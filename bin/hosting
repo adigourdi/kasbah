@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# hosting — multi-project Docker host CLI. See docs/ for design.
+
+set -euo pipefail
+
+_resolve_self_dir() {
+    local src="${BASH_SOURCE[0]}"
+    while [ -L "$src" ]; do
+        local dir
+        dir="$(cd -P "$(dirname "$src")" && pwd)"
+        src="$(readlink "$src")"
+        [[ $src != /* ]] && src="$dir/$src"
+    done
+    cd -P "$(dirname "$src")" && pwd
+}
+
+_bin_dir="$(_resolve_self_dir)"
+
+# Prefer an explicit override, else a repo checkout (detected by install.sh
+# sibling — unambiguous), else the XDG share dir.
+if [ -n "${HOSTING_LIB_DIR:-}" ]; then
+    HOSTING_VERSION_FILE="$HOSTING_LIB_DIR/VERSION"
+elif [ -f "$_bin_dir/../install.sh" ] && [ -f "$_bin_dir/../VERSION" ]; then
+    _repo_dir="$(cd "$_bin_dir/.." && pwd)"
+    HOSTING_LIB_DIR="$_repo_dir/lib"
+    HOSTING_VERSION_FILE="$_repo_dir/VERSION"
+else
+    if [ -z "${XDG_DATA_HOME:-}" ] && [ -z "${HOME:-}" ]; then
+        echo "hosting: neither HOSTING_LIB_DIR, XDG_DATA_HOME, nor HOME is set" >&2
+        exit 1
+    fi
+    HOSTING_LIB_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/hosting"
+    HOSTING_VERSION_FILE="$HOSTING_LIB_DIR/VERSION"
+fi
+
+if [ ! -f "$HOSTING_LIB_DIR/common.sh" ]; then
+    echo "hosting: cannot locate library files (looked in $HOSTING_LIB_DIR)" >&2
+    exit 1
+fi
+
+# shellcheck source=../lib/common.sh
+. "$HOSTING_LIB_DIR/common.sh"
+
+HOSTING_VERSION="$(cat "$HOSTING_VERSION_FILE")"
+export HOSTING_LIB_DIR HOSTING_VERSION
+
+usage() {
+    cat <<EOF
+hosting — multi-project Docker host CLI (v$HOSTING_VERSION)
+
+Usage: hosting [--version] [--help] <command> [args...]
+
+Commands are not yet implemented. See docs/cli.md for the planned surface.
+EOF
+}
+
+main() {
+    if [ $# -eq 0 ]; then
+        usage
+        exit 0
+    fi
+
+    case "$1" in
+        -v|--version) echo "hosting $HOSTING_VERSION" ;;
+        -h|--help)    usage ;;
+        *)            die "command '$1' is not yet implemented" ;;
+    esac
+}
+
+main "$@"

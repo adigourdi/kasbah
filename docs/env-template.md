@@ -119,7 +119,7 @@ prompt asks whether to re-configure anyway; default is no.
 ## Testing
 
 The port keeps `test-setup-env.sh` from the original project. It builds fixtures,
-pipes stdin, and asserts the resulting `.env`. Runs in CI (or `make test`).
+pipes stdin, and asserts the resulting `.env`. Runs in CI (or `./test.sh`).
 
 Coverage (preserved from the original project):
 - First run — accept defaults

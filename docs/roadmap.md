@@ -7,7 +7,7 @@ the multi-project layer.
 
 ### 1.1 Foundation
 - [ ] Repo skeleton: `bin/hosting`, `lib/*.sh`, `templates/`, `tests/`
-- [ ] Global install: `make install` copies `bin/` to `~/.local/bin`, `lib/`
+- [ ] Global install: `./install.sh` copies `bin/` to `~/.local/bin`, `lib/`
   to `~/.local/share/hosting/`
 - [ ] Self-version: `hosting --version` reports from a committed
   `VERSION` file
