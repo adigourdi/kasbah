@@ -80,7 +80,7 @@ Flags:
 ### `hosting check [--fix]`
 
 Run the compliance check on the current project. See `compliance.md` for
-the full rule set. Exit code 0 on pass, 1 on any failure.
+the full rule set. Exit code 0 on pass, 6 on any failure (see "Exit codes" below).
 
 `--fix` applies safe auto-fixes (add missing restart policy, add missing
 logging rotation, add missing `traefik.enable=true`).

@@ -52,6 +52,7 @@ Usage: hosting [--version] [--help] <command> [args...]
 
 Commands:
   init-project [--name=<n>] [--domain=<d>]   Scaffold hosting metadata in cwd.
+  check                                      Run structural checks on the project.
 
 See docs/cli.md for the full planned surface.
 EOF
@@ -63,6 +64,10 @@ dispatch() {
         init-project)
             . "$HOSTING_LIB_DIR/init_project.sh"
             cmd_init_project "$@"
+            ;;
+        check)
+            . "$HOSTING_LIB_DIR/check.sh"
+            cmd_check "$@"
             ;;
         *)
             die "command '$cmd' is not yet implemented"

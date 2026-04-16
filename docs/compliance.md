@@ -10,7 +10,7 @@ Checking /home/you/projects/myapp
 
 Structure:
   ✓ hosting.yml exists (schema 1)
-  ✓ compose.yml or compose.prod.yml exists
+  ✓ compose.prod.yml exists
   ✓ .env.prod.example exists
   ✓ .gitignore excludes .env
 
@@ -54,7 +54,7 @@ Exit code 0 if no failures (warnings are informational).
 |---|---|---|
 | S01 | `hosting.yml` exists | fail |
 | S02 | `hosting.yml` has valid schema version | fail |
-| S03 | `compose.prod.yml` or `compose.yml` exists | fail |
+| S03 | `compose.prod.yml` exists | fail |
 | S04 | `.env.prod.example` exists | fail |
 | S05 | `.gitignore` excludes `.env` | warn |
 | S06 | `.gitignore` excludes `.hosting/` | warn |

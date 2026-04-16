@@ -25,4 +25,5 @@ err_cont() { printf '       %s\n' "$*" >&2; }
 die()  { err "$*"; exit 1; }
 
 # Exit codes — shared contract, see docs/cli.md "Exit codes".
-HOSTING_EXIT_NO_PROJECT=2   # no hosting.yml in cwd
+HOSTING_EXIT_NO_PROJECT=2       # no hosting.yml in cwd
+HOSTING_EXIT_COMPLIANCE_FAIL=6  # `hosting check` recorded one or more failures
