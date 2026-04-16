@@ -50,8 +50,24 @@ hosting — multi-project Docker host CLI (v$HOSTING_VERSION)
 
 Usage: hosting [--version] [--help] <command> [args...]
 
-Commands are not yet implemented. See docs/cli.md for the planned surface.
+Commands:
+  init-project [--name=<n>] [--domain=<d>]   Scaffold hosting metadata in cwd.
+
+See docs/cli.md for the full planned surface.
 EOF
+}
+
+dispatch() {
+    local cmd="$1"; shift
+    case "$cmd" in
+        init-project)
+            . "$HOSTING_LIB_DIR/init_project.sh"
+            cmd_init_project "$@"
+            ;;
+        *)
+            die "command '$cmd' is not yet implemented"
+            ;;
+    esac
 }
 
 main() {
@@ -63,7 +79,7 @@ main() {
     case "$1" in
         -v|--version) echo "hosting $HOSTING_VERSION" ;;
         -h|--help)    usage ;;
-        *)            die "command '$1' is not yet implemented" ;;
+        *)            dispatch "$@" ;;
     esac
 }
 
