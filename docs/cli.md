@@ -34,11 +34,13 @@ What it does:
 2. `mkdir -p /apps /apps/data /apps/backups`.
 3. `mkdir -p /apps/data/traefik/letsencrypt && touch /apps/data/traefik/letsencrypt/acme.json && chmod 600 ...`
    (touch-as-file is mandatory — Docker silently creates a directory otherwise).
-4. Scaffold `/apps/traefik/` (compose.yml, traefik.yml, dynamic.yml, .env).
+4. Scaffold `/apps/traefik/` (compose.yml, traefik.yml, dynamic/ with `_shared.yml`, .env).
 5. Run `hosting env` interactively against `/apps/traefik/.env.prod.example`.
 6. `docker compose up -d` in `/apps/traefik/`.
 7. Health-check Traefik, print dashboard URL.
-8. If `--with-mail`: scaffold `/apps/mail/`, run its env setup, start it.
+8. If `--with-mail`: scaffold `/apps/mail/`, write the cert-trigger +
+   webmail router fragment to `/apps/traefik/dynamic/_mail.yml`, run its
+   env setup, start it.
 
 ### `hosting server status USER@HOST`
 
@@ -83,7 +85,7 @@ Run the compliance check on the current project. See `compliance.md` for
 the full rule set. Exit code 0 on pass, 6 on any failure (see "Exit codes" below).
 
 `--fix` applies safe auto-fixes (add missing restart policy, add missing
-logging rotation, add missing `traefik.enable=true`).
+logging rotation). Traefik rules are never auto-fixed — routing is policy.
 
 ### `hosting build-push [USER@HOST]`
 

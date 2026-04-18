@@ -12,19 +12,24 @@ generalized to serve multiple app domains.
 - **SnappyMail** (djmaze/snappymail) — lightweight webmail, served at
   `webmail.<domain>` via Traefik.
 
-## TLS flow (the clever bit, ported as-is)
+## TLS flow
 
 DMS needs a Let's Encrypt cert for `mail.<domain>` to start, but Traefik
 only issues certs when a router requests the host. If we only had a DMS
 router, it'd deadlock: DMS won't boot → router never registers → cert
 never issued → DMS won't boot.
 
-Solution (from the original project): a **cert-trigger router** on SnappyMail claims
-`Host(\`mail.<domain>\`)` but 404s every request. SnappyMail boots in 10s
-regardless of cert state, so its labels register immediately → Traefik
-requests the cert → DMS reads it from `acme.json` and boots.
+`hosting server init --with-mail` writes a hosting-owned fragment at
+`/apps/traefik/dynamic/_mail.yml` that declares a **cert-trigger router**
+claiming `Host(\`mail.<domain>\`)` on `websecure` with
+`tls.certResolver: letsencrypt`. The router is registered the moment
+Traefik loads the fragment — independent of SnappyMail or DMS startup.
+Traefik requests the cert → DMS reads it from `acme.json` and boots.
 
-This same technique is preserved verbatim in hosting's mail template.
+The `_mail.yml` fragment also holds SnappyMail's webmail router
+(`Host(\`webmail.<domain>\`)` → `http://mail-snappymail:8888`). Both
+routers living in a hosting-owned fragment makes the boot-order deadlock
+impossible regardless of container health.
 
 ## Multi-domain support
 

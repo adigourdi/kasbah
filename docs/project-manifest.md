@@ -38,7 +38,6 @@ domain: shop.example.com
 sync:
   - compose.prod.yml -> compose.yml
   - .env.prod.example
-  - traefik/             # project-local Traefik middlewares overrides
   - docker/postgres/init-postgis-prod.sql
 
 # Healthcheck to block on after `compose up -d` before running post-deploy
@@ -131,6 +130,11 @@ Rsync list applied on every deploy. Each entry is either `src` or `src -> dst`
 (relative to project root on dev; `/apps/<name>/` on VPS). Trailing `/` means
 "recurse". Hosting always syncs the manifest itself and the minimal helper
 scripts (`setup-env.sh`, `remote-deploy.sh`) — you don't list those.
+
+The Traefik dynamic config (`traefik-dynamic.yml` at project root) is
+**not** listed here. Hosting rsyncs it directly to
+`/apps/traefik/dynamic/<name>.yml` out-of-band, the same way it handles
+its own helper scripts. See `traefik.md` for the fragment shape.
 
 ### `health` *(optional)*
 

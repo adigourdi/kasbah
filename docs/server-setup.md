@@ -37,7 +37,9 @@ Default paths (override with `--apps-path`, `--data-path`):
 └── traefik/
     ├── compose.yml                  the shared Traefik stack
     ├── traefik.yml                  static config
-    ├── dynamic.yml                  middlewares + TLS options
+    ├── dynamic/                     file-provider watch dir
+    │   ├── _shared.yml              middlewares + TLS options
+    │   └── <project>.yml            one per deployed project (copied in on deploy)
     ├── .env.prod.example
     └── .env                         generated interactively at init
 ```
@@ -66,12 +68,8 @@ entryPoints:
         options: default
 
 providers:
-  docker:
-    endpoint: "unix:///var/run/docker.sock"
-    exposedByDefault: false
-    network: hosting-net
   file:
-    filename: /etc/traefik/dynamic.yml
+    directory: /etc/traefik/dynamic
     watch: true
 
 certificatesResolvers:
@@ -92,17 +90,19 @@ ping:
   entryPoint: "web"
 ```
 
-### `dynamic.yml` (middlewares)
+### `dynamic/_shared.yml` (middlewares)
 
-Ships baseline middlewares that any project can reference via `@file`:
+Ships baseline middlewares that any project fragment can reference via `@file`:
 - `http-to-https` — scheme redirect.
 - `http-www-to-https-non-www`, `https-www-to-https-non-www` — apex canonicalization.
 - `security-headers` — HSTS, frame-deny, CSP-report-only stub.
 - `gzip-compression`.
-- `api-rate-limit` (50 avg / 100 burst) — opt-in via project labels.
+- `api-rate-limit` (50 avg / 100 burst) — opt-in from a project fragment.
 
-Projects may add their own middlewares in their own compose.yml labels; the
-shared file provider is for things every project wants.
+Projects add their own middlewares in their own `traefik-dynamic.yml`
+(rsynced into the same `dynamic/` directory as `<manifest.name>.yml`).
+The `_` prefix on shared files keeps them sorted at the top and distinct
+from project fragments.
 
 ### Network
 
@@ -115,8 +115,9 @@ networks:
     driver: bridge
 ```
 
-Projects declare `hosting-net` as `external: true`. Traefik discovers
-project containers via labels.
+Projects declare `hosting-net` as `external: true`. Traefik resolves
+project containers by `container_name` on this network — the file
+provider fragment names them explicitly in `services.<x>.loadBalancer.servers`.
 
 ## With mail (`--with-mail`)
 

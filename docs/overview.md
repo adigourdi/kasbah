@@ -27,7 +27,7 @@ the same battle-tested workflow without copying scripts between repos.
 - **Env management** — interactive `.env` generation from a rich template,
   drift detection against `.env.prod.example`.
 - **Compliance check** — structural conformance (compose.yml, manifest, Traefik
-  labels, healthchecks, logging, restart policy, env sync).
+  fragment, healthchecks, logging, restart policy, env sync).
 - **Mail primitive** — shared DMS + SnappyMail stack apps can claim a domain
   from; accounts are managed out-of-band via DMS CLI.
 
@@ -97,7 +97,9 @@ Chosen defaults (overridable via `hosting server init --apps-path=...`):
 ├── traefik/                     # shared reverse proxy (hosting-managed)
 │   ├── compose.yml
 │   ├── traefik.yml              # static config
-│   ├── dynamic.yml              # middlewares, TLS opts
+│   ├── dynamic/                 # file-provider watch dir
+│   │   ├── _shared.yml          # middlewares, TLS opts
+│   │   └── <project>.yml        # one per deployed project
 │   └── .env
 ├── mail/                        # optional mail stack (hosting-managed)
 │   ├── compose.yml

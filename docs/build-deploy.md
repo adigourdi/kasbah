@@ -98,9 +98,11 @@ below). The only differences:
 4. Ensure remote dirs exist:
      /apps/<name>/, scripts/, backups/, /apps/data/<name>/
 5. Rsync from working tree:
-     - every path in manifest's `sync:` list
+     - every path in manifest's `sync:` list → /apps/<name>/
      - setup-env.sh and remote-deploy.sh (hosting-owned helpers, overwritten
-       on every deploy to match installed hosting version)
+       on every deploy to match installed hosting version) → /apps/<name>/scripts/
+     - traefik-dynamic.yml → /apps/traefik/dynamic/<name>.yml (hosting-owned
+       path, handled out-of-band — see traefik.md)
 6. Env drift check (via setup-env.sh on VPS):
      MISSING .env         → run interactive setup
      DRIFT from template  → prompt: re-run setup / continue / abort
@@ -226,7 +228,9 @@ small without sacrificing history.
 7. Parse v<target>'s manifest for its `sync:` list.
 8. git archive v<target> <v<target>'s sync list> | ssh vps tar -x -C /apps/<name>/
    (Overwrites whatever HEAD sync produced at the last deploy.)
-9. SSH into VPS and run scripts/remote-deploy.sh rollback <target>:
+9. Restore v<target>'s Traefik config: git archive v<target>:traefik-dynamic.yml
+   → /apps/traefik/dynamic/<name>.yml. Traefik reloads on its own.
+10. SSH into VPS and run scripts/remote-deploy.sh rollback <target>:
      a. Run pre-rollback hooks against currently-running containers.
      b. Retag :<target> as :current for each v<target>-era built image.
      c. docker compose up -d --remove-orphans.
@@ -249,7 +253,9 @@ expects.
 Restores:
 - Image (via retag of `:current`).
 - Everything in v<target>'s `sync:` list: compose.prod.yml → compose.yml,
-  .env.prod.example, project-local Traefik middlewares, init SQL, etc.
+  .env.prod.example, init SQL, etc.
+- v<target>'s `traefik-dynamic.yml` → /apps/traefik/dynamic/<name>.yml,
+  rsynced out-of-band (same path as deploy).
 - Hosting helper scripts (`setup-env.sh`, `remote-deploy.sh`) — from the
   **current** hosting install, not from git. Helpers belong to hosting,
   not to the project's version history.

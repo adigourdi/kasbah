@@ -21,10 +21,10 @@ Compose:
   ✓ No `version:` field (deprecated)
 
 Traefik:
-  ✓ At least one service has traefik.enable=true
+  ✓ traefik-dynamic.yml exists
   ✓ At least one router references manifest domain (myapp.example.com)
   ✓ Routers declare entrypoints (web or websecure)
-  ✓ Secure routers reference a certresolver
+  ✓ Secure routers reference letsencrypt
 
 Healthchecks:
   ⚠ Service 'worker' has no HEALTHCHECK (warning only)
@@ -72,13 +72,18 @@ Exit code 0 if no failures (warnings are informational).
 
 ### Traefik
 
+Rules parse `traefik-dynamic.yml` at the project root. `compose.prod.yml`
+is also scanned: any `traefik.*` label is a hard fail (T06), since the
+docker provider is not wired in.
+
 | ID | Rule | Level |
 |---|---|---|
-| T01 | At least one service has `traefik.enable=true` | fail |
-| T02 | At least one router rule references `manifest.domain` | fail |
-| T03 | Routers declare `entrypoints` | fail |
-| T04 | Routers on `websecure` reference `tls.certresolver=letsencrypt` | fail |
-| T05 | No router uses reserved hosting names (`traefik.*`, `mail.*`) unless the project IS the mail/traefik owner | fail |
+| T01 | `traefik-dynamic.yml` exists and parses as YAML | fail |
+| T02 | At least one router's `rule` references `manifest.domain` | fail |
+| T03 | Every router declares `entryPoints` (non-empty list) | fail |
+| T04 | Routers on `websecure` reference `tls.certResolver: letsencrypt` | fail |
+| T05 | Project fragment's routers don't claim reserved hostnames (`traefik.<domain>`, `mail.<domain>`, `webmail.<domain>`) — those belong to hosting-owned `_`-prefixed fragments | fail |
+| T06 | No service in `compose.prod.yml` carries `traefik.*` labels | fail |
 
 ### Healthchecks
 

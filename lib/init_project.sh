@@ -161,17 +161,31 @@ Next step: author compose.prod.yml. Starter snippet:
   services:
     app:
       image: nginx:alpine
+      container_name: ${name}-web
       restart: unless-stopped
-      networks: [traefik, default]
-      labels:
-        - traefik.enable=true
-        - traefik.http.routers.${name}.rule=Host(\`${domain}\`)
-        - traefik.http.routers.${name}.entrypoints=websecure
-        - traefik.http.routers.${name}.tls.certresolver=letsencrypt
 
   networks:
-    traefik:
+    default:
+      name: hosting-net
       external: true
+
+Routing is declared in traefik-dynamic.yml at the project root (see
+docs/traefik.md). Starter:
+
+  http:
+    routers:
+      ${name}:
+        rule: "Host(\`${domain}\`)"
+        entryPoints: [websecure]
+        tls:
+          certResolver: letsencrypt
+        middlewares: ["security-headers@file", "gzip-compression@file"]
+        service: ${name}
+    services:
+      ${name}:
+        loadBalancer:
+          servers:
+            - url: "http://${name}-web:80"
 
 Then run \`hosting check\` to validate structure.
 EOF
