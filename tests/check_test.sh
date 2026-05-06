@@ -17,8 +17,11 @@ assert() {
     fi
 }
 
-# Scaffold a passing project: init-project + a minimal-but-valid compose.prod.yml
-# that satisfies all Compose rules (C01–C05).
+# Scaffold a passing project: init-project + a minimal-but-valid
+# compose.prod.yml + a minimal traefik-dynamic.yml that together satisfy
+# every check group's pass path (Structure, Compose, Traefik, Env). The
+# Healthchecks and Hooks sections are silent — manifest has no health/
+# hooks/backup blocks, and the only service has no build:.
 make_project() {
     local dir="$1" name="${2:-demo}" domain="${3:-demo.example.com}"
     mkdir -p "$dir"
@@ -39,6 +42,19 @@ networks:
     name: hosting-net
     external: true
 YAML
+    # printf-built so backticks in `Host(`…`)` stay literal (heredoc would
+    # require '<<YAML' for $name/$domain interpolation but then evaluate the
+    # backticks as command substitution).
+    {
+        printf 'http:\n'
+        printf '  routers:\n'
+        printf '    %s:\n' "$name"
+        printf '      rule: "Host(`%s`)"\n' "$domain"
+        printf '      entryPoints: [websecure]\n'
+        printf '      tls:\n'
+        printf '        certResolver: letsencrypt\n'
+        printf '      service: noop@internal\n'
+    } > "$dir/traefik-dynamic.yml"
 }
 
 # --- Case 1: golden path — everything passes, exit 0 --------------------------
@@ -56,7 +72,17 @@ assert 'grep -qF "✓ All services set json-file logging with rotation" <<<"$out
 assert 'grep -qF "✓ All services join hosting-net" <<<"$out"'                   "C03 pass line"
 assert 'grep -qF "✓ hosting-net declared external" <<<"$out"'                   "C04 pass line"
 assert 'grep -qF "✓ No deprecated '"'"'version:'"'"' field" <<<"$out"'          "C05 pass line"
-assert 'grep -qF "10 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
+assert 'grep -qF "✓ compose.prod.yml has no traefik.* labels" <<<"$out"'                       "T06 pass line"
+assert 'grep -qF "✓ traefik-dynamic.yml exists" <<<"$out"'                                     "T01 pass line"
+assert 'grep -qF "✓ At least one router references manifest domain (demo.example.com)" <<<"$out"' "T02 pass line"
+assert 'grep -qF "✓ All routers declare entryPoints" <<<"$out"'                                "T03 pass line"
+assert 'grep -qF "✓ Secure routers reference letsencrypt cert resolver" <<<"$out"'             "T04 pass line"
+assert 'grep -qF "✓ No router claims reserved hostnames" <<<"$out"'                            "T05 pass line"
+assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'                              "E01 pass line"
+assert 'grep -qF "✓ .env.prod.example has no obvious long secrets" <<<"$out"'                  "E04 pass line"
+assert '! grep -q "Healthchecks:" <<<"$out"'  "Healthchecks: header suppressed (nothing to check)"
+assert '! grep -q "Hooks:" <<<"$out"'         "Hooks: header suppressed (no hooks/backup in manifest)"
+assert 'grep -qF "18 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
 
 # --- Case 2: missing compose.prod.yml — fail, exit 6 -------------------------
 # Exit 6 is the documented "compliance check failed" code (docs/cli.md).
@@ -266,5 +292,402 @@ out="$(cd "$proj18" && "$hosting" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                                       "empty compose exits 0 (got $rc)"
 assert 'grep -qF "⚠ compose.prod.yml declares no services — skipping Compose checks" <<<"$out"' "no-services warn line"
 assert 'grep -qF "✓ No deprecated '"'"'version:'"'"' field" <<<"$out"'                          "C05 still runs"
+
+# --- Case 19: T01 — traefik-dynamic.yml missing → warn, exit 0 ---------------
+# Worker-only projects without web routing should not fail the whole check.
+proj19="$tmpdir/no-traefik-fragment"
+make_project "$proj19"
+rm "$proj19/traefik-dynamic.yml"
+out="$(cd "$proj19" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                      "T01 missing exits 0 (got $rc)"
+assert 'grep -qF "⚠ traefik-dynamic.yml missing" <<<"$out"'                   "T01 warn line"
+assert '! grep -qF "At least one router references manifest domain" <<<"$out"' "T02 skipped when fragment missing"
+assert 'grep -qF "✓ compose.prod.yml has no traefik.* labels" <<<"$out"'       "T06 still runs"
+
+# --- Case 20: T02 — router doesn't reference manifest domain → fail ----------
+proj20="$tmpdir/wrong-domain"
+make_project "$proj20"
+cat > "$proj20/traefik-dynamic.yml" <<'YAML'
+http:
+  routers:
+    demo:
+      rule: "Host(`other.test`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: noop@internal
+YAML
+out="$(cd "$proj20" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                                  "T02 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ No router rule references manifest domain (demo.example.com)" <<<"$out"' "T02 fail line"
+
+# --- Case 21: T03 — router missing entryPoints → fail ------------------------
+proj21="$tmpdir/no-entrypoints"
+make_project "$proj21"
+cat > "$proj21/traefik-dynamic.yml" <<'YAML'
+http:
+  routers:
+    demo:
+      rule: "Host(`demo.example.com`)"
+      service: noop@internal
+YAML
+out="$(cd "$proj21" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                          "T03 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ Routers without entryPoints: demo" <<<"$out"' "T03 fail line"
+
+# --- Case 22: T04 — websecure without letsencrypt → fail ---------------------
+proj22="$tmpdir/no-letsencrypt"
+make_project "$proj22"
+cat > "$proj22/traefik-dynamic.yml" <<'YAML'
+http:
+  routers:
+    demo:
+      rule: "Host(`demo.example.com`)"
+      entryPoints: [websecure]
+      service: noop@internal
+YAML
+out="$(cd "$proj22" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                                       "T04 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ Websecure routers without tls.certResolver=letsencrypt: demo" <<<"$out"'   "T04 fail line"
+
+# --- Case 23: T05 — router claims a reserved hostname → fail ----------------
+proj23="$tmpdir/reserved-host"
+make_project "$proj23"
+cat > "$proj23/traefik-dynamic.yml" <<'YAML'
+http:
+  routers:
+    demo:
+      rule: "Host(`demo.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: noop@internal
+    demo-mail:
+      rule: "Host(`mail.demo.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: noop@internal
+YAML
+out="$(cd "$proj23" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                  "T05 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ Routers claim reserved hostnames" <<<"$out"'          "T05 fail line"
+assert 'grep -qF "demo-mail" <<<"$out"'                                   "T05 names offending router"
+
+# --- Case 24: T06 — service carries traefik.* label → fail ------------------
+proj24="$tmpdir/traefik-label"
+make_project "$proj24"
+cat > "$proj24/compose.prod.yml" <<'YAML'
+services:
+  app:
+    image: nginx:alpine
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.app.rule=Host(`demo.example.com`)"
+networks:
+  default:
+    name: hosting-net
+    external: true
+YAML
+out="$(cd "$proj24" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                                  "T06 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ Services carry traefik.* labels (file provider only): app" <<<"$out"' "T06 fail line"
+
+# --- Case 25: H01 — built service without compose healthcheck → warn --------
+proj25="$tmpdir/built-no-hc"
+make_project "$proj25"
+mkdir -p "$proj25/api"
+: > "$proj25/api/Dockerfile"
+cat > "$proj25/compose.prod.yml" <<'YAML'
+services:
+  api:
+    build: ./api
+    container_name: demo-api
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+networks:
+  default:
+    name: hosting-net
+    external: true
+YAML
+out="$(cd "$proj25" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                                                          "H01 warn exits 0 (got $rc)"
+assert 'grep -qF "Healthchecks:" <<<"$out"'                                                                       "Healthchecks: header appears"
+assert 'grep -qF "⚠ Built services without a compose healthcheck (Dockerfile may declare one): api" <<<"$out"'    "H01 warn line"
+
+# --- Case 26: H02 — manifest health.container not in compose → fail ---------
+proj26="$tmpdir/bad-health-container"
+make_project "$proj26"
+# Append a `health:` block to the manifest.
+cat >> "$proj26/hosting.yml" <<'YAML'
+
+health:
+  container: nonexistent-container
+  timeout: 60s
+YAML
+out="$(cd "$proj26" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                                                                  "H02 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ manifest health.container '"'"'nonexistent-container'"'"' not found among compose container_names" <<<"$out"' "H02 fail line"
+
+# --- Case 27: H02 pass — health.container matches a compose container_name --
+proj27="$tmpdir/good-health-container"
+make_project "$proj27"
+cat > "$proj27/compose.prod.yml" <<'YAML'
+services:
+  app:
+    image: nginx:alpine
+    container_name: demo-web
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+networks:
+  default:
+    name: hosting-net
+    external: true
+YAML
+cat >> "$proj27/hosting.yml" <<'YAML'
+
+health:
+  container: demo-web
+  timeout: 60s
+YAML
+out="$(cd "$proj27" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                                       "H02 pass exits 0 (got $rc)"
+assert 'grep -qF "✓ manifest health.container '"'"'demo-web'"'"' exists in compose" <<<"$out"' "H02 pass line"
+
+# --- Case 28: E01 — invalid line → fail --------------------------------------
+proj28="$tmpdir/env-bad-syntax"
+make_project "$proj28"
+# Inject a garbage line that's neither a comment, blank, nor NAME=value.
+printf 'this is not valid env syntax\n' >> "$proj28/.env.prod.example"
+out="$(cd "$proj28" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                            "E01 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ .env.prod.example has invalid lines" <<<"$out"'                 "E01 fail line"
+
+# --- Case 29: E02 — .env missing a key from .env.prod.example → warn --------
+proj29="$tmpdir/env-missing-key"
+make_project "$proj29"
+# .env.prod.example has DOMAIN. .env has nothing.
+: > "$proj29/.env"
+out="$(cd "$proj29" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                  "E02 warn exits 0 (got $rc)"
+assert 'grep -qF "⚠ .env missing keys vs .env.prod.example: DOMAIN" <<<"$out"'  "E02 warn line"
+
+# --- Case 30: E03 — .env has an extra key not in template → warn ------------
+proj30="$tmpdir/env-extra-key"
+make_project "$proj30"
+cat > "$proj30/.env" <<'ENV'
+DOMAIN=demo.example.com
+EXTRA_VAR=oops
+ENV
+out="$(cd "$proj30" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                              "E03 warn exits 0 (got $rc)"
+assert 'grep -qF "⚠ .env has extra keys not in .env.prod.example: EXTRA_VAR" <<<"$out"' "E03 warn line"
+
+# --- Case 31: E04 — long literal value in template → warn -------------------
+proj31="$tmpdir/env-long-secret"
+make_project "$proj31"
+# 80-char hex-ish value, not a `!`-generator, not a hint.
+printf 'API_TOKEN=%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" >> "$proj31/.env.prod.example"
+out="$(cd "$proj31" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                                          "E04 warn exits 0 (got $rc)"
+assert 'grep -qF "⚠ .env.prod.example has values >64 chars (possibly leaked secrets): API_TOKEN" <<<"$out"' "E04 warn line"
+
+# --- Case 32: HK01 — hook references unknown container → fail ----------------
+proj32="$tmpdir/hk01-unknown"
+make_project "$proj32"
+cat > "$proj32/compose.prod.yml" <<'YAML'
+services:
+  app:
+    image: nginx:alpine
+    container_name: demo-web
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+networks:
+  default:
+    name: hosting-net
+    external: true
+YAML
+cat >> "$proj32/hosting.yml" <<'YAML'
+
+hooks:
+  post-deploy:
+    - ghost-container echo hi
+YAML
+out="$(cd "$proj32" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                              "HK01 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ Hooks reference unknown container_names: ghost-container" <<<"$out"' "HK01 fail line"
+
+# --- Case 33: HK02 — backup missing required field → fail --------------------
+proj33="$tmpdir/hk02-missing-field"
+make_project "$proj33"
+cat > "$proj33/compose.prod.yml" <<'YAML'
+services:
+  db:
+    image: postgres:16
+    container_name: demo-db
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+networks:
+  default:
+    name: hosting-net
+    external: true
+YAML
+cat >> "$proj33/hosting.yml" <<'YAML'
+
+backup:
+  container: demo-db
+  check: "true"
+  command: "pg_dump -U u d"
+  # extension intentionally omitted
+YAML
+out="$(cd "$proj33" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                            "HK02 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ Backup hook missing required field(s): extension" <<<"$out"'   "HK02 fail line"
+
+# --- Case 34: HK03 — backup container not in compose → fail ------------------
+proj34="$tmpdir/hk03-bad-container"
+make_project "$proj34"
+cat > "$proj34/compose.prod.yml" <<'YAML'
+services:
+  db:
+    image: postgres:16
+    container_name: demo-db
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+networks:
+  default:
+    name: hosting-net
+    external: true
+YAML
+cat >> "$proj34/hosting.yml" <<'YAML'
+
+backup:
+  container: not-in-compose
+  check: "true"
+  command: "pg_dump -U u d"
+  extension: sql.gz
+YAML
+out="$(cd "$proj34" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                                                            "HK03 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ Backup hook container '"'"'not-in-compose'"'"' not found among compose container_names" <<<"$out"' "HK03 fail line"
+
+# --- Case 35: HK01–03 — full valid hooks + backup → pass --------------------
+# Regression guard for the .hooks/.value[]? extraction and the container_name
+# set assembly. If the yq stage names get refactored this should catch it.
+proj35="$tmpdir/hk-all-pass"
+make_project "$proj35"
+cat > "$proj35/compose.prod.yml" <<'YAML'
+services:
+  api:
+    image: nginx:alpine
+    container_name: demo-api
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  db:
+    image: postgres:16
+    container_name: demo-db
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+networks:
+  default:
+    name: hosting-net
+    external: true
+YAML
+cat >> "$proj35/hosting.yml" <<'YAML'
+
+hooks:
+  pre-deploy:
+    - demo-api echo before
+  post-deploy:
+    - demo-api echo after
+  pre-rollback:
+    - demo-api echo rollback-before
+  post-rollback:
+    - demo-api echo rollback-after
+
+backup:
+  container: demo-db
+  check: "true"
+  command: "pg_dump -U u d"
+  extension: sql.gz
+YAML
+out="$(cd "$proj35" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                       "HK pass exits 0 (got $rc)"
+assert 'grep -qF "✓ All hook commands target known container_names" <<<"$out"' "HK01 pass line"
+assert 'grep -qF "✓ Backup hook has check, command, and extension" <<<"$out"'  "HK02 pass line"
+assert 'grep -qF "✓ Backup hook container '"'"'demo-db'"'"' exists in compose" <<<"$out"' "HK03 pass line"
+
+# --- Case 36: T01 — malformed traefik-dynamic.yml → warn, exit 0 ------------
+# T01 was downgraded to warn (worker-only projects). A malformed file is the
+# same user-facing condition as a missing one — should not fail the check.
+proj36="$tmpdir/traefik-malformed"
+make_project "$proj36"
+printf 'http:\n  routers:\n    bad: [ this is\n      not yaml\n' > "$proj36/traefik-dynamic.yml"
+out="$(cd "$proj36" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                        "T01 malformed exits 0 (got $rc)"
+assert 'grep -qF "⚠ traefik-dynamic.yml does not parse as YAML" <<<"$out"'      "T01 malformed warn line"
+assert '! grep -qF "At least one router references manifest domain" <<<"$out"'  "T02 skipped on parse failure"
+
+# --- Case 37: empty manifest domain → T02 skipped with a warn, exit 0 -------
+# init-project allows an empty domain. The Traefik check should warn and skip
+# T02 rather than failing on an empty needle.
+proj37="$tmpdir/empty-domain"
+mkdir -p "$proj37"
+(cd "$proj37" && "$hosting" init-project --name=demo >/dev/null 2>&1)
+cat > "$proj37/compose.prod.yml" <<'YAML'
+services:
+  app:
+    image: nginx:alpine
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+networks:
+  default:
+    name: hosting-net
+    external: true
+YAML
+{ printf 'http:\n  routers:\n    demo:\n      rule: "Host(`x.test`)"\n      entryPoints: [websecure]\n      tls:\n        certResolver: letsencrypt\n      service: noop@internal\n'; } > "$proj37/traefik-dynamic.yml"
+out="$(cd "$proj37" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                              "empty-domain T02 skip exits 0 (got $rc)"
+assert 'grep -qF "⚠ manifest domain is empty — skipping T02" <<<"$out"'               "empty-domain warn line"
+assert '! grep -qF "At least one router references manifest domain" <<<"$out"'        "T02 not run on empty domain"
+assert 'grep -qF "✓ All routers declare entryPoints" <<<"$out"'                       "T03 still runs on empty domain"
 
 exit "$fail"

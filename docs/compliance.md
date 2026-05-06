@@ -78,11 +78,11 @@ docker provider is not wired in.
 
 | ID | Rule | Level |
 |---|---|---|
-| T01 | `traefik-dynamic.yml` exists and parses as YAML | fail |
+| T01 | `traefik-dynamic.yml` exists and parses as YAML | warn |
 | T02 | At least one router's `rule` references `manifest.domain` | fail |
 | T03 | Every router declares `entryPoints` (non-empty list) | fail |
 | T04 | Routers on `websecure` reference `tls.certResolver: letsencrypt` | fail |
-| T05 | Project fragment's routers don't claim reserved hostnames (`traefik.<domain>`, `mail.<domain>`, `webmail.<domain>`) — those belong to hosting-owned `_`-prefixed fragments | fail |
+| T05 | Project fragment's routers don't claim reserved hostnames (`traefik.<domain>`, `mail.<domain>`, `webmail.<domain>`) — those belong to hosting-owned `_`-prefixed fragments. Implemented locally as a heuristic: any `Host(\`…\`)` whose first DNS label is `traefik`, `mail`, or `webmail` fails. Tightens to the exact server-apex match when `--server` mode lands. | fail |
 | T06 | No service in `compose.prod.yml` carries `traefik.*` labels | fail |
 
 ### Healthchecks
@@ -105,7 +105,7 @@ docker provider is not wired in.
 
 | ID | Rule | Level |
 |---|---|---|
-| HK01 | Every hook's first word is a container_name from compose.yml | fail |
+| HK01 | Every hook's first word is an explicit `container_name:` from compose.prod.yml (compose's auto-generated `<project>_<svc>_1` won't match) | fail |
 | HK02 | Backup hook has all required subfields (`check`, `command`, `extension`) | fail |
 | HK03 | Backup hook's container exists among services | fail |
 

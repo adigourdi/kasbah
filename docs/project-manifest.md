@@ -143,9 +143,11 @@ Defaults to waiting on all services with a compose healthcheck.
 
 ### `hooks` *(optional)*
 
-Each hook is a list of strings. Each string starts with a **container name**
-(resolved against the running compose project), followed by the command to
-run inside it via `docker exec -T`.
+Each hook is a list of strings. Each string starts with a literal
+**container name**, followed by the command to run inside it via
+`docker exec -T`. The target service in `compose.prod.yml` must set an
+explicit `container_name:` — compose's auto-generated
+`<project>_<service>_1` won't match. `hosting check` (HK01) enforces this.
 
 Supported hooks and when they run:
 
