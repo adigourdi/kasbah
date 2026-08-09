@@ -1,0 +1,66 @@
+# Phase 5 — Undo
+
+> Deploys are reversible and inspectable: `rollback` restores a prior
+> version from git + retained images, and `history` / `pending` /
+> `changelog` read the record.
+
+**Prerequisite:** Phase 4.
+**Spec:** `docs/build-deploy.md` (rollback flow + invariant, retention, versions.log rotation), `docs/cli.md` (rollback, history, pending, changelog)
+
+## Exit criteria
+- [ ] On the rig: deploy v1 → deploy v2 → `rollback` → compose file, fragment, and `:current` all match v1 (asserted from git show + docker inspect)
+- [ ] Rolling back to a never-deployed version fails with the "first-time deploy" message
+- [ ] Rolling back to a pruned-image version fails with the roll-forward guidance (no auto-reship)
+- [ ] `history` renders both the live log and `--all` including `versions.log.gz`
+
+## Tasks
+
+### 5.1 — `rollback` (M)
+Target = arg or second-latest `action=deploy` entry; must exist in
+versions.log(.gz); `git fetch --tags` fallback; read v<target>'s manifest
++ compose via `git show` (never HEAD — the invariant in
+`build-deploy.md`); image `:<target>` must be on the VPS (retention
+window; fail with the rebuild-from-tag escape hatch, rebuild explicitly
+noted as not byte-identical); `git archive` the target's own sync list;
+restore the target's fragment; run remote-deploy `rollback` mode.
+
+**Deliverables**
+- [ ] `lib/rollback.sh` + the three failure-path messages from the spec
+- [ ] Integration test: v1→v2→rollback asserts all three surfaces at v1
+- [ ] pre/post-rollback hooks fire with correct VERSION/PREV_VERSION
+
+**Watch out for:** the sync list must come from *v<target>'s* manifest —
+a file added to `sync:` after v<target> would otherwise survive rollback
+as a stale HEAD artifact. And `git archive` paths that no longer exist at
+HEAD are fine, but paths that never existed at v<target> hard-fail the
+whole archive — validate the list against `git ls-tree v<target>` first.
+
+### 5.2 — `history` / `pending` / `changelog` (S)
+Tabular history (timestamp, action, version, backup, hosting version;
+`--all` appends the gz rotation). `pending` resolves the deployed version
+from the VPS at runtime — never from state.json (state is a cache, per
+`project-manifest.md`). `changelog` = git log between the two latest
+deploys.
+
+**Deliverables**
+- [ ] Three commands green against the rig's log from 5.1's test run
+- [ ] `pending` with an unreachable VPS exits 3, not garbage
+
+**Watch out for:** concatenated gzip streams — read the rotation with
+`zcat` (valid for appended gzips), never `gunzip -c` a partial copy.
+
+### 5.3 — Log rotation (S)
+The 3-month rotation from `build-deploy.md`: prune-to-gz on every
+successful write, nothing ever deleted. Unit-testable locally with
+synthetic timestamps.
+
+**Deliverables**
+- [ ] `tests/rotation_test.sh` covering the month-boundary math
+- [ ] `history --all` transparently spans the rotation point
+
+**Watch out for:** month arithmetic in bash (August − 3 crossing the year
+boundary) — compute with `date -d`, not string surgery.
+
+## Findings
+
+_(filled during execution)_
