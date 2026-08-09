@@ -19,10 +19,19 @@ ERROR: No hosting.yml in current directory.
 
 One-time VPS setup. Idempotent — safe to re-run.
 
+Optional features are tri-state (see the interactivity decision in
+`overview.md`): leaving `--with-mail`/`--no-mail` unset means init *asks* —
+it never treats absence as "no". Without a TTY, an unanswered choice is a
+hard fail naming the flag to pass.
+
 Flags:
 - `--domain=<apex>` — domain for the Traefik dashboard and acme email config.
 - `--email=<addr>` — ACME email for Let's Encrypt registration.
-- `--with-mail` — also scaffold `/apps/mail/` (DMS + SnappyMail).
+- `--with-mail` / `--no-mail` — scaffold `/apps/mail/` (DMS + SnappyMail),
+  or explicitly skip it. Unset → prompt.
+- `--with-backup` / `--no-backup` — install restic + append-only S3
+  credentials + daily backup cron (see `backup.md`), or explicitly skip.
+  Unset → prompt.
 - `--apps-path=/apps` — root directory on the VPS (default `/apps`).
 - `--data-path=/apps/data` — bind-mount root (default `/apps/data`).
 - `--traefik-auth=user:pass` — basic auth for the dashboard. Password is
@@ -41,6 +50,33 @@ What it does:
 8. If `--with-mail`: scaffold `/apps/mail/`, write the cert-trigger +
    webmail router fragment to `/apps/traefik/dynamic/_mail.yml`, run its
    env setup, start it.
+9. Write the server marker `/apps/.hosting/server.json` — hosting version,
+   paths, resource limits computed as 90% of host cores/RAM (see
+   `server-setup.md`).
+10. If `--with-backup`: install restic, write append-only S3 credentials,
+   schedule the backup cron (see `backup.md`).
+
+### `hosting server prune USER@HOST` *(Phase 2)*
+
+Image retention cleanup across all projects on the VPS: removes
+`:<version>` image tags that are both older than 3 months and not among
+the project's last 3 deployed versions — the version `:current` points
+at counts as the first of the 3, and `:current` itself is never pruned.
+The time window mirrors versions.log rotation — see `build-deploy.md`.
+Prints what it would remove and asks once.
+
+### `hosting server destroy USER@HOST` *(Phase 3)*
+
+De-brand the VPS for handover. Every container keeps running — projects
+**and** Traefik, the sites stay up. Removes hosting's management layer only:
+
+- `/apps/.hosting/` server marker
+- backup cron + S3 credentials (agency-owned secrets never transfer)
+- per project: `hosting.yml`, `versions.log(.gz)`, `scripts/` helpers
+
+The new owner inherits a plain, working Docker Compose setup; deploy
+history and env tooling leave with hosting. Double confirmation (typed
+hostname). See `server-setup.md` ("Handover / teardown").
 
 ### `hosting server status USER@HOST`
 
@@ -127,6 +163,8 @@ Flow (no-args / working-tree path):
 4. Ensure remote dirs exist (`/apps/<name>/`, `scripts/`, `backups/`, `/apps/data/<name>/`).
 5. Rsync manifest's `sync:` list + helper scripts (`setup-env.sh`, `remote-deploy.sh`).
 6. Env drift check on VPS — run setup-env if missing, prompt on drift.
+   Then refresh the hosting-managed `HOSTING_*` keys in `.env` (resource
+   limits from the server marker) — reserved prefix, exempt from drift.
 7. Mail claim check (if manifest has `mail:`).
 8. SSH into VPS, run `remote-deploy.sh deploy <version>`:
    - If `backup:` configured and its `check` exits 0 → run backup (against
@@ -154,9 +192,9 @@ Flow (see `build-deploy.md` for full detail):
 3. Verify git tag `v<target>` exists locally (`git fetch --tags` if not).
 4. Read v<target>'s files via `git show v<target>:hosting.yml` and
    `git show v<target>:compose.prod.yml` — no checkout.
-5. For each `build:` service in v<target>'s compose: check `:<target>`
-   image on VPS → else on local (auto-push if found) → else fail with
-   instructions to rebuild from the tag.
+5. For each `build:` service in v<target>'s compose: `:<target>` must
+   still be on the VPS (see image retention in `build-deploy.md`) — if
+   pruned, fail with roll-forward / rebuild-from-tag guidance.
 6. `git archive v<target> <v<target>'s sync list> | ssh vps tar -x -C /apps/<name>/`.
 7. On VPS: run `remote-deploy.sh rollback <target>`:
    - Run `pre-rollback` hooks against currently-running containers.
@@ -169,6 +207,28 @@ Flow (see `build-deploy.md` for full detail):
 Rollback restores image + sync'd config only. It does **not** restore
 data bind mounts or `.env` secret values. For schema rollback, use
 `pre-rollback` hooks.
+
+### `hosting drop [USER@HOST] [--prune]` *(Phase 3)*
+
+Remove the project from the VPS. Plain `drop` is reversible:
+
+Removes:
+- containers (`docker compose down`)
+- the Traefik fragment (`/apps/traefik/dynamic/<name>.yml`)
+- the project's loaded images (every `:<version>` tag + `:current`)
+
+Keeps:
+- `/apps/<name>/` (compose, `.env`, manifest, versions.log, scripts)
+- `/apps/data/<name>/` (bind mounts)
+- backups (on-VPS and off-VPS)
+
+A later `hosting deploy` fully resurrects the project (images must be
+re-shipped via `build-push` first).
+
+`--prune` additionally deletes `/apps/<name>/`, `/apps/data/<name>/`, and
+the project's on-VPS backups — everything except the off-VPS restic repo,
+which is operator property (see `backup.md`). Double confirmation (typed
+project name).
 
 ### `hosting history [USER@HOST] [flags]`
 
@@ -215,8 +275,6 @@ Referenced elsewhere in the docs but not yet in v0.1:
 
 - `hosting migrate` — migrate a project's source-tree files to a newer
   hosting schema. (Phase 4 — see `roadmap.md`.)
-- `hosting destroy` — remove a project from the VPS with double
-  confirmation. (Phase 3 — see `roadmap.md`.)
 - `hosting server add-mail-domain` — add a new domain to the shared mail
   stack. (Phase 2 — see `roadmap.md`.)
 - `hosting server upgrade-traefik` — managed Traefik version bump.

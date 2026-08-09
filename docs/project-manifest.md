@@ -32,6 +32,7 @@ hosting_version: 0.1.0
 
 name: shop
 domain: shop.example.com
+client: shop                    # backup repo grouping — defaults to name
 
 # Files/dirs to rsync from project root to /apps/shop/ on each deploy.
 # "a -> b" renames on arrival. No arrow = same path. Trailing / recurses.
@@ -104,7 +105,9 @@ mail:
 
 Integer. The manifest schema version. Bumps when the format changes in a
 breaking way. `hosting` refuses to operate on a manifest whose schema is newer
-than the installed binary.
+than the installed binary. In the other direction, every hosting version
+reads all older schemas of its own major; crossing a major boundary requires
+`hosting migrate` (see the compatibility policy in `overview.md`).
 
 ### `hosting_version` *(required, auto-written)*
 
@@ -123,6 +126,15 @@ Must match `^[a-z][a-z0-9-]*$`.
 The primary Traefik hostname. Used in checks (the compose file must route
 this host somewhere), in `hosting server status` output, and for the mail
 claim reconciliation.
+
+### `client` *(optional)*
+
+Groups this project's off-VPS backups: the restic repo is
+`<repo_base>/<client>`, defaulting to `name` when absent. Projects that
+declare the same `client` share a repo, so offboarding hands over (or
+deletes) exactly one repo per client — and per-client degenerates
+gracefully into per-project when the field is omitted. Same charset rules
+as `name`. See `backup.md`.
 
 ### `sync` *(required, list)*
 

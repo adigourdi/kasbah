@@ -37,6 +37,22 @@ Removing `:latest` eliminates the "emergency patch of an older release
 silently clobbers `:latest`" class of bug and collapses the tag model to
 two tags per image.
 
+### Retention
+
+`:<version>` tags are pruned routinely: `hosting server prune` (Phase 2)
+removes version tags that are **both** older than 3 months **and** not
+among the project's last 3 deployed versions — where the version
+`:current` points at counts as the first of the 3. `:current` itself is
+never pruned. The time window mirrors the versions.log rotation cutoff;
+the count floor guarantees rollback targets exist (current plus two
+older) even on rarely-deployed projects.
+
+The retention window **is** the rollback window. Anything older is a
+roll-forward (ship a fix), not a rollback. Hosting does not promise to
+resurrect pruned images from a dev machine: a rebuild from the tag is not
+byte-identical to what originally shipped, and in a multi-operator setup
+which laptop holds the original is unknowable.
+
 ## `hosting build-push`
 
 ### Project shape is derived from compose
@@ -107,6 +123,9 @@ below). The only differences:
      MISSING .env         → run interactive setup
      DRIFT from template  → prompt: re-run setup / continue / abort
      OK                   → continue
+   Then refresh the hosting-managed `HOSTING_*` keys in `.env` (resource
+   limits read from the server marker). The `HOSTING_` prefix is reserved
+   and exempt from drift detection.
 7. Mail claim (if manifest has `mail:`):
      verify mail stack is up
      verify claimed domain is configured in /apps/mail/.env
@@ -155,15 +174,15 @@ mkdir, rsync, env check, mail claim, remote-deploy) into one.
 Append-only, space-delimited. Lives at `/apps/<name>/versions.log` on the VPS:
 
 ```
-<iso-timestamp> <action> <version> <backup-path-or-"no-backup"> hosting=<version>
+<iso-timestamp> <action> <version> <backup-path-or-"no-backup"> hosting=<version> digest=<image@sha256,…|->
 ```
 
 Example:
 
 ```
-2026-04-12T01:00:00+00:00 deploy 1.2.0 no-backup hosting=0.1.0
-2026-04-15T14:30:00+00:00 deploy 1.3.0 backups/pre-deploy-20260415-143000.sql.gz hosting=0.1.0
-2026-04-17T09:15:00+00:00 rollback 1.2.0 no-backup hosting=0.1.0
+2026-04-12T01:00:00+00:00 deploy 1.2.0 no-backup hosting=0.1.0 digest=shop-php@sha256:9f2a…
+2026-04-15T14:30:00+00:00 deploy 1.3.0 backups/pre-deploy-20260415-143000.sql.gz hosting=0.1.0 digest=shop-php@sha256:c81b…
+2026-04-17T09:15:00+00:00 rollback 1.2.0 no-backup hosting=0.1.0 digest=shop-php@sha256:9f2a…
 ```
 
 Fields:
@@ -171,6 +190,14 @@ Fields:
 - `version` — the semver that ran.
 - `backup` — relative path to backup file, or `no-backup`.
 - `hosting=...` — version of hosting that wrote the entry.
+- `digest=...` — content digest of each built image that went live
+  (comma-joined), or `-` for stock-only projects. Provenance: answers
+  "which image actually ran" even after a rebuild of the same tag.
+
+The four positional fields are **frozen forever** — never reordered, never
+removed. New data lands as `key=value` pairs appended at the end. Every
+hosting version within the same major must parse every line ever written
+(see the compatibility policy in `overview.md`).
 
 Hosting does **not** track migration counts; that was a specific
 framework's concern and now lives in project hooks.
@@ -216,12 +243,13 @@ small without sacrificing history.
 5. Read v<target>'s files WITHOUT touching the working tree:
      git show v<target>:hosting.yml       → used for the sync list
      git show v<target>:compose.prod.yml  → used for the image set
-6. Image check — for each service with `build:` in v<target>'s compose:
-     :<target> present on VPS  → ok
-     :<target> present locally → auto-push (save | gzip | scp | load)
-     neither                   → fail with:
-       "Image <image>:<target> is not on the VPS and not on this machine.
-        Rebuild with:
+6. Image check — for each service with `build:` in v<target>'s compose,
+   `:<target>` must be present on the VPS. Within the retention window
+   (see "Retention") it always is. If pruned:
+       "Image <image>:<target> is no longer on the VPS (outside the
+        retention window). Prefer deploying a fix forward. To force a
+        rollback anyway, rebuild from the tag (NOT byte-identical to the
+        original — compare versions.log digests):
           git checkout v<target> && hosting build-push <user@host>
         Then retry:
           hosting rollback <user@host> <target>"
@@ -277,6 +305,10 @@ Does NOT restore:
   - `deploy <version>`  — backup → pre-deploy → retag :current → up → health → post-deploy.
   - `rollback <version>` — pre-rollback → retag :current → up → health → post-rollback.
 
+  Both modes hold an exclusive `flock` on the project directory for the
+  whole run — a second concurrent deploy/rollback fails fast instead of
+  interleaving hooks and retags (multi-operator safety).
+
 These are the *only* hosting-owned files that live on the VPS in a
 project directory. They are overwritten on every deploy / rollback so
 they match the hosting version driving the operation.
@@ -287,7 +319,5 @@ they match the hosting version driving the operation.
 - **No blue/green** — projects briefly overlap during `compose up -d`.
   Acceptable for the homelab / small-business target.
 - **No pre-flight image scan** — assume local security scanning.
-- **No deploy locking** — single-developer model. If two people push at
-  once, the second wins (and their hooks run).
 - **No database migration framework** — hosts hand that off to hooks.
 - **No data / volume rollback** — rollback is image + config only.

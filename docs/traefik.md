@@ -58,21 +58,36 @@ networks:
     driver: bridge
 ```
 
-Every project joins this network as external:
+Only the containers Traefik routes to join this network — explicitly, never
+via the project's `default` network:
 
 ```yaml
 # /apps/<project>/compose.yml
+services:
+  web:
+    container_name: myapp-web
+    networks: [hosting-net, internal]
+  postgres:
+    networks: [internal]
+
 networks:
-  default:
-    name: hosting-net
+  hosting-net:
     external: true
+  internal: {}
 ```
 
-Using `default:` avoids having to tag every service with `networks: - hosting-net`.
+Why not put the whole project on `hosting-net` via `default:`? Compose
+registers every service's **service name** as a DNS alias on each network
+it joins. On a shared network, two projects that each have a service called
+`postgres` would both register the `postgres` alias — and Docker DNS
+round-robins between them, so project A's app can silently connect to
+project B's database. Keeping internal services on a project-internal
+network scopes those aliases. `hosting check` enforces the split (C03/C07).
 
 The network is what lets Traefik resolve `http://<container_name>:<port>`
-in the file fragment. Container names on `hosting-net` are reachable by
-name from the Traefik container.
+in the file fragment. Container names — unlike service-name aliases — are
+unique per host (Docker refuses to start a duplicate), so fragments always
+target `container_name` (T07).
 
 ## Discovery
 
@@ -193,15 +208,16 @@ in `_shared.yml`, not the docker-provider API entrypoint.
 Traefik has a compose healthcheck (`traefik healthcheck --ping`). `hosting
 server status` surfaces it.
 
-## Lifecycle on deploy / rollback / destroy
+## Lifecycle on deploy / rollback / drop
 
 - **Deploy** — hosting rsyncs `traefik-dynamic.yml` directly to
   `/apps/traefik/dynamic/<manifest.name>.yml`. Rsync writes temp + rename,
   so Traefik sees a single atomic replace event and reloads.
 - **Rollback** — hosting reads `traefik-dynamic.yml` from
   `git archive v<target>` and rsyncs it to the same destination.
-- **Destroy** (future, phase 3) — `rm /apps/traefik/dynamic/<manifest.name>.yml`
-  before `docker compose down`.
+- **Drop** (phase 3) — `rm /apps/traefik/dynamic/<manifest.name>.yml`
+  before `docker compose down`. (`hosting server destroy` deliberately
+  leaves fragments in place — a handover keeps every site routing.)
 
 ## What projects may NOT do
 
@@ -212,8 +228,10 @@ server status` surfaces it.
   (claimed by hosting's `_mail.yml` — cert-trigger and SnappyMail).
 - Bind ports 80 or 443 on the host (they belong to Traefik).
 - Replace the `hosting-net` network.
+- Attach non-routed services (databases, caches, workers) to `hosting-net` —
+  internal services stay on a project-internal network.
 
-`hosting check` enforces these (rules T01–T06).
+`hosting check` enforces these (rules T01–T07, C07).
 
 ## Upgrading Traefik
 

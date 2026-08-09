@@ -30,12 +30,15 @@ the same battle-tested workflow without copying scripts between repos.
   fragment, healthchecks, logging, restart policy, env sync).
 - **Mail primitive** — shared DMS + SnappyMail stack apps can claim a domain
   from; accounts are managed out-of-band via DMS CLI.
+- **Off-VPS backup (optional)** — restic push from each VPS to S3-compatible
+  storage; per-client repos, append-only credentials.
 
 ### Out (for v1)
 - Private container registry.
 - Git/CI integration (hosting expects `git push` and local builds — no webhooks,
   no remote triggers).
-- Metrics, log aggregation, uptime monitoring.
+- Metrics, log aggregation, uptime monitoring (backlog: a Gatus stack with
+  endpoint config generated from manifests — see roadmap).
 - Automated SSH hardening / firewall (`hosting server init` does not run `ufw`
   or edit sshd_config).
 - Cross-project shared databases or caches. Every project owns its own.
@@ -50,16 +53,23 @@ the same battle-tested workflow without copying scripts between repos.
 | Project boundary | Each project is an independent directory under `/apps/<name>/` with its own compose.yml and .env. They only share the Traefik network. |
 | Project shape | Derived from compose: services with a `build:` key are built+shipped locally; services with only `image:` are pulled on the VPS. No `type` field in the manifest — the compose file is the source of truth. |
 | Compose files | User authors `compose.prod.yml` for prod; the manifest's `sync` rule renames it to `compose.yml` on the VPS. Hosting does not generate compose files. `compose.yml` in the working tree is for local dev and is never synced to the VPS. |
-| Image tags on VPS | `:<version>` (permanent, one per build-push) + `:current` (moved by deploy/rollback). No `:latest`. Compose references `:current` for built services; it never gets rewritten per deploy. |
+| Image tags on VPS | `:<version>` (one per build-push) + `:current` (moved by deploy/rollback). No `:latest`. Compose references `:current` for built services; it never gets rewritten per deploy. |
+| Image retention | `hosting server prune` keeps the last 3 deployed versions (the one `:current` points at counts as the first) and anything newer than 3 months (time window mirrors versions.log rotation). The retention window is the rollback window — anything older is a roll-forward, not a rollback. |
 | Version source | Git tags on the project repo (`vX.Y.Z`). `hosting deploy` (no args) labels the working tree with HEAD's tag. `hosting deploy X.Y.Z` and `hosting rollback X.Y.Z` pull files from `git archive v<X.Y.Z>` — no checkout needed. |
 | Image delivery | `docker compose build` locally → `docker save \| gzip` → `scp` → `docker load` on VPS → retag `:current`. No registry. |
 | Build config | Lives in each project's `compose.yml` under `build:`. Hosting does not duplicate it in the manifest. |
-| Traefik | One shared instance per VPS, managed by hosting. Projects join via `external: true` network. |
+| Traefik | One shared instance per VPS, managed by hosting. Routed containers join its `hosting-net` via `external: true`. |
+| Networks | Only containers Traefik routes to join `hosting-net`; every other service (DBs, caches, workers) lives on a project-internal network. Compose registers service names as DNS aliases on every attached network — generic names (`postgres`) on a shared network would round-robin across projects. |
+| Resources | Every service sets hard limits `cpus: ${HOSTING_CPU_LIMIT}` / `mem_limit: ${HOSTING_MEM_LIMIT}` — 90% of host cores/RAM, computed at `server init`, injected into each project's `.env` at deploy. No reservations: ceilings against total takeover, not fair-share slices. |
 | Mail | Hosting primitive (optional). Apps declare a domain in their manifest; admin manages accounts via DMS CLI. |
 | Databases/caches | Always per-project. Hosting does not run shared Postgres/Redis. |
 | Hooks | Run via `docker exec` inside a project container. No host scripts get copied into projects. |
-| Rollback | `git archive v<target>` for config + retag `:<target>` as `:current` + `compose up -d`. Auto-reships image from local if pruned on VPS. Does not restore data bind mounts — schema rollback is hook-driven. |
+| Rollback | `git archive v<target>` for config + retag `:<target>` as `:current` + `compose up -d`. Target image must still be on the VPS — outside the retention window, rollback fails with roll-forward/rebuild guidance. Does not restore data bind mounts — schema rollback is hook-driven. |
 | Project detection | CLI runs from project root. Reads `./hosting.yml`. Errors if not a hosting project. |
+| Interactivity | Commands never assume on an unspecified choice: an unset flag means *prompt*, not *no*. Every prompt has an explicit flag pair (`--with-x` / `--no-x`) for scripted use; without a TTY, an unanswered prompt is a hard fail that names the flag. |
+| Version compatibility | Same-major tool ↔ state interop is guaranteed; crossing a major requires `hosting migrate`. An older tool refuses newer state. `/apps/.hosting/server.json` records what manages the VPS. |
+| Off-VPS backup | Optional. Each VPS pushes restic snapshots (data bind mounts, hook backups, `.env`) to S3-compatible storage using append-only credentials. One repo per client (`client:` manifest field, defaults to project name). Pruning runs from an operator machine with full credentials. |
+| Removal | `hosting drop` removes containers, fragment, and images but keeps config/data/backups (redeployable). `drop --prune` deletes those too. `hosting server destroy` de-brands the whole VPS for handover — containers keep running. |
 
 ## Mental model
 
@@ -94,6 +104,8 @@ Chosen defaults (overridable via `hosting server init --apps-path=...`):
 
 ```
 /apps/                           # project root
+├── .hosting/
+│   └── server.json              # server marker: hosting version, paths, limits
 ├── traefik/                     # shared reverse proxy (hosting-managed)
 │   ├── compose.yml
 │   ├── traefik.yml              # static config

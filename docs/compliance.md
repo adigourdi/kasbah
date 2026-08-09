@@ -17,8 +17,12 @@ Structure:
 Compose:
   ✓ All services set restart policy
   ✓ All services set json-file logging with rotation
-  ✓ Joins hosting-net (external)
+  ✓ Routed services join hosting-net; internal services stay off it
   ✓ No `version:` field (deprecated)
+
+Resources:
+  ✓ All services set cpus/mem_limit via HOSTING_* vars
+  ✓ No resource reservations
 
 Traefik:
   ✓ traefik-dynamic.yml exists
@@ -41,7 +45,7 @@ Mail (if manifest has `mail:`):
   ✓ Domain matches an apex or subdomain of a known mail stack domain
     (this check only runs when --server is passed)
 
-Summary: 12 passed, 1 warning, 0 failed
+Summary: 14 passed, 1 warning, 0 failed
 ```
 
 Exit code 0 if no failures (warnings are informational).
@@ -65,10 +69,26 @@ Exit code 0 if no failures (warnings are informational).
 |---|---|---|---|
 | C01 | Every service sets `restart: unless-stopped` (or stronger) | fail | yes |
 | C02 | Every service has `logging.driver: json-file` with `max-size` + `max-file` | fail | yes |
-| C03 | Every service joins `hosting-net` network | fail | yes |
+| C03 | Every Traefik-routed service (targeted by a fragment `loadBalancer` URL) joins `hosting-net` | fail | yes |
 | C04 | `hosting-net` declared `external: true` | fail | yes |
 | C05 | No deprecated `version:` top-level field | warn | yes |
 | C06 | Every service has `container_name` OR project uses compose's default naming | info | no |
+| C07 | No non-routed service joins `hosting-net` — internal services use a project-internal network (service-name aliases on a shared network round-robin across projects) | fail | no |
+
+### Resources
+
+Hard limits only — reservations are banned. The values come from
+hosting-managed env vars (`HOSTING_CPU_LIMIT`, `HOSTING_MEM_LIMIT` — 90%
+of host cores/RAM, computed at `server init`, injected into the project's
+`.env` at deploy — see `server-setup.md`). Literal values are rejected so
+limits scale with the host instead of fossilizing one VPS's numbers.
+
+| ID | Rule | Level | Auto-fixable |
+|---|---|---|---|
+| R01 | Every service sets `cpus: ${HOSTING_CPU_LIMIT}` — missing or literal value fails | fail | yes |
+| R02 | Every service sets `mem_limit: ${HOSTING_MEM_LIMIT}` — missing or literal value fails | fail | yes |
+| R03 | No service declares resource `reservations` | fail | yes |
+| R04 | (`--server`) Effective limit vs host size: above 90% fails; below 90% warns (deliberately tighter is allowed, but flagged) | fail/warn | no |
 
 ### Traefik
 
@@ -84,6 +104,7 @@ docker provider is not wired in.
 | T04 | Routers on `websecure` reference `tls.certResolver: letsencrypt` | fail |
 | T05 | Project fragment's routers don't claim reserved hostnames (`traefik.<domain>`, `mail.<domain>`, `webmail.<domain>`) — those belong to hosting-owned `_`-prefixed fragments. Implemented locally as a heuristic: any `Host(\`…\`)` whose first DNS label is `traefik`, `mail`, or `webmail` fails. Tightens to the exact server-apex match when `--server` mode lands. | fail |
 | T06 | No service in `compose.prod.yml` carries `traefik.*` labels | fail |
+| T07 | Every fragment `loadBalancer` server URL hostname matches an explicit `container_name` in `compose.prod.yml` | fail |
 
 ### Healthchecks
 
@@ -100,6 +121,9 @@ docker provider is not wired in.
 | E02 | `.env` (if present) has no missing keys vs `.env.prod.example` | warn |
 | E03 | `.env` (if present) has no extra keys vs `.env.prod.example` | warn |
 | E04 | No obvious secret leaked into `.env.prod.example` (e.g. lines longer than 64 chars that aren't `!` commands) | warn |
+
+Keys prefixed `HOSTING_` are reserved — injected and refreshed by hosting
+at deploy (resource limits) and exempt from E02/E03 and drift detection.
 
 ### Hooks
 
@@ -125,9 +149,11 @@ diff shown before writing).
 
 Fixable today:
 - C01, C02, C03, C04, C05 (compose hygiene)
+- R01, R02, R03 (insert/replace limits with the `HOSTING_*` var references)
 - Adding `hosting_version` to manifest if missing
 
 Unfixable (must be done by hand):
+- C07 (moving services between networks is topology — hosting won't guess)
 - Anything under Traefik (routing is policy, hosting can't guess)
 - Hooks (hosting can't invent commands)
 - Mail claims
@@ -140,6 +166,7 @@ Extended check that also queries the VPS:
 - Is the claimed mail domain known to the mail stack?
 - Is the manifest's `health.container` currently healthy (if deployed)?
 - Cert status for the project's `domain` in Traefik's `acme.json`.
+- Effective resource limits vs host size (R04: above 90% fails, below warns).
 
 Not run by default because it needs SSH and is slower. Useful as a
 pre-deploy sanity check.

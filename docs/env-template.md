@@ -90,6 +90,10 @@ Outcomes:
 - Any drift → warn, prompt: *"re-run setup" / "continue with current .env" /
   "abort"*.
 
+Keys prefixed `HOSTING_` are reserved: hosting injects and refreshes them
+at deploy (resource limits — see `server-setup.md`). They are excluded
+from both sides of the comparison and never prompted for.
+
 ## Update modes
 
 When `.env` exists, setup offers three modes:
