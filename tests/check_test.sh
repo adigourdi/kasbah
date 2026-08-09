@@ -18,29 +18,37 @@ assert() {
 }
 
 # Scaffold a passing project: init-project + a minimal-but-valid
-# compose.prod.yml + a minimal traefik-dynamic.yml that together satisfy
-# every check group's pass path (Structure, Compose, Traefik, Env). The
-# Healthchecks and Hooks sections are silent — manifest has no health/
-# hooks/backup blocks, and the only service has no build:.
+# compose.prod.yml + a traefik-dynamic.yml that together satisfy every
+# check group's pass path (Structure, Compose, Resources, Traefik, Env).
+# The routed service joins hosting-net explicitly and keeps an internal
+# network (C03/C07); limits reference the HOSTING_* vars (R01/R02); the
+# fragment's loadBalancer targets the container_name (T07). Healthchecks
+# and Hooks sections are silent — manifest has no health/hooks/backup
+# blocks, and the only service has no build:.
 make_project() {
     local dir="$1" name="${2:-demo}" domain="${3:-demo.example.com}"
     mkdir -p "$dir"
     (cd "$dir" && "$hosting" init-project --name="$name" --domain="$domain" >/dev/null)
-    cat > "$dir/compose.prod.yml" <<'YAML'
+    # Unquoted heredoc: $name interpolates, \${HOSTING_*} stays literal.
+    cat > "$dir/compose.prod.yml" <<YAML
 services:
   app:
     image: nginx:alpine
+    container_name: ${name}-web
     restart: unless-stopped
+    cpus: \${HOSTING_CPU_LIMIT}
+    mem_limit: \${HOSTING_MEM_LIMIT}
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+    networks: [hosting-net, internal]
 
 networks:
-  default:
-    name: hosting-net
+  hosting-net:
     external: true
+  internal: {}
 YAML
     # printf-built so backticks in `Host(`…`)` stay literal (heredoc would
     # require '<<YAML' for $name/$domain interpolation but then evaluate the
@@ -53,7 +61,12 @@ YAML
         printf '      entryPoints: [websecure]\n'
         printf '      tls:\n'
         printf '        certResolver: letsencrypt\n'
-        printf '      service: noop@internal\n'
+        printf '      service: %s\n' "$name"
+        printf '  services:\n'
+        printf '    %s:\n' "$name"
+        printf '      loadBalancer:\n'
+        printf '        servers:\n'
+        printf '          - url: "http://%s-web:80"\n' "$name"
     } > "$dir/traefik-dynamic.yml"
 }
 
@@ -69,20 +82,24 @@ assert 'grep -qF "✓ .gitignore excludes .env" <<<"$out"'       "S05 pass line"
 assert 'grep -qF "✓ .gitignore excludes .hosting/" <<<"$out"'  "S06 pass line"
 assert 'grep -qF "✓ All services set restart policy" <<<"$out"'                 "C01 pass line"
 assert 'grep -qF "✓ All services set json-file logging with rotation" <<<"$out"' "C02 pass line"
-assert 'grep -qF "✓ All services join hosting-net" <<<"$out"'                   "C03 pass line"
+assert 'grep -qF "✓ All routed services join hosting-net" <<<"$out"'            "C03 pass line"
 assert 'grep -qF "✓ hosting-net declared external" <<<"$out"'                   "C04 pass line"
+assert 'grep -qF "✓ No internal services on hosting-net" <<<"$out"'             "C07 pass line"
 assert 'grep -qF "✓ No deprecated '"'"'version:'"'"' field" <<<"$out"'          "C05 pass line"
+assert 'grep -qF "✓ All services set cpus/mem_limit via HOSTING_* vars" <<<"$out"'  "R01/R02 pass line"
+assert 'grep -qF "✓ No resource reservations" <<<"$out"'                            "R03 pass line"
 assert 'grep -qF "✓ compose.prod.yml has no traefik.* labels" <<<"$out"'                       "T06 pass line"
 assert 'grep -qF "✓ traefik-dynamic.yml exists" <<<"$out"'                                     "T01 pass line"
 assert 'grep -qF "✓ At least one router references manifest domain (demo.example.com)" <<<"$out"' "T02 pass line"
 assert 'grep -qF "✓ All routers declare entryPoints" <<<"$out"'                                "T03 pass line"
 assert 'grep -qF "✓ Secure routers reference letsencrypt cert resolver" <<<"$out"'             "T04 pass line"
 assert 'grep -qF "✓ No router claims reserved hostnames" <<<"$out"'                            "T05 pass line"
+assert 'grep -qF "✓ Fragment loadBalancer URLs target explicit container_names" <<<"$out"'     "T07 pass line"
 assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'                              "E01 pass line"
 assert 'grep -qF "✓ .env.prod.example has no obvious long secrets" <<<"$out"'                  "E04 pass line"
 assert '! grep -q "Healthchecks:" <<<"$out"'  "Healthchecks: header suppressed (nothing to check)"
 assert '! grep -q "Hooks:" <<<"$out"'         "Hooks: header suppressed (no hooks/backup in manifest)"
-assert 'grep -qF "18 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
+assert 'grep -qF "22 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
 
 # --- Case 2: missing compose.prod.yml — fail, exit 6 -------------------------
 # Exit 6 is the documented "compliance check failed" code (docs/cli.md).
@@ -219,15 +236,18 @@ out="$(cd "$proj14" && "$hosting" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                    "C02 fail exits 6 (got $rc)"
 assert 'grep -qF "✗ Services missing json-file logging with max-size/max-file: app" <<<"$out"' "C02 fail line"
 
-# --- Case 15: C03 — service not on hosting-net → fail, exit 6 ---------------
-# No hosting-net alias on default, no explicit service reference.
+# --- Case 15: C03 — routed service not on hosting-net → fail, exit 6 --------
+# Fragment targets demo-web (routed), but the service joins no network.
 proj15="$tmpdir/no-hostingnet"
 make_project "$proj15"
 cat > "$proj15/compose.prod.yml" <<'YAML'
 services:
   app:
     image: nginx:alpine
+    container_name: demo-web
     restart: unless-stopped
+    cpus: ${HOSTING_CPU_LIMIT}
+    mem_limit: ${HOSTING_MEM_LIMIT}
     logging:
       driver: json-file
       options:
@@ -235,8 +255,9 @@ services:
         max-file: "3"
 YAML
 out="$(cd "$proj15" && "$hosting" check 2>&1)"; rc=$?
-assert '[ "$rc" = "6" ]'                                              "C03 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Services not on hosting-net: app" <<<"$out"'      "C03 fail line"
+assert '[ "$rc" = "6" ]'                                                "C03 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ Routed services not on hosting-net: app" <<<"$out"' "C03 fail line"
+assert 'grep -qF "✓ No internal services on hosting-net" <<<"$out"'     "C07 still passes"
 
 # --- Case 16: C04 — hosting-net referenced but not external → fail, exit 6 --
 proj16="$tmpdir/hostingnet-not-external"
@@ -245,19 +266,23 @@ cat > "$proj16/compose.prod.yml" <<'YAML'
 services:
   app:
     image: nginx:alpine
+    container_name: demo-web
     restart: unless-stopped
+    cpus: ${HOSTING_CPU_LIMIT}
+    mem_limit: ${HOSTING_MEM_LIMIT}
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-    networks: [hosting-net]
+    networks: [hosting-net, internal]
 networks:
   hosting-net: {}
+  internal: {}
 YAML
 out="$(cd "$proj16" && "$hosting" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                  "C04 fail exits 6 (got $rc)"
-assert 'grep -qF "✓ All services join hosting-net" <<<"$out"'             "C03 still passes"
+assert 'grep -qF "✓ All routed services join hosting-net" <<<"$out"'      "C03 still passes"
 assert 'grep -qF "✗ hosting-net not declared external: true" <<<"$out"'   "C04 fail line"
 
 # --- Case 17: C05 — top-level `version:` → warn, exit 0 ---------------------
@@ -268,16 +293,20 @@ version: "3.8"
 services:
   app:
     image: nginx:alpine
+    container_name: demo-web
     restart: unless-stopped
+    cpus: ${HOSTING_CPU_LIMIT}
+    mem_limit: ${HOSTING_MEM_LIMIT}
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+    networks: [hosting-net, internal]
 networks:
-  default:
-    name: hosting-net
+  hosting-net:
     external: true
+  internal: {}
 YAML
 out="$(cd "$proj17" && "$hosting" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                                "C05 warn exits 0 (got $rc)"
@@ -295,9 +324,24 @@ assert 'grep -qF "✓ No deprecated '"'"'version:'"'"' field" <<<"$out"'        
 
 # --- Case 19: T01 — traefik-dynamic.yml missing → warn, exit 0 ---------------
 # Worker-only projects without web routing should not fail the whole check.
+# Consistently, such a project has no business on hosting-net (C07) — so the
+# fixture keeps the service off it entirely.
 proj19="$tmpdir/no-traefik-fragment"
 make_project "$proj19"
 rm "$proj19/traefik-dynamic.yml"
+cat > "$proj19/compose.prod.yml" <<'YAML'
+services:
+  app:
+    image: nginx:alpine
+    restart: unless-stopped
+    cpus: ${HOSTING_CPU_LIMIT}
+    mem_limit: ${HOSTING_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+YAML
 out="$(cd "$proj19" && "$hosting" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                      "T01 missing exits 0 (got $rc)"
 assert 'grep -qF "⚠ traefik-dynamic.yml missing" <<<"$out"'                   "T01 warn line"
@@ -408,17 +452,20 @@ cat > "$proj25/compose.prod.yml" <<'YAML'
 services:
   api:
     build: ./api
-    container_name: demo-api
+    container_name: demo-web
     restart: unless-stopped
+    cpus: ${HOSTING_CPU_LIMIT}
+    mem_limit: ${HOSTING_MEM_LIMIT}
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+    networks: [hosting-net, internal]
 networks:
-  default:
-    name: hosting-net
+  hosting-net:
     external: true
+  internal: {}
 YAML
 out="$(cd "$proj25" && "$hosting" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                                                          "H01 warn exits 0 (got $rc)"
@@ -448,15 +495,18 @@ services:
     image: nginx:alpine
     container_name: demo-web
     restart: unless-stopped
+    cpus: ${HOSTING_CPU_LIMIT}
+    mem_limit: ${HOSTING_MEM_LIMIT}
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+    networks: [hosting-net, internal]
 networks:
-  default:
-    name: hosting-net
+  hosting-net:
     external: true
+  internal: {}
 YAML
 cat >> "$proj27/hosting.yml" <<'YAML'
 
@@ -608,25 +658,48 @@ services:
     image: nginx:alpine
     container_name: demo-api
     restart: unless-stopped
+    cpus: ${HOSTING_CPU_LIMIT}
+    mem_limit: ${HOSTING_MEM_LIMIT}
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+    networks: [hosting-net, internal]
   db:
     image: postgres:16
     container_name: demo-db
     restart: unless-stopped
+    cpus: ${HOSTING_CPU_LIMIT}
+    mem_limit: ${HOSTING_MEM_LIMIT}
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+    networks: [internal]
 networks:
-  default:
-    name: hosting-net
+  hosting-net:
     external: true
+  internal: {}
 YAML
+# Fragment must target the api container (the fixture routes demo-api, not
+# make_project's default demo-web).
+{
+    printf 'http:\n'
+    printf '  routers:\n'
+    printf '    demo:\n'
+    printf '      rule: "Host(`demo.example.com`)"\n'
+    printf '      entryPoints: [websecure]\n'
+    printf '      tls:\n'
+    printf '        certResolver: letsencrypt\n'
+    printf '      service: demo\n'
+    printf '  services:\n'
+    printf '    demo:\n'
+    printf '      loadBalancer:\n'
+    printf '        servers:\n'
+    printf '          - url: "http://demo-api:80"\n'
+} > "$proj35/traefik-dynamic.yml"
 cat >> "$proj35/hosting.yml" <<'YAML'
 
 hooks:
@@ -657,6 +730,21 @@ assert 'grep -qF "✓ Backup hook container '"'"'demo-db'"'"' exists in compose"
 proj36="$tmpdir/traefik-malformed"
 make_project "$proj36"
 printf 'http:\n  routers:\n    bad: [ this is\n      not yaml\n' > "$proj36/traefik-dynamic.yml"
+# With no parseable fragment there are no routed services, so the fixture's
+# service must stay off hosting-net (C07) for the warn-only outcome to hold.
+cat > "$proj36/compose.prod.yml" <<'YAML'
+services:
+  app:
+    image: nginx:alpine
+    restart: unless-stopped
+    cpus: ${HOSTING_CPU_LIMIT}
+    mem_limit: ${HOSTING_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+YAML
 out="$(cd "$proj36" && "$hosting" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                        "T01 malformed exits 0 (got $rc)"
 assert 'grep -qF "⚠ traefik-dynamic.yml does not parse as YAML" <<<"$out"'      "T01 malformed warn line"
@@ -673,6 +761,71 @@ services:
   app:
     image: nginx:alpine
     restart: unless-stopped
+    cpus: ${HOSTING_CPU_LIMIT}
+    mem_limit: ${HOSTING_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+YAML
+{ printf 'http:\n  routers:\n    demo:\n      rule: "Host(`x.test`)"\n      entryPoints: [websecure]\n      tls:\n        certResolver: letsencrypt\n      service: noop@internal\n'; } > "$proj37/traefik-dynamic.yml"
+out="$(cd "$proj37" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                              "empty-domain T02 skip exits 0 (got $rc)"
+assert 'grep -qF "⚠ manifest domain is empty — skipping T02" <<<"$out"'               "empty-domain warn line"
+assert '! grep -qF "At least one router references manifest domain" <<<"$out"'        "T02 not run on empty domain"
+assert 'grep -qF "✓ All routers declare entryPoints" <<<"$out"'                       "T03 still runs on empty domain"
+
+# --- Case 38: C07 — non-routed service on hosting-net → fail ----------------
+proj38="$tmpdir/c07-internal-on-shared"
+make_project "$proj38"
+cat > "$proj38/compose.prod.yml" <<'YAML'
+services:
+  app:
+    image: nginx:alpine
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: ${HOSTING_CPU_LIMIT}
+    mem_limit: ${HOSTING_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks: [hosting-net, internal]
+  db:
+    image: postgres:16
+    container_name: demo-db
+    restart: unless-stopped
+    cpus: ${HOSTING_CPU_LIMIT}
+    mem_limit: ${HOSTING_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks: [hosting-net, internal]
+networks:
+  hosting-net:
+    external: true
+  internal: {}
+YAML
+out="$(cd "$proj38" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                              "C07 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ Non-routed services on hosting-net: db" <<<"$out"' "C07 fail line names db"
+assert 'grep -qF "✓ All routed services join hosting-net" <<<"$out"'   "C03 still passes"
+
+# --- Case 39: C07 — default network aliasing hosting-net is banned ----------
+proj39="$tmpdir/c07-default-alias"
+make_project "$proj39"
+cat > "$proj39/compose.prod.yml" <<'YAML'
+services:
+  app:
+    image: nginx:alpine
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: ${HOSTING_CPU_LIMIT}
+    mem_limit: ${HOSTING_MEM_LIMIT}
     logging:
       driver: json-file
       options:
@@ -683,11 +836,60 @@ networks:
     name: hosting-net
     external: true
 YAML
-{ printf 'http:\n  routers:\n    demo:\n      rule: "Host(`x.test`)"\n      entryPoints: [websecure]\n      tls:\n        certResolver: letsencrypt\n      service: noop@internal\n'; } > "$proj37/traefik-dynamic.yml"
-out="$(cd "$proj37" && "$hosting" check 2>&1)"; rc=$?
-assert '[ "$rc" = "0" ]'                                                              "empty-domain T02 skip exits 0 (got $rc)"
-assert 'grep -qF "⚠ manifest domain is empty — skipping T02" <<<"$out"'               "empty-domain warn line"
-assert '! grep -qF "At least one router references manifest domain" <<<"$out"'        "T02 not run on empty domain"
-assert 'grep -qF "✓ All routers declare entryPoints" <<<"$out"'                       "T03 still runs on empty domain"
+out="$(cd "$proj39" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                    "default-alias exits 6 (got $rc)"
+assert 'grep -qF "✗ default network aliases hosting-net" <<<"$out"'         "C07 default-alias fail line"
+
+# --- Case 40: R01/R02 literal limits + R03 reservations → fail --------------
+proj40="$tmpdir/r-rules"
+make_project "$proj40"
+cat > "$proj40/compose.prod.yml" <<'YAML'
+services:
+  app:
+    image: nginx:alpine
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: "1.5"
+    mem_limit: ${HOSTING_MEM_LIMIT}
+    mem_reservation: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks: [hosting-net, internal]
+networks:
+  hosting-net:
+    external: true
+  internal: {}
+YAML
+out="$(cd "$proj40" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                                  "R rules fail exits 6 (got $rc)"
+assert 'grep -qF "✗ Services with missing or literal resource limits: app(cpus)" <<<"$out"' "R01 fail line (literal cpus)"
+assert 'grep -qF "✗ Services declare resource reservations: app" <<<"$out"'                "R03 fail line"
+
+# --- Case 41: T07 — fragment targets a hostname with no container_name ------
+proj41="$tmpdir/t07-unknown-target"
+make_project "$proj41"
+# Compose renames the container; the make_project fragment still targets
+# demo-web. The routed set is now empty, so C03/C07 stay quiet — T07 is the
+# rule that catches the dangling reference.
+cat > "$proj41/compose.prod.yml" <<'YAML'
+services:
+  app:
+    image: nginx:alpine
+    container_name: demo-renamed
+    restart: unless-stopped
+    cpus: ${HOSTING_CPU_LIMIT}
+    mem_limit: ${HOSTING_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+YAML
+out="$(cd "$proj41" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                       "T07 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ Fragment targets unknown container_names: demo-web" <<<"$out"' "T07 fail line"
 
 exit "$fail"

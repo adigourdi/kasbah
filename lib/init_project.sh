@@ -163,11 +163,23 @@ Next step: author compose.prod.yml. Starter snippet:
       image: nginx:alpine
       container_name: ${name}-web
       restart: unless-stopped
+      cpus: \${HOSTING_CPU_LIMIT}
+      mem_limit: \${HOSTING_MEM_LIMIT}
+      logging:
+        driver: json-file
+        options:
+          max-size: "10m"
+          max-file: "3"
+      networks: [hosting-net, internal]
 
   networks:
-    default:
-      name: hosting-net
+    hosting-net:
       external: true
+    internal: {}
+
+  Only Traefik-routed containers join hosting-net; everything else stays on
+  the project-internal network (see docs/traefik.md). The HOSTING_* limits
+  are injected into .env at deploy.
 
 Routing is declared in traefik-dynamic.yml at the project root (see
 docs/traefik.md). Starter:

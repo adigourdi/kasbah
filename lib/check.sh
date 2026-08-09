@@ -14,9 +14,9 @@ Usage: hosting check
 Runs structural checks against the current project. Exit 0 if no failures
 (warnings are informational). See docs/compliance.md for the full rule set.
 
-Implemented: Structure (S01–S06), Compose (C01–C05), Traefik (T01–T06),
-Healthchecks (H01–H02), Env (E01–E04), Hooks (HK01–HK03). Mail (M*) and
-the --fix / --server modes are not yet wired in.
+Implemented: Structure (S01–S06), Compose (C01–C07), Resources (R01–R03),
+Traefik (T01–T07), Healthchecks (H01–H02), Env (E01–E04), Hooks (HK01–HK03).
+Mail (M*), R04, and the --fix / --server modes are not yet wired in.
 EOF
 }
 
@@ -103,6 +103,7 @@ cmd_check() {
     fi
 
     _check_compose_section "$services"
+    _check_resources_section "$services"
     _check_traefik_section "$services"
     _check_healthcheck_section "$services"
     _check_env_section
@@ -144,7 +145,7 @@ _check_compose_section() {
 
     _check_c01_restart "$services"
     _check_c02_logging "$services"
-    _check_c03_c04_hostingnet "$services"
+    _check_c03_c04_c07_networks "$services"
     _check_c05_version
 }
 
@@ -189,14 +190,15 @@ _check_c02_logging() {
     fi
 }
 
-# C03 + C04: every service joins hosting-net, and hosting-net is declared
-# external. Two equivalent shapes are supported:
-#   1) Top-level `networks: { hosting-net: { external: true } }` and each
-#      service references it explicitly under `networks:`.
-#   2) Top-level `networks: { default: { name: hosting-net, external: true } }`
-#      — services with no explicit networks key inherit it via the default.
-# Anything else (mixed, missing, internal-only) fails.
-_check_c03_c04_hostingnet() {
+# C03 + C04 + C07: only Traefik-routed services join hosting-net. A service
+# is "routed" iff its explicit container_name appears as a hostname in the
+# fragment's loadBalancer server URLs. Routed services must join hosting-net
+# (C03), hosting-net must be external (C04), and nothing else may join it
+# (C07) — compose registers service names as DNS aliases on every attached
+# network, so generic names (postgres) on the shared network round-robin
+# across projects. The old `networks: { default: { name: hosting-net } }`
+# shape is banned outright: it puts every service on the shared network.
+_check_c03_c04_c07_networks() {
     local services="$1" svc
     local default_name default_ext hn_ext
     default_name="$(yq -r '.networks.default.name // ""'                compose.prod.yml)"
@@ -206,11 +208,14 @@ _check_c03_c04_hostingnet() {
     local default_aliases_hn=0
     [ "$default_name" = "hosting-net" ] && default_aliases_hn=1
 
-    # C03 — per-service join check.
-    local missing_net=()
-    local any_uses_hn=0
+    local routed_hosts
+    routed_hosts="$(_traefik_routed_hosts | sort -u)"
+
+    local bad_c03=() bad_c07=()
+    local any_uses_hn=0 any_routed=0
     while IFS= read -r svc; do
-        local has_hn
+        [ -z "$svc" ] && continue
+        local has_hn joined=0 routed=0 cn
         # `.networks` may be a list (["a", "b"]) or a dict ({a: {…}, b: {…}}).
         # Normalize to a list of names, then check membership.
         has_hn="$(yq -r "
@@ -223,33 +228,58 @@ _check_c03_c04_hostingnet() {
         " compose.prod.yml 2>/dev/null || echo "false")"
 
         if [ "$has_hn" = "true" ]; then
-            any_uses_hn=1
-        else
-            # No explicit reference — service falls back to the default network.
-            if [ "$default_aliases_hn" = 1 ]; then
-                any_uses_hn=1
-            else
-                missing_net+=("$svc")
-            fi
+            joined=1
+        elif [ "$default_aliases_hn" = 1 ]; then
+            # Services with no explicit networks key inherit the default;
+            # an explicit list overrides it entirely.
+            local has_nets
+            has_nets="$(yq -r ".services[\"$svc\"] | has(\"networks\")" compose.prod.yml 2>/dev/null || echo false)"
+            [ "$has_nets" = "true" ] || joined=1
+        fi
+
+        cn="$(yq -r ".services[\"$svc\"].container_name // \"\"" compose.prod.yml 2>/dev/null)"
+        if [ -n "$cn" ] && [ "$cn" != "null" ] && [ -n "$routed_hosts" ] \
+            && grep -qxF -- "$cn" <<<"$routed_hosts"; then
+            routed=1
+            any_routed=1
+        fi
+
+        [ "$joined" = 1 ] && any_uses_hn=1
+        if [ "$routed" = 1 ] && [ "$joined" = 0 ]; then
+            bad_c03+=("$svc")
+        fi
+        # Under the banned default-alias shape C07 reports the pattern itself,
+        # not a per-service list.
+        if [ "$routed" = 0 ] && [ "$joined" = 1 ] && [ "$default_aliases_hn" = 0 ]; then
+            bad_c07+=("$svc")
         fi
     done <<<"$services"
 
-    if [ "${#missing_net[@]}" -eq 0 ]; then
-        _check_pass "All services join hosting-net"
+    # C03
+    if [ "${#bad_c03[@]}" -gt 0 ]; then
+        _check_fail "Routed services not on hosting-net: ${bad_c03[*]}"
+    elif [ "$any_routed" = 1 ]; then
+        _check_pass "All routed services join hosting-net"
     else
-        _check_fail "Services not on hosting-net: ${missing_net[*]}"
+        _check_pass "No Traefik-routed services in compose"
     fi
 
-    # C04 — only meaningful if a service actually uses hosting-net. If nothing
-    # references it, C03 has already failed and the external-flag question is
-    # moot.
-    if [ "$any_uses_hn" = 0 ]; then
-        return 0
+    # C04 — only meaningful if a service actually joins hosting-net.
+    if [ "$any_uses_hn" = 1 ]; then
+        if [ "$hn_ext" = "true" ] || { [ "$default_aliases_hn" = 1 ] && [ "$default_ext" = "true" ]; }; then
+            _check_pass "hosting-net declared external"
+        else
+            _check_fail "hosting-net not declared external: true"
+        fi
     fi
-    if [ "$hn_ext" = "true" ] || { [ "$default_aliases_hn" = 1 ] && [ "$default_ext" = "true" ]; }; then
-        _check_pass "hosting-net declared external"
+
+    # C07
+    if [ "$default_aliases_hn" = 1 ]; then
+        _check_fail "default network aliases hosting-net — every service joins the shared network; join it explicitly per routed service and keep the rest on a project-internal network"
+    elif [ "${#bad_c07[@]}" -gt 0 ]; then
+        _check_fail "Non-routed services on hosting-net: ${bad_c07[*]}"
     else
-        _check_fail "hosting-net not declared external: true"
+        _check_pass "No internal services on hosting-net"
     fi
 }
 
@@ -266,11 +296,76 @@ _check_c05_version() {
 }
 
 # ----------------------------------------------------------------------------
-# Traefik (T01–T06)
+# Resources (R01–R03; R04 needs --server)
+# ----------------------------------------------------------------------------
+# Hard limits via the hosting-managed vars only (see docs/server-setup.md).
+# Literal values are rejected so limits scale with the host instead of
+# fossilizing one VPS's numbers. Section is silent when compose is missing,
+# unparseable, or empty — S03 / the Compose section already reported that.
+
+_check_resources_section() {
+    local services="$1"
+    [ -f compose.prod.yml ] || return 0
+    [ -n "$services" ] || return 0
+    yq -r '.' compose.prod.yml >/dev/null 2>&1 || return 0
+
+    echo
+    echo "Resources:"
+    _check_r01_r02_limits "$services"
+    _check_r03_reservations "$services"
+}
+
+# R01/R02: every service sets cpus: ${HOSTING_CPU_LIMIT} and
+# mem_limit: ${HOSTING_MEM_LIMIT} — exactly those var references. Missing
+# and literal values both fail.
+_check_r01_r02_limits() {
+    local services="$1" svc cpus mem
+    local bad=()
+    while IFS= read -r svc; do
+        [ -z "$svc" ] && continue
+        local wrong=""
+        cpus="$(yq -r ".services[\"$svc\"].cpus // \"\"" compose.prod.yml 2>/dev/null || echo "")"
+        mem="$(yq  -r ".services[\"$svc\"].mem_limit // \"\"" compose.prod.yml 2>/dev/null || echo "")"
+        [ "$cpus" = '${HOSTING_CPU_LIMIT}' ] || wrong="cpus"
+        if [ "$mem" != '${HOSTING_MEM_LIMIT}' ]; then
+            wrong="${wrong:+$wrong,}mem_limit"
+        fi
+        [ -z "$wrong" ] || bad+=("$svc($wrong)")
+    done <<<"$services"
+    if [ "${#bad[@]}" -eq 0 ]; then
+        _check_pass "All services set cpus/mem_limit via HOSTING_* vars"
+    else
+        _check_fail "Services with missing or literal resource limits: ${bad[*]}"
+    fi
+}
+
+# R03: reservations are banned — hosting's limits are anti-takeover
+# ceilings, not scheduler hints.
+_check_r03_reservations() {
+    local services="$1" svc bad=()
+    while IFS= read -r svc; do
+        [ -z "$svc" ] && continue
+        local resv memr
+        resv="$(yq -r ".services[\"$svc\"].deploy.resources.reservations // null" compose.prod.yml 2>/dev/null || echo null)"
+        memr="$(yq -r ".services[\"$svc\"].mem_reservation // \"\"" compose.prod.yml 2>/dev/null || echo "")"
+        if [ "$resv" != "null" ] || { [ -n "$memr" ] && [ "$memr" != "null" ]; }; then
+            bad+=("$svc")
+        fi
+    done <<<"$services"
+    if [ "${#bad[@]}" -eq 0 ]; then
+        _check_pass "No resource reservations"
+    else
+        _check_fail "Services declare resource reservations: ${bad[*]}"
+    fi
+}
+
+# ----------------------------------------------------------------------------
+# Traefik (T01–T07)
 # ----------------------------------------------------------------------------
 # Routing is declared via file-provider fragments (see docs/traefik.md). T06
 # scans compose.prod.yml for `traefik.*` labels (the docker provider is not
-# wired in). T01–T05 inspect the project's own traefik-dynamic.yml.
+# wired in). T01–T05 inspect the project's own traefik-dynamic.yml; T07
+# cross-checks its loadBalancer targets against compose container_names.
 #
 # T01 is a warn (not fail) so worker-only projects without web routing don't
 # tip the whole check. When the file is missing or malformed, T02–T05 are
@@ -307,6 +402,7 @@ _check_traefik_section() {
         _check_t03_entrypoints "$routers"
         _check_t04_letsencrypt "$routers"
         _check_t05_reserved_hostnames "$routers"
+        _check_t07_fragment_targets "$services"
     fi
 
     _check_t06_no_labels "$services"
@@ -396,6 +492,35 @@ _check_t04_letsencrypt() {
         _check_pass "Secure routers reference letsencrypt cert resolver"
     else
         _check_fail "Websecure routers without tls.certResolver=letsencrypt: ${bad[*]}"
+    fi
+}
+
+# T07: every hostname in the fragment's loadBalancer server URLs must be an
+# explicit container_name in compose. Container names are unique per host
+# (Docker errors on duplicates), unlike service-name DNS aliases — this is
+# what makes fragment targets collision-proof on the shared network. Skipped
+# when compose has no services (already warned) or the fragment has no
+# loadBalancer services (redirect-only projects).
+_check_t07_fragment_targets() {
+    local services="$1"
+    [ -n "$services" ] || return 0
+    local hosts
+    hosts="$(_traefik_routed_hosts | sort -u)"
+    if [ -z "$hosts" ]; then
+        _check_pass "Fragment has no loadBalancer server URLs to verify"
+        return 0
+    fi
+    local names
+    names="$(_compose_container_names "$services" | sort -u)"
+    local bad=() h
+    while IFS= read -r h; do
+        [ -z "$h" ] && continue
+        grep -qxF -- "$h" <<<"$names" || bad+=("$h")
+    done <<<"$hosts"
+    if [ "${#bad[@]}" -eq 0 ]; then
+        _check_pass "Fragment loadBalancer URLs target explicit container_names"
+    else
+        _check_fail "Fragment targets unknown container_names: ${bad[*]} (set container_name in compose.prod.yml)"
     fi
 }
 
@@ -713,6 +838,18 @@ _compose_any_built() {
         [ "$hb" = "true" ] && return 0
     done <<<"$services"
     return 1
+}
+
+# Hostnames targeted by the fragment's loadBalancer server URLs
+# (http://<host>:<port> → <host>), one per line. Empty when the fragment is
+# missing, malformed, or has no loadBalancer services. Used by the network
+# rules (C03/C07 routed-service detection) and T07.
+_traefik_routed_hosts() {
+    [ -f traefik-dynamic.yml ] || return 0
+    { yq -r '(.http.services // {}) | to_entries[] | (.value.loadBalancer.servers // [])[] | .url // ""' \
+        traefik-dynamic.yml 2>/dev/null || true; } \
+        | sed -E 's#^[A-Za-z0-9+.-]+://##; s#[:/].*$##' | awk 'NF'
+    return 0
 }
 
 # Print every explicit container_name from compose.prod.yml, one per line.
