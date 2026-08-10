@@ -33,16 +33,30 @@ if [ ${#tests[@]} -eq 0 ]; then
 fi
 
 failed=0
+unrunnable=0
 for t in "${tests[@]}"; do
     name="$(basename "$t")"
-    if bash "$t"; then
-        echo "PASS $name"
-    else
-        echo "FAIL $name" >&2
-        failed=$((failed + 1))
-    fi
+    bash "$t"; rc=$?
+    # A suite's own exit 2 carries this runner's meaning of 2: it could not run
+    # (no rig, for the integration suite), which is a fact about the environment
+    # and not about the code. Counting it as a failure was the whole confusion —
+    # "1 test(s) failed" sent readers looking for a defect that was not there.
+    case $rc in
+        0) echo "PASS $name" ;;
+        2) echo "SKIP $name — preconditions not met (see above)" >&2
+           unrunnable=$((unrunnable + 1)) ;;
+        *) echo "FAIL $name" >&2
+           failed=$((failed + 1)) ;;
+    esac
 done
 
+# An incomplete run outranks a failing one: the verdict below it is not the
+# verdict of the suite that was asked for. Both counts are printed either way.
+if [ "$unrunnable" -gt 0 ]; then
+    [ "$failed" -eq 0 ] || echo "$failed test(s) failed" >&2
+    echo "$unrunnable suite(s) could not run — fix the environment and rerun" >&2
+    exit 2
+fi
 if [ "$failed" -gt 0 ]; then
     echo "$failed test(s) failed" >&2
     exit 1

@@ -7,7 +7,9 @@ DOCKERD_LOG=/var/log/dockerd.log
 # Bounds how long dockerd may take to answer at boot. Unrelated to compose's
 # healthcheck start_period, which bounds how long an already-broken rig is
 # allowed to look merely "starting" before it is reported unhealthy.
-DOCKERD_TIMEOUT=${HOSTING_RIG_DOCKERD_TIMEOUT:-90}
+# compose.yml passes this through from the host's HOSTING_RIG_DOCKERD_TIMEOUT and
+# passes it empty when that is unset, so `:-` (empty or unset) rather than `-`.
+DOCKERD_TIMEOUT=${RIG_DOCKERD_TIMEOUT:-90}
 
 fail() {
     printf 'rig: %s\n' "$*" >&2
@@ -22,7 +24,12 @@ fail() {
 key=${RIG_AUTHORIZED_KEY:-}
 case $key in
     'ssh-ed25519 '*|'ssh-rsa '*|'ecdsa-'*) ;;
-    *) fail 'RIG_AUTHORIZED_KEY holds no public key — start the rig through tests/rig/rig.sh, or export HOSTING_RIG_PUBKEY="$(cat tests/rig/id_ed25519.pub)" first if driving docker compose directly' ;;
+    # Deliberately no "or export the key and drive docker compose yourself"
+    # hint: a compose command without `-p hosting-rig` is aimed by whatever
+    # COMPOSE_PROJECT_NAME the shell carries, and the `down -v` that follows
+    # removes that project instead. An error message is the last place to teach
+    # a form that unsafe.
+    *) fail 'RIG_AUTHORIZED_KEY holds no public key — start the rig with tests/rig/rig.sh up, which generates the keypair and passes it in' ;;
 esac
 install -d -m 0700 -o stevedore -g stevedore /home/stevedore/.ssh
 printf '%s\n' "$key" > /home/stevedore/.ssh/authorized_keys

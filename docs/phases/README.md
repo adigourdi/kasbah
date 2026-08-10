@@ -11,7 +11,7 @@ during execution.
 | # | Phase | State of the thing at the end |
 |---|---|---|
 | 0 | [Ground](00-ground.md) | **Done.** Scaffold, install, manifest/state, init-project, full `check`, docs corpus with all decisions |
-| 1 | [Rig](01-rig.md) | A fake VPS (DinD container: sshd + dockerd) with reset script and integration-test runner |
+| 1 | [Rig](01-rig.md) | **Done.** A fake VPS (DinD container: sshd + dockerd) with reset script and integration-test runner |
 | 2 | [Spine](02-spine.md) | `server init` + thin `deploy` work against the rig: a stock project serves through Traefik via file-provider fragment |
 | 3 | [Env](03-env.md) | Env template system ported with tests; drift + `HOSTING_*` injection. *Parallel-safe with 1–2* |
 | 4 | [Ship](04-ship.md) | `build-push` + full `deploy` (hooks, backup, health, flock, digests): a custom-built app ships to the rig |

@@ -1,4 +1,4 @@
-# Phase 1 — Rig
+# Phase 1 — Rig ✅ done
 
 > A disposable fake VPS exists: hosting commands can SSH into a container
 > that runs its own Docker daemon, and an integration-test runner drives it
@@ -26,15 +26,25 @@
   (see 02-spine.md), instead of hiding the answer in the rig.
 
 ## Exit criteria
-- [ ] `tests/rig/rig.sh up` → `ssh` into the rig succeeds with key auth
-- [ ] `docker run hello-world` works **inside** the rig over that SSH session
-- [ ] `tests/rig/rig.sh reset` returns a pristine rig in under a minute
-- [ ] `HOSTING_RIG_TESTS=1 ./test.sh` runs the integration suite; without the var, the unit suite is unchanged and fast
-- [ ] Rig limitations documented (ACME cannot issue; TLS asserted via Traefik default cert until Phase 6)
+
+Walked at phase close against the real rig, from a cold keyless start, and
+re-walked after the group review's fixes.
+
+- [x] `tests/rig/rig.sh up` → `ssh` into the rig succeeds with key auth — **2.2 s** from no keypair and no container, lands as `stevedore`; root login refused
+- [x] `docker run hello-world` works **inside** the rig over that SSH session — pulled, not cached
+- [x] `tests/rig/rig.sh reset` returns a pristine rig in under a minute — **4.2 s**, `images=0 containers=0` inside afterwards
+- [x] `HOSTING_RIG_TESTS=1 ./test.sh` runs the integration suite; without the var, the unit suite is unchanged and fast — 5 PASS vs 4 PASS; the integration delta is ~3 s against a ~1m40–2m00 suite whose own host-load swing is ±20 s. With the rig down: `SKIP smoke_test.sh — preconditions not met`, exit **2** (environment, not test failure)
+- [x] Rig limitations documented — `tests/rig/README.md`. ACME cannot issue (no public DNS, nothing reaches :80 from outside); until Phase 6, TLS is asserted as "Traefik serves HTTPS at all" (`curl -k`), never as "a valid certificate was issued"
+
+**Not proven here, by construction:** that the rig resembles a real VPS
+beyond the prerequisites table. No systemd, no reboot, no kernel of its
+own, no disk or memory pressure worth trusting, no firewall, and resource
+limits computed inside it reflect the workstation. Phase 6 is the honest
+test; that is why it exists.
 
 ## Tasks
 
-### 1.1 — DinD image + compose (M)
+### 1.1 — DinD image + compose (M) ✅
 `tests/rig/` — Dockerfile (Debian slim + docker-ce + openssh-server), a
 `compose.yml` running it `privileged: true`, entrypoint that starts
 `dockerd`, **waits for `/var/run/docker.sock`**, then starts `sshd`.
@@ -58,7 +68,7 @@ race (gate sshd on the socket, or tests flake), and MTU mismatch in
 nested networks (symptom: TLS handshakes hang; fix: set dockerd MTU to
 the outer network's).
 
-### 1.2 — Rig lifecycle script (S)
+### 1.2 — Rig lifecycle script (S) ✅
 `tests/rig/rig.sh up|down|reset|ssh` — reset = down -v && up && wait for
 SSH. A rig-local ssh config (`StrictHostKeyChecking=no`,
 `UserKnownHostsFile=/dev/null`, port, key) that every caller reuses, so
@@ -78,7 +88,7 @@ both verified, so Phase 2 reuses it rather than restating flags.
 — poll the SSH port with a timeout, not `sleep`. *Went further in
 practice: even the compose healthcheck is too weak — see Findings.*
 
-### 1.3 — Integration runner + smoke test (S)
+### 1.3 — Integration runner + smoke test (S) ✅
 `tests/integration/` with the same assert-helper idiom as the unit tests.
 `test.sh` runs it only when `HOSTING_RIG_TESTS=1`. First test: rig
 reachable, docker functional, `rsync`/`gzip`/`openssl` present (the
@@ -226,3 +236,42 @@ already expects it.
   starts", which is not what "docker functional" means. Registry failures
   were checked and are diagnosed exactly (refused: 0.3 s, unroutable:
   11.6 s, both naming the cause).
+
+### From the phase-close group review
+
+The three tasks were each reviewed in isolation. A fourth reviewer that had
+seen none of the rounds judged them together, and found what per-task
+review structurally cannot — defects that live in the *seams*:
+
+- **A shared generated file rendered from per-caller environment is a
+  poisoning hazard.** `rig.sh` re-rendered `ssh_config` from
+  `$HOSTING_RIG_SSH_PORT` on *every* verb, while the publish side was fixed
+  when the container was created. So one stray `HOSTING_RIG_SSH_PORT=15022
+  rig.sh ssh` permanently repointed the contract, and the integration suite
+  then failed with "is the rig up?" against a rig that was up and healthy.
+  Now the endpoint is read back out of Docker; the environment is consulted
+  only when no container exists. **`docker port` alone is not enough — it
+  fails outright on a container that exists but is *stopped*.** Fall back to
+  `HostConfig.PortBindings`, recorded at create time, which survives a stop.
+- **An env knob the container never receives is a dead knob.**
+  `entrypoint.sh` read `HOSTING_RIG_DOCKERD_TIMEOUT`, but `compose.yml`
+  passed only `RIG_AUTHORIZED_KEY`, so it was permanently 90 s. It was also
+  named with the host-side prefix while being read *inside* the container,
+  where the convention is `RIG_*`. A container sees exactly what the compose
+  file declares and nothing else.
+- **Two comments taught the unsafe form of the very rule the phase had just
+  fixed** — a `docker compose` recipe without `-p`, in a repo whose README
+  says always to pass it. Rationale that lives in four places (code comment,
+  Findings, commit message, README) is a drift engine; the fix keeps them in
+  step, but the count is worth watching.
+- **`rig.sh` had no tests**, against CLAUDE.md's "tests land with the code
+  they test". Now `tests/rig_test.sh` covers the branches that cost two
+  review rounds — verb-argument rejection, the mismatched-`.pub` guard, the
+  not-a-plain-file guard, endpoint resolution including the stopped-container
+  case, and that every compose call carries `-p`. It is hermetic: a copied
+  script plus a stub `docker` on `PATH`, so it passes with the rig down and
+  on a machine with no Docker, and it costs 0.25 s.
+- **`test.sh` now separates "the tests failed" from "the environment is
+  wrong."** A suite exiting 2 prints `SKIP <suite> — preconditions not met`
+  and makes the runner exit 2. A downed rig is not a test failure, and in CI
+  the exit code is often all you get.

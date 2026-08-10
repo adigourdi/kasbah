@@ -10,8 +10,10 @@ FROM debian:bookworm-slim
 # built is what the rig runs, indefinitely. Compose pairs `build:` with a fixed
 # image name, so `up` never rebuilds on its own — refreshing these versions is
 # an explicit rebuild, which is rig.sh's job. To reproduce a version regression:
-#   HOSTING_RIG_DOCKER_VERSION=5:27.1.1-1~debian.12~bookworm \
-#     docker compose -f tests/rig/compose.yml build
+#   HOSTING_RIG_DOCKER_VERSION=5:27.1.1-1~debian.12~bookworm tests/rig/rig.sh up
+# Driving compose by hand instead needs `-p hosting-rig` on every call — the
+# `name:` key is the weakest source of the project name, so without the flag an
+# inherited COMPOSE_PROJECT_NAME aims the command at another stack.
 ARG DOCKER_APT_VERSION=
 
 # rsync/openssl/gzip are not incidental: they are three rows of the

@@ -9,6 +9,41 @@
 **Spec:** `docs/server-setup.md`, `docs/traefik.md`, `docs/cli.md` (server init, deploy), `docs/build-deploy.md` (deploy flow steps 1–5, 8d, 8g)
 **Retires:** file-provider-only routing (no docker socket, `container_name` DNS on `hosting-net`) — designed in `765972c`, never yet run anywhere.
 
+## Inherited from Phase 1 — read before starting
+
+The rig exists and works (`tests/rig/README.md` documents its shape and
+limits). What Phase 1 learned that lands on this phase:
+
+1. **`hosting` has no way to be told the rig's SSH contract — settle this
+   before 2.4.** The CLI takes a bare `USER@HOST` and `cli.md` documents no
+   `-F`, `-i` or port option, but the rig is reachable only as
+   `ssh -F tests/rig/ssh_config rig` on a non-standard port with a
+   per-checkout key. Either `hosting` grows an ssh-options passthrough, or
+   2.6 injects the `Host rig` block into a temp `~/.ssh/config`. The
+   passthrough is the better answer — the rig's rule is that its flags are
+   never restated anywhere — and it is a real feature for users with
+   jump hosts or non-22 ports, not test scaffolding.
+2. **The rig must be created through `rig.sh`.** `RIG_AUTHORIZED_KEY`
+   defaults empty and the entrypoint hard-fails on it, so a harness that
+   calls `docker compose up` directly gets a dead rig.
+3. **Write the compose preflight as major `>= 2`, not `== 2`.** The rig
+   reports Compose 5.4.0. `tests/integration/smoke_test.sh` already does
+   this correctly — copy it rather than reinventing it.
+4. **`rig.sh reset` wipes the nested image cache** (`down -v` drops the
+   `/var/lib/docker` volume), so a reset-per-test loop re-pulls Traefik and
+   nginx every time. Decide deliberately: add a lighter "clean `/apps`
+   only" verb, or accept the Docker Hub exposure — before it starts
+   flaking.
+5. **A wedged dockerd stops the rig container** rather than leaving it
+   half-alive. A test that kills the daemon needs `rig.sh up` afterwards,
+   not `reset`, and no test may assume the rig survives the suite.
+6. **`git` is not installed in the rig.** Fine for the
+   `git archive | ssh vps tar -x` model; do not add a step that needs git
+   on the far end.
+7. **Nothing will fail loudly if the `/apps` decision above is skipped** —
+   `stevedore` has passwordless sudo, so a stray `sudo mkdir` just works on
+   the rig and the question resurfaces on a real VPS in Phase 6 instead.
+
 ## Exit criteria
 - [ ] On a fresh rig: `server init` → deploy fixture → `curl -H 'Host: demo.test' localhost:5080` returns the fixture page, routed by Traefik (the rig's published HTTP port — see 01-rig.md; the suite itself curls from inside the rig, so it doesn't depend on the host port being free)
 - [ ] The Traefik container has **no docker socket mounted** (asserted by the integration test)
@@ -111,8 +146,9 @@ full version (certs, mail, disk) grows in Phase 7.
 Fixture stock project under `tests/fixtures/`: nginx + baked index page,
 compose in the new network pattern, fragment targeting its
 `container_name`. Test: reset rig → init (`--no-mail --no-backup`) →
-pre-seed `.env` → deploy → curl through 8080 asserts the page → re-init
-no-op assert.
+pre-seed `.env` → deploy → curl asserts the page → re-init no-op assert.
+Curl from *inside* the rig (`rig.sh ssh -- 'curl …'`) so the test never
+depends on a host port being free; 5080 is for driving it by hand.
 
 **Deliverables**
 - [ ] `tests/integration/spine_test.sh` green on a fresh rig

@@ -20,6 +20,12 @@ services:
       # defaulting to empty rather than `:?` so that `down` and `ps` still work
       # when no key is exported; the entrypoint is what rejects an empty value.
       RIG_AUTHORIZED_KEY: ${HOSTING_RIG_PUBKEY:-}
+      # How long the entrypoint waits for the nested dockerd to answer. Empty
+      # means "the entrypoint's own default" — passing it unconditionally is what
+      # makes the knob exist at all, since the container sees only what is
+      # declared here. Inside the container the prefix is RIG_, not HOSTING_RIG_:
+      # the latter names the host-side override.
+      RIG_DOCKERD_TIMEOUT: ${HOSTING_RIG_DOCKERD_TIMEOUT:-}
     ports:
       # Loopback by default: this is a privileged container whose SSH user has
       # passwordless sudo, so LAN exposure would be root-equivalent on the host.

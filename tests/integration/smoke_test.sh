@@ -5,6 +5,11 @@
 # test that repairs its own environment hides that cost and turns "the rig is
 # broken" into "some test failed somewhere", so an unreachable rig is a loud
 # precondition failure here, not a skip and not a `rig.sh up`.
+#
+# Exit status follows test.sh's contract: 0 pass, 1 an assertion about the rig
+# failed, 2 the suite could not run at all. A downed rig is the operator's
+# environment, not a fact about the code under test, and reporting it as 1 sends
+# the reader hunting for a defect that is not there.
 
 set -uo pipefail
 
@@ -29,7 +34,7 @@ trap 'rm -rf "$tmpdir"' EXIT
 if [ ! -f "$ssh_config" ]; then
     echo "error: no $ssh_config" >&2
     echo "       the integration suite needs a running rig: tests/rig/rig.sh up" >&2
-    exit 1
+    exit 2
 fi
 
 # A single SSH session collects every fact, for two reasons. The rig's sshd runs
@@ -84,14 +89,14 @@ if [ "$probe_rc" -eq 124 ]; then
     echo "error: the rig probe did not finish within ${probe_timeout}s" >&2
     sed 's/^/       ssh: /' "$probe_err" >&2
     echo "       the rig is wedged, or the hello-world pull stalled mid-transfer" >&2
-    exit 1
+    exit 2
 fi
 
 if [ "$probe_rc" -ne 0 ] || [ -z "$probe_out" ]; then
     echo "error: could not run the probe on the rig (ssh exit $probe_rc)" >&2
     sed 's/^/       ssh: /' "$probe_err" >&2
     echo "       is the rig up? tests/rig/rig.sh up" >&2
-    exit 1
+    exit 2
 fi
 
 # The probe output is a protocol, so it is validated as one: parsed once, then
@@ -114,7 +119,7 @@ if [ "${#missing[@]}" -gt 0 ]; then
     echo "error: the rig probe reported no ${missing[*]}" >&2
     echo "       the probe script broke, or its output was truncated — raw output:" >&2
     sed 's/^/       | /' <<<"$probe_out" >&2
-    exit 1
+    exit 2
 fi
 
 major() { printf '%s' "${1%%.*}"; }

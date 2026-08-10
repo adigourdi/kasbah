@@ -21,8 +21,11 @@ rig_image=hosting-rig
 # Mirrors `name:` in compose.yml, but passed as `-p` — see compose().
 rig_project=hosting-rig
 
-# Read the same variables compose.yml reads, so one override moves the publish
-# side and the connect side together.
+# Where a *new* container gets published: compose.yml reads the same variables,
+# so an override here moves the publish side. It does not move the connect side
+# on its own — once a container exists, write_ssh_config reads the binding back
+# out of Docker and overwrites these, because the port is a property of the
+# running container and not of whatever a later caller happens to have exported.
 rig_bind=${HOSTING_RIG_BIND:-127.0.0.1}
 rig_ssh_port=${HOSTING_RIG_SSH_PORT:-5022}
 # Bounds the wait for a usable rig: 30x the observed ~2 s, so a loaded machine
@@ -45,6 +48,10 @@ note() { printf 'rig: %s\n' "$*" >&2; }
 # only reason this script cannot touch anything but the rig.
 compose() { docker compose -p "$rig_project" -f "$compose_file" "$@"; }
 
+# Empty when the rig has no container — including a container that exists but is
+# stopped, which `-a` deliberately still reports.
+container_id() { compose ps -aq rig 2>/dev/null || true; }
+
 usage() {
     cat <<EOF
 usage: rig.sh <up|down|reset|ssh>
@@ -55,7 +62,8 @@ usage: rig.sh <up|down|reset|ssh>
   ssh [-- cmd]  ssh in as stevedore; with a command, propagate its exit status
 
 environment: HOSTING_RIG_BIND, HOSTING_RIG_{SSH,HTTP,HTTPS}_PORT,
-             HOSTING_RIG_READY_TIMEOUT, HOSTING_RIG_DOCKER_VERSION
+             HOSTING_RIG_READY_TIMEOUT, HOSTING_RIG_DOCKER_VERSION,
+             HOSTING_RIG_DOCKERD_TIMEOUT
 EOF
 }
 
@@ -123,8 +131,49 @@ export_pubkey() {
     export HOSTING_RIG_PUBKEY=$pub
 }
 
-# Rewritten on every invocation: it embeds the resolved port and key path, so a
-# changed HOSTING_RIG_SSH_PORT must not be able to leave a stale file behind.
+# The published SSH endpoint belongs to the container, not to this process's
+# environment: it is fixed when the container is created, and every later caller
+# shares one generated ssh_config. Deriving it from the environment instead let a
+# single stray `HOSTING_RIG_SSH_PORT=… rig.sh ssh` repoint that shared file at a
+# port nothing listens on, breaking every subsequent caller — which then blamed
+# the rig. So it is read back out of Docker, and the environment is consulted
+# only when there is no container to read (see write_ssh_config).
+#
+# `docker port` is the truth for a running container, but it prints one line per
+# binding — an IPv4 and an IPv6 line for a wildcard bind — and it fails outright
+# on a container that exists but is stopped. Hence: prefer its IPv4 line, and
+# fall back to the bindings recorded at create time, which survive a stop.
+# Returns 1 without touching anything if neither source names a port.
+resolve_published_endpoint() {
+    local cid=$1 out line ip port
+    out=$(docker port "$cid" 22 2>/dev/null) || out=
+    [ -n "$out" ] || out=$(docker inspect \
+        -f '{{range index .HostConfig.PortBindings "22/tcp"}}{{.HostIp}}:{{.HostPort}}{{"\n"}}{{end}}' \
+        "$cid" 2>/dev/null) || out=
+    [ -n "$out" ] || return 1
+
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        port=${line##*:}
+        ip=${line%:*}
+        # An IPv6 host keeps its colons (and its brackets, from `docker port`)
+        # after that split. The config connects over IPv4, so those are not
+        # candidates — and the IPv4 line is not always the first one.
+        case $ip in *:*|*'['*) continue ;; esac
+        [ -n "$port" ] || continue
+        # An empty HostIp is Docker's "every interface"; 0.0.0.0 is how `docker
+        # port` spells the same thing, and it is connectable.
+        [ -n "$ip" ] || ip=0.0.0.0
+        rig_bind=$ip
+        rig_ssh_port=$port
+        return 0
+    done <<<"$out"
+    return 1
+}
+
+# Rewritten on every invocation, from the container where there is one: it
+# embeds the endpoint and the key path, so neither a changed HOSTING_RIG_SSH_PORT
+# nor a recreated container can leave a stale file behind.
 # Rendered to a sibling temp file and renamed, never truncated in place: two
 # rig.sh calls at once would otherwise leave a window where a concurrent reader
 # sees an empty config, silently loses the `Host rig` block, and tries to
@@ -135,7 +184,12 @@ export_pubkey() {
 # ~/.ssh/known_hosts. LogLevel ERROR silences the "permanently added" notice
 # that /dev/null makes unavoidable and that would otherwise pollute test output.
 write_ssh_config() {
-    local tmp
+    local tmp cid
+    # No container means nothing has been published yet and the environment is
+    # all there is — which is also exactly what the next `up` will publish with.
+    cid=$(container_id)
+    [ -z "$cid" ] || resolve_published_endpoint "$cid" || true
+
     tmp=$(mktemp "$ssh_config.XXXXXX") || die "could not create a temp file next to $ssh_config"
     # Cleaned up inline rather than with a RETURN trap: bash keeps a RETURN
     # trap installed after the function that set it returns, so the handler
@@ -163,8 +217,6 @@ EOF
     chmod 0644 "$tmp" && mv -f "$tmp" "$ssh_config" \
         || { rm -f "$tmp"; die "could not install $ssh_config"; }
 }
-
-container_id() { compose ps -aq rig 2>/dev/null || true; }
 
 dump_diagnostics() {
     local cid
@@ -223,6 +275,11 @@ cmd_up() {
     export_pubkey
     build
     compose up -d
+    # Re-render now that there is a container to read: main's earlier render
+    # could only go on the environment (there may have been no container, or an
+    # older one on a different port), and what compose actually published is the
+    # contract. wait_ready's probe is the first thing to depend on it.
+    write_ssh_config
     wait_ready
     note "ready — ssh -F $ssh_config $ssh_alias"
 }
@@ -271,6 +328,11 @@ main() {
         *) printf 'rig: unknown verb %s\n' "$verb" >&2; usage >&2; exit 1 ;;
     esac
     command -v docker >/dev/null 2>&1 || die 'docker is not installed'
+    # Every verb refreshes the contract, because `ssh` needs one that matches the
+    # container that is actually running and a keyless checkout has none at all.
+    # It is a read of the container, not of the environment, so a read-only verb
+    # cannot move it (`up` renders it a second time, after creating the
+    # container).
     write_ssh_config
     "cmd_$verb" "$@"
 }
