@@ -2,3 +2,7 @@
 *.swp
 *~
 .env
+
+# Rig keypair — generated per checkout by tests/rig/rig.sh, never committed.
+tests/rig/id_ed25519
+tests/rig/id_ed25519.pub

@@ -32,20 +32,21 @@ so `/tackle` and future phases inherit its evidence and findings.
 ### 0.7 — File-provider routing decision (M) ✅
 **Evidence:** commit `765972c` — docker labels rejected (T06), fragments + `_shared.yml` model in `docs/traefik.md`.
 
-### 0.8 — Agency docs pass + check rework (L) ✅ *(working tree, uncommitted)*
+### 0.8 — Agency docs pass + check rework (L) ✅
 Network split (C03/C07, T07), resource rules (R01–R03), retention =
 3 months ∪ last-3-versions, drop/`--prune`/`server destroy` lifecycle,
 server marker + same-major compat policy, off-VPS backup design
 (`docs/backup.md`), interactivity rule, roadmap de-tracked, init-project
 snippet updated. Tests reworked and green (22-rule golden path).
-**Evidence:** current working tree; `./test.sh` PASS ×3. **Commit before Phase 1.**
+**Evidence:** commits `7ea63e1` (docs), `7c5f7d1` (check rework + tests);
+`./test.sh` PASS ×3 in 1m52s — the baseline Phase 1 must not move.
 
 ### 0.9 — CLAUDE.md + minimal README (S) ✅
 Repo conventions for agents (yq dialect, bash discipline, frozen
 contracts, interactivity rule) and a status-honest README with install +
 what-works-today.
-**Evidence:** working tree (written during planning). Roadmap 1.5's full
-walkthrough README waits until there's a deploy to walk through.
+**Evidence:** commit `f8fe1cf`. Roadmap 1.5's full walkthrough README
+waits until there's a deploy to walk through.
 
 ## Findings
 

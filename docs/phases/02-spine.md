@@ -10,7 +10,7 @@
 **Retires:** file-provider-only routing (no docker socket, `container_name` DNS on `hosting-net`) — designed in `765972c`, never yet run anywhere.
 
 ## Exit criteria
-- [ ] On a fresh rig: `server init` → deploy fixture → `curl -H 'Host: demo.test' localhost:8080` returns the fixture page, routed by Traefik
+- [ ] On a fresh rig: `server init` → deploy fixture → `curl -H 'Host: demo.test' localhost:5080` returns the fixture page, routed by Traefik (the rig's published HTTP port — see 01-rig.md; the suite itself curls from inside the rig, so it doesn't depend on the host port being free)
 - [ ] The Traefik container has **no docker socket mounted** (asserted by the integration test)
 - [ ] Re-running `server init` is a no-op (idempotency rules in `server-setup.md`)
 - [ ] `/apps/.hosting/server.json` exists with computed 90% limits
@@ -44,6 +44,16 @@ themselves stays in Phases 7/8.
 - [ ] `lib/server_init.sh` + integration test on a fresh rig
 - [ ] Marker JSON matches `server-setup.md`'s shape; limits plausible for the rig's host
 - [ ] Second run changes nothing (assert via checksum of `/apps`)
+
+**Open decision, carried forward from Phase 1 — settle it explicitly, do
+not let it be settled by a stray `sudo`.** The rig's SSH user is
+`stevedore`, not root, and the image deliberately does not pre-create
+`/apps`. So `mkdir -p /apps` needs an answer: does `server init` sudo, or
+is a pre-created `/apps` owned by the deploy user a documented
+prerequisite? `server-setup.md` warns against mixed sudo/non-sudo
+ownership in `/apps/data/` and lists prerequisites as *checked, not
+installed* — which leans toward the prerequisite. Whichever wins, record
+it in `server-setup.md` in the same change.
 
 **Watch out for:** Docker silently creating a *directory* at a missing
 bind-mount path — the acme.json touch must precede any `compose up`

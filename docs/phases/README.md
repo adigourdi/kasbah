@@ -75,10 +75,11 @@ rhythm: one capability slice per task, tests landing with it.
 8. **VPS-side helpers are hosting-owned** and overwritten on every deploy;
    projects never vendor hosting bash.
 
-## Before starting Phase 1
+## Before starting Phase 1 ✅
 
-The working tree holds all of Phase 0's final act uncommitted (docs pass +
-check rework + this plan). Commit it first so task baselines are clean.
+Phase 0's final act is committed (`7ea63e1`, `7c5f7d1`, `f8fe1cf`), so
+task baselines are clean. Unit-suite baseline at the start of Phase 1:
+`./test.sh` PASS ×3 in 1m52s.
 
 ## Re-read notes
 

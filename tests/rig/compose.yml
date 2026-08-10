@@ -1,0 +1,56 @@
+# Project name pinned here so every `docker compose` call lands on the rig and
+# only the rig, whatever directory it is run from — this repo is developed on
+# workstations with unrelated containers running.
+name: hosting-rig
+
+services:
+  rig:
+    build:
+      context: .
+      args:
+        DOCKER_APT_VERSION: ${HOSTING_RIG_DOCKER_VERSION:-}
+    image: hosting-rig
+    container_name: hosting-rig
+    # Nested dockerd needs full kernel access (cgroups, netlink, mounts).
+    privileged: true
+    init: true
+    environment:
+      # Passed in, not mounted: Docker turns a missing bind-mount source into a
+      # root-owned directory on the host, which an env var cannot do. Left
+      # defaulting to empty rather than `:?` so that `down` and `ps` still work
+      # when no key is exported; the entrypoint is what rejects an empty value.
+      RIG_AUTHORIZED_KEY: ${HOSTING_RIG_PUBKEY:-}
+    ports:
+      # Loopback by default: this is a privileged container whose SSH user has
+      # passwordless sudo, so LAN exposure would be root-equivalent on the host.
+      # Every consumer is local; widening the bind stays possible but deliberate.
+      # The port defaults sit above the usual dev-server range because 8080/8443
+      # are routinely taken on developer machines.
+      - "${HOSTING_RIG_BIND:-127.0.0.1}:${HOSTING_RIG_SSH_PORT:-5022}:22"
+      - "${HOSTING_RIG_BIND:-127.0.0.1}:${HOSTING_RIG_HTTP_PORT:-5080}:80"
+      - "${HOSTING_RIG_BIND:-127.0.0.1}:${HOSTING_RIG_HTTPS_PORT:-5043}:443"
+    volumes:
+      # Mandatory, not an optimisation: on an overlayfs-backed container
+      # layer the nested dockerd degrades to vfs or refuses to start.
+      - docker-data:/var/lib/docker
+    healthcheck:
+      # Asserts three conditions, each of which has been observed true while
+      # the others were false: the nested daemon answers *as stevedore* (the
+      # "docker without sudo" prerequisite row), sshd accepts on :22, and an
+      # authorized key is installed. Not proven: that the installed key is the
+      # *right* one — a mismatched key still reads as healthy.
+      # /dev/tcp is a bash builtin, hence CMD with bash rather than CMD-SHELL.
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'su -s /bin/bash stevedore -c "docker info" >/dev/null 2>&1 && [ -s /home/stevedore/.ssh/authorized_keys ] && exec 3<>/dev/tcp/127.0.0.1/22'
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      # A healthy rig arrives in about two seconds, so a long grace period only
+      # delays the report of a broken one.
+      start_period: 30s
+
+volumes:
+  docker-data:
