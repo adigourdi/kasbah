@@ -92,6 +92,13 @@ handling is Phase 3; hooks/backup/health are Phase 4). Stock-only.
 **Watch out for:** ControlPath length limits (~104 chars) — use `%C`
 hashing, not `%r@%h:%p`, or long hostnames break multiplexing silently.
 
+**Carried from Phase 1:** every `docker compose` invocation hosting makes
+on the VPS must pass `-p <project>`. `name:` in a compose file is the
+*weakest* source of the project name — `COMPOSE_PROJECT_NAME` in the
+remote environment outranks it, and `down` removes by project label, not
+by the services the file lists. On the dev workstation this was proven to
+put nine unrelated containers in range (see 01-rig.md Findings).
+
 ### 2.5 — Minimal `server status` (S) [parallel-safe]
 Enough to verify the spine by hand: docker/compose versions, Traefik
 health, project list from `/apps/` with last `versions.log` entry. The

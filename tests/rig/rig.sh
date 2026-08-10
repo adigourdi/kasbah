@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+# Lifecycle for the fake VPS: tests/rig/rig.sh up|down|reset|ssh.
+#
+# Every verb is idempotent and safe to run from any working directory, and no
+# verb can reach a container outside the rig's own compose project — see the
+# `-p` in compose() for why the pin has to be a flag and not compose.yml's
+# `name:`.
+set -euo pipefail
+
+rig_dir="$(cd "$(dirname "$0")" && pwd)"
+compose_file="$rig_dir/compose.yml"
+key_file="$rig_dir/id_ed25519"
+pub_file="$key_file.pub"
+# The one place the SSH flags are written down. Integration tests (1.3) and the
+# rsync/scp calls of later phases take `-F "$ssh_config"` rather than restating
+# them, because two copies of a connection contract drift.
+ssh_config="$rig_dir/ssh_config"
+ssh_alias=rig
+# Mirrors `image:` in compose.yml; only used to tell a first build from a later one.
+rig_image=hosting-rig
+# Mirrors `name:` in compose.yml, but passed as `-p` — see compose().
+rig_project=hosting-rig
+
+# Read the same variables compose.yml reads, so one override moves the publish
+# side and the connect side together.
+rig_bind=${HOSTING_RIG_BIND:-127.0.0.1}
+rig_ssh_port=${HOSTING_RIG_SSH_PORT:-5022}
+# Bounds the wait for a usable rig: 30x the observed ~2 s, so a loaded machine
+# still passes, and still inside this phase's "reset in under a minute" bar.
+ready_timeout=${HOSTING_RIG_READY_TIMEOUT:-60}
+
+die() {
+    printf 'rig: %s\n' "$*" >&2
+    exit 1
+}
+
+note() { printf 'rig: %s\n' "$*" >&2; }
+
+# `-p` is not redundant with compose.yml's `name:`. Of the three sources of a
+# project name — `-p`, COMPOSE_PROJECT_NAME, `name:` — the file is the weakest,
+# so an exported COMPOSE_PROJECT_NAME left over from another stack silently
+# retargets every call here. `down -v` would then remove that project's
+# containers and volumes, since it works off the project label rather than the
+# services listed in the file. The flag outranks the environment, which is the
+# only reason this script cannot touch anything but the rig.
+compose() { docker compose -p "$rig_project" -f "$compose_file" "$@"; }
+
+usage() {
+    cat <<EOF
+usage: rig.sh <up|down|reset|ssh>
+
+  up            build if needed, start the rig, wait until it is usable
+  down          stop the rig and remove its volume
+  reset         down then up — a pristine rig
+  ssh [-- cmd]  ssh in as stevedore; with a command, propagate its exit status
+
+environment: HOSTING_RIG_BIND, HOSTING_RIG_{SSH,HTTP,HTTPS}_PORT,
+             HOSTING_RIG_READY_TIMEOUT, HOSTING_RIG_DOCKER_VERSION
+EOF
+}
+
+# A missing bind-mount source is materialised by Docker as a root-owned
+# directory (see 01-rig.md); these paths are gitignored, so such a thing is
+# invisible in `git status` and unwritable without sudo. Nothing mounts them
+# any more, but `-f` rather than `-e` is the habit that catches the next one.
+assert_plain_file() {
+    [ ! -e "$1" ] || [ -f "$1" ] || die "$1 exists but is not a regular file — remove it (it may be a root-owned directory left by an older rig)"
+}
+
+ensure_key() {
+    assert_plain_file "$key_file"
+    assert_plain_file "$pub_file"
+    if [ ! -s "$key_file" ]; then
+        rm -f "$key_file" "$pub_file"
+        ssh-keygen -t ed25519 -N '' -C hosting-rig -f "$key_file" >/dev/null \
+            || die "ssh-keygen could not write $key_file"
+        note "generated a rig keypair at $key_file (gitignored)"
+    fi
+    chmod 0600 "$key_file"
+
+    # The private half is the authority: whatever it derives to is the key the
+    # rig must authorize. </dev/null so a passphrase-protected key fails here
+    # rather than stopping to prompt in the middle of a test run.
+    local derived
+    derived=$(ssh-keygen -y -f "$key_file" </dev/null 2>/dev/null) \
+        || die "could not read the private key $key_file — delete it and both halves are regenerated"
+
+    if [ ! -s "$pub_file" ]; then
+        # Derivable, and the rig cannot start without it. Writing it costs
+        # nothing and destroys nothing.
+        printf '%s\n' "$derived" > "$pub_file"
+        return 0
+    fi
+
+    # A .pub that does not belong to the private key installs an authorized key
+    # nobody holds: the rig boots, looks healthy, and refuses every login until
+    # wait_ready times out blaming the rig. Caught here it costs milliseconds.
+    # This is a hard failure rather than a silent rewrite because rig.sh cannot
+    # produce this state — something outside it wrote that file, and quietly
+    # deleting a file the operator put there is the worse surprise. Only type
+    # and blob are compared, so a differing comment field is not a mismatch.
+    local stored dtype dblob stype sblob
+    stored=$(<"$pub_file")
+    stored=${stored//$'\r'/}
+    read -r dtype dblob _ <<<"$derived"
+    read -r stype sblob _ <<<"$stored"
+    [ "$dtype $dblob" = "$stype $sblob" ] \
+        || die "$pub_file is not the public half of $key_file — delete it to have it rederived, or delete both to start from a fresh keypair"
+}
+
+# The authorized key travels to the container in the environment, never as a
+# mount. compose.yml defaults it to empty so `down` still works without it,
+# which means every command that creates or recreates the container must set it
+# here or the entrypoint refuses to boot.
+export_pubkey() {
+    local pub
+    pub=$(<"$pub_file")
+    pub=${pub//$'\r'/}
+    case $pub in
+        'ssh-ed25519 '*|'ssh-rsa '*|'ecdsa-'*) ;;
+        *) die "$pub_file does not hold a public key — delete it and rerun rig.sh up" ;;
+    esac
+    export HOSTING_RIG_PUBKEY=$pub
+}
+
+# Rewritten on every invocation: it embeds the resolved port and key path, so a
+# changed HOSTING_RIG_SSH_PORT must not be able to leave a stale file behind.
+# Rendered to a sibling temp file and renamed, never truncated in place: two
+# rig.sh calls at once would otherwise leave a window where a concurrent reader
+# sees an empty config, silently loses the `Host rig` block, and tries to
+# resolve `rig` as a real hostname. Rename is atomic, so a reader sees the old
+# contract or the new one, never neither.
+# StrictHostKeyChecking/UserKnownHostsFile are not laziness — the rig generates
+# fresh host keys per container, so every reset would otherwise poison
+# ~/.ssh/known_hosts. LogLevel ERROR silences the "permanently added" notice
+# that /dev/null makes unavoidable and that would otherwise pollute test output.
+write_ssh_config() {
+    local tmp
+    tmp=$(mktemp "$ssh_config.XXXXXX") || die "could not create a temp file next to $ssh_config"
+    # Cleaned up inline rather than with a RETURN trap: bash keeps a RETURN
+    # trap installed after the function that set it returns, so the handler
+    # fires again later against a `tmp` that is out of scope — with set -u,
+    # that is an unbound-variable abort in an unrelated verb.
+    if ! cat > "$tmp" <<EOF
+# Generated by tests/rig/rig.sh — edits are overwritten. Reuse it, do not copy
+# the flags: ssh -F "$ssh_config" $ssh_alias, rsync -e "ssh -F $ssh_config", …
+Host $ssh_alias
+    HostName $rig_bind
+    Port $rig_ssh_port
+    User stevedore
+    IdentityFile $key_file
+    IdentitiesOnly yes
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    BatchMode yes
+    ConnectTimeout 5
+    LogLevel ERROR
+EOF
+    then
+        rm -f "$tmp"
+        die "could not write $ssh_config"
+    fi
+    chmod 0644 "$tmp" && mv -f "$tmp" "$ssh_config" \
+        || { rm -f "$tmp"; die "could not install $ssh_config"; }
+}
+
+container_id() { compose ps -aq rig 2>/dev/null || true; }
+
+dump_diagnostics() {
+    local cid
+    cid=$(container_id)
+    if [ -n "$cid" ]; then
+        printf 'rig: container state: %s\n' \
+            "$(docker inspect -f '{{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>&1)" >&2
+    fi
+    compose logs --tail 60 rig >&2 2>&1 || true
+}
+
+# Proves the rig works, not that a container exists. It is strictly stronger
+# than compose's healthcheck — same three conditions plus "the installed key is
+# *our* key", which the healthcheck cannot see — and it answers within a second
+# of boot instead of waiting out the healthcheck's 10 s interval.
+probe() { ssh -F "$ssh_config" "$ssh_alias" docker info >/dev/null 2>&1; }
+
+wait_ready() {
+    local deadline=$((SECONDS + ready_timeout)) cid
+    cid=$(container_id)
+    [ -n "$cid" ] || die 'no rig container after `docker compose up` — see the output above'
+    while :; do
+        if [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo false)" != true ]; then
+            dump_diagnostics
+            die 'the rig container stopped while starting up'
+        fi
+        probe && return 0
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            dump_diagnostics
+            die "the rig did not accept ssh with working docker within ${ready_timeout}s"
+        fi
+        sleep 0.5
+    done
+}
+
+# compose.yml pairs `build:` with a fixed `image:`, so `up` on its own reuses
+# whatever `hosting-rig` already is and silently ignores an edited Dockerfile or
+# entrypoint. Rebuild control lives here, and the rule is "always ask the
+# builder": Docker's layer cache is the only staleness oracle that cannot
+# itself go stale, a no-op build costs ~0.3 s, and an hour lost to a rig running
+# last week's entrypoint costs rather more.
+#
+# Verbosity is gated on "does the `hosting-rig` tag exist yet", i.e. the very
+# first build of a checkout is loud and every later one is quiet. That is not
+# the same as cold-vs-cached: a Dockerfile edit that re-runs apt is a silent
+# ~20 s wait. The alternative is BuildKit's cache report on every single `up`,
+# including the ones inside 1.3's test loop, which is the worse trade.
+build() {
+    local quiet=()
+    docker image inspect "$rig_image" >/dev/null 2>&1 && quiet=(--quiet)
+    compose build "${quiet[@]+"${quiet[@]}"}"
+}
+
+cmd_up() {
+    ensure_key
+    export_pubkey
+    build
+    compose up -d
+    wait_ready
+    note "ready — ssh -F $ssh_config $ssh_alias"
+}
+
+cmd_down() {
+    # -v removes the rig's own docker-data volume and nothing else. `down`
+    # deletes by project label, not by the services listed in the file, so the
+    # whole safety of this line rests on compose() forcing the project with
+    # `-p` — without that, an inherited COMPOSE_PROJECT_NAME aims it at
+    # somebody else's running stack.
+    compose down -v
+}
+
+cmd_reset() {
+    # Validate the keypair before tearing anything down: a broken .pub is a
+    # local, fixable mistake, and discovering it after `down` leaves the caller
+    # with no rig at all. ensure_key is idempotent, so cmd_up repeating it costs
+    # nothing.
+    ensure_key
+    cmd_down
+    cmd_up
+}
+
+cmd_ssh() {
+    [ -s "$key_file" ] || die 'no rig keypair — run tests/rig/rig.sh up first'
+    [ "${1:-}" != "--" ] || shift
+    local status=0
+    ssh -F "$ssh_config" "$ssh_alias" "$@" || status=$?
+    # 255 is ssh's own "could not connect" status. A remote command may also
+    # exit 255, so this is a hint rather than a diagnosis — the status is
+    # propagated either way.
+    [ "$status" -ne 255 ] || note "could not reach $rig_bind:$rig_ssh_port — is the rig up? (tests/rig/rig.sh up)"
+    exit "$status"
+}
+
+main() {
+    local verb=${1:-}
+    [ $# -eq 0 ] || shift
+    case $verb in
+        # Only `ssh` forwards arguments. Swallowing the rest would let a typo
+        # like `rig.sh up --build` report success while doing something else.
+        up|down|reset) [ $# -eq 0 ] || die "$verb: unknown argument '$1' (this verb takes none)" ;;
+        ssh) ;;
+        -h|--help|help) usage; exit 0 ;;
+        '') usage >&2; exit 1 ;;
+        *) printf 'rig: unknown verb %s\n' "$verb" >&2; usage >&2; exit 1 ;;
+    esac
+    command -v docker >/dev/null 2>&1 || die 'docker is not installed'
+    write_ssh_config
+    "cmd_$verb" "$@"
+}
+
+main "$@"

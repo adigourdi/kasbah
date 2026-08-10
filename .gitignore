@@ -6,3 +6,6 @@
 # Rig keypair — generated per checkout by tests/rig/rig.sh, never committed.
 tests/rig/id_ed25519
 tests/rig/id_ed25519.pub
+# Rig ssh config — regenerated per invocation; embeds the resolved port and key
+# path. The glob also covers the mktemp file it is renamed from.
+tests/rig/ssh_config*

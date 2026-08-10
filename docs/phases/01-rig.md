@@ -65,11 +65,18 @@ SSH. A rig-local ssh config (`StrictHostKeyChecking=no`,
 resets don't churn known_hosts.
 
 **Deliverables**
-- [ ] `rig.sh` with the four verbs, each idempotent
-- [ ] `rig.sh ssh -- docker info` works from a clean checkout
+- [x] `rig.sh` with the four verbs, each idempotent — `up`×2, `down`×2, `reset` from either state, `ssh` when down (255 + hint) all verified
+- [x] `rig.sh ssh -- docker info` works from a clean checkout — cold keyless `up` generates the keypair and is ready in **2.0 s**, from any cwd
+
+**Observed:** `reset` **2.6 s** from down, **3.5–4.5 s** from running (bar is
+60 s), and genuinely pristine — nested images, containers and volumes all
+gone. No-op `up` costs 0.7 s. Connection contract is a generated
+`tests/rig/ssh_config` (gitignored); `rsync -e` and `scp -F` against it
+both verified, so Phase 2 reuses it rather than restating flags.
 
 **Watch out for:** waiting on "container is up" instead of "sshd answers"
-— poll the SSH port with a timeout, not `sleep`.
+— poll the SSH port with a timeout, not `sleep`. *Went further in
+practice: even the compose healthcheck is too weak — see Findings.*
 
 ### 1.3 — Integration runner + smoke test (S)
 `tests/integration/` with the same assert-helper idiom as the unit tests.
@@ -139,4 +146,48 @@ already expects it.
   SSH user has passwordless sudo, reachable from the LAN, is
   root-equivalent on the workstation. Now `${HOSTING_RIG_BIND:-127.0.0.1}`.
 
-_(1.2 to record observed `reset` time; 1.3 to record the unit-suite delta.)_
+### From 1.2
+
+- **`name:` in a compose file is not a pin — it is the *weakest* source of
+  the project name.** Precedence is `-p` > `COMPOSE_PROJECT_NAME` >
+  `name:`. With that variable exported for another stack,
+  `docker compose -f tests/rig/compose.yml ps -a` listed **nine unrelated
+  live containers** on this workstation, and `down -v` removes by project
+  label, not by services named in the file — so `rig.sh down` from the
+  wrong shell would have taken them with it. Every compose invocation now
+  passes `-p hosting-rig`. **Carry to Phase 2:** hosting runs
+  `docker compose` on the VPS too, and inherits the same hazard from the
+  remote environment. Pass `-p` there as well.
+- **The compose healthcheck reports `healthy` on a rig nobody can log
+  into.** Observed by planting a *mismatched* public key: `health=healthy`
+  alongside `Connection closed by authenticating user stevedore [preauth]`.
+  `rig.sh` therefore waits on a real `ssh … docker info` probe, which is
+  also ~8 s faster than the healthcheck's first poll (one full `interval`
+  after start). A healthcheck is a monitoring signal, not a readiness gate.
+- **`cat > shared_file` is a truncation race.** `O_TRUNC` leaves a
+  zero-byte window in which a concurrent reader sees no `Host rig` block
+  and treats `rig` as a real hostname — a misleading DNS error. Measured
+  directly: truncate-in-place 15 of 68 reads saw an empty file;
+  render-to-temp + `mv -f` (atomic rename), 0 of 1046. Anything generated
+  for other processes to read gets the rename treatment.
+- **A bash `RETURN` trap stays installed after the function that set it
+  returns.** `trap 'rm -f "$tmp"' RETURN` fired again on a later,
+  unrelated function's return, against an out-of-scope `local tmp` — under
+  `set -u` that aborts a *successful* command with `tmp: unbound
+  variable`. Clean up inline; don't reach for RETURN traps here.
+- **`ssh-keygen -y` does emit the key's comment field** (3 fields, not 2),
+  so re-appending one doubles it. Only type+blob are compared when
+  validating a stored `.pub`.
+- **The rig's sshd is `maxstartups 10:30:100`.** More than ~10 concurrent
+  SSH sessions get random early drops — `Connection closed`, exit 255.
+  Relevant to 1.3 and to any later suite that fans out.
+- **`ssh host cmd args` re-joins the arguments with spaces**, so quoting is
+  the caller's job: `rig.sh ssh -- docker info --format '{{.Driver}}'`
+  reaches the rig as two words and fails. Wrap the remote command in a
+  single quoted string.
+- **Accepted limit:** a checkout path containing spaces breaks the
+  generated `IdentityFile` line and the `rsync -e "ssh -F …"` recipe. Not
+  fixed — a partial fix that left the recipe broken would be worse than a
+  known limit.
+
+_(1.3 to record the unit-suite delta.)_
