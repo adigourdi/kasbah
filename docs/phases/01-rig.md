@@ -85,8 +85,13 @@ reachable, docker functional, `rsync`/`gzip`/`openssl` present (the
 `server-setup.md` prerequisites table, asserted).
 
 **Deliverables**
-- [ ] `tests/integration/smoke_test.sh` green against a fresh rig
-- [ ] `./test.sh` timing unchanged when the var is unset
+- [x] `tests/integration/smoke_test.sh` green against a fresh rig — asserts all five prerequisite rows plus `docker run --rm hello-world` inside the rig
+- [x] `./test.sh` timing unchanged when the var is unset — the unset path costs one string comparison; instrumented with `PATH` shims, **zero** external calls when off, exactly one SSH session when on
+
+**Observed:** smoke suite **~4.0 s** standalone; back-to-back pairs put the
+integration delta at 3–6 s against a ~1m40–2m00 unit suite, where host load
+swings ±20 s and swamps it. Every assertion was watched going red on a
+false premise; every probe key was watched going missing.
 
 **Watch out for:** every hosting command the suite will ever run must be
 flag-driven (cross-phase rule 1) — no test may ever block on a prompt.
@@ -190,4 +195,34 @@ already expects it.
   fixed — a partial fix that left the recipe broken would be worse than a
   known limit.
 
-_(1.3 to record the unit-suite delta.)_
+### From 1.3
+
+- **A "missing" marker value makes non-emptiness assertions unfalsifiable.**
+  A `field()` helper printed `<no X reported>` for an absent key so failures
+  would name it — but that string is non-empty and `!= "0"`, so four
+  assertions could never fail, and with `hello_greeting` absent the suite
+  **exited 0, silently green**. Fix the class, not the call sites: parse the
+  probe output once, validate the complete expected key set as a *protocol*
+  before any assertion reads a value, and let lookups be plain lookups.
+  A test that goes green because a fact went missing is the exact failure
+  this phase exists to prevent.
+- **`ConnectTimeout` bounds connection setup, not execution.**
+  `ssh … 'sleep 20'` returns after 20 s with `ConnectTimeout 5` set. An
+  established session that stalls — a wedged rig, a pull that connects and
+  then hangs — is unbounded. The probe is wrapped in `timeout`, with exit
+  124 given its own branch so a stall isn't misreported as transport
+  failure. (`timeout(1)` is now a local dependency.)
+- **A boolean env gate that only matches `=1` turns `=true` into a false
+  green.** `HOSTING_RIG_TESTS=true` printed the same three PASS lines and
+  the same exit 0 as a run where the integration suite really passed.
+  Unset/empty/`0` are off, `1` is on, anything else exits before any suite
+  runs, naming the accepted values.
+- **`test.sh`'s exit codes are its own contract** — 0 pass, 1 tests failed,
+  2 runner misconfigured. `docs/cli.md`'s table (2 = not a hosting project,
+  …) governs the `hosting` CLI only; it is not a repo-wide numbering scheme.
+- **Accepted limit:** the smoke test is not hermetic — it pulls
+  `hello-world` from Docker Hub on every run and deletes it afterwards, on
+  purpose. A cached image would reduce the assertion to "a local image
+  starts", which is not what "docker functional" means. Registry failures
+  were checked and are diagnosed exactly (refused: 0.3 s, unroutable:
+  11.6 s, both naming the cause).
