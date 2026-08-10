@@ -8,7 +8,10 @@ plan and the only progress tracker (the roadmap is scope, not status).
 ## Commands
 
 - `./test.sh` — unit suites (fast, no server needed). Must pass before any commit.
-- `HOSTING_RIG_TESTS=1 ./test.sh` — adds integration tests against the fake-VPS rig (`tests/rig/rig.sh up` first; exists from Phase 1 of the plan).
+- `HOSTING_RIG_TESTS=1 ./test.sh` — adds integration tests against the
+  fake-VPS rig. Run `tests/rig/rig.sh up` first; see `tests/rig/README.md`
+  for what the rig can and cannot prove. Exit 2 means the environment is
+  wrong (rig down), not that a test failed.
 - `bin/hosting <cmd>` — run the CLI from the checkout (repo detection via the `install.sh` sibling; no install needed).
 
 ## Hard conventions
