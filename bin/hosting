@@ -16,12 +16,18 @@ _resolve_self_dir() {
 
 _bin_dir="$(_resolve_self_dir)"
 
-# Prefer an explicit override, else a repo checkout (detected by install.sh
-# sibling — unambiguous), else the XDG share dir.
+# A checkout is recognised by the install.sh sibling — unambiguous, and the
+# same test decides where both the libraries and the templates come from.
+_repo_dir=""
+if [ -f "$_bin_dir/../install.sh" ] && [ -f "$_bin_dir/../VERSION" ]; then
+    _repo_dir="$(cd "$_bin_dir/.." && pwd)"
+fi
+
+# Prefer an explicit override, else a repo checkout, else the XDG share dir.
+_lib_dir_given="${HOSTING_LIB_DIR:+1}"
 if [ -n "${HOSTING_LIB_DIR:-}" ]; then
     HOSTING_VERSION_FILE="$HOSTING_LIB_DIR/VERSION"
-elif [ -f "$_bin_dir/../install.sh" ] && [ -f "$_bin_dir/../VERSION" ]; then
-    _repo_dir="$(cd "$_bin_dir/.." && pwd)"
+elif [ -n "$_repo_dir" ]; then
     HOSTING_LIB_DIR="$_repo_dir/lib"
     HOSTING_VERSION_FILE="$_repo_dir/VERSION"
 else
@@ -38,11 +44,25 @@ if [ ! -f "$HOSTING_LIB_DIR/common.sh" ]; then
     exit 1
 fi
 
+# Templates are rendered onto servers, so an installed hosting must carry its
+# own copy: install.sh puts the tree beside the libraries. They travel with the
+# libraries — whoever names the library directory names the templates too, so a
+# HOSTING_LIB_DIR pointing at an installed tree cannot end up pairing installed
+# libraries with a checkout's templates. Only HOSTING_TEMPLATE_DIR splits them,
+# and only on purpose.
+if [ -z "${HOSTING_TEMPLATE_DIR:-}" ]; then
+    if [ -n "$_lib_dir_given" ] || [ -z "$_repo_dir" ]; then
+        HOSTING_TEMPLATE_DIR="$HOSTING_LIB_DIR/templates"
+    else
+        HOSTING_TEMPLATE_DIR="$_repo_dir/templates"
+    fi
+fi
+
 # shellcheck source=../lib/common.sh
 . "$HOSTING_LIB_DIR/common.sh"
 
 HOSTING_VERSION="$(cat "$HOSTING_VERSION_FILE")"
-export HOSTING_LIB_DIR HOSTING_VERSION
+export HOSTING_LIB_DIR HOSTING_TEMPLATE_DIR HOSTING_VERSION
 
 usage() {
     cat <<EOF

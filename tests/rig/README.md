@@ -21,6 +21,22 @@ tests/rig/rig.sh up
 HOSTING_RIG_TESTS=1 ./test.sh
 ```
 
+They do not use `reset` between runs — it drops the nested image volume, so
+every suite would re-pull Traefik and nginx. Each suite instead calls
+`rig_clean` from `tests/integration/rig_env.sh`, which removes `/apps` and
+every compose project the rig's daemon reports while keeping the image
+cache. It runs at suite start (so a crashed run cannot poison the next) and
+again at the end only when the suite passed, leaving a failure's state
+intact for inspection.
+
+**The image carries `/etc/hosting-rig`, and `rig_clean` refuses without
+it.** That file is the far-side proof that a destructive payload has landed
+on a disposable fake VPS rather than on someone's real machine — the one
+guard that still holds when the ssh alias or config has been redirected. A
+rig built outside `rig.sh` (driving `docker compose` directly, per the
+caveat below) that somehow lacks the marker will refuse cleanup with exit 9,
+changing nothing. That is the intended direction of failure.
+
 ## Shape
 
 | | |

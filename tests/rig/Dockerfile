@@ -68,6 +68,16 @@ RUN printf '%s\n' \
 COPY entrypoint.sh /usr/local/bin/rig-entrypoint
 RUN chmod 0755 /usr/local/bin/rig-entrypoint
 
+# The far side of the guard on tests/integration/rig_env.sh's cleanup. That
+# payload deletes /apps and every compose project, and the only thing choosing
+# where it lands is an ssh target — so it refuses to run anywhere this file
+# does not say the exact expected words. A real host cannot have it by
+# accident, and a rig always does: `rig.sh up` runs `compose build` on every
+# invocation and compose recreates a container whose image changed, so an
+# existing rig grows the marker on the next `up` without a `reset` (which would
+# drop the nested image cache with it).
+RUN printf 'hosting-rig-disposable-fake-vps\n' > /etc/hosting-rig
+
 EXPOSE 22 80 443
 
 ENTRYPOINT ["/usr/local/bin/rig-entrypoint"]

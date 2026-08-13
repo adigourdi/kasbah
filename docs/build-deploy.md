@@ -161,13 +161,36 @@ any remote operation and reuse it for every subsequent `ssh` / `rsync` /
 
 ```bash
 ssh -o ControlMaster=auto \
-    -o ControlPath=~/.ssh/cm-%r@%h:%p \
+    -o ControlPath="$HOME/.ssh/cm-%C" \
     -o ControlPersist=60s \
+    -o ConnectTimeout=10 \
+    -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
     user@vps true
 ```
 
 Turns ~5× TCP+TLS handshake overhead per deploy (reachability check,
 mkdir, rsync, env check, mail claim, remote-deploy) into one.
+
+Three details in that command are load-bearing:
+
+- **`%C` (a hash), not `%r@%h:%p`.** The socket path is a Unix domain
+  socket, capped near 104 characters; a long user or hostname silently
+  overflows it and multiplexing stops working with no error.
+- **`$HOME`, not `~`.** OpenSSH expands a leading `~` from the *passwd
+  entry*, not the environment, so `~/.ssh/cm-%C` ignores an overridden
+  `HOME` and writes into the invoking user's real `~/.ssh`. Measured on
+  OpenSSH 9.6p1. The same rule governs which per-user `ssh_config` is
+  read, which is why the integration suite reaches the rig with `ssh -F`
+  rather than by pointing `HOME` somewhere else.
+- **`ConnectTimeout` bounds setup only** — including the banner exchange,
+  but not an established session. A remote command that wedges after
+  connecting is unbounded without `ServerAlive*`.
+
+hosting takes no ssh-options flag. It runs plain `ssh user@host` and
+inherits the user's own `ssh_config`, the same way git does over SSH:
+jump hosts, non-standard ports and key selection are already that file's
+job. Everything remote goes through `lib/ssh.sh`; nothing else in the
+codebase invokes `ssh`, `rsync` or `scp` directly.
 
 ## `versions.log` format
 

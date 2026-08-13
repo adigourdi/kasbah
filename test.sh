@@ -35,7 +35,10 @@ fi
 failed=0
 unrunnable=0
 for t in "${tests[@]}"; do
-    name="$(basename "$t")"
+    # Relative to tests/, not just the basename: a unit suite and an
+    # integration suite for the same library share a name (ssh_test.sh), and
+    # "FAIL ssh_test.sh" would not say which one.
+    name="${t#"$tests_dir"/}"
     bash "$t"; rc=$?
     # A suite's own exit 2 carries this runner's meaning of 2: it could not run
     # (no rig, for the integration suite), which is a fact about the environment
