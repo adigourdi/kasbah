@@ -41,12 +41,20 @@ Default paths (override with `--apps-path`, `--data-path`):
 └── traefik/
     ├── compose.yml                  the shared Traefik stack
     ├── traefik.yml                  static config
-    ├── dynamic/                     file-provider watch dir
-    │   ├── _shared.yml              middlewares + TLS options
-    │   └── <project>.yml            one per deployed project (copied in on deploy)
-    ├── .env.prod.example
-    └── .env                         generated interactively at init
+    └── dynamic/                     file-provider watch dir
+        ├── _shared.yml              middlewares + TLS options + dashboard router
+        └── <project>.yml            one per deployed project (copied in on deploy)
 ```
+
+**The Traefik stack has no `.env`, deliberately.** Traefik expands
+environment variables in neither its static nor its dynamic configuration,
+so the ACME email, the dashboard domain and the basic-auth hash are baked
+into the rendered files at init time. The rendered `compose.yml` then
+contains no `${…}` for compose to interpolate, which leaves an `.env` with
+nothing to hold — and an env knob the container never receives is a dead
+knob. Those three values are read back *out of* the rendered files on a
+re-run, which is what lets init stay idempotent without storing them
+anywhere else.
 
 `acme.json` is touched as an empty file before `docker compose up`. If Docker
 sees a missing path on a bind mount, it silently creates a **directory**,
@@ -124,7 +132,7 @@ providers:
 certificatesResolvers:
   letsencrypt:
     acme:
-      email: <from .env>
+      email: <baked at render time from --email>
       storage: /letsencrypt/acme.json
       httpChallenge:
         entryPoint: web
@@ -289,8 +297,12 @@ Projects:
 - `acme.json` is created if missing; its mode is enforced as 600 on every
   run, and a *directory* found at that path is a hard failure rather than
   something init works around.
-- Traefik `.env` runs in drift-check mode (see `env-template.md`).
-- Traefik is restarted only if the static config files changed.
+- The Traefik stack has no `.env`; its three baked values (dashboard
+  domain, ACME email, auth hash) are read back out of the rendered files,
+  so a re-run without the flags reproduces them exactly.
+- Traefik is restarted only when the static config actually changed *and*
+  `compose up -d` did not already create or recreate the container — a
+  container two seconds old has read the new config on its way up.
 - Adding `--with-mail` on re-run scaffolds mail without touching Traefik.
 
 ## Handover / teardown

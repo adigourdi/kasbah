@@ -130,7 +130,11 @@ printf 'seeded_projects=%s\n' "$(docker compose ls --all -q | tr '\n' ',')"
 printf 'seeded_apps=%s\n' "$([ -d /apps/probe/deep ] && echo yes || echo no)"
 printf 'seeded_net=%s\n' "$(docker network ls --format '{{.Name}}' | grep -c '^hosting-net$')"
 printf 'seeded_volumes=%s\n' "$(docker volume ls -q | wc -l)"
-printf 'seeded_images=%s\n' "$(docker images -q | wc -l)"
+# By name, not by count. The rig's image cache is deliberately kept across
+# rig_clean, so every suite that starts a real stack leaves images behind for
+# every later one: since Phase 2's Traefik unit the rig permanently carries
+# traefik:v3.x, and a count of 1 could never hold again.
+printf 'seeded_images=%s\n' "$(docker images --format '{{.Repository}}:{{.Tag}}' | tr '\n' ',')"
 exit 0
 REMOTE
 )
@@ -138,7 +142,8 @@ assert 'grep -qF "seeded_apps=yes" <<<"$seed_out"'                  "/apps was c
 assert 'grep -qF "seeded_net=1" <<<"$seed_out"'                     "hosting-net was created on the rig (got '$seed_out')"
 assert 'grep -qF "seeded_projects=hosting-clean-probe," <<<"$seed_out"' "a compose project exists on the rig (got '$seed_out')"
 assert 'grep -qF "seeded_volumes=1" <<<"$seed_out"'                 "a compose volume exists on the rig (got '$seed_out')"
-assert 'grep -qF "seeded_images=1" <<<"$seed_out"'                  "an image exists on the rig (got '$seed_out')"
+assert 'grep -qE "^seeded_images=.*hosting-clean-probe:test," <<<"$seed_out"' \
+    "the image that must survive the clean exists on the rig (got '$(grep "^seeded_images=" <<<"$seed_out")')"
 
 rig_clean; clean_rc=$?
 assert '[ "$clean_rc" = "0" ]' "rig_clean succeeds against a dirty rig (exit $clean_rc)"
@@ -162,7 +167,7 @@ assert 'grep -qF "containers=0" <<<"$after_out"'      "clean removes every conta
 assert 'grep -qF "volumes=0" <<<"$after_out"'         "clean removes the projects' volumes (got '$(grep "^volumes=" <<<"$after_out")')"
 assert 'grep -qxF "networks=bridge,host,none," <<<"$after_out"' \
     "clean removes hosting-net and keeps the three built-ins (got '$(grep "^networks=" <<<"$after_out")')"
-assert 'grep -qF "images=hosting-clean-probe:test," <<<"$after_out"' \
+assert 'grep -qE "^images=.*hosting-clean-probe:test," <<<"$after_out"' \
     "clean keeps the image cache — that is the whole reason it exists (got '$(grep "^images=" <<<"$after_out")')"
 
 # --- The transport, against the live rig --------------------------------------

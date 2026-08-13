@@ -1,0 +1,59 @@
+# The shared Traefik stack — one instance per VPS, installed at
+# <apps>/traefik/compose.yml by `hosting server init`.
+#
+# The apps and data paths below are substituted on the workstation before this
+# file is shipped. Traefik expands environment variables in neither its static
+# nor its dynamic configuration, so every value it needs is baked at render
+# time; nothing here is left for compose to interpolate, which is why the stack
+# carries no `.env`.
+#
+# Run by hand as: docker compose -p traefik up -d
+# The `-p` is not optional — `name:` below is the weakest source of the project
+# name, and COMPOSE_PROJECT_NAME in the environment outranks it.
+name: traefik
+
+services:
+  traefik:
+    image: traefik:v3.7.10
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # No docker socket. Routing comes from the file provider alone: the
+      # docker provider drops routers for unhealthy containers, cannot express
+      # a backend-less redirect, and scatters routing across every project's
+      # compose file (docs/traefik.md). Mounting the socket would also hand
+      # every routed project root on the host.
+      - "__APPS_PATH__/traefik/traefik.yml:/etc/traefik/traefik.yml:ro"
+      - "__APPS_PATH__/traefik/dynamic:/etc/traefik/dynamic:ro"
+      # Read-write: this is where ACME stores the account and the certificates.
+      # `hosting server init` creates it as a *file* first — Docker materialises
+      # a missing bind-mount source as a directory.
+      - "__DATA_PATH__/traefik/letsencrypt/acme.json:/letsencrypt/acme.json"
+    networks:
+      - hosting-net
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Deliberately no `cpus:` / `mem_limit:`. Those ceilings exist so that one
+    # project cannot lock out Traefik and SSH; capping the ingress protects
+    # nothing it is not already the victim of, and a throttled Traefik takes
+    # every site with it. `hosting check`'s R01-R03 govern project compose
+    # files, not hosting-owned stacks.
+
+# The network every routed container joins, declared `external: true` on the
+# project side. Traefik resolves backends by container_name across it.
+networks:
+  hosting-net:
+    name: hosting-net
+    driver: bridge

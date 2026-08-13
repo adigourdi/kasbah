@@ -1,0 +1,91 @@
+# Hosting-owned dynamic configuration, installed at
+# <apps>/traefik/dynamic/_shared.yml and watched by the file provider.
+#
+# Middleware names, the `default` TLS options and the `letsencrypt` resolver
+# are a frozen contract: project fragments reference them by name as
+# `<name>@file`, so renaming one breaks every deployed project (docs/traefik.md).
+#
+# The dashboard's domain and its basic-auth entry are substituted on the
+# workstation. A single `$` in the bcrypt hash is correct here — this file is
+# read by Traefik, not interpolated by compose.
+http:
+  middlewares:
+    # 301 from :80 to :443, same host and path.
+    http-to-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+    # Apex canonicalisation, entered on :80.
+    http-www-to-https-non-www:
+      redirectRegex:
+        regex: '^http://www\.(.+)'
+        replacement: 'https://${1}'
+        permanent: true
+
+    # The same, for a request that already arrived over TLS.
+    https-www-to-https-non-www:
+      redirectRegex:
+        regex: '^https://www\.(.+)'
+        replacement: 'https://${1}'
+        permanent: true
+
+    # HSTS, frame-deny, content-type-nosniff, and a CSP that only reports.
+    # The CSP is a stub on purpose: a blocking policy that a project has not
+    # been tailored for breaks it, and a shared default must not.
+    security-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        frameDeny: true
+        contentTypeNosniff: true
+        contentSecurityPolicyReportOnly: "default-src 'self'"
+
+    gzip-compression:
+      compress: {}
+
+    # Opt-in from a project fragment; nothing is rate-limited by default.
+    api-rate-limit:
+      rateLimit:
+        average: 50
+        burst: 100
+
+    # The dashboard's own guard. Not part of the frozen set — projects have no
+    # reason to reference it, and `traefik.<domain>` is reserved to hosting.
+    traefik-dashboard-auth:
+      basicAuth:
+        users:
+          - "__DASHBOARD_AUTH__"
+
+  routers:
+    # api@internal is Traefik's built-in dashboard/API service. It is reached
+    # through this router and nowhere else — `api.insecure` stays off.
+    traefik-dashboard:
+      rule: "Host(`traefik.__DASHBOARD_DOMAIN__`)"
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+      middlewares:
+        - traefik-dashboard-auth
+      service: api@internal
+
+# Referenced by `websecure` in the static config, so this block is what makes
+# every HTTPS router in every project fragment work. Cipher suites apply to
+# TLS 1.2 only; Go fixes the TLS 1.3 suites.
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      maxVersion: VersionTLS13
+      cipherSuites:
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305
+      curvePreferences:
+        - X25519
+        - CurveP256
+        - CurveP384

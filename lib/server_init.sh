@@ -13,13 +13,15 @@ _HOSTING_SERVER_INIT_LOADED=1
 # never installs them (docs/server-setup.md), and it is safe to re-run: a second
 # run against an unchanged host leaves the tree byte-identical.
 #
-# Four remote steps over one connection, and nothing is created until the first
-# two have both been judged. The probe collects every fact the verdicts need in
+# Six remote steps over one connection, and nothing is created until every read
+# among them has been judged. The probe collects every fact the verdicts need in
 # a single round trip, because a check that fetches its own value is a check
 # that can silently read a fact that never arrived (docs/phases/01-rig.md, from
-# 1.3). The second reads any marker already on the server. The third creates the
-# layout. The fourth writes the marker, and is separate from the third so that
-# it stays last.
+# 1.3). The second reads any marker already on the server. The third reads the
+# Traefik stack already on the server, which is what the fresh render is
+# compared against. The fourth creates the layout, the fifth starts Traefik, and
+# the sixth writes the marker — last, because its presence is the "init
+# completed" signal.
 
 # The parsed command line.
 _SI_TARGET=""
@@ -27,6 +29,9 @@ _SI_APPS_PATH=""
 _SI_DATA_PATH=""
 _SI_MAIL=""
 _SI_BACKUP=""
+_SI_DOMAIN=""
+_SI_EMAIL=""
+_SI_AUTH=""
 
 # What the probe brought back, and what was derived from it.
 declare -A _SI_FACT=()
@@ -36,21 +41,46 @@ _SI_MEM_LIMIT=""
 _SI_MARKER_EXISTING=""
 _SI_MARKER_PRESENT=no
 
+# The Traefik stack: the three files hosting owns, what is on the server now,
+# what the run resolved to render with, and what shipping decided.
+_SI_TRAEFIK_FILES=(compose.yml traefik.yml dynamic/_shared.yml)
+declare -A _SI_TRAEFIK_KEY=(
+    [compose.yml]=traefik_compose_b64
+    [traefik.yml]=traefik_static_b64
+    [dynamic/_shared.yml]=traefik_shared_b64
+)
+declare -A _SI_TRAEFIK_CURRENT=()
+_SI_TRAEFIK_PROJECT=traefik
+_SI_DASHBOARD_DOMAIN=""
+_SI_ACME_EMAIL=""
+_SI_AUTH_ENTRY=""
+_SI_AUTH_ORIGIN=""
+_SI_TRAEFIK_CHANGED=()
+_SI_TRAEFIK_RESTART=no
+_SI_TMPDIR=""
+
 _server_init_usage() {
     cat <<EOF
 Usage: hosting server init USER@HOST [flags]
 
 Prepares a VPS to host projects: checks the prerequisites, creates the
-directory layout, and writes the server marker. Idempotent.
+directory layout, renders and starts the shared Traefik stack, and writes
+the server marker. Idempotent.
 
 Flags:
   --apps-path=<dir>      root directory on the VPS (default /apps)
   --data-path=<dir>      bind-mount root (default <apps-path>/data)
+  --domain=<apex>        the dashboard is served at traefik.<apex>
+  --email=<addr>         ACME registration address for Let's Encrypt
+  --traefik-auth=user:pass   dashboard basic auth; hashed with bcrypt here
   --with-mail|--no-mail      scaffold the mail stack, or skip it
   --with-backup|--no-backup  install restic backups, or skip them
 
-Mail and backup are tri-state: leaving both flags off asks. See
-docs/server-setup.md for the prerequisites table and the layout.
+Every flag is tri-state: leaving one off asks. Domain, email and the
+dashboard credentials are only asked for once — a re-run reuses what is
+already on the server, since bcrypt salts randomly and a fresh hash would
+rewrite the stack on every run. See docs/server-setup.md for the
+prerequisites table and the layout.
 EOF
 }
 
@@ -69,7 +99,8 @@ _server_init_set_bool() {
 
 # Normalises a path flag into <outvar>: absolute, no trailing slash, no relative
 # segment. Everything below the apps path is built from these two strings on the
-# far side, so a surprise here becomes a surprise in mkdir.
+# far side, so a surprise here becomes a surprise in mkdir — and both paths are
+# also substituted into the Traefik compose file's quoted bind-mount strings.
 _server_init_path() {
     local _sp_flag="$1" _sp_value="${2%$'\r'}" _sp_out="$3"
 
@@ -81,6 +112,23 @@ _server_init_path() {
     case $_sp_value in
         *$'\n'*) die "server init: --$_sp_flag= must not contain a newline" ;;
     esac
+    _si_check_yaml_scalar "--$_sp_flag=" "$_sp_value"
+
+    # Valid YAML is not enough for these two. They land in compose's volume
+    # short syntax, which compose interpolates and then splits before Traefik
+    # ever sees the file — so both characters below produce a document that
+    # parses perfectly and means something else. `$` is expanded on the *VPS*
+    # against the remote login shell (`/apps/$HOME` mounted /apps//home/you/…,
+    # and an unset `${STAGE}` collapses to a different existing directory than
+    # the layout step created, while the marker records the literal). `:`
+    # re-partitions source from target (`/d:ata` mounted `/d` and left
+    # acme.json unmounted). Neither has a legitimate use in an operator-typed
+    # path.
+    case $_sp_value in
+        *'$'*) die "server init: --$_sp_flag= must not contain '\$' — the path is written into a compose bind mount, which compose expands on the server" ;;
+        *:*)   die "server init: --$_sp_flag= must not contain ':' — the path is written into a compose bind mount, where ':' separates source from target" ;;
+    esac
+
     case $_sp_value in
         *//*|*/./*|*/../*|*/..|*/.)
             die "server init: --$_sp_flag=$_sp_value must be a normalised path (no '.', '..' or empty segment)" ;;
@@ -95,6 +143,95 @@ _server_init_path() {
     printf -v "$_sp_out" '%s' "$_sp_value"
 }
 
+# The three Traefik values, checked where they are typed. Each one is baked
+# into a config file that Traefik parses on the far side, so a malformed value
+# becomes a stack that will not start — cheaper to refuse here, and with a
+# message about the input rather than about YAML.
+
+# Every value below is substituted into a double-quoted YAML scalar. `"` ends
+# that scalar and `\` starts an escape, so either one silently turns the rest of
+# the file into something else — and for dynamic/_shared.yml that means
+# tls.options.default never registers and *every* project's HTTPS router stops
+# starting, while /ping keeps answering 200. Refused at the input, and the
+# rendered file is parsed before it ships (see _server_init_traefik_render):
+# this check is the good message, that one is the guarantee.
+_si_check_yaml_scalar() {
+    local _cy_what="$1" _cy_value="$2"
+    case $_cy_value in
+        *'"'*)  die "server init: $_cy_what must not contain a double quote — it is written into a quoted YAML value" ;;
+        *'\'*)  die "server init: $_cy_what must not contain a backslash — it is written into a quoted YAML value" ;;
+    esac
+    # `[:cntrl:]` rather than `[![:print:]]`: the negative form asks "is every
+    # byte printable", which under LC_ALL=C — routine in CI — is false for any
+    # UTF-8 path, username or SMTPUTF8 address, and refuses `/srv/café` with a
+    # message about control characters. Matching control characters positively
+    # means the same bytes are rejected in every locale and nothing else is.
+    case $_cy_value in
+        *[[:cntrl:]]*) die "server init: $_cy_what must not contain control characters" ;;
+    esac
+}
+
+_si_check_domain() {
+    local d="$1"
+    [ -n "$d" ] || die "server init: --domain= must not be empty"
+    _is_fqdn "$d" \
+        || die "server init: --domain=$d is not a domain name (expected an apex like example.com — the dashboard is served at traefik.<domain>)"
+}
+
+# Deliberately not an RFC 5322 parser: this address goes to Let's Encrypt,
+# which validates it properly, and what pays for itself here is catching the
+# typo before it is baked into the static config.
+_si_check_email() {
+    local e="$1"
+    [ -n "$e" ] || die "server init: --email= must not be empty"
+    case $e in
+        *[[:space:]]*) die "server init: --email= must not contain whitespace" ;;
+    esac
+    _si_check_yaml_scalar "--email=" "$e"
+    [[ "$e" =~ ^[^@]+@[^@]+$ ]] \
+        || die "server init: --email=$e is not an email address (expected one @, with something either side)"
+}
+
+# `[[:space:]]` covers the carriage return too, which is the CRLF tolerance
+# this value needs: a username silently carrying a \r would authenticate
+# against a hash nobody can reproduce.
+_si_check_auth_user() {
+    local u="$1"
+    [ -n "$u" ] || die "server init: the dashboard username must not be empty (--traefik-auth=user:pass)"
+    case $u in
+        *:*)           die "server init: the dashboard username must not contain a colon (--traefik-auth=user:pass splits on the first one)" ;;
+        *[[:space:]]*) die "server init: the dashboard username must not contain whitespace" ;;
+    esac
+    _si_check_yaml_scalar "the dashboard username" "$u"
+}
+
+_si_check_auth_pass() {
+    local p="$1"
+    [ -n "$p" ] || die "server init: the dashboard password must not be empty (--traefik-auth=user:pass)"
+    case $p in
+        *$'\n'*) die "server init: the dashboard password must not contain a newline" ;;
+    esac
+}
+
+_si_check_auth() {
+    local v="$1"
+    case $v in
+        *:*) ;;
+        *)   die "server init: --traefik-auth= must be user:pass" ;;
+    esac
+    _si_check_auth_user "${v%%:*}"
+    _si_check_auth_pass "${v#*:}"
+}
+
+# Splits an already-checked user:pass at the first colon. The password may
+# contain colons; the username may not, which is also what htpasswd assumes.
+_si_parse_auth() {
+    local _pa_value="$1" _pa_user_out="$2" _pa_pass_out="$3"
+    _si_check_auth "$_pa_value"
+    printf -v "$_pa_user_out" '%s' "${_pa_value%%:*}"
+    printf -v "$_pa_pass_out" '%s' "${_pa_value#*:}"
+}
+
 _server_init_parse_args() {
     local apps="" data=""
     local apps_given=0 data_given=0
@@ -102,17 +239,33 @@ _server_init_parse_args() {
     _SI_TARGET=""
     _SI_MAIL=""
     _SI_BACKUP=""
+    _SI_DOMAIN=""
+    _SI_EMAIL=""
+    _SI_AUTH=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
             --apps-path=*) apps="${1#*=}"; apps_given=1 ;;
             --data-path=*) data="${1#*=}"; data_given=1 ;;
+            --domain=*)    _SI_DOMAIN="${1#*=}"; _SI_DOMAIN="${_SI_DOMAIN%$'\r'}"
+                           _si_check_domain "$_SI_DOMAIN" ;;
+            --email=*)     _SI_EMAIL="${1#*=}";  _SI_EMAIL="${_SI_EMAIL%$'\r'}"
+                           _si_check_email "$_SI_EMAIL" ;;
+            # Validated, never echoed: the value carries a password, and an
+            # error message is the one place it would end up on a terminal.
+            --traefik-auth=*) _SI_AUTH="${1#*=}"; _si_check_auth "$_SI_AUTH" ;;
             --with-mail)   _server_init_set_bool mail yes ;;
             --no-mail)     _server_init_set_bool mail no ;;
             --with-backup) _server_init_set_bool backup yes ;;
             --no-backup)   _server_init_set_bool backup no ;;
             -h|--help)     _server_init_usage; exit 0 ;;
-            -*)            die "server init: unknown flag '$1' (expected --apps-path=, --data-path=, --with-mail/--no-mail, --with-backup/--no-backup)" ;;
+            # Only the flag's *name* is quoted back. An unknown flag is most
+            # often a mistyped known one, and `--traefik-auths=admin:hunter2`
+            # would otherwise put the password in the message and in every CI
+            # log that keeps one. The name is what diagnoses a typo; the value
+            # adds nothing, so it is never printed — for any flag, rather than
+            # for a list of names that can always miss one.
+            -*)            die "server init: unknown flag '${1%%=*}' (expected --apps-path=, --data-path=, --domain=, --email=, --traefik-auth=, --with-mail/--no-mail, --with-backup/--no-backup)" ;;
             *)
                 [ -z "$_SI_TARGET" ] \
                     || die "server init: unexpected argument '$1' (USER@HOST is given once)"
@@ -758,11 +911,507 @@ REMOTE
     _si_absorb "$out"
 }
 
+# --- The Traefik stack ----------------------------------------------------------
+
+# Three files, rendered on the workstation and shipped: compose.yml, the static
+# traefik.yml, and the dynamic dynamic/_shared.yml. They are rendered here and
+# not on the far side because **Traefik expands environment variables in
+# neither its static nor its dynamic configuration** — the ACME address, the
+# dashboard domain and the basic-auth hash have to arrive as literal bytes.
+# That is also why the stack has no `.env`: with nothing left for compose to
+# interpolate, a file of variables would be a knob the container never receives
+# (docs/phases/01-rig.md).
+
+# A remote step's output, checked as a protocol before any of it is read: a
+# fact that never arrived must not be absorbed into a passing verdict
+# (docs/phases/01-rig.md, from 1.3).
+_si_absorb_checked() {
+    local _ac_what="$1" _ac_out="$2"; shift 2
+    local _ac_key _ac_line
+    local _ac_missing=()
+
+    _si_absorb "$_ac_out"
+    for _ac_key in "$@"; do
+        [ -n "${_SI_FACT[$_ac_key]+set}" ] || _ac_missing+=("$_ac_key")
+    done
+    if [ "${#_ac_missing[@]}" -gt 0 ]; then
+        err "$_ac_what on $_SI_TARGET reported no ${_ac_missing[*]}"
+        err_cont "the step was truncated, or the remote shell rejected it — raw output:"
+        while IFS= read -r _ac_line; do err_cont "| $_ac_line"; done <<<"$_ac_out"
+        exit 1
+    fi
+    return 0
+}
+
+# What is on the server now, so the fresh render can be compared against it
+# byte for byte: an unchanged file is not shipped, and Traefik is not restarted
+# (docs/server-setup.md, idempotency rules). The same read is where a re-run
+# recovers the dashboard credentials it must not regenerate.
+_server_init_read_traefik() {
+    local out rc=0 rel enc dec
+
+    out=$(ssh_script "$_SI_APPS_PATH" <<'REMOTE'
+set -uo pipefail
+export LC_ALL=C
+dir="$1/traefik"
+
+# Base64 on one line: this output is a key=value protocol, and a YAML file sent
+# raw would arrive as a dozen keys. openssl is on the prerequisites table;
+# coreutils' `base64 -w0` is not. An unreadable or absent file reports empty,
+# which reads downstream as "nothing to compare against" — the file is then
+# shipped, which is the safe direction.
+emit() {
+    local enc=""
+    if [ -f "$2" ]; then enc=$(openssl base64 -A -in "$2" 2>/dev/null) || enc=""; fi
+    printf '%s=%s\n' "$1" "$enc"
+}
+
+emit traefik_compose_b64 "$dir/compose.yml"
+emit traefik_static_b64  "$dir/traefik.yml"
+emit traefik_shared_b64  "$dir/dynamic/_shared.yml"
+exit 0
+REMOTE
+    ) || rc=$?
+
+    [ "$rc" -eq 0 ] \
+        || die "could not read the Traefik stack on $_SI_TARGET (the remote step exited $rc, see above)"
+
+    _si_absorb_checked "the Traefik stack read" "$out" \
+        traefik_compose_b64 traefik_static_b64 traefik_shared_b64
+
+    _SI_TRAEFIK_CURRENT=()
+    for rel in "${_SI_TRAEFIK_FILES[@]}"; do
+        enc="${_SI_FACT[${_SI_TRAEFIK_KEY[$rel]}]}"
+        # The `printf x` sentinel keeps trailing newlines, which $(…) strips —
+        # without it every comparison below would be against a file that is one
+        # byte shorter than the one on the server.
+        dec=$( { printf '%s' "$enc" | base64 -d 2>/dev/null; printf x; } )
+        _SI_TRAEFIK_CURRENT[$rel]="${dec%x}"
+    done
+    return 0
+}
+
+# One keyed lookup against a YAML document held in a variable. Exit 2 means the
+# document did not parse, which every caller keeps distinct from "the key is not
+# there": hosting reuses what is on the server rather than regenerating it, and
+# a file it cannot read is a file it cannot reuse from.
+_si_yaml_get() {
+    local _yg_content="$1" _yg_filter="$2" _yg_out="$3" _yg_val=""
+
+    printf -v "$_yg_out" '%s' ""
+    [ -n "$_yg_content" ] || return 0
+    _yg_val=$(printf '%s' "$_yg_content" | yq -r "$_yg_filter" 2>/dev/null) || return 2
+    case $_yg_val in null) _yg_val="" ;; esac
+    printf -v "$_yg_out" '%s' "${_yg_val%$'\r'}"
+    return 0
+}
+
+# The dashboard's own basic-auth entry. bcrypt salts randomly, so hashing the
+# same password twice gives different bytes: without reuse, every re-run would
+# rewrite the file and "a second run changes nothing" would be unsatisfiable.
+#
+# Keyed to the middleware that carries it, not scanned for. docs/traefik.md
+# invites operators to add their own middlewares under dynamic/, and a
+# basicAuth of theirs sorting above traefik-dashboard-auth would otherwise be
+# adopted as the dashboard's — quietly replacing the dashboard credentials on
+# the next re-run, and reporting it as reuse. Going through yq also reads the
+# inline `users: ["…"]` spelling, which a line scanner does not.
+_si_extract_auth() {
+    local _xa_content="$1" _xa_out="$2" _xa_entry="" _xa_count="" _xa_rc=0
+    local _xa_users='(.http.middlewares["traefik-dashboard-auth"].basicAuth.users // [])'
+
+    _si_yaml_get "$_xa_content" "$_xa_users | length"    _xa_count || _xa_rc=$?
+    [ "$_xa_rc" -eq 0 ] || return "$_xa_rc"
+    _si_yaml_get "$_xa_content" "$_xa_users | .[0] // \"\"" _xa_entry || _xa_rc=$?
+    [ "$_xa_rc" -eq 0 ] || return "$_xa_rc"
+
+    printf -v "$_xa_out" '%s' ""
+    case $_xa_count in ''|0) return 0 ;; esac
+
+    # An htpasswd entry, whatever the algorithm: reuse reproduces what is in
+    # effect, so an operator who moved the dashboard to apr1 keeps apr1. What it
+    # will not do is carry something shapeless back into the file and call it
+    # credentials.
+    case $_xa_entry in
+        *$'\n'*|'') _xa_entry="" ;;
+        *:*)        printf -v "$_xa_out" '%s' "$_xa_entry"; return 0 ;;
+        *)          ;;
+    esac
+    err "the dashboard credentials in dynamic/_shared.yml are not an htpasswd entry"
+    err_cont "traefik-dashboard-auth.basicAuth.users[0] holds '${_xa_entry:-<not a string>}', and hosting"
+    err_cont "reuses that entry verbatim rather than regenerating it — it cannot reuse this one."
+    err_cont "Fix it, or pass --traefik-auth=user:pass to set the credentials outright."
+    exit 1
+}
+
+# The apex the dashboard router already hangs off. Read back off the server
+# rather than stored in the marker, so the file in effect stays the single
+# source of truth. A rule the operator rewrote into some other shape simply
+# yields nothing, and the flag or the prompt answers instead.
+_si_extract_domain() {
+    local _xd_content="$1" _xd_out="$2" _xd_rule="" _xd_rc=0
+    local _xd_re='^Host\(`traefik\.([^`]+)`\)$'
+
+    _si_yaml_get "$_xd_content" '.http.routers["traefik-dashboard"].rule // ""' _xd_rule \
+        || _xd_rc=$?
+    [ "$_xd_rc" -eq 0 ] || return "$_xd_rc"
+
+    printf -v "$_xd_out" '%s' ""
+    if [[ "$_xd_rule" =~ $_xd_re ]]; then
+        printf -v "$_xd_out" '%s' "${BASH_REMATCH[1]}"
+    fi
+    return 0
+}
+
+_si_extract_email() {
+    local _xe_content="$1" _xe_out="$2"
+    _si_yaml_get "$_xe_content" \
+        '.certificatesResolvers.letsencrypt.acme.email // ""' "$_xe_out"
+}
+
+# bcrypt, as docs/cli.md promises. apr1 via `openssl passwd` was rejected as a
+# real weakening — salted MD5, ~1k iterations — for no gain.
+#
+# The password arrives on stdin (`-i`) rather than in argv (`-b`): `htpasswd
+# -nbB user pass` puts the password in the process table, where any other user
+# of the workstation can read it for as long as it runs.
+_si_bcrypt() {
+    local _bc_user="$1" _bc_pass="$2" _bc_out="$3"
+    local _bc_line="" _bc_rc=0
+    local _bc_re=':\$2[aby]\$[0-9]{2}\$'
+
+    if command -v htpasswd >/dev/null 2>&1; then
+        _bc_line=$(printf '%s\n' "$_bc_pass" | htpasswd -niB "$_bc_user") || _bc_rc=$?
+    elif command -v docker >/dev/null 2>&1; then
+        _bc_line=$(printf '%s\n' "$_bc_pass" \
+            | docker run --rm -i httpd:2-alpine htpasswd -niB "$_bc_user") || _bc_rc=$?
+    else
+        err "cannot hash the dashboard password: no htpasswd on PATH, and no docker to borrow one from"
+        err_cont "install apache2-utils (Debian/Ubuntu) or httpd-tools (RHEL), or make"
+        err_cont "\`docker run --rm httpd:2-alpine\` work here"
+        exit 1
+    fi
+
+    _bc_line="${_bc_line%$'\r'}"
+    if [ "$_bc_rc" -ne 0 ] || ! [[ "$_bc_line" =~ $_bc_re ]] \
+       || [ "${_bc_line%%:*}" != "$_bc_user" ] || [ "${_bc_line#*$'\n'}" != "$_bc_line" ]; then
+        err "could not produce a bcrypt hash for the dashboard password (htpasswd exited $_bc_rc)"
+        err_cont "expected one line of '$_bc_user:\$2y\$..' — see htpasswd's own error above"
+        exit 1
+    fi
+    printf -v "$_bc_out" '%s' "$_bc_line"
+    return 0
+}
+
+# Flag wins, else what the server already has, else ask. The middle branch is
+# the one that makes a re-run a no-op, and it is why these questions are put
+# after the connection rather than beside the mail and backup ones: whether
+# they need asking at all is a fact about the server.
+#
+# Nothing is created before this returns, so an unanswerable question still
+# costs nothing.
+# A file hosting is about to reuse a value out of, that it could not read.
+# Refused rather than worked around: the alternative is inventing a fresh value
+# and overwriting whatever the operator had, which for the dashboard means
+# rotating their credentials because their YAML had a typo in it.
+_si_unreadable_stack() {
+    local _us_file="$1" _us_flag="$2"
+    err "$_SI_APPS_PATH/traefik/$_us_file on $_SI_TARGET could not be read as YAML"
+    err_cont "hosting reuses what is already on the server instead of regenerating it, so it"
+    err_cont "will not guess past a file it cannot parse — that would overwrite whatever is"
+    err_cont "in there. Fix the file, or delete it, or pass $_us_flag to settle the value."
+    exit 1
+}
+
+_server_init_traefik_values() {
+    local shared="${_SI_TRAEFIK_CURRENT[dynamic/_shared.yml]}"
+    local static="${_SI_TRAEFIK_CURRENT[traefik.yml]}"
+    local stored_domain="" stored_email="" stored_auth="" user="" pass=""
+    local shared_rc=0 static_rc=0
+
+    _si_extract_domain "$shared" stored_domain || shared_rc=$?
+    [ "$shared_rc" -ne 0 ] || _si_extract_auth "$shared" stored_auth || shared_rc=$?
+    _si_extract_email "$static" stored_email || static_rc=$?
+
+    # A stored value is reproduced verbatim and not re-validated: it is already
+    # the configuration in effect, and re-rendering it into the same bytes is
+    # the whole point. Only a value this run is about to invent gets checked.
+    # An unreadable file is fatal only where a value was actually needed from
+    # it — with the flag given there is nothing to recover and nothing to lose.
+    if [ -n "$_SI_DOMAIN" ]; then
+        _SI_DASHBOARD_DOMAIN="$_SI_DOMAIN"
+    elif [ "$shared_rc" -ne 0 ]; then
+        _si_unreadable_stack dynamic/_shared.yml --domain=
+    elif [ -n "$stored_domain" ]; then
+        _SI_DASHBOARD_DOMAIN="$stored_domain"
+    else
+        prompt_value domain \
+            "Apex domain for $_SI_TARGET (the dashboard is served at traefik.<domain>)" \
+            "" _SI_DASHBOARD_DOMAIN
+        _si_check_domain "$_SI_DASHBOARD_DOMAIN"
+    fi
+
+    if [ -n "$_SI_EMAIL" ]; then
+        _SI_ACME_EMAIL="$_SI_EMAIL"
+    elif [ "$static_rc" -ne 0 ]; then
+        _si_unreadable_stack traefik.yml --email=
+    elif [ -n "$stored_email" ]; then
+        _SI_ACME_EMAIL="$stored_email"
+    else
+        prompt_value email \
+            "Email address to register with Let's Encrypt" "" _SI_ACME_EMAIL
+        _si_check_email "$_SI_ACME_EMAIL"
+    fi
+
+    if [ -n "$_SI_AUTH" ]; then
+        _si_parse_auth "$_SI_AUTH" user pass
+        _si_bcrypt "$user" "$pass" _SI_AUTH_ENTRY
+        _SI_AUTH_ORIGIN=flag
+    elif [ "$shared_rc" -ne 0 ]; then
+        _si_unreadable_stack dynamic/_shared.yml --traefik-auth=
+    elif [ -n "$stored_auth" ]; then
+        _SI_AUTH_ENTRY="$stored_auth"
+        _SI_AUTH_ORIGIN=reused
+    else
+        prompt_value  traefik-auth \
+            "Username for the dashboard at traefik.$_SI_DASHBOARD_DOMAIN" "" user
+        prompt_secret traefik-auth \
+            "Password for $user" "" pass
+        _si_check_auth_user "$user"
+        _si_check_auth_pass "$pass"
+        _si_bcrypt "$user" "$pass" _SI_AUTH_ENTRY
+        _SI_AUTH_ORIGIN=prompt
+    fi
+    return 0
+}
+
+# Renders the templates into a temp directory. `__NAME__` is the placeholder
+# form because it collides with nothing in the files it appears in: YAML gives
+# `_` no meaning (`@` may not even start a plain scalar), and the `${1}` in
+# _shared.yml's redirect middlewares is a different shape, so the guard below
+# cannot mistake one for the other.
+#
+# A token the renderer has no value for is a hard failure, and it is looked for
+# in the *template* rather than in the output: an operator whose --apps-path
+# happens to contain __STAGE__ has done nothing wrong, and must not be told
+# hosting's templates are out of step. Substituted values are never rescanned,
+# which is the same property from the other side.
+#
+# Every rendered file is then parsed before it is allowed near the server.
+_server_init_traefik_render() {
+    local rel src dst content out rest tok key yq_err
+    local tpl="${HOSTING_TEMPLATE_DIR:-}"
+    declare -A subst=(
+        [APPS_PATH]="$_SI_APPS_PATH"
+        [DATA_PATH]="$_SI_DATA_PATH"
+        [ACME_EMAIL]="$_SI_ACME_EMAIL"
+        [DASHBOARD_DOMAIN]="$_SI_DASHBOARD_DOMAIN"
+        [DASHBOARD_AUTH]="$_SI_AUTH_ENTRY"
+    )
+
+    [ -n "$tpl" ] || die "internal: HOSTING_TEMPLATE_DIR is not set"
+    [ -d "$tpl/traefik" ] \
+        || die "the Traefik templates are missing (looked in $tpl/traefik) — this hosting installation is incomplete"
+    command -v yq >/dev/null \
+        || die "yq is required to render the Traefik stack (install yq and retry)"
+
+    _SI_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/hosting-traefik.XXXXXX")" \
+        || die "could not create a temp directory to render the Traefik stack in"
+
+    for rel in "${_SI_TRAEFIK_FILES[@]}"; do
+        src="$tpl/traefik/$rel"
+        dst="$_SI_TMPDIR/$rel"
+        [ -f "$src" ] || die "the Traefik template $src is missing"
+        mkdir -p "${dst%/*}" || die "could not create ${dst%/*}"
+
+        content="$(cat "$src"; printf x)" || die "could not read $src"
+        content="${content%x}"
+
+        # One left-to-right pass: each token is replaced where it stands and the
+        # text that replaces it is never looked at again.
+        out=""
+        rest="$content"
+        while [[ "$rest" =~ __[A-Z0-9_]+__ ]]; do
+            tok="${BASH_REMATCH[0]}"
+            key="${tok#__}"; key="${key%__}"
+            [ -n "${subst[$key]+set}" ] \
+                || die "internal: the $rel template uses $tok, which the renderer has no value for — templates and renderer are out of step"
+            out+="${rest%%"$tok"*}${subst[$key]}"
+            rest="${rest#*"$tok"}"
+        done
+        content="$out$rest"
+
+        printf '%s' "$content" > "$dst" || die "could not write $dst"
+        chmod 644 "$dst" || die "could not set mode 644 on $dst"
+
+        # The guarantee behind the input checks. A quote or a backslash in any
+        # substituted value ends the YAML scalar it sits in, and for
+        # dynamic/_shared.yml that costs tls.options.default — which
+        # traefik.yml points every websecure entrypoint at, so *every* project's
+        # HTTPS router stops starting. Traefik keeps answering /ping through all
+        # of it, so the health wait would pass and init would report success.
+        # Nothing unparseable reaches the server.
+        if ! yq_err="$(yq -e . "$dst" 2>&1 >/dev/null)"; then
+            err "the rendered Traefik $rel is not valid YAML — refusing to ship it"
+            err_cont "${yq_err:-yq rejected the file and said nothing}"
+            err_cont "a substituted value is the likely cause; this run rendered it with:"
+            err_cont "  domain          $_SI_DASHBOARD_DOMAIN"
+            err_cont "  acme email      $_SI_ACME_EMAIL"
+            err_cont "  dashboard user  ${_SI_AUTH_ENTRY%%:*}"
+            err_cont "  apps / data     $_SI_APPS_PATH, $_SI_DATA_PATH"
+            exit 1
+        fi
+    done
+    return 0
+}
+
+# Ships only what differs. rsync writes a temp file and renames, so Traefik's
+# watcher sees one atomic replace of a dynamic file rather than a truncated
+# one — the same reason anything generated for another process to read gets the
+# rename treatment (docs/phases/01-rig.md).
+#
+# Only traefik.yml sets the restart flag. It is the static config, which Traefik
+# reads once at startup; dynamic/_shared.yml is picked up by the file watcher,
+# and a changed compose.yml is a changed service definition, which `up -d`
+# recreates on its own.
+_server_init_traefik_sync() {
+    local rel rendered dest
+    local changed=()
+
+    _SI_TRAEFIK_RESTART=no
+    for rel in "${_SI_TRAEFIK_FILES[@]}"; do
+        rendered="$(cat "$_SI_TMPDIR/$rel"; printf x)" || die "could not read $_SI_TMPDIR/$rel"
+        rendered="${rendered%x}"
+        [ "$rendered" != "${_SI_TRAEFIK_CURRENT[$rel]}" ] || continue
+        changed+=("$rel")
+        [ "$rel" != traefik.yml ] || _SI_TRAEFIK_RESTART=yes
+    done
+
+    _SI_TRAEFIK_CHANGED=(${changed[@]+"${changed[@]}"})
+    [ "${#changed[@]}" -gt 0 ] || return 0
+
+    for rel in "${changed[@]}"; do
+        dest="$_SI_APPS_PATH/traefik/$rel"
+        ssh_rsync -pt --chmod=F644 "$_SI_TMPDIR/$rel" "$SSH_TARGET:$dest" >/dev/null \
+            || die "could not ship the Traefik $rel to $_SI_TARGET:$dest"
+    done
+    return 0
+}
+
+# Starts the stack and waits for the healthcheck, with a real diagnostic rather
+# than a bare timeout: a Traefik that will not come up says why in its own logs,
+# and making the operator go and fetch them is a waste of a round trip.
+_server_init_traefik_start() {
+    local out rc=0
+
+    out=$(ssh_script "$_SI_APPS_PATH" "$_SI_TRAEFIK_PROJECT" "$_SI_TRAEFIK_RESTART" 120 <<'REMOTE'
+set -uo pipefail
+export LC_ALL=C
+apps=$1
+project=$2
+restart=$3
+timeout_s=$4
+
+fail() { printf 'remote: %s\n' "$*" >&2; exit 1; }
+
+cd "$apps/traefik" || fail "could not enter $apps/traefik"
+
+# Every compose invocation carries -p. `name:` in the compose file is the
+# weakest source of the project name: COMPOSE_PROJECT_NAME in this login shell
+# outranks it, and `down` removes by project label rather than by the services
+# the file lists (docs/phases/01-rig.md — nine unrelated containers were once
+# in range of exactly this).
+dc() { docker compose -p "$project" "$@"; }
+
+started_at() { docker inspect -f '{{.State.StartedAt}}' "$1" 2>/dev/null || printf ''; }
+
+before=""
+cid=$(dc ps -a -q traefik 2>/dev/null) || cid=""
+[ -z "$cid" ] || before=$(started_at "$cid")
+
+dc up -d || fail "docker compose -p $project up -d failed in $apps/traefik"
+
+cid=$(dc ps -a -q traefik 2>/dev/null) || cid=""
+[ -n "$cid" ] || fail "compose reported no traefik container after up -d"
+
+# The static config is bind-mounted, so compose sees no change in the service
+# definition and leaves the container alone: only an explicit restart makes
+# Traefik re-read traefik.yml. Skipped when this same `up -d` created or
+# recreated the container, which read the new file on its way up — restarting a
+# process that started two seconds ago is downtime bought for nothing.
+mid=$(started_at "$cid")
+if [ "$restart" = yes ] && [ -n "$before" ] && [ "$before" = "$mid" ]; then
+    dc restart traefik || fail "docker compose -p $project restart traefik failed"
+fi
+
+diagnose() {
+    printf 'remote: %s\n' "$1" >&2
+    dc ps -a >&2 || true
+    dc logs --no-color --tail 60 >&2 || true
+}
+
+deadline=$((SECONDS + timeout_s))
+health=""
+while :; do
+    health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null) \
+        || health=gone
+    [ "$health" != healthy ] || break
+    if [ "$health" = none ]; then
+        diagnose "the traefik container declares no healthcheck — compose.yml lost it"
+        exit 1
+    fi
+    running=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null) || running=false
+    if [ "$running" != true ]; then
+        diagnose "traefik is not running (health $health) — it exited instead of coming up"
+        exit 1
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+        diagnose "traefik did not report healthy within ${timeout_s}s (last health: $health)"
+        exit 1
+    fi
+    sleep 2
+done
+
+after=$(started_at "$cid")
+if [ -z "$before" ]; then action=started
+elif [ "$before" != "$after" ]; then action=restarted
+else action=running
+fi
+
+name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null) || name=""
+printf 'traefik_action=%s\n' "$action"
+printf 'traefik_health=%s\n' "$health"
+printf 'traefik_started_at=%s\n' "$after"
+printf 'traefik_image=%s\n' "$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null)"
+printf 'traefik_container=%s\n' "${name#/}"
+exit 0
+REMOTE
+    ) || rc=$?
+
+    [ "$rc" -eq 0 ] \
+        || die "could not start Traefik on $_SI_TARGET (the remote step exited $rc, see above)"
+
+    _si_absorb_checked "the Traefik start" "$out" \
+        traefik_action traefik_health traefik_started_at traefik_image traefik_container
+    return 0
+}
+
 # --- Command ------------------------------------------------------------------
+
+# The rendered stack lives in a temp directory until it is shipped. The trap is
+# installed before ssh_connect on purpose: lib/ssh.sh chains its master teardown
+# onto whatever EXIT trap already exists, and can only reach one that is already
+# there.
+_server_init_cleanup() {
+    [ -z "$_SI_TMPDIR" ] || rm -rf "$_SI_TMPDIR"
+    _SI_TMPDIR=""
+    return 0
+}
 
 cmd_server_init() {
     _server_init_parse_args "$@"
     command -v jq >/dev/null || die "jq is required (install jq and retry)"
+    trap '_server_init_cleanup' EXIT
 
     # Both questions are asked before anything is opened or created: a run that
     # cannot be answered must cost nothing, and a feature that would be a silent
@@ -791,7 +1440,17 @@ cmd_server_init() {
     marker_json="$(_server_marker_json "$HOSTING_VERSION" "$_SI_APPS_PATH" \
         "$_SI_DATA_PATH" "$_SI_CPU_LIMIT" "$_SI_MEM_LIMIT" "$_SI_MARKER_EXISTING")"
 
+    # Everything the Traefik stack needs is settled — asked for or recovered
+    # from the server — and rendered before the first directory is created, so
+    # a run nobody can answer and a template that will not render both cost
+    # nothing on the far side.
+    _server_init_read_traefik
+    _server_init_traefik_values
+    _server_init_traefik_render
+
     _server_init_layout
+    _server_init_traefik_sync
+    _server_init_traefik_start
     _server_init_marker "$marker_json"
 
     info "Prepared $_SI_TARGET"
@@ -804,5 +1463,9 @@ cmd_server_init() {
         || info "  touched $_SI_DATA_PATH/traefik/letsencrypt/acme.json as a file, mode 600"
     info "  apps: $_SI_APPS_PATH   data: $_SI_DATA_PATH"
     info "  limits: cpu $_SI_CPU_LIMIT, mem $_SI_MEM_LIMIT (90% of ${_SI_FACT[nproc]} cores, ${_SI_FACT[memtotal_kb]} kB)"
+    local shipped="nothing re-rendered"
+    [ "${#_SI_TRAEFIK_CHANGED[@]}" -eq 0 ] || shipped="shipped ${_SI_TRAEFIK_CHANGED[*]}"
+    info "  traefik: ${_SI_FACT[traefik_action]}, ${_SI_FACT[traefik_health]}, ${_SI_FACT[traefik_image]} ($shipped)"
+    info "  dashboard: https://traefik.$_SI_DASHBOARD_DOMAIN (basic auth, credentials $_SI_AUTH_ORIGIN)"
     info "  marker: $_SI_APPS_PATH/.hosting/server.json (${_SI_FACT[marker]})"
 }

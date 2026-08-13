@@ -24,6 +24,16 @@ err()  { printf '%serror:%s %s\n' "$_C_RED" "$_C_RST" "$*" >&2; }
 err_cont() { printf '       %s\n' "$*" >&2; }
 die()  { err "$*"; exit 1; }
 
+# A hostname a certificate could be issued for. At least one dot; labels are
+# 1-63 chars of [A-Za-z0-9-], not starting or ending with a hyphen; the final
+# label is alphabetic (any length — `a.b` and `app.co.uk` both accepted).
+# Shared: `init-project` validates a project domain with it, `server init` the
+# apex the dashboard hangs off.
+_is_fqdn() {
+    local d="$1"
+    [[ "$d" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]+$ ]]
+}
+
 # Exit codes — shared contract, see docs/cli.md "Exit codes".
 HOSTING_EXIT_NO_PROJECT=2       # no hosting.yml in cwd
 HOSTING_EXIT_SSH_UNREACHABLE=3  # the target host did not answer ssh

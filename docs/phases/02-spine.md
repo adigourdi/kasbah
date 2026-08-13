@@ -191,19 +191,22 @@ touched **as a file**, chmod 600; write `/apps/.hosting/server.json`
 themselves stays in Phases 7/8.
 
 **Deliverables**
-- [ ] `lib/server_init.sh` + integration test on a fresh rig
-- [ ] Marker JSON matches `server-setup.md`'s shape; limits plausible for the rig's host
-- [ ] Second run changes nothing (assert via checksum of `/apps`)
+- [x] `lib/server_init.sh` + integration test on a fresh rig — 11 suites
+      green, integration pass 17.5 s
+- [x] Marker JSON matches `server-setup.md`'s shape; limits plausible for
+      the rig's host — derived from the rig's own `nproc`/`MemTotal`
+      (16 / 63624052 kB → `14.4` / `54g`), never a hard-coded number
+- [x] Second run changes nothing (assert via checksum of `/apps`) —
+      byte-identical, digest covering type, mode, owner and content, and
+      self-proved sensitive to both a new file and a mode change
 
-**Open decision, carried forward from Phase 1 — settle it explicitly, do
-not let it be settled by a stray `sudo`.** The rig's SSH user is
-`stevedore`, not root, and the image deliberately does not pre-create
-`/apps`. So `mkdir -p /apps` needs an answer: does `server init` sudo, or
-is a pre-created `/apps` owned by the deploy user a documented
-prerequisite? `server-setup.md` warns against mixed sudo/non-sudo
-ownership in `/apps/data/` and lists prerequisites as *checked, not
-installed* — which leans toward the prerequisite. Whichever wins, record
-it in `server-setup.md` in the same change.
+**Open decision from Phase 1 — settled: `server init` sudo-creates the
+apps path** and chowns it to the SSH user, then works unelevated below.
+Recorded in `server-setup.md` ("Who creates the apps path"), which now
+carries the four-state table including the two refusals. Elevation is
+strictly for *creating*: init never adopts a directory it did not create,
+and it re-asks root before deciding, because the deploy user cannot see
+past a parent they cannot traverse.
 
 **Watch out for:** Docker silently creating a *directory* at a missing
 bind-mount path — the acme.json touch must precede any `compose up`
@@ -220,13 +223,35 @@ Traefik `.env` minimal, values from init flags (interactive env comes with
 Phase 3).
 
 **Deliverables**
-- [ ] Templates render, Traefik healthy on the rig, dashboard router answers with basic auth
-- [ ] Integration assert: `docker inspect` on the rig shows no `/var/run/docker.sock` mount
+- [x] Templates render, Traefik healthy on the rig, dashboard router answers
+      with basic auth — `traefik:v3.7.10`; no credentials → 401, wrong
+      password → 401, correct → 200 over HTTP/2, curled from inside the rig
+- [x] Integration assert: `docker inspect` on the rig shows no
+      `/var/run/docker.sock` mount — three mounts, none of them the socket,
+      and the negative is fenced by positive mount controls so it cannot
+      pass against an empty list
 
-**Watch out for:** `$` in the bcrypt hash — compose interpolates `.env`
-values, so the hash must be `$$`-escaped on write (the env-template port
-does this later; do it manually here). ACME will fail on the rig — assert
-Traefik *serves* with its default cert (`curl -k`), don't assert issuance.
+**Watch out for:** ACME will fail on the rig — assert Traefik *serves* with
+its default cert (`curl -k`), never issuance.
+
+**The `$$` warning above was wrong and is struck.** It presumed the hash
+reaches a compose-interpolated `.env`; it does not, because Traefik
+interpolates nothing and the stack therefore has no `.env` at all. In
+`_shared.yml` — plain YAML that Traefik parses directly — a single `$` is
+correct and doubling it would be the bug.
+
+**What actually bit, and it was worse:** a `"` in the dashboard username.
+It renders `- "ad"min:$2y$…"`, Traefik fails to parse the *whole file*, so
+`tls.options.default` never registers — and `traefik.yml` points every
+`websecure` entrypoint at it, so every project's HTTPS router stops
+starting. Meanwhile `/ping` still answers 200, the health wait passes, init
+prints `traefik: started, healthy`, writes the marker and exits 0. A wholly
+green run over a wholly broken server. Two layers now: the input is refused
+by name, and every rendered file is `yq -e .`-parsed before it ships.
+`$` and `:` in `--apps-path`/`--data-path` are the same class one level
+down — they produce *valid* YAML that compose then interpolates on the VPS
+(`/apps/$HOME`) or re-splits (`/d:ata` mounts `/d` and leaves acme.json
+unmounted), slipping both layers until the path validator banned them.
 
 ### 2.4 — Thin deploy (M)
 The skeleton of `cmd_deploy`: SSH ControlMaster, reachability, version =
@@ -275,9 +300,54 @@ not the hosting repo's own history.
 
 ## Findings
 
-_(first real observation of fragment routing — reload latency, 502
-behavior when the container is stopped, default-cert TLS shape — lands
-with unit D)_
+### The routing model, first observed — unit C
+
+This is what the phase existed to retire: file-provider-only routing, no
+docker socket, `container_name` DNS on `hosting-net`. It was designed in
+`765972c` and had never been run anywhere. It works, and here is what it
+actually does.
+
+- **Reload latency is ~2.0 s and constant** — 2136 ms to pick up a new
+  fragment, 2003 ms to notice a backend swap in an existing one, 1958 ms
+  to process a deletion. That is Traefik's `providersThrottleDuration`
+  (default 2 s), not filesystem-watch delay, so it is a floor rather than
+  a load-dependent lag. **Anything asserting on a fragment must poll, never
+  check immediately after the rsync returns.**
+- **A stopped backend gives 502, and the router stays registered** —
+  precisely the property the file provider was chosen for over the docker
+  provider (`traefik.md` → "Why file provider"). Restarting the container
+  returns 200 with no Traefik action of any kind. The app keeps ownership
+  of its own error surface, which is the whole argument.
+- **Traefik never restarts for a fragment.** Its `StartedAt` is unmoved
+  across add, edit, delete, the 502 and the recovery.
+- **Middlewares resolve by `<name>@file` and apply**: a fragment
+  referencing the shared set produced `strict-transport-security`,
+  `x-frame-options: DENY`, `x-content-type-options: nosniff` and the
+  CSP-report-only stub on a real response, over HTTP/2.
+- **An unrouted host on :443 gets 404 with the default cert**, not a
+  connection error — so "Traefik is serving" and "this host is routed" are
+  distinguishable from the client side.
+- **The default certificate is `CN = TRAEFIK DEFAULT CERT`**, self-signed,
+  one-year validity, `verify return code 18`. TLS 1.3 by default;
+  forcing 1.2 negotiates from the configured cipher list.
+
+### ACME on the rig fails at *account creation*, and that is worth keeping
+
+Let's Encrypt rejects the account before any challenge is attempted:
+`400 invalidContact :: contact email has invalid domain: Domain name does
+not end with a valid public suffix (TLD)`. So `acme.json` stays **0 bytes**
+and a suite can run all day without consuming new-account quota.
+
+That is a property of using a reserved TLD in the rig's `--email`, not luck.
+An address with a *real* TLD would register an account per fresh
+`acme.json` and walk into the 10-per-IP-per-3h limit — a flake that would
+arrive looking like a Traefik bug. Keep test emails on `.test`.
+
+### Two facts about the rig, learned here
+
+`curl`, `openssl` and `base64` are present; **`bc` is not** (use
+`date +%s%3N` and shell arithmetic for timing). `git` is still absent, as
+Phase 1 recorded.
 
 ### From unit A
 

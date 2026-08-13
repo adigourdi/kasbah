@@ -23,6 +23,16 @@ data=/apps/data
 acme="$data/traefik/letsencrypt/acme.json"
 marker="$apps/.hosting/server.json"
 
+# The Traefik stack the golden path brings up. `.test` is reserved by RFC 6761,
+# so nothing here can accidentally name a real host — and ACME cannot issue for
+# it, which is the rig's documented limit anyway (tests/rig/README.md).
+rig_domain=rig.test
+dash_host="traefik.$rig_domain"
+dash_user=dashadmin
+dash_pass='rig-dashboard-pw'
+traefik_flags=(--domain="$rig_domain" --email="ops@$rig_domain"
+               --traefik-auth="$dash_user:$dash_pass")
+
 fail=0
 assert() {
     if ! eval "$1"; then
@@ -43,10 +53,15 @@ hidden_bin=""
 # mount, which has to come down before its directory can.
 foreign=""
 mounted=""
+# And the rig's own .bashrc, which one case edits to prove `-p` outranks
+# COMPOSE_PROJECT_NAME. Left behind it would follow every later suite into every
+# docker compose call on the rig, so it comes back whatever happens here.
+bashrc_planted=""
 cleanup() {
     [ -z "$hidden_bin" ] || rig_ssh "sudo mv -f $hidden_bin.hidden $hidden_bin" >/dev/null 2>&1
     [ -z "$mounted" ] || rig_ssh "sudo umount $mounted" >/dev/null 2>&1
     [ -z "$foreign" ] || rig_ssh "sudo rm -rf $foreign" >/dev/null 2>&1
+    [ -z "$bashrc_planted" ] || rig_ssh "mv -f ~/.bashrc.hosting-unit-c ~/.bashrc" >/dev/null 2>&1
     rm -rf "$tmpdir"
 }
 trap cleanup EXIT
@@ -76,10 +91,44 @@ init_err() { cat "$tmpdir/err"; }
 
 # Names, types, modes, ownership and contents of everything under the apps path,
 # in one digest. Anything init writes differently on a second run moves it.
+#
+# acme.json is in the first half and out of the second: its *content* belongs to
+# the running Traefik, which rewrites it whenever ACME registers or retries, so
+# hashing it would make idempotency a race against a container. Its type, mode,
+# owner and path are still covered — that is what the mode probe below moves.
 apps_checksum() {
-    rig_ssh "{ find $apps -printf '%y %m %u:%g %p\n' | sort; find $apps -type f -exec sha256sum {} + | sort; } | sha256sum" 2>/dev/null
+    rig_ssh "{ find $apps -printf '%y %m %u:%g %p\n' | sort; find $apps -type f ! -name acme.json -exec sha256sum {} + | sort; } | sha256sum" 2>/dev/null
 }
 apps_state() { rig_ssh "[ -e $apps ] && echo present || echo absent" 2>/dev/null; }
+
+# When the Traefik container last started. A re-run that changed nothing must
+# leave this alone — "something is running" would pass against a stack restarted
+# on every init, which is precisely what docs/server-setup.md forbids.
+traefik_started_at() {
+    rig_ssh "docker inspect -f '{{.State.StartedAt}}' traefik" 2>/dev/null
+}
+traefik_container_id() {
+    rig_ssh "docker inspect -f '{{.Id}}' traefik" 2>/dev/null
+}
+# How many times Traefik has come up inside this container. `StartedAt` alone
+# cannot see a restart that a `docker compose up -d` performed in the same
+# breath as creating the container — this can, because Traefik logs its version
+# on every boot and the log survives a restart.
+traefik_boot_count() {
+    rig_ssh "docker logs traefik 2>&1 | grep -c 'Traefik version' || true" 2>/dev/null
+}
+
+# The pin the templates carry, so a version bump does not silently turn a case
+# that needs a real image into `assert false`.
+traefik_image=$(yq -r '.services.traefik.image' "$repo_dir/templates/traefik/compose.yml" 2>/dev/null)
+
+# Curl from inside the rig, so the suite never depends on a host port being
+# free. --resolve rather than -H Host: the TLS handshake has to carry the real
+# SNI, and -k is because ACME cannot issue here — Traefik answers with its
+# built-in self-signed certificate and that is the documented expectation.
+curl_dash() {
+    rig_ssh "curl -s -o /dev/null -m 15 -k --resolve '$dash_host:443:127.0.0.1' -w '%{http_code}' $* 'https://$dash_host/dashboard/'" 2>/dev/null
+}
 
 # --- A refusal must reach the server not at all -------------------------------
 # Both cases run against a rig with no /apps, so "nothing was created" is
@@ -126,7 +175,10 @@ else
 fi
 
 # --- The golden path ----------------------------------------------------------
-init --no-mail --no-backup; rc=$?
+# The three Traefik values are passed explicitly here and nowhere else: the
+# re-runs below leave them off on purpose, which is what proves a second init
+# recovers them from the server instead of asking again.
+init --no-mail --no-backup "${traefik_flags[@]}"; rc=$?
 if [ "$rc" != "0" ]; then
     echo "  FAIL: server init succeeded on a cleaned rig (exit $rc)" >&2
     sed 's/^/        | /' "$tmpdir/err" >&2
@@ -273,6 +325,118 @@ if jq -e . >/dev/null 2>&1 <<<"$marker_json"; then
     fi
 fi
 
+# --- The Traefik stack ----------------------------------------------------------
+# One session for every fact about the container, read off the rig rather than
+# taken from hosting's own summary.
+tfk_out=$(rig_ssh "bash -s" 2>"$tmpdir/tfk.err" <<'REMOTE'
+set -uo pipefail
+kv() { printf '%s=%s\n' "$1" "$2"; }
+
+kv state   "$(docker inspect -f '{{.State.Status}}' traefik 2>/dev/null)"
+kv health  "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' traefik 2>/dev/null)"
+kv image   "$(docker inspect -f '{{.Config.Image}}' traefik 2>/dev/null)"
+kv mounts  "$(docker inspect -f '{{range .Mounts}}{{.Source}}:{{.Destination}} {{end}}' traefik 2>/dev/null)"
+kv project "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' traefik 2>/dev/null)"
+kv nets    "$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' traefik 2>/dev/null)"
+kv version "$(docker exec traefik traefik version 2>/dev/null | tr -d '\r' | tr '\n' ' ')"
+
+if docker network inspect hosting-net >/dev/null 2>&1; then kv net_hosting yes; else kv net_hosting no; fi
+kv net_driver "$(docker network inspect -f '{{.Driver}}' hosting-net 2>/dev/null)"
+
+# The ping entrypoint on :80 — plain HTTP, no router involved. It is also the
+# positive control for the HTTPS rows: if Traefik were not listening at all,
+# every "not a 200" assertion below would pass for the wrong reason.
+kv ping_code "$(curl -s -o /dev/null -m 15 -w '%{http_code}' http://127.0.0.1/ping 2>/dev/null)"
+exit 0
+REMOTE
+); tfk_rc=$?
+
+if [ "$tfk_rc" -ne 0 ] || [ -z "$tfk_out" ]; then
+    echo "error: could not read the Traefik container off the rig (ssh exit $tfk_rc)" >&2
+    sed 's/^/       | /' "$tmpdir/tfk.err" >&2
+    exit 2
+fi
+declare -A tfk=()
+while IFS= read -r line; do
+    case $line in *=*) tfk[${line%%=*}]=${line#*=} ;; esac
+done <<<"$tfk_out"
+missing=()
+for key in state health image mounts project nets version net_hosting net_driver ping_code; do
+    [ -n "${tfk[$key]+set}" ] || missing+=("$key")
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+    echo "error: the Traefik readback reported no ${missing[*]}" >&2
+    sed 's/^/       | /' <<<"$tfk_out" >&2
+    exit 2
+fi
+
+assert '[ "${tfk[state]}" = "running" ]'   "Traefik is running on the rig (got '${tfk[state]}')"
+assert '[ "${tfk[health]}" = "healthy" ]'  "and its compose healthcheck is green (got '${tfk[health]}')"
+assert '[[ "${tfk[image]}" =~ ^traefik:v3\.[0-9]+\.[0-9]+$ ]]' \
+    "from an exactly pinned v3 image (got '${tfk[image]}')"
+assert 'grep -qF "${tfk[image]#traefik:v}" <<<"${tfk[version]}"' \
+    "and the binary inside reports that same version (image '${tfk[image]}', binary said '${tfk[version]}')"
+assert '[ "${tfk[project]}" = "traefik" ]' \
+    "it belongs to the compose project hosting names with -p (got '${tfk[project]}')"
+assert '[ "${tfk[ping_code]}" = "200" ]' \
+    "the ping entrypoint answers 200 on :80 (got '${tfk[ping_code]}')"
+
+# The negative half of the restart rule. This run rendered traefik.yml from
+# nothing, so a restart *was* wanted — and had to be skipped, because the
+# container compose had just created already read it on its way up. Restarting
+# a two-second-old Traefik is downtime bought for nothing, and `StartedAt`
+# cannot see it: `before` is empty either way.
+boot_first=$(traefik_boot_count)
+assert '[ "$boot_first" = "1" ]' \
+    "Traefik booted once — the run that created it did not also restart it (got '$boot_first')"
+
+# The mount that must never be there. The two rows after it are the control:
+# without them an empty mount list — a container that does not exist — would
+# satisfy the negative assertion perfectly.
+assert '! grep -qF "/var/run/docker.sock" <<<"${tfk[mounts]}"' \
+    "no docker socket is mounted into Traefik (mounts: ${tfk[mounts]})"
+assert '! grep -qF "docker.sock" <<<"${tfk[mounts]}"' \
+    "not under any other path either (mounts: ${tfk[mounts]})"
+assert 'grep -qF "$apps/traefik/traefik.yml:/etc/traefik/traefik.yml" <<<"${tfk[mounts]}"' \
+    "the static config is mounted — so the rows above are read off a real mount list (mounts: ${tfk[mounts]})"
+assert 'grep -qF "$apps/traefik/dynamic:/etc/traefik/dynamic" <<<"${tfk[mounts]}"' \
+    "and so is the dynamic directory (mounts: ${tfk[mounts]})"
+assert 'grep -qF "$acme:/letsencrypt/acme.json" <<<"${tfk[mounts]}"' \
+    "and acme.json from the data path (mounts: ${tfk[mounts]})"
+
+# Frozen names, on the server rather than in the template.
+assert '[ "${tfk[net_hosting]}" = "yes" ]' "the hosting-net network exists"
+assert '[ "${tfk[net_driver]}" = "bridge" ]' "as a bridge (got '${tfk[net_driver]}')"
+assert 'grep -qw "hosting-net" <<<"${tfk[nets]}"' \
+    "and Traefik is attached to it (networks: ${tfk[nets]})"
+
+shared_yml=$(rig_ssh "cat $apps/traefik/dynamic/_shared.yml" 2>/dev/null)
+assert 'yq -e . >/dev/null 2>&1 <<<"$shared_yml"' "_shared.yml on the rig parses as YAML"
+for mw in http-to-https http-www-to-https-non-www https-www-to-https-non-www \
+          security-headers gzip-compression api-rate-limit; do
+    assert '[ "$(yq -r ".http.middlewares | has(\"$mw\")" <<<"$shared_yml")" = "true" ]' \
+        "the shipped _shared.yml defines the frozen middleware $mw"
+done
+assert '[ "$(yq -r ".tls.options | has(\"default\")" <<<"$shared_yml")" = "true" ]' \
+    "and the 'default' TLS options every websecure router depends on"
+assert '[ "$(yq -r ".tls.options.default.minVersion" <<<"$shared_yml")" = "VersionTLS12" ]' \
+    "floored at TLS 1.2 (got '$(yq -r ".tls.options.default.minVersion" <<<"$shared_yml")')"
+assert 'grep -qF "\$2y\$" <<<"$shared_yml"' \
+    "the bcrypt hash landed with single dollars — doubling them here would be the bug"
+assert '! grep -qF "$dash_pass" <<<"$shared_yml"' \
+    "and the password itself never reached the server"
+
+# --- The dashboard answers, and answers with basic auth -----------------------
+code_anon=$(curl_dash)
+code_auth=$(curl_dash "-u '$dash_user:$dash_pass'")
+code_wrong=$(curl_dash "-u '$dash_user:not-the-password'")
+assert '[ "$code_anon" = "401" ]' \
+    "the dashboard refuses an unauthenticated request (got '$code_anon')"
+assert '[ "$code_auth" = "200" ]' \
+    "and serves it with the right credentials (got '$code_auth')"
+assert '[ "$code_wrong" = "401" ]' \
+    "a wrong password is refused too — so the 200 above is the credential, not the route (got '$code_wrong')"
+
 # --- A second run changes nothing ---------------------------------------------
 before=$(apps_checksum)
 assert '[ -n "$before" ]' "the apps tree hashes to something (got '$before')"
@@ -287,13 +451,110 @@ assert '[ "$(apps_checksum)" != "$before" ]' "the digest notices a mode change"
 rig_ssh "chmod 600 $acme" >/dev/null 2>&1
 assert '[ "$(apps_checksum)" = "$before" ]'  "and both probes were undone"
 
+# No Traefik flags this time, and stdin is closed: the domain, the ACME address
+# and the dashboard hash all have to come back off the server. bcrypt salts
+# randomly, so a re-run that re-hashed the same password would rewrite
+# _shared.yml every time and make this assertion unsatisfiable.
+started_before=$(traefik_started_at)
+assert '[ -n "$started_before" ]' "the Traefik container reports a start time (got '$started_before')"
+
 init --no-mail --no-backup; rc=$?
-assert '[ "$rc" = "0" ]' "a second server init succeeds (exit $rc: $(init_err))"
+assert '[ "$rc" = "0" ]' "a second server init succeeds with no Traefik flags at all (exit $rc: $(init_err))"
 after=$(apps_checksum)
 assert '[ "$after" = "$before" ]' \
     "re-running server init changes nothing under $apps
         before: $before
         after:  $after"
+started_after=$(traefik_started_at)
+assert '[ "$started_after" = "$started_before" ]' \
+    "and does not restart Traefik — nothing moved, so nothing to reload
+        before: $started_before
+        after:  $started_after"
+code_reuse=$(curl_dash "-u '$dash_user:$dash_pass'")
+assert '[ "$code_reuse" = "200" ]' \
+    "the first run's credentials still work, so the hash was reused rather than regenerated (got '$code_reuse')"
+
+# The other half of the rule: a changed static config *is* restarted. Traefik
+# reads traefik.yml once, at startup, so a re-render that skipped the restart
+# would leave the server running configuration nobody can see.
+id_before=$(traefik_container_id)
+rig_ssh "printf '\n# nudged by the integration suite\n' >> $apps/traefik/traefik.yml" >/dev/null 2>&1
+assert '[ "$(apps_checksum)" != "$before" ]' "the nudged static config moves the digest"
+init --no-mail --no-backup; rc=$?
+started_restarted=$(traefik_started_at)
+boot_restarted=$(traefik_boot_count)
+assert '[ "$rc" = "0" ]' "init runs against an edited static config (exit $rc: $(init_err))"
+assert '[ "$(apps_checksum)" = "$before" ]' "and puts the rendered traefik.yml back"
+assert '[ "$started_restarted" != "$started_after" ]' \
+    "restarting Traefik, because the static config changed
+        was:  $started_after
+        now:  $started_restarted"
+assert '[ "$(traefik_container_id)" = "$id_before" ]' \
+    "the same container, restarted rather than replaced"
+assert '[ "$boot_restarted" = "2" ]' \
+    "and Traefik booted a second time inside it (got '$boot_restarted')"
+
+# The case the `[ "$before" = "$mid" ]` clause exists for: the static config
+# changed *and* `up -d` recreated the container anyway, because the service
+# definition changed too. The recreated container has already read the new
+# traefik.yml on its way up, so the restart must be skipped — one boot, not two.
+#
+# Editing compose.yml and then running init does not produce that: init ships
+# the rendered file back first, so compose compares the canonical definition
+# against a container created from the canonical definition and changes nothing.
+# The running container has to be the odd one out, so it is started from the
+# edited file by hand and init is what returns the stack to normal.
+rig_ssh "sed -i 's|^    restart: unless-stopped\$|    restart: unless-stopped\n    environment:\n      HOSTING_PROBE: \"1\"|' $apps/traefik/compose.yml \
+         && cd $apps/traefik && docker compose -p traefik up -d" >/dev/null 2>&1
+id_probe=$(traefik_container_id)
+probe_env=$(rig_ssh "docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' traefik | grep -c HOSTING_PROBE || true" 2>/dev/null)
+assert '[ "$probe_env" = "1" ]' \
+    "a Traefik built from a different service definition is running (got '$probe_env') — else this case proves nothing"
+assert '[ "$id_probe" != "$id_before" ]' "and it really is a different container"
+rig_ssh "printf '\n# nudged again\n' >> $apps/traefik/traefik.yml" >/dev/null 2>&1
+
+init --no-mail --no-backup; rc=$?
+id_recreated=$(traefik_container_id)
+boot_recreated=$(traefik_boot_count)
+assert '[ "$rc" = "0" ]' "init runs against a hand-started, hand-edited stack (exit $rc: $(init_err))"
+assert '[ "$id_recreated" != "$id_probe" ]' \
+    "compose replaced the container, because the definition it shipped differs
+        was:  $id_probe
+        now:  $id_recreated"
+assert '[ "$boot_recreated" = "1" ]' \
+    "and the fresh container was not then restarted on top — it had already read the new static config (got '$boot_recreated' boots)"
+assert '[ "$(apps_checksum)" = "$before" ]' "and both files are back at the rendered bytes"
+
+# --- Every compose call carries -p, and it has to be -p that does the work ----
+# `name: traefik` in the compose file would produce the same project label on
+# its own, so asserting the label proves nothing until the environment disagrees
+# with it. COMPOSE_PROJECT_NAME outranks `name:` and `down` removes by project
+# label, which is what put nine unrelated containers in range on this
+# workstation (docs/phases/01-rig.md).
+if rig_ssh "cp ~/.bashrc ~/.bashrc.hosting-unit-c && printf 'export COMPOSE_PROJECT_NAME=%s\n%s' hosting-not-traefik \"\$(cat ~/.bashrc)\" > ~/.bashrc.new && mv ~/.bashrc.new ~/.bashrc" >/dev/null 2>&1; then
+    bashrc_planted=yes
+    planted=$(rig_ssh "bash -s" <<<'echo "${COMPOSE_PROJECT_NAME:-unset}"' 2>/dev/null)
+    assert '[ "$planted" = "hosting-not-traefik" ]' \
+        "COMPOSE_PROJECT_NAME reaches the shell hosting runs its remote steps in (got '$planted') — else this case proves nothing"
+
+    # The control: in the very directory hosting works in, compose without -p
+    # follows the variable rather than the file's own name:.
+    resolved_bare=$(rig_ssh "cd $apps/traefik && docker compose config --format json 2>/dev/null | sed -n 's/.*\"name\": *\"\([^\"]*\)\".*/\1/p' | head -1" 2>/dev/null)
+    assert '[ "$resolved_bare" = "hosting-not-traefik" ]' \
+        "and without -p, compose really does prefer it over the file's name: (got '$resolved_bare')"
+
+    init --no-mail --no-backup; rc=$?
+    labelled=$(rig_ssh "docker inspect -f '{{index .Config.Labels \"com.docker.compose.project\"}}' traefik" 2>/dev/null)
+    assert '[ "$rc" = "0" ]' "init runs with a hostile COMPOSE_PROJECT_NAME in the environment (exit $rc: $(init_err))"
+    assert '[ "$labelled" = "traefik" ]' \
+        "and -p wins: the stack stays in the traefik project (got '$labelled')"
+    assert '[ "$(apps_checksum)" = "$before" ]' "with nothing re-rendered"
+
+    rig_ssh "mv -f ~/.bashrc.hosting-unit-c ~/.bashrc" >/dev/null 2>&1 && bashrc_planted=""
+    assert '[ -z "$bashrc_planted" ]' "the rig's .bashrc was put back"
+else
+    assert 'false' "could not plant COMPOSE_PROJECT_NAME in the rig's environment"
+fi
 
 # --- The acme.json trap, and the marker written last --------------------------
 # Docker's bind-mount behaviour reproduced by hand: a directory where the file
@@ -354,6 +615,14 @@ fi
 # --- Paths that are not hosting's to take -------------------------------------
 # Everything below lives outside the apps path, so rig_clean would not remove
 # it; the EXIT trap does.
+#
+# Traefik comes down first. Every apps path renders the same `traefik` compose
+# project, so an init pointed at a second one does not stand beside the running
+# stack — it replaces it. Bringing it down makes that explicit instead of
+# leaving one case's success depending on another case's recreate.
+rig_ssh "cd $apps/traefik && docker compose -p traefik down" >/dev/null 2>&1
+assert '[ "$(apps_checksum)" = "$before" ]' "downing Traefik touches nothing under $apps"
+
 foreign=/srv/hosting-unit-b
 owned="$foreign/owned"
 # The dangerous shape, not merely the awkward one: root-owned and *writable* by
@@ -384,9 +653,10 @@ assert '! grep -qF "$RIG_SSH_USER:$RIG_SSH_USER" <<<"$after_owned"' \
 assert '! grep -qF ".hosting" <<<"$after_owned"' \
     "and nothing was created inside it (got '$after_owned')"
 
-# The operator does what the message says, and then it works.
+# The operator does what the message says, and then it works. A fresh apps path
+# has no Traefik stack to recover values from, so the flags come back.
 rig_ssh "sudo chown $RIG_SSH_USER:$RIG_SSH_USER $owned" >/dev/null 2>&1
-init --apps-path="$owned" --no-mail --no-backup; rc=$?
+init --apps-path="$owned" --no-mail --no-backup "${traefik_flags[@]}"; rc=$?
 handed=$(rig_ssh "[ -f $owned/.hosting/server.json ] && echo marker-ok; stat -c '%U:%G' $owned/PRECIOUS" 2>&1)
 assert '[ "$rc" = "0" ]' "init uses the path once it has been handed over (exit $rc: $(init_err))"
 assert 'grep -qF "marker-ok" <<<"$handed"' "the marker lands there (got '$handed')"
@@ -483,7 +753,7 @@ rig_ssh "sudo rm -rf $foreign" >/dev/null 2>&1 && foreign=""
 # ("the data path /apps cannot be created: / is not writable … It sits outside
 # /apps"), because "below" was tested strictly.
 if rig_clean; then
-    init --apps-path="$apps" --data-path="$apps" --no-mail --no-backup; rc=$?
+    init --apps-path="$apps" --data-path="$apps" --no-mail --no-backup "${traefik_flags[@]}"; rc=$?
     same_path=$(rig_ssh "find $apps | sort | tr '\n' ' '" 2>/dev/null)
     assert '[ "$rc" = "0" ]' "--data-path equal to --apps-path is accepted (exit $rc: $(init_err))"
     assert 'grep -qF "$apps/traefik/letsencrypt/acme.json" <<<"$same_path"' \
@@ -492,6 +762,31 @@ if rig_clean; then
         "and the marker records it"
 else
     assert 'false' "could not clean the rig before the equal-paths case"
+fi
+
+# --- A Traefik that will not start leaves no marker ---------------------------
+# The marker is the "init completed" signal, so the stack has to be up before it
+# is written. A container already holding the name is the cheapest honest way to
+# make `up -d` fail: it needs no extra image and no port juggling.
+if rig_clean; then
+    squat=$(rig_ssh "docker create --name traefik $traefik_image >/dev/null 2>&1 && echo squatted" 2>/dev/null)
+    if [ "$squat" = "squatted" ]; then
+        init --no-mail --no-backup "${traefik_flags[@]}"; rc=$?
+        assert '[ "$rc" != "0" ]' "init fails when Traefik cannot start (exit $rc)"
+        assert 'grep -qF "up -d failed" "$tmpdir/err"' \
+            "and says which step failed (said '$(init_err)')"
+        assert 'grep -qF "already in use" "$tmpdir/err"' \
+            "passing docker's own diagnosis through rather than a bare timeout"
+        assert '[ "$(rig_ssh "[ -e $marker ] && echo present || echo absent" 2>/dev/null)" = "absent" ]' \
+            "and writes no marker — a server whose Traefik never came up is not a prepared server"
+        assert '[ "$(rig_ssh "[ -f $apps/traefik/compose.yml ] && echo yes || echo no" 2>/dev/null)" = "yes" ]' \
+            "though the stack it rendered is on disk, so the operator can look at it"
+        rig_ssh "docker rm -f traefik" >/dev/null 2>&1
+    else
+        assert 'false' "could not park a container on the name traefik to make compose up fail"
+    fi
+else
+    assert 'false' "could not clean the rig before the failed-start case"
 fi
 
 # --- Leave the rig as it was found, but only on success -----------------------

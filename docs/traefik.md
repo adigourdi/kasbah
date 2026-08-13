@@ -45,8 +45,20 @@ labels; `hosting check` rejects them.
 ## Ownership
 
 The Traefik stack lives at `/apps/traefik/` on the VPS and is managed by
-`hosting server init / status`. Users can customize `traefik.yml` and the
-files under `dynamic/` — hosting keeps backups before overwriting on upgrade.
+`hosting server init / status`.
+
+**`traefik.yml` and `_shared.yml` are hosting's, and every `server init`
+re-renders them.** A hand edit to either is reverted on the next run, with
+no backup — so treat them as generated files, not as configuration you own.
+What survives a re-run is exactly the three values init reads back out of
+them: the dashboard domain, the ACME email, and the basic-auth hash.
+
+Project fragments in `dynamic/<project>.yml` are a different matter — those
+belong to their projects and init never touches them. Files you add under
+`dynamic/` yourself survive too, provided they do not start with `_`, which
+is hosting's prefix. If you need to change what `traefik.yml` contains, the
+change belongs in hosting's template rather than on the server; otherwise
+it lasts until the next init.
 
 ## Network
 

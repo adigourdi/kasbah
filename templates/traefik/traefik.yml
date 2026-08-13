@@ -1,0 +1,45 @@
+# Traefik's static configuration, installed at <apps>/traefik/traefik.yml.
+# Changing this file requires a Traefik restart — `hosting server init` does
+# that, and only when the file's bytes actually change.
+#
+# The ACME address below is substituted on the workstation: Traefik expands no
+# environment variables here, so it cannot come from an `.env`.
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+    http:
+      tls:
+        # `default` is declared in dynamic/_shared.yml. Without that file
+        # every HTTPS router fails to start.
+        options: default
+
+providers:
+  file:
+    # Bind-mounted from <apps>/traefik/dynamic/. Project fragments land here as
+    # <project>.yml and are picked up live — no restart, no compose up.
+    directory: /etc/traefik/dynamic
+    watch: true
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "__ACME_EMAIL__"
+      storage: /letsencrypt/acme.json
+      httpChallenge:
+        entryPoint: web
+
+api:
+  dashboard: true
+
+log:
+  level: INFO
+
+# What `traefik healthcheck --ping` — the compose healthcheck — talks to.
+ping:
+  entryPoint: "web"

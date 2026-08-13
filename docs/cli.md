@@ -34,8 +34,11 @@ Flags:
   Unset → prompt.
 - `--apps-path=/apps` — root directory on the VPS (default `/apps`).
 - `--data-path=/apps/data` — bind-mount root (default `/apps/data`).
-- `--traefik-auth=user:pass` — basic auth for the dashboard. Password is
-  hashed with bcrypt locally; the hash is what lands in `.env`.
+- `--traefik-auth=user:pass` — basic auth for the dashboard. The password is
+  hashed with bcrypt on the workstation (`htpasswd -niB`, or the same via a
+  throwaway `httpd:2-alpine` container when htpasswd is absent); the hash
+  lands in `dynamic/_shared.yml`. Unset on a re-run means the stored hash is
+  reused — bcrypt salts randomly, so re-hashing would break idempotency.
 
 What it does:
 1. Verify Docker ≥ 24 and Docker Compose v2 exist. **Does not install.** Fails
@@ -46,18 +49,22 @@ What it does:
    Then `mkdir -p /apps/data /apps/backups`.
 3. `mkdir -p /apps/data/traefik/letsencrypt && touch /apps/data/traefik/letsencrypt/acme.json && chmod 600 ...`
    (touch-as-file is mandatory — Docker silently creates a directory otherwise).
-4. Scaffold `/apps/traefik/` (compose.yml, traefik.yml, dynamic/ with `_shared.yml`, .env).
-5. Run `hosting env` interactively against `/apps/traefik/.env.prod.example`.
-6. `docker compose up -d` in `/apps/traefik/`.
-7. Health-check Traefik, print dashboard URL.
-8. If `--with-mail`: scaffold `/apps/mail/`, write the cert-trigger +
+4. Scaffold `/apps/traefik/` — compose.yml, traefik.yml, and dynamic/ with
+   `_shared.yml`. No `.env`: Traefik interpolates no environment variables,
+   so `--domain`, `--email` and the `--traefik-auth` hash are baked into the
+   rendered files (see `server-setup.md`).
+5. `docker compose -p traefik up -d` in `/apps/traefik/`, restarting only
+   when the static config changed and the container was not just recreated.
+6. Health-check Traefik, print dashboard URL.
+7. If `--with-mail`: scaffold `/apps/mail/`, write the cert-trigger +
    webmail router fragment to `/apps/traefik/dynamic/_mail.yml`, run its
    env setup, start it.
+8. If `--with-backup`: install restic, write append-only S3 credentials,
+   schedule the backup cron (see `backup.md`).
 9. Write the server marker `/apps/.hosting/server.json` — hosting version,
    paths, resource limits computed as 90% of host cores/RAM (see
-   `server-setup.md`).
-10. If `--with-backup`: install restic, write append-only S3 credentials,
-   schedule the backup cron (see `backup.md`).
+   `server-setup.md`). **Last**: its presence is the "init completed"
+   signal, so a failure at any earlier step leaves no marker behind.
 
 ### `hosting server prune USER@HOST` *(roadmap v0.2)*
 

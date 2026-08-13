@@ -94,14 +94,6 @@ cmd_init_project() {
     _print_compose_snippet "$name" "$domain"
 }
 
-_is_fqdn() {
-    local d="$1"
-    # At least one dot; labels are 1-63 chars of [A-Za-z0-9-], not starting
-    # or ending with a hyphen; final label is alphabetic (any length — `a.b`
-    # and `app.co.uk` both accepted).
-    [[ "$d" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]+$ ]]
-}
-
 _init_cleanup() {
     rm -f hosting.yml .env.prod.example .hosting/state.json
     [ -n "${_INIT_MADE_DIR:-}" ] && rmdir "$_INIT_MADE_DIR" 2>/dev/null
