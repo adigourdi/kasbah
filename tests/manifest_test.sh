@@ -180,6 +180,31 @@ out="$(run_snippet 'manifest_require; printf "%s|%s\n" "$MANIFEST_NAME" "$MANIFE
 assert '[ "$rc" = "0" ]'            "CRLF manifest parses successfully"
 assert '[ "$out" = "crlf|c.test" ]' "CRLF CR is stripped from field values"
 
+# --- Case 11b: names hosting owns under <apps>/ -------------------------------
+# A project called `traefik` would have deploy write over the shared proxy's
+# stack and then remove it with --remove-orphans. Refused here, so every command
+# that reads a manifest refuses it — `check` included.
+for reserved in traefik data backups; do
+    projr="$tmpdir/reserved-$reserved"
+    mkdir -p "$projr"
+    cd "$projr"
+    printf 'schema: 1\nhosting_version: 0.1.0\nname: %s\ndomain: "r.test"\nsync: []\n' "$reserved" > hosting.yml
+    out="$(run_snippet 'manifest_require' 2>&1)"; rc=$?
+    assert '[ "$rc" = "1" ]' "manifest_require refuses the reserved name $reserved (got $rc)"
+    assert 'grep -qF "is reserved" <<<"$out"' "and says so (said '$out')"
+    assert 'grep -qF "traefik data backups" <<<"$out"' "listing every reserved name (said '$out')"
+done
+
+# The control: a name that merely contains a reserved one is fine, so the rule
+# is an exact match rather than a substring.
+projok="$tmpdir/reserved-ok"
+mkdir -p "$projok"
+cd "$projok"
+printf 'schema: 1\nhosting_version: 0.1.0\nname: %s\ndomain: "r.test"\nsync: []\n' traefik-mirror > hosting.yml
+out="$(run_snippet 'manifest_require; printf "%s\n" "$MANIFEST_NAME"' 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ] && [ "$out" = "traefik-mirror" ]' \
+    "a name containing a reserved one is accepted (rc $rc, got '$out')"
+
 # --- Case 11: manifest_get dies when no manifest ------------------------------
 proj11="$tmpdir/noyml"
 mkdir -p "$proj11"

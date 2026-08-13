@@ -85,6 +85,18 @@ comma-joined, `-` for stock-only).
 `docker image inspect --format {{.Id}}` (content ID), not RepoDigest,
 and note the distinction in `build-deploy.md` if the docs imply otherwise.
 
+## Carried in from Phase 2
+
+- **Deploy cannot find a server initialised with a non-default
+  `--apps-path`.** It looks for the marker at `/apps/.hosting/server.json`
+  and reads the real paths out of it, which works only when the apps path
+  *is* the default. A server at `/srv/apps` is undiscoverable, and neither
+  `cli.md` nor `build-deploy.md` mentions it. The fix is a flag on the
+  project commands or an apps-path field in `.hosting/state.json`; state
+  is the better home, since the value is a property of the server the
+  project last talked to and `state.json` already records `last_server`.
+  Phase 4 is the next time the deploy path is opened up.
+
 ## Findings
 
 _(filled during execution — record the yq-on-VPS decision, observed

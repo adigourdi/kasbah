@@ -344,14 +344,19 @@ assert '[ -n "$rig_ip" ] && [ -n "$rig_port" ] && [ -n "$rig_key" ]' \
 # Deliberately outside the harness and outside the contract's Host block: a
 # plain ssh, to establish that this endpoint really does answer. Without it the
 # fenced attempt below could be failing for any reason at all.
-control_out=$(timeout 20 ssh -o BatchMode=yes -o StrictHostKeyChecking=no \
+#
+# `-n` for the same reason rig_env.sh redirects stdin: `timeout` runs its child
+# in its own process group, so an ssh that reads the controlling terminal is
+# stopped by SIGTTIN and never lives to receive the timeout's SIGTERM. Both
+# calls here are `id -un` and want no stdin at all.
+control_out=$(timeout 20 ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
     -i "$rig_key" -p "$rig_port" "$RIG_SSH_USER@$rig_ip" id -un 2>&1)
 assert '[ "$control_out" = "stevedore" ]' \
     "the endpoint answers ssh when nothing fences it (got '$control_out')"
 
 fenced_out=$(timeout 20 env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-    ssh -p "$rig_port" "$RIG_SSH_USER@$rig_ip" id -un 2>&1); fenced_rc=$?
+    ssh -n -p "$rig_port" "$RIG_SSH_USER@$rig_ip" id -un 2>&1); fenced_rc=$?
 assert '[ "$fenced_rc" != "0" ]' \
     "under the harness the same endpoint is unreachable by IP (exit $fenced_rc, said '$fenced_out')"
 assert '[ "$fenced_out" != "stevedore" ]' "the fenced attempt did not log in"

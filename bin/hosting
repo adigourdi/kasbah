@@ -73,6 +73,7 @@ Usage: hosting [--version] [--help] <command> [args...]
 Commands:
   init-project [--name=<n>] [--domain=<d>]   Scaffold hosting metadata in cwd.
   check                                      Run structural checks on the project.
+  deploy [USER@HOST]                         Ship the working tree and bring it up.
   server init USER@HOST [flags]              Prepare a VPS to host projects.
 
 See docs/cli.md for the full planned surface.
@@ -118,6 +119,10 @@ dispatch() {
         check)
             . "$HOSTING_LIB_DIR/check.sh"
             cmd_check "$@"
+            ;;
+        deploy)
+            . "$HOSTING_LIB_DIR/deploy.sh"
+            cmd_deploy "$@"
             ;;
         server)
             dispatch_server "$@"

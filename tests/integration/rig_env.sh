@@ -117,23 +117,56 @@ hosting_cli() {
         "$RIG_REPO_DIR/bin/hosting" "$@"
 }
 
+# Nothing below is ever handed the terminal as stdin.
+#
+# `timeout` runs its child in a process group of its own so it can signal the
+# whole group. That group is not the foreground group of the terminal, so a
+# child that reads stdin gets SIGTTIN from the kernel and *stops* — and a
+# stopped process never runs long enough to handle the SIGTERM timeout then
+# sends, which turns a bounded wait into a permanent hang. Measured under
+# `script -qec 'HOSTING_RIG_TESTS=1 ./test.sh'`, which is how the suite is run
+# in a real terminal: integration/server_init_test.sh stopped dead at its first
+# reachability probe, ssh in state T and timeout in sigsuspend, still there ten
+# minutes later. With stdin piped — the way CI runs it — the same call returns
+# instantly, which is why it survived three units.
+#
+# Redirected here rather than at every call site: a caller that really does
+# feed the far side feeds it from a heredoc, a pipe or a file, never from a
+# tty, so the guard cannot take a payload away from one.
+
 # The same environment for a script that drives the libraries directly — the
 # only way to exercise lib/ssh.sh until a command uses it. Bounded, because a
 # driver that hangs would hang the suite.
 rig_env_bash() {
-    timeout "$RIG_WORK_TIMEOUT" \
-        env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-            HOSTING_LIB_DIR="$RIG_REPO_DIR/lib" bash "$@"
+    if [ -t 0 ]; then
+        timeout "$RIG_WORK_TIMEOUT" \
+            env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
+                HOSTING_LIB_DIR="$RIG_REPO_DIR/lib" bash "$@" </dev/null
+    else
+        timeout "$RIG_WORK_TIMEOUT" \
+            env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
+                HOSTING_LIB_DIR="$RIG_REPO_DIR/lib" bash "$@"
+    fi
 }
 
 # Suite-side access to the rig, straight down the rig's own contract: what a
 # test asserts about the rig must not depend on the wrapper it is testing.
+#
+# Spelled as two branches rather than one redirect from /dev/stdin: reopening
+# the caller's stdin through /proc is a subtlety this file does not need, and
+# the thing being guarded against is a hang that costs a suite run to notice.
 rig_ssh() {
-    timeout "$RIG_WORK_TIMEOUT" ssh -F "$RIG_SSH_CONFIG" "$RIG_SSH_ALIAS" "$@"
+    if [ -t 0 ]; then
+        timeout "$RIG_WORK_TIMEOUT" ssh -F "$RIG_SSH_CONFIG" "$RIG_SSH_ALIAS" "$@" </dev/null
+    else
+        timeout "$RIG_WORK_TIMEOUT" ssh -F "$RIG_SSH_CONFIG" "$RIG_SSH_ALIAS" "$@"
+    fi
 }
 
+# -n rather than the redirect above: a probe has no payload to protect, and
+# ssh's own flag says so at the point of use.
 rig_reachable() {
-    timeout "$RIG_PROBE_TIMEOUT" ssh -F "$RIG_SSH_CONFIG" "$RIG_SSH_ALIAS" true >/dev/null 2>&1
+    timeout "$RIG_PROBE_TIMEOUT" ssh -n -F "$RIG_SSH_CONFIG" "$RIG_SSH_ALIAS" true >/dev/null 2>&1
 }
 
 # Returns the rig to the state hosting has never touched — no compose projects,
@@ -207,6 +240,19 @@ done <<<"$projects"
 if docker network inspect hosting-net >/dev/null 2>&1; then
     docker network rm hosting-net >/dev/null 2>&1 || status=1
 fi
+
+# Orphaned project networks. `down` above takes a project's networks with it,
+# but a deploy that failed after creating the network and before creating a
+# container leaves a project with nothing for `compose ls` to report — and the
+# network outlives every clean, until a later suite asserting on the network
+# list fails for something an earlier one did. Filtered on compose's own label,
+# so the built-ins and anything hand-made are never candidates; by this point
+# every compose project has been downed, so a labelled survivor is an orphan.
+orphans=$(docker network ls --filter label=com.docker.compose.project -q 2>/dev/null) || orphans=""
+while IFS= read -r net; do
+    [ -n "$net" ] || continue
+    docker network rm "$net" >/dev/null 2>&1 || status=1
+done <<<"$orphans"
 
 # /apps is root-owned on a rig where the ssh user is unprivileged; stevedore
 # has passwordless sudo.

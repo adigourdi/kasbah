@@ -117,8 +117,7 @@ below). The only differences:
      - every path in manifest's `sync:` list → /apps/<name>/
      - setup-env.sh and remote-deploy.sh (hosting-owned helpers, overwritten
        on every deploy to match installed hosting version) → /apps/<name>/scripts/
-     - traefik-dynamic.yml → /apps/traefik/dynamic/<name>.yml (hosting-owned
-       path, handled out-of-band — see traefik.md)
+   The Traefik fragment is deliberately **not** shipped here — see step 8h.
 6. Env drift check (via setup-env.sh on VPS):
      MISSING .env         → run interactive setup
      DRIFT from template  → prompt: re-run setup / continue / abort
@@ -139,8 +138,31 @@ below). The only differences:
      e. Wait for manifest's health.container to be healthy.
      f. Run post-deploy hooks against new containers.
      g. Append deploy entry to versions.log, rotate.
-9. Compute changelog (git log <prev-deploy>..<new>) and print it locally.
+9. Rsync traefik-dynamic.yml → /apps/traefik/dynamic/<name>.yml. Done by the
+   *local* side once remote-deploy.sh has returned 0 — the file is on the
+   workstation, and the ordering is the point (see below).
+10. Compute changelog (git log <prev-deploy>..<new>) and print it locally.
 ```
+
+### Why the fragment ships last
+
+Traefik registers a router the moment the file lands, whether or not
+anything is behind it. Ship it before `compose up` and *every* way the
+deploy can still fail — unpullable image, port conflict, a bad env value, a
+compose file that will not parse — leaves a live route to a container that
+never started. The host then serves **502 until some later deploy
+succeeds**; on a first deploy it starts 502ing a hostname that was
+previously an honest 404.
+
+Shipping last trades that for a much smaller window: the container is up
+but unrouted for as long as the fragment write takes to be noticed. A
+single filesystem event on an idle Traefik is ~44 ms; a rsync temp-then-
+rename is two events and opens the file provider's ~2 s throttle window.
+Either is a rounding error against "broken until a human intervenes".
+
+The same ordering is what makes a `container_name` change safe on a
+redeploy: the new fragment never names a container that does not exist
+yet.
 
 ### Why working-tree for no-args, git-archive for explicit versions
 

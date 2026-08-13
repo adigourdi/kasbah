@@ -83,6 +83,24 @@ its own, no disk-pressure or memory-pressure behaviour worth trusting, no
 firewall. Resource limits computed from `nproc`/`MemTotal` inside it
 reflect the *host*, not a VPS's real allocation.
 
+**It cannot apply cgroup limits at all.** Any container the nested dockerd
+starts with `--cpus` or `--memory` fails:
+
+```
+cannot enter cgroupv2 "/sys/fs/cgroup/docker" with domain controllers
+  -- it is in threaded mode
+```
+
+The rig's cgroup root holds its own processes and has no `init` sub-cgroup,
+so the nested dockerd cannot distribute domain controllers and runc falls
+back to threaded mode. The standard `docker:dind` cgroup-nesting step in
+the entrypoint would fix it. Until then, **compliance rules R01/R02
+(`cpus: ${HOSTING_CPU_LIMIT}` / `mem_limit: ${HOSTING_MEM_LIMIT}`) cannot
+be proven end to end here** — a fixture must seed those variables as `0`,
+which Docker reads as "no limit". The values themselves are exercised by
+unit tests and by the server marker; that they are *enforced* waits for
+Phase 6 and a real VPS.
+
 **sshd runs `maxstartups 10:30:100`.** More than about ten concurrent SSH
 sessions get random early drops — `Connection closed`, exit 255. Batch
 work into one session rather than fanning out.

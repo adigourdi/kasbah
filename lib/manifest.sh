@@ -13,6 +13,28 @@ HOSTING_MANIFEST_FILE="hosting.yml"
 # Highest schema version this tool can read. See docs/project-manifest.md.
 HOSTING_MANIFEST_SCHEMA=1
 
+# Directory names hosting owns under <apps>/, which a project therefore may not
+# take. `traefik` is the dangerous one: a project called that has deploy rsync
+# its compose file over the shared proxy's own, and then run
+# `docker compose -p traefik up -d --remove-orphans` in <apps>/traefik — where
+# the new file has no traefik service, so --remove-orphans takes the reverse
+# proxy down and every site on the host with it. `data` and `backups` are the
+# same collision without the blast radius: the project would be deployed into
+# the bind-mount root, or into the server's backup directory.
+#
+# Checked here rather than in deploy, so a project learns it from
+# `hosting check` and not from the deploy that ate the proxy.
+HOSTING_RESERVED_NAMES=(traefik data backups)
+
+# manifest_name_reserved <name> — true when the name is one hosting owns.
+manifest_name_reserved() {
+    local _nr_name="$1" _nr_reserved
+    for _nr_reserved in "${HOSTING_RESERVED_NAMES[@]}"; do
+        [ "$_nr_name" != "$_nr_reserved" ] || return 0
+    done
+    return 1
+}
+
 # Populated by manifest_require.
 MANIFEST_SCHEMA=""
 MANIFEST_HOSTING_VERSION=""
@@ -88,6 +110,8 @@ manifest_require() {
         || die "$HOSTING_MANIFEST_FILE: missing required field 'name'"
     [[ "$name" =~ ^[a-z][a-z0-9-]*$ ]] \
         || die "$HOSTING_MANIFEST_FILE: invalid name '$name' (must match ^[a-z][a-z0-9-]*\$)"
+    ! manifest_name_reserved "$name" \
+        || die "$HOSTING_MANIFEST_FILE: '$name' is reserved — hosting owns <apps>/$name on every server (reserved: ${HOSTING_RESERVED_NAMES[*]}). Rename the project."
 
     # domain is allowed to be empty: `hosting init-project` without --domain
     # writes `domain: ""` and warns. Commands that need a domain (deploy,

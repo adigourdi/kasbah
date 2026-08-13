@@ -280,7 +280,7 @@ _server_init_parse_args() {
 
     # An empty --apps-path= is a stated intent that cannot be honoured, so it
     # fails rather than falling back to the default the operator just overrode.
-    [ "$apps_given" = 1 ] || apps=/apps
+    [ "$apps_given" = 1 ] || apps="$HOSTING_DEFAULT_APPS_PATH"
     _server_init_path apps-path "$apps" _SI_APPS_PATH
     [ "$data_given" = 1 ] || data="$_SI_APPS_PATH/data"
     _server_init_path data-path "$data" _SI_DATA_PATH

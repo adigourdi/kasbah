@@ -37,4 +37,10 @@ _is_fqdn() {
 # Exit codes — shared contract, see docs/cli.md "Exit codes".
 HOSTING_EXIT_NO_PROJECT=2       # no hosting.yml in cwd
 HOSTING_EXIT_SSH_UNREACHABLE=3  # the target host did not answer ssh
+HOSTING_EXIT_NO_REMOTE_STATE=4  # no server marker — `hosting server init` first
 HOSTING_EXIT_COMPLIANCE_FAIL=6  # `hosting check` recorded one or more failures
+
+# Where the server marker lives when nobody said otherwise. `server init`
+# defaults its --apps-path to this, and every project command finds the marker
+# there and reads the real paths back out of it.
+HOSTING_DEFAULT_APPS_PATH=/apps

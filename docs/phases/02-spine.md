@@ -261,11 +261,35 @@ rsynced out-of-band to `/apps/traefik/dynamic/<name>.yml`, `compose up
 handling is Phase 3; hooks/backup/health are Phase 4). Stock-only.
 
 **Deliverables**
-- [ ] `lib/deploy.sh` thin path + `versions.log` line with `digest=-`
-- [ ] Fragment lands atomically (rsync temp+rename) and Traefik picks it up without restart
+- [x] `lib/deploy.sh` thin path + `versions.log` line with `digest=-` —
+      `2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup hosting=0.1.0-dev digest=-`
+- [x] Fragment lands atomically (rsync temp+rename) and Traefik picks it up
+      without restart — boot count 1 before and after, `StartedAt` unmoved,
+      mode 644, byte-identical to the project's `traefik-dynamic.yml`
+- [x] **The fixture, pulled forward from 2.6** — `tests/fixtures/demo/`,
+      stock nginx, passes `hosting check` 22/0/0
+- [x] `templates/remote-deploy.sh`, thin: `compose -p <name> up -d
+      --remove-orphans` plus one log line. Phase 4 extends it
 
 **Watch out for:** ControlPath length limits (~104 chars) — use `%C`
 hashing, not `%r@%h:%p`, or long hostnames break multiplexing silently.
+*Handled in unit A; `build-deploy.md`'s example was wrong in both halves.*
+
+**What actually bit: the fragment shipped too early.** A router registers
+the moment the file lands, whether or not anything is behind it — so any
+later failure (unpullable image, port conflict, bad env, unparseable
+compose) left a live route to a container that never started, and the host
+served **502 until some future deploy succeeded**. On a first deploy that
+turns an honest 404 into a permanent 502. Proven on the rig, fixed by
+shipping the fragment last, and `build-deploy.md` now carries the ordering
+and the reason. Two related hazards came out of the same review, both worse
+than the bug because hosting *told the operator to do them*: exit 4 offered
+a bare `hosting server init`, which against a `--apps-path` server renders
+a second Traefik stack under the frozen `traefik` project and takes every
+site down; and a project named `traefik` would `--remove-orphans` the
+reverse proxy, gated only by a missing `.env` that the refusal message
+explained how to create. `traefik`, `data` and `backups` are now reserved
+names, refused at `check` time (S07).
 
 **Carried from Phase 1:** every `docker compose` invocation hosting makes
 on the VPS must pass `-p <project>`. `name:` in a compose file is the
@@ -307,12 +331,18 @@ docker socket, `container_name` DNS on `hosting-net`. It was designed in
 `765972c` and had never been run anywhere. It works, and here is what it
 actually does.
 
-- **Reload latency is ~2.0 s and constant** — 2136 ms to pick up a new
-  fragment, 2003 ms to notice a backend swap in an existing one, 1958 ms
-  to process a deletion. That is Traefik's `providersThrottleDuration`
-  (default 2 s), not filesystem-watch delay, so it is a floor rather than
-  a load-dependent lag. **Anything asserting on a fragment must poll, never
-  check immediately after the rsync returns.**
+- **Reload latency is a ~2 s throttle *window*, not a floor** — and the
+  distinction cost a round to learn. Unit C measured 2136 ms for a new
+  fragment, 2003 ms for a backend swap and 1958 ms for a delete, and
+  concluded 2 s was a floor. Unit D measured the same Traefik with no ssh
+  in the loop and found a *single* filesystem event on an idle Traefik
+  lands in **25 ms** (delete → 404) to **44 ms** (rename-in → 200). The 2 s
+  is `providersThrottleDuration` opening a window on the *first* event and
+  holding everything until it closes. Unit C's numbers were all two-event
+  operations, because **rsync's temp-then-rename is always two events** —
+  which is exactly what hosting does to ship a fragment. So a real deploy
+  pays the ~2 s and a bare `rm` does not. **Poll regardless**: the floor is
+  not what makes an immediate assertion wrong, the window is.
 - **A stopped backend gives 502, and the router stays registered** —
   precisely the property the file provider was chosen for over the docker
   provider (`traefik.md` → "Why file provider"). Restarting the container

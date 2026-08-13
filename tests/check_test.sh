@@ -892,4 +892,28 @@ out="$(cd "$proj41" && "$hosting" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                       "T07 fail exits 6 (got $rc)"
 assert 'grep -qF "✗ Fragment targets unknown container_names: demo-web" <<<"$out"' "T07 fail line"
 
+# --- Case 42: a name hosting owns on the server -------------------------------
+# The project should learn this from `check`, not from the deploy that rsyncs
+# over the shared Traefik stack and then removes it as an orphan. It is a
+# manifest rule, so it arrives the same way a bad schema does: manifest_require
+# refuses and the report short-circuits.
+for reserved in traefik data backups; do
+    proj42="$tmpdir/reserved-$reserved"
+    mkdir -p "$proj42"
+    cat > "$proj42/hosting.yml" <<EOF
+schema: 1
+hosting_version: 0.1.0
+name: $reserved
+domain: "x.test"
+sync: []
+EOF
+    out="$(cd "$proj42" && "$hosting" check 2>&1)"; rc=$?
+    # 1, not 6: a reserved name is a manifest-load refusal that short-circuits
+    # before any rule runs, the same as an invalid-regex name. Every other case
+    # in this suite pins 6, so pin the number that actually distinguishes them.
+    assert '[ "$rc" = "1" ]' "check refuses a project named $reserved with exit 1 (got $rc)"
+    assert 'grep -qF "is reserved" <<<"$out"' "and says it is reserved (said '$out')"
+    assert 'grep -qF "$reserved" <<<"$out"'   "naming it"
+done
+
 exit "$fail"

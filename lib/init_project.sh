@@ -6,6 +6,9 @@ _HOSTING_INIT_PROJECT_LOADED=1
 
 . "$HOSTING_LIB_DIR/common.sh"
 . "$HOSTING_LIB_DIR/state.sh"
+# For the reserved-name list, which is the manifest's rule and is enforced
+# wherever a name is chosen as well as wherever one is read.
+. "$HOSTING_LIB_DIR/manifest.sh"
 
 _init_project_usage() {
     cat <<EOF
@@ -41,6 +44,12 @@ cmd_init_project() {
     [ -n "$name" ] || name="$(basename "$PWD")"
     if ! [[ "$name" =~ ^[a-z][a-z0-9-]*$ ]]; then
         die "invalid project name '$name' (must match ^[a-z][a-z0-9-]*\$)"
+    fi
+    # Refused at the moment it is chosen, not only when it is read back: the
+    # default name is the directory's, so `hosting init-project` in a directory
+    # called `data` would otherwise scaffold a project that can never deploy.
+    if manifest_name_reserved "$name"; then
+        die "project name '$name' is reserved — hosting owns <apps>/$name on every server (reserved: ${HOSTING_RESERVED_NAMES[*]}). Pass --name=<other>."
     fi
 
     if [ "$domain_given" = 1 ] && ! _is_fqdn "$domain"; then

@@ -1,0 +1,40 @@
+# Synced to <apps>/demo/compose.yml on deploy, and brought up there as
+# `docker compose -p demo up -d`. The `-p` is what fixes the project name;
+# `name:` below is the weakest source of it and COMPOSE_PROJECT_NAME in the
+# server's login shell outranks it (docs/phases/01-rig.md).
+name: demo
+
+services:
+  web:
+    image: nginx:alpine
+    # Traefik resolves the backend by container name over hosting-net, so this
+    # is what traefik-dynamic.yml's loadBalancer URL points at (docs/traefik.md).
+    container_name: demo-web
+    restart: unless-stopped
+    volumes:
+      # The page itself, synced from the project's site/ directory.
+      - "./site:/usr/share/nginx/html:ro"
+    environment:
+      # Read from <apps>/demo/.env by compose — proof that the environment file
+      # is in play, and the reason deploy refuses to run without one.
+      DEMO_GREETING: ${DEMO_GREETING}
+    networks:
+      # Routed service: on hosting-net for Traefik, and on the project's own
+      # network for anything internal. Nothing else joins hosting-net (C07).
+      - hosting-net
+      - internal
+    # Injected into .env by hosting from the server marker (Phase 3); seeded by
+    # hand for now. Unset, compose fails outright — an empty value is not a
+    # valid cpus:.
+    cpus: ${HOSTING_CPU_LIMIT}
+    mem_limit: ${HOSTING_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  hosting-net:
+    external: true
+  internal: {}

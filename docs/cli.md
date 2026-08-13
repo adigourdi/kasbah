@@ -172,6 +172,8 @@ Flow (no-args / working-tree path):
 3. Resolve version = HEAD's `v-tag` (fail if not tagged).
 4. Ensure remote dirs exist (`/apps/<name>/`, `scripts/`, `backups/`, `/apps/data/<name>/`).
 5. Rsync manifest's `sync:` list + helper scripts (`setup-env.sh`, `remote-deploy.sh`).
+   The Traefik fragment is not shipped here — it goes last, after the stack is
+   up, so a failed deploy cannot leave a live route to nothing (`build-deploy.md`).
 6. Env drift check on VPS — run setup-env if missing, prompt on drift.
    Then refresh the hosting-managed `HOSTING_*` keys in `.env` (resource
    limits from the server marker) — reserved prefix, exempt from drift.
@@ -185,7 +187,9 @@ Flow (no-args / working-tree path):
    - Wait for `health.container` to be healthy.
    - Run `post-deploy` hooks against new containers.
    - Append to `versions.log`, rotate.
-9. Print local changelog (`git log <prev>..<new>`).
+9. Rsync `traefik-dynamic.yml` to `/apps/traefik/dynamic/<name>.yml` — locally
+   driven, after the stack is up, so a failed deploy leaves no live route.
+10. Print local changelog (`git log <prev>..<new>`).
 
 Flags:
 - `--skip-hooks` — skip pre/post hooks (dry-run style).

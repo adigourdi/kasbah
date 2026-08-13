@@ -67,6 +67,31 @@ if "$hosting" init-project --name=BadName >/dev/null 2>&1; then
     fail=1
 fi
 
+# --- Case 4b: the names hosting owns on a server are refused ------------------
+# `traefik` is the one with teeth: deploy would rsync the project over the
+# shared proxy's own stack and then `compose -p traefik up -d --remove-orphans`
+# in that directory, removing the proxy. Refused at the moment the name is
+# chosen, and again wherever a manifest is read (tests/manifest_test.sh).
+for reserved in traefik data backups; do
+    projr="$tmpdir/reserved-$reserved"
+    mkdir -p "$projr"
+    cd "$projr"
+    out="$("$hosting" init-project --name="$reserved" 2>&1)"; rc=$?
+    assert '[ "$rc" != "0" ]' "init-project --name=$reserved is refused (rc $rc)"
+    assert 'grep -qF "reserved" <<<"$out"' "and says why (said '$out')"
+    assert '[ ! -f hosting.yml ]' "and scaffolds nothing for $reserved"
+done
+
+# The default name is the directory's, so the refusal has to fire there too —
+# `hosting init-project` inside a directory called data is the likelier way in.
+projd="$tmpdir/data"
+mkdir -p "$projd"
+cd "$projd"
+out="$("$hosting" init-project 2>&1)"; rc=$?
+assert '[ "$rc" != "0" ]' "init-project in a directory called data is refused (rc $rc)"
+assert 'grep -qF "reserved" <<<"$out"' "naming the rule (said '$out')"
+assert '[ ! -f hosting.yml ]' "and scaffolds nothing"
+
 # --- Case 5: respects an existing .gitignore ----------------------------------
 proj4="$tmpdir/proj4"
 mkdir -p "$proj4"

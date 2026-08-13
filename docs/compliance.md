@@ -62,6 +62,7 @@ Exit code 0 if no failures (warnings are informational).
 | S04 | `.env.prod.example` exists | fail |
 | S05 | `.gitignore` excludes `.env` | warn |
 | S06 | `.gitignore` excludes `.hosting/` | warn |
+| S07 | `name` is not one of hosting's reserved directories (`traefik`, `data`, `backups`) — see `project-manifest.md`. Refused when the manifest loads, so it exits 1 rather than 6: nothing else can be checked about a project that would overwrite the reverse proxy | fail |
 
 ### Compose
 

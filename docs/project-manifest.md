@@ -121,6 +121,15 @@ migrate files in the source tree.
 Directory name on the VPS (`/apps/<name>/`) and basis for container names.
 Must match `^[a-z][a-z0-9-]*$`.
 
+**Reserved: `traefik`, `data`, `backups`.** Those directories under `/apps/`
+belong to hosting, and a project claiming one is not a naming collision but
+a live hazard: a project named `traefik` would rsync its compose file over
+the shared stack's, then run `docker compose -p traefik up -d
+--remove-orphans` in that directory — and since Traefik is not a service in
+the project's file, `--remove-orphans` removes the reverse proxy every site
+on the box is behind. `hosting check` and `hosting deploy` both refuse these
+names, and `init-project` will not scaffold one.
+
 ### `domain` *(required)*
 
 The primary Traefik hostname. Used in checks (the compose file must route
