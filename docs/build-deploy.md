@@ -39,7 +39,7 @@ two tags per image.
 
 ### Retention
 
-`:<version>` tags are pruned routinely: `hosting server prune` (Phase 2)
+`:<version>` tags are pruned routinely: `hosting server prune` (roadmap v0.2)
 removes version tags that are **both** older than 3 months **and** not
 among the project's last 3 deployed versions — where the version
 `:current` points at counts as the first of the 3. `:current` itself is

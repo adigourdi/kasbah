@@ -40,7 +40,10 @@ Flags:
 What it does:
 1. Verify Docker ≥ 24 and Docker Compose v2 exist. **Does not install.** Fails
    with a clear message otherwise.
-2. `mkdir -p /apps /apps/data /apps/backups`.
+2. Create the apps path — `sudo mkdir -p /apps` plus a `chown` to the SSH
+   user, but only when it does not already exist; everything below it is
+   created unelevated. See `server-setup.md` ("Who creates the apps path").
+   Then `mkdir -p /apps/data /apps/backups`.
 3. `mkdir -p /apps/data/traefik/letsencrypt && touch /apps/data/traefik/letsencrypt/acme.json && chmod 600 ...`
    (touch-as-file is mandatory — Docker silently creates a directory otherwise).
 4. Scaffold `/apps/traefik/` (compose.yml, traefik.yml, dynamic/ with `_shared.yml`, .env).
@@ -56,7 +59,7 @@ What it does:
 10. If `--with-backup`: install restic, write append-only S3 credentials,
    schedule the backup cron (see `backup.md`).
 
-### `hosting server prune USER@HOST` *(Phase 2)*
+### `hosting server prune USER@HOST` *(roadmap v0.2)*
 
 Image retention cleanup across all projects on the VPS: removes
 `:<version>` image tags that are both older than 3 months and not among
@@ -65,7 +68,7 @@ at counts as the first of the 3, and `:current` itself is never pruned.
 The time window mirrors versions.log rotation — see `build-deploy.md`.
 Prints what it would remove and asks once.
 
-### `hosting server destroy USER@HOST` *(Phase 3)*
+### `hosting server destroy USER@HOST` *(roadmap v0.3)*
 
 De-brand the VPS for handover. Every container keeps running — projects
 **and** Traefik, the sites stay up. Removes hosting's management layer only:
@@ -208,7 +211,7 @@ Rollback restores image + sync'd config only. It does **not** restore
 data bind mounts or `.env` secret values. For schema rollback, use
 `pre-rollback` hooks.
 
-### `hosting drop [USER@HOST] [--prune]` *(Phase 3)*
+### `hosting drop [USER@HOST] [--prune]` *(roadmap v0.3)*
 
 Remove the project from the VPS. Plain `drop` is reversible:
 
@@ -274,12 +277,12 @@ like `user@host` (contains `@`) hosting treats it as the server.
 Referenced elsewhere in the docs but not yet in v0.1:
 
 - `hosting migrate` — migrate a project's source-tree files to a newer
-  hosting schema. (Phase 4 — see `roadmap.md`.)
+  hosting schema. (roadmap v1.0.)
 - `hosting server add-mail-domain` — add a new domain to the shared mail
-  stack. (Phase 2 — see `roadmap.md`.)
+  stack. (roadmap v0.2.)
 - `hosting server upgrade-traefik` — managed Traefik version bump.
-  (Phase 3 — see `roadmap.md`.)
-- `hosting check --server` — VPS-aware compliance check. (Phase 2 — see
+  (roadmap v0.3.)
+- `hosting check --server` — VPS-aware compliance check. (roadmap v0.2 — see
   `compliance.md`.)
 
 ## Exit codes

@@ -370,8 +370,10 @@ assert 'grep -qxF "identityfile $rig_key" <<<"$rig_cfg"'  "the rig still gets ex
 # everything a real server has — differing only in the one file the payload
 # checks. Restored by the EXIT trap whatever happens next.
 rig_ssh 'sudo mkdir -p /apps/guard-probe' >/dev/null 2>&1
+# Flagged before the move, not after: a crash between the two would otherwise
+# leave the marker hidden and every later rig_clean refusing.
+marker_hidden=1
 if rig_ssh "sudo mv -f $RIG_MARKER_FILE $RIG_MARKER_FILE.hidden" >/dev/null 2>&1; then
-    marker_hidden=1
     guard_err=$(rig_clean 2>&1); guard_rc=$?
     rig_ssh "sudo mv -f $RIG_MARKER_FILE.hidden $RIG_MARKER_FILE" >/dev/null 2>&1 \
         && marker_hidden=0
@@ -386,6 +388,7 @@ if rig_ssh "sudo mv -f $RIG_MARKER_FILE $RIG_MARKER_FILE.hidden" >/dev/null 2>&1
     assert 'grep -qxF "$RIG_MARKER_VALUE" <<<"$guard_state"' \
         "the marker is back where it belongs (got '$guard_state')"
 else
+    marker_hidden=0
     assert 'false' "could not hide $RIG_MARKER_FILE to exercise the payload's guard"
 fi
 

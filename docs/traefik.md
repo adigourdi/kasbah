@@ -215,7 +215,7 @@ server status` surfaces it.
   so Traefik sees a single atomic replace event and reloads.
 - **Rollback** — hosting reads `traefik-dynamic.yml` from
   `git archive v<target>` and rsyncs it to the same destination.
-- **Drop** (phase 3) — `rm /apps/traefik/dynamic/<manifest.name>.yml`
+- **Drop** (roadmap v0.3) — `rm /apps/traefik/dynamic/<manifest.name>.yml`
   before `docker compose down`. (`hosting server destroy` deliberately
   leaves fragments in place — a handover keeps every site routing.)
 
@@ -239,5 +239,5 @@ server status` surfaces it.
 hosting server upgrade-traefik user@vps --version=v3.7
 ```
 
-(Phase 3 roadmap.) For now, edit `/apps/traefik/compose.yml` directly on
+(Roadmap v0.3.) For now, edit `/apps/traefik/compose.yml` directly on
 the VPS and `docker compose up -d`.

@@ -344,7 +344,52 @@ with unit D)_
   with the marker check defeated, a refused clean became a completed one —
   the planted `/apps/guard-probe` went from surviving to `gone`.
 
-- **Comments that overclaim are the review's most common catch.**
+- **Comments that overclaim are the review's most common catch.** Two more
+  turned up in unit B, one of them describing a distinction (`no marker` vs
+  `an empty marker`) that the next line discards.
+
+### From unit B
+
+- **Ask the question with the eyes that will do the work.** `server init`
+  decided whether to elevate by testing the apps path as the *deploy user*,
+  then ran the `chown` as *root*. A directory the deploy user cannot
+  traverse to answers `-e` with false, so a path that plainly existed
+  scored `absent`, elevation fired, and root took a directory belonging to
+  someone else — leaving its contents behind in exactly the mixed
+  ownership the check existed to prevent. The run then failed for an
+  unrelated reason, so nothing in the output ever mentioned the chown.
+  A privilege check is only as good as the privileges it was evaluated
+  with, and the fix is to re-ask as root plus create the final component
+  with a bare `mkdir` so an existing directory is `EEXIST` rather than a
+  silent adoption.
+
+- **Refusing is not the same as refusing correctly.** Several nearby cases
+  refused safely while naming a remedy that could not work — `chmod u+rwx`
+  on a read-only mount, "it sits outside /apps" about `/apps` itself. The
+  guard held every time; the operator was misdirected every time.
+
+- **A locale can make a correct implementation untestable.** `printf
+  '%.1f'` renders `14,4` under a comma-decimal `LC_NUMERIC`, so the marker
+  is computed with integer arithmetic instead. The test proving that,
+  however, pinned nothing twice over: `LC_ALL=C` overrides `LC_NUMERIC`,
+  and no comma locale was installed anyway, so it compared the function
+  against itself — a deliberately locale-broken implementation passed it.
+  The durable form is a structural assertion (no `printf`/`bc`/`awk` in
+  the limit path) plus a live comparison under a locale *discovered* at
+  runtime, skipping loudly when none exists. `en_DK.utf8` was present here.
+
+- **Marker writes merge; they never replace.** A `9.0.0` marker carrying an
+  unknown key was silently downgraded and the key erased. Within a major,
+  a field written by a newer hosting has to survive a re-run by an older
+  one, or `backup.repo_base` disappears the first time someone runs plain
+  `server init` after Phase 8.
+
+- **Three assertions in one unit could not fail.** The locale pair above,
+  and an integration guard that grepped for text only printed on failure —
+  so a remote step that ran *successfully* read as "no remote step ran".
+  Moving preflight after the layout left the suite green. The review that
+  catches these is the one told to construct the failure rather than read
+  the diff.
   `docker compose ls --all -q` was described as enumerating "what hosting
   creates"; it lists every compose project on whatever host answered. The
   code was right for the rig and the comment was wrong everywhere, which

@@ -73,9 +73,39 @@ Usage: hosting [--version] [--help] <command> [args...]
 Commands:
   init-project [--name=<n>] [--domain=<d>]   Scaffold hosting metadata in cwd.
   check                                      Run structural checks on the project.
+  server init USER@HOST [flags]              Prepare a VPS to host projects.
 
 See docs/cli.md for the full planned surface.
 EOF
+}
+
+# `hosting server …` acts on a VPS and always takes USER@HOST; everything else
+# acts on the project in the current directory (docs/cli.md).
+dispatch_server() {
+    local sub="${1:-}"
+    [ $# -eq 0 ] || shift
+    case "$sub" in
+        init)
+            . "$HOSTING_LIB_DIR/server_init.sh"
+            cmd_server_init "$@"
+            ;;
+        -h|--help)
+            cat <<EOF
+Usage: hosting server <subcommand> USER@HOST [args...]
+
+Subcommands:
+  init USER@HOST [flags]   Prepare a VPS to host projects.
+
+Run \`hosting server init --help\` for its flags.
+EOF
+            ;;
+        '')
+            die "server: no subcommand given (expected: init)"
+            ;;
+        *)
+            die "server: unknown subcommand '$sub' (expected: init)"
+            ;;
+    esac
 }
 
 dispatch() {
@@ -88,6 +118,9 @@ dispatch() {
         check)
             . "$HOSTING_LIB_DIR/check.sh"
             cmd_check "$@"
+            ;;
+        server)
+            dispatch_server "$@"
             ;;
         *)
             die "command '$cmd' is not yet implemented"
