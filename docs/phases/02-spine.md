@@ -304,7 +304,15 @@ health, project list from `/apps/` with last `versions.log` entry. The
 full version (certs, mail, disk) grows in Phase 7.
 
 **Deliverables**
-- [ ] `hosting server status` output matches reality on the rig after 2.4
+- [x] `hosting server status` output matches reality on the rig after 2.4 —
+      every value derived from the rig rather than a literal: the deployed
+      version and timestamp read back out of `versions.log`, the Traefik tag
+      *and* resolved image id off `docker inspect`, the project list off the
+      apps path. Read-only, proved three ways (payload audit; hermetic digest
+      with mtimes; live digest of `/apps`, `/home/stevedore`, `/tmp` and
+      `/var/tmp` across a run — byte-identical)
+- [x] `--apps-path`, which `deploy` still lacks — a server prepared
+      elsewhere is otherwise uninspectable
 
 ### 2.6 — Spine integration test (S)
 Fixture stock project under `tests/fixtures/`: nginx + baked index page,
@@ -315,12 +323,23 @@ Curl from *inside* the rig (`rig.sh ssh -- 'curl …'`) so the test never
 depends on a host port being free; 5080 is for driving it by hand.
 
 **Deliverables**
-- [ ] `tests/integration/spine_test.sh` green on a fresh rig
-- [ ] The no-TTY hard-fail assertion moved here from Phase 1 (init without mail/backup flags, stdin closed → exit ≠ 0, message names `--with-mail`)
+- [x] `tests/integration/spine_test.sh` green on a fresh rig — the whole
+      path: clean → init → seed → deploy → the page, HTTPS on the default
+      cert, fragment placement and atomicity, no Traefik restart,
+      `versions.log`, network membership, the unrouted-host negative, two
+      failed-deploy cases, and `server status` against reality
+- [x] The no-TTY hard-fail assertion from Phase 1 — **it lives in
+      `tests/integration/server_init_test.sh`**, not here, because that is
+      where the command with the prompt lives. Verified by mutation rather
+      than by eye: with `prompt_bool`'s TTY branch replaced by a silent
+      `return 1`, that suite goes red naming "the no-TTY failure names the
+      flag that would answer it"
 
 **Watch out for:** the fixture needs a git repo with a v-tag (deploy
 resolves versions from tags) — `git init && tag` inside the fixture setup,
-not the hosting repo's own history.
+not the hosting repo's own history. *Handled by copying the fixture to a
+temp dir per run; the scratch `HOME` has no git identity, so the copy sets
+`user.email`, `user.name` and `commit.gpgsign false` explicitly.*
 
 ## Findings
 
@@ -490,6 +509,27 @@ Phase 1 recorded.
   Moving preflight after the layout left the suite green. The review that
   catches these is the one told to construct the failure rather than read
   the diff.
+
+### The habit that actually worked — across all five units
+
+**Counting mutations beats reading assertions.** Every unit in this phase
+was reviewed by someone told to *construct* each failure rather than judge
+the diff, and every unit produced assertions that could not fail — eight in
+total, three of which were hiding real defects. Reading the test never found
+them; breaking the code always did.
+
+The sharpest version arrived in unit E, where the reviewer ran a **survey**
+rather than spot-checks: 36 mutations, 15 survivors. Individually the
+survivors looked like nitpicks; together they said something the defect list
+could not — that the suite pinned the happy path and almost nothing else.
+Two of them were properties the code's own comments named out loud
+(`--apps-path` reaching the server, an image id truncated to 12 digits) and
+neither was pinned by anything.
+
+The cost is low and the yield is high, so it is now the standing bar for
+this repo: **an assertion is not finished until its failure has been
+observed.** Where a mutation cannot be constructed cheaply, say so in the
+report rather than letting the green stand unexamined.
   `docker compose ls --all -q` was described as enumerating "what hosting
   creates"; it lists every compose project on whatever host answered. The
   code was right for the rig and the comment was wrong everywhere, which

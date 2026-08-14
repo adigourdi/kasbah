@@ -57,6 +57,29 @@ its log.
 user-customized `traefik.yml` gets a diff + confirm, not a silent
 replace (`traefik.md` § Ownership).
 
+## Carried in from Phase 2
+
+`hosting server status` exists in minimal form (`lib/server_status.sh`):
+docker/compose versions, the marker, Traefik's state/health/image, and each
+project's last `versions.log` entry. Phase 7 owns the rest, and two items
+need a decision rather than just implementation:
+
+- **The per-project domain.** `cli.md` promised it and it is not printed. It
+  lives in `<apps>/traefik/dynamic/<name>.yml`, so it costs either a YAML
+  parse on a server where `yq` is not a prerequisite, or a Traefik API call
+  with the dashboard credentials. Pick one deliberately — the credentials
+  route also gives certs and router health in the same call, which may make
+  it the cheaper answer overall.
+- **Cert status, disk usage, mail, per-container health.** Straightforward,
+  but they are what turns status from one batched SSH round trip into
+  several. Keep the single-round-trip protocol shape that `server_init` and
+  `status` both use; it is what keeps the rig's `maxstartups 10` from
+  biting.
+
+Also: `status` accepts `--apps-path`, `deploy` does not (carried to Phase 4).
+If Phase 4 puts the apps path in `.hosting/state.json`, `status` should read
+it too rather than keeping two mechanisms.
+
 ## Findings
 
 _(filled during execution)_

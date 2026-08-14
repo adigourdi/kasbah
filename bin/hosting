@@ -75,6 +75,7 @@ Commands:
   check                                      Run structural checks on the project.
   deploy [USER@HOST]                         Ship the working tree and bring it up.
   server init USER@HOST [flags]              Prepare a VPS to host projects.
+  server status USER@HOST                    Report what a prepared VPS is running.
 
 See docs/cli.md for the full planned surface.
 EOF
@@ -90,21 +91,26 @@ dispatch_server() {
             . "$HOSTING_LIB_DIR/server_init.sh"
             cmd_server_init "$@"
             ;;
+        status)
+            . "$HOSTING_LIB_DIR/server_status.sh"
+            cmd_server_status "$@"
+            ;;
         -h|--help)
             cat <<EOF
 Usage: hosting server <subcommand> USER@HOST [args...]
 
 Subcommands:
   init USER@HOST [flags]   Prepare a VPS to host projects.
+  status USER@HOST         Report what a prepared VPS is running (read-only).
 
-Run \`hosting server init --help\` for its flags.
+Run \`hosting server <subcommand> --help\` for its flags.
 EOF
             ;;
         '')
-            die "server: no subcommand given (expected: init)"
+            die "server: no subcommand given (expected: init, status)"
             ;;
         *)
-            die "server: unknown subcommand '$sub' (expected: init)"
+            die "server: unknown subcommand '$sub' (expected: init, status)"
             ;;
     esac
 }

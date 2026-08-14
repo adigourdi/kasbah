@@ -15,6 +15,7 @@ assumes.
 | The SSH user can run `docker` without sudo | Avoids mixed sudo/non-sudo ownership in `/apps/data/` | Hard fail, suggest `usermod -aG docker` |
 | `rsync`, `openssl`, `gzip` available on remote | Used by deploy and env setup | Hard fail |
 | `bash` on the remote | Every hosting step ships a script to `bash -s` over the SSH master | Hard fail |
+| A POSIX userland — `tr`, `cat`, `stat`, `nproc`, `date`, `find` | Every remote step is a shell script; these are assumed present rather than checked, because a box without them cannot run `bash -s` usefully in the first place | Not checked; failure surfaces as the step's own error |
 | Passwordless `sudo` — **only** when the apps path does not exist yet | `/apps` lives outside the deploy user's home, so nobody but root can create it. Once it exists and is owned by that user, init never elevates again | Hard fail naming the two commands to run by hand |
 
 `hosting server init` does **not**:
@@ -267,28 +268,40 @@ the ordering automatically.
 
 ## `hosting server status`
 
-Read-only. Walks `/apps/`, asks docker for container health, reads
-`versions.log` for each project, and prints:
+Read-only — it never creates, modifies or removes anything. Walks the apps
+path, asks docker for each project's container *state* (health is reported
+for Traefik alone, which is the only container hosting gives a healthcheck),
+reads `versions.log` for each project, and prints:
+
+What it prints today:
 
 ```
-VPS: user@vps (connected)
-Docker: 27.3.1, Compose: 2.29.7
-Root: /apps  Data: /apps/data  Disk: 41% used (168G free)
+VPS: you@vps (connected)
+Docker: 29.7.2, Compose: 5.4.0
+Root: /apps  Data: /apps/data
+Marker: hosting 0.1.0-dev, cpu 14.4, mem 54g
 
 Traefik: running (healthy)
-  Dashboard: https://traefik.example.com
-  ACME email: you@example.com
-  Certs: 4 issued (next renewal in 42d)
-
-Mail: running (healthy)
-  MX: mail.example.com
-  Domains: example.com, shop.example.com
+  Image: traefik:v3.7.10 (sha256:9c3b91d5fb77)
+  Container: traefik
 
 Projects:
-  shop           running  v1.3.0   deployed 2026-04-01 (hosting 0.1.0)
-  jellyfin       running  latest   deployed 2026-03-15 (hosting 0.1.0)
-  paperless      stopped  latest   deployed 2026-02-10 (hosting 0.1.0)
+  shop           1/1 running    1.3.0      deploy 2026-04-01T09:12:44+00:00 (hosting 0.1.0)
+  jellyfin       0/1 stopped    2.4.1      deploy 2026-03-15T22:05:10+00:00 (hosting 0.1.0)
 ```
+
+Versions appear exactly as `versions.log` holds them — no `v` prefix, and
+the full ISO timestamp the log records rather than a truncated date, because
+the log is the source of truth and a reformat invites a mismatch. Both the
+image tag and the resolved image id are shown: a tag can be re-pushed under
+the same name, the id cannot.
+
+The fuller report — cert status and expiry, disk usage, the mail stack,
+per-container health — arrives with the rest of the operational surface in
+roadmap v0.2. So does the per-project **domain**, which is not simply
+missing: it lives in each project's Traefik fragment, so printing it means
+parsing YAML on a server where `yq` is not a prerequisite, or asking the
+Traefik API with the dashboard credentials.
 
 ## Idempotency rules
 

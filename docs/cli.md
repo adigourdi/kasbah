@@ -88,14 +88,34 @@ The new owner inherits a plain, working Docker Compose setup; deploy
 history and env tooling leave with hosting. Double confirmation (typed
 hostname). See `server-setup.md` ("Handover / teardown").
 
-### `hosting server status USER@HOST`
+### `hosting server status USER@HOST [--apps-path=<dir>]`
 
-Prints:
+Read-only — it never creates, modifies or removes anything on the server.
+
+Prints today:
 - Docker + Compose versions
-- Traefik status + last cert refresh
-- List of projects under `/apps/` (name, running state, domain, last deploy)
-- Disk usage on `/apps` and `/apps/data`
-- Mail stack status if deployed
+- The server marker: hosting version, paths, resource limits
+- Traefik: running state, health, the image tag it was created from **and**
+  the resolved image id (a tag can be re-pushed; the id cannot)
+- Projects under the apps path — name, running/total containers, and the
+  last `versions.log` entry (action, version, timestamp, hosting version)
+
+`--apps-path` exists because a server prepared with a non-default apps path
+is otherwise uninspectable. `deploy` does not have it yet — see
+`docs/phases/04-ship.md`.
+
+Deferred to roadmap v0.2 (`docs/phases/07-operate.md`):
+- Cert status and last refresh
+- Disk usage on the apps and data paths
+- Mail stack status
+- Per-container health beyond Traefik's
+
+**The project's domain is not printed and is not merely deferred.** It lives
+in `<apps>/traefik/dynamic/<name>.yml`, so printing it means parsing every
+fragment on a server where yq is not a prerequisite, or querying the Traefik
+API with the dashboard credentials. Both are real work with a real
+dependency; whichever a later phase picks, it is a decision rather than an
+omission.
 
 ## Project commands
 
@@ -302,6 +322,10 @@ Referenced elsewhere in the docs but not yet in v0.1:
 - `1` generic failure
 - `2` not a hosting project (no `hosting.yml`)
 - `3` SSH unreachable
-- `4` remote state missing (need `hosting server init` first)
+- `4` remote state missing — no server marker at the apps path. **Not always
+  "run init":** on a server prepared with `--apps-path`, the marker is
+  elsewhere and re-running init would render a second Traefik stack under
+  the frozen `traefik` compose project, recreating the running proxy against
+  it. Commands that exit 4 say so rather than prescribing init.
 - `5` .env drift detected and user declined to fix
 - `6` compliance check failed

@@ -61,8 +61,13 @@ tmpdir="$(mktemp -d)"
 # wins on the deploy path. Left behind, it would follow every later suite into
 # every docker compose call on the rig, so it comes back whatever happens here.
 bashrc_planted=""
+# A second prepared tree, planted outside /apps for the --apps-path case. It is
+# outside everything rig_clean removes, so it comes back off the rig here.
+alt_planted=""
+alt_apps=""
 cleanup() {
     [ -z "$bashrc_planted" ] || rig_ssh "mv -f ~/.bashrc.hosting-unit-d ~/.bashrc" >/dev/null 2>&1
+    [ -z "$alt_planted" ] || rig_ssh "rm -rf '$alt_apps'" >/dev/null 2>&1
     rm -rf "$tmpdir"
 }
 trap cleanup EXIT
@@ -90,11 +95,27 @@ fi
 # --- Helpers --------------------------------------------------------------------
 
 init() { hosting_cli server init "$RIG_TARGET" "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; }
+status() { hosting_cli server status "$RIG_TARGET" "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; }
+status_out() { cat "$tmpdir/out"; }
 deploy() (
     cd "$projdir" || return 2
     hosting_cli deploy "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
 )
 cli_err() { cat "$tmpdir/err"; }
+
+# Everything under <apps>/ that is not one of hosting's own four directories —
+# the list `server status` must reproduce, read off the rig rather than written
+# down here.
+rig_projects() {
+    rig_ssh "cd $apps 2>/dev/null && ls -A | grep -v -x -e .hosting -e data -e backups -e traefik | sort | tr '\n' ' '" 2>/dev/null
+}
+
+# Type, mode, owner, mtime and content of the whole tree. acme.json is left out
+# of both halves: Traefik owns that file and rewrites it on its own schedule, so
+# a digest covering it would fail for something status did not do.
+apps_digest() {
+    rig_ssh "{ find $apps ! -name acme.json -printf '%y %m %u:%g %T@ %p\n' | sort; find $apps -type f ! -name acme.json -exec sha256sum {} + | sort; } | sha256sum" 2>/dev/null
+}
 
 # How many times Traefik has come up inside its container. The observable unit C
 # established: `StartedAt` cannot see a restart performed in the same breath as
@@ -165,6 +186,23 @@ poll_page() {
     done
 }
 
+# --- status on a server hosting has never touched -----------------------------------
+# rig_clean has just removed /apps, so this is the no-marker state itself rather
+# than a manufactured one — and the only moment in this suite when it exists.
+assert '[ "$(rig_ssh "[ -e $apps ] && echo present || echo absent" 2>/dev/null)" = "absent" ]' \
+    "the rig starts with no $apps — else the exit-4 case below proves nothing"
+status; rc=$?
+assert '[ "$rc" = "4" ]' "server status against an unprepared server exits 4, like deploy (exit $rc)"
+assert 'grep -qF "$marker" "$tmpdir/err"' "naming the marker it looked for (said '$(cli_err)')"
+assert 'grep -qF -- "--apps-path" "$tmpdir/err"' \
+    "and the flag that makes a prepared server look unprepared (said '$(cli_err)')"
+# The remedy must not be followable into a disaster: a bare
+# `hosting server init user@host` against a server whose apps path is not /apps
+# renders a second Traefik stack under the frozen `traefik` compose project and
+# takes every site on the host down.
+assert '! grep -qE "hosting server init [A-Za-z0-9._-]+@" "$tmpdir/err"' \
+    "and never prints a runnable bare \`server init\` (said '$(cli_err)')"
+
 # --- A prepared server ------------------------------------------------------------
 init --no-mail --no-backup "${traefik_flags[@]}"; rc=$?
 if [ "$rc" != "0" ]; then
@@ -185,6 +223,19 @@ fi
 # compose files expect them.
 assert '[[ "$cpu_limit" =~ ^[0-9]+\.[0-9]$ ]]' "the marker's cpu_limit is a number (got '$cpu_limit')"
 assert '[[ "$mem_limit" =~ ^[0-9]+[gm]$ ]]'    "the marker's mem_limit carries a unit (got '$mem_limit')"
+
+# --- status on a prepared server with nothing deployed --------------------------------
+# The other state that exists exactly once in this suite: init has run, and no
+# project directory is under /apps yet.
+empty_projects=$(rig_projects)
+assert '[ -z "$empty_projects" ]' \
+    "the rig really has no project directory yet (found '$empty_projects') — else the case below proves nothing"
+status; rc=$?
+assert '[ "$rc" = "0" ]' "server status on a prepared server exits 0 (exit $rc: $(cli_err))"
+assert 'grep -qF "none — no project directory under $apps" "$tmpdir/out"' \
+    "and reports no projects rather than an empty list (said '$(status_out)')"
+assert 'grep -qF "Traefik: running (healthy)" "$tmpdir/out"' \
+    "with the Traefik init just started (said '$(status_out)')"
 
 # --- The project, with a git history of its own -----------------------------------
 projdir="$tmpdir/$project"
@@ -555,6 +606,152 @@ survived_code=$(code_stays "$project_host" 200); stays_rc=$?
 assert '[ "$stays_rc" = "0" ]' \
     "and keeps serving past the reload window, so nothing was quietly rerouted (went to '$survived_code')"
 fix_image
+
+# --- server status matches the rig -----------------------------------------------------
+# Every expectation below is read off the rig moments before the comparison, so
+# a hard-coded version, image or project name cannot make this pass.
+want_docker=$(rig_ssh "docker version --format '{{.Server.Version}}'" 2>/dev/null | tr -d '\r')
+want_compose=$(rig_ssh "docker compose version --short" 2>/dev/null | tr -d '\r')
+want_tstate=$(rig_ssh "docker inspect -f '{{.State.Status}}' traefik" 2>/dev/null | tr -d '\r')
+want_thealth=$(rig_ssh "docker inspect -f '{{.State.Health.Status}}' traefik" 2>/dev/null | tr -d '\r')
+want_image=$(rig_ssh "docker inspect -f '{{.Config.Image}}' traefik" 2>/dev/null | tr -d '\r')
+want_image_id=$(rig_ssh "docker inspect -f '{{.Image}}' traefik" 2>/dev/null | tr -d '\r')
+want_line=$(rig_ssh "tail -1 $apps/$project/versions.log" 2>/dev/null | tr -d '\r')
+read -r want_ts want_action want_version _ want_hosting _ <<<"$want_line"
+want_running=$(rig_ssh "docker ps --filter label=com.docker.compose.project=$project -q | wc -l" 2>/dev/null | tr -d ' \r')
+want_total=$(rig_ssh "docker ps -a --filter label=com.docker.compose.project=$project -q | wc -l" 2>/dev/null | tr -d ' \r')
+want_projects=$(rig_projects)
+want_marker_data=$(jq -r '.data_path // ""' <<<"$(rig_ssh "cat $marker" 2>/dev/null)" 2>/dev/null)
+
+digest_before=$(apps_digest)
+id_before=$(traefik_container_id)
+started_at_before=$(traefik_started_at)
+demo_id_before=$(rig_ssh "docker inspect -f '{{.Id}}' $container" 2>/dev/null)
+
+status; rc=$?
+assert '[ "$rc" = "0" ]' "server status on the deployed rig exits 0 (exit $rc: $(cli_err))"
+assert '[ -n "$want_docker" ] && [ -n "$want_image_id" ] && [ -n "$want_version" ]' \
+    "the rig answered every question the comparison needs (docker '$want_docker', image '$want_image_id', version '$want_version')"
+
+assert 'grep -qF "Docker: $want_docker, Compose: $want_compose" "$tmpdir/out"' \
+    "the versions are the daemon's own (wanted '$want_docker'/'$want_compose', said '$(status_out)')"
+assert 'grep -qF "Root: $apps  Data: $want_marker_data" "$tmpdir/out"' \
+    "the paths are the marker's (wanted '$want_marker_data', said '$(status_out)')"
+assert 'grep -qF "Traefik: $want_tstate ($want_thealth)" "$tmpdir/out"' \
+    "Traefik's state and health are what docker reports (wanted '$want_tstate ($want_thealth)', said '$(status_out)')"
+# `-x`, and a second assertion that the full id is absent: the untruncated id
+# *contains* the truncated one, so a substring match here would pass against a
+# line that prints all 71 characters.
+assert 'grep -qxF "  Image: $want_image (${want_image_id:0:19})" "$tmpdir/out"' \
+    "and the image is the one it is actually running (wanted '$want_image ${want_image_id:0:19}', said '$(status_out)')"
+assert '! grep -qF "$want_image_id" "$tmpdir/out"' \
+    "shortened to twelve hex digits, not printed whole (said '$(grep Image: "$tmpdir/out")')"
+
+# The project list is the set of directories that are there, not a name this
+# file knows: a status that printed `demo` because someone typed it here would
+# pass the row assertion below and fail this one.
+listed=$(sed -n '/^Projects:/,/^$/p' "$tmpdir/out" | sed -n 's/^  \([^ ]*\) .*/\1 /p' | sort | tr -d '\n')
+assert '[ "$listed" = "$want_projects" ]' \
+    "the projects listed are the directories under $apps (wanted '$want_projects', listed '$listed')"
+assert '[ "$want_total" != "0" ] && [ "$want_running" = "$want_total" ]' \
+    "the fixture has every container it declares running ($want_running/$want_total) — which is the state the word below is asserted for"
+assert 'grep -qE "^  $project +$want_running/$want_total running +$want_version " "$tmpdir/out"' \
+    "the row carries the container counts and the version versions.log holds
+        wanted: $project $want_running/$want_total running $want_version
+        line:   $want_line
+        said:   $(grep "^  $project" "$tmpdir/out")"
+# The timestamp is what separates the last entry from the first: this project
+# deployed the same version twice, so a status reading line 1 would print the
+# right version off the wrong deploy.
+assert 'grep -qF "$want_action $want_ts (hosting ${want_hosting#hosting=})" "$tmpdir/out"' \
+    "and the action, timestamp and hosting version of the *last* entry
+        wanted: $want_action $want_ts (hosting ${want_hosting#hosting=})
+        said:   $(grep "^  $project" "$tmpdir/out")"
+
+# Read-only, proved on a real server rather than argued: the tree is unmoved to
+# the mtime, and neither container was recreated.
+assert '[ "$(apps_digest)" = "$digest_before" ]' \
+    "server status changed nothing under $apps — not a mode, not a byte, not an mtime"
+assert '[ "$(traefik_container_id)" = "$id_before" ]' "and did not recreate Traefik"
+assert '[ "$(traefik_started_at)" = "$started_at_before" ]' "or restart it"
+demo_id_after=$(rig_ssh "docker inspect -f '{{.Id}}' $container" 2>/dev/null)
+assert '[ "$demo_id_after" = "$demo_id_before" ]' \
+    "or touch the project's container"
+
+# The digest is only evidence if it can tell. One touch inside a project must
+# break it. The mtime is left moved: nothing reads that file again, and
+# rig_clean removes the tree at the end of the suite.
+rig_ssh "touch $apps/$project/versions.log" >/dev/null 2>&1
+assert '[ "$(apps_digest)" != "$digest_before" ]' \
+    "the digest notices a bare touch — else the read-only assertion above proves nothing"
+
+# --- The word in the state column, against a real docker ---------------------------------
+# Everything the rig has ever shown this suite is a project with every container
+# up, so `running` is the only word the deploy path can produce — and a column
+# that said `0/1 running` for a dead site would pass every assertion above.
+# Stopping the fixture's container is the cheapest way to have docker disagree.
+rig_ssh "docker stop $container" >/dev/null 2>&1
+stopped_state=$(rig_ssh "docker inspect -f '{{.State.Status}}' $container" 2>/dev/null | tr -d '\r')
+assert '[ -n "$stopped_state" ] && [ "$stopped_state" != "running" ]' \
+    "the fixture's container really is down (docker says '$stopped_state') — else the word below proves nothing"
+status; rc=$?
+assert '[ "$rc" = "0" ]' "status reports with a project's container stopped (exit $rc: $(cli_err))"
+assert 'grep -qE "^  $project +0/1 stopped " "$tmpdir/out"' \
+    "and calls it stopped rather than '0/1 running' (said '$(grep "^  $project" "$tmpdir/out")')"
+
+rig_ssh "docker start $container" >/dev/null 2>&1
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ "$(rig_ssh "docker inspect -f '{{.State.Status}}' $container" 2>/dev/null | tr -d '\r')" = running ] && break
+    sleep 1
+done
+status; rc=$?
+assert 'grep -qE "^  $project +1/1 running " "$tmpdir/out"' \
+    "and back to running once it is up again — the column tracks docker both ways (said '$(grep "^  $project" "$tmpdir/out")')"
+
+# --- --apps-path, end to end -----------------------------------------------------------
+# The one flag status has that deploy does not. Parsed correctly and never sent,
+# it would look identical from here — so the check is that a *second* prepared
+# tree, somewhere rig_clean does not reach, is the one read.
+#
+# Built by hand rather than by init: what is under test is that the flag steers
+# every read, not that init can lay out a second server. It lives outside /apps
+# and comes back off the rig in the EXIT trap whatever happens.
+alt_apps=/home/stevedore/hosting-alt-apps
+alt_line='2026-08-14T00:00:00+00:00 deploy 7.7.7 no-backup hosting=9.9.9 digest=- future=xyz'
+# The marker of the real server with its two paths moved, so the data directory
+# is `store` — a name no static list can hold, and the case that proves the
+# bind-mount root is filtered from the marker rather than from a hard-coded list.
+alt_marker=$(jq --arg a "$alt_apps" '.apps_path = $a | .data_path = ($a + "/store")' \
+    <<<"$(rig_ssh "cat $marker" 2>/dev/null)" 2>/dev/null)
+if [ -n "$alt_marker" ] && rig_ssh "mkdir -p $alt_apps/.hosting $alt_apps/altproj $alt_apps/store && printf '%s\n' '$alt_line' > $alt_apps/altproj/versions.log && cat > $alt_apps/.hosting/server.json" >/dev/null 2>&1 <<<"$alt_marker"; then
+    alt_planted=yes
+    status --apps-path="$alt_apps"; rc=$?
+    assert '[ "$rc" = "0" ]' "server status --apps-path reads a server prepared elsewhere (exit $rc: $(cli_err))"
+    assert 'grep -qF "Root: $alt_apps  Data: $alt_apps/store" "$tmpdir/out"' \
+        "and reports that tree's own paths (said '$(status_out)')"
+    assert 'grep -qE "^  altproj +no containers +7\.7\.7 +deploy 2026-08-14T00:00:00\+00:00 \(hosting 9\.9\.9\)$" "$tmpdir/out"' \
+        "the project it lists is the one under --apps-path, with its own log line (said '$(status_out)')"
+    assert '! grep -qE "^  $project " "$tmpdir/out"' \
+        "and not the one under $apps — the flag steered the whole read (said '$(status_out)')"
+    assert '! grep -qE "^  store " "$tmpdir/out"' \
+        "the marker's own data directory is not a project, whatever it is called (said '$(status_out)')"
+    # The forward-compatibility rule, end to end: that line carries a pair this
+    # hosting has never heard of, and it is ignored rather than printed or
+    # choked on.
+    assert '! grep -qF "future=xyz" "$tmpdir/out"' \
+        "a trailing pair this version does not know is ignored, not echoed (said '$(status_out)')"
+    # And the default is still the default: the flag changed this run, not the
+    # command.
+    status; rc=$?
+    assert '[ "$rc" = "0" ]' "and without the flag status is back on $apps (exit $rc: $(cli_err))"
+    assert 'grep -qE "^  $project " "$tmpdir/out"' "listing $project again (said '$(status_out)')"
+    assert '! grep -qE "^  altproj " "$tmpdir/out"' "and not altproj (said '$(status_out)')"
+
+    rig_ssh "rm -rf $alt_apps" >/dev/null 2>&1 && alt_planted=""
+    assert '[ -z "$alt_planted" ]' "the second tree was removed from the rig"
+else
+    assert 'false' "could not plant a second prepared tree at $alt_apps on the rig"
+fi
 
 # --- Leave the rig as it was found, but only on success ------------------------------------
 if [ "$fail" -eq 0 ]; then
