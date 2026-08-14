@@ -47,8 +47,8 @@ labels; `hosting check` rejects them.
 The Traefik stack lives at `/apps/traefik/` on the VPS and is managed by
 `hosting server init / status`.
 
-**`traefik.yml` and `_shared.yml` are hosting's, and every `server init`
-re-renders them.** A hand edit to either is reverted on the next run, with
+**`compose.yml`, `traefik.yml` and `_shared.yml` are hosting's, and every
+`server init` re-ships any of them whose bytes differ.** A hand edit to either is reverted on the next run, with
 no backup — so treat them as generated files, not as configuration you own.
 What survives a re-run is exactly the three values init reads back out of
 them: the dashboard domain, the ACME email, and the basic-auth hash.
@@ -251,5 +251,8 @@ server status` surfaces it.
 hosting server upgrade-traefik user@vps --version=v3.7
 ```
 
-(Roadmap v0.3.) For now, edit `/apps/traefik/compose.yml` directly on
-the VPS and `docker compose up -d`.
+(Roadmap v0.3.) Until then, change the pinned tag in hosting's own
+`templates/traefik/compose.yml` and re-run `hosting server init` — **not**
+the copy on the VPS. `compose.yml` is one of the three hosting-owned files
+init re-ships whenever its bytes differ, so an edit made on the server is
+reverted by the next init, without a backup and without a warning.

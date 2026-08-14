@@ -37,7 +37,11 @@ _is_fqdn() {
 # Exit codes — shared contract, see docs/cli.md "Exit codes".
 HOSTING_EXIT_NO_PROJECT=2       # no hosting.yml in cwd
 HOSTING_EXIT_SSH_UNREACHABLE=3  # the target host did not answer ssh
-HOSTING_EXIT_NO_REMOTE_STATE=4  # no server marker — `hosting server init` first
+# No server marker at the apps path. Deliberately not "run init": on a server
+# prepared with --apps-path the marker is elsewhere, and re-running init would
+# render a second Traefik under the frozen `traefik` compose project and
+# recreate the running proxy against it. Callers say which situation it is.
+HOSTING_EXIT_NO_REMOTE_STATE=4
 HOSTING_EXIT_COMPLIANCE_FAIL=6  # `hosting check` recorded one or more failures
 
 # Where the server marker lives when nobody said otherwise. `server init`

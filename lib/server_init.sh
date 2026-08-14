@@ -269,7 +269,10 @@ _server_init_parse_args() {
             *)
                 [ -z "$_SI_TARGET" ] \
                     || die "server init: unexpected argument '$1' (USER@HOST is given once)"
-                _SI_TARGET="$1"
+                # Stripped here as well as in ssh_target_parse: a target read
+                # out of a CRLF file is otherwise named with a stray carriage
+                # return in every message this command prints before connecting.
+                _SI_TARGET="${1%$'\r'}"
                 ;;
         esac
         shift

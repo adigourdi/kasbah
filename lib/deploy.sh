@@ -346,6 +346,7 @@ _deploy_read_marker() {
 
     out=$(ssh_script "$HOSTING_DEFAULT_APPS_PATH" <<'REMOTE'
 set -uo pipefail
+export LC_ALL=C
 marker="$1/.hosting/server.json"
 
 if [ -e "$marker" ] && [ ! -f "$marker" ]; then

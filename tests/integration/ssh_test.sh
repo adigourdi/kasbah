@@ -186,10 +186,14 @@ kv parsed_host "$SSH_HOST"
 remote_user=$(ssh_run id -un); kv remote_user "$remote_user"
 
 shopt -s nullglob
-socks=("$HOME"/.ssh/cm-*)
+kv ctl_dir "$_SSH_CTL_DIR"
+socks=("$_SSH_CTL_DIR"/*)
 kv sockets_open "${#socks[@]}"
 kv socket_path "${socks[0]:-none}"
 if [ "${#socks[@]}" -gt 0 ] && [ -S "${socks[0]}" ]; then kv socket_is_socket yes; else kv socket_is_socket no; fi
+# Nothing of hosting's goes in the user's ~/.ssh any more.
+home_socks=("$HOME"/.ssh/cm-*)
+kv home_sockets "${#home_socks[@]}"
 
 # Quotes, backticks, $, a percent, an embedded newline and a nested quoted
 # heredoc — the shapes a remote deploy script is actually made of.
@@ -218,7 +222,7 @@ kv rsync_readback "$(ssh_run cat /tmp/hosting-rsync-probe/hello.txt)"
 ssh_run rm -rf /tmp/hosting-rsync-probe
 
 ssh_disconnect
-socks_after=("$HOME"/.ssh/cm-*)
+socks_after=("$_SSH_CTL_DIR"/*)
 kv sockets_after "${#socks_after[@]}"
 exit 0
 DRIVER
@@ -240,8 +244,8 @@ while IFS= read -r line; do
     case $line in *=*) fact[${line%%=*}]=${line#*=} ;; esac
 done <<<"$transport_out"
 missing=()
-for key in target parsed_user parsed_host remote_user sockets_open socket_path \
-           socket_is_socket payload rsync_rc rsync_readback sockets_after; do
+for key in target parsed_user parsed_host remote_user ctl_dir sockets_open socket_path \
+           socket_is_socket home_sockets payload rsync_rc rsync_readback sockets_after; do
     [ -n "${fact[$key]+set}" ] || missing+=("$key")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
@@ -257,11 +261,19 @@ assert '[ "${fact[remote_user]}" = "stevedore" ]'  "the session lands as stevedo
 
 assert '[ "${fact[sockets_open]}" = "1" ]'         "one control socket exists while connected (got '${fact[sockets_open]}')"
 assert '[ "${fact[socket_is_socket]}" = "yes" ]'   "the control path is a socket, not a stray file"
-assert '[[ "${fact[socket_path]}" == "$RIG_HOME/.ssh/cm-"* ]]' \
-    "the control socket lives under the scratch HOME (got '${fact[socket_path]}')"
-assert '[ "${#fact[socket_path]}" -lt 104 ]' \
-    "the control path fits a unix socket (${#fact[socket_path]} chars: ${fact[socket_path]})"
+assert '[[ "${fact[socket_path]}" == "${fact[ctl_dir]}/"* ]]' \
+    "the control socket lives in the directory the run made for it (got '${fact[socket_path]}')"
+assert '[[ "${fact[ctl_dir]}" == "${TMPDIR:-/tmp}/hosting-ssh."* ]]' \
+    "and that directory is a private one under TMPDIR (got '${fact[ctl_dir]}')"
+assert '[ "${fact[home_sockets]}" = "0" ]' \
+    "no control socket is left in the user's ~/.ssh (found ${fact[home_sockets]})"
+# 90, not 104: the master listens on `<path>.<16 random chars>` and renames it
+# into place, so sun_path's 108 bytes are spent before the path is.
+assert '[ "${#fact[socket_path]}" -le 90 ]' \
+    "the control path fits what a master can bind (${#fact[socket_path]} chars: ${fact[socket_path]})"
 assert '[ "${fact[sockets_after]}" = "0" ]'        "an explicit disconnect removes the master (got '${fact[sockets_after]}')"
+assert '[ ! -e "${fact[ctl_dir]}" ]' \
+    "and the directory goes with the process (still there: ${fact[ctl_dir]})"
 
 expected_payload='it'"'"'s "quoted"|backticked|$100 & 50%|one+two|one|two three|/home/stevedore'
 assert '[ "${fact[payload]}" = "$expected_payload" ]' \
@@ -271,6 +283,83 @@ assert '[ "${fact[payload]}" = "$expected_payload" ]' \
 
 assert '[ "${fact[rsync_rc]}" = "0" ]'                              "rsync over the shared master succeeds (exit ${fact[rsync_rc]})"
 assert '[ "${fact[rsync_readback]}" = "rsynced through the master" ]' "the rsynced file is on the rig (got '${fact[rsync_readback]}')"
+
+# --- Two runs against one server do not touch each other ----------------------
+# The defect this pins: `ssh -O exit` closes a master **and every session
+# multiplexed over it**, and hosting used to name its socket `~/.ssh/cm-%C` —
+# user, host and port, nothing about the process. So any second hosting command
+# against the same server shared the first one's master, and tore it down on its
+# way out. Measured before the fix: a read-only `server status` that exited 4 and
+# changed nothing, fired six seconds into a `server init`, killed the init's
+# remote step (255), which then reported "could not start Traefik" about a
+# Traefik that was `Up 21 seconds (healthy)` and left the server with no marker.
+#
+# Two library-level runs, exactly that shape: the holder is mid-command when the
+# visitor connects, works and tears its own master down.
+cat > "$tmpdir/holder.sh" <<'DRIVER'
+set -uo pipefail
+. "$HOSTING_LIB_DIR/common.sh"
+. "$HOSTING_LIB_DIR/ssh.sh"
+
+ssh_connect "$1"
+printf 'holder_ctl=%s\n' "$_SSH_CTL_DIR"
+printf 'holder_ready=yes\n'
+# Long enough that the visitor's whole run — connect, remote step, teardown —
+# happens inside it. The output is what proves the session was not cut: a killed
+# master takes the session with it, and ssh exits 255 having printed nothing.
+out=$(ssh_script <<'REMOTE'
+sleep 8
+printf 'survived\n'
+REMOTE
+); rc=$?
+printf 'holder_rc=%s\n' "$rc"
+printf 'holder_out=%s\n' "$out"
+DRIVER
+
+cat > "$tmpdir/visitor.sh" <<'DRIVER'
+set -uo pipefail
+. "$HOSTING_LIB_DIR/common.sh"
+. "$HOSTING_LIB_DIR/ssh.sh"
+
+ssh_connect "$1"
+printf 'visitor_ctl=%s\n' "$_SSH_CTL_DIR"
+printf 'visitor_user=%s\n' "$(ssh_run id -un)"
+# Not called explicitly: the EXIT trap is what every command relies on, and the
+# trap is what fired in the case above.
+DRIVER
+
+rig_env_bash "$tmpdir/holder.sh" "$RIG_TARGET" >"$tmpdir/holder.out" 2>"$tmpdir/holder.err" &
+holder_pid=$!
+# Wait for the holder's remote command to be under way rather than sleeping a
+# guessed interval: the visitor has to arrive while there is something to kill.
+for _ in $(seq 1 100); do
+    grep -qF holder_ready "$tmpdir/holder.out" 2>/dev/null && break
+    sleep 0.1
+done
+sleep 1
+
+visitor_out=$(rig_env_bash "$tmpdir/visitor.sh" "$RIG_TARGET" 2>"$tmpdir/visitor.err")
+visitor_rc=$?
+wait "$holder_pid"; holder_rc=$?
+holder_out=$(<"$tmpdir/holder.out")
+
+assert '[ "$visitor_rc" = "0" ]' \
+    "the second run works while the first is mid-command (exit $visitor_rc: $(cat "$tmpdir/visitor.err"))"
+assert 'grep -qxF "visitor_user=stevedore" <<<"$visitor_out"' \
+    "and really did reach the server (got '$visitor_out')"
+
+holder_ctl=$(sed -n 's/^holder_ctl=//p' <<<"$holder_out")
+visitor_ctl=$(sed -n 's/^visitor_ctl=//p' <<<"$visitor_out")
+assert '[ -n "$holder_ctl" ] && [ "$holder_ctl" != "$visitor_ctl" ]' \
+    "the two runs used different control directories ('$holder_ctl' and '$visitor_ctl')"
+
+assert '[ "$holder_rc" = "0" ]' "the first run finished (exit $holder_rc: $(cat "$tmpdir/holder.err"))"
+assert 'grep -qxF "holder_rc=0" <<<"$holder_out"' \
+    "its remote command was not killed by the second run's teardown (got '$(grep -F holder_rc= <<<"$holder_out")')"
+assert 'grep -qxF "holder_out=survived" <<<"$holder_out"' \
+    "and returned its output whole (got '$(grep -F holder_out= <<<"$holder_out")')"
+assert '[ ! -e "$holder_ctl" ] && [ ! -e "$visitor_ctl" ]' \
+    "both control directories are gone afterwards ($holder_ctl, $visitor_ctl)"
 
 # --- The real ~/.ssh/config is out of reach -----------------------------------
 # Proven from ssh's own account of which files it read, not from this file's

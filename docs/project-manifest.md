@@ -149,8 +149,11 @@ as `name`. See `backup.md`.
 
 Rsync list applied on every deploy. Each entry is either `src` or `src -> dst`
 (relative to project root on dev; `/apps/<name>/` on VPS). Trailing `/` means
-"recurse". Hosting always syncs the manifest itself and the minimal helper
-scripts (`setup-env.sh`, `remote-deploy.sh`) — you don't list those.
+"recurse". Hosting always syncs the minimal helper scripts — you don't list those.
+Today that is `remote-deploy.sh` alone; `setup-env.sh` arrives with the env
+template system in roadmap v0.1's env phase. The manifest itself is **not**
+shipped: nothing on the server reads it yet, and `hosting.yml` in a
+project's sync list would be a second copy to drift.
 
 The Traefik dynamic config (`traefik-dynamic.yml` at project root) is
 **not** listed here. Hosting rsyncs it directly to

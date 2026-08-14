@@ -182,8 +182,9 @@ any remote operation and reuse it for every subsequent `ssh` / `rsync` /
 `scp` in the same run:
 
 ```bash
+ctl="$(mktemp -d "${TMPDIR:-/tmp}/hosting-ssh.XXXXXX")"   # 0700, one per process
 ssh -o ControlMaster=auto \
-    -o ControlPath="$HOME/.ssh/cm-%C" \
+    -o ControlPath="$ctl/m1" \
     -o ControlPersist=60s \
     -o ConnectTimeout=10 \
     -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
@@ -193,17 +194,36 @@ ssh -o ControlMaster=auto \
 Turns ~5× TCP+TLS handshake overhead per deploy (reachability check,
 mkdir, rsync, env check, mail claim, remote-deploy) into one.
 
-Three details in that command are load-bearing:
+Four details in that command are load-bearing:
 
-- **`%C` (a hash), not `%r@%h:%p`.** The socket path is a Unix domain
-  socket, capped near 104 characters; a long user or hostname silently
-  overflows it and multiplexing stops working with no error.
-- **`$HOME`, not `~`.** OpenSSH expands a leading `~` from the *passwd
-  entry*, not the environment, so `~/.ssh/cm-%C` ignores an overridden
-  `HOME` and writes into the invoking user's real `~/.ssh`. Measured on
-  OpenSSH 9.6p1. The same rule governs which per-user `ssh_config` is
-  read, which is why the integration suite reaches the rig with `ssh -F`
-  rather than by pointing `HOME` somewhere else.
+- **The socket path must be unique per *process*, and no `%` token is.**
+  Every expansion ssh offers — `%C`, `%h`, `%r`, `%p`, `%d` — is a
+  function of the target and the invoking user. Two hosting commands run
+  against the same server therefore compute the same path and share one
+  master, and `ssh -O exit` closes a master **together with every session
+  multiplexed over it, including another process's**. Measured: a
+  read-only `hosting server status` finishing its run killed a concurrent
+  `hosting server init` mid-step, which then reported a Traefik that was
+  in fact healthy and left the server with no marker. A `mktemp -d`
+  directory cannot be computed by another process, and the counter inside
+  it cannot repeat within this one — a name derived from the target
+  repeats on a second `ssh_connect`, and a stale socket makes the next
+  master silently fall back to no multiplexing at all.
+- **The usable path budget is 90 bytes, not 108.** `sun_path` is 108, but
+  the master binds `<path>.<16 random chars>` and renames it into place.
+  Measured on OpenSSH 9.6p1: 90 connects, 91 fails with `unix_listener:
+  path … too long for Unix domain socket`. `/tmp/hosting-ssh.XXXXXX/m1`
+  spends 26 of it; `~/.ssh/cm-` plus a 40-character `%C` spent 49 before
+  the home directory was even counted.
+- **`TMPDIR`, not `~/.ssh`.** The socket is worth exactly one run. It also
+  keeps hosting from creating anything in the user's `~/.ssh`, and
+  sidesteps the fact that OpenSSH expands a leading `~` from the *passwd
+  entry* rather than the environment — so `~/.ssh/cm-%C` ignores an
+  overridden `HOME` and writes into the real home. (That same rule governs
+  which per-user `ssh_config` is read, which is why the integration suite
+  reaches the rig with `ssh -F` rather than by pointing `HOME` elsewhere.)
+  A `TMPDIR` containing whitespace or a `%` is refused rather than
+  escaped: rsync splits `-e` on spaces, and ssh reads `%` as a token.
 - **`ConnectTimeout` bounds setup only** — including the banner exchange,
   but not an established session. A remote command that wedges after
   connecting is unbounded without `ServerAlive*`.

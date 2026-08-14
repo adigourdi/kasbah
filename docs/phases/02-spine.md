@@ -87,12 +87,20 @@ limits). What Phase 1 learned that lands on this phase:
   script is run by hand from arbitrary shells on a workstation carrying
   nineteen unrelated containers, and a destructive verb there is one typo
   from disaster; inside the test harness it is unreachable by hand. And it
-  enumerates (`docker compose ls -q` → `down -v` per project) rather than
-  sweeping (`docker rm -f $(docker ps -aq)`, prunes). The rig's dockerd is
-  a nested daemon, so a sweep *would* be contained — but the containment
-  rests entirely on the command reaching the far side, which is precisely
-  the assumption not worth betting the owner's `shop-*` stack on.
-  A targeted payload is harmless even if it escapes.
+  works by *enumeration* — `docker compose ls -q`, then `down -v` per
+  project — rather than by wildcard: no `docker rm -f $(docker ps -aq)`, no
+  prunes. The rig's dockerd is a nested daemon, so a wildcard sweep *would*
+  be contained, but the containment rests entirely on the command reaching
+  the far side, which is precisely the assumption not worth betting the
+  owner's `shop-*` stack on. An enumerated payload is harmless even if
+  it escapes.
+
+  To be exact about what that enumeration covers, since this paragraph and
+  the code comment drifted apart once already: it tears down **every**
+  compose project the rig's daemon reports, whoever created it — the
+  breadth of a sweep, by the mechanism of an enumeration. On a disposable
+  fake VPS the breadth is the point; the mechanism is what would keep it
+  harmless anywhere else.
 - **`templates/remote-deploy.sh` is introduced thin in 2.4** (compose up +
   the versions.log line) rather than inlined over SSH, so Phase 4 grows it
   instead of rewriting the whole VPS side of deploy. `build-deploy.md`
@@ -129,11 +137,23 @@ limits). What Phase 1 learned that lands on this phase:
    form 2.4 warns against. It becomes `%C`.
 
 ## Exit criteria
-- [ ] On a fresh rig: `server init` → deploy fixture → `curl -H 'Host: demo.test' localhost:5080` returns the fixture page, routed by Traefik (the rig's published HTTP port — see 01-rig.md; the suite itself curls from inside the rig, so it doesn't depend on the host port being free)
-- [ ] The Traefik container has **no docker socket mounted** (asserted by the integration test)
-- [ ] Re-running `server init` is a no-op (idempotency rules in `server-setup.md`)
-- [ ] `/apps/.hosting/server.json` exists with computed 90% limits
-- [ ] `versions.log` has one well-formed deploy line (frozen fields + `hosting=` + `digest=-`)
+
+Walked by hand against the real rig at phase close, from a cleaned rig, in
+one sitting — not inferred from the suites having passed.
+
+- [x] On a fresh rig: `server init` → deploy fixture → `curl -H 'Host: demo.test' localhost:5080` returns the fixture page, routed by Traefik — returns `served-by-demo-web-through-the-file-provider` **from the host**, on the rig's published port. That it is genuinely *through Traefik* is separately established: `demo-web` publishes no host port at all (`ports={"80/tcp":null}`), Traefik alone binds :80/:443, and an unrouted `Host:` on the same port gets Traefik's own 404
+- [x] The Traefik container has **no docker socket mounted** — three mounts (`traefik.yml`, `dynamic/`, `acme.json`), zero matching `docker.sock`. The integration assertion is fenced by positive mount controls, so it cannot pass against an empty list
+- [x] Re-running `server init` is a no-op — a second init **with no Traefik flags and stdin closed** left `/apps` byte-identical (`46e44dd4…dff36f` before and after, digest over type, mode, owner and content) and Traefik's `StartedAt` unmoved at `2026-08-14T02:02:55.301528274Z`. It reported `credentials reused` and `nothing re-rendered`; the page still served afterwards. That path is the real test, since bcrypt salts randomly and a re-render would change the tree
+- [x] `/apps/.hosting/server.json` exists with computed 90% limits — `cpu_limit 14.4`, `mem_limit 54g` against the rig's own 16 cores and 63624052 kB
+- [x] `versions.log` has one well-formed deploy line (frozen fields + `hosting=` + `digest=-`) — `2026-08-14T02:03:02+00:00 deploy 1.0.0 no-backup hosting=0.1.0-dev digest=-`
+
+**Not proven here, and not tickable on a container:** ACME issuance (no
+public DNS — Traefik serves its default cert and Let's Encrypt rejects the
+account outright), and the resource limits actually being *enforced* — the
+rig's cgroup root is in threaded mode, so any container with `--cpus` or
+`--memory` fails to start and the fixture must seed `0`. R01/R02 are
+computed and written correctly; that they bind is Phase 6's to show, on a
+real VPS. Both are recorded in `tests/rig/README.md`.
 
 ## Execution order
 
@@ -271,9 +291,10 @@ handling is Phase 3; hooks/backup/health are Phase 4). Stock-only.
 - [x] `templates/remote-deploy.sh`, thin: `compose -p <name> up -d
       --remove-orphans` plus one log line. Phase 4 extends it
 
-**Watch out for:** ControlPath length limits (~104 chars) — use `%C`
-hashing, not `%r@%h:%p`, or long hostnames break multiplexing silently.
-*Handled in unit A; `build-deploy.md`'s example was wrong in both halves.*
+**Watch out for:** ControlPath length limits — real, but the plan's `%C`
+remedy was itself wrong, and the group review is what caught it. See the
+Findings: `%C` is unique per *target*, and the socket has to be unique per
+*process*. The usable budget is 90 bytes, not ~104.
 
 **What actually bit: the fragment shipped too early.** A router registers
 the moment the file lands, whether or not anything is behind it — so any
@@ -392,6 +413,63 @@ An address with a *real* TLD would register an account per fresh
 `acme.json` and walk into the 10-per-IP-per-3h limit — a flake that would
 arrive looking like a Traefik bug. Keep test emails on `.test`.
 
+### From the phase-close group review — the seams
+
+Five units were each reviewed in isolation and each approved. A sixth
+reviewer that had seen none of those rounds judged them together and found
+what per-unit review structurally cannot.
+
+- **The transport was a remote kill switch between hosting processes.**
+  `ControlPath=$HOME/.ssh/cm-%C` looked careful — `%C` was chosen precisely
+  to avoid the 104-byte overflow the plan warned about. But `%C` hashes
+  user, host and port and *nothing about the process*, so two hosting
+  commands against one server shared a socket, and `ssh -O exit` closes a
+  master **together with every session multiplexed over it, including
+  another process's**. Measured: a read-only `hosting server status`
+  finishing its run killed a concurrent `hosting server init` mid-step. The
+  init reported a Traefik that was in fact `Up 21 seconds (healthy)`, left
+  `/apps/.hosting/` empty, and both commands then refused the server with
+  "Do not re-run init until you know which" — while re-running init was
+  exactly the fix.
+
+  Unit A owned the transport, unit B init, unit E status; each was correct
+  alone. `flock` in Phase 4 would not have helped, because the trigger is a
+  read-only command no lock is ever held for. The socket now lives in a
+  per-process `mktemp -d` under `TMPDIR`, named by a counter: no `%` token
+  ssh offers is process-specific, so no expansion could have fixed it.
+
+  Two measurements fell out. The usable `sun_path` budget is **90 bytes,
+  not 108** — the master binds `<path>.<16 random chars>` and renames — and
+  `~/.ssh/cm-` plus a 40-character `%C` had already spent 49 of it before
+  the home directory was counted. And a name derived from the target
+  repeats when `ssh_connect` runs twice, where a stale socket makes the
+  next master silently fall back to no multiplexing at all; a counter
+  cannot.
+
+- **The phase's proudest fix had no unit test.** "The fragment ships last"
+  is the 502 bug this phase is most pleased to have caught. Moving
+  `_deploy_sync_fragment` back before the remote step left `./test.sh` at
+  **10/10 PASS** — only the integration suite noticed. Behind it, the whole
+  post-marker half of `cmd_deploy` had zero unit coverage, because the ssh
+  stub always returned exit 3 or an unparseable marker and the happy path
+  was unreachable. The phase's own standing bar, missed by the phase.
+
+- **A test can pass for the wrong reason and look hermetic.** A block in
+  `server_init_test.sh` whose comment claimed hermeticity had no ssh stub
+  on `PATH`, so it did a real DNS lookup for `hosting-unit-test.invalid`
+  and its `[ "$rc" != "0" ]` assertions passed on the lookup failing — not
+  on the guard under test. The fix is the one `deploy_test.sh` already
+  used: assert the ssh log is *empty*, with a positive control proving the
+  stub is really on `PATH`.
+
+- **Docs reconciled unit by unit still drift as a set.** Each unit fixed
+  the docs it touched; nobody owned the whole. `overview.md` still drew the
+  Traefik `.env` this phase proved cannot exist, `roadmap.md` still
+  promised to build it, and `traefik.md` told operators to edit
+  `/apps/traefik/compose.yml` on the server — a file `server init` silently
+  re-ships. That last one was in the *same file* as unit C's new ownership
+  paragraph, 200 lines below it.
+
 ### Two facts about the rig, learned here
 
 `curl`, `openssl` and `base64` are present; **`bc` is not** (use
@@ -414,8 +492,8 @@ Phase 1 recorded.
   in play and control sockets land in the owner's `~/.ssh`. Isolation
   needs `-F`, which does suppress both the per-user and the system config
   — under the harness ssh reads only the scratch config and the rig's.
-  `lib/ssh.sh` spells the control path `$HOME/.ssh/cm-%C` for the same
-  reason.
+  `lib/ssh.sh` therefore never reads `HOME` at all — see the group-review
+  finding below, which moved the socket out of `~/.ssh` entirely.
 
 - **`-F` does not sandbox a host the config does not name.** An alias with
   no matching block falls through to the built-in defaults — the real

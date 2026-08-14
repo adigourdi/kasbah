@@ -20,7 +20,7 @@ the multi-project layer.
   - Folder layout (`/apps/`, `/apps/data/`, `/apps/backups/`)
   - `acme.json` touched as file
   - Traefik compose + config templates
-  - Interactive `.env` setup for Traefik
+  - Interactive `.env` setup for projects (Traefik itself needs none — it interpolates nothing)
   - Health wait
 - Server marker `/apps/.hosting/server.json` + resource-limit
   computation (90% of host cores/RAM)

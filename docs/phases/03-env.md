@@ -85,6 +85,19 @@ Two things unit D left for this phase, with the evidence warm:
   are ones the host cannot honour, and the integration test for it has to
   probe rather than assume. R01/R02 enforcement is Phase 6's to prove.
 
+- **The `HOSTING_` drift exemption is documented but not implemented, and
+  Phase 2 made it reachable.** `compliance.md` and `env-template.md` both
+  say `HOSTING_`-prefixed keys are exempt from E02/E03 and from drift;
+  `lib/check.sh` diffs raw key sets with no prefix filter. It was
+  unreachable until this phase's fixture seeded `HOSTING_CPU_LIMIT` and
+  `HOSTING_MEM_LIMIT` into a `.env`, which now produces
+  `⚠ .env has extra keys not in .env.prod.example: HOSTING_CPU_LIMIT
+  HOSTING_MEM_LIMIT`. Warn-level, so exit stays 0 — but task 3.3 already
+  owns the fix and its test ("`.env` with extra `HOSTING_CPU_LIMIT` shows
+  no drift"). Do it there, and check both directions: the exemption has to
+  hold for a key *missing* from the template as well as one *extra* in the
+  `.env`.
+
 - **The `.env` precondition is checked before anything is shipped, and
   that ordering is load-bearing.** Unit D originally checked it after the
   rsyncs and observed the result: the Traefik fragment was already live,

@@ -12,7 +12,7 @@ during execution.
 |---|---|---|
 | 0 | [Ground](00-ground.md) | **Done.** Scaffold, install, manifest/state, init-project, full `check`, docs corpus with all decisions |
 | 1 | [Rig](01-rig.md) | **Done.** A fake VPS (DinD container: sshd + dockerd) with reset script and integration-test runner |
-| 2 | [Spine](02-spine.md) | `server init` + thin `deploy` work against the rig: a stock project serves through Traefik via file-provider fragment |
+| 2 | [Spine](02-spine.md) | **Done.** `server init`, the shared Traefik stack, thin `deploy` and minimal `server status`; a stock project serves through Traefik via a file-provider fragment |
 | 3 | [Env](03-env.md) | Env template system ported with tests; drift + `HOSTING_*` injection. *Parallel-safe with 1–2* |
 | 4 | [Ship](04-ship.md) | `build-push` + full `deploy` (hooks, backup, health, flock, digests): a custom-built app ships to the rig |
 | 5 | [Undo](05-undo.md) | `rollback` + `history` / `pending` / `changelog` |
@@ -74,6 +74,19 @@ rhythm: one capability slice per task, tests landing with it.
    docker-compose.yml), no `version:` attribute.
 8. **VPS-side helpers are hosting-owned** and overwritten on every deploy;
    projects never vendor hosting bash.
+
+## Before starting Phase 3
+
+Phase 2 is committed and its exit criteria were walked by hand against the
+rig at close. Unit-suite baseline: `./test.sh` 10 PASS in ~1m50s; with the
+rig, `HOSTING_RIG_TESTS=1 ./test.sh` 14 PASS in ~4m20s. **Run both under a
+real terminal as well as piped** — the integration suites hung forever
+under a pty for three units before anyone noticed, because a `timeout`
+child reading the controlling terminal takes SIGTTIN and a stopped process
+never receives the SIGTERM that follows.
+
+Phase 3 has a `## Carried in from Phase 2` section; read it first. Phase 4
+has one too.
 
 ## Before starting Phase 1 ✅
 

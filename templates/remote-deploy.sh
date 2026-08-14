@@ -14,6 +14,12 @@
 # two above and derives everything else from where it is installed.
 
 set -euo pipefail
+# The same locale every payload hosting sends over ssh runs under; this script
+# is the one remote step that arrives as a file rather than a heredoc, and it
+# had been left out. What it prints is read by machines — the versions.log line
+# every hosting version has to parse, and in Phase 4 the `docker` output the
+# digests come out of, whose wording is otherwise the server's locale to choose.
+export LC_ALL=C
 
 fail() { printf 'remote-deploy: %s\n' "$*" >&2; exit 1; }
 

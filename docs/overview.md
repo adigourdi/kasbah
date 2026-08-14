@@ -109,10 +109,11 @@ Chosen defaults (overridable via `hosting server init --apps-path=...`):
 ├── traefik/                     # shared reverse proxy (hosting-managed)
 │   ├── compose.yml
 │   ├── traefik.yml              # static config
-│   ├── dynamic/                 # file-provider watch dir
-│   │   ├── _shared.yml          # middlewares, TLS opts
-│   │   └── <project>.yml        # one per deployed project
-│   └── .env
+│   └── dynamic/                 # file-provider watch dir
+│       ├── _shared.yml          # middlewares, TLS opts
+│       └── <project>.yml        # one per deployed project
+│   # no .env: Traefik interpolates no environment variables, so the ACME
+│   # email, dashboard domain and auth hash are baked in at render time
 ├── mail/                        # optional mail stack (hosting-managed)
 │   ├── compose.yml
 │   └── .env

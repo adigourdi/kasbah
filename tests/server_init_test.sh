@@ -850,10 +850,34 @@ assert '[ "$(grep -c "rsync->" <<<"$err_out")" = "3" ]' \
 # The two exports above are for the driver, which sources the libraries
 # directly. bin/hosting must not see them: it takes VERSION from beside
 # HOSTING_LIB_DIR, and a checkout has no lib/VERSION.
+#
+# A recording ssh goes first on PATH, and every case below asserts its log is
+# empty. That is what makes "the question is asked before anything is opened" an
+# assertion rather than a hope: without the stub these runs reach the real ssh,
+# spend a DNS lookup on a .invalid name, and fail for that instead — so a guard
+# that had stopped working would still exit non-zero and the case would still
+# pass. tests/deploy_test.sh does it this way for the same reason.
+si_stub_dir="$tmpdir/stubbin"
+mkdir -p "$si_stub_dir"
+si_ssh_log="$tmpdir/ssh.log"
+: > "$si_ssh_log"
+cat > "$si_stub_dir/ssh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SSH_LOG"
+echo "stub ssh: this suite reaches no network" >&2
+exit 255
+STUB
+chmod 0755 "$si_stub_dir/ssh"
+
 run() {
+    : > "$si_ssh_log"
     env -u HOSTING_LIB_DIR -u HOSTING_VERSION \
+        PATH="$si_stub_dir:$PATH" SSH_LOG="$si_ssh_log" \
         "$hosting" "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
 }
+
+assert '[ "$(PATH="$si_stub_dir:$PATH" command -v ssh)" = "$si_stub_dir/ssh" ]' \
+    "the stub ssh shadows any real one for the cases below"
 
 run server; rc=$?
 assert '[ "$rc" != "0" ]' "bare \`hosting server\` fails (exit $rc)"
@@ -875,28 +899,54 @@ run --help
 assert 'grep -qF "server init" "$tmpdir/out"' "usage advertises server init"
 
 # Mail and backup are scaffolded in Phases 7 and 8. Accepting the flag and doing
-# nothing would be a lie, so it is a hard failure that names the phase — and it
-# happens before anything is opened, which is why this is a hermetic test.
+# nothing would be a lie, so it is a hard failure that names the phase — and the
+# refusal comes before the connection, which the empty ssh log is what proves.
 run server init deploy@hosting-unit-test.invalid --with-mail --no-backup; rc=$?
 assert '[ "$rc" != "0" ]' "--with-mail fails rather than silently skipping mail (exit $rc)"
 assert 'grep -qF "Phase 7" "$tmpdir/err"' "--with-mail names the phase that builds it (said '$(cat "$tmpdir/err")')"
 assert 'grep -qF -- "--no-mail" "$tmpdir/err"' "--with-mail says how to proceed today"
+assert '[ ! -s "$si_ssh_log" ]' "and nothing was contacted first (ssh saw: $(cat "$si_ssh_log"))"
 
 run server init deploy@hosting-unit-test.invalid --no-mail --with-backup; rc=$?
 assert '[ "$rc" != "0" ]' "--with-backup fails rather than silently skipping backups (exit $rc)"
 assert 'grep -qF "Phase 8" "$tmpdir/err"' "--with-backup names the phase that builds it (said '$(cat "$tmpdir/err")')"
 assert 'grep -qF -- "--no-backup" "$tmpdir/err"' "--with-backup says how to proceed today"
+assert '[ ! -s "$si_ssh_log" ]' "and nothing was contacted first (ssh saw: $(cat "$si_ssh_log"))"
 
 # The tri-state rule: no flag and no terminal is a hard fail naming the flag,
-# never an assumed "no". Nothing is contacted first.
+# never an assumed "no". Nothing is contacted first — and that half matters as
+# much as the exit code, because a guard that stopped guarding would still fail
+# the run, just further along and against somebody's server.
 run server init deploy@hosting-unit-test.invalid; rc=$?
 assert '[ "$rc" != "0" ]' "an unanswerable mail question fails (exit $rc)"
 assert 'grep -qF -- "--with-mail or --no-mail" "$tmpdir/err"' \
     "the no-TTY failure names both flags (said '$(cat "$tmpdir/err")')"
+assert '[ ! -s "$si_ssh_log" ]' \
+    "and the unanswered question cost no connection (ssh saw: $(cat "$si_ssh_log"))"
 
 run server init deploy@hosting-unit-test.invalid --no-mail; rc=$?
 assert '[ "$rc" != "0" ]' "an unanswerable backup question fails (exit $rc)"
 assert 'grep -qF -- "--with-backup or --no-backup" "$tmpdir/err"' \
     "the no-TTY failure names the backup flags (said '$(cat "$tmpdir/err")')"
+assert '[ ! -s "$si_ssh_log" ]' \
+    "and the unanswered question cost no connection (ssh saw: $(cat "$si_ssh_log"))"
+
+# The positive control: with both questions answered the command does reach the
+# transport, so the four empty logs above are about the guards and not about a
+# stub that was never on PATH.
+run server init deploy@hosting-unit-test.invalid --no-mail --no-backup; rc=$?
+assert '[ "$rc" = "3" ]' "an answered init goes on to the server, and this one is unreachable (exit $rc: $(cat "$tmpdir/err"))"
+assert '[ -s "$si_ssh_log" ]' "and the stub ssh is what it reached (ssh saw: $(cat "$si_ssh_log"))"
+
+# A target carrying a Windows line ending is the same target. ssh_target_parse
+# strips it too, but only once a connection is being made: everything this
+# command prints first — the two questions among them — reads _SI_TARGET
+# directly, and a carriage return in the middle of a prompt overwrites the line
+# the operator is being asked to answer.
+run server init "$(printf 'deploy@hosting-unit-test.invalid\r')"
+assert '! grep -qU $'"'"'\r'"'"' "$tmpdir/err"' \
+    "a CRLF target carries no carriage return into the prompt (said '$(cat -v "$tmpdir/err")')"
+assert 'grep -qF "on deploy@hosting-unit-test.invalid?" "$tmpdir/err"' \
+    "and the question names the target it would act on (said '$(cat "$tmpdir/err")')"
 
 exit "$fail"

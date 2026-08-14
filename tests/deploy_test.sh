@@ -305,6 +305,11 @@ assert 'grep -qF "needs a version" <<<"$out"' "saying what is missing (said '$ou
 # every remote script, which is the shape lib/deploy.sh turns into exit 4. Every
 # invocation is recorded, so a case can assert that ssh was never called.
 ssh_log="$tmpdir/ssh.log"
+# Every ssh *and* rsync invocation of one run, in the order they were made, one
+# line per call with the arguments |-separated so a flag can be matched as a
+# whole field. The ordering is the point: which of the remote deploy and the
+# fragment goes first is the defect this phase exists to have caught.
+call_log="$tmpdir/calls.log"
 cat > "$stub_dir/ssh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$SSH_LOG"
@@ -338,11 +343,12 @@ cp -R "$repo_dir/tests/fixtures/demo" "$project"
 # `hosting`, as installed, with the stub first on PATH and a HOME of its own so
 # the ssh control socket has somewhere harmless to live.
 deploy_cli() {
-    : > "$ssh_log"
+    : > "$ssh_log"; : > "$call_log"
     # The suite exports HOSTING_LIB_DIR for its own snippets; the CLI has to
     # resolve its own, the way an installed hosting does.
     env -u HOSTING_LIB_DIR -u HOSTING_TEMPLATE_DIR -u HOSTING_VERSION \
-        HOME="$tmpdir/home" PATH="$stub_dir:$PATH" SSH_LOG="$ssh_log" \
+        HOME="$tmpdir/home" PATH="$stub_dir:$PATH" \
+        SSH_LOG="$ssh_log" CALL_LOG="$call_log" \
         "$repo_dir/bin/hosting" deploy "$@" 2>&1
 }
 mkdir -p "$tmpdir/home"
@@ -376,6 +382,139 @@ assert '[ ! -f "$project/.hosting/state.json" ]' \
 out=$( cd "$project" && SSH_STEP_RC=0 deploy_cli deploy@vps ); rc=$?
 assert '[ "$rc" != "0" ]' "an empty marker is not accepted as one (rc $rc: $out)"
 assert 'grep -qF "not a JSON object" <<<"$out"' "and says what it read (said '$out')"
+
+# --- The whole path, against a server that is prepared --------------------------
+# The stub above answers "no marker" to every remote step, so everything after
+# _deploy_read_marker — the three syncs, the helper, the remote step, the
+# fragment — was unreachable from this suite and pinned only by the rig. This
+# one answers as a prepared server does, so cmd_deploy runs to the end and every
+# call it makes lands in $call_log in order.
+cat > "$stub_dir/ssh" <<'STUB'
+#!/usr/bin/env bash
+{ printf 'ssh'; for a in "$@"; do printf '|%s' "$a"; done; printf '\n'; } >> "$CALL_LOG"
+printf '%s\n' "$*" >> "$SSH_LOG"
+last="${!#}"
+# ssh -n reads no stdin; emulated so a step that lost its payload looks lost.
+for a in "$@"; do [ "$a" = "-n" ] || continue; exec </dev/null; break; done
+case "$*" in
+    *"-O exit"*) exit 0 ;;
+esac
+case "$last" in
+    true) exit 0 ;;
+    # A remote step. The script itself arrives on stdin and this stub never runs
+    # it, so what the real step would have printed is written out here instead.
+    "'bash' '-s'"*) cat >/dev/null ;;
+esac
+case "$last" in
+    "'bash' '-s' '--' '/apps'")
+        printf '{"hosting_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data"}\n' ;;
+    "'bash' '-s' '--' '/apps' '/apps/data' 'demo'"*)
+        printf 'prepared=yes\n' ;;
+    *"remote-deploy.sh' 'deploy' '1.0.0'") ;;
+    *)
+        printf 'stub: no answer for remote step %s\n' "$last" >&2
+        exit 9 ;;
+esac
+exit 0
+STUB
+cat > "$stub_dir/rsync" <<'STUB'
+#!/usr/bin/env bash
+{ printf 'rsync'; for a in "$@"; do printf '|%s' "$a"; done; printf '\n'; } >> "$CALL_LOG"
+exit 0
+STUB
+chmod 0755 "$stub_dir/ssh" "$stub_dir/rsync"
+
+out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ]' "a prepared server deploys (rc $rc: $out)"
+assert 'grep -qF "Deployed demo 1.0.0 to deploy@vps" <<<"$out"' "and says so (said '$out')"
+
+line_of() { grep -n -m1 -F -- "$1" <<<"$calls" | cut -d: -f1; }
+# Anchored: the prepare step's argument list starts with the marker read's, so
+# an unanchored match would find whichever came first and call it the marker.
+n_marker=$(grep -n -m1 -E "\|'bash' '-s' '--' '/apps'\$" <<<"$calls" | cut -d: -f1)
+n_prepare=$(line_of "|'bash' '-s' '--' '/apps' '/apps/data' 'demo'")
+n_compose=$(line_of "|compose.prod.yml|")
+n_helper=$(line_of "--chmod=F755")
+n_remote=$(line_of "remote-deploy.sh' 'deploy' '1.0.0'")
+n_fragment=$(line_of "|traefik-dynamic.yml|")
+assert '[ -n "$n_marker" ] && [ -n "$n_prepare" ] && [ -n "$n_compose" ] &&
+        [ -n "$n_helper" ] && [ -n "$n_remote" ] && [ -n "$n_fragment" ]' \
+    "the run made all six calls the order below is about (marker $n_marker, prepare $n_prepare, sync $n_compose, helper $n_helper, remote $n_remote, fragment $n_fragment)
+        calls: $calls"
+# A call that never happened orders as 0 rather than as an empty string: the
+# assertion above is the one that reports it, and the three below should then
+# fail on their own terms instead of on `[: integer expression expected`.
+for n in n_marker n_prepare n_compose n_helper n_remote n_fragment; do
+    [ -n "${!n}" ] || printf -v "$n" '%s' 0
+done
+
+# **The ordering this phase exists to have caught.** A Traefik fragment
+# registers a router the moment the file lands, whether or not anything is
+# behind it — so shipping it before `compose up` turns any failed deploy into a
+# live route to a container that never started, and the host serves 502 until
+# some later deploy succeeds. On a first deploy that is an honest 404 turned
+# permanent (docs/phases/02-spine.md → 2.4, docs/build-deploy.md).
+assert '[ "$n_fragment" -gt "$n_remote" ]' \
+    "the fragment ships after the remote deploy returns, never before it (fragment on line $n_fragment, remote step on $n_remote)"
+assert '[ "$n_compose" -gt "$n_prepare" ] && [ "$n_prepare" -gt "$n_marker" ]' \
+    "nothing is written before the server has been read and judged (marker $n_marker, prepare $n_prepare, first sync $n_compose)"
+assert '[ "$n_remote" -gt "$n_helper" ]' \
+    "the helper is on the server before the step that runs it (helper $n_helper, remote step $n_remote)"
+
+# The rsync flag sets, whole, and each of them ends its line: -a would carry
+# ownership and times a deploy has no business asserting, and -s is what stops
+# the far side re-splitting a path with a space in it on the remote shell. The
+# fields ahead of the flags are the `-e ssh …` ssh_rsync builds, asserted
+# separately below because the control path in it changes every run.
+assert 'grep -qF "|-lpt|-s|compose.prod.yml|deploy@vps:/apps/demo/compose.yml" <<<"$calls"' \
+    "a renamed file syncs as one file to its new name ($(grep -F "compose.prod.yml" <<<"$calls"))"
+assert 'grep -qF "|-lpt|-s|.env.prod.example|deploy@vps:/apps/demo/.env.prod.example" <<<"$calls"' \
+    "a plain file keeps its path ($(grep -F ".env.prod.example" <<<"$calls"))"
+assert 'grep -qF "|-rlpt|-s|site/|deploy@vps:/apps/demo/site/" <<<"$calls"' \
+    "a directory entry recurses, with the trailing slashes rsync reads as contents-of ($(grep -F "site/" <<<"$calls"))"
+assert 'grep -qF "|-pt|--chmod=F755|-s|$repo_dir/templates/remote-deploy.sh|deploy@vps:/apps/demo/scripts/remote-deploy.sh" <<<"$calls"' \
+    "the helper ships executable, stated rather than inherited from the checkout ($(grep -F "remote-deploy.sh|" <<<"$calls"))"
+assert 'grep -qF "|-pt|--chmod=F644|-s|traefik-dynamic.yml|deploy@vps:/apps/traefik/dynamic/demo.yml" <<<"$calls"' \
+    "the fragment ships 644 to the name hosting owns ($(grep -F "traefik-dynamic.yml" <<<"$calls"))"
+
+rsync_calls=$(grep -c '^rsync|' <<<"$calls")
+rsync_with_s=$(grep -c '^rsync|.*|-s|' <<<"$calls")
+rsync_with_e=$(grep -c '^rsync|-e|ssh -o ControlMaster=auto -o ControlPath=' <<<"$calls")
+assert '[ "$rsync_calls" = "$rsync_with_e" ]' \
+    "every rsync rides the run's own ssh master through -e ($rsync_with_e of $rsync_calls)"
+assert '[ "$rsync_calls" = "5" ]'            "five rsync calls in a deploy (got $rsync_calls)"
+assert '[ "$rsync_calls" = "$rsync_with_s" ]' "every one of them passes -s ($rsync_with_s of $rsync_calls)"
+# --inplace would write through the file Traefik is watching instead of renaming
+# a complete one over it, so the watcher would see a truncated fragment and stop
+# routing the site until the next deploy.
+assert '! grep -qF -- "--inplace" <<<"$calls"' \
+    "no rsync in a deploy uses --inplace — the fragment must arrive as an atomic rename ($(grep -F -- "--inplace" <<<"$calls"))"
+
+assert '[ "$(jq -r .last_server "$project/.hosting/state.json")" = "deploy@vps" ]' \
+    "a deploy that worked records the server it went to"
+assert '[ "$(jq -r .last_version "$project/.hosting/state.json")" = "1.0.0" ]' \
+    "and the version it shipped"
+rm -rf "$project/.hosting"
+
+# A project with no fragment deploys anyway, and is warned about: T01 is a
+# warning, and a worker with no HTTP surface is a real project shape. What must
+# not happen is the previous fragment being deleted — taking a site off the
+# internet is `hosting drop`'s decision.
+mv "$project/traefik-dynamic.yml" "$tmpdir/held-fragment.yml"
+out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ]' "a project with no traefik-dynamic.yml still deploys (rc $rc: $out)"
+assert 'grep -qF "no traefik-dynamic.yml" <<<"$out"' "and says the route was not written (said '$out')"
+assert '[ "$(grep -c "dynamic/demo.yml" <<<"$calls")" = "0" ]' \
+    "nothing at all was sent to the dynamic directory (sent: $(grep -F "dynamic/" <<<"$calls"))"
+mv "$tmpdir/held-fragment.yml" "$project/traefik-dynamic.yml"
+rm -rf "$project/.hosting"
+
+# The recording rsync stub stays on PATH for the cases below. None of them
+# reaches a sync, and each asserts that; the stub is what makes "it never
+# reached rsync" a fact about a log rather than about a machine that happens to
+# have no rsync.
 
 # Unreachable: the stub fails the probe itself, which is lib/ssh.sh's exit 3.
 cat > "$stub_dir/ssh" <<'STUB'

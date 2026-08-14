@@ -13,10 +13,11 @@
 # — ssh takes the per-user config path from the passwd entry, not from the
 # environment. So:
 #
-#   * A scratch HOME, because hosting builds its ControlPath out of $HOME. (A
-#     literal `~` would be expanded by ssh from the passwd entry too, which is
-#     precisely why lib/ssh.sh does not use one.) Every control socket a suite
-#     creates therefore lands in the scratch tree.
+#   * A scratch HOME to hold the config the wrapper below names, and to keep
+#     `known_hosts` and anything else ssh writes out of the owner's. The control
+#     socket is not among them: lib/ssh.sh puts that in a private directory
+#     under TMPDIR that it removes on exit, so that no two hosting processes can
+#     compute the same path and tear down each other's master.
 #   * A one-line `ssh` wrapper first on PATH, adding `-F "$HOME/.ssh/config"`.
 #     That is the only interposition point left that does not put a flag on
 #     hosting, and it is honest: the file it names is the scratch HOME's own

@@ -28,12 +28,16 @@ Flags:
 - `--domain=<apex>` — domain for the Traefik dashboard and acme email config.
 - `--email=<addr>` — ACME email for Let's Encrypt registration.
 - `--with-mail` / `--no-mail` — scaffold `/apps/mail/` (DMS + SnappyMail),
-  or explicitly skip it. Unset → prompt.
+  or explicitly skip it. Unset → prompt. **The mail stack itself arrives in
+  roadmap v0.2**, so `--with-mail`, and answering yes at the prompt, both
+  hard-fail today rather than silently doing nothing. `--no-mail` works.
 - `--with-backup` / `--no-backup` — install restic + append-only S3
   credentials + daily backup cron (see `backup.md`), or explicitly skip.
-  Unset → prompt.
+  Unset → prompt. **Backup arrives in roadmap v0.3**; as with mail, asking
+  for it today is a hard failure rather than a silent no-op.
 - `--apps-path=/apps` — root directory on the VPS (default `/apps`).
-- `--data-path=/apps/data` — bind-mount root (default `/apps/data`).
+- `--data-path=<dir>` — bind-mount root (default `<apps-path>/data`, so it
+  follows `--apps-path` rather than being pinned to `/apps/data`).
 - `--traefik-auth=user:pass` — basic auth for the dashboard. The password is
   hashed with bcrypt on the workstation (`htpasswd -niB`, or the same via a
   throwaway `httpd:2-alpine` container when htpasswd is absent); the hash
@@ -43,11 +47,13 @@ Flags:
 What it does:
 1. Verify Docker ≥ 24 and Docker Compose v2 exist. **Does not install.** Fails
    with a clear message otherwise.
-2. Create the apps path — `sudo mkdir -p /apps` plus a `chown` to the SSH
-   user, but only when it does not already exist; everything below it is
+2. Create the apps path — `sudo mkdir -p` the *parent*, a bare `sudo mkdir`
+   on the final component (so an existing directory is an error rather than
+   a silent adoption), then `chown` to the SSH user — and only when the path
+   does not already exist; everything below it is
    created unelevated. See `server-setup.md` ("Who creates the apps path").
    Then `mkdir -p /apps/data /apps/backups`.
-3. `mkdir -p /apps/data/traefik/letsencrypt && touch /apps/data/traefik/letsencrypt/acme.json && chmod 600 ...`
+3. `mkdir -p <data>/traefik/letsencrypt && touch <data>/traefik/letsencrypt/acme.json && chmod 600 ...`
    (touch-as-file is mandatory — Docker silently creates a directory otherwise).
 4. Scaffold `/apps/traefik/` — compose.yml, traefik.yml, and dynamic/ with
    `_shared.yml`. No `.env`: Traefik interpolates no environment variables,
@@ -150,8 +156,9 @@ Flags:
 Run the compliance check on the current project. See `compliance.md` for
 the full rule set. Exit code 0 on pass, 6 on any failure (see "Exit codes" below).
 
-`--fix` applies safe auto-fixes (add missing restart policy, add missing
-logging rotation). Traefik rules are never auto-fixed — routing is policy.
+`--fix` *(not implemented — `check` refuses the flag today)* would apply
+safe auto-fixes (add missing restart policy, add missing logging rotation).
+Traefik rules are never auto-fixed — routing is policy.
 
 ### `hosting build-push [USER@HOST]`
 

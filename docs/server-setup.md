@@ -252,14 +252,16 @@ and fails anything above (R04).
 
 ## With backup (`--with-backup`)
 
-Optional. Installs restic, writes append-only S3-compatible credentials,
+*Not implemented yet — roadmap v0.3. `server init` hard-fails on
+`--with-backup` rather than pretending.* Optional. Installs restic, writes append-only S3-compatible credentials,
 and schedules a daily cron that snapshots each project's data bind
 mounts, hook-produced backups, and `.env`. Full design — repo layout,
 credential model, restore, pruning — in `backup.md`.
 
 ## With mail (`--with-mail`)
 
-Additionally scaffolds `/apps/mail/` with DMS + SnappyMail (ported from
+*Not implemented yet — roadmap v0.2. `server init` hard-fails on
+`--with-mail` rather than pretending.* Additionally scaffolds `/apps/mail/` with DMS + SnappyMail (ported from
 the original project's mail/compose.yml). See `mail.md` for details.
 
 Mail requires the main Traefik stack to be running first so that the
