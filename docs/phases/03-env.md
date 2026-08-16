@@ -24,8 +24,18 @@ Only packaging changes: sourced lib + a thin standalone wrapper that
 deploys ship to the VPS as `scripts/setup-env.sh`.
 
 **Deliverables**
-- [ ] `lib/env.sh` + the VPS-side wrapper generation
-- [ ] Behavior byte-identical on the original project's fixtures
+- [x] `lib/env.sh` — **there is no wrapper to generate.** The file is dual-mode:
+      sourced as a library locally, and the same bytes rsynced to the VPS as
+      `scripts/setup-env.sh` and executed there (unit C ships it). That is what
+      makes 3.3's "one shared drift function" literally true rather than two
+      copies that agree today. Cost: nothing in this file may source
+      `common.sh`, read `HOSTING_LIB_DIR`, or call `info`/`warn`/`err`/`die`
+- [x] Behavior byte-identical on the original project's fixtures — **25 cases, 25
+      byte-identical `.env`, 25 identical exit codes, 25 identical
+      ANSI-stripped transcripts, 0 diffs.** The 13 upstream cases plus the
+      generator in three shapes, `$`→`$$`, masking, missing template, unknown
+      line formats, and EOF at each of the two menus. Re-run unchanged after
+      every fix in the review round
 
 **Watch out for:** the `$` → `$$` escaping on output and masked
 `read -rs` prompts — both are load-bearing and easy to lose in a
@@ -35,7 +45,10 @@ deploys ship to the VPS as `scripts/setup-env.sh`.
 Same fixtures, same stdin-piping technique, wired into `./test.sh`.
 
 **Deliverables**
-- [ ] All coverage cases from `env-template.md` § Testing present and green
+- [x] All coverage cases from `env-template.md` § Testing present and green —
+      `tests/env_test.sh`, the 13 upstream cases plus 11 more, ~125 assertions,
+      2.3 s. Hermetic: no reference to the original project's checkout, no Docker, no
+      network
 
 ### 3.3 — Drift function + `HOSTING_*` injection (S)
 Extract the key-diff into one function; exclude the `HOSTING_` prefix
@@ -106,6 +119,116 @@ Two things unit D left for this phase, with the evidence warm:
   setup, keep it in the same position — nothing may reach
   `<apps>/traefik/dynamic/` until the deploy is known to be able to finish.
 
+## Execution order
+
+Three units, each one brief / one review / one commit.
+
+| Unit | Tasks | Contents |
+|---|---|---|
+| A | 3.1 + 3.2 | `lib/env.sh` (the port) + `tests/env_test.sh`, wired into `./test.sh` |
+| B | 3.3 | Shared drift function, `HOSTING_` exemption, E05, `env_inject_hosting_vars` |
+| C | 3.4 | `ssh_run_tty`, `hosting env`, deploy wiring, integration test |
+
+## Decisions settled at execution time
+
+- **Exit 5 widens** rather than a new code being added. `cli.md` reserved it for
+  "drift the user declined to fix"; it now reads "env setup could not
+  complete", which covers both that and a missing `.env` with no TTY to fix it.
+  This is the Phase 2 carry-in below, settled. One code, and `04-ship.md`'s
+  "exit codes match cli.md" criterion stays one row.
+- **A `HOSTING_`-prefixed key in a project's `.env.prod.example` is E05, warn
+  level.** Every other E rule is a warning and `compliance.md` says the check is
+  a linter, not a gatekeeper — a fail here would be the only env rule able to
+  push `check` to exit 6. Setup skips the key; injection owns it.
+- **The drift prompt's flag is `--on-drift=setup|continue|abort`**, not a
+  `--with-x`/`--no-x` pair. The prompt has three answers and the boolean form
+  leaves *abort* unrequestable, which is the one a scripted deploy wants.
+- **Injection strips strays.** The managed block is sentinel-delimited and any
+  `HOSTING_*` line outside it is removed. The alternative — leave and warn —
+  means two lines set one variable and the last wins, so the effective limit can
+  differ from the marker's silently.
+- **`lib/env.sh` is dual-mode and *is* the shipped artifact.** See 3.1 above.
+
 ## Findings
 
-_(filled during execution)_
+### From unit A — the port
+
+- **`|| true` on the two value reads is the non-interactive contract, and
+  nothing tested it.** Template `A=1 B=2 C=3` with one newline of stdin: with
+  `|| true`, exit 0 and a complete `.env`; without, exit 1 and **no `.env` at
+  all**. That is precisely the shape a headless `hosting deploy` produces on the
+  far side — stdin runs out mid-run and the remaining template defaults are
+  accepted. Every ported fixture fed exactly as many answers as there were
+  prompts, so no case ever reached EOF inside a value read, and the mutant
+  survived the whole suite. Both halves are now pinned.
+
+- **Errexit is this file's contract, which makes `|| rc=$?` a trap rather than
+  defensive coding.** The two menu reads are the only ones *without* `|| true`,
+  so "EOF at the menu aborts, leaving `.env` untouched" is an errexit behaviour
+  and nothing else. Put `env_setup_run` on the left of `||` or `&&` — as this
+  phase's own first brief prescribed — and bash switches errexit off for the
+  entire function body: the failed menu read then falls through and exit 1
+  becomes exit 0, reporting "up to date" over a file it never wrote. The call in
+  `env_main` is bare on purpose, and unit C's subcommand dispatch must be too.
+
+- **`env_setup_run` can kill the caller's process, not merely return.** Sourced,
+  bare-called, EOF at the update menu: errexit fires inside the function and the
+  whole shell exits 1 mid-menu. Correct, but the function's own contract comment
+  said "returns 1 when the template is missing, 0 otherwise" — the exact comment
+  unit C would have believed while wiring 3.4's no-TTY hard fail.
+
+- **Three comments arrived false, inherited verbatim.** The sharpest:
+  `# substring check — [[ "! x" == "! "* ]] fails due to ! negation`. It does
+  not fail; `bash -c '[[ "! x" == "! "* ]]'` matches. A comment naming a
+  rationale the code does not have is the thing later cited as a reason not to
+  touch working code. Also struck: "lines starting with `#` are … skipped"
+  (they are preserved, as `env-template.md` says) and the `env_setup_run`
+  contract above. **A verbatim port copies the comments' claims along with the
+  code, and those claims get a review this repo's conventions apply, not the
+  origin repo's.**
+
+- **Counting mutations again beat reading assertions, and the yield was in the
+  features nobody doubted.** 49 mutants, 48 killed. Deleting the *entire*
+  section-header branch survived the first suite — both the header and the
+  free-form-comment branch end in the same `OUTPUT_LINES+=("$line")`, so the
+  "section header survives into .env" assertion passed identically for a header,
+  a plain comment, or no header branch at all. So did widening `[-=]{3,}` to
+  `{4,}`, neutering `SUPPRESS_HEADERS`, and both `has-existing` prompt branches
+  (cases that *looked* like they covered them ran in update-only mode, where the
+  value is auto-accepted before the branch is reached). Five real gaps in a
+  feature the spec documents by name.
+
+- **The one surviving mutant is genuinely equivalent, and so are four others.**
+  Stripping `\r` in the template-key loop is unobservable: that loop's regex is
+  `^([A-Za-z_][A-Za-z0-9_]*)=`, prefix-anchored, so a `\r` can only land after
+  the `=` and never enters the captured key. Kept anyway for uniform handling
+  across the three readers of user-authored files. Recorded because "survivor"
+  and "defect" are not the same word.
+
+- **`script(1)` without `-f` buffers the typescript until the child exits.** A
+  pty test that polls the transcript for a prompt therefore never sees one and
+  burns its full timeout — the suite went to 87 s while staying green. With
+  `-f`, 1.9 s, faster than the fixed `sleep 0.4` it replaced (which was itself a
+  race: a loaded machine needing >0.4 s to reach `read` echoes the secret).
+
+- **`declare` inside a function is local, so six arrays quietly became
+  function-scoped** — a sixth divergence from the original, beneficial, and the
+  reason `${#NEW_KEYS[@]}` cannot go stale across repeat calls in one shell.
+  Documented and pinned.
+
+- **`env-template.md` § Testing was right and the upstream test was wrong.** Its
+  "empty value preserved in update mode" case never entered update mode (its
+  fixture had no drift, so it exited early and asserted a file nothing touched);
+  two of its three assertions could not fail. The doc needed no change — the
+  test did.
+
+### Carried into 3.3, with the evidence warm
+
+- **`lib/env.sh` and `lib/check.sh` disagree about a file with no trailing
+  newline.** All three of `env.sh`'s read loops drop a final unterminated line;
+  `check.sh:654` and `:706` read the *same* `.env.prod.example` with
+  `|| [ -n "$line" ]`. So `check` sees a key `env.sh` does not, and a `.env`
+  whose last line lacks `\n` loses that live value on reconfigure. Inherited
+  verbatim, so unit A left it alone — but 3.3 owns `env_extract_keys` and the
+  shared drift function, and cannot make one function serve both readers
+  without picking a side. Pick it, and test it.
