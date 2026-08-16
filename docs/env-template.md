@@ -75,24 +75,70 @@ the output `.env`.
 
 ## Drift detection
 
-Run on every `hosting deploy` before touching anything:
+Run on every `hosting deploy` before touching anything, by `env_drift` in
+`lib/env.sh`:
 
 ```bash
-EXAMPLE_KEYS=$(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env.prod.example | cut -d= -f1 | sort)
-LIVE_KEYS=$(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | cut -d= -f1 | sort)
-MISSING=$(comm -23 <(echo "$EXAMPLE_KEYS") <(echo "$LIVE_KEYS"))
-EXTRA=$(comm -13 <(echo "$EXAMPLE_KEYS") <(echo "$LIVE_KEYS"))
+env_drift .env.prod.example .env   # sets ENV_DRIFT_MISSING / ENV_DRIFT_EXTRA
 ```
 
+Both are space-separated key lists, empty when in sync. **`env_drift` always
+returns 0** and never signals through its exit status — a function that
+returned 1 for "drift found" would force every caller to write
+`env_drift … ||`, and that switches errexit off for the whole calling
+function body. Test the variables, never the call.
+
 Outcomes:
-- `MISSING=`, `EXTRA=` → in sync, continue silently.
+- both empty → in sync, continue silently.
 - `.env` missing → launch interactive setup.
 - Any drift → warn, prompt: *"re-run setup" / "continue with current .env" /
-  "abort"*.
+  "abort"* — scriptable as `--on-drift=setup|continue|abort`.
+
+One implementation serves both readers. `hosting check` (E02/E03) sources
+`lib/env.sh`; `hosting deploy` runs the *same bytes* on the VPS, where they
+have been rsynced as `scripts/setup-env.sh`. That is why nothing in that file
+may reach for `common.sh`, `jq`, `awk` or `bc`: coreutils and bash builtins
+only, since the prerequisites table promises nothing else.
 
 Keys prefixed `HOSTING_` are reserved: hosting injects and refreshes them
-at deploy (resource limits — see `server-setup.md`). They are excluded
-from both sides of the comparison and never prompted for.
+at deploy (resource limits — see `server-setup.md`). They are excluded from
+**both** sides of the comparison, in both directions — reserved keys extra in
+`.env` and reserved keys missing from it are equally not drift — and are never
+prompted for. A template that declares one is warned about by E05.
+
+## The hosting-managed block
+
+Injection writes the reserved keys into a sentinel-delimited block:
+
+```
+# >>> hosting managed block - do not edit, rewritten on every deploy >>>
+HOSTING_CPU_LIMIT=14.4
+HOSTING_MEM_LIMIT=54g
+# <<< hosting managed block <<<
+```
+
+Rules, all of them load-bearing:
+
+- The block is rewritten **where it already stands**, never moved to the end.
+  Every other line survives byte-for-byte in its original order, comments,
+  blank lines and hand-spacing included — users edit this file.
+- **Any line outside the block that Compose would read as assigning a
+  `HOSTING_*` variable is removed.** Compose honours a leading-whitespace
+  assignment and an `export ` prefix, and takes the *last* assignment — so a
+  stray below the block would silently outrank the server marker. The match is
+  anchored (optional blanks, optional `export `) and never a substring: a
+  user's own `MY_HOSTING_URL` is not hosting's to delete.
+- Values are written through unchanged. A `0` limit stays `0` — the rig cannot
+  apply cgroup limits at all, and injection must keep working when the values
+  it writes are ones the host cannot honour.
+- Idempotent: the second run is byte-identical to the first. The one
+  normalisation is a trailing newline on a file that lacked one, since the
+  block has to start on its own line.
+
+**Inject after setup, never before.** `env_setup_run` builds its output from
+the template, and the template has no reserved keys — so regenerating `.env`
+drops the block entirely, and `compose up` then fails on an unset
+`HOSTING_CPU_LIMIT` until injection runs again.
 
 ## Update modes
 

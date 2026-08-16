@@ -56,9 +56,18 @@ from both comm sides; add `env_inject_hosting_vars` that writes/refreshes
 a managed block in `.env` from the server marker's limits.
 
 **Deliverables**
-- [ ] `check` E02/E03 and the deploy drift path call the same function
-- [ ] Injection is idempotent (second run = no diff) and survives user edits elsewhere in `.env`
-- [ ] Unit test: `.env` with extra `HOSTING_CPU_LIMIT` shows no drift
+- [x] `check` E02/E03 and the deploy drift path call the same function —
+      `env_drift` in `lib/env.sh`, which `check.sh` sources and which the VPS
+      runs as the same bytes. `hosting check` diffed against `9ebf3aa` over five
+      fixtures: every difference is one added E05 pass line and the incremented
+      total, nothing else
+- [x] Injection is idempotent (second run = no diff) and survives user edits
+      elsewhere in `.env` — `cmp`-verified byte-identical from run 2 on every
+      awkward fixture, not just a tidy one: two blocks, CRLF throughout, a block
+      at the top, an unterminated begin sentinel, trailing spaces, an unknown
+      line, a comment-led tail
+- [x] Unit test: `.env` with extra `HOSTING_CPU_LIMIT` shows no drift — and the
+      other direction too, a reserved key in the template but absent from `.env`
 
 **Watch out for:** injection must not reorder or rewrite the rest of
 `.env` — users edit it by hand; touch only the managed block.
@@ -222,7 +231,63 @@ Three units, each one brief / one review / one commit.
   two of its three assertions could not fail. The doc needed no change — the
   test did.
 
-### Carried into 3.3, with the evidence warm
+### From unit B — drift and injection
+
+- **A stray `HOSTING_*` line outranked the marker, and the comment said it
+  could not.** The strip rule was anchored at column 0, but Compose also
+  honours `  HOSTING_CPU_LIMIT=0.1` and `export HOSTING_MEM_LIMIT=1g`, and
+  takes the **last** assignment. So a hand-edit below the block — the ordinary
+  position, since the block is appended on first injection and rewritten in
+  place after — silently won. `docker compose config` on the resulting file
+  reported `cpus: 0.1` against a marker saying `14.4`.
+
+- **The fix had a mirror-image hazard one mutation away.** Widening the match
+  from anchored to *substring* — the obvious way to catch more strays —
+  deletes a user's `MY_HOSTING_URL=…` line outright. Data loss in the opposite
+  direction, from the same rule. The match is anchored with optional blanks and
+  an optional `export ` and nothing else, and both hazards are now pinned by
+  fixtures; neither was before.
+
+- **A mutation survey written from the code tests the code it was written
+  from.** Unit B's own survey reported 26 mutants, 26 killed, 0 survivors. A
+  reviewer that built its set independently, without reading that one, got 25
+  mutants and **16 survivors, 13 of them real** — six being the entire question
+  "is the reserved-prefix match anchored?", which no fixture in the repo
+  touched. The lesson is not that the first survey was careless; it is that
+  mutants must be derived from the *behaviour wanted*, not from the lines
+  present. The fix round then found a **seventh** anchored site the review's own
+  list had missed (the `TEMPLATE_KEYS` scan, whose observable is the *removed*
+  count rather than the *kept* count).
+
+- **`env_setup_run` destroys the managed block, and nothing said so.** A `.env`
+  holding `APP=live` plus a block comes back as exactly `APP=live` — setup
+  builds its output from the template, and the template has no reserved keys.
+  `compose up` then fails on an unset `HOSTING_CPU_LIMIT`. Hence the ordering
+  rule now in the file and in `env-template.md`: **inject after setup, never
+  before.** 3.4 is the code that wires the two together.
+
+- **The portability rule the code follows was not the one it stated.** A
+  comment justified avoiding `awk` and `grep` by the prerequisites table, two
+  functions above calls to `sort -u`, `comm` and GNU-only `chmod --reference`,
+  which that table promises exactly as much. The real rule — **coreutils and
+  bash builtins yes, separately-packaged tools no** — is now stated once in the
+  file header, and `server-setup.md`'s prerequisites row names `sort`, `comm`
+  and `readlink` rather than implying they were never needed.
+
+- **`HOSTING_` with an empty name was judged by three rules at once**: exempt
+  from drift, flagged by E05, not stripped as a stray, refused as a pair.
+  Settled toward reserved — `docker compose config` reads `HOSTING_=x` as
+  setting a variable, so the bare name is inside the namespace the frozen
+  contract claims. One anchored rule now, at all seven sites.
+
+- **A differential harness proves only what its fixtures contain.** The
+  25-case proof from unit A uses LF-only fixtures, so it cannot detect the
+  trailing-newline divergence 3.3 deliberately introduced — 25/25 was quoted
+  twice as evidence the change was contained before a reviewer pointed out it
+  is structurally incapable of being that evidence. Containment was real, but
+  it was established by separate measurement.
+
+### Carried into 3.3, with the evidence warm — settled
 
 - **`lib/env.sh` and `lib/check.sh` disagree about a file with no trailing
   newline.** All three of `env.sh`'s read loops drop a final unterminated line;

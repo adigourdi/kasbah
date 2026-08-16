@@ -122,9 +122,17 @@ docker provider is not wired in.
 | E02 | `.env` (if present) has no missing keys vs `.env.prod.example` | warn |
 | E03 | `.env` (if present) has no extra keys vs `.env.prod.example` | warn |
 | E04 | No obvious secret leaked into `.env.prod.example` (e.g. lines longer than 64 chars that aren't `!` commands) | warn |
+| E05 | `.env.prod.example` declares no reserved `HOSTING_*` key — hosting injects those, so a template line naming one is a knob that does nothing | warn |
 
 Keys prefixed `HOSTING_` are reserved — injected and refreshed by hosting
 at deploy (resource limits) and exempt from E02/E03 and drift detection.
+The bare name `HOSTING_` counts as reserved: Compose reads `HOSTING_=x` as
+setting a variable, so it is inside the namespace the frozen contract claims.
+
+E02/E03 are not implemented here. They call `env_drift` in `lib/env.sh` —
+the same function, in the same bytes, that runs on the VPS as
+`scripts/setup-env.sh` during a deploy, so the local check and the remote
+one cannot drift apart by agreeing to differ.
 
 ### Hooks
 

@@ -682,6 +682,7 @@ leaked=$(env -i PATH="$PATH" LC_ALL=C bash -c '
 " " "
 ' _ "$env_sh" "$d" < "$tmpdir/stdin")
 expected='BASH_REMATCH BOLD CHOICE CMD COMMENT CYAN DEFAULT DIM DISPLAY DISPLAY_CURRENT '
+expected+='ENV_MANAGED_BEGIN ENV_MANAGED_END ENV_RESERVED_PREFIX '
 expected+='ESCAPED_VALUE EXAMPLE EXISTING_VALUE GREEN HAS_EXISTING HINT KEPT_COUNT KEY OUTPUT '
 expected+='RAW_VALUE RED RESET SUPPRESS_HEADERS TARGET_DIR UPDATE_ONLY VALUE YELLOW '
 expected+='_HOSTING_ENV_LOADED dkey ekey line nkey tkey tline '
@@ -691,5 +692,443 @@ assert '[ "$leaked" = "$expected" ]' "env_setup_run leaks exactly the known glob
 # the reason a second call in one shell cannot read the first call's NEW_KEYS.
 assert '! grep -qE "\b(EXISTING|TEMPLATE_KEYS|TEMPLATE_KEY_SET|NEW_KEYS|DROPPED_KEYS|OUTPUT_LINES)\b" <<<"$leaked"' \
        "the declared arrays stay function-local (got '$leaked')"
+
+# --- Case 25: the library half — lib_run sources and evaluates ---------------
+# The drift and injection helpers are never executed as a script; they are
+# called by lib/check.sh here and by the deploy path on the VPS. Positional
+# arguments after the snippet arrive as "$1", "$2", …
+lib_run() {
+    local snippet="$1"; shift
+    out=$(bash -c "set -euo pipefail; . \"\$1\"; shift; $snippet" _ "$env_sh" "$@" 2>&1)
+    rc=$?
+}
+
+d=$(newdir t25)
+printf '# comment\nA=1\nB=\n\nnot a var line\n1BAD=x\nFOO BAR=y\n_C_1=z\nLAST=9' > "$d/keys"
+lib_run 'env_extract_keys "$1" | tr "\n" " "' "$d/keys"
+assert '[ "$out" = "A B _C_1 LAST " ]' "env_extract_keys returns the assignment keys in file order (got '$out')"
+assert '[ "$rc" = "0" ]'               "env_extract_keys exits 0 (got $rc)"
+
+# A key-less file and a missing file both come back empty with status 0 — under
+# errexit either would otherwise take the caller down.
+printf '# only comments\n\n' > "$d/keyless"
+lib_run 'env_extract_keys "$1"; echo "alive-keyless"; env_extract_keys "$1/nope"; echo "alive-missing"' "$d/keyless"
+assert '[ "$rc" = "0" ]'                          "a key-less and a missing file leave the caller alive (got $rc)"
+assert 'grep -qF "alive-keyless" <<<"$out"'       "a key-less file returns 0 (said '$out')"
+assert 'grep -qF "alive-missing" <<<"$out"'       "a missing file returns 0 (said '$out')"
+assert '[ "$(grep -c . <<<"$out")" = "2" ]'       "and neither prints anything (said '$out')"
+
+# --- Case 26: a final line with no newline is data ----------------------------
+# lib/check.sh's E01/E04 readers, grep, awk and docker compose all see it, so
+# every reader in lib/env.sh does too. The value at stake is a live one:
+# without it, reconfigure regenerates the last key from the template default.
+d=$(newdir t26)
+printf 'A=1\nLAST=9' > "$d/unterminated"
+lib_run 'env_extract_keys "$1" | tr "\n" " "' "$d/unterminated"
+assert '[ "$out" = "A LAST " ]' "env_extract_keys sees an unterminated final key (got '$out')"
+
+d=$(newdir t26b)
+printf 'APP_NAME=MyApp\nAPP_PORT=3000' > "$d/.env.prod.example"
+printf 'APP_NAME=live_name\nAPP_PORT=8080' > "$d/.env"
+# Neither file ends in a newline, so all three of this file's readers are on
+# trial. If the last key were invisible to any of them, APP_PORT would be new,
+# or dropped, or absent from the output — instead of the no-drift shortcut.
+run_env $'y\n\n' "$d"
+assert 'grep -qF "No changes detected" <<<"$out"' \
+       "an unterminated last key counts for drift, so nothing looks new (said '$out')"
+expect_kv "$d/.env" APP_NAME live_name "the terminated key keeps its live value"
+expect_kv "$d/.env" APP_PORT 8080      "the unterminated last key keeps its live value too"
+
+# --- Case 27: env_drift ---------------------------------------------------------
+d=$(newdir t27)
+printf 'A=1\nB=2\nHOSTING_MEM_LIMIT=54g\n' > "$d/.env.prod.example"
+printf 'A=x\nHOSTING_CPU_LIMIT=14.4\n' > "$d/.env"
+drift='env_drift "$1" "$2"; echo "missing=[$ENV_DRIFT_MISSING] extra=[$ENV_DRIFT_EXTRA]"'
+lib_run "$drift" "$d/.env.prod.example" "$d/.env"
+assert '[ "$out" = "missing=[B] extra=[]" ]' \
+       "a reserved key is not drift in either direction, a real one still is (got '$out')"
+
+# In sync, values deliberately different — drift is a key-set question.
+d=$(newdir t27b)
+printf 'A=1\nB=2\n' > "$d/.env.prod.example"
+printf 'B=changed\nA=alsochanged\n' > "$d/.env"
+lib_run "$drift" "$d/.env.prod.example" "$d/.env"
+assert '[ "$out" = "missing=[] extra=[]" ]' "different values are not drift (got '$out')"
+
+# Real drift both ways, more than one key each, reserved keys mixed in.
+d=$(newdir t27c)
+printf 'A=1\nM_ONE=1\nM_TWO=2\nHOSTING_MEM_LIMIT=54g\n' > "$d/.env.prod.example"
+printf 'A=1\nX_ONE=1\nX_TWO=2\nHOSTING_CPU_LIMIT=14.4\n' > "$d/.env"
+lib_run "$drift" "$d/.env.prod.example" "$d/.env"
+assert '[ "$out" = "missing=[M_ONE M_TWO] extra=[X_ONE X_TWO]" ]' \
+       "both lists are space-joined and name only unreserved keys (got '$out')"
+
+# A .env that is nothing but the injected block is in sync with any template
+# whose keys it already has — the shape every deployed project is in.
+d=$(newdir t27d)
+printf 'A=1\n' > "$d/.env.prod.example"
+printf 'A=1\nHOSTING_CPU_LIMIT=14.4\nHOSTING_MEM_LIMIT=54g\n' > "$d/.env"
+lib_run "$drift" "$d/.env.prod.example" "$d/.env"
+assert '[ "$out" = "missing=[] extra=[]" ]' "an injected .env has no drift (got '$out')"
+
+# A key set twice — the shape a stray leaves behind — is one key, not drift.
+d=$(newdir t27f)
+printf 'A=1\nB=2\n' > "$d/.env.prod.example"
+printf 'A=1\nB=2\nA=override\n' > "$d/.env"
+lib_run "$drift" "$d/.env.prod.example" "$d/.env"
+assert '[ "$out" = "missing=[] extra=[]" ]' "a key repeated in .env is not extra (got '$out')"
+
+# A missing .env is every template key missing, not an error.
+d=$(newdir t27g)
+printf 'A=1\nHOSTING_CPU_LIMIT=0\n' > "$d/.env.prod.example"
+lib_run "$drift" "$d/.env.prod.example" "$d/nope"
+assert '[ "$rc" = "0" ]'                     "env_drift over a missing .env exits 0 (got $rc)"
+assert '[ "$out" = "missing=[A] extra=[]" ]' "and reports every unreserved template key missing (got '$out')"
+
+# Drift is reported through the two variables, never the exit status: the one
+# call every caller makes must be safe to write bare under errexit.
+d=$(newdir t27e)
+printf 'A=1\n' > "$d/.env.prod.example"
+printf 'B=1\n' > "$d/.env"
+lib_run 'env_drift "$1" "$2"; echo "caller-alive"' "$d/.env.prod.example" "$d/.env"
+assert '[ "$rc" = "0" ]'                     "a bare env_drift over a drifting pair returns 0 (got $rc)"
+assert 'grep -qF "caller-alive" <<<"$out"'   "and the caller survives it (said '$out')"
+
+# --- Case 28: env_inject_hosting_vars ------------------------------------------
+inject='env_inject_hosting_vars "$1" HOSTING_CPU_LIMIT=14.4 HOSTING_MEM_LIMIT=54g'
+block=$'# >>> hosting managed block - do not edit, rewritten on every deploy >>>\nHOSTING_CPU_LIMIT=14.4\nHOSTING_MEM_LIMIT=54g\n# <<< hosting managed block <<<\n'
+bmark='# >>> hosting managed block - do not edit, rewritten on every deploy >>>'
+emark='# <<< hosting managed block <<<'
+
+expect_bytes() {
+    printf '%s' "$2" > "$tmpdir/want"
+    expect_same "$1" "$tmpdir/want" "$3"
+}
+
+# A hand-edited file: comments, blank lines, odd spacing, an unknown line, a
+# trailing section. All of it survives in order; the block is appended.
+d=$(newdir t28)
+body=$'# --- App ---\nAPP=1\n\nSPACED=2   \nnot a var line\n# tail note\nLAST=3\n'
+printf '%s' "$body" > "$d/.env"
+lib_run "$inject" "$d/.env"
+assert '[ "$rc" = "0" ]' "injection exits 0 (got $rc)"
+expect_bytes "$d/.env" "$body$block" "a first injection appends the block and touches nothing else"
+
+cp "$d/.env" "$d/.env.first"
+lib_run "$inject" "$d/.env"
+expect_same "$d/.env" "$d/.env.first" "a second injection with the same values is byte-identical"
+
+# Stale values are refreshed in place — the block does not move to the end and
+# the lines around it do not shift.
+d=$(newdir t28b)
+stale=$'# >>> hosting managed block - do not edit, rewritten on every deploy >>>\nHOSTING_CPU_LIMIT=0.9\nHOSTING_MEM_LIMIT=460m\n# <<< hosting managed block <<<\n'
+printf '%s' "HEAD=1"$'\n'"$stale"$'# tail note\nTAIL=2\n' > "$d/.env"
+lib_run "$inject" "$d/.env"
+expect_bytes "$d/.env" "HEAD=1"$'\n'"$block"$'# tail note\nTAIL=2\n' \
+             "a stale block is refreshed where it stands, not moved to the end"
+cp "$d/.env" "$d/.env.first"
+lib_run "$inject" "$d/.env"
+expect_same "$d/.env" "$d/.env.first" "refreshing an existing block is idempotent too"
+
+# Any HOSTING_ line outside the block is removed: two lines setting one
+# variable means the last wins, so a stray silently outranks the marker.
+d=$(newdir t28c)
+printf 'A=1\nHOSTING_CPU_LIMIT=stray\nB=2\n' > "$d/.env"
+lib_run "$inject" "$d/.env"
+expect_bytes "$d/.env" $'A=1\nB=2\n'"$block" "a stray HOSTING_ line outside the block is removed"
+
+# Including in a CRLF file, whose other lines keep their carriage returns —
+# injection is not a line-ending rewrite.
+d=$(newdir t28d)
+printf 'A=1\r\nHOSTING_MEM_LIMIT=stray\r\nB=2\r\n' > "$d/.env"
+lib_run "$inject" "$d/.env"
+expect_bytes "$d/.env" $'A=1\r\nB=2\r\n'"$block" "the user's CRLF lines survive byte-for-byte"
+
+# No .env at all: the file is created holding the block, and nothing else.
+d=$(newdir t28e)
+lib_run "$inject" "$d/.env"
+expect_bytes "$d/.env" "$block" "injection into a missing .env creates it with just the block"
+assert '[ "$(stat -c %a "$d/.env")" = "600" ]' \
+       "a .env injection created is 600 — it holds secrets (got $(stat -c %a "$d/.env"))"
+
+# An existing file keeps the mode its owner gave it.
+d=$(newdir t28f)
+printf 'A=1\n' > "$d/.env"; chmod 640 "$d/.env"
+lib_run "$inject" "$d/.env"
+assert '[ "$(stat -c %a "$d/.env")" = "640" ]' \
+       "injection leaves an existing .env's mode alone (got $(stat -c %a "$d/.env"))"
+
+# A last line with no newline gets one; it is not merged with the block.
+d=$(newdir t28g)
+printf 'A=1\nLAST=9' > "$d/.env"
+lib_run "$inject" "$d/.env"
+expect_bytes "$d/.env" $'A=1\nLAST=9\n'"$block" "an unterminated last line survives, terminated"
+
+# A begin sentinel with no end is not a block: it marks the position, and
+# everything after it stays. Running to EOF instead would swallow the tail of a
+# half-written file.
+d=$(newdir t28h)
+printf '%s' $'A=1\n# >>> hosting managed block - do not edit, rewritten on every deploy >>>\nB=2\n' > "$d/.env"
+lib_run "$inject" "$d/.env"
+expect_bytes "$d/.env" $'A=1\n'"$block"$'B=2\n' "an unterminated block keeps its place and swallows nothing"
+
+# Values are written through unchanged — the marker's spelling is the contract,
+# and the rig cannot honour a real limit, so 0 has to survive as 0.
+d=$(newdir t28i)
+lib_run 'env_inject_hosting_vars "$1" HOSTING_CPU_LIMIT=0 HOSTING_MEM_LIMIT=0' "$d/.env"
+assert 'grep -qxF "HOSTING_CPU_LIMIT=0" "$d/.env"' "a limit of 0 is written through unvalidated"
+assert 'grep -qxF "HOSTING_MEM_LIMIT=0" "$d/.env"' "both of them"
+
+# No pairs at all is an empty block, not a blank line inside one.
+d=$(newdir t28k)
+printf 'A=1\n' > "$d/.env"
+lib_run 'env_inject_hosting_vars "$1"' "$d/.env"
+expect_bytes "$d/.env" $'A=1\n# >>> hosting managed block - do not edit, rewritten on every deploy >>>\n# <<< hosting managed block <<<\n' \
+             "injecting nothing writes an empty block"
+
+# A key outside the reserved prefix is a caller bug: refused, file untouched.
+d=$(newdir t28j)
+printf 'A=1\n' > "$d/.env"; cp "$d/.env" "$d/.env.backup"
+lib_run 'env_inject_hosting_vars "$1" DATABASE_URL=x || echo "rc=$?"' "$d/.env"
+assert 'grep -qF "rc=1" <<<"$out"'                    "an unreserved key is refused with 1 (said '$out')"
+assert 'grep -qF "is not a HOSTING_NAME=value pair" <<<"$out"' "and says why (said '$out')"
+expect_same "$d/.env" "$d/.env.backup" "a refused injection leaves .env untouched"
+
+# The prefix is matched anchored, so a key that merely contains it is refused
+# too — accepting it would let injection write outside its own namespace.
+lib_run 'env_inject_hosting_vars "$1" MY_HOSTING_URL=x || echo "rc=$?"' "$d/.env"
+assert 'grep -qF "rc=1" <<<"$out"'  "a key containing HOSTING_ but not starting with it is refused (said '$out')"
+lib_run 'env_inject_hosting_vars "$1" "HOSTING_F BAR=x" || echo "rc=$?"' "$d/.env"
+assert 'grep -qF "rc=1" <<<"$out"'  "so is a pair whose name is not a name (said '$out')"
+
+# --- Case 29: reserved keys are never prompted and never land in .env ---------
+# The template line and the injected block name the same key; setup must treat
+# neither as drift and write neither, or the .env carries two lines for one
+# variable and the last one wins.
+d=$(newdir t29)
+cat > "$d/.env.prod.example" <<'TMPL'
+# --- App ---
+APP_NAME=MyApp
+HOSTING_CPU_LIMIT=0
+TMPL
+cat > "$d/.env" <<'ENV'
+APP_NAME=live_name
+HOSTING_CPU_LIMIT=14.4
+HOSTING_MEM_LIMIT=54g
+ENV
+# y = reconfigure anyway, then Enter for the one var that is actually prompted.
+run_env $'y\n' "$d"
+assert '[ "$rc" = "0" ]'                              "a reserved key in both files exits 0 (got $rc)"
+assert 'grep -qF "No changes detected" <<<"$out"'     "reserved keys count as neither new nor removed (said '$out')"
+assert '! grep -qF "HOSTING_" <<<"$out"'              "and are never prompted for (said '$out')"
+expect_kv     "$d/.env" APP_NAME live_name            "the unreserved key keeps its live value"
+expect_absent "$d/.env" HOSTING_CPU_LIMIT             "a reserved template key is not written to .env"
+expect_absent "$d/.env" HOSTING_MEM_LIMIT             "nor is a reserved key the live .env carried"
+
+# --- Case 31: what counts as a stray ------------------------------------------
+# Compose trims leading blanks, honours an `export ` prefix, and lets the last
+# assignment win — so every one of these outranks the marker.
+d=$(newdir t31)
+printf 'A=1\nexport HOSTING_MEM_LIMIT=1g\n  HOSTING_CPU_LIMIT=0.1\n\tHOSTING_MEM_LIMIT=2g\nexport\tHOSTING_CPU_LIMIT=0.2\n' > "$d/.env"
+lib_run "$inject" "$d/.env"
+expect_bytes "$d/.env" $'A=1\n'"$block" "an exported or indented HOSTING_ assignment is a stray too"
+
+# And what does not. MY_HOSTING_URL is the user's key; removing it would be
+# data loss in the opposite direction from the one the stray rule prevents.
+d=$(newdir t31b)
+keep=$'# HOSTING_CPU_LIMIT=commented out\nMY_HOSTING_URL=https://mine\nNOTE=see HOSTING_MEM_LIMIT=1\nHOSTING_ SPACED=x\n'
+printf '%s' "$keep" > "$d/.env"
+lib_run "$inject" "$d/.env"
+expect_bytes "$d/.env" "$keep$block" "a line that merely looks like a reserved assignment survives"
+
+# --- Case 31c: HOSTING_ with an empty name is reserved, uniformly -------------
+# Compose reads `HOSTING_=x` as setting a variable named HOSTING_, which is
+# inside the reserved namespace — so every rule naming the prefix owns it:
+# stripped as a stray, accepted as a pair, exempt from drift.
+d=$(newdir t31c)
+printf 'A=1\nHOSTING_=stray\n' > "$d/.env"
+lib_run 'env_inject_hosting_vars "$1" HOSTING_=owned' "$d/.env"
+assert '[ "$rc" = "0" ]' "a bare HOSTING_ pair is accepted (got $rc, said '$out')"
+expect_bytes "$d/.env" $'A=1\n'"$bmark"$'\nHOSTING_=owned\n'"$emark"$'\n' \
+             "the bare-name stray is removed and the block owns the key"
+printf 'A=1\nHOSTING_=t\n' > "$d/.env.prod.example"
+printf 'A=1\n' > "$d/.env.live"
+lib_run "$drift" "$d/.env.prod.example" "$d/.env.live"
+assert '[ "$out" = "missing=[] extra=[]" ]' \
+       "and it is exempt from drift like any other reserved key (got '$out')"
+
+# --- Case 32: two blocks collapse into one ------------------------------------
+# Any future change to the sentinel text leaves a .env in this state, and a
+# second pair that survived every run would be permanent.
+d=$(newdir t32)
+printf '%s' "A=1"$'\n'"$block"$'MID=1\n'"$block"$'TAIL=1\n' > "$d/.env"
+lib_run "$inject" "$d/.env"
+expect_bytes "$d/.env" "A=1"$'\n'"$block"$'MID=1\nTAIL=1\n' \
+             "two blocks collapse into one, written where the first began"
+cp "$d/.env" "$d/.env.first"
+lib_run "$inject" "$d/.env"
+expect_same "$d/.env" "$d/.env.first" "and collapsing is idempotent"
+
+# --- Case 33: the sentinels are matched with the \r stripped ------------------
+# A .env a Windows editor saved carries CRLF sentinels. Unstripped, the old
+# block goes unrecognised and the file ends up holding two of them.
+d=$(newdir t33)
+printf 'A=1\r\n%s\r\nHOSTING_CPU_LIMIT=0.9\r\n%s\r\n' "$bmark" "$emark" > "$d/.env"
+lib_run "$inject" "$d/.env"
+assert '[ "$(grep -cF "$bmark" "$d/.env")" = "1" ]' \
+       "a CRLF block is recognised, so one begin sentinel remains (got $(grep -cF "$bmark" "$d/.env"))"
+assert '[ "$(grep -cF "$emark" "$d/.env")" = "1" ]' \
+       "and one end sentinel (got $(grep -cF "$emark" "$d/.env"))"
+expect_bytes "$d/.env" $'A=1\r\n'"$block" "the CRLF block is replaced where it stood"
+
+# --- Case 34: failure paths return, and leave no temp behind ------------------
+# The temp sits in the project directory `deploy` rsyncs, so no exit path may
+# leave one; and a raw bash diagnostic would kill the calling shell under
+# errexit rather than returning.
+d=$(newdir t34)
+printf 'A=1\n' > "$d/.env"
+lib_run "$inject" "$d/.env"
+assert '[ -z "$(ls -A "$d" | grep -F ".hosting-inject." || true)" ]' \
+       "a successful injection leaves no temp file (saw '$(ls -A "$d")')"
+
+# Root would bypass both permission cases.
+if [ "$(id -u)" -ne 0 ]; then
+    d=$(newdir t34b)
+    printf 'A=1\n' > "$d/.env"; chmod 000 "$d/.env"
+    lib_run 'env_inject_hosting_vars "$1" HOSTING_CPU_LIMIT=1 || echo "rc=$?"; echo caller-alive' "$d/.env"
+    assert '[ "$rc" = "0" ]'           "an unreadable .env does not kill the caller (got $rc)"
+    assert 'grep -qF "rc=1" <<<"$out"' "it returns 1 (said '$out')"
+    assert 'grep -qF "ERROR: env_inject_hosting_vars: cannot read" <<<"$out"' \
+           "with a diagnostic of its own, not bash's (said '$out')"
+    assert 'grep -qF "caller-alive" <<<"$out"' "and the caller runs on (said '$out')"
+    chmod 600 "$d/.env"
+
+    d=$(newdir t34c)
+    printf 'A=1\n' > "$d/.env"; chmod 500 "$d"
+    lib_run 'env_inject_hosting_vars "$1" HOSTING_CPU_LIMIT=1 || echo "rc=$?"; echo caller-alive' "$d/.env"
+    assert 'grep -qF "rc=1" <<<"$out"' "an unwritable directory returns 1 (said '$out')"
+    assert 'grep -qF "ERROR: env_inject_hosting_vars: cannot write" <<<"$out"' \
+           "and says so (said '$out')"
+    assert 'grep -qF "caller-alive" <<<"$out"' "without killing the caller (said '$out')"
+    chmod 700 "$d"
+    assert '[ -z "$(ls -A "$d" | grep -F ".hosting-inject." || true)" ]' \
+           "and leaves no temp in the tree deploy rsyncs (saw '$(ls -A "$d")')"
+fi
+
+# A temp path that cannot be cleared — a directory left where one belongs — is
+# the same kind of failure: one diagnostic of this function's own, not `rm`'s
+# on the way to an errexit abort. Called bare, so nothing masks the abort. The
+# mkdir spells out the temp path, so it also pins that the name carries the pid.
+d=$(newdir t34d)
+printf 'A=1\n' > "$d/.env"
+out=$(bash -c '
+    set -euo pipefail
+    . "$1"
+    mkdir "$2/.env.hosting-inject.$$"
+    env_inject_hosting_vars "$2/.env" HOSTING_CPU_LIMIT=1
+    echo NOTREACHED
+' _ "$env_sh" "$d" 2>&1); rc=$?
+assert '[ "$rc" = "1" ]'                    "an unusable temp path fails with 1 (got $rc, said '$out')"
+assert 'grep -qF "ERROR: env_inject_hosting_vars: cannot write beside" <<<"$out"' \
+       "reported as this function's own failure (said '$out')"
+assert '! grep -q "^rm:" <<<"$out"'         "not as a raw rm diagnostic (said '$out')"
+assert '! grep -qF NOTREACHED <<<"$out"'    "and it does not carry on regardless (said '$out')"
+expect_bytes "$d/.env" $'A=1\n'             "leaving .env untouched"
+
+# --- Case 35: a symlinked .env is written through ------------------------------
+# Renaming over the link would leave a regular file here and orphan the target
+# with stale content.
+d=$(newdir t35)
+printf 'A=1\n' > "$d/real.env"
+ln -s real.env "$d/.env"
+lib_run "$inject" "$d/.env"
+assert '[ "$rc" = "0" ]'  "injection through a symlink exits 0 (got $rc, said '$out')"
+assert '[ -L "$d/.env" ]' "the .env is still a symlink afterwards"
+expect_bytes "$d/real.env" $'A=1\n'"$block" "and the block landed in the file it points at"
+
+# --- Case 36: the write is a rename over a fresh temp -------------------------
+d=$(newdir t36)
+printf 'A=1\n' > "$d/.env"
+ino=$(stat -c %i "$d/.env")
+lib_run "$inject" "$d/.env"
+assert '[ "$(stat -c %i "$d/.env")" != "$ino" ]' \
+       "the new .env is a renamed temp, not an in-place edit a reader could catch half-written"
+
+# The temp is per-process and made fresh: one left by a crashed run would
+# otherwise hand its mode to the .env this creates.
+d=$(newdir t36b)
+out=$(bash -c '
+    set -euo pipefail
+    . "$1"
+    : > "$2/.env.hosting-inject.$$"
+    chmod 666 "$2/.env.hosting-inject.$$"
+    env_inject_hosting_vars "$2/.env" HOSTING_CPU_LIMIT=1
+    stat -c %a "$2/.env"
+' _ "$env_sh" "$d" 2>&1)
+assert '[ "$out" = "600" ]' "a stale temp is removed rather than reused (got '$out')"
+
+# --- Case 37: setup destroys the block, so injection has to run after it ------
+# env_setup_run rebuilds .env from the template, which carries no reserved
+# keys. In the other order `docker compose up` fails on an unset limit.
+d=$(newdir t37)
+printf 'APP=MyApp\n' > "$d/.env.prod.example"
+printf '%s' $'APP=live\n'"$block" > "$d/.env"
+run_env $'y\n' "$d"
+assert '[ "$rc" = "0" ]'                              "reconfigure-all over an injected .env exits 0 (got $rc)"
+assert '! grep -qF "hosting managed block" "$d/.env"' "setup leaves no managed block behind"
+assert '! grep -q "^HOSTING_" "$d/.env"'              "nor any reserved key at all"
+lib_run "$inject" "$d/.env"
+assert 'grep -qxF "HOSTING_CPU_LIMIT=14.4" "$d/.env"' "which injection puts back — that is the required order"
+
+# --- Case 38: the reserved prefix is matched anchored --------------------------
+# MY_HOSTING_URL is a plausible user key. Every site naming the prefix has to
+# see it as the user's, or the exemption swallows keys hosting never writes.
+d=$(newdir t38)
+printf 'A=1\nMY_HOSTING_URL=t\n' > "$d/.env.prod.example"
+printf 'A=1\n' > "$d/.env"
+lib_run "$drift" "$d/.env.prod.example" "$d/.env"
+assert '[ "$out" = "missing=[MY_HOSTING_URL] extra=[]" ]' \
+       "a key containing HOSTING_ still drifts when the .env lacks it (got '$out')"
+
+d=$(newdir t38b)
+printf 'A=1\n' > "$d/.env.prod.example"
+printf 'A=1\nMY_HOSTING_URL=x\n' > "$d/.env"
+lib_run "$drift" "$d/.env.prod.example" "$d/.env"
+assert '[ "$out" = "missing=[] extra=[MY_HOSTING_URL]" ]' \
+       "and when the template lacks it (got '$out')"
+
+# Setup's three readers at once: the .env loader (the kept count), the
+# template-key scan (the removed count) and the prompt loop (the value written).
+d=$(newdir t38c)
+cat > "$d/.env.prod.example" <<'TMPL'
+APP_NAME=MyApp
+MY_HOSTING_URL=https://default
+NEW_VAR=n
+TMPL
+cat > "$d/.env" <<'ENV'
+APP_NAME=live
+MY_HOSTING_URL=https://live
+ENV
+run_env $'\n\n' "$d"
+assert 'grep -qF "2 kept, 1 new, 0 removed" <<<"$out"' \
+       "setup counts a key containing HOSTING_ as an ordinary kept key (said '$out')"
+expect_kv "$d/.env" MY_HOSTING_URL https://live "and keeps its live value rather than dropping the line"
+
+# --- Case 30: what the drift and injection helpers leak -----------------------
+# Same pin as case 24, for the half lib/check.sh and the deploy path call.
+d=$(newdir t30)
+printf 'A=1\n' > "$d/.env.prod.example"
+printf 'B=1\n' > "$d/.env"
+leaked=$(env -i PATH="$PATH" LC_ALL=C bash -c '
+    set -euo pipefail
+    . "$1"
+    before=$(compgen -v | sort)
+    env_extract_keys "$2/.env" >/dev/null
+    env_drift "$2/.env.prod.example" "$2/.env"
+    env_inject_hosting_vars "$2/.env" HOSTING_CPU_LIMIT=1.0
+    comm -13 <(printf "%s\n" "$before") <(compgen -v | sort) | grep -vx before | tr "\n" " "
+' _ "$env_sh" "$d")
+assert '[ "$leaked" = "BASH_REMATCH ENV_DRIFT_EXTRA ENV_DRIFT_MISSING " ]' \
+       "the helpers leak only the two drift results (got '$leaked')"
 
 exit "$fail"

@@ -97,9 +97,10 @@ assert 'grep -qF "✓ No router claims reserved hostnames" <<<"$out"'           
 assert 'grep -qF "✓ Fragment loadBalancer URLs target explicit container_names" <<<"$out"'     "T07 pass line"
 assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'                              "E01 pass line"
 assert 'grep -qF "✓ .env.prod.example has no obvious long secrets" <<<"$out"'                  "E04 pass line"
+assert 'grep -qF "✓ .env.prod.example leaves the HOSTING_* prefix to hosting" <<<"$out"'       "E05 pass line"
 assert '! grep -q "Healthchecks:" <<<"$out"'  "Healthchecks: header suppressed (nothing to check)"
 assert '! grep -q "Hooks:" <<<"$out"'         "Hooks: header suppressed (no hooks/backup in manifest)"
-assert 'grep -qF "22 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
+assert 'grep -qF "23 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
 
 # --- Case 2: missing compose.prod.yml — fail, exit 6 -------------------------
 # Exit 6 is the documented "compliance check failed" code (docs/cli.md).
@@ -546,6 +547,72 @@ ENV
 out="$(cd "$proj30" && "$hosting" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                              "E03 warn exits 0 (got $rc)"
 assert 'grep -qF "⚠ .env has extra keys not in .env.prod.example: EXTRA_VAR" <<<"$out"' "E03 warn line"
+
+# --- Case 30b: the HOSTING_ prefix is invisible to E02/E03 in both directions -
+# Extra in .env is the injected block hosting itself writes; missing from .env
+# is the same key sitting in the template. Neither is drift, and the drift
+# messages must not name them either.
+proj30b="$tmpdir/env-reserved-extra"
+make_project "$proj30b"
+cat > "$proj30b/.env" <<'ENV'
+DOMAIN=demo.example.com
+HOSTING_CPU_LIMIT=14.4
+HOSTING_MEM_LIMIT=54g
+ENV
+out="$(cd "$proj30b" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                     "reserved keys in .env exit 0 (got $rc)"
+assert 'grep -qF "✓ .env has no extra keys vs .env.prod.example" <<<"$out"'  "an extra HOSTING_ key is not E03 drift"
+assert 'grep -qF "✓ .env has no missing keys vs .env.prod.example" <<<"$out"' "and leaves E02 passing"
+
+proj30c="$tmpdir/env-reserved-missing"
+make_project "$proj30c"
+printf 'HOSTING_MEM_LIMIT=54g\n' >> "$proj30c/.env.prod.example"
+cat > "$proj30c/.env" <<'ENV'
+DOMAIN=demo.example.com
+ENV
+out="$(cd "$proj30c" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                      "a reserved key only in the template exits 0 (got $rc)"
+assert 'grep -qF "✓ .env has no missing keys vs .env.prod.example" <<<"$out"' "a HOSTING_ key absent from .env is not E02 drift"
+
+# Real drift in both directions still reports, with the reserved keys filtered
+# out of the message — the half that a blanket "skip the whole check" would
+# also pass.
+proj30d="$tmpdir/env-reserved-and-real"
+make_project "$proj30d"
+printf 'REAL_MISSING=x\nHOSTING_MEM_LIMIT=54g\n' >> "$proj30d/.env.prod.example"
+cat > "$proj30d/.env" <<'ENV'
+DOMAIN=demo.example.com
+REAL_EXTRA=y
+HOSTING_CPU_LIMIT=14.4
+ENV
+out="$(cd "$proj30d" && "$hosting" check 2>&1)"; rc=$?
+assert 'grep -qF "⚠ .env missing keys vs .env.prod.example: REAL_MISSING" <<<"$out"' \
+       "real missing keys are still reported (said '$out')"
+assert 'grep -qF "⚠ .env has extra keys not in .env.prod.example: REAL_EXTRA" <<<"$out"' \
+       "real extra keys are still reported (said '$out')"
+drift_lines="$(grep -F "vs .env.prod.example" <<<"$out")"
+assert '! grep -qF "HOSTING_" <<<"$drift_lines"' \
+       "no reserved key is named in either drift message (said '$drift_lines')"
+
+# --- Case 30e: E05 — a reserved key in the template → warn -------------------
+# Two of them: the message names every offender, not the first.
+proj30e="$tmpdir/env-reserved-template"
+make_project "$proj30e"
+printf 'HOSTING_CPU_LIMIT=0\nHOSTING_MEM_LIMIT=0\n' >> "$proj30e/.env.prod.example"
+out="$(cd "$proj30e" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                     "E05 is a warning, so exit stays 0 (got $rc)"
+assert 'grep -qF "⚠ .env.prod.example defines reserved HOSTING_* keys (hosting injects these): HOSTING_CPU_LIMIT HOSTING_MEM_LIMIT" <<<"$out"' \
+       "E05 warn line names every reserved key, not just the first (said '$out')"
+assert 'grep -qF "22 passed, 1 warning, 0 failed" <<<"$out"'                 "E05 warns instead of passing, one line either way (said '$out')"
+
+# The prefix is matched anchored: MY_HOSTING_URL is the user's key. A substring
+# match here would warn about a key hosting neither injects nor skips.
+proj30f="$tmpdir/env-reserved-substring"
+make_project "$proj30f"
+printf 'MY_HOSTING_URL=https://example.com\n' >> "$proj30f/.env.prod.example"
+out="$(cd "$proj30f" && "$hosting" check 2>&1)"; rc=$?
+assert 'grep -qF "✓ .env.prod.example leaves the HOSTING_* prefix to hosting" <<<"$out"' \
+       "a key merely containing HOSTING_ is not E05 (said '$out')"
 
 # --- Case 31: E04 — long literal value in template → warn -------------------
 proj31="$tmpdir/env-long-secret"

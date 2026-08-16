@@ -6,6 +6,8 @@ _HOSTING_CHECK_LOADED=1
 
 . "$HOSTING_LIB_DIR/common.sh"
 . "$HOSTING_LIB_DIR/manifest.sh"
+# The env rules read keys and diff them with the same code the VPS runs.
+. "$HOSTING_LIB_DIR/env.sh"
 
 _check_usage() {
     cat <<EOF
@@ -15,7 +17,7 @@ Runs structural checks against the current project. Exit 0 if no failures
 (warnings are informational). See docs/compliance.md for the full rule set.
 
 Implemented: Structure (S01–S06), Compose (C01–C07), Resources (R01–R03),
-Traefik (T01–T07), Healthchecks (H01–H02), Env (E01–E04), Hooks (HK01–HK03).
+Traefik (T01–T07), Healthchecks (H01–H02), Env (E01–E05), Hooks (HK01–HK03).
 Mail (M*), R04, and the --fix / --server modes are not yet wired in.
 EOF
 }
@@ -632,7 +634,7 @@ _check_h02_health_container() {
 }
 
 # ----------------------------------------------------------------------------
-# Env (E01–E04)
+# Env (E01–E05)
 # ----------------------------------------------------------------------------
 # Skipped silently if .env.prod.example is missing — S04 has already failed
 # for that case.
@@ -644,6 +646,7 @@ _check_env_section() {
     _check_e01_syntax
     _check_e02_e03_drift
     _check_e04_long_values
+    _check_e05_reserved_prefix
 }
 
 # E01: every line is empty, a comment (`#…`), or `<NAME>=<value>`. Anything
@@ -666,35 +669,22 @@ _check_e01_syntax() {
     fi
 }
 
-# E02/E03: only run when .env exists. Diff key sets — values intentionally
-# ignored; the user may legitimately leave defaults verbatim.
+# E02/E03: only run when .env exists. env_drift (lib/env.sh) is the same
+# function the deploy path and the VPS-side setup call, HOSTING_* exemption
+# included; this only reports its two lists.
 _check_e02_e03_drift() {
     [ -f .env ] || return 0
-    local example_keys env_keys
-    example_keys="$(_env_extract_keys .env.prod.example | sort -u)"
-    env_keys="$(_env_extract_keys .env | sort -u)"
-    local missing extra
-    missing="$(comm -23 <(printf '%s\n' "$example_keys") <(printf '%s\n' "$env_keys") | tr '\n' ' ' | sed 's/ *$//')"
-    extra="$(comm -13 <(printf '%s\n' "$example_keys") <(printf '%s\n' "$env_keys") | tr '\n' ' ' | sed 's/ *$//')"
-    if [ -z "$missing" ]; then
+    env_drift .env.prod.example .env
+    if [ -z "$ENV_DRIFT_MISSING" ]; then
         _check_pass ".env has no missing keys vs .env.prod.example"
     else
-        _check_warn ".env missing keys vs .env.prod.example: $missing"
+        _check_warn ".env missing keys vs .env.prod.example: $ENV_DRIFT_MISSING"
     fi
-    if [ -z "$extra" ]; then
+    if [ -z "$ENV_DRIFT_EXTRA" ]; then
         _check_pass ".env has no extra keys vs .env.prod.example"
     else
-        _check_warn ".env has extra keys not in .env.prod.example: $extra"
+        _check_warn ".env has extra keys not in .env.prod.example: $ENV_DRIFT_EXTRA"
     fi
-}
-
-_env_extract_keys() {
-    local f="$1"
-    [ -f "$f" ] || return 0
-    # awk (not grep) so a key-less file returns 0 with empty output. With
-    # pipefail, grep's "no match → exit 1" tips the surrounding `var=$(…)`
-    # under errexit.
-    awk -F= '/^[A-Za-z_][A-Za-z0-9_]*=/ { sub(/=.*/, ""); print }' "$f"
 }
 
 # E04: a literal long value in a committed template is almost always a leaked
@@ -717,6 +707,22 @@ _check_e04_long_values() {
         _check_pass ".env.prod.example has no obvious long secrets"
     else
         _check_warn ".env.prod.example has values >64 chars (possibly leaked secrets): ${bad[*]}"
+    fi
+}
+
+# E05 (warn): a key the template opens with `HOSTING_`. Setup skips it and the
+# managed block owns it, so the line only misleads — warn, because a fail here
+# would be the only env rule able to push `check` to exit 6.
+_check_e05_reserved_prefix() {
+    local bad=() key keys
+    keys="$(env_extract_keys .env.prod.example)"
+    while IFS= read -r key; do
+        case "$key" in "$ENV_RESERVED_PREFIX"*) bad+=("$key") ;; esac
+    done <<<"$keys"
+    if [ "${#bad[@]}" -eq 0 ]; then
+        _check_pass ".env.prod.example leaves the ${ENV_RESERVED_PREFIX}* prefix to hosting"
+    else
+        _check_warn ".env.prod.example defines reserved ${ENV_RESERVED_PREFIX}* keys (hosting injects these): ${bad[*]}"
     fi
 }
 

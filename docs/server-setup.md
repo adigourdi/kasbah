@@ -15,7 +15,7 @@ assumes.
 | The SSH user can run `docker` without sudo | Avoids mixed sudo/non-sudo ownership in `/apps/data/` | Hard fail, suggest `usermod -aG docker` |
 | `rsync`, `openssl`, `gzip` available on remote | Used by deploy and env setup | Hard fail |
 | `bash` on the remote | Every hosting step ships a script to `bash -s` over the SSH master | Hard fail |
-| A POSIX userland — `tr`, `cat`, `stat`, `nproc`, `date`, `find` | Every remote step is a shell script; these are assumed present rather than checked, because a box without them cannot run `bash -s` usefully in the first place | Not checked; failure surfaces as the step's own error |
+| A POSIX userland — `tr`, `cat`, `stat`, `nproc`, `date`, `find`, `sort`, `comm`, `readlink` | Every remote step is a shell script; these are assumed present rather than checked, because a box without them cannot run `bash -s` usefully in the first place. The rule hosting's shipped scripts follow is **coreutils and bash builtins, nothing separately packaged** — which is why `scripts/setup-env.sh` parses env files with `read` loops rather than `awk` or `grep` | Not checked; failure surfaces as the step's own error |
 | Passwordless `sudo` — **only** when the apps path does not exist yet | `/apps` lives outside the deploy user's home, so nobody but root can create it. Once it exists and is owned by that user, init never elevates again | Hard fail naming the two commands to run by hand |
 
 `hosting server init` does **not**:
@@ -244,8 +244,11 @@ depend on the operator's locale cannot be idempotent. The remote side is not
 assumed to have `awk` or `bc` — the prerequisites table does not list them.
 
 The values live in the server marker and are injected into each project's
-`.env` on every deploy as `HOSTING_CPU_LIMIT` / `HOSTING_MEM_LIMIT`
-(reserved prefix, exempt from env drift detection). Project compose files
+`.env` on every deploy as `HOSTING_CPU_LIMIT` / `HOSTING_MEM_LIMIT`, into a
+sentinel-delimited managed block, written through unchanged — injection
+formats nothing and validates nothing, so a `0` reaches the file as `0`
+(reserved prefix, exempt from env drift detection; see `env-template.md` for
+the block's shape and the stray-removal rule). Project compose files
 must reference the vars, never literal values — `hosting check` enforces
 this (R01–R03), and `check --server` warns on values tightened below 90%
 and fails anything above (R04).
