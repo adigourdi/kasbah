@@ -254,6 +254,26 @@ ssh_run() {
     ssh -n "${_SSH_OPTS[@]}" "$SSH_TARGET" "$(_ssh_quote "$@")"
 }
 
+# ssh_run_tty <word>... — one remote command with a terminal attached, quoted
+# the same way ssh_run quotes. For an interactive remote program and nothing
+# else: the .env generator prompts, masks a password with `read -rs`, and reads
+# one character at a menu, none of which survives a pipe.
+#
+# Neither of the other two can carry it. ssh_run closes stdin with -n, so the
+# far side reads EOF at its first prompt; ssh_script feeds the payload down
+# stdin, so stdin is spent before the program starts. This one passes stdin
+# through untouched and asks ssh for a pty.
+#
+# `-t` allocates that pty only when the *local* stdin is one; without a terminal
+# here ssh says so and runs the command anyway, which would leave a prompt
+# nobody can answer. Callers therefore check `[ -t 0 ]` themselves and refuse
+# before reaching this, rather than relying on ssh's warning (docs/cli.md → exit
+# codes: an unanswerable prompt is a hard failure, never a hang).
+ssh_run_tty() {
+    _ssh_require
+    ssh -t "${_SSH_OPTS[@]}" "$SSH_TARGET" "$(_ssh_quote "$@")"
+}
+
 # ssh_script [arg]... — run a bash script read from stdin, with the arguments
 # as its $1... The heredoc is the ergonomic path, and a quoted delimiter keeps
 # the payload verbatim all the way to the far side:

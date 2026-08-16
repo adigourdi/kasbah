@@ -15,17 +15,17 @@ services:
       # The page itself, synced from the project's site/ directory.
       - "./site:/usr/share/nginx/html:ro"
     environment:
-      # Read from <apps>/demo/.env by compose — proof that the environment file
-      # is in play, and the reason deploy refuses to run without one.
+      # Read from <apps>/demo/.env by compose — proof that the environment
+      # file is in play, and what the interactive setup prompts for.
       DEMO_GREETING: ${DEMO_GREETING}
     networks:
       # Routed service: on hosting-net for Traefik, and on the project's own
       # network for anything internal. Nothing else joins hosting-net (C07).
       - hosting-net
       - internal
-    # Injected into .env by hosting from the server marker (Phase 3); seeded by
-    # hand for now. Unset, compose fails outright — an empty value is not a
-    # valid cpus:.
+    # Injected into .env by hosting from the server marker, into its managed
+    # block. Unset, compose fails outright — an empty value is not a valid
+    # cpus:.
     cpus: ${HOSTING_CPU_LIMIT}
     mem_limit: ${HOSTING_MEM_LIMIT}
     logging:

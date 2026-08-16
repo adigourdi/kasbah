@@ -74,6 +74,7 @@ Commands:
   init-project [--name=<n>] [--domain=<d>]   Scaffold hosting metadata in cwd.
   check                                      Run structural checks on the project.
   deploy [USER@HOST]                         Ship the working tree and bring it up.
+  env [USER@HOST]                            Render the project's .env on the server.
   server init USER@HOST [flags]              Prepare a VPS to host projects.
   server status USER@HOST                    Report what a prepared VPS is running.
 
@@ -129,6 +130,10 @@ dispatch() {
         deploy)
             . "$HOSTING_LIB_DIR/deploy.sh"
             cmd_deploy "$@"
+            ;;
+        env)
+            . "$HOSTING_LIB_DIR/env_cmd.sh"
+            cmd_env "$@"
             ;;
         server)
             dispatch_server "$@"

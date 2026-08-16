@@ -643,11 +643,13 @@ assert '! grep -qE "HOSTING_LIB_DIR|common\.sh" <<<"$code_only"' "lib/env.sh ref
 assert '! grep -qE "(^|[;&|(\`[:space:]])(info|warn|err|err_cont|die)[[:space:]]" <<<"$code_only"' \
        "lib/env.sh calls none of common.sh's helpers"
 
-# --- Case 24: the exact set of globals env_setup_run leaks --------------------
-# The verbatim port uses no `local`, so every scalar it touches lands in the
-# caller's shell — harmless today, and pinned here so that adding one is seen
-# in this suite rather than discovered inside hosting deploy. `env -i` keeps the
-# ambient environment (DISPLAY, notably) out of the comparison.
+# --- Case 24: every global a sourced lib/env.sh plus one env_setup_run adds ---
+# `before` is taken ahead of the `.`, so the pinned set is the file's source-time
+# globals *and* env_setup_run's — which is the set that matters, because
+# lib/check.sh sources this file into a live command. The verbatim port uses no
+# `local`, so every scalar the run touches lands in the caller's shell; adding
+# one is seen here rather than discovered inside hosting deploy. `env -i` keeps
+# the ambient environment (DISPLAY, notably) out of the comparison.
 d=$(newdir t24)
 cat > "$d/.env.prod.example" <<'TMPL'
 # === Head ===
@@ -682,7 +684,7 @@ leaked=$(env -i PATH="$PATH" LC_ALL=C bash -c '
 " " "
 ' _ "$env_sh" "$d" < "$tmpdir/stdin")
 expected='BASH_REMATCH BOLD CHOICE CMD COMMENT CYAN DEFAULT DIM DISPLAY DISPLAY_CURRENT '
-expected+='ENV_MANAGED_BEGIN ENV_MANAGED_END ENV_RESERVED_PREFIX '
+expected+='ENV_ASSIGN_RE ENV_MANAGED_BEGIN ENV_MANAGED_END ENV_RESERVED_PREFIX '
 expected+='ESCAPED_VALUE EXAMPLE EXISTING_VALUE GREEN HAS_EXISTING HINT KEPT_COUNT KEY OUTPUT '
 expected+='RAW_VALUE RED RESET SUPPRESS_HEADERS TARGET_DIR UPDATE_ONLY VALUE YELLOW '
 expected+='_HOSTING_ENV_LOADED dkey ekey line nkey tkey tline '
@@ -879,12 +881,19 @@ lib_run 'env_inject_hosting_vars "$1" HOSTING_CPU_LIMIT=0 HOSTING_MEM_LIMIT=0' "
 assert 'grep -qxF "HOSTING_CPU_LIMIT=0" "$d/.env"' "a limit of 0 is written through unvalidated"
 assert 'grep -qxF "HOSTING_MEM_LIMIT=0" "$d/.env"' "both of them"
 
-# No pairs at all is an empty block, not a blank line inside one.
+# No pairs at all is refused: it would rewrite an existing block empty, and
+# `compose up` then fails on an unset HOSTING_CPU_LIMIT. The `for` guard below
+# never runs with zero arguments, so this needs its own check.
 d=$(newdir t28k)
-printf 'A=1\n' > "$d/.env"
-lib_run 'env_inject_hosting_vars "$1"' "$d/.env"
-expect_bytes "$d/.env" $'A=1\n# >>> hosting managed block - do not edit, rewritten on every deploy >>>\n# <<< hosting managed block <<<\n' \
-             "injecting nothing writes an empty block"
+printf '%s' $'A=1\nHOSTING_CPU_LIMIT=9\n' > "$d/.env"
+lib_run 'env_inject_hosting_vars "$1" HOSTING_CPU_LIMIT=9' "$d/.env"
+cp "$d/.env" "$d/.env.before"
+lib_run 'env_inject_hosting_vars "$1" || echo "rc=$?"; echo caller-alive' "$d/.env"
+assert '[ "$rc" = "0" ]'                          "an empty pair list does not kill the caller (got $rc)"
+assert 'grep -qF "rc=1" <<<"$out"'                "it returns 1 (said '$out')"
+assert 'grep -qF "no HOSTING_NAME=value pairs given" <<<"$out"' "and says why (said '$out')"
+assert 'grep -qF "caller-alive" <<<"$out"'        "the caller runs on (said '$out')"
+expect_same "$d/.env" "$d/.env.before" "and the block it would have emptied is untouched"
 
 # A key outside the reserved prefix is a caller bug: refused, file untouched.
 d=$(newdir t28j)
@@ -1114,6 +1123,74 @@ assert 'grep -qF "2 kept, 1 new, 0 removed" <<<"$out"' \
        "setup counts a key containing HOSTING_ as an ordinary kept key (said '$out')"
 expect_kv "$d/.env" MY_HOSTING_URL https://live "and keeps its live value rather than dropping the line"
 
+# --- Case 40: every reader here sees the line Compose sees --------------------
+# Compose trims leading blanks and honours an `export ` prefix. A reader that
+# does not is worse than one that over-matches: the key reads as absent, drift
+# calls it missing, and setup then overwrites a live value with the template's.
+d=$(newdir t40)
+printf 'A=1\nexport B=2\n  C=3\n\tD=4\nexport\tE=5\n# export F=6\nexportG=7\nexport H I=8\n' > "$d/keys"
+lib_run 'env_extract_keys "$1" | tr "\n" " "' "$d/keys"
+assert '[ "$out" = "A B C D E exportG " ]' \
+       "env_extract_keys reads the key behind an export or an indent, bare (got '$out')"
+
+# The seam itself: a live secret written with `export `, and a template default
+# beside it. Anchored readers saw an empty .env here, reported the key missing,
+# and regenerated it from the template.
+d=$(newdir t40b)
+printf 'APP_KEY=default\nAPP_URL=http://default\n' > "$d/.env.prod.example"
+printf 'export APP_KEY=live-secret\n  APP_URL=http://live\n' > "$d/.env"
+lib_run "$drift" "$d/.env.prod.example" "$d/.env"
+assert '[ "$out" = "missing=[] extra=[]" ]' \
+       "an exported or indented .env key is not missing (got '$out')"
+run_env $'y\n\n' "$d"
+assert '[ "$rc" = "0" ]'                            "reconfiguring over it exits 0 (got $rc)"
+assert 'grep -qF "No changes detected" <<<"$out"'   "and the keys read as already there (said '$out')"
+assert 'grep -qF "[http://live]" <<<"$out"'         "the live value is what Enter accepts (said '$out')"
+expect_kv "$d/.env" APP_KEY live-secret   "the exported live secret survives a regeneration"
+expect_kv "$d/.env" APP_URL http://live   "so does the indented one"
+assert 'grep -qxF "APP_KEY=live-secret" "$d/.env"'  "rewritten bare — .env is rebuilt from the template, not edited"
+
+# The template side. A key the scan sees but the prompt loop does not would be
+# preserved verbatim, taking the template's default with it.
+d=$(newdir t40c)
+printf 'export FOO=tfoo\n  BAR=tbar\n' > "$d/.env.prod.example"
+printf 'FOO=live\n' > "$d/.env"
+run_env $'\n\n' "$d"
+assert 'grep -qF "1 kept, 1 new, 0 removed" <<<"$out"' \
+       "the template scan counts an exported key as a key (said '$out')"
+expect_kv "$d/.env" FOO live "and the prompt loop keeps its live value"
+expect_kv "$d/.env" BAR tbar "the new one takes the template default"
+
+# Reserved keys, through the same shapes: still never prompted, still not
+# written, still not drift. E05 is what warns about them (tests/check_test.sh).
+d=$(newdir t40d)
+printf 'A=1\nexport HOSTING_CPU_LIMIT=0\n  HOSTING_MEM_LIMIT=0\n' > "$d/.env.prod.example"
+printf 'A=live\n' > "$d/.env"
+lib_run "$drift" "$d/.env.prod.example" "$d/.env"
+assert '[ "$out" = "missing=[] extra=[]" ]' "an exported reserved template key is not drift (got '$out')"
+run_env $'y\n' "$d"
+assert '! grep -qF "HOSTING_" <<<"$out"' "and is never prompted for (said '$out')"
+expect_absent "$d/.env" HOSTING_CPU_LIMIT "nor written to .env"
+expect_absent "$d/.env" HOSTING_MEM_LIMIT "either of them"
+expect_kv "$d/.env" A live "the unreserved key keeps its live value"
+
+d=$(newdir t40e)
+printf 'A=1\n' > "$d/.env.prod.example"
+printf 'A=live\nexport HOSTING_CPU_LIMIT=9\n  HOSTING_MEM_LIMIT=1g\n' > "$d/.env"
+lib_run "$drift" "$d/.env.prod.example" "$d/.env"
+assert '[ "$out" = "missing=[] extra=[]" ]' "an exported reserved .env key is not drift either (got '$out')"
+run_env $'y\n' "$d"
+assert 'grep -qF "1 kept, 0 new, 0 removed" <<<"$out"' \
+       "and the .env loader does not count it as a dropped key (said '$out')"
+
+# The mirror hazard: widening to a substring would make MY_HOSTING_URL hosting's.
+d=$(newdir t40f)
+printf 'A=1\nexport MY_HOSTING_URL=d\n' > "$d/.env.prod.example"
+printf 'A=1\n' > "$d/.env"
+lib_run "$drift" "$d/.env.prod.example" "$d/.env"
+assert '[ "$out" = "missing=[MY_HOSTING_URL] extra=[]" ]' \
+       "an exported key that merely contains HOSTING_ is still the user's (got '$out')"
+
 # --- Case 30: what the drift and injection helpers leak -----------------------
 # Same pin as case 24, for the half lib/check.sh and the deploy path call.
 d=$(newdir t30)
@@ -1130,5 +1207,144 @@ leaked=$(env -i PATH="$PATH" LC_ALL=C bash -c '
 ' _ "$env_sh" "$d")
 assert '[ "$leaked" = "BASH_REMATCH ENV_DRIFT_EXTRA ENV_DRIFT_MISSING " ]' \
        "the helpers leak only the two drift results (got '$leaked')"
+
+# --- Case 39: the dispatch modes the VPS copy is driven with -------------------
+# The same bytes answer three questions on the far side, so `hosting deploy` can
+# ask "is there a .env and has it drifted" and "write the managed block" without
+# a second script existing anywhere. The bare form is the standalone original's
+# calling convention and must not move: the 25-case differential against
+# the original project's setup-env.sh runs `bash env.sh <dir>`.
+
+# --drift over a pair that is in sync.
+d=$(newdir t39); mkdir -p "$d"
+printf 'A=1\nB=2\n' > "$d/.env.prod.example"
+printf 'A=x\nB=y\n' > "$d/.env"
+out=$(bash "$env_sh" --drift "$d" 2>&1); rc=$?
+assert '[ "$rc" = "0" ]' "--drift over an in-sync pair exits 0 (got $rc)"
+assert '[ "$out" = "$(printf "template_exists=yes\nenv_exists=yes\nmissing=\nextra=")" ]' \
+       "and reports four key=value lines, both lists empty (said '$out')"
+
+# Drift both ways, reserved keys mixed in and invisible to both sides.
+printf 'A=1\nNEW=2\nHOSTING_CPU_LIMIT=9\n' > "$d/.env.prod.example"
+printf 'A=x\nGONE=y\nHOSTING_MEM_LIMIT=1g\n' > "$d/.env"
+out=$(bash "$env_sh" --drift "$d" 2>&1); rc=$?
+assert '[ "$rc" = "0" ]' "--drift over a drifting pair still exits 0 (got $rc)"
+assert 'grep -qx "missing=NEW" <<<"$out"' "the template's own new key is missing (said '$out')"
+assert 'grep -qx "extra=GONE" <<<"$out"'  "and the .env's own key is extra (said '$out')"
+assert '! grep -q "HOSTING_" <<<"$out"'   "reserved keys are in neither list (said '$out')"
+
+# The two flags are what the caller branches on, and each has to be able to say
+# no — a report that always said yes would send a deploy into the setup it
+# should have skipped, or past the one it needed.
+d=$(newdir t39b)
+out=$(bash "$env_sh" --drift "$d" 2>&1)
+assert 'grep -qx "template_exists=no" <<<"$out"' "no template says so (said '$out')"
+assert 'grep -qx "env_exists=no" <<<"$out"'      "and no .env says so (said '$out')"
+printf 'A=1\n' > "$d/.env.prod.example"
+out=$(bash "$env_sh" --drift "$d" 2>&1)
+assert 'grep -qx "template_exists=yes" <<<"$out"' "a template that is there says so (said '$out')"
+assert 'grep -qx "env_exists=no" <<<"$out"'       "with the .env still absent (said '$out')"
+assert 'grep -qx "missing=A" <<<"$out"'           "and its keys all read as missing (said '$out')"
+printf 'A=1\n' > "$d/.env"
+out=$(bash "$env_sh" --drift "$d" 2>&1)
+assert 'grep -qx "env_exists=yes" <<<"$out"'      "a .env that is there says so (said '$out')"
+
+# An empty .env is not a missing one: the caller runs setup for the second and
+# reports drift for the first, and `[ -s ]` would confuse them.
+d=$(newdir t39c)
+printf 'A=1\n' > "$d/.env.prod.example"
+: > "$d/.env"
+out=$(bash "$env_sh" --drift "$d" 2>&1)
+assert 'grep -qx "env_exists=yes" <<<"$out"' "an empty .env exists (said '$out')"
+assert 'grep -qx "missing=A" <<<"$out"'      "and every template key is missing from it (said '$out')"
+
+# stdout is a protocol; a diagnostic on it would be absorbed as a fact.
+d=$(newdir t39d)
+printf 'A=1\n' > "$d/.env.prod.example"
+mkdir -p "$d/.env"
+out=$(bash "$env_sh" --drift "$d" 2>/dev/null); rc=$?
+err_out=$(bash "$env_sh" --drift "$d" 2>&1 >/dev/null)
+assert '[ "$rc" != "0" ]' "--drift over a .env that is not a regular file fails (got $rc)"
+assert '[ -z "$out" ]'    "printing no facts at all (said '$out')"
+assert 'grep -qF "is not a regular file" <<<"$err_out"' "and the reason on stderr (said '$err_out')"
+
+# --inject, through the same entry point.
+d=$(newdir t39e)
+printf 'A=1\n' > "$d/.env"
+out=$(bash "$env_sh" --inject "$d" HOSTING_CPU_LIMIT=14.4 HOSTING_MEM_LIMIT=54g 2>&1); rc=$?
+assert '[ "$rc" = "0" ]' "--inject exits 0 (got $rc: $out)"
+expect_bytes "$d/.env" $'A=1\n'"$block" "and writes the same block env_inject_hosting_vars does"
+cp "$d/.env" "$d/.env.first"
+bash "$env_sh" --inject "$d" HOSTING_CPU_LIMIT=14.4 HOSTING_MEM_LIMIT=54g >/dev/null 2>&1
+expect_same "$d/.env" "$d/.env.first" "a second --inject is byte-identical"
+# The mode takes the *directory*, like every other mode, and appends /.env
+# itself. A mode that took the file would have written $d/.env/.env here and
+# left $d/.env empty of a block.
+assert '[ "$(ls -A "$d" | grep -cx ".env")" = "1" ]' \
+       "--inject named the directory, not the file (saw '$(ls -A "$d")')"
+
+out=$(bash "$env_sh" --inject "$d" DATABASE_URL=x 2>&1); rc=$?
+assert '[ "$rc" != "0" ]' "--inject with an unreserved key fails (got $rc)"
+assert 'grep -qF "is not a HOSTING_NAME=value pair" <<<"$out"' "and says why (said '$out')"
+expect_same "$d/.env" "$d/.env.first" "leaving .env untouched"
+
+# `--inject` is a documented interface in this file's own header, so the empty
+# pair list has to be refused here too — it would rewrite the block empty and
+# leave `compose up` failing on an unset HOSTING_CPU_LIMIT.
+out=$(bash "$env_sh" --inject "$d" 2>&1); rc=$?
+assert '[ "$rc" != "0" ]' "--inject with no pairs fails (got $rc)"
+assert 'grep -qF "no HOSTING_NAME=value pairs given" <<<"$out"' "and says why (said '$out')"
+expect_same "$d/.env" "$d/.env.first" "leaving the block it would have emptied intact"
+out=$(cd "$d" && bash "$env_sh" --inject 2>&1); rc=$?
+assert '[ "$rc" != "0" ]' "--inject with no arguments at all fails too (got $rc)"
+expect_same "$d/.env" "$d/.env.first" "and touches nothing in the working directory"
+
+# --- Case 39b: the bare form is untouched, and unknown modes are refused ------
+# `bash env.sh <dir>` is the original's calling convention and the differential
+# harness's. A mode word is a leading `--`, which a target directory is not.
+d=$(newdir t39f)
+printf 'A=1\nB=2\n' > "$d/.env.prod.example"
+run_env $'\n\n' "$d"
+assert '[ "$rc" = "0" ]' "the bare [target_dir] form still runs the setup (got $rc)"
+expect_kv "$d/.env" A 1 "and writes the .env it always did"
+expect_kv "$d/.env" B 2 "every key of it"
+
+d=$(newdir t39g)
+printf 'A=1\nB=2\n' > "$d/.env.prod.example"
+printf '\n\n' > "$tmpdir/stdin"
+out=$(bash "$env_sh" --setup "$d" < "$tmpdir/stdin" 2>&1); rc=$?
+assert '[ "$rc" = "0" ]' "--setup is the same thing, named (got $rc: $out)"
+expect_kv "$d/.env" A 1 "and writes the same .env"
+
+# The bare form's errexit contract survives the dispatch: EOF at the update menu
+# still aborts, and .env is still untouched. Wrapping the call in `|| rc=$?`
+# anywhere in env_main would turn that into exit 0 over a file nothing wrote.
+d=$(newdir t39h); basic_template "$d"
+cat > "$d/.env" <<'ENV'
+APP_NAME=existing_app
+APP_PORT=8080
+APP_DEBUG=true
+ENV
+cp "$d/.env" "$d/.env.backup"
+: > "$tmpdir/stdin"
+out=$(bash "$env_sh" --setup "$d" < "$tmpdir/stdin" 2>&1); rc=$?
+assert '[ "$rc" = "1" ]' "--setup with EOF at the menu exits 1 (got $rc)"
+expect_same "$d/.env" "$d/.env.backup" "and leaves .env alone"
+
+out=$(bash "$env_sh" --nonsense "$d" 2>&1); rc=$?
+assert '[ "$rc" != "0" ]' "an unknown mode is refused (got $rc)"
+assert 'grep -qF "unknown mode" <<<"$out"' "by name (said '$out')"
+assert 'grep -qF -- "--drift" <<<"$out"'   "and the message lists the modes there are (said '$out')"
+
+# Sourced, env_main is still the only entry point and the modes reach the same
+# functions — lib/check.sh sources this file and must not gain a dispatch.
+out=$(bash -c '
+    set -euo pipefail
+    . "$1"
+    env_main --drift "$2"
+    echo "caller-alive"
+' _ "$env_sh" "$d" 2>&1); rc=$?
+assert '[ "$rc" = "0" ]' "a sourced env_main --drift returns to its caller (got $rc: $out)"
+assert 'grep -qF "caller-alive" <<<"$out"' "alive (said '$out')"
 
 exit "$fail"

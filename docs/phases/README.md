@@ -13,7 +13,7 @@ during execution.
 | 0 | [Ground](00-ground.md) | **Done.** Scaffold, install, manifest/state, init-project, full `check`, docs corpus with all decisions |
 | 1 | [Rig](01-rig.md) | **Done.** A fake VPS (DinD container: sshd + dockerd) with reset script and integration-test runner |
 | 2 | [Spine](02-spine.md) | **Done.** `server init`, the shared Traefik stack, thin `deploy` and minimal `server status`; a stock project serves through Traefik via a file-provider fragment |
-| 3 | [Env](03-env.md) | Env template system ported with tests; drift + `HOSTING_*` injection. *Parallel-safe with 1–2* |
+| 3 | [Env](03-env.md) | **Done.** Env template system ported verbatim with its tests; one shared drift function used by `check` and by the VPS; `HOSTING_*` injected into a managed block |
 | 4 | [Ship](04-ship.md) | `build-push` + full `deploy` (hooks, backup, health, flock, digests): a custom-built app ships to the rig |
 | 5 | [Undo](05-undo.md) | `rollback` + `history` / `pending` / `changelog` |
 | 6 | [Proof](06-proof.md) | **The real milestone.** A real project (deliberately unnamed) on a freshly provisioned VPS: bare host → HTTPS with real ACME, change deploy, rollback — hosting only |
@@ -75,7 +75,24 @@ rhythm: one capability slice per task, tests landing with it.
 8. **VPS-side helpers are hosting-owned** and overwritten on every deploy;
    projects never vendor hosting bash.
 
-## Before starting Phase 3
+## Before starting Phase 4
+
+Phase 3 is committed and its exit criteria were walked by hand at close.
+Baselines: `./test.sh` 13 PASS; `HOSTING_RIG_TESTS=1 ./test.sh` **17 PASS in
+~5m50s**. Phase 4 has a `## Carried in from Phase 2` section; read it first.
+
+Two things Phase 3 leaves on the table for whoever opens this code next.
+**`lib/env.sh` is shipped to the VPS verbatim** — it is sourced by
+`hosting check` here and executed there as `scripts/setup-env.sh`, so nothing
+in it may reach for `common.sh`, `jq`, `awk` or `bc`, and `set -euo pipefail`
+at its top is a contract rather than a habit: the two menu reads are the only
+ones without `|| true`, so "EOF at the menu aborts" *is* errexit. Never put
+`env_setup_run` on the left of `||` or `&&`. And **`hosting deploy` now has a
+step that can prompt** — 4.3 assembles the full flow around it, so keep the env
+step after the project rsync and before the remote deploy, and keep the Traefik
+fragment last.
+
+## Before starting Phase 3 ✅
 
 Phase 2 is committed and its exit criteria were walked by hand against the
 rig at close. Unit-suite baseline: `./test.sh` 10 PASS in ~1m50s; with the

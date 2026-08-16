@@ -121,7 +121,6 @@ Chosen defaults (overridable via `hosting server init --apps-path=...`):
 │   ├── compose.yml              # from project's compose.prod.yml
 │   ├── .env                     # generated via setup-env
 │   ├── .env.prod.example        # synced from project for drift detection
-│   ├── hosting.yml              # project manifest
 │   ├── versions.log             # deploy/rollback history
 │   ├── scripts/                 # minimal helpers copied per deploy
 │   │   ├── setup-env.sh         # rich env template handler

@@ -649,9 +649,11 @@ _check_env_section() {
     _check_e05_reserved_prefix
 }
 
-# E01: every line is empty, a comment (`#…`), or `<NAME>=<value>`. Anything
-# else (e.g. `FOO BAR=baz`, `=value`, `1FOO=bar`) is a parse error for
-# setup-env.sh down the line.
+# E01: every line is empty, a comment (`#…`), or an assignment in the shape
+# lib/env.sh reads (ENV_ASSIGN_RE — Compose's, so `export FOO=1` and a leading
+# blank both count). Anything else (e.g. `FOO BAR=baz`, `=value`, `1FOO=bar`)
+# setup-env.sh preserves verbatim instead of prompting for, so the key the
+# author meant never reaches .env.
 _check_e01_syntax() {
     local f=.env.prod.example bad=() lineno=0 line
     while IFS= read -r line || [ -n "$line" ]; do
@@ -659,7 +661,7 @@ _check_e01_syntax() {
         line="${line%$'\r'}"
         [[ "$line" =~ ^[[:space:]]*$ ]] && continue
         [[ "$line" =~ ^[[:space:]]*# ]] && continue
-        [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] && continue
+        [[ "$line" =~ $ENV_ASSIGN_RE ]] && continue
         bad+=("$lineno")
     done < "$f"
     if [ "${#bad[@]}" -eq 0 ]; then
@@ -695,9 +697,9 @@ _check_e04_long_values() {
     local f=.env.prod.example bad=() line key val val_only
     while IFS= read -r line || [ -n "$line" ]; do
         line="${line%$'\r'}"
-        [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
-        key="${BASH_REMATCH[1]}"
-        val="${BASH_REMATCH[2]}"
+        [[ "$line" =~ $ENV_ASSIGN_RE ]] || continue
+        key="${BASH_REMATCH[2]}"
+        val="${BASH_REMATCH[3]}"
         [[ "$val" =~ ^[[:space:]]*! ]] && continue
         [[ "$val" =~ ^[[:space:]]*# ]] && continue
         val_only="$(printf '%s' "$val" | sed -E 's/[[:space:]]+#.*$//')"

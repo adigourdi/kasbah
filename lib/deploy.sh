@@ -8,6 +8,8 @@ _HOSTING_DEPLOY_LOADED=1
 . "$HOSTING_LIB_DIR/manifest.sh"
 . "$HOSTING_LIB_DIR/state.sh"
 . "$HOSTING_LIB_DIR/ssh.sh"
+. "$HOSTING_LIB_DIR/marker.sh"
+. "$HOSTING_LIB_DIR/env_cmd.sh"
 
 # `hosting deploy [USER@HOST]` ships the working tree, labelled with HEAD's
 # version tag, to a server `hosting server init` has already prepared, and runs
@@ -25,17 +27,25 @@ _HOSTING_DEPLOY_LOADED=1
 # time Traefik takes to notice one new file — 44 ms measured on an idle Traefik
 # (docs/phases/02-spine.md).
 #
+# The env step sits between the two: after the project rsync, because the
+# interactive setup prompts from the .env.prod.example that rsync put there, and
+# before the remote deploy, because `compose up` reads the file it writes. See
+# lib/env_cmd.sh.
+#
 # Thin on purpose. Hooks, backup, the health wait, image digests and versions.log
-# rotation belong to templates/remote-deploy.sh and arrive in Phase 4; env
-# rendering and drift, and the HOSTING_* injection, in Phase 3. What is here is
-# the stock-image path: sync, fragment, `compose up -d`, one log line.
+# rotation belong to templates/remote-deploy.sh and arrive in Phase 4. What is
+# here is the stock-image path: sync, env, `compose up -d`, one log line,
+# fragment.
 
 _DEPLOY_TARGET=""
 _DEPLOY_TARGET_SOURCE=""
 _DEPLOY_VERSION=""
 _DEPLOY_APPS_PATH=""
 _DEPLOY_DATA_PATH=""
+_DEPLOY_CPU_LIMIT=""
+_DEPLOY_MEM_LIMIT=""
 _DEPLOY_MARKER=""
+_DEPLOY_ON_DRIFT=""
 
 # The manifest's sync: list, split into three parallel arrays by
 # _deploy_parse_sync_lines.
@@ -51,7 +61,7 @@ declare -A _DEPLOY_FACT=()
 
 _deploy_usage() {
     cat <<EOF
-Usage: hosting deploy [USER@HOST]
+Usage: hosting deploy [USER@HOST] [--on-drift=setup|continue|abort]
 
 Ships the working tree to a prepared server and brings the project up there.
 Run from the project root. The version is HEAD's v-tag; USER@HOST defaults to
@@ -59,12 +69,20 @@ the last server this project deployed to (.hosting/state.json).
 
 What it does:
   * rsyncs every path in the manifest's sync: list to <apps>/<name>/
-  * rsyncs traefik-dynamic.yml to <apps>/traefik/dynamic/<name>.yml
+  * renders <apps>/<name>/.env when it is missing, checks it for drift against
+    .env.prod.example otherwise, and refreshes the HOSTING_* block in it from
+    the server marker's resource limits
   * runs scripts/remote-deploy.sh deploy <version> on the server, which does
     docker compose -p <name> up -d --remove-orphans and appends versions.log
+  * rsyncs traefik-dynamic.yml to <apps>/traefik/dynamic/<name>.yml, last
 
-The server's .env must already exist at <apps>/<name>/.env. Interactive env
-setup and drift detection are Phase 3. See docs/build-deploy.md.
+Flags:
+  --on-drift=setup      re-run the interactive setup when .env has drifted
+  --on-drift=continue   deploy against the .env as it stands
+  --on-drift=abort      stop, changing nothing
+Unset, a drifting .env asks; with no terminal to ask on, the run stops (exit 5).
+
+See docs/build-deploy.md and docs/env-template.md.
 EOF
 }
 
@@ -72,6 +90,7 @@ EOF
 
 _deploy_parse_args() {
     _DEPLOY_TARGET=""
+    _DEPLOY_ON_DRIFT=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -81,7 +100,13 @@ _deploy_parse_args() {
             # who read that page deserves to know which phase brings them.
             --skip-hooks|--no-health-wait)
                 die "deploy: $1 is not implemented yet — hooks and the health wait arrive in Phase 4 (docs/build-deploy.md)" ;;
-            -*) die "deploy: unknown flag '${1%%=*}' (deploy takes USER@HOST and nothing else today)" ;;
+            --on-drift=*)
+                _DEPLOY_ON_DRIFT="${1#*=}"
+                env_on_drift_check deploy "$_DEPLOY_ON_DRIFT"
+                ;;
+            --on-drift)
+                die "deploy: --on-drift takes its value with '=' — --on-drift=setup, --on-drift=continue or --on-drift=abort" ;;
+            -*) die "deploy: unknown flag '${1%%=*}' (deploy takes USER@HOST and --on-drift=)" ;;
             *)
                 if [ -z "$_DEPLOY_TARGET" ]; then
                     _DEPLOY_TARGET="${1%$'\r'}"
@@ -327,80 +352,43 @@ _deploy_absorb() {
 }
 
 # The server marker, at the one path a project command can know without being
-# told. Its contents are where the apps and data paths come from, so a server
-# whose layout is not under /apps is followed rather than second-guessed — once
-# it has been found. Finding it is the part that is missing: deploy looks at the
-# default path only, so a server prepared with --apps-path elsewhere reads as
-# unprepared here (carried to Phase 4).
+# told (lib/marker.sh — `hosting env` reads it the same way, and the refusal for
+# a server that has none lives there). Its contents are where the apps and data
+# paths come from, so a server whose layout is not under /apps is followed
+# rather than second-guessed — once it has been found. Finding it is the part
+# that is missing: deploy looks at the default path only, so a server prepared
+# with --apps-path elsewhere reads as unprepared here (carried to Phase 4).
 #
-# Which is why the refusal below neither prints nor implies a bare
-# `hosting server init <target>`. Run against a server whose apps path is not
-# /apps, that command renders a second Traefik stack under /apps and brings it
-# up as compose project `traefik` — the frozen name the live one already has —
-# so compose recreates the running proxy against the new file, off the old
-# dynamic/ and acme.json, and every site on the server goes dark. An operator
-# following hosting's own instruction must not be able to do that.
+# The two resource limits come out of the same read, and go straight into the
+# project's .env as the HOSTING_* managed block (docs/env-template.md).
 _deploy_read_marker() {
-    local marker_path="$HOSTING_DEFAULT_APPS_PATH/.hosting/server.json"
-    local out rc=0
+    marker_read "$_DEPLOY_TARGET"
 
-    out=$(ssh_script "$HOSTING_DEFAULT_APPS_PATH" <<'REMOTE'
-set -uo pipefail
-export LC_ALL=C
-marker="$1/.hosting/server.json"
-
-if [ -e "$marker" ] && [ ! -f "$marker" ]; then
-    printf 'remote: %s exists and is not a regular file\n' "$marker" >&2
-    exit 1
-fi
-[ -f "$marker" ] || exit 3
-cat "$marker"
-REMOTE
-    ) || rc=$?
-
-    case $rc in
-        0) ;;
-        3)
-            err "$_DEPLOY_TARGET has no server marker at $marker_path"
-            err_cont "That file is what \`hosting server init\` writes last, and deploy looks for it"
-            err_cont "there and nowhere else. So this is one of two situations, and they have"
-            err_cont "different answers:"
-            err_cont "  * the server was prepared with --apps-path=<dir> somewhere other than"
-            err_cont "    $HOSTING_DEFAULT_APPS_PATH. Deploying to it is not wired up yet — check with"
-            err_cont "    \`ssh $_DEPLOY_TARGET ls <dir>/.hosting/server.json\` before doing anything else."
-            err_cont "  * the server has never been prepared, and initialising it is the answer."
-            err_cont "Do not re-run init until you know which. Pointed at the wrong apps path it"
-            err_cont "renders a second Traefik stack under the frozen 'traefik' compose project,"
-            err_cont "which recreates the running proxy against it and takes every site down."
-            exit "$HOSTING_EXIT_NO_REMOTE_STATE"
-            ;;
-        *) die "could not read $marker_path on $_DEPLOY_TARGET (the remote step exited $rc, see above)" ;;
-    esac
-
-    _DEPLOY_MARKER="$out"
-    jq -e 'type == "object"' >/dev/null 2>&1 <<<"$_DEPLOY_MARKER" \
-        || die "$marker_path on $_DEPLOY_TARGET is not a JSON object — re-run \`hosting server init $_DEPLOY_TARGET\`"
-
-    _DEPLOY_APPS_PATH="$(jq -r '.apps_path // "" | tostring' <<<"$_DEPLOY_MARKER")"
-    _DEPLOY_DATA_PATH="$(jq -r '.data_path // "" | tostring' <<<"$_DEPLOY_MARKER")"
-    local path
-    for path in "$_DEPLOY_APPS_PATH" "$_DEPLOY_DATA_PATH"; do
-        case $path in
-            /?*) ;;
-            *) die "$marker_path on $_DEPLOY_TARGET records apps_path='$_DEPLOY_APPS_PATH' data_path='$_DEPLOY_DATA_PATH'; both must be absolute paths — re-run \`hosting server init\`" ;;
-        esac
-    done
+    _DEPLOY_MARKER="$MARKER_JSON"
+    _DEPLOY_APPS_PATH="$MARKER_APPS_PATH"
+    _DEPLOY_DATA_PATH="$MARKER_DATA_PATH"
+    _DEPLOY_CPU_LIMIT="$MARKER_CPU_LIMIT"
+    _DEPLOY_MEM_LIMIT="$MARKER_MEM_LIMIT"
     return 0
 }
 
-# One step: judge, then create. The .env is the judgement — nothing is shipped
-# to a project whose environment file is not there, because `compose up` would
-# fail on the far side with the fragment already live and pointing at a
-# container that never started.
+# The directories a deploy writes into, and the two facts about the server that
+# have to hold before anything is written: the apps path is a directory, and
+# Traefik's dynamic directory is there — a server that is not prepared is worth
+# finding out about before the first rsync, not after it.
 #
-# The directories are the create half. `<data>/<name>` is made here too: it is
-# the bind-mount root a project's compose file points at, and Docker would
-# otherwise materialise it as a root-owned directory on first use.
+# `<data>/<name>` is made here too: it is the bind-mount root a project's
+# compose file points at, and Docker would otherwise materialise it as a
+# root-owned directory on first use.
+#
+# The .env is deliberately *not* judged here any more. It used to be, because
+# nothing rendered one — and the ordering was load-bearing, since a refusal
+# after the rsyncs had already put a fragment in traefik/dynamic and left a live
+# route to a container that never started (docs/phases/02-spine.md). The env
+# step replaces that judgement and runs later on purpose, since the interactive
+# setup prompts from the .env.prod.example the rsync ships; the ordering rule it
+# has to keep is the fragment's, and the fragment is still the last thing any
+# deploy sends.
 _deploy_prepare() {
     local out rc=0
     local parents=()
@@ -423,14 +411,6 @@ fail() { printf 'remote: %s\n' "$*" >&2; exit 1; }
 [ -d "$apps" ] || fail "$apps is not a directory"
 [ -d "$apps/traefik/dynamic" ] || fail "$apps/traefik/dynamic is not a directory"
 
-# Judged before anything is created: exit 3 is "no .env", which the caller turns
-# into the message about seeding it.
-env_file="$apps/$name/.env"
-if [ -e "$env_file" ] && [ ! -f "$env_file" ]; then
-    fail "$env_file exists and is not a regular file"
-fi
-[ -f "$env_file" ] || exit 3
-
 for d in "$apps/$name" "$apps/$name/scripts" "$apps/$name/backups" "$data/$name" "$@"; do
     mkdir -p "$d" || fail "could not create $d"
 done
@@ -440,19 +420,8 @@ exit 0
 REMOTE
     ) || rc=$?
 
-    case $rc in
-        0) ;;
-        3)
-            err "$_DEPLOY_TARGET has no $_DEPLOY_APPS_PATH/$MANIFEST_NAME/.env, and deploy will not invent one"
-            err_cont "the compose file on the server reads its values from that file. Until Phase 3"
-            err_cont "brings interactive env setup and drift detection (docs/env-template.md), seed it"
-            err_cont "by hand from .env.prod.example:"
-            err_cont "  ssh $_DEPLOY_TARGET 'mkdir -p $_DEPLOY_APPS_PATH/$MANIFEST_NAME'"
-            err_cont "  scp .env.prod.example $_DEPLOY_TARGET:$_DEPLOY_APPS_PATH/$MANIFEST_NAME/.env   # then edit it there"
-            exit 1
-            ;;
-        *) die "could not prepare $_DEPLOY_APPS_PATH/$MANIFEST_NAME on $_DEPLOY_TARGET (the remote step exited $rc, see above)" ;;
-    esac
+    [ "$rc" -eq 0 ] \
+        || die "could not prepare $_DEPLOY_APPS_PATH/$MANIFEST_NAME on $_DEPLOY_TARGET (the remote step exited $rc, see above)"
 
     _deploy_absorb "the prepare step" "$out" prepared
     return 0
@@ -510,10 +479,17 @@ _deploy_sync_project() {
     return 0
 }
 
-# hosting's own helper, overwritten on every deploy so the script on the server
-# is the one this hosting version drives (docs/build-deploy.md → helper scripts).
-# Executable is stated here rather than inherited: a checkout on a filesystem
-# that lost the mode bit would otherwise ship a script nothing can run.
+# hosting's own two helpers, overwritten on every deploy so the scripts on the
+# server are the ones this hosting version drives (docs/build-deploy.md → helper
+# scripts). Executable is stated here rather than inherited: a checkout on a
+# filesystem that lost the mode bit would otherwise ship a script nothing can
+# run.
+#
+# They come from different places, and that is not an accident:
+# remote-deploy.sh is a template hosting renders onto servers, while
+# setup-env.sh *is* lib/env.sh — the same bytes `hosting check` sources locally,
+# shipped verbatim so that the drift question has one implementation rather than
+# two copies that agree today (env_ship_helper, lib/env_cmd.sh).
 _deploy_sync_helper() {
     local tpl="${HOSTING_TEMPLATE_DIR:-}"
     local src="$tpl/remote-deploy.sh"
@@ -525,6 +501,18 @@ _deploy_sync_helper() {
 
     ssh_rsync -pt --chmod=F755 -s "$src" "$SSH_TARGET:$dest" >/dev/null \
         || die "could not ship remote-deploy.sh to $_DEPLOY_TARGET:$dest"
+
+    env_ship_helper "$_DEPLOY_APPS_PATH" "$MANIFEST_NAME"
+    return 0
+}
+
+# Step 6 of docs/build-deploy.md, in lib/env_cmd.sh because `hosting env` is the
+# same step with the setup always run. After the project rsync (the setup
+# prompts from the .env.prod.example it ships) and before the remote deploy
+# (`compose up` reads what it writes).
+_deploy_env_step() {
+    env_step_run "$_DEPLOY_APPS_PATH" "$MANIFEST_NAME" \
+        "$_DEPLOY_CPU_LIMIT" "$_DEPLOY_MEM_LIMIT" "$_DEPLOY_ON_DRIFT" no
     return 0
 }
 
@@ -618,6 +606,9 @@ cmd_deploy() {
 
     _deploy_sync_project
     _deploy_sync_helper
+    # Between the two: the setup prompts from a template that has to be on the
+    # server already, and `compose up` reads the .env it writes.
+    _deploy_env_step
     _deploy_remote_deploy
     # Last, and only now: see the header. A route must never point at a
     # container the deploy failed to start.
@@ -632,6 +623,7 @@ cmd_deploy() {
 
     info "Deployed $MANIFEST_NAME $_DEPLOY_VERSION to $_DEPLOY_TARGET"
     info "  project: $_DEPLOY_APPS_PATH/$MANIFEST_NAME   data: $_DEPLOY_DATA_PATH/$MANIFEST_NAME"
+    info "  limits:  HOSTING_CPU_LIMIT=$_DEPLOY_CPU_LIMIT HOSTING_MEM_LIMIT=$_DEPLOY_MEM_LIMIT (from the server marker)"
     if [ "${_DEPLOY_FACT[fragment]}" = shipped ]; then
         info "  routing: $_DEPLOY_APPS_PATH/traefik/dynamic/$MANIFEST_NAME.yml (Traefik reloads within a couple of seconds)"
     fi

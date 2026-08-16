@@ -10,10 +10,38 @@ whichever finishes later.
 **Spec:** `docs/env-template.md` (the whole file), `docs/compliance.md` (E rules, `HOSTING_` exemption), `docs/server-setup.md` (Resource limits section)
 
 ## Exit criteria
-- [ ] `tests/env_test.sh` green — full coverage list from `env-template.md` preserved
-- [ ] Drift detection is one shared function used by `check` (E02/E03) and the deploy path
-- [ ] `HOSTING_*` keys are invisible to drift in both directions and never prompted
-- [ ] `hosting env user@host` runs the interactive setup remotely
+
+Walked by hand at phase close, one at a time, against the real artifact — not
+inferred from the suites having passed.
+
+- [x] `tests/env_test.sh` green — full coverage list from `env-template.md`
+      preserved. All 13 doc-listed cases mapped to cases in the suite by the
+      group reviewer, none missing; 11 more added beyond them
+- [x] Drift detection is one shared function used by `check` (E02/E03) and the
+      deploy path — literally, not nominally. `lib/check.sh:679` calls
+      `env_drift`; the deploy path never re-implements it, because
+      `lib/env_cmd.sh` asks the *far side* (`lib/env.sh:629`, the `--drift`
+      dispatch) and the far side is the same file byte-for-byte. The rig
+      asserts that identity with `sha256sum` rather than trusting it
+- [x] `HOSTING_*` keys are invisible to drift in both directions and never
+      prompted — a `.env` carrying `HOSTING_MEM_LIMIT` against a template
+      carrying `HOSTING_CPU_LIMIT` reports `MISSING=[] EXTRA=[]`, and a setup
+      run over it prompts for the reserved prefix zero times
+- [x] `hosting env user@host` runs the interactive setup remotely — hand-walked
+      from a real pty (see 3.4), and `tests/env_cmd_test.sh` drives the command
+      behind `script(1)` asserting the `-t` reaches ssh
+
+Final: `HOSTING_RIG_TESTS=1 ./test.sh` **17/17 PASS** in 5m49s; `./test.sh`
+13/13. The 25-case differential against the origin script is unmoved at
+`25 identical, 0 differing` through all three units and both close rounds.
+
+**Not proven here.** The masked `read -rs` over an *ssh* pty: masking is
+pinned locally against a real pty, but the far side's `stty` in an `ssh -t`
+session is untested, and only real infrastructure settles it. And the
+interactive path is single-witness — one hand-walk, one rig. The suites prove
+hosting asks ssh for a pty, and prove the shipped script renders a `.env` when
+driven headless; nothing automated proves a human typing into `ssh -t` and the
+value landing. That gap is structural and is recorded rather than papered over.
 
 ## Tasks
 
@@ -78,8 +106,23 @@ prompt (re-run / continue / abort, per `build-deploy.md` step 6) and the
 injection into the deploy path from Phase 2.
 
 **Deliverables**
-- [ ] Missing `.env` on deploy → interactive setup fires (manual rig check)
-- [ ] Integration test covers the non-interactive path: pre-seeded `.env` + drift → deploy fails with exit 5, no hang
+- [x] Missing `.env` on deploy → interactive setup fires — **hand-walked
+      against the rig from a real pty at phase close.** Clean rig → `server
+      init` → a fixture with no `.env` on the server → `hosting deploy` under
+      `script(1)`, one line of input. The generator prompted for
+      `DEMO_GREETING` over `ssh -t`, the typed value landed in
+      `<apps>/demo/.env` with the template's comments and section header
+      preserved, the managed block was injected beneath it from the marker,
+      `docker inspect demo-web` showed
+      `DEMO_GREETING=typed-at-a-real-terminal` in the container's own
+      environment, and `curl -H 'Host: demo.test'` returned the fixture page
+      through Traefik. Exit 0; `versions.log` well-formed
+- [x] Integration test covers the non-interactive path: pre-seeded `.env` +
+      drift → deploy fails with exit 5, no hang — the exit-5 assertion is
+      bounded by `timeout` and asserts `rc != 124`, so "no hang" is observed
+      rather than assumed. `--on-drift=abort` (5) and `--on-drift=continue`
+      (0) are covered beside it, with a revert-to-sync control proving the
+      deploy stops mentioning drift
 
 **Watch out for:** `ssh -t` breaks when the local side has no TTY — the
 interactive path needs a TTY end to end; without one, fall back to the
@@ -286,6 +329,59 @@ Three units, each one brief / one review / one commit.
   twice as evidence the change was contained before a reviewer pointed out it
   is structurally incapable of being that evidence. Containment was real, but
   it was established by separate measurement.
+
+### From the phase-close group review — the seam
+
+Three units, each reviewed in isolation and each approved. A fourth reviewer
+that had seen none of those rounds judged them together.
+
+- **One file, two beliefs about what a `.env` line is — and a live secret paid
+  for it.** Unit B's stray-stripper encodes a measured fact: Compose trims
+  leading blanks and honours an `export ` prefix. Unit A's readers, ported
+  verbatim, are anchored `^[A-Za-z_]…=` and see none of those shapes. Each unit
+  was right alone; the contradiction existed only once both were in the file.
+  Against a `.env` holding `export APP_KEY=live-secret`:
+
+  ```
+  docker compose config  →  SEEN: live-secret     # Compose reads it
+  env_drift              →  MISSING=[APP_KEY]     # hosting says it is absent
+  printf '\n' | setup    →  APP_KEY=default       # the secret is gone
+  ```
+
+  No `[current:]` prompt and no menu, because the loader saw an empty `.env`
+  and took the first-deploy path. Headless, that false drift became **exit 5 on
+  a working project**. Before this phase the same mis-read was a warn-level
+  `check` line — the deploy wiring is what made it consequential, which is the
+  general shape: *a latent disagreement becomes a defect when something starts
+  acting on it.*
+
+  Settled by widening the readers: hosting reads a `.env` the way Compose does,
+  everywhere. One shared `ENV_ASSIGN_RE`, seven sites. The `--inject` pair guard
+  is deliberately **not** among them — a pair is hosting's own argv, not a
+  user-authored line — and now says so.
+
+- **The count of anchored sites was wrong three times running.** The plan
+  implied one. Unit B's review found six. Unit B's fix round found a seventh
+  (the `TEMPLATE_KEYS` scan, whose observable is the *removed* count rather than
+  the *kept* count). The close brief listed three readers and the close round
+  found a **fourth** — the prompt loop, a distinct value-loss path in which the
+  template's value is written over the live one without a prompt. Nobody
+  enumerating by memory got it right; only mutating each site individually did.
+
+- **A test can pin the defect.** `tests/env_test.sh`'s `t28k` asserted, byte for
+  byte, that `--inject` with no pairs writes an *empty* block — the exact
+  behaviour that silently wipes the reserved keys and leaves `compose up`
+  failing on an unset variable. The fix could not land without deleting an
+  assertion, which is the honest signal that the assertion was wrong rather
+  than the code.
+
+- **The docs drifted as a set again, exactly as Phase 2 recorded.** Each unit
+  reconciled what it touched; nobody owned the whole. Eight statements had gone
+  false, two of them inside this phase's own blast radius: the demo fixture
+  still said the `HOSTING_*` values were "seeded by hand for now" — which is
+  precisely what these three commits retired — and still described deploy as
+  refusing to run without a `.env`. `project-manifest.md` still promised
+  `setup-env.sh` would arrive "in roadmap v0.1's env phase". This one.
 
 ### Carried into 3.3, with the evidence warm — settled
 

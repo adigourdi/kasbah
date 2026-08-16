@@ -10,8 +10,11 @@ Per project:
 - `.env.prod.example` — committed, template.
 - `.env` — **not** committed, generated interactively.
 
-Hosting syncs `.env.prod.example` to the VPS on every deploy and runs
-`setup-env.sh` there when `.env` is missing or drifts from the template.
+`hosting env` syncs `.env.prod.example` to the VPS itself. `hosting deploy`
+does not: the template reaches the server through the manifest's `sync:` list
+like any other project file, which is why the deploy path has a branch telling
+the operator to add it there. Either way `setup-env.sh` runs on the server when
+`.env` is missing or drifts from the template.
 
 ## Template conventions
 
@@ -75,12 +78,21 @@ the output `.env`.
 
 ## Drift detection
 
-Run on every `hosting deploy` before touching anything, by `env_drift` in
+Run on every `hosting deploy` by `env_drift` in
 `lib/env.sh`:
 
 ```bash
 env_drift .env.prod.example .env   # sets ENV_DRIFT_MISSING / ENV_DRIFT_EXTRA
 ```
+
+A line counts as setting a key if Compose would read it as one: optional
+leading blanks and an optional `export ` prefix, which `docker compose config`
+honours and which hosting therefore honours everywhere it reads a `.env` or a
+template. The consequence is accepted rather than worked around — regenerating
+`.env` rewrites `export FOO=x` as `FOO=x`, since the file is rebuilt from the
+template wholesale. A reader that only matched column 0 would report a live
+`export APP_KEY=…` as *missing*, and the setup would then overwrite it with the
+template default.
 
 Both are space-separated key lists, empty when in sync. **`env_drift` always
 returns 0** and never signals through its exit status — a function that

@@ -101,6 +101,19 @@ deploy() (
     cd "$projdir" || return 2
     hosting_cli deploy "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
 )
+# The same, bounded — for the cases whose failure mode is a prompt nobody can
+# answer rather than a wrong answer. `timeout` puts the child in a process group
+# of its own, so stdin stays on /dev/null here as it is everywhere in this
+# harness: a child reading the *controlling* terminal from a background process
+# group takes SIGTTIN and stops, and a stopped process never handles the SIGTERM
+# that follows (tests/integration/rig_env.sh).
+deploy_bounded() (
+    cd "$projdir" || return 2
+    timeout "${DEPLOY_TIMEOUT:-180}" \
+        env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
+            "$RIG_REPO_DIR/bin/hosting" deploy "$@" \
+        >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
+)
 cli_err() { cat "$tmpdir/err"; }
 
 # Everything under <apps>/ that is not one of hosting's own four directories —
@@ -215,12 +228,13 @@ marker_json=$(rig_ssh "cat $marker" 2>/dev/null)
 cpu_limit=$(jq -r '.cpu_limit // ""' <<<"$marker_json" 2>/dev/null)
 mem_limit=$(jq -r '.mem_limit // ""' <<<"$marker_json" 2>/dev/null)
 if [ -z "$cpu_limit" ] || [ -z "$mem_limit" ]; then
-    echo "error: the server marker carries no limits to seed the project .env with" >&2
+    echo "error: the server marker carries no limits for injection to write" >&2
     echo "       marker: $marker_json" >&2
     exit 2
 fi
-# The values Phase 3 will inject into every project's .env, in the shape the
-# compose files expect them.
+# The values injection writes into every project's .env, in the shape the
+# compose files expect them. Read here so the block assertions further down
+# compare against the marker rather than against a constant.
 assert '[[ "$cpu_limit" =~ ^[0-9]+\.[0-9]$ ]]' "the marker's cpu_limit is a number (got '$cpu_limit')"
 assert '[[ "$mem_limit" =~ ^[0-9]+[gm]$ ]]'    "the marker's mem_limit carries a unit (got '$mem_limit')"
 
@@ -258,19 +272,45 @@ if ! (
     exit 2
 fi
 
-# --- Deploy refuses before the .env exists ----------------------------------------
-# The seam Phase 3 replaces. It is asserted rather than assumed, because the
-# whole reason the test seeds .env by hand is that nothing else does yet.
-deploy "$RIG_TARGET"; rc=$?
-assert '[ "$rc" != "0" ]' "deploy refuses a project with no .env on the server (exit $rc)"
+# --- Deploy refuses to render a .env with nobody to answer it -----------------------
+# The env step, at the one shape this harness can produce: no .env on the server
+# and no terminal at either end. Running the generator anyway would feed it EOF,
+# which its non-interactive contract turns into every default silently accepted
+# — secrets included — so it refuses with exit 5 instead (docs/cli.md).
+#
+# Bounded, because the failure mode this replaces is not a wrong answer but a
+# prompt nobody can answer: `deploy` is measured, and a run that took the whole
+# timeout would fail here rather than hang the suite.
+deploy_started=$(date +%s%3N)
+deploy_bounded "$RIG_TARGET"; rc=$?
+noenv_ms=$(( $(date +%s%3N) - deploy_started ))
+assert '[ "$rc" != "124" ]' \
+    "a deploy that cannot render .env returns rather than waiting on a prompt (took ${noenv_ms}ms)"
+assert '[ "$rc" = "5" ]' \
+    "and exits 5 — the env step could not complete (exit $rc: $(cli_err))"
 assert 'grep -qF "$apps/$project/.env" "$tmpdir/err"' \
-    "and names the file it wants (said '$(cli_err)')"
-assert 'grep -qF "Phase 3" "$tmpdir/err"' \
-    "and says what will render it (said '$(cli_err)')"
+    "naming the file it wanted (said '$(cli_err)')"
+assert 'grep -qF "no terminal" "$tmpdir/err"' \
+    "and what is missing (said '$(cli_err)')"
+assert 'grep -qF "hosting env $RIG_TARGET" "$tmpdir/err"' \
+    "and the command that renders it (said '$(cli_err)')"
 assert '[ "$(rig_ssh "[ -e $fragment ] && echo present || echo absent" 2>/dev/null)" = "absent" ]' \
     "a refused deploy ships no Traefik fragment — a route to a container that never started"
+assert '[ "$(rig_ssh "[ -e $apps/$project/.env ] && echo present || echo absent" 2>/dev/null)" = "absent" ]' \
+    "and invents no .env of its own"
 assert '[ ! -f "$projdir/.hosting/state.json" ]' \
     "and writes no project state (docs/project-manifest.md: only on success)"
+
+# What it *did* ship first, and the reason the order is that way round: the
+# generator the message recommends is on the server, executable, and it is
+# lib/env.sh byte for byte rather than a second copy that agrees today.
+helper="$apps/$project/scripts/setup-env.sh"
+assert '[ "$(rig_ssh "stat -c %a $helper" 2>/dev/null)" = "755" ]' \
+    "the env helper landed executable (got '$(rig_ssh "stat -c %a $helper" 2>/dev/null)')"
+assert '[ "$(rig_ssh "sha256sum $helper | cut -d\" \" -f1" 2>/dev/null)" = "$(sha256sum "$repo_dir/lib/env.sh" | cut -d" " -f1)" ]' \
+    "and it is lib/env.sh itself — the same bytes \`hosting check\` sources locally"
+assert '[ "$(rig_ssh "[ -e $apps/$project/.env.prod.example ] && echo present || echo absent" 2>/dev/null)" = "present" ]' \
+    "with the template beside it, which is what the setup prompts from"
 
 # --- Can this rig apply a cgroup limit at all? --------------------------------------
 # Measured, not assumed, because on the rig as built today it cannot: the
@@ -283,40 +323,60 @@ assert '[ ! -f "$projdir/.hosting/state.json" ]' \
 # (docs/phases/02-spine.md → Findings), and the fix is the standard docker:dind
 # cgroup-nesting step in the rig's entrypoint.
 #
-# So the seeded values are chosen from what the rig can do: 0 means "no limit"
-# to Docker and skips the cgroup path entirely. The probe is what keeps this
-# honest — a rig that grows cgroup nesting seeds the marker's real limits
-# instead, with no edit here.
+# Nothing here special-cases hosting. What changes is the *server marker*: on a
+# rig that cannot honour a limit it is rewritten to 0/0, which Docker reads as
+# "no limit", and injection then does its real job end to end against a value
+# the host can live with. The assertion that matters — the block in .env matches
+# the marker — holds either way, and a rig that later grows cgroup nesting needs
+# no edit here.
 limit_probe=$(rig_ssh "docker run --rm --cpus 0.5 --memory 64m nginx:alpine /bin/true 2>&1" 2>/dev/null); probe_rc=$?
 if [ "$probe_rc" -eq 0 ]; then
-    seed_cpu="$cpu_limit"
-    seed_mem="$mem_limit"
+    want_cpu="$cpu_limit"
+    want_mem="$mem_limit"
 elif grep -qF "threaded mode" <<<"$limit_probe"; then
-    seed_cpu=0
-    seed_mem=0
+    want_cpu=0
+    want_mem=0
     echo "note: this rig cannot apply cgroup limits (nested cgroup v2 is in threaded mode)," >&2
-    echo "      so the project .env is seeded with 0/0 — Docker reads that as no limit." >&2
+    echo "      so the server marker is rewritten to 0/0 — Docker reads that as no limit." >&2
+    new_marker=$(jq --arg c "$want_cpu" --arg m "$want_mem" '.cpu_limit = $c | .mem_limit = $m' \
+        <<<"$marker_json" 2>/dev/null)
+    if [ -z "$new_marker" ] || ! rig_ssh "cat > $marker" <<<"$new_marker" >/dev/null 2>&1; then
+        echo "error: could not rewrite the server marker's limits on the rig" >&2
+        exit 2
+    fi
+    marker_json=$(rig_ssh "cat $marker" 2>/dev/null)
+    if [ "$(jq -r '.cpu_limit' <<<"$marker_json" 2>/dev/null)" != "$want_cpu" ]; then
+        echo "error: the rewritten marker does not carry cpu_limit=$want_cpu (got '$marker_json')" >&2
+        exit 2
+    fi
 else
     echo "error: could not tell whether the rig can apply cgroup limits (rc $probe_rc)" >&2
     sed 's/^/       | /' <<<"$limit_probe" >&2
     exit 2
 fi
 
-# --- Seed .env by hand -------------------------------------------------------------
-# Exactly what Phase 3's HOSTING_* injection will take over: the two resource
-# limits (from the server marker, wherever the rig can honour them) plus the one
-# variable the fixture's own template declares. Nothing else creates this file
-# today, which is why the refusal above is asserted rather than assumed.
-rig_ssh "mkdir -p $apps/$project && cat > $apps/$project/.env" <<EOF >/dev/null 2>&1
-HOSTING_CPU_LIMIT=$seed_cpu
-HOSTING_MEM_LIMIT=$seed_mem
-DEMO_GREETING=hello from the demo fixture
-EOF
-seeded=$(rig_ssh "cat $apps/$project/.env" 2>/dev/null)
-if ! grep -qF "HOSTING_CPU_LIMIT=$seed_cpu" <<<"$seeded"; then
-    echo "error: could not seed $apps/$project/.env on the rig (got '$seeded')" >&2
+# --- The operator renders .env, with the script hosting shipped ---------------------
+# This is the half hosting refuses to do headless, done by hand — the suite
+# playing the person at the terminal. It runs the *shipped* helper, off the
+# server, against the template the failed deploy put beside it; stdin is empty,
+# which for a first run means every template default is accepted (there is no
+# menu until a .env exists, so nothing here trips the errexit path).
+#
+# The two HOSTING_* lines that used to be seeded here are deliberately not: this
+# writes only what the project's own template declares, and injection is what
+# has to produce the rest. A .env with them already in it would make the
+# assertions below pass against a hosting that injected nothing at all.
+setup_out=$(rig_ssh "cd $apps/$project && ./scripts/setup-env.sh $apps/$project" </dev/null 2>&1); setup_rc=$?
+rendered=$(rig_ssh "cat $apps/$project/.env" 2>/dev/null)
+if [ "$setup_rc" -ne 0 ] || ! grep -qF "DEMO_GREETING=hello from the demo fixture" <<<"$rendered"; then
+    echo "error: the shipped setup-env.sh did not render $apps/$project/.env (rc $setup_rc)" >&2
+    sed 's/^/       | /' <<<"$setup_out" >&2
+    sed 's/^/       > /' <<<"$rendered" >&2
     exit 2
 fi
+assert '! grep -q "^HOSTING_" <<<"$rendered"' \
+    "the rendered .env carries no HOSTING_ key of its own — injection is what puts them there
+        rendered: $(tr '\n' '|' <<<"$rendered")"
 
 # --- A deploy that cannot finish must not route anything ------------------------------
 # The fragment is the last thing a deploy ships, after `compose up` has
@@ -434,6 +494,8 @@ isfile "$dir/.env.prod.example" f_envexample
 isfile "$dir/site/index.html"   f_page
 isfile "$dir/scripts/remote-deploy.sh" f_helper
 kv helper_mode "$(stat -c '%a' "$dir/scripts/remote-deploy.sh" 2>/dev/null)"
+isfile "$dir/scripts/setup-env.sh" f_envhelper
+kv envhelper_mode "$(stat -c '%a' "$dir/scripts/setup-env.sh" 2>/dev/null)"
 # compose.prod.yml is the *source* name; the sync list renames it on arrival, so
 # its absence here is what proves the rename happened rather than a plain copy.
 isfile "$dir/compose.prod.yml" f_unrenamed
@@ -458,7 +520,8 @@ while IFS= read -r line; do
 done <<<"$land_out"
 missing=()
 for key in d_project d_scripts d_backups d_data f_compose f_envexample f_page f_helper \
-           helper_mode f_unrenamed versions_lines versions_first c_project c_state c_nets c_env; do
+           helper_mode f_envhelper envhelper_mode f_unrenamed versions_lines versions_first \
+           c_project c_state c_nets c_env; do
     [ -n "${got[$key]+set}" ] || missing+=("$key")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
@@ -481,6 +544,35 @@ assert '[ "${got[f_page]}" = "yes" ]' \
 assert '[ "${got[f_helper]}" = "yes" ]'   "remote-deploy.sh was shipped (got '${got[f_helper]}')"
 assert '[ "${got[helper_mode]}" = "755" ]' \
     "and landed executable — hosting runs it over ssh (got '${got[helper_mode]}')"
+assert '[ "${got[f_envhelper]}" = "yes" ]'    "setup-env.sh was shipped too (got '${got[f_envhelper]}')"
+assert '[ "${got[envhelper_mode]}" = "755" ]' \
+    "and it is executable as well (got '${got[envhelper_mode]}')"
+
+# --- The HOSTING_* managed block, written from the marker -----------------------------
+# The seam this phase replaces. Until now the two limits were seeded into .env by
+# this file; now the only thing that puts them there is injection, so what is
+# read back is hosting's work and not the suite's.
+env_body=$(rig_ssh "cat $apps/$project/.env" 2>/dev/null)
+bmark='# >>> hosting managed block - do not edit, rewritten on every deploy >>>'
+emark='# <<< hosting managed block <<<'
+assert '[ "$(grep -cxF "$bmark" <<<"$env_body")" = "1" ]' \
+    "the deploy wrote exactly one managed block into $apps/$project/.env
+        .env: $(tr '\n' '|' <<<"$env_body")"
+assert '[ "$(grep -cxF "$emark" <<<"$env_body")" = "1" ]' "closed by exactly one end sentinel"
+assert 'grep -qxF "HOSTING_CPU_LIMIT=$want_cpu" <<<"$env_body"' \
+    "carrying the marker's cpu_limit verbatim (wanted '$want_cpu', .env: $(grep HOSTING_CPU <<<"$env_body"))"
+assert 'grep -qxF "HOSTING_MEM_LIMIT=$want_mem" <<<"$env_body"' \
+    "and its mem_limit (wanted '$want_mem', .env: $(grep HOSTING_MEM <<<"$env_body"))"
+# Both directions of the stray rule, on a real file: two lines setting one
+# variable and the last one wins, so a HOSTING_ assignment outside the block
+# would silently outrank the marker.
+assert '[ "$(grep -c "^HOSTING_" <<<"$env_body")" = "2" ]' \
+    "and nothing sets a HOSTING_ variable outside it (got $(grep -c "^HOSTING_" <<<"$env_body") lines)"
+# The operator's own value, written by the generator before injection ever ran,
+# is still there — injection touches the block and nothing else.
+assert 'grep -qxF "DEMO_GREETING=hello from the demo fixture" <<<"$env_body"' \
+    "the value the generator rendered survived injection (.env: $(tr '\n' '|' <<<"$env_body"))"
+env_sha=$(rig_ssh "sha256sum $apps/$project/.env | cut -d' ' -f1" 2>/dev/null)
 
 # --- versions.log ---------------------------------------------------------------------
 assert '[ "${got[versions_lines]}" = "1" ]' \
@@ -507,7 +599,7 @@ assert 'grep -qw "hosting-net" <<<"${got[c_nets]}"' \
 assert 'grep -qw "demo_internal" <<<"${got[c_nets]}"' \
     "as well as the project's own network (networks: ${got[c_nets]})"
 assert '[ "${got[c_env]}" = "1" ]' \
-    "compose read the seeded .env — DEMO_GREETING reached the container (got '${got[c_env]}' matches)"
+    "compose read the rendered .env — DEMO_GREETING reached the container (got '${got[c_env]}' matches)"
 
 # Traefik's own view of the fragment: the router is registered and the service
 # points at the container by name. The 200 above says it works; this says it
@@ -562,6 +654,11 @@ if rig_ssh "cp ~/.bashrc ~/.bashrc.hosting-unit-d && printf 'export COMPOSE_PROJ
     # putting the container under somebody else's project.
     assert '[ "$labelled" = "$project" ]' \
         "and the running container is still labelled $project (got '$labelled')"
+    # Idempotence, end to end and on a file two deploys have now rewritten: the
+    # second injection produced the same bytes as the first, so a redeploy does
+    # not churn a file the operator edits by hand.
+    assert '[ "$(rig_ssh "sha256sum $apps/$project/.env | cut -d\" \" -f1" 2>/dev/null)" = "$env_sha" ]' \
+        "the second deploy left .env byte-identical — injection is idempotent against a real file"
     lines=$(rig_ssh "wc -l < $apps/$project/versions.log" 2>/dev/null | tr -d ' ')
     assert '[ "$lines" = "2" ]' "the second deploy appended a second line (got '$lines')"
     assert '[ "$(rig_ssh "head -1 $apps/$project/versions.log" 2>/dev/null)" = "${got[versions_first]}" ]' \
@@ -606,6 +703,64 @@ survived_code=$(code_stays "$project_host" 200); stays_rc=$?
 assert '[ "$stays_rc" = "0" ]' \
     "and keeps serving past the reload window, so nothing was quietly rerouted (went to '$survived_code')"
 fix_image
+
+# --- Drift, on a server with a real .env and no terminal anywhere ------------------------
+# The plan's own deliverable ("pre-seeded .env + drift -> exit 5, no hang"),
+# with the .env the generator rendered above standing in for the seeding this
+# phase retired. The drift is
+# made the way it happens in life — a key added to the project's template — and
+# the template reaches the server through the manifest's sync: list, so what the
+# far side compares is genuinely the new one.
+lines_before=$(rig_ssh "wc -l < $apps/$project/versions.log" 2>/dev/null | tr -d ' ')
+frag_before=$(rig_ssh "sha256sum $fragment | cut -d' ' -f1" 2>/dev/null)
+env_before=$(rig_ssh "sha256sum $apps/$project/.env | cut -d' ' -f1" 2>/dev/null)
+printf 'DRIFT_PROBE=added since the .env was rendered\n' >> "$projdir/.env.prod.example"
+
+drift_started=$(date +%s%3N)
+deploy_bounded; rc=$?
+drift_ms=$(( $(date +%s%3N) - drift_started ))
+assert '[ "$rc" != "124" ]' \
+    "a drifting .env with nobody to ask returns rather than waiting on a prompt (took ${drift_ms}ms)"
+assert '[ "$rc" = "5" ]' "and exits 5 (exit $rc: $(cli_err))"
+assert 'grep -qF "DRIFT_PROBE" "$tmpdir/err"' \
+    "naming the key that drifted (said '$(cli_err)')"
+assert 'grep -qF -- "--on-drift" "$tmpdir/err"' \
+    "and the flag that makes the choice scriptable (said '$(cli_err)')"
+assert '[ "$(rig_ssh "wc -l < $apps/$project/versions.log" 2>/dev/null | tr -d " ")" = "$lines_before" ]' \
+    "nothing was deployed ($lines_before lines before)"
+assert '[ "$(rig_ssh "sha256sum $apps/$project/.env | cut -d\" \" -f1" 2>/dev/null)" = "$env_before" ]' \
+    "and the server's .env was not touched — not even the block"
+assert '[ "$(rig_ssh "sha256sum $fragment | cut -d\" \" -f1" 2>/dev/null)" = "$frag_before" ]' \
+    "nor the fragment"
+survived_code=$(code_stays "$project_host" 200); stays_rc=$?
+assert '[ "$stays_rc" = "0" ]' \
+    "and the version already serving keeps serving (went to '$survived_code')"
+
+deploy_bounded --on-drift=abort; rc=$?
+assert '[ "$rc" = "5" ]' "--on-drift=abort is the same refusal, asked for (exit $rc: $(cli_err))"
+assert '[ "$(rig_ssh "sha256sum $apps/$project/.env | cut -d\" \" -f1" 2>/dev/null)" = "$env_before" ]' \
+    "changing nothing on the server"
+
+# The scriptable way through. `continue` means the .env is left as it stands —
+# the new template key does *not* appear in it — and only the managed block is
+# refreshed.
+deploy_bounded --on-drift=continue; rc=$?
+assert '[ "$rc" = "0" ]' "--on-drift=continue deploys against the .env as it stands (exit $rc: $(cli_err))"
+drifted_env=$(rig_ssh "cat $apps/$project/.env" 2>/dev/null)
+assert '! grep -q "^DRIFT_PROBE=" <<<"$drifted_env"' \
+    "and adds no key of its own — continue is not a silent setup (.env: $(tr '\n' '|' <<<"$drifted_env"))"
+assert 'grep -qxF "HOSTING_CPU_LIMIT=$want_cpu" <<<"$drifted_env"' \
+    "while the block is still the marker's ( .env: $(grep HOSTING_CPU <<<"$drifted_env"))"
+assert '[ "$(rig_ssh "wc -l < $apps/$project/versions.log" 2>/dev/null | tr -d " ")" = "$(( lines_before + 1 ))" ]' \
+    "and the deploy really ran (was $lines_before lines)"
+
+# Back in sync, and the deploy stops mentioning drift at all — without this, the
+# three cases above would pass equally against a hosting that saw drift always.
+head -n -1 "$projdir/.env.prod.example" > "$tmpdir/tpl" && mv "$tmpdir/tpl" "$projdir/.env.prod.example"
+assert '! grep -q "^DRIFT_PROBE=" "$projdir/.env.prod.example"' "the fixture template is back as it was"
+deploy_bounded; rc=$?
+assert '[ "$rc" = "0" ]' "an in-sync .env deploys with no flag and no prompt (exit $rc: $(cli_err))"
+assert '! grep -qF "has drifted" "$tmpdir/err"' "saying nothing about drift (said '$(cli_err)')"
 
 # --- server status matches the rig -----------------------------------------------------
 # Every expectation below is read off the rig moments before the comparison, so

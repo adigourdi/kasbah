@@ -528,6 +528,47 @@ out="$(cd "$proj28" && "$hosting" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                            "E01 fail exits 6 (got $rc)"
 assert 'grep -qF "✗ .env.prod.example has invalid lines" <<<"$out"'                 "E01 fail line"
 
+# --- Case 28b: the four env rules read a line the way Compose does -----------
+# lib/env.sh sees leading blanks and an `export ` prefix as an assignment
+# (ENV_ASSIGN_RE), and every rule here shares that reader: E01 must not call
+# valid lines invalid, and E02–E05 must see the keys behind the prefix. All
+# four in one run, so a rule that quietly fell back to the anchored shape shows
+# up as its own failed assertion.
+proj28b="$tmpdir/env-export-shapes"
+make_project "$proj28b"
+{
+    printf 'export EXPORTED=1\n'
+    printf '  INDENTED=2\n'
+    printf '\tTABBED=3\n'
+    printf 'export HOSTING_CPU_LIMIT=0\n'
+    printf 'export API_TOKEN=%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+} >> "$proj28b/.env.prod.example"
+cat > "$proj28b/.env" <<'ENV'
+DOMAIN=demo.example.com
+export EXPORTED=x
+  INDENTED=y
+	TABBED=z
+export API_TOKEN=short
+ENV
+out="$(cd "$proj28b" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                     "an exported or indented template line is not an E01 failure (got $rc)"
+assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'            "E01 accepts what setup-env.sh accepts (said '$out')"
+assert 'grep -qF "✓ .env has no missing keys vs .env.prod.example" <<<"$out"' "E02 reads the key behind an export/indent in .env"
+assert 'grep -qF "✓ .env has no extra keys vs .env.prod.example" <<<"$out"'   "and E03 reads it in the template too"
+assert 'grep -qF "⚠ .env.prod.example defines reserved HOSTING_* keys (hosting injects these): HOSTING_CPU_LIMIT" <<<"$out"' \
+       "E05 sees an exported reserved key (said '$out')"
+assert 'grep -qF "⚠ .env.prod.example has values >64 chars (possibly leaked secrets): API_TOKEN" <<<"$out"' \
+       "E04 measures the value of an exported assignment (said '$out')"
+
+# The widening is not "anything goes": `export` still has to be followed by a
+# name, and a name still has to be one word.
+proj28c="$tmpdir/env-export-bad"
+make_project "$proj28c"
+printf 'export FOO BAR=baz\nexport =1\n' >> "$proj28c/.env.prod.example"
+out="$(cd "$proj28c" && "$hosting" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                            "a malformed export line still fails E01 (got $rc)"
+assert 'grep -qF "✗ .env.prod.example has invalid lines" <<<"$out"' "and is named as invalid (said '$out')"
+
 # --- Case 29: E02 — .env missing a key from .env.prod.example → warn --------
 proj29="$tmpdir/env-missing-key"
 make_project "$proj29"

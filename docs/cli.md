@@ -219,6 +219,9 @@ Flow (no-args / working-tree path):
 10. Print local changelog (`git log <prev>..<new>`).
 
 Flags:
+- `--on-drift=setup|continue|abort` — what step 6 does when the server's `.env`
+  has drifted from `.env.prod.example`. Unset it asks; with no terminal to ask
+  on the run stops with exit `5`. See `hosting env` below.
 - `--skip-hooks` — skip pre/post hooks (dry-run style).
 - `--no-health-wait` — don't block on healthcheck.
 
@@ -290,10 +293,41 @@ before cutting a tag.
 `git log <prev-deploy>..<current-deploy>` — what changed in the currently
 deployed version.
 
-### `hosting env [USER@HOST]`
+### `hosting env [USER@HOST] [--on-drift=setup|continue|abort]`
 
-Drift-aware env setup. Rsyncs `.env.prod.example` to VPS, runs the interactive
-`setup-env.sh` against it. See `env-template.md` for the template conventions.
+Drift-aware env setup. Rsyncs `.env.prod.example` and hosting's own
+`setup-env.sh` to `<apps>/<name>/`, runs the interactive setup there over
+`ssh -t`, then refreshes the hosting-managed `HOSTING_*` block in `.env` from
+the server marker's resource limits. See `env-template.md` for the template
+conventions and the managed block.
+
+The injection is not optional decoration: a `.env` without `HOSTING_CPU_LIMIT`
+makes `compose up` fail outright, so a command whose job is producing a usable
+`.env` finishes the job. That is also why it reads the server marker and exits
+`4` when there is none, exactly as `deploy` does.
+
+The setup is interactive and needs a terminal at both ends. Without one the run
+stops with exit `5` rather than feeding the generator EOF, which its
+non-interactive contract would turn into every default silently accepted,
+secrets included.
+
+Flags, which apply only when `.env` **has** drifted:
+- `--on-drift=setup` — re-run the setup. What this command does anyway.
+- `--on-drift=continue` — leave `.env` alone and only refresh the `HOSTING_*`
+  block. The only answer that gets through without a terminal.
+- `--on-drift=abort` — stop, changing nothing (exit `5`).
+
+Unset, a drifting `.env` asks; with no terminal to ask on, the run stops naming
+the flag. The prompt has **no default** — an empty answer is asked again, since
+Enter must not be able to re-run the generator over a live `.env`.
+
+`--on-drift=` is not a way to run `hosting env` headlessly in general. With
+`.env` missing, or in sync, the flag is never consulted and the run still needs
+a terminal (exit `5`); only the drift case has a question for it to answer.
+
+`deploy` carries the same flag for the same step (`build-deploy.md` step 6) —
+the difference is that `deploy` runs the setup only when the `.env` is missing
+or has drifted, while `env` runs it every time, since that is what it is for.
 
 ### `hosting logs [USER@HOST] [SERVICE] [flags]`
 
@@ -334,5 +368,12 @@ Referenced elsewhere in the docs but not yet in v0.1:
   elsewhere and re-running init would render a second Traefik stack under
   the frozen `traefik` compose project, recreating the running proxy against
   it. Commands that exit 4 say so rather than prescribing init.
-- `5` .env drift detected and user declined to fix
+- `5` env setup could not complete. Covers both halves of the same sentence —
+  the project's `.env` on the server is not in a state hosting will deploy
+  against, and nothing was deployed: drift the user declined to fix
+  (`--on-drift=abort`, or an aborted setup), a `.env` that is missing or
+  unrenderable with no terminal to render it on, **and** `setup-env.sh` not
+  finishing on the far side — including when it could not be run at all. One
+  code rather than several, because the operator's next move is the same in
+  every case: run `hosting env` from a terminal, or pass `--on-drift=`.
 - `6` compliance check failed

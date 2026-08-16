@@ -326,6 +326,38 @@ EOS
 assert $'grep -qxF "ARG:\'docker ps | wc -l\'" <<<"$(call_block 2)"' \
     "a whole command line given as one argument stays one quoted word (got: $(call_block 2 | grep '^ARG:.docker'))"
 
+# --- Case 4b: ssh_run_tty — the one call that carries an interactive session ---
+# The .env generator prompts, masks a password with `read -rs` and reads one
+# character at a menu, none of which survives a pipe. Neither of the other two
+# runners can carry it: ssh_run closes stdin with -n and ssh_script spends it on
+# the payload — so this asserts the flag that is there and the one that is not.
+run_driver -- <<'EOS'
+ssh_connect deploy@vps.example.com
+ssh_run_tty /apps/demo/scripts/setup-env.sh /apps/demo
+EOS
+assert '[ "$rc" = "0" ]' "ssh_run_tty runs a remote command (exit $rc: $err)"
+tty_block="$(call_block 2)"
+assert 'grep -qxF "ARG:-t" <<<"$tty_block"' \
+    "it asks ssh for a pty (block: $(tr '\n' ' ' <<<"$tty_block"))"
+assert '! grep -qxF "ARG:-n" <<<"$tty_block"' \
+    "and never -n: the far side reads the operator's answers off this stdin (block: $(tr '\n' ' ' <<<"$tty_block"))"
+assert $'grep -qxF "ARG:\'/apps/demo/scripts/setup-env.sh\' \'/apps/demo\'" <<<"$tty_block"' \
+    "its words are quoted for the remote shell the way ssh_run's are (block: $(tr '\n' ' ' <<<"$tty_block"))"
+# The control options are the run's own: an interactive session that opened a
+# second connection would be a second handshake and a second master.
+assert 'grep -qxF "ARG:ControlMaster=auto" <<<"$tty_block"' \
+    "and it rides the master this run already opened (block: $(tr '\n' ' ' <<<"$tty_block"))"
+# `-t` on the *stdin-closing* runner would be the same defect from the other
+# side, so the neighbouring calls are asserted not to have grown one.
+assert '! grep -qxF "ARG:-t" <<<"$(call_block 1)"' \
+    "ssh_connect's probe asks for no pty (block: $(call_block 1 | tr '\n' ' '))"
+run_driver -- <<'EOS'
+ssh_connect deploy@vps.example.com
+ssh_run docker ps
+EOS
+assert '! grep -qxF "ARG:-t" <<<"$(call_block 2)"' \
+    "nor does ssh_run (block: $(call_block 2 | tr '\n' ' '))"
+
 # --- Case 5: a script payload survives the trip -------------------------------
 # Quotes, $, backticks, newlines and a nested heredoc are exactly what a remote
 # deploy script is made of; anything that mangles them shows up as a syntax
@@ -439,7 +471,7 @@ assert '[ "$first_teardown" = "1" ]' \
     "the first master is torn down against its own target, not the new one"
 
 # --- Case 7: nothing remote happens before the master is open -----------------
-for op in 'ssh_run true' 'ssh_script </dev/null' 'ssh_rsync -a /tmp/x/ host:/tmp/y/'; do
+for op in 'ssh_run true' 'ssh_run_tty true' 'ssh_script </dev/null' 'ssh_rsync -a /tmp/x/ host:/tmp/y/'; do
     run_driver -- <<EOS
 $op
 EOS

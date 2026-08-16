@@ -29,6 +29,8 @@
 # Usage (executed):
 #   ./scripts/setup-env.sh                          # interactive
 #   ./scripts/setup-env.sh /path/to/dir             # custom directory
+#   ./scripts/setup-env.sh --drift  /path/to/dir    # key=value drift report
+#   ./scripts/setup-env.sh --inject /path/to/dir HOSTING_X=y ...
 # =============================================================================
 
 # Never exported, so the executed case reaches the guard with it unset and the
@@ -46,6 +48,14 @@ set -euo pipefail
 # anchored — MY_HOSTING_URL is the user's key, not hosting's.
 # docs/env-template.md § Drift detection, docs/compliance.md § Env.
 ENV_RESERVED_PREFIX=HOSTING_
+
+# One definition of "a line that assigns a variable", shared by every reader of
+# a user-authored .env or template here and by lib/check.sh's E01/E04: Compose
+# trims leading blanks, honours an `export ` prefix, and lets the last
+# assignment win, so hosting has to see the same lines it does. Group 2 is the
+# bare key, group 3 the value — the `export ` is group 1 and belongs to neither.
+# docs/env-template.md § Drift detection.
+ENV_ASSIGN_RE='^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$'
 
 # The block env_inject_hosting_vars owns. Frozen strings: an older hosting's
 # block has to be recognised, and every one of them collapses into a single
@@ -72,9 +82,9 @@ fi
 # Prompt helper — reads input, masks sensitive vars
 # ---------------------------------------------------------------------------
 # Reads KEY and writes VALUE in the caller's scope by dynamic scoping: neither
-# may be made local here. Named `_env_prompt_value` because lib/prompt.sh
-# already owns `prompt_value` with an unrelated signature and lib/deploy.sh
-# sources both.
+# may be made local here. Named `_env_prompt_value` rather than `prompt_value`
+# because lib/prompt.sh owns that name with an unrelated signature, and this
+# file is sourced into hosting's own shell by lib/check.sh.
 _env_prompt_value() {
     VALUE=""
     if [[ "$KEY" =~ PASSWORD|SECRET|KEY ]]; then
@@ -122,9 +132,9 @@ env_setup_run() {
             line="${line%$'\r'}"
             [[ "$line" =~ ^[[:space:]]*# ]] && continue
             [[ -z "$line" ]] && continue
-            if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*) ]]; then
-                case "${BASH_REMATCH[1]}" in "$ENV_RESERVED_PREFIX"*) continue ;; esac
-                EXISTING["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+            if [[ "$line" =~ $ENV_ASSIGN_RE ]]; then
+                case "${BASH_REMATCH[2]}" in "$ENV_RESERVED_PREFIX"*) continue ;; esac
+                EXISTING["${BASH_REMATCH[2]}"]="${BASH_REMATCH[3]}"
             fi
         done < "$OUTPUT"
     fi
@@ -139,9 +149,9 @@ env_setup_run() {
         declare -a TEMPLATE_KEYS=()
         while IFS= read -r tline || [[ -n "$tline" ]]; do
             tline="${tline%$'\r'}"
-            if [[ "$tline" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
-                case "${BASH_REMATCH[1]}" in "$ENV_RESERVED_PREFIX"*) continue ;; esac
-                TEMPLATE_KEYS+=("${BASH_REMATCH[1]}")
+            if [[ "$tline" =~ $ENV_ASSIGN_RE ]]; then
+                case "${BASH_REMATCH[2]}" in "$ENV_RESERVED_PREFIX"*) continue ;; esac
+                TEMPLATE_KEYS+=("${BASH_REMATCH[2]}")
             fi
         done < "$EXAMPLE"
 
@@ -262,10 +272,12 @@ env_setup_run() {
             continue
         fi
 
-        # Variable lines: KEY=VALUE
-        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*) ]]; then
-            KEY="${BASH_REMATCH[1]}"
-            RAW_VALUE="${BASH_REMATCH[2]}"
+        # Variable lines: KEY=VALUE. Written back bare, so a template's
+        # `export FOO=x` or leading blanks are normalised away — the file is
+        # rebuilt from the template wholesale, not edited.
+        if [[ "$line" =~ $ENV_ASSIGN_RE ]]; then
+            KEY="${BASH_REMATCH[2]}"
+            RAW_VALUE="${BASH_REMATCH[3]}"
 
             # Reserved: dropped rather than preserved, so the only line setting
             # it is the managed block's. `hosting check` warns (E05).
@@ -396,6 +408,9 @@ env_setup_run() {
     # Write .env
     # -----------------------------------------------------------------------
     echo ""
+    # Truncate in place, not the rename env_inject_hosting_vars uses: a run
+    # killed here leaves a half-written .env. Kept as the original wrote it —
+    # this file is a verbatim port and the write is one of the ported lines.
     printf '%s\n' "${OUTPUT_LINES[@]}" > "$OUTPUT"
     echo -e "${GREEN}${BOLD}==> .env written to ${OUTPUT}${RESET}"
     return 0
@@ -405,7 +420,8 @@ env_setup_run() {
 # Drift — shared by `hosting check` (E02/E03) and the deploy path
 # ---------------------------------------------------------------------------
 
-# env_extract_keys FILE — every assignment's key, one per line, in file order.
+# env_extract_keys FILE — every assignment's key, one per line, in file order,
+# bare: an `export ` prefix and leading blanks belong to the line, not the key.
 # A missing or key-less file comes back empty with status 0: under pipefail a
 # `grep` finding nothing would tip the caller's `var=$(…)` instead.
 env_extract_keys() {
@@ -413,8 +429,8 @@ env_extract_keys() {
     [ -f "$f" ] || return 0
     while IFS= read -r line || [ -n "$line" ]; do
         line="${line%$'\r'}"
-        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
-            printf '%s\n' "${BASH_REMATCH[1]}"
+        if [[ "$line" =~ $ENV_ASSIGN_RE ]]; then
+            printf '%s\n' "${BASH_REMATCH[2]}"
         fi
     done < "$f"
     return 0
@@ -455,17 +471,21 @@ env_drift() {
 # ---------------------------------------------------------------------------
 
 # _env_line_sets_reserved LINE — true when Compose would read the line as
-# assigning a reserved key. Compose trims leading blanks and honours an
-# `export ` prefix, so both shapes are strays; a `#` comment is not.
+# assigning a reserved key. The shape is ENV_ASSIGN_RE's, so a stray is exactly
+# what the drift readers would have counted as a key; a `#` comment is not one.
 _env_line_sets_reserved() {
-    [[ "${1%$'\r'}" =~ ^[[:space:]]*(export[[:space:]]+)?${ENV_RESERVED_PREFIX}[A-Za-z0-9_]*= ]]
+    [[ "${1%$'\r'}" =~ $ENV_ASSIGN_RE ]] || return 1
+    case "${BASH_REMATCH[2]}" in "$ENV_RESERVED_PREFIX"*) return 0 ;; esac
+    return 1
 }
 
 # env_inject_hosting_vars ENVFILE HOSTING_KEY=VALUE... — writes the managed
 # block, creating ENVFILE if it does not exist, and runs *after* env_setup_run,
 # which rebuilds .env from a template holding no reserved keys. Values go
 # through unchanged: the marker's spelling (`14.4`, `54g`) is the contract, not
-# this function's to reformat or validate.
+# this function's to reformat or validate. The pairs are hosting's own argv
+# rather than file lines, so they take no leading blanks and no `export `, and
+# there must be at least one.
 #
 # Every other line survives byte-for-byte in its original order, except lines
 # Compose would read as setting a reserved key, which are removed — the last
@@ -473,6 +493,13 @@ _env_line_sets_reserved() {
 env_inject_hosting_vars() {
     local envfile="$1"; shift
     local pair
+    # No pairs would rewrite the block empty, and `compose up` then fails on an
+    # unset HOSTING_CPU_LIMIT. There is no call that wants that, so it is a
+    # caller bug rather than a request — the `for` below cannot catch it.
+    if [ "$#" -eq 0 ]; then
+        echo "ERROR: env_inject_hosting_vars: no ${ENV_RESERVED_PREFIX}NAME=value pairs given"
+        return 1
+    fi
     for pair in "$@"; do
         [[ "$pair" =~ ^${ENV_RESERVED_PREFIX}[A-Za-z0-9_]*= ]] && continue
         echo "ERROR: env_inject_hosting_vars: '${pair}' is not a ${ENV_RESERVED_PREFIX}NAME=value pair"
@@ -543,11 +570,14 @@ env_inject_hosting_vars() {
     if [ -f "$target" ]; then
         chmod --reference="$target" "$tmp" 2>/dev/null || true
     fi
-    # The temp lives in the tree `deploy` rsyncs, so no failure may leave it.
+    # The temp lives in the tree `deploy` rsyncs, so every `return` below clears
+    # it. A signal does not: there is no trap, because this file is sourced into
+    # hosting's own shell as well as executed, and an EXIT trap here would
+    # replace the caller's. A killed run can leave one `.hosting-inject.<pid>`.
     if ! {
         if [ "$at" -gt 0 ]; then printf '%s\n' "${kept[@]:0:$at}"; fi
         printf '%s\n' "$ENV_MANAGED_BEGIN"
-        if [ "$#" -gt 0 ]; then printf '%s\n' "$@"; fi
+        printf '%s\n' "$@"
         printf '%s\n' "$ENV_MANAGED_END"
         if [ "${#kept[@]}" -gt "$at" ]; then printf '%s\n' "${kept[@]:$at}"; fi
     } > "$tmp"; then
@@ -563,14 +593,83 @@ env_inject_hosting_vars() {
     fi
 }
 
-# Entry point for the executed case. Arguments pass straight through to the
-# interactive setup, so the shipped scripts/setup-env.sh keeps the original's
-# `[target_dir]` calling convention and its exit codes. The call is bare on
-# purpose: wrapping it in `|| rc=$?` would switch errexit off for the whole of
-# env_setup_run, and a failed `read` there has to abort exactly as it does in
-# the standalone original.
+# ---------------------------------------------------------------------------
+# Dispatch — the three things the VPS copy is asked to do
+# ---------------------------------------------------------------------------
+
+# _env_report [target_dir] — the far side's answer to "is there a .env, is
+# there a template, and do their key sets agree", as key=value lines on stdout.
+# Diagnostics go to stderr: stdout is a protocol here, and a caller that folded
+# an error message into its fact table would absorb it as a fact.
+#
+# Always four lines, whether or not either file exists, because "no .env" and
+# "an empty .env" are different answers and the caller decides which branch it
+# takes. Exit 0 unless a path is there but unusable.
+_env_report() {
+    local dir="${1:-.}"
+    local template="$dir/.env.prod.example" envfile="$dir/.env"
+
+    if [ -e "$envfile" ] && [ ! -f "$envfile" ]; then
+        echo "ERROR: ${envfile} exists and is not a regular file" >&2
+        return 1
+    fi
+    if [ -e "$template" ] && [ ! -f "$template" ]; then
+        echo "ERROR: ${template} exists and is not a regular file" >&2
+        return 1
+    fi
+
+    if [ -f "$template" ]; then printf 'template_exists=yes\n'; else printf 'template_exists=no\n'; fi
+    if [ -f "$envfile" ];  then printf 'env_exists=yes\n';      else printf 'env_exists=no\n'; fi
+
+    # Bare, and the two variables are what is read afterwards: env_drift always
+    # returns 0 and never signals through its exit status, so `if env_drift`
+    # would be a test of nothing at all.
+    ENV_DRIFT_MISSING=""
+    ENV_DRIFT_EXTRA=""
+    env_drift "$template" "$envfile"
+    printf 'missing=%s\n' "$ENV_DRIFT_MISSING"
+    printf 'extra=%s\n' "$ENV_DRIFT_EXTRA"
+    return 0
+}
+
+# Entry point for the executed case. With no mode word the arguments pass
+# straight through to the interactive setup, so the shipped scripts/setup-env.sh
+# keeps the original's `[target_dir]` calling convention and its exit codes —
+# a mode is a leading `--word`, which a target directory is not.
+#
+# The `env_setup_run` call below is bare because it *must* be: wrapping it in
+# `|| rc=$?` switches errexit off for the whole of that function, and its two
+# menu `read`s are the only ones without `|| true` — so EOF at a menu would stop
+# aborting, exit 1 would become exit 0, and the caller would be told "up to
+# date" about a file nothing wrote. The other two are bare for uniformity
+# rather than necessity: neither `_env_report` nor `env_inject_hosting_vars`
+# reads stdin, so both already signal only through their return value, and a
+# mutant that wrapped either is genuinely equivalent (tests/env_test.sh case 39
+# pins the one that is not).
 env_main() {
-    env_setup_run "$@"
+    local mode="" dir
+
+    case "${1:-}" in
+        --setup|--drift|--inject) mode="$1"; shift ;;
+        --*)
+            echo "ERROR: unknown mode '$1' (expected --setup, --drift or --inject)" >&2
+            return 1
+            ;;
+    esac
+
+    case "$mode" in
+        --drift)
+            _env_report "${1:-.}"
+            ;;
+        --inject)
+            dir="${1:-.}"
+            [ "$#" -eq 0 ] || shift
+            env_inject_hosting_vars "$dir/.env" "$@"
+            ;;
+        *)
+            env_setup_run "$@"
+            ;;
+    esac
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

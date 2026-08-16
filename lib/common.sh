@@ -42,6 +42,13 @@ HOSTING_EXIT_SSH_UNREACHABLE=3  # the target host did not answer ssh
 # render a second Traefik under the frozen `traefik` compose project and
 # recreate the running proxy against it. Callers say which situation it is.
 HOSTING_EXIT_NO_REMOTE_STATE=4
+# The env setup did not leave a .env hosting will deploy against, for any
+# reason: drift the user declined to fix, a .env that is not there with no
+# terminal to render one on, or setup-env.sh not finishing on the far side —
+# including when it could not be run at all. One code, because it is one
+# sentence from the operator's side and nothing was deployed. Injection is a
+# different step and fails with 1 (docs/cli.md, docs/phases/03-env.md).
+HOSTING_EXIT_ENV_SETUP=5
 HOSTING_EXIT_COMPLIANCE_FAIL=6  # `hosting check` recorded one or more failures
 
 # Where the server marker lives when nobody said otherwise. `server init`

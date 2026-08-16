@@ -346,10 +346,14 @@ deploy_cli() {
     : > "$ssh_log"; : > "$call_log"
     # The suite exports HOSTING_LIB_DIR for its own snippets; the CLI has to
     # resolve its own, the way an installed hosting does.
+    # stdin from /dev/null, not from whatever the suite was started with: the
+    # env step asks what to do about drift when there is a terminal to ask on,
+    # and a run by hand in a real shell would otherwise stop at a prompt. The
+    # refusal that replaces it is asserted below.
     env -u HOSTING_LIB_DIR -u HOSTING_TEMPLATE_DIR -u HOSTING_VERSION \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" \
         SSH_LOG="$ssh_log" CALL_LOG="$call_log" \
-        "$repo_dir/bin/hosting" deploy "$@" 2>&1
+        "$repo_dir/bin/hosting" deploy "$@" </dev/null 2>&1
 }
 mkdir -p "$tmpdir/home"
 
@@ -385,10 +389,14 @@ assert 'grep -qF "not a JSON object" <<<"$out"' "and says what it read (said '$o
 
 # --- The whole path, against a server that is prepared --------------------------
 # The stub above answers "no marker" to every remote step, so everything after
-# _deploy_read_marker — the three syncs, the helper, the remote step, the
-# fragment — was unreachable from this suite and pinned only by the rig. This
-# one answers as a prepared server does, so cmd_deploy runs to the end and every
-# call it makes lands in $call_log in order.
+# _deploy_read_marker — the three syncs, the helper, the env step, the remote
+# step, the fragment — was unreachable from this suite and pinned only by the
+# rig. This one answers as a prepared server does, so cmd_deploy runs to the end
+# and every call it makes lands in $call_log in order.
+#
+# The env step's two remote calls are answered from the environment, so a case
+# can put the far side into any of the four states the step branches on: no
+# .env, no template, drift, in sync. MARKER is settable for the same reason.
 cat > "$stub_dir/ssh" <<'STUB'
 #!/usr/bin/env bash
 { printf 'ssh'; for a in "$@"; do printf '|%s' "$a"; done; printf '\n'; } >> "$CALL_LOG"
@@ -407,9 +415,20 @@ case "$last" in
 esac
 case "$last" in
     "'bash' '-s' '--' '/apps'")
-        printf '{"hosting_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data"}\n' ;;
-    "'bash' '-s' '--' '/apps' '/apps/data' 'demo'"*)
+        marker_default='{"hosting_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"14.4","mem_limit":"54g"}'
+        printf '%s\n' "${MARKER-$marker_default}" ;;
+    # The marker read is matched exactly above, so anything else naming the
+    # project is the prepare step — whatever apps path the marker steered it to.
+    "'bash' '-s' '--' "*" 'demo'"*)
         printf 'prepared=yes\n' ;;
+    *"setup-env.sh' '--drift' "*)
+        [ -z "${DRIFT_OUT+set}" ] || { printf '%s' "$DRIFT_OUT"; exit "${DRIFT_RC:-0}"; }
+        [ -z "${DRIFT_RC:-}" ] || exit "$DRIFT_RC"
+        printf 'template_exists=%s\n' "${ENV_TEMPLATE:-yes}"
+        printf 'env_exists=%s\n' "${ENV_EXISTS:-yes}"
+        printf 'missing=%s\n' "${ENV_MISSING:-}"
+        printf 'extra=%s\n' "${ENV_EXTRA:-}" ;;
+    *"setup-env.sh' '--inject' "*) exit "${INJECT_RC:-0}" ;;
     *"remote-deploy.sh' 'deploy' '1.0.0'") ;;
     *)
         printf 'stub: no answer for remote step %s\n' "$last" >&2
@@ -435,17 +454,21 @@ line_of() { grep -n -m1 -F -- "$1" <<<"$calls" | cut -d: -f1; }
 n_marker=$(grep -n -m1 -E "\|'bash' '-s' '--' '/apps'\$" <<<"$calls" | cut -d: -f1)
 n_prepare=$(line_of "|'bash' '-s' '--' '/apps' '/apps/data' 'demo'")
 n_compose=$(line_of "|compose.prod.yml|")
-n_helper=$(line_of "--chmod=F755")
+n_helper=$(line_of "|$repo_dir/templates/remote-deploy.sh|")
+n_envhelper=$(line_of "|$repo_dir/lib/env.sh|")
+n_drift=$(line_of "setup-env.sh' '--drift'")
+n_inject=$(line_of "setup-env.sh' '--inject'")
 n_remote=$(line_of "remote-deploy.sh' 'deploy' '1.0.0'")
 n_fragment=$(line_of "|traefik-dynamic.yml|")
 assert '[ -n "$n_marker" ] && [ -n "$n_prepare" ] && [ -n "$n_compose" ] &&
-        [ -n "$n_helper" ] && [ -n "$n_remote" ] && [ -n "$n_fragment" ]' \
-    "the run made all six calls the order below is about (marker $n_marker, prepare $n_prepare, sync $n_compose, helper $n_helper, remote $n_remote, fragment $n_fragment)
+        [ -n "$n_helper" ] && [ -n "$n_envhelper" ] && [ -n "$n_drift" ] &&
+        [ -n "$n_inject" ] && [ -n "$n_remote" ] && [ -n "$n_fragment" ]' \
+    "the run made all nine calls the order below is about (marker $n_marker, prepare $n_prepare, sync $n_compose, helper $n_helper, env helper $n_envhelper, drift $n_drift, inject $n_inject, remote $n_remote, fragment $n_fragment)
         calls: $calls"
 # A call that never happened orders as 0 rather than as an empty string: the
-# assertion above is the one that reports it, and the three below should then
+# assertion above is the one that reports it, and the ones below should then
 # fail on their own terms instead of on `[: integer expression expected`.
-for n in n_marker n_prepare n_compose n_helper n_remote n_fragment; do
+for n in n_marker n_prepare n_compose n_helper n_envhelper n_drift n_inject n_remote n_fragment; do
     [ -n "${!n}" ] || printf -v "$n" '%s' 0
 done
 
@@ -461,6 +484,26 @@ assert '[ "$n_compose" -gt "$n_prepare" ] && [ "$n_prepare" -gt "$n_marker" ]' \
     "nothing is written before the server has been read and judged (marker $n_marker, prepare $n_prepare, first sync $n_compose)"
 assert '[ "$n_remote" -gt "$n_helper" ]' \
     "the helper is on the server before the step that runs it (helper $n_helper, remote step $n_remote)"
+
+# The env step, at the one place in the run where it works. After the project
+# rsync, because the interactive setup prompts from the .env.prod.example that
+# rsync ships; after the helper, because it is the helper it runs; and before
+# the remote deploy, because `compose up` reads the .env it writes — an
+# injection after `compose up` refreshes a limit nothing will read until the
+# next deploy.
+assert '[ "$n_drift" -gt "$n_compose" ] && [ "$n_drift" -gt "$n_envhelper" ]' \
+    "the env check runs after the template and the script it needs are both there (sync $n_compose, env helper $n_envhelper, drift $n_drift)"
+assert '[ "$n_inject" -gt "$n_drift" ]' \
+    "injection runs after the drift check, never before (drift $n_drift, inject $n_inject)"
+assert '[ "$n_remote" -gt "$n_inject" ]' \
+    "and before compose up reads the file it wrote (inject $n_inject, remote step $n_remote)"
+# The values are the marker's own, spelled as the marker spells them: `14.4`
+# reformatted to `14.40` is a different cpus: and `54g` to `54G` a different
+# mem_limit.
+assert 'grep -qF "setup-env.sh'\'' '\''--inject'\'' '\''/apps/demo'\'' '\''HOSTING_CPU_LIMIT=14.4'\'' '\''HOSTING_MEM_LIMIT=54g'\''" <<<"$calls"' \
+    "injection carries the marker's two limits, unreformatted ($(grep -F -- "--inject" <<<"$calls"))"
+assert 'grep -qF "|-pt|--chmod=F755|-s|$repo_dir/lib/env.sh|deploy@vps:/apps/demo/scripts/setup-env.sh" <<<"$calls"' \
+    "and setup-env.sh is lib/env.sh itself, shipped executable — not a generated copy ($(grep -F "env.sh|" <<<"$calls"))"
 
 # The rsync flag sets, whole, and each of them ends its line: -a would carry
 # ownership and times a deploy has no business asserting, and -s is what stops
@@ -483,7 +526,7 @@ rsync_with_s=$(grep -c '^rsync|.*|-s|' <<<"$calls")
 rsync_with_e=$(grep -c '^rsync|-e|ssh -o ControlMaster=auto -o ControlPath=' <<<"$calls")
 assert '[ "$rsync_calls" = "$rsync_with_e" ]' \
     "every rsync rides the run's own ssh master through -e ($rsync_with_e of $rsync_calls)"
-assert '[ "$rsync_calls" = "5" ]'            "five rsync calls in a deploy (got $rsync_calls)"
+assert '[ "$rsync_calls" = "6" ]'            "six rsync calls in a deploy (got $rsync_calls)"
 assert '[ "$rsync_calls" = "$rsync_with_s" ]' "every one of them passes -s ($rsync_with_s of $rsync_calls)"
 # --inplace would write through the file Traefik is watching instead of renaming
 # a complete one over it, so the watcher would see a truncated fragment and stop
@@ -509,6 +552,213 @@ assert 'grep -qF "no traefik-dynamic.yml" <<<"$out"' "and says the route was not
 assert '[ "$(grep -c "dynamic/demo.yml" <<<"$calls")" = "0" ]' \
     "nothing at all was sent to the dynamic directory (sent: $(grep -F "dynamic/" <<<"$calls"))"
 mv "$tmpdir/held-fragment.yml" "$project/traefik-dynamic.yml"
+rm -rf "$project/.hosting"
+
+# --- The env step ---------------------------------------------------------------
+# Everything below runs against the prepared-server stub, which answers the two
+# remote env calls from the environment. `deploy_cli` feeds /dev/null to stdin,
+# so every one of these is the headless shape a CI runner produces — which is
+# the one that must never stop at a prompt.
+env_calls() { grep -F "setup-env.sh" <<<"$(<"$call_log")"; }
+
+# Drift, nothing said, nobody to ask. The exit code is 5 and not 1, because
+# "the env step could not complete" is a distinct thing a script can branch on
+# (docs/cli.md → exit codes).
+out=$( cd "$project" && ENV_MISSING=NEW_KEY ENV_EXTRA=OLD_KEY deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "5" ]' "drift with no terminal and no flag exits 5 (rc $rc: $out)"
+assert 'grep -qF -- "--on-drift" <<<"$out"' \
+    "naming the flag that would have answered (said '$out')"
+assert 'grep -qF "NEW_KEY" <<<"$out" && grep -qF "OLD_KEY" <<<"$out"' \
+    "and both sides of the drift, so the reader knows which keys (said '$out')"
+assert '! grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' \
+    "nothing was deployed ($(grep -F "remote-deploy.sh' 'deploy'" <<<"$calls"))"
+assert '! grep -qF "dynamic/demo.yml" <<<"$calls"' \
+    "and no route was written — the fragment is downstream of a step that refused"
+assert '[ ! -f "$project/.hosting/state.json" ]' "and no project state was recorded"
+
+# Drift is two lists and either one alone is drift: a .env holding a key the
+# template dropped is as much a reason to stop as one missing a key it gained.
+out=$( cd "$project" && ENV_EXTRA=STALE_KEY deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "5" ]' "an extra key on its own is drift too (rc $rc: $out)"
+assert 'grep -qF "STALE_KEY" <<<"$out"' "and is named (said '$out')"
+assert '! grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' "nothing was deployed"
+
+# The same drift, answered three ways.
+out=$( cd "$project" && ENV_MISSING=NEW_KEY deploy_cli deploy@vps --on-drift=abort ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "5" ]' "--on-drift=abort exits 5 (rc $rc: $out)"
+assert 'grep -qF "aborted" <<<"$out"' "saying it aborted (said '$out')"
+assert '! grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' "and deployed nothing"
+assert '! grep -qF -- "--inject" <<<"$calls"' \
+    "not even the managed block: an aborted deploy touches the server's .env not at all ($(env_calls))"
+
+out=$( cd "$project" && ENV_MISSING=NEW_KEY deploy_cli deploy@vps --on-drift=continue ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ]' "--on-drift=continue deploys anyway (rc $rc: $out)"
+assert 'grep -qF "has drifted" <<<"$out"' "having said the .env drifted (said '$out')"
+assert 'grep -qF -- "--inject" <<<"$calls"' "and still refreshed the managed block ($(env_calls))"
+assert 'grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' "and ran the deploy"
+rm -rf "$project/.hosting"
+
+# `setup` is the answer that needs a terminal, so headless it is the refusal —
+# and a different one from "nobody said": the flag *was* passed.
+out=$( cd "$project" && ENV_MISSING=NEW_KEY deploy_cli deploy@vps --on-drift=setup ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "5" ]' "--on-drift=setup with no terminal exits 5 (rc $rc: $out)"
+assert 'grep -qF "no terminal" <<<"$out"' "saying what is missing (said '$out')"
+assert 'grep -qF "hosting env" <<<"$out"' "and where to get one (said '$out')"
+assert '! grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' "and deployed nothing"
+# The whole reason for the refusal: run headless, the generator reads EOF at
+# every prompt and its `|| true` accepts every default silently, secrets and all.
+assert '! grep -qE "^ssh\|-t\|" <<<"$calls"' \
+    "and asked for no pty it could not use ($(grep -E "^ssh\|-t" <<<"$calls"))"
+
+# A .env that is not there at all. The branch the old `.env must already exist`
+# precondition used to hold, one step later in the run.
+out=$( cd "$project" && ENV_EXISTS=no ENV_MISSING=DEMO_GREETING deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "5" ]' "a missing .env with no terminal exits 5 (rc $rc: $out)"
+assert 'grep -qF "does not exist yet" <<<"$out"' "saying the file is not there (said '$out')"
+assert 'grep -qF "hosting env deploy@vps" <<<"$out"' \
+    "and naming the command that renders it (said '$out')"
+# The remedies have to be ones that can reach this branch. A missing .env sets
+# action=setup before --on-drift= is ever consulted, so offering that flag here
+# would tell the operator to re-run the identical command for the identical exit
+# 5 — refusing safely while naming a remedy that cannot work is the class Phase
+# 2 named, and Phase 2's own refusal for this situation gave a working recipe.
+assert '! grep -qF -- "--on-drift=continue" <<<"$out"' \
+    "and offering no flag that cannot reach it (said '$out')"
+assert 'grep -qF "does not reach this" <<<"$out"' \
+    "saying so outright, since the flag is in the command's own --help (said '$out')"
+assert 'grep -qF "cp /apps/demo/.env.prod.example /apps/demo/.env" <<<"$out"' \
+    "and giving the by-hand recipe that does work (said '$out')"
+# The drift branch is where the flag does reach, and its remedy list says so —
+# without this the assertion above passes against a hosting that never mentions
+# the flag anywhere.
+out=$( cd "$project" && ENV_MISSING=NEW_KEY deploy_cli deploy@vps --on-drift=setup ); rc=$?
+assert 'grep -qF -- "--on-drift=continue" <<<"$out"' \
+    "the drift refusal does offer it, because there it is consulted (said '$out')"
+assert '! grep -qF "does not reach this" <<<"$out"' \
+    "and does not say otherwise (said '$out')"
+assert '! grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' "nothing was deployed"
+assert '! grep -qF "dynamic/demo.yml" <<<"$calls"' "and no route was written"
+assert '! grep -qF -- "--inject" <<<"$calls"' \
+    "and no block was written into a .env that does not exist ($(env_calls))"
+# The template and the helper *are* shipped first, on purpose: they are what the
+# `hosting env` the message recommends will run against.
+assert 'grep -qF "/apps/demo/scripts/setup-env.sh" <<<"$calls"' \
+    "the helper reached the server before the step gave up ($(grep -F "scripts/" <<<"$calls"))"
+
+# Neither file. There is nothing to render from, and the message says which file
+# the project is missing rather than which the server is.
+out=$( cd "$project" && ENV_EXISTS=no ENV_TEMPLATE=no deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "5" ]' "no .env and no template exits 5 (rc $rc: $out)"
+assert 'grep -qF "/apps/demo/.env" <<<"$out"' "naming the file that is not there (said '$out')"
+assert 'grep -qF ".env.prod.example" <<<"$out"' "and the template it would come from (said '$out')"
+assert 'grep -qF "sync:" <<<"$out"' "and the list that would have shipped it (said '$out')"
+
+# A .env with no template beside it is not drift, however different the key sets
+# are: every key would read as `extra` against an empty template, so the deploy
+# warns about the missing file and gets on with it.
+out=$( cd "$project" && ENV_TEMPLATE=no ENV_EXTRA="A B C" deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ]' "a .env with no template on the server still deploys (rc $rc: $out)"
+assert 'grep -qF "cannot be checked for drift" <<<"$out"' "with a warning (said '$out')"
+assert '! grep -qF -- "--on-drift" <<<"$out"' \
+    "and no drift prompt for keys an absent template cannot have (said '$out')"
+assert 'grep -qF -- "--inject" <<<"$calls"' "the block is still refreshed ($(env_calls))"
+rm -rf "$project/.hosting"
+
+# The flag is validated where it is parsed: a typo costs one sentence before the
+# first connection, not a refusal at the bottom of a deploy.
+out=$( cd "$project" && deploy_cli deploy@vps --on-drift=maybe ); rc=$?
+assert '[ "$rc" != "0" ]' "--on-drift=maybe is refused (rc $rc: $out)"
+assert 'grep -qF "setup, continue or abort" <<<"$out"' "listing the three answers (said '$out')"
+assert '[ ! -s "$ssh_log" ]' "before any connection (ssh saw: $(cat "$ssh_log"))"
+out=$( cd "$project" && deploy_cli deploy@vps --on-drift= ); rc=$?
+assert '[ "$rc" != "0" ]' "an empty --on-drift= is refused rather than read as unset (rc $rc: $out)"
+out=$( cd "$project" && deploy_cli deploy@vps --on-drift setup ); rc=$?
+assert '[ "$rc" != "0" ]' "--on-drift without '=' is refused (rc $rc: $out)"
+assert 'grep -qF -- "--on-drift=setup" <<<"$out"' "showing the form that works (said '$out')"
+
+# The far side answering something else is a failure, not a fact. "no drift" and
+# "the report never arrived" are the same empty string once absorbed.
+out=$( cd "$project" && DRIFT_OUT="env_exists=yes"$'\n' deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" != "0" ]' "a truncated env report fails the deploy (rc $rc: $out)"
+assert 'grep -qF "template_exists" <<<"$out" && grep -qF "missing" <<<"$out"' \
+    "naming the answers that never came (said '$out')"
+assert '! grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' "and nothing was deployed"
+
+out=$( cd "$project" && DRIFT_RC=7 deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" != "0" ]' "a setup-env.sh that will not run fails the deploy (rc $rc: $out)"
+assert 'grep -qF "exited 7" <<<"$out"' "quoting its status (said '$out')"
+assert '! grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' "and nothing was deployed"
+
+# Injection is a precondition of `compose up`, not a finishing touch: without
+# the block, HOSTING_CPU_LIMIT is unset and the compose file fails outright.
+out=$( cd "$project" && INJECT_RC=5 deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+# Exit 1, deliberately, and pinned so the two families cannot quietly merge: 5
+# is for a *choice* the operator can revisit (drift declined, a question nobody
+# was there to answer), and re-running with a flag or a terminal clears it. A
+# refused injection is the far side breaking, like the probe above or the helper
+# rsync, and nothing the operator answers will change it. The remote status is
+# deliberately 5 here, so a hosting that passed it through would look right.
+assert '[ "$rc" = "1" ]' "an injection that fails fails the deploy with 1, not 5 (rc $rc: $out)"
+assert 'grep -qF "HOSTING_CPU_LIMIT" <<<"$out"' "saying what would have broken (said '$out')"
+assert '! grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' "and nothing was deployed"
+assert '! grep -qF "dynamic/demo.yml" <<<"$calls"' "and no route was written"
+
+# A marker with no limits is not a marker this hosting can deploy from: there is
+# no default for someone else's server, and an empty `cpus:` is a compose file
+# that does not parse.
+out=$( cd "$project" && MARKER='{"apps_path":"/apps","data_path":"/apps/data"}' deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" != "0" ]' "a marker without the two limits is refused (rc $rc: $out)"
+assert 'grep -qF "cpu_limit" <<<"$out"' "naming the field (said '$out')"
+assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' \
+    "before anything is shipped (rsync saw: $(grep "^rsync|" <<<"$calls"))"
+out=$( cd "$project" && MARKER='{"apps_path":"/apps","data_path":"/apps/data","cpu_limit":"1 4","mem_limit":"4g"}' deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" != "0" ]' "so is a limit with a space in it (rc $rc: $out)"
+# Each limit on its own, both ways round: a check that only ever looked at
+# cpu_limit would pass every case above and let an empty mem_limit through into
+# `mem_limit:` on the far side.
+out=$( cd "$project" && MARKER='{"apps_path":"/apps","data_path":"/apps/data","cpu_limit":"1.0"}' deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" != "0" ]' "a marker with cpu_limit but no mem_limit is refused (rc $rc: $out)"
+assert 'grep -qF "mem_limit" <<<"$out"' "naming the field (said '$out')"
+out=$( cd "$project" && MARKER='{"apps_path":"/apps","data_path":"/apps/data","cpu_limit":"1.0","mem_limit":"4 g"}' deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" != "0" ]' "and so is a mem_limit with a space in it (rc $rc: $out)"
+
+# The marker's paths steer the whole run, and the marker is looked for at the
+# default path whatever it then says: a server laid out somewhere else is
+# followed rather than second-guessed. Every path below is the marker's, and
+# none of them is /apps.
+out=$( cd "$project" && MARKER='{"apps_path":"/srv/apps","data_path":"/srv/store","cpu_limit":"1.0","mem_limit":"2g"}' deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ]' "a marker naming another apps path deploys (rc $rc: $out)"
+assert 'grep -qF "|'\''bash'\'' '\''-s'\'' '\''--'\'' '\''/apps'\''" <<<"$calls"' \
+    "the marker itself is still read at the default path ($(grep -F "'--' '/apps'" <<<"$calls"))"
+assert 'grep -qF "deploy@vps:/srv/apps/demo/compose.yml" <<<"$calls"' \
+    "but the project lands under the marker's apps path ($(grep -F "compose.prod.yml" <<<"$calls"))"
+assert 'grep -qF "'\''/srv/store'\''" <<<"$calls"' \
+    "the bind-mount root is the marker's data path ($(grep -F "prepare" <<<"$calls"))"
+assert 'grep -qF "'\''/srv/apps/demo/scripts/setup-env.sh'\'' '\''--drift'\'' '\''/srv/apps/demo'\''" <<<"$calls"' \
+    "the env check runs the script that is there and asks about the directory the project is in ($(grep -F -- "--drift" <<<"$calls"))"
+assert 'grep -qF "'\''/srv/apps/demo/scripts/setup-env.sh'\'' '\''--inject'\'' '\''/srv/apps/demo'\''" <<<"$calls"' \
+    "and injection writes into that same directory's .env, not the default path's ($(grep -F -- "--inject" <<<"$calls"))"
+assert 'grep -qF "deploy@vps:/srv/apps/traefik/dynamic/demo.yml" <<<"$calls"' \
+    "and the fragment goes to that tree's Traefik ($(grep -F "dynamic/" <<<"$calls"))"
+rm -rf "$project/.hosting"
+
+# The control for all of the above: the same stub, nothing set, deploys.
+out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' \
+    "an in-sync .env deploys with no prompt and no flag (rc $rc: $out) — else the refusals above prove nothing"
+assert '! grep -qF "has drifted" <<<"$out"' "and says nothing about drift (said '$out')"
 rm -rf "$project/.hosting"
 
 # The recording rsync stub stays on PATH for the cases below. None of them
