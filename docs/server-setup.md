@@ -1,6 +1,6 @@
 # Server Setup
 
-`hosting server init` prepares a VPS to host projects. It is deliberately
+`kasbah server init` prepares a VPS to host projects. It is deliberately
 thin: it doesn't install packages and doesn't harden the system. It checks
 prerequisites and lays out the folder structure that every later command
 assumes.
@@ -9,16 +9,16 @@ assumes.
 
 | Requirement | Rationale | Failure mode |
 |---|---|---|
-| SSH with key auth to `user@host` | Every hosting operation is SSH-based | Hard fail, print ssh diagnostic |
+| SSH with key auth to `user@host` | Every kasbah operation is SSH-based | Hard fail, print ssh diagnostic |
 | Docker ≥ 24 | `docker compose` v2 plugin required | Hard fail, link to docker docs |
 | Docker Compose v2 | Manifest uses `include:` and modern syntax | Hard fail |
 | The SSH user can run `docker` without sudo | Avoids mixed sudo/non-sudo ownership in `/apps/data/` | Hard fail, suggest `usermod -aG docker` |
 | `rsync`, `openssl`, `gzip` available on remote | Used by deploy and env setup | Hard fail |
-| `bash` on the remote | Every hosting step ships a script to `bash -s` over the SSH master | Hard fail |
-| A POSIX userland — `tr`, `cat`, `stat`, `nproc`, `date`, `find`, `sort`, `comm`, `readlink` | Every remote step is a shell script; these are assumed present rather than checked, because a box without them cannot run `bash -s` usefully in the first place. The rule hosting's shipped scripts follow is **coreutils and bash builtins, nothing separately packaged** — which is why `scripts/setup-env.sh` parses env files with `read` loops rather than `awk` or `grep` | Not checked; failure surfaces as the step's own error |
+| `bash` on the remote | Every kasbah step ships a script to `bash -s` over the SSH master | Hard fail |
+| A POSIX userland — `tr`, `cat`, `stat`, `nproc`, `date`, `find`, `sort`, `comm`, `readlink` | Every remote step is a shell script; these are assumed present rather than checked, because a box without them cannot run `bash -s` usefully in the first place. The rule kasbah's shipped scripts follow is **coreutils and bash builtins, nothing separately packaged** — which is why `scripts/setup-env.sh` parses env files with `read` loops rather than `awk` or `grep` | Not checked; failure surfaces as the step's own error |
 | Passwordless `sudo` — **only** when the apps path does not exist yet | `/apps` lives outside the deploy user's home, so nobody but root can create it. Once it exists and is owned by that user, init never elevates again | Hard fail naming the two commands to run by hand |
 
-`hosting server init` does **not**:
+`kasbah server init` does **not**:
 
 - Install Docker or Compose (too opinionated; distros vary).
 - Configure `ufw` or iptables.
@@ -33,7 +33,7 @@ Default paths (override with `--apps-path`, `--data-path`):
 
 ```
 /apps/                               root owned by deploy user
-├── .hosting/
+├── .kasbah/
 │   └── server.json                  server marker (version, paths, limits, backup)
 ├── data/                            bind-mount root for all projects
 │   └── traefik/letsencrypt/
@@ -60,7 +60,7 @@ anywhere else.
 `acme.json` is touched as an empty file before `docker compose up`. If Docker
 sees a missing path on a bind mount, it silently creates a **directory**,
 which breaks Traefik (and later breaks DMS when it tries to read the file).
-Hosting's init loop prevents this.
+Kasbah's init loop prevents this.
 
 ### Who creates the apps path
 
@@ -89,7 +89,7 @@ The third row is a refusal rather than a `chown` on purpose. `--apps-path`
 is an operator-supplied path, and a version of init that quietly took
 ownership of whatever it was pointed at would hand `/var/www` to the deploy
 user on a live host — while reporting that it had *created* it. Seizing a
-directory hosting did not create is not a repair; one command from the
+directory kasbah did not create is not a repair; one command from the
 operator is cheaper than the class of accident it prevents.
 
 The fourth row exists because the first three are not decidable by the
@@ -168,52 +168,52 @@ Created by the Traefik compose:
 
 ```yaml
 networks:
-  hosting-net:
-    name: hosting-net
+  kasbah-net:
+    name: kasbah-net
     driver: bridge
 ```
 
-Only the containers Traefik routes to join `hosting-net` (declared
+Only the containers Traefik routes to join `kasbah-net` (declared
 `external: true` in the project compose); internal services stay on a
 project-internal network — see `traefik.md` for the alias-collision
 rationale. Traefik resolves routed containers by `container_name` on
 this network — the file provider fragment names them explicitly in
 `services.<x>.loadBalancer.servers`.
 
-## Server marker (`/apps/.hosting/server.json`)
+## Server marker (`/apps/.kasbah/server.json`)
 
 Written by `server init`, updated by any server-mutating command
 (`upgrade-traefik`, re-run with `--with-mail` / `--with-backup`):
 
 ```json
 {
-  "hosting_version": "0.1.0",
+  "kasbah_version": "0.1.0",
   "apps_path": "/apps",
   "data_path": "/apps/data",
   "cpu_limit": "3.6",
   "mem_limit": "7g",
-  "backup": { "enabled": true, "repo_base": "s3:https://…/hosting-backups" }
+  "backup": { "enabled": true, "repo_base": "s3:https://…/kasbah-backups" }
 }
 ```
 
 Written as mode 644, temp-file-and-rename, so the file is identical across
 hosts with different umasks and a reader never sees a half-written marker.
 
-Compatibility rule: a hosting binary operates on a VPS whose marker shares
+Compatibility rule: a kasbah binary operates on a VPS whose marker shares
 its **major** version. Older tool + newer marker → refuse. Newer tool +
-older-major marker → refuse until `hosting migrate` is run. Within the
+older-major marker → refuse until `kasbah migrate` is run. Within the
 same major, everything interoperates (see `overview.md`).
 
 Only the first direction is implemented. Refusing an *older* marker would
-be a dead end today: the remedy it names, `hosting migrate`, does not exist
+be a dead end today: the remedy it names, `kasbah migrate`, does not exist
 until roadmap v1.0, so the refusal would strand a server with no way
 forward. It lands with that command.
 
 Marker writes **merge, they never replace.** A command computes the fields it
 owns and overlays them onto whatever is already there, so a key written by a
-newer hosting — `backup.repo_base` is the one this document already
+newer kasbah — `backup.repo_base` is the one this document already
 anticipates — survives a re-run by a tool that has never heard of it. Only
-`hosting_version` is unconditionally overwritten, with the version that did
+`kasbah_version` is unconditionally overwritten, with the version that did
 the writing.
 
 ## Resource limits
@@ -244,12 +244,12 @@ depend on the operator's locale cannot be idempotent. The remote side is not
 assumed to have `awk` or `bc` — the prerequisites table does not list them.
 
 The values live in the server marker and are injected into each project's
-`.env` on every deploy as `HOSTING_CPU_LIMIT` / `HOSTING_MEM_LIMIT`, into a
+`.env` on every deploy as `KASBAH_CPU_LIMIT` / `KASBAH_MEM_LIMIT`, into a
 sentinel-delimited managed block, written through unchanged — injection
 formats nothing and validates nothing, so a `0` reaches the file as `0`
 (reserved prefix, exempt from env drift detection; see `env-template.md` for
 the block's shape and the stray-removal rule). Project compose files
-must reference the vars, never literal values — `hosting check` enforces
+must reference the vars, never literal values — `kasbah check` enforces
 this (R01–R03), and `check --server` warns on values tightened below 90%
 and fails anything above (R04).
 
@@ -271,11 +271,11 @@ Mail requires the main Traefik stack to be running first so that the
 `mail.<domain>` cert-trigger router can issue an ACME cert; init handles
 the ordering automatically.
 
-## `hosting server status`
+## `kasbah server status`
 
 Read-only — it never creates, modifies or removes anything. Walks the apps
 path, asks docker for each project's container *state* (health is reported
-for Traefik alone, which is the only container hosting gives a healthcheck),
+for Traefik alone, which is the only container kasbah gives a healthcheck),
 reads `versions.log` for each project, and prints:
 
 What it prints today:
@@ -284,15 +284,15 @@ What it prints today:
 VPS: you@vps (connected)
 Docker: 29.7.2, Compose: 5.4.0
 Root: /apps  Data: /apps/data
-Marker: hosting 0.1.0-dev, cpu 14.4, mem 54g
+Marker: kasbah 0.1.0-dev, cpu 14.4, mem 54g
 
 Traefik: running (healthy)
   Image: traefik:v3.7.10 (sha256:9c3b91d5fb77)
   Container: traefik
 
 Projects:
-  shop           1/1 running    1.3.0      deploy 2026-04-01T09:12:44+00:00 (hosting 0.1.0)
-  jellyfin       0/1 stopped    2.4.1      deploy 2026-03-15T22:05:10+00:00 (hosting 0.1.0)
+  shop           1/1 running    1.3.0      deploy 2026-04-01T09:12:44+00:00 (kasbah 0.1.0)
+  jellyfin       0/1 stopped    2.4.1      deploy 2026-03-15T22:05:10+00:00 (kasbah 0.1.0)
 ```
 
 Versions appear exactly as `versions.log` holds them — no `v` prefix, and
@@ -310,7 +310,7 @@ Traefik API with the dashboard credentials.
 
 ## Idempotency rules
 
-`hosting server init` can be re-run:
+`kasbah server init` can be re-run:
 - Folders are `mkdir -p`.
 - `acme.json` is created if missing; its mode is enforced as 600 on every
   run, and a *directory* found at that path is a hard failure rather than
@@ -325,18 +325,18 @@ Traefik API with the dashboard credentials.
 
 ## Handover / teardown
 
-`hosting server destroy` (roadmap v0.3) de-brands a VPS for handover — when the
+`kasbah server destroy` (roadmap v0.3) de-brands a VPS for handover — when the
 server passes to a client or another operator. Every container keeps
 running, projects **and** Traefik: the sites stay up. What's removed is
-hosting's management layer:
+kasbah's management layer:
 
-- `/apps/.hosting/` (server marker)
+- `/apps/.kasbah/` (server marker)
 - backup cron + S3 credentials (agency-owned secrets never transfer)
-- per project: `hosting.yml`, `versions.log(.gz)`, `scripts/` helpers
+- per project: `kasbah.yml`, `versions.log(.gz)`, `scripts/` helpers
 
 What remains is a plain, self-contained Docker Compose setup the new owner
 fully controls. The trade-off is explicit: deploy history and env tooling
-leave with hosting. Double confirmation (typed hostname).
+leave with kasbah. Double confirmation (typed hostname).
 
 Full teardown (actually stopping everything) stays manual on purpose —
 too easy to misfire:

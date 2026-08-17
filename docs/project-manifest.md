@@ -1,20 +1,20 @@
-# Project Manifest — `hosting.yml`
+# Project Manifest — `kasbah.yml`
 
-The single file hosting needs in a project. Lives at the project root.
-Everything else hosting knows about the project is derived from it plus the
+The single file kasbah needs in a project. Lives at the project root.
+Everything else kasbah knows about the project is derived from it plus the
 project's `compose.yml` and `.env.prod.example`.
 
 Whether a project builds its own images or only pulls stock ones is
 derived from `compose.prod.yml`: any service with a `build:` key is
-built and shipped by `hosting build-push`; services with only `image:`
+built and shipped by `kasbah build-push`; services with only `image:`
 are pulled by `compose up -d` on the VPS. There is no `type` field.
 
 ## Minimal example (stock-image project)
 
 ```yaml
-# jellyfin/hosting.yml
+# jellyfin/kasbah.yml
 schema: 1                       # manifest schema version
-hosting_version: 0.1.0          # hosting version that last wrote this file
+kasbah_version: 0.1.0          # kasbah version that last wrote this file
 
 name: jellyfin                  # project directory name on the VPS
 domain: jellyfin.example.com    # primary Traefik hostname
@@ -28,7 +28,7 @@ sync:
 
 ```yaml
 schema: 1
-hosting_version: 0.1.0
+kasbah_version: 0.1.0
 
 name: shop
 domain: shop.example.com
@@ -65,7 +65,7 @@ hooks:
     - shop-php-fpm php artisan route:cache
 
   # Projects that need migration rollback count their own migrations in
-  # the hook (hosting doesn't track migration counts).
+  # the hook (kasbah doesn't track migration counts).
   pre-rollback:
     - shop-php-fpm php artisan migrate:rollback --force
 
@@ -76,7 +76,7 @@ hooks:
 # previous version's containers), IF the `check` command exits 0. This
 # ordering means a backup always exists before any pre-deploy work
 # touches live state. Output goes to ./backups/ relative to the project
-# dir on the VPS. Hosting rotates these (keeps last `retain` by default).
+# dir on the VPS. Kasbah rotates these (keeps last `retain` by default).
 backup:
   container: shop-postgres
   # Any command. Exit 0 = take a backup. Exit non-zero = skip.
@@ -88,14 +88,14 @@ backup:
   pipe: gzip
   retain: 10
 
-# Mail claim — tells hosting this project expects `mail.<domain>` (and SMTP)
-# to be available. Hosting validates the domain is known to the mail stack
+# Mail claim — tells kasbah this project expects `mail.<domain>` (and SMTP)
+# to be available. Kasbah validates the domain is known to the mail stack
 # on the VPS. Account management is NOT done here — use `docker exec
 # mail-dms setup.sh email add foo@domain` on the VPS directly.
 mail:
   domain: shop.example.com
   # Optional pre-seed files copied to the mail stack's data dir on first
-  # deploy (safe to re-run — hosting only copies if the target is missing).
+  # deploy (safe to re-run — kasbah only copies if the target is missing).
   snappymail_domain: ./mail/snappymail-domain.json
 ```
 
@@ -104,14 +104,14 @@ mail:
 ### `schema` *(required)*
 
 Integer. The manifest schema version. Bumps when the format changes in a
-breaking way. `hosting` refuses to operate on a manifest whose schema is newer
-than the installed binary. In the other direction, every hosting version
+breaking way. `kasbah` refuses to operate on a manifest whose schema is newer
+than the installed binary. In the other direction, every kasbah version
 reads all older schemas of its own major; crossing a major boundary requires
-`hosting migrate` (see the compatibility policy in `overview.md`).
+`kasbah migrate` (see the compatibility policy in `overview.md`).
 
-### `hosting_version` *(required, auto-written)*
+### `kasbah_version` *(required, auto-written)*
 
-The version of `hosting` that last wrote this file. Hosting writes this on
+The version of `kasbah` that last wrote this file. Kasbah writes this on
 `init-project`, `check --fix`, and when running a schema migration. Projects
 shouldn't edit it manually. Used by future Go binary to know whether to
 migrate files in the source tree.
@@ -122,18 +122,18 @@ Directory name on the VPS (`/apps/<name>/`) and basis for container names.
 Must match `^[a-z][a-z0-9-]*$`.
 
 **Reserved: `traefik`, `data`, `backups`.** Those directories under `/apps/`
-belong to hosting, and a project claiming one is not a naming collision but
+belong to kasbah, and a project claiming one is not a naming collision but
 a live hazard: a project named `traefik` would rsync its compose file over
 the shared stack's, then run `docker compose -p traefik up -d
 --remove-orphans` in that directory — and since Traefik is not a service in
 the project's file, `--remove-orphans` removes the reverse proxy every site
-on the box is behind. `hosting check` and `hosting deploy` both refuse these
+on the box is behind. `kasbah check` and `kasbah deploy` both refuse these
 names, and `init-project` will not scaffold one.
 
 ### `domain` *(required)*
 
 The primary Traefik hostname. Used in checks (the compose file must route
-this host somewhere), in `hosting server status` output, and for the mail
+this host somewhere), in `kasbah server status` output, and for the mail
 claim reconciliation.
 
 ### `client` *(optional)*
@@ -149,15 +149,15 @@ as `name`. See `backup.md`.
 
 Rsync list applied on every deploy. Each entry is either `src` or `src -> dst`
 (relative to project root on dev; `/apps/<name>/` on VPS). Trailing `/` means
-"recurse". Hosting always syncs the minimal helper scripts — you don't list those.
+"recurse". Kasbah always syncs the minimal helper scripts — you don't list those.
 Today that is `remote-deploy.sh` and `setup-env.sh` — the latter is
 `lib/env.sh` itself, shipped verbatim so the drift check running on the server
-is the same bytes `hosting check` runs here. The manifest itself is **not**
-shipped: nothing on the server reads it yet, and `hosting.yml` in a
+is the same bytes `kasbah check` runs here. The manifest itself is **not**
+shipped: nothing on the server reads it yet, and `kasbah.yml` in a
 project's sync list would be a second copy to drift.
 
 The Traefik dynamic config (`traefik-dynamic.yml` at project root) is
-**not** listed here. Hosting rsyncs it directly to
+**not** listed here. Kasbah rsyncs it directly to
 `/apps/traefik/dynamic/<name>.yml` out-of-band, the same way it handles
 its own helper scripts. See `traefik.md` for the fragment shape.
 
@@ -172,7 +172,7 @@ Each hook is a list of strings. Each string starts with a literal
 **container name**, followed by the command to run inside it via
 `docker exec -T`. The target service in `compose.prod.yml` must set an
 explicit `container_name:` — compose's auto-generated
-`<project>_<service>_1` won't match. `hosting check` (HK01) enforces this.
+`<project>_<service>_1` won't match. `kasbah check` (HK01) enforces this.
 
 Supported hooks and when they run:
 
@@ -188,18 +188,18 @@ The `pre-*` hooks exec against containers from the *outgoing* state; the
 names are the same across versions (compose project name is stable), so
 the hook commands look identical — it's the timing that picks the target.
 
-Environment variables available to hook commands (set by hosting):
+Environment variables available to hook commands (set by kasbah):
 - `$VERSION` — the version being deployed/rolled to.
 - `$PREV_VERSION` — the version previously current (may be empty on first deploy).
 - `$DEPLOY_BACKUP` — (post-deploy) path to the backup file, or `no-backup`.
 
-Hosting does **not** generalize migration accounting. Projects that need to
+Kasbah does **not** generalize migration accounting. Projects that need to
 count migrations (Laravel, Rails, Django, etc.) do that inside their hook
 by querying their framework's migration table.
 
 ### `backup` *(optional)*
 
-If present, hosting may take a backup after `compose up -d` + health wait,
+If present, kasbah may take a backup after `compose up -d` + health wait,
 before pre-deploy hooks run.
 
 - `check` — any command. Exit code 0 triggers the backup; non-zero skips
@@ -226,14 +226,14 @@ ssh you@vps 'docker exec mail-dms setup email add noreply@example.com'
 
 This keeps accounts decoupled from the deploy cycle.
 
-## State file (`.hosting/state.json`, not manifest)
+## State file (`.kasbah/state.json`, not manifest)
 
 Stored in the project root. Not committed (add to `.gitignore`). Not synced
 to the VPS. Tracks:
 
 ```json
 {
-  "hosting_version": "0.1.0",
+  "kasbah_version": "0.1.0",
   "last_server": "user@vps",
   "last_deploy": "2026-04-12T01:00:00Z",
   "last_version": "1.3.0",
@@ -245,13 +245,13 @@ to the VPS. Tracks:
 
 | Field | Written by | Read by |
 |---|---|---|
-| `hosting_version` | `init-project`, `check --fix`, any migration | future `hosting migrate` (bash→Go cutover) |
+| `kasbah_version` | `init-project`, `check --fix`, any migration | future `kasbah migrate` (bash→Go cutover) |
 | `last_server` | every project command that targets a server, on success | every project command — used as default when `USER@HOST` is omitted |
-| `last_deploy` | `deploy`, `rollback` on success | `hosting check` (diff deployed vs local) |
-| `last_version` | `deploy`, `rollback` on success | `hosting check` |
-| `schema_migrations_applied` | `hosting migrate` | `hosting migrate` (idempotency) |
+| `last_deploy` | `deploy`, `rollback` on success | `kasbah check` (diff deployed vs local) |
+| `last_version` | `deploy`, `rollback` on success | `kasbah check` |
+| `schema_migrations_applied` | `kasbah migrate` | `kasbah migrate` (idempotency) |
 
-`hosting pending` does **not** read `last_version`. It resolves the deployed
+`kasbah pending` does **not** read `last_version`. It resolves the deployed
 version by querying `versions.log` on the VPS at runtime. State is a cache
 for defaults, not a source of truth for what's actually running.
 
@@ -261,11 +261,11 @@ for defaults, not a source of truth for what's actually running.
 - `last_server` is updated by: `build-push`, `deploy`, `rollback`, `env`,
   `history`, `changelog`, `pending`, `logs`, `exec`, `check --server` *(v0.2)*.
 - `init-project` creates the file with empty fields and the current
-  `hosting_version`. First server-targeting command must be passed
+  `kasbah_version`. First server-targeting command must be passed
   `USER@HOST` explicitly; subsequent ones default to `last_server`.
 
 ### Purpose
 
 - Default `USER@HOST` so users don't repeat it every command in the same project.
 - Anchor the source-tree schema migration story for the bash→Go transition.
-- Let `hosting check` diff the deployed version against local HEAD.
+- Let `kasbah check` diff the deployed version against local HEAD.

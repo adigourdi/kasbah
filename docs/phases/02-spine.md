@@ -1,24 +1,24 @@
 # Phase 2 — Spine
 
-> One thin path works end to end: `hosting server init` prepares the rig,
-> a thin `hosting deploy` puts a stock nginx project on it, and the page
+> One thin path works end to end: `kasbah server init` prepares the rig,
+> a thin `kasbah deploy` puts a stock nginx project on it, and the page
 > serves **through Traefik via a file-provider fragment** — the routing
 > model is proven.
 
 **Prerequisite:** Phase 1. (Phase 3 may run in parallel — no shared files.)
 **Spec:** `docs/server-setup.md`, `docs/traefik.md`, `docs/cli.md` (server init, deploy), `docs/build-deploy.md` (deploy flow steps 1–5, 8d, 8g)
-**Retires:** file-provider-only routing (no docker socket, `container_name` DNS on `hosting-net`) — designed in `765972c`, never yet run anywhere.
+**Retires:** file-provider-only routing (no docker socket, `container_name` DNS on `kasbah-net`) — designed in `765972c`, never yet run anywhere.
 
 ## Inherited from Phase 1 — read before starting
 
 The rig exists and works (`tests/rig/README.md` documents its shape and
 limits). What Phase 1 learned that lands on this phase:
 
-1. **`hosting` has no way to be told the rig's SSH contract — settle this
+1. **`kasbah` has no way to be told the rig's SSH contract — settle this
    before 2.4.** The CLI takes a bare `USER@HOST` and `cli.md` documents no
    `-F`, `-i` or port option, but the rig is reachable only as
    `ssh -F tests/rig/ssh_config rig` on a non-standard port with a
-   per-checkout key. Either `hosting` grows an ssh-options passthrough, or
+   per-checkout key. Either `kasbah` grows an ssh-options passthrough, or
    2.6 injects the `Host rig` block into a temp `~/.ssh/config`. The
    passthrough is the better answer — the rig's rule is that its flags are
    never restated anywhere — and it is a real feature for users with
@@ -54,7 +54,7 @@ limits). What Phase 1 learned that lands on this phase:
   prerequisites table can simply name. Consequence: passwordless sudo
   becomes a prerequisite row, and init must *detect* a sudo that would
   prompt and fail cleanly naming the manual command, never hang on it.
-- **hosting grows no ssh-options flag.** It runs plain `ssh user@host` and
+- **kasbah grows no ssh-options flag.** It runs plain `ssh user@host` and
   inherits the user's own ssh config, exactly as git does over SSH — jump
   hosts, non-standard ports and key selection are already that file's job.
   This overrules Phase 1's finding 1, which recommended a `--ssh-config`
@@ -115,7 +115,7 @@ limits). What Phase 1 learned that lands on this phase:
 ## Corrections to this plan, found before starting
 
 1. **`install.sh` ships no templates.** It copies `lib/*.sh` only, so an
-   installed hosting would have no `templates/` at all and 2.3/2.4 would
+   installed kasbah would have no `templates/` at all and 2.3/2.4 would
    ship commands that work from a checkout and break once installed.
    Template resolution and installation are hoisted into the first unit.
 2. **Traefik expands environment variables in neither its static nor its
@@ -144,8 +144,8 @@ one sitting — not inferred from the suites having passed.
 - [x] On a fresh rig: `server init` → deploy fixture → `curl -H 'Host: demo.test' localhost:5080` returns the fixture page, routed by Traefik — returns `served-by-demo-web-through-the-file-provider` **from the host**, on the rig's published port. That it is genuinely *through Traefik* is separately established: `demo-web` publishes no host port at all (`ports={"80/tcp":null}`), Traefik alone binds :80/:443, and an unrouted `Host:` on the same port gets Traefik's own 404
 - [x] The Traefik container has **no docker socket mounted** — three mounts (`traefik.yml`, `dynamic/`, `acme.json`), zero matching `docker.sock`. The integration assertion is fenced by positive mount controls, so it cannot pass against an empty list
 - [x] Re-running `server init` is a no-op — a second init **with no Traefik flags and stdin closed** left `/apps` byte-identical (`46e44dd4…dff36f` before and after, digest over type, mode, owner and content) and Traefik's `StartedAt` unmoved at `2026-08-14T02:02:55.301528274Z`. It reported `credentials reused` and `nothing re-rendered`; the page still served afterwards. That path is the real test, since bcrypt salts randomly and a re-render would change the tree
-- [x] `/apps/.hosting/server.json` exists with computed 90% limits — `cpu_limit 14.4`, `mem_limit 54g` against the rig's own 16 cores and 63624052 kB
-- [x] `versions.log` has one well-formed deploy line (frozen fields + `hosting=` + `digest=-`) — `2026-08-14T02:03:02+00:00 deploy 1.0.0 no-backup hosting=0.1.0-dev digest=-`
+- [x] `/apps/.kasbah/server.json` exists with computed 90% limits — `cpu_limit 14.4`, `mem_limit 54g` against the rig's own 16 cores and 63624052 kB
+- [x] `versions.log` has one well-formed deploy line (frozen fields + `kasbah=` + `digest=-`) — `2026-08-14T02:03:02+00:00 deploy 1.0.0 no-backup kasbah=0.1.0-dev digest=-`
 
 **Not proven here, and not tickable on a container:** ACME issuance (no
 public DNS — Traefik serves its default cert and Let's Encrypt rejects the
@@ -204,8 +204,8 @@ controls that do leak.
 ### 2.2 — `server init`: preflight, layout, marker (M)
 Preflight per the `server-setup.md` table (docker ≥ 24, compose v2,
 sudo-less docker, rsync/openssl/gzip); `mkdir -p` layout; `acme.json`
-touched **as a file**, chmod 600; write `/apps/.hosting/server.json`
-(hosting version, paths, `cpu_limit` from `nproc` × 0.9, `mem_limit` from
+touched **as a file**, chmod 600; write `/apps/.kasbah/server.json`
+(kasbah version, paths, `cpu_limit` from `nproc` × 0.9, `mem_limit` from
 `MemTotal` × 0.9). Mail/backup choices resolved via 2.1 (`--no-mail
 --no-backup` in all rig tests); scaffolding of the mail/backup stacks
 themselves stays in Phases 7/8.
@@ -282,12 +282,12 @@ handling is Phase 3; hooks/backup/health are Phase 4). Stock-only.
 
 **Deliverables**
 - [x] `lib/deploy.sh` thin path + `versions.log` line with `digest=-` —
-      `2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup hosting=0.1.0-dev digest=-`
+      `2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0-dev digest=-`
 - [x] Fragment lands atomically (rsync temp+rename) and Traefik picks it up
       without restart — boot count 1 before and after, `StartedAt` unmoved,
       mode 644, byte-identical to the project's `traefik-dynamic.yml`
 - [x] **The fixture, pulled forward from 2.6** — `tests/fixtures/demo/`,
-      stock nginx, passes `hosting check` 22/0/0
+      stock nginx, passes `kasbah check` 22/0/0
 - [x] `templates/remote-deploy.sh`, thin: `compose -p <name> up -d
       --remove-orphans` plus one log line. Phase 4 extends it
 
@@ -304,15 +304,15 @@ served **502 until some future deploy succeeded**. On a first deploy that
 turns an honest 404 into a permanent 502. Proven on the rig, fixed by
 shipping the fragment last, and `build-deploy.md` now carries the ordering
 and the reason. Two related hazards came out of the same review, both worse
-than the bug because hosting *told the operator to do them*: exit 4 offered
-a bare `hosting server init`, which against a `--apps-path` server renders
+than the bug because kasbah *told the operator to do them*: exit 4 offered
+a bare `kasbah server init`, which against a `--apps-path` server renders
 a second Traefik stack under the frozen `traefik` project and takes every
 site down; and a project named `traefik` would `--remove-orphans` the
 reverse proxy, gated only by a missing `.env` that the refusal message
 explained how to create. `traefik`, `data` and `backups` are now reserved
 names, refused at `check` time (S07).
 
-**Carried from Phase 1:** every `docker compose` invocation hosting makes
+**Carried from Phase 1:** every `docker compose` invocation kasbah makes
 on the VPS must pass `-p <project>`. `name:` in a compose file is the
 *weakest* source of the project name — `COMPOSE_PROJECT_NAME` in the
 remote environment outranks it, and `down` removes by project label, not
@@ -325,7 +325,7 @@ health, project list from `/apps/` with last `versions.log` entry. The
 full version (certs, mail, disk) grows in Phase 7.
 
 **Deliverables**
-- [x] `hosting server status` output matches reality on the rig after 2.4 —
+- [x] `kasbah server status` output matches reality on the rig after 2.4 —
       every value derived from the rig rather than a literal: the deployed
       version and timestamp read back out of `versions.log`, the Traefik tag
       *and* resolved image id off `docker inspect`, the project list off the
@@ -358,7 +358,7 @@ depends on a host port being free; 5080 is for driving it by hand.
 
 **Watch out for:** the fixture needs a git repo with a v-tag (deploy
 resolves versions from tags) — `git init && tag` inside the fixture setup,
-not the hosting repo's own history. *Handled by copying the fixture to a
+not the kasbah repo's own history. *Handled by copying the fixture to a
 temp dir per run; the scratch `HOME` has no git identity, so the copy sets
 `user.email`, `user.name` and `commit.gpgsign false` explicitly.*
 
@@ -367,7 +367,7 @@ temp dir per run; the scratch `HOME` has no git identity, so the copy sets
 ### The routing model, first observed — unit C
 
 This is what the phase existed to retire: file-provider-only routing, no
-docker socket, `container_name` DNS on `hosting-net`. It was designed in
+docker socket, `container_name` DNS on `kasbah-net`. It was designed in
 `765972c` and had never been run anywhere. It works, and here is what it
 actually does.
 
@@ -380,7 +380,7 @@ actually does.
   is `providersThrottleDuration` opening a window on the *first* event and
   holding everything until it closes. Unit C's numbers were all two-event
   operations, because **rsync's temp-then-rename is always two events** —
-  which is exactly what hosting does to ship a fragment. So a real deploy
+  which is exactly what kasbah does to ship a fragment. So a real deploy
   pays the ~2 s and a bare `rm` does not. **Poll regardless**: the floor is
   not what makes an immediate assertion wrong, the window is.
 - **A stopped backend gives 502, and the router stays registered** —
@@ -419,16 +419,16 @@ Five units were each reviewed in isolation and each approved. A sixth
 reviewer that had seen none of those rounds judged them together and found
 what per-unit review structurally cannot.
 
-- **The transport was a remote kill switch between hosting processes.**
+- **The transport was a remote kill switch between kasbah processes.**
   `ControlPath=$HOME/.ssh/cm-%C` looked careful — `%C` was chosen precisely
   to avoid the 104-byte overflow the plan warned about. But `%C` hashes
-  user, host and port and *nothing about the process*, so two hosting
+  user, host and port and *nothing about the process*, so two kasbah
   commands against one server shared a socket, and `ssh -O exit` closes a
   master **together with every session multiplexed over it, including
-  another process's**. Measured: a read-only `hosting server status`
-  finishing its run killed a concurrent `hosting server init` mid-step. The
+  another process's**. Measured: a read-only `kasbah server status`
+  finishing its run killed a concurrent `kasbah server init` mid-step. The
   init reported a Traefik that was in fact `Up 21 seconds (healthy)`, left
-  `/apps/.hosting/` empty, and both commands then refused the server with
+  `/apps/.kasbah/` empty, and both commands then refused the server with
   "Do not re-run init until you know which" — while re-running init was
   exactly the fix.
 
@@ -456,7 +456,7 @@ what per-unit review structurally cannot.
 
 - **A test can pass for the wrong reason and look hermetic.** A block in
   `server_init_test.sh` whose comment claimed hermeticity had no ssh stub
-  on `PATH`, so it did a real DNS lookup for `hosting-unit-test.invalid`
+  on `PATH`, so it did a real DNS lookup for `kasbah-unit-test.invalid`
   and its `[ "$rc" != "0" ]` assertions passed on the lookup failing — not
   on the guard under test. The fix is the one `deploy_test.sh` already
   used: assert the ssh log is *empty*, with a positive control proving the
@@ -500,7 +500,7 @@ Phase 1 recorded.
   login name, the real `~/.ssh/id_*` keys, the real `known_hosts`:
 
   ```
-  $ ssh -F tests/rig/ssh_config -G hosting-not-in-any-config
+  $ ssh -F tests/rig/ssh_config -G kasbah-not-in-any-config
   user you / port 22 / batchmode no / identityfile ~/.ssh/id_rsa …
   ```
 
@@ -577,7 +577,7 @@ Phase 1 recorded.
 
 - **Marker writes merge; they never replace.** A `9.0.0` marker carrying an
   unknown key was silently downgraded and the key erased. Within a major,
-  a field written by a newer hosting has to survive a re-run by an older
+  a field written by a newer kasbah has to survive a re-run by an older
   one, or `backup.repo_base` disappears the first time someone runs plain
   `server init` after Phase 8.
 
@@ -608,7 +608,7 @@ The cost is low and the yield is high, so it is now the standing bar for
 this repo: **an assertion is not finished until its failure has been
 observed.** Where a mutation cannot be constructed cheaply, say so in the
 report rather than letting the green stand unexamined.
-  `docker compose ls --all -q` was described as enumerating "what hosting
+  `docker compose ls --all -q` was described as enumerating "what kasbah
   creates"; it lists every compose project on whatever host answered. The
   code was right for the rig and the comment was wrong everywhere, which
   is precisely the drift this repo's comment convention exists to stop.

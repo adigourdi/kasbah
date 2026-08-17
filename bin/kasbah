@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hosting — multi-project Docker host CLI. See docs/ for design.
+# kasbah — multi-project Docker host CLI. See docs/ for design.
 
 set -euo pipefail
 
@@ -24,54 +24,54 @@ if [ -f "$_bin_dir/../install.sh" ] && [ -f "$_bin_dir/../VERSION" ]; then
 fi
 
 # Prefer an explicit override, else a repo checkout, else the XDG share dir.
-_lib_dir_given="${HOSTING_LIB_DIR:+1}"
-if [ -n "${HOSTING_LIB_DIR:-}" ]; then
-    HOSTING_VERSION_FILE="$HOSTING_LIB_DIR/VERSION"
+_lib_dir_given="${KASBAH_LIB_DIR:+1}"
+if [ -n "${KASBAH_LIB_DIR:-}" ]; then
+    KASBAH_VERSION_FILE="$KASBAH_LIB_DIR/VERSION"
 elif [ -n "$_repo_dir" ]; then
-    HOSTING_LIB_DIR="$_repo_dir/lib"
-    HOSTING_VERSION_FILE="$_repo_dir/VERSION"
+    KASBAH_LIB_DIR="$_repo_dir/lib"
+    KASBAH_VERSION_FILE="$_repo_dir/VERSION"
 else
     if [ -z "${XDG_DATA_HOME:-}" ] && [ -z "${HOME:-}" ]; then
-        echo "hosting: neither HOSTING_LIB_DIR, XDG_DATA_HOME, nor HOME is set" >&2
+        echo "kasbah: neither KASBAH_LIB_DIR, XDG_DATA_HOME, nor HOME is set" >&2
         exit 1
     fi
-    HOSTING_LIB_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/hosting"
-    HOSTING_VERSION_FILE="$HOSTING_LIB_DIR/VERSION"
+    KASBAH_LIB_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/kasbah"
+    KASBAH_VERSION_FILE="$KASBAH_LIB_DIR/VERSION"
 fi
 
-if [ ! -f "$HOSTING_LIB_DIR/common.sh" ]; then
-    echo "hosting: cannot locate library files (looked in $HOSTING_LIB_DIR)" >&2
+if [ ! -f "$KASBAH_LIB_DIR/common.sh" ]; then
+    echo "kasbah: cannot locate library files (looked in $KASBAH_LIB_DIR)" >&2
     exit 1
 fi
 
-# Templates are rendered onto servers, so an installed hosting must carry its
+# Templates are rendered onto servers, so an installed kasbah must carry its
 # own copy: install.sh puts the tree beside the libraries. They travel with the
 # libraries — whoever names the library directory names the templates too, so a
-# HOSTING_LIB_DIR pointing at an installed tree cannot end up pairing installed
-# libraries with a checkout's templates. Only HOSTING_TEMPLATE_DIR splits them,
+# KASBAH_LIB_DIR pointing at an installed tree cannot end up pairing installed
+# libraries with a checkout's templates. Only KASBAH_TEMPLATE_DIR splits them,
 # and only on purpose.
-if [ -z "${HOSTING_TEMPLATE_DIR:-}" ]; then
+if [ -z "${KASBAH_TEMPLATE_DIR:-}" ]; then
     if [ -n "$_lib_dir_given" ] || [ -z "$_repo_dir" ]; then
-        HOSTING_TEMPLATE_DIR="$HOSTING_LIB_DIR/templates"
+        KASBAH_TEMPLATE_DIR="$KASBAH_LIB_DIR/templates"
     else
-        HOSTING_TEMPLATE_DIR="$_repo_dir/templates"
+        KASBAH_TEMPLATE_DIR="$_repo_dir/templates"
     fi
 fi
 
 # shellcheck source=../lib/common.sh
-. "$HOSTING_LIB_DIR/common.sh"
+. "$KASBAH_LIB_DIR/common.sh"
 
-HOSTING_VERSION="$(cat "$HOSTING_VERSION_FILE")"
-export HOSTING_LIB_DIR HOSTING_TEMPLATE_DIR HOSTING_VERSION
+KASBAH_VERSION="$(cat "$KASBAH_VERSION_FILE")"
+export KASBAH_LIB_DIR KASBAH_TEMPLATE_DIR KASBAH_VERSION
 
 usage() {
     cat <<EOF
-hosting — multi-project Docker host CLI (v$HOSTING_VERSION)
+kasbah — multi-project Docker host CLI (v$KASBAH_VERSION)
 
-Usage: hosting [--version] [--help] <command> [args...]
+Usage: kasbah [--version] [--help] <command> [args...]
 
 Commands:
-  init-project [--name=<n>] [--domain=<d>]   Scaffold hosting metadata in cwd.
+  init-project [--name=<n>] [--domain=<d>]   Scaffold kasbah metadata in cwd.
   check                                      Run structural checks on the project.
   deploy [USER@HOST]                         Ship the working tree and bring it up.
   env [USER@HOST]                            Render the project's .env on the server.
@@ -82,29 +82,29 @@ See docs/cli.md for the full planned surface.
 EOF
 }
 
-# `hosting server …` acts on a VPS and always takes USER@HOST; everything else
+# `kasbah server …` acts on a VPS and always takes USER@HOST; everything else
 # acts on the project in the current directory (docs/cli.md).
 dispatch_server() {
     local sub="${1:-}"
     [ $# -eq 0 ] || shift
     case "$sub" in
         init)
-            . "$HOSTING_LIB_DIR/server_init.sh"
+            . "$KASBAH_LIB_DIR/server_init.sh"
             cmd_server_init "$@"
             ;;
         status)
-            . "$HOSTING_LIB_DIR/server_status.sh"
+            . "$KASBAH_LIB_DIR/server_status.sh"
             cmd_server_status "$@"
             ;;
         -h|--help)
             cat <<EOF
-Usage: hosting server <subcommand> USER@HOST [args...]
+Usage: kasbah server <subcommand> USER@HOST [args...]
 
 Subcommands:
   init USER@HOST [flags]   Prepare a VPS to host projects.
   status USER@HOST         Report what a prepared VPS is running (read-only).
 
-Run \`hosting server <subcommand> --help\` for its flags.
+Run \`kasbah server <subcommand> --help\` for its flags.
 EOF
             ;;
         '')
@@ -120,19 +120,19 @@ dispatch() {
     local cmd="$1"; shift
     case "$cmd" in
         init-project)
-            . "$HOSTING_LIB_DIR/init_project.sh"
+            . "$KASBAH_LIB_DIR/init_project.sh"
             cmd_init_project "$@"
             ;;
         check)
-            . "$HOSTING_LIB_DIR/check.sh"
+            . "$KASBAH_LIB_DIR/check.sh"
             cmd_check "$@"
             ;;
         deploy)
-            . "$HOSTING_LIB_DIR/deploy.sh"
+            . "$KASBAH_LIB_DIR/deploy.sh"
             cmd_deploy "$@"
             ;;
         env)
-            . "$HOSTING_LIB_DIR/env_cmd.sh"
+            . "$KASBAH_LIB_DIR/env_cmd.sh"
             cmd_env "$@"
             ;;
         server)
@@ -151,7 +151,7 @@ main() {
     fi
 
     case "$1" in
-        -v|--version) echo "hosting $HOSTING_VERSION" ;;
+        -v|--version) echo "kasbah $KASBAH_VERSION" ;;
         -h|--help)    usage ;;
         *)            dispatch "$@" ;;
     esac

@@ -1,6 +1,6 @@
 # Phase 7 — Operate
 
-> Day-2 operations exist: the mail stack is hosting-managed, the VPS can
+> Day-2 operations exist: the mail stack is kasbah-managed, the VPS can
 > be inspected and upgraded remotely, and images get pruned on policy.
 
 **Prerequisite:** Phase 6. **Lighter spec — re-read against Phase 6
@@ -48,18 +48,18 @@ The retention policy, exactly as `build-deploy.md` states it: remove
 project, not from tag mtimes — a re-tagged image lies about its age.
 
 ### 7.5 — `upgrade-traefik` (M)
-Version bump with backup-before-overwrite of hosting-owned files, plus
+Version bump with backup-before-overwrite of kasbah-owned files, plus
 the dry-run: boot a throwaway Traefik of the target version with the
 dynamic dir mounted read-only and fail the upgrade on config errors in
 its log.
 
-**Watch out for:** only `_`-prefixed files are hosting's to overwrite —
+**Watch out for:** only `_`-prefixed files are kasbah's to overwrite —
 user-customized `traefik.yml` gets a diff + confirm, not a silent
 replace (`traefik.md` § Ownership).
 
 ## Carried in from Phase 2
 
-`hosting server status` exists in minimal form (`lib/server_status.sh`):
+`kasbah server status` exists in minimal form (`lib/server_status.sh`):
 docker/compose versions, the marker, Traefik's state/health/image, and each
 project's last `versions.log` entry. Phase 7 owns the rest, and two items
 need a decision rather than just implementation:
@@ -77,7 +77,7 @@ need a decision rather than just implementation:
   biting.
 
 Also: `status` accepts `--apps-path`, `deploy` does not (carried to Phase 4).
-If Phase 4 puts the apps path in `.hosting/state.json`, `status` should read
+If Phase 4 puts the apps path in `.kasbah/state.json`, `status` should read
 it too rather than keeping two mechanisms.
 
 ## Findings

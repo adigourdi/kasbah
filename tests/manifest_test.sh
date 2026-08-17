@@ -4,8 +4,8 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
-export HOSTING_LIB_DIR="$repo_dir/lib"
-export HOSTING_VERSION="$(cat "$repo_dir/VERSION")"
+export KASBAH_LIB_DIR="$repo_dir/lib"
+export KASBAH_VERSION="$(cat "$repo_dir/VERSION")"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -23,7 +23,7 @@ assert() {
 run_snippet() {
     bash -c '
         set -uo pipefail
-        . "$HOSTING_LIB_DIR/manifest.sh"
+        . "$KASBAH_LIB_DIR/manifest.sh"
         '"$1"'
     '
 }
@@ -34,7 +34,7 @@ mkdir -p "$proj1"
 cd "$proj1"
 out="$(run_snippet 'manifest_require' 2>&1)"; rc=$?
 assert '[ "$rc" = "2" ]' "missing manifest exits 2 (got $rc)"
-assert 'grep -qF "No hosting.yml" <<<"$out"' "missing manifest message mentions hosting.yml"
+assert 'grep -qF "No kasbah.yml" <<<"$out"' "missing manifest message mentions kasbah.yml"
 # Continuation line should not carry a second `error:` prefix.
 assert '[ "$(grep -c "^error:" <<<"$out")" = "1" ]' "missing manifest has one error: prefix, not two"
 
@@ -42,9 +42,9 @@ assert '[ "$(grep -c "^error:" <<<"$out")" = "1" ]' "missing manifest has one er
 proj2="$tmpdir/ok"
 mkdir -p "$proj2"
 cd "$proj2"
-cat > hosting.yml <<EOF
+cat > kasbah.yml <<EOF
 schema: 1
-hosting_version: $HOSTING_VERSION
+kasbah_version: $KASBAH_VERSION
 name: demo
 domain: "demo.example.com"
 sync:
@@ -52,12 +52,12 @@ sync:
   - .env.prod.example
 EOF
 
-out="$(run_snippet 'manifest_require; printf "%s\t%s\t%s\t%s\n" "$MANIFEST_SCHEMA" "$MANIFEST_HOSTING_VERSION" "$MANIFEST_NAME" "$MANIFEST_DOMAIN"')"
+out="$(run_snippet 'manifest_require; printf "%s\t%s\t%s\t%s\n" "$MANIFEST_SCHEMA" "$MANIFEST_KASBAH_VERSION" "$MANIFEST_NAME" "$MANIFEST_DOMAIN"')"
 rc=$?
 assert '[ "$rc" = "0" ]' "valid manifest returns 0 (got $rc)"
 IFS=$'\t' read -r s hv n d <<<"$out"
 assert '[ "$s" = "1" ]'               "MANIFEST_SCHEMA is 1"
-assert '[ "$hv" = "$HOSTING_VERSION" ]' "MANIFEST_HOSTING_VERSION matches VERSION"
+assert '[ "$hv" = "$KASBAH_VERSION" ]' "MANIFEST_KASBAH_VERSION matches VERSION"
 assert '[ "$n" = "demo" ]'            "MANIFEST_NAME is demo"
 assert '[ "$d" = "demo.example.com" ]' "MANIFEST_DOMAIN is parsed (quotes stripped)"
 
@@ -69,22 +69,22 @@ assert '[ "$sync_first" = "compose.prod.yml -> compose.yml" ]' "manifest_get ret
 proj3="$tmpdir/future"
 mkdir -p "$proj3"
 cd "$proj3"
-cat > hosting.yml <<EOF
+cat > kasbah.yml <<EOF
 schema: 99
-hosting_version: 0.1.0
+kasbah_version: 0.1.0
 name: future
 domain: "x.test"
 sync: []
 EOF
 out="$(run_snippet 'manifest_require' 2>&1)"; rc=$?
 assert '[ "$rc" = "1" ]' "future schema exits 1 (got $rc)"
-assert 'grep -qF "newer than this hosting" <<<"$out"' "future schema message mentions upgrade"
+assert 'grep -qF "newer than this kasbah" <<<"$out"' "future schema message mentions upgrade"
 
 # --- Case 4: missing schema field ---------------------------------------------
 proj4="$tmpdir/noschema"
 mkdir -p "$proj4"
 cd "$proj4"
-cat > hosting.yml <<EOF
+cat > kasbah.yml <<EOF
 name: noschema
 domain: "x.test"
 sync: []
@@ -97,9 +97,9 @@ assert 'grep -qF "missing required field" <<<"$out"' "missing field message"
 proj5="$tmpdir/badname"
 mkdir -p "$proj5"
 cd "$proj5"
-cat > hosting.yml <<EOF
+cat > kasbah.yml <<EOF
 schema: 1
-hosting_version: 0.1.0
+kasbah_version: 0.1.0
 name: BadName
 domain: "x.test"
 sync: []
@@ -112,7 +112,7 @@ assert 'grep -qF "invalid name" <<<"$out"' "invalid name message"
 proj6="$tmpdir/bad"
 mkdir -p "$proj6"
 cd "$proj6"
-printf 'schema: 1\nname: [unterminated\n' > hosting.yml
+printf 'schema: 1\nname: [unterminated\n' > kasbah.yml
 out="$(run_snippet 'manifest_require' 2>&1)"; rc=$?
 assert '[ "$rc" = "1" ]' "malformed YAML exits 1 (got $rc)"
 assert 'grep -qF "could not parse YAML" <<<"$out"' "malformed YAML message"
@@ -121,8 +121,8 @@ assert 'grep -qF "could not parse YAML" <<<"$out"' "malformed YAML message"
 proj7="$tmpdir/integration"
 mkdir -p "$proj7"
 cd "$proj7"
-# Unset HOSTING_LIB_DIR so bin/hosting auto-detects VERSION via its repo-checkout path.
-env -u HOSTING_LIB_DIR "$repo_dir/bin/hosting" init-project --name=integration --domain=i.example.com >/dev/null
+# Unset KASBAH_LIB_DIR so bin/kasbah auto-detects VERSION via its repo-checkout path.
+env -u KASBAH_LIB_DIR "$repo_dir/bin/kasbah" init-project --name=integration --domain=i.example.com >/dev/null
 out="$(run_snippet 'manifest_require; echo "$MANIFEST_NAME"')"; rc=$?
 assert '[ "$rc" = "0" ]'          "init-project output passes manifest_require"
 assert '[ "$out" = "integration" ]' "init-project output parses to name=integration"
@@ -132,7 +132,7 @@ assert '[ "$out" = "integration" ]' "init-project output parses to name=integrat
 proj8="$tmpdir/nodomain"
 mkdir -p "$proj8"
 cd "$proj8"
-env -u HOSTING_LIB_DIR "$repo_dir/bin/hosting" init-project --name=nodomain >/dev/null 2>&1
+env -u KASBAH_LIB_DIR "$repo_dir/bin/kasbah" init-project --name=nodomain >/dev/null 2>&1
 out="$(run_snippet 'manifest_require; printf "%s|%s\n" "$MANIFEST_NAME" "$MANIFEST_DOMAIN"')"; rc=$?
 assert '[ "$rc" = "0" ]'             "init-project (no --domain) output passes manifest_require"
 assert '[ "$out" = "nodomain|" ]'     "empty domain parses as empty string"
@@ -141,9 +141,9 @@ assert '[ "$out" = "nodomain|" ]'     "empty domain parses as empty string"
 proj9="$tmpdir/quotedschema"
 mkdir -p "$proj9"
 cd "$proj9"
-cat > hosting.yml <<EOF
+cat > kasbah.yml <<EOF
 schema: "1"
-hosting_version: 0.1.0
+kasbah_version: 0.1.0
 name: quoted
 domain: "q.test"
 sync: []
@@ -156,9 +156,9 @@ assert '[ "$out" = "1" ]' "quoted schema parses as 1"
 proj10="$tmpdir/multidoc"
 mkdir -p "$proj10"
 cd "$proj10"
-cat > hosting.yml <<EOF
+cat > kasbah.yml <<EOF
 schema: 1
-hosting_version: 0.1.0
+kasbah_version: 0.1.0
 name: multi
 domain: "m.test"
 ---
@@ -175,12 +175,12 @@ proj11a="$tmpdir/crlf"
 mkdir -p "$proj11a"
 cd "$proj11a"
 # Write the manifest with CRLF line endings (Windows-style).
-printf 'schema: 1\r\nhosting_version: 0.1.0\r\nname: crlf\r\ndomain: "c.test"\r\nsync: []\r\n' > hosting.yml
+printf 'schema: 1\r\nkasbah_version: 0.1.0\r\nname: crlf\r\ndomain: "c.test"\r\nsync: []\r\n' > kasbah.yml
 out="$(run_snippet 'manifest_require; printf "%s|%s\n" "$MANIFEST_NAME" "$MANIFEST_DOMAIN"')"; rc=$?
 assert '[ "$rc" = "0" ]'            "CRLF manifest parses successfully"
 assert '[ "$out" = "crlf|c.test" ]' "CRLF CR is stripped from field values"
 
-# --- Case 11b: names hosting owns under <apps>/ -------------------------------
+# --- Case 11b: names kasbah owns under <apps>/ -------------------------------
 # A project called `traefik` would have deploy write over the shared proxy's
 # stack and then remove it with --remove-orphans. Refused here, so every command
 # that reads a manifest refuses it — `check` included.
@@ -188,7 +188,7 @@ for reserved in traefik data backups; do
     projr="$tmpdir/reserved-$reserved"
     mkdir -p "$projr"
     cd "$projr"
-    printf 'schema: 1\nhosting_version: 0.1.0\nname: %s\ndomain: "r.test"\nsync: []\n' "$reserved" > hosting.yml
+    printf 'schema: 1\nkasbah_version: 0.1.0\nname: %s\ndomain: "r.test"\nsync: []\n' "$reserved" > kasbah.yml
     out="$(run_snippet 'manifest_require' 2>&1)"; rc=$?
     assert '[ "$rc" = "1" ]' "manifest_require refuses the reserved name $reserved (got $rc)"
     assert 'grep -qF "is reserved" <<<"$out"' "and says so (said '$out')"
@@ -200,7 +200,7 @@ done
 projok="$tmpdir/reserved-ok"
 mkdir -p "$projok"
 cd "$projok"
-printf 'schema: 1\nhosting_version: 0.1.0\nname: %s\ndomain: "r.test"\nsync: []\n' traefik-mirror > hosting.yml
+printf 'schema: 1\nkasbah_version: 0.1.0\nname: %s\ndomain: "r.test"\nsync: []\n' traefik-mirror > kasbah.yml
 out="$(run_snippet 'manifest_require; printf "%s\n" "$MANIFEST_NAME"' 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ] && [ "$out" = "traefik-mirror" ]' \
     "a name containing a reserved one is accepted (rc $rc, got '$out')"

@@ -36,7 +36,7 @@ HEAD are fine, but paths that never existed at v<target> hard-fail the
 whole archive — validate the list against `git ls-tree v<target>` first.
 
 ### 5.2 — `history` / `pending` / `changelog` (S)
-Tabular history (timestamp, action, version, backup, hosting version;
+Tabular history (timestamp, action, version, backup, kasbah version;
 `--all` appends the gz rotation). `pending` resolves the deployed version
 from the VPS at runtime — never from state.json (state is a cache, per
 `project-manifest.md`). `changelog` = git log between the two latest

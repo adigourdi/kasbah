@@ -7,7 +7,7 @@ name: demo
 services:
   web:
     image: nginx:alpine
-    # Traefik resolves the backend by container name over hosting-net, so this
+    # Traefik resolves the backend by container name over kasbah-net, so this
     # is what traefik-dynamic.yml's loadBalancer URL points at (docs/traefik.md).
     container_name: demo-web
     restart: unless-stopped
@@ -19,15 +19,15 @@ services:
       # file is in play, and what the interactive setup prompts for.
       DEMO_GREETING: ${DEMO_GREETING}
     networks:
-      # Routed service: on hosting-net for Traefik, and on the project's own
-      # network for anything internal. Nothing else joins hosting-net (C07).
-      - hosting-net
+      # Routed service: on kasbah-net for Traefik, and on the project's own
+      # network for anything internal. Nothing else joins kasbah-net (C07).
+      - kasbah-net
       - internal
-    # Injected into .env by hosting from the server marker, into its managed
+    # Injected into .env by kasbah from the server marker, into its managed
     # block. Unset, compose fails outright — an empty value is not a valid
     # cpus:.
-    cpus: ${HOSTING_CPU_LIMIT}
-    mem_limit: ${HOSTING_MEM_LIMIT}
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
     logging:
       driver: json-file
       options:
@@ -35,6 +35,6 @@ services:
         max-file: "3"
 
 networks:
-  hosting-net:
+  kasbah-net:
     external: true
   internal: {}

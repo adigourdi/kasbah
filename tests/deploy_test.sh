@@ -13,9 +13,9 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
-export HOSTING_LIB_DIR="$repo_dir/lib"
-export HOSTING_TEMPLATE_DIR="$repo_dir/templates"
-export HOSTING_VERSION="$(cat "$repo_dir/VERSION")"
+export KASBAH_LIB_DIR="$repo_dir/lib"
+export KASBAH_TEMPLATE_DIR="$repo_dir/templates"
+export KASBAH_VERSION="$(cat "$repo_dir/VERSION")"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -33,7 +33,7 @@ assert() {
 run_snippet() {
     bash -c '
         set -uo pipefail
-        . "$HOSTING_LIB_DIR/deploy.sh"
+        . "$KASBAH_LIB_DIR/deploy.sh"
         '"$1"'
     '
 }
@@ -194,7 +194,7 @@ new_project() {
 proj="$(new_project demo)"
 export DOCKER_LOG="$tmpdir/docker.log"
 : > "$DOCKER_LOG"
-out=$(env PATH="$stub_dir:$PATH" HOSTING_VERSION=9.9.9 DOCKER_LOG="$DOCKER_LOG" \
+out=$(env PATH="$stub_dir:$PATH" KASBAH_VERSION=9.9.9 DOCKER_LOG="$DOCKER_LOG" \
         COMPOSE_PROJECT_NAME=hostile-project \
         bash "$proj/scripts/remote-deploy.sh" deploy 1.2.3 2>&1); rc=$?
 assert '[ "$rc" = "0" ]' "remote-deploy.sh deploy succeeds against a stub docker (rc $rc: $out)"
@@ -206,19 +206,19 @@ assert '! grep -qF "hostile-project" "$DOCKER_LOG"' \
 log_line="$(cat "$proj/versions.log" 2>/dev/null)"
 assert '[ "$(wc -l < "$proj/versions.log")" = "1" ]' \
     "one deploy appends exactly one line (got '$log_line')"
-read -r ts action version backup hosting digest extra <<<"$log_line"
+read -r ts action version backup kasbah digest extra <<<"$log_line"
 assert '[[ "$ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+00:00$ ]]' \
     "field 1 is a UTC ISO-8601 timestamp (got '$ts')"
 assert '[ "$action" = "deploy" ]'      "field 2 is the action (got '$action')"
 assert '[ "$version" = "1.2.3" ]'      "field 3 is the version (got '$version')"
 assert '[ "$backup" = "no-backup" ]'   "field 4 is the backup path or no-backup (got '$backup')"
-assert '[ "$hosting" = "hosting=9.9.9" ]' \
-    "then hosting=<version>, from the environment hosting passed (got '$hosting')"
+assert '[ "$kasbah" = "kasbah=9.9.9" ]' \
+    "then kasbah=<version>, from the environment kasbah passed (got '$kasbah')"
 assert '[ "$digest" = "digest=-" ]'    "and digest=- for a stock-only project (got '$digest')"
 assert '[ -z "$extra" ]'               "with nothing after it yet (got '$extra')"
 
 # A second deploy appends; it never rewrites.
-env PATH="$stub_dir:$PATH" HOSTING_VERSION=9.9.9 DOCKER_LOG="$DOCKER_LOG" \
+env PATH="$stub_dir:$PATH" KASBAH_VERSION=9.9.9 DOCKER_LOG="$DOCKER_LOG" \
     bash "$proj/scripts/remote-deploy.sh" deploy 1.2.4 >/dev/null 2>&1
 assert '[ "$(wc -l < "$proj/versions.log")" = "2" ]' \
     "a second deploy appends rather than replacing ($(wc -l < "$proj/versions.log") lines)"
@@ -226,12 +226,12 @@ assert '[ "$(head -1 "$proj/versions.log")" = "$log_line" ]' \
     "and the first line is untouched"
 assert 'grep -qF " deploy 1.2.4 " "$proj/versions.log"' "the second version is in the log"
 
-# hosting= is honest when nobody said which hosting is driving.
+# kasbah= is honest when nobody said which kasbah is driving.
 proj2="$(new_project bare)"
-env -u HOSTING_VERSION PATH="$stub_dir:$PATH" DOCKER_LOG="$DOCKER_LOG" \
+env -u KASBAH_VERSION PATH="$stub_dir:$PATH" DOCKER_LOG="$DOCKER_LOG" \
     bash "$proj2/scripts/remote-deploy.sh" deploy 2.0.0 >/dev/null 2>&1
-assert 'grep -qF "hosting=unknown" "$proj2/versions.log"' \
-    "a hand-run with no HOSTING_VERSION logs hosting=unknown rather than a guess (got '$(cat "$proj2/versions.log")')"
+assert 'grep -qF "kasbah=unknown" "$proj2/versions.log"' \
+    "a hand-run with no KASBAH_VERSION logs kasbah=unknown rather than a guess (got '$(cat "$proj2/versions.log")')"
 
 # A failed compose writes no line: versions.log records what ran, and nothing ran.
 proj3="$(new_project failing)"
@@ -269,25 +269,25 @@ chmod 0755 "$date_stub/date"
 cp "$stub_dir/docker" "$date_stub/docker"
 
 proj6="$(new_project nodate)"
-out=$(env PATH="$date_stub:$PATH" HOSTING_VERSION=9.9.9 DOCKER_LOG="$DOCKER_LOG" \
+out=$(env PATH="$date_stub:$PATH" KASBAH_VERSION=9.9.9 DOCKER_LOG="$DOCKER_LOG" \
         bash "$proj6/scripts/remote-deploy.sh" deploy 1.0.0 2>&1); rc=$?
 assert '[ "$rc" != "0" ]' "a date that fails is a hard failure, not a line starting with a space (rc $rc: $out)"
 assert 'grep -qF "timestamp is empty" <<<"$out"' "naming the field (said '$out')"
 assert '[ ! -f "$proj6/versions.log" ]' "and nothing was appended"
 
 proj7="$(new_project spacey)"
-out=$(env PATH="$stub_dir:$PATH" HOSTING_VERSION='1.0 beta' DOCKER_LOG="$DOCKER_LOG" \
+out=$(env PATH="$stub_dir:$PATH" KASBAH_VERSION='1.0 beta' DOCKER_LOG="$DOCKER_LOG" \
         bash "$proj7/scripts/remote-deploy.sh" deploy 1.0.0 2>&1); rc=$?
-assert '[ "$rc" != "0" ]' "a HOSTING_VERSION with a space is refused (rc $rc: $out)"
-assert 'grep -qF "hosting version" <<<"$out"' "naming the field (said '$out')"
+assert '[ "$rc" != "0" ]' "a KASBAH_VERSION with a space is refused (rc $rc: $out)"
+assert 'grep -qF "kasbah version" <<<"$out"' "naming the field (said '$out')"
 assert '[ ! -f "$proj7/versions.log" ]' "and nothing was appended"
 
 # The control for both: the same script with both values sane writes its line,
 # so the two refusals above are about the values and not about the stubs.
 proj8="$(new_project sane)"
-env PATH="$stub_dir:$PATH" HOSTING_VERSION='1.0-beta' DOCKER_LOG="$DOCKER_LOG" \
+env PATH="$stub_dir:$PATH" KASBAH_VERSION='1.0-beta' DOCKER_LOG="$DOCKER_LOG" \
     bash "$proj8/scripts/remote-deploy.sh" deploy 1.0.0 >/dev/null 2>&1
-assert 'grep -qF "hosting=1.0-beta" "$proj8/versions.log"' \
+assert 'grep -qF "kasbah=1.0-beta" "$proj8/versions.log"' \
     "a hyphenated version writes normally (got '$(cat "$proj8/versions.log" 2>/dev/null)')"
 
 out=$(env PATH="$stub_dir:$PATH" bash "$proj/scripts/remote-deploy.sh" rollback 1.0.0 2>&1); rc=$?
@@ -333,33 +333,33 @@ cp -R "$repo_dir/tests/fixtures/demo" "$project"
 (
     cd "$project" || exit 1
     git init -q .
-    git config user.email hosting-test@example.invalid
-    git config user.name  "hosting test"
+    git config user.email kasbah-test@example.invalid
+    git config user.name  "kasbah test"
     git add -A
     git commit -qm "fixture"
     git tag v1.0.0
 ) >/dev/null 2>&1
 
-# `hosting`, as installed, with the stub first on PATH and a HOME of its own so
+# `kasbah`, as installed, with the stub first on PATH and a HOME of its own so
 # the ssh control socket has somewhere harmless to live.
 deploy_cli() {
     : > "$ssh_log"; : > "$call_log"
-    # The suite exports HOSTING_LIB_DIR for its own snippets; the CLI has to
-    # resolve its own, the way an installed hosting does.
+    # The suite exports KASBAH_LIB_DIR for its own snippets; the CLI has to
+    # resolve its own, the way an installed kasbah does.
     # stdin from /dev/null, not from whatever the suite was started with: the
     # env step asks what to do about drift when there is a terminal to ask on,
     # and a run by hand in a real shell would otherwise stop at a prompt. The
     # refusal that replaces it is asserted below.
-    env -u HOSTING_LIB_DIR -u HOSTING_TEMPLATE_DIR -u HOSTING_VERSION \
+    env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" \
         SSH_LOG="$ssh_log" CALL_LOG="$call_log" \
-        "$repo_dir/bin/hosting" deploy "$@" </dev/null 2>&1
+        "$repo_dir/bin/kasbah" deploy "$@" </dev/null 2>&1
 }
 mkdir -p "$tmpdir/home"
 
 out=$( cd "$tmpdir" && deploy_cli deploy@vps ); rc=$?
 assert '[ "$rc" = "2" ]' "deploy outside a project exits 2 (rc $rc: $out)"
-assert 'grep -qF "No hosting.yml" <<<"$out"' "naming the file it wanted (said '$out')"
+assert 'grep -qF "No kasbah.yml" <<<"$out"' "naming the file it wanted (said '$out')"
 assert '[ ! -s "$ssh_log" ]' "and never opened a connection (ssh saw: $(cat "$ssh_log"))"
 
 out=$( cd "$project" && deploy_cli ); rc=$?
@@ -369,18 +369,18 @@ assert '[ ! -s "$ssh_log" ]' "and never opened a connection (ssh saw: $(cat "$ss
 
 out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
 assert '[ "$rc" = "4" ]' "a server with no marker exits 4 (rc $rc: $out)"
-assert 'grep -qF "/apps/.hosting/server.json" <<<"$out"' \
+assert 'grep -qF "/apps/.kasbah/server.json" <<<"$out"' \
     "naming the file it looked for (said '$out')"
 assert 'grep -qF -- "--apps-path" <<<"$out"' \
     "and naming the flag that makes a prepared server look unprepared (said '$out')"
 # The message must not be followable into a disaster. A bare
-# `hosting server init user@host` against a server whose apps path is not /apps
+# `kasbah server init user@host` against a server whose apps path is not /apps
 # renders a second Traefik stack there and brings it up as compose project
 # `traefik` — the frozen name the live one already carries — so compose
 # recreates the running proxy against the new file and every site goes dark.
-assert '! grep -qE "hosting server init [A-Za-z0-9._-]+@" <<<"$out"' \
+assert '! grep -qE "kasbah server init [A-Za-z0-9._-]+@" <<<"$out"' \
     "and never prints a runnable bare \`server init\` as the remedy (said '$out')"
-assert '[ ! -f "$project/.hosting/state.json" ]' \
+assert '[ ! -f "$project/.kasbah/state.json" ]' \
     "a failed deploy writes no state — last_server is only for servers that worked"
 
 out=$( cd "$project" && SSH_STEP_RC=0 deploy_cli deploy@vps ); rc=$?
@@ -415,7 +415,7 @@ case "$last" in
 esac
 case "$last" in
     "'bash' '-s' '--' '/apps'")
-        marker_default='{"hosting_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"14.4","mem_limit":"54g"}'
+        marker_default='{"kasbah_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"14.4","mem_limit":"54g"}'
         printf '%s\n' "${MARKER-$marker_default}" ;;
     # The marker read is matched exactly above, so anything else naming the
     # project is the prepare step — whatever apps path the marker steered it to.
@@ -500,7 +500,7 @@ assert '[ "$n_remote" -gt "$n_inject" ]' \
 # The values are the marker's own, spelled as the marker spells them: `14.4`
 # reformatted to `14.40` is a different cpus: and `54g` to `54G` a different
 # mem_limit.
-assert 'grep -qF "setup-env.sh'\'' '\''--inject'\'' '\''/apps/demo'\'' '\''HOSTING_CPU_LIMIT=14.4'\'' '\''HOSTING_MEM_LIMIT=54g'\''" <<<"$calls"' \
+assert 'grep -qF "setup-env.sh'\'' '\''--inject'\'' '\''/apps/demo'\'' '\''KASBAH_CPU_LIMIT=14.4'\'' '\''KASBAH_MEM_LIMIT=54g'\''" <<<"$calls"' \
     "injection carries the marker's two limits, unreformatted ($(grep -F -- "--inject" <<<"$calls"))"
 assert 'grep -qF "|-pt|--chmod=F755|-s|$repo_dir/lib/env.sh|deploy@vps:/apps/demo/scripts/setup-env.sh" <<<"$calls"' \
     "and setup-env.sh is lib/env.sh itself, shipped executable — not a generated copy ($(grep -F "env.sh|" <<<"$calls"))"
@@ -519,7 +519,7 @@ assert 'grep -qF "|-rlpt|-s|site/|deploy@vps:/apps/demo/site/" <<<"$calls"' \
 assert 'grep -qF "|-pt|--chmod=F755|-s|$repo_dir/templates/remote-deploy.sh|deploy@vps:/apps/demo/scripts/remote-deploy.sh" <<<"$calls"' \
     "the helper ships executable, stated rather than inherited from the checkout ($(grep -F "remote-deploy.sh|" <<<"$calls"))"
 assert 'grep -qF "|-pt|--chmod=F644|-s|traefik-dynamic.yml|deploy@vps:/apps/traefik/dynamic/demo.yml" <<<"$calls"' \
-    "the fragment ships 644 to the name hosting owns ($(grep -F "traefik-dynamic.yml" <<<"$calls"))"
+    "the fragment ships 644 to the name kasbah owns ($(grep -F "traefik-dynamic.yml" <<<"$calls"))"
 
 rsync_calls=$(grep -c '^rsync|' <<<"$calls")
 rsync_with_s=$(grep -c '^rsync|.*|-s|' <<<"$calls")
@@ -534,16 +534,16 @@ assert '[ "$rsync_calls" = "$rsync_with_s" ]' "every one of them passes -s ($rsy
 assert '! grep -qF -- "--inplace" <<<"$calls"' \
     "no rsync in a deploy uses --inplace — the fragment must arrive as an atomic rename ($(grep -F -- "--inplace" <<<"$calls"))"
 
-assert '[ "$(jq -r .last_server "$project/.hosting/state.json")" = "deploy@vps" ]' \
+assert '[ "$(jq -r .last_server "$project/.kasbah/state.json")" = "deploy@vps" ]' \
     "a deploy that worked records the server it went to"
-assert '[ "$(jq -r .last_version "$project/.hosting/state.json")" = "1.0.0" ]' \
+assert '[ "$(jq -r .last_version "$project/.kasbah/state.json")" = "1.0.0" ]' \
     "and the version it shipped"
-rm -rf "$project/.hosting"
+rm -rf "$project/.kasbah"
 
 # A project with no fragment deploys anyway, and is warned about: T01 is a
 # warning, and a worker with no HTTP surface is a real project shape. What must
 # not happen is the previous fragment being deleted — taking a site off the
-# internet is `hosting drop`'s decision.
+# internet is `kasbah drop`'s decision.
 mv "$project/traefik-dynamic.yml" "$tmpdir/held-fragment.yml"
 out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
 calls=$(<"$call_log")
@@ -552,7 +552,7 @@ assert 'grep -qF "no traefik-dynamic.yml" <<<"$out"' "and says the route was not
 assert '[ "$(grep -c "dynamic/demo.yml" <<<"$calls")" = "0" ]' \
     "nothing at all was sent to the dynamic directory (sent: $(grep -F "dynamic/" <<<"$calls"))"
 mv "$tmpdir/held-fragment.yml" "$project/traefik-dynamic.yml"
-rm -rf "$project/.hosting"
+rm -rf "$project/.kasbah"
 
 # --- The env step ---------------------------------------------------------------
 # Everything below runs against the prepared-server stub, which answers the two
@@ -575,7 +575,7 @@ assert '! grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' \
     "nothing was deployed ($(grep -F "remote-deploy.sh' 'deploy'" <<<"$calls"))"
 assert '! grep -qF "dynamic/demo.yml" <<<"$calls"' \
     "and no route was written — the fragment is downstream of a step that refused"
-assert '[ ! -f "$project/.hosting/state.json" ]' "and no project state was recorded"
+assert '[ ! -f "$project/.kasbah/state.json" ]' "and no project state was recorded"
 
 # Drift is two lists and either one alone is drift: a .env holding a key the
 # template dropped is as much a reason to stop as one missing a key it gained.
@@ -600,7 +600,7 @@ assert '[ "$rc" = "0" ]' "--on-drift=continue deploys anyway (rc $rc: $out)"
 assert 'grep -qF "has drifted" <<<"$out"' "having said the .env drifted (said '$out')"
 assert 'grep -qF -- "--inject" <<<"$calls"' "and still refreshed the managed block ($(env_calls))"
 assert 'grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' "and ran the deploy"
-rm -rf "$project/.hosting"
+rm -rf "$project/.kasbah"
 
 # `setup` is the answer that needs a terminal, so headless it is the refusal —
 # and a different one from "nobody said": the flag *was* passed.
@@ -608,7 +608,7 @@ out=$( cd "$project" && ENV_MISSING=NEW_KEY deploy_cli deploy@vps --on-drift=set
 calls=$(<"$call_log")
 assert '[ "$rc" = "5" ]' "--on-drift=setup with no terminal exits 5 (rc $rc: $out)"
 assert 'grep -qF "no terminal" <<<"$out"' "saying what is missing (said '$out')"
-assert 'grep -qF "hosting env" <<<"$out"' "and where to get one (said '$out')"
+assert 'grep -qF "kasbah env" <<<"$out"' "and where to get one (said '$out')"
 assert '! grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' "and deployed nothing"
 # The whole reason for the refusal: run headless, the generator reads EOF at
 # every prompt and its `|| true` accepts every default silently, secrets and all.
@@ -621,7 +621,7 @@ out=$( cd "$project" && ENV_EXISTS=no ENV_MISSING=DEMO_GREETING deploy_cli deplo
 calls=$(<"$call_log")
 assert '[ "$rc" = "5" ]' "a missing .env with no terminal exits 5 (rc $rc: $out)"
 assert 'grep -qF "does not exist yet" <<<"$out"' "saying the file is not there (said '$out')"
-assert 'grep -qF "hosting env deploy@vps" <<<"$out"' \
+assert 'grep -qF "kasbah env deploy@vps" <<<"$out"' \
     "and naming the command that renders it (said '$out')"
 # The remedies have to be ones that can reach this branch. A missing .env sets
 # action=setup before --on-drift= is ever consulted, so offering that flag here
@@ -635,7 +635,7 @@ assert 'grep -qF "does not reach this" <<<"$out"' \
 assert 'grep -qF "cp /apps/demo/.env.prod.example /apps/demo/.env" <<<"$out"' \
     "and giving the by-hand recipe that does work (said '$out')"
 # The drift branch is where the flag does reach, and its remedy list says so —
-# without this the assertion above passes against a hosting that never mentions
+# without this the assertion above passes against a kasbah that never mentions
 # the flag anywhere.
 out=$( cd "$project" && ENV_MISSING=NEW_KEY deploy_cli deploy@vps --on-drift=setup ); rc=$?
 assert 'grep -qF -- "--on-drift=continue" <<<"$out"' \
@@ -647,7 +647,7 @@ assert '! grep -qF "dynamic/demo.yml" <<<"$calls"' "and no route was written"
 assert '! grep -qF -- "--inject" <<<"$calls"' \
     "and no block was written into a .env that does not exist ($(env_calls))"
 # The template and the helper *are* shipped first, on purpose: they are what the
-# `hosting env` the message recommends will run against.
+# `kasbah env` the message recommends will run against.
 assert 'grep -qF "/apps/demo/scripts/setup-env.sh" <<<"$calls"' \
     "the helper reached the server before the step gave up ($(grep -F "scripts/" <<<"$calls"))"
 
@@ -669,7 +669,7 @@ assert 'grep -qF "cannot be checked for drift" <<<"$out"' "with a warning (said 
 assert '! grep -qF -- "--on-drift" <<<"$out"' \
     "and no drift prompt for keys an absent template cannot have (said '$out')"
 assert 'grep -qF -- "--inject" <<<"$calls"' "the block is still refreshed ($(env_calls))"
-rm -rf "$project/.hosting"
+rm -rf "$project/.kasbah"
 
 # The flag is validated where it is parsed: a typo costs one sentence before the
 # first connection, not a refusal at the bottom of a deploy.
@@ -699,7 +699,7 @@ assert 'grep -qF "exited 7" <<<"$out"' "quoting its status (said '$out')"
 assert '! grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' "and nothing was deployed"
 
 # Injection is a precondition of `compose up`, not a finishing touch: without
-# the block, HOSTING_CPU_LIMIT is unset and the compose file fails outright.
+# the block, KASBAH_CPU_LIMIT is unset and the compose file fails outright.
 out=$( cd "$project" && INJECT_RC=5 deploy_cli deploy@vps ); rc=$?
 calls=$(<"$call_log")
 # Exit 1, deliberately, and pinned so the two families cannot quietly merge: 5
@@ -707,13 +707,13 @@ calls=$(<"$call_log")
 # was there to answer), and re-running with a flag or a terminal clears it. A
 # refused injection is the far side breaking, like the probe above or the helper
 # rsync, and nothing the operator answers will change it. The remote status is
-# deliberately 5 here, so a hosting that passed it through would look right.
+# deliberately 5 here, so a kasbah that passed it through would look right.
 assert '[ "$rc" = "1" ]' "an injection that fails fails the deploy with 1, not 5 (rc $rc: $out)"
-assert 'grep -qF "HOSTING_CPU_LIMIT" <<<"$out"' "saying what would have broken (said '$out')"
+assert 'grep -qF "KASBAH_CPU_LIMIT" <<<"$out"' "saying what would have broken (said '$out')"
 assert '! grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' "and nothing was deployed"
 assert '! grep -qF "dynamic/demo.yml" <<<"$calls"' "and no route was written"
 
-# A marker with no limits is not a marker this hosting can deploy from: there is
+# A marker with no limits is not a marker this kasbah can deploy from: there is
 # no default for someone else's server, and an empty `cpus:` is a compose file
 # that does not parse.
 out=$( cd "$project" && MARKER='{"apps_path":"/apps","data_path":"/apps/data"}' deploy_cli deploy@vps ); rc=$?
@@ -752,14 +752,14 @@ assert 'grep -qF "'\''/srv/apps/demo/scripts/setup-env.sh'\'' '\''--inject'\'' '
     "and injection writes into that same directory's .env, not the default path's ($(grep -F -- "--inject" <<<"$calls"))"
 assert 'grep -qF "deploy@vps:/srv/apps/traefik/dynamic/demo.yml" <<<"$calls"' \
     "and the fragment goes to that tree's Traefik ($(grep -F "dynamic/" <<<"$calls"))"
-rm -rf "$project/.hosting"
+rm -rf "$project/.kasbah"
 
 # The control for all of the above: the same stub, nothing set, deploys.
 out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
 assert '[ "$rc" = "0" ]' \
     "an in-sync .env deploys with no prompt and no flag (rc $rc: $out) — else the refusals above prove nothing"
 assert '! grep -qF "has drifted" <<<"$out"' "and says nothing about drift (said '$out')"
-rm -rf "$project/.hosting"
+rm -rf "$project/.kasbah"
 
 # The recording rsync stub stays on PATH for the cases below. None of them
 # reaches a sync, and each asserts that; the stub is what makes "it never
@@ -792,21 +792,21 @@ mkdir -p "$state_dir"
 run_state() {
     ( cd "$state_dir" && bash -c '
         set -uo pipefail
-        . "$HOSTING_LIB_DIR/state.sh"
+        . "$KASBAH_LIB_DIR/state.sh"
         '"$1"'
     ' 2>&1 )
 }
 
-out="$(run_state 'state_record last_server deploy@vps last_version 1.2.3; cat .hosting/state.json')"; rc=$?
+out="$(run_state 'state_record last_server deploy@vps last_version 1.2.3; cat .kasbah/state.json')"; rc=$?
 assert '[ "$rc" = "0" ]' "state_record creates the file when there is none (rc $rc: $out)"
 assert '[ "$(jq -r .last_server <<<"$out")" = "deploy@vps" ]' "recording last_server (got '$out')"
 assert '[ "$(jq -r .last_version <<<"$out")" = "1.2.3" ]'     "and last_version"
-assert '[ "$(jq -r .hosting_version <<<"$out")" = "$HOSTING_VERSION" ]' \
+assert '[ "$(jq -r .kasbah_version <<<"$out")" = "$KASBAH_VERSION" ]' \
     "with the shape init-project would have written"
 
 # Merged, never replaced: a field this command does not own has to survive.
-run_state 'jq ".schema_migrations_applied = [\"m1\"] | .future_key = 7" .hosting/state.json > s && mv s .hosting/state.json' >/dev/null
-out="$(run_state 'state_record last_server other@vps; cat .hosting/state.json')"
+run_state 'jq ".schema_migrations_applied = [\"m1\"] | .future_key = 7" .kasbah/state.json > s && mv s .kasbah/state.json' >/dev/null
+out="$(run_state 'state_record last_server other@vps; cat .kasbah/state.json')"
 assert '[ "$(jq -r .last_server <<<"$out")" = "other@vps" ]' "a re-record updates the field (got '$out')"
 assert '[ "$(jq -r .last_version <<<"$out")" = "1.2.3" ]' "leaves the fields it was not given alone"
 assert '[ "$(jq -c .schema_migrations_applied <<<"$out")" = "[\"m1\"]" ]' "keeps another command's field"
@@ -815,14 +815,14 @@ assert '[ "$(jq -r .future_key <<<"$out")" = "7" ]' "and a key it has never hear
 # A state file that exists but holds nothing gets the shape as well, which is
 # what the merge is for: the fields this call did not set have to be present and
 # null, not missing.
-printf '{}\n' > "$state_dir/.hosting/state.json"
-out="$(run_state 'state_record last_server thin@vps; cat .hosting/state.json')"
+printf '{}\n' > "$state_dir/.kasbah/state.json"
+out="$(run_state 'state_record last_server thin@vps; cat .kasbah/state.json')"
 assert '[ "$(jq -r .last_server <<<"$out")" = "thin@vps" ]' "an empty object is filled in (got '$out')"
 # `jq -r .last_version` prints "null" for an absent key just as it does for a
 # null one, so presence is asserted rather than the rendered value.
 assert 'jq -e "has(\"last_version\") and .last_version == null" >/dev/null <<<"$out"' \
     "with the untouched fields present and null rather than missing (got '$out')"
-assert '[ "$(jq -r .hosting_version <<<"$out")" = "$HOSTING_VERSION" ]' "and the hosting version"
+assert '[ "$(jq -r .kasbah_version <<<"$out")" = "$KASBAH_VERSION" ]' "and the kasbah version"
 assert '[ "$(jq -c .schema_migrations_applied <<<"$out")" = "[]" ]' "and the migration list"
 run_state 'state_record last_server other@vps last_version 1.2.3' >/dev/null
 
@@ -831,11 +831,11 @@ assert '[ "$out" = "other@vps" ]' "state_get reads it back (got '$out')"
 out="$(run_state 'state_get last_deploy v; printf "[%s]\n" "$v"')"
 assert '[ "$out" = "[]" ]' "and a null field reads as empty rather than the string null (got '$out')"
 
-printf 'not json\n' > "$state_dir/.hosting/state.json"
+printf 'not json\n' > "$state_dir/.kasbah/state.json"
 out="$(run_state 'state_get last_server v; printf "%s\n" "$v"')"; rc=$?
 assert '[ "$rc" != "0" ]' "an unparseable state file is an error, not an empty default (rc $rc: $out)"
 out="$(run_state 'state_record last_server x@y')"; rc=$?
 assert '[ "$rc" != "0" ]' "and it is never overwritten (rc $rc: $out)"
-assert '[ "$(cat "$state_dir/.hosting/state.json")" = "not json" ]' "the file is left as it was"
+assert '[ "$(cat "$state_dir/.kasbah/state.json")" = "not json" ]' "the file is left as it was"
 
 exit "$fail"

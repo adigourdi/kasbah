@@ -1,18 +1,18 @@
-# hosting — deploy command
-# Sourced by bin/hosting. Do not execute directly.
+# kasbah — deploy command
+# Sourced by bin/kasbah. Do not execute directly.
 
-[ -n "${_HOSTING_DEPLOY_LOADED:-}" ] && return 0
-_HOSTING_DEPLOY_LOADED=1
+[ -n "${_KASBAH_DEPLOY_LOADED:-}" ] && return 0
+_KASBAH_DEPLOY_LOADED=1
 
-. "$HOSTING_LIB_DIR/common.sh"
-. "$HOSTING_LIB_DIR/manifest.sh"
-. "$HOSTING_LIB_DIR/state.sh"
-. "$HOSTING_LIB_DIR/ssh.sh"
-. "$HOSTING_LIB_DIR/marker.sh"
-. "$HOSTING_LIB_DIR/env_cmd.sh"
+. "$KASBAH_LIB_DIR/common.sh"
+. "$KASBAH_LIB_DIR/manifest.sh"
+. "$KASBAH_LIB_DIR/state.sh"
+. "$KASBAH_LIB_DIR/ssh.sh"
+. "$KASBAH_LIB_DIR/marker.sh"
+. "$KASBAH_LIB_DIR/env_cmd.sh"
 
-# `hosting deploy [USER@HOST]` ships the working tree, labelled with HEAD's
-# version tag, to a server `hosting server init` has already prepared, and runs
+# `kasbah deploy [USER@HOST]` ships the working tree, labelled with HEAD's
+# version tag, to a server `kasbah server init` has already prepared, and runs
 # the project's compose stack there (docs/build-deploy.md, the no-args path).
 #
 # Everything remote rides one ssh master. The order is: read, judge, then write
@@ -53,7 +53,7 @@ _DEPLOY_SRC=()
 _DEPLOY_DST=()
 _DEPLOY_RECURSE=()
 
-# The project fragment, which never appears in the sync list: hosting owns the
+# The project fragment, which never appears in the sync list: kasbah owns the
 # path it lands on (docs/traefik.md).
 _DEPLOY_FRAGMENT=traefik-dynamic.yml
 
@@ -61,16 +61,16 @@ declare -A _DEPLOY_FACT=()
 
 _deploy_usage() {
     cat <<EOF
-Usage: hosting deploy [USER@HOST] [--on-drift=setup|continue|abort]
+Usage: kasbah deploy [USER@HOST] [--on-drift=setup|continue|abort]
 
 Ships the working tree to a prepared server and brings the project up there.
 Run from the project root. The version is HEAD's v-tag; USER@HOST defaults to
-the last server this project deployed to (.hosting/state.json).
+the last server this project deployed to (.kasbah/state.json).
 
 What it does:
   * rsyncs every path in the manifest's sync: list to <apps>/<name>/
   * renders <apps>/<name>/.env when it is missing, checks it for drift against
-    .env.prod.example otherwise, and refreshes the HOSTING_* block in it from
+    .env.prod.example otherwise, and refreshes the KASBAH_* block in it from
     the server marker's resource limits
   * runs scripts/remote-deploy.sh deploy <version> on the server, which does
     docker compose -p <name> up -d --remove-orphans and appends versions.log
@@ -111,7 +111,7 @@ _deploy_parse_args() {
                 if [ -z "$_DEPLOY_TARGET" ]; then
                     _DEPLOY_TARGET="${1%$'\r'}"
                 else
-                    # `hosting deploy user@host 1.2.3` is a documented mode, so
+                    # `kasbah deploy user@host 1.2.3` is a documented mode, so
                     # it is refused by name rather than as a stray argument.
                     die "deploy: deploying an explicit version ('$1') is not implemented yet — it ships from git archive in Phase 4/5. Today's deploy labels the working tree with HEAD's tag."
                 fi
@@ -136,8 +136,8 @@ _deploy_resolve_target() {
     state_get last_server stored
     if [ -z "$stored" ] || [ "$stored" = null ]; then
         err "deploy: no server given, and this project has never deployed to one"
-        err_cont "pass it once — \`hosting deploy user@vps\` — and it is remembered in"
-        err_cont "$HOSTING_STATE_FILE as last_server"
+        err_cont "pass it once — \`kasbah deploy user@vps\` — and it is remembered in"
+        err_cont "$KASBAH_STATE_FILE as last_server"
         exit 1
     fi
     _DEPLOY_TARGET="$stored"
@@ -148,7 +148,7 @@ _deploy_resolve_target() {
 # --- Version --------------------------------------------------------------------
 
 # Exactly one v-tag on HEAD, or the run stops. Zero and two are different
-# mistakes and get different messages: nothing is tagged yet, versus hosting
+# mistakes and get different messages: nothing is tagged yet, versus kasbah
 # cannot know which of two labels this deploy is called.
 #
 # Pure so it can be tested without a repository — the caller feeds it whatever
@@ -170,7 +170,7 @@ _deploy_pick_version() {
     if [ "${#_pv_v[@]}" -eq 0 ]; then
         err "HEAD carries no version tag, so this deploy has nothing to label itself with"
         if [ "${#_pv_other[@]}" -gt 0 ]; then
-            err_cont "HEAD is tagged ${_pv_other[*]}, and hosting versions are v-prefixed semver"
+            err_cont "HEAD is tagged ${_pv_other[*]}, and kasbah versions are v-prefixed semver"
         fi
         err_cont "tag the commit and retry:  git tag v1.0.0"
         exit 1
@@ -178,17 +178,17 @@ _deploy_pick_version() {
     if [ "${#_pv_v[@]}" -gt 1 ]; then
         err "HEAD carries ${#_pv_v[@]} version tags — ${_pv_v[*]}"
         err_cont "exactly one is required: the tag is the version that goes into versions.log"
-        err_cont "and onto the images, and hosting will not choose between them"
+        err_cont "and onto the images, and kasbah will not choose between them"
         exit 1
     fi
 
     _pv_tag="${_pv_v[0]}"
     # Semver, as docs/build-deploy.md's versioning contract has it. A pre-release
     # or build suffix is allowed through; the shape that matters is X.Y.Z, since
-    # `hosting history` sorts on it. A space would also break versions.log, whose
+    # `kasbah history` sorts on it. A space would also break versions.log, whose
     # fields are space-delimited.
     if ! [[ "$_pv_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
-        err "HEAD's tag '$_pv_tag' is not a version hosting can use"
+        err "HEAD's tag '$_pv_tag' is not a version kasbah can use"
         err_cont "expected v<major>.<minor>.<patch> (docs/build-deploy.md → versioning contract)"
         exit 1
     fi
@@ -200,9 +200,9 @@ _deploy_resolve_version() {
     local tags=""
 
     command -v git >/dev/null \
-        || die "git is required — hosting resolves the version from HEAD's tag"
+        || die "git is required — kasbah resolves the version from HEAD's tag"
     git rev-parse --git-dir >/dev/null 2>&1 \
-        || die "$PWD is not a git repository — hosting resolves the version from HEAD's tag"
+        || die "$PWD is not a git repository — kasbah resolves the version from HEAD's tag"
     git rev-parse -q --verify HEAD >/dev/null 2>&1 \
         || die "this repository has no commits yet, so there is no HEAD to read a version tag from"
 
@@ -221,18 +221,18 @@ _deploy_check_sync_path() {
     local _cp_path="$1" _cp_side="$2" _cp_entry="$3"
 
     [ -n "$_cp_path" ] \
-        || die "hosting.yml: sync entry '$_cp_entry' has no $_cp_side"
+        || die "kasbah.yml: sync entry '$_cp_entry' has no $_cp_side"
     case $_cp_path in
-        /*) die "hosting.yml: sync entry '$_cp_entry' names an absolute $_cp_side ('$_cp_path') — entries are relative to the project root" ;;
-        -*) die "hosting.yml: sync entry '$_cp_entry' has a $_cp_side starting with '-' ('$_cp_path'), which rsync would read as an option" ;;
+        /*) die "kasbah.yml: sync entry '$_cp_entry' names an absolute $_cp_side ('$_cp_path') — entries are relative to the project root" ;;
+        -*) die "kasbah.yml: sync entry '$_cp_entry' has a $_cp_side starting with '-' ('$_cp_path'), which rsync would read as an option" ;;
     esac
     case $_cp_path in
-        *:*) die "hosting.yml: sync entry '$_cp_entry' has a ':' in its $_cp_side ('$_cp_path') — rsync splits host from path on it" ;;
-        *[[:cntrl:]]*) die "hosting.yml: sync entry '$_cp_entry' has a control character in its $_cp_side" ;;
+        *:*) die "kasbah.yml: sync entry '$_cp_entry' has a ':' in its $_cp_side ('$_cp_path') — rsync splits host from path on it" ;;
+        *[[:cntrl:]]*) die "kasbah.yml: sync entry '$_cp_entry' has a control character in its $_cp_side" ;;
     esac
     case "/$_cp_path/" in
         *//*|*/./*|*/../*)
-            die "hosting.yml: sync entry '$_cp_entry' has a '.', '..' or empty segment in its $_cp_side ('$_cp_path')" ;;
+            die "kasbah.yml: sync entry '$_cp_entry' has a '.', '..' or empty segment in its $_cp_side ('$_cp_path')" ;;
     esac
     return 0
 }
@@ -287,7 +287,7 @@ _deploy_parse_sync_lines() {
     done <<<"$raw"
 
     [ "${#_DEPLOY_SRC[@]}" -gt 0 ] \
-        || die "hosting.yml: the sync: list is empty — a deploy would ship no compose file and nothing to run"
+        || die "kasbah.yml: the sync: list is empty — a deploy would ship no compose file and nothing to run"
     return 0
 }
 
@@ -318,7 +318,7 @@ _deploy_check_sources() {
     done
 
     [ "${#rows[@]}" -gt 0 ] || return 0
-    err "hosting.yml lists paths in sync: that this working tree does not have:"
+    err "kasbah.yml lists paths in sync: that this working tree does not have:"
     for src in "${rows[@]}"; do err_cont "$src"; done
     err_cont "every sync: entry is shipped on every deploy — fix the list or the tree"
     exit 1
@@ -352,7 +352,7 @@ _deploy_absorb() {
 }
 
 # The server marker, at the one path a project command can know without being
-# told (lib/marker.sh — `hosting env` reads it the same way, and the refusal for
+# told (lib/marker.sh — `kasbah env` reads it the same way, and the refusal for
 # a server that has none lives there). Its contents are where the apps and data
 # paths come from, so a server whose layout is not under /apps is followed
 # rather than second-guessed — once it has been found. Finding it is the part
@@ -360,7 +360,7 @@ _deploy_absorb() {
 # with --apps-path elsewhere reads as unprepared here (carried to Phase 4).
 #
 # The two resource limits come out of the same read, and go straight into the
-# project's .env as the HOSTING_* managed block (docs/env-template.md).
+# project's .env as the KASBAH_* managed block (docs/env-template.md).
 _deploy_read_marker() {
     marker_read "$_DEPLOY_TARGET"
 
@@ -479,25 +479,25 @@ _deploy_sync_project() {
     return 0
 }
 
-# hosting's own two helpers, overwritten on every deploy so the scripts on the
-# server are the ones this hosting version drives (docs/build-deploy.md → helper
+# kasbah's own two helpers, overwritten on every deploy so the scripts on the
+# server are the ones this kasbah version drives (docs/build-deploy.md → helper
 # scripts). Executable is stated here rather than inherited: a checkout on a
 # filesystem that lost the mode bit would otherwise ship a script nothing can
 # run.
 #
 # They come from different places, and that is not an accident:
-# remote-deploy.sh is a template hosting renders onto servers, while
-# setup-env.sh *is* lib/env.sh — the same bytes `hosting check` sources locally,
+# remote-deploy.sh is a template kasbah renders onto servers, while
+# setup-env.sh *is* lib/env.sh — the same bytes `kasbah check` sources locally,
 # shipped verbatim so that the drift question has one implementation rather than
 # two copies that agree today (env_ship_helper, lib/env_cmd.sh).
 _deploy_sync_helper() {
-    local tpl="${HOSTING_TEMPLATE_DIR:-}"
+    local tpl="${KASBAH_TEMPLATE_DIR:-}"
     local src="$tpl/remote-deploy.sh"
     local dest="$_DEPLOY_APPS_PATH/$MANIFEST_NAME/scripts/remote-deploy.sh"
 
-    [ -n "$tpl" ] || die "internal: HOSTING_TEMPLATE_DIR is not set"
+    [ -n "$tpl" ] || die "internal: KASBAH_TEMPLATE_DIR is not set"
     [ -f "$src" ] \
-        || die "the remote-deploy helper is missing (looked in $src) — this hosting installation is incomplete"
+        || die "the remote-deploy helper is missing (looked in $src) — this kasbah installation is incomplete"
 
     ssh_rsync -pt --chmod=F755 -s "$src" "$SSH_TARGET:$dest" >/dev/null \
         || die "could not ship remote-deploy.sh to $_DEPLOY_TARGET:$dest"
@@ -506,7 +506,7 @@ _deploy_sync_helper() {
     return 0
 }
 
-# Step 6 of docs/build-deploy.md, in lib/env_cmd.sh because `hosting env` is the
+# Step 6 of docs/build-deploy.md, in lib/env_cmd.sh because `kasbah env` is the
 # same step with the setup always run. After the project rsync (the setup
 # prompts from the .env.prod.example it ships) and before the remote deploy
 # (`compose up` reads what it writes).
@@ -516,7 +516,7 @@ _deploy_env_step() {
     return 0
 }
 
-# The Traefik fragment, out of band: hosting owns the destination path, so the
+# The Traefik fragment, out of band: kasbah owns the destination path, so the
 # project never lists it in sync: (docs/project-manifest.md, docs/traefik.md).
 # rsync writes a temp file and renames, so Traefik's watcher sees one atomic
 # replace rather than a truncated file — which is why --inplace must never
@@ -533,7 +533,7 @@ _deploy_env_step() {
 # A project with no fragment is deployed anyway and warned about: T01 in
 # docs/compliance.md is a warning, and a worker with no HTTP surface is a real
 # project shape. What is not done is deleting whatever fragment is already
-# there; taking a site off the internet is `hosting drop`'s decision, not a
+# there; taking a site off the internet is `kasbah drop`'s decision, not a
 # side effect of a missing file.
 _deploy_sync_fragment() {
     local dest="$_DEPLOY_APPS_PATH/traefik/dynamic/$MANIFEST_NAME.yml"
@@ -554,7 +554,7 @@ _deploy_sync_fragment() {
         err_cont "the deploy itself succeeded — the new containers are up and versions.log"
         err_cont "already records $_DEPLOY_VERSION. Only the Traefik route is missing, so this"
         err_cont "host serves whatever it served before (404 if it is a first deploy)."
-        err_cont "re-run \`hosting deploy\` once the server is reachable again."
+        err_cont "re-run \`kasbah deploy\` once the server is reachable again."
         exit 1
     fi
     _DEPLOY_FACT[fragment]=shipped
@@ -565,19 +565,19 @@ _deploy_sync_fragment() {
 # Phase 4 grows one script instead of rewriting this function
 # (docs/phases/02-spine.md → Decisions).
 #
-# HOSTING_VERSION travels in the environment: it is what the helper writes into
-# versions.log's `hosting=` field, and the alternative — a positional argument —
+# KASBAH_VERSION travels in the environment: it is what the helper writes into
+# versions.log's `kasbah=` field, and the alternative — a positional argument —
 # would fix the shape of a command line docs/build-deploy.md spells out as
 # `remote-deploy.sh deploy <version>`.
 _deploy_remote_deploy() {
     local script="$_DEPLOY_APPS_PATH/$MANIFEST_NAME/scripts/remote-deploy.sh"
     local rc=0
 
-    ssh_run env "HOSTING_VERSION=$HOSTING_VERSION" "$script" deploy "$_DEPLOY_VERSION" \
+    ssh_run env "KASBAH_VERSION=$KASBAH_VERSION" "$script" deploy "$_DEPLOY_VERSION" \
         || rc=$?
     [ "$rc" -eq 0 ] || {
         err "the deploy failed on $_DEPLOY_TARGET (remote-deploy.sh exited $rc, see above)"
-        err_cont "the files are already there — fix what it reported and re-run \`hosting deploy\`"
+        err_cont "the files are already there — fix what it reported and re-run \`kasbah deploy\`"
         exit 1
     }
     return 0
@@ -623,7 +623,7 @@ cmd_deploy() {
 
     info "Deployed $MANIFEST_NAME $_DEPLOY_VERSION to $_DEPLOY_TARGET"
     info "  project: $_DEPLOY_APPS_PATH/$MANIFEST_NAME   data: $_DEPLOY_DATA_PATH/$MANIFEST_NAME"
-    info "  limits:  HOSTING_CPU_LIMIT=$_DEPLOY_CPU_LIMIT HOSTING_MEM_LIMIT=$_DEPLOY_MEM_LIMIT (from the server marker)"
+    info "  limits:  KASBAH_CPU_LIMIT=$_DEPLOY_CPU_LIMIT KASBAH_MEM_LIMIT=$_DEPLOY_MEM_LIMIT (from the server marker)"
     if [ "${_DEPLOY_FACT[fragment]}" = shipped ]; then
         info "  routing: $_DEPLOY_APPS_PATH/traefik/dynamic/$MANIFEST_NAME.yml (Traefik reloads within a couple of seconds)"
     fi

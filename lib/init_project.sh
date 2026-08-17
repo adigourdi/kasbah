@@ -1,24 +1,24 @@
-# hosting — init-project command
-# Sourced by bin/hosting. Do not execute directly.
+# kasbah — init-project command
+# Sourced by bin/kasbah. Do not execute directly.
 
-[ -n "${_HOSTING_INIT_PROJECT_LOADED:-}" ] && return 0
-_HOSTING_INIT_PROJECT_LOADED=1
+[ -n "${_KASBAH_INIT_PROJECT_LOADED:-}" ] && return 0
+_KASBAH_INIT_PROJECT_LOADED=1
 
-. "$HOSTING_LIB_DIR/common.sh"
-. "$HOSTING_LIB_DIR/state.sh"
+. "$KASBAH_LIB_DIR/common.sh"
+. "$KASBAH_LIB_DIR/state.sh"
 # For the reserved-name list, which is the manifest's rule and is enforced
 # wherever a name is chosen as well as wherever one is read.
-. "$HOSTING_LIB_DIR/manifest.sh"
+. "$KASBAH_LIB_DIR/manifest.sh"
 
 _init_project_usage() {
     cat <<EOF
-Usage: hosting init-project [--name=<name>] [--domain=<fqdn>]
+Usage: kasbah init-project [--name=<name>] [--domain=<fqdn>]
 
-Scaffolds hosting metadata in the current directory:
-  - hosting.yml           (manifest)
+Scaffolds kasbah metadata in the current directory:
+  - kasbah.yml           (manifest)
   - .env.prod.example     (env template skeleton)
-  - .hosting/state.json   (project state)
-  - .gitignore entries for .env and .hosting/
+  - .kasbah/state.json   (project state)
+  - .gitignore entries for .env and .kasbah/
 
 Does not create compose.prod.yml — that is user-authored.
 EOF
@@ -46,10 +46,10 @@ cmd_init_project() {
         die "invalid project name '$name' (must match ^[a-z][a-z0-9-]*\$)"
     fi
     # Refused at the moment it is chosen, not only when it is read back: the
-    # default name is the directory's, so `hosting init-project` in a directory
+    # default name is the directory's, so `kasbah init-project` in a directory
     # called `data` would otherwise scaffold a project that can never deploy.
     if manifest_name_reserved "$name"; then
-        die "project name '$name' is reserved — hosting owns <apps>/$name on every server (reserved: ${HOSTING_RESERVED_NAMES[*]}). Pass --name=<other>."
+        die "project name '$name' is reserved — kasbah owns <apps>/$name on every server (reserved: ${KASBAH_RESERVED_NAMES[*]}). Pass --name=<other>."
     fi
 
     if [ "$domain_given" = 1 ] && ! _is_fqdn "$domain"; then
@@ -59,7 +59,7 @@ cmd_init_project() {
     command -v jq >/dev/null || die "jq is required (install jq and retry)"
 
     # Pre-check every target path before writing anything, so we fail cleanly.
-    local targets=(hosting.yml .env.prod.example .hosting/state.json)
+    local targets=(kasbah.yml .env.prod.example .kasbah/state.json)
     local t
     for t in "${targets[@]}"; do
         [ ! -e "$t" ] || die "$t already exists — refusing to overwrite"
@@ -84,27 +84,27 @@ cmd_init_project() {
 
     _write_manifest "$name" "$domain"
     _write_env_example "$domain"
-    if [ ! -d .hosting ]; then
-        mkdir .hosting
-        _INIT_MADE_DIR=.hosting
+    if [ ! -d .kasbah ]; then
+        mkdir .kasbah
+        _INIT_MADE_DIR=.kasbah
     fi
     state_init
     _update_gitignore
 
     trap - ERR
 
-    info "Initialized hosting project '$name'"
+    info "Initialized kasbah project '$name'"
     if [ -n "$domain" ]; then
         info "  domain: $domain"
     else
-        warn "domain is empty — edit hosting.yml before deploying"
+        warn "domain is empty — edit kasbah.yml before deploying"
     fi
     echo
     _print_compose_snippet "$name" "$domain"
 }
 
 _init_cleanup() {
-    rm -f hosting.yml .env.prod.example .hosting/state.json
+    rm -f kasbah.yml .env.prod.example .kasbah/state.json
     [ -n "${_INIT_MADE_DIR:-}" ] && rmdir "$_INIT_MADE_DIR" 2>/dev/null
     if [ "${_INIT_GITIGNORE_EXISTED:-0}" = 1 ]; then
         # Strip the trailing 'x' sentinel that protected the captured newlines.
@@ -120,7 +120,7 @@ _write_manifest() {
     local name="$1" domain="$2"
     {
         printf 'schema: 1\n'
-        printf 'hosting_version: %s\n' "$HOSTING_VERSION"
+        printf 'kasbah_version: %s\n' "$KASBAH_VERSION"
         printf '\n'
         printf 'name: %s\n' "$name"
         printf 'domain: "%s"\n' "$domain"
@@ -128,7 +128,7 @@ _write_manifest() {
         printf 'sync:\n'
         printf '  - compose.prod.yml -> compose.yml\n'
         printf '  - .env.prod.example\n'
-    } > hosting.yml
+    } > kasbah.yml
 }
 
 _write_env_example() {
@@ -151,7 +151,7 @@ _update_gitignore() {
         printf '\n' >> "$f"
     fi
     grep -qxF '.env' "$f"      || printf '.env\n'      >> "$f"
-    grep -qxF '.hosting/' "$f" || printf '.hosting/\n' >> "$f"
+    grep -qxF '.kasbah/' "$f" || printf '.kasbah/\n' >> "$f"
 }
 
 _print_compose_snippet() {
@@ -164,22 +164,22 @@ Next step: author compose.prod.yml. Starter snippet:
       image: nginx:alpine
       container_name: ${name}-web
       restart: unless-stopped
-      cpus: \${HOSTING_CPU_LIMIT}
-      mem_limit: \${HOSTING_MEM_LIMIT}
+      cpus: \${KASBAH_CPU_LIMIT}
+      mem_limit: \${KASBAH_MEM_LIMIT}
       logging:
         driver: json-file
         options:
           max-size: "10m"
           max-file: "3"
-      networks: [hosting-net, internal]
+      networks: [kasbah-net, internal]
 
   networks:
-    hosting-net:
+    kasbah-net:
       external: true
     internal: {}
 
-  Only Traefik-routed containers join hosting-net; everything else stays on
-  the project-internal network (see docs/traefik.md). The HOSTING_* limits
+  Only Traefik-routed containers join kasbah-net; everything else stays on
+  the project-internal network (see docs/traefik.md). The KASBAH_* limits
   are injected into .env at deploy.
 
 Routing is declared in traefik-dynamic.yml at the project root (see
@@ -200,6 +200,6 @@ docs/traefik.md). Starter:
           servers:
             - url: "http://${name}-web:80"
 
-Then run \`hosting check\` to validate structure.
+Then run \`kasbah check\` to validate structure.
 EOF
 }

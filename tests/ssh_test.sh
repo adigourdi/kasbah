@@ -5,7 +5,7 @@
 # Hermetic the same way tests/rig_test.sh is: recording stubs for `ssh` and
 # `rsync` go first on PATH, so nothing here can open a socket and the suite
 # passes on a machine with neither a rig nor Docker. What the stubs record is
-# the whole point — the argv hosting builds is the contract with the far side.
+# the whole point — the argv kasbah builds is the contract with the far side.
 
 set -uo pipefail
 
@@ -91,8 +91,8 @@ run_driver() {
     [ $# -eq 0 ] || shift
 
     { printf '%s\n' 'set -euo pipefail' \
-                    '. "$HOSTING_LIB_DIR/common.sh"' \
-                    '. "$HOSTING_LIB_DIR/ssh.sh"'
+                    '. "$KASBAH_LIB_DIR/common.sh"' \
+                    '. "$KASBAH_LIB_DIR/ssh.sh"'
       cat; } > "$tmpdir/case.sh"
 
     : > "$log"
@@ -102,7 +102,7 @@ run_driver() {
 
     out=$(env -u SSH_STUB_RC \
               HOME="$fakehome" TMPDIR="$faketmp" PATH="$stub_dir:$PATH" \
-              HOSTING_LIB_DIR="$repo_dir/lib" \
+              KASBAH_LIB_DIR="$repo_dir/lib" \
               SSH_STUB_LOG="$log" SSH_STUB_LOG_ALL="$log_all" SSH_STUB_STDIN="$payload" \
               "${env_args[@]+"${env_args[@]}"}" \
               bash "$tmpdir/case.sh" 2>"$tmpdir/err")
@@ -189,13 +189,13 @@ assert '! grep -qF "%r@%h:%p" <<<"$calls"' \
 
 # --- Case 2b: the control socket is this process's alone ----------------------
 # `ssh -O exit` closes a master *and every session multiplexed over it*, so a
-# path two hosting processes both compute is a kill switch one points at the
+# path two kasbah processes both compute is a kill switch one points at the
 # other: a read-only `server status` finishing its run once killed a concurrent
 # `server init` mid-step (docs/phases/02-spine.md). Nothing target-derived may
 # appear in the path, and no % token either — %C, %h, %r and %p are all
 # functions of the target and the invoking user, never of the process.
 assert '[ -n "$ctl_path" ]' "the control path was recorded (else nothing below is asserted)"
-assert '[[ "$ctl_path" == "$faketmp/hosting-ssh."* ]]' \
+assert '[[ "$ctl_path" == "$faketmp/kasbah-ssh."* ]]' \
     "the socket lives in a directory under TMPDIR, not in ~/.ssh (got '$ctl_path')"
 assert '[[ "$ctl_path" != *%* ]]' \
     "the path holds no ssh % token — every one of them is shared between processes (got '$ctl_path')"
@@ -284,7 +284,7 @@ assert 'grep -qxF "ARG:-a" <<<"$calls"'                             "rsync's own
 assert 'grep -qxF "ARG:deploy@vps.example.com:/apps/x/" <<<"$calls"' "rsync's destination is passed through"
 
 # The socket moved out of ~/.ssh entirely, and so did the mkdir that used to
-# make sure it existed: that directory is the user's, and nothing hosting puts
+# make sure it existed: that directory is the user's, and nothing kasbah puts
 # anywhere now outlives the run that made it.
 assert '[ ! -e "$fakehome/.ssh" ]' \
     "nothing is created in ~/.ssh (found: $(ls -A "$fakehome/.ssh" 2>/dev/null | tr '\n' ' '))"

@@ -1,4 +1,4 @@
-# Hosting-owned dynamic configuration, installed at
+# Kasbah-owned dynamic configuration, installed at
 # <apps>/traefik/dynamic/_shared.yml and watched by the file provider.
 #
 # Middleware names, the `default` TLS options and the `letsencrypt` resolver
@@ -51,7 +51,7 @@ http:
         burst: 100
 
     # The dashboard's own guard. Not part of the frozen set — projects have no
-    # reason to reference it, and `traefik.<domain>` is reserved to hosting.
+    # reason to reference it, and `traefik.<domain>` is reserved to kasbah.
     traefik-dashboard-auth:
       basicAuth:
         users:

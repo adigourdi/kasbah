@@ -1,8 +1,8 @@
-# hosting — common shell library
-# Sourced by bin/hosting and lib/*.sh. Do not execute directly.
+# kasbah — common shell library
+# Sourced by bin/kasbah and lib/*.sh. Do not execute directly.
 
-[ -n "${_HOSTING_COMMON_LOADED:-}" ] && return 0
-_HOSTING_COMMON_LOADED=1
+[ -n "${_KASBAH_COMMON_LOADED:-}" ] && return 0
+_KASBAH_COMMON_LOADED=1
 
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
     _C_RED=$'\033[31m'
@@ -35,23 +35,23 @@ _is_fqdn() {
 }
 
 # Exit codes — shared contract, see docs/cli.md "Exit codes".
-HOSTING_EXIT_NO_PROJECT=2       # no hosting.yml in cwd
-HOSTING_EXIT_SSH_UNREACHABLE=3  # the target host did not answer ssh
+KASBAH_EXIT_NO_PROJECT=2       # no kasbah.yml in cwd
+KASBAH_EXIT_SSH_UNREACHABLE=3  # the target host did not answer ssh
 # No server marker at the apps path. Deliberately not "run init": on a server
 # prepared with --apps-path the marker is elsewhere, and re-running init would
 # render a second Traefik under the frozen `traefik` compose project and
 # recreate the running proxy against it. Callers say which situation it is.
-HOSTING_EXIT_NO_REMOTE_STATE=4
-# The env setup did not leave a .env hosting will deploy against, for any
+KASBAH_EXIT_NO_REMOTE_STATE=4
+# The env setup did not leave a .env kasbah will deploy against, for any
 # reason: drift the user declined to fix, a .env that is not there with no
 # terminal to render one on, or setup-env.sh not finishing on the far side —
 # including when it could not be run at all. One code, because it is one
 # sentence from the operator's side and nothing was deployed. Injection is a
 # different step and fails with 1 (docs/cli.md, docs/phases/03-env.md).
-HOSTING_EXIT_ENV_SETUP=5
-HOSTING_EXIT_COMPLIANCE_FAIL=6  # `hosting check` recorded one or more failures
+KASBAH_EXIT_ENV_SETUP=5
+KASBAH_EXIT_COMPLIANCE_FAIL=6  # `kasbah check` recorded one or more failures
 
 # Where the server marker lives when nobody said otherwise. `server init`
 # defaults its --apps-path to this, and every project command finds the marker
 # there and reads the real paths back out of it.
-HOSTING_DEFAULT_APPS_PATH=/apps
+KASBAH_DEFAULT_APPS_PATH=/apps

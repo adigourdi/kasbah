@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test: lib/env_cmd.sh — `hosting env`, and the tri-state the deploy path shares
+# Test: lib/env_cmd.sh — `kasbah env`, and the tri-state the deploy path shares
 # with it.
 #
 # A unit suite: recording stubs for `ssh` and `rsync` go first on PATH, so
@@ -7,7 +7,7 @@
 # What the stubs record is the contract — which calls the command makes, in
 # which order, with which arguments.
 #
-# Two halves. Everything headless is driven straight through bin/hosting with
+# Two halves. Everything headless is driven straight through bin/kasbah with
 # stdin on /dev/null, which is the shape a CI runner produces and the one that
 # must never stop at a prompt. The prompt itself needs a terminal, so those
 # cases run behind script(1): `[ -t 0 ]` is a property of the pty and no
@@ -56,7 +56,7 @@ case "$last" in
 esac
 case "$last" in
     "'bash' '-s' '--' '/apps'")
-        marker_default='{"hosting_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"14.4","mem_limit":"54g"}'
+        marker_default='{"kasbah_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"14.4","mem_limit":"54g"}'
         printf '%s\n' "${MARKER-$marker_default}" ;;
     "'bash' '-s' '--' '/apps' 'demo'") printf 'prepared=yes\n' ;;
     *"setup-env.sh' '--drift' "*)
@@ -95,9 +95,9 @@ cp -R "$repo_dir/tests/fixtures/demo" "$project"
 
 env_cli() {
     : > "$call_log"
-    env -u HOSTING_LIB_DIR -u HOSTING_TEMPLATE_DIR -u HOSTING_VERSION \
+    env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" CALL_LOG="$call_log" \
-        "$repo_dir/bin/hosting" env "$@" </dev/null 2>&1
+        "$repo_dir/bin/kasbah" env "$@" </dev/null 2>&1
 }
 
 # The same command behind a pty, with the answers on its stdin. script(1) merges
@@ -114,7 +114,7 @@ env_cli_tty() {
     local redirect=""
     # `--redirect-stdout` sends the command's stdout to a file *inside* the pty
     # session, so stdin stays a terminal while stdout is not — the shape
-    # `hosting env user@vps > out.log` produces, and the one that separates a
+    # `kasbah env user@vps > out.log` produces, and the one that separates a
     # prompt this side can ask (stderr) from one the far side cannot show.
     if [ "${1:-}" = --redirect-stdout ]; then redirect=" > $(printf '%q' "$tmpdir/tty-stdout")"; shift; fi
     : > "$call_log"
@@ -122,13 +122,13 @@ env_cli_tty() {
     rm -f "$tmpdir/tty-out"
     local cmd
     # script(1) runs the string through `sh -c` in the *caller's* directory, and
-    # every project command reads ./hosting.yml — so the cd is part of the
+    # every project command reads ./kasbah.yml — so the cd is part of the
     # command rather than of this function, which has globals to write back.
     cmd="cd $(printf '%q' "$project") && "
-    cmd+="$(printf '%q ' env -u HOSTING_LIB_DIR -u HOSTING_TEMPLATE_DIR -u HOSTING_VERSION \
+    cmd+="$(printf '%q ' env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" CALL_LOG="$call_log" NO_COLOR=1 \
         "${TTY_ENV[@]+"${TTY_ENV[@]}"}" \
-        "$repo_dir/bin/hosting" env "$@")$redirect"
+        "$repo_dir/bin/kasbah" env "$@")$redirect"
     timeout 60 script -qfec "$cmd" "$tmpdir/tty-out" < "$tmpdir/tty-in" >/dev/null 2>&1
     tty_rc=$?
     tty_out=$(<"$tmpdir/tty-out")
@@ -144,7 +144,7 @@ calls() { cat "$call_log"; }
 # --- Case 1: the local refusals, before anything remote -------------------------
 out=$( cd "$tmpdir" && env_cli deploy@vps ); rc=$?
 assert '[ "$rc" = "2" ]' "env outside a project exits 2, like every project command (rc $rc: $out)"
-assert 'grep -qF "No hosting.yml" <<<"$out"' "naming the file it wanted (said '$out')"
+assert 'grep -qF "No kasbah.yml" <<<"$out"' "naming the file it wanted (said '$out')"
 assert '[ ! -s "$call_log" ]' "and opens no connection (calls: $(calls))"
 
 out=$( cd "$project" && env_cli ); rc=$?
@@ -198,8 +198,8 @@ cp "$stub_dir/ssh" "$stub_dir/ssh.full"
 cp "$stub_dir/ssh.marker-missing" "$stub_dir/ssh"
 out=$( cd "$project" && env_cli deploy@vps ); rc=$?
 assert '[ "$rc" = "4" ]' "env against an unprepared server exits 4, like deploy (rc $rc: $out)"
-assert 'grep -qF "/apps/.hosting/server.json" <<<"$out"' "naming the marker (said '$out')"
-assert '! grep -qE "hosting server init [A-Za-z0-9._-]+@" <<<"$out"' \
+assert 'grep -qF "/apps/.kasbah/server.json" <<<"$out"' "naming the marker (said '$out')"
+assert '! grep -qE "kasbah server init [A-Za-z0-9._-]+@" <<<"$out"' \
     "and never prints a runnable bare \`server init\` as the remedy (said '$out')"
 assert '[ "$(grep -c "^rsync|" "$call_log")" = "0" ]' \
     "nothing was shipped to a server that is not prepared (calls: $(calls))"
@@ -220,7 +220,7 @@ assert 'grep -qF ".env.prod.example" <<<"$out"' "naming the file (said '$out')"
 assert '! grep -qF -- "--drift" "$call_log"' "before any probe (calls: $(calls))"
 
 # --- Case 3: headless, the setup cannot run -------------------------------------
-# `hosting env` exists to run the interactive generator, so with no terminal
+# `kasbah env` exists to run the interactive generator, so with no terminal
 # there is nothing for it to do but say so. Exit 5, the same code the deploy
 # path uses for "the env step could not complete".
 out=$( cd "$project" && env_cli deploy@vps ); rc=$?
@@ -230,8 +230,8 @@ assert '! grep -qE "^ssh\|-t\|" "$call_log"' \
     "and never opened a session it could not drive ($(grep -E "^ssh\|-t" "$call_log"))"
 assert '! grep -qF -- "--inject" "$call_log"' \
     "and wrote no block, because the .env it would go in was never rendered ($(calls))"
-assert '[ ! -f "$project/.hosting/state.json" ]' "a failed run records no last_server"
-# The remedy has to be one that can reach this branch. `hosting env` runs the
+assert '[ ! -f "$project/.kasbah/state.json" ]' "a failed run records no last_server"
+# The remedy has to be one that can reach this branch. `kasbah env` runs the
 # setup whether or not there is drift, so --on-drift= is never consulted here:
 # offering it would tell the operator to re-run the identical command for the
 # identical exit 5 (docs/phases/02-spine.md — refusing safely while naming a
@@ -254,9 +254,9 @@ out=$( cd "$project" && ENV_MISSING=NEW_KEY env_cli deploy@vps --on-drift=contin
 assert '[ "$rc" = "0" ]' "--on-drift=continue needs no terminal (rc $rc: $out)"
 assert 'grep -qF "has drifted" <<<"$out"' "and still reports the drift (said '$out')"
 assert '! grep -qE "^ssh\|-t\|" "$call_log"' "without opening an interactive session"
-assert 'grep -qF "setup-env.sh'\'' '\''--inject'\'' '\''/apps/demo'\'' '\''HOSTING_CPU_LIMIT=14.4'\'' '\''HOSTING_MEM_LIMIT=54g'\''" "$call_log"' \
+assert 'grep -qF "setup-env.sh'\'' '\''--inject'\'' '\''/apps/demo'\'' '\''KASBAH_CPU_LIMIT=14.4'\'' '\''KASBAH_MEM_LIMIT=54g'\''" "$call_log"' \
     "the block carries the marker's own limits, unreformatted ($(grep -F -- "--inject" "$call_log"))"
-assert '[ "$(jq -r .last_server "$project/.hosting/state.json" 2>/dev/null)" = "deploy@vps" ]' \
+assert '[ "$(jq -r .last_server "$project/.kasbah/state.json" 2>/dev/null)" = "deploy@vps" ]' \
     "and a run that worked records the server it went to"
 
 # The order the two rsyncs and the probe have to be in: the generator prompts
@@ -277,15 +277,15 @@ assert '[ "$n_drift" -gt "$n_template" ] && [ "$n_drift" -gt "$n_helper" ]' \
 assert '[ "$n_inject" -gt "$n_drift" ]' "and injection is last (drift $n_drift, inject $n_inject)"
 assert 'grep -qF "|-pt|--chmod=F755|-s|$repo_dir/lib/env.sh|deploy@vps:/apps/demo/scripts/setup-env.sh" "$call_log"' \
     "setup-env.sh is lib/env.sh itself, shipped executable ($(grep -F "env.sh|" "$call_log"))"
-rm -rf "$project/.hosting"
+rm -rf "$project/.kasbah"
 
 out=$( cd "$project" && ENV_MISSING=NEW_KEY env_cli deploy@vps --on-drift=abort ); rc=$?
 assert '[ "$rc" = "5" ]' "--on-drift=abort exits 5 (rc $rc: $out)"
 assert '! grep -qF -- "--inject" "$call_log"' "changing nothing on the server ($(calls))"
-assert '[ ! -f "$project/.hosting/state.json" ]' "and recording nothing locally"
+assert '[ ! -f "$project/.kasbah/state.json" ]' "and recording nothing locally"
 
 # --- Case 5: behind a terminal, the setup runs ----------------------------------
-# No drift, nothing passed: `hosting env` runs the generator anyway, because
+# No drift, nothing passed: `kasbah env` runs the generator anyway, because
 # that is what it is for — the generator's own "reconfigure anyway?" shortcut is
 # the thing being reached (docs/env-template.md → Update modes).
 env_cli_tty '' deploy@vps
@@ -298,7 +298,7 @@ n_setup=$(grep -n -- "-t|" "$call_log" | head -1 | cut -d: -f1)
 n_inject=$(grep -n -- "--inject" "$call_log" | head -1 | cut -d: -f1)
 assert '[ -n "$n_setup" ] && [ -n "$n_inject" ] && [ "$n_inject" -gt "$n_setup" ]' \
     "injection runs after setup, never before — setup rebuilds .env from a template with no reserved keys in it (setup $n_setup, inject $n_inject)"
-rm -rf "$project/.hosting"
+rm -rf "$project/.kasbah"
 
 # A generator that did not finish is not a .env to deploy against.
 TTY_ENV=(SETUP_RC=1); env_cli_tty '' deploy@vps; TTY_ENV=()
@@ -329,7 +329,7 @@ assert '[ "$tty_rc" = "0" ]' "answering continue at the drift prompt exits 0 (rc
 assert 'grep -qF "setup/continue/abort" <<<"$tty_out"' "the prompt names its three answers (said '$tty_out')"
 assert '! grep -qE "^ssh\|-t\|" "$call_log"' "and continue runs no setup ($(calls))"
 assert 'grep -qF -- "--inject" "$call_log"' "but still refreshes the block"
-rm -rf "$project/.hosting"
+rm -rf "$project/.kasbah"
 
 TTY_ENV=(ENV_MISSING=NEW_KEY); env_cli_tty $'abort\n' deploy@vps; TTY_ENV=()
 assert '[ "$tty_rc" = "5" ]' "answering abort exits 5 (rc $tty_rc: $tty_out)"
@@ -338,7 +338,7 @@ assert '! grep -qF -- "--inject" "$call_log"' "changing nothing ($(calls))"
 TTY_ENV=(ENV_MISSING=NEW_KEY); env_cli_tty $'setup\n' deploy@vps; TTY_ENV=()
 assert '[ "$tty_rc" = "0" ]' "answering setup exits 0 (rc $tty_rc: $tty_out)"
 assert 'grep -qE "^ssh\|-t\|" "$call_log"' "and is the one answer that runs the generator ($(calls))"
-rm -rf "$project/.hosting"
+rm -rf "$project/.kasbah"
 
 # An answer that is none of the three is re-asked rather than taken for one of
 # them — silently reading `yes` as `continue` would deploy against a .env the
@@ -351,9 +351,9 @@ assert '[ "$(grep -c "setup/continue/abort" <<<"$tty_out")" = "2" ]' \
 
 # Redirecting stdout does not take the question away. prompt_value asks on
 # *stderr*, the way bash's own `read -p` does, and checks `[ -t 0 ]` and nothing
-# else (lib/prompt.sh) — so `hosting env user@vps > out.log` is answerable, and
+# else (lib/prompt.sh) — so `kasbah env user@vps > out.log` is answerable, and
 # a guard here that also demanded `[ -t 1 ]` would refuse what
-# `hosting server init` accepts in the identical shape.
+# `kasbah server init` accepts in the identical shape.
 TTY_ENV=(ENV_MISSING=NEW_KEY); env_cli_tty $'continue\n' --redirect-stdout deploy@vps; TTY_ENV=()
 assert '[ "$tty_rc" = "0" ]' \
     "the drift prompt is asked and answered with stdout on a file (rc $tty_rc: $tty_out)"
@@ -362,12 +362,12 @@ assert 'grep -qF "setup/continue/abort" <<<"$tty_out"' \
 assert '! grep -qF "no terminal to ask on" <<<"$tty_out"' \
     "and nothing was refused for want of one (said '$tty_out')"
 assert 'grep -qF -- "--inject" "$call_log"' "the run finished (calls: $(calls))"
-rm -rf "$project/.hosting"
+rm -rf "$project/.kasbah"
 
 # The flag still wins over the terminal: with one passed, nothing is asked.
 TTY_ENV=(ENV_MISSING=NEW_KEY); env_cli_tty '' deploy@vps --on-drift=continue; TTY_ENV=()
 assert '[ "$tty_rc" = "0" ]' "a flag answers the question a terminal would have asked (rc $tty_rc: $tty_out)"
 assert '! grep -qF "setup/continue/abort" <<<"$tty_out"' "with no prompt at all (said '$tty_out')"
-rm -rf "$project/.hosting"
+rm -rf "$project/.kasbah"
 
 exit "$fail"

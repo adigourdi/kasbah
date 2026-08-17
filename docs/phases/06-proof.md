@@ -1,7 +1,7 @@
 # Phase 6 — Proof  ← the real milestone
 
 > A real project — deliberately not named in this plan — runs on a freshly
-> provisioned VPS through hosting alone: from bare server to HTTPS with a
+> provisioned VPS through kasbah alone: from bare server to HTTPS with a
 > real Let's Encrypt cert, plus a change deploy and a rollback, all on
 > real infrastructure.
 
@@ -15,7 +15,7 @@ port 80, ACME.
 **Retires:** real-world ACME/DNS/network behavior; "does the generalization hold for a project it wasn't extracted from".
 
 ## Exit criteria
-- [ ] A fresh VPS goes from bare Docker host to serving the project over HTTPS (valid LE cert) using only hosting commands
+- [ ] A fresh VPS goes from bare Docker host to serving the project over HTTPS (valid LE cert) using only kasbah commands
 - [ ] A second deploy of a trivial change lands end to end (tag → build-push → deploy → hooks → live)
 - [ ] A rollback on the real VPS restores the prior version (the Phase 5 drill, repeated on real infra)
 - [ ] Docs reconciled: everything reality contradicted is fixed in `docs/` now
@@ -24,12 +24,12 @@ port 80, ACME.
 
 ### 6.1 — Project conformance, locally (M)
 `init-project` in the chosen project, compose in the new pattern (network
-split, `HOSTING_*` limits, `container_name`s, logging), fragment, env
-template. `hosting check` clean, then a full rehearsal deploy to the rig
+split, `KASBAH_*` limits, `container_name`s, logging), fragment, env
+template. `kasbah check` clean, then a full rehearsal deploy to the rig
 — hooks and all, if the project has them.
 
 **Deliverables**
-- [ ] `hosting check` exits 0 in the project
+- [ ] `kasbah check` exits 0 in the project
 - [ ] Rehearsal deploy on the rig serves the project via fragment routing
 
 **Watch out for:** this is the first non-fixture project — expect the
@@ -59,7 +59,7 @@ ACME issuance time, fragment reload latency in production Traefik.
 
 **Deliverables**
 - [ ] Three `versions.log` entries (deploy, deploy, rollback), all well-formed
-- [ ] `hosting history` / `pending` / `server status` correct against the real VPS
+- [ ] `kasbah history` / `pending` / `server status` correct against the real VPS
 - [ ] Measurements recorded in Findings
 
 **Watch out for:** the interactive env setup runs over `ssh -t` for real

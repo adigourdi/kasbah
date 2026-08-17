@@ -1,6 +1,6 @@
 # Traefik — Shared Reverse Proxy
 
-One Traefik instance per VPS, managed by hosting. Projects declare their
+One Traefik instance per VPS, managed by kasbah. Projects declare their
 routing as file-provider fragments dropped into a shared dynamic directory.
 
 ## Why shared
@@ -40,14 +40,14 @@ The file provider fixes all three:
 - All routing lives under `/apps/traefik/dynamic/` — one directory to audit.
 
 The docker provider is **not** wired in. Projects do not use `traefik.*`
-labels; `hosting check` rejects them.
+labels; `kasbah check` rejects them.
 
 ## Ownership
 
 The Traefik stack lives at `/apps/traefik/` on the VPS and is managed by
-`hosting server init / status`.
+`kasbah server init / status`.
 
-**`compose.yml`, `traefik.yml` and `_shared.yml` are hosting's, and every
+**`compose.yml`, `traefik.yml` and `_shared.yml` are kasbah's, and every
 `server init` re-ships any of them whose bytes differ.** A hand edit to either is reverted on the next run, with
 no backup — so treat them as generated files, not as configuration you own.
 What survives a re-run is exactly the three values init reads back out of
@@ -56,8 +56,8 @@ them: the dashboard domain, the ACME email, and the basic-auth hash.
 Project fragments in `dynamic/<project>.yml` are a different matter — those
 belong to their projects and init never touches them. Files you add under
 `dynamic/` yourself survive too, provided they do not start with `_`, which
-is hosting's prefix. If you need to change what `traefik.yml` contains, the
-change belongs in hosting's template rather than on the server; otherwise
+is kasbah's prefix. If you need to change what `traefik.yml` contains, the
+change belongs in kasbah's template rather than on the server; otherwise
 it lasts until the next init.
 
 ## Network
@@ -65,8 +65,8 @@ it lasts until the next init.
 ```yaml
 # /apps/traefik/compose.yml (excerpt)
 networks:
-  hosting-net:
-    name: hosting-net
+  kasbah-net:
+    name: kasbah-net
     driver: bridge
 ```
 
@@ -78,23 +78,23 @@ via the project's `default` network:
 services:
   web:
     container_name: myapp-web
-    networks: [hosting-net, internal]
+    networks: [kasbah-net, internal]
   postgres:
     networks: [internal]
 
 networks:
-  hosting-net:
+  kasbah-net:
     external: true
   internal: {}
 ```
 
-Why not put the whole project on `hosting-net` via `default:`? Compose
+Why not put the whole project on `kasbah-net` via `default:`? Compose
 registers every service's **service name** as a DNS alias on each network
 it joins. On a shared network, two projects that each have a service called
 `postgres` would both register the `postgres` alias — and Docker DNS
 round-robins between them, so project A's app can silently connect to
 project B's database. Keeping internal services on a project-internal
-network scopes those aliases. `hosting check` enforces the split (C03/C07).
+network scopes those aliases. `kasbah check` enforces the split (C03/C07).
 
 The network is what lets Traefik resolve `http://<container_name>:<port>`
 in the file fragment. Container names — unlike service-name aliases — are
@@ -116,20 +116,20 @@ providers:
 `/apps/traefik/dynamic/` on the host. Changes are picked up live — no
 Traefik restart, no `compose up` on the project.
 
-Hosting-owned fragments (written by `hosting server init`):
+Kasbah-owned fragments (written by `kasbah server init`):
 - `_shared.yml` — middlewares, TLS options, dashboard router.
 - `_mail.yml` — cert-trigger + webmail routers. Only written when
   `--with-mail` is passed. See `mail.md`.
 
 Project fragments are named `<manifest.name>.yml`. Filenames starting
-with `_` belong to hosting and get overwritten on
-`hosting server upgrade-traefik` — don't author your own `_`-prefixed files.
+with `_` belong to kasbah and get overwritten on
+`kasbah server upgrade-traefik` — don't author your own `_`-prefixed files.
 
 ## Project fragment
 
-Each project ships `traefik-dynamic.yml` at its repo root. `hosting deploy`
+Each project ships `traefik-dynamic.yml` at its repo root. `kasbah deploy`
 rsyncs it directly to `/apps/traefik/dynamic/<manifest.name>.yml` — no
-intermediate copy, no entry in the manifest's `sync:` list. Hosting
+intermediate copy, no entry in the manifest's `sync:` list. Kasbah
 handles it out-of-band, same as `setup-env.sh` and `remote-deploy.sh`.
 Traefik picks up the change on the next watch tick.
 
@@ -164,7 +164,7 @@ http:
           - url: "http://myapp-web:80"
 ```
 
-The service URL names a container on `hosting-net`. Pin it via compose's
+The service URL names a container on `kasbah-net`. Pin it via compose's
 `container_name:` so the URL stays stable across restarts.
 
 ### Redirect-only router
@@ -186,7 +186,7 @@ http:
 `noop@internal` is Traefik's built-in placeholder for routers whose
 middleware fully handles the response (a redirect, in this case).
 
-## Middlewares provided by hosting
+## Middlewares provided by kasbah
 
 Referenced via `@file` from `_shared.yml`:
 
@@ -212,23 +212,23 @@ Project-specific middlewares go in the same project fragment under
 ## Dashboard
 
 Enabled by default at `traefik.<init-domain>`, protected by basic auth
-(hash generated during `hosting server init`). The dashboard router lives
+(hash generated during `kasbah server init`). The dashboard router lives
 in `_shared.yml`, not the docker-provider API entrypoint.
 
 ## Health
 
-Traefik has a compose healthcheck (`traefik healthcheck --ping`). `hosting
+Traefik has a compose healthcheck (`traefik healthcheck --ping`). `kasbah
 server status` surfaces it.
 
 ## Lifecycle on deploy / rollback / drop
 
-- **Deploy** — hosting rsyncs `traefik-dynamic.yml` directly to
+- **Deploy** — kasbah rsyncs `traefik-dynamic.yml` directly to
   `/apps/traefik/dynamic/<manifest.name>.yml`. Rsync writes temp + rename,
   so Traefik sees a single atomic replace event and reloads.
-- **Rollback** — hosting reads `traefik-dynamic.yml` from
+- **Rollback** — kasbah reads `traefik-dynamic.yml` from
   `git archive v<target>` and rsyncs it to the same destination.
 - **Drop** (roadmap v0.3) — `rm /apps/traefik/dynamic/<manifest.name>.yml`
-  before `docker compose down`. (`hosting server destroy` deliberately
+  before `docker compose down`. (`kasbah server destroy` deliberately
   leaves fragments in place — a handover keeps every site routing.)
 
 ## What projects may NOT do
@@ -237,22 +237,22 @@ server status` surfaces it.
 - Add routers in their fragment for `traefik.<domain>` (reserved for the
   dashboard).
 - Add routers in their fragment for `mail.<domain>` or `webmail.<domain>`
-  (claimed by hosting's `_mail.yml` — cert-trigger and SnappyMail).
+  (claimed by kasbah's `_mail.yml` — cert-trigger and SnappyMail).
 - Bind ports 80 or 443 on the host (they belong to Traefik).
-- Replace the `hosting-net` network.
-- Attach non-routed services (databases, caches, workers) to `hosting-net` —
+- Replace the `kasbah-net` network.
+- Attach non-routed services (databases, caches, workers) to `kasbah-net` —
   internal services stay on a project-internal network.
 
-`hosting check` enforces these (rules T01–T07, C07).
+`kasbah check` enforces these (rules T01–T07, C07).
 
 ## Upgrading Traefik
 
 ```
-hosting server upgrade-traefik user@vps --version=v3.7
+kasbah server upgrade-traefik user@vps --version=v3.7
 ```
 
-(Roadmap v0.3.) Until then, change the pinned tag in hosting's own
-`templates/traefik/compose.yml` and re-run `hosting server init` — **not**
-the copy on the VPS. `compose.yml` is one of the three hosting-owned files
+(Roadmap v0.3.) Until then, change the pinned tag in kasbah's own
+`templates/traefik/compose.yml` and re-run `kasbah server init` — **not**
+the copy on the VPS. `compose.yml` is one of the three kasbah-owned files
 init re-ships whenever its bytes differ, so an edit made on the server is
 reverted by the next init, without a backup and without a warning.

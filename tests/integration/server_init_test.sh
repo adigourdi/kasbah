@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Integration test: `hosting server init` against the live rig.
+# Integration test: `kasbah server init` against the live rig.
 #
 # What the hermetic suite cannot show: that the layout really lands on a VPS,
 # that acme.json is a *file* on a real filesystem, that the marker carries this
 # host's own resources, and that a second run changes nothing. Everything is
-# read back off the rig — hosting's own summary is not evidence.
+# read back off the rig — kasbah's own summary is not evidence.
 #
 # The rig is treated as given: this suite never starts, resets or stops it. It
 # does call rig_clean, which establishes a known starting state rather than
@@ -21,7 +21,7 @@ repo_dir="$(cd "$(dirname "$0")/../.." && pwd)"
 apps=/apps
 data=/apps/data
 acme="$data/traefik/letsencrypt/acme.json"
-marker="$apps/.hosting/server.json"
+marker="$apps/.kasbah/server.json"
 
 # The Traefik stack the golden path brings up. `.test` is reserved by RFC 6761,
 # so nothing here can accidentally name a real host — and ACME cannot issue for
@@ -61,7 +61,7 @@ cleanup() {
     [ -z "$hidden_bin" ] || rig_ssh "sudo mv -f $hidden_bin.hidden $hidden_bin" >/dev/null 2>&1
     [ -z "$mounted" ] || rig_ssh "sudo umount $mounted" >/dev/null 2>&1
     [ -z "$foreign" ] || rig_ssh "sudo rm -rf $foreign" >/dev/null 2>&1
-    [ -z "$bashrc_planted" ] || rig_ssh "mv -f ~/.bashrc.hosting-unit-c ~/.bashrc" >/dev/null 2>&1
+    [ -z "$bashrc_planted" ] || rig_ssh "mv -f ~/.bashrc.kasbah-unit-c ~/.bashrc" >/dev/null 2>&1
     rm -rf "$tmpdir"
 }
 trap cleanup EXIT
@@ -86,7 +86,7 @@ if ! rig_clean; then
     exit 2
 fi
 
-init() { hosting_cli server init "$RIG_TARGET" "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; }
+init() { kasbah_cli server init "$RIG_TARGET" "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; }
 init_err() { cat "$tmpdir/err"; }
 
 # Names, types, modes, ownership and contents of everything under the apps path,
@@ -163,7 +163,7 @@ if rig_ssh "sudo mv $hidden_bin $hidden_bin.hidden" >/dev/null 2>&1; then
     assert 'grep -qF "gzip is missing" "$tmpdir/err"' \
         "the failure names the row and the binary (said '$(init_err)')"
     assert 'grep -qF "prerequisites" "$tmpdir/err"' \
-        "the failure says it is a prerequisite, not a bug in hosting"
+        "the failure says it is a prerequisite, not a bug in kasbah"
     assert '[ "$(apps_state)" = "absent" ]' \
         "preflight fails before anything is created — the apps path is still not there"
     assert '[ -z "$hidden_bin" ]' "gzip was put back on the rig"
@@ -194,13 +194,13 @@ set -uo pipefail
 apps=$1
 data=$2
 acme=$data/traefik/letsencrypt/acme.json
-marker=$apps/.hosting/server.json
+marker=$apps/.kasbah/server.json
 
 kv() { printf '%s=%s\n' "$1" "$2"; }
 isdir() { if [ -d "$1" ]; then kv "$2" yes; else kv "$2" no; fi; }
 
 isdir "$apps"                     d_apps
-isdir "$apps/.hosting"            d_hosting
+isdir "$apps/.kasbah"            d_kasbah
 isdir "$apps/backups"             d_backups
 isdir "$apps/traefik"             d_traefik
 isdir "$apps/traefik/dynamic"     d_dynamic
@@ -219,12 +219,12 @@ if [ -f "$marker" ]; then kv marker_isfile yes; else kv marker_isfile no; fi
 
 # The control: a directory at a path named acme.json, which is exactly what
 # Docker leaves behind when it materialises a missing bind-mount source.
-control=/tmp/hosting-acme-control/acme.json
-rm -rf /tmp/hosting-acme-control
+control=/tmp/kasbah-acme-control/acme.json
+rm -rf /tmp/kasbah-acme-control
 mkdir -p "$control"
 if [ -f "$control" ]; then kv control_isfile yes; else kv control_isfile no; fi
 if [ -r "$control" ]; then kv control_isreadable yes; else kv control_isreadable no; fi
-rm -rf /tmp/hosting-acme-control
+rm -rf /tmp/kasbah-acme-control
 
 kv nproc "$(nproc)"
 memtotal_kb=""
@@ -250,7 +250,7 @@ while IFS= read -r line; do
     case $line in *=*) fact[${line%%=*}]=${line#*=} ;; esac
 done <<<"$probe_out"
 missing=()
-for key in d_apps d_hosting d_backups d_traefik d_dynamic d_data d_letsencrypt \
+for key in d_apps d_kasbah d_backups d_traefik d_dynamic d_data d_letsencrypt \
            apps_owner acme_isfile acme_isdir acme_isreadable acme_mode acme_owner \
            marker_isfile control_isfile control_isreadable nproc memtotal_kb; do
     [ -n "${fact[$key]+set}" ] || missing+=("$key")
@@ -262,7 +262,7 @@ if [ "${#missing[@]}" -gt 0 ]; then
 fi
 
 # --- The layout ---------------------------------------------------------------
-for d in d_apps:"$apps" d_hosting:"$apps/.hosting" d_backups:"$apps/backups" \
+for d in d_apps:"$apps" d_kasbah:"$apps/.kasbah" d_backups:"$apps/backups" \
          d_traefik:"$apps/traefik" d_dynamic:"$apps/traefik/dynamic" \
          d_data:"$data" d_letsencrypt:"$data/traefik/letsencrypt"; do
     key="${d%%:*}"; path="${d#*:}"
@@ -288,13 +288,13 @@ assert '[ "${fact[marker_isfile]}" = "yes" ]' "$marker exists as a file"
 marker_json=$(rig_ssh "cat $marker" 2>/dev/null)
 assert 'jq -e . >/dev/null 2>&1 <<<"$marker_json"' "the marker parses as JSON (got '$marker_json')"
 if jq -e . >/dev/null 2>&1 <<<"$marker_json"; then
-    for key in hosting_version apps_path data_path cpu_limit mem_limit backup; do
+    for key in kasbah_version apps_path data_path cpu_limit mem_limit backup; do
         assert 'jq -e --arg k "$key" "has(\$k)" >/dev/null <<<"$marker_json"' \
             "the marker carries $key (got '$marker_json')"
     done
     version="$(cat "$repo_dir/VERSION")"
-    assert '[ "$(jq -r .hosting_version <<<"$marker_json")" = "$version" ]' \
-        "the marker records this checkout's version (wanted $version, got '$(jq -r .hosting_version <<<"$marker_json")')"
+    assert '[ "$(jq -r .kasbah_version <<<"$marker_json")" = "$version" ]' \
+        "the marker records this checkout's version (wanted $version, got '$(jq -r .kasbah_version <<<"$marker_json")')"
     assert '[ "$(jq -r .apps_path <<<"$marker_json")" = "$apps" ]'  "the marker records the apps path"
     assert '[ "$(jq -r .data_path <<<"$marker_json")" = "$data" ]'  "the marker records the data path"
     assert '[ "$(jq -r .backup.enabled <<<"$marker_json")" = "false" ]' \
@@ -327,7 +327,7 @@ fi
 
 # --- The Traefik stack ----------------------------------------------------------
 # One session for every fact about the container, read off the rig rather than
-# taken from hosting's own summary.
+# taken from kasbah's own summary.
 tfk_out=$(rig_ssh "bash -s" 2>"$tmpdir/tfk.err" <<'REMOTE'
 set -uo pipefail
 kv() { printf '%s=%s\n' "$1" "$2"; }
@@ -340,8 +340,8 @@ kv project "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.proj
 kv nets    "$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' traefik 2>/dev/null)"
 kv version "$(docker exec traefik traefik version 2>/dev/null | tr -d '\r' | tr '\n' ' ')"
 
-if docker network inspect hosting-net >/dev/null 2>&1; then kv net_hosting yes; else kv net_hosting no; fi
-kv net_driver "$(docker network inspect -f '{{.Driver}}' hosting-net 2>/dev/null)"
+if docker network inspect kasbah-net >/dev/null 2>&1; then kv net_kasbah yes; else kv net_kasbah no; fi
+kv net_driver "$(docker network inspect -f '{{.Driver}}' kasbah-net 2>/dev/null)"
 
 # The ping entrypoint on :80 — plain HTTP, no router involved. It is also the
 # positive control for the HTTPS rows: if Traefik were not listening at all,
@@ -361,7 +361,7 @@ while IFS= read -r line; do
     case $line in *=*) tfk[${line%%=*}]=${line#*=} ;; esac
 done <<<"$tfk_out"
 missing=()
-for key in state health image mounts project nets version net_hosting net_driver ping_code; do
+for key in state health image mounts project nets version net_kasbah net_driver ping_code; do
     [ -n "${tfk[$key]+set}" ] || missing+=("$key")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
@@ -377,7 +377,7 @@ assert '[[ "${tfk[image]}" =~ ^traefik:v3\.[0-9]+\.[0-9]+$ ]]' \
 assert 'grep -qF "${tfk[image]#traefik:v}" <<<"${tfk[version]}"' \
     "and the binary inside reports that same version (image '${tfk[image]}', binary said '${tfk[version]}')"
 assert '[ "${tfk[project]}" = "traefik" ]' \
-    "it belongs to the compose project hosting names with -p (got '${tfk[project]}')"
+    "it belongs to the compose project kasbah names with -p (got '${tfk[project]}')"
 assert '[ "${tfk[ping_code]}" = "200" ]' \
     "the ping entrypoint answers 200 on :80 (got '${tfk[ping_code]}')"
 
@@ -405,9 +405,9 @@ assert 'grep -qF "$acme:/letsencrypt/acme.json" <<<"${tfk[mounts]}"' \
     "and acme.json from the data path (mounts: ${tfk[mounts]})"
 
 # Frozen names, on the server rather than in the template.
-assert '[ "${tfk[net_hosting]}" = "yes" ]' "the hosting-net network exists"
+assert '[ "${tfk[net_kasbah]}" = "yes" ]' "the kasbah-net network exists"
 assert '[ "${tfk[net_driver]}" = "bridge" ]' "as a bridge (got '${tfk[net_driver]}')"
-assert 'grep -qw "hosting-net" <<<"${tfk[nets]}"' \
+assert 'grep -qw "kasbah-net" <<<"${tfk[nets]}"' \
     "and Traefik is attached to it (networks: ${tfk[nets]})"
 
 shared_yml=$(rig_ssh "cat $apps/traefik/dynamic/_shared.yml" 2>/dev/null)
@@ -504,10 +504,10 @@ assert '[ "$boot_restarted" = "2" ]' \
 # against a container created from the canonical definition and changes nothing.
 # The running container has to be the odd one out, so it is started from the
 # edited file by hand and init is what returns the stack to normal.
-rig_ssh "sed -i 's|^    restart: unless-stopped\$|    restart: unless-stopped\n    environment:\n      HOSTING_PROBE: \"1\"|' $apps/traefik/compose.yml \
+rig_ssh "sed -i 's|^    restart: unless-stopped\$|    restart: unless-stopped\n    environment:\n      KASBAH_PROBE: \"1\"|' $apps/traefik/compose.yml \
          && cd $apps/traefik && docker compose -p traefik up -d" >/dev/null 2>&1
 id_probe=$(traefik_container_id)
-probe_env=$(rig_ssh "docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' traefik | grep -c HOSTING_PROBE || true" 2>/dev/null)
+probe_env=$(rig_ssh "docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' traefik | grep -c KASBAH_PROBE || true" 2>/dev/null)
 assert '[ "$probe_env" = "1" ]' \
     "a Traefik built from a different service definition is running (got '$probe_env') — else this case proves nothing"
 assert '[ "$id_probe" != "$id_before" ]' "and it really is a different container"
@@ -531,16 +531,16 @@ assert '[ "$(apps_checksum)" = "$before" ]' "and both files are back at the rend
 # with it. COMPOSE_PROJECT_NAME outranks `name:` and `down` removes by project
 # label, which is what put nine unrelated containers in range on this
 # workstation (docs/phases/01-rig.md).
-if rig_ssh "cp ~/.bashrc ~/.bashrc.hosting-unit-c && printf 'export COMPOSE_PROJECT_NAME=%s\n%s' hosting-not-traefik \"\$(cat ~/.bashrc)\" > ~/.bashrc.new && mv ~/.bashrc.new ~/.bashrc" >/dev/null 2>&1; then
+if rig_ssh "cp ~/.bashrc ~/.bashrc.kasbah-unit-c && printf 'export COMPOSE_PROJECT_NAME=%s\n%s' kasbah-not-traefik \"\$(cat ~/.bashrc)\" > ~/.bashrc.new && mv ~/.bashrc.new ~/.bashrc" >/dev/null 2>&1; then
     bashrc_planted=yes
     planted=$(rig_ssh "bash -s" <<<'echo "${COMPOSE_PROJECT_NAME:-unset}"' 2>/dev/null)
-    assert '[ "$planted" = "hosting-not-traefik" ]' \
-        "COMPOSE_PROJECT_NAME reaches the shell hosting runs its remote steps in (got '$planted') — else this case proves nothing"
+    assert '[ "$planted" = "kasbah-not-traefik" ]' \
+        "COMPOSE_PROJECT_NAME reaches the shell kasbah runs its remote steps in (got '$planted') — else this case proves nothing"
 
-    # The control: in the very directory hosting works in, compose without -p
+    # The control: in the very directory kasbah works in, compose without -p
     # follows the variable rather than the file's own name:.
     resolved_bare=$(rig_ssh "cd $apps/traefik && docker compose config --format json 2>/dev/null | sed -n 's/.*\"name\": *\"\([^\"]*\)\".*/\1/p' | head -1" 2>/dev/null)
-    assert '[ "$resolved_bare" = "hosting-not-traefik" ]' \
+    assert '[ "$resolved_bare" = "kasbah-not-traefik" ]' \
         "and without -p, compose really does prefer it over the file's name: (got '$resolved_bare')"
 
     init --no-mail --no-backup; rc=$?
@@ -550,7 +550,7 @@ if rig_ssh "cp ~/.bashrc ~/.bashrc.hosting-unit-c && printf 'export COMPOSE_PROJ
         "and -p wins: the stack stays in the traefik project (got '$labelled')"
     assert '[ "$(apps_checksum)" = "$before" ]' "with nothing re-rendered"
 
-    rig_ssh "mv -f ~/.bashrc.hosting-unit-c ~/.bashrc" >/dev/null 2>&1 && bashrc_planted=""
+    rig_ssh "mv -f ~/.bashrc.kasbah-unit-c ~/.bashrc" >/dev/null 2>&1 && bashrc_planted=""
     assert '[ -z "$bashrc_planted" ]' "the rig's .bashrc was put back"
 else
     assert 'false' "could not plant COMPOSE_PROJECT_NAME in the rig's environment"
@@ -574,36 +574,36 @@ init --no-mail --no-backup; rc=$?
 assert '[ "$rc" = "0" ]' "init repairs the tree once the directory is gone (exit $rc: $(init_err))"
 assert '[ "$(apps_checksum)" = "$before" ]' "and the repaired tree is the same tree, byte for byte"
 
-# --- A marker this hosting did not write in full ------------------------------
-# Phase 8 will put backup.repo_base in the marker, and a newer hosting may put
+# --- A marker this kasbah did not write in full ------------------------------
+# Phase 8 will put backup.repo_base in the marker, and a newer kasbah may put
 # keys this one has never heard of. Init owns five keys; a re-run must leave the
 # rest of the file exactly as it found it.
 if [ -n "$marker_json" ]; then
-    seeded=$(jq '.backup = {enabled: true, repo_base: "s3:https://example/hosting-backups"}
+    seeded=$(jq '.backup = {enabled: true, repo_base: "s3:https://example/kasbah-backups"}
                  | .future_key = {kept: [1, 2]}' <<<"$marker_json")
     printf '%s\n' "$seeded" | rig_ssh "cat > $marker" >/dev/null 2>&1
 
     init --no-mail --no-backup; rc=$?
     kept=$(rig_ssh "cat $marker" 2>/dev/null)
     assert '[ "$rc" = "0" ]' "init runs against a marker carrying keys it does not own (exit $rc: $(init_err))"
-    assert '[ "$(jq -r .backup.repo_base <<<"$kept")" = "s3:https://example/hosting-backups" ]' \
+    assert '[ "$(jq -r .backup.repo_base <<<"$kept")" = "s3:https://example/kasbah-backups" ]' \
         "backup.repo_base survived the re-run (marker is now '$kept')"
     assert '[ "$(jq -r .backup.enabled <<<"$kept")" = "true" ]' \
         "an enabled backup is not switched off by a plain re-run"
     assert '[ "$(jq -c .future_key <<<"$kept")" = "{\"kept\":[1,2]}" ]' \
-        "a key from a newer hosting survived the re-run"
+        "a key from a newer kasbah survived the re-run"
     assert '[ "$(jq -r .cpu_limit <<<"$kept")" = "${cpu:-unset}" ]' \
         "and the keys init does own are still current"
 
     # docs/server-setup.md's compatibility rule: an older tool refuses a newer
     # major rather than writing fields it does not understand.
-    newer=$(jq '.hosting_version = "99.0.0"' <<<"$marker_json")
+    newer=$(jq '.kasbah_version = "99.0.0"' <<<"$marker_json")
     printf '%s\n' "$newer" | rig_ssh "cat > $marker" >/dev/null 2>&1
     init --no-mail --no-backup; rc=$?
     still=$(rig_ssh "cat $marker" 2>/dev/null)
     assert '[ "$rc" != "0" ]' "init refuses a marker from a newer major (exit $rc)"
     assert 'grep -qF "99.0.0" "$tmpdir/err"' "the refusal names the version it found (said '$(init_err)')"
-    assert '[ "$(jq -r .hosting_version <<<"$still")" = "99.0.0" ]' \
+    assert '[ "$(jq -r .kasbah_version <<<"$still")" = "99.0.0" ]' \
         "the refused run did not overwrite the marker (got '$still')"
 
     rig_ssh "rm -f $marker" >/dev/null 2>&1
@@ -612,7 +612,7 @@ if [ -n "$marker_json" ]; then
     assert '[ "$(apps_checksum)" = "$before" ]' "and the tree is back at the baseline"
 fi
 
-# --- Paths that are not hosting's to take -------------------------------------
+# --- Paths that are not kasbah's to take -------------------------------------
 # Everything below lives outside the apps path, so rig_clean would not remove
 # it; the EXIT trap does.
 #
@@ -623,10 +623,10 @@ fi
 rig_ssh "cd $apps/traefik && docker compose -p traefik down" >/dev/null 2>&1
 assert '[ "$(apps_checksum)" = "$before" ]' "downing Traefik touches nothing under $apps"
 
-foreign=/srv/hosting-unit-b
+foreign=/srv/kasbah-unit-b
 owned="$foreign/owned"
 # The dangerous shape, not merely the awkward one: root-owned and *writable* by
-# the deploy user. A mode that kept hosting out would let a plain permission
+# the deploy user. A mode that kept kasbah out would let a plain permission
 # error stand in for the ownership rule, and the rule is the thing under test.
 rig_ssh "sudo mkdir -p $owned $foreign/ro && sudo sh -c 'echo secret > $owned/PRECIOUS' \
          && sudo chmod 777 $owned \
@@ -636,7 +636,7 @@ assert 'grep -qF "file-ok" <<<"$setup"'     "a root-owned directory the deploy u
 assert 'grep -qF "dangling-ok" <<<"$setup"' "a dangling symlink exists to aim at (got '$setup')"
 assert 'grep -qF "ro-ok" <<<"$setup"'       "an unwritable parent exists to aim at (got '$setup')"
 
-# The state hosting must never repair: a directory that exists, holds somebody
+# The state kasbah must never repair: a directory that exists, holds somebody
 # else's files, and is not the deploy user's. Chowning it would hand a live
 # /var/www to the deploy user and leave its contents in mixed ownership.
 init --apps-path="$owned" --no-mail --no-backup; rc=$?
@@ -650,18 +650,18 @@ assert 'grep -qF "root:root" <<<"$after_owned"' \
     "the directory still belongs to root — it was not seized (got '$after_owned')"
 assert '! grep -qF "$RIG_SSH_USER:$RIG_SSH_USER" <<<"$after_owned"' \
     "nothing in it changed hands (got '$after_owned')"
-assert '! grep -qF ".hosting" <<<"$after_owned"' \
+assert '! grep -qF ".kasbah" <<<"$after_owned"' \
     "and nothing was created inside it (got '$after_owned')"
 
 # The operator does what the message says, and then it works. A fresh apps path
 # has no Traefik stack to recover values from, so the flags come back.
 rig_ssh "sudo chown $RIG_SSH_USER:$RIG_SSH_USER $owned" >/dev/null 2>&1
 init --apps-path="$owned" --no-mail --no-backup "${traefik_flags[@]}"; rc=$?
-handed=$(rig_ssh "[ -f $owned/.hosting/server.json ] && echo marker-ok; stat -c '%U:%G' $owned/PRECIOUS" 2>&1)
+handed=$(rig_ssh "[ -f $owned/.kasbah/server.json ] && echo marker-ok; stat -c '%U:%G' $owned/PRECIOUS" 2>&1)
 assert '[ "$rc" = "0" ]' "init uses the path once it has been handed over (exit $rc: $(init_err))"
 assert 'grep -qF "marker-ok" <<<"$handed"' "the marker lands there (got '$handed')"
 assert 'grep -qF "root:root" <<<"$handed"' \
-    "and the pre-existing file is still root's — hosting chowns nothing recursively (got '$handed')"
+    "and the pre-existing file is still root's — kasbah chowns nothing recursively (got '$handed')"
 
 # A symlink to nothing answers -e with "no" and then fails `mkdir -p` with
 # "File exists", so it is diagnosed rather than walked into.
@@ -712,9 +712,9 @@ assert '[ "$(head -1 <<<"$walled_after")" = "root:root" ]' \
     "the directory still belongs to root — it did not change hands (got '$walled_after')"
 assert '! grep -qF "$RIG_SSH_USER:$RIG_SSH_USER" <<<"$walled_after"' \
     "nothing under it changed hands either (got '$walled_after')"
-assert '! grep -qF ".hosting" <<<"$walled_after"' "and nothing was created inside it (got '$walled_after')"
+assert '! grep -qF ".kasbah" <<<"$walled_after"' "and nothing was created inside it (got '$walled_after')"
 
-# The same wall, with nothing behind it: hosting cannot tell whether the path
+# The same wall, with nothing behind it: kasbah cannot tell whether the path
 # exists, and a path the deploy user cannot enter is no use even once created.
 init --apps-path="$locked/newone" --no-mail --no-backup; rc=$?
 assert '[ "$rc" != "0" ]' "init refuses to create below a wall it cannot cross (exit $rc)"

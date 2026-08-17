@@ -8,10 +8,10 @@ and generalized so every project gets the same flow.
 Versions come from git tags on the project repo, formatted `vX.Y.Z` (semver).
 
 - `build-push` requires HEAD to have exactly one `v<semver>` tag.
-- `hosting deploy` (no args) labels the **working tree** with HEAD's tag
+- `kasbah deploy` (no args) labels the **working tree** with HEAD's tag
   and rsyncs it as-is. Lets you iterate on compose / env template between
   tagged releases without forcing a commit for every tweak.
-- `hosting deploy X.Y.Z` and `hosting rollback X.Y.Z` target a specific
+- `kasbah deploy X.Y.Z` and `kasbah rollback X.Y.Z` target a specific
   tagged version. Files come from `git archive v<X.Y.Z>` — no checkout,
   working tree untouched.
 - `rollback` additionally requires the target to appear in `versions.log`
@@ -39,7 +39,7 @@ two tags per image.
 
 ### Retention
 
-`:<version>` tags are pruned routinely: `hosting server prune` (roadmap v0.2)
+`:<version>` tags are pruned routinely: `kasbah server prune` (roadmap v0.2)
 removes version tags that are **both** older than 3 months **and** not
 among the project's last 3 deployed versions — where the version
 `:current` points at counts as the first of the 3. `:current` itself is
@@ -48,12 +48,12 @@ the count floor guarantees rollback targets exist (current plus two
 older) even on rarely-deployed projects.
 
 The retention window **is** the rollback window. Anything older is a
-roll-forward (ship a fix), not a rollback. Hosting does not promise to
+roll-forward (ship a fix), not a rollback. Kasbah does not promise to
 resurrect pruned images from a dev machine: a rebuild from the tag is not
 byte-identical to what originally shipped, and in a multi-operator setup
 which laptop holds the original is unknowable.
 
-## `hosting build-push`
+## `kasbah build-push`
 
 ### Project shape is derived from compose
 
@@ -89,7 +89,7 @@ from compose itself.
 That's `deploy`'s job — decoupling lets you build-push without deploying
 (e.g. to stage an image ahead of time).
 
-## `hosting deploy`
+## `kasbah deploy`
 
 ### Two modes
 
@@ -115,15 +115,15 @@ below). The only differences:
      /apps/<name>/, scripts/, backups/, /apps/data/<name>/
 5. Rsync from working tree:
      - every path in manifest's `sync:` list → /apps/<name>/
-     - setup-env.sh and remote-deploy.sh (hosting-owned helpers, overwritten
-       on every deploy to match installed hosting version) → /apps/<name>/scripts/
+     - setup-env.sh and remote-deploy.sh (kasbah-owned helpers, overwritten
+       on every deploy to match installed kasbah version) → /apps/<name>/scripts/
    The Traefik fragment is deliberately **not** shipped here — see step 8h.
 6. Env drift check (via setup-env.sh on VPS):
      MISSING .env         → run interactive setup
      DRIFT from template  → prompt: re-run setup / continue / abort
      OK                   → continue
-   Then refresh the hosting-managed `HOSTING_*` keys in `.env` (resource
-   limits read from the server marker). The `HOSTING_` prefix is reserved
+   Then refresh the kasbah-managed `KASBAH_*` keys in `.env` (resource
+   limits read from the server marker). The `KASBAH_` prefix is reserved
    and exempt from drift detection.
 7. Mail claim (if manifest has `mail:`):
      verify mail stack is up
@@ -166,23 +166,23 @@ yet.
 
 ### Why working-tree for no-args, git-archive for explicit versions
 
-`hosting deploy` with no args is the iterate-and-ship path: you've cut
+`kasbah deploy` with no args is the iterate-and-ship path: you've cut
 a tag, tweaked compose or the env template since, and want to ship
 what's on disk. Using `git archive` there would force every tweak to
 be committed first, blocking the workflow.
 
-`hosting deploy X.Y.Z` means "deploy version X.Y.Z as it was tagged" —
+`kasbah deploy X.Y.Z` means "deploy version X.Y.Z as it was tagged" —
 reproducible, so it comes from `git archive`. The working tree is
 irrelevant (and untouched).
 
 ## SSH multiplexing
 
-`hosting deploy` and `hosting rollback` open an SSH ControlMaster before
+`kasbah deploy` and `kasbah rollback` open an SSH ControlMaster before
 any remote operation and reuse it for every subsequent `ssh` / `rsync` /
 `scp` in the same run:
 
 ```bash
-ctl="$(mktemp -d "${TMPDIR:-/tmp}/hosting-ssh.XXXXXX")"   # 0700, one per process
+ctl="$(mktemp -d "${TMPDIR:-/tmp}/kasbah-ssh.XXXXXX")"   # 0700, one per process
 ssh -o ControlMaster=auto \
     -o ControlPath="$ctl/m1" \
     -o ControlPersist=60s \
@@ -198,12 +198,12 @@ Four details in that command are load-bearing:
 
 - **The socket path must be unique per *process*, and no `%` token is.**
   Every expansion ssh offers — `%C`, `%h`, `%r`, `%p`, `%d` — is a
-  function of the target and the invoking user. Two hosting commands run
+  function of the target and the invoking user. Two kasbah commands run
   against the same server therefore compute the same path and share one
   master, and `ssh -O exit` closes a master **together with every session
   multiplexed over it, including another process's**. Measured: a
-  read-only `hosting server status` finishing its run killed a concurrent
-  `hosting server init` mid-step, which then reported a Traefik that was
+  read-only `kasbah server status` finishing its run killed a concurrent
+  `kasbah server init` mid-step, which then reported a Traefik that was
   in fact healthy and left the server with no marker. A `mktemp -d`
   directory cannot be computed by another process, and the counter inside
   it cannot repeat within this one — a name derived from the target
@@ -212,11 +212,11 @@ Four details in that command are load-bearing:
 - **The usable path budget is 90 bytes, not 108.** `sun_path` is 108, but
   the master binds `<path>.<16 random chars>` and renames it into place.
   Measured on OpenSSH 9.6p1: 90 connects, 91 fails with `unix_listener:
-  path … too long for Unix domain socket`. `/tmp/hosting-ssh.XXXXXX/m1`
+  path … too long for Unix domain socket`. `/tmp/kasbah-ssh.XXXXXX/m1`
   spends 26 of it; `~/.ssh/cm-` plus a 40-character `%C` spent 49 before
   the home directory was even counted.
 - **`TMPDIR`, not `~/.ssh`.** The socket is worth exactly one run. It also
-  keeps hosting from creating anything in the user's `~/.ssh`, and
+  keeps kasbah from creating anything in the user's `~/.ssh`, and
   sidesteps the fact that OpenSSH expands a leading `~` from the *passwd
   entry* rather than the environment — so `~/.ssh/cm-%C` ignores an
   overridden `HOME` and writes into the real home. (That same rule governs
@@ -228,7 +228,7 @@ Four details in that command are load-bearing:
   but not an established session. A remote command that wedges after
   connecting is unbounded without `ServerAlive*`.
 
-hosting takes no ssh-options flag. It runs plain `ssh user@host` and
+kasbah takes no ssh-options flag. It runs plain `ssh user@host` and
 inherits the user's own `ssh_config`, the same way git does over SSH:
 jump hosts, non-standard ports and key selection are already that file's
 job. Everything remote goes through `lib/ssh.sh`; nothing else in the
@@ -239,32 +239,32 @@ codebase invokes `ssh`, `rsync` or `scp` directly.
 Append-only, space-delimited. Lives at `/apps/<name>/versions.log` on the VPS:
 
 ```
-<iso-timestamp> <action> <version> <backup-path-or-"no-backup"> hosting=<version> digest=<image@sha256,…|->
+<iso-timestamp> <action> <version> <backup-path-or-"no-backup"> kasbah=<version> digest=<image@sha256,…|->
 ```
 
 Example:
 
 ```
-2026-04-12T01:00:00+00:00 deploy 1.2.0 no-backup hosting=0.1.0 digest=shop-php@sha256:9f2a…
-2026-04-15T14:30:00+00:00 deploy 1.3.0 backups/pre-deploy-20260415-143000.sql.gz hosting=0.1.0 digest=shop-php@sha256:c81b…
-2026-04-17T09:15:00+00:00 rollback 1.2.0 no-backup hosting=0.1.0 digest=shop-php@sha256:9f2a…
+2026-04-12T01:00:00+00:00 deploy 1.2.0 no-backup kasbah=0.1.0 digest=shop-php@sha256:9f2a…
+2026-04-15T14:30:00+00:00 deploy 1.3.0 backups/pre-deploy-20260415-143000.sql.gz kasbah=0.1.0 digest=shop-php@sha256:c81b…
+2026-04-17T09:15:00+00:00 rollback 1.2.0 no-backup kasbah=0.1.0 digest=shop-php@sha256:9f2a…
 ```
 
 Fields:
 - `action` — `deploy` or `rollback`.
 - `version` — the semver that ran.
 - `backup` — relative path to backup file, or `no-backup`.
-- `hosting=...` — version of hosting that wrote the entry.
+- `kasbah=...` — version of kasbah that wrote the entry.
 - `digest=...` — content digest of each built image that went live
   (comma-joined), or `-` for stock-only projects. Provenance: answers
   "which image actually ran" even after a rebuild of the same tag.
 
 The four positional fields are **frozen forever** — never reordered, never
 removed. New data lands as `key=value` pairs appended at the end. Every
-hosting version within the same major must parse every line ever written
+kasbah version within the same major must parse every line ever written
 (see the compatibility policy in `overview.md`).
 
-Hosting does **not** track migration counts; that was a specific
+Kasbah does **not** track migration counts; that was a specific
 framework's concern and now lives in project hooks.
 
 ### Rotation
@@ -279,17 +279,17 @@ Runs at the end of every successful write (`deploy`, `rollback`):
 3. `versions.log` is rewritten with only the retained entries.
 4. Nothing is ever deleted.
 
-`hosting history` transparently reads both files: `versions.log` first
+`kasbah history` transparently reads both files: `versions.log` first
 (fast, usually enough), and `versions.log.gz` on demand (`--all`, or
 when the requested version isn't in the active log).
 
 ### Why append-only
 
 Fast to parse, cleanly survives single-deployer concurrent writes (the
-only scenario hosting targets), and rotation keeps the active file
+only scenario kasbah targets), and rotation keeps the active file
 small without sacrificing history.
 
-## `hosting rollback`
+## `kasbah rollback`
 
 ### Flow
 
@@ -301,12 +301,12 @@ small without sacrificing history.
 3. Verify target appears in versions.log (or versions.log.gz).
      NOT present → fail:
        "Version X was never deployed to this VPS.
-        Use `hosting deploy <user@host> X` for a first-time deploy."
+        Use `kasbah deploy <user@host> X` for a first-time deploy."
 4. Verify git tag v<target> exists locally.
      missing → `git fetch --tags`, retry
      still missing → hard fail
 5. Read v<target>'s files WITHOUT touching the working tree:
-     git show v<target>:hosting.yml       → used for the sync list
+     git show v<target>:kasbah.yml       → used for the sync list
      git show v<target>:compose.prod.yml  → used for the image set
 6. Image check — for each service with `build:` in v<target>'s compose,
    `:<target>` must be present on the VPS. Within the retention window
@@ -315,9 +315,9 @@ small without sacrificing history.
         retention window). Prefer deploying a fix forward. To force a
         rollback anyway, rebuild from the tag (NOT byte-identical to the
         original — compare versions.log digests):
-          git checkout v<target> && hosting build-push <user@host>
+          git checkout v<target> && kasbah build-push <user@host>
         Then retry:
-          hosting rollback <user@host> <target>"
+          kasbah rollback <user@host> <target>"
 7. Parse v<target>'s manifest for its `sync:` list.
 8. git archive v<target> <v<target>'s sync list> | ssh vps tar -x -C /apps/<name>/
    (Overwrites whatever HEAD sync produced at the last deploy.)
@@ -349,8 +349,8 @@ Restores:
   .env.prod.example, init SQL, etc.
 - v<target>'s `traefik-dynamic.yml` → /apps/traefik/dynamic/<name>.yml,
   rsynced out-of-band (same path as deploy).
-- Hosting helper scripts (`setup-env.sh`, `remote-deploy.sh`) — from the
-  **current** hosting install, not from git. Helpers belong to hosting,
+- Kasbah helper scripts (`setup-env.sh`, `remote-deploy.sh`) — from the
+  **current** kasbah install, not from git. Helpers belong to kasbah,
   not to the project's version history.
 
 Does NOT restore:
@@ -363,7 +363,7 @@ Does NOT restore:
 
 ## Helper scripts on the VPS
 
-`hosting deploy` and `hosting rollback` sync two scripts per project:
+`kasbah deploy` and `kasbah rollback` sync two scripts per project:
 
 - `setup-env.sh` — rich env template renderer (see `env-template.md`).
 - `remote-deploy.sh` — orchestrates the VPS-side flow. Modes:
@@ -374,9 +374,9 @@ Does NOT restore:
   whole run — a second concurrent deploy/rollback fails fast instead of
   interleaving hooks and retags (multi-operator safety).
 
-These are the *only* hosting-owned files that live on the VPS in a
+These are the *only* kasbah-owned files that live on the VPS in a
 project directory. They are overwritten on every deploy / rollback so
-they match the hosting version driving the operation.
+they match the kasbah version driving the operation.
 
 ## What this intentionally skips
 

@@ -1,6 +1,6 @@
-# Build Plan — hosting
+# Build Plan — kasbah
 
-Phased plan for taking hosting from "local half done" (scaffold, manifest,
+Phased plan for taking kasbah from "local half done" (scaffold, manifest,
 check) to both real consumers migrated (the original PHP project, the homelab). Produced by
 `/phase-out` from `docs/*.md`; executed by `/tackle`. Each phase file is
 self-contained: deliverables verbatim, spec links inline, findings filled
@@ -13,17 +13,17 @@ during execution.
 | 0 | [Ground](00-ground.md) | **Done.** Scaffold, install, manifest/state, init-project, full `check`, docs corpus with all decisions |
 | 1 | [Rig](01-rig.md) | **Done.** A fake VPS (DinD container: sshd + dockerd) with reset script and integration-test runner |
 | 2 | [Spine](02-spine.md) | **Done.** `server init`, the shared Traefik stack, thin `deploy` and minimal `server status`; a stock project serves through Traefik via a file-provider fragment |
-| 3 | [Env](03-env.md) | **Done.** Env template system ported verbatim with its tests; one shared drift function used by `check` and by the VPS; `HOSTING_*` injected into a managed block |
+| 3 | [Env](03-env.md) | **Done.** Env template system ported verbatim with its tests; one shared drift function used by `check` and by the VPS; `KASBAH_*` injected into a managed block |
 | 4 | [Ship](04-ship.md) | `build-push` + full `deploy` (hooks, backup, health, flock, digests): a custom-built app ships to the rig |
 | 5 | [Undo](05-undo.md) | `rollback` + `history` / `pending` / `changelog` |
-| 6 | [Proof](06-proof.md) | **The real milestone.** A real project (deliberately unnamed) on a freshly provisioned VPS: bare host → HTTPS with real ACME, change deploy, rollback — hosting only |
+| 6 | [Proof](06-proof.md) | **The real milestone.** A real project (deliberately unnamed) on a freshly provisioned VPS: bare host → HTTPS with real ACME, change deploy, rollback — kasbah only |
 | 7 | [Operate](07-operate.md) | Mail port, `logs`/`exec`, `check --server`, `upgrade-traefik`, `server prune`, full `server status` |
 | 8 | [Keep](08-keep.md) | `drop [--prune]`, `server destroy`, `--with-backup` (restic), `check --fix` |
-| 9 | [Adopt](09-adopt.md) | Both existing consumers migrated: the original project (scripts/ deleted, mail included, live cutover) and lab (RPi stacks as hosting projects) |
+| 9 | [Adopt](09-adopt.md) | Both existing consumers migrated: the original project (scripts/ deleted, mail included, live cutover) and lab (RPi stacks as kasbah projects) |
 
 ## The real milestone
 
-**Phase 6 — Proof.** A greenfield deployment: a real project hosting was
+**Phase 6 — Proof.** A greenfield deployment: a real project kasbah was
 *not* extracted from, on a VPS that starts bare. Migrating the original project
 would prove little — the tool fits it by construction — so the origin
 projects migrate later (Phase 9), and Proof is the honest test.
@@ -57,9 +57,9 @@ rhythm: one capability slice per task, tests landing with it.
    (`overview.md` → Interactivity). Every prompt has a `--with-x`/`--no-x`
    flag pair; without a TTY an unanswered prompt is a hard fail naming the
    flag. This is also what lets the rig tests drive everything headless.
-2. **Frozen contracts — never rename:** `hosting-net`, entrypoints
+2. **Frozen contracts — never rename:** `kasbah-net`, entrypoints
    `web`/`websecure`, certresolver `letsencrypt`, `_shared.yml` middleware
-   names, versions.log's four positional fields, the `HOSTING_` env prefix.
+   names, versions.log's four positional fields, the `KASBAH_` env prefix.
 3. **yq is the kislyuk wrapper (jq dialect).** Do not write mikefarah v4
    syntax — it will parse differently or not at all.
 4. **Bash discipline:** `set -euo pipefail` everywhere; mind SIGPIPE with
@@ -67,27 +67,27 @@ rhythm: one capability slice per task, tests landing with it.
    comments); helpers sourced with load guards.
 5. **Tests land with the code, same phase.** Unit suite: `./test.sh`
    (fast, no rig). Integration suite: requires the rig, opt-in via
-   `HOSTING_RIG_TESTS=1 ./test.sh` (wired in Phase 1).
+   `KASBAH_RIG_TESTS=1 ./test.sh` (wired in Phase 1).
 6. **Docs are the spec.** When reality disagrees, fix the doc in the same
    phase — reconciliation is part of every phase's exit bar.
 7. **Compose conventions:** files named `compose.yml` (not
    docker-compose.yml), no `version:` attribute.
-8. **VPS-side helpers are hosting-owned** and overwritten on every deploy;
-   projects never vendor hosting bash.
+8. **VPS-side helpers are kasbah-owned** and overwritten on every deploy;
+   projects never vendor kasbah bash.
 
 ## Before starting Phase 4
 
 Phase 3 is committed and its exit criteria were walked by hand at close.
-Baselines: `./test.sh` 13 PASS; `HOSTING_RIG_TESTS=1 ./test.sh` **17 PASS in
+Baselines: `./test.sh` 13 PASS; `KASBAH_RIG_TESTS=1 ./test.sh` **17 PASS in
 ~5m50s**. Phase 4 has a `## Carried in from Phase 2` section; read it first.
 
 Two things Phase 3 leaves on the table for whoever opens this code next.
 **`lib/env.sh` is shipped to the VPS verbatim** — it is sourced by
-`hosting check` here and executed there as `scripts/setup-env.sh`, so nothing
+`kasbah check` here and executed there as `scripts/setup-env.sh`, so nothing
 in it may reach for `common.sh`, `jq`, `awk` or `bc`, and `set -euo pipefail`
 at its top is a contract rather than a habit: the two menu reads are the only
 ones without `|| true`, so "EOF at the menu aborts" *is* errexit. Never put
-`env_setup_run` on the left of `||` or `&&`. And **`hosting deploy` now has a
+`env_setup_run` on the left of `||` or `&&`. And **`kasbah deploy` now has a
 step that can prompt** — 4.3 assembles the full flow around it, so keep the env
 step after the project rsync and before the remote deploy, and keep the Traefik
 fragment last.
@@ -96,7 +96,7 @@ fragment last.
 
 Phase 2 is committed and its exit criteria were walked by hand against the
 rig at close. Unit-suite baseline: `./test.sh` 10 PASS in ~1m50s; with the
-rig, `HOSTING_RIG_TESTS=1 ./test.sh` 14 PASS in ~4m20s. **Run both under a
+rig, `KASBAH_RIG_TESTS=1 ./test.sh` 14 PASS in ~4m20s. **Run both under a
 real terminal as well as piped** — the integration suites hung forever
 under a pty for three units before anyone noticed, because a `timeout`
 child reading the controlling terminal takes SIGTTIN and a stopped process

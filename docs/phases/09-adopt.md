@@ -1,8 +1,8 @@
 # Phase 9 — Adopt
 
-> Both existing consumers run on hosting: the original project has no `scripts/`
-> folder and deploys (mail included) through hosting on its live VPS, and
-> the lab RPi runs its stacks as independent hosting projects with the
+> Both existing consumers run on kasbah: the original project has no `scripts/`
+> folder and deploys (mail included) through kasbah on its live VPS, and
+> the lab RPi runs its stacks as independent kasbah projects with the
 > root-compose + single-.env model retired.
 
 **Prerequisite:** Phase 8 (drop/backup wanted before touching live
@@ -16,10 +16,10 @@ discipline throughout.
 ## Part A — the original project
 
 ### 9.1 — Conformance, locally (M)
-`hosting.yml` per the `docs/project-manifest.md` full example (it was
+`kasbah.yml` per the `docs/project-manifest.md` full example (it was
 modeled on the original project — hooks, backup, and now the `mail:` claim). Rework
 `compose.prod.yml`: network split (only nginx routed; php-fpm/postgres
-internal), `HOSTING_*` limits, `container_name`s. Convert
+internal), `KASBAH_*` limits, `container_name`s. Convert
 `traefik/dynamic.yml` into a project fragment. `check` clean; full
 rehearsal on the rig with the real hooks firing.
 
@@ -33,7 +33,7 @@ The risky task. Write the checklist into Findings **before** executing:
 `server init` onto the live VPS (layout already `/apps`), **reuse the
 existing `acme.json`** into `/apps/data/traefik/letsencrypt/` before the
 new Traefik starts (LE rate limits — never discard issued certs), swap
-old label-based Traefik for the hosting-managed one in a single scripted
+old label-based Traefik for the kasbah-managed one in a single scripted
 SSH session (seconds of downtime, chosen hour), drop the fragment in,
 verify serving. Keep the old traefik compose until 48h clean.
 
@@ -43,10 +43,10 @@ must be one script, not two commands typed by hand. And `acme.json` perms
 and burns rate limits.
 
 ### 9.3 — Mail migration + scripts deletion (M)
-Move the mail stack under hosting (`--with-mail`, domain claims, DMS data
+Move the mail stack under kasbah (`--with-mail`, domain claims, DMS data
 bind mounts moved — **never regenerate DKIM keys**; DNS holds the
 pubkey). Then delete the original project's `scripts/` folder, tag a trivial change,
-deploy to production through hosting alone. This is the roadmap's
+deploy to production through kasbah alone. This is the roadmap's
 original exit criterion, landed.
 
 **Watch out for:** mailflow verification needs real SMTP round-trips
@@ -81,16 +81,16 @@ split, limits), fragment, env template, deploy, verify, remove from the
 old root compose. Old traefik last, same choreography as 9.2.
 
 **Watch out for:** hardware devices (`/dev/dri` transcode) and
-host-network services (Home Assistant) bypass `hosting-net` assumptions —
+host-network services (Home Assistant) bypass `kasbah-net` assumptions —
 HA may be a legitimate documented exception rather than a forced fit.
 
 ### 9.7 — Retire the old models (S)
 lab: delete `setup.sh`, root `compose.yml`, numbered dynamic configs;
-README documents the hosting workflow. The original project: remove any leftover
+README documents the kasbah workflow. The original project: remove any leftover
 deploy tooling 9.3 missed.
 
 ## Exit criteria
-- [ ] The original project deploys (site + mail) through hosting on its live VPS; `scripts/` gone; site and mailflow verified
+- [ ] The original project deploys (site + mail) through kasbah on its live VPS; `scripts/` gone; site and mailflow verified
 - [ ] Every lab stack runs as an independent `/apps/<name>` project on the RPi; single root `.env` decomposed per project
 - [ ] Both old models retired from their repos
 - [ ] One full drill on the RPi: `drop` a stack, redeploy, data intact
@@ -99,4 +99,4 @@ deploy tooling 9.3 missed.
 
 _(filled during execution — the 9.2 cutover checklist goes here BEFORE
 executing; then the cert decision, the inventory table, and which lab
-conventions were worth folding back into hosting's docs)_
+conventions were worth folding back into kasbah's docs)_

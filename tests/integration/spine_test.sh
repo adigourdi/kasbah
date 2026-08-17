@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Integration test: the spine — `hosting server init` then `hosting deploy`,
+# Integration test: the spine — `kasbah server init` then `kasbah deploy`,
 # against the live rig, ending at a page served through Traefik.
 #
 # This is the phase's exit criterion made checkable: a stock nginx project put
 # on a prepared server by deploy, routed by a file-provider fragment that
 # Traefik picked up without restarting. Everything is read back off the rig;
-# hosting's own summary is never the evidence.
+# kasbah's own summary is never the evidence.
 #
 # Anything downstream of a fragment write is polled, never asserted straight
 # after the rsync returns: Traefik's providersThrottleDuration puts a ~2 s floor
@@ -24,7 +24,7 @@ repo_dir="$(cd "$(dirname "$0")/../.." && pwd)"
 
 apps=/apps
 data=/apps/data
-marker="$apps/.hosting/server.json"
+marker="$apps/.kasbah/server.json"
 
 # The server, prepared the same way every rig suite prepares one. `.test` is
 # reserved by RFC 6761, so no name here can reach anything real, and ACME
@@ -37,7 +37,7 @@ traefik_flags=(--domain="$rig_domain" --email="ops@$rig_domain"
                --traefik-auth="$dash_user:$dash_pass")
 
 # The project under test: tests/fixtures/demo, copied out of the repo before it
-# is given a git history. `git init` inside the checkout would land in hosting's
+# is given a git history. `git init` inside the checkout would land in kasbah's
 # own history as a gitlink.
 project=demo
 project_host=demo.test
@@ -66,7 +66,7 @@ bashrc_planted=""
 alt_planted=""
 alt_apps=""
 cleanup() {
-    [ -z "$bashrc_planted" ] || rig_ssh "mv -f ~/.bashrc.hosting-unit-d ~/.bashrc" >/dev/null 2>&1
+    [ -z "$bashrc_planted" ] || rig_ssh "mv -f ~/.bashrc.kasbah-unit-d ~/.bashrc" >/dev/null 2>&1
     [ -z "$alt_planted" ] || rig_ssh "rm -rf '$alt_apps'" >/dev/null 2>&1
     rm -rf "$tmpdir"
 }
@@ -94,12 +94,12 @@ fi
 
 # --- Helpers --------------------------------------------------------------------
 
-init() { hosting_cli server init "$RIG_TARGET" "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; }
-status() { hosting_cli server status "$RIG_TARGET" "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; }
+init() { kasbah_cli server init "$RIG_TARGET" "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; }
+status() { kasbah_cli server status "$RIG_TARGET" "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; }
 status_out() { cat "$tmpdir/out"; }
 deploy() (
     cd "$projdir" || return 2
-    hosting_cli deploy "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
+    kasbah_cli deploy "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
 )
 # The same, bounded — for the cases whose failure mode is a prompt nobody can
 # answer rather than a wrong answer. `timeout` puts the child in a process group
@@ -111,16 +111,16 @@ deploy_bounded() (
     cd "$projdir" || return 2
     timeout "${DEPLOY_TIMEOUT:-180}" \
         env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-            "$RIG_REPO_DIR/bin/hosting" deploy "$@" \
+            "$RIG_REPO_DIR/bin/kasbah" deploy "$@" \
         >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
 )
 cli_err() { cat "$tmpdir/err"; }
 
-# Everything under <apps>/ that is not one of hosting's own four directories —
+# Everything under <apps>/ that is not one of kasbah's own four directories —
 # the list `server status` must reproduce, read off the rig rather than written
 # down here.
 rig_projects() {
-    rig_ssh "cd $apps 2>/dev/null && ls -A | grep -v -x -e .hosting -e data -e backups -e traefik | sort | tr '\n' ' '" 2>/dev/null
+    rig_ssh "cd $apps 2>/dev/null && ls -A | grep -v -x -e .kasbah -e data -e backups -e traefik | sort | tr '\n' ' '" 2>/dev/null
 }
 
 # Type, mode, owner, mtime and content of the whole tree. acme.json is left out
@@ -199,7 +199,7 @@ poll_page() {
     done
 }
 
-# --- status on a server hosting has never touched -----------------------------------
+# --- status on a server kasbah has never touched -----------------------------------
 # rig_clean has just removed /apps, so this is the no-marker state itself rather
 # than a manufactured one — and the only moment in this suite when it exists.
 assert '[ "$(rig_ssh "[ -e $apps ] && echo present || echo absent" 2>/dev/null)" = "absent" ]' \
@@ -210,10 +210,10 @@ assert 'grep -qF "$marker" "$tmpdir/err"' "naming the marker it looked for (said
 assert 'grep -qF -- "--apps-path" "$tmpdir/err"' \
     "and the flag that makes a prepared server look unprepared (said '$(cli_err)')"
 # The remedy must not be followable into a disaster: a bare
-# `hosting server init user@host` against a server whose apps path is not /apps
+# `kasbah server init user@host` against a server whose apps path is not /apps
 # renders a second Traefik stack under the frozen `traefik` compose project and
 # takes every site on the host down.
-assert '! grep -qE "hosting server init [A-Za-z0-9._-]+@" "$tmpdir/err"' \
+assert '! grep -qE "kasbah server init [A-Za-z0-9._-]+@" "$tmpdir/err"' \
     "and never prints a runnable bare \`server init\` (said '$(cli_err)')"
 
 # --- A prepared server ------------------------------------------------------------
@@ -261,7 +261,7 @@ if ! (
     # its own. Signing is off for the same reason: whatever the developer's
     # global config says must not decide whether this commit can be made.
     git config user.email "spine-test@$rig_domain"
-    git config user.name  "hosting spine test"
+    git config user.name  "kasbah spine test"
     git config commit.gpgsign false
     git add -A
     git commit -qm "the demo fixture, v$project_version"
@@ -292,13 +292,13 @@ assert 'grep -qF "$apps/$project/.env" "$tmpdir/err"' \
     "naming the file it wanted (said '$(cli_err)')"
 assert 'grep -qF "no terminal" "$tmpdir/err"' \
     "and what is missing (said '$(cli_err)')"
-assert 'grep -qF "hosting env $RIG_TARGET" "$tmpdir/err"' \
+assert 'grep -qF "kasbah env $RIG_TARGET" "$tmpdir/err"' \
     "and the command that renders it (said '$(cli_err)')"
 assert '[ "$(rig_ssh "[ -e $fragment ] && echo present || echo absent" 2>/dev/null)" = "absent" ]' \
     "a refused deploy ships no Traefik fragment — a route to a container that never started"
 assert '[ "$(rig_ssh "[ -e $apps/$project/.env ] && echo present || echo absent" 2>/dev/null)" = "absent" ]' \
     "and invents no .env of its own"
-assert '[ ! -f "$projdir/.hosting/state.json" ]' \
+assert '[ ! -f "$projdir/.kasbah/state.json" ]' \
     "and writes no project state (docs/project-manifest.md: only on success)"
 
 # What it *did* ship first, and the reason the order is that way round: the
@@ -308,7 +308,7 @@ helper="$apps/$project/scripts/setup-env.sh"
 assert '[ "$(rig_ssh "stat -c %a $helper" 2>/dev/null)" = "755" ]' \
     "the env helper landed executable (got '$(rig_ssh "stat -c %a $helper" 2>/dev/null)')"
 assert '[ "$(rig_ssh "sha256sum $helper | cut -d\" \" -f1" 2>/dev/null)" = "$(sha256sum "$repo_dir/lib/env.sh" | cut -d" " -f1)" ]' \
-    "and it is lib/env.sh itself — the same bytes \`hosting check\` sources locally"
+    "and it is lib/env.sh itself — the same bytes \`kasbah check\` sources locally"
 assert '[ "$(rig_ssh "[ -e $apps/$project/.env.prod.example ] && echo present || echo absent" 2>/dev/null)" = "present" ]' \
     "with the template beside it, which is what the setup prompts from"
 
@@ -319,11 +319,11 @@ assert '[ "$(rig_ssh "[ -e $apps/$project/.env.prod.example ] && echo present ||
 # threaded cgroups. Any --cpus or --memory then fails with
 #   cannot enter cgroupv2 "/sys/fs/cgroup/docker" with domain controllers
 #   -- it is in threaded mode
-# and the container never starts. That is a property of the rig, not of hosting
+# and the container never starts. That is a property of the rig, not of kasbah
 # (docs/phases/02-spine.md → Findings), and the fix is the standard docker:dind
 # cgroup-nesting step in the rig's entrypoint.
 #
-# Nothing here special-cases hosting. What changes is the *server marker*: on a
+# Nothing here special-cases kasbah. What changes is the *server marker*: on a
 # rig that cannot honour a limit it is rewritten to 0/0, which Docker reads as
 # "no limit", and injection then does its real job end to end against a value
 # the host can live with. The assertion that matters — the block in .env matches
@@ -355,17 +355,17 @@ else
     exit 2
 fi
 
-# --- The operator renders .env, with the script hosting shipped ---------------------
-# This is the half hosting refuses to do headless, done by hand — the suite
+# --- The operator renders .env, with the script kasbah shipped ---------------------
+# This is the half kasbah refuses to do headless, done by hand — the suite
 # playing the person at the terminal. It runs the *shipped* helper, off the
 # server, against the template the failed deploy put beside it; stdin is empty,
 # which for a first run means every template default is accepted (there is no
 # menu until a .env exists, so nothing here trips the errexit path).
 #
-# The two HOSTING_* lines that used to be seeded here are deliberately not: this
+# The two KASBAH_* lines that used to be seeded here are deliberately not: this
 # writes only what the project's own template declares, and injection is what
 # has to produce the rest. A .env with them already in it would make the
-# assertions below pass against a hosting that injected nothing at all.
+# assertions below pass against a kasbah that injected nothing at all.
 setup_out=$(rig_ssh "cd $apps/$project && ./scripts/setup-env.sh $apps/$project" </dev/null 2>&1); setup_rc=$?
 rendered=$(rig_ssh "cat $apps/$project/.env" 2>/dev/null)
 if [ "$setup_rc" -ne 0 ] || ! grep -qF "DEMO_GREETING=hello from the demo fixture" <<<"$rendered"; then
@@ -374,8 +374,8 @@ if [ "$setup_rc" -ne 0 ] || ! grep -qF "DEMO_GREETING=hello from the demo fixtur
     sed 's/^/       > /' <<<"$rendered" >&2
     exit 2
 fi
-assert '! grep -q "^HOSTING_" <<<"$rendered"' \
-    "the rendered .env carries no HOSTING_ key of its own — injection is what puts them there
+assert '! grep -q "^KASBAH_" <<<"$rendered"' \
+    "the rendered .env carries no KASBAH_ key of its own — injection is what puts them there
         rendered: $(tr '\n' '|' <<<"$rendered")"
 
 # --- A deploy that cannot finish must not route anything ------------------------------
@@ -385,7 +385,7 @@ assert '! grep -q "^HOSTING_" <<<"$rendered"' \
 # leave `demo.test` routed at a container that does not exist, answering 502
 # until somebody deploys again. An unpullable image is the cheapest way to hold
 # `compose up` at arm's length.
-broken_image=nginx:no-such-tag-hosting-unit-d
+broken_image=nginx:no-such-tag-kasbah-unit-d
 break_image() { sed -i "s|image: nginx:alpine|image: $broken_image|" "$projdir/compose.prod.yml"; }
 fix_image()   { sed -i "s|image: $broken_image|image: nginx:alpine|" "$projdir/compose.prod.yml"; }
 
@@ -401,7 +401,7 @@ assert '[ "$stays_rc" = "0" ]' \
     "so the host stays unrouted rather than turning 502 a reload later (went to '$unrouted_code')"
 assert '[ "$(rig_ssh "[ -e $apps/$project/versions.log ] && echo present || echo absent" 2>/dev/null)" = "absent" ]' \
     "no versions.log line for a deploy that did not run"
-assert '[ ! -f "$projdir/.hosting/state.json" ]' "and no project state"
+assert '[ ! -f "$projdir/.kasbah/state.json" ]' "and no project state"
 fix_image
 assert 'grep -qF "image: nginx:alpine" "$projdir/compose.prod.yml"' "the fixture is back to a pullable image"
 
@@ -416,7 +416,7 @@ deploy_started=$(date +%s%3N)
 deploy "$RIG_TARGET"; rc=$?
 deploy_ms=$(( $(date +%s%3N) - deploy_started ))
 if [ "$rc" != "0" ]; then
-    echo "  FAIL: hosting deploy succeeded against the prepared rig (exit $rc)" >&2
+    echo "  FAIL: kasbah deploy succeeded against the prepared rig (exit $rc)" >&2
     sed 's/^/        | /' "$tmpdir/err" >&2
     fail=1
 fi
@@ -543,31 +543,31 @@ assert '[ "${got[f_page]}" = "yes" ]' \
     "and the trailing-slash entry recursed: site/index.html is there (got '${got[f_page]}')"
 assert '[ "${got[f_helper]}" = "yes" ]'   "remote-deploy.sh was shipped (got '${got[f_helper]}')"
 assert '[ "${got[helper_mode]}" = "755" ]' \
-    "and landed executable — hosting runs it over ssh (got '${got[helper_mode]}')"
+    "and landed executable — kasbah runs it over ssh (got '${got[helper_mode]}')"
 assert '[ "${got[f_envhelper]}" = "yes" ]'    "setup-env.sh was shipped too (got '${got[f_envhelper]}')"
 assert '[ "${got[envhelper_mode]}" = "755" ]' \
     "and it is executable as well (got '${got[envhelper_mode]}')"
 
-# --- The HOSTING_* managed block, written from the marker -----------------------------
+# --- The KASBAH_* managed block, written from the marker -----------------------------
 # The seam this phase replaces. Until now the two limits were seeded into .env by
 # this file; now the only thing that puts them there is injection, so what is
-# read back is hosting's work and not the suite's.
+# read back is kasbah's work and not the suite's.
 env_body=$(rig_ssh "cat $apps/$project/.env" 2>/dev/null)
-bmark='# >>> hosting managed block - do not edit, rewritten on every deploy >>>'
-emark='# <<< hosting managed block <<<'
+bmark='# >>> kasbah managed block - do not edit, rewritten on every deploy >>>'
+emark='# <<< kasbah managed block <<<'
 assert '[ "$(grep -cxF "$bmark" <<<"$env_body")" = "1" ]' \
     "the deploy wrote exactly one managed block into $apps/$project/.env
         .env: $(tr '\n' '|' <<<"$env_body")"
 assert '[ "$(grep -cxF "$emark" <<<"$env_body")" = "1" ]' "closed by exactly one end sentinel"
-assert 'grep -qxF "HOSTING_CPU_LIMIT=$want_cpu" <<<"$env_body"' \
-    "carrying the marker's cpu_limit verbatim (wanted '$want_cpu', .env: $(grep HOSTING_CPU <<<"$env_body"))"
-assert 'grep -qxF "HOSTING_MEM_LIMIT=$want_mem" <<<"$env_body"' \
-    "and its mem_limit (wanted '$want_mem', .env: $(grep HOSTING_MEM <<<"$env_body"))"
+assert 'grep -qxF "KASBAH_CPU_LIMIT=$want_cpu" <<<"$env_body"' \
+    "carrying the marker's cpu_limit verbatim (wanted '$want_cpu', .env: $(grep KASBAH_CPU <<<"$env_body"))"
+assert 'grep -qxF "KASBAH_MEM_LIMIT=$want_mem" <<<"$env_body"' \
+    "and its mem_limit (wanted '$want_mem', .env: $(grep KASBAH_MEM <<<"$env_body"))"
 # Both directions of the stray rule, on a real file: two lines setting one
-# variable and the last one wins, so a HOSTING_ assignment outside the block
+# variable and the last one wins, so a KASBAH_ assignment outside the block
 # would silently outrank the marker.
-assert '[ "$(grep -c "^HOSTING_" <<<"$env_body")" = "2" ]' \
-    "and nothing sets a HOSTING_ variable outside it (got $(grep -c "^HOSTING_" <<<"$env_body") lines)"
+assert '[ "$(grep -c "^KASBAH_" <<<"$env_body")" = "2" ]' \
+    "and nothing sets a KASBAH_ variable outside it (got $(grep -c "^KASBAH_" <<<"$env_body") lines)"
 # The operator's own value, written by the generator before injection ever ran,
 # is still there — injection touches the block and nothing else.
 assert 'grep -qxF "DEMO_GREETING=hello from the demo fixture" <<<"$env_body"' \
@@ -577,15 +577,15 @@ env_sha=$(rig_ssh "sha256sum $apps/$project/.env | cut -d' ' -f1" 2>/dev/null)
 # --- versions.log ---------------------------------------------------------------------
 assert '[ "${got[versions_lines]}" = "1" ]' \
     "one deploy wrote exactly one versions.log line (got '${got[versions_lines]}')"
-read -r v_ts v_action v_version v_backup v_hosting v_digest v_extra <<<"${got[versions_first]}"
+read -r v_ts v_action v_version v_backup v_kasbah v_digest v_extra <<<"${got[versions_first]}"
 assert '[[ "$v_ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+00:00$ ]]' \
     "field 1 is a UTC ISO-8601 timestamp (line: '${got[versions_first]}')"
 assert '[ "$v_action" = "deploy" ]'   "field 2 is the action (got '$v_action')"
 assert '[ "$v_version" = "$project_version" ]' \
     "field 3 is the version off HEAD's tag (got '$v_version')"
 assert '[ "$v_backup" = "no-backup" ]' "field 4 is the backup path, absent here (got '$v_backup')"
-assert '[ "$v_hosting" = "hosting=$(cat "$repo_dir/VERSION")" ]' \
-    "then hosting=<this checkout's version> (got '$v_hosting')"
+assert '[ "$v_kasbah" = "kasbah=$(cat "$repo_dir/VERSION")" ]' \
+    "then kasbah=<this checkout's version> (got '$v_kasbah')"
 assert '[ "$v_digest" = "digest=-" ]' \
     "and digest=- , because a stock-only project builds no image (got '$v_digest')"
 assert '[ -z "$v_extra" ]' "with nothing appended after it yet (got '$v_extra')"
@@ -594,8 +594,8 @@ assert '[ -z "$v_extra" ]' "with nothing appended after it yet (got '$v_extra')"
 assert '[ "${got[c_state]}" = "running" ]' "$container is running (got '${got[c_state]}')"
 assert '[ "${got[c_project]}" = "$project" ]' \
     "it belongs to the compose project deploy names with -p (got '${got[c_project]}')"
-assert 'grep -qw "hosting-net" <<<"${got[c_nets]}"' \
-    "and it is on hosting-net, which is what makes container_name resolvable (networks: ${got[c_nets]})"
+assert 'grep -qw "kasbah-net" <<<"${got[c_nets]}"' \
+    "and it is on kasbah-net, which is what makes container_name resolvable (networks: ${got[c_nets]})"
 assert 'grep -qw "demo_internal" <<<"${got[c_nets]}"' \
     "as well as the project's own network (networks: ${got[c_nets]})"
 assert '[ "${got[c_env]}" = "1" ]' \
@@ -617,7 +617,7 @@ assert '[ "$(jq -r "[.[] | select(.name == \"$project@file\")] | .[0].loadBalanc
     "and the service targets the container by container_name, not by service-name alias"
 
 # --- The project state, written only now --------------------------------------------------
-state="$projdir/.hosting/state.json"
+state="$projdir/.kasbah/state.json"
 assert '[ -f "$state" ]' "a successful deploy writes $state"
 if [ -f "$state" ]; then
     assert '[ "$(jq -r .last_server <<<"$(cat "$state")")" = "$RIG_TARGET" ]' \
@@ -637,10 +637,10 @@ fi
 # COMPOSE_PROJECT_NAME outranks `name:` and `down` removes by project label —
 # which is what put nine unrelated containers in range on this workstation
 # (docs/phases/01-rig.md).
-if rig_ssh "cp ~/.bashrc ~/.bashrc.hosting-unit-d && printf 'export COMPOSE_PROJECT_NAME=%s\n%s' hosting-not-demo \"\$(cat ~/.bashrc)\" > ~/.bashrc.new && mv ~/.bashrc.new ~/.bashrc" >/dev/null 2>&1; then
+if rig_ssh "cp ~/.bashrc ~/.bashrc.kasbah-unit-d && printf 'export COMPOSE_PROJECT_NAME=%s\n%s' kasbah-not-demo \"\$(cat ~/.bashrc)\" > ~/.bashrc.new && mv ~/.bashrc.new ~/.bashrc" >/dev/null 2>&1; then
     bashrc_planted=yes
     planted=$(rig_ssh "bash -s" <<<'echo "${COMPOSE_PROJECT_NAME:-unset}"' 2>/dev/null)
-    assert '[ "$planted" = "hosting-not-demo" ]' \
+    assert '[ "$planted" = "kasbah-not-demo" ]' \
         "COMPOSE_PROJECT_NAME reaches the shell remote-deploy.sh runs in (got '$planted') — else this case proves nothing"
 
     deploy; rc=$?
@@ -664,7 +664,7 @@ if rig_ssh "cp ~/.bashrc ~/.bashrc.hosting-unit-d && printf 'export COMPOSE_PROJ
     assert '[ "$(rig_ssh "head -1 $apps/$project/versions.log" 2>/dev/null)" = "${got[versions_first]}" ]' \
         "and left the first one exactly as it was"
 
-    rig_ssh "mv -f ~/.bashrc.hosting-unit-d ~/.bashrc" >/dev/null 2>&1 && bashrc_planted=""
+    rig_ssh "mv -f ~/.bashrc.kasbah-unit-d ~/.bashrc" >/dev/null 2>&1 && bashrc_planted=""
     assert '[ -z "$bashrc_planted" ]' "the rig's .bashrc was put back"
 else
     assert 'false' "could not plant COMPOSE_PROJECT_NAME in the rig's environment"
@@ -749,13 +749,13 @@ assert '[ "$rc" = "0" ]' "--on-drift=continue deploys against the .env as it sta
 drifted_env=$(rig_ssh "cat $apps/$project/.env" 2>/dev/null)
 assert '! grep -q "^DRIFT_PROBE=" <<<"$drifted_env"' \
     "and adds no key of its own — continue is not a silent setup (.env: $(tr '\n' '|' <<<"$drifted_env"))"
-assert 'grep -qxF "HOSTING_CPU_LIMIT=$want_cpu" <<<"$drifted_env"' \
-    "while the block is still the marker's ( .env: $(grep HOSTING_CPU <<<"$drifted_env"))"
+assert 'grep -qxF "KASBAH_CPU_LIMIT=$want_cpu" <<<"$drifted_env"' \
+    "while the block is still the marker's ( .env: $(grep KASBAH_CPU <<<"$drifted_env"))"
 assert '[ "$(rig_ssh "wc -l < $apps/$project/versions.log" 2>/dev/null | tr -d " ")" = "$(( lines_before + 1 ))" ]' \
     "and the deploy really ran (was $lines_before lines)"
 
 # Back in sync, and the deploy stops mentioning drift at all — without this, the
-# three cases above would pass equally against a hosting that saw drift always.
+# three cases above would pass equally against a kasbah that saw drift always.
 head -n -1 "$projdir/.env.prod.example" > "$tmpdir/tpl" && mv "$tmpdir/tpl" "$projdir/.env.prod.example"
 assert '! grep -q "^DRIFT_PROBE=" "$projdir/.env.prod.example"' "the fixture template is back as it was"
 deploy_bounded; rc=$?
@@ -772,7 +772,7 @@ want_thealth=$(rig_ssh "docker inspect -f '{{.State.Health.Status}}' traefik" 2>
 want_image=$(rig_ssh "docker inspect -f '{{.Config.Image}}' traefik" 2>/dev/null | tr -d '\r')
 want_image_id=$(rig_ssh "docker inspect -f '{{.Image}}' traefik" 2>/dev/null | tr -d '\r')
 want_line=$(rig_ssh "tail -1 $apps/$project/versions.log" 2>/dev/null | tr -d '\r')
-read -r want_ts want_action want_version _ want_hosting _ <<<"$want_line"
+read -r want_ts want_action want_version _ want_kasbah _ <<<"$want_line"
 want_running=$(rig_ssh "docker ps --filter label=com.docker.compose.project=$project -q | wc -l" 2>/dev/null | tr -d ' \r')
 want_total=$(rig_ssh "docker ps -a --filter label=com.docker.compose.project=$project -q | wc -l" 2>/dev/null | tr -d ' \r')
 want_projects=$(rig_projects)
@@ -818,9 +818,9 @@ assert 'grep -qE "^  $project +$want_running/$want_total running +$want_version 
 # The timestamp is what separates the last entry from the first: this project
 # deployed the same version twice, so a status reading line 1 would print the
 # right version off the wrong deploy.
-assert 'grep -qF "$want_action $want_ts (hosting ${want_hosting#hosting=})" "$tmpdir/out"' \
-    "and the action, timestamp and hosting version of the *last* entry
-        wanted: $want_action $want_ts (hosting ${want_hosting#hosting=})
+assert 'grep -qF "$want_action $want_ts (kasbah ${want_kasbah#kasbah=})" "$tmpdir/out"' \
+    "and the action, timestamp and kasbah version of the *last* entry
+        wanted: $want_action $want_ts (kasbah ${want_kasbah#kasbah=})
         said:   $(grep "^  $project" "$tmpdir/out")"
 
 # Read-only, proved on a real server rather than argued: the tree is unmoved to
@@ -871,27 +871,27 @@ assert 'grep -qE "^  $project +1/1 running " "$tmpdir/out"' \
 # Built by hand rather than by init: what is under test is that the flag steers
 # every read, not that init can lay out a second server. It lives outside /apps
 # and comes back off the rig in the EXIT trap whatever happens.
-alt_apps=/home/stevedore/hosting-alt-apps
-alt_line='2026-08-14T00:00:00+00:00 deploy 7.7.7 no-backup hosting=9.9.9 digest=- future=xyz'
+alt_apps=/home/stevedore/kasbah-alt-apps
+alt_line='2026-08-14T00:00:00+00:00 deploy 7.7.7 no-backup kasbah=9.9.9 digest=- future=xyz'
 # The marker of the real server with its two paths moved, so the data directory
 # is `store` — a name no static list can hold, and the case that proves the
 # bind-mount root is filtered from the marker rather than from a hard-coded list.
 alt_marker=$(jq --arg a "$alt_apps" '.apps_path = $a | .data_path = ($a + "/store")' \
     <<<"$(rig_ssh "cat $marker" 2>/dev/null)" 2>/dev/null)
-if [ -n "$alt_marker" ] && rig_ssh "mkdir -p $alt_apps/.hosting $alt_apps/altproj $alt_apps/store && printf '%s\n' '$alt_line' > $alt_apps/altproj/versions.log && cat > $alt_apps/.hosting/server.json" >/dev/null 2>&1 <<<"$alt_marker"; then
+if [ -n "$alt_marker" ] && rig_ssh "mkdir -p $alt_apps/.kasbah $alt_apps/altproj $alt_apps/store && printf '%s\n' '$alt_line' > $alt_apps/altproj/versions.log && cat > $alt_apps/.kasbah/server.json" >/dev/null 2>&1 <<<"$alt_marker"; then
     alt_planted=yes
     status --apps-path="$alt_apps"; rc=$?
     assert '[ "$rc" = "0" ]' "server status --apps-path reads a server prepared elsewhere (exit $rc: $(cli_err))"
     assert 'grep -qF "Root: $alt_apps  Data: $alt_apps/store" "$tmpdir/out"' \
         "and reports that tree's own paths (said '$(status_out)')"
-    assert 'grep -qE "^  altproj +no containers +7\.7\.7 +deploy 2026-08-14T00:00:00\+00:00 \(hosting 9\.9\.9\)$" "$tmpdir/out"' \
+    assert 'grep -qE "^  altproj +no containers +7\.7\.7 +deploy 2026-08-14T00:00:00\+00:00 \(kasbah 9\.9\.9\)$" "$tmpdir/out"' \
         "the project it lists is the one under --apps-path, with its own log line (said '$(status_out)')"
     assert '! grep -qE "^  $project " "$tmpdir/out"' \
         "and not the one under $apps — the flag steered the whole read (said '$(status_out)')"
     assert '! grep -qE "^  store " "$tmpdir/out"' \
         "the marker's own data directory is not a project, whatever it is called (said '$(status_out)')"
     # The forward-compatibility rule, end to end: that line carries a pair this
-    # hosting has never heard of, and it is ignored rather than printed or
+    # kasbah has never heard of, and it is ignored rather than printed or
     # choked on.
     assert '! grep -qF "future=xyz" "$tmpdir/out"' \
         "a trailing pair this version does not know is ignored, not echoed (said '$(status_out)')"

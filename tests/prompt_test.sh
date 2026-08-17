@@ -22,7 +22,7 @@ assert() {
     fi
 }
 
-export HOSTING_LIB_DIR="$repo_dir/lib"
+export KASBAH_LIB_DIR="$repo_dir/lib"
 # Colour is decided by [ -t 2 ], which is true behind the pty; the escapes
 # would then break every substring match below.
 export NO_COLOR=1
@@ -35,8 +35,8 @@ driver="$tmpdir/driver.sh"
 cat > "$driver" <<'DRV'
 #!/usr/bin/env bash
 set -euo pipefail
-. "$HOSTING_LIB_DIR/common.sh"
-. "$HOSTING_LIB_DIR/prompt.sh"
+. "$KASBAH_LIB_DIR/common.sh"
+. "$KASBAH_LIB_DIR/prompt.sh"
 
 case "$1" in
     bool)
@@ -126,7 +126,7 @@ assert '[ "$rc" != "0" ]'                              "a secret with no flag an
 assert 'grep -qF -- "--traefik-auth=<value>" <<<"$err"' "the secret failure names the flag (got '$err')"
 
 # A default is not an answer: without a terminal the flag is still required, or
-# `hosting` would quietly deploy to whatever the default happened to be.
+# `kasbah` would quietly deploy to whatever the default happened to be.
 run_closed value domain "Domain?" "" app.example.com
 assert '[ "$rc" != "0" ]' "a default does not substitute for a flag when there is no terminal (exit $rc)"
 

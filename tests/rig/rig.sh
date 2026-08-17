@@ -17,20 +17,20 @@ pub_file="$key_file.pub"
 ssh_config="$rig_dir/ssh_config"
 ssh_alias=rig
 # Mirrors `image:` in compose.yml; only used to tell a first build from a later one.
-rig_image=hosting-rig
+rig_image=kasbah-rig
 # Mirrors `name:` in compose.yml, but passed as `-p` — see compose().
-rig_project=hosting-rig
+rig_project=kasbah-rig
 
 # Where a *new* container gets published: compose.yml reads the same variables,
 # so an override here moves the publish side. It does not move the connect side
 # on its own — once a container exists, write_ssh_config reads the binding back
 # out of Docker and overwrites these, because the port is a property of the
 # running container and not of whatever a later caller happens to have exported.
-rig_bind=${HOSTING_RIG_BIND:-127.0.0.1}
-rig_ssh_port=${HOSTING_RIG_SSH_PORT:-5022}
+rig_bind=${KASBAH_RIG_BIND:-127.0.0.1}
+rig_ssh_port=${KASBAH_RIG_SSH_PORT:-5022}
 # Bounds the wait for a usable rig: 30x the observed ~2 s, so a loaded machine
 # still passes, and still inside this phase's "reset in under a minute" bar.
-ready_timeout=${HOSTING_RIG_READY_TIMEOUT:-60}
+ready_timeout=${KASBAH_RIG_READY_TIMEOUT:-60}
 
 die() {
     printf 'rig: %s\n' "$*" >&2
@@ -61,9 +61,9 @@ usage: rig.sh <up|down|reset|ssh>
   reset         down then up — a pristine rig
   ssh [-- cmd]  ssh in as stevedore; with a command, propagate its exit status
 
-environment: HOSTING_RIG_BIND, HOSTING_RIG_{SSH,HTTP,HTTPS}_PORT,
-             HOSTING_RIG_READY_TIMEOUT, HOSTING_RIG_DOCKER_VERSION,
-             HOSTING_RIG_DOCKERD_TIMEOUT
+environment: KASBAH_RIG_BIND, KASBAH_RIG_{SSH,HTTP,HTTPS}_PORT,
+             KASBAH_RIG_READY_TIMEOUT, KASBAH_RIG_DOCKER_VERSION,
+             KASBAH_RIG_DOCKERD_TIMEOUT
 EOF
 }
 
@@ -80,7 +80,7 @@ ensure_key() {
     assert_plain_file "$pub_file"
     if [ ! -s "$key_file" ]; then
         rm -f "$key_file" "$pub_file"
-        ssh-keygen -t ed25519 -N '' -C hosting-rig -f "$key_file" >/dev/null \
+        ssh-keygen -t ed25519 -N '' -C kasbah-rig -f "$key_file" >/dev/null \
             || die "ssh-keygen could not write $key_file"
         note "generated a rig keypair at $key_file (gitignored)"
     fi
@@ -128,13 +128,13 @@ export_pubkey() {
         'ssh-ed25519 '*|'ssh-rsa '*|'ecdsa-'*) ;;
         *) die "$pub_file does not hold a public key — delete it and rerun rig.sh up" ;;
     esac
-    export HOSTING_RIG_PUBKEY=$pub
+    export KASBAH_RIG_PUBKEY=$pub
 }
 
 # The published SSH endpoint belongs to the container, not to this process's
 # environment: it is fixed when the container is created, and every later caller
 # shares one generated ssh_config. Deriving it from the environment instead let a
-# single stray `HOSTING_RIG_SSH_PORT=… rig.sh ssh` repoint that shared file at a
+# single stray `KASBAH_RIG_SSH_PORT=… rig.sh ssh` repoint that shared file at a
 # port nothing listens on, breaking every subsequent caller — which then blamed
 # the rig. So it is read back out of Docker, and the environment is consulted
 # only when there is no container to read (see write_ssh_config).
@@ -172,7 +172,7 @@ resolve_published_endpoint() {
 }
 
 # Rewritten on every invocation, from the container where there is one: it
-# embeds the endpoint and the key path, so neither a changed HOSTING_RIG_SSH_PORT
+# embeds the endpoint and the key path, so neither a changed KASBAH_RIG_SSH_PORT
 # nor a recreated container can leave a stale file behind.
 # Rendered to a sibling temp file and renamed, never truncated in place: two
 # rig.sh calls at once would otherwise leave a window where a concurrent reader
@@ -253,13 +253,13 @@ wait_ready() {
 }
 
 # compose.yml pairs `build:` with a fixed `image:`, so `up` on its own reuses
-# whatever `hosting-rig` already is and silently ignores an edited Dockerfile or
+# whatever `kasbah-rig` already is and silently ignores an edited Dockerfile or
 # entrypoint. Rebuild control lives here, and the rule is "always ask the
 # builder": Docker's layer cache is the only staleness oracle that cannot
 # itself go stale, a no-op build costs ~0.3 s, and an hour lost to a rig running
 # last week's entrypoint costs rather more.
 #
-# Verbosity is gated on "does the `hosting-rig` tag exist yet", i.e. the very
+# Verbosity is gated on "does the `kasbah-rig` tag exist yet", i.e. the very
 # first build of a checkout is loud and every later one is quiet. That is not
 # the same as cold-vs-cached: a Dockerfile edit that re-runs apt is a silent
 # ~20 s wait. The alternative is BuildKit's cache report on every single `up`,

@@ -13,15 +13,15 @@ tests=("$tests_dir"/*_test.sh)
 # default run stays fast and works on a machine with no Docker. Off, this costs
 # one string comparison — no glob, no stat, nothing that grows with the repo.
 #
-# An unrecognised value is a hard failure rather than "off": `HOSTING_RIG_TESTS=true`
+# An unrecognised value is a hard failure rather than "off": `KASBAH_RIG_TESTS=true`
 # treated as off prints the same three PASS lines and the same exit 0 as a run
 # where the integration suite really passed, which is a false green rather than
 # an error. Exit 2 so a misconfigured runner is distinguishable from exit 1,
 # "tests failed".
-case "${HOSTING_RIG_TESTS:-}" in
+case "${KASBAH_RIG_TESTS:-}" in
     ''|0) ;;
     1) tests+=("$tests_dir/integration"/*_test.sh) ;;
-    *)  echo "HOSTING_RIG_TESTS='$HOSTING_RIG_TESTS' is not a valid value" >&2
+    *)  echo "KASBAH_RIG_TESTS='$KASBAH_RIG_TESTS' is not a valid value" >&2
         echo "  1        run the integration suite too (needs tests/rig/rig.sh up)" >&2
         echo "  0/empty  unit suites only" >&2
         exit 2 ;;

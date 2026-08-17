@@ -3,7 +3,7 @@
 # generated ssh_config. A unit suite: no rig, no container, no Docker.
 #
 # Hermetic by construction, and both halves matter. rig.sh derives its own
-# directory from $0 and hardcodes the `hosting-rig` compose project, so running
+# directory from $0 and hardcodes the `kasbah-rig` compose project, so running
 # the script in place would drive the real rig on a developer's workstation; a
 # real `docker` on PATH would let it. So the script is copied into a temp dir
 # and a recording stub is put first on PATH. `./test.sh` must keep working on a
@@ -57,7 +57,7 @@ case "$*" in
     'port '*)
         # docker(1) exits 1 with this on a container that exists but is stopped.
         [ -n "${RIG_STUB_PORT_OUT:-}" ] \
-            || { echo "no public port '22' published for hosting-rig" >&2; exit 1; }
+            || { echo "no public port '22' published for kasbah-rig" >&2; exit 1; }
         printf '%s\n' "$RIG_STUB_PORT_OUT" ;;
     'inspect -f'*PortBindings*)
         [ -z "${RIG_STUB_BINDINGS:-}" ] || printf '%s\n' "$RIG_STUB_BINDINGS" ;;
@@ -88,9 +88,9 @@ run_rig() {
     [ $# -eq 0 ] || shift
     : > "$RIG_STUB_LOG"
     # The ambient environment is scrubbed of everything a case might care about,
-    # so a developer running ./test.sh with HOSTING_RIG_SSH_PORT exported gets
+    # so a developer running ./test.sh with KASBAH_RIG_SSH_PORT exported gets
     # the same verdicts as CI.
-    out=$(env -u HOSTING_RIG_BIND -u HOSTING_RIG_SSH_PORT -u HOSTING_RIG_READY_TIMEOUT \
+    out=$(env -u KASBAH_RIG_BIND -u KASBAH_RIG_SSH_PORT -u KASBAH_RIG_READY_TIMEOUT \
               -u RIG_STUB_CONTAINER -u RIG_STUB_PORT_OUT -u RIG_STUB_BINDINGS \
               "${env_args[@]+"${env_args[@]}"}" \
               "$rig" "$@" 2>"$tmpdir/err")
@@ -137,8 +137,8 @@ run_rig -- --help
 assert '[ "$rc" = "0" ]'                    "--help exits 0 (got $rc)"
 assert 'grep -qF "usage: rig.sh" <<<"$out"' "--help prints usage on stdout (got '$out')"
 assert '[ -z "$err" ]'                      "--help prints nothing on stderr (got '$err')"
-assert 'grep -qF "HOSTING_RIG_DOCKERD_TIMEOUT" <<<"$out"' \
-    "--help lists HOSTING_RIG_DOCKERD_TIMEOUT — an undocumented knob is a dead one"
+assert 'grep -qF "KASBAH_RIG_DOCKERD_TIMEOUT" <<<"$out"' \
+    "--help lists KASBAH_RIG_DOCKERD_TIMEOUT — an undocumented knob is a dead one"
 
 # --- Case 4: a .pub that is not the private key's fails fast ------------------
 # Such a rig boots, looks healthy, and refuses every login until the readiness
@@ -187,10 +187,10 @@ rmdir "$pub_file"
 # --- Case 7: with no container, ssh_config follows the environment -------------
 new_keypair
 rm -f "$ssh_config"
-run_rig HOSTING_RIG_BIND=127.0.0.2 HOSTING_RIG_SSH_PORT=15022 -- down
+run_rig KASBAH_RIG_BIND=127.0.0.2 KASBAH_RIG_SSH_PORT=15022 -- down
 cfg=$(<"$ssh_config")
-assert 'grep -qE "^ +Port 15022$" <<<"$cfg"'         "HOSTING_RIG_SSH_PORT reaches ssh_config with no container to read"
-assert 'grep -qE "^ +HostName 127\.0\.0\.2$" <<<"$cfg"' "HOSTING_RIG_BIND reaches ssh_config with no container to read"
+assert 'grep -qE "^ +Port 15022$" <<<"$cfg"'         "KASBAH_RIG_SSH_PORT reaches ssh_config with no container to read"
+assert 'grep -qE "^ +HostName 127\.0\.0\.2$" <<<"$cfg"' "KASBAH_RIG_BIND reaches ssh_config with no container to read"
 assert '[ "$(grep -c "^Host " <<<"$cfg")" = "1" ]'   "ssh_config holds exactly one Host block (got $(grep -c "^Host " <<<"$cfg"))"
 assert 'grep -qF "IdentityFile $key_file" <<<"$cfg"' "ssh_config points at the rig's own key"
 
@@ -199,12 +199,12 @@ assert 'grep -qF "IdentityFile $key_file" <<<"$cfg"' "ssh_config points at the r
 # next command: one stray override used to repoint this shared file at a port
 # nothing listens on, and every later caller then blamed the rig.
 run_rig RIG_STUB_CONTAINER=deadbeef RIG_STUB_PORT_OUT=$'127.0.0.1:5022\n[::]:5022' \
-        HOSTING_RIG_SSH_PORT=15022 HOSTING_RIG_BIND=127.0.0.9 -- down
+        KASBAH_RIG_SSH_PORT=15022 KASBAH_RIG_BIND=127.0.0.9 -- down
 cfg=$(<"$ssh_config")
 assert 'grep -qE "^ +Port 5022$" <<<"$cfg"' \
-    "a stray HOSTING_RIG_SSH_PORT does not repoint ssh_config away from the running container"
+    "a stray KASBAH_RIG_SSH_PORT does not repoint ssh_config away from the running container"
 assert 'grep -qE "^ +HostName 127\.0\.0\.1$" <<<"$cfg"' \
-    "a stray HOSTING_RIG_BIND does not repoint ssh_config away from the running container"
+    "a stray KASBAH_RIG_BIND does not repoint ssh_config away from the running container"
 assert 'grep -qF "port deadbeef 22" "$RIG_STUB_LOG"' \
     "the endpoint was read back from the container (calls: $(cat "$RIG_STUB_LOG"))"
 
@@ -220,7 +220,7 @@ assert 'grep -qE "^ +Port 5022$" <<<"$cfg"'           "the IPv4 binding's port i
 # bindings recorded at create time are the fallback — not the environment, which
 # would reintroduce exactly the bug case 8 covers.
 run_rig RIG_STUB_CONTAINER=deadbeef RIG_STUB_BINDINGS='127.0.0.3:5522' \
-        HOSTING_RIG_SSH_PORT=15022 -- down
+        KASBAH_RIG_SSH_PORT=15022 -- down
 cfg=$(<"$ssh_config")
 assert 'grep -qE "^ +Port 5522$" <<<"$cfg"'             "a stopped container's recorded port wins over the environment"
 assert 'grep -qE "^ +HostName 127\.0\.0\.3$" <<<"$cfg"' "a stopped container's recorded bind wins over the environment"
@@ -231,11 +231,11 @@ assert 'grep -qE "^ +HostName 127\.0\.0\.3$" <<<"$cfg"' "a stopped container's r
 # suite could have driven the developer's actual rig.
 calls=$(<"$RIG_STUB_LOG_ALL")
 compose_calls=$(grep -c '^compose ' <<<"$calls")
-pinned=$(grep -c -- "^compose -p hosting-rig -f $rig_dir/compose.yml " <<<"$calls")
+pinned=$(grep -c -- "^compose -p kasbah-rig -f $rig_dir/compose.yml " <<<"$calls")
 assert '[ -s "$RIG_STUB_LOG_ALL" ]'      "the stub docker was the one that ran"
 assert '[ "$compose_calls" -gt 0 ]'      "compose was exercised at all (else the check below is vacuous)"
 assert '[ "$compose_calls" = "$pinned" ]' \
-    "every compose call carried -p hosting-rig and the temp compose file ($pinned of $compose_calls)"
+    "every compose call carried -p kasbah-rig and the temp compose file ($pinned of $compose_calls)"
 assert '! grep -qF "$repo_dir/tests/rig" <<<"$calls"' \
     "no docker call named the real rig directory"
 assert '! grep -q "^ssh " <<<"$calls"' \

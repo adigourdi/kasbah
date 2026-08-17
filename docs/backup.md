@@ -1,6 +1,6 @@
 # Backup — Off-VPS Disaster Recovery
 
-Optional (`hosting server init --with-backup`). Everything else in hosting
+Optional (`kasbah server init --with-backup`). Everything else in kasbah
 survives a lost VPS via git plus a redeploy — except two things that exist
 only on the VPS: **`.env` secret values** and **data bind mounts** (plus
 the hook-produced dumps in `backups/`). This feature ships those off-box.
@@ -8,7 +8,7 @@ the hook-produced dumps in `backups/`). This feature ships those off-box.
 ## Model
 
 Each VPS **pushes** restic snapshots to S3-compatible storage on a daily
-cron. No central coordinator — the same shape as the rest of hosting.
+cron. No central coordinator — the same shape as the rest of kasbah.
 
 Why push, and not the alternatives:
 
@@ -17,7 +17,7 @@ Why push, and not the alternatives:
   for all backups at once.
 - **VPSes backing each other up** puts one client's data on another
   client's machine, correlates failure when both sit at the same provider,
-  and adds pairing topology hosting would have to manage.
+  and adds pairing topology kasbah would have to manage.
 - **Push with restricted credentials** keeps each VPS independent and
   needs no new infrastructure.
 
@@ -32,7 +32,7 @@ history. Deleting (retention pruning) requires the full-access key, which
 lives only on operator machines:
 
 ```
-hosting server backup-prune user@host    # restic forget/prune with
+kasbah server backup-prune user@host    # restic forget/prune with
                                          # operator credentials
 ```
 
@@ -69,20 +69,20 @@ is crash-consistent at best.
 - Daily snapshot at 02:00, with per-VPS jitter to avoid herding.
 - Retention, applied by operator-side prune: 7 daily, 4 weekly, 3 monthly.
 
-Both recorded in the server marker (`/apps/.hosting/server.json`).
+Both recorded in the server marker (`/apps/.kasbah/server.json`).
 
 ## Restore
 
-1. Fresh VPS: `hosting server init` (same flags as before).
+1. Fresh VPS: `kasbah server init` (same flags as before).
 2. `restic restore` the client repo into `/apps/data/<name>/`,
    `/apps/<name>/.env`, and `backups/`.
-3. `hosting deploy` from the project repo.
+3. `kasbah deploy` from the project repo.
 4. Database projects: restore from the newest dump in `backups/` rather
    than trusting the live-file copy.
 
 ## Handover
 
-`hosting server destroy` removes the cron and the S3 credentials from the
+`kasbah server destroy` removes the cron and the S3 credentials from the
 VPS — agency-owned secrets never transfer. The repos themselves are
 operator property; export or delete per client as the offboarding deal
 dictates.

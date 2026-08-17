@@ -536,7 +536,7 @@ assert 'grep -qF "# --- Section ---" <<<"$out"' "a run with new vars does print 
 assert 'grep -qF "1 kept, 1 new, 0 removed" <<<"$out"' "the summary counts a new key (said '$out')"
 
 # --- Case 20: sourced mode ------------------------------------------------------
-# The same bytes are sourced by hosting deploy, where the original's top-level
+# The same bytes are sourced by kasbah deploy, where the original's top-level
 # `exit 1` would have taken the whole deploy down with it.
 d=$(newdir t20)
 out=$(bash -c '
@@ -545,7 +545,7 @@ out=$(bash -c '
     _env_prompt_value() { echo SENTINEL; }
     . "$1"   # the load guard makes the second source a no-op
     declare -f _env_prompt_value | grep -q SENTINEL && echo "guard-held"
-    [ "$_HOSTING_ENV_LOADED" = 1 ] && echo "guard-flag-set"
+    [ "$_KASBAH_ENV_LOADED" = 1 ] && echo "guard-flag-set"
     env_setup_run "$2" && echo "returned=0" || echo "returned=$?"
     echo "caller-alive"
     declare -F env_main >/dev/null && echo "have-env_main"
@@ -553,19 +553,19 @@ out=$(bash -c '
 rc=$?
 assert '[ "$rc" = "0" ]'                          "sourcing lib/env.sh twice succeeds (got $rc)"
 assert 'grep -qF "guard-held" <<<"$out"'          "the load guard makes a second source a no-op (said '$out')"
-assert 'grep -qF "guard-flag-set" <<<"$out"'      "the load guard sets _HOSTING_ENV_LOADED (said '$out')"
+assert 'grep -qF "guard-flag-set" <<<"$out"'      "the load guard sets _KASBAH_ENV_LOADED (said '$out')"
 assert 'grep -qF "returned=1" <<<"$out"'          "a sourced missing-template returns 1 (said '$out')"
 assert 'grep -qF "caller-alive" <<<"$out"'        "a sourced failure does not exit the caller (said '$out')"
 assert 'grep -qF "have-env_main" <<<"$out"'       "sourcing defines env_main (said '$out')"
 
 # lib/prompt.sh owns `prompt_value`; lib/env.sh must not redefine it, or
 # whichever loads second in lib/deploy.sh silently loses its helper.
-out=$(HOSTING_LIB_DIR="$repo_dir/lib" bash -c '
+out=$(KASBAH_LIB_DIR="$repo_dir/lib" bash -c '
     set -euo pipefail
-    . "$HOSTING_LIB_DIR/common.sh"
-    . "$HOSTING_LIB_DIR/prompt.sh"
+    . "$KASBAH_LIB_DIR/common.sh"
+    . "$KASBAH_LIB_DIR/prompt.sh"
     before=$(declare -f prompt_value)
-    . "$HOSTING_LIB_DIR/env.sh"
+    . "$KASBAH_LIB_DIR/env.sh"
     [ "$before" = "$(declare -f prompt_value)" ] && echo "prompt_value-intact"
     declare -F _env_prompt_value >/dev/null && echo "have-_env_prompt_value"
 ' 2>&1)
@@ -588,7 +588,7 @@ run_env '' "$d"
 assert '[ "$rc" = "1" ]' "EOF at the reconfigure prompt exits 1 (got $rc)"
 expect_same "$d/.env" "$d/.env.backup" "EOF at the reconfigure prompt leaves .env alone"
 
-# The same, sourced: this is the shape hosting deploy runs, and it takes the
+# The same, sourced: this is the shape kasbah deploy runs, and it takes the
 # caller down with it. Asserted rather than assumed — the contract Unit C reads
 # is this one, not the missing-template return.
 d=$(newdir t21b); basic_template "$d"
@@ -639,7 +639,7 @@ assert 'grep -qF "$esc" <<<"$tty_out"' "a terminal run does emit colour — the 
 # On the VPS nothing else exists, so a reference to another lib or to any of
 # common.sh's helpers would only fail there.
 code_only=$(grep -vE '^[[:space:]]*#' "$env_sh")
-assert '! grep -qE "HOSTING_LIB_DIR|common\.sh" <<<"$code_only"' "lib/env.sh references no other hosting file"
+assert '! grep -qE "KASBAH_LIB_DIR|common\.sh" <<<"$code_only"' "lib/env.sh references no other kasbah file"
 assert '! grep -qE "(^|[;&|(\`[:space:]])(info|warn|err|err_cont|die)[[:space:]]" <<<"$code_only"' \
        "lib/env.sh calls none of common.sh's helpers"
 
@@ -648,7 +648,7 @@ assert '! grep -qE "(^|[;&|(\`[:space:]])(info|warn|err|err_cont|die)[[:space:]]
 # globals *and* env_setup_run's — which is the set that matters, because
 # lib/check.sh sources this file into a live command. The verbatim port uses no
 # `local`, so every scalar the run touches lands in the caller's shell; adding
-# one is seen here rather than discovered inside hosting deploy. `env -i` keeps
+# one is seen here rather than discovered inside kasbah deploy. `env -i` keeps
 # the ambient environment (DISPLAY, notably) out of the comparison.
 d=$(newdir t24)
 cat > "$d/.env.prod.example" <<'TMPL'
@@ -687,7 +687,7 @@ expected='BASH_REMATCH BOLD CHOICE CMD COMMENT CYAN DEFAULT DIM DISPLAY DISPLAY_
 expected+='ENV_ASSIGN_RE ENV_MANAGED_BEGIN ENV_MANAGED_END ENV_RESERVED_PREFIX '
 expected+='ESCAPED_VALUE EXAMPLE EXISTING_VALUE GREEN HAS_EXISTING HINT KEPT_COUNT KEY OUTPUT '
 expected+='RAW_VALUE RED RESET SUPPRESS_HEADERS TARGET_DIR UPDATE_ONLY VALUE YELLOW '
-expected+='_HOSTING_ENV_LOADED dkey ekey line nkey tkey tline '
+expected+='_KASBAH_ENV_LOADED dkey ekey line nkey tkey tline '
 assert '[ "$leaked" = "$expected" ]' "env_setup_run leaks exactly the known globals (got '$leaked')"
 # The six arrays are `declare`d inside the function, which makes them local —
 # the one divergence from the standalone original that changes behaviour, and
@@ -743,8 +743,8 @@ expect_kv "$d/.env" APP_PORT 8080      "the unterminated last key keeps its live
 
 # --- Case 27: env_drift ---------------------------------------------------------
 d=$(newdir t27)
-printf 'A=1\nB=2\nHOSTING_MEM_LIMIT=54g\n' > "$d/.env.prod.example"
-printf 'A=x\nHOSTING_CPU_LIMIT=14.4\n' > "$d/.env"
+printf 'A=1\nB=2\nKASBAH_MEM_LIMIT=54g\n' > "$d/.env.prod.example"
+printf 'A=x\nKASBAH_CPU_LIMIT=14.4\n' > "$d/.env"
 drift='env_drift "$1" "$2"; echo "missing=[$ENV_DRIFT_MISSING] extra=[$ENV_DRIFT_EXTRA]"'
 lib_run "$drift" "$d/.env.prod.example" "$d/.env"
 assert '[ "$out" = "missing=[B] extra=[]" ]' \
@@ -759,8 +759,8 @@ assert '[ "$out" = "missing=[] extra=[]" ]' "different values are not drift (got
 
 # Real drift both ways, more than one key each, reserved keys mixed in.
 d=$(newdir t27c)
-printf 'A=1\nM_ONE=1\nM_TWO=2\nHOSTING_MEM_LIMIT=54g\n' > "$d/.env.prod.example"
-printf 'A=1\nX_ONE=1\nX_TWO=2\nHOSTING_CPU_LIMIT=14.4\n' > "$d/.env"
+printf 'A=1\nM_ONE=1\nM_TWO=2\nKASBAH_MEM_LIMIT=54g\n' > "$d/.env.prod.example"
+printf 'A=1\nX_ONE=1\nX_TWO=2\nKASBAH_CPU_LIMIT=14.4\n' > "$d/.env"
 lib_run "$drift" "$d/.env.prod.example" "$d/.env"
 assert '[ "$out" = "missing=[M_ONE M_TWO] extra=[X_ONE X_TWO]" ]' \
        "both lists are space-joined and name only unreserved keys (got '$out')"
@@ -769,7 +769,7 @@ assert '[ "$out" = "missing=[M_ONE M_TWO] extra=[X_ONE X_TWO]" ]' \
 # whose keys it already has — the shape every deployed project is in.
 d=$(newdir t27d)
 printf 'A=1\n' > "$d/.env.prod.example"
-printf 'A=1\nHOSTING_CPU_LIMIT=14.4\nHOSTING_MEM_LIMIT=54g\n' > "$d/.env"
+printf 'A=1\nKASBAH_CPU_LIMIT=14.4\nKASBAH_MEM_LIMIT=54g\n' > "$d/.env"
 lib_run "$drift" "$d/.env.prod.example" "$d/.env"
 assert '[ "$out" = "missing=[] extra=[]" ]' "an injected .env has no drift (got '$out')"
 
@@ -782,7 +782,7 @@ assert '[ "$out" = "missing=[] extra=[]" ]' "a key repeated in .env is not extra
 
 # A missing .env is every template key missing, not an error.
 d=$(newdir t27g)
-printf 'A=1\nHOSTING_CPU_LIMIT=0\n' > "$d/.env.prod.example"
+printf 'A=1\nKASBAH_CPU_LIMIT=0\n' > "$d/.env.prod.example"
 lib_run "$drift" "$d/.env.prod.example" "$d/nope"
 assert '[ "$rc" = "0" ]'                     "env_drift over a missing .env exits 0 (got $rc)"
 assert '[ "$out" = "missing=[A] extra=[]" ]' "and reports every unreserved template key missing (got '$out')"
@@ -796,11 +796,11 @@ lib_run 'env_drift "$1" "$2"; echo "caller-alive"' "$d/.env.prod.example" "$d/.e
 assert '[ "$rc" = "0" ]'                     "a bare env_drift over a drifting pair returns 0 (got $rc)"
 assert 'grep -qF "caller-alive" <<<"$out"'   "and the caller survives it (said '$out')"
 
-# --- Case 28: env_inject_hosting_vars ------------------------------------------
-inject='env_inject_hosting_vars "$1" HOSTING_CPU_LIMIT=14.4 HOSTING_MEM_LIMIT=54g'
-block=$'# >>> hosting managed block - do not edit, rewritten on every deploy >>>\nHOSTING_CPU_LIMIT=14.4\nHOSTING_MEM_LIMIT=54g\n# <<< hosting managed block <<<\n'
-bmark='# >>> hosting managed block - do not edit, rewritten on every deploy >>>'
-emark='# <<< hosting managed block <<<'
+# --- Case 28: env_inject_kasbah_vars ------------------------------------------
+inject='env_inject_kasbah_vars "$1" KASBAH_CPU_LIMIT=14.4 KASBAH_MEM_LIMIT=54g'
+block=$'# >>> kasbah managed block - do not edit, rewritten on every deploy >>>\nKASBAH_CPU_LIMIT=14.4\nKASBAH_MEM_LIMIT=54g\n# <<< kasbah managed block <<<\n'
+bmark='# >>> kasbah managed block - do not edit, rewritten on every deploy >>>'
+emark='# <<< kasbah managed block <<<'
 
 expect_bytes() {
     printf '%s' "$2" > "$tmpdir/want"
@@ -823,7 +823,7 @@ expect_same "$d/.env" "$d/.env.first" "a second injection with the same values i
 # Stale values are refreshed in place — the block does not move to the end and
 # the lines around it do not shift.
 d=$(newdir t28b)
-stale=$'# >>> hosting managed block - do not edit, rewritten on every deploy >>>\nHOSTING_CPU_LIMIT=0.9\nHOSTING_MEM_LIMIT=460m\n# <<< hosting managed block <<<\n'
+stale=$'# >>> kasbah managed block - do not edit, rewritten on every deploy >>>\nKASBAH_CPU_LIMIT=0.9\nKASBAH_MEM_LIMIT=460m\n# <<< kasbah managed block <<<\n'
 printf '%s' "HEAD=1"$'\n'"$stale"$'# tail note\nTAIL=2\n' > "$d/.env"
 lib_run "$inject" "$d/.env"
 expect_bytes "$d/.env" "HEAD=1"$'\n'"$block"$'# tail note\nTAIL=2\n' \
@@ -832,17 +832,17 @@ cp "$d/.env" "$d/.env.first"
 lib_run "$inject" "$d/.env"
 expect_same "$d/.env" "$d/.env.first" "refreshing an existing block is idempotent too"
 
-# Any HOSTING_ line outside the block is removed: two lines setting one
+# Any KASBAH_ line outside the block is removed: two lines setting one
 # variable means the last wins, so a stray silently outranks the marker.
 d=$(newdir t28c)
-printf 'A=1\nHOSTING_CPU_LIMIT=stray\nB=2\n' > "$d/.env"
+printf 'A=1\nKASBAH_CPU_LIMIT=stray\nB=2\n' > "$d/.env"
 lib_run "$inject" "$d/.env"
-expect_bytes "$d/.env" $'A=1\nB=2\n'"$block" "a stray HOSTING_ line outside the block is removed"
+expect_bytes "$d/.env" $'A=1\nB=2\n'"$block" "a stray KASBAH_ line outside the block is removed"
 
 # Including in a CRLF file, whose other lines keep their carriage returns —
 # injection is not a line-ending rewrite.
 d=$(newdir t28d)
-printf 'A=1\r\nHOSTING_MEM_LIMIT=stray\r\nB=2\r\n' > "$d/.env"
+printf 'A=1\r\nKASBAH_MEM_LIMIT=stray\r\nB=2\r\n' > "$d/.env"
 lib_run "$inject" "$d/.env"
 expect_bytes "$d/.env" $'A=1\r\nB=2\r\n'"$block" "the user's CRLF lines survive byte-for-byte"
 
@@ -870,44 +870,44 @@ expect_bytes "$d/.env" $'A=1\nLAST=9\n'"$block" "an unterminated last line survi
 # everything after it stays. Running to EOF instead would swallow the tail of a
 # half-written file.
 d=$(newdir t28h)
-printf '%s' $'A=1\n# >>> hosting managed block - do not edit, rewritten on every deploy >>>\nB=2\n' > "$d/.env"
+printf '%s' $'A=1\n# >>> kasbah managed block - do not edit, rewritten on every deploy >>>\nB=2\n' > "$d/.env"
 lib_run "$inject" "$d/.env"
 expect_bytes "$d/.env" $'A=1\n'"$block"$'B=2\n' "an unterminated block keeps its place and swallows nothing"
 
 # Values are written through unchanged — the marker's spelling is the contract,
 # and the rig cannot honour a real limit, so 0 has to survive as 0.
 d=$(newdir t28i)
-lib_run 'env_inject_hosting_vars "$1" HOSTING_CPU_LIMIT=0 HOSTING_MEM_LIMIT=0' "$d/.env"
-assert 'grep -qxF "HOSTING_CPU_LIMIT=0" "$d/.env"' "a limit of 0 is written through unvalidated"
-assert 'grep -qxF "HOSTING_MEM_LIMIT=0" "$d/.env"' "both of them"
+lib_run 'env_inject_kasbah_vars "$1" KASBAH_CPU_LIMIT=0 KASBAH_MEM_LIMIT=0' "$d/.env"
+assert 'grep -qxF "KASBAH_CPU_LIMIT=0" "$d/.env"' "a limit of 0 is written through unvalidated"
+assert 'grep -qxF "KASBAH_MEM_LIMIT=0" "$d/.env"' "both of them"
 
 # No pairs at all is refused: it would rewrite an existing block empty, and
-# `compose up` then fails on an unset HOSTING_CPU_LIMIT. The `for` guard below
+# `compose up` then fails on an unset KASBAH_CPU_LIMIT. The `for` guard below
 # never runs with zero arguments, so this needs its own check.
 d=$(newdir t28k)
-printf '%s' $'A=1\nHOSTING_CPU_LIMIT=9\n' > "$d/.env"
-lib_run 'env_inject_hosting_vars "$1" HOSTING_CPU_LIMIT=9' "$d/.env"
+printf '%s' $'A=1\nKASBAH_CPU_LIMIT=9\n' > "$d/.env"
+lib_run 'env_inject_kasbah_vars "$1" KASBAH_CPU_LIMIT=9' "$d/.env"
 cp "$d/.env" "$d/.env.before"
-lib_run 'env_inject_hosting_vars "$1" || echo "rc=$?"; echo caller-alive' "$d/.env"
+lib_run 'env_inject_kasbah_vars "$1" || echo "rc=$?"; echo caller-alive' "$d/.env"
 assert '[ "$rc" = "0" ]'                          "an empty pair list does not kill the caller (got $rc)"
 assert 'grep -qF "rc=1" <<<"$out"'                "it returns 1 (said '$out')"
-assert 'grep -qF "no HOSTING_NAME=value pairs given" <<<"$out"' "and says why (said '$out')"
+assert 'grep -qF "no KASBAH_NAME=value pairs given" <<<"$out"' "and says why (said '$out')"
 assert 'grep -qF "caller-alive" <<<"$out"'        "the caller runs on (said '$out')"
 expect_same "$d/.env" "$d/.env.before" "and the block it would have emptied is untouched"
 
 # A key outside the reserved prefix is a caller bug: refused, file untouched.
 d=$(newdir t28j)
 printf 'A=1\n' > "$d/.env"; cp "$d/.env" "$d/.env.backup"
-lib_run 'env_inject_hosting_vars "$1" DATABASE_URL=x || echo "rc=$?"' "$d/.env"
+lib_run 'env_inject_kasbah_vars "$1" DATABASE_URL=x || echo "rc=$?"' "$d/.env"
 assert 'grep -qF "rc=1" <<<"$out"'                    "an unreserved key is refused with 1 (said '$out')"
-assert 'grep -qF "is not a HOSTING_NAME=value pair" <<<"$out"' "and says why (said '$out')"
+assert 'grep -qF "is not a KASBAH_NAME=value pair" <<<"$out"' "and says why (said '$out')"
 expect_same "$d/.env" "$d/.env.backup" "a refused injection leaves .env untouched"
 
 # The prefix is matched anchored, so a key that merely contains it is refused
 # too — accepting it would let injection write outside its own namespace.
-lib_run 'env_inject_hosting_vars "$1" MY_HOSTING_URL=x || echo "rc=$?"' "$d/.env"
-assert 'grep -qF "rc=1" <<<"$out"'  "a key containing HOSTING_ but not starting with it is refused (said '$out')"
-lib_run 'env_inject_hosting_vars "$1" "HOSTING_F BAR=x" || echo "rc=$?"' "$d/.env"
+lib_run 'env_inject_kasbah_vars "$1" MY_KASBAH_URL=x || echo "rc=$?"' "$d/.env"
+assert 'grep -qF "rc=1" <<<"$out"'  "a key containing KASBAH_ but not starting with it is refused (said '$out')"
+lib_run 'env_inject_kasbah_vars "$1" "KASBAH_F BAR=x" || echo "rc=$?"' "$d/.env"
 assert 'grep -qF "rc=1" <<<"$out"'  "so is a pair whose name is not a name (said '$out')"
 
 # --- Case 29: reserved keys are never prompted and never land in .env ---------
@@ -918,49 +918,49 @@ d=$(newdir t29)
 cat > "$d/.env.prod.example" <<'TMPL'
 # --- App ---
 APP_NAME=MyApp
-HOSTING_CPU_LIMIT=0
+KASBAH_CPU_LIMIT=0
 TMPL
 cat > "$d/.env" <<'ENV'
 APP_NAME=live_name
-HOSTING_CPU_LIMIT=14.4
-HOSTING_MEM_LIMIT=54g
+KASBAH_CPU_LIMIT=14.4
+KASBAH_MEM_LIMIT=54g
 ENV
 # y = reconfigure anyway, then Enter for the one var that is actually prompted.
 run_env $'y\n' "$d"
 assert '[ "$rc" = "0" ]'                              "a reserved key in both files exits 0 (got $rc)"
 assert 'grep -qF "No changes detected" <<<"$out"'     "reserved keys count as neither new nor removed (said '$out')"
-assert '! grep -qF "HOSTING_" <<<"$out"'              "and are never prompted for (said '$out')"
+assert '! grep -qF "KASBAH_" <<<"$out"'              "and are never prompted for (said '$out')"
 expect_kv     "$d/.env" APP_NAME live_name            "the unreserved key keeps its live value"
-expect_absent "$d/.env" HOSTING_CPU_LIMIT             "a reserved template key is not written to .env"
-expect_absent "$d/.env" HOSTING_MEM_LIMIT             "nor is a reserved key the live .env carried"
+expect_absent "$d/.env" KASBAH_CPU_LIMIT             "a reserved template key is not written to .env"
+expect_absent "$d/.env" KASBAH_MEM_LIMIT             "nor is a reserved key the live .env carried"
 
 # --- Case 31: what counts as a stray ------------------------------------------
 # Compose trims leading blanks, honours an `export ` prefix, and lets the last
 # assignment win — so every one of these outranks the marker.
 d=$(newdir t31)
-printf 'A=1\nexport HOSTING_MEM_LIMIT=1g\n  HOSTING_CPU_LIMIT=0.1\n\tHOSTING_MEM_LIMIT=2g\nexport\tHOSTING_CPU_LIMIT=0.2\n' > "$d/.env"
+printf 'A=1\nexport KASBAH_MEM_LIMIT=1g\n  KASBAH_CPU_LIMIT=0.1\n\tKASBAH_MEM_LIMIT=2g\nexport\tKASBAH_CPU_LIMIT=0.2\n' > "$d/.env"
 lib_run "$inject" "$d/.env"
-expect_bytes "$d/.env" $'A=1\n'"$block" "an exported or indented HOSTING_ assignment is a stray too"
+expect_bytes "$d/.env" $'A=1\n'"$block" "an exported or indented KASBAH_ assignment is a stray too"
 
-# And what does not. MY_HOSTING_URL is the user's key; removing it would be
+# And what does not. MY_KASBAH_URL is the user's key; removing it would be
 # data loss in the opposite direction from the one the stray rule prevents.
 d=$(newdir t31b)
-keep=$'# HOSTING_CPU_LIMIT=commented out\nMY_HOSTING_URL=https://mine\nNOTE=see HOSTING_MEM_LIMIT=1\nHOSTING_ SPACED=x\n'
+keep=$'# KASBAH_CPU_LIMIT=commented out\nMY_KASBAH_URL=https://mine\nNOTE=see KASBAH_MEM_LIMIT=1\nKASBAH_ SPACED=x\n'
 printf '%s' "$keep" > "$d/.env"
 lib_run "$inject" "$d/.env"
 expect_bytes "$d/.env" "$keep$block" "a line that merely looks like a reserved assignment survives"
 
-# --- Case 31c: HOSTING_ with an empty name is reserved, uniformly -------------
-# Compose reads `HOSTING_=x` as setting a variable named HOSTING_, which is
+# --- Case 31c: KASBAH_ with an empty name is reserved, uniformly -------------
+# Compose reads `KASBAH_=x` as setting a variable named KASBAH_, which is
 # inside the reserved namespace — so every rule naming the prefix owns it:
 # stripped as a stray, accepted as a pair, exempt from drift.
 d=$(newdir t31c)
-printf 'A=1\nHOSTING_=stray\n' > "$d/.env"
-lib_run 'env_inject_hosting_vars "$1" HOSTING_=owned' "$d/.env"
-assert '[ "$rc" = "0" ]' "a bare HOSTING_ pair is accepted (got $rc, said '$out')"
-expect_bytes "$d/.env" $'A=1\n'"$bmark"$'\nHOSTING_=owned\n'"$emark"$'\n' \
+printf 'A=1\nKASBAH_=stray\n' > "$d/.env"
+lib_run 'env_inject_kasbah_vars "$1" KASBAH_=owned' "$d/.env"
+assert '[ "$rc" = "0" ]' "a bare KASBAH_ pair is accepted (got $rc, said '$out')"
+expect_bytes "$d/.env" $'A=1\n'"$bmark"$'\nKASBAH_=owned\n'"$emark"$'\n' \
              "the bare-name stray is removed and the block owns the key"
-printf 'A=1\nHOSTING_=t\n' > "$d/.env.prod.example"
+printf 'A=1\nKASBAH_=t\n' > "$d/.env.prod.example"
 printf 'A=1\n' > "$d/.env.live"
 lib_run "$drift" "$d/.env.prod.example" "$d/.env.live"
 assert '[ "$out" = "missing=[] extra=[]" ]' \
@@ -982,7 +982,7 @@ expect_same "$d/.env" "$d/.env.first" "and collapsing is idempotent"
 # A .env a Windows editor saved carries CRLF sentinels. Unstripped, the old
 # block goes unrecognised and the file ends up holding two of them.
 d=$(newdir t33)
-printf 'A=1\r\n%s\r\nHOSTING_CPU_LIMIT=0.9\r\n%s\r\n' "$bmark" "$emark" > "$d/.env"
+printf 'A=1\r\n%s\r\nKASBAH_CPU_LIMIT=0.9\r\n%s\r\n' "$bmark" "$emark" > "$d/.env"
 lib_run "$inject" "$d/.env"
 assert '[ "$(grep -cF "$bmark" "$d/.env")" = "1" ]' \
        "a CRLF block is recognised, so one begin sentinel remains (got $(grep -cF "$bmark" "$d/.env"))"
@@ -997,30 +997,30 @@ expect_bytes "$d/.env" $'A=1\r\n'"$block" "the CRLF block is replaced where it s
 d=$(newdir t34)
 printf 'A=1\n' > "$d/.env"
 lib_run "$inject" "$d/.env"
-assert '[ -z "$(ls -A "$d" | grep -F ".hosting-inject." || true)" ]' \
+assert '[ -z "$(ls -A "$d" | grep -F ".kasbah-inject." || true)" ]' \
        "a successful injection leaves no temp file (saw '$(ls -A "$d")')"
 
 # Root would bypass both permission cases.
 if [ "$(id -u)" -ne 0 ]; then
     d=$(newdir t34b)
     printf 'A=1\n' > "$d/.env"; chmod 000 "$d/.env"
-    lib_run 'env_inject_hosting_vars "$1" HOSTING_CPU_LIMIT=1 || echo "rc=$?"; echo caller-alive' "$d/.env"
+    lib_run 'env_inject_kasbah_vars "$1" KASBAH_CPU_LIMIT=1 || echo "rc=$?"; echo caller-alive' "$d/.env"
     assert '[ "$rc" = "0" ]'           "an unreadable .env does not kill the caller (got $rc)"
     assert 'grep -qF "rc=1" <<<"$out"' "it returns 1 (said '$out')"
-    assert 'grep -qF "ERROR: env_inject_hosting_vars: cannot read" <<<"$out"' \
+    assert 'grep -qF "ERROR: env_inject_kasbah_vars: cannot read" <<<"$out"' \
            "with a diagnostic of its own, not bash's (said '$out')"
     assert 'grep -qF "caller-alive" <<<"$out"' "and the caller runs on (said '$out')"
     chmod 600 "$d/.env"
 
     d=$(newdir t34c)
     printf 'A=1\n' > "$d/.env"; chmod 500 "$d"
-    lib_run 'env_inject_hosting_vars "$1" HOSTING_CPU_LIMIT=1 || echo "rc=$?"; echo caller-alive' "$d/.env"
+    lib_run 'env_inject_kasbah_vars "$1" KASBAH_CPU_LIMIT=1 || echo "rc=$?"; echo caller-alive' "$d/.env"
     assert 'grep -qF "rc=1" <<<"$out"' "an unwritable directory returns 1 (said '$out')"
-    assert 'grep -qF "ERROR: env_inject_hosting_vars: cannot write" <<<"$out"' \
+    assert 'grep -qF "ERROR: env_inject_kasbah_vars: cannot write" <<<"$out"' \
            "and says so (said '$out')"
     assert 'grep -qF "caller-alive" <<<"$out"' "without killing the caller (said '$out')"
     chmod 700 "$d"
-    assert '[ -z "$(ls -A "$d" | grep -F ".hosting-inject." || true)" ]' \
+    assert '[ -z "$(ls -A "$d" | grep -F ".kasbah-inject." || true)" ]' \
            "and leaves no temp in the tree deploy rsyncs (saw '$(ls -A "$d")')"
 fi
 
@@ -1033,12 +1033,12 @@ printf 'A=1\n' > "$d/.env"
 out=$(bash -c '
     set -euo pipefail
     . "$1"
-    mkdir "$2/.env.hosting-inject.$$"
-    env_inject_hosting_vars "$2/.env" HOSTING_CPU_LIMIT=1
+    mkdir "$2/.env.kasbah-inject.$$"
+    env_inject_kasbah_vars "$2/.env" KASBAH_CPU_LIMIT=1
     echo NOTREACHED
 ' _ "$env_sh" "$d" 2>&1); rc=$?
 assert '[ "$rc" = "1" ]'                    "an unusable temp path fails with 1 (got $rc, said '$out')"
-assert 'grep -qF "ERROR: env_inject_hosting_vars: cannot write beside" <<<"$out"' \
+assert 'grep -qF "ERROR: env_inject_kasbah_vars: cannot write beside" <<<"$out"' \
        "reported as this function's own failure (said '$out')"
 assert '! grep -q "^rm:" <<<"$out"'         "not as a raw rm diagnostic (said '$out')"
 assert '! grep -qF NOTREACHED <<<"$out"'    "and it does not carry on regardless (said '$out')"
@@ -1069,9 +1069,9 @@ d=$(newdir t36b)
 out=$(bash -c '
     set -euo pipefail
     . "$1"
-    : > "$2/.env.hosting-inject.$$"
-    chmod 666 "$2/.env.hosting-inject.$$"
-    env_inject_hosting_vars "$2/.env" HOSTING_CPU_LIMIT=1
+    : > "$2/.env.kasbah-inject.$$"
+    chmod 666 "$2/.env.kasbah-inject.$$"
+    env_inject_kasbah_vars "$2/.env" KASBAH_CPU_LIMIT=1
     stat -c %a "$2/.env"
 ' _ "$env_sh" "$d" 2>&1)
 assert '[ "$out" = "600" ]' "a stale temp is removed rather than reused (got '$out')"
@@ -1084,26 +1084,26 @@ printf 'APP=MyApp\n' > "$d/.env.prod.example"
 printf '%s' $'APP=live\n'"$block" > "$d/.env"
 run_env $'y\n' "$d"
 assert '[ "$rc" = "0" ]'                              "reconfigure-all over an injected .env exits 0 (got $rc)"
-assert '! grep -qF "hosting managed block" "$d/.env"' "setup leaves no managed block behind"
-assert '! grep -q "^HOSTING_" "$d/.env"'              "nor any reserved key at all"
+assert '! grep -qF "kasbah managed block" "$d/.env"' "setup leaves no managed block behind"
+assert '! grep -q "^KASBAH_" "$d/.env"'              "nor any reserved key at all"
 lib_run "$inject" "$d/.env"
-assert 'grep -qxF "HOSTING_CPU_LIMIT=14.4" "$d/.env"' "which injection puts back — that is the required order"
+assert 'grep -qxF "KASBAH_CPU_LIMIT=14.4" "$d/.env"' "which injection puts back — that is the required order"
 
 # --- Case 38: the reserved prefix is matched anchored --------------------------
-# MY_HOSTING_URL is a plausible user key. Every site naming the prefix has to
-# see it as the user's, or the exemption swallows keys hosting never writes.
+# MY_KASBAH_URL is a plausible user key. Every site naming the prefix has to
+# see it as the user's, or the exemption swallows keys kasbah never writes.
 d=$(newdir t38)
-printf 'A=1\nMY_HOSTING_URL=t\n' > "$d/.env.prod.example"
+printf 'A=1\nMY_KASBAH_URL=t\n' > "$d/.env.prod.example"
 printf 'A=1\n' > "$d/.env"
 lib_run "$drift" "$d/.env.prod.example" "$d/.env"
-assert '[ "$out" = "missing=[MY_HOSTING_URL] extra=[]" ]' \
-       "a key containing HOSTING_ still drifts when the .env lacks it (got '$out')"
+assert '[ "$out" = "missing=[MY_KASBAH_URL] extra=[]" ]' \
+       "a key containing KASBAH_ still drifts when the .env lacks it (got '$out')"
 
 d=$(newdir t38b)
 printf 'A=1\n' > "$d/.env.prod.example"
-printf 'A=1\nMY_HOSTING_URL=x\n' > "$d/.env"
+printf 'A=1\nMY_KASBAH_URL=x\n' > "$d/.env"
 lib_run "$drift" "$d/.env.prod.example" "$d/.env"
-assert '[ "$out" = "missing=[] extra=[MY_HOSTING_URL]" ]' \
+assert '[ "$out" = "missing=[] extra=[MY_KASBAH_URL]" ]' \
        "and when the template lacks it (got '$out')"
 
 # Setup's three readers at once: the .env loader (the kept count), the
@@ -1111,17 +1111,17 @@ assert '[ "$out" = "missing=[] extra=[MY_HOSTING_URL]" ]' \
 d=$(newdir t38c)
 cat > "$d/.env.prod.example" <<'TMPL'
 APP_NAME=MyApp
-MY_HOSTING_URL=https://default
+MY_KASBAH_URL=https://default
 NEW_VAR=n
 TMPL
 cat > "$d/.env" <<'ENV'
 APP_NAME=live
-MY_HOSTING_URL=https://live
+MY_KASBAH_URL=https://live
 ENV
 run_env $'\n\n' "$d"
 assert 'grep -qF "2 kept, 1 new, 0 removed" <<<"$out"' \
-       "setup counts a key containing HOSTING_ as an ordinary kept key (said '$out')"
-expect_kv "$d/.env" MY_HOSTING_URL https://live "and keeps its live value rather than dropping the line"
+       "setup counts a key containing KASBAH_ as an ordinary kept key (said '$out')"
+expect_kv "$d/.env" MY_KASBAH_URL https://live "and keeps its live value rather than dropping the line"
 
 # --- Case 40: every reader here sees the line Compose sees --------------------
 # Compose trims leading blanks and honours an `export ` prefix. A reader that
@@ -1164,32 +1164,32 @@ expect_kv "$d/.env" BAR tbar "the new one takes the template default"
 # Reserved keys, through the same shapes: still never prompted, still not
 # written, still not drift. E05 is what warns about them (tests/check_test.sh).
 d=$(newdir t40d)
-printf 'A=1\nexport HOSTING_CPU_LIMIT=0\n  HOSTING_MEM_LIMIT=0\n' > "$d/.env.prod.example"
+printf 'A=1\nexport KASBAH_CPU_LIMIT=0\n  KASBAH_MEM_LIMIT=0\n' > "$d/.env.prod.example"
 printf 'A=live\n' > "$d/.env"
 lib_run "$drift" "$d/.env.prod.example" "$d/.env"
 assert '[ "$out" = "missing=[] extra=[]" ]' "an exported reserved template key is not drift (got '$out')"
 run_env $'y\n' "$d"
-assert '! grep -qF "HOSTING_" <<<"$out"' "and is never prompted for (said '$out')"
-expect_absent "$d/.env" HOSTING_CPU_LIMIT "nor written to .env"
-expect_absent "$d/.env" HOSTING_MEM_LIMIT "either of them"
+assert '! grep -qF "KASBAH_" <<<"$out"' "and is never prompted for (said '$out')"
+expect_absent "$d/.env" KASBAH_CPU_LIMIT "nor written to .env"
+expect_absent "$d/.env" KASBAH_MEM_LIMIT "either of them"
 expect_kv "$d/.env" A live "the unreserved key keeps its live value"
 
 d=$(newdir t40e)
 printf 'A=1\n' > "$d/.env.prod.example"
-printf 'A=live\nexport HOSTING_CPU_LIMIT=9\n  HOSTING_MEM_LIMIT=1g\n' > "$d/.env"
+printf 'A=live\nexport KASBAH_CPU_LIMIT=9\n  KASBAH_MEM_LIMIT=1g\n' > "$d/.env"
 lib_run "$drift" "$d/.env.prod.example" "$d/.env"
 assert '[ "$out" = "missing=[] extra=[]" ]' "an exported reserved .env key is not drift either (got '$out')"
 run_env $'y\n' "$d"
 assert 'grep -qF "1 kept, 0 new, 0 removed" <<<"$out"' \
        "and the .env loader does not count it as a dropped key (said '$out')"
 
-# The mirror hazard: widening to a substring would make MY_HOSTING_URL hosting's.
+# The mirror hazard: widening to a substring would make MY_KASBAH_URL kasbah's.
 d=$(newdir t40f)
-printf 'A=1\nexport MY_HOSTING_URL=d\n' > "$d/.env.prod.example"
+printf 'A=1\nexport MY_KASBAH_URL=d\n' > "$d/.env.prod.example"
 printf 'A=1\n' > "$d/.env"
 lib_run "$drift" "$d/.env.prod.example" "$d/.env"
-assert '[ "$out" = "missing=[MY_HOSTING_URL] extra=[]" ]' \
-       "an exported key that merely contains HOSTING_ is still the user's (got '$out')"
+assert '[ "$out" = "missing=[MY_KASBAH_URL] extra=[]" ]' \
+       "an exported key that merely contains KASBAH_ is still the user's (got '$out')"
 
 # --- Case 30: what the drift and injection helpers leak -----------------------
 # Same pin as case 24, for the half lib/check.sh and the deploy path call.
@@ -1202,14 +1202,14 @@ leaked=$(env -i PATH="$PATH" LC_ALL=C bash -c '
     before=$(compgen -v | sort)
     env_extract_keys "$2/.env" >/dev/null
     env_drift "$2/.env.prod.example" "$2/.env"
-    env_inject_hosting_vars "$2/.env" HOSTING_CPU_LIMIT=1.0
+    env_inject_kasbah_vars "$2/.env" KASBAH_CPU_LIMIT=1.0
     comm -13 <(printf "%s\n" "$before") <(compgen -v | sort) | grep -vx before | tr "\n" " "
 ' _ "$env_sh" "$d")
 assert '[ "$leaked" = "BASH_REMATCH ENV_DRIFT_EXTRA ENV_DRIFT_MISSING " ]' \
        "the helpers leak only the two drift results (got '$leaked')"
 
 # --- Case 39: the dispatch modes the VPS copy is driven with -------------------
-# The same bytes answer three questions on the far side, so `hosting deploy` can
+# The same bytes answer three questions on the far side, so `kasbah deploy` can
 # ask "is there a .env and has it drifted" and "write the managed block" without
 # a second script existing anywhere. The bare form is the standalone original's
 # calling convention and must not move: the 25-case differential against
@@ -1225,13 +1225,13 @@ assert '[ "$out" = "$(printf "template_exists=yes\nenv_exists=yes\nmissing=\next
        "and reports four key=value lines, both lists empty (said '$out')"
 
 # Drift both ways, reserved keys mixed in and invisible to both sides.
-printf 'A=1\nNEW=2\nHOSTING_CPU_LIMIT=9\n' > "$d/.env.prod.example"
-printf 'A=x\nGONE=y\nHOSTING_MEM_LIMIT=1g\n' > "$d/.env"
+printf 'A=1\nNEW=2\nKASBAH_CPU_LIMIT=9\n' > "$d/.env.prod.example"
+printf 'A=x\nGONE=y\nKASBAH_MEM_LIMIT=1g\n' > "$d/.env"
 out=$(bash "$env_sh" --drift "$d" 2>&1); rc=$?
 assert '[ "$rc" = "0" ]' "--drift over a drifting pair still exits 0 (got $rc)"
 assert 'grep -qx "missing=NEW" <<<"$out"' "the template's own new key is missing (said '$out')"
 assert 'grep -qx "extra=GONE" <<<"$out"'  "and the .env's own key is extra (said '$out')"
-assert '! grep -q "HOSTING_" <<<"$out"'   "reserved keys are in neither list (said '$out')"
+assert '! grep -q "KASBAH_" <<<"$out"'   "reserved keys are in neither list (said '$out')"
 
 # The two flags are what the caller branches on, and each has to be able to say
 # no — a report that always said yes would send a deploy into the setup it
@@ -1271,11 +1271,11 @@ assert 'grep -qF "is not a regular file" <<<"$err_out"' "and the reason on stder
 # --inject, through the same entry point.
 d=$(newdir t39e)
 printf 'A=1\n' > "$d/.env"
-out=$(bash "$env_sh" --inject "$d" HOSTING_CPU_LIMIT=14.4 HOSTING_MEM_LIMIT=54g 2>&1); rc=$?
+out=$(bash "$env_sh" --inject "$d" KASBAH_CPU_LIMIT=14.4 KASBAH_MEM_LIMIT=54g 2>&1); rc=$?
 assert '[ "$rc" = "0" ]' "--inject exits 0 (got $rc: $out)"
-expect_bytes "$d/.env" $'A=1\n'"$block" "and writes the same block env_inject_hosting_vars does"
+expect_bytes "$d/.env" $'A=1\n'"$block" "and writes the same block env_inject_kasbah_vars does"
 cp "$d/.env" "$d/.env.first"
-bash "$env_sh" --inject "$d" HOSTING_CPU_LIMIT=14.4 HOSTING_MEM_LIMIT=54g >/dev/null 2>&1
+bash "$env_sh" --inject "$d" KASBAH_CPU_LIMIT=14.4 KASBAH_MEM_LIMIT=54g >/dev/null 2>&1
 expect_same "$d/.env" "$d/.env.first" "a second --inject is byte-identical"
 # The mode takes the *directory*, like every other mode, and appends /.env
 # itself. A mode that took the file would have written $d/.env/.env here and
@@ -1285,15 +1285,15 @@ assert '[ "$(ls -A "$d" | grep -cx ".env")" = "1" ]' \
 
 out=$(bash "$env_sh" --inject "$d" DATABASE_URL=x 2>&1); rc=$?
 assert '[ "$rc" != "0" ]' "--inject with an unreserved key fails (got $rc)"
-assert 'grep -qF "is not a HOSTING_NAME=value pair" <<<"$out"' "and says why (said '$out')"
+assert 'grep -qF "is not a KASBAH_NAME=value pair" <<<"$out"' "and says why (said '$out')"
 expect_same "$d/.env" "$d/.env.first" "leaving .env untouched"
 
 # `--inject` is a documented interface in this file's own header, so the empty
 # pair list has to be refused here too — it would rewrite the block empty and
-# leave `compose up` failing on an unset HOSTING_CPU_LIMIT.
+# leave `compose up` failing on an unset KASBAH_CPU_LIMIT.
 out=$(bash "$env_sh" --inject "$d" 2>&1); rc=$?
 assert '[ "$rc" != "0" ]' "--inject with no pairs fails (got $rc)"
-assert 'grep -qF "no HOSTING_NAME=value pairs given" <<<"$out"' "and says why (said '$out')"
+assert 'grep -qF "no KASBAH_NAME=value pairs given" <<<"$out"' "and says why (said '$out')"
 expect_same "$d/.env" "$d/.env.first" "leaving the block it would have emptied intact"
 out=$(cd "$d" && bash "$env_sh" --inject 2>&1); rc=$?
 assert '[ "$rc" != "0" ]' "--inject with no arguments at all fails too (got $rc)"

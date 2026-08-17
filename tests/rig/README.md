@@ -1,7 +1,7 @@
 # The rig — a container that plays VPS
 
 A privileged Debian container running its own dockerd behind sshd, so
-hosting's commands can be driven over real SSH against real Docker instead
+kasbah's commands can be driven over real SSH against real Docker instead
 of a local shortcut. It exists because the chosen exit bar for every phase
 is "works against a container that plays VPS" — the rig is what makes that
 bar checkable.
@@ -18,7 +18,7 @@ Integration tests assume a running rig and never start one:
 
 ```
 tests/rig/rig.sh up
-HOSTING_RIG_TESTS=1 ./test.sh
+KASBAH_RIG_TESTS=1 ./test.sh
 ```
 
 They do not use `reset` between runs — it drops the nested image volume, so
@@ -29,7 +29,7 @@ cache. It runs at suite start (so a crashed run cannot poison the next) and
 again at the end only when the suite passed, leaving a failure's state
 intact for inspection.
 
-**The image carries `/etc/hosting-rig`, and `rig_clean` refuses without
+**The image carries `/etc/kasbah-rig`, and `rig_clean` refuses without
 it.** That file is the far-side proof that a destructive payload has landed
 on a disposable fake VPS rather than on someone's real machine — the one
 guard that still holds when the ssh alias or config has been redirected. A
@@ -48,17 +48,17 @@ changing nothing. That is the intended direction of failure.
 | Keypair | generated per checkout by `rig.sh`, gitignored, never committed |
 | Connection contract | the generated `tests/rig/ssh_config` — hand it to `ssh -F`, `scp -F`, `rsync -e`. Do not restate its flags anywhere |
 
-`HOSTING_RIG_BIND` and `HOSTING_RIG_SSH_PORT` affect only a container being
+`KASBAH_RIG_BIND` and `KASBAH_RIG_SSH_PORT` affect only a container being
 *created*. Once one exists, `rig.sh` reads the published endpoint back out
 of Docker and renders `ssh_config` from that — the port is a property of
 the running container, not of whatever a later caller happens to have
-exported. Otherwise one stray `HOSTING_RIG_SSH_PORT=… rig.sh ssh` would
+exported. Otherwise one stray `KASBAH_RIG_SSH_PORT=… rig.sh ssh` would
 repoint the shared file at a port nothing listens on and every subsequent
 caller would blame the rig.
 
-Overridable: `HOSTING_RIG_BIND`, `HOSTING_RIG_{SSH,HTTP,HTTPS}_PORT`,
-`HOSTING_RIG_READY_TIMEOUT`, `HOSTING_RIG_DOCKERD_TIMEOUT`,
-`HOSTING_RIG_DOCKER_VERSION`.
+Overridable: `KASBAH_RIG_BIND`, `KASBAH_RIG_{SSH,HTTP,HTTPS}_PORT`,
+`KASBAH_RIG_READY_TIMEOUT`, `KASBAH_RIG_DOCKERD_TIMEOUT`,
+`KASBAH_RIG_DOCKER_VERSION`.
 
 Docker's version is deliberately **not pinned** — the rig should look like
 a VPS provisioned today. The build that produced this text carried
@@ -66,7 +66,7 @@ docker-ce 29.7.2, containerd.io 2.3.3 and compose v5.4.0, but that is a
 snapshot of one build, not a property of the rig: it moves whenever a
 cache-busting rebuild happens. Ask the rig, don't trust this paragraph.
 To reproduce an old version:
-`HOSTING_RIG_DOCKER_VERSION=5:27.1.1-1~debian.12~bookworm tests/rig/rig.sh reset`.
+`KASBAH_RIG_DOCKER_VERSION=5:27.1.1-1~debian.12~bookworm tests/rig/rig.sh reset`.
 
 ## Limitations — what the rig cannot prove
 
@@ -95,7 +95,7 @@ The rig's cgroup root holds its own processes and has no `init` sub-cgroup,
 so the nested dockerd cannot distribute domain controllers and runc falls
 back to threaded mode. The standard `docker:dind` cgroup-nesting step in
 the entrypoint would fix it. Until then, **compliance rules R01/R02
-(`cpus: ${HOSTING_CPU_LIMIT}` / `mem_limit: ${HOSTING_MEM_LIMIT}`) cannot
+(`cpus: ${KASBAH_CPU_LIMIT}` / `mem_limit: ${KASBAH_MEM_LIMIT}`) cannot
 be proven end to end here** — a fixture must seed those variables as `0`,
 which Docker reads as "no limit". The values themselves are exercised by
 unit tests and by the server marker; that they are *enforced* waits for
@@ -119,11 +119,11 @@ be worse.
 **`docker compose up` never rebuilds this image on its own** (`build:`
 paired with a fixed `image:`), which is why `rig.sh` always calls
 `compose build` and lets the layer cache decide. Driving compose directly
-gets you whatever `hosting-rig` already is.
+gets you whatever `kasbah-rig` already is.
 
 ## Rules for anything that drives the rig
 
-- **Always pass `-p hosting-rig` to `docker compose`.** The `name:` key in
+- **Always pass `-p kasbah-rig` to `docker compose`.** The `name:` key in
   a compose file is the *weakest* source of the project name —
   `COMPOSE_PROJECT_NAME` in the environment outranks it, and `down`
   removes by project label rather than by the services the file lists.

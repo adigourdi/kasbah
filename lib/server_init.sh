@@ -1,14 +1,14 @@
-# hosting — server init command
-# Sourced by bin/hosting. Do not execute directly.
+# kasbah — server init command
+# Sourced by bin/kasbah. Do not execute directly.
 
-[ -n "${_HOSTING_SERVER_INIT_LOADED:-}" ] && return 0
-_HOSTING_SERVER_INIT_LOADED=1
+[ -n "${_KASBAH_SERVER_INIT_LOADED:-}" ] && return 0
+_KASBAH_SERVER_INIT_LOADED=1
 
-. "$HOSTING_LIB_DIR/common.sh"
-. "$HOSTING_LIB_DIR/prompt.sh"
-. "$HOSTING_LIB_DIR/ssh.sh"
+. "$KASBAH_LIB_DIR/common.sh"
+. "$KASBAH_LIB_DIR/prompt.sh"
+. "$KASBAH_LIB_DIR/ssh.sh"
 
-# `hosting server init` lays out the directory tree every later command assumes
+# `kasbah server init` lays out the directory tree every later command assumes
 # and records what it found in the server marker. It checks prerequisites and
 # never installs them (docs/server-setup.md), and it is safe to re-run: a second
 # run against an unchanged host leaves the tree byte-identical.
@@ -41,7 +41,7 @@ _SI_MEM_LIMIT=""
 _SI_MARKER_EXISTING=""
 _SI_MARKER_PRESENT=no
 
-# The Traefik stack: the three files hosting owns, what is on the server now,
+# The Traefik stack: the three files kasbah owns, what is on the server now,
 # what the run resolved to render with, and what shipping decided.
 _SI_TRAEFIK_FILES=(compose.yml traefik.yml dynamic/_shared.yml)
 declare -A _SI_TRAEFIK_KEY=(
@@ -61,7 +61,7 @@ _SI_TMPDIR=""
 
 _server_init_usage() {
     cat <<EOF
-Usage: hosting server init USER@HOST [flags]
+Usage: kasbah server init USER@HOST [flags]
 
 Prepares a VPS to host projects: checks the prerequisites, creates the
 directory layout, renders and starts the shared Traefik stack, and writes
@@ -279,11 +279,11 @@ _server_init_parse_args() {
     done
 
     [ -n "$_SI_TARGET" ] \
-        || die "server init: USER@HOST is required (the user hosting deploys as is not optional)"
+        || die "server init: USER@HOST is required (the user kasbah deploys as is not optional)"
 
     # An empty --apps-path= is a stated intent that cannot be honoured, so it
     # fails rather than falling back to the default the operator just overrode.
-    [ "$apps_given" = 1 ] || apps="$HOSTING_DEFAULT_APPS_PATH"
+    [ "$apps_given" = 1 ] || apps="$KASBAH_DEFAULT_APPS_PATH"
     _server_init_path apps-path "$apps" _SI_APPS_PATH
     [ "$data_given" = 1 ] || data="$_SI_APPS_PATH/data"
     _server_init_path data-path "$data" _SI_DATA_PATH
@@ -334,7 +334,7 @@ _server_limits() {
 # and knows nothing about the rest. `backup` is the one that matters today —
 # Phase 8 puts a repo_base beside `enabled`, and a plain re-run of init must not
 # take an operator's backup configuration with it. Same for any key a newer
-# hosting wrote and this one has never heard of.
+# kasbah wrote and this one has never heard of.
 _server_marker_json() {
     local existing="${6:-}"
     jq -n \
@@ -345,7 +345,7 @@ _server_marker_json() {
         --arg cpu_limit "$4" \
         --arg mem_limit "$5" \
         '(($existing // {}) + {
-            hosting_version: $version,
+            kasbah_version: $version,
             apps_path: $apps_path,
             data_path: $data_path,
             cpu_limit: $cpu_limit,
@@ -458,7 +458,7 @@ if [ "$apps_state" = absent ] && [ "$sudo_ok" = yes ]; then
         apps_root_state=absent
     fi
 fi
-# Either answer makes it unusable: hosting will not adopt what root can see and
+# Either answer makes it unusable: kasbah will not adopt what root can see and
 # this user cannot, and it cannot work below a wall it cannot cross either,
 # since everything under the apps path is written unelevated.
 if [ "$apps_state" = absent ]; then
@@ -488,8 +488,8 @@ kv apps_owner "$(stat -c '%U:%G' "$apps" 2>/dev/null | flat)"
 # asked for directly. LC_ALL=C above keeps the wording stable.
 apps_write_error=""
 if [ "$apps_state" = dir ] && [ -O "$apps" ] && [ ! -w "$apps" ]; then
-    apps_write_error=$(touch "$apps/.hosting-write-probe" 2>&1 | flat)
-    rm -f "$apps/.hosting-write-probe" 2>/dev/null
+    apps_write_error=$(touch "$apps/.kasbah-write-probe" 2>&1 | flat)
+    rm -f "$apps/.kasbah-write-probe" 2>/dev/null
 fi
 kv apps_write_error "$apps_write_error"
 
@@ -615,7 +615,7 @@ _server_init_preflight() {
                "  The compose plugin is missing: install docker-compose-plugin.")
     elif ! [[ "$major" =~ ^[0-9]+$ ]] || [ "$major" -lt 2 ]; then
         rows+=("Docker Compose v2 — the plugin reports ${_SI_FACT[compose_version]}."
-               "  hosting's compose files need include: and v2 syntax.")
+               "  kasbah's compose files need include: and v2 syntax.")
     fi
 
     for cmd in rsync openssl gzip; do
@@ -627,7 +627,7 @@ _server_init_preflight() {
     done
 
     # The apps path, in the four states it can be in. Only the first is
-    # elevated over; the rest are the operator's to resolve, because hosting
+    # elevated over; the rest are the operator's to resolve, because kasbah
     # taking ownership of a directory it did not create is not a repair.
     case "${_SI_FACT[apps_state]}" in
         absent)
@@ -647,12 +647,12 @@ _server_init_preflight() {
         unreachable)
             if [ "${_SI_FACT[apps_root_state]}" = exists ]; then
                 rows+=("$apps exists and belongs to ${_SI_FACT[apps_root_owner]}, and $user cannot see it."
-                       "  Only root can, which is why this is a refusal: hosting would have to take the"
+                       "  Only root can, which is why this is a refusal: kasbah would have to take the"
                        "  directory over to use it, and it never takes over one it did not create.")
             else
                 rows+=("$apps cannot be reached by $user."
                        "  ${_SI_FACT[apps_base]} is not traversable by them (owner ${_SI_FACT[apps_base_owner]}, mode ${_SI_FACT[apps_base_mode]}),"
-                       "  so hosting cannot even tell whether $apps exists.")
+                       "  so kasbah cannot even tell whether $apps exists.")
             fi
             rows+=("  Everything below the apps path is written as $user, so a path they cannot"
                    "  enter is no use even once it exists. Pick one they can, with --apps-path=<dir>.")
@@ -664,9 +664,9 @@ _server_init_preflight() {
         dir)
             if [ "${_SI_FACT[apps_owned]}" != yes ]; then
                 rows+=("$apps already exists and belongs to ${_SI_FACT[apps_owner]}, not $user."
-                       "  hosting only elevates to create the apps path; it never takes over one"
+                       "  kasbah only elevates to create the apps path; it never takes over one"
                        "  it did not create, because everything below would end up in mixed"
-                       "  ownership. If this path really is meant for hosting, hand it over:"
+                       "  ownership. If this path really is meant for kasbah, hand it over:"
                        "  ssh $target 'sudo chown $owner $apps'")
             elif [ "${_SI_FACT[apps_writable]}" != yes ]; then
                 case "${_SI_FACT[apps_write_error]}" in
@@ -708,7 +708,7 @@ _server_init_preflight() {
             if [ "${_SI_FACT[data_scope]}" = outside ] \
                 && [ "${_SI_FACT[data_base_writable]}" != yes ]; then
                 rows+=("the data path $_SI_DATA_PATH cannot be created: ${_SI_FACT[data_base]} is not writable by $user."
-                       "  It sits outside $apps, so hosting cannot get there unelevated. Create it once:"
+                       "  It sits outside $apps, so kasbah cannot get there unelevated. Create it once:"
                        "  ssh $target 'sudo mkdir -p $_SI_DATA_PATH && sudo chown $owner $_SI_DATA_PATH'")
             fi
             ;;
@@ -725,9 +725,9 @@ _server_init_preflight() {
 
     [ "${#rows[@]}" -gt 0 ] || return 0
 
-    err "$target does not meet the prerequisites for hosting server init:"
+    err "$target does not meet the prerequisites for kasbah server init:"
     for row in "${rows[@]}"; do err_cont "$row"; done
-    err_cont "hosting checks prerequisites and never installs them — see docs/server-setup.md"
+    err_cont "kasbah checks prerequisites and never installs them — see docs/server-setup.md"
     exit 1
 }
 
@@ -743,7 +743,7 @@ _server_init_read_marker() {
 
     out=$(ssh_script "$_SI_APPS_PATH" <<'REMOTE'
 set -uo pipefail
-marker="$1/.hosting/server.json"
+marker="$1/.kasbah/server.json"
 
 if [ -e "$marker" ] && [ ! -f "$marker" ]; then
     printf 'remote: %s exists and is not a regular file\n' "$marker" >&2
@@ -757,41 +757,41 @@ REMOTE
     case $rc in
         0) _SI_MARKER_PRESENT=yes; _SI_MARKER_EXISTING="$out" ;;
         3) _SI_MARKER_PRESENT=no;  _SI_MARKER_EXISTING="" ;;
-        *) die "could not read $_SI_APPS_PATH/.hosting/server.json on $_SI_TARGET (the remote step exited $rc, see above)" ;;
+        *) die "could not read $_SI_APPS_PATH/.kasbah/server.json on $_SI_TARGET (the remote step exited $rc, see above)" ;;
     esac
     return 0
 }
 
 # docs/server-setup.md's compatibility rule, the half that has a remedy: a
-# hosting binary operates on a VPS whose marker shares its major version, and an
+# kasbah binary operates on a VPS whose marker shares its major version, and an
 # older tool facing a newer marker refuses rather than writing fields it does
 # not understand. (The mirror case — newer tool, older-major marker — is
-# specified as "refuse until `hosting migrate`", and that command does not exist
+# specified as "refuse until `kasbah migrate`", and that command does not exist
 # yet; refusing with no way forward would be worse than the drift.)
 _server_init_check_marker() {
-    local path="$_SI_APPS_PATH/.hosting/server.json" version major ours
+    local path="$_SI_APPS_PATH/.kasbah/server.json" version major ours
 
     [ "$_SI_MARKER_PRESENT" = yes ] || return 0
 
     if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$_SI_MARKER_EXISTING"; then
         err "$path on $_SI_TARGET is not a JSON object"
-        err_cont "hosting will not overwrite a marker it cannot read — look at it, then remove"
+        err_cont "kasbah will not overwrite a marker it cannot read — look at it, then remove"
         err_cont "it and re-run to start the server's record over"
         exit 1
     fi
 
-    version="$(jq -r '.hosting_version // "" | tostring' <<<"$_SI_MARKER_EXISTING")"
+    version="$(jq -r '.kasbah_version // "" | tostring' <<<"$_SI_MARKER_EXISTING")"
     major="$(_si_major "$version")"
-    ours="$(_si_major "$HOSTING_VERSION")"
+    ours="$(_si_major "$KASBAH_VERSION")"
     if ! [[ "$major" =~ ^[0-9]+$ ]] || ! [[ "$ours" =~ ^[0-9]+$ ]]; then
-        warn "$path records hosting_version '$version'; this hosting is $HOSTING_VERSION"
+        warn "$path records kasbah_version '$version'; this kasbah is $KASBAH_VERSION"
         warn "the two cannot be compared, so no compatibility check was made"
         return 0
     fi
     if [ "$major" -gt "$ours" ]; then
-        err "$path was written by hosting $version, and this is hosting $HOSTING_VERSION"
+        err "$path was written by kasbah $version, and this is kasbah $KASBAH_VERSION"
         err_cont "a newer major on the server means fields this binary does not know about"
-        err_cont "upgrade hosting locally, or point at a server this version manages"
+        err_cont "upgrade kasbah locally, or point at a server this version manages"
         exit 1
     fi
     return 0
@@ -826,7 +826,7 @@ if [ "$elevate" = yes ]; then
     # anything the earlier look got wrong — the chown below would be a seizure,
     # so it does not happen.
     if sudo -n test -e "$apps"; then
-        fail "$apps exists after all (root sees it, owner $(sudo -n stat -c '%U:%G' "$apps" 2>/dev/null)) — hosting creates the apps path, it never takes over one that is already there"
+        fail "$apps exists after all (root sees it, owner $(sudo -n stat -c '%U:%G' "$apps" 2>/dev/null)) — kasbah creates the apps path, it never takes over one that is already there"
     fi
     # -p for the parents, and a bare mkdir for the component being taken
     # ownership of: an existing directory is then EEXIST and an error, instead
@@ -834,14 +834,14 @@ if [ "$elevate" = yes ]; then
     parent=${apps%/*}
     [ -n "$parent" ] || parent=/
     sudo -n mkdir -p "$parent" || fail "sudo mkdir -p $parent failed"
-    sudo -n mkdir "$apps" || fail "sudo mkdir $apps failed — it exists already, and hosting only chowns what it created"
+    sudo -n mkdir "$apps" || fail "sudo mkdir $apps failed — it exists already, and kasbah only chowns what it created"
     sudo -n chown "$owner" "$apps" || fail "sudo chown $owner $apps failed"
     printf 'elevated=yes\n'
 else
     printf 'elevated=no\n'
 fi
 
-for d in "$apps/.hosting" "$apps/backups" "$apps/traefik/dynamic" \
+for d in "$apps/.kasbah" "$apps/backups" "$apps/traefik/dynamic" \
          "$data" "$data/traefik/letsencrypt"; do
     mkdir -p "$d" || fail "could not create $d"
 done
@@ -885,7 +885,7 @@ marker_json=$2
 
 fail() { printf 'remote: %s\n' "$*" >&2; exit 1; }
 
-marker="$apps/.hosting/server.json"
+marker="$apps/.kasbah/server.json"
 if [ -e "$marker" ] && [ ! -f "$marker" ]; then
     fail "$marker exists and is not a regular file"
 fi
@@ -894,7 +894,7 @@ current=""
 if [ "$current" = "$marker_json" ]; then
     printf 'marker=unchanged\n'
 else
-    # Rendered and renamed: another hosting run reading the marker must never
+    # Rendered and renamed: another kasbah run reading the marker must never
     # catch a half-written one.
     tmp="$marker.tmp.$$"
     printf '%s\n' "$marker_json" > "$tmp" || fail "could not write $tmp"
@@ -996,7 +996,7 @@ REMOTE
 
 # One keyed lookup against a YAML document held in a variable. Exit 2 means the
 # document did not parse, which every caller keeps distinct from "the key is not
-# there": hosting reuses what is on the server rather than regenerating it, and
+# there": kasbah reuses what is on the server rather than regenerating it, and
 # a file it cannot read is a file it cannot reuse from.
 _si_yaml_get() {
     local _yg_content="$1" _yg_filter="$2" _yg_out="$3" _yg_val=""
@@ -1041,7 +1041,7 @@ _si_extract_auth() {
         *)          ;;
     esac
     err "the dashboard credentials in dynamic/_shared.yml are not an htpasswd entry"
-    err_cont "traefik-dashboard-auth.basicAuth.users[0] holds '${_xa_entry:-<not a string>}', and hosting"
+    err_cont "traefik-dashboard-auth.basicAuth.users[0] holds '${_xa_entry:-<not a string>}', and kasbah"
     err_cont "reuses that entry verbatim rather than regenerating it — it cannot reuse this one."
     err_cont "Fix it, or pass --traefik-auth=user:pass to set the credentials outright."
     exit 1
@@ -1113,14 +1113,14 @@ _si_bcrypt() {
 #
 # Nothing is created before this returns, so an unanswerable question still
 # costs nothing.
-# A file hosting is about to reuse a value out of, that it could not read.
+# A file kasbah is about to reuse a value out of, that it could not read.
 # Refused rather than worked around: the alternative is inventing a fresh value
 # and overwriting whatever the operator had, which for the dashboard means
 # rotating their credentials because their YAML had a typo in it.
 _si_unreadable_stack() {
     local _us_file="$1" _us_flag="$2"
     err "$_SI_APPS_PATH/traefik/$_us_file on $_SI_TARGET could not be read as YAML"
-    err_cont "hosting reuses what is already on the server instead of regenerating it, so it"
+    err_cont "kasbah reuses what is already on the server instead of regenerating it, so it"
     err_cont "will not guess past a file it cannot parse — that would overwrite whatever is"
     err_cont "in there. Fix the file, or delete it, or pass $_us_flag to settle the value."
     exit 1
@@ -1197,13 +1197,13 @@ _server_init_traefik_values() {
 # A token the renderer has no value for is a hard failure, and it is looked for
 # in the *template* rather than in the output: an operator whose --apps-path
 # happens to contain __STAGE__ has done nothing wrong, and must not be told
-# hosting's templates are out of step. Substituted values are never rescanned,
+# kasbah's templates are out of step. Substituted values are never rescanned,
 # which is the same property from the other side.
 #
 # Every rendered file is then parsed before it is allowed near the server.
 _server_init_traefik_render() {
     local rel src dst content out rest tok key yq_err
-    local tpl="${HOSTING_TEMPLATE_DIR:-}"
+    local tpl="${KASBAH_TEMPLATE_DIR:-}"
     declare -A subst=(
         [APPS_PATH]="$_SI_APPS_PATH"
         [DATA_PATH]="$_SI_DATA_PATH"
@@ -1212,13 +1212,13 @@ _server_init_traefik_render() {
         [DASHBOARD_AUTH]="$_SI_AUTH_ENTRY"
     )
 
-    [ -n "$tpl" ] || die "internal: HOSTING_TEMPLATE_DIR is not set"
+    [ -n "$tpl" ] || die "internal: KASBAH_TEMPLATE_DIR is not set"
     [ -d "$tpl/traefik" ] \
-        || die "the Traefik templates are missing (looked in $tpl/traefik) — this hosting installation is incomplete"
+        || die "the Traefik templates are missing (looked in $tpl/traefik) — this kasbah installation is incomplete"
     command -v yq >/dev/null \
         || die "yq is required to render the Traefik stack (install yq and retry)"
 
-    _SI_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/hosting-traefik.XXXXXX")" \
+    _SI_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/kasbah-traefik.XXXXXX")" \
         || die "could not create a temp directory to render the Traefik stack in"
 
     for rel in "${_SI_TRAEFIK_FILES[@]}"; do
@@ -1440,7 +1440,7 @@ cmd_server_init() {
     _server_limits "${_SI_FACT[nproc]}" "${_SI_FACT[memtotal_kb]}"
 
     local marker_json
-    marker_json="$(_server_marker_json "$HOSTING_VERSION" "$_SI_APPS_PATH" \
+    marker_json="$(_server_marker_json "$KASBAH_VERSION" "$_SI_APPS_PATH" \
         "$_SI_DATA_PATH" "$_SI_CPU_LIMIT" "$_SI_MEM_LIMIT" "$_SI_MARKER_EXISTING")"
 
     # Everything the Traefik stack needs is settled — asked for or recovered
@@ -1457,7 +1457,7 @@ cmd_server_init() {
     _server_init_marker "$marker_json"
 
     info "Prepared $_SI_TARGET"
-    # The one moment hosting elevates, and the one moment it creates the file
+    # The one moment kasbah elevates, and the one moment it creates the file
     # Docker would otherwise turn into a directory: both are worth saying out
     # loud, and both are silent on a re-run.
     [ "${_SI_FACT[elevated]}" != yes ] \
@@ -1470,5 +1470,5 @@ cmd_server_init() {
     [ "${#_SI_TRAEFIK_CHANGED[@]}" -eq 0 ] || shipped="shipped ${_SI_TRAEFIK_CHANGED[*]}"
     info "  traefik: ${_SI_FACT[traefik_action]}, ${_SI_FACT[traefik_health]}, ${_SI_FACT[traefik_image]} ($shipped)"
     info "  dashboard: https://traefik.$_SI_DASHBOARD_DOMAIN (basic auth, credentials $_SI_AUTH_ORIGIN)"
-    info "  marker: $_SI_APPS_PATH/.hosting/server.json (${_SI_FACT[marker]})"
+    info "  marker: $_SI_APPS_PATH/.kasbah/server.json (${_SI_FACT[marker]})"
 }

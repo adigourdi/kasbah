@@ -1,18 +1,18 @@
-# hosting — server status command
-# Sourced by bin/hosting. Do not execute directly.
+# kasbah — server status command
+# Sourced by bin/kasbah. Do not execute directly.
 
-[ -n "${_HOSTING_SERVER_STATUS_LOADED:-}" ] && return 0
-_HOSTING_SERVER_STATUS_LOADED=1
+[ -n "${_KASBAH_SERVER_STATUS_LOADED:-}" ] && return 0
+_KASBAH_SERVER_STATUS_LOADED=1
 
-. "$HOSTING_LIB_DIR/common.sh"
-. "$HOSTING_LIB_DIR/ssh.sh"
-# For HOSTING_RESERVED_NAMES alone — a server command has no manifest to read.
+. "$KASBAH_LIB_DIR/common.sh"
+. "$KASBAH_LIB_DIR/ssh.sh"
+# For KASBAH_RESERVED_NAMES alone — a server command has no manifest to read.
 # The list is what a project may not be called *because* those directories are
-# hosting's own under <apps>/, which is the same question status asks when it
+# kasbah's own under <apps>/, which is the same question status asks when it
 # decides what is a project, so the two must not drift apart.
-. "$HOSTING_LIB_DIR/manifest.sh"
+. "$KASBAH_LIB_DIR/manifest.sh"
 
-# `hosting server status USER@HOST` reports what a prepared VPS is running: the
+# `kasbah server status USER@HOST` reports what a prepared VPS is running: the
 # docker and compose versions, the shared Traefik stack, and every project under
 # the apps path with the last line of its versions.log.
 #
@@ -54,27 +54,27 @@ _SS_P_RUNNING=()
 _SS_P_LOGSTATE=()
 _SS_P_LOG=()
 
-# The fixed names hosting owns under the apps path (docs/server-setup.md → What
+# The fixed names kasbah owns under the apps path (docs/server-setup.md → What
 # init creates). The bind-mount root is not always among them — `--data-path`
 # can put it inside the apps path under any name — so that one is dropped later,
 # from the marker, in _ss_decode_projects.
 #
 # Everything else is reported as a project, including a name no deploy of this
-# hosting could have made: a name rule cannot tell a stray directory from one a
-# different hosting deployed, and a status that hides what it does not recognise
+# kasbah could have made: a name rule cannot tell a stray directory from one a
+# different kasbah deployed, and a status that hides what it does not recognise
 # is worse than one that shows it.
-_SS_RESERVED=(.hosting "${HOSTING_RESERVED_NAMES[@]}")
+_SS_RESERVED=(.kasbah "${KASBAH_RESERVED_NAMES[@]}")
 
 _server_status_usage() {
     cat <<EOF
-Usage: hosting server status USER@HOST [--apps-path=<dir>]
+Usage: kasbah server status USER@HOST [--apps-path=<dir>]
 
 Prints what a prepared server is running: docker and compose versions, the
 shared Traefik stack, and every project under the apps path with its last
 versions.log entry. Read-only — it changes nothing on the server.
 
 Flags:
-  --apps-path=<dir>   where the server was prepared (default $HOSTING_DEFAULT_APPS_PATH)
+  --apps-path=<dir>   where the server was prepared (default $KASBAH_DEFAULT_APPS_PATH)
 
 Certs, mail and disk usage are not reported yet; see docs/server-setup.md.
 EOF
@@ -130,11 +130,11 @@ _server_status_parse_args() {
     done
 
     [ -n "$_SS_TARGET" ] \
-        || die "server status: USER@HOST is required (the user hosting deploys as is not optional)"
+        || die "server status: USER@HOST is required (the user kasbah deploys as is not optional)"
 
     # An empty --apps-path= is a stated intent that cannot be honoured, so it
     # fails rather than falling back to the default the operator just overrode.
-    [ "$apps_given" = 1 ] || apps="$HOSTING_DEFAULT_APPS_PATH"
+    [ "$apps_given" = 1 ] || apps="$KASBAH_DEFAULT_APPS_PATH"
     _ss_apps_path "$apps"
     return 0
 }
@@ -250,7 +250,7 @@ kv apps_state "$apps_state"
 # The marker's bytes, not its meaning: no jq on the far side, so the caller
 # parses it. A zero-byte file is reported as such rather than as an absent one —
 # absence is an unprepared server, emptiness is a broken marker.
-marker="$apps/.hosting/server.json"
+marker="$apps/.kasbah/server.json"
 marker_state=absent
 marker_b64=""
 if [ -e "$marker" ] && [ ! -f "$marker" ]; then
@@ -268,7 +268,7 @@ kv marker_b64 "$marker_b64"
 
 # Traefik by its compose labels, which is the frozen contract: the project name
 # is `traefik` wherever the stack was rendered. A container merely *named*
-# traefik did not come from hosting's stack, and reporting it as the proxy would
+# traefik did not come from kasbah's stack, and reporting it as the proxy would
 # be worse than reporting none.
 cid=""
 if [ "$docker_rc" -eq 0 ]; then
@@ -295,7 +295,7 @@ else
 fi
 
 # One row per project: everything under the apps path that is not one of
-# hosting's own directories. dotglob is on because `.hosting` is skipped by name
+# kasbah's own directories. dotglob is on because `.kasbah` is skipped by name
 # rather than by being hidden, and a project that is not a directory at all is
 # reported as that rather than skipped.
 rows=""
@@ -384,34 +384,34 @@ REMOTE
 
 # --- The marker -------------------------------------------------------------------
 
-# Exit 4 is the same verdict `hosting deploy` reaches, and the remedy is worded
-# the same way, for the same reason: a bare `hosting server init <target>` run
+# Exit 4 is the same verdict `kasbah deploy` reaches, and the remedy is worded
+# the same way, for the same reason: a bare `kasbah server init <target>` run
 # against a server prepared with --apps-path elsewhere renders a second Traefik
 # stack under the frozen `traefik` compose project, recreates the running proxy
-# against it, and takes every site on the host down. hosting must not print an
+# against it, and takes every site on the host down. kasbah must not print an
 # instruction that can do that. What status can offer instead — and deploy
 # cannot, because it is a project command — is the flag that looks elsewhere.
 _ss_no_marker() {
-    local marker_path="$_SS_APPS_PATH/.hosting/server.json"
+    local marker_path="$_SS_APPS_PATH/.kasbah/server.json"
 
     err "$_SS_TARGET has no server marker at $marker_path"
     [ "${_SS_FACT[apps_state]}" != absent ] \
         || err_cont "($_SS_APPS_PATH is not there either — the probe found nothing at that path.)"
-    err_cont "That file is what \`hosting server init\` writes last, and status looked for it"
+    err_cont "That file is what \`kasbah server init\` writes last, and status looked for it"
     err_cont "there and nowhere else. So this is one of two situations, and they have"
     err_cont "different answers:"
     err_cont "  * the server was prepared with --apps-path=<dir> somewhere other than"
     err_cont "    $_SS_APPS_PATH. Point status at it:"
-    err_cont "      hosting server status $_SS_TARGET --apps-path=<dir>"
+    err_cont "      kasbah server status $_SS_TARGET --apps-path=<dir>"
     err_cont "  * the server has never been prepared, and initialising it is the answer."
     err_cont "Do not re-run init until you know which. Pointed at the wrong apps path it"
     err_cont "renders a second Traefik stack under the frozen 'traefik' compose project,"
     err_cont "which recreates the running proxy against it and takes every site down."
-    exit "$HOSTING_EXIT_NO_REMOTE_STATE"
+    exit "$KASBAH_EXIT_NO_REMOTE_STATE"
 }
 
 _server_status_read_marker() {
-    local path="$_SS_APPS_PATH/.hosting/server.json"
+    local path="$_SS_APPS_PATH/.kasbah/server.json"
 
     # The apps path itself, before the file inside it: "there is no marker" and
     # "that is not a directory" are different servers, and the probe already
@@ -419,14 +419,14 @@ _server_status_read_marker() {
     case "${_SS_FACT[apps_state]}" in
         dir|absent) ;;
         notdir) die "$_SS_APPS_PATH on $_SS_TARGET exists and is not a directory — point status elsewhere with --apps-path=<dir>" ;;
-        *)      die "$_SS_APPS_PATH on $_SS_TARGET is in a state the probe called '${_SS_FACT[apps_state]}', which this hosting does not know" ;;
+        *)      die "$_SS_APPS_PATH on $_SS_TARGET is in a state the probe called '${_SS_FACT[apps_state]}', which this kasbah does not know" ;;
     esac
 
     case "${_SS_FACT[marker_state]}" in
         ok) ;;
         absent) _ss_no_marker ;;
         notfile) die "$path on $_SS_TARGET exists and is not a regular file" ;;
-        empty)   die "$path on $_SS_TARGET is empty — hosting server init did not finish, or something truncated it" ;;
+        empty)   die "$path on $_SS_TARGET is empty — kasbah server init did not finish, or something truncated it" ;;
         *)       die "$path on $_SS_TARGET could not be read" ;;
     esac
 
@@ -437,7 +437,7 @@ _server_status_read_marker() {
 
     _SS_MARKER_APPS="$(jq -r '.apps_path // "" | tostring' <<<"$_SS_MARKER")"
     _SS_MARKER_DATA="$(jq -r '.data_path // "" | tostring' <<<"$_SS_MARKER")"
-    _SS_MARKER_VERSION="$(jq -r '.hosting_version // "" | tostring' <<<"$_SS_MARKER")"
+    _SS_MARKER_VERSION="$(jq -r '.kasbah_version // "" | tostring' <<<"$_SS_MARKER")"
     _SS_MARKER_CPU="$(jq -r '.cpu_limit // "" | tostring' <<<"$_SS_MARKER")"
     _SS_MARKER_MEM="$(jq -r '.mem_limit // "" | tostring' <<<"$_SS_MARKER")"
     return 0
@@ -447,10 +447,10 @@ _server_status_read_marker() {
 
 # One line of docs/build-deploy.md's frozen format:
 #
-#   <iso-timestamp> <action> <version> <backup-or-no-backup> hosting=<v> digest=<…|->
+#   <iso-timestamp> <action> <version> <backup-or-no-backup> kasbah=<v> digest=<…|->
 #
 # The four positional fields are frozen forever; everything after them is
-# key=value pairs, and a line written by a newer hosting carries pairs this one
+# key=value pairs, and a line written by a newer kasbah carries pairs this one
 # has never heard of. So the tail is scanned for the one key worth printing and
 # every other pair is ignored rather than rejected — the alternative is a status
 # command that stops working the first time a later phase appends a field.
@@ -459,34 +459,34 @@ _server_status_read_marker() {
 # state: a truncated write, or somebody's note in the file.
 _ss_parse_log_line() {
     local _pl_line="${1%$'\r'}"
-    local _pl_ts_out="$2" _pl_action_out="$3" _pl_version_out="$4" _pl_backup_out="$5" _pl_hosting_out="$6"
+    local _pl_ts_out="$2" _pl_action_out="$3" _pl_version_out="$4" _pl_backup_out="$5" _pl_kasbah_out="$6"
     local _pl_ts="" _pl_action="" _pl_version="" _pl_backup="" _pl_rest="" _pl_tok
-    local _pl_hosting=""
+    local _pl_kasbah=""
     local _pl_pairs=()
 
     printf -v "$_pl_ts_out" '%s' ""
     printf -v "$_pl_action_out" '%s' ""
     printf -v "$_pl_version_out" '%s' ""
     printf -v "$_pl_backup_out" '%s' ""
-    printf -v "$_pl_hosting_out" '%s' ""
+    printf -v "$_pl_kasbah_out" '%s' ""
 
     read -r _pl_ts _pl_action _pl_version _pl_backup _pl_rest <<<"$_pl_line"
     [ -n "$_pl_ts" ] && [ -n "$_pl_action" ] && [ -n "$_pl_version" ] && [ -n "$_pl_backup" ] \
         || return 1
     # The timestamp's leading date, which is the one part of field 1 the format
-    # fixes. It separates a hosting entry from a line of prose without pinning
-    # anything a later hosting might legitimately change.
+    # fixes. It separates a kasbah entry from a line of prose without pinning
+    # anything a later kasbah might legitimately change.
     [[ "$_pl_ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || return 1
 
-    # `read -ra` and not `for tok in $rest`: the tail is the part a later hosting
+    # `read -ra` and not `for tok in $rest`: the tail is the part a later kasbah
     # gets to invent, so a pair holding `*`, `?` or `[…]` would be expanded
     # against whatever directory the operator happens to be standing in. Measured:
-    # in a directory containing a file named `hosting=EVIL`, a line ending in `*`
-    # reported that file's name as the hosting version.
+    # in a directory containing a file named `kasbah=EVIL`, a line ending in `*`
+    # reported that file's name as the kasbah version.
     read -ra _pl_pairs <<<"$_pl_rest"
     for _pl_tok in ${_pl_pairs[@]+"${_pl_pairs[@]}"}; do
         case $_pl_tok in
-            hosting=*) _pl_hosting="${_pl_tok#hosting=}" ;;
+            kasbah=*) _pl_kasbah="${_pl_tok#kasbah=}" ;;
         esac
     done
 
@@ -494,7 +494,7 @@ _ss_parse_log_line() {
     printf -v "$_pl_action_out" '%s' "$_pl_action"
     printf -v "$_pl_version_out" '%s' "$_pl_version"
     printf -v "$_pl_backup_out" '%s' "$_pl_backup"
-    printf -v "$_pl_hosting_out" '%s' "$_pl_hosting"
+    printf -v "$_pl_kasbah_out" '%s' "$_pl_kasbah"
     return 0
 }
 
@@ -507,9 +507,9 @@ _ss_parse_log_line() {
 #
 # One row is dropped here rather than on the far side: the bind-mount root, when
 # `--data-path` put it inside the apps path under a name the remote step could
-# not know. The static list it filters with is hosting's three reserved names,
+# not know. The static list it filters with is kasbah's three reserved names,
 # and `--data-path=<apps>/store` is neither reserved nor a project — it is
-# hosting's own directory, and the marker is the only thing that says so.
+# kasbah's own directory, and the marker is the only thing that says so.
 _ss_decode_projects() {
     local table row name_b64 total running logstate log_b64 rest name log
     local data_dir="" described=0
@@ -565,7 +565,7 @@ _ss_decode_projects() {
 
 # --- Output --------------------------------------------------------------------------
 
-# Whatever the container itself says, rather than a state hosting infers: a
+# Whatever the container itself says, rather than a state kasbah infers: a
 # stopped Traefik and a running-but-unhealthy one are different problems.
 _ss_print_traefik() {
     local health
@@ -609,7 +609,7 @@ _ss_print_traefik() {
 }
 
 _ss_print_projects() {
-    local i name state version deployed detail ts action backup hosting note
+    local i name state version deployed detail ts action backup kasbah note
 
     printf 'Projects:\n'
     if [ "${#_SS_P_NAME[@]}" -eq 0 ]; then
@@ -625,20 +625,20 @@ _ss_print_projects() {
 
         case "${_SS_P_LOGSTATE[$i]}" in
             ok)
-                if _ss_parse_log_line "${_SS_P_LOG[$i]}" ts action version backup hosting; then
+                if _ss_parse_log_line "${_SS_P_LOG[$i]}" ts action version backup kasbah; then
                     deployed="$action $ts"
-                    [ -z "$hosting" ] || deployed="$deployed (hosting $hosting)"
+                    [ -z "$kasbah" ] || deployed="$deployed (kasbah $kasbah)"
                 else
                     version="?"
-                    note="versions.log's last line is not a hosting entry: ${_SS_P_LOG[$i]}"
+                    note="versions.log's last line is not a kasbah entry: ${_SS_P_LOG[$i]}"
                 fi
                 ;;
-            missing)    note="no versions.log — never deployed by hosting, or dropped" ;;
+            missing)    note="no versions.log — never deployed by kasbah, or dropped" ;;
             empty)      note="versions.log is empty" ;;
             notfile)    note="versions.log exists and is not a regular file" ;;
             unreadable) note="versions.log cannot be read by the ssh user" ;;
             noaccess)   note="the directory cannot be read by the ssh user — a deploy that ran as root leaves this" ;;
-            notdir)     note="not a directory — hosting deploys into directories only" ;;
+            notdir)     note="not a directory — kasbah deploys into directories only" ;;
             *)          note="unknown versions.log state '${_SS_P_LOGSTATE[$i]}'" ;;
         esac
 
@@ -679,7 +679,7 @@ _server_status_print() {
         printf 'Docker: unavailable — %s\n' "${_SS_FACT[docker_error]:-no docker command on the remote}"
     fi
     printf 'Root: %s  Data: %s\n' "$_SS_APPS_PATH" "${_SS_MARKER_DATA:-unknown}"
-    printf 'Marker: hosting %s, cpu %s, mem %s\n' \
+    printf 'Marker: kasbah %s, cpu %s, mem %s\n' \
         "${_SS_MARKER_VERSION:-unknown}" "${_SS_MARKER_CPU:-unknown}" "${_SS_MARKER_MEM:-unknown}"
 
     # The marker is the record of where init put things; the apps path is where
@@ -715,10 +715,10 @@ cmd_server_status() {
     # print because the server is ahead of the reader is missing at the moment it
     # is most wanted. Versions that cannot be compared add nothing here; the
     # Marker line prints what the file says either way.
-    local marker_major="${_SS_MARKER_VERSION%%.*}" ours="${HOSTING_VERSION%%.*}"
+    local marker_major="${_SS_MARKER_VERSION%%.*}" ours="${KASBAH_VERSION%%.*}"
     if [[ "$marker_major" =~ ^[0-9]+$ ]] && [[ "$ours" =~ ^[0-9]+$ ]] \
        && [ "$marker_major" != "$ours" ]; then
-        warn "the marker was written by hosting $_SS_MARKER_VERSION and this is hosting $HOSTING_VERSION"
+        warn "the marker was written by kasbah $_SS_MARKER_VERSION and this is kasbah $KASBAH_VERSION"
         warn "different majors — fields this version does not know about are not shown"
     fi
 

@@ -1,5 +1,5 @@
 # The shared Traefik stack — one instance per VPS, installed at
-# <apps>/traefik/compose.yml by `hosting server init`.
+# <apps>/traefik/compose.yml by `kasbah server init`.
 #
 # The apps and data paths below are substituted on the workstation before this
 # file is shipped. Traefik expands environment variables in neither its static
@@ -29,11 +29,11 @@ services:
       - "__APPS_PATH__/traefik/traefik.yml:/etc/traefik/traefik.yml:ro"
       - "__APPS_PATH__/traefik/dynamic:/etc/traefik/dynamic:ro"
       # Read-write: this is where ACME stores the account and the certificates.
-      # `hosting server init` creates it as a *file* first — Docker materialises
+      # `kasbah server init` creates it as a *file* first — Docker materialises
       # a missing bind-mount source as a directory.
       - "__DATA_PATH__/traefik/letsencrypt/acme.json:/letsencrypt/acme.json"
     networks:
-      - hosting-net
+      - kasbah-net
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 10s
@@ -48,12 +48,12 @@ services:
     # Deliberately no `cpus:` / `mem_limit:`. Those ceilings exist so that one
     # project cannot lock out Traefik and SSH; capping the ingress protects
     # nothing it is not already the victim of, and a throttled Traefik takes
-    # every site with it. `hosting check`'s R01-R03 govern project compose
-    # files, not hosting-owned stacks.
+    # every site with it. `kasbah check`'s R01-R03 govern project compose
+    # files, not kasbah-owned stacks.
 
 # The network every routed container joins, declared `external: true` on the
 # project side. Traefik resolves backends by container_name across it.
 networks:
-  hosting-net:
-    name: hosting-net
+  kasbah-net:
+    name: kasbah-net
     driver: bridge

@@ -1,7 +1,7 @@
 # Mail — docker-mailserver + SnappyMail
 
-An optional hosting primitive: one shared mail stack per VPS, enabled via
-`hosting server init --with-mail`. Ported from the original project's `mail/` and
+An optional kasbah primitive: one shared mail stack per VPS, enabled via
+`kasbah server init --with-mail`. Ported from the original project's `mail/` and
 generalized to serve multiple app domains.
 
 ## Components (unchanged from the original project)
@@ -19,7 +19,7 @@ only issues certs when a router requests the host. If we only had a DMS
 router, it'd deadlock: DMS won't boot → router never registers → cert
 never issued → DMS won't boot.
 
-`hosting server init --with-mail` writes a hosting-owned fragment at
+`kasbah server init --with-mail` writes a kasbah-owned fragment at
 `/apps/traefik/dynamic/_mail.yml` that declares a **cert-trigger router**
 claiming `Host(\`mail.<domain>\`)` on `websecure` with
 `tls.certResolver: letsencrypt`. The router is registered the moment
@@ -28,16 +28,16 @@ Traefik requests the cert → DMS reads it from `acme.json` and boots.
 
 The `_mail.yml` fragment also holds SnappyMail's webmail router
 (`Host(\`webmail.<domain>\`)` → `http://mail-snappymail:8888`). Both
-routers living in a hosting-owned fragment makes the boot-order deadlock
+routers living in a kasbah-owned fragment makes the boot-order deadlock
 impossible regardless of container health.
 
 ## Multi-domain support
 
-The original project hosts a single domain. Hosting generalizes: multiple app domains
+The original project hosts a single domain. Kasbah generalizes: multiple app domains
 can share one DMS instance.
 
 ```yaml
-# /apps/mail/hosting.yml  (hosting-managed, not a user project)
+# /apps/mail/kasbah.yml  (kasbah-managed, not a user project)
 name: mail
 primary_domain: example.com          # MX for this + reverse DNS
 domains:
@@ -52,7 +52,7 @@ For each additional domain:
 - DMS `postmaster-aliases.cf` routes `postmaster@<domain>` → the primary mailbox.
 - SnappyMail adds the domain via the pre-seeded JSON config.
 
-`hosting server add-mail-domain <domain>` (v0.2) automates this.
+`kasbah server add-mail-domain <domain>` (v0.2) automates this.
 
 ## Account management
 
@@ -71,12 +71,12 @@ Rationale:
 - Making accounts a manifest field would create friction for ops tasks
   (rotating a compromised password, removing an ex-employee).
 
-`hosting deploy` does **not** reconcile accounts. It only validates that
+`kasbah deploy` does **not** reconcile accounts. It only validates that
 the claimed domain is known to the mail stack.
 
 ## SMTP access from apps
 
-Apps that need to send mail connect to DMS over the shared `hosting-net`
+Apps that need to send mail connect to DMS over the shared `kasbah-net`
 network:
 
 ```
@@ -101,20 +101,20 @@ mail:
   snappymail_domain: ./mail/snappymail-domain.json    # optional pre-seed
 ```
 
-What hosting does with it:
+What kasbah does with it:
 1. On deploy, verify the mail stack is up.
 2. Verify `shop.example.com` is in `/apps/mail/.env`'s `domains` list.
 3. If `snappymail_domain` is set and the target file is missing on the VPS,
    copy it into `/apps/data/mail/snappymail/_data_/_default_/domains/<domain>.json`.
 
-What hosting does NOT do:
+What kasbah does NOT do:
 - Create mailboxes.
 - Generate DKIM keys (admin runs `docker exec mail-dms setup config dkim …`).
 - Publish DNS records.
 
 The mail stack's setup walkthrough (ported from the original project's `mail/SETUP.md`)
-is shown once after `hosting server init --with-mail` and also accessible
-via `hosting server mail-setup-guide user@vps`.
+is shown once after `kasbah server init --with-mail` and also accessible
+via `kasbah server mail-setup-guide user@vps`.
 
 ## Pre-seeding (first-deploy gotchas, preserved)
 
@@ -122,7 +122,7 @@ via `hosting server mail-setup-guide user@vps`.
   `rspamd-dkim-signing.conf` is copied into `override.d/` before first start
   so the `setup config dkim` helper doesn't overwrite it.
 - **Postmaster account** — DMS's Dovecot panics within 120s if no account
-  exists in `postfix-accounts.cf`. `hosting server init --with-mail` prompts
+  exists in `postfix-accounts.cf`. `kasbah server init --with-mail` prompts
   for the postmaster password, hashes it locally (`openssl passwd -6`), and
   seeds the account before starting DMS.
 - **SnappyMail domain config** — pre-seeded from the file referenced in a
@@ -143,13 +143,13 @@ Empty = direct delivery via port 25 (the original project's default).
 
 ## Mail is optional
 
-If `hosting server init` was run without `--with-mail`, the `mail/`
+If `kasbah server init` was run without `--with-mail`, the `mail/`
 directory doesn't exist. A project's `mail:` claim then fails
 compliance at deploy time with a clear message:
 
 ```
 ERROR: Project claims mail domain `shop.example.com` but no mail stack
        is installed on the VPS.
-       Enable it with: hosting server init user@host --with-mail
-       Or remove the `mail:` section from hosting.yml.
+       Enable it with: kasbah server init user@host --with-mail
+       Or remove the `mail:` section from kasbah.yml.
 ```

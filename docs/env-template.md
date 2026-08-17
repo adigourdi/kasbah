@@ -2,7 +2,7 @@
 
 Ported verbatim from the original project's `scripts/setup-env.sh`. It works well, has
 tests, and is the single biggest friction-reducer on a first deploy. The only
-change is packaging: hosting owns the script, projects own the template.
+change is packaging: kasbah owns the script, projects own the template.
 
 ## Files
 
@@ -10,7 +10,7 @@ Per project:
 - `.env.prod.example` — committed, template.
 - `.env` — **not** committed, generated interactively.
 
-`hosting env` syncs `.env.prod.example` to the VPS itself. `hosting deploy`
+`kasbah env` syncs `.env.prod.example` to the VPS itself. `kasbah deploy`
 does not: the template reaches the server through the manifest's `sync:` list
 like any other project file, which is why the deploy path has a branch telling
 the operator to add it there. Either way `setup-env.sh` runs on the server when
@@ -78,7 +78,7 @@ the output `.env`.
 
 ## Drift detection
 
-Run on every `hosting deploy` by `env_drift` in
+Run on every `kasbah deploy` by `env_drift` in
 `lib/env.sh`:
 
 ```bash
@@ -87,7 +87,7 @@ env_drift .env.prod.example .env   # sets ENV_DRIFT_MISSING / ENV_DRIFT_EXTRA
 
 A line counts as setting a key if Compose would read it as one: optional
 leading blanks and an optional `export ` prefix, which `docker compose config`
-honours and which hosting therefore honours everywhere it reads a `.env` or a
+honours and which kasbah therefore honours everywhere it reads a `.env` or a
 template. The consequence is accepted rather than worked around — regenerating
 `.env` rewrites `export FOO=x` as `FOO=x`, since the file is rebuilt from the
 template wholesale. A reader that only matched column 0 would report a live
@@ -106,27 +106,27 @@ Outcomes:
 - Any drift → warn, prompt: *"re-run setup" / "continue with current .env" /
   "abort"* — scriptable as `--on-drift=setup|continue|abort`.
 
-One implementation serves both readers. `hosting check` (E02/E03) sources
-`lib/env.sh`; `hosting deploy` runs the *same bytes* on the VPS, where they
+One implementation serves both readers. `kasbah check` (E02/E03) sources
+`lib/env.sh`; `kasbah deploy` runs the *same bytes* on the VPS, where they
 have been rsynced as `scripts/setup-env.sh`. That is why nothing in that file
 may reach for `common.sh`, `jq`, `awk` or `bc`: coreutils and bash builtins
 only, since the prerequisites table promises nothing else.
 
-Keys prefixed `HOSTING_` are reserved: hosting injects and refreshes them
+Keys prefixed `KASBAH_` are reserved: kasbah injects and refreshes them
 at deploy (resource limits — see `server-setup.md`). They are excluded from
 **both** sides of the comparison, in both directions — reserved keys extra in
 `.env` and reserved keys missing from it are equally not drift — and are never
 prompted for. A template that declares one is warned about by E05.
 
-## The hosting-managed block
+## The kasbah-managed block
 
 Injection writes the reserved keys into a sentinel-delimited block:
 
 ```
-# >>> hosting managed block - do not edit, rewritten on every deploy >>>
-HOSTING_CPU_LIMIT=14.4
-HOSTING_MEM_LIMIT=54g
-# <<< hosting managed block <<<
+# >>> kasbah managed block - do not edit, rewritten on every deploy >>>
+KASBAH_CPU_LIMIT=14.4
+KASBAH_MEM_LIMIT=54g
+# <<< kasbah managed block <<<
 ```
 
 Rules, all of them load-bearing:
@@ -135,11 +135,11 @@ Rules, all of them load-bearing:
   Every other line survives byte-for-byte in its original order, comments,
   blank lines and hand-spacing included — users edit this file.
 - **Any line outside the block that Compose would read as assigning a
-  `HOSTING_*` variable is removed.** Compose honours a leading-whitespace
+  `KASBAH_*` variable is removed.** Compose honours a leading-whitespace
   assignment and an `export ` prefix, and takes the *last* assignment — so a
   stray below the block would silently outrank the server marker. The match is
   anchored (optional blanks, optional `export `) and never a substring: a
-  user's own `MY_HOSTING_URL` is not hosting's to delete.
+  user's own `MY_KASBAH_URL` is not kasbah's to delete.
 - Values are written through unchanged. A `0` limit stays `0` — the rig cannot
   apply cgroup limits at all, and injection must keep working when the values
   it writes are ones the host cannot honour.
@@ -150,7 +150,7 @@ Rules, all of them load-bearing:
 **Inject after setup, never before.** `env_setup_run` builds its output from
 the template, and the template has no reserved keys — so regenerating `.env`
 drops the block entirely, and `compose up` then fails on an unset
-`HOSTING_CPU_LIMIT` until injection runs again.
+`KASBAH_CPU_LIMIT` until injection runs again.
 
 ## Update modes
 

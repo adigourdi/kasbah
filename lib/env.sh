@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# hosting — interactive .env generator
+# kasbah — interactive .env generator
 #
 # Reads .env.prod.example and prompts for each variable.
 # If .env already exists, detects drift and only prompts for new vars.
@@ -17,12 +17,12 @@
 # additionally rendered as bold section headers while prompting.
 #
 # Also carries the drift helpers (env_extract_keys, env_drift) and the
-# HOSTING_* managed-block writer, so the VPS copy answers "has this .env
+# KASBAH_* managed-block writer, so the VPS copy answers "has this .env
 # drifted" with the same code the workstation runs.
 #
 # Dual-mode. Sourced as a library locally; the same bytes are rsynced to the
-# VPS as scripts/setup-env.sh and executed there, where no other hosting file
-# exists — so nothing here may source common.sh, read HOSTING_LIB_DIR, or call
+# VPS as scripts/setup-env.sh and executed there, where no other kasbah file
+# exists — so nothing here may source common.sh, read KASBAH_LIB_DIR, or call
 # info/warn/err/die. Tool budget: coreutils and bash builtins, never a
 # separately-packaged one (awk, bc, jq).
 #
@@ -30,38 +30,38 @@
 #   ./scripts/setup-env.sh                          # interactive
 #   ./scripts/setup-env.sh /path/to/dir             # custom directory
 #   ./scripts/setup-env.sh --drift  /path/to/dir    # key=value drift report
-#   ./scripts/setup-env.sh --inject /path/to/dir HOSTING_X=y ...
+#   ./scripts/setup-env.sh --inject /path/to/dir KASBAH_X=y ...
 # =============================================================================
 
 # Never exported, so the executed case reaches the guard with it unset and the
 # `return` below is never taken.
-[ -n "${_HOSTING_ENV_LOADED:-}" ] && return 0
-_HOSTING_ENV_LOADED=1
+[ -n "${_KASBAH_ENV_LOADED:-}" ] && return 0
+_KASBAH_ENV_LOADED=1
 
 # Errexit is part of this file's contract, not decoration: the two menu reads
 # are the only ones without `|| true`, so EOF at a menu aborts and leaves .env
 # untouched. A shell that sources this must already be running -euo pipefail.
 set -euo pipefail
 
-# Keys under this prefix are hosting's: never prompted, invisible to drift in
+# Keys under this prefix are kasbah's: never prompted, invisible to drift in
 # both directions, and owned by the managed block below. The prefix is matched
-# anchored — MY_HOSTING_URL is the user's key, not hosting's.
+# anchored — MY_KASBAH_URL is the user's key, not kasbah's.
 # docs/env-template.md § Drift detection, docs/compliance.md § Env.
-ENV_RESERVED_PREFIX=HOSTING_
+ENV_RESERVED_PREFIX=KASBAH_
 
 # One definition of "a line that assigns a variable", shared by every reader of
 # a user-authored .env or template here and by lib/check.sh's E01/E04: Compose
 # trims leading blanks, honours an `export ` prefix, and lets the last
-# assignment win, so hosting has to see the same lines it does. Group 2 is the
+# assignment win, so kasbah has to see the same lines it does. Group 2 is the
 # bare key, group 3 the value — the `export ` is group 1 and belongs to neither.
 # docs/env-template.md § Drift detection.
 ENV_ASSIGN_RE='^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$'
 
-# The block env_inject_hosting_vars owns. Frozen strings: an older hosting's
+# The block env_inject_kasbah_vars owns. Frozen strings: an older kasbah's
 # block has to be recognised, and every one of them collapses into a single
 # rewritten block.
-ENV_MANAGED_BEGIN='# >>> hosting managed block - do not edit, rewritten on every deploy >>>'
-ENV_MANAGED_END='# <<< hosting managed block <<<'
+ENV_MANAGED_BEGIN='# >>> kasbah managed block - do not edit, rewritten on every deploy >>>'
+ENV_MANAGED_END='# <<< kasbah managed block <<<'
 
 # ---------------------------------------------------------------------------
 # Colors — this script's prompts go to stdout, so that is what decides.
@@ -84,7 +84,7 @@ fi
 # Reads KEY and writes VALUE in the caller's scope by dynamic scoping: neither
 # may be made local here. Named `_env_prompt_value` rather than `prompt_value`
 # because lib/prompt.sh owns that name with an unrelated signature, and this
-# file is sourced into hosting's own shell by lib/check.sh.
+# file is sourced into kasbah's own shell by lib/check.sh.
 _env_prompt_value() {
     VALUE=""
     if [[ "$KEY" =~ PASSWORD|SECRET|KEY ]]; then
@@ -104,7 +104,7 @@ _env_prompt_value() {
 #
 # Rebuilds .env from the template, which carries no reserved keys — so a run
 # destroys the managed block, and `docker compose up` then fails on an unset
-# HOSTING_CPU_LIMIT. The order is fixed: env_inject_hosting_vars runs *after*
+# KASBAH_CPU_LIMIT. The order is fixed: env_inject_kasbah_vars runs *after*
 # this, never before.
 #
 # The six `declare`d arrays below are function-local (declare inside a function
@@ -280,7 +280,7 @@ env_setup_run() {
             RAW_VALUE="${BASH_REMATCH[3]}"
 
             # Reserved: dropped rather than preserved, so the only line setting
-            # it is the managed block's. `hosting check` warns (E05).
+            # it is the managed block's. `kasbah check` warns (E05).
             case "$KEY" in "$ENV_RESERVED_PREFIX"*) continue ;; esac
 
             # Check if existing .env has this var
@@ -408,7 +408,7 @@ env_setup_run() {
     # Write .env
     # -----------------------------------------------------------------------
     echo ""
-    # Truncate in place, not the rename env_inject_hosting_vars uses: a run
+    # Truncate in place, not the rename env_inject_kasbah_vars uses: a run
     # killed here leaves a half-written .env. Kept as the original wrote it —
     # this file is a verbatim port and the write is one of the ported lines.
     printf '%s\n' "${OUTPUT_LINES[@]}" > "$OUTPUT"
@@ -417,7 +417,7 @@ env_setup_run() {
 }
 
 # ---------------------------------------------------------------------------
-# Drift — shared by `hosting check` (E02/E03) and the deploy path
+# Drift — shared by `kasbah check` (E02/E03) and the deploy path
 # ---------------------------------------------------------------------------
 
 # env_extract_keys FILE — every assignment's key, one per line, in file order,
@@ -467,7 +467,7 @@ env_drift() {
 }
 
 # ---------------------------------------------------------------------------
-# HOSTING_* injection
+# KASBAH_* injection
 # ---------------------------------------------------------------------------
 
 # _env_line_sets_reserved LINE — true when Compose would read the line as
@@ -479,30 +479,30 @@ _env_line_sets_reserved() {
     return 1
 }
 
-# env_inject_hosting_vars ENVFILE HOSTING_KEY=VALUE... — writes the managed
+# env_inject_kasbah_vars ENVFILE KASBAH_KEY=VALUE... — writes the managed
 # block, creating ENVFILE if it does not exist, and runs *after* env_setup_run,
 # which rebuilds .env from a template holding no reserved keys. Values go
 # through unchanged: the marker's spelling (`14.4`, `54g`) is the contract, not
-# this function's to reformat or validate. The pairs are hosting's own argv
+# this function's to reformat or validate. The pairs are kasbah's own argv
 # rather than file lines, so they take no leading blanks and no `export `, and
 # there must be at least one.
 #
 # Every other line survives byte-for-byte in its original order, except lines
 # Compose would read as setting a reserved key, which are removed — the last
 # assignment wins, so a stray outside the block silently outranks the marker.
-env_inject_hosting_vars() {
+env_inject_kasbah_vars() {
     local envfile="$1"; shift
     local pair
     # No pairs would rewrite the block empty, and `compose up` then fails on an
-    # unset HOSTING_CPU_LIMIT. There is no call that wants that, so it is a
+    # unset KASBAH_CPU_LIMIT. There is no call that wants that, so it is a
     # caller bug rather than a request — the `for` below cannot catch it.
     if [ "$#" -eq 0 ]; then
-        echo "ERROR: env_inject_hosting_vars: no ${ENV_RESERVED_PREFIX}NAME=value pairs given"
+        echo "ERROR: env_inject_kasbah_vars: no ${ENV_RESERVED_PREFIX}NAME=value pairs given"
         return 1
     fi
     for pair in "$@"; do
         [[ "$pair" =~ ^${ENV_RESERVED_PREFIX}[A-Za-z0-9_]*= ]] && continue
-        echo "ERROR: env_inject_hosting_vars: '${pair}' is not a ${ENV_RESERVED_PREFIX}NAME=value pair"
+        echo "ERROR: env_inject_kasbah_vars: '${pair}' is not a ${ENV_RESERVED_PREFIX}NAME=value pair"
         return 1
     done
 
@@ -511,7 +511,7 @@ env_inject_hosting_vars() {
     local target="$envfile"
     if [ -L "$envfile" ]; then
         target=$(readlink -f -- "$envfile") || {
-            echo "ERROR: env_inject_hosting_vars: cannot resolve '${envfile}'"
+            echo "ERROR: env_inject_kasbah_vars: cannot resolve '${envfile}'"
             return 1
         }
     fi
@@ -520,7 +520,7 @@ env_inject_hosting_vars() {
     local line
     if [ -f "$target" ]; then
         if [ ! -r "$target" ]; then
-            echo "ERROR: env_inject_hosting_vars: cannot read '${target}'"
+            echo "ERROR: env_inject_kasbah_vars: cannot read '${target}'"
             return 1
         fi
         while IFS= read -r line || [ -n "$line" ]; do
@@ -559,12 +559,12 @@ env_inject_hosting_vars() {
     # keeps its mode. `chmod --reference` is GNU-only, and failing it falls back
     # to that 600 by design. Ownership is deliberately not copied: on the VPS
     # the deploy user running injection already owns the file.
-    local tmp="${target}.hosting-inject.$$"
+    local tmp="${target}.kasbah-inject.$$"
     # Whether the path is usable is the next line's verdict, not this one's:
     # `rm -f` still fails on a directory, and must not abort the caller.
     rm -f "$tmp" 2>/dev/null || true
     if ! (umask 077; : > "$tmp") 2>/dev/null; then
-        echo "ERROR: env_inject_hosting_vars: cannot write beside '${target}'"
+        echo "ERROR: env_inject_kasbah_vars: cannot write beside '${target}'"
         return 1
     fi
     if [ -f "$target" ]; then
@@ -572,8 +572,8 @@ env_inject_hosting_vars() {
     fi
     # The temp lives in the tree `deploy` rsyncs, so every `return` below clears
     # it. A signal does not: there is no trap, because this file is sourced into
-    # hosting's own shell as well as executed, and an EXIT trap here would
-    # replace the caller's. A killed run can leave one `.hosting-inject.<pid>`.
+    # kasbah's own shell as well as executed, and an EXIT trap here would
+    # replace the caller's. A killed run can leave one `.kasbah-inject.<pid>`.
     if ! {
         if [ "$at" -gt 0 ]; then printf '%s\n' "${kept[@]:0:$at}"; fi
         printf '%s\n' "$ENV_MANAGED_BEGIN"
@@ -582,13 +582,13 @@ env_inject_hosting_vars() {
         if [ "${#kept[@]}" -gt "$at" ]; then printf '%s\n' "${kept[@]:$at}"; fi
     } > "$tmp"; then
         rm -f "$tmp"
-        echo "ERROR: env_inject_hosting_vars: could not write '${target}'"
+        echo "ERROR: env_inject_kasbah_vars: could not write '${target}'"
         return 1
     fi
     # Renamed, never copied: a reader sees the whole old file or the whole new.
     if ! mv -f "$tmp" "$target"; then
         rm -f "$tmp"
-        echo "ERROR: env_inject_hosting_vars: could not replace '${target}'"
+        echo "ERROR: env_inject_kasbah_vars: could not replace '${target}'"
         return 1
     fi
 }
@@ -642,7 +642,7 @@ _env_report() {
 # menu `read`s are the only ones without `|| true` — so EOF at a menu would stop
 # aborting, exit 1 would become exit 0, and the caller would be told "up to
 # date" about a file nothing wrote. The other two are bare for uniformity
-# rather than necessity: neither `_env_report` nor `env_inject_hosting_vars`
+# rather than necessity: neither `_env_report` nor `env_inject_kasbah_vars`
 # reads stdin, so both already signal only through their return value, and a
 # mutant that wrapped either is genuinely equivalent (tests/env_test.sh case 39
 # pins the one that is not).
@@ -664,7 +664,7 @@ env_main() {
         --inject)
             dir="${1:-.}"
             [ "$#" -eq 0 ] || shift
-            env_inject_hosting_vars "$dir/.env" "$@"
+            env_inject_kasbah_vars "$dir/.env" "$@"
             ;;
         *)
             env_setup_run "$@"

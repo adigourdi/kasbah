@@ -1,17 +1,17 @@
-# Fake VPS for hosting's integration tests: a container running its own
-# dockerd behind sshd, so every hosting command exercises the real
+# Fake VPS for kasbah's integration tests: a container running its own
+# dockerd behind sshd, so every kasbah command exercises the real
 # "SSH in, drive Docker over there" path instead of a local shortcut.
 #
-# Deliberately bare: no /apps, no hosting layout. Creating those here would
-# hide whether `hosting server init` really builds them from nothing.
+# Deliberately bare: no /apps, no kasbah layout. Creating those here would
+# hide whether `kasbah server init` really builds them from nothing.
 FROM debian:bookworm-slim
 
 # Unpinned: whatever Docker's apt repo served on the day this image was last
 # built is what the rig runs, indefinitely. Compose pairs `build:` with a fixed
 # image name, so `up` never rebuilds on its own — refreshing these versions is
 # an explicit rebuild, which is rig.sh's job. To reproduce a version regression:
-#   HOSTING_RIG_DOCKER_VERSION=5:27.1.1-1~debian.12~bookworm tests/rig/rig.sh up
-# Driving compose by hand instead needs `-p hosting-rig` on every call — the
+#   KASBAH_RIG_DOCKER_VERSION=5:27.1.1-1~debian.12~bookworm tests/rig/rig.sh up
+# Driving compose by hand instead needs `-p kasbah-rig` on every call — the
 # `name:` key is the weakest source of the project name, so without the flag an
 # inherited COMPOSE_PROJECT_NAME aims the command at another stack.
 ARG DOCKER_APT_VERSION=
@@ -76,7 +76,7 @@ RUN chmod 0755 /usr/local/bin/rig-entrypoint
 # invocation and compose recreates a container whose image changed, so an
 # existing rig grows the marker on the next `up` without a `reset` (which would
 # drop the nested image cache with it).
-RUN printf 'hosting-rig-disposable-fake-vps\n' > /etc/hosting-rig
+RUN printf 'kasbah-rig-disposable-fake-vps\n' > /etc/kasbah-rig
 
 EXPOSE 22 80 443
 

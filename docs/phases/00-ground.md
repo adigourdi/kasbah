@@ -12,13 +12,13 @@ so `/tackle` and future phases inherit its evidence and findings.
 
 ## Exit criteria
 - [x] `./test.sh` passes all suites (check, init-project, manifest)
-- [x] `hosting init-project` + `hosting check` work end-to-end on a fresh directory
+- [x] `kasbah init-project` + `kasbah check` work end-to-end on a fresh directory
 - [x] Every design decision in this conversation's docs pass is reflected in `docs/*.md`
 
 ## Tasks
 
 ### 0.1 — Repo scaffold, install, self-version (S) ✅
-**Evidence:** commits `9e4cb16`, `e84e4f4` — `bin/hosting`, `lib/`, `install.sh`, `test.sh`, `VERSION`.
+**Evidence:** commits `9e4cb16`, `e84e4f4` — `bin/kasbah`, `lib/`, `install.sh`, `test.sh`, `VERSION`.
 
 ### 0.2 — Dispatcher, init-project, state module (M) ✅
 **Evidence:** commit `1a4f8a2` — symlink-safe self-resolution, `state_init`, rollback-safe scaffold with ERR-trap cleanup.
@@ -26,7 +26,7 @@ so `/tackle` and future phases inherit its evidence and findings.
 ### 0.3 — Manifest reader with schema gate (M) ✅
 **Evidence:** commit `56e97e3` + `tests/manifest_test.sh` — refuses schemas newer than the binary.
 
-### 0.4–0.6 — `hosting check`, grown rule-group per commit (L) ✅
+### 0.4–0.6 — `kasbah check`, grown rule-group per commit (L) ✅
 **Evidence:** commits `0bbab11` (S rules), `5d98ec8` (C rules), `1c9a57c` (T/H/E/HK rules) + `tests/check_test.sh`.
 
 ### 0.7 — File-provider routing decision (M) ✅

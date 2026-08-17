@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Test: hosting init-project scaffolds the expected files and refuses to overwrite.
+# Test: kasbah init-project scaffolds the expected files and refuses to overwrite.
 
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
-hosting="$repo_dir/bin/hosting"
+kasbah="$repo_dir/bin/kasbah"
 version="$(cat "$repo_dir/VERSION")"
 
 tmpdir="$(mktemp -d)"
@@ -23,30 +23,30 @@ proj="$tmpdir/demo"
 mkdir -p "$proj"
 cd "$proj"
 
-"$hosting" init-project --name=demo --domain=demo.example.com >/dev/null
+"$kasbah" init-project --name=demo --domain=demo.example.com >/dev/null
 
-assert '[ -f hosting.yml ]'           "hosting.yml exists"
+assert '[ -f kasbah.yml ]'           "kasbah.yml exists"
 assert '[ -f .env.prod.example ]'     ".env.prod.example exists"
-assert '[ -f .hosting/state.json ]'   ".hosting/state.json exists"
+assert '[ -f .kasbah/state.json ]'   ".kasbah/state.json exists"
 assert '[ -f .gitignore ]'            ".gitignore exists"
 
-assert 'grep -qxF "schema: 1" hosting.yml'                  "manifest has schema: 1"
-assert 'grep -qxF "hosting_version: $version" hosting.yml'  "manifest has hosting_version"
-assert 'grep -qxF "name: demo" hosting.yml'                 "manifest has name"
-assert 'grep -qxF "domain: \"demo.example.com\"" hosting.yml' "manifest has quoted domain"
-assert 'grep -qF "compose.prod.yml -> compose.yml" hosting.yml' "manifest has sync"
+assert 'grep -qxF "schema: 1" kasbah.yml'                  "manifest has schema: 1"
+assert 'grep -qxF "kasbah_version: $version" kasbah.yml'  "manifest has kasbah_version"
+assert 'grep -qxF "name: demo" kasbah.yml'                 "manifest has name"
+assert 'grep -qxF "domain: \"demo.example.com\"" kasbah.yml' "manifest has quoted domain"
+assert 'grep -qF "compose.prod.yml -> compose.yml" kasbah.yml' "manifest has sync"
 
 assert 'grep -qxF "DOMAIN=demo.example.com" .env.prod.example' "env example seeds DOMAIN"
 
-assert '[ "$(jq -r .hosting_version .hosting/state.json)" = "$version" ]' "state hosting_version"
-assert '[ "$(jq -r .last_server .hosting/state.json)" = "null" ]'         "state last_server nulled"
-assert '[ "$(jq -r ".schema_migrations_applied|length" .hosting/state.json)" = "0" ]' "state migrations empty"
+assert '[ "$(jq -r .kasbah_version .kasbah/state.json)" = "$version" ]' "state kasbah_version"
+assert '[ "$(jq -r .last_server .kasbah/state.json)" = "null" ]'         "state last_server nulled"
+assert '[ "$(jq -r ".schema_migrations_applied|length" .kasbah/state.json)" = "0" ]' "state migrations empty"
 
 assert 'grep -qxF ".env" .gitignore'      "gitignore has .env"
-assert 'grep -qxF ".hosting/" .gitignore' "gitignore has .hosting/"
+assert 'grep -qxF ".kasbah/" .gitignore' "gitignore has .kasbah/"
 
 # --- Case 2: refuses to overwrite existing manifest ---------------------------
-if "$hosting" init-project --name=demo >/dev/null 2>&1; then
+if "$kasbah" init-project --name=demo >/dev/null 2>&1; then
     echo "  FAIL: second init-project should refuse to overwrite" >&2
     fail=1
 fi
@@ -55,19 +55,19 @@ fi
 proj2="$tmpdir/mysite"
 mkdir -p "$proj2"
 cd "$proj2"
-"$hosting" init-project --domain=mysite.test >/dev/null
-assert 'grep -qxF "name: mysite" hosting.yml' "default name is directory basename"
+"$kasbah" init-project --domain=mysite.test >/dev/null
+assert 'grep -qxF "name: mysite" kasbah.yml' "default name is directory basename"
 
 # --- Case 4: invalid name rejected --------------------------------------------
 proj3="$tmpdir/proj3"
 mkdir -p "$proj3"
 cd "$proj3"
-if "$hosting" init-project --name=BadName >/dev/null 2>&1; then
+if "$kasbah" init-project --name=BadName >/dev/null 2>&1; then
     echo "  FAIL: BadName should be rejected" >&2
     fail=1
 fi
 
-# --- Case 4b: the names hosting owns on a server are refused ------------------
+# --- Case 4b: the names kasbah owns on a server are refused ------------------
 # `traefik` is the one with teeth: deploy would rsync the project over the
 # shared proxy's own stack and then `compose -p traefik up -d --remove-orphans`
 # in that directory, removing the proxy. Refused at the moment the name is
@@ -76,85 +76,85 @@ for reserved in traefik data backups; do
     projr="$tmpdir/reserved-$reserved"
     mkdir -p "$projr"
     cd "$projr"
-    out="$("$hosting" init-project --name="$reserved" 2>&1)"; rc=$?
+    out="$("$kasbah" init-project --name="$reserved" 2>&1)"; rc=$?
     assert '[ "$rc" != "0" ]' "init-project --name=$reserved is refused (rc $rc)"
     assert 'grep -qF "reserved" <<<"$out"' "and says why (said '$out')"
-    assert '[ ! -f hosting.yml ]' "and scaffolds nothing for $reserved"
+    assert '[ ! -f kasbah.yml ]' "and scaffolds nothing for $reserved"
 done
 
 # The default name is the directory's, so the refusal has to fire there too —
-# `hosting init-project` inside a directory called data is the likelier way in.
+# `kasbah init-project` inside a directory called data is the likelier way in.
 projd="$tmpdir/data"
 mkdir -p "$projd"
 cd "$projd"
-out="$("$hosting" init-project 2>&1)"; rc=$?
+out="$("$kasbah" init-project 2>&1)"; rc=$?
 assert '[ "$rc" != "0" ]' "init-project in a directory called data is refused (rc $rc)"
 assert 'grep -qF "reserved" <<<"$out"' "naming the rule (said '$out')"
-assert '[ ! -f hosting.yml ]' "and scaffolds nothing"
+assert '[ ! -f kasbah.yml ]' "and scaffolds nothing"
 
 # --- Case 5: respects an existing .gitignore ----------------------------------
 proj4="$tmpdir/proj4"
 mkdir -p "$proj4"
 cd "$proj4"
 printf 'node_modules\n.env\n' > .gitignore
-"$hosting" init-project --name=proj4 >/dev/null
+"$kasbah" init-project --name=proj4 >/dev/null
 assert '[ "$(grep -cxF .env .gitignore)" = "1" ]' "does not duplicate .env in gitignore"
 assert 'grep -qxF node_modules .gitignore'        "preserves existing entries"
-assert 'grep -qxF ".hosting/" .gitignore'         "adds .hosting/ to existing gitignore"
+assert 'grep -qxF ".kasbah/" .gitignore'         "adds .kasbah/ to existing gitignore"
 
 # --- Case 6: empty --name= is rejected ----------------------------------------
 proj6="$tmpdir/proj6"
 mkdir -p "$proj6"
 cd "$proj6"
-if "$hosting" init-project --name= >/dev/null 2>&1; then
+if "$kasbah" init-project --name= >/dev/null 2>&1; then
     echo "  FAIL: empty --name= should be rejected" >&2
     fail=1
 fi
-assert '[ ! -e hosting.yml ]' "rejected run leaves no hosting.yml"
+assert '[ ! -e kasbah.yml ]' "rejected run leaves no kasbah.yml"
 
 # --- Case 7: invalid --domain= is rejected ------------------------------------
 proj7="$tmpdir/proj7"
 mkdir -p "$proj7"
 cd "$proj7"
-if "$hosting" init-project --name=proj7 --domain=not_a_domain >/dev/null 2>&1; then
+if "$kasbah" init-project --name=proj7 --domain=not_a_domain >/dev/null 2>&1; then
     echo "  FAIL: invalid --domain should be rejected" >&2
     fail=1
 fi
-assert '[ ! -e hosting.yml ]' "rejected domain leaves no hosting.yml"
+assert '[ ! -e kasbah.yml ]' "rejected domain leaves no kasbah.yml"
 
-# --- Case 8: pre-existing .hosting/state.json blocks init ---------------------
+# --- Case 8: pre-existing .kasbah/state.json blocks init ---------------------
 proj8="$tmpdir/proj8"
-mkdir -p "$proj8/.hosting"
+mkdir -p "$proj8/.kasbah"
 cd "$proj8"
-printf '{}\n' > .hosting/state.json
-if "$hosting" init-project --name=proj8 >/dev/null 2>&1; then
+printf '{}\n' > .kasbah/state.json
+if "$kasbah" init-project --name=proj8 >/dev/null 2>&1; then
     echo "  FAIL: existing state.json should block init" >&2
     fail=1
 fi
-assert '[ "$(cat .hosting/state.json)" = "{}" ]' "pre-existing state.json untouched"
+assert '[ "$(cat .kasbah/state.json)" = "{}" ]' "pre-existing state.json untouched"
 
 # --- Case 9: partial-failure cleanup ------------------------------------------
-# Pre-create .hosting as a FILE (not dir). init-project's pre-checks pass, but
-# `mkdir .hosting` fails mid-run and must trigger cleanup.
+# Pre-create .kasbah as a FILE (not dir). init-project's pre-checks pass, but
+# `mkdir .kasbah` fails mid-run and must trigger cleanup.
 proj9="$tmpdir/proj9"
 mkdir -p "$proj9"
 cd "$proj9"
 printf 'node_modules\ndist\n' > .gitignore
 cp .gitignore "$tmpdir/proj9.gitignore.orig"
-printf 'not a dir' > .hosting   # block the mkdir later
-if "$hosting" init-project --name=proj9 --domain=proj9.test >/dev/null 2>&1; then
+printf 'not a dir' > .kasbah   # block the mkdir later
+if "$kasbah" init-project --name=proj9 --domain=proj9.test >/dev/null 2>&1; then
     echo "  FAIL: partial-failure case should have errored" >&2
     fail=1
 fi
-assert '[ ! -f hosting.yml ]'           "cleanup removed hosting.yml"
+assert '[ ! -f kasbah.yml ]'           "cleanup removed kasbah.yml"
 assert '[ ! -f .env.prod.example ]'     "cleanup removed .env.prod.example"
 assert 'cmp -s .gitignore "$tmpdir/proj9.gitignore.orig"' "cleanup restored .gitignore byte-for-byte"
-rm -f .hosting
+rm -f .kasbah
 
 # --- Case 10: regression — --version and --help still work -------------------
 cd "$tmpdir"
-assert '"$hosting" --version | grep -qF "$version"' "--version prints version"
-assert '"$hosting" --help    | grep -qF "init-project"' "--help lists init-project"
-assert '"$hosting"            | grep -qF "init-project"' "no-args prints help"
+assert '"$kasbah" --version | grep -qF "$version"' "--version prints version"
+assert '"$kasbah" --help    | grep -qF "init-project"' "--help lists init-project"
+assert '"$kasbah"            | grep -qF "init-project"' "no-args prints help"
 
 exit "$fail"

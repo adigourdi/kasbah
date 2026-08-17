@@ -6,25 +6,25 @@ Goal: Replicate the original project's deploy workflow as a generalized tool, an
 the multi-project layer.
 
 ### 1.1 Foundation
-- Repo skeleton: `bin/hosting`, `lib/*.sh`, `templates/`, `tests/`
+- Repo skeleton: `bin/kasbah`, `lib/*.sh`, `templates/`, `tests/`
 - Global install: `./install.sh` copies `bin/` to `~/.local/bin`, `lib/`
-  to `~/.local/share/hosting/`
-- Self-version: `hosting --version` reports from a committed
+  to `~/.local/share/kasbah/`
+- Self-version: `kasbah --version` reports from a committed
   `VERSION` file
 - Manifest parsing: yq-based reader with schema-version check
-- `.hosting/state.json` read/write
+- `.kasbah/state.json` read/write
 
 ### 1.2 Server setup
-- `hosting server init user@host`
+- `kasbah server init user@host`
   - Docker/Compose preflight
   - Folder layout (`/apps/`, `/apps/data/`, `/apps/backups/`)
   - `acme.json` touched as file
   - Traefik compose + config templates
   - Interactive `.env` setup for projects (Traefik itself needs none — it interpolates nothing)
   - Health wait
-- Server marker `/apps/.hosting/server.json` + resource-limit
+- Server marker `/apps/.kasbah/server.json` + resource-limit
   computation (90% of host cores/RAM)
-- `hosting server status user@host`
+- `kasbah server status user@host`
 
 ### 1.3 Env template
 - Port `setup-env.sh` verbatim to `lib/env.sh`
@@ -32,59 +32,59 @@ the multi-project layer.
 - Drift detection function reused by `deploy` and `env` commands
 
 ### 1.4 Project lifecycle
-- `hosting init-project` — scaffold manifest + env skeleton (compose is user-authored)
-- `hosting check` — structural rules (S, C, T, H, E, HK)
-- `hosting check` rework: network split rules (C03/C07, T07) +
+- `kasbah init-project` — scaffold manifest + env skeleton (compose is user-authored)
+- `kasbah check` — structural rules (S, C, T, H, E, HK)
+- `kasbah check` rework: network split rules (C03/C07, T07) +
   resource rules (R01–R03; R04 belongs to `check --server`)
-- `hosting build-push user@host` — no-op when compose has zero `build:` services
-- `hosting deploy user@host` (working tree) + `hosting deploy user@host X.Y.Z` (git archive)
-- `hosting rollback user@host [version]` — git-archive flow; target image must be within the VPS retention window
-- `hosting history / changelog / pending`
+- `kasbah build-push user@host` — no-op when compose has zero `build:` services
+- `kasbah deploy user@host` (working tree) + `kasbah deploy user@host X.Y.Z` (git archive)
+- `kasbah rollback user@host [version]` — git-archive flow; target image must be within the VPS retention window
+- `kasbah history / changelog / pending`
 
 ### 1.5 Docs
 - README.md with install + first-project walkthrough
 - All docs/*.md under this directory
 
 **Exit criteria:** the original project can replace its `scripts/` folder with a
-one-line `hosting.yml` and deploy identically.
+one-line `kasbah.yml` and deploy identically.
 
 ## Phase 2 — v0.2 (Mail + polish)
 
-- `hosting server init --with-mail` (DMS + SnappyMail, ported from the original project)
-- `hosting server add-mail-domain <domain>` — multi-domain support
+- `kasbah server init --with-mail` (DMS + SnappyMail, ported from the original project)
+- `kasbah server add-mail-domain <domain>` — multi-domain support
 - Mail claim reconciliation on deploy
-- `hosting server mail-setup-guide` — printed walkthrough
-- `hosting check --server user@host` — VPS-aware checks
-- `hosting logs user@host [service]` / `hosting exec`
-- `hosting server upgrade-traefik`
-- `hosting server prune` — image retention (keep the last 3 deployed
+- `kasbah server mail-setup-guide` — printed walkthrough
+- `kasbah check --server user@host` — VPS-aware checks
+- `kasbah logs user@host [service]` / `kasbah exec`
+- `kasbah server upgrade-traefik`
+- `kasbah server prune` — image retention (keep the last 3 deployed
   versions including current, plus anything < 3 months)
 
-**Exit criteria:** the original project's mail stack migrated to hosting; at least one
+**Exit criteria:** the original project's mail stack migrated to kasbah; at least one
 other project (e.g. a jellyfin stock, a second custom app) deployed
 successfully.
 
 ## Phase 3 — v0.3 (Quality of life)
 
 - Backups retention rotation
-- `hosting check --fix` for C01-C05
+- `kasbah check --fix` for C01-C05
 - Dashboard-optional Traefik template
-- `hosting drop [--prune]` — remove a project; `--prune` also deletes
+- `kasbah drop [--prune]` — remove a project; `--prune` also deletes
   data + backups (double confirmation)
-- `hosting server destroy` — de-brand a VPS for handover; containers
+- `kasbah server destroy` — de-brand a VPS for handover; containers
   keep running (double confirmation)
 - Off-VPS backups: `server init --with-backup` — restic → S3-compatible,
   append-only creds, per-client repos (see `backup.md`)
 
 ## Phase 4 — v1.0 (Go rewrite preparation)
 
-Where the `hosting_version` field starts earning its keep.
+Where the `kasbah_version` field starts earning its keep.
 
 - Define the migration story: v0.x → v1.0 may rename/move files in the
-  project source tree. Tool: `hosting migrate` (still bash).
+  project source tree. Tool: `kasbah migrate` (still bash).
 - Freeze the manifest schema — after v1.0, changes go through an
   explicit migration.
-- Document every file hosting writes (project + VPS) so a Go rewrite
+- Document every file kasbah writes (project + VPS) so a Go rewrite
   knows what's under management.
 
 ## Phase 5 — v1.x (Go binary)
@@ -92,14 +92,14 @@ Where the `hosting_version` field starts earning its keep.
 - Go re-implementation of the CLI
 - Single statically-linked binary distributed via GitHub releases
 - Same manifest schema
-- `hosting --version` reports both tool version and schema version
-- Auto-detect older projects (`hosting_version < installed_version`)
+- `kasbah --version` reports both tool version and schema version
+- Auto-detect older projects (`kasbah_version < installed_version`)
   and offer to migrate:
 
   ```
-  $ hosting deploy user@vps
-  Warning: project was last touched by hosting 0.3.0; you have 1.0.0.
-           Run `hosting migrate` to update project files.
+  $ kasbah deploy user@vps
+  Warning: project was last touched by kasbah 0.3.0; you have 1.0.0.
+           Run `kasbah migrate` to update project files.
   ```
 
 - Migration of VPS state is opt-in and reversible (because the VPS
@@ -118,21 +118,21 @@ Go wins:
 - Concurrency for multi-VPS operations (roadmap: deploy to N servers).
 - Static binary → no runtime surprises on developer laptops.
 
-The cutover point is when `hosting` does enough (multi-VPS, more hooks,
+The cutover point is when `kasbah` does enough (multi-VPS, more hooks,
 templates) that bash maintainability starts to hurt. Current estimate:
 around Phase 3.
 
 ## Backlog (unphased, low priority)
 
 - Uptime monitoring: a Gatus stack on a separate operator VPS, its endpoint
-  config generated from project manifests (`hosting monitor sync`).
+  config generated from project manifests (`kasbah monitor sync`).
   Config-file-driven on purpose — same philosophy as the Traefik fragments.
   Deliberately deprioritized.
 
 ## Non-goals (staying out of scope)
 
 - Private registry management (no Harbor/Zot/Distribution).
-- Web UI for hosting.
+- Web UI for kasbah.
 - Multi-user access control on a VPS.
 - Support for Swarm / Kubernetes.
 - Automated DNS management (no Cloudflare API integration).
@@ -142,7 +142,7 @@ around Phase 3.
 
 ## Open questions (to revisit)
 
-- Should the VPS state be mirrored into a git repo owned by hosting?
+- Should the VPS state be mirrored into a git repo owned by kasbah?
   (Audit trail, but adds complexity.)
-- Should there be a `hosting secrets` command distinct from `hosting env`
+- Should there be a `kasbah secrets` command distinct from `kasbah env`
   for values that rotate (API keys)? For now, env template handles both.

@@ -11,7 +11,7 @@
 # Exit status follows test.sh's contract: 0 pass, 1 an assertion failed, 2 the
 # suite could not run at all (no rig).
 #
-# No hosting command uses lib/ssh.sh yet — `server init` and `deploy` are the
+# No kasbah command uses lib/ssh.sh yet — `server init` and `deploy` are the
 # next units — so the transport is driven directly, under exactly the HOME and
 # PATH that rig_env.sh will hand those commands.
 
@@ -56,13 +56,13 @@ if ! rig_env_init "$tmpdir"; then
 fi
 
 # --- The invoker the later units will use -------------------------------------
-# No hosting command reaches the rig yet, so what is asserted here is the
+# No kasbah command reaches the rig yet, so what is asserted here is the
 # invoker itself: the checkout's CLI runs under the scratch HOME and the ssh
 # wrapper, which is the environment Units B-E will get.
-cli_out=$(hosting_cli --version 2>&1); cli_rc=$?
-assert '[ "$cli_rc" = "0" ]' "hosting_cli runs the checkout's CLI (exit $cli_rc: $cli_out)"
-assert '[ "$cli_out" = "hosting $(cat "$repo_dir/VERSION")" ]' \
-    "hosting_cli runs this checkout, not an installed copy (got '$cli_out')"
+cli_out=$(kasbah_cli --version 2>&1); cli_rc=$?
+assert '[ "$cli_rc" = "0" ]' "kasbah_cli runs the checkout's CLI (exit $cli_rc: $cli_out)"
+assert '[ "$cli_out" = "kasbah $(cat "$repo_dir/VERSION")" ]' \
+    "kasbah_cli runs this checkout, not an installed copy (got '$cli_out')"
 
 # --- The cleanup payload cannot run locally -----------------------------------
 # A static read of rig_env.sh, before anything is executed: every destructive
@@ -110,25 +110,25 @@ if ! rig_clean; then
 fi
 
 # One session plants everything a Phase 2 deploy leaves behind: a compose
-# project (created through `docker compose -p`, the way hosting does it), the
+# project (created through `docker compose -p`, the way kasbah does it), the
 # shared network, /apps, and an image that must survive. The image is built by
 # importing an empty tar rather than pulling, so the suite stays offline.
 seed_out=$(rig_ssh bash -s <<'REMOTE' 2>&1
 set -uo pipefail
 sudo mkdir -p /apps/probe/deep
-docker network create hosting-net >/dev/null 2>&1
-tar -cf - -T /dev/null | docker import - hosting-clean-probe:test >/dev/null 2>&1
-mkdir -p /tmp/hosting-clean-probe
-{ printf 'services:\n  a:\n    image: hosting-clean-probe:test\n'
+docker network create kasbah-net >/dev/null 2>&1
+tar -cf - -T /dev/null | docker import - kasbah-clean-probe:test >/dev/null 2>&1
+mkdir -p /tmp/kasbah-clean-probe
+{ printf 'services:\n  a:\n    image: kasbah-clean-probe:test\n'
   printf '    command: ["/nonexistent"]\n    volumes: [probe-data:/data]\n'
-  printf 'volumes:\n  probe-data: {}\n'; } > /tmp/hosting-clean-probe/compose.yml
-cd /tmp/hosting-clean-probe
+  printf 'volumes:\n  probe-data: {}\n'; } > /tmp/kasbah-clean-probe/compose.yml
+cd /tmp/kasbah-clean-probe
 # The container cannot start (the image has no filesystem); created is enough,
 # `docker compose ls --all` reports the project either way.
-docker compose -p hosting-clean-probe up -d >/dev/null 2>&1
+docker compose -p kasbah-clean-probe up -d >/dev/null 2>&1
 printf 'seeded_projects=%s\n' "$(docker compose ls --all -q | tr '\n' ',')"
 printf 'seeded_apps=%s\n' "$([ -d /apps/probe/deep ] && echo yes || echo no)"
-printf 'seeded_net=%s\n' "$(docker network ls --format '{{.Name}}' | grep -c '^hosting-net$')"
+printf 'seeded_net=%s\n' "$(docker network ls --format '{{.Name}}' | grep -c '^kasbah-net$')"
 printf 'seeded_volumes=%s\n' "$(docker volume ls -q | wc -l)"
 # By name, not by count. The rig's image cache is deliberately kept across
 # rig_clean, so every suite that starts a real stack leaves images behind for
@@ -139,10 +139,10 @@ exit 0
 REMOTE
 )
 assert 'grep -qF "seeded_apps=yes" <<<"$seed_out"'                  "/apps was created on the rig (got '$seed_out')"
-assert 'grep -qF "seeded_net=1" <<<"$seed_out"'                     "hosting-net was created on the rig (got '$seed_out')"
-assert 'grep -qF "seeded_projects=hosting-clean-probe," <<<"$seed_out"' "a compose project exists on the rig (got '$seed_out')"
+assert 'grep -qF "seeded_net=1" <<<"$seed_out"'                     "kasbah-net was created on the rig (got '$seed_out')"
+assert 'grep -qF "seeded_projects=kasbah-clean-probe," <<<"$seed_out"' "a compose project exists on the rig (got '$seed_out')"
 assert 'grep -qF "seeded_volumes=1" <<<"$seed_out"'                 "a compose volume exists on the rig (got '$seed_out')"
-assert 'grep -qE "^seeded_images=.*hosting-clean-probe:test," <<<"$seed_out"' \
+assert 'grep -qE "^seeded_images=.*kasbah-clean-probe:test," <<<"$seed_out"' \
     "the image that must survive the clean exists on the rig (got '$(grep "^seeded_images=" <<<"$seed_out")')"
 
 rig_clean; clean_rc=$?
@@ -166,15 +166,15 @@ assert '[ "$projects_after" = "projects=" ]' \
 assert 'grep -qF "containers=0" <<<"$after_out"'      "clean removes every container (got '$(grep "^containers=" <<<"$after_out")')"
 assert 'grep -qF "volumes=0" <<<"$after_out"'         "clean removes the projects' volumes (got '$(grep "^volumes=" <<<"$after_out")')"
 assert 'grep -qxF "networks=bridge,host,none," <<<"$after_out"' \
-    "clean removes hosting-net and keeps the three built-ins (got '$(grep "^networks=" <<<"$after_out")')"
-assert 'grep -qE "^images=.*hosting-clean-probe:test," <<<"$after_out"' \
+    "clean removes kasbah-net and keeps the three built-ins (got '$(grep "^networks=" <<<"$after_out")')"
+assert 'grep -qE "^images=.*kasbah-clean-probe:test," <<<"$after_out"' \
     "clean keeps the image cache — that is the whole reason it exists (got '$(grep "^images=" <<<"$after_out")')"
 
 # --- The transport, against the live rig --------------------------------------
 cat > "$tmpdir/transport.sh" <<'DRIVER'
 set -uo pipefail
-. "$HOSTING_LIB_DIR/common.sh"
-. "$HOSTING_LIB_DIR/ssh.sh"
+. "$KASBAH_LIB_DIR/common.sh"
+. "$KASBAH_LIB_DIR/ssh.sh"
 
 kv() { printf '%s=%s\n' "$1" "$2"; }
 
@@ -191,7 +191,7 @@ socks=("$_SSH_CTL_DIR"/*)
 kv sockets_open "${#socks[@]}"
 kv socket_path "${socks[0]:-none}"
 if [ "${#socks[@]}" -gt 0 ] && [ -S "${socks[0]}" ]; then kv socket_is_socket yes; else kv socket_is_socket no; fi
-# Nothing of hosting's goes in the user's ~/.ssh any more.
+# Nothing of kasbah's goes in the user's ~/.ssh any more.
 home_socks=("$HOME"/.ssh/cm-*)
 kv home_sockets "${#home_socks[@]}"
 
@@ -216,10 +216,10 @@ kv payload "${payload_out#payload=}"
 src="$HOME/rsync-src"
 mkdir -p "$src"
 printf 'rsynced through the master\n' > "$src/hello.txt"
-ssh_rsync -a "$src/" "$SSH_TARGET:/tmp/hosting-rsync-probe/" >/dev/null 2>&1
+ssh_rsync -a "$src/" "$SSH_TARGET:/tmp/kasbah-rsync-probe/" >/dev/null 2>&1
 kv rsync_rc "$?"
-kv rsync_readback "$(ssh_run cat /tmp/hosting-rsync-probe/hello.txt)"
-ssh_run rm -rf /tmp/hosting-rsync-probe
+kv rsync_readback "$(ssh_run cat /tmp/kasbah-rsync-probe/hello.txt)"
+ssh_run rm -rf /tmp/kasbah-rsync-probe
 
 ssh_disconnect
 socks_after=("$_SSH_CTL_DIR"/*)
@@ -263,7 +263,7 @@ assert '[ "${fact[sockets_open]}" = "1" ]'         "one control socket exists wh
 assert '[ "${fact[socket_is_socket]}" = "yes" ]'   "the control path is a socket, not a stray file"
 assert '[[ "${fact[socket_path]}" == "${fact[ctl_dir]}/"* ]]' \
     "the control socket lives in the directory the run made for it (got '${fact[socket_path]}')"
-assert '[[ "${fact[ctl_dir]}" == "${TMPDIR:-/tmp}/hosting-ssh."* ]]' \
+assert '[[ "${fact[ctl_dir]}" == "${TMPDIR:-/tmp}/kasbah-ssh."* ]]' \
     "and that directory is a private one under TMPDIR (got '${fact[ctl_dir]}')"
 assert '[ "${fact[home_sockets]}" = "0" ]' \
     "no control socket is left in the user's ~/.ssh (found ${fact[home_sockets]})"
@@ -286,8 +286,8 @@ assert '[ "${fact[rsync_readback]}" = "rsynced through the master" ]' "the rsync
 
 # --- Two runs against one server do not touch each other ----------------------
 # The defect this pins: `ssh -O exit` closes a master **and every session
-# multiplexed over it**, and hosting used to name its socket `~/.ssh/cm-%C` —
-# user, host and port, nothing about the process. So any second hosting command
+# multiplexed over it**, and kasbah used to name its socket `~/.ssh/cm-%C` —
+# user, host and port, nothing about the process. So any second kasbah command
 # against the same server shared the first one's master, and tore it down on its
 # way out. Measured before the fix: a read-only `server status` that exited 4 and
 # changed nothing, fired six seconds into a `server init`, killed the init's
@@ -298,8 +298,8 @@ assert '[ "${fact[rsync_readback]}" = "rsynced through the master" ]' "the rsync
 # visitor connects, works and tears its own master down.
 cat > "$tmpdir/holder.sh" <<'DRIVER'
 set -uo pipefail
-. "$HOSTING_LIB_DIR/common.sh"
-. "$HOSTING_LIB_DIR/ssh.sh"
+. "$KASBAH_LIB_DIR/common.sh"
+. "$KASBAH_LIB_DIR/ssh.sh"
 
 ssh_connect "$1"
 printf 'holder_ctl=%s\n' "$_SSH_CTL_DIR"
@@ -318,8 +318,8 @@ DRIVER
 
 cat > "$tmpdir/visitor.sh" <<'DRIVER'
 set -uo pipefail
-. "$HOSTING_LIB_DIR/common.sh"
-. "$HOSTING_LIB_DIR/ssh.sh"
+. "$KASBAH_LIB_DIR/common.sh"
+. "$KASBAH_LIB_DIR/ssh.sh"
 
 ssh_connect "$1"
 printf 'visitor_ctl=%s\n' "$_SSH_CTL_DIR"
@@ -368,7 +368,7 @@ assert '[ ! -e "$holder_ctl" ] && [ ! -e "$visitor_ctl" ]' \
 pw_home=$(getent passwd "$(id -u)" | cut -d: -f6)
 harness_dbg=$(env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
     ssh -vv -G "$RIG_SSH_ALIAS" 2>&1)
-control_dbg=$(ssh -vv -G hosting-not-in-any-config 2>&1)
+control_dbg=$(ssh -vv -G kasbah-not-in-any-config 2>&1)
 
 assert '[ -n "$pw_home" ]' "the passwd entry names a home directory (got '$pw_home')"
 assert 'grep -qF "Reading configuration data $pw_home/.ssh/config" <<<"$control_dbg"' \
@@ -384,8 +384,8 @@ assert 'grep -qxF "user stevedore" <<<"$harness_cfg"'     "the included rig cont
 
 # A name the rig contract does not define must stay exactly what it was: if any
 # other config were in play, this is where a `Host *` block would show up.
-stray_cfg=$(env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" ssh -G hosting-not-in-any-config 2>&1)
-assert 'grep -qxF "hostname hosting-not-in-any-config" <<<"$stray_cfg"' \
+stray_cfg=$(env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" ssh -G kasbah-not-in-any-config 2>&1)
+assert 'grep -qxF "hostname kasbah-not-in-any-config" <<<"$stray_cfg"' \
     "an unknown alias resolves to nothing under the harness (got '$(grep "^hostname " <<<"$stray_cfg")')"
 assert 'grep -qxF "port 22" <<<"$stray_cfg"' \
     "an unknown alias keeps the default port under the harness (got '$(grep "^port " <<<"$stray_cfg")')"
@@ -393,15 +393,15 @@ assert 'grep -qxF "port 22" <<<"$stray_cfg"' \
 # --- An unreachable host fails fast, with exit 3 ------------------------------
 cat > "$tmpdir/unreachable.sh" <<'DRIVER'
 set -uo pipefail
-. "$HOSTING_LIB_DIR/common.sh"
-. "$HOSTING_LIB_DIR/ssh.sh"
+. "$KASBAH_LIB_DIR/common.sh"
+. "$KASBAH_LIB_DIR/ssh.sh"
 ssh_connect "$1"
 echo "connected=yes"
 DRIVER
 
 started=$SECONDS
 unreachable_out=$(rig_env_bash "$tmpdir/unreachable.sh" \
-    deploy@hosting-unreachable.invalid 2>"$tmpdir/unreachable.err")
+    deploy@kasbah-unreachable.invalid 2>"$tmpdir/unreachable.err")
 unreachable_rc=$?
 elapsed=$((SECONDS - started))
 unreachable_err=$(<"$tmpdir/unreachable.err")
@@ -409,14 +409,14 @@ unreachable_err=$(<"$tmpdir/unreachable.err")
 assert '[ "$unreachable_rc" = "3" ]' "an unreachable host exits 3 (got $unreachable_rc)"
 assert '[ -z "$unreachable_out" ]'   "nothing runs past an unreachable host (got '$unreachable_out')"
 assert '[ "$elapsed" -lt 30 ]'       "an unreachable host fails promptly (took ${elapsed}s)"
-assert 'grep -qF "hosting-unreachable.invalid" <<<"$unreachable_err"' \
+assert 'grep -qF "kasbah-unreachable.invalid" <<<"$unreachable_err"' \
     "the unreachable target is named (got '$unreachable_err')"
 # Whatever ssh said comes out first and unedited. Matching a particular phrase
 # would only pin today's failure mode: under the harness fence an unroutable
 # name dies in the ProxyCommand, not in DNS, and both are ssh speaking.
 ssh_said="${unreachable_err%%$'\n'*}"
 assert '[ -n "$ssh_said" ] && [[ "$ssh_said" != error:* ]]' \
-    "ssh's own error is surfaced ahead of hosting's, not swallowed (got '$ssh_said')"
+    "ssh's own error is surfaced ahead of kasbah's, not swallowed (got '$ssh_said')"
 
 # --- Everything but the rig is fenced off -------------------------------------
 # `-F` replaces the config file; it does not stop an alias the config says
@@ -517,7 +517,7 @@ assert '[ "$marker" = "present" ]' "a refused clean really changed nothing (got 
 
 # --- Leave the rig as it was found, but only on success -----------------------
 if [ "$fail" -eq 0 ]; then
-    rig_ssh 'docker rmi -f hosting-clean-probe:test >/dev/null 2>&1; rm -rf /tmp/hosting-clean-probe' >/dev/null 2>&1
+    rig_ssh 'docker rmi -f kasbah-clean-probe:test >/dev/null 2>&1; rm -rf /tmp/kasbah-clean-probe' >/dev/null 2>&1
     rig_clean || fail=1
 fi
 

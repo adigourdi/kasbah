@@ -1,5 +1,5 @@
 # Traefik's static configuration, installed at <apps>/traefik/traefik.yml.
-# Changing this file requires a Traefik restart — `hosting server init` does
+# Changing this file requires a Traefik restart — `kasbah server init` does
 # that, and only when the file's bytes actually change.
 #
 # The ACME address below is substituted on the workstation: Traefik expands no

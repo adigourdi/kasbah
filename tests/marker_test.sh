@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Test: lib/marker.sh — the server marker, read once per run and shared by
-# `hosting deploy` and `hosting env`.
+# `kasbah deploy` and `kasbah env`.
 #
 # A unit suite: a recording stub `ssh` goes first on PATH and answers as a
 # server would, so nothing here opens a socket. What it pins is the whole
@@ -53,10 +53,10 @@ chmod 0755 "$stub_dir/ssh"
 run_marker() {
     : > "$log"
     out=$(env HOME="$tmpdir/home" TMPDIR="$tmpdir" PATH="$stub_dir:$PATH" \
-              HOSTING_LIB_DIR="$repo_dir/lib" STUB_LOG="$log" "$@" \
+              KASBAH_LIB_DIR="$repo_dir/lib" STUB_LOG="$log" "$@" \
           bash -c '
         set -uo pipefail
-        . "$HOSTING_LIB_DIR/marker.sh"
+        . "$KASBAH_LIB_DIR/marker.sh"
         ssh_connect deploy@vps
         marker_read deploy@vps
         printf "apps=%s data=%s cpu=%s mem=%s\n" \
@@ -66,7 +66,7 @@ run_marker() {
     rc=$?
 }
 
-good='{"hosting_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"14.4","mem_limit":"54g"}'
+good='{"kasbah_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"14.4","mem_limit":"54g"}'
 
 # --- The happy path, and where it looked ----------------------------------------
 run_marker MARKER="$good"
@@ -74,7 +74,7 @@ assert '[ "$rc" = "0" ]' "a complete marker reads clean (rc $rc: $out)"
 assert 'grep -qxF "apps=/apps data=/apps/data cpu=14.4 mem=54g" <<<"$out"' \
     "and every one of the four fields lands in its variable (got '$out')"
 assert 'grep -qF "json=$good" <<<"$out"' "with the whole object kept for later readers (got '$out')"
-# The path is hosting's default, not the marker's own apps_path: the marker is
+# The path is kasbah's default, not the marker's own apps_path: the marker is
 # what *tells* a command where the tree is, so looking for it anywhere the
 # marker said would be circular.
 assert 'grep -qF "|'\''bash'\'' '\''-s'\'' '\''--'\'' '\''/apps'\''" "$log"' \
@@ -91,14 +91,14 @@ assert 'grep -qxF "apps=/srv/apps data=/srv/store cpu=1.0 mem=2g" <<<"$out"' \
 # --- No marker ------------------------------------------------------------------
 run_marker MARKER_RC=3
 assert '[ "$rc" = "4" ]' "no marker exits 4 (rc $rc: $out)"
-assert 'grep -qF "/apps/.hosting/server.json" <<<"$out"' "naming the file it looked for (said '$out')"
+assert 'grep -qF "/apps/.kasbah/server.json" <<<"$out"' "naming the file it looked for (said '$out')"
 assert 'grep -qF -- "--apps-path" <<<"$out"' \
     "and the flag that makes a prepared server look unprepared (said '$out')"
 # The remedy must not be followable into a disaster: a bare
-# `hosting server init user@host` against a server whose apps path is not /apps
+# `kasbah server init user@host` against a server whose apps path is not /apps
 # renders a second Traefik stack under the frozen `traefik` compose project and
 # recreates the running proxy against it, taking every site down.
-assert '! grep -qE "hosting server init [A-Za-z0-9._-]+@" <<<"$out"' \
+assert '! grep -qE "kasbah server init [A-Za-z0-9._-]+@" <<<"$out"' \
     "and never prints a runnable bare \`server init\` (said '$out')"
 
 run_marker MARKER_RC=1
@@ -115,7 +115,7 @@ done
 # --- The paths must be absolute --------------------------------------------------
 # Every one of these becomes both a remote directory and half of an rsync
 # destination. A relative one silently means "under the ssh user's home", which
-# is not where anything hosting wrote is.
+# is not where anything kasbah wrote is.
 while read -r apps data desc; do
     [ -n "$apps" ] || continue
     run_marker MARKER="{\"apps_path\":\"$apps\",\"data_path\":\"$data\",\"cpu_limit\":\"1.0\",\"mem_limit\":\"2g\"}"
@@ -158,7 +158,7 @@ assert '[ "$rc" = "1" ]' "an absent cpu_limit is refused (rc $rc: $out)"
 run_marker MARKER='{"apps_path":"/apps","data_path":"/apps/data","cpu_limit":"14.4"}'
 assert '[ "$rc" = "1" ]' "and an absent mem_limit (rc $rc: $out)"
 
-# The positive control for all eight refusals above: values hosting has no
+# The positive control for all eight refusals above: values kasbah has no
 # opinion about are written through, because the marker's spelling is the
 # contract and reformatting `14.4` to `14.40` is a different cpus:.
 run_marker MARKER='{"apps_path":"/apps","data_path":"/apps/data","cpu_limit":"0","mem_limit":"0"}'
@@ -169,7 +169,7 @@ assert 'grep -qxF "apps=/apps data=/apps/data cpu=0.50 mem=512m" <<<"$out"' \
     "and a trailing zero is not normalised away (got '$out')"
 
 # --- Forward compatibility --------------------------------------------------------
-# A marker written by a later hosting carries keys this one has never heard of,
+# A marker written by a later kasbah carries keys this one has never heard of,
 # and they are ignored rather than choked on (docs/overview.md → compatibility).
 run_marker MARKER='{"apps_path":"/apps","data_path":"/apps/data","cpu_limit":"1.0","mem_limit":"2g","future":{"a":[1,2]}}'
 assert '[ "$rc" = "0" ]' "a marker with unknown keys still reads (rc $rc: $out)"

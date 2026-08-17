@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# hosting — the VPS side of a deploy. Installed at
+# kasbah — the VPS side of a deploy. Installed at
 # <apps>/<project>/scripts/remote-deploy.sh and overwritten on every deploy, so
-# it always matches the hosting that drives it (docs/build-deploy.md → helper
-# scripts on the VPS). Do not edit it on the server; edit hosting's template.
+# it always matches the kasbah that drives it (docs/build-deploy.md → helper
+# scripts on the VPS). Do not edit it on the server; edit kasbah's template.
 #
 #   remote-deploy.sh deploy <version>
 #
@@ -14,10 +14,10 @@
 # two above and derives everything else from where it is installed.
 
 set -euo pipefail
-# The same locale every payload hosting sends over ssh runs under; this script
+# The same locale every payload kasbah sends over ssh runs under; this script
 # is the one remote step that arrives as a file rather than a heredoc, and it
 # had been left out. What it prints is read by machines — the versions.log line
-# every hosting version has to parse, and in Phase 4 the `docker` output the
+# every kasbah version has to parse, and in Phase 4 the `docker` output the
 # digests come out of, whose wording is otherwise the server's locale to choose.
 export LC_ALL=C
 
@@ -34,7 +34,7 @@ EOF
 
 # Where this script is installed decides everything: the project directory is
 # its parent, and the compose project name is that directory's name — which is
-# manifest.name, because that is the directory hosting deploys into.
+# manifest.name, because that is the directory kasbah deploys into.
 _rd_locate() {
     local here
     here="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)" \
@@ -54,13 +54,13 @@ dc() { docker compose -p "$PROJECT" "$@"; }
 
 # The line docs/build-deploy.md freezes:
 #
-#   <iso-timestamp> <action> <version> <backup-or-no-backup> hosting=<v> digest=<…|->
+#   <iso-timestamp> <action> <version> <backup-or-no-backup> kasbah=<v> digest=<…|->
 #
 # The four positional fields are frozen forever — never reordered, never
 # removed. Anything new is a key=value pair appended after digest=, which is
 # where Phase 4's additions go.
 #
-# `hosting=` is the version of the hosting that drove the deploy, passed in the
+# `kasbah=` is the version of the kasbah that drove the deploy, passed in the
 # environment. A hand-run of this script says `unknown` rather than claiming a
 # version it cannot know.
 #
@@ -68,13 +68,13 @@ dc() { docker compose -p "$PROJECT" "$@"; }
 # written, because the line is space-delimited and its shape is frozen: one
 # empty field or one embedded space does not produce a slightly-wrong entry, it
 # produces one that every later reader parses into the wrong columns — in a file
-# that must stay readable by every hosting version there will ever be. A `date`
+# that must stay readable by every kasbah version there will ever be. A `date`
 # that fails is the case that motivates it, and it is caught here rather than by
 # `set -e`: written the obvious way, as a substitution inside the printf's own
 # argument list, the failure is invisible to errexit.
 versions_log_line() {
     local action="$1" version="$2" backup="$3" digest="$4"
-    local hosting="${HOSTING_VERSION:-unknown}"
+    local kasbah="${KASBAH_VERSION:-unknown}"
     local ts pair what value
 
     ts="$(date -u -Iseconds)" || ts=""
@@ -83,7 +83,7 @@ versions_log_line() {
     # `fail` in a command substitution exits the subshell, and the field would
     # be written empty regardless.
     for pair in "timestamp=$ts" "action=$action" "version=$version" \
-                "backup path=$backup" "hosting version=$hosting" "digest=$digest"; do
+                "backup path=$backup" "kasbah version=$kasbah" "digest=$digest"; do
         what="${pair%%=*}"
         value="${pair#*=}"
         [ -n "$value" ] \
@@ -93,8 +93,8 @@ versions_log_line() {
         esac
     done
 
-    printf '%s %s %s %s hosting=%s digest=%s\n' \
-        "$ts" "$action" "$version" "$backup" "$hosting" "$digest"
+    printf '%s %s %s %s kasbah=%s digest=%s\n' \
+        "$ts" "$action" "$version" "$backup" "$kasbah" "$digest"
 }
 
 # Appended, never rewritten: the log is the record of what ran on this server,
@@ -141,7 +141,7 @@ main() {
         deploy) ;;
         -h|--help) usage; exit 0 ;;
         '') usage; fail "no action given (expected: deploy)" ;;
-        # rollback lands in Phase 5, in this same file. Named, so a hosting that
+        # rollback lands in Phase 5, in this same file. Named, so a kasbah that
         # is ahead of the script on the server says so instead of "unknown".
         rollback) fail "rollback is not implemented in this version of remote-deploy.sh" ;;
         *) usage; fail "unknown action '$action' (expected: deploy)" ;;

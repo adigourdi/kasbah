@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test: lib/server_init.sh — everything about `hosting server init` that does
+# Test: lib/server_init.sh — everything about `kasbah server init` that does
 # not need a server. Flag parsing, the limit formatter, the marker, and the
 # prerequisite verdicts, which are driven from a synthetic fact set so that
 # rows the rig cannot break (an old daemon, a sudo that prompts) are still
@@ -8,7 +8,7 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
-hosting="$repo_dir/bin/hosting"
+kasbah="$repo_dir/bin/kasbah"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -21,9 +21,9 @@ assert() {
     fi
 }
 
-export HOSTING_LIB_DIR="$repo_dir/lib"
-export HOSTING_TEMPLATE_DIR="$repo_dir/templates"
-export HOSTING_VERSION="9.9.9-test"
+export KASBAH_LIB_DIR="$repo_dir/lib"
+export KASBAH_TEMPLATE_DIR="$repo_dir/templates"
+export KASBAH_VERSION="9.9.9-test"
 export NO_COLOR=1
 
 # --- Driver -------------------------------------------------------------------
@@ -35,8 +35,8 @@ driver="$tmpdir/driver.sh"
 cat > "$driver" <<'DRV'
 #!/usr/bin/env bash
 set -euo pipefail
-. "$HOSTING_LIB_DIR/common.sh"
-. "$HOSTING_LIB_DIR/server_init.sh"
+. "$KASBAH_LIB_DIR/common.sh"
+. "$KASBAH_LIB_DIR/server_init.sh"
 
 mode="$1"; shift
 case "$mode" in
@@ -369,11 +369,11 @@ done
 marker=$(drive marker 0.1.0 /apps /apps/data 3.6 7g); rc=$?
 assert '[ "$rc" = "0" ]'                  "the marker renders (exit $rc: $(drive_err))"
 assert 'jq -e . >/dev/null <<<"$marker"'  "the marker is valid JSON (got '$marker')"
-for key in hosting_version apps_path data_path cpu_limit mem_limit backup; do
+for key in kasbah_version apps_path data_path cpu_limit mem_limit backup; do
     assert 'jq -e --arg k "$key" "has(\$k)" >/dev/null <<<"$marker"' \
         "the marker carries $key, as docs/server-setup.md specifies"
 done
-assert '[ "$(jq -r .hosting_version <<<"$marker")" = "0.1.0" ]' "hosting_version is the tool's"
+assert '[ "$(jq -r .kasbah_version <<<"$marker")" = "0.1.0" ]' "kasbah_version is the tool's"
 assert '[ "$(jq -r .apps_path <<<"$marker")" = "/apps" ]'       "apps_path is recorded"
 assert '[ "$(jq -r .data_path <<<"$marker")" = "/apps/data" ]'  "data_path is recorded"
 assert '[ "$(jq -r .cpu_limit <<<"$marker")" = "3.6" ]'         "cpu_limit is recorded as a string"
@@ -387,23 +387,23 @@ assert 'jq -e . >/dev/null <<<"$odd"' "a quote in a path is escaped, not emitted
 # A re-run owns five keys and must leave everything else exactly as it found it:
 # Phase 8 puts backup.repo_base in the marker, and a plain init must not be what
 # deletes an operator's backup configuration.
-existing='{"hosting_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"1.8","mem_limit":"3g","backup":{"enabled":true,"repo_base":"s3:https://example/hosting-backups"},"future_key":{"kept":[1,2]}}'
+existing='{"kasbah_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"1.8","mem_limit":"3g","backup":{"enabled":true,"repo_base":"s3:https://example/kasbah-backups"},"future_key":{"kept":[1,2]}}'
 merged=$(drive marker 0.2.0 /apps /apps/data 3.6 7g "$existing")
 assert 'jq -e . >/dev/null <<<"$merged"'                          "a merged marker is valid JSON (got '$merged')"
-assert '[ "$(jq -r .hosting_version <<<"$merged")" = "0.2.0" ]'   "the writing tool's version wins"
+assert '[ "$(jq -r .kasbah_version <<<"$merged")" = "0.2.0" ]'   "the writing tool's version wins"
 assert '[ "$(jq -r .cpu_limit <<<"$merged")" = "3.6" ]'           "recomputed limits win"
 assert '[ "$(jq -r .backup.enabled <<<"$merged")" = "true" ]'     "an enabled backup is not switched off by a re-run"
-assert '[ "$(jq -r .backup.repo_base <<<"$merged")" = "s3:https://example/hosting-backups" ]' \
+assert '[ "$(jq -r .backup.repo_base <<<"$merged")" = "s3:https://example/kasbah-backups" ]' \
     "backup.repo_base survives a re-run (got '$(jq -c .backup <<<"$merged")')"
 assert '[ "$(jq -c .future_key <<<"$merged")" = "{\"kept\":[1,2]}" ]' \
-    "a key this hosting has never heard of survives a re-run"
+    "a key this kasbah has never heard of survives a re-run"
 same=$(drive marker 0.1.0 /apps /apps/data 3.6 7g "$(drive marker 0.1.0 /apps /apps/data 3.6 7g)")
 assert '[ "$same" = "$(drive marker 0.1.0 /apps /apps/data 3.6 7g)" ]' \
     "merging a marker into itself is a no-op, byte for byte — that is what makes a re-run idempotent"
 
 # --- Marker compatibility -----------------------------------------------------
-# docs/server-setup.md: a hosting binary operates on a VPS whose marker shares
-# its major version. HOSTING_VERSION is 9.9.9-test here.
+# docs/server-setup.md: a kasbah binary operates on a VPS whose marker shares
+# its major version. KASBAH_VERSION is 9.9.9-test here.
 assert '[ "$(drive compat no "")" = "compat=ok" ]'                              "no marker is the ordinary case"
 assert '[ "$(drive compat yes "$(drive marker 9.0.1 /apps /apps/data 1.8 3g)")" = "compat=ok" ]' \
     "a marker of the same major is accepted"
@@ -430,7 +430,7 @@ assert 'grep -qF "cannot be compared" "$tmpdir/err"' \
 
 # --- Elevation decision -------------------------------------------------------
 # One condition, and one only. Every other state of the apps path is a preflight
-# refusal below: chowning a directory hosting did not create would hand somebody
+# refusal below: chowning a directory kasbah did not create would hand somebody
 # else's /var/www to the deploy user and leave its contents in mixed ownership.
 assert '[ "$(drive elevation apps_state=absent)" = "elevate=yes" ]' \
     "a missing apps path needs root to create it"
@@ -476,7 +476,7 @@ row "no gzip"                 "gzip is missing"        have_gzip=no
 row "an unreadable core count" "nproc="                nproc=
 row "an unreadable MemTotal"   "MemTotal="             memtotal_kb=
 
-# The apps path, in every state but the two hosting acts on.
+# The apps path, in every state but the two kasbah acts on.
 row "a sudo that would prompt" "sudo mkdir -p /apps && sudo chown deploy:deploy /apps" sudo_nopasswd=no
 row "an apps path that is a file" "/apps exists and is not a directory" apps_state=notdir
 row "an apps path that dangles"   "/apps is a symlink to nothing"       apps_state=dangling
@@ -486,13 +486,13 @@ row "an apps path owned by somebody else, world-writable" "belongs to root:root,
     apps_state=dir apps_owned=no apps_writable=yes apps_owner=root:root
 row "an apps path the deploy user owns but cannot write" "chmod u+rwx /apps" \
     apps_state=dir apps_owned=yes apps_writable=no \
-    apps_write_error="touch: cannot touch '/apps/.hosting-write-probe': Permission denied"
+    apps_write_error="touch: cannot touch '/apps/.kasbah-write-probe': Permission denied"
 # The same -w, wanting the opposite advice: no chmod fixes a read-only mount.
 row "an apps path on a read-only filesystem" "read-only filesystem" \
     apps_state=dir apps_owned=yes apps_writable=no \
-    apps_write_error="touch: cannot touch '/apps/.hosting-write-probe': Read-only file system"
+    apps_write_error="touch: cannot touch '/apps/.kasbah-write-probe': Read-only file system"
 out=$(drive preflight apps_state=dir apps_owned=yes apps_writable=no \
-    apps_write_error="touch: cannot touch '/apps/.hosting-write-probe': Read-only file system")
+    apps_write_error="touch: cannot touch '/apps/.kasbah-write-probe': Read-only file system")
 assert '! grep -qF "chmod u+rwx" "$tmpdir/err"' \
     "and it does not prescribe a chmod that cannot work (said '$(drive_err)')"
 
@@ -567,25 +567,25 @@ cp "$repo_dir/templates/traefik/traefik.yml" "$bad_tpl/traefik/traefik.yml"
 cp "$repo_dir/templates/traefik/dynamic/_shared.yml" "$bad_tpl/traefik/dynamic/_shared.yml"
 sed 's|image: traefik:.*|image: "__NOPE__"|' "$repo_dir/templates/traefik/compose.yml" \
     > "$bad_tpl/traefik/compose.yml"
-out=$(HOSTING_TEMPLATE_DIR="$bad_tpl" drive render /apps /apps/data a@b.c example.com "$hash_admin"); rc=$?
+out=$(KASBAH_TEMPLATE_DIR="$bad_tpl" drive render /apps /apps/data a@b.c example.com "$hash_admin"); rc=$?
 assert '[ "$rc" != "0" ]' "an unsubstituted placeholder is a hard failure (exit $rc, printed '$out')"
 assert 'grep -qF "__NOPE__" "$tmpdir/err"' \
     "and the failure names the token that survived (said '$(drive_err)')"
 assert 'grep -qF "compose.yml" "$tmpdir/err"' "and the file it survived in (said '$(drive_err)')"
 
-out=$(HOSTING_TEMPLATE_DIR="$tmpdir/not-there" drive render /apps /apps/data a@b.c example.com x); rc=$?
-assert '[ "$rc" != "0" ]' "a hosting with no templates fails rather than shipping nothing (exit $rc)"
+out=$(KASBAH_TEMPLATE_DIR="$tmpdir/not-there" drive render /apps /apps/data a@b.c example.com x); rc=$?
+assert '[ "$rc" != "0" ]' "a kasbah with no templates fails rather than shipping nothing (exit $rc)"
 assert 'grep -qF "installation is incomplete" "$tmpdir/err"' \
     "and says the installation is incomplete (said '$(drive_err)')"
 
-# A token in an operator's *value* is not hosting's templates being out of step,
+# A token in an operator's *value* is not kasbah's templates being out of step,
 # and must not be reported as one. It is also never re-scanned: __APPS_PATH__
 # inside the data path comes back verbatim rather than expanded.
 mkdir -p "$tmpdir/stage"
 out=$(RENDER_OUT="$tmpdir/stage" drive render '/apps/__STAGE__' '/data/__APPS_PATH__' a@b.c example.com "$hash_admin"); rc=$?
 stage_vols=$(yq -r '.services.traefik.volumes | join(" ")' "$tmpdir/stage/compose.yml" 2>/dev/null)
 assert '[ "$rc" = "0" ]' \
-    "a path carrying hosting's own token syntax renders rather than being blamed on the templates (exit $rc: $(drive_err))"
+    "a path carrying kasbah's own token syntax renders rather than being blamed on the templates (exit $rc: $(drive_err))"
 assert 'grep -qF "/apps/__STAGE__/traefik/traefik.yml" <<<"$stage_vols"' \
     "the operator's path is substituted in as written (got '$stage_vols')"
 assert 'grep -qF "/data/__APPS_PATH__/traefik/letsencrypt" <<<"$stage_vols"' \
@@ -610,17 +610,17 @@ assert '[[ "$(yq -r ".services.traefik.image" "$compose")" =~ ^traefik:v3\.[0-9]
 assert '[ "$(yq -r "has(\"version\")" "$compose")" = "false" ]' \
     "no deprecated version: attribute (C05)"
 assert '[ "$(yq -r ".services.traefik.restart" "$compose")" = "unless-stopped" ]' \
-    "restart: unless-stopped, as hosting check demands of every service (C01)"
+    "restart: unless-stopped, as kasbah check demands of every service (C01)"
 assert '[ "$(yq -r ".services.traefik.logging.driver" "$compose")" = "json-file" ]' \
     "json-file logging (C02)"
 assert '[ "$(yq -r ".services.traefik.logging.options[\"max-size\"]" "$compose")" != "null" ] \
         && [ "$(yq -r ".services.traefik.logging.options[\"max-file\"]" "$compose")" != "null" ]' \
     "with both rotation knobs set (C02)"
-assert '[ "$(yq -r ".networks[\"hosting-net\"].name" "$compose")" = "hosting-net" ]' \
-    "the network is named hosting-net — a frozen contract every project fragment depends on"
-assert '[ "$(yq -r ".networks[\"hosting-net\"].driver" "$compose")" = "bridge" ]' \
-    "and is a bridge (got '$(yq -r ".networks[\"hosting-net\"].driver" "$compose")')"
-assert '[ "$(yq -r ".services.traefik.networks | join(\",\")" "$compose")" = "hosting-net" ]' \
+assert '[ "$(yq -r ".networks[\"kasbah-net\"].name" "$compose")" = "kasbah-net" ]' \
+    "the network is named kasbah-net — a frozen contract every project fragment depends on"
+assert '[ "$(yq -r ".networks[\"kasbah-net\"].driver" "$compose")" = "bridge" ]' \
+    "and is a bridge (got '$(yq -r ".networks[\"kasbah-net\"].driver" "$compose")')"
+assert '[ "$(yq -r ".services.traefik.networks | join(\",\")" "$compose")" = "kasbah-net" ]' \
     "Traefik itself joins it"
 assert '[ "$(yq -r ".services.traefik.ports | join(\",\")" "$compose")" = "80:80,443:443" ]' \
     "it binds 80 and 443 (got '$(yq -r ".services.traefik.ports | join(\",\")" "$compose")')"
@@ -762,7 +762,7 @@ assert 'grep -qxF "origin=flag" <<<"$out"' "and the credentials come from the fl
 extract() { printf '%s' "$2" | drive_stdin extract "$1"; }
 
 assert '[ "$(extract auth "$stored_shared")" = "$hash_admin" ]' \
-    "the hash is found in hosting's own output"
+    "the hash is found in kasbah's own output"
 crlf=$(printf 'http:\r\n  middlewares:\r\n    traefik-dashboard-auth:\r\n      basicAuth:\r\n        users:\r\n          - "bob:$2b$12$abcdefghijklmnopqrstuv"\r\n')
 assert '[ "$(extract auth "$crlf")" = "bob:\$2b\$12\$abcdefghijklmnopqrstuv" ]' \
     "and in a file saved with CRLF line endings (got '$(extract auth "$crlf")')"
@@ -797,7 +797,7 @@ assert '[ -z "$(extract domain "$stored_static")" ]' \
 assert '[ "$(extract email "$stored_static")" = "ops@example.com" ]' \
     "the ACME email is read back out of the static config"
 
-# A file hosting cannot parse is not a file it may quietly replace: the value it
+# A file kasbah cannot parse is not a file it may quietly replace: the value it
 # would invent is the dashboard password.
 broken=$(printf 'http:\n  middlewares:\n   bad indentation: [\n')
 out=$(drive values "$broken" "$stored_static"); rc=$?
@@ -846,10 +846,10 @@ assert 'grep -qxF "changed=compose.yml traefik.yml dynamic/_shared.yml" <<<"$out
 assert '[ "$(grep -c "rsync->" <<<"$err_out")" = "3" ]' \
     "in three rsync calls (said '$err_out')"
 
-# --- The command line, through bin/hosting ------------------------------------
+# --- The command line, through bin/kasbah ------------------------------------
 # The two exports above are for the driver, which sources the libraries
-# directly. bin/hosting must not see them: it takes VERSION from beside
-# HOSTING_LIB_DIR, and a checkout has no lib/VERSION.
+# directly. bin/kasbah must not see them: it takes VERSION from beside
+# KASBAH_LIB_DIR, and a checkout has no lib/VERSION.
 #
 # A recording ssh goes first on PATH, and every case below asserts its log is
 # empty. That is what makes "the question is asked before anything is opened" an
@@ -871,24 +871,24 @@ chmod 0755 "$si_stub_dir/ssh"
 
 run() {
     : > "$si_ssh_log"
-    env -u HOSTING_LIB_DIR -u HOSTING_VERSION \
+    env -u KASBAH_LIB_DIR -u KASBAH_VERSION \
         PATH="$si_stub_dir:$PATH" SSH_LOG="$si_ssh_log" \
-        "$hosting" "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
+        "$kasbah" "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
 }
 
 assert '[ "$(PATH="$si_stub_dir:$PATH" command -v ssh)" = "$si_stub_dir/ssh" ]' \
     "the stub ssh shadows any real one for the cases below"
 
 run server; rc=$?
-assert '[ "$rc" != "0" ]' "bare \`hosting server\` fails (exit $rc)"
+assert '[ "$rc" != "0" ]' "bare \`kasbah server\` fails (exit $rc)"
 assert 'grep -qF "expected: init" "$tmpdir/err"' \
     "it names the subcommands that exist (said '$(cat "$tmpdir/err")')"
 
 run server --help; rc=$?
-assert '[ "$rc" = "0" ]' "\`hosting server --help\` is help, not an unknown subcommand (exit $rc: $(cat "$tmpdir/err"))"
+assert '[ "$rc" = "0" ]' "\`kasbah server --help\` is help, not an unknown subcommand (exit $rc: $(cat "$tmpdir/err"))"
 assert 'grep -qF "init USER@HOST" "$tmpdir/out"' "it lists the subcommands (got '$(cat "$tmpdir/out")')"
 run server -h; rc=$?
-assert '[ "$rc" = "0" ]' "\`hosting server -h\` too (exit $rc)"
+assert '[ "$rc" = "0" ]' "\`kasbah server -h\` too (exit $rc)"
 
 run server statsu; rc=$?
 assert '[ "$rc" != "0" ]' "an unknown server subcommand fails (exit $rc)"
@@ -901,13 +901,13 @@ assert 'grep -qF "server init" "$tmpdir/out"' "usage advertises server init"
 # Mail and backup are scaffolded in Phases 7 and 8. Accepting the flag and doing
 # nothing would be a lie, so it is a hard failure that names the phase — and the
 # refusal comes before the connection, which the empty ssh log is what proves.
-run server init deploy@hosting-unit-test.invalid --with-mail --no-backup; rc=$?
+run server init deploy@kasbah-unit-test.invalid --with-mail --no-backup; rc=$?
 assert '[ "$rc" != "0" ]' "--with-mail fails rather than silently skipping mail (exit $rc)"
 assert 'grep -qF "Phase 7" "$tmpdir/err"' "--with-mail names the phase that builds it (said '$(cat "$tmpdir/err")')"
 assert 'grep -qF -- "--no-mail" "$tmpdir/err"' "--with-mail says how to proceed today"
 assert '[ ! -s "$si_ssh_log" ]' "and nothing was contacted first (ssh saw: $(cat "$si_ssh_log"))"
 
-run server init deploy@hosting-unit-test.invalid --no-mail --with-backup; rc=$?
+run server init deploy@kasbah-unit-test.invalid --no-mail --with-backup; rc=$?
 assert '[ "$rc" != "0" ]' "--with-backup fails rather than silently skipping backups (exit $rc)"
 assert 'grep -qF "Phase 8" "$tmpdir/err"' "--with-backup names the phase that builds it (said '$(cat "$tmpdir/err")')"
 assert 'grep -qF -- "--no-backup" "$tmpdir/err"' "--with-backup says how to proceed today"
@@ -917,14 +917,14 @@ assert '[ ! -s "$si_ssh_log" ]' "and nothing was contacted first (ssh saw: $(cat
 # never an assumed "no". Nothing is contacted first — and that half matters as
 # much as the exit code, because a guard that stopped guarding would still fail
 # the run, just further along and against somebody's server.
-run server init deploy@hosting-unit-test.invalid; rc=$?
+run server init deploy@kasbah-unit-test.invalid; rc=$?
 assert '[ "$rc" != "0" ]' "an unanswerable mail question fails (exit $rc)"
 assert 'grep -qF -- "--with-mail or --no-mail" "$tmpdir/err"' \
     "the no-TTY failure names both flags (said '$(cat "$tmpdir/err")')"
 assert '[ ! -s "$si_ssh_log" ]' \
     "and the unanswered question cost no connection (ssh saw: $(cat "$si_ssh_log"))"
 
-run server init deploy@hosting-unit-test.invalid --no-mail; rc=$?
+run server init deploy@kasbah-unit-test.invalid --no-mail; rc=$?
 assert '[ "$rc" != "0" ]' "an unanswerable backup question fails (exit $rc)"
 assert 'grep -qF -- "--with-backup or --no-backup" "$tmpdir/err"' \
     "the no-TTY failure names the backup flags (said '$(cat "$tmpdir/err")')"
@@ -934,7 +934,7 @@ assert '[ ! -s "$si_ssh_log" ]' \
 # The positive control: with both questions answered the command does reach the
 # transport, so the four empty logs above are about the guards and not about a
 # stub that was never on PATH.
-run server init deploy@hosting-unit-test.invalid --no-mail --no-backup; rc=$?
+run server init deploy@kasbah-unit-test.invalid --no-mail --no-backup; rc=$?
 assert '[ "$rc" = "3" ]' "an answered init goes on to the server, and this one is unreachable (exit $rc: $(cat "$tmpdir/err"))"
 assert '[ -s "$si_ssh_log" ]' "and the stub ssh is what it reached (ssh saw: $(cat "$si_ssh_log"))"
 
@@ -943,10 +943,10 @@ assert '[ -s "$si_ssh_log" ]' "and the stub ssh is what it reached (ssh saw: $(c
 # command prints first — the two questions among them — reads _SI_TARGET
 # directly, and a carriage return in the middle of a prompt overwrites the line
 # the operator is being asked to answer.
-run server init "$(printf 'deploy@hosting-unit-test.invalid\r')"
+run server init "$(printf 'deploy@kasbah-unit-test.invalid\r')"
 assert '! grep -qU $'"'"'\r'"'"' "$tmpdir/err"' \
     "a CRLF target carries no carriage return into the prompt (said '$(cat -v "$tmpdir/err")')"
-assert 'grep -qF "on deploy@hosting-unit-test.invalid?" "$tmpdir/err"' \
+assert 'grep -qF "on deploy@kasbah-unit-test.invalid?" "$tmpdir/err"' \
     "and the question names the target it would act on (said '$(cat "$tmpdir/err")')"
 
 exit "$fail"

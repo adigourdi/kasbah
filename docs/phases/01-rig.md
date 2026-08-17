@@ -1,6 +1,6 @@
 # Phase 1 — Rig ✅ done
 
-> A disposable fake VPS exists: hosting commands can SSH into a container
+> A disposable fake VPS exists: kasbah commands can SSH into a container
 > that runs its own Docker daemon, and an integration-test runner drives it
 > headless.
 
@@ -33,7 +33,7 @@ re-walked after the group review's fixes.
 - [x] `tests/rig/rig.sh up` → `ssh` into the rig succeeds with key auth — **2.2 s** from no keypair and no container, lands as `stevedore`; root login refused
 - [x] `docker run hello-world` works **inside** the rig over that SSH session — pulled, not cached
 - [x] `tests/rig/rig.sh reset` returns a pristine rig in under a minute — **4.2 s**, `images=0 containers=0` inside afterwards
-- [x] `HOSTING_RIG_TESTS=1 ./test.sh` runs the integration suite; without the var, the unit suite is unchanged and fast — 5 PASS vs 4 PASS; the integration delta is ~3 s against a ~1m40–2m00 suite whose own host-load swing is ±20 s. With the rig down: `SKIP smoke_test.sh — preconditions not met`, exit **2** (environment, not test failure)
+- [x] `KASBAH_RIG_TESTS=1 ./test.sh` runs the integration suite; without the var, the unit suite is unchanged and fast — 5 PASS vs 4 PASS; the integration delta is ~3 s against a ~1m40–2m00 suite whose own host-load swing is ±20 s. With the rig down: `SKIP smoke_test.sh — preconditions not met`, exit **2** (environment, not test failure)
 - [x] Rig limitations documented — `tests/rig/README.md`. ACME cannot issue (no public DNS, nothing reaches :80 from outside); until Phase 6, TLS is asserted as "Traefik serves HTTPS at all" (`curl -k`), never as "a valid certificate was issued"
 
 **Not proven here, by construction:** that the rig resembles a real VPS
@@ -50,7 +50,7 @@ test; that is why it exists.
 `dockerd`, **waits for `/var/run/docker.sock`**, then starts `sshd`.
 Dedicated keypair, generated on first `up` and gitignored. Ports:
 5022→22, 5080→80, 5043→443, each overridable via
-`HOSTING_RIG_{SSH,HTTP,HTTPS}_PORT`. Named volume for `/var/lib/docker`.
+`KASBAH_RIG_{SSH,HTTP,HTTPS}_PORT`. Named volume for `/var/lib/docker`.
 
 **Deliverables**
 - [x] `tests/rig/Dockerfile`, `tests/rig/compose.yml`, entrypoint script
@@ -90,7 +90,7 @@ practice: even the compose healthcheck is too weak — see Findings.*
 
 ### 1.3 — Integration runner + smoke test (S) ✅
 `tests/integration/` with the same assert-helper idiom as the unit tests.
-`test.sh` runs it only when `HOSTING_RIG_TESTS=1`. First test: rig
+`test.sh` runs it only when `KASBAH_RIG_TESTS=1`. First test: rig
 reachable, docker functional, `rsync`/`gzip`/`openssl` present (the
 `server-setup.md` prerequisites table, asserted).
 
@@ -103,11 +103,11 @@ integration delta at 3–6 s against a ~1m40–2m00 unit suite, where host load
 swings ±20 s and swamps it. Every assertion was watched going red on a
 false premise; every probe key was watched going missing.
 
-**Watch out for:** every hosting command the suite will ever run must be
+**Watch out for:** every kasbah command the suite will ever run must be
 flag-driven (cross-phase rule 1) — no test may ever block on a prompt.
 
 **Not assertable in this phase:** the plan wanted the smoke test to prove
-`hosting` fails loudly rather than hangs when a required flag is missing
+`kasbah` fails loudly rather than hangs when a required flag is missing
 with no TTY. No command with a prompt exists until Phase 2, so there is
 nothing to assert against. The assertion lands in 2.6, where 02-spine.md
 already expects it.
@@ -129,9 +129,9 @@ already expects it.
   `git status` never shows it and the later `ssh-keygen` can't overwrite
   it without sudo. The guard didn't fire because **`[ -r ]` is true for a
   directory**. Fixed structurally: the key travels in the environment
-  (`HOSTING_RIG_PUBKEY` → `RIG_AUTHORIZED_KEY`), so there is no host path
+  (`KASBAH_RIG_PUBKEY` → `RIG_AUTHORIZED_KEY`), so there is no host path
   to materialise. *Rule for later phases: never bind-mount a host file
-  hosting doesn't itself guarantee exists — and `-r`/`-e` don't
+  kasbah doesn't itself guarantee exists — and `-r`/`-e` don't
   distinguish file from directory; use `-f`/`-s`.*
 - **`build:` + `image:` in compose means `up` never rebuilds.** An edited
   Dockerfile is silently ignored as long as the named image exists.
@@ -159,7 +159,7 @@ already expects it.
   still returns in ~1.2 s.
 - **Published ports defaulted to `0.0.0.0`.** A privileged container whose
   SSH user has passwordless sudo, reachable from the LAN, is
-  root-equivalent on the workstation. Now `${HOSTING_RIG_BIND:-127.0.0.1}`.
+  root-equivalent on the workstation. Now `${KASBAH_RIG_BIND:-127.0.0.1}`.
 
 ### From 1.2
 
@@ -170,7 +170,7 @@ already expects it.
   live containers** on this workstation, and `down -v` removes by project
   label, not by services named in the file — so `rig.sh down` from the
   wrong shell would have taken them with it. Every compose invocation now
-  passes `-p hosting-rig`. **Carry to Phase 2:** hosting runs
+  passes `-p kasbah-rig`. **Carry to Phase 2:** kasbah runs
   `docker compose` on the VPS too, and inherits the same hazard from the
   remote environment. Pass `-p` there as well.
 - **The compose healthcheck reports `healthy` on a rig nobody can log
@@ -223,13 +223,13 @@ already expects it.
   124 given its own branch so a stall isn't misreported as transport
   failure. (`timeout(1)` is now a local dependency.)
 - **A boolean env gate that only matches `=1` turns `=true` into a false
-  green.** `HOSTING_RIG_TESTS=true` printed the same three PASS lines and
+  green.** `KASBAH_RIG_TESTS=true` printed the same three PASS lines and
   the same exit 0 as a run where the integration suite really passed.
   Unset/empty/`0` are off, `1` is on, anything else exits before any suite
   runs, naming the accepted values.
 - **`test.sh`'s exit codes are its own contract** — 0 pass, 1 tests failed,
-  2 runner misconfigured. `docs/cli.md`'s table (2 = not a hosting project,
-  …) governs the `hosting` CLI only; it is not a repo-wide numbering scheme.
+  2 runner misconfigured. `docs/cli.md`'s table (2 = not a kasbah project,
+  …) governs the `kasbah` CLI only; it is not a repo-wide numbering scheme.
 - **Accepted limit:** the smoke test is not hermetic — it pulls
   `hello-world` from Docker Hub on every run and deletes it afterwards, on
   purpose. A cached image would reduce the assertion to "a local image
@@ -245,8 +245,8 @@ review structurally cannot — defects that live in the *seams*:
 
 - **A shared generated file rendered from per-caller environment is a
   poisoning hazard.** `rig.sh` re-rendered `ssh_config` from
-  `$HOSTING_RIG_SSH_PORT` on *every* verb, while the publish side was fixed
-  when the container was created. So one stray `HOSTING_RIG_SSH_PORT=15022
+  `$KASBAH_RIG_SSH_PORT` on *every* verb, while the publish side was fixed
+  when the container was created. So one stray `KASBAH_RIG_SSH_PORT=15022
   rig.sh ssh` permanently repointed the contract, and the integration suite
   then failed with "is the rig up?" against a rig that was up and healthy.
   Now the endpoint is read back out of Docker; the environment is consulted
@@ -254,7 +254,7 @@ review structurally cannot — defects that live in the *seams*:
   fails outright on a container that exists but is *stopped*.** Fall back to
   `HostConfig.PortBindings`, recorded at create time, which survives a stop.
 - **An env knob the container never receives is a dead knob.**
-  `entrypoint.sh` read `HOSTING_RIG_DOCKERD_TIMEOUT`, but `compose.yml`
+  `entrypoint.sh` read `KASBAH_RIG_DOCKERD_TIMEOUT`, but `compose.yml`
   passed only `RIG_AUTHORIZED_KEY`, so it was permanently 90 s. It was also
   named with the host-side prefix while being read *inside* the container,
   where the convention is `RIG_*`. A container sees exactly what the compose

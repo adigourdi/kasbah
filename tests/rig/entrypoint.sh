@@ -7,7 +7,7 @@ DOCKERD_LOG=/var/log/dockerd.log
 # Bounds how long dockerd may take to answer at boot. Unrelated to compose's
 # healthcheck start_period, which bounds how long an already-broken rig is
 # allowed to look merely "starting" before it is reported unhealthy.
-# compose.yml passes this through from the host's HOSTING_RIG_DOCKERD_TIMEOUT and
+# compose.yml passes this through from the host's KASBAH_RIG_DOCKERD_TIMEOUT and
 # passes it empty when that is unset, so `:-` (empty or unset) rather than `-`.
 DOCKERD_TIMEOUT=${RIG_DOCKERD_TIMEOUT:-90}
 
@@ -25,7 +25,7 @@ key=${RIG_AUTHORIZED_KEY:-}
 case $key in
     'ssh-ed25519 '*|'ssh-rsa '*|'ecdsa-'*) ;;
     # Deliberately no "or export the key and drive docker compose yourself"
-    # hint: a compose command without `-p hosting-rig` is aimed by whatever
+    # hint: a compose command without `-p kasbah-rig` is aimed by whatever
     # COMPOSE_PROJECT_NAME the shell carries, and the `down -v` that follows
     # removes that project instead. An error message is the last place to teach
     # a form that unsafe.

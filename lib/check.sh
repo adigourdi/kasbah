@@ -1,17 +1,17 @@
-# hosting — check command (compliance linter)
-# Sourced by bin/hosting. Do not execute directly.
+# kasbah — check command (compliance linter)
+# Sourced by bin/kasbah. Do not execute directly.
 
-[ -n "${_HOSTING_CHECK_LOADED:-}" ] && return 0
-_HOSTING_CHECK_LOADED=1
+[ -n "${_KASBAH_CHECK_LOADED:-}" ] && return 0
+_KASBAH_CHECK_LOADED=1
 
-. "$HOSTING_LIB_DIR/common.sh"
-. "$HOSTING_LIB_DIR/manifest.sh"
+. "$KASBAH_LIB_DIR/common.sh"
+. "$KASBAH_LIB_DIR/manifest.sh"
 # The env rules read keys and diff them with the same code the VPS runs.
-. "$HOSTING_LIB_DIR/env.sh"
+. "$KASBAH_LIB_DIR/env.sh"
 
 _check_usage() {
     cat <<EOF
-Usage: hosting check
+Usage: kasbah check
 
 Runs structural checks against the current project. Exit 0 if no failures
 (warnings are informational). See docs/compliance.md for the full rule set.
@@ -53,19 +53,19 @@ cmd_check() {
     _CHECK_WARN=0
     _CHECK_FAIL=0
 
-    # Report goes to stdout (the ✓/⚠/✗ lines do, too) so `hosting check >
+    # Report goes to stdout (the ✓/⚠/✗ lines do, too) so `kasbah check >
     # report.txt` captures the whole thing. Diagnostics from helpers (info/
     # warn/err) keep going to stderr.
     printf 'Checking %s\n\n' "$PWD"
 
     echo "Structure:"
 
-    # S01 + S02: manifest_require enforces hosting.yml exists, parses, and
+    # S01 + S02: manifest_require enforces kasbah.yml exists, parses, and
     # validates schema. On failure it exits non-zero (2 if missing, 1 if
     # invalid) — that matches the docs' intent: structural failure should
     # short-circuit the whole check.
     manifest_require
-    _check_pass "hosting.yml exists (schema $MANIFEST_SCHEMA)"
+    _check_pass "kasbah.yml exists (schema $MANIFEST_SCHEMA)"
 
     # S03
     if [ -f compose.prod.yml ]; then
@@ -89,10 +89,10 @@ cmd_check() {
     fi
 
     # S06
-    if _gitignore_has '.hosting/'; then
-        _check_pass ".gitignore excludes .hosting/"
+    if _gitignore_has '.kasbah/'; then
+        _check_pass ".gitignore excludes .kasbah/"
     else
-        _check_warn ".gitignore does not exclude .hosting/"
+        _check_warn ".gitignore does not exclude .kasbah/"
     fi
 
     # Compose-derived data is reused by Traefik (T06), Healthchecks (H01,
@@ -115,7 +115,7 @@ cmd_check() {
     printf 'Summary: %d passed, %d warning, %d failed\n' \
         "$_CHECK_PASS" "$_CHECK_WARN" "$_CHECK_FAIL"
 
-    [ "$_CHECK_FAIL" -eq 0 ] || exit "$HOSTING_EXIT_COMPLIANCE_FAIL"
+    [ "$_CHECK_FAIL" -eq 0 ] || exit "$KASBAH_EXIT_COMPLIANCE_FAIL"
 }
 
 # Compose rules (C01–C05). Skipped quietly when compose.prod.yml is missing —
@@ -192,23 +192,23 @@ _check_c02_logging() {
     fi
 }
 
-# C03 + C04 + C07: only Traefik-routed services join hosting-net. A service
+# C03 + C04 + C07: only Traefik-routed services join kasbah-net. A service
 # is "routed" iff its explicit container_name appears as a hostname in the
-# fragment's loadBalancer server URLs. Routed services must join hosting-net
-# (C03), hosting-net must be external (C04), and nothing else may join it
+# fragment's loadBalancer server URLs. Routed services must join kasbah-net
+# (C03), kasbah-net must be external (C04), and nothing else may join it
 # (C07) — compose registers service names as DNS aliases on every attached
 # network, so generic names (postgres) on the shared network round-robin
-# across projects. The old `networks: { default: { name: hosting-net } }`
+# across projects. The old `networks: { default: { name: kasbah-net } }`
 # shape is banned outright: it puts every service on the shared network.
 _check_c03_c04_c07_networks() {
     local services="$1" svc
     local default_name default_ext hn_ext
     default_name="$(yq -r '.networks.default.name // ""'                compose.prod.yml)"
     default_ext="$(yq  -r '.networks.default.external // false'         compose.prod.yml)"
-    hn_ext="$(yq       -r '.networks["hosting-net"].external // false'  compose.prod.yml)"
+    hn_ext="$(yq       -r '.networks["kasbah-net"].external // false'  compose.prod.yml)"
 
     local default_aliases_hn=0
-    [ "$default_name" = "hosting-net" ] && default_aliases_hn=1
+    [ "$default_name" = "kasbah-net" ] && default_aliases_hn=1
 
     local routed_hosts
     routed_hosts="$(_traefik_routed_hosts | sort -u)"
@@ -226,7 +226,7 @@ _check_c03_c04_c07_networks() {
               elif type == \"object\" then keys
               else .
               end
-            | any(. == \"hosting-net\")
+            | any(. == \"kasbah-net\")
         " compose.prod.yml 2>/dev/null || echo "false")"
 
         if [ "$has_hn" = "true" ]; then
@@ -259,29 +259,29 @@ _check_c03_c04_c07_networks() {
 
     # C03
     if [ "${#bad_c03[@]}" -gt 0 ]; then
-        _check_fail "Routed services not on hosting-net: ${bad_c03[*]}"
+        _check_fail "Routed services not on kasbah-net: ${bad_c03[*]}"
     elif [ "$any_routed" = 1 ]; then
-        _check_pass "All routed services join hosting-net"
+        _check_pass "All routed services join kasbah-net"
     else
         _check_pass "No Traefik-routed services in compose"
     fi
 
-    # C04 — only meaningful if a service actually joins hosting-net.
+    # C04 — only meaningful if a service actually joins kasbah-net.
     if [ "$any_uses_hn" = 1 ]; then
         if [ "$hn_ext" = "true" ] || { [ "$default_aliases_hn" = 1 ] && [ "$default_ext" = "true" ]; }; then
-            _check_pass "hosting-net declared external"
+            _check_pass "kasbah-net declared external"
         else
-            _check_fail "hosting-net not declared external: true"
+            _check_fail "kasbah-net not declared external: true"
         fi
     fi
 
     # C07
     if [ "$default_aliases_hn" = 1 ]; then
-        _check_fail "default network aliases hosting-net — every service joins the shared network; join it explicitly per routed service and keep the rest on a project-internal network"
+        _check_fail "default network aliases kasbah-net — every service joins the shared network; join it explicitly per routed service and keep the rest on a project-internal network"
     elif [ "${#bad_c07[@]}" -gt 0 ]; then
-        _check_fail "Non-routed services on hosting-net: ${bad_c07[*]}"
+        _check_fail "Non-routed services on kasbah-net: ${bad_c07[*]}"
     else
-        _check_pass "No internal services on hosting-net"
+        _check_pass "No internal services on kasbah-net"
     fi
 }
 
@@ -300,7 +300,7 @@ _check_c05_version() {
 # ----------------------------------------------------------------------------
 # Resources (R01–R03; R04 needs --server)
 # ----------------------------------------------------------------------------
-# Hard limits via the hosting-managed vars only (see docs/server-setup.md).
+# Hard limits via the kasbah-managed vars only (see docs/server-setup.md).
 # Literal values are rejected so limits scale with the host instead of
 # fossilizing one VPS's numbers. Section is silent when compose is missing,
 # unparseable, or empty — S03 / the Compose section already reported that.
@@ -317,8 +317,8 @@ _check_resources_section() {
     _check_r03_reservations "$services"
 }
 
-# R01/R02: every service sets cpus: ${HOSTING_CPU_LIMIT} and
-# mem_limit: ${HOSTING_MEM_LIMIT} — exactly those var references. Missing
+# R01/R02: every service sets cpus: ${KASBAH_CPU_LIMIT} and
+# mem_limit: ${KASBAH_MEM_LIMIT} — exactly those var references. Missing
 # and literal values both fail.
 _check_r01_r02_limits() {
     local services="$1" svc cpus mem
@@ -328,20 +328,20 @@ _check_r01_r02_limits() {
         local wrong=""
         cpus="$(yq -r ".services[\"$svc\"].cpus // \"\"" compose.prod.yml 2>/dev/null || echo "")"
         mem="$(yq  -r ".services[\"$svc\"].mem_limit // \"\"" compose.prod.yml 2>/dev/null || echo "")"
-        [ "$cpus" = '${HOSTING_CPU_LIMIT}' ] || wrong="cpus"
-        if [ "$mem" != '${HOSTING_MEM_LIMIT}' ]; then
+        [ "$cpus" = '${KASBAH_CPU_LIMIT}' ] || wrong="cpus"
+        if [ "$mem" != '${KASBAH_MEM_LIMIT}' ]; then
             wrong="${wrong:+$wrong,}mem_limit"
         fi
         [ -z "$wrong" ] || bad+=("$svc($wrong)")
     done <<<"$services"
     if [ "${#bad[@]}" -eq 0 ]; then
-        _check_pass "All services set cpus/mem_limit via HOSTING_* vars"
+        _check_pass "All services set cpus/mem_limit via KASBAH_* vars"
     else
         _check_fail "Services with missing or literal resource limits: ${bad[*]}"
     fi
 }
 
-# R03: reservations are banned — hosting's limits are anti-takeover
+# R03: reservations are banned — kasbah's limits are anti-takeover
 # ceilings, not scheduler hints.
 _check_r03_reservations() {
     local services="$1" svc bad=()
@@ -527,7 +527,7 @@ _check_t07_fragment_targets() {
 }
 
 # T05: heuristic — any router rule whose Host() argument's first DNS label is
-# `traefik`, `mail`, or `webmail` is treated as claiming a hosting-owned
+# `traefik`, `mail`, or `webmail` is treated as claiming a kasbah-owned
 # subdomain. The strict spec says `traefik.<server-apex>` etc., but the
 # server apex isn't available locally. The first-label check catches the
 # common-mistake shape (project tries to add its own dashboard/mail router)
@@ -617,7 +617,7 @@ _check_h01_build_healthchecks() {
 # is "set container_name on the service you want to wait on".
 _check_h02_health_container() {
     local services="$1" container names
-    container="$(yq -r '.health.container // ""' "$HOSTING_MANIFEST_FILE")"
+    container="$(yq -r '.health.container // ""' "$KASBAH_MANIFEST_FILE")"
     if [ -z "$container" ] || [ "$container" = "null" ]; then
         _check_fail "manifest health.container is empty"
         return 0
@@ -672,7 +672,7 @@ _check_e01_syntax() {
 }
 
 # E02/E03: only run when .env exists. env_drift (lib/env.sh) is the same
-# function the deploy path and the VPS-side setup call, HOSTING_* exemption
+# function the deploy path and the VPS-side setup call, KASBAH_* exemption
 # included; this only reports its two lists.
 _check_e02_e03_drift() {
     [ -f .env ] || return 0
@@ -712,7 +712,7 @@ _check_e04_long_values() {
     fi
 }
 
-# E05 (warn): a key the template opens with `HOSTING_`. Setup skips it and the
+# E05 (warn): a key the template opens with `KASBAH_`. Setup skips it and the
 # managed block owns it, so the line only misleads — warn, because a fail here
 # would be the only env rule able to push `check` to exit 6.
 _check_e05_reserved_prefix() {
@@ -722,9 +722,9 @@ _check_e05_reserved_prefix() {
         case "$key" in "$ENV_RESERVED_PREFIX"*) bad+=("$key") ;; esac
     done <<<"$keys"
     if [ "${#bad[@]}" -eq 0 ]; then
-        _check_pass ".env.prod.example leaves the ${ENV_RESERVED_PREFIX}* prefix to hosting"
+        _check_pass ".env.prod.example leaves the ${ENV_RESERVED_PREFIX}* prefix to kasbah"
     else
-        _check_warn ".env.prod.example defines reserved ${ENV_RESERVED_PREFIX}* keys (hosting injects these): ${bad[*]}"
+        _check_warn ".env.prod.example defines reserved ${ENV_RESERVED_PREFIX}* keys (kasbah injects these): ${bad[*]}"
     fi
 }
 
@@ -768,7 +768,7 @@ _check_hooks_section() {
 _check_hk01_hook_targets() {
     local container_names="$1"
     local hooks
-    hooks="$(yq -r '.hooks // {} | to_entries[] | .value[]?' "$HOSTING_MANIFEST_FILE" 2>/dev/null)"
+    hooks="$(yq -r '.hooks // {} | to_entries[] | .value[]?' "$KASBAH_MANIFEST_FILE" 2>/dev/null)"
     if [ -z "$hooks" ]; then
         _check_pass "Hooks block is empty"
         return 0
@@ -796,7 +796,7 @@ _check_hk01_hook_targets() {
 _check_hk02_backup_fields() {
     local missing=() f v
     for f in check command extension; do
-        v="$(yq -r ".backup[\"$f\"] // \"\"" "$HOSTING_MANIFEST_FILE")"
+        v="$(yq -r ".backup[\"$f\"] // \"\"" "$KASBAH_MANIFEST_FILE")"
         if [ -z "$v" ] || [ "$v" = "null" ]; then
             missing+=("$f")
         fi
@@ -812,7 +812,7 @@ _check_hk02_backup_fields() {
 # rationale as HK01.
 _check_hk03_backup_container() {
     local container_names="$1" c
-    c="$(yq -r '.backup.container // ""' "$HOSTING_MANIFEST_FILE")"
+    c="$(yq -r '.backup.container // ""' "$KASBAH_MANIFEST_FILE")"
     if [ -z "$c" ] || [ "$c" = "null" ]; then
         _check_fail "Backup hook missing 'container' field"
         return 0
@@ -832,7 +832,7 @@ _check_hk03_backup_container() {
 # (e.g. ".health", ".hooks", ".backup"). Used to gate whole sections.
 _manifest_has_block() {
     local path="$1" v
-    v="$(yq -r "$path // null" "$HOSTING_MANIFEST_FILE" 2>/dev/null)"
+    v="$(yq -r "$path // null" "$KASBAH_MANIFEST_FILE" 2>/dev/null)"
     [ "$v" != "null" ] && [ -n "$v" ]
 }
 

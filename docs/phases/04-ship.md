@@ -9,7 +9,7 @@
 
 ## Exit criteria
 - [ ] A built fixture app deploys to the rig end-to-end: backup → pre-deploy hook → retag `:current` → up → health wait → post-deploy hook, in that order (order asserted)
-- [ ] `versions.log` line carries all frozen fields + `hosting=` + real `digest=`
+- [ ] `versions.log` line carries all frozen fields + `kasbah=` + real `digest=`
 - [ ] Two concurrent deploys: the second fails fast on the flock, the first completes untouched
 - [ ] `build-push` on a stock-only project exits 0 doing nothing
 
@@ -40,7 +40,7 @@ hook (run `check`, gate on exit 0, `command | pipe > backups/…`, rotate to
 append + rotate `versions.log`.
 
 **Deliverables**
-- [ ] Generated per-deploy, shipped to `/apps/<name>/scripts/`, matching the installed hosting version
+- [ ] Generated per-deploy, shipped to `/apps/<name>/scripts/`, matching the installed kasbah version
 - [ ] Hook order + env vars asserted by the integration test (hooks write breadcrumbs)
 - [ ] Backup gate: fixture where `check` exits 1 → no backup file, deploy proceeds
 
@@ -49,20 +49,20 @@ append + rotate `versions.log`.
 is non-portable. Health wait must poll `docker inspect
 --format {{.State.Health.Status}}`, and treat *no healthcheck defined* as
 an immediate pass, not an infinite wait. Manifest data reaches the VPS
-side as the synced `hosting.yml` — parse with the same yq dialect, which
+side as the synced `kasbah.yml` — parse with the same yq dialect, which
 means yq must be a rig/VPS prerequisite **or** the local side pre-renders
 hooks into the script; decide once, record it in Findings, and update
 `server-setup.md`'s prerequisites table to match.
 
 ### 4.3 — Full deploy wiring (M)
 Assemble `build-deploy.md` steps 1–9 in order: ControlMaster, reachability,
-version, dirs, sync + helpers + fragment, env drift + `HOSTING_*`
+version, dirs, sync + helpers + fragment, env drift + `KASBAH_*`
 injection (Phase 3), remote-deploy invocation, changelog print. Mail claim
 (step 7) is a stub that warns and continues when no mail stack exists —
 real reconciliation is Phase 7.
 
 **Deliverables**
-- [ ] `hosting deploy user@host` runs the full sequence on the rig
+- [ ] `kasbah deploy user@host` runs the full sequence on the rig
 - [ ] `--skip-hooks` and `--no-health-wait` honored
 - [ ] Exit codes match `cli.md` (3 unreachable, 4 no server state, 5 env declined)
 
@@ -88,11 +88,11 @@ and note the distinction in `build-deploy.md` if the docs imply otherwise.
 ## Carried in from Phase 2
 
 - **Deploy cannot find a server initialised with a non-default
-  `--apps-path`.** It looks for the marker at `/apps/.hosting/server.json`
+  `--apps-path`.** It looks for the marker at `/apps/.kasbah/server.json`
   and reads the real paths out of it, which works only when the apps path
   *is* the default. A server at `/srv/apps` is undiscoverable, and neither
   `cli.md` nor `build-deploy.md` mentions it. The fix is a flag on the
-  project commands or an apps-path field in `.hosting/state.json`; state
+  project commands or an apps-path field in `.kasbah/state.json`; state
   is the better home, since the value is a property of the server the
   project last talked to and `state.json` already records `last_server`.
   Phase 4 is the next time the deploy path is opened up.

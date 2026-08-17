@@ -9,7 +9,7 @@ includes mail data). **Lighter spec — re-read before starting.**
 
 ## Exit criteria
 - [ ] Rig: deploy → `drop` → redeploy resurrects fully (data intact); `drop --prune` leaves no trace under `/apps/<name>` or `/apps/data/<name>`
-- [ ] Rig: `server destroy` → every container still serving, no `hosting.yml` / `versions.log` / helpers / marker / backup creds remain
+- [ ] Rig: `server destroy` → every container still serving, no `kasbah.yml` / `versions.log` / helpers / marker / backup creds remain
 - [ ] A restic snapshot from the rig restores onto a **fresh** rig and the project comes back (the restore drill from `backup.md`, executed once for real)
 - [ ] `check --fix` applies C01–C05 + R01–R03 with a diff shown first, and never touches anything else
 
@@ -27,7 +27,7 @@ unreferenced).
 
 ### 8.2 — `server destroy` (M)
 Full de-branding per `server-setup.md`: marker, backup cron + creds,
-per-project hosting.yml/versions.log/helpers. Containers and Traefik keep
+per-project kasbah.yml/versions.log/helpers. Containers and Traefik keep
 running. Typed-hostname confirmation.
 
 **Watch out for:** verify serving *after* each removal step on the rig —
@@ -46,8 +46,8 @@ the rig test must *prove* the VPS creds cannot delete (attempt a delete,
 assert failure), or the whole security property is decorative.
 
 ### 8.4 — `check --fix` (M)
-Auto-fixes per `compliance.md`: C01–C05, R01–R03, `hosting_version`
-backfill. Diff before writing; only `compose.prod.yml` and `hosting.yml`
+Auto-fixes per `compliance.md`: C01–C05, R01–R03, `kasbah_version`
+backfill. Diff before writing; only `compose.prod.yml` and `kasbah.yml`
 are ever touched.
 
 **Watch out for:** yq round-trips reorder YAML and drop comments — fix

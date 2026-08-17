@@ -1,16 +1,16 @@
 # Project name pinned here so every `docker compose` call lands on the rig and
 # only the rig, whatever directory it is run from — this repo is developed on
 # workstations with unrelated containers running.
-name: hosting-rig
+name: kasbah-rig
 
 services:
   rig:
     build:
       context: .
       args:
-        DOCKER_APT_VERSION: ${HOSTING_RIG_DOCKER_VERSION:-}
-    image: hosting-rig
-    container_name: hosting-rig
+        DOCKER_APT_VERSION: ${KASBAH_RIG_DOCKER_VERSION:-}
+    image: kasbah-rig
+    container_name: kasbah-rig
     # Nested dockerd needs full kernel access (cgroups, netlink, mounts).
     privileged: true
     init: true
@@ -19,22 +19,22 @@ services:
       # root-owned directory on the host, which an env var cannot do. Left
       # defaulting to empty rather than `:?` so that `down` and `ps` still work
       # when no key is exported; the entrypoint is what rejects an empty value.
-      RIG_AUTHORIZED_KEY: ${HOSTING_RIG_PUBKEY:-}
+      RIG_AUTHORIZED_KEY: ${KASBAH_RIG_PUBKEY:-}
       # How long the entrypoint waits for the nested dockerd to answer. Empty
       # means "the entrypoint's own default" — passing it unconditionally is what
       # makes the knob exist at all, since the container sees only what is
-      # declared here. Inside the container the prefix is RIG_, not HOSTING_RIG_:
+      # declared here. Inside the container the prefix is RIG_, not KASBAH_RIG_:
       # the latter names the host-side override.
-      RIG_DOCKERD_TIMEOUT: ${HOSTING_RIG_DOCKERD_TIMEOUT:-}
+      RIG_DOCKERD_TIMEOUT: ${KASBAH_RIG_DOCKERD_TIMEOUT:-}
     ports:
       # Loopback by default: this is a privileged container whose SSH user has
       # passwordless sudo, so LAN exposure would be root-equivalent on the host.
       # Every consumer is local; widening the bind stays possible but deliberate.
       # The port defaults sit above the usual dev-server range because 8080/8443
       # are routinely taken on developer machines.
-      - "${HOSTING_RIG_BIND:-127.0.0.1}:${HOSTING_RIG_SSH_PORT:-5022}:22"
-      - "${HOSTING_RIG_BIND:-127.0.0.1}:${HOSTING_RIG_HTTP_PORT:-5080}:80"
-      - "${HOSTING_RIG_BIND:-127.0.0.1}:${HOSTING_RIG_HTTPS_PORT:-5043}:443"
+      - "${KASBAH_RIG_BIND:-127.0.0.1}:${KASBAH_RIG_SSH_PORT:-5022}:22"
+      - "${KASBAH_RIG_BIND:-127.0.0.1}:${KASBAH_RIG_HTTP_PORT:-5080}:80"
+      - "${KASBAH_RIG_BIND:-127.0.0.1}:${KASBAH_RIG_HTTPS_PORT:-5043}:443"
     volumes:
       # Mandatory, not an optimisation: on an overlayfs-backed container
       # layer the nested dockerd degrades to vfs or refuses to start.

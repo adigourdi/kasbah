@@ -1,13 +1,13 @@
 # Shared environment for the rig-driven suites. Sourced, never executed.
 #
-# ## How hosting is pointed at the rig
+# ## How kasbah is pointed at the rig
 #
-# hosting takes no ssh-options flag: it runs `ssh USER@HOST` and inherits the
+# kasbah takes no ssh-options flag: it runs `ssh USER@HOST` and inherits the
 # user's own ssh config, the way git does. The rig answers only through the
 # generated tests/rig/ssh_config (loopback, port 5022, per-checkout key), which
 # is the single copy of that contract — suites Include it, never restate it.
 #
-# Handing it to hosting takes two pieces, because $HOME is not enough on its
+# Handing it to kasbah takes two pieces, because $HOME is not enough on its
 # own. Measured on OpenSSH 9.6p1: with HOME pointed at a scratch directory,
 # `ssh -G rig` still read /home/<user>/.ssh/config and ignored the scratch one
 # — ssh takes the per-user config path from the passwd entry, not from the
@@ -16,11 +16,11 @@
 #   * A scratch HOME to hold the config the wrapper below names, and to keep
 #     `known_hosts` and anything else ssh writes out of the owner's. The control
 #     socket is not among them: lib/ssh.sh puts that in a private directory
-#     under TMPDIR that it removes on exit, so that no two hosting processes can
+#     under TMPDIR that it removes on exit, so that no two kasbah processes can
 #     compute the same path and tear down each other's master.
 #   * A one-line `ssh` wrapper first on PATH, adding `-F "$HOME/.ssh/config"`.
 #     That is the only interposition point left that does not put a flag on
-#     hosting, and it is honest: the file it names is the scratch HOME's own
+#     kasbah, and it is honest: the file it names is the scratch HOME's own
 #     config, which Includes the rig contract and nothing else.
 #
 # `-F` makes ssh skip the per-user and system-wide config files entirely, so
@@ -36,8 +36,8 @@
 # answers ssh — dies in the ProxyCommand instead. ssh_test.sh asserts all of
 # it against ssh's own output rather than trusting this paragraph.
 
-[ -n "${_HOSTING_RIG_ENV_LOADED:-}" ] && return 0
-_HOSTING_RIG_ENV_LOADED=1
+[ -n "${_KASBAH_RIG_ENV_LOADED:-}" ] && return 0
+_KASBAH_RIG_ENV_LOADED=1
 
 RIG_REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RIG_SSH_CONFIG="$RIG_REPO_DIR/tests/rig/ssh_config"
@@ -50,12 +50,12 @@ RIG_SSH_ALIAS=rig
 RIG_SSH_USER=stevedore
 RIG_TARGET="$RIG_SSH_USER@$RIG_SSH_ALIAS"
 
-# The far side of the same guard: /etc/hosting-rig is baked into the rig image
+# The far side of the same guard: /etc/kasbah-rig is baked into the rig image
 # (tests/rig/Dockerfile) and holds exactly this string. The cleanup payload
 # checks it on the host that actually answered, so the protection survives any
 # mistake made on this side.
-RIG_MARKER_FILE=/etc/hosting-rig
-RIG_MARKER_VALUE=hosting-rig-disposable-fake-vps
+RIG_MARKER_FILE=/etc/kasbah-rig
+RIG_MARKER_VALUE=kasbah-rig-disposable-fake-vps
 # The payload's own exit status for "this is not the rig" — distinct from a
 # cleanup that ran and failed.
 RIG_NOT_THE_RIG=9
@@ -112,10 +112,10 @@ rig_env_init() {
     chmod 0755 "$tmp" && mv -f "$tmp" "$RIG_SHIM_DIR/ssh" || return 1
 }
 
-# hosting, exactly as installed, under the scratch HOME and the wrapper.
-hosting_cli() {
+# kasbah, exactly as installed, under the scratch HOME and the wrapper.
+kasbah_cli() {
     env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-        "$RIG_REPO_DIR/bin/hosting" "$@"
+        "$RIG_REPO_DIR/bin/kasbah" "$@"
 }
 
 # Nothing below is ever handed the terminal as stdin.
@@ -125,7 +125,7 @@ hosting_cli() {
 # child that reads stdin gets SIGTTIN from the kernel and *stops* — and a
 # stopped process never runs long enough to handle the SIGTERM timeout then
 # sends, which turns a bounded wait into a permanent hang. Measured under
-# `script -qec 'HOSTING_RIG_TESTS=1 ./test.sh'`, which is how the suite is run
+# `script -qec 'KASBAH_RIG_TESTS=1 ./test.sh'`, which is how the suite is run
 # in a real terminal: integration/server_init_test.sh stopped dead at its first
 # reachability probe, ssh in state T and timeout in sigsuspend, still there ten
 # minutes later. With stdin piped — the way CI runs it — the same call returns
@@ -142,11 +142,11 @@ rig_env_bash() {
     if [ -t 0 ]; then
         timeout "$RIG_WORK_TIMEOUT" \
             env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-                HOSTING_LIB_DIR="$RIG_REPO_DIR/lib" bash "$@" </dev/null
+                KASBAH_LIB_DIR="$RIG_REPO_DIR/lib" bash "$@" </dev/null
     else
         timeout "$RIG_WORK_TIMEOUT" \
             env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-                HOSTING_LIB_DIR="$RIG_REPO_DIR/lib" bash "$@"
+                KASBAH_LIB_DIR="$RIG_REPO_DIR/lib" bash "$@"
     fi
 }
 
@@ -170,8 +170,8 @@ rig_reachable() {
     timeout "$RIG_PROBE_TIMEOUT" ssh -n -F "$RIG_SSH_CONFIG" "$RIG_SSH_ALIAS" true >/dev/null 2>&1
 }
 
-# Returns the rig to the state hosting has never touched — no compose projects,
-# no hosting-net, no /apps — while leaving every image in place. That is the
+# Returns the rig to the state kasbah has never touched — no compose projects,
+# no kasbah-net, no /apps — while leaving every image in place. That is the
 # whole reason it exists: `rig.sh reset` drops the /var/lib/docker volume, so a
 # reset per suite re-pulls Traefik and nginx every run.
 #
@@ -226,7 +226,7 @@ if [ "$marker" != "$marker_value" ]; then
     exit "$not_the_rig"
 fi
 
-# Every compose project on the rig, not a list of names hosting knows: a deploy
+# Every compose project on the rig, not a list of names kasbah knows: a deploy
 # that half-failed leaves a project this side cannot predict, and the point of
 # clean is a known starting state. Safe only because of the marker above.
 # `down` removes by project label, so it needs no compose file.
@@ -236,10 +236,10 @@ while IFS= read -r project; do
     docker compose -p "$project" down -v --remove-orphans >/dev/null 2>&1 || status=1
 done <<<"$projects"
 
-# The one network hosting creates outside any compose project. The built-in
+# The one network kasbah creates outside any compose project. The built-in
 # bridge/host/none are never named, here or anywhere.
-if docker network inspect hosting-net >/dev/null 2>&1; then
-    docker network rm hosting-net >/dev/null 2>&1 || status=1
+if docker network inspect kasbah-net >/dev/null 2>&1; then
+    docker network rm kasbah-net >/dev/null 2>&1 || status=1
 fi
 
 # Orphaned project networks. `down` above takes a project's networks with it,
@@ -264,7 +264,7 @@ exit "$status"
 REMOTE
 
     if [ "$rc" = "$RIG_NOT_THE_RIG" ]; then
-        echo "rig_clean: refused — the host that answered is not the hosting rig" >&2
+        echo "rig_clean: refused — the host that answered is not the kasbah rig" >&2
         echo "           (no $RIG_MARKER_FILE; rebuild it with tests/rig/rig.sh up)" >&2
     fi
     return "$rc"

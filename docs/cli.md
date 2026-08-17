@@ -2,20 +2,20 @@
 
 Two levels of commands:
 
-- **`hosting server …`** — act on a VPS. Always take `user@host` as first arg.
-- **`hosting …`** (everything else) — act on a project. Run from the project
-  root. Read `./hosting.yml`. Error if missing.
+- **`kasbah server …`** — act on a VPS. Always take `user@host` as first arg.
+- **`kasbah …`** (everything else) — act on a project. Run from the project
+  root. Read `./kasbah.yml`. Error if missing.
 
 ```
 $ cd ~/some/random/path
-$ hosting deploy you@vps
-ERROR: No hosting.yml in current directory.
-       Run from the project root, or `hosting init-project` to scaffold.
+$ kasbah deploy you@vps
+ERROR: No kasbah.yml in current directory.
+       Run from the project root, or `kasbah init-project` to scaffold.
 ```
 
 ## Server commands
 
-### `hosting server init USER@HOST [flags]`
+### `kasbah server init USER@HOST [flags]`
 
 One-time VPS setup. Idempotent — safe to re-run.
 
@@ -67,12 +67,12 @@ What it does:
    env setup, start it.
 8. If `--with-backup`: install restic, write append-only S3 credentials,
    schedule the backup cron (see `backup.md`).
-9. Write the server marker `/apps/.hosting/server.json` — hosting version,
+9. Write the server marker `/apps/.kasbah/server.json` — kasbah version,
    paths, resource limits computed as 90% of host cores/RAM (see
    `server-setup.md`). **Last**: its presence is the "init completed"
    signal, so a failure at any earlier step leaves no marker behind.
 
-### `hosting server prune USER@HOST` *(roadmap v0.2)*
+### `kasbah server prune USER@HOST` *(roadmap v0.2)*
 
 Image retention cleanup across all projects on the VPS: removes
 `:<version>` image tags that are both older than 3 months and not among
@@ -81,30 +81,30 @@ at counts as the first of the 3, and `:current` itself is never pruned.
 The time window mirrors versions.log rotation — see `build-deploy.md`.
 Prints what it would remove and asks once.
 
-### `hosting server destroy USER@HOST` *(roadmap v0.3)*
+### `kasbah server destroy USER@HOST` *(roadmap v0.3)*
 
 De-brand the VPS for handover. Every container keeps running — projects
-**and** Traefik, the sites stay up. Removes hosting's management layer only:
+**and** Traefik, the sites stay up. Removes kasbah's management layer only:
 
-- `/apps/.hosting/` server marker
+- `/apps/.kasbah/` server marker
 - backup cron + S3 credentials (agency-owned secrets never transfer)
-- per project: `hosting.yml`, `versions.log(.gz)`, `scripts/` helpers
+- per project: `kasbah.yml`, `versions.log(.gz)`, `scripts/` helpers
 
 The new owner inherits a plain, working Docker Compose setup; deploy
-history and env tooling leave with hosting. Double confirmation (typed
+history and env tooling leave with kasbah. Double confirmation (typed
 hostname). See `server-setup.md` ("Handover / teardown").
 
-### `hosting server status USER@HOST [--apps-path=<dir>]`
+### `kasbah server status USER@HOST [--apps-path=<dir>]`
 
 Read-only — it never creates, modifies or removes anything on the server.
 
 Prints today:
 - Docker + Compose versions
-- The server marker: hosting version, paths, resource limits
+- The server marker: kasbah version, paths, resource limits
 - Traefik: running state, health, the image tag it was created from **and**
   the resolved image id (a tag can be re-pushed; the id cannot)
 - Projects under the apps path — name, running/total containers, and the
-  last `versions.log` entry (action, version, timestamp, hosting version)
+  last `versions.log` entry (action, version, timestamp, kasbah version)
 
 `--apps-path` exists because a server prepared with a non-default apps path
 is otherwise uninspectable. `deploy` does not have it yet — see
@@ -125,33 +125,33 @@ omission.
 
 ## Project commands
 
-All run from the project root (where `hosting.yml` lives).
+All run from the project root (where `kasbah.yml` lives).
 
-`USER@HOST` is optional on any command that takes it. If omitted, hosting
-reads `last_server` from `.hosting/state.json` and uses that. After any
+`USER@HOST` is optional on any command that takes it. If omitted, kasbah
+reads `last_server` from `.kasbah/state.json` and uses that. After any
 command succeeds against a given server, `last_server` is written so the
-next invocation in the same project defaults to it. `hosting init-project`
+next invocation in the same project defaults to it. `kasbah init-project`
 writes an empty state file; the first command that needs a server must
 pass `USER@HOST` explicitly.
 
-### `hosting init-project [flags]`
+### `kasbah init-project [flags]`
 
-Scaffold the hosting metadata for a new project. Creates:
-- `hosting.yml` with schema version and sane defaults
+Scaffold the kasbah metadata for a new project. Creates:
+- `kasbah.yml` with schema version and sane defaults
 - `.env.prod.example` skeleton
-- `.hosting/state.json` (empty fields, current `hosting_version`)
-- `.gitignore` entries for `.env` and `.hosting/`
+- `.kasbah/state.json` (empty fields, current `kasbah_version`)
+- `.gitignore` entries for `.env` and `.kasbah/`
 
-Does **not** scaffold `compose.prod.yml`. The user authors that file — hosting
+Does **not** scaffold `compose.prod.yml`. The user authors that file — kasbah
 has no opinion on which service is "primary", what ports to expose, etc. After
-running, hosting prints a minimal starter compose snippet to stdout so the
+running, kasbah prints a minimal starter compose snippet to stdout so the
 user can paste and adapt if useful.
 
 Flags:
 - `--name=<name>` (default: current directory name)
 - `--domain=<fqdn>`
 
-### `hosting check [--fix]`
+### `kasbah check [--fix]`
 
 Run the compliance check on the current project. See `compliance.md` for
 the full rule set. Exit code 0 on pass, 6 on any failure (see "Exit codes" below).
@@ -160,7 +160,7 @@ the full rule set. Exit code 0 on pass, 6 on any failure (see "Exit codes" below
 safe auto-fixes (add missing restart policy, add missing logging rotation).
 Traefik rules are never auto-fixed — routing is policy.
 
-### `hosting build-push [USER@HOST]`
+### `kasbah build-push [USER@HOST]`
 
 1. Resolve version from git tag on HEAD (exactly one `vX.Y.Z`). Fail otherwise.
 2. Parse `compose.prod.yml` for services with a `build:` key. If zero, exit 0
@@ -179,7 +179,7 @@ Flags:
 - `--build-only` — skip scp/load/push (local build + tag only).
 - `--no-git-push` — don't push the git tag.
 
-### `hosting deploy [USER@HOST] [VERSION] [flags]`
+### `kasbah deploy [USER@HOST] [VERSION] [flags]`
 
 Two modes:
 
@@ -202,7 +202,7 @@ Flow (no-args / working-tree path):
    The Traefik fragment is not shipped here — it goes last, after the stack is
    up, so a failed deploy cannot leave a live route to nothing (`build-deploy.md`).
 6. Env drift check on VPS — run setup-env if missing, prompt on drift.
-   Then refresh the hosting-managed `HOSTING_*` keys in `.env` (resource
+   Then refresh the kasbah-managed `KASBAH_*` keys in `.env` (resource
    limits from the server marker) — reserved prefix, exempt from drift.
 7. Mail claim check (if manifest has `mail:`).
 8. SSH into VPS, run `remote-deploy.sh deploy <version>`:
@@ -221,11 +221,11 @@ Flow (no-args / working-tree path):
 Flags:
 - `--on-drift=setup|continue|abort` — what step 6 does when the server's `.env`
   has drifted from `.env.prod.example`. Unset it asks; with no terminal to ask
-  on the run stops with exit `5`. See `hosting env` below.
+  on the run stops with exit `5`. See `kasbah env` below.
 - `--skip-hooks` — skip pre/post hooks (dry-run style).
 - `--no-health-wait` — don't block on healthcheck.
 
-### `hosting rollback [USER@HOST] [VERSION]`
+### `kasbah rollback [USER@HOST] [VERSION]`
 
 Default target: second-most-recent entry in `versions.log` with `action=deploy`.
 
@@ -234,7 +234,7 @@ Flow (see `build-deploy.md` for full detail):
 2. Verify target appears in `versions.log` (or `versions.log.gz`). If not —
    fail; it was never deployed here, so it's a first-time deploy, not a rollback.
 3. Verify git tag `v<target>` exists locally (`git fetch --tags` if not).
-4. Read v<target>'s files via `git show v<target>:hosting.yml` and
+4. Read v<target>'s files via `git show v<target>:kasbah.yml` and
    `git show v<target>:compose.prod.yml` — no checkout.
 5. For each `build:` service in v<target>'s compose: `:<target>` must
    still be on the VPS (see image retention in `build-deploy.md`) — if
@@ -252,7 +252,7 @@ Rollback restores image + sync'd config only. It does **not** restore
 data bind mounts or `.env` secret values. For schema rollback, use
 `pre-rollback` hooks.
 
-### `hosting drop [USER@HOST] [--prune]` *(roadmap v0.3)*
+### `kasbah drop [USER@HOST] [--prune]` *(roadmap v0.3)*
 
 Remove the project from the VPS. Plain `drop` is reversible:
 
@@ -266,7 +266,7 @@ Keeps:
 - `/apps/data/<name>/` (bind mounts)
 - backups (on-VPS and off-VPS)
 
-A later `hosting deploy` fully resurrects the project (images must be
+A later `kasbah deploy` fully resurrects the project (images must be
 re-shipped via `build-push` first).
 
 `--prune` additionally deletes `/apps/<name>/`, `/apps/data/<name>/`, and
@@ -274,34 +274,34 @@ the project's on-VPS backups — everything except the off-VPS restic repo,
 which is operator property (see `backup.md`). Double confirmation (typed
 project name).
 
-### `hosting history [USER@HOST] [flags]`
+### `kasbah history [USER@HOST] [flags]`
 
 Tabular view of `versions.log`. Columns: timestamp, action, version,
-backup file, hosting version.
+backup file, kasbah version.
 
 Flags:
 - `--all` — include the archived rotation (`versions.log.gz`). By default
   only the active log is shown.
 
-### `hosting pending [USER@HOST] [VERSION]`
+### `kasbah pending [USER@HOST] [VERSION]`
 
 `git log <deployed>..<VERSION-or-HEAD>` formatted as a changelog. Useful
 before cutting a tag.
 
-### `hosting changelog [USER@HOST]`
+### `kasbah changelog [USER@HOST]`
 
 `git log <prev-deploy>..<current-deploy>` — what changed in the currently
 deployed version.
 
-### `hosting env [USER@HOST] [--on-drift=setup|continue|abort]`
+### `kasbah env [USER@HOST] [--on-drift=setup|continue|abort]`
 
-Drift-aware env setup. Rsyncs `.env.prod.example` and hosting's own
+Drift-aware env setup. Rsyncs `.env.prod.example` and kasbah's own
 `setup-env.sh` to `<apps>/<name>/`, runs the interactive setup there over
-`ssh -t`, then refreshes the hosting-managed `HOSTING_*` block in `.env` from
+`ssh -t`, then refreshes the kasbah-managed `KASBAH_*` block in `.env` from
 the server marker's resource limits. See `env-template.md` for the template
 conventions and the managed block.
 
-The injection is not optional decoration: a `.env` without `HOSTING_CPU_LIMIT`
+The injection is not optional decoration: a `.env` without `KASBAH_CPU_LIMIT`
 makes `compose up` fail outright, so a command whose job is producing a usable
 `.env` finishes the job. That is also why it reads the server marker and exits
 `4` when there is none, exactly as `deploy` does.
@@ -313,7 +313,7 @@ secrets included.
 
 Flags, which apply only when `.env` **has** drifted:
 - `--on-drift=setup` — re-run the setup. What this command does anyway.
-- `--on-drift=continue` — leave `.env` alone and only refresh the `HOSTING_*`
+- `--on-drift=continue` — leave `.env` alone and only refresh the `KASBAH_*`
   block. The only answer that gets through without a terminal.
 - `--on-drift=abort` — stop, changing nothing (exit `5`).
 
@@ -321,7 +321,7 @@ Unset, a drifting `.env` asks; with no terminal to ask on, the run stops naming
 the flag. The prompt has **no default** — an empty answer is asked again, since
 Enter must not be able to re-run the generator over a live `.env`.
 
-`--on-drift=` is not a way to run `hosting env` headlessly in general. With
+`--on-drift=` is not a way to run `kasbah env` headlessly in general. With
 `.env` missing, or in sync, the flag is never consulted and the run still needs
 a terminal (exit `5`); only the drift case has a question for it to answer.
 
@@ -329,7 +329,7 @@ a terminal (exit `5`); only the drift case has a question for it to answer.
 the difference is that `deploy` runs the setup only when the `.env` is missing
 or has drifted, while `env` runs it every time, since that is what it is for.
 
-### `hosting logs [USER@HOST] [SERVICE] [flags]`
+### `kasbah logs [USER@HOST] [SERVICE] [flags]`
 
 Thin wrapper around `docker compose logs` on the VPS. If `SERVICE` is
 omitted, shows all services in the project.
@@ -338,30 +338,30 @@ Flags:
 - `-f` — follow.
 - `--tail=100` — lines of history (default 100).
 
-### `hosting exec [USER@HOST] SERVICE -- CMD…`
+### `kasbah exec [USER@HOST] SERVICE -- CMD…`
 
 `docker compose exec SERVICE CMD…` over SSH. The `--` is mandatory so flags
 after it belong to the inner command. `SERVICE` is required; if it looks
-like `user@host` (contains `@`) hosting treats it as the server.
+like `user@host` (contains `@`) kasbah treats it as the server.
 
 ## Deferred commands
 
 Referenced elsewhere in the docs but not yet in v0.1:
 
-- `hosting migrate` — migrate a project's source-tree files to a newer
-  hosting schema. (roadmap v1.0.)
-- `hosting server add-mail-domain` — add a new domain to the shared mail
+- `kasbah migrate` — migrate a project's source-tree files to a newer
+  kasbah schema. (roadmap v1.0.)
+- `kasbah server add-mail-domain` — add a new domain to the shared mail
   stack. (roadmap v0.2.)
-- `hosting server upgrade-traefik` — managed Traefik version bump.
+- `kasbah server upgrade-traefik` — managed Traefik version bump.
   (roadmap v0.3.)
-- `hosting check --server` — VPS-aware compliance check. (roadmap v0.2 — see
+- `kasbah check --server` — VPS-aware compliance check. (roadmap v0.2 — see
   `compliance.md`.)
 
 ## Exit codes
 
 - `0` success
 - `1` generic failure
-- `2` not a hosting project (no `hosting.yml`)
+- `2` not a kasbah project (no `kasbah.yml`)
 - `3` SSH unreachable
 - `4` remote state missing — no server marker at the apps path. **Not always
   "run init":** on a server prepared with `--apps-path`, the marker is
@@ -369,11 +369,11 @@ Referenced elsewhere in the docs but not yet in v0.1:
   the frozen `traefik` compose project, recreating the running proxy against
   it. Commands that exit 4 say so rather than prescribing init.
 - `5` env setup could not complete. Covers both halves of the same sentence —
-  the project's `.env` on the server is not in a state hosting will deploy
+  the project's `.env` on the server is not in a state kasbah will deploy
   against, and nothing was deployed: drift the user declined to fix
   (`--on-drift=abort`, or an aborted setup), a `.env` that is missing or
   unrenderable with no terminal to render it on, **and** `setup-env.sh` not
   finishing on the far side — including when it could not be run at all. One
   code rather than several, because the operator's next move is the same in
-  every case: run `hosting env` from a terminal, or pass `--on-drift=`.
+  every case: run `kasbah env` from a terminal, or pass `--on-drift=`.
 - `6` compliance check failed

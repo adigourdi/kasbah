@@ -1,10 +1,10 @@
-# hosting — flag-or-prompt helpers
-# Sourced by bin/hosting. Do not execute directly.
+# kasbah — flag-or-prompt helpers
+# Sourced by bin/kasbah. Do not execute directly.
 
-[ -n "${_HOSTING_PROMPT_LOADED:-}" ] && return 0
-_HOSTING_PROMPT_LOADED=1
+[ -n "${_KASBAH_PROMPT_LOADED:-}" ] && return 0
+_KASBAH_PROMPT_LOADED=1
 
-. "$HOSTING_LIB_DIR/common.sh"
+. "$KASBAH_LIB_DIR/common.sh"
 
 # The tri-state rule of docs/overview.md → Interactivity lives here and nowhere
 # else: an explicit flag wins, otherwise a terminal is asked, otherwise the run

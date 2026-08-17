@@ -1,23 +1,23 @@
-# hosting — `hosting env`, and the same env step inside a deploy
-# Sourced by bin/hosting and lib/deploy.sh. Do not execute directly.
+# kasbah — `kasbah env`, and the same env step inside a deploy
+# Sourced by bin/kasbah and lib/deploy.sh. Do not execute directly.
 
-[ -n "${_HOSTING_ENV_CMD_LOADED:-}" ] && return 0
-_HOSTING_ENV_CMD_LOADED=1
+[ -n "${_KASBAH_ENV_CMD_LOADED:-}" ] && return 0
+_KASBAH_ENV_CMD_LOADED=1
 
-. "$HOSTING_LIB_DIR/common.sh"
-. "$HOSTING_LIB_DIR/manifest.sh"
-. "$HOSTING_LIB_DIR/state.sh"
-. "$HOSTING_LIB_DIR/ssh.sh"
-. "$HOSTING_LIB_DIR/prompt.sh"
-. "$HOSTING_LIB_DIR/marker.sh"
+. "$KASBAH_LIB_DIR/common.sh"
+. "$KASBAH_LIB_DIR/manifest.sh"
+. "$KASBAH_LIB_DIR/state.sh"
+. "$KASBAH_LIB_DIR/ssh.sh"
+. "$KASBAH_LIB_DIR/prompt.sh"
+. "$KASBAH_LIB_DIR/marker.sh"
 
-# Step 6 of docs/build-deploy.md, and the whole of `hosting env`: get the
+# Step 6 of docs/build-deploy.md, and the whole of `kasbah env`: get the
 # project's .env on the server into a state a deploy can run against, then
-# refresh the HOSTING_* block from the server marker's limits.
+# refresh the KASBAH_* block from the server marker's limits.
 #
 # **lib/env.sh is deliberately not sourced here.** Every question this file asks
 # about a .env is asked on the far side, by the copy of lib/env.sh that shipped
-# there as scripts/setup-env.sh — the same bytes `hosting check` sources
+# there as scripts/setup-env.sh — the same bytes `kasbah check` sources
 # locally, which is what makes "one shared drift function" literally true
 # instead of two copies that agree today (docs/phases/03-env.md → 3.1). Not
 # sourcing it also keeps its ~26 unprefixed globals (KEY, VALUE, DEFAULT, line,
@@ -64,17 +64,17 @@ env_on_drift_check() {
 # env_ship_helper APPS NAME — lib/env.sh itself, byte for byte, as the project's
 # scripts/setup-env.sh. There is no generation step and no second copy: the file
 # is dual-mode by construction (docs/phases/03-env.md → 3.1), so it comes from
-# HOSTING_LIB_DIR rather than from HOSTING_TEMPLATE_DIR. Executable is stated
+# KASBAH_LIB_DIR rather than from KASBAH_TEMPLATE_DIR. Executable is stated
 # rather than inherited, the way remote-deploy.sh is: a checkout on a filesystem
 # that lost the mode bit would otherwise ship a script nothing can run.
 env_ship_helper() {
     local apps="$1" name="$2"
-    local src="${HOSTING_LIB_DIR:-}/env.sh"
+    local src="${KASBAH_LIB_DIR:-}/env.sh"
     local dest="$apps/$name/scripts/setup-env.sh"
 
-    [ -n "${HOSTING_LIB_DIR:-}" ] || die "internal: HOSTING_LIB_DIR is not set"
+    [ -n "${KASBAH_LIB_DIR:-}" ] || die "internal: KASBAH_LIB_DIR is not set"
     [ -f "$src" ] \
-        || die "the env helper is missing (looked in $src) — this hosting installation is incomplete"
+        || die "the env helper is missing (looked in $src) — this kasbah installation is incomplete"
 
     ssh_rsync -pt --chmod=F755 -s "$src" "$SSH_TARGET:$dest" >/dev/null \
         || die "could not ship setup-env.sh to $SSH_TARGET:$dest"
@@ -122,7 +122,7 @@ _env_absorb() {
     done
     if [ "${#absent[@]}" -gt 0 ]; then
         err "the env check on $SSH_TARGET reported no ${absent[*]}"
-        err_cont "the step was truncated, or setup-env.sh is not the one this hosting ships —"
+        err_cont "the step was truncated, or setup-env.sh is not the one this kasbah ships —"
         err_cont "raw output:"
         while IFS= read -r line; do err_cont "| $line"; done <<<"$out"
         exit 1
@@ -158,24 +158,24 @@ _env_remedies() {
     local reason="$1" dir="$2"
     case "$reason" in
         missing)
-            err_cont "  * run \`hosting env $SSH_TARGET\` from a terminal, or"
+            err_cont "  * run \`kasbah env $SSH_TARGET\` from a terminal, or"
             err_cont "  * write the file on the server yourself, from the template that is"
             err_cont "    already beside it:"
             err_cont "      ssh $SSH_TARGET 'cp $dir/.env.prod.example $dir/.env'   # then edit it there"
             err_cont "--on-drift= does not reach this: there is no .env to have drifted."
             ;;
         drift)
-            err_cont "  * run \`hosting env $SSH_TARGET\` from a terminal, or"
+            err_cont "  * run \`kasbah env $SSH_TARGET\` from a terminal, or"
             err_cont "  * pass --on-drift=continue to deploy against $dir/.env as it stands, or"
             err_cont "  * pass --on-drift=abort to stop without touching the server."
             ;;
         reconfigure)
-            err_cont "  * run \`hosting env $SSH_TARGET\` from a terminal."
-            err_cont "$dir/.env is already in sync with the template, so \`hosting deploy\`"
+            err_cont "  * run \`kasbah env $SSH_TARGET\` from a terminal."
+            err_cont "$dir/.env is already in sync with the template, so \`kasbah deploy\`"
             err_cont "needs nothing from you — this command exists to re-answer the prompts,"
             err_cont "and there is nobody here to answer them."
             ;;
-        *) err_cont "  * run \`hosting env $SSH_TARGET\` from a terminal." ;;
+        *) err_cont "  * run \`kasbah env $SSH_TARGET\` from a terminal." ;;
     esac
     return 0
 }
@@ -206,7 +206,7 @@ _env_run_setup() {
         err_cont "runs the template's generators (docs/env-template.md). Either:"
         _env_remedies "$reason" "$dir"
         err_cont "Nothing was deployed."
-        exit "$HOSTING_EXIT_ENV_SETUP"
+        exit "$KASBAH_EXIT_ENV_SETUP"
     fi
 
     info "$why — running the interactive env setup on $SSH_TARGET"
@@ -217,7 +217,7 @@ _env_run_setup() {
         err_cont "leave the .env unwritten, which is what exit 5 says. Nothing was deployed."
         err_cont "Re-run and answer it through, or:"
         _env_remedies "$reason" "$dir"
-        exit "$HOSTING_EXIT_ENV_SETUP"
+        exit "$KASBAH_EXIT_ENV_SETUP"
     fi
     return 0
 }
@@ -234,8 +234,8 @@ _env_require_env_file() {
 
     err "the env setup left no $apps/$name/.env on $SSH_TARGET"
     err_cont "it was aborted, or answered with nothing. Nothing was deployed — re-run"
-    err_cont "\`hosting env $SSH_TARGET\` and answer it through."
-    exit "$HOSTING_EXIT_ENV_SETUP"
+    err_cont "\`kasbah env $SSH_TARGET\` and answer it through."
+    exit "$KASBAH_EXIT_ENV_SETUP"
 }
 
 # The three answers of docs/build-deploy.md step 6. The flag wins; otherwise a
@@ -244,16 +244,16 @@ _env_require_env_file() {
 #
 # `[ -t 0 ]` only, deliberately, and it is the same test lib/prompt.sh:86 makes:
 # prompt_value puts its question on **stderr**, the way bash's own `read -p`
-# does, so `hosting env user@vps > out.log` is an answerable prompt and must not
+# does, so `kasbah env user@vps > out.log` is an answerable prompt and must not
 # be refused. Re-deriving the rule more strictly than the helper that owns it is
-# how one command ends up refusing what `hosting server init` accepts in the
+# how one command ends up refusing what `kasbah server init` accepts in the
 # same shape. (The setup itself is the other case — see _env_run_setup, whose
 # `-t 1` check is about the *remote* generator's stdout, not about this prompt.)
 #
 # The give-up here exits 5 rather than prompt.sh's 1, because "the env step
 # could not complete" is a thing a script branches on. One path keeps prompt.sh's
 # 1 and is left that way on purpose: Ctrl-D at the prompt reaches
-# prompt_value's own give-up, which exits 1 for every hosting prompt there is,
+# prompt_value's own give-up, which exits 1 for every kasbah prompt there is,
 # and making this one command answer differently to the same keystroke would be
 # the worse inconsistency. Changing it would mean either reaching into
 # lib/prompt.sh or re-implementing the read loop this comment argues against.
@@ -266,7 +266,7 @@ _env_choose_on_drift() {
         err_cont "pass --on-drift=setup (re-run the interactive setup), --on-drift=continue"
         err_cont "(deploy against the .env as it stands) or --on-drift=abort."
         err_cont "Nothing was deployed."
-        exit "$HOSTING_EXIT_ENV_SETUP"
+        exit "$KASBAH_EXIT_ENV_SETUP"
     fi
 
     while :; do
@@ -291,7 +291,7 @@ _env_choose_on_drift() {
 # `0`, which is what a host that cannot apply cgroup limits needs.
 #
 # Exit 1, not 5, and the line between them is the *step*, not the cause. Exit 5
-# is the env setup: every way it can end without a .env hosting will deploy
+# is the env setup: every way it can end without a .env kasbah will deploy
 # against — drift declined, nobody there to be asked, or setup-env.sh itself not
 # finishing (126 and 127 included). Injection is not setup; it takes no answer
 # from anyone, so it fails the way _env_probe, the helper rsync and
@@ -302,11 +302,11 @@ _env_inject() {
     local rc=0
 
     ssh_run "$dir/scripts/setup-env.sh" --inject "$dir" \
-        "HOSTING_CPU_LIMIT=$cpu" "HOSTING_MEM_LIMIT=$mem" || rc=$?
+        "KASBAH_CPU_LIMIT=$cpu" "KASBAH_MEM_LIMIT=$mem" || rc=$?
     if [ "$rc" -ne 0 ]; then
-        err "could not write the hosting-managed block into $dir/.env on $SSH_TARGET"
+        err "could not write the kasbah-managed block into $dir/.env on $SSH_TARGET"
         err_cont "setup-env.sh --inject exited $rc (see above). Without it \`compose up\` fails on"
-        err_cont "an unset HOSTING_CPU_LIMIT, so nothing was deployed."
+        err_cont "an unset KASBAH_CPU_LIMIT, so nothing was deployed."
         exit 1
     fi
     return 0
@@ -316,7 +316,7 @@ _env_inject() {
 
 # env_step_run APPS NAME CPU MEM ON_DRIFT ALWAYS_SETUP
 #
-# ALWAYS_SETUP is `yes` for `hosting env`, whose whole job is to run the
+# ALWAYS_SETUP is `yes` for `kasbah env`, whose whole job is to run the
 # generator, and `no` for a deploy, which only runs it when the .env is not
 # there or has drifted. Either way the step ends in injection.
 env_step_run() {
@@ -335,7 +335,7 @@ env_step_run() {
             err_cont "the template is the project's own file and reaches the server through the"
             err_cont "manifest's sync: list — add .env.prod.example to it"
             err_cont "(docs/project-manifest.md, docs/env-template.md). Nothing was deployed."
-            exit "$HOSTING_EXIT_ENV_SETUP"
+            exit "$KASBAH_EXIT_ENV_SETUP"
         fi
         action=setup
         why="$dir/.env does not exist yet"
@@ -347,7 +347,7 @@ env_step_run() {
         warn "$SSH_TARGET has no $dir/.env.prod.example, so its .env cannot be checked for drift"
         warn "add .env.prod.example to the manifest's sync: list (docs/project-manifest.md)"
         if [ "$always" = yes ]; then
-            # `hosting env` with no template on the far side has nothing to
+            # `kasbah env` with no template on the far side has nothing to
             # prompt from, and the generator would refuse anyway.
             die "there is no $dir/.env.prod.example on $SSH_TARGET to run the setup against"
         fi
@@ -376,9 +376,9 @@ env_step_run() {
         continue) ;;
         abort)
             err "aborted: $dir/.env on $SSH_TARGET has drifted from .env.prod.example"
-            err_cont "nothing was deployed. \`hosting env $SSH_TARGET\` re-runs the setup, or pass"
+            err_cont "nothing was deployed. \`kasbah env $SSH_TARGET\` re-runs the setup, or pass"
             err_cont "--on-drift=continue to deploy against the .env as it stands."
-            exit "$HOSTING_EXIT_ENV_SETUP"
+            exit "$KASBAH_EXIT_ENV_SETUP"
             ;;
         *) die "internal: env_step_run reached action '$action'" ;;
     esac
@@ -394,12 +394,12 @@ _ENV_ON_DRIFT=""
 
 _env_usage() {
     cat <<EOF
-Usage: hosting env [USER@HOST] [--on-drift=setup|continue|abort]
+Usage: kasbah env [USER@HOST] [--on-drift=setup|continue|abort]
 
 Renders <apps>/<name>/.env on the server from this project's .env.prod.example,
-interactively, and refreshes the hosting-managed HOSTING_* block in it from the
+interactively, and refreshes the kasbah-managed KASBAH_* block in it from the
 server marker's resource limits. Run from the project root; USER@HOST defaults
-to the last server this project deployed to (.hosting/state.json).
+to the last server this project deployed to (.kasbah/state.json).
 
 The setup is interactive and needs a terminal at both ends. Without one the run
 stops (exit 5) rather than accepting every default silently — including when
@@ -409,7 +409,7 @@ drifted.
 Flags, for when it has:
   --on-drift=setup      re-run the setup. What the command does anyway; there
                         is no default answer, an empty one is asked again
-  --on-drift=continue   leave .env alone; only refresh the HOSTING_* block
+  --on-drift=continue   leave .env alone; only refresh the KASBAH_* block
   --on-drift=abort      stop, changing nothing
 
 See docs/env-template.md for the template conventions.
@@ -451,8 +451,8 @@ _env_resolve_target() {
     state_get last_server stored
     if [ -z "$stored" ] || [ "$stored" = null ]; then
         err "env: no server given, and this project has never deployed to one"
-        err_cont "pass it once — \`hosting env user@vps\` — and it is remembered in"
-        err_cont "$HOSTING_STATE_FILE as last_server"
+        err_cont "pass it once — \`kasbah env user@vps\` — and it is remembered in"
+        err_cont "$KASBAH_STATE_FILE as last_server"
         exit 1
     fi
     _ENV_TARGET="$stored"
@@ -521,5 +521,5 @@ cmd_env() {
 
     info "$MANIFEST_NAME's .env on $_ENV_TARGET is ready"
     info "  file:   $MARKER_APPS_PATH/$MANIFEST_NAME/.env"
-    info "  limits: HOSTING_CPU_LIMIT=$MARKER_CPU_LIMIT HOSTING_MEM_LIMIT=$MARKER_MEM_LIMIT (from the server marker)"
+    info "  limits: KASBAH_CPU_LIMIT=$MARKER_CPU_LIMIT KASBAH_MEM_LIMIT=$MARKER_MEM_LIMIT (from the server marker)"
 }

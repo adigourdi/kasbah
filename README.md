@@ -1,4 +1,4 @@
-# hosting
+# kasbah
 
 A CLI that turns a plain VPS into a multi-project Docker host — shared
 Traefik with file-provider routing, image shipping over SSH
@@ -9,16 +9,16 @@ except it's auditable bash and nothing but Docker runs on the server.
 ## Install
 
 ```sh
-./install.sh    # copies bin/ to ~/.local/bin, lib/ to ~/.local/share/hosting
+./install.sh    # copies bin/ to ~/.local/bin, lib/ to ~/.local/share/kasbah
 ```
 
 ## Quick start
 
 ```sh
 cd ~/work/my-app
-hosting init-project --name=my-app --domain=my-app.example.com
+kasbah init-project --name=my-app --domain=my-app.example.com
 # author compose.prod.yml (a starter is printed), then:
-hosting check
+kasbah check
 ```
 
 ## Docs

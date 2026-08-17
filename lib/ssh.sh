@@ -1,16 +1,16 @@
-# hosting — the SSH transport: one multiplexed connection per process
-# Sourced by bin/hosting. Do not execute directly.
+# kasbah — the SSH transport: one multiplexed connection per process
+# Sourced by bin/kasbah. Do not execute directly.
 
-[ -n "${_HOSTING_SSH_LOADED:-}" ] && return 0
-_HOSTING_SSH_LOADED=1
+[ -n "${_KASBAH_SSH_LOADED:-}" ] && return 0
+_KASBAH_SSH_LOADED=1
 
-. "$HOSTING_LIB_DIR/common.sh"
+. "$KASBAH_LIB_DIR/common.sh"
 
-# Every remote operation hosting performs goes through this file — no command
+# Every remote operation kasbah performs goes through this file — no command
 # calls ssh, rsync or scp itself. That is what keeps the connection options in
 # one place and lets a whole deploy ride a single handshake.
 #
-# hosting takes no ssh options of its own: it runs `ssh USER@HOST` and inherits
+# kasbah takes no ssh options of its own: it runs `ssh USER@HOST` and inherits
 # the user's own ssh config, the way git does. A jump host, a non-standard
 # port, a per-host key are all things ssh already knows how to be told.
 
@@ -95,11 +95,11 @@ _ssh_install_exit_trap() {
 
 # A directory of this process's own, made once and removed by the EXIT trap.
 #
-# The socket cannot live at a name another hosting process would compute. `ssh
+# The socket cannot live at a name another kasbah process would compute. `ssh
 # -O exit` closes a master *and every session multiplexed over it*, including
 # sessions belonging to another process — so a shared path would make teardown a
-# remote kill switch. It did: a read-only `hosting server status` exiting at the
-# end of its run took a concurrent `hosting server init` down mid-step, which
+# remote kill switch. It did: a read-only `kasbah server status` exiting at the
+# end of its run took a concurrent `kasbah server init` down mid-step, which
 # then reported a Traefik that was in fact healthy and left the server without
 # its marker (docs/phases/02-spine.md). The name was `~/.ssh/cm-%C`, and `%C`
 # hashes user, host and port — nothing about the process.
@@ -127,7 +127,7 @@ _ssh_ctl_dir_create() {
         || die "TMPDIR is '$tmp', which is not a directory — the ssh control socket has nowhere to live"
 
     local dir
-    dir="$(mktemp -d "$tmp/hosting-ssh.XXXXXX")" \
+    dir="$(mktemp -d "$tmp/kasbah-ssh.XXXXXX")" \
         || die "could not create a directory under $tmp for the ssh control socket"
     # mktemp makes it 0700; stated rather than inherited, because that socket is
     # this process's whole authenticated access to the server.
@@ -167,7 +167,7 @@ ssh_target_parse() {
     [ -n "$target" ] || die "no target given (expected USER@HOST)"
     case $target in
         *@*) ;;
-        *)   die "invalid target '$target' (expected USER@HOST — the user hosting deploys as is not optional)" ;;
+        *)   die "invalid target '$target' (expected USER@HOST — the user kasbah deploys as is not optional)" ;;
     esac
 
     local user="${target%%@*}" host="${target#*@}"
@@ -203,7 +203,7 @@ ssh_connect() {
     # ConnectTimeout goes on the command line so it outranks whatever the
     # user's config says: an unreachable host must fail in seconds, not in the
     # kernel's TCP default. No BatchMode — a passphrase-protected key with an
-    # agent is an ordinary setup, and hosting must not be what breaks it.
+    # agent is an ordinary setup, and kasbah must not be what breaks it.
     #
     # ConnectTimeout bounds setting the connection up, not using it
     # (docs/phases/01-rig.md): a session that stalls once established — a
@@ -234,7 +234,7 @@ ssh_connect() {
     # wrapper message replaces them.
     if ! ssh -n "${_SSH_OPTS[@]}" "$SSH_TARGET" true; then
         err "cannot reach $SSH_TARGET over ssh (see ssh's own error above)"
-        exit "$HOSTING_EXIT_SSH_UNREACHABLE"
+        exit "$KASBAH_EXIT_SSH_UNREACHABLE"
     fi
     _SSH_CONNECTED=1
 }
