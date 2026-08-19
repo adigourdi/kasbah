@@ -165,18 +165,28 @@ Traefik rules are never auto-fixed — routing is policy.
 1. Resolve version from git tag on HEAD (exactly one `vX.Y.Z`). Fail otherwise.
 2. Parse `compose.prod.yml` for services with a `build:` key. If zero, exit 0
    (stock-only project — nothing to ship; `compose up -d` will pull stock images at deploy time).
-3. `docker compose -f compose.prod.yml build`.
+3. `docker compose -p <name> -f compose.prod.yml build`, under
+   `KASBAH_CPU_LIMIT=0 KASBAH_MEM_LIMIT=0` — a compliant compose file cannot
+   interpolate without them and a build has no server to read them from
+   (`build-deploy.md`).
 4. Tag each built image: `<image>:<version>`.
-5. `docker save ... | gzip > /tmp/<name>-<version>.tar.gz`.
-6. `scp` to VPS, `docker load` there.
-7. Clean up tarball on both ends.
-8. `git push origin v<version>` if the tag isn't yet on origin.
+5. `docker save ... | gzip > ${TMPDIR:-/tmp}/<name>-<version>.tar.gz`.
+6. `rsync` to VPS `/tmp`, `docker load` there.
+7. Clean up tarball on both ends — by a trap, so a failed transfer leaks nothing.
+8. `git push origin v<version>` if the tag isn't yet on origin. A repository
+   with no `origin` remote at all warns and exits 0: the image has already
+   shipped by then, and a local-only project is a real shape.
 
 `build-push` does **not** set `:current` and does **not** run `compose up`.
-Moving `:current` is `deploy`'s responsibility. `:latest` is never set.
+Moving `:current` is `deploy`'s responsibility. `:latest` is never set. It does
+run `compose build` — that is the one compose verb it uses.
+
+`USER@HOST` follows the same rule as every other project command: the argument,
+else `last_server` from `.kasbah/state.json`, which is written on success.
+`--build-only` needs neither, since it never reaches a server.
 
 Flags:
-- `--build-only` — skip scp/load/push (local build + tag only).
+- `--build-only` — skip transfer/load/push (local build + tag only).
 - `--no-git-push` — don't push the git tag.
 
 ### `kasbah deploy [USER@HOST] [VERSION] [flags]`

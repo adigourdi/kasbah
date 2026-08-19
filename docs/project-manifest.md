@@ -79,10 +79,13 @@ hooks:
 # dir on the VPS. Kasbah rotates these (keeps last `retain` by default).
 backup:
   container: shop-postgres
-  # Any command. Exit 0 = take a backup. Exit non-zero = skip.
-  # Examples: grep pending migrations; `[[ -f ./.force-backup ]]`; `true`
-  # to always back up.
-  check: sh -c 'shop-php-fpm php artisan migrate:status | grep -q pending'
+  # Any command, run in the VPS's shell with cwd = the project directory.
+  # Exit 0 = take a backup. Exit non-zero = skip. Reaching into a container
+  # means writing the `docker exec` yourself — `check` is not scoped to
+  # `container:` above, which is the thing being backed up, not the thing
+  # deciding. Other examples: `[ -f ./.force-backup ]`; `true` to always
+  # back up.
+  check: docker exec shop-php-fpm php artisan migrate:status | grep -q pending
   command: pg_dump -U $DB_USERNAME $DB_DATABASE
   extension: sql.gz
   pipe: gzip
@@ -169,10 +172,23 @@ Defaults to waiting on all services with a compose healthcheck.
 ### `hooks` *(optional)*
 
 Each hook is a list of strings. Each string starts with a literal
-**container name**, followed by the command to run inside it via
-`docker exec -T`. The target service in `compose.prod.yml` must set an
-explicit `container_name:` — compose's auto-generated
-`<project>_<service>_1` won't match. `kasbah check` (HK01) enforces this.
+**container name**, followed by the command to run inside it. The target
+service in `compose.prod.yml` must set an explicit `container_name:` —
+compose's auto-generated `<project>_<service>_1` won't match. `kasbah check`
+(HK01) enforces this.
+
+The rest of the string is a **shell command**, not an argument vector. Kasbah
+runs it as:
+
+```
+docker exec -T -e VERSION -e PREV_VERSION -e DEPLOY_BACKUP <container> sh -c '<rest>'
+```
+
+so a pipeline, a redirection, a quoted argument and `$VERSION` all mean what
+they look like. The cost is that the target container must have a `/bin/sh` —
+a distroless or scratch image cannot be a hook target. That is the deliberate
+trade: hooks are written by the project's author in the shell they already
+think in, and every base image a kasbah project has ever used has a shell.
 
 Supported hooks and when they run:
 
@@ -191,7 +207,9 @@ the hook commands look identical — it's the timing that picks the target.
 Environment variables available to hook commands (set by kasbah):
 - `$VERSION` — the version being deployed/rolled to.
 - `$PREV_VERSION` — the version previously current (may be empty on first deploy).
-- `$DEPLOY_BACKUP` — (post-deploy) path to the backup file, or `no-backup`.
+- `$DEPLOY_BACKUP` — path to the backup file, or `no-backup`. Available to
+  **both** `pre-deploy` and `post-deploy`: the backup step runs before either,
+  so a pre-deploy hook can already name the file that was just written.
 
 Kasbah does **not** generalize migration accounting. Projects that need to
 count migrations (Laravel, Rails, Django, etc.) do that inside their hook
@@ -199,14 +217,24 @@ by querying their framework's migration table.
 
 ### `backup` *(optional)*
 
-If present, kasbah may take a backup after `compose up -d` + health wait,
-before pre-deploy hooks run.
+If present, kasbah may take a backup as the **first** step of the VPS-side
+deploy — before the `pre-deploy` hooks, and therefore against the still-running
+previous version's containers. That ordering is the point: a backup always
+exists before any hook touches live state.
 
 - `check` — any command. Exit code 0 triggers the backup; non-zero skips
   it. Projects decide their own trigger: pending migrations, a sentinel
   file, config change detection, or simply `true` to back up every deploy.
-- `command` — command that writes the backup to stdout.
-- `pipe` — optional stdout pipe (e.g. `gzip`).
+  It runs in the **VPS's own shell**, with the working directory set to the
+  project directory — so `[ -f ./.force-backup ]` reads a file next to the
+  compose file, and reaching into a container means writing the `docker exec`
+  yourself. It is deliberately not scoped to `backup.container`: the thing
+  that decides whether to back up is often not the thing being backed up.
+- `command` — command that writes the backup to stdout. Unlike `check`, this
+  runs *inside* `backup.container`, as `docker exec -T <container> sh -c
+  '<command>'` — so `$DB_USERNAME` resolves to the container's environment.
+- `pipe` — optional stdout pipe (e.g. `gzip`). Runs on the VPS, not in the
+  container.
 - `extension` — filename extension (resulting file:
   `backups/pre-deploy-<timestamp>.<extension>`).
 - `retain` — number of backups to keep (oldest are deleted on success).

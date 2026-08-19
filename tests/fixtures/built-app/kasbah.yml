@@ -1,0 +1,54 @@
+# The ship fixture: two images built from the Dockerfiles beside this file plus
+# one stock image, small enough to reason about and real enough to route.
+# tests/integration/ship_test.sh copies this directory somewhere writable,
+# gives it a git repo with a v-tag, and runs `kasbah build-push` from the copy.
+#
+# The health:, hooks: and backup: blocks below are declared and nothing reads
+# them yet: `build-push` only builds and ships images, and the VPS-side
+# orchestrator that runs them arrives with templates/remote-deploy.sh in 4.2.
+# They are here now so the fixture the next tasks drive is already the fixture
+# `kasbah check` passes today.
+schema: 1
+kasbah_version: 0.1.0
+
+name: built-app
+domain: built-app.test
+
+# traefik-dynamic.yml is deliberately absent from this list — kasbah ships it
+# out of band to <apps>/traefik/dynamic/built-app.yml
+# (docs/project-manifest.md). The Dockerfiles are absent too: images are built
+# on the workstation and travel as a tarball, never as a build on the server.
+sync:
+  - compose.prod.yml -> compose.yml
+  - .env.prod.example
+  - state/
+
+# What deploy blocks on after `compose up -d`, before the post-deploy hooks.
+# The healthcheck itself lives in the Dockerfile, so it travels with the image.
+health:
+  container: built-app-web
+  timeout: 60s
+
+# Each entry is "<container_name> <command…>", run as
+# `docker exec -T -e VERSION -e PREV_VERSION -e DEPLOY_BACKUP <container>
+#  sh -c '<command…>'`. The redirection therefore happens inside the container,
+# into the bind mount compose declares — which is how a suite reads back that
+# the hooks ran, in what order, and with which variables set.
+hooks:
+  pre-deploy:
+    - 'built-app-web echo "pre-deploy version=$VERSION prev=$PREV_VERSION backup=$DEPLOY_BACKUP" >> /var/kasbah/breadcrumbs.log'
+  post-deploy:
+    - 'built-app-web echo "post-deploy version=$VERSION prev=$PREV_VERSION backup=$DEPLOY_BACKUP" >> /var/kasbah/breadcrumbs.log'
+
+# `check` runs in the VPS host shell with cwd at the project directory, and its
+# exit status decides whether a backup is taken at all; `command` runs through
+# `sh -c` inside `container`, with its stdout piped through `pipe`. The payload
+# is a fixed string so a suite can assert on the decompressed file rather than
+# on the fact that some file appeared.
+backup:
+  container: built-app-web
+  check: test -f ./compose.yml
+  command: echo kasbah-built-app-backup-payload
+  extension: txt.gz
+  pipe: gzip
+  retain: 3

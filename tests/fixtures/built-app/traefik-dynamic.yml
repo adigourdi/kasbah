@@ -1,0 +1,40 @@
+# Rsynced to <apps>/traefik/dynamic/built-app.yml by `kasbah deploy` — out of
+# band, never through the manifest's sync: list. Traefik's file provider picks
+# the change up within a couple of seconds, with no restart and no compose
+# action.
+#
+# The :80 router serves the site directly instead of redirecting to :443. That
+# is deliberate for a fixture on a rig where ACME cannot issue: a plain
+# `curl -H 'Host: built-app.test' http://…` returns the page rather than a 301,
+# so "the image that shipped is the image serving" is one command. A real
+# project puts http-to-https@file on that router (docs/traefik.md).
+http:
+  routers:
+    built-app-http:
+      rule: "Host(`built-app.test`)"
+      entryPoints:
+        - web
+      middlewares:
+        - security-headers@file
+        - gzip-compression@file
+      service: built-app
+
+    # The same host over TLS, with the frozen certresolver name. On the rig the
+    # certificate never issues and Traefik answers with its built-in default
+    # one — which is the point: routing keeps working while ACME is failing.
+    built-app:
+      rule: "Host(`built-app.test`)"
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+      middlewares:
+        - security-headers@file
+        - gzip-compression@file
+      service: built-app
+
+  services:
+    built-app:
+      loadBalancer:
+        servers:
+          - url: "http://built-app-web:80"

@@ -21,6 +21,7 @@ set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$repo_dir/tests/integration/rig_env.sh"
+. "$repo_dir/tests/fixture_repo.sh"
 
 apps=/apps
 data=/apps/data
@@ -253,20 +254,8 @@ assert 'grep -qF "Traefik: running (healthy)" "$tmpdir/out"' \
 
 # --- The project, with a git history of its own -----------------------------------
 projdir="$tmpdir/$project"
-cp -R "$repo_dir/tests/fixtures/$project" "$projdir" || exit 2
-if ! (
-    cd "$projdir" || exit 1
-    git init -q .
-    # The scratch HOME the harness uses has no git identity, so the repo carries
-    # its own. Signing is off for the same reason: whatever the developer's
-    # global config says must not decide whether this commit can be made.
-    git config user.email "spine-test@$rig_domain"
-    git config user.name  "kasbah spine test"
-    git config commit.gpgsign false
-    git add -A
-    git commit -qm "the demo fixture, v$project_version"
-    git tag "v$project_version"
-) >"$tmpdir/git.log" 2>&1; then
+if ! fixture_repo_make "$projdir" "$repo_dir/tests/fixtures/$project" "v$project_version" \
+        2>"$tmpdir/git.log"; then
     echo "error: could not give the fixture copy a git repo with a v-tag" >&2
     sed 's/^/       | /' "$tmpdir/git.log" >&2
     exit 2

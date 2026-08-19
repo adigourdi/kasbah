@@ -1,0 +1,19 @@
+# The fixture's second built image, and the reason it exists: with one built
+# service, "the tarball carried every image" cannot be told apart from "the
+# tarball carried an image", the far side's loaded= count is right by accident,
+# and versions.log's comma-joined digest= has nothing to join. Deliberately not
+# a second nginx — an alpine and one file.
+FROM alpine:3.20
+
+# The string tests/integration/ship_test.sh reads back out of the *arrived*
+# image, the same way it reads the web image's page.
+RUN printf '%s\n' 'built-app-worker-payload-shipped-over-ssh' > /etc/built-app-worker.marker
+
+# In the image rather than in compose, so it travels inside the tarball and the
+# next unit's health wait has something real to observe on the server.
+HEALTHCHECK --interval=5s --timeout=3s --start-period=2s --retries=6 \
+    CMD test -f /etc/built-app-worker.marker
+
+# A container that exits is not a service: the hooks and the health wait both
+# need something to exec into.
+CMD ["sh", "-c", "while :; do sleep 3600; done"]

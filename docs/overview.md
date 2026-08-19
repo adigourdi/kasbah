@@ -26,7 +26,7 @@ the same battle-tested workflow without copying scripts between repos.
 ### In
 - **Server prep** — check Docker/Compose, create folder layout, start a shared
   Traefik (optionally DMS + SnappyMail mail stack).
-- **Project lifecycle** — build, push (via `docker save`/`scp`/`docker load`),
+- **Project lifecycle** — build, push (via `docker save`/`rsync`/`docker load`),
   deploy, rollback, check, logs.
 - **Env management** — interactive `.env` generation from a rich template,
   drift detection against `.env.prod.example`.
@@ -60,7 +60,7 @@ the same battle-tested workflow without copying scripts between repos.
 | Image tags on VPS | `:<version>` (one per build-push) + `:current` (moved by deploy/rollback). No `:latest`. Compose references `:current` for built services; it never gets rewritten per deploy. |
 | Image retention | `kasbah server prune` keeps the last 3 deployed versions (the one `:current` points at counts as the first) and anything newer than 3 months (time window mirrors versions.log rotation). The retention window is the rollback window — anything older is a roll-forward, not a rollback. |
 | Version source | Git tags on the project repo (`vX.Y.Z`). `kasbah deploy` (no args) labels the working tree with HEAD's tag. `kasbah deploy X.Y.Z` and `kasbah rollback X.Y.Z` pull files from `git archive v<X.Y.Z>` — no checkout needed. |
-| Image delivery | `docker compose build` locally → `docker save \| gzip` → `scp` → `docker load` on VPS → retag `:current`. No registry. |
+| Image delivery | `docker compose build` locally → `docker save \| gzip` → `rsync` → `docker load` on VPS → retag `:current`. No registry. |
 | Build config | Lives in each project's `compose.yml` under `build:`. Kasbah does not duplicate it in the manifest. |
 | Traefik | One shared instance per VPS, managed by kasbah. Routed containers join its `kasbah-net` via `external: true`. |
 | Networks | Only containers Traefik routes to join `kasbah-net`; every other service (DBs, caches, workers) lives on a project-internal network. Compose registers service names as DNS aliases on every attached network — generic names (`postgres`) on a shared network would round-robin across projects. |

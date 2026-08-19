@@ -73,17 +73,49 @@ from compose itself.
 1. Resolve version from git tag on HEAD (exactly one v<semver>). Fail otherwise.
 2. Parse compose.prod.yml for services with `build:`.
    - Zero → exit 0.
-3. docker compose -f compose.prod.yml build
+3. docker compose -p <name> -f compose.prod.yml build
+     run with KASBAH_CPU_LIMIT=0 KASBAH_MEM_LIMIT=0 in the environment
 4. Tag each built image:
      <image>:<version>
-5. docker save <all built images> | gzip > /tmp/<name>-<version>.tar.gz
-6. scp tarball to VPS:/tmp
+5. docker save <all built images> | gzip > $TMPDIR/<name>-<version>.tar.gz
+6. rsync tarball to VPS:/tmp, over the same ssh master
 7. ssh VPS:
      docker load < tarball
      rm tarball
 8. rm local tarball
 9. git push origin v<version>   # if tag not on origin yet
 ```
+
+Three details in that flow are load-bearing.
+
+**The build needs the resource-limit variables set to something.** Compliance
+rules R01/R02 make `cpus: ${KASBAH_CPU_LIMIT}` and `mem_limit:
+${KASBAH_MEM_LIMIT}` mandatory in every project's compose file, and a build
+has no server to read them from, so a bare `docker compose build` fails on
+every kasbah-compliant project before it reaches the Dockerfile:
+
+```
+error while interpolating services.web.cpus: failed to cast to expected type:
+  strconv.ParseFloat: parsing "": invalid syntax
+```
+
+`build-push` therefore builds under `KASBAH_CPU_LIMIT=0 KASBAH_MEM_LIMIT=0`.
+Both are runtime keys — nothing reaches the image, the tarball or the server,
+and `0` is Docker's "no limit" in the event anything ever consumed them. The
+guarantee that keeps it inert is that no `build.args` references a `KASBAH_*`
+key; nothing enforces that today.
+
+**One `docker save` invocation carries every built image.** Saving them
+separately throws away the layer dedup a single tarball gives you across
+images that share a base.
+
+**The tarball moves by `rsync`, not `scp`.** Everything remote goes through
+`lib/ssh.sh`, which has no scp helper and gains none: rsync is already a
+documented remote prerequisite and already rides the deploy's ControlMaster.
+The local side writes into `${TMPDIR:-/tmp}` rather than a hardcoded `/tmp`,
+following the same rule as the ssh control socket; the remote side is
+literally `/tmp`. Both ends are removed by a trap rather than a final line —
+a failed transfer must not leave gigabytes behind on either machine.
 
 `build-push` does **not** touch `:current` and does **not** run `compose up`.
 That's `deploy`'s job — decoupling lets you build-push without deploying
@@ -178,8 +210,8 @@ irrelevant (and untouched).
 ## SSH multiplexing
 
 `kasbah deploy` and `kasbah rollback` open an SSH ControlMaster before
-any remote operation and reuse it for every subsequent `ssh` / `rsync` /
-`scp` in the same run:
+any remote operation and reuse it for every subsequent `ssh` and `rsync`
+in the same run:
 
 ```bash
 ctl="$(mktemp -d "${TMPDIR:-/tmp}/kasbah-ssh.XXXXXX")"   # 0700, one per process

@@ -1,0 +1,3 @@
+# Bind-mounted into built-app-web at /var/kasbah, which is where the manifest's
+# hooks append their breadcrumbs. The directory has to exist in the working
+# tree for the deploy's sync: list to ship it, and git cannot carry an empty one.

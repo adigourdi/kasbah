@@ -168,7 +168,7 @@ _deploy_pick_version() {
     done <<<"$_pv_tags"
 
     if [ "${#_pv_v[@]}" -eq 0 ]; then
-        err "HEAD carries no version tag, so this deploy has nothing to label itself with"
+        err "HEAD carries no version tag, so this release has nothing to label itself with"
         if [ "${#_pv_other[@]}" -gt 0 ]; then
             err_cont "HEAD is tagged ${_pv_other[*]}, and kasbah versions are v-prefixed semver"
         fi

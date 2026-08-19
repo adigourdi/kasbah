@@ -1,0 +1,89 @@
+# Synced to <apps>/built-app/compose.yml on deploy, and brought up there as
+# `docker compose -p built-app up -d`. The `-p` is what fixes the project name;
+# `name:` below is the weakest source of it and COMPOSE_PROJECT_NAME in the
+# server's login shell outranks it (docs/phases/01-rig.md).
+#
+# Three services on purpose: two built here and shipped by `kasbah build-push`,
+# one stock image pulled on the server by `compose up`. A project is mixed far
+# more often than it is purely one or the other, build-push has to pick the
+# built ones out of the stock one, and one built image is not enough to tell a
+# tarball carrying every image from a tarball carrying an image.
+name: built-app
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Required for a built service: kasbah tags <image>:<version> from this
+    # name and moves <image>:current on deploy, and compose's generated name is
+    # not one it can move. The tag reads :current because that is what the
+    # server's compose file resolves to (docs/build-deploy.md → image tags).
+    image: built-app-web:current
+    # Traefik resolves the backend by container name over kasbah-net, so this
+    # is what traefik-dynamic.yml's loadBalancer URL points at (docs/traefik.md).
+    container_name: built-app-web
+    restart: unless-stopped
+    volumes:
+      # Where the manifest's hooks write their breadcrumbs, so a suite can read
+      # them back off the server.
+      - "./state:/var/kasbah"
+    environment:
+      BUILT_APP_GREETING: ${BUILT_APP_GREETING}
+    networks:
+      # Routed service: on kasbah-net for Traefik, and on the project's own
+      # network for anything internal. Nothing else joins kasbah-net (C07).
+      - kasbah-net
+      - internal
+    # Injected into .env by kasbah from the server marker, into its managed
+    # block. Unset, compose fails outright — an empty value is not a valid
+    # cpus:.
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    image: built-app-worker:current
+    container_name: built-app-worker
+    restart: unless-stopped
+    networks:
+      # Nothing routes to it, so it stays off kasbah-net (C07).
+      - internal
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cache:
+    image: redis:7-alpine
+    container_name: built-app-cache
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks:
+      # Internal only. A service nothing routes to must stay off kasbah-net:
+      # compose registers service-name aliases on every network it joins, and
+      # two projects with a `cache` service would round-robin across each
+      # other (C07).
+      - internal
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: true
+  internal: {}

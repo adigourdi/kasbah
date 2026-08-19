@@ -54,7 +54,7 @@ challenges count against limits too.
 
 ### 6.3 — Deploy, change, roll back (M)
 First real deploy; then a trivial tagged change; then `rollback`. Measure
-what the rig couldn't: `save|gzip|scp|load` duration over a real uplink,
+what the rig couldn't: `save|gzip|rsync|load` duration over a real uplink,
 ACME issuance time, fragment reload latency in production Traefik.
 
 **Deliverables**

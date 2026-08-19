@@ -111,7 +111,7 @@ docker provider is not wired in.
 
 | ID | Rule | Level |
 |---|---|---|
-| H01 | Each custom-built service has a HEALTHCHECK in its Dockerfile or compose | warn |
+| H01 | Each custom-built service declares a `healthcheck:` in compose. Warn-only and never a failure, because kasbah cannot see a `HEALTHCHECK` in the service's Dockerfile — which is the better place for one, since it travels inside the image. A project whose built services are healthchecked in their Dockerfiles warns here forever, correctly | warn |
 | H02 | Manifest `health.container` exists among services | fail |
 
 ### Env

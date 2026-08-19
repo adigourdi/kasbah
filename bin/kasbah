@@ -73,6 +73,7 @@ Usage: kasbah [--version] [--help] <command> [args...]
 Commands:
   init-project [--name=<n>] [--domain=<d>]   Scaffold kasbah metadata in cwd.
   check                                      Run structural checks on the project.
+  build-push [USER@HOST]                     Build this project's images and load them on a server.
   deploy [USER@HOST]                         Ship the working tree and bring it up.
   env [USER@HOST]                            Render the project's .env on the server.
   server init USER@HOST [flags]              Prepare a VPS to host projects.
@@ -126,6 +127,10 @@ dispatch() {
         check)
             . "$KASBAH_LIB_DIR/check.sh"
             cmd_check "$@"
+            ;;
+        build-push)
+            . "$KASBAH_LIB_DIR/build_push.sh"
+            cmd_build_push "$@"
             ;;
         deploy)
             . "$KASBAH_LIB_DIR/deploy.sh"
