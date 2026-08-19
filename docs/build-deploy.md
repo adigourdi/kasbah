@@ -418,14 +418,22 @@ run's last act — *after* the `versions.log` entry is appended.
 ```
 version=1.3.0
 prev_version=1.2.0
+deployed_before=yes
 backup=backups/pre-deploy-20260419-101500.sql.gz
 digest=sha256:9f2a…,sha256:c81b…
 ```
 
 That placement makes it two things at once. It is how the local side learns
-facts only the server has — chiefly `prev_version`, which is what step 10's
-`git log <prev-deploy>..<new>` range is computed from and which exists nowhere
-on the workstation. And it is the run's **completion marker**: an exit 0 with no
+facts only the server has — chiefly the pair `deployed_before` and
+`prev_version`, from which step 10's `git log <prev-deploy>..<new>` range is
+computed and which exist nowhere on the workstation.
+
+They are two keys because they answer two questions, and collapsing them is a
+mistake this file has already made once. `prev_version` is empty both on a
+genuine first deploy **and** when the log's last line is not one a version can
+be read out of; only `deployed_before` separates those, and calling the second
+one a first deploy would print "no previous version to compare against" about a
+server that plainly has history. And it is the run's **completion marker**: an exit 0 with no
 report, or with a report missing a key, means the script did not reach its end,
 so the local side treats that as a failed deploy and **stops before shipping the
 Traefik fragment**. A truncated run therefore leaves no route and no state, which
@@ -451,12 +459,27 @@ two quite different reasons for that:
   moment it is worth having, and silently.
 
 `--allow-stopped` is the override for an operator who knows the stack is meant
-to be down. Two shapes need it that arguably should not: a `pre-deploy` hook
+to be down. Both the refusal and the flag work **per container**: a stopped
+hook container does not excuse skipping a backup whose own container is up, and
+kasbah names which of the two it is talking about rather than announcing a
+blanket skip it is not performing.
+
+Two shapes need the flag that arguably should not: a `pre-deploy` hook
 targeting a container that is deliberately `restart: "no"`, and a project whose
 `backup.check` would have declined anyway while its backup container happens to
 be stopped. The refusal is computed from static manifest data on purpose —
 consulting `backup.check` first would mean running project-authored shell
 *before* deciding whether the deploy may proceed at all.
+
+**A container that no longer exists is a different thing from one that is
+stopped**, and kasbah says so. Rename a `container_name:` in
+`compose.prod.yml` without updating the hook that targets it, and the old name
+is not down — it is gone. Telling the operator to start it would be advice they
+cannot follow, and `--allow-stopped` would silently disable that hook on every
+deploy from then on, which is the exact silent skip this guard exists to
+prevent. The refusal therefore names the manifest/compose mismatch and points
+at `kasbah check`'s HK01, which catches it locally before a deploy is
+attempted.
 
   Both modes hold an exclusive `flock` for the whole run, so a second
   concurrent deploy or rollback fails fast instead of interleaving hooks and

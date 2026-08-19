@@ -8,10 +8,49 @@
 **Spec:** `docs/build-deploy.md` (build-push flow, deploy steps a–g, versions.log format, SSH multiplexing, helper scripts), `docs/project-manifest.md` (hooks, backup, health), `docs/cli.md` (build-push, deploy flags)
 
 ## Exit criteria
-- [ ] A built fixture app deploys to the rig end-to-end: backup → pre-deploy hook → retag `:current` → up → health wait → post-deploy hook, in that order (order asserted)
-- [ ] `versions.log` line carries all frozen fields + `kasbah=` + real `digest=`
-- [ ] Two concurrent deploys: the second fails fast on the flock, the first completes untouched
-- [ ] `build-push` on a stock-only project exits 0 doing nothing
+
+Walked by hand against the rig at the close, driving `kasbah` as an operator
+would and reading every fact back off the server — not inferred from a green
+suite. Two deploys were needed, because a *first* deploy legitimately has no
+outgoing state to back up or run pre-deploy hooks against.
+
+- [x] **A built fixture app deploys to the rig end-to-end**: backup →
+  pre-deploy hook → retag `:current` → up → health wait → post-deploy hook, in
+  that order (order asserted). Observed on the second deploy (1.0.0 → 1.1.0),
+  the hooks writing their own record:
+
+  ```
+  pre-deploy  version=1.1.0 prev=1.0.0 backup=backups/pre-deploy-20260819-201854.txt.gz
+  post-deploy version=1.1.0 prev=1.0.0 backup=backups/pre-deploy-20260819-201854.txt.gz
+  ```
+
+  The pre-deploy hook names a backup file that already exists and holds its
+  known payload (`kasbah-built-app-backup-payload`), which is the ordering
+  claim made from the far side rather than by kasbah's own narration. The full
+  six-step order is additionally pinned hermetically by line number from a
+  docker-call trace.
+- [x] **`versions.log` line carries all frozen fields + `kasbah=` + real
+  `digest=`.** Read off the rig:
+
+  ```
+  2026-08-19T20:18:55+00:00 deploy 1.1.0 backups/pre-deploy-20260819-201854.txt.gz kasbah=0.1.0-dev digest=sha256:473485c7…,sha256:91a2bd2a…
+  ```
+
+  Both digest halves match `docker image inspect -f '{{.Id}}'` on the rig,
+  inspected one at a time.
+- [x] **Two concurrent deploys: the second fails fast on the flock, the first
+  completes untouched.** Refusal observed directly, with the lock provably held
+  first (a `flock -n` probe was refused before the deploy was started):
+  **exit 1 after 8 ms**, `another deploy or rollback is already running in
+  /apps/built-app — it holds the lock on /apps/built-app/.deploy.lock`. The
+  "first completes untouched" half is asserted by
+  `tests/integration/deploy_ship_test.sh` against a first run held inside an 8 s
+  hook — exactly one appended line, earlier entries byte-identical.
+- [x] **`build-push` on a stock-only project exits 0 doing nothing.** Observed:
+  exit 0, the rig's full `docker image ls -aq` set byte-identical before and
+  after, and no tarball in either `/tmp`. It still requires HEAD to carry
+  exactly one v-tag before it discovers there is nothing to build, so a
+  stock-only project with an untagged HEAD exits 1.
 
 ## Tasks
 
@@ -573,6 +612,88 @@ this function is called from that one, and this call precedes that one — kille
 four mutants for about five lines. Where a stub would have to grow a
 seven-step protocol to reach a call site, assert the call.
 
+### From the phase-close group review — the seams
+
+Four units, each reviewed in isolation and each approved. A fifth reviewer that
+had seen none of those rounds judged them together, and found what per-unit
+review structurally cannot. Its own summary is the useful part: **the seams are
+almost entirely in what the tool *says*, not what it does** — which is a good
+place for a phase to be wrong, and still the kind of thing an operator
+remembers.
+
+- **`versions.log` corrupted itself in the one state this phase wrote a Finding
+  about.** `rd_last_log_line` goes to explicit trouble to read a file whose last
+  line has no trailing newline; `log_version` appended with a bare
+  `printf '%s\n' >>` and never checked for one first. A `printf >>` killed
+  mid-append — named in this phase's own Findings as the realistic producer —
+  therefore fused the two entries:
+
+  ```
+  2026-01-02T00:00:00+02026-08-19T00:00:00+00:00 deploy 1.5.0 no-backup kasbah=t digest=-
+  ```
+
+  Six fields, so **every later reader accepts it**, with the interrupted
+  record's remains permanently inside the frozen timestamp and Phase 5's
+  `history` and rotation inheriting it. Two things make this a textbook seam
+  find: the comment directly above the append claimed the newline was "put back
+  here rather than assumed" because "an entry that ran into the next one would
+  break every reader of the file at once" — naming the exact failure it did not
+  prevent — and the suite's own Case X15c *constructs* the damaged file, runs a
+  deploy over it to completion, and then asserts only the exit code, never
+  reading the file back.
+
+- **`--allow-stopped` announced a skip it was not performing.** One blanket
+  sentence whenever *any* outgoing container was down, while the skips are
+  per-container — so `…the backup and the pre-deploy hooks are skipped` printed
+  two lines above `backup written to backups/pre-deploy-….txt`, with the file
+  on disk and named in `versions.log`. Neither suite ever built a *mixed*
+  outgoing state; both greped for the flag's name.
+
+- **The changelog re-collapsed the two questions unit 2 had split.** On the
+  server "has this project deployed here" and "what version was it" are two
+  facts, deliberately. The report carried only the second, so an empty
+  `prev_version` meant both a first deploy and history whose last line is
+  unreadable — and the local side called the second one a first deploy, about a
+  server the shipped script had just described as having history. The report
+  gained a `deployed_before` key; a five-field protocol is free where a frozen
+  log line is not.
+
+- **"Stopped" and "no longer exists" were one state.** Rename a
+  `container_name:` without updating the hook that targets it and the *second*
+  deploy was permanently refused with "Start it" — advice for a container the
+  compose file no longer defines — leaving `--allow-stopped` as the only way
+  through, which then silently disables that hook forever. The exact silent skip
+  the guard exists to prevent, reachable only through the guard.
+
+- **One server state, two exit codes, and a comment asserting they agreed.** A
+  pointer naming a tree with no marker exited 1 from `deploy` and 4 from
+  `status`, while `server_status.sh` claimed in a comment that "exit 4 is the
+  same verdict `kasbah deploy` reaches". Now 4 from both, with the *message*
+  carrying the distinction — which is what `docs/cli.md`'s exit-4 entry always
+  described.
+
+- **A missing `flock` accused a concurrent operator who did not exist.**
+  `flock -n 9 || fail "another deploy … is already running"` turns exit 127 into
+  a statement about someone else's deploy. `flock` had been added to the
+  prerequisites table by unit 2 and probed by nothing; `server init` now checks
+  it alongside `rsync`, `openssl` and `gzip`.
+
+- **Five stale or false comments**, the worst being `_deploy_read_marker`'s,
+  which still told the next reader that finding a non-default apps path "is the
+  part that is missing … (carried to Phase 4)" — the thing the phase's own last
+  commit had just built. Unit 4 changed `marker_read` and never revisited its
+  caller's comment.
+
+### One thing the hand-walk saw that no suite asserts
+
+A deploy that fails at `compose up` has **already moved `:current`** — the
+documented order is retag → up, so the tag points at a version whose containers
+did not start. Observed by accident, when the walk's own first attempt hit the
+rig's cgroup limitation. It is by design and rollback restores the tag, but
+nothing says so out loud, and a reader of `versions.log` — which has no entry
+for the failed run — cannot tell that `:current` moved. Carried to Phase 5,
+which owns the retag's other direction.
+
 ### Measured
 
 - `flock` over SSH: the second concurrent deploy refused in **216 ms** against
@@ -588,8 +709,11 @@ seven-step protocol to reach a call site, assert the call.
 - `docker save | gzip` of both images **3056 ms** → 28,669,020 B; `rsync`
   **402 ms**; remote `docker load` **1559 ms**. A whole `kasbah build-push`
   against the rig, warm build cache: **5.9–6.2 s**.
-- Suites: `./test.sh` **14 PASS in 2m52s** (13 / 2m32s at phase start);
-  `KASBAH_RIG_TESTS=1 ./test.sh` **19 PASS in 5m35s** (17 / ~5m50s).
+- Suites, at the phase's close: `./test.sh` **16 PASS in 5m17s**;
+  `KASBAH_RIG_TESTS=1 ./test.sh` **23 PASS in 10m42s**. At the phase's start
+  they were 13 / 2m32s and 17 / ~5m50s. **These are the numbers a later phase
+  should regress against** — the mid-phase figures that stood here (14 / 19)
+  were written after unit 1 and never refreshed, which the close review caught.
 
 ### Accepted limits
 

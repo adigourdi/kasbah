@@ -268,9 +268,10 @@ assert 'grep -qF "$alt_apps/$project" "$tmpdir/err"' \
 assert '[ "$(exists /apps)" = "absent" ]' "still nothing at the default path"
 
 # --- A pointer that has been lost -------------------------------------------------
-# The one state left that exits 4: the server is prepared and the record of
-# where is gone. The message must not read as "never prepared" alone, and must
-# not send the reader into a bare init.
+# Exit 4 again, and the reason it is the same code is that it is the same server
+# state: no marker where the apps path says one should be. Here the server is
+# prepared and the record of where is gone, so the message must not read as
+# "never prepared" alone, and must not send the reader into a bare init.
 rig_ssh "sudo rm -f $pointer" >/dev/null 2>&1
 run_bounded deploy "$RIG_TARGET"; rc=$?
 assert '[ "$rc" = "4" ]' "with the pointer gone the server is undiscoverable again (exit $rc: $(cli_err))"

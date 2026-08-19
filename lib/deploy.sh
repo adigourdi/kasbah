@@ -114,8 +114,10 @@ Passed straight through to scripts/remote-deploy.sh on the server:
                         the data safety net
   --no-health-wait      bring the stack up without blocking on its health
   --allow-stopped       deploy over a stack that has deployed here before and
-                        is not running, which is otherwise refused because its
-                        backup and pre-deploy hooks cannot run
+                        is not running, which is otherwise refused. Each step
+                        whose own container is down is then skipped — the backup
+                        if that is backup.container, a pre-deploy hook if it is
+                        that hook's — and the run says which
 
 See docs/build-deploy.md and docs/env-template.md.
 EOF
@@ -341,6 +343,23 @@ _deploy_read_sync() {
     _deploy_parse_sync_lines "$raw"
 }
 
+# The server runs `docker compose` on <apps>/<name>/compose.yml and on nothing
+# else, so a sync: list that lands on no such destination cannot produce a
+# runnable project. Judged here with the other local checks: the list is a fact
+# about this checkout, and the shipped script's own check for the file only
+# comes after the rsync has run and the .env has been rendered on the server.
+_deploy_check_compose_dst() {
+    local i
+
+    for i in "${!_DEPLOY_DST[@]}"; do
+        [ "${_DEPLOY_DST[$i]}" != compose.yml ] || return 0
+    done
+    err "kasbah.yml: no sync: entry lands on compose.yml"
+    err_cont "the server runs \`docker compose\` on $MANIFEST_NAME/compose.yml, so the list has to"
+    err_cont "put the project's compose file there:  compose.prod.yml -> compose.yml"
+    exit 1
+}
+
 # The manifest's mail claim, read with the rest of the local checks. `domain` is
 # the whole of what a claim says (docs/project-manifest.md → mail), so a `mail:`
 # block without one claims nothing and is a mistake about this checkout — worth
@@ -432,13 +451,12 @@ _deploy_absorb() {
     return 0
 }
 
-# The server marker, at the one path a project command can know without being
-# told (lib/marker.sh — `kasbah env` reads it the same way, and the refusal for
-# a server that has none lives there). Its contents are where the apps and data
-# paths come from, so a server whose layout is not under /apps is followed
-# rather than second-guessed — once it has been found. Finding it is the part
-# that is missing: deploy looks at the default path only, so a server prepared
-# with --apps-path elsewhere reads as unprepared here (carried to Phase 4).
+# The server marker, found the way every project command finds it: the server's
+# own pointer at /etc/kasbah/apps-path names the tree it was prepared in, and
+# /apps is the fallback for a server that carries none (lib/marker.sh — `kasbah
+# env` reads it the same way, and the refusals live there). Its contents are
+# where the apps and data paths come from, so a server whose layout is not under
+# /apps is followed rather than second-guessed.
 #
 # The two resource limits come out of the same read, and go straight into the
 # project's .env as the KASBAH_* managed block (docs/env-template.md).
@@ -746,13 +764,20 @@ _deploy_remote_deploy() {
         "host still serves whatever it served before. Check the server, then"
         "re-run \`kasbah deploy\` — it is safe to run again."
     )
-    _deploy_absorb "the deploy step" "$out" version prev_version backup digest
+    _deploy_absorb "the deploy step" "$out" version prev_version deployed_before backup digest
     _DEPLOY_ABSORB_ADVICE=()
     # The one value that can be checked rather than believed: the script on the
     # server is shipped by this same run, moments earlier, and a report about
     # some other version means the two are not talking about the same deploy.
     [ "${_DEPLOY_FACT[version]}" = "$_DEPLOY_VERSION" ] \
         || die "the deploy step on $_DEPLOY_TARGET reported version '${_DEPLOY_FACT[version]}', not the $_DEPLOY_VERSION it was asked for"
+    # A value outside the two the protocol defines must not read as one of them:
+    # anything-but-yes silently becomes "no", which is the changelog calling a
+    # server with history a first deploy — the defect this key exists to fix.
+    case "${_DEPLOY_FACT[deployed_before]}" in
+        yes|no) ;;
+        *) die "the deploy step on $_DEPLOY_TARGET reported deployed_before='${_DEPLOY_FACT[deployed_before]}', which is neither yes nor no" ;;
+    esac
     return 0
 }
 
@@ -770,6 +795,19 @@ _deploy_changelog() {
     local range line log=""
 
     if [ -z "$prev" ]; then
+        # Two servers produce an empty prev_version and they are not the same
+        # server, which is why the report carries both halves: no versions.log
+        # entry at all is a first deploy, while entries whose last line is a
+        # truncated write are a history this side cannot name. Calling the
+        # second one a first deploy says something the far side has just
+        # refused to say.
+        if [ "${_DEPLOY_FACT[deployed_before]}" = yes ]; then
+            warn "$_DEPLOY_TARGET has deployed $MANIFEST_NAME before, but the last line of its"
+            warn "versions.log is not one a version can be read out of — so there is no range to"
+            warn "compare against and no changelog. The deploy itself is done."
+            warn "look at $_DEPLOY_APPS_PATH/$MANIFEST_NAME/versions.log, then \`git log v<prev>..v$_DEPLOY_VERSION\`"
+            return 0
+        fi
         info "  changes: first deploy to $_DEPLOY_TARGET — no previous version to compare against"
         return 0
     fi
@@ -820,6 +858,7 @@ cmd_deploy() {
     _deploy_resolve_target
     _deploy_resolve_version
     _deploy_read_sync
+    _deploy_check_compose_dst
     _deploy_check_sources
     _deploy_read_mail
     # The hooks, backup and health blocks that get rendered into the helper. Read

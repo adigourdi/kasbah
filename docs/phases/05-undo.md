@@ -61,6 +61,29 @@ synthetic timestamps.
 **Watch out for:** month arithmetic in bash (August − 3 crossing the year
 boundary) — compute with `date -d`, not string surgery.
 
+## Carried in from Phase 4
+
+- **A deploy that fails at `compose up` has already moved `:current`.** The
+  order is retag → up, so a failed deploy leaves the tag pointing at a version
+  whose containers did not start, and `versions.log` has no entry for the run —
+  so nothing on the server records that the tag moved. Observed by hand at
+  Phase 4's close. It is by design, and rollback is the thing that puts the tag
+  back, which makes 5.1 the place to decide whether that is worth saying out
+  loud (a note in `build-deploy.md`, or a line in the deploy's own failure
+  message).
+- **`versions.log` rotation is 5.3's, and 4.2's task text claiming it was
+  deliberately dropped.** Phase 5 reopens `templates/remote-deploy.sh` for
+  `rollback` mode anyway, so rotation costs nothing to wait for. The writer now
+  repairs a missing final newline before appending (see Phase 4's Findings —
+  a truncated last line used to fuse with the new entry); **rotation must
+  preserve that property**, since it rewrites the file wholesale.
+- **`rd_last_log_line` and `rd_prev_version` are two functions on purpose.**
+  "Has this project deployed here" and "what version was it" are different
+  questions, and collapsing them into one variable has already produced two
+  defects in Phase 4 — a guard that failed open, and a changelog that called a
+  server with history a first deploy. `history` and `pending` read the same
+  file; keep them apart.
+
 ## Findings
 
 _(filled during execution)_

@@ -795,8 +795,8 @@ assert '[[ "$line" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+[0
 # caller parses it unfiltered and treats a missing key as "the run did not reach
 # its end" (lib/deploy.sh → _deploy_remote_deploy), so a `note` that drifted to
 # stdout and a key that stopped being emitted are both protocol breaks.
-assert '[ "$(grep -c . <<<"$run_out")" = "4" ]' \
-    "the report is four lines and nothing else is on stdout (stdout: $(tr "\n" "/" <<<"$run_out"))"
+assert '[ "$(grep -c . <<<"$run_out")" = "5" ]' \
+    "the report is five lines and nothing else is on stdout (stdout: $(tr "\n" "/" <<<"$run_out"))"
 # The control for that count. Both fixtures deliberately print a `key=value`
 # line to stdout — one from inside a container, one from the server's own shell
 # — and both must come out here instead. Without this, a hook that printed
@@ -810,6 +810,10 @@ assert 'grep -qxF "version=1.5.0" <<<"$run_out"' \
 assert 'grep -qxF "prev_version=" <<<"$run_out"' \
     "with prev_version present and empty on a first deploy rather than omitted — the two
         are the same thing to a reader that only checks for the key"
+assert 'grep -qxF "deployed_before=no" <<<"$run_out"' \
+    "and the other half of that question answered separately: an empty prev_version is
+        also what a truncated last line produces, and only one of the two is a first
+        deploy (stdout: $(tr "\n" "/" <<<"$run_out"))"
 assert 'grep -qxE "backup=backups/pre-deploy-[0-9]{8}-[0-9]{6}\.txt\.gz" <<<"$run_out"' \
     "the backup path it wrote (stdout: $(tr "\n" "/" <<<"$run_out"))"
 assert 'grep -qxF "digest=sha256:aaa,sha256:bbb" <<<"$run_out"' \
@@ -1301,6 +1305,155 @@ assert '[ "$rc" = "0" ]' "with the stack up it deploys (exit $rc)
 assert 'grep -qF "prev= " "$tmpdir/crumbs"' \
     "handing the hooks an empty \$PREV_VERSION, not a fragment of the broken line
         crumbs: $(tr "\n" "/" < "$tmpdir/crumbs")"
+# …and it says so as a fact of its own, because an empty prev_version is also
+# what a genuine first deploy reports and the changelog gives the two different
+# sentences (lib/deploy.sh → _deploy_changelog).
+assert 'grep -qxF "deployed_before=yes" <<<"$run_out"' \
+    "reporting that this project has deployed here, on the evidence the version could not
+        be read from (stdout: $(tr "\n" "/" <<<"$run_out"))"
+
+# What the append did to the file it appended to. The truncated last line has no
+# newline on it, so a bare `printf '%s\n' >>` writes the new entry onto the end
+# of it — and the fused line still has six fields, so every later reader accepts
+# it, with the interrupted record's remains sitting in the frozen timestamp.
+log_after="$(cat "$proj/versions.log")"
+assert '[ "$(wc -l < "$proj/versions.log")" = "3" ]' \
+    "the truncated line is terminated and the entry appended below it — three lines, not two
+        log: $(tr "\n" "/" <<<"$log_after")"
+assert '[ "$(sed -n 1p "$proj/versions.log")" = "2026-01-01T00:00:00+00:00 deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-" ]' \
+    "the complete earlier entry is byte-for-byte what it was
+        got: $(sed -n 1p "$proj/versions.log")"
+assert '[ "$(sed -n 2p "$proj/versions.log")" = "2026-01-02T00:00:00+0" ]' \
+    "and the truncated one is still its own line, holding exactly what it held — nothing
+        was written into it (got: $(sed -n 2p "$proj/versions.log"))"
+assert '[[ "$(sed -n 3p "$proj/versions.log")" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+00:00\ deploy\ 1\.5\.0\  ]]' \
+    "with the new entry on a line of its own, starting at its own timestamp
+        got: $(sed -n 3p "$proj/versions.log")"
+assert 'grep -qF "had no newline on it" <<<"$run_err"' \
+    "and the repair is said out loud rather than done quietly (said '$run_err')"
+
+# --- Case X15d: a *mixed* outgoing state, which the skips are per container for ---------------
+# backup.container up, one pre-deploy hook's container down. rd_backup checks its
+# own container and rd_run_hooks checks each hook's, so what --allow-stopped
+# actually skips here is the hook and nothing else — a message that says "the
+# backup and the pre-deploy hooks are skipped" announces a skip that does not
+# happen, while the backup file is written and versions.log field 4 names it.
+: > "$tmpdir/crumbs"
+setup_run x15d 'schema: 1
+name: demo
+domain: demo.test
+sync:
+  - compose.prod.yml -> compose.yml
+hooks:
+  pre-deploy:
+    - "demo-worker printf pre-hook-ran >> '"$tmpdir"'/crumbs"
+backup:
+  container: demo-db
+  check: "echo backup-check >> '"$tmpdir"'/crumbs"
+  command: echo kasbah-backup-payload
+  extension: txt
+  retain: 3
+' "$stock_compose"
+printf '2026-01-01T00:00:00+00:00 deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-\n' > "$proj/versions.log"
+printf 'demo-db\n' > "$STUB_STATE/containers"
+printf 'demo-worker=exited\n' > "$STUB_STATE/stopped"
+
+deploy deploy 1.5.0; rc=$?
+assert '[ "$rc" != "0" ]' "with one hook container down the redeploy is still refused (exit $rc)"
+assert 'grep -qF "demo-worker is exited" <<<"$run_err"' "naming it (said '$run_err')"
+assert '! grep -qF "demo-db" <<<"$run_err"' \
+    "and not the backup's container, which is up (said '$run_err')"
+assert 'grep -qF "cannot run the pre-deploy hooks in demo-worker" <<<"$run_err"' \
+    "saying what it is that cannot run, rather than 'its backup or its pre-deploy hooks'
+        said: $run_err"
+
+: > "$tmpdir/crumbs"
+deploy deploy 1.5.0 --allow-stopped; rc=$?
+assert '[ "$rc" = "0" ]' "--allow-stopped lets it through (exit $rc)
+        stderr: $run_err"
+assert 'grep -qF -- "--allow-stopped: demo-worker is exited, so the pre-deploy hooks in demo-worker will not run" <<<"$run_err"' \
+    "announcing exactly the step that is skipped (said '$run_err')"
+# The killer for the blanket sentence: the backup it would have said was skipped
+# is on disk, with its payload, and versions.log field 4 names it.
+assert '! grep -qE -- "--allow-stopped:.*backup" <<<"$run_err"' \
+    "and never claiming the backup was skipped (said '$run_err')"
+assert '[ "$(cat "$tmpdir/crumbs")" = "backup-check" ]' \
+    "the backup gate ran and no hook did (crumbs: $(tr "\n" "/" < "$tmpdir/crumbs"))"
+backup_mixed="$(find "$proj/backups" -name 'pre-deploy-*.txt' 2>/dev/null | head -1)"
+assert '[ -n "$backup_mixed" ] && [ "$(cat "$backup_mixed" 2>/dev/null)" = "kasbah-backup-payload" ]' \
+    "and the backup was written with its payload (found '$backup_mixed')"
+assert '[[ "$(sed -n 2p "$proj/versions.log")" == *" deploy 1.5.0 backups/pre-deploy-"*".txt kasbah="* ]]' \
+    "with versions.log field 4 naming the file rather than no-backup
+        line: $(sed -n 2p "$proj/versions.log")"
+assert 'grep -qF "pre-deploy hook skipped: no demo-worker is running" <<<"$run_err"' \
+    "and the hook that really was skipped saying so where it happened (said '$run_err')"
+
+# --- Case X15e: absent is not stopped ---------------------------------------------------------
+# Rename a container_name: in compose.prod.yml and forget the hook, and the
+# second deploy is refused forever with "start it" — about a container the
+# compose file no longer defines, which cannot start. The only way past is
+# --allow-stopped, which then disables that hook silently on every deploy after
+# it: the exact silent skip this preflight exists to stop. The stub tells the two
+# apart because a name in neither `containers` nor `stopped` is `No such object`.
+: > "$tmpdir/crumbs"
+setup_run x15e 'schema: 1
+name: demo
+domain: demo.test
+sync:
+  - compose.prod.yml -> compose.yml
+hooks:
+  pre-deploy:
+    - "demo-renamed true"
+' "$stock_compose"
+printf '2026-01-01T00:00:00+00:00 deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-\n' > "$proj/versions.log"
+: > "$STUB_STATE/containers"
+: > "$STUB_STATE/stopped"
+deploy deploy 1.5.0; rc=$?
+assert '[ "$rc" != "0" ]' "a hook naming a container that does not exist refuses the redeploy (exit $rc)"
+assert 'grep -qF "demo-renamed does not exist on this server" <<<"$run_err"' \
+    "saying what docker actually reports, not 'demo-renamed is absent' (said '$run_err')"
+assert '! grep -qF "Start it" <<<"$run_err"' \
+    "and never telling the operator to start something that cannot start (said '$run_err')"
+assert 'grep -qF "container_name:" <<<"$run_err"' \
+    "pointing at the mismatch between the manifest and the compose file instead (said '$run_err')"
+assert 'grep -qF "HK01" <<<"$run_err"' \
+    "and at the local check that catches it before a deploy (said '$run_err')"
+assert 'grep -qF "silently on every deploy after it" <<<"$run_err"' \
+    "with what --allow-stopped would really buy here (said '$run_err')"
+assert '[ "$(wc -l < "$proj/versions.log")" = "1" ]' "and nothing was appended"
+
+# --- Case X17: no flock on this server is not a concurrent deploy ------------------------------
+# `flock -n 9` on a host with no flock exits 127, and `|| fail` turns that into a
+# statement about an operator who does not exist. No stub can express it — flock
+# is a real binary — so the case builds a PATH that has everything the script
+# uses except that one.
+nobin="$tmpdir/nobin"
+mkdir -p "$nobin"
+for c in bash sh dirname basename date mkdir rm mv tail sleep cat gzip grep sed head wc tr find; do
+    cp_from="$(command -v "$c" 2>/dev/null)" && ln -sf "$cp_from" "$nobin/$c"
+done
+assert '[ ! -e "$nobin/flock" ] && [ -x "$nobin/bash" ]' \
+    "the reduced PATH has a bash and no flock — otherwise this case proves nothing"
+
+setup_run x17 'schema: 1
+name: demo
+domain: demo.test
+sync:
+  - compose.prod.yml -> compose.yml
+' "$stock_compose"
+env PATH="$stub_dir:$nobin" STUB_STATE="$STUB_STATE" DOCKER_LOG="$DOCKER_LOG" \
+    KASBAH_VERSION=0.1.0-test "$proj/scripts/remote-deploy.sh" deploy 1.5.0 \
+    >"$tmpdir/run.out" 2>"$tmpdir/run.err" </dev/null; rc=$?
+run_err="$(cat "$tmpdir/run.err")"
+assert '[ "$rc" != "0" ]' "a server with no flock refuses the deploy (exit $rc)"
+assert 'grep -qF "flock is not installed on this server" <<<"$run_err"' \
+    "saying that, rather than naming a lock nobody holds (said '$run_err')"
+assert '! grep -qF "already running" <<<"$run_err"' \
+    "and never accusing a concurrent deploy that does not exist (said '$run_err')"
+assert 'grep -qF "util-linux" <<<"$run_err"' "with what to install (said '$run_err')"
+assert '[ ! -e "$proj/.deploy.lock" ]' \
+    "asked before the lock file is opened, so nothing is left behind either"
+assert '[ ! -e "$proj/versions.log" ]' "and nothing was deployed"
 
 # --- Case X16: --skip-hooks narrows what the outgoing preflight demands -----------------------
 # With the hooks skipped their containers are not needed, so a stopped one is

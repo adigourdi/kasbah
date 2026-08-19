@@ -424,11 +424,27 @@ assert '[ "$(cd "$projdir" && git tag | tr "\n" " ")" = "nightly v3.1.0 " ]' \
 assert '[ "$(origin_tags)" = "v3.1.0 " ]' \
     "and it is the version tag alone that lands on origin (origin has: '$(origin_tags)')"
 
+# The `git:` line is an indented continuation of the `Shipped …` headline, so it
+# has to come after it — the order `kasbah deploy` and `kasbah server init` both
+# print theirs in. Read by line number off the one stream every info() goes to.
+n_head="$(grep -n -m1 -F "Shipped built-app 3.1.0 to deploy@vps" <<<"$err" | cut -d: -f1)"
+n_git="$(grep -n -m1 -F "  git:" <<<"$err" | cut -d: -f1)"
+assert '[ -n "$n_head" ] && [ -n "$n_git" ]' \
+    "the run prints both a headline and a git: line (said '$err')"
+assert '[ "$n_head" -lt "$n_git" ]' \
+    "and the headline comes first, with the git: line indented under it
+        (headline on line $n_head, git: on line $n_git)
+        said: $err"
+assert 'grep -qF "git:     pushed v3.1.0 to origin" <<<"$err"' \
+    "which says what it did with the tag (said '$err')"
+
 # Idempotent: a tag already on origin is not pushed again, and that is not an error.
 run "deploy@vps"; rc=$?
 assert '[ "$rc" = "0" ]' "shipping the same version again succeeds (exit $rc: $err)"
 assert 'grep -qF "already on origin" <<<"$out$err"' \
     "and says the tag was already there (said '$out$err')"
+assert '[ "$(grep -n -m1 -F "Shipped built-app" <<<"$err" | cut -d: -f1)" -lt "$(grep -n -m1 -F "  git:" <<<"$err" | cut -d: -f1)" ]' \
+    "under the headline here too, not above it (said '$err')"
 
 # --build-only is the whole short circuit: no transfer and no push either.
 git --git-dir="$origin" tag -d v3.1.0 >/dev/null 2>&1
@@ -444,6 +460,8 @@ run --no-git-push "deploy@vps"; rc=$?
 assert '[ "$rc" = "0" ]' "--no-git-push still ships (exit $rc: $err)"
 assert '[ "$(origin_tags)" = "" ]' \
     "and leaves the tag exactly where it was (origin has: '$(origin_tags)')"
+assert 'grep -qF "git:     v3.1.0 left where it is (--no-git-push)" <<<"$err"' \
+    "saying so under the headline rather than staying silent about the tag (said '$err')"
 assert '[ "$(grep -c "^save " "$DOCKER_LOG")" = "1" ]' \
     "the images went all the same (log: $(cat "$DOCKER_LOG"))"
 
@@ -464,6 +482,8 @@ projdir="$(make noorigin built-app v3.1.0)"
 run "deploy@vps"; rc=$?
 assert '[ "$rc" = "0" ]' "a repository with no origin still exits 0 (exit $rc: $err)"
 assert 'grep -qF "no '"'"'origin'"'"' remote" <<<"$err"' "with a warning that says why (said '$err')"
+assert 'grep -qF "git:     v3.1.0 not pushed" <<<"$err"' \
+    "and the summary line under the headline agrees with the warning (said '$err')"
 assert '[ "$(grep -c "^save " "$DOCKER_LOG")" = "1" ]' "and the images did ship (log: $(cat "$DOCKER_LOG"))"
 
 # --- The command line -------------------------------------------------------------------------

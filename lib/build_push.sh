@@ -31,6 +31,8 @@ _BP_TARGET=""
 _BP_VERSION=""
 _BP_BUILD_ONLY=""
 _BP_GIT_PUSH=yes
+# What _bp_git_push did with the tag, printed under the `Shipped …` headline.
+_BP_GIT_RESULT=""
 
 # The tarball, on each end. Set the moment the path is decided rather than once
 # the file is complete, because a half-written one is exactly what the cleanup
@@ -336,20 +338,26 @@ _bp_cleanup() {
 # Last, after the images are on the server, and a repository with no origin at
 # all is a warning rather than a failure — by that point the shipping has
 # happened and there is nothing to undo.
+#
+# What it did goes into _BP_GIT_RESULT rather than straight to the operator: the
+# line is an indented continuation of the `Shipped …` headline, and every other
+# command in kasbah prints the headline before what hangs off it. The push has
+# to run before that headline (a failure here is a failure of the command), so
+# the doing and the saying are split.
 _bp_git_push() {
     local tag="v$_BP_VERSION"
 
-    if [ "$_BP_GIT_PUSH" = no ]; then
-        info "  git:     $tag left where it is (--no-git-push)"
-        return 0
-    fi
+    _BP_GIT_RESULT="$tag left where it is (--no-git-push)"
+    [ "$_BP_GIT_PUSH" != no ] || return 0
+
     if ! git remote get-url origin >/dev/null 2>&1; then
         warn "this repository has no 'origin' remote, so $tag was not pushed"
         warn "the images are on $_BP_TARGET regardless — push the tag wherever this project lives"
+        _BP_GIT_RESULT="$tag not pushed — this repository has no 'origin' remote"
         return 0
     fi
     if git ls-remote --exit-code origin "refs/tags/$tag" >/dev/null 2>&1; then
-        info "  git:     $tag is already on origin"
+        _BP_GIT_RESULT="$tag is already on origin"
         return 0
     fi
     if ! git push origin "$tag"; then
@@ -358,7 +366,7 @@ _bp_git_push() {
         err_cont "push the tag once the remote is reachable:  git push origin $tag"
         exit 1
     fi
-    info "  git:     pushed $tag to origin"
+    _BP_GIT_RESULT="pushed $tag to origin"
     return 0
 }
 
@@ -421,4 +429,5 @@ cmd_build_push() {
         info "  image:   ${_BP_IMAGE[$i]} (service ${_BP_SERVICE[$i]})"
     done
     info "  current: unmoved — \`kasbah deploy\` is what cuts over to $_BP_VERSION"
+    info "  git:     $_BP_GIT_RESULT"
 }

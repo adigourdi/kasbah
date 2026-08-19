@@ -1,6 +1,8 @@
-# The one image tests/integration/ship_test.sh builds, ships over ssh and looks
-# for on the rig. Tiny on purpose: `docker save | gzip` runs on every rig suite,
-# and every layer here is paid for twice — once over the wire, once in /tmp.
+# The web half of the two images tests/integration/ship_test.sh builds, ships
+# over ssh and looks for on the rig; Dockerfile.worker is the other, on a
+# different base so the tarball carries two real layer sets. Tiny on purpose:
+# `docker save | gzip` runs on every rig suite, and every layer here is paid for
+# twice — once over the wire, once in /tmp.
 FROM nginx:alpine
 
 # The page the deploy suites grep for. Distinctive enough that an nginx welcome

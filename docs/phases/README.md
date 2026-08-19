@@ -14,7 +14,7 @@ during execution.
 | 1 | [Rig](01-rig.md) | **Done.** A fake VPS (DinD container: sshd + dockerd) with reset script and integration-test runner |
 | 2 | [Spine](02-spine.md) | **Done.** `server init`, the shared Traefik stack, thin `deploy` and minimal `server status`; a stock project serves through Traefik via a file-provider fragment |
 | 3 | [Env](03-env.md) | **Done.** Env template system ported verbatim with its tests; one shared drift function used by `check` and by the VPS; `KASBAH_*` injected into a managed block |
-| 4 | [Ship](04-ship.md) | `build-push` + full `deploy` (hooks, backup, health, flock, digests): a custom-built app ships to the rig |
+| 4 | [Ship](04-ship.md) | **Done.** `build-push` + full `deploy` (hooks, backup, health, flock, digests): a custom-built app ships to the rig |
 | 5 | [Undo](05-undo.md) | `rollback` + `history` / `pending` / `changelog` |
 | 6 | [Proof](06-proof.md) | **The real milestone.** A real project (deliberately unnamed) on a freshly provisioned VPS: bare host → HTTPS with real ACME, change deploy, rollback — kasbah only |
 | 7 | [Operate](07-operate.md) | Mail port, `logs`/`exec`, `check --server`, `upgrade-traefik`, `server prune`, full `server status` |
@@ -75,7 +75,35 @@ rhythm: one capability slice per task, tests landing with it.
 8. **VPS-side helpers are kasbah-owned** and overwritten on every deploy;
    projects never vendor kasbah bash.
 
-## Before starting Phase 4
+## Before starting Phase 5
+
+Phase 4 is committed and its four exit criteria were walked by hand against the
+rig at the close. Baselines: `./test.sh` **16 PASS in ~5m15s**;
+`KASBAH_RIG_TESTS=1 ./test.sh` **23 PASS in ~10m40s**. Phase 5 has a
+`## Carried in from Phase 4` section; read it first.
+
+Three things Phase 4 leaves for whoever opens this code next.
+
+**`templates/remote-deploy.sh` is rendered, not copied.** The manifest is never
+synced to a server, so `lib/remote_deploy.sh` pre-renders hooks, backup, health
+and the built-image list into a marked block inside the script. The VPS needs no
+`yq`, `jq` or `python3` and must keep needing none. Anything Phase 5 adds that
+wants manifest data renders it the same way.
+
+**Its stdout is a protocol, not output.** Everything the script says goes to
+stderr; stdout carries a five-key `key=value` report printed *after* the
+`versions.log` append, so it doubles as the run's completion marker — no report
+means the local side refuses **before shipping the Traefik fragment**, leaving
+no route and no state. Two `>&2` redirects keep project-authored hook and
+`backup.check` output off that channel. `rollback` mode inherits all of it.
+
+**Four implementations of one path-normalising rule** exist deliberately —
+`lib/common.sh` plus a copy in each of three remote payloads, which cannot
+source it. `tests/norm_path_test.sh` asserts the three copies are byte-identical
+and drives one case table through both spellings. Adding a fourth remote reader
+means adding a fourth copy *and* a line to that test.
+
+## Before starting Phase 4 ✅
 
 Phase 3 is committed and its exit criteria were walked by hand at close.
 Baselines: `./test.sh` 13 PASS; `KASBAH_RIG_TESTS=1 ./test.sh` **17 PASS in

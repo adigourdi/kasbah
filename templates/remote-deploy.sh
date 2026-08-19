@@ -78,9 +78,13 @@ hooks, and one appended entry in ../versions.log.
   --no-health-wait   bring the stack up without blocking on its health.
   --allow-stopped    deploy over a stack whose containers are not running. On a
                      first deploy that is the normal state and needs no flag;
-                     on a project that has deployed before it means the backup
-                     and the pre-deploy hooks cannot run, so it is refused
-                     unless you say here that the stack is meant to be down.
+                     on a project that has deployed before, each step whose own
+                     container is down is skipped — the backup if that is
+                     backup.container, a pre-deploy hook if it is that hook's —
+                     so it is refused unless you say here that the stack is
+                     meant to be down. It is not the answer for a container that
+                     does not exist at all: that is the manifest and the compose
+                     file disagreeing, and the refusal says so.
 EOF
 }
 
@@ -153,15 +157,34 @@ versions_log_line() {
 # to Phase 5, which reopens this file for `rollback` anyway; appending is what
 # it will rotate.
 log_version() {
-    local line
-    # `$(…)` strips the trailing newline the line was built with, so it is put
-    # back here rather than assumed: an entry that ran into the next one would
-    # break every reader of the file at once.
+    local line tail_byte
+    # Both terminators are this function's, because the file is space- and
+    # newline-delimited and its fields are frozen. `$(…)` strips the trailing
+    # newline the line was built with, so it is put back below; and the *leading*
+    # one is restored first when the file's last line has none — a `printf >>`
+    # killed mid-append leaves exactly that, and appending to it fuses the two
+    # entries into one line that still has six fields, so every later reader
+    # accepts it with the interrupted record's remains inside the frozen
+    # timestamp.
     # The `|| fail` is not decoration: versions_log_line's own refusals run in
     # this substitution's subshell, so its exit status is the only thing that
     # reaches here.
     line="$(versions_log_line "$@")" || fail "the versions.log entry was refused (see above)"
     [ -n "$line" ] || fail "refusing to append an empty line to $PROJECT_DIR/versions.log"
+
+    # `$(…)` strips trailing newlines, so an empty answer here *is* "the last
+    # byte is a newline". Nothing is rewritten: the truncated line keeps
+    # whatever it holds and simply becomes a line of its own.
+    if [ -s "$PROJECT_DIR/versions.log" ]; then
+        tail_byte="$(tail -c 1 "$PROJECT_DIR/versions.log")" \
+            || fail "could not read the end of $PROJECT_DIR/versions.log"
+        if [ -n "$tail_byte" ]; then
+            printf '\n' >> "$PROJECT_DIR/versions.log" \
+                || fail "could not terminate the last line of $PROJECT_DIR/versions.log"
+            note "the last line of versions.log had no newline on it — an append that was interrupted. Terminated it rather than writing into it; it is left exactly as it stands."
+        fi
+    fi
+
     printf '%s\n' "$line" >> "$PROJECT_DIR/versions.log" \
         || fail "could not append to $PROJECT_DIR/versions.log"
 }
@@ -171,7 +194,15 @@ log_version() {
 # still let two operators interleave one's retag with the other's `compose up`.
 # The second run fails fast and names the file rather than waiting on it: a
 # deploy that silently queues behind another looks like a hung deploy.
+#
+# Whether flock is here at all is asked first, before the lock file is opened, so
+# a server without it leaves nothing behind either: `flock -n 9` on such a host
+# exits 127, and reading that as a failed lock turns "this server is missing a
+# prerequisite" into a statement about a concurrent operator who does not exist.
+# `server init` probes for it, so on a server kasbah prepared this never fires.
 rd_lock() {
+    command -v flock >/dev/null 2>&1 \
+        || fail "flock is not installed on this server — it is the only thing keeping two deploys of $PROJECT from interleaving their hooks and retags, so this script will not run without it. Install util-linux (docs/server-setup.md → prerequisites). Nothing was changed."
     exec 9>"$PROJECT_DIR/.deploy.lock" \
         || fail "could not open the lock file $PROJECT_DIR/.deploy.lock"
     flock -n 9 \
@@ -270,6 +301,28 @@ _rd_state() {
     printf '%s' "$s"
 }
 
+# One container's state as a clause. `absent` is the one state that is not a
+# state of a container at all, and "demo-web is absent" invites an operator to
+# start something that cannot start, so it gets its own wording.
+_rd_state_clause() {
+    local s
+    s="$(_rd_state "$1")"
+    if [ "$s" = absent ]; then printf '%s does not exist on this server' "$1"
+    else printf '%s is %s' "$1" "$s"; fi
+}
+
+# Whether this container is the first token of some pre-deploy hook. The outgoing
+# skips are per container — rd_backup checks backup.container, rd_run_hooks
+# checks each hook's own — so the message that announces them has to be too.
+_rd_is_pre_hook() {
+    local hook
+    [ "$RD_SKIP_HOOKS" != yes ] || return 1
+    for hook in ${RD_HOOKS_PRE[@]+"${RD_HOOKS_PRE[@]}"}; do
+        [ "${hook%%[[:space:]]*}" != "$1" ] || return 0
+    done
+    return 1
+}
+
 # The containers the outgoing phase needs: backup.container when a backup is
 # declared, and every pre-deploy hook's container unless --skip-hooks. Printed
 # one per line, deduplicated.
@@ -307,27 +360,49 @@ rd_outgoing_containers() {
 # down is a refusal — `--allow-stopped` is how an operator says it is meant to
 # be down.
 rd_outgoing_preflight() {
-    local prev="$1" raw c list="" recorded
+    local prev="$1" raw c clause list="" absent="" hooks_down="" backup_down=no
+    local skipped recorded
 
     raw="$(rd_outgoing_containers)" || fail "could not work out which containers the pre-deploy steps need"
     while IFS= read -r c; do
         [ -n "$c" ] || continue
         _rd_running "$c" && continue
+        clause="$(_rd_state_clause "$c")"
         # Comma-joined rather than space-joined: two containers run together
         # into "demo-web is exited demo-db is exited", which reads as one
         # sentence about neither of them.
-        if [ -z "$list" ]; then list="$c is $(_rd_state "$c")"
-        else list="$list, $c is $(_rd_state "$c")"; fi
+        if [ -z "$list" ]; then list="$clause"; else list="$list, $clause"; fi
+        case "$clause" in
+            *"does not exist on this server")
+                if [ -z "$absent" ]; then absent="$clause"; else absent="$absent, $clause"; fi ;;
+        esac
+        if [ -n "$RD_BACKUP_CHECK" ] && [ "$c" = "$RD_BACKUP_CONTAINER" ]; then backup_down=yes; fi
+        if _rd_is_pre_hook "$c"; then
+            if [ -z "$hooks_down" ]; then hooks_down="$c"; else hooks_down="$hooks_down, $c"; fi
+        fi
     done <<<"$raw"
 
     [ -n "$list" ] || return 0
 
+    # What these particular containers being down actually costs. Naming "the
+    # backup and the pre-deploy hooks" whenever anything is down announces a
+    # skip that does not happen: with backup.container up and one hook's
+    # container down, the backup runs, writes its file, and lands in
+    # versions.log field 4 under a sentence that just said it was skipped.
+    skipped=""
+    [ "$backup_down" != yes ] || skipped="the backup"
+    if [ -n "$hooks_down" ]; then
+        [ -z "$skipped" ] || skipped="$skipped and "
+        skipped="${skipped}the pre-deploy hooks in $hooks_down"
+    fi
+    [ -n "$skipped" ] || skipped="the outgoing steps that need them"
+
     if ! rd_deployed_before; then
-        note "first deploy — versions.log has no entry for this project, so there is no previous version to back up or run pre-deploy hooks against"
+        note "first deploy — versions.log has no entry for this project, and $list, so $skipped will not run"
         return 0
     fi
     if [ "$RD_ALLOW_STOPPED" = yes ]; then
-        note "--allow-stopped: $list, so the backup and the pre-deploy hooks are skipped"
+        note "--allow-stopped: $list, so $skipped will not run"
         return 0
     fi
     # There is history either way; what the message can say about it depends on
@@ -337,7 +412,19 @@ rd_outgoing_preflight() {
     else
         recorded="versions.log has entries for it, though its last line is not one a version can be read out of"
     fi
-    fail "$list, and this project has deployed here before ($recorded) — refusing to deploy over a stack that cannot run its backup or its pre-deploy hooks. Start it, or pass --allow-stopped if it is meant to be down. Nothing was changed."
+    # A container docker has never heard of is not a stopped stack, and "start
+    # it" is advice about something that cannot start. It is the manifest and
+    # the compose file naming different containers — a rename that reached one
+    # and not the other — and the only way past it, --allow-stopped, would then
+    # skip that step silently on every deploy after this one, which is the exact
+    # thing this preflight exists to stop.
+    if [ -n "$absent" ]; then
+        note "$list, and this project has deployed here before ($recorded)"
+        note "$absent — the manifest names it (backup.container, or the first word of a pre-deploy hook) and this server's compose file defines no container_name: that matches"
+        note "\`kasbah check\`'s HK01 catches that on the workstation, before any deploy"
+        fail "make kasbah.yml and the compose file agree on the name. --allow-stopped would deploy past this, and would go on skipping $skipped silently on every deploy after it. Nothing was changed."
+    fi
+    fail "$list, and this project has deployed here before ($recorded) — refusing to deploy over a stack that cannot run $skipped. Start it, or pass --allow-stopped if it is meant to be down. Nothing was changed."
 }
 
 # Newest `retain` kept, oldest removed, and only once the new file is on disk: a
@@ -546,20 +633,27 @@ rd_health_targets() {
     return 0
 }
 
-# The one thing this script writes to stdout, and the last thing it does: four
+# The one thing this script writes to stdout, and the last thing it does: five
 # `key=value` lines naming what the run ended up doing. Everything else it says
 # goes to stderr (see `note`), so the caller reads this without filtering.
 #
-# Two of the four are facts only this server has — the version the previous
-# deploy recorded, and the image ids the daemon here computed after the retag —
-# and `kasbah deploy` needs the first of them to print the changelog for the
-# range it just shipped (docs/build-deploy.md step 10).
+# Three of the five are facts only this server has — whether this project had
+# deployed here at all, the version the previous deploy recorded, and the image
+# ids the daemon here computed after the retag. `kasbah deploy` needs the first
+# two to print the changelog for the range it just shipped
+# (docs/build-deploy.md step 10), and it needs them as *two*: an empty
+# prev_version is what both a genuine first deploy and a project whose last
+# versions.log line is a truncated write look like, and the two get different
+# sentences. The shape here is not frozen the way versions.log's is — this
+# report is read only by the kasbah that shipped the script printing it — so a
+# new fact is an added key.
 #
 # Printed after the versions.log entry rather than anywhere earlier, which makes
 # it an end-of-run marker as well as a report: a caller that gets an exit status
 # of 0 and no report knows the run did not reach its end.
 rd_report() {
-    printf 'version=%s\nprev_version=%s\nbackup=%s\ndigest=%s\n' "$1" "$2" "$3" "$4"
+    printf 'version=%s\nprev_version=%s\ndeployed_before=%s\nbackup=%s\ndigest=%s\n' \
+        "$1" "$2" "$3" "$4" "$5"
     return 0
 }
 
@@ -609,8 +703,12 @@ rd_health_wait() {
 
 do_deploy() {
     local version="$1"
-    local backup prev digest
+    local backup prev digest deployed_before
 
+    # A backstop for a hand-run, not the first thing that notices: `kasbah
+    # deploy` judges the sync: list on the workstation, before the rsync and
+    # before the .env is rendered, because a list with no compose.yml
+    # destination is a fact about that checkout (lib/deploy.sh).
     [ -f "$PROJECT_DIR/compose.yml" ] \
         || fail "$PROJECT_DIR/compose.yml is missing — the project's sync: list must map its compose file to compose.yml"
     [ -f "$PROJECT_DIR/.env" ] \
@@ -622,6 +720,12 @@ do_deploy() {
     rd_preflight "$version"
 
     prev="$(rd_prev_version)" || fail "could not read $PROJECT_DIR/versions.log"
+    # Read here, before the append at the end of this function makes it true of
+    # every run. It is the other half of the question `prev` answers, and the
+    # report carries both for the same reason this script keeps them apart: an
+    # empty version is what a first deploy and a truncated last line both look
+    # like, and only one of them is a first deploy.
+    if rd_deployed_before; then deployed_before=yes; else deployed_before=no; fi
     rd_outgoing_preflight "$prev"
 
     # `|| fail` because rd_backup's own refusals run in this substitution's
@@ -664,7 +768,7 @@ do_deploy() {
     fi
 
     log_version deploy "$version" "$backup" "$digest"
-    rd_report "$version" "$prev" "$backup" "$digest"
+    rd_report "$version" "$prev" "$deployed_before" "$backup" "$digest"
     return 0
 }
 

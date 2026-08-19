@@ -215,14 +215,16 @@ Two modes:
   `v-tag`. Fails fast if HEAD isn't tagged. This is the everyday path: you
   may have tweaked compose or env template since cutting the tag, and you
   want to ship current disk state under that version label.
-- **Explicit `VERSION`** — deploys that tagged version exactly as it was,
+- **Explicit `VERSION`** *(not implemented — `deploy` refuses it by name
+  today. It is structurally the rollback path and lands with it in the undo
+  phase)* — deploys that tagged version exactly as it was,
   via `git archive v<VERSION>` (no checkout, working tree untouched). See
   the rollback flow in `build-deploy.md` — deploy of an explicit version
   uses the same code path, only the log entry (`action=deploy`) and hook
   pair (`pre-/post-deploy`) differ.
 
 Flow (no-args / working-tree path):
-1. Open SSH ControlMaster for the whole deploy (reuse across rsync/scp/ssh).
+1. Open SSH ControlMaster for the whole deploy (reused by every ssh and rsync).
 2. Verify SSH reachability.
 3. Resolve version = HEAD's `v-tag` (fail if not tagged).
 4. Ensure remote dirs exist (`/apps/<name>/`, `scripts/`, `backups/`, `/apps/data/<name>/`).
@@ -254,11 +256,14 @@ Flags:
   runs**: a flag for a dry-run-ish deploy must not also discard the data safety
   net.
 - `--no-health-wait` — don't block on healthcheck.
-- `--allow-stopped` — deploy over a stack that has deployed here before but is
-  not running. Without it that is a refusal, because the backup and the
-  `pre-deploy` hooks act on the outgoing containers and skipping them silently
-  is how a backup goes missing exactly when it was worth having. See
-  `build-deploy.md` § the outgoing stack.
+- `--allow-stopped` — deploy over a stack that has deployed here before but
+  whose outgoing containers are not running. Without it that is a refusal,
+  because the backup and the `pre-deploy` hooks act on those containers and
+  skipping them silently is how a backup goes missing exactly when it was worth
+  having. The refusal, and this flag, are **per container**: a stopped hook
+  container does not excuse skipping a backup whose own container is up, and
+  kasbah names which of the two it is talking about. See `build-deploy.md` §
+  the outgoing stack.
 
 ### `kasbah rollback [USER@HOST] [VERSION]`
 
@@ -399,7 +404,7 @@ Referenced elsewhere in the docs but not yet in v0.1:
 - `2` not a kasbah project (no `kasbah.yml`)
 - `3` SSH unreachable
 - `4` remote state missing — no server marker where the apps path says it
-  should be. Two situations now, and neither is "a server prepared with
+  should be. Three situations, and none of them is "a server prepared with
   `--apps-path` cannot be found" — the discovery pointer
   (`/etc/kasbah/apps-path`) closed that one:
   - the server was never prepared, and `kasbah server init` is the answer;
@@ -409,7 +414,12 @@ Referenced elsewhere in the docs but not yet in v0.1:
     stack under the frozen `traefik` compose project and recreate the running
     proxy against it, taking every site down. Find the real apps path
     (`kasbah server status <host> --apps-path=<dir>`) and restore the pointer.
+  - the pointer names a tree with **no marker under it**. kasbah does not fall
+    back to `/apps` here and says so: silently reading a different server's
+    marker is how a deploy lands on the wrong machine.
 
+  All three are one verdict — no marker where the apps path says one should be
+  — so all three exit 4, and the **message** is what distinguishes them.
   Commands that exit 4 say which situation they are in rather than
   prescribing init.
 - `5` env setup could not complete. Covers both halves of the same sentence —

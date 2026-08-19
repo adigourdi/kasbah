@@ -132,14 +132,20 @@ assert 'grep -qxF "apps=/srv/apps data=/srv/store cpu=1.0 mem=2g" <<<"$out"' \
     "with the marker's own paths coming back (got '$out')"
 
 # A pointer naming a tree with no marker in it. Falling back to /apps here would
-# read a *different* server's marker and deploy against it, so it is a refusal —
-# and never the exit 4 that means "this server was never prepared".
+# read a *different* server's marker and deploy against it, so kasbah does not —
+# and says so. The code is 4, the same one every "no marker where the apps path
+# says one should be" carries (docs/cli.md → exit codes): it is one server
+# state, and `kasbah server status` reaches it through _ss_no_marker and answers
+# 4 as well. What is particular to this case is the message, not the number.
 run_marker POINTER=/srv/apps MARKER_RC=3
-assert '[ "$rc" != "0" ] && [ "$rc" != "4" ]' \
-    "a pointer naming a tree with no marker is a hard failure, not exit 4 (rc $rc: $out)"
+assert '[ "$rc" = "4" ]' \
+    "a pointer naming a tree with no marker exits 4, like every other missing marker (rc $rc: $out)"
 assert 'grep -qF "/srv/apps/.kasbah/server.json" <<<"$out"' \
     "naming the marker it looked for (said '$out')"
 assert 'grep -qF "/etc/kasbah/apps-path" <<<"$out"' "and the pointer that sent it there (said '$out')"
+assert 'grep -qF "does not fall back" <<<"$out"' \
+    "and saying it refused to read the default tree instead — which is what separates
+        this from the two situations exit 4 usually means (said '$out')"
 assert '! grep -qF "no server marker at /apps/" <<<"$out"' \
     "and it did not quietly look under /apps instead (said '$out')"
 

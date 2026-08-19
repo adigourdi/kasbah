@@ -247,7 +247,13 @@ REMOTE
         err_cont "and deploying against that is worse than stopping."
         err_cont "So either $apps was removed, or the pointer names the wrong tree — look at"
         err_cont "both before doing anything else."
-        exit 1
+        # Exit 4, like every other "there is no marker where the apps path says
+        # one should be" (docs/cli.md → exit codes). It is the same server state
+        # `kasbah server status` reaches through _ss_no_marker, and one state
+        # answering with two codes is the thing a caller cannot script around.
+        # What separates this case from the others is the *message*, not the
+        # code: kasbah did not fall back to the default tree, and says so.
+        exit "$KASBAH_EXIT_NO_REMOTE_STATE"
     fi
 
     # What is left is a server that looks unprepared: either nothing has ever

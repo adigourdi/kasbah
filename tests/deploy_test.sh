@@ -127,6 +127,48 @@ out="$(check_sources 'compose.prod.yml/\n')"; rc=$?
 assert '[ "$rc" != "0" ]' "a file listed with a trailing slash fails (rc $rc)"
 assert 'grep -qF "but it is a file" <<<"$out"' "and says why (said '$out')"
 
+# A sync list that lands on no compose.yml. The shipped script refuses it too,
+# but only on the server — after the rsync and after the .env has been rendered
+# there. Which entry maps where is a fact about this checkout, so it costs no
+# round trip to find out.
+compose_dst() {
+    run_snippet '
+        MANIFEST_NAME=demo
+        _deploy_parse_sync_lines "$(printf '"'"'%b'"'"' "'"$1"'")"
+        _deploy_check_compose_dst
+        echo ok
+    ' 2>&1
+}
+
+out="$(compose_dst 'compose.prod.yml -> compose.yml\nsite/\n')"; rc=$?
+assert '[ "$rc" = "0" ] && [ "$out" = "ok" ]' \
+    "a list that maps a compose file onto compose.yml passes (rc $rc: $out)"
+out="$(compose_dst 'compose.yml\n')"; rc=$?
+assert '[ "$rc" = "0" ] && [ "$out" = "ok" ]' \
+    "and so does a bare compose.yml, which is its own destination (rc $rc: $out)"
+
+out="$(compose_dst 'compose.prod.yml\n.env.prod.example\n')"; rc=$?
+assert '[ "$rc" != "0" ]' \
+    "a list with no compose.yml destination is refused here, not on the server (rc $rc: $out)"
+assert 'grep -qF "no sync: entry lands on compose.yml" <<<"$out"' \
+    "naming what is missing (said '$out')"
+assert 'grep -qF "compose.prod.yml -> compose.yml" <<<"$out"' \
+    "and the line that fixes it (said '$out')"
+
+# The call site, not only the function. This suite drives functions, so a check
+# wired to nothing passes every case above (docs/phases/04-ship.md → a function
+# can be exhaustively tested and called by nothing) — and the whole point of
+# moving this one off the server is where it runs, which is a fact about
+# cmd_deploy's order rather than about the function.
+cmd_body="$(sed -n '/^cmd_deploy()/,/^}/p' "$repo_dir/lib/deploy.sh")"
+n_composechk="$(grep -n -m1 -F '_deploy_check_compose_dst' <<<"$cmd_body" | cut -d: -f1)"
+n_sshconn="$(grep -n -m1 -F 'ssh_connect' <<<"$cmd_body" | cut -d: -f1)"
+assert '[ -n "$n_composechk" ]' \
+    "cmd_deploy calls _deploy_check_compose_dst — a refusal nothing reaches is not a refusal"
+assert '[ -n "$n_sshconn" ] && [ "$n_composechk" -lt "$n_sshconn" ]' \
+    "and calls it before ssh_connect, which is the difference between this check and the
+        shipped script's own (check on line ${n_composechk:-none}, ssh_connect on ${n_sshconn:-none})"
+
 # --- Version resolution ---------------------------------------------------------
 pick_version() {
     run_snippet '
@@ -507,6 +549,10 @@ case "$last" in
         [ "${REPORT_OMIT:-}" != all ] || exit 0
         [ "${REPORT_OMIT:-}" = version ]      || printf 'version=%s\n' "${REPORT_VERSION-1.0.0}"
         [ "${REPORT_OMIT:-}" = prev_version ] || printf 'prev_version=%s\n' "${REPORT_PREV-0.9.0}"
+        # The other half of the same question. An empty prev_version is what a
+        # first deploy and a versions.log whose last line is a truncated write
+        # both look like, so the two facts are settable apart.
+        [ "${REPORT_OMIT:-}" = deployed_before ] || printf 'deployed_before=%s\n' "${REPORT_HISTORY-yes}"
         [ "${REPORT_OMIT:-}" = backup ]       || printf 'backup=%s\n' "${REPORT_BACKUP-no-backup}"
         [ "${REPORT_OMIT:-}" = digest ]       || printf 'digest=%s\n' "${REPORT_DIGEST--}" ;;
     *)
@@ -739,10 +785,33 @@ assert '! grep -qF "the commit before the one being deployed" <<<"$out"' \
 assert '! grep -qF "prev_version=" <<<"$out"' \
     "the raw report is absorbed rather than printed (said '$out')"
 
-out=$( cd "$project" && REPORT_PREV= deploy_cli deploy@vps ); rc=$?
+out=$( cd "$project" && REPORT_PREV= REPORT_HISTORY=no deploy_cli deploy@vps ); rc=$?
 assert '[ "$rc" = "0" ]' "a first deploy — the server reports no previous version (rc $rc: $out)"
 assert 'grep -qF "first deploy" <<<"$out"' "says so instead of a changelog (said '$out')"
 assert '! grep -qF "v..v1.0.0" <<<"$out"' "and computes no range from an empty version (said '$out')"
+
+# The other server that reports prev_version= — and it is not a first deploy.
+# The far side has just refused to call it one (its versions.log holds entries;
+# only their last line is a truncated write), so the local side must not say the
+# opposite of the sentence the operator has read three lines above. The two
+# halves travel as two keys because one key cannot carry them.
+out=$( cd "$project" && REPORT_PREV= REPORT_HISTORY=yes deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a server with history and an unreadable last line still deploys (rc $rc: $out)"
+assert '! grep -qF "first deploy" <<<"$out"' \
+    "and is never called a first deploy — the server said it has deployed here (said '$out')"
+assert 'grep -qF "has deployed demo before" <<<"$out"' \
+    "the changelog says what is actually true of it (said '$out')"
+assert 'grep -qF "versions.log" <<<"$out"' \
+    "and points at the file to look at (said '$out')"
+
+# A value the protocol does not define must not fall through to "no": that is
+# the changelog calling a server with history a first deploy, which is the
+# defect the key was added for.
+out=$( cd "$project" && REPORT_HISTORY=maybe deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" != "0" ]' "a deployed_before that is neither yes nor no fails the deploy (rc $rc: $out)"
+assert 'grep -qF "deployed_before=" <<<"$out" && grep -qF "maybe" <<<"$out"' \
+    "quoting what the server said (said '$out')"
+rm -rf "$project/.kasbah"
 
 out=$( cd "$project" && REPORT_PREV=1.0.0 deploy_cli deploy@vps ); rc=$?
 assert '[ "$rc" = "0" ]' "a redeploy of the version already there succeeds (rc $rc: $out)"
@@ -772,14 +841,14 @@ assert 'grep -qF "git fetch --tags" <<<"$out"' "with the way to get it (said '$o
 assert 'grep -qF "Deployed demo 1.0.0" <<<"$out"' "and the deploy is still reported (said '$out')"
 rm -rf "$project/.kasbah"
 
-# Each key on its own: a report missing any one of the four is the step not
+# Each key on its own: a report missing any one of the five is the step not
 # having finished, because the report is the last thing the script writes.
 #
 # The assertion is the protocol *sentence*, not the bare key name. Dropping a key
 # from the required set leaves the run failing either way — but on
 # `${_DEPLOY_FACT[key]}: unbound variable` and a bash backtrace, which happens to
 # contain the key name too. Grepping for the name alone calls that a pass.
-for key in version prev_version backup digest; do
+for key in version prev_version deployed_before backup digest; do
     out=$( cd "$project" && REPORT_OMIT="$key" deploy_cli deploy@vps ); rc=$?
     calls=$(<"$call_log")
     assert '[ "$rc" != "0" ]' "a report with no $key fails the deploy (rc $rc: $out)"
@@ -797,8 +866,8 @@ done
 out=$( cd "$project" && REPORT_OMIT=all deploy_cli deploy@vps ); rc=$?
 calls=$(<"$call_log")
 assert '[ "$rc" != "0" ]' "a deploy that exits 0 and reports nothing at all fails (rc $rc: $out)"
-assert 'grep -qF "reported no version prev_version backup digest" <<<"$out"' \
-    "naming all four in one sentence rather than the first one it missed (said '$out')"
+assert 'grep -qF "reported no version prev_version deployed_before backup digest" <<<"$out"' \
+    "naming all five in one sentence rather than the first one it missed (said '$out')"
 assert '! grep -qF "dynamic/demo.yml" <<<"$calls"' "and no route was written"
 
 # This is the one absorb whose failure is not "nothing happened", so it says so:
