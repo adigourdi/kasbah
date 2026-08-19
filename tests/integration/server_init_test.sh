@@ -283,6 +283,22 @@ assert '[ "${fact[control_isfile]}" = "no" ]' \
 assert '[ "${fact[control_isreadable]}" = "yes" ]' \
     "and -r says yes to that same directory, which is why -f is the guard and -e/-r are not"
 
+# --- The pointer --------------------------------------------------------------
+# The server's own record of where it was prepared, which is what makes a
+# server at a non-default apps path discoverable at all. Read off the rig with
+# no kasbah in the loop.
+pointer_stat=$(rig_ssh "stat -c '%U:%G %a' /etc/kasbah/apps-path; cat /etc/kasbah/apps-path; stat -c '%a' /etc/kasbah" 2>&1 | tr -d '\r')
+assert 'grep -qxF "root:root 644" <<<"$pointer_stat"' \
+    "the pointer is root-owned and world-readable (got '$(tr "\n" "|" <<<"$pointer_stat")')"
+assert 'grep -qxF "$apps" <<<"$pointer_stat"' \
+    "and holds the apps path on a line of its own (got '$(tr "\n" "|" <<<"$pointer_stat")')"
+assert '[ "$(rig_ssh "wc -l < /etc/kasbah/apps-path" 2>/dev/null | tr -d "\r ")" = "1" ]' \
+    "one line, nothing else"
+assert 'grep -qxF "755" <<<"$pointer_stat"' \
+    "in a directory every user can traverse (got '$(tr "\n" "|" <<<"$pointer_stat")')"
+assert 'grep -qF "/etc/kasbah/apps-path -> $apps" "$tmpdir/err"' \
+    "and init says it wrote it (said '$(init_err)')"
+
 # --- The marker ---------------------------------------------------------------
 assert '[ "${fact[marker_isfile]}" = "yes" ]' "$marker exists as a file"
 marker_json=$(rig_ssh "cat $marker" 2>/dev/null)
@@ -466,6 +482,8 @@ assert '[ "$after" = "$before" ]' \
         before: $before
         after:  $after"
 started_after=$(traefik_started_at)
+assert 'grep -qF "/etc/kasbah/apps-path -> $apps (unchanged)" "$tmpdir/err"' \
+    "the pointer already said that, so it was not rewritten (said '$(init_err)')"
 assert '[ "$started_after" = "$started_before" ]' \
     "and does not restart Traefik — nothing moved, so nothing to reload
         before: $started_before
@@ -473,6 +491,17 @@ assert '[ "$started_after" = "$started_before" ]' \
 code_reuse=$(curl_dash "-u '$dash_user:$dash_pass'")
 assert '[ "$code_reuse" = "200" ]' \
     "the first run's credentials still work, so the hash was reused rather than regenerated (got '$code_reuse')"
+
+# A pointer with the right content and the wrong mode is not a pointer: at 600
+# no deploy user can read it, which is the same as none at all. Init repairs it
+# rather than reading the content and calling it done.
+rig_ssh "sudo chmod 600 /etc/kasbah/apps-path" >/dev/null 2>&1
+init --no-mail --no-backup; rc=$?
+assert '[ "$rc" = "0" ]' "init runs against a pointer nobody but root can read (exit $rc: $(init_err))"
+assert 'grep -qF "/etc/kasbah/apps-path -> $apps (written)" "$tmpdir/err"' \
+    "and rewrites it rather than leaving it (said '$(init_err)')"
+assert '[ "$(rig_ssh "stat -c %a /etc/kasbah/apps-path" 2>/dev/null | tr -d "\r")" = "644" ]' \
+    "back to world-readable (got '$(rig_ssh "stat -c %a /etc/kasbah/apps-path" 2>/dev/null)')"
 
 # The other half of the rule: a changed static config *is* restarted. Traefik
 # reads traefik.yml once, at startup, so a re-render that skipped the restart
@@ -653,15 +682,40 @@ assert '! grep -qF "$RIG_SSH_USER:$RIG_SSH_USER" <<<"$after_owned"' \
 assert '! grep -qF ".kasbah" <<<"$after_owned"' \
     "and nothing was created inside it (got '$after_owned')"
 
-# The operator does what the message says, and then it works. A fresh apps path
-# has no Traefik stack to recover values from, so the flags come back.
+# The operator does what the message says — and it is still refused, because
+# this rig is already prepared at /apps and one server runs one kasbah: one
+# Traefik holds :80 and :443, and a second tree would render a rival stack under
+# the frozen `traefik` compose project and recreate the running proxy against
+# it. The pointer is what knows that.
 rig_ssh "sudo chown $RIG_SSH_USER:$RIG_SSH_USER $owned" >/dev/null 2>&1
+pointer_before=$(rig_ssh "cat /etc/kasbah/apps-path" 2>/dev/null | tr -d '\r')
+assert '[ "$pointer_before" = "$apps" ]' \
+    "the rig carries the pointer the earlier init wrote (got '$pointer_before')"
+init --apps-path="$owned" --no-mail --no-backup "${traefik_flags[@]}"; rc=$?
+assert '[ "$rc" != "0" ]' "a second, different apps path is refused (exit $rc)"
+assert 'grep -qF "$owned" "$tmpdir/err"' "naming the path this run would have prepared (said '$(init_err)')"
+assert 'grep -qF "$apps" "$tmpdir/err"'  "and the one it is already prepared at (said '$(init_err)')"
+assert '[ "$(rig_ssh "[ -e $owned/.kasbah ] && echo present || echo absent" 2>/dev/null)" = "absent" ]' \
+    "and nothing was laid out under it"
+assert '[ "$(rig_ssh "cat /etc/kasbah/apps-path" 2>/dev/null | tr -d "\r")" = "$apps" ]' \
+    "the pointer still names the server that is there"
+
+# Moving a server is deliberate: the pointer comes off, and then it works. A
+# fresh apps path has no Traefik stack to recover values from, so the flags
+# come back.
+rig_ssh "sudo rm -f /etc/kasbah/apps-path" >/dev/null 2>&1
 init --apps-path="$owned" --no-mail --no-backup "${traefik_flags[@]}"; rc=$?
 handed=$(rig_ssh "[ -f $owned/.kasbah/server.json ] && echo marker-ok; stat -c '%U:%G' $owned/PRECIOUS" 2>&1)
 assert '[ "$rc" = "0" ]' "init uses the path once it has been handed over (exit $rc: $(init_err))"
 assert 'grep -qF "marker-ok" <<<"$handed"' "the marker lands there (got '$handed')"
 assert 'grep -qF "root:root" <<<"$handed"' \
     "and the pre-existing file is still root's — kasbah chowns nothing recursively (got '$handed')"
+assert '[ "$(rig_ssh "cat /etc/kasbah/apps-path" 2>/dev/null | tr -d "\r")" = "$owned" ]' \
+    "and the server's record now names the tree it was prepared at"
+assert '[ "$(rig_ssh "stat -c \"%U %a\" /etc/kasbah/apps-path" 2>/dev/null | tr -d "\r")" = "root 644" ]' \
+    "root-owned and world-readable, since every deploy user reads it (got '$(rig_ssh "stat -c \"%U %a\" /etc/kasbah/apps-path" 2>/dev/null)')"
+# Left where it is, it would steer every case below and every later suite.
+rig_ssh "sudo rm -f /etc/kasbah/apps-path" >/dev/null 2>&1
 
 # A symlink to nothing answers -e with "no" and then fails `mkdir -p` with
 # "File exists", so it is diagnosed rather than walked into.
@@ -779,6 +833,11 @@ if rig_clean; then
             "passing docker's own diagnosis through rather than a bare timeout"
         assert '[ "$(rig_ssh "[ -e $marker ] && echo present || echo absent" 2>/dev/null)" = "absent" ]' \
             "and writes no marker — a server whose Traefik never came up is not a prepared server"
+        # The pointer is written immediately *after* the marker and never
+        # before it, so a run that dies earlier leaves no pointer either — and
+        # every command's /apps fallback still describes this host truthfully.
+        assert '[ "$(rig_ssh "[ -e /etc/kasbah/apps-path ] && echo present || echo absent" 2>/dev/null)" = "absent" ]' \
+            "and no pointer — it follows the marker, so a failed run leaves neither"
         assert '[ "$(rig_ssh "[ -f $apps/traefik/compose.yml ] && echo yes || echo no" 2>/dev/null)" = "yes" ]' \
             "though the stack it rendered is on disk, so the operator can look at it"
         rig_ssh "docker rm -f traefik" >/dev/null 2>&1

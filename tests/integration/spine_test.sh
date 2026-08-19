@@ -779,8 +779,8 @@ assert '[ -n "$want_docker" ] && [ -n "$want_image_id" ] && [ -n "$want_version"
 
 assert 'grep -qF "Docker: $want_docker, Compose: $want_compose" "$tmpdir/out"' \
     "the versions are the daemon's own (wanted '$want_docker'/'$want_compose', said '$(status_out)')"
-assert 'grep -qF "Root: $apps  Data: $want_marker_data" "$tmpdir/out"' \
-    "the paths are the marker's (wanted '$want_marker_data', said '$(status_out)')"
+assert 'grep -qF "Root: $apps (pointer)  Data: $want_marker_data" "$tmpdir/out"' \
+    "the paths are the marker's, and the root came from the server's own pointer (wanted '$want_marker_data', said '$(status_out)')"
 assert 'grep -qF "Traefik: $want_tstate ($want_thealth)" "$tmpdir/out"' \
     "Traefik's state and health are what docker reports (wanted '$want_tstate ($want_thealth)', said '$(status_out)')"
 # `-x`, and a second assertion that the full id is absent: the untruncated id
@@ -871,8 +871,8 @@ if [ -n "$alt_marker" ] && rig_ssh "mkdir -p $alt_apps/.kasbah $alt_apps/altproj
     alt_planted=yes
     status --apps-path="$alt_apps"; rc=$?
     assert '[ "$rc" = "0" ]' "server status --apps-path reads a server prepared elsewhere (exit $rc: $(cli_err))"
-    assert 'grep -qF "Root: $alt_apps  Data: $alt_apps/store" "$tmpdir/out"' \
-        "and reports that tree's own paths (said '$(status_out)')"
+    assert 'grep -qF "Root: $alt_apps (flag)  Data: $alt_apps/store" "$tmpdir/out"' \
+        "and reports that tree's own paths, read because the flag said so (said '$(status_out)')"
     assert 'grep -qE "^  altproj +no containers +7\.7\.7 +deploy 2026-08-14T00:00:00\+00:00 \(kasbah 9\.9\.9\)$" "$tmpdir/out"' \
         "the project it lists is the one under --apps-path, with its own log line (said '$(status_out)')"
     assert '! grep -qE "^  $project " "$tmpdir/out"' \

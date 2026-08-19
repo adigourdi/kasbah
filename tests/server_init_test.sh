@@ -116,6 +116,25 @@ case "$mode" in
     marker)
         _server_marker_json "$1" "$2" "$3" "$4" "$5" "${6:-}"
         ;;
+    pointercheck)
+        # The refusal that keeps one server to one kasbah, driven from the two
+        # facts the probe brings back.
+        _SI_TARGET=deploy@vps
+        _SI_APPS_PATH="$1"
+        # `user` comes from the probe, whose key set is checked before any
+        # verdict runs, so it is always there by the time this is called.
+        _SI_FACT=([pointer_state]="$2" [pointer_value]="${3:-}" [user]=deploy)
+        _server_init_check_pointer
+        printf 'pointer=accepted\n'
+        ;;
+    pointerverdict)
+        # What a pointer step's report costs, which depends on the apps path.
+        _SI_TARGET=deploy@vps
+        _SI_APPS_PATH="$1"
+        _SI_FACT=([pointer]="$2" [user]=deploy)
+        _server_init_pointer_verdict
+        printf 'verdict=ok\n'
+        ;;
     compat)
         _SI_APPS_PATH=/apps
         _SI_TARGET=deploy@vps
@@ -948,5 +967,393 @@ assert '! grep -qU $'"'"'\r'"'"' "$tmpdir/err"' \
     "a CRLF target carries no carriage return into the prompt (said '$(cat -v "$tmpdir/err")')"
 assert 'grep -qF "on deploy@kasbah-unit-test.invalid?" "$tmpdir/err"' \
     "and the question names the target it would act on (said '$(cat "$tmpdir/err")')"
+
+# --- The pointer, and the second apps path it refuses -------------------------
+# One kasbah per server, because one Traefik holds :80 and :443. The states come
+# from the probe's two facts, so every branch below is reachable from a real
+# server.
+out=$(drive pointercheck /apps absent); rc=$?
+assert '[ "$rc" = "0" ] && grep -qxF "pointer=accepted" <<<"$out"' \
+    "no pointer is the ordinary first run, and the check returns rather than exits (exit $rc, got '$out': $(drive_err))"
+out=$(drive pointercheck /apps present /apps); rc=$?
+assert '[ "$rc" = "0" ] && grep -qxF "pointer=accepted" <<<"$out"' \
+    "a pointer naming this very path is idempotent, not a conflict (exit $rc, got '$out': $(drive_err))"
+out=$(drive pointercheck /srv/apps present /srv/apps); rc=$?
+assert '[ "$rc" = "0" ] && grep -qxF "pointer=accepted" <<<"$out"' \
+    "and so is a re-run at a non-default path (exit $rc, got '$out': $(drive_err))"
+
+# The refusal itself. It has to name both paths and what would happen, because
+# the alternative to reading it is a host whose every site goes dark.
+drive pointercheck /apps present /srv/apps >/dev/null; rc=$?
+out=$(drive_err)
+assert '[ "$rc" != "0" ]' "a second, different apps path is refused (exit $rc, said '$out')"
+assert 'grep -qF "/srv/apps" <<<"$out"' "naming the path the server is prepared at (said '$out')"
+assert 'grep -qF "/apps" <<<"$out"'     "and the one this run would prepare (said '$out')"
+assert 'grep -qF "/etc/kasbah/apps-path" <<<"$out"' "and where that is recorded (said '$out')"
+assert 'grep -qF "traefik" <<<"$out"'   "and what would happen to the running proxy (said '$out')"
+assert 'grep -qF "Nothing has been changed" <<<"$out"' \
+    "and that this run did nothing (said '$out')"
+assert 'grep -qF -- "--apps-path" <<<"$out"' \
+    "and the flag that manages the server that is there (said '$out')"
+
+# A pointer spelling the path with a `..` segment names a real directory, and
+# the refusal is right to fire — but its remedy has to be one the operator can
+# carry out: `--apps-path=/srv/x/..` is rejected by init's own flag check as not
+# normalised, which would be a refusal loop printed by kasbah itself.
+drive pointercheck /apps present /srv/x/.. >/dev/null; rc=$?
+out=$(drive_err)
+assert '[ "$rc" != "0" ]' "a pointer naming another tree through '..' is refused (exit $rc, said '$out')"
+assert '! grep -qF -- "--apps-path=/srv/x/.." <<<"$out"' \
+    "and never prescribes a flag its own parser rejects (said '$out')"
+assert 'grep -qF "resolves to" <<<"$out"' \
+    "asking for the directory it resolves to instead (said '$out')"
+assert 'grep -qF "remove /etc/kasbah/apps-path" <<<"$out"' \
+    "with the other way out still spelled (said '$out')"
+
+drive pointercheck /srv/apps present /apps >/dev/null; rc=$?
+out=$(drive_err)
+assert '[ "$rc" != "0" ]' "the refusal is symmetric — the default is not privileged (exit $rc, said '$out')"
+
+# A pointer that is not a file, and one that holds nothing usable: kasbah does
+# not write over a record it cannot read, because whatever it was meant to say
+# is the tree this run would stand a second Traefik beside.
+drive pointercheck /apps notfile >/dev/null; rc=$?
+out=$(drive_err)
+assert '[ "$rc" != "0" ]' "a pointer that is not a regular file is refused (exit $rc, said '$out')"
+assert 'grep -qF "not a regular file" <<<"$out"' "saying so (said '$out')"
+
+# A directory nothing here can enter: whether this server records an apps path
+# cannot be told, and "cannot tell" is not "there is none".
+drive pointercheck /apps unreachable >/dev/null; rc=$?
+out=$(drive_err)
+assert '[ "$rc" != "0" ]' "a pointer directory nothing can enter is refused (exit $rc, said '$out')"
+assert 'grep -qF "/etc/kasbah" <<<"$out"' "naming it (said '$out')"
+assert 'grep -qF "chmod 755" <<<"$out"' "and how to open it (said '$out')"
+
+# Not even root could read it. Init repairs a pointer it can read — that is the
+# mode-600 case the rig covers — but what it cannot read may name another tree,
+# and standing a second Traefik beside a running one is not a guess to make.
+drive pointercheck /apps unreadable >/dev/null; rc=$?
+out=$(drive_err)
+assert '[ "$rc" != "0" ]' "a pointer nothing can read is refused (exit $rc, said '$out')"
+assert 'grep -qF "cannot be read" <<<"$out"' "saying so (said '$out')"
+assert 'grep -qF "traefik" <<<"$out" || grep -qF "Traefik" <<<"$out"' \
+    "and what it is protecting (said '$out')"
+for bad in srv/apps . ""; do
+    drive pointercheck /apps present "$bad" >/dev/null; rc=$?
+    out=$(drive_err)
+    assert '[ "$rc" != "0" ]' "a pointer holding '$bad' is refused (exit $rc, said '$out')"
+    assert 'grep -qF "not an absolute path" <<<"$out"' "saying why (said '$out')"
+    assert 'grep -qF "remove /etc/kasbah/apps-path" <<<"$out"' \
+        "and how to get out of it (said '$out')"
+done
+
+# --- What a pointer that could not be written costs ---------------------------
+out=$(drive pointerverdict /apps written); rc=$?
+assert '[ "$rc" = "0" ] && grep -qxF "verdict=ok" <<<"$out"' \
+    "a written pointer is the end of it, and the verdict returns rather than exits (exit $rc, got '$out': $(drive_err))"
+out=$(drive pointerverdict /apps unchanged); rc=$?
+assert '[ "$rc" = "0" ] && grep -qxF "verdict=ok" <<<"$out"' \
+    "and so is one that was already right (exit $rc, got '$out': $(drive_err))"
+
+# The split the whole sudo question comes down to: at /apps the fallback covers
+# it, anywhere else the server is prepared and undiscoverable.
+sentinel=$(drive pointerverdict /apps nosudo); rc=$?
+out=$(drive_err)
+assert '[ "$rc" = "0" ] && grep -qxF "verdict=ok" <<<"$sentinel"' \
+    "no sudo at the default apps path is a warning, not a failure, and the run goes on (exit $rc, got '$sentinel', said '$out')"
+assert 'grep -qF "warning:" <<<"$out"' "and it does warn (said '$out')"
+assert 'grep -qF "sudo -n" <<<"$out"'  "naming what was missing (said '$out')"
+
+drive pointerverdict /srv/apps nosudo >/dev/null; rc=$?
+out=$(drive_err)
+assert '[ "$rc" != "0" ]' "no sudo at a non-default apps path is a hard failure (exit $rc, said '$out')"
+assert 'grep -qF "/srv/apps" <<<"$out"' "naming the path nothing would find (said '$out')"
+assert 'grep -qF "exit 4" <<<"$out"'    "and what deploy would do instead (said '$out')"
+assert 'grep -qF "sudo tee /etc/kasbah/apps-path" <<<"$out"' \
+    "and the one command that fixes it by hand (said '$out')"
+
+drive pointerverdict /apps somethingelse >/dev/null; rc=$?
+out=$(drive_err)
+assert '[ "$rc" != "0" ]' "a report this kasbah does not know is a failure (exit $rc, said '$out')"
+
+# --- The pointer step, run locally --------------------------------------------
+# Extracted from its heredoc and run against a pointer path of its own. Two of
+# its branches cannot be produced on the rig, whose ssh user has passwordless
+# sudo: a host with no sudo at all, and one where the file is something other
+# than a file. The rig proves the half this cannot — root ownership, mode 644,
+# and the unchanged re-run.
+payload="$tmpdir/pointer.sh"
+awk '/<<'"'"'REMOTE'"'"'$/{buf=""; inb=1; next} inb && /^REMOTE$/{if (buf ~ /pointer=written/) printf "%s", buf; inb=0; next} inb{buf = buf $0 "\n"}' \
+    "$repo_dir/lib/server_init.sh" > "$payload"
+assert '[ -s "$payload" ]' "the pointer step was extracted from lib/server_init.sh"
+assert 'grep -qF "pointer=nosudo" "$payload"' \
+    "and it is the right block — every case below is empty theatre otherwise"
+
+# A stand-in for root, because this suite is not root and must not become it.
+#
+#   * `-n` is required, not tolerated: a sudo that would prompt has nowhere to
+#     read a password from inside a remote step, so a call without it is a
+#     defect rather than a slower path. This stub answers such a call the way
+#     the real one answers a caller with no terminal — it does not run.
+#   * $STUB_SUDO=no is a host where sudo refuses outright.
+#   * $STUB_ROOT_DIR / $STUB_ROOT_FILE are what root's *eyes* amount to here:
+#     the mode is lifted for the duration of the one command and put straight
+#     back, so a directory this user cannot enter and a file it cannot read are
+#     both reachable through sudo and through nothing else.
+#   * `chown` is faked: this user cannot hand a file to uid 0, and the rig
+#     asserts that half against a real one.
+#
+# Every call is logged, so a step can be asked what it actually ran.
+sudo_stub="$tmpdir/sudobin"
+mkdir -p "$sudo_stub"
+cat > "$sudo_stub/sudo" <<'STUB'
+#!/usr/bin/env bash
+{ printf 'sudo'; for a in "$@"; do printf '|%s' "$a"; done; printf '\n'; } >> "$STUB_SUDO_LOG"
+if [ "${1:-}" != "-n" ]; then
+    printf 'sudo: a terminal is required to read the password\n' >&2
+    exit 97
+fi
+[ "${STUB_SUDO:-yes}" = yes ] || exit 1
+shift
+case "$1" in chown) exit 0 ;; esac
+restore=""
+for p in "${STUB_ROOT_DIR:-}" "${STUB_ROOT_FILE:-}"; do
+    [ -n "$p" ] && [ -e "$p" ] || continue
+    restore="$restore$p $(stat -c '%a' "$p")
+"
+    chmod u+rwx "$p" 2>/dev/null || true
+done
+"$@"; rc=$?
+while read -r p mode; do
+    [ -n "$p" ] || continue
+    chmod "$mode" "$p" 2>/dev/null || true
+done <<<"$restore"
+exit "$rc"
+STUB
+chmod 0755 "$sudo_stub/sudo"
+sudo_log="$tmpdir/sudo.log"
+: > "$sudo_log"
+
+pdir="$tmpdir/pointerfs"
+ppath="$pdir/etc/kasbah/apps-path"
+run_pointer() {
+    local apps="$1"; shift
+    p_rc=0
+    : > "$sudo_log"
+    p_out="$(env PATH="$sudo_stub:$PATH" STUB_SUDO_LOG="$sudo_log" "$@" \
+             bash "$payload" "$apps" "$ppath" 2>"$tmpdir/perr")" || p_rc=$?
+}
+
+# No sudo, nothing written: the file the caller then has to have an opinion
+# about is the one that is not there.
+rm -rf "$pdir"; mkdir -p "$pdir/etc"
+run_pointer /srv/apps STUB_SUDO=no
+assert '[ "$p_rc" = "0" ]' "a host with no sudo is reported, not a transport failure (rc $p_rc: $(cat "$tmpdir/perr"))"
+assert '[ "$p_out" = "pointer=nosudo" ]' "as nosudo (got '$p_out')"
+assert '[ ! -e "$ppath" ]' "and nothing was written"
+
+# With root available: one absolute path, one line, mode 644.
+run_pointer /srv/apps
+assert '[ "$p_rc" = "0" ]' "the pointer is written (rc $p_rc: $(cat "$tmpdir/perr"))"
+assert '[ "$p_out" = "pointer=written" ]' "and says so (got '$p_out')"
+assert '[ "$(cat "$ppath")" = "/srv/apps" ]' "holding the apps path (got '$(cat "$ppath" 2>&1)')"
+assert '[ "$(stat -c %a "$ppath")" = "644" ]' "world-readable (got '$(stat -c %a "$ppath" 2>&1)')"
+assert '[ "$(wc -l < "$ppath")" = "1" ]' "on one line (got $(wc -l < "$ppath") lines)"
+assert '[ "$(stat -c %a "$pdir/etc/kasbah")" = "755" ]' \
+    "in a directory anyone can traverse (got '$(stat -c %a "$pdir/etc/kasbah" 2>&1)')"
+assert '[ -z "$(ls "$pdir/etc/kasbah" | grep -v "^apps-path$")" ]' \
+    "and the staging file was renamed into place, not left behind (dir: $(ls -A "$pdir/etc/kasbah" | tr '\n' ' '))"
+
+# A pointer whose content is right but whose mode is not is rewritten: a 600
+# pointer is one no deploy user can read, which is the same as none.
+chmod 600 "$ppath"
+run_pointer /srv/apps
+assert '[ "$p_out" = "pointer=written" ]' \
+    "a pointer with the wrong mode is rewritten rather than left (got '$p_out')"
+assert '[ "$(stat -c %a "$ppath")" = "644" ]' "back to 644 (got '$(stat -c %a "$ppath" 2>&1)')"
+
+# A different apps path overwrites — by the time this step runs, the refusal
+# above has already had its say about whether that is allowed.
+run_pointer /opt/apps
+assert '[ "$(cat "$ppath")" = "/opt/apps" ]' "a re-prepare rewrites it (got '$(cat "$ppath" 2>&1)')"
+
+# The staging file is gone after a run that worked, not only after one that
+# failed: it holds the apps path, and /tmp on a server is not where that lives.
+stage_ok="$tmpdir/pointer-staging-ok"
+mkdir -p "$stage_ok"
+run_pointer /srv/apps TMPDIR="$stage_ok"
+assert '[ "$p_out" = "pointer=written" ]' "the staged write succeeded (got '$p_out')"
+assert '[ -z "$(ls -A "$stage_ok")" ]' \
+    "and left nothing behind in TMPDIR (left: $(ls -A "$stage_ok" | tr '\n' ' '))"
+
+# Every elevation is `sudo -n`. Without the flag sudo asks for a password, and
+# a remote step has no terminal to be asked on — it would hang until the ssh
+# session timed out. The stub refuses a call without it, and the log is what
+# says the step never made one.
+assert '[ -s "$sudo_log" ]' "the write really did elevate (sudo log: $(cat "$sudo_log"))"
+assert '! grep -qv "^sudo|-n|" "$sudo_log"' \
+    "and every sudo call carries -n (sudo log: $(tr '\n' ' ' < "$sudo_log"))"
+
+# Owner as well as mode. A 644 pointer that belongs to the deploy user rather
+# than to root is one that user can rewrite at will, which is not the file the
+# rest of kasbah trusts — so "already right" is not content alone.
+printf '/srv/apps\n' > "$ppath"
+chmod 644 "$ppath"
+run_pointer /srv/apps
+assert '[ "$p_out" = "pointer=written" ]' \
+    "a pointer with the right content and the wrong owner is rewritten (got '$p_out')"
+
+# A pointer this user cannot read at all: rewritten, and silently. The `-r`
+# guard is what keeps a failed redirect out of the operator's terminal.
+printf '/srv/apps\n' > "$ppath"
+chmod 000 "$ppath"
+if [ ! -r "$ppath" ]; then
+    run_pointer /srv/apps
+    assert '[ "$p_out" = "pointer=written" ]' "an unreadable pointer is rewritten (got '$p_out')"
+    assert '[ ! -s "$tmpdir/perr" ]' \
+        "with nothing on stderr — the step reads no file it cannot read (said '$(cat "$tmpdir/perr")')"
+else
+    assert 'true' "skipped: this user can read a mode-000 file"
+fi
+chmod 644 "$ppath"
+
+# A step that fails half way takes its staging file with it: the apps path must
+# not be left lying in /tmp on the server.
+stage_dir="$tmpdir/pointer-staging"
+mkdir -p "$stage_dir"
+locked="$tmpdir/locked"
+rm -rf "$locked"; mkdir -p "$locked"; chmod 555 "$locked"
+saved_ppath="$ppath"
+ppath="$locked/kasbah/apps-path"
+run_pointer /srv/apps TMPDIR="$stage_dir"
+assert '[ "$p_rc" != "0" ]' "a pointer directory that cannot be created is a failure (rc $p_rc)"
+assert '[ -z "$(ls -A "$stage_dir")" ]' \
+    "and the staging file went with it (left: $(ls -A "$stage_dir" | tr '\n' ' '))"
+chmod 755 "$locked"; rm -rf "$locked"
+ppath="$saved_ppath"
+
+rm -f "$ppath"; mkdir -p "$ppath"
+run_pointer /srv/apps
+assert '[ "$p_rc" != "0" ]' "a directory where the pointer belongs is a failure (rc $p_rc)"
+assert 'grep -qF "not a regular file" "$tmpdir/perr"' "saying so (said '$(cat "$tmpdir/perr")')"
+rmdir "$ppath"
+
+# --- The prerequisite probe's pointer facts, run locally ------------------------
+# The one remote payload in this change that nothing else runs. Extracted the
+# same way as the pointer step and pointed at a scratch tree, because the states
+# it has to tell apart — a pointer only root can read, one behind a directory
+# this user cannot enter, one that is not there at all — are the states whose
+# verdicts differ, and the rig can only ever be in the easy one.
+probe_payload="$tmpdir/probe.sh"
+awk '/<<'"'"'REMOTE'"'"'$/{buf=""; inb=1; next} inb && /^REMOTE$/{if (buf ~ /kv pointer_state/) printf "%s", buf; inb=0; next} inb{buf = buf $0 "\n"}' \
+    "$repo_dir/lib/server_init.sh" > "$probe_payload"
+assert '[ -s "$probe_payload" ]' "the prerequisite probe was extracted from lib/server_init.sh"
+assert 'grep -qF "kv memtotal_kb" "$probe_payload"' \
+    "and it is the whole probe — every case below is empty theatre otherwise"
+
+probe_root="$tmpdir/probefs"
+probe_ptr="$probe_root/etc/kasbah/apps-path"
+probe_out=""
+run_probe() {
+    : > "$sudo_log"
+    probe_out="$(env PATH="$sudo_stub:$PATH" STUB_SUDO_LOG="$sudo_log" "$@" \
+        bash "$probe_payload" "$probe_root/apps" "$probe_root/apps/data" "$probe_ptr" 2>/dev/null)"
+}
+pfact() { sed -n "s/^$1=//p" <<<"$probe_out"; }
+
+rm -rf "$probe_root"; mkdir -p "$probe_root/etc/kasbah"
+run_probe
+assert '[ "$(pfact pointer_state)" = "absent" ]' \
+    "no pointer is reported as absent (got '$(pfact pointer_state)')"
+assert '[ "$(pfact pointer_value)" = "" ]' "with no value (got '$(pfact pointer_value)')"
+assert '[ "$(pfact sudo_nopasswd)" = "yes" ]' \
+    "and the sudo row is asked with -n (got '$(pfact sudo_nopasswd)', sudo log: $(tr '\n' ' ' < "$sudo_log"))"
+assert '! grep -qv "^sudo|-n|" "$sudo_log"' \
+    "every sudo the probe runs carries -n (sudo log: $(tr '\n' ' ' < "$sudo_log"))"
+
+printf '%s\n' "/srv/apps/" > "$probe_ptr"
+run_probe
+assert '[ "$(pfact pointer_state)" = "present" ]' "a pointer is read (got '$(pfact pointer_state)')"
+assert '[ "$(pfact pointer_value)" = "/srv/apps" ]' \
+    "and normalised, so it compares with a --apps-path the same way (got '$(pfact pointer_value)')"
+
+# Only root can read it. Init repairs such a pointer — but not before it knows
+# what it says, because what it says may be another tree.
+chmod 000 "$probe_ptr"
+if [ ! -r "$probe_ptr" ]; then
+    run_probe STUB_ROOT_FILE="$probe_ptr"
+    assert '[ "$(pfact pointer_state)" = "present" ]' \
+        "a pointer only root can read is read with root's eyes (got '$(pfact pointer_state)')"
+    assert '[ "$(pfact pointer_value)" = "/srv/apps" ]' "with its value (got '$(pfact pointer_value)')"
+    # And when root cannot help either — no sudo, or a sudo that answers
+    # nothing — an empty read must never stand in for "there is no pointer".
+    run_probe
+    assert '[ "$(pfact pointer_state)" = "unreadable" ]' \
+        "a read that came back empty is not a pointer holding nothing (got '$(pfact pointer_state)')"
+    run_probe STUB_SUDO=no
+    assert '[ "$(pfact pointer_state)" = "unreadable" ]' \
+        "and neither is a host with no sudo to look with (got '$(pfact pointer_state)')"
+else
+    assert 'true' "skipped: this user can read a mode-000 file"
+fi
+chmod 644 "$probe_ptr"
+
+# The directory, which is the harder half: `[ -e ]` answers "no" for a pointer
+# behind a directory this user cannot enter, exactly as it does for one that is
+# not there — and the second means "this server is at /apps" while the first may
+# mean "this server is somewhere else entirely".
+chmod 000 "$probe_root/etc/kasbah"
+if [ ! -x "$probe_root/etc/kasbah" ]; then
+    run_probe STUB_ROOT_DIR="$probe_root/etc/kasbah"
+    assert '[ "$(pfact pointer_state)" = "present" ]' \
+        "root looks inside a directory this user cannot enter (got '$(pfact pointer_state)')"
+    assert '[ "$(pfact pointer_value)" = "/srv/apps" ]' "and finds it (got '$(pfact pointer_value)')"
+    run_probe STUB_SUDO=no
+    assert '[ "$(pfact pointer_state)" = "unreachable" ]' \
+        "and with no sudo the answer is 'cannot tell', never 'absent' (got '$(pfact pointer_state)')"
+else
+    assert 'true' "skipped: this user can enter a mode-000 directory"
+fi
+chmod 755 "$probe_root/etc/kasbah"
+
+# The same directory, with no pointer in it: root's eyes say absent, and absent
+# is the ordinary first run.
+rm -f "$probe_ptr"
+chmod 000 "$probe_root/etc/kasbah"
+if [ ! -x "$probe_root/etc/kasbah" ]; then
+    run_probe STUB_ROOT_DIR="$probe_root/etc/kasbah"
+    assert '[ "$(pfact pointer_state)" = "absent" ]' \
+        "root can also say there is nothing there (got '$(pfact pointer_state)')"
+else
+    assert 'true' "skipped: this user can enter a mode-000 directory"
+fi
+chmod 755 "$probe_root/etc/kasbah"
+
+# --- The call sites -------------------------------------------------------------
+# Everything above tests these functions. What the functions cannot say is
+# whether anything calls them, and three of the decisions in this file are
+# decisions about *when*: the refusal has to run before the layout, the verdict
+# has to run at all, and the pointer has to follow the marker so that a run
+# which dies earlier leaves neither.
+# Read with the indentation taken off, so the calls match as whole lines and a
+# name that merely appears inside a longer one cannot stand in for a call.
+cmd_body="$(sed -n '/^cmd_server_init() {/,/^}/p' "$repo_dir/lib/server_init.sh" | sed 's/^[[:space:]]*//')"
+assert '[ -n "$cmd_body" ]' "cmd_server_init's body was found in lib/server_init.sh"
+line_in() { grep -n -m1 -xF "$1" <<<"$cmd_body" | cut -d: -f1; }
+n_check=$(line_in '_server_init_check_pointer')
+n_layout=$(line_in '_server_init_layout')
+n_marker=$(line_in '_server_init_marker "$marker_json"')
+n_pointer=$(line_in '_server_init_pointer')
+assert '[ -n "$n_check" ]' "cmd_server_init calls _server_init_check_pointer (body: $(tr '\n' ' ' <<<"$cmd_body" | head -c 200))"
+assert '[ -n "$n_pointer" ]' "and _server_init_pointer"
+assert '[ -n "$n_check" ] && [ -n "$n_layout" ] && [ "$n_check" -lt "$n_layout" ]' \
+    "the refusal runs before anything is created (check $n_check, layout $n_layout)"
+assert '[ -n "$n_marker" ] && [ -n "$n_pointer" ] && [ "$n_pointer" -gt "$n_marker" ]' \
+    "and the pointer is written after the marker, so a run that dies earlier leaves neither (marker $n_marker, pointer $n_pointer)"
+
+pointer_body="$(sed -n '/^_server_init_pointer() {/,/^}/p' "$repo_dir/lib/server_init.sh")"
+assert 'grep -qF "_server_init_pointer_verdict" <<<"$pointer_body"' \
+    "the pointer step reaches its verdict — the whole sudo split hangs off that one call"
 
 exit "$fail"

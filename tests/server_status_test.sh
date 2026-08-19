@@ -49,8 +49,17 @@ set -euo pipefail
 mode="$1"; shift
 case "$mode" in
     parse)
+        # The flag, not the path: without --apps-path the path is not known
+        # until the probe has read the server's own pointer.
         _server_status_parse_args "$@"
-        printf 'target=%s\napps=%s\n' "$_SS_TARGET" "$_SS_APPS_PATH"
+        printf 'target=%s\nflag=%s\n' "$_SS_TARGET" "$_SS_APPS_FLAG"
+        ;;
+    resolve)
+        # The probe's answer turned into the path everything downstream reads.
+        _SS_TARGET=deploy@vps
+        _SS_FACT=([pointer_state]="$1" [pointer_value]="$2" [apps_path]="$3" [apps_source]="$4")
+        _ss_resolve_apps_path
+        printf 'apps=%s\nsource=%s\n' "$_SS_APPS_PATH" "$_SS_APPS_SOURCE"
         ;;
     logline)
         # The line arrives on stdin so a fixture can carry a CR or leading
@@ -102,15 +111,75 @@ drive_err() { cat "$tmpdir/err"; }
 out=$(drive parse deploy@vps); rc=$?
 assert '[ "$rc" = "0" ]'                         "a bare target parses (exit $rc: $(drive_err))"
 assert 'grep -qxF "target=deploy@vps" <<<"$out"' "the target is kept as given (got '$out')"
-assert 'grep -qxF "apps=/apps" <<<"$out"'        "--apps-path defaults to /apps (got '$out')"
+assert 'grep -qxF "flag=" <<<"$out"' \
+    "without --apps-path nothing is decided here — the pointer answers later (got '$out')"
 
 # The flag `deploy` cannot take, and the reason status must: a server prepared
 # elsewhere is exactly the one whose state is hardest to inspect by hand.
 out=$(drive parse deploy@vps --apps-path=/srv/apps); rc=$?
 assert '[ "$rc" = "0" ]'                         "--apps-path is accepted (exit $rc: $(drive_err))"
-assert 'grep -qxF "apps=/srv/apps" <<<"$out"'    "and honoured (got '$out')"
+assert 'grep -qxF "flag=/srv/apps" <<<"$out"'    "and honoured (got '$out')"
 out=$(drive parse --apps-path=/srv/apps/ deploy@vps)
-assert 'grep -qxF "apps=/srv/apps" <<<"$out"'    "a trailing slash is normalised away (got '$out')"
+assert 'grep -qxF "flag=/srv/apps" <<<"$out"'    "a trailing slash is normalised away (got '$out')"
+
+# --- Which path the run reads --------------------------------------------------------
+# The flag wins; without it the server's own record does; without that, /apps.
+# The whole reason the pointer exists is the middle row: a server prepared at
+# /srv/apps is found by a command nobody told where to look.
+out=$(drive resolve absent "" /srv/apps flag); rc=$?
+assert '[ "$rc" = "0" ] && grep -qxF "apps=/srv/apps" <<<"$out" && grep -qxF "source=flag" <<<"$out"' \
+    "--apps-path is what was read (exit $rc, got '$out': $(drive_err))"
+out=$(drive resolve present /srv/apps /srv/apps pointer); rc=$?
+assert '[ "$rc" = "0" ] && grep -qxF "apps=/srv/apps" <<<"$out"' \
+    "a pointer steers a run that carried no flag (exit $rc, got '$out': $(drive_err))"
+out=$(drive resolve absent "" /apps default); rc=$?
+assert '[ "$rc" = "0" ] && grep -qxF "apps=/apps" <<<"$out"' \
+    "and with neither, /apps as before (exit $rc, got '$out': $(drive_err))"
+
+# A pointer that exists and names nothing usable is refused rather than replaced
+# by the default: reading /apps instead would report a different server as this
+# one. Under --apps-path it is not consulted at all.
+drive resolve present srv/apps /apps default >/dev/null; rc=$?
+out=$(drive_err)
+assert '[ "$rc" != "0" ]' "a pointer holding a relative path is refused (exit $rc, said '$out')"
+assert 'grep -qF "srv/apps" <<<"$out"' "quoting it (said '$out')"
+assert 'grep -qF -- "--apps-path" <<<"$out"' "and offering the escape hatch (said '$out')"
+drive resolve notfile "" /apps default >/dev/null; rc=$?
+out=$(drive_err)
+assert '[ "$rc" != "0" ]' "a pointer that is not a regular file is refused (exit $rc, said '$out')"
+# status never elevates, so a pointer it cannot read is a refusal with the flag
+# as the way through — not a silent read of /apps, which may be another server.
+drive resolve unreadable "" /apps default >/dev/null; rc=$?
+out=$(drive_err)
+assert '[ "$rc" != "0" ]' "an unreadable pointer is refused (exit $rc, said '$out')"
+assert 'grep -qF -- "--apps-path" <<<"$out"' "offering the escape hatch (said '$out')"
+# A pointer behind a directory this user cannot enter: whether the server
+# records an apps path cannot be told, and reading /apps on that answer could
+# describe a different server.
+drive resolve unreachable "" /apps default >/dev/null; rc=$?
+out=$(drive_err)
+assert '[ "$rc" != "0" ]' "an unenterable pointer directory is refused (exit $rc, said '$out')"
+assert 'grep -qF "/etc/kasbah" <<<"$out"' "naming it (said '$out')"
+
+# Every one of those refusals is about a record status was going to *use*. Under
+# --apps-path it uses none of them — that is what the escape hatch is: the way
+# through a server whose pointer is damaged. A refusal there would prescribe the
+# flag the operator has just passed.
+for _state in unreadable notfile unreachable present; do
+    _val=""
+    [ "$_state" != present ] || _val=srv/broken
+    out=$(drive resolve "$_state" "$_val" /srv/other flag); rc=$?
+    assert '[ "$rc" = "0" ] && grep -qxF "apps=/srv/other" <<<"$out"' \
+        "--apps-path reads its own tree with the pointer in state '$_state' (exit $rc, got '$out': $(drive_err))"
+    assert 'grep -qxF "source=flag" <<<"$out"' "and says the flag is why (got '$out')"
+done
+out=$(drive resolve present srv/apps /srv/other flag); rc=$?
+assert '[ "$rc" = "0" ] && grep -qxF "apps=/srv/other" <<<"$out"' \
+    "but --apps-path does not care what the pointer says (exit $rc, got '$out': $(drive_err))"
+drive resolve absent "" apps default >/dev/null; rc=$?
+assert '[ "$rc" != "0" ]' "a probe reporting a relative apps path is a failure (exit $rc: $(drive_err))"
+drive resolve absent "" /apps guessed >/dev/null; rc=$?
+assert '[ "$rc" != "0" ]' "and so is one reporting a source this kasbah does not know (exit $rc: $(drive_err))"
 
 reject() {
     local desc="$1" want="$2"; shift 2
@@ -345,11 +414,15 @@ tree_digest() {
 }
 before="$(tree_digest "$apps")"
 
-# run_payload <apps-path> [VAR=value ...]
+# run_payload <apps-path-flag> [VAR=value ...] — the four arguments the step
+# takes: what --apps-path said (empty when it was not given), the default, the
+# pointer, and the reserved names. $POINTER_FILE overrides the third, so a case
+# can put a pointer anywhere but /etc.
 run_payload() {
     local apps_path="$1"; shift
     env PATH="$stub_dir:$PATH" STUB_TOTAL_demo=2 STUB_RUNNING_demo=1 "$@" \
-        bash "$payload" "$apps_path" " .kasbah data backups traefik "
+        bash "$payload" "$apps_path" "$apps" "${POINTER_FILE:-$tmpdir/no-such-pointer}" \
+             " .kasbah data backups traefik "
 }
 probe_out="$(run_payload "$apps" 2>"$tmpdir/perr")"; probe_rc=$?
 assert '[ "$probe_rc" = "0" ]' "the remote script exits 0 on a prepared tree (exit $probe_rc: $(cat "$tmpdir/perr"))"
@@ -481,12 +554,121 @@ assert '[ ! -e "$tmpdir/nowhere" ]'               "and looking at a path that do
 nodocker="$tmpdir/nodocker"
 mkdir -p "$nodocker"
 for bin in tr openssl; do ln -sf "$(command -v "$bin")" "$nodocker/$bin"; done
-probe_out="$(env PATH="$nodocker" "$BASH" "$payload" "$apps" " .kasbah data backups traefik " 2>/dev/null)"
+probe_out="$(env PATH="$nodocker" "$BASH" "$payload" "$apps" "$apps" "$tmpdir/no-such-pointer" " .kasbah data backups traefik " 2>/dev/null)"
 assert '[ "$(fact have_docker)" = "no" ]'      "no docker on the remote is reported (got '$(fact have_docker)')"
 assert '[ -n "$(fact docker_error)" ]'         "with the error it gave (got '$(fact docker_error)')"
 assert '[ "$(fact traefik_present)" = "no" ]'  "and Traefik unknown rather than assumed (got '$(fact traefik_present)')"
 assert '[ "$(fact project_count)" = "6" ]'     "the projects are still listed — they are directories, not containers (got '$(fact project_count)')"
 assert '[ "$(tree_digest "$apps")" = "$before" ]' "and still nothing was written"
+
+# --- Where the remote script decides to look ------------------------------------------
+# The resolution itself, in the script that does it: one round trip covers the
+# pointer and everything read out of the tree it names, so the choice is made on
+# the far side and reported back. The second tree below is a *different* server
+# — reading the wrong one is the failure this exists to prevent.
+alt_apps="$tmpdir/altapps"
+mkdir -p "$alt_apps/.kasbah" "$alt_apps/altproj"
+printf '{"kasbah_version":"0.1.0","apps_path":"%s","data_path":"%s/store","cpu_limit":"1.0","mem_limit":"2g"}\n' \
+    "$alt_apps" "$alt_apps" > "$alt_apps/.kasbah/server.json"
+POINTER_FILE="$tmpdir/pointer"
+
+rm -f "$POINTER_FILE"
+probe_out="$(run_payload "" 2>/dev/null)"
+assert '[ "$(fact apps_path)" = "$apps" ]'      "with no flag and no pointer, the default (got '$(fact apps_path)')"
+assert '[ "$(fact apps_source)" = "default" ]'  "reported as such (got '$(fact apps_source)')"
+assert '[ "$(fact pointer_state)" = "absent" ]' "and the pointer as absent (got '$(fact pointer_state)')"
+
+printf '%s\n' "$alt_apps" > "$POINTER_FILE"
+probe_out="$(run_payload "" 2>/dev/null)"
+assert '[ "$(fact apps_path)" = "$alt_apps" ]'  "a pointer steers the whole read (got '$(fact apps_path)')"
+assert '[ "$(fact apps_source)" = "pointer" ]'  "reported as such (got '$(fact apps_source)')"
+assert '[ "$(fact pointer_value)" = "$alt_apps" ]' "with what it holds (got '$(fact pointer_value)')"
+assert '[ "$(printf "%s" "$(fact marker_b64)" | base64 -d)" = "$(cat "$alt_apps/.kasbah/server.json")" ]' \
+    "the marker read is the pointed-at tree's, not the default one's"
+decoded="$(printf '%s' "$(fact projects_b64)" | base64 -d)"
+assert 'grep -qF "$(printf %s altproj | base64 -w0)" <<<"$decoded"' \
+    "and so is the project list (rows: $decoded)"
+
+# The flag outranks it, and is the escape hatch for a pointer that is wrong.
+probe_out="$(run_payload "$apps" 2>/dev/null)"
+assert '[ "$(fact apps_path)" = "$apps" ]'   "--apps-path outranks the pointer (got '$(fact apps_path)')"
+assert '[ "$(fact apps_source)" = "flag" ]'  "reported as such (got '$(fact apps_source)')"
+assert '[ "$(fact pointer_value)" = "$alt_apps" ]' \
+    "and the pointer is still reported, so the caller can say the two disagree (got '$(fact pointer_value)')"
+
+# A file a human edited, and one that holds nothing usable. The second is
+# reported rather than resolved: falling back to the default here would describe
+# a different server, and only the caller can refuse.
+printf '%s  \r\n' "$alt_apps" > "$POINTER_FILE"
+probe_out="$(run_payload "" 2>/dev/null)"
+assert '[ "$(fact apps_path)" = "$alt_apps" ]' \
+    "a CRLF pointer with trailing blanks still resolves (got '$(fact apps_path)')"
+printf 'srv/apps\n' > "$POINTER_FILE"
+probe_out="$(run_payload "" 2>/dev/null)"
+assert '[ "$(fact pointer_value)" = "srv/apps" ]' "a relative pointer is reported (got '$(fact pointer_value)')"
+assert '[ "$(fact apps_source)" = "default" ]'    "and not resolved (got '$(fact apps_source)')"
+# Exactly `/` is not an apps path: it would make the marker path /.kasbah/…,
+# a tree nothing prepared. The probe resolves nothing and reports what it holds,
+# and the refusal happens on the caller's side.
+printf '/\n' > "$POINTER_FILE"
+probe_out="$(run_payload "" 2>/dev/null)"
+assert '[ "$(fact pointer_value)" = "/" ]' "a pointer of '/' is reported (got '$(fact pointer_value)')"
+assert '[ "$(fact apps_source)" = "default" ]' "and resolves nothing (got '$(fact apps_source)')"
+assert '[ "$(fact apps_path)" = "$apps" ]' "the read stays on the default (got '$(fact apps_path)')"
+
+# Every spelling of one tree is one tree, and a trailing tab is not part of a
+# path — `kv` trims trailing spaces off what it reports, which is not the same
+# thing as the value the comparison uses.
+while IFS= read -r spelling; do
+    [ -n "$spelling" ] || continue
+    printf '%s\n' "$alt_apps$spelling" > "$POINTER_FILE"
+    probe_out="$(run_payload "" 2>/dev/null)"
+    assert '[ "$(fact apps_path)" = "$alt_apps" ]' \
+        "a pointer spelled with '$spelling' resolves to the one path (got '$(fact apps_path)')"
+    assert '[ "$(fact pointer_value)" = "$alt_apps" ]' \
+        "and is reported normalised, which is what init's value is compared against (got '$(fact pointer_value)')"
+done <<'CASES'
+/
+/.
+//
+CASES
+printf '%s\t\n' "$alt_apps" > "$POINTER_FILE"
+probe_out="$(run_payload "" 2>/dev/null)"
+assert '[ "$(fact pointer_value)" = "$alt_apps" ]' \
+    "a trailing tab is taken off, not merely hidden by the reporter (got '$(fact pointer_value)')"
+
+# A pointer behind a directory this user cannot enter reads as absent to
+# `[ -e ]`, and absent means "read /apps" — which may be a different server.
+locked_dir="$tmpdir/lockedetc"
+mkdir -p "$locked_dir"
+printf '%s\n' "$alt_apps" > "$locked_dir/apps-path"
+chmod 000 "$locked_dir"
+if [ ! -x "$locked_dir" ]; then
+    probe_out="$(POINTER_FILE="$locked_dir/apps-path" run_payload "" 2>/dev/null)"
+    assert '[ "$(fact pointer_state)" = "unreachable" ]' \
+        "an unenterable pointer directory is its own state, not 'absent' (got '$(fact pointer_state)')"
+else
+    assert 'true' "skipped: this user can enter a mode-000 directory"
+fi
+chmod 755 "$locked_dir"; rm -rf "$locked_dir"
+
+printf '%s\n' "$alt_apps" > "$POINTER_FILE"
+chmod 000 "$POINTER_FILE"
+if [ ! -r "$POINTER_FILE" ]; then
+    probe_out="$(run_payload "" 2>/dev/null)"
+    assert '[ "$(fact pointer_state)" = "unreadable" ]' \
+        "a pointer this user cannot read is its own state, not an empty one (got '$(fact pointer_state)')"
+    assert '[ "$(fact apps_source)" = "default" ]' "and it resolved nothing (got '$(fact apps_source)')"
+else
+    assert 'true' "skipped: this user can read a mode-000 file"
+fi
+chmod 644 "$POINTER_FILE"
+rm -f "$POINTER_FILE"; mkdir -p "$POINTER_FILE"
+probe_out="$(run_payload "" 2>/dev/null)"
+assert '[ "$(fact pointer_state)" = "notfile" ]' \
+    "a directory where the pointer belongs is its own state (got '$(fact pointer_state)')"
+rmdir "$POINTER_FILE"
+unset POINTER_FILE
 
 # --- The command, with a stub ssh --------------------------------------------------
 # The stub answers the reachability probe and hands the one remote step whatever
@@ -526,6 +708,10 @@ write_payload() {
     local rows="${6-$(row demo 1 1 ok '2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0-dev digest=-')}"
     local count="${7-1}"
     {
+        # Where the step looked, and how it got there: a server with no pointer,
+        # read at the default. `payload_set` puts a case into any other state.
+        printf 'pointer_state=absent\npointer_value=\n'
+        printf 'apps_path=/apps\napps_source=default\n'
         printf 'have_docker=yes\ndocker_server=27.3.1\ndocker_error=\ncompose_version=2.29.7\n'
         printf 'apps_state=dir\n'
         printf 'marker_state=%s\n' "$marker_state"
@@ -569,6 +755,8 @@ assert 'grep -qE "^  Image: traefik:v3\.7\.10 \(sha256:0123456789ab\)$" <<<"$out
 # The one thing status has that deploy does not. Without this, --apps-path could
 # be parsed perfectly and never leave the workstation.
 write_payload
+payload_set apps_path=/srv/apps
+payload_set apps_source=flag
 out=$(status_cli deploy@vps --apps-path=/srv/apps)
 assert 'grep -qF "'"'"'bash'"'"' '"'"'-s'"'"' '"'"'--'"'"' '"'"'/srv/apps'"'"'" "$ssh_log"' \
     "the remote step is given the apps path that was asked for (ssh saw: $(cat "$ssh_log"))"
@@ -709,10 +897,78 @@ assert '! grep -qE "kasbah server init [A-Za-z0-9._-]+@" <<<"$out"' \
 assert 'grep -qF "kasbah server status deploy@vps --apps-path=" <<<"$out"' \
     "what it does offer is the read-only command with the flag (said '$out')"
 
+write_payload absent
+payload_set apps_path=/srv/apps
+payload_set apps_source=flag
 out=$(status_cli deploy@vps --apps-path=/srv/apps); rc=$?
 assert '[ "$rc" = "4" ]' "the same verdict under --apps-path (exit $rc: $out)"
 assert 'grep -qF "/srv/apps/.kasbah/server.json" <<<"$out"' \
     "naming the path that was actually searched (said '$out')"
+assert 'grep -qF "the one --apps-path named" <<<"$out"' \
+    "and saying that is where the flag sent it (said '$out')"
+
+# The operator who reached for the escape hatch and guessed: the server's own
+# record is right there, and it is the answer to their next question.
+write_payload absent
+payload_set pointer_state=present
+payload_set pointer_value=/srv/elsewhere
+payload_set apps_path=/srv/apps
+payload_set apps_source=flag
+out=$(status_cli deploy@vps --apps-path=/srv/apps); rc=$?
+assert '[ "$rc" = "4" ]' "a wrong --apps-path still exits 4 (exit $rc: $out)"
+assert 'grep -qF "records /srv/elsewhere" <<<"$out"' \
+    "and the message says what the server's own record holds (said '$out')"
+
+# The third shape of exit 4, and the one the pointer introduces: the server's
+# own record names a tree with no marker in it. The reader must not be told the
+# server was never prepared — something prepared it and wrote that file.
+write_payload absent
+payload_set pointer_state=present
+payload_set pointer_value=/srv/apps
+payload_set apps_path=/srv/apps
+payload_set apps_source=pointer
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "4" ]' "a pointer naming a tree with no marker exits 4 (exit $rc: $out)"
+assert 'grep -qF "/srv/apps/.kasbah/server.json" <<<"$out"' \
+    "naming the marker it looked for (said '$out')"
+assert 'grep -qF "/etc/kasbah/apps-path" <<<"$out"' \
+    "and the record that sent it there (said '$out')"
+assert '! grep -qF "is not there either" <<<"$out"' \
+    "and it does not claim the pointer is missing when it is what steered the read (said '$out')"
+
+# A pointer that holds something that is not a path: refused before anything is
+# reported, because /apps would be a different server.
+write_payload
+payload_set pointer_state=present
+payload_set pointer_value=srv/apps
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" != "0" ] && [ "$rc" != "4" ]' \
+    "a pointer holding a relative path stops the run (exit $rc: $out)"
+assert 'grep -qF "srv/apps" <<<"$out"' "quoting what it holds (said '$out')"
+assert '! grep -qF "Root:" <<<"$out"' "and nothing is reported about the wrong tree (said '$out')"
+
+# The same file, under --apps-path: not consulted, because the operator said
+# where to look. This is the escape hatch for a server whose pointer is gone or
+# damaged, and it has to work while it is damaged.
+write_payload
+payload_set pointer_state=present
+payload_set pointer_value=srv/apps
+payload_set apps_path=/srv/other
+payload_set apps_source=flag
+out=$(status_cli deploy@vps --apps-path=/srv/other); rc=$?
+assert '[ "$rc" = "0" ]' "--apps-path reports a server whose pointer is damaged (exit $rc: $out)"
+assert 'grep -qF "Root: /srv/other (flag)" <<<"$out"' "reading where it was told (said '$out')"
+
+# Where the root came from is printed, because "status read the wrong tree" and
+# "the server records another one" are different problems.
+write_payload
+payload_set pointer_state=present
+payload_set pointer_value=/apps
+payload_set apps_source=pointer
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a pointer-steered read reports (exit $rc: $out)"
+assert 'grep -qF "Root: /apps (pointer)" <<<"$out"' \
+    "and says the server's own record is what named it (said '$out')"
 
 write_payload empty
 out=$(status_cli deploy@vps); rc=$?

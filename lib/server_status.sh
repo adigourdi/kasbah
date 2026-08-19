@@ -37,6 +37,10 @@ _KASBAH_SERVER_STATUS_LOADED=1
 
 _SS_TARGET=""
 _SS_APPS_PATH=""
+# What --apps-path was given as (empty when it was not), and how the path above
+# was arrived at: `flag`, `pointer` or `default`.
+_SS_APPS_FLAG=""
+_SS_APPS_SOURCE=""
 
 # What the one remote step brought back, and what was read out of the marker.
 declare -A _SS_FACT=()
@@ -74,7 +78,10 @@ shared Traefik stack, and every project under the apps path with its last
 versions.log entry. Read-only — it changes nothing on the server.
 
 Flags:
-  --apps-path=<dir>   where the server was prepared (default $KASBAH_DEFAULT_APPS_PATH)
+  --apps-path=<dir>   where the server was prepared. Without it, status reads
+                      $KASBAH_APPS_POINTER — the server's own record — and
+                      falls back to $KASBAH_DEFAULT_APPS_PATH when there is none. The flag is
+                      the escape hatch for a server whose pointer is gone.
 
 Certs, mail and disk usage are not reported yet; see docs/server-setup.md.
 EOF
@@ -106,7 +113,7 @@ _ss_apps_path() {
     [ -n "$_ap_value" ] \
         || die "server status: --apps-path=/ must not be the filesystem root"
 
-    printf -v _SS_APPS_PATH '%s' "$_ap_value"
+    printf -v _SS_APPS_FLAG '%s' "$_ap_value"
 }
 
 _server_status_parse_args() {
@@ -114,6 +121,8 @@ _server_status_parse_args() {
 
     _SS_TARGET=""
     _SS_APPS_PATH=""
+    _SS_APPS_FLAG=""
+    _SS_APPS_SOURCE=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -133,8 +142,10 @@ _server_status_parse_args() {
         || die "server status: USER@HOST is required (the user kasbah deploys as is not optional)"
 
     # An empty --apps-path= is a stated intent that cannot be honoured, so it
-    # fails rather than falling back to the default the operator just overrode.
-    [ "$apps_given" = 1 ] || apps="$KASBAH_DEFAULT_APPS_PATH"
+    # fails rather than falling back to the path the operator just overrode.
+    # Without the flag the path is left for the probe to discover, which is
+    # where the pointer is read.
+    [ "$apps_given" = 1 ] || return 0
     _ss_apps_path "$apps"
     return 0
 }
@@ -198,11 +209,14 @@ _ss_b64_decode() {
 _server_status_collect() {
     local out rc=0
 
-    out=$(ssh_script "$_SS_APPS_PATH" "${_SS_RESERVED[*]}" <<'REMOTE'
+    out=$(ssh_script "$_SS_APPS_FLAG" "$KASBAH_DEFAULT_APPS_PATH" \
+                     "$KASBAH_APPS_POINTER" "${_SS_RESERVED[*]}" <<'REMOTE'
 set -uo pipefail
 export LC_ALL=C
 apps=$1
-reserved=" $2 "
+default=$2
+pointer=$3
+reserved=" $4 "
 
 # One line per value: the reader parses this output as a protocol, so a
 # command's multi-line complaint would arrive as extra keys. Anything that can
@@ -229,6 +243,70 @@ count_lines() {
     fi
     printf '%s' "$n"
 }
+
+# Where to look, decided here so that one round trip covers both the pointer
+# and everything read out of the tree it names. The flag wins when it was given;
+# otherwise the server's own record does; otherwise the default. A pointer that
+# is present and does not name an absolute path is reported as it stands and
+# refused on the caller's side — the reads below then describe the default tree,
+# which nothing prints.
+# The pointer's own spelling, reduced to the form every kasbah path flag is
+# normalised into: CR and trailing blanks off, empty and `.` segments dropped,
+# no trailing slash. `/apps/`, `//apps` and `/apps/.` all name `/apps`, and only
+# the normalised form compares equal to what init recorded.
+norm_path() {
+    local p="$1" out="" seg IFS=/
+    set -f
+    p=${p%$'\r'}
+    while [ -n "$p" ]; do
+        case ${p: -1} in
+            ' '|$'\t') p=${p%?} ;;
+            *) break ;;
+        esac
+    done
+    case $p in
+        /*) ;;
+        *) printf '%s' "$p"; return 0 ;;
+    esac
+    for seg in $p; do
+        [ -n "$seg" ] && [ "$seg" != . ] || continue
+        out="$out/$seg"
+    done
+    [ -n "$out" ] || out=/
+    printf '%s' "$out"
+}
+
+pointer_dir=${pointer%/*}
+pointer_state=absent
+pointer_value=""
+if [ -e "$pointer" ] && [ ! -f "$pointer" ]; then
+    pointer_state=notfile
+elif [ -f "$pointer" ] && [ ! -r "$pointer" ]; then
+    # World-readable is the contract; status never elevates, so a pointer it
+    # cannot read is reported as that rather than as an empty one.
+    pointer_state=unreadable
+elif [ -f "$pointer" ]; then
+    pointer_state=present
+    IFS= read -r pointer_value < "$pointer" || pointer_value=""
+    pointer_value=$(norm_path "$pointer_value")
+elif [ -d "$pointer_dir" ] && [ ! -x "$pointer_dir" ]; then
+    # `[ -e ]` answers "no" for a file behind a directory this user cannot
+    # traverse, exactly as it does for one that is not there. Reading the
+    # default tree on that answer would report a different server as this one.
+    pointer_state=unreachable
+fi
+if [ -n "$apps" ]; then
+    apps_source=flag
+else
+    case $pointer_value in
+        /?*) apps=$pointer_value; apps_source=pointer ;;
+        *)   apps=$default;       apps_source=default ;;
+    esac
+fi
+kv pointer_state "$pointer_state"
+kv pointer_value "$pointer_value"
+kv apps_path "$apps"
+kv apps_source "$apps_source"
 
 if command -v docker >/dev/null 2>&1; then kv have_docker yes; else kv have_docker no; fi
 docker_out=$(docker version --format '{{.Server.Version}}' 2>&1); docker_rc=$?
@@ -374,36 +452,116 @@ REMOTE
 
     _SS_FACT=()
     _ss_absorb_checked "$out" \
+        pointer_state pointer_value apps_path apps_source \
         have_docker docker_server docker_error compose_version \
         apps_state marker_state marker_b64 \
         traefik_present traefik_state traefik_health traefik_image \
         traefik_image_id traefik_container \
         project_count projects_b64
+
+    _ss_resolve_apps_path
+    return 0
+}
+
+# The path everything below reads, taken from the probe rather than assumed: it
+# is the flag when there was one, and the server's own record when there was
+# not. A pointer that exists and names nothing usable is refused rather than
+# silently replaced by the default — the operator asked about a server, and the
+# only record of which tree that is has been damaged.
+_ss_resolve_apps_path() {
+    local apps="${_SS_FACT[apps_path]}" source="${_SS_FACT[apps_source]}"
+
+    # Every refusal below is about a record status was going to *use*. Under
+    # --apps-path it consults none of them, which is what the flag is for: it is
+    # the way through a server whose pointer is damaged, and refusing there
+    # would prescribe the flag the operator has already passed.
+    if [ "$source" != flag ] && [ "${_SS_FACT[pointer_state]}" = notfile ]; then
+        err "$KASBAH_APPS_POINTER on $_SS_TARGET exists and is not a regular file"
+        err_cont "that path is the server's record of where it was prepared, and status reads"
+        err_cont "it when no --apps-path is given. Look at it, or pass --apps-path=<dir>."
+        exit 1
+    fi
+    if [ "$source" != flag ] && [ "${_SS_FACT[pointer_state]}" = unreachable ]; then
+        err "${KASBAH_APPS_POINTER%/*} on $_SS_TARGET cannot be entered by the user status connected as"
+        err_cont "so whether this server records an apps path cannot be told from here, and"
+        err_cont "reading $KASBAH_DEFAULT_APPS_PATH on that answer could report a different server as this one."
+        err_cont "Pass --apps-path=<dir>, or make it traversable — it is mode 755 on a server"
+        err_cont "kasbah prepared."
+        exit 1
+    fi
+    if [ "$source" != flag ] && [ "${_SS_FACT[pointer_state]}" = unreadable ]; then
+        err "$KASBAH_APPS_POINTER on $_SS_TARGET cannot be read by the user status connected as"
+        err_cont "it records where this server was prepared, and status never elevates to read"
+        err_cont "it. Reading $KASBAH_DEFAULT_APPS_PATH instead could report a different server as this one."
+        err_cont "Pass --apps-path=<dir>, or fix the mode: it is world-readable by contract"
+        err_cont "and \`kasbah server init\` rewrites it as root."
+        exit 1
+    fi
+    if [ "$source" != flag ] && [ "${_SS_FACT[pointer_state]}" = present ]; then
+        case "${_SS_FACT[pointer_value]}" in
+            /?*) ;;
+            *)
+                err "$KASBAH_APPS_POINTER on $_SS_TARGET holds '${_SS_FACT[pointer_value]}', which is not an absolute path"
+                err_cont "that file is where status looks when no --apps-path is given, and reading"
+                err_cont "$KASBAH_DEFAULT_APPS_PATH instead would report a different server as if it were this one."
+                err_cont "Pass --apps-path=<dir>, or repair the pointer with \`kasbah server init\`."
+                exit 1
+                ;;
+        esac
+    fi
+
+    case $apps in
+        /?*) ;;
+        *) die "the status probe on $_SS_TARGET reported apps_path='$apps', which is not an absolute path" ;;
+    esac
+    case $source in
+        flag|pointer|default) ;;
+        *) die "the status probe on $_SS_TARGET reported apps_source='$source', which this kasbah does not know" ;;
+    esac
+
+    _SS_APPS_PATH="$apps"
+    _SS_APPS_SOURCE="$source"
     return 0
 }
 
 # --- The marker -------------------------------------------------------------------
 
-# Exit 4 is the same verdict `kasbah deploy` reaches, and the remedy is worded
-# the same way, for the same reason: a bare `kasbah server init <target>` run
-# against a server prepared with --apps-path elsewhere renders a second Traefik
-# stack under the frozen `traefik` compose project, recreates the running proxy
-# against it, and takes every site on the host down. kasbah must not print an
-# instruction that can do that. What status can offer instead — and deploy
-# cannot, because it is a project command — is the flag that looks elsewhere.
+# Exit 4 is the same verdict `kasbah deploy` reaches, and for the same reason it
+# never prints a bare `kasbah server init <target>`: run against a server
+# prepared somewhere other than the default, that command renders a second
+# Traefik stack under the frozen `traefik` compose project, recreates the
+# running proxy against it, and takes every site on the host down. What status
+# can offer instead — and deploy cannot, because it is a project command — is
+# the flag that looks elsewhere.
+#
+# Where it looked is now the pointer's answer unless --apps-path overrode it, so
+# the two situations left are "never prepared" and "prepared, and the record of
+# where is gone or wrong".
 _ss_no_marker() {
     local marker_path="$_SS_APPS_PATH/.kasbah/server.json"
 
     err "$_SS_TARGET has no server marker at $marker_path"
     [ "${_SS_FACT[apps_state]}" != absent ] \
         || err_cont "($_SS_APPS_PATH is not there either — the probe found nothing at that path.)"
-    err_cont "That file is what \`kasbah server init\` writes last, and status looked for it"
-    err_cont "there and nowhere else. So this is one of two situations, and they have"
-    err_cont "different answers:"
-    err_cont "  * the server was prepared with --apps-path=<dir> somewhere other than"
-    err_cont "    $_SS_APPS_PATH. Point status at it:"
-    err_cont "      kasbah server status $_SS_TARGET --apps-path=<dir>"
+    case $_SS_APPS_SOURCE in
+        flag)
+            err_cont "That path is the one --apps-path named, and status looked there and nowhere else."
+            # The operator who reached for the escape hatch and guessed is
+            # exactly the one the server's own record helps.
+            [ "${_SS_FACT[pointer_state]}" != present ] \
+                || err_cont "($KASBAH_APPS_POINTER on this server records ${_SS_FACT[pointer_value]}.)"
+            ;;
+        pointer) err_cont "That path is what $KASBAH_APPS_POINTER records, so the server's own note of" ;;
+        *)       err_cont "That file is what \`kasbah server init\` writes last, and $KASBAH_APPS_POINTER —" ;;
+    esac
+    case $_SS_APPS_SOURCE in
+        pointer) err_cont "where it was prepared points at a tree with no marker in it." ;;
+        default) err_cont "the server's own record of where it was prepared — is not there either." ;;
+    esac
+    err_cont "So this is one of two situations, and they have different answers:"
     err_cont "  * the server has never been prepared, and initialising it is the answer."
+    err_cont "  * it is prepared somewhere else. Point status at that tree:"
+    err_cont "      kasbah server status $_SS_TARGET --apps-path=<dir>"
     err_cont "Do not re-run init until you know which. Pointed at the wrong apps path it"
     err_cont "renders a second Traefik stack under the frozen 'traefik' compose project,"
     err_cont "which recreates the running proxy against it and takes every site down."
@@ -678,7 +836,11 @@ _server_status_print() {
     else
         printf 'Docker: unavailable — %s\n' "${_SS_FACT[docker_error]:-no docker command on the remote}"
     fi
-    printf 'Root: %s  Data: %s\n' "$_SS_APPS_PATH" "${_SS_MARKER_DATA:-unknown}"
+    # Where the root came from, because "status read the wrong tree" and "the
+    # server records a different one" are different problems and only the
+    # source tells them apart.
+    printf 'Root: %s (%s)  Data: %s\n' \
+        "$_SS_APPS_PATH" "$_SS_APPS_SOURCE" "${_SS_MARKER_DATA:-unknown}"
     printf 'Marker: kasbah %s, cpu %s, mem %s\n' \
         "${_SS_MARKER_VERSION:-unknown}" "${_SS_MARKER_CPU:-unknown}" "${_SS_MARKER_MEM:-unknown}"
 

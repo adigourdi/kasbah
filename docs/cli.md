@@ -67,10 +67,20 @@ What it does:
    env setup, start it.
 8. If `--with-backup`: install restic, write append-only S3 credentials,
    schedule the backup cron (see `backup.md`).
-9. Write the server marker `/apps/.kasbah/server.json` — kasbah version,
+9. Write the server marker `<apps>/.kasbah/server.json` — kasbah version,
    paths, resource limits computed as 90% of host cores/RAM (see
-   `server-setup.md`). **Last**: its presence is the "init completed"
-   signal, so a failure at any earlier step leaves no marker behind.
+   `server-setup.md`). **Last of the steps that signal completion**: its
+   presence is the "init completed" signal, so a failure at any earlier step
+   leaves no marker behind.
+10. Write the discovery pointer `/etc/kasbah/apps-path` (`root:root 644`, in a
+    `755` directory, one absolute path) so every project command can find this server without
+    being told where it is. Immediately after the marker, never before — a
+    run that dies early must leave neither. See `server-setup.md` → the
+    discovery pointer, including what happens when sudo is unavailable.
+
+Re-running init against a server whose pointer records a **different** apps
+path is refused: one machine runs one kasbah, because one Traefik holds `:80`
+and `:443`.
 
 ### `kasbah server prune USER@HOST` *(roadmap v0.2)*
 
@@ -107,9 +117,16 @@ Prints today:
 - Projects under the apps path — name, running/total containers, and the
   last `versions.log` entry (action, version, timestamp, kasbah version)
 
-`--apps-path` exists because a server prepared with a non-default apps path
-is otherwise uninspectable. `deploy` does not have it yet — see
-`docs/phases/04-ship.md`.
+`--apps-path` is the escape hatch for a server whose discovery pointer is
+missing, unreadable, or in a directory nobody can enter — and it is honoured in
+every one of those states, since refusing to read a path the caller named
+outright would leave no way in at all. Without it, `status` resolves the apps
+path the same way every other command does — `/etc/kasbah/apps-path`, else
+`/apps` — and
+prints which of the three it used. No other command takes the flag: a value
+repeated on every invocation is a belief each caller holds separately, and the
+apps path is a property of the server (see `server-setup.md` → the discovery
+pointer).
 
 Deferred to roadmap v0.2 (`docs/phases/07-operate.md`):
 - Cert status and last refresh
@@ -381,11 +398,20 @@ Referenced elsewhere in the docs but not yet in v0.1:
 - `1` generic failure
 - `2` not a kasbah project (no `kasbah.yml`)
 - `3` SSH unreachable
-- `4` remote state missing — no server marker at the apps path. **Not always
-  "run init":** on a server prepared with `--apps-path`, the marker is
-  elsewhere and re-running init would render a second Traefik stack under
-  the frozen `traefik` compose project, recreating the running proxy against
-  it. Commands that exit 4 say so rather than prescribing init.
+- `4` remote state missing — no server marker where the apps path says it
+  should be. Two situations now, and neither is "a server prepared with
+  `--apps-path` cannot be found" — the discovery pointer
+  (`/etc/kasbah/apps-path`) closed that one:
+  - the server was never prepared, and `kasbah server init` is the answer;
+  - it was prepared and the pointer is gone, so kasbah is looking under
+    `/apps` at a server that lives elsewhere. **Re-running init is the wrong
+    move here** — pointed at the default it would render a second Traefik
+    stack under the frozen `traefik` compose project and recreate the running
+    proxy against it, taking every site down. Find the real apps path
+    (`kasbah server status <host> --apps-path=<dir>`) and restore the pointer.
+
+  Commands that exit 4 say which situation they are in rather than
+  prescribing init.
 - `5` env setup could not complete. Covers both halves of the same sentence —
   the project's `.env` on the server is not in a state kasbah will deploy
   against, and nothing was deployed: drift the user declined to fix

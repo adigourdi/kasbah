@@ -17,7 +17,7 @@ assumes.
 | `bash` on the remote | Every kasbah step ships a script to `bash -s` over the SSH master | Hard fail |
 | `flock` (util-linux) | `remote-deploy.sh` holds an exclusive lock on `<project>/.deploy.lock` for the whole of a deploy, so a second concurrent deploy fails fast instead of interleaving hooks and retags. The one tool kasbah's shipped scripts use that is **not** coreutils, which is why it gets its own row | The deploy refuses, naming the lock |
 | A POSIX userland — `tr`, `cat`, `stat`, `nproc`, `date`, `find`, `sort`, `comm`, `readlink` | Every remote step is a shell script; these are assumed present rather than checked, because a box without them cannot run `bash -s` usefully in the first place. The rule kasbah's shipped scripts follow is **coreutils and bash builtins, nothing separately packaged** — which is why `scripts/setup-env.sh` parses env files with `read` loops rather than `awk` or `grep` | Not checked; failure surfaces as the step's own error |
-| Passwordless `sudo` — **only** when the apps path does not exist yet | `/apps` lives outside the deploy user's home, so nobody but root can create it. Once it exists and is owned by that user, init never elevates again | Hard fail naming the two commands to run by hand |
+| Passwordless `sudo` — when the apps path does not exist yet, **and** to write the discovery pointer | `/apps` lives outside the deploy user's home, so nobody but root can create it; `/etc/kasbah/apps-path` is root-owned for the same reason it is machine-wide. Once both exist, init never elevates again — re-runs only read the pointer | Apps path: hard fail naming the two commands to run by hand. Pointer: hard fail at a non-default apps path (the server would be undiscoverable), a warning at `/apps` (the fallback covers it) |
 
 `kasbah server init` does **not**:
 
@@ -33,6 +33,8 @@ These are the VPS owner's responsibility.
 Default paths (override with `--apps-path`, `--data-path`):
 
 ```
+/etc/kasbah/                         root:root 755
+└── apps-path                        root:root 644 — the discovery pointer
 /apps/                               root owned by deploy user
 ├── .kasbah/
 │   └── server.json                  server marker (version, paths, limits, backup)
@@ -181,7 +183,52 @@ rationale. Traefik resolves routed containers by `container_name` on
 this network — the file provider fragment names them explicitly in
 `services.<x>.loadBalancer.servers`.
 
-## Server marker (`/apps/.kasbah/server.json`)
+## The discovery pointer (`/etc/kasbah/apps-path`)
+
+One line, one absolute path, `root:root 644`. It is how every project command
+finds a server whose apps path is not `/apps`:
+
+```
+/etc/kasbah/apps-path  →  /srv/apps  →  /srv/apps/.kasbah/server.json
+```
+
+Resolution is: the pointer if it exists **and can be read**, else `/apps`. A
+pointer naming a path with **no marker under it** is a hard failure rather than
+a fallback — silently reading a different tree's marker is how a deploy lands
+on the wrong server — and one that cannot be read is a refusal too, never a
+quiet fall back to the default. The one exception is a pointer naming the
+default tree itself, in any spelling (`/apps`, `/apps/`, `//apps`): the
+fallback would read the same file anyway, so it degrades to the ordinary
+"no marker" exit 4.
+
+The directory is mode `755` for the same reason the file is `644`: a pointer
+nobody but root can *traverse to* is indistinguishable from one that is not
+there, and "not there" is the one state that falls back silently.
+
+It lives in `/etc` rather than a home directory because **more than one person
+administers a server**. A per-user pointer lets two admins hold different
+beliefs about one machine, which is the failure being removed, not a cost worth
+paying for avoiding sudo.
+
+It is written immediately *after* the marker, so the marker remains the
+"init completed" signal and a run that dies early leaves neither.
+
+**One server runs one kasbah.** One Traefik holds `:80` and `:443`, so a second
+apps path on the same machine is not a second install but a rival stack under
+the frozen `traefik` compose project — which would recreate the running proxy
+against its own `dynamic/` and `acme.json` and take every site down.
+`server init` therefore refuses when the pointer records a *different* path
+than the run would prepare, and says how to manage the server that is there.
+Re-running with the same path stays idempotent.
+
+**The refusal only protects a server that already carries a pointer.** One
+prepared before this existed has none, so a bare `kasbah server init host`
+against it still sees an unprepared machine and will stand a rival stack. The
+pointer is written by any `server init` re-run, so the fix is to re-run init
+once against the real apps path — which is also the only way an old server
+becomes discoverable by `deploy` and `env`.
+
+## Server marker (`<apps>/.kasbah/server.json`)
 
 Written by `server init`, updated by any server-mutating command
 (`upgrade-traefik`, re-run with `--with-mail` / `--with-backup`):
@@ -284,7 +331,7 @@ What it prints today:
 ```
 VPS: you@vps (connected)
 Docker: 29.7.2, Compose: 5.4.0
-Root: /apps  Data: /apps/data
+Root: /apps (pointer)  Data: /apps/data
 Marker: kasbah 0.1.0-dev, cpu 14.4, mem 54g
 
 Traefik: running (healthy)

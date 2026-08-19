@@ -279,6 +279,15 @@ done <<<"$dangling"
 # has passwordless sudo.
 sudo rm -rf /apps || status=1
 
+# The server's record of where it was prepared. Left behind, a non-default apps
+# path written by one suite steers every later one — `kasbah deploy` reads this
+# file before it falls back to /apps.
+#
+# The exact directory, never a glob: /etc/kasbah-rig is the disposability marker
+# this payload has already checked, one character away, and removing it would
+# make every later rig_clean refuse.
+sudo rm -rf /etc/kasbah || status=1
+
 # Images are deliberately untouched.
 exit "$status"
 REMOTE

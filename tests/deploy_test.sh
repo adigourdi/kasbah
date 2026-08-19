@@ -331,6 +331,13 @@ esac
 case "$*" in
     *"-O exit"*) exit 0 ;;
 esac
+# The marker read reports where it looked before it reports anything else, and
+# it does so whether or not it found a marker — so the two header lines come
+# first here too, or every case below fails as a truncated step rather than as
+# the state it means to be.
+case "$last" in
+    *"'/etc/kasbah/apps-path'") printf 'apps=/apps\nsource=default\n' ;;
+esac
 exit "${SSH_STEP_RC:-3}"
 STUB
 chmod 0755 "$stub_dir/ssh"
@@ -453,8 +460,16 @@ case "$last" in
     "'bash' '-s'"*) cat >/dev/null ;;
 esac
 case "$last" in
-    "'bash' '-s' '--' '/apps'")
+    # The marker read: the pointer path is its second argument, and the two
+    # header lines are the discovery protocol — where it looked, and how it got
+    # there. $POINTER puts the far side into the pointer state.
+    "'bash' '-s' '--' '/apps' '/etc/kasbah/apps-path'")
         marker_default='{"kasbah_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"14.4","mem_limit":"54g"}'
+        if [ -n "${POINTER:-}" ]; then
+            printf 'apps=%s\nsource=pointer\n' "$POINTER"
+        else
+            printf 'apps=/apps\nsource=default\n'
+        fi
         printf '%s\n' "${MARKER-$marker_default}" ;;
     # The marker read is matched exactly above, so anything else naming the
     # project is the prepare step — whatever apps path the marker steered it to.
@@ -520,7 +535,7 @@ assert 'grep -qF "Deployed demo 1.0.0 to deploy@vps" <<<"$out"' "and says so (sa
 line_of() { grep -n -m1 -F -- "$1" <<<"$calls" | cut -d: -f1; }
 # Anchored: the prepare step's argument list starts with the marker read's, so
 # an unanchored match would find whichever came first and call it the marker.
-n_marker=$(grep -n -m1 -E "\|'bash' '-s' '--' '/apps'\$" <<<"$calls" | cut -d: -f1)
+n_marker=$(grep -n -m1 -E "\|'bash' '-s' '--' '/apps' '/etc/kasbah/apps-path'\$" <<<"$calls" | cut -d: -f1)
 n_prepare=$(line_of "|'bash' '-s' '--' '/apps' '/apps/data' 'demo'")
 n_compose=$(line_of "|compose.prod.yml|")
 n_helper=$(line_of "|deploy@vps:/apps/demo/scripts/remote-deploy.sh")

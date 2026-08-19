@@ -146,7 +146,18 @@ against one computed on the workstation.
   second, different apps path on a server that already has a pointer,
   rather than rendering a rival Traefik stack under the frozen `traefik`
   compose project and recreating the running proxy against it. That refusal
-  is what `lib/marker.sh`'s exit-4 message currently only warns about.
+  is what `lib/marker.sh`'s exit-4 message could previously only warn about.
+
+  **Closed, and observed end to end.** `tests/integration/apps_path_test.sh`
+  prepares a server at `/srv/kasbah-unit-e/apps`, then has `deploy`, `env` and
+  `status` reach it with no flag while `/apps` never exists at all. The
+  refusal is asserted against the rig's real running Traefik — same container
+  id afterwards, nothing created. Two limits are recorded rather than fixed:
+  the refusal only protects a server that **already carries a pointer**, so a
+  machine prepared before this change still reads as unprepared until init is
+  re-run against its real apps path; and a command-restricted sudoers that
+  permits `sudo -n true` while denying `sudo -n test -e` leaves the probe
+  reporting `absent`, which no stub in this repo can currently express.
 
 ## Carried into 4.2, with the evidence warm
 
@@ -497,6 +508,70 @@ was not to change code that was already correct but to **pin the property that
 was merely unobserved** — the streams are now split in the harness and kasbah
 is asserted to write nothing at all to stdout. A review finding that turns out
 to be wrong is still evidence that something was unpinned.
+
+### The apps path is a property of the server, so the server carries it
+
+The Phase 2 carry offered two fixes and the answer was neither. A flag has to
+be repeated forever. A `.kasbah/state.json` field makes the apps path a
+property of *one project's memory of the server*, so two projects — or two
+operators — can hold different beliefs about one machine and one of them is
+wrong. The pointer lives at `/etc/kasbah/apps-path`, root-owned and
+world-readable, for exactly that reason: **more than one person administers a
+server**, and a per-user file would preserve the split belief rather than
+remove it.
+
+The same fact buys a second guard. One kasbah means one Traefik means one
+holder of `:80` and `:443`, so `server init` refuses a *different* apps path on
+a server whose pointer already names one — the hazard `lib/marker.sh`'s exit-4
+message had only been able to warn about.
+
+**Honest limit:** the refusal only protects a server that already carries a
+pointer. One prepared before this change has none, so a bare `server init`
+against it still sees an unprepared machine. Re-running init once against the
+real apps path is both the fix and the only way an old server becomes
+discoverable at all.
+
+### `[ -e ]` is false when the *parent* directory cannot be entered
+
+The pointer's whole safety argument is that "absent" is the only state that
+falls back silently, and every other state refuses. But `[ -e ]` and `[ -f ]`
+return false on `EACCES` from the parent, so a `/etc/kasbah` at mode 700 owned
+by someone else made all three readers report **absent** — and kasbah then read
+`/apps`'s marker, i.e. *a different server's*, without a word. `server init`
+skipped its new refusal for the same reason and would have stood a rival
+Traefik.
+
+The code had gone to real trouble to keep `unreadable` distinct from `absent`
+for the *file*. The directory was the hole. This is the third time this repo
+has been caught by what a `test` builtin does *not* distinguish — Phase 1 lost
+a day to `[ -r ]` being true for a directory, and Phase 2 to a privilege check
+evaluated with the wrong eyes ("a directory the deploy user cannot traverse to
+answers `-e` with false"). That second one is *this* bug, in another file,
+recorded eighteen months of project-time earlier. The fix follows Phase 2's
+too: `server init` now asks **root's eyes** (`sudo -n test -e`) before
+concluding anything, and reports "cannot tell" rather than "absent" when there
+is no sudo to look with.
+
+### A function can be exhaustively tested and called by nothing
+
+The unit suite drove `_server_init_check_pointer` through every branch. Deleting
+its **call site** survived that suite entirely — the suite drives functions, not
+`cmd_server_init`. That much was known and arguably acceptable. What the
+independent review found is that the same shape hid two worse cases:
+
+- deleting the call to `_server_init_pointer_verdict` survived **both** suites,
+  because the rig's sudo always works, so the verdict is always a no-op there.
+  The entire sudo split — hard-fail at a non-default apps path, warn at `/apps`
+  — was exhaustively tested as a function and wired to nothing anything
+  verified.
+- swapping the marker and pointer writes survived both suites, leaving the
+  "a run that dies early leaves neither" ordering unfalsifiable.
+
+The fix was not a bigger stub. The suite already extracts heredocs from these
+files with `awk` and `sed`; three **structural assertions** in the same idiom —
+this function is called from that one, and this call precedes that one — killed
+four mutants for about five lines. Where a stub would have to grow a
+seven-step protocol to reach a call site, assert the call.
 
 ### Measured
 

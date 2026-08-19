@@ -13,15 +13,17 @@ _KASBAH_SERVER_INIT_LOADED=1
 # never installs them (docs/server-setup.md), and it is safe to re-run: a second
 # run against an unchanged host leaves the tree byte-identical.
 #
-# Six remote steps over one connection, and nothing is created until every read
-# among them has been judged. The probe collects every fact the verdicts need in
-# a single round trip, because a check that fetches its own value is a check
-# that can silently read a fact that never arrived (docs/phases/01-rig.md, from
-# 1.3). The second reads any marker already on the server. The third reads the
-# Traefik stack already on the server, which is what the fresh render is
-# compared against. The fourth creates the layout, the fifth starts Traefik, and
-# the sixth writes the marker — last, because its presence is the "init
-# completed" signal.
+# Seven remote steps over one connection, and nothing is created until every
+# read among them has been judged. The probe collects every fact the verdicts
+# need in a single round trip, because a check that fetches its own value is a
+# check that can silently read a fact that never arrived
+# (docs/phases/01-rig.md, from 1.3). The second reads any marker already on the
+# server. The third reads the Traefik stack already on the server, which is what
+# the fresh render is compared against. The fourth creates the layout, the fifth
+# starts Traefik, and the sixth writes the marker — last among the things that
+# signal completion, because its presence is the "init completed" signal. The
+# seventh writes /etc/kasbah/apps-path, immediately after the marker: a run that
+# dies before the marker leaves no pointer either.
 
 # The parsed command line.
 _SI_TARGET=""
@@ -65,7 +67,8 @@ Usage: kasbah server init USER@HOST [flags]
 
 Prepares a VPS to host projects: checks the prerequisites, creates the
 directory layout, renders and starts the shared Traefik stack, and writes
-the server marker. Idempotent.
+the server marker, and records the apps path at $KASBAH_APPS_POINTER so
+every project command can find this server without being told. Idempotent.
 
 Flags:
   --apps-path=<dir>      root directory on the VPS (default /apps)
@@ -372,11 +375,12 @@ _server_init_probe() {
     local out rc=0 line key
     local missing=()
 
-    out=$(ssh_script "$_SI_APPS_PATH" "$_SI_DATA_PATH" <<'REMOTE'
+    out=$(ssh_script "$_SI_APPS_PATH" "$_SI_DATA_PATH" "$KASBAH_APPS_POINTER" <<'REMOTE'
 set -uo pipefail
 export LC_ALL=C
 apps=$1
 data=$2
+pointer=$3
 
 # One line per value: the reader parses this output as a protocol, and a
 # command's multi-line complaint would arrive as extra keys. The trailing space
@@ -415,6 +419,78 @@ done
 # from here, and the run must say so instead of hanging on it.
 if sudo -n true >/dev/null 2>&1; then sudo_ok=yes; else sudo_ok=no; fi
 kv sudo_nopasswd "$sudo_ok"
+
+# The pointer's own spelling, reduced to the form every path flag is normalised
+# into (see _server_init_path): CR and trailing blanks off, empty and `.`
+# segments dropped, no trailing slash. Without this, a pointer reading
+# `/srv/apps/` is a *different* string from `--apps-path=/srv/apps`, and the
+# refusal below would prescribe re-running with the very flag it just refused.
+norm_path() {
+    local p="$1" out="" seg IFS=/
+    set -f
+    p=${p%$'\r'}
+    while [ -n "$p" ]; do
+        case ${p: -1} in
+            ' '|$'\t') p=${p%?} ;;
+            *) break ;;
+        esac
+    done
+    case $p in
+        /*) ;;
+        *) printf '%s' "$p"; return 0 ;;
+    esac
+    for seg in $p; do
+        [ -n "$seg" ] && [ "$seg" != . ] || continue
+        out="$out/$seg"
+    done
+    [ -n "$out" ] || out=/
+    printf '%s' "$out"
+}
+
+# The server's own record of where it was prepared: its first line, normalised.
+# Five states, because init's verdict differs for each — absent, present with a
+# value, something other than a file, readable by nobody here, and a directory
+# this user cannot enter, where "is there a pointer at all?" cannot be answered
+# without root.
+pointer_dir=${pointer%/*}
+pointer_state=absent
+pointer_value=""
+# Root's eyes when this user's will not do, exactly as the apps path is asked
+# about twice: `[ -e ]` answers "no" both for a file that is not there and for
+# one behind a directory this user cannot traverse, and only one of those is an
+# unprepared server. A pointer left at mode 600 is one no deploy user can read,
+# which init repairs — but only once it knows what it says, because what it says
+# may be another tree entirely. An empty read never stands in for that.
+if [ -e "$pointer" ] && [ ! -f "$pointer" ]; then
+    pointer_state=notfile
+elif [ -f "$pointer" ]; then
+    pointer_state=present
+    if [ -r "$pointer" ]; then
+        IFS= read -r pointer_value < "$pointer" || pointer_value=""
+    elif [ "$sudo_ok" = yes ]; then
+        pointer_value=$(sudo -n cat "$pointer" 2>/dev/null) || pointer_value=""
+        pointer_value=${pointer_value%%$'\n'*}
+        [ -n "$pointer_value" ] || pointer_state=unreadable
+    else
+        pointer_state=unreadable
+    fi
+elif [ -d "$pointer_dir" ] && [ ! -x "$pointer_dir" ]; then
+    if [ "$sudo_ok" = yes ] && sudo -n test -e "$pointer" 2>/dev/null; then
+        if sudo -n test -f "$pointer" 2>/dev/null; then
+            pointer_state=present
+            pointer_value=$(sudo -n cat "$pointer" 2>/dev/null) || pointer_value=""
+            pointer_value=${pointer_value%%$'\n'*}
+            [ -n "$pointer_value" ] || pointer_state=unreadable
+        else
+            pointer_state=notfile
+        fi
+    elif [ "$sudo_ok" != yes ]; then
+        pointer_state=unreachable
+    fi
+fi
+pointer_value=$(norm_path "$pointer_value")
+kv pointer_state "$pointer_state"
+kv pointer_value "$pointer_value"
 
 # One state per path rather than a spread of booleans, because the states are
 # mutually exclusive and each one has its own verdict. `dangling` is a real
@@ -536,6 +612,7 @@ REMOTE
     # fact that never arrived must not be absorbed into a passing check.
     for key in user group have_docker docker_server docker_error \
                compose_version have_rsync have_openssl have_gzip sudo_nopasswd \
+               pointer_state pointer_value \
                apps_state apps_owned apps_writable apps_owner apps_write_error \
                apps_root_state apps_root_owner apps_base apps_base_owner apps_base_mode \
                data_state data_writable data_owner data_scope data_base data_base_writable \
@@ -794,6 +871,185 @@ _server_init_check_marker() {
         err_cont "upgrade kasbah locally, or point at a server this version manages"
         exit 1
     fi
+    return 0
+}
+
+# --- The pointer at /etc/kasbah/apps-path --------------------------------------
+
+# One kasbah instance per server, because one Traefik holds :80 and :443 — so a
+# server that already carries a pointer is refused a *different* apps path here,
+# before anything is created. Re-running init at the path the pointer names is
+# the ordinary idempotent case and passes straight through.
+#
+# The refusal is what `lib/marker.sh`'s exit-4 message used to be able only to
+# warn about: rendering a second stack under the frozen `traefik` compose
+# project recreates the running proxy against it, off the other tree's dynamic/
+# and acme.json, and takes every site on the host down.
+_server_init_check_pointer() {
+    local state="${_SI_FACT[pointer_state]}" value="${_SI_FACT[pointer_value]}"
+
+    case $state in
+        absent) return 0 ;;
+        notfile)
+            err "$KASBAH_APPS_POINTER on $_SI_TARGET exists and is not a regular file"
+            err_cont "that path is the server's record of where it was prepared, and kasbah"
+            err_cont "writes one absolute path there. Look at it, remove it, and re-run."
+            exit 1
+            ;;
+        unreachable)
+            err "${KASBAH_APPS_POINTER%/*} on $_SI_TARGET cannot be entered by ${_SI_FACT[user]}, and there is no sudo to look with"
+            err_cont "so whether this server already records an apps path cannot be told, and"
+            err_cont "this run would prepare $_SI_APPS_PATH. If the two differ that stands a second"
+            err_cont "Traefik beside the one already holding :80 and :443, so kasbah stops here."
+            err_cont "Make it traversable — it is mode 755 on a server kasbah prepared:"
+            err_cont "  ssh $_SI_TARGET 'sudo chmod 755 ${KASBAH_APPS_POINTER%/*}'"
+            exit 1
+            ;;
+        unreadable)
+            err "$KASBAH_APPS_POINTER on $_SI_TARGET cannot be read, by ${_SI_FACT[user]} or by root"
+            err_cont "it records where this server was prepared, and this run would prepare"
+            err_cont "$_SI_APPS_PATH — which, if the two differ, stands a second Traefik beside the"
+            err_cont "one already holding :80 and :443. kasbah will not guess. Read the file"
+            err_cont "yourself and remove it if $_SI_APPS_PATH is the tree this server runs from."
+            exit 1
+            ;;
+    esac
+
+    case $value in
+        /?*) ;;
+        *)
+            err "$KASBAH_APPS_POINTER on $_SI_TARGET holds '$value', which is not an absolute path"
+            err_cont "kasbah will not write over a pointer it cannot read: whatever apps path"
+            err_cont "this server was prepared at, that file was meant to name it, and this run"
+            err_cont "would prepare $_SI_APPS_PATH instead. If $_SI_APPS_PATH is the tree this"
+            err_cont "server really runs from, remove $KASBAH_APPS_POINTER and re-run — init"
+            err_cont "writes it again."
+            exit 1
+            ;;
+    esac
+
+    [ "$value" != "$_SI_APPS_PATH" ] || return 0
+
+    err "$_SI_TARGET is already prepared at $value, and this run would prepare it at $_SI_APPS_PATH"
+    err_cont "$KASBAH_APPS_POINTER records $value. One server runs one kasbah, because one"
+    err_cont "Traefik holds :80 and :443: preparing a second tree here would render a rival"
+    err_cont "stack under the frozen 'traefik' compose project, recreate the running proxy"
+    err_cont "against it — off this tree's dynamic/ and acme.json rather than $value's —"
+    err_cont "and take every site on the server down. Nothing has been changed."
+    err_cont "To manage the server that is there, re-run with --apps-path set to the directory"
+    err_cont "$value resolves to — for a plain path that is $value itself, and kasbah's flags"
+    err_cont "take no '..' segment — or with no --apps-path if that is the default."
+    err_cont "To move the server to $_SI_APPS_PATH, take the existing stack down first and"
+    err_cont "remove $KASBAH_APPS_POINTER."
+    exit 1
+}
+
+# Written immediately after the marker, and never before it: the marker is the
+# "init completed" signal, so a run that dies earlier leaves no pointer and the
+# /apps fallback still describes the server truthfully.
+#
+# Root-owned, mode 644, one absolute path on a line — every project command
+# reads it as whatever user it deploys as. Left alone when it already says that,
+# down to the mode and the owner, so a re-run on a host whose sudo has since
+# been taken away still succeeds.
+_server_init_pointer() {
+    local out rc=0
+
+    out=$(ssh_script "$_SI_APPS_PATH" "$KASBAH_APPS_POINTER" <<'REMOTE'
+set -uo pipefail
+export LC_ALL=C
+apps=$1
+pointer=$2
+dir=${pointer%/*}
+
+# The staging file goes with the failure: every path out of this step from here
+# on has already created it, and a run that stops half way must not leave a copy
+# of the apps path in /tmp on the server.
+staged=""
+fail() { [ -z "$staged" ] || rm -f "$staged"; printf 'remote: %s\n' "$*" >&2; exit 1; }
+
+if [ -e "$pointer" ] && [ ! -f "$pointer" ]; then
+    fail "$pointer exists and is not a regular file"
+fi
+
+# Already right, down to the mode and the owner. `-r` first, because a pointer
+# this user cannot read is one to rewrite rather than one to read: 644 and root
+# are half of what "already right" means, and a failed redirect would say so
+# only in stderr nobody is reading.
+if [ -f "$pointer" ] && [ -r "$pointer" ]; then
+    current=""
+    IFS= read -r current < "$pointer" || current=""
+    current=${current%$'\r'}
+    meta=$(stat -c '%a %u' "$pointer" 2>/dev/null) || meta=""
+    if [ "$current" = "$apps" ] && [ "$meta" = "644 0" ]; then
+        printf 'pointer=unchanged\n'
+        exit 0
+    fi
+fi
+
+# Asked, never assumed, and reported rather than refused here: what a missing
+# sudo costs depends on the apps path, and that verdict is the caller's.
+sudo_cmd=""
+if [ "$(id -u)" != 0 ]; then
+    if sudo -n true >/dev/null 2>&1; then
+        sudo_cmd="sudo -n"
+    else
+        printf 'pointer=nosudo\n'
+        exit 0
+    fi
+fi
+
+# Staged where this user can write, then installed as root and renamed into
+# place: a command reading the pointer must never catch a half-written one.
+staged="${TMPDIR:-/tmp}/kasbah-apps-path.$$"
+tmp="$pointer.tmp.$$"
+printf '%s\n' "$apps" > "$staged" || fail "could not stage the pointer at $staged"
+$sudo_cmd mkdir -p "$dir" || fail "sudo mkdir -p $dir failed"
+$sudo_cmd chmod 755 "$dir" || fail "sudo chmod 755 $dir failed"
+$sudo_cmd cp "$staged" "$tmp" || fail "could not write $tmp"
+rm -f "$staged"
+$sudo_cmd chown 0:0 "$tmp" || fail "could not give $tmp to root"
+$sudo_cmd chmod 644 "$tmp" || fail "could not set mode 644 on $tmp"
+$sudo_cmd mv -f "$tmp" "$pointer" || fail "could not install $pointer"
+printf 'pointer=written\n'
+exit 0
+REMOTE
+    ) || rc=$?
+
+    [ "$rc" -eq 0 ] \
+        || die "could not write $KASBAH_APPS_POINTER on $_SI_TARGET (the remote step exited $rc, see above)"
+
+    _si_absorb_checked "the pointer step" "$out" pointer
+    _server_init_pointer_verdict
+}
+
+# What a pointer that could not be written costs, which is not the same
+# everywhere: at the default apps path every project command finds the server
+# anyway, so the pointer is a convenience and its absence is a warning. Anywhere
+# else it is the only thing that makes the server discoverable, and a server
+# prepared where nothing can find it is the bug this file exists to close.
+_server_init_pointer_verdict() {
+    local state="${_SI_FACT[pointer]}" user="${_SI_FACT[user]}"
+
+    case $state in
+        written|unchanged) return 0 ;;
+        nosudo) ;;
+        *) die "the pointer step on $_SI_TARGET reported '$state', which this kasbah does not know" ;;
+    esac
+
+    if [ "$_SI_APPS_PATH" != "$KASBAH_DEFAULT_APPS_PATH" ]; then
+        err "could not write $KASBAH_APPS_POINTER on $_SI_TARGET — \`sudo -n\` is not available to $user"
+        err_cont "$_SI_TARGET is prepared at $_SI_APPS_PATH and nothing can find it: that file is"
+        err_cont "how \`kasbah deploy\` and \`kasbah env\` discover a server prepared anywhere other"
+        err_cont "than $KASBAH_DEFAULT_APPS_PATH. Without it they look under $KASBAH_DEFAULT_APPS_PATH, find no marker"
+        err_cont "and exit 4. Grant NOPASSWD sudo and re-run, or create it once by hand:"
+        err_cont "  ssh $_SI_TARGET 'sudo mkdir -p ${KASBAH_APPS_POINTER%/*} && printf \"%s\\n\" $_SI_APPS_PATH | sudo tee $KASBAH_APPS_POINTER >/dev/null && sudo chmod 644 $KASBAH_APPS_POINTER'"
+        exit 1
+    fi
+
+    warn "could not write $KASBAH_APPS_POINTER on $_SI_TARGET — \`sudo -n\` is not available to $user"
+    warn "nothing is broken: $_SI_APPS_PATH is where every project command looks when there is no"
+    warn "pointer. It would only matter if this server were ever re-prepared elsewhere."
     return 0
 }
 
@@ -1437,6 +1693,7 @@ cmd_server_init() {
     _server_init_elevation
     _server_init_preflight "$_SI_TARGET" "$_SI_APPS_PATH" "$_SI_ELEVATE"
     _server_init_check_marker
+    _server_init_check_pointer
     _server_limits "${_SI_FACT[nproc]}" "${_SI_FACT[memtotal_kb]}"
 
     local marker_json
@@ -1455,6 +1712,7 @@ cmd_server_init() {
     _server_init_traefik_sync
     _server_init_traefik_start
     _server_init_marker "$marker_json"
+    _server_init_pointer
 
     info "Prepared $_SI_TARGET"
     # The one moment kasbah elevates, and the one moment it creates the file
@@ -1471,4 +1729,5 @@ cmd_server_init() {
     info "  traefik: ${_SI_FACT[traefik_action]}, ${_SI_FACT[traefik_health]}, ${_SI_FACT[traefik_image]} ($shipped)"
     info "  dashboard: https://traefik.$_SI_DASHBOARD_DOMAIN (basic auth, credentials $_SI_AUTH_ORIGIN)"
     info "  marker: $_SI_APPS_PATH/.kasbah/server.json (${_SI_FACT[marker]})"
+    info "  pointer: $KASBAH_APPS_POINTER -> $_SI_APPS_PATH (${_SI_FACT[pointer]})"
 }

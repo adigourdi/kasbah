@@ -55,8 +55,16 @@ case "$last" in
     "'bash' '-s'"*) cat >/dev/null ;;
 esac
 case "$last" in
-    "'bash' '-s' '--' '/apps'")
+    # The marker read, with its two discovery header lines: the pointer path is
+    # the step's second argument, and $POINTER makes the far side answer as a
+    # server whose pointer names another tree.
+    "'bash' '-s' '--' '/apps' '/etc/kasbah/apps-path'")
         marker_default='{"kasbah_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"14.4","mem_limit":"54g"}'
+        if [ -n "${POINTER:-}" ]; then
+            printf 'apps=%s\nsource=pointer\n' "$POINTER"
+        else
+            printf 'apps=/apps\nsource=default\n'
+        fi
         printf '%s\n' "${MARKER-$marker_default}" ;;
     "'bash' '-s' '--' '/apps' 'demo'") printf 'prepared=yes\n' ;;
     *"setup-env.sh' '--drift' "*)
@@ -191,6 +199,11 @@ last="${!#}"
 case "$*" in *"-O exit"*) exit 0 ;; esac
 case "$last" in true) exit 0 ;; esac
 cat >/dev/null
+# Where it looked, then "no marker there": the discovery protocol reports the
+# first even when the second is the answer.
+case "$last" in
+    *"'/etc/kasbah/apps-path'") printf 'apps=/apps\nsource=default\n' ;;
+esac
 exit 3
 STUB
 chmod 0755 "$stub_dir/ssh.marker-missing"

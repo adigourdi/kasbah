@@ -76,7 +76,7 @@ need a decision rather than just implementation:
   `status` both use; it is what keeps the rig's `maxstartups 10` from
   biting.
 
-Also: `status` accepts `--apps-path`, `deploy` does not (carried to Phase 4).
+Also: every command now resolves the apps path through `/etc/kasbah/apps-path` (Phase 4 closed the carry); `status` keeps `--apps-path` as the escape hatch for a server whose pointer is gone.
 If Phase 4 puts the apps path in `.kasbah/state.json`, `status` should read
 it too rather than keeping two mechanisms.
 
