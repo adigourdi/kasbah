@@ -44,6 +44,8 @@ traefik_flags=(--domain="$rig_domain" --email="ops@$rig_domain"
 
 project=built-app
 project_version=1.5.0
+# The version the changelog section cuts, so step 10 has a real range to print.
+next_version=1.6.0
 image_web=built-app-web
 image_worker=built-app-worker
 web="$image_web:$project_version"
@@ -65,8 +67,8 @@ assert() {
 
 tmpdir="$(mktemp -d)"
 cleanup() {
-    rig_ssh "docker image rm -f $web $worker $image_web:current $image_worker:current; rm -f /tmp/$project-*.tar.gz /tmp/rd-first.out /tmp/rd-first.rc" >/dev/null 2>&1
-    docker image rm -f "$web" "$worker" "$image_web:current" "$image_worker:current" >/dev/null 2>&1
+    rig_ssh "docker image rm -f $web $worker $image_web:$next_version $image_worker:$next_version $image_web:current $image_worker:current; rm -rf $apps/mail; rm -f /tmp/$project-*.tar.gz /tmp/rd-first.out /tmp/rd-first.rc" >/dev/null 2>&1
+    docker image rm -f "$web" "$worker" "$image_web:$next_version" "$image_worker:$next_version" "$image_web:current" "$image_worker:current" >/dev/null 2>&1
     rm -f "${TMPDIR:-/tmp}/$project-"*.tar.gz
     rm -rf "$tmpdir"
 }
@@ -231,6 +233,11 @@ assert '[[ "$first_crumbs" == post-deploy\ * ]]' \
     "which is the post-deploy one (line: '$first_crumbs')"
 assert '[[ "$first_crumbs" == *" prev= "* ]]' \
     "with \$PREV_VERSION empty on a first deploy rather than absent (line: '$first_crumbs')"
+# The changelog (docs/build-deploy.md step 10) is driven by the previous version
+# in the shipped script's report, which on a first deploy is empty — so there is
+# no range to compute and the local side says that instead of inventing one.
+assert 'grep -qF "changes: first deploy" "$tmpdir/err"' \
+    "and the changelog says there is no previous version to compare against (said '$(cli_err)')"
 
 # ==================================================================================
 # The second deploy: the whole order, against a stack that is up
@@ -242,6 +249,11 @@ assert '[ "$rc" = "0" ]' "a redeploy over a running stack succeeds (exit $rc)
 if [ "$rc" != "0" ]; then
     sed 's/^/       | /' "$tmpdir/err" >&2
 fi
+# The range is the server's answer, not this side's guess: nothing in the
+# checkout knows that $project_version was already deployed here, and the only
+# way this line can name it is the report the shipped script printed.
+assert 'grep -qF "changes: none — v$project_version..v$project_version is empty" "$tmpdir/err"' \
+    "the changelog names the version the server reported as previous (said '$(cli_err)')"
 
 # --- The script on the server is this kasbah's template, rendered -------------------
 # Two halves, because the deliverable has two: the parts kasbah owns are its own
@@ -396,6 +408,85 @@ assert '[ "${got[containers]}" = "3" ]' \
     "all three of the fixture's services are up (found ${got[containers]})"
 
 # ==================================================================================
+# The three flags, and what each one changes on the far side
+# ==================================================================================
+# `kasbah deploy` decides nothing about them — it hands them to the shipped
+# script — so what is worth showing here is that they arrive and that the far
+# side acts on each one differently.
+
+# --skip-hooks skips the hooks and *keeps* the backup: a dry-run-ish deploy must
+# not also throw away the data safety net (docs/build-deploy.md → helper scripts).
+backups_before="$(backup_names)"
+crumbs_reset
+deploy "$RIG_TARGET" --skip-hooks; rc=$?
+assert '[ "$rc" = "0" ]' "--skip-hooks deploys (exit $rc)
+        stderr: $(cli_err)"
+assert '[ "$(crumbs)" = "" ]' \
+    "and neither hook ran — nothing was written to the breadcrumb file (crumbs: $(tr '\n' '/' <<<"$(crumbs)"))"
+assert 'grep -qF "pre-deploy hooks skipped (--skip-hooks)" "$tmpdir/err"' \
+    "the far side says which flag skipped them (said '$(cli_err)')"
+assert '[ "$(backup_names)" != "$backups_before" ]' \
+    "while the backup still ran
+        before: $backups_before
+        after:  $(backup_names)"
+
+# --no-health-wait brings the stack up without blocking on it. The control is the
+# deploys above, which all reported the wait.
+crumbs_reset
+deploy "$RIG_TARGET" --no-health-wait; rc=$?
+assert '[ "$rc" = "0" ]' "--no-health-wait deploys (exit $rc)
+        stderr: $(cli_err)"
+assert 'grep -qF "health wait skipped (--no-health-wait)" "$tmpdir/err"' \
+    "saying so (said '$(cli_err)')"
+assert '! grep -qF "is healthy" "$tmpdir/err"' \
+    "and nothing waited on health at all (said '$(cli_err)')"
+assert '[ "$(grep -c . <<<"$(crumbs)")" = "2" ]' \
+    "with the hooks still running, because this flag is not that one (crumbs: $(tr '\n' '/' <<<"$(crumbs)"))"
+
+# --allow-stopped is the refusal's override, so the refusal is what makes it
+# mean anything: built-app-web is both the backup container and the pre-deploy
+# hook's, and a project that has deployed here before must not be deployed over
+# while it is down (docs/build-deploy.md → the outgoing stack).
+rig_ssh "docker stop $image_web" >/dev/null 2>&1
+stopped_state=$(rig_ssh "docker inspect -f '{{.State.Status}}' $image_web" 2>/dev/null | tr -d '\r')
+assert '[ "$stopped_state" = "exited" ]' \
+    "the outgoing container is stopped (docker says '$stopped_state')"
+log_before="$(versions_log)"
+crumbs_reset
+deploy "$RIG_TARGET"; rc=$?
+assert '[ "$rc" != "0" ]' "a deploy over a stopped stack that has deployed here before is refused (exit $rc)"
+assert 'grep -qF "$image_web is exited" "$tmpdir/err"' \
+    "naming the container and the state docker reports for it (said '$(cli_err)')"
+assert 'grep -qF -- "--allow-stopped" "$tmpdir/err"' "and the flag that overrides it (said '$(cli_err)')"
+assert '[ "$(versions_log)" = "$log_before" ]' \
+    "before any side effect — versions.log is untouched (log: $(versions_log))"
+assert '[ "$(crumbs)" = "" ]' "and no hook ran (crumbs: $(tr '\n' '/' <<<"$(crumbs)"))"
+
+backups_before="$(backup_names)"
+deploy "$RIG_TARGET" --allow-stopped; rc=$?
+assert '[ "$rc" = "0" ]' "--allow-stopped deploys over it (exit $rc)
+        stderr: $(cli_err)"
+assert 'grep -qF -- "--allow-stopped:" "$tmpdir/err"' \
+    "saying which flag let it through (said '$(cli_err)')"
+assert '[ "$(backup_names)" = "$backups_before" ]' \
+    "and took no backup, because there was nothing running to take one from
+        before: $backups_before
+        after:  $(backup_names)"
+allow_crumbs="$(crumbs)"
+assert '[ "$(grep -c . <<<"$allow_crumbs")" = "1" ]' \
+    "the pre-deploy hook had nothing to run against either, so exactly one breadcrumb
+        was left (crumbs: $(tr '\n' '/' <<<"$allow_crumbs"))"
+assert '[[ "$allow_crumbs" == post-deploy\ * ]]' \
+    "and it is the post-deploy one, against what compose just started (line: '$allow_crumbs')"
+web_after=$(rig_ssh "docker inspect -f '{{.State.Running}}' $image_web" 2>/dev/null | tr -d '\r')
+assert '[ "$web_after" = "true" ]' "with the stack running again afterwards (docker says '$web_after')"
+# The control for the --no-health-wait case above: this deploy passed no flag, so
+# it did block on health and said so. Without it, "nothing waited on health" would
+# pass just as well against a kasbah that never waits at all.
+assert 'grep -qF "$image_web is healthy" "$tmpdir/err"' \
+    "and this one, with no flag, did wait on health (said '$(cli_err)')"
+
+# ==================================================================================
 # The backup gate says no — and two runs race the lock
 # ==================================================================================
 # One redeploy carries both: the manifest's backup.check is flipped to a command
@@ -427,10 +518,12 @@ gate_crumbs="$(crumbs)"
 assert 'grep -qF "backup=no-backup" <<<"$gate_crumbs"' \
     "the hooks are told there is none, through \$DEPLOY_BACKUP
         crumbs: $(tr '\n' '/' <<<"$gate_crumbs")"
+# Two deploys here, three in the flag section above, and one refused that wrote
+# nothing: six lines, of which this is the sixth.
 log2="$(versions_log)"
-assert '[ "$(wc -l <<<"$log2")" = "3" ]' "a third line was appended (log: $log2)"
-assert '[[ "$(sed -n 3p <<<"$log2")" == *" $project_version no-backup kasbah="* ]]' \
-    "recording no-backup in the frozen fourth field (line: $(sed -n 3p <<<"$log2"))"
+assert '[ "$(wc -l <<<"$log2")" = "6" ]' "a sixth line was appended (log: $log2)"
+assert '[[ "$(sed -n 6p <<<"$log2")" == *" $project_version no-backup kasbah="* ]]' \
+    "recording no-backup in the frozen fourth field (line: $(sed -n 6p <<<"$log2"))"
 assert '[ "$(sed -n "1,2p" <<<"$log2")" = "$log" ]' \
     "and the earlier entries are untouched — the log is appended to, never rewritten"
 
@@ -497,13 +590,124 @@ assert '[ "$first_rc" = "0" ]' \
     "while the first run finishes untouched (exit '$first_rc')
         said: $(rig_ssh "cat /tmp/rd-first.out 2>/dev/null" 2>/dev/null)"
 log3="$(versions_log)"
-assert '[ "$(wc -l <<<"$log3")" = "4" ]' \
+assert '[ "$(wc -l <<<"$log3")" = "7" ]' \
     "and exactly one of the two wrote a versions.log entry ($(wc -l <<<"$log3") lines in all)
         log: $log3"
 
+# ==================================================================================
+# Step 10, with a range in it — and the mail claim's own payload, run
+# ==================================================================================
+# Everything above deployed 1.5.0 over 1.5.0, so the changelog had an empty range
+# to report every time. Cutting a second version here is what makes step 10
+# observable end to end: the previous version comes off this server's own
+# versions.log, the commits come out of this checkout, and neither side can
+# produce the line alone.
+#
+# The sleeping hook goes first — it was the concurrency section's instrument and
+# costs every later deploy eight seconds.
+sed -i "/- 'built-app-web sleep $hook_sleep'/d" "$projdir/kasbah.yml"
+assert '! grep -qF "built-app-web sleep" "$projdir/kasbah.yml"' \
+    "the concurrency section's sleeping hook is out of the manifest again"
+
+# The mail claim rides the same deploy: this server has no $apps/mail yet, which
+# is the state every server is in today, and the branch the suite has never run
+# the real payload against.
+printf '\nmail:\n  domain: mail.built-app.test\n' >> "$projdir/kasbah.yml"
+
+commit_subject="what $next_version ships and $project_version did not"
+if ! ( cd "$projdir" && git add -A && git commit -qm "$commit_subject" && git tag "v$next_version" ) >"$tmpdir/git.log" 2>&1; then
+    echo "error: could not cut v$next_version in the fixture copy" >&2
+    sed 's/^/       | /' "$tmpdir/git.log" >&2
+    exit 2
+fi
+build_push "$RIG_TARGET"; rc=$?
+if [ "$rc" != "0" ]; then
+    echo "error: build-push of $next_version failed (exit $rc) — the deploy has no images to retag" >&2
+    sed 's/^/       | /' "$tmpdir/err" >&2
+    exit 2
+fi
+
+deploy "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "0" ]' "the $next_version deploy succeeds (exit $rc)
+        stderr: $(cli_err)"
+assert 'grep -qF "changes: v$project_version..v$next_version" "$tmpdir/err"' \
+    "and the changelog names the range from what this server was running to what it runs now
+        (said '$(cli_err)')"
+assert 'grep -qF "$commit_subject" "$tmpdir/err"' \
+    "listing the commit inside it (said '$(cli_err)')"
+assert '! grep -qF "the built-app fixture" "$tmpdir/err"' \
+    "and not the commit before the range began (said '$(cli_err)')"
+assert 'grep -qF "there is no mail stack at $apps/mail" "$tmpdir/err"' \
+    "the mail claim looked, on this server, and found none (said '$(cli_err)')"
+
+# The other three states of $apps/mail, against the real payload. The code looks
+# for a *directory* and a file in it, so a plain file at that path is a server
+# with no mail stack — and `[ -d ]` relaxed to `[ -e ]` is exactly the mutant a
+# suite that never runs the payload cannot see.
+rig_ssh "rm -rf $apps/mail && : > $apps/mail" >/dev/null 2>&1
+mail_kind=$(rig_ssh "[ -f $apps/mail ] && echo file || echo other" 2>/dev/null | tr -d '\r')
+assert '[ "$mail_kind" = "file" ]' "a plain file stands where the mail stack would be (found '$mail_kind')"
+deploy "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "0" ]' "a file at $apps/mail does not stop the deploy (exit $rc)
+        stderr: $(cli_err)"
+assert 'grep -qF "there is no mail stack at $apps/mail" "$tmpdir/err"' \
+    "and is not a mail stack (said '$(cli_err)')"
+
+rig_ssh "rm -f $apps/mail && mkdir -p $apps/mail" >/dev/null 2>&1
+deploy "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "0" ]' "a mail directory with no .env does not stop the deploy (exit $rc)
+        stderr: $(cli_err)"
+assert 'grep -qF "$apps/mail on $RIG_TARGET has no .env" "$tmpdir/err"' \
+    "and is reported as its own state (said '$(cli_err)')"
+assert '! grep -qF "there is no mail stack" "$tmpdir/err"' \
+    "not as an absent one (said '$(cli_err)')"
+
+rig_ssh "touch $apps/mail/.env" >/dev/null 2>&1
+deploy "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "0" ]' "a mail stack with an .env does not stop the deploy either (exit $rc)
+        stderr: $(cli_err)"
+assert 'grep -qF "does not yet check that $apps/mail/.env names it" "$tmpdir/err"' \
+    "and kasbah says plainly that it cannot reconcile the claim yet (said '$(cli_err)')"
+assert '! grep -qF "has no .env" "$tmpdir/err"' "not the state below it (said '$(cli_err)')"
+
+rig_ssh "rm -rf $apps/mail" >/dev/null 2>&1
+sed -i '/^mail:$/,$d' "$projdir/kasbah.yml"
+assert '! grep -qF "mail:" "$projdir/kasbah.yml"' "the mail claim is out of the manifest again"
+
+# ==================================================================================
+# The exit codes docs/cli.md promises, out of a real `kasbah deploy`
+# ==================================================================================
+# 5 is pinned at the top of this suite: the first deploy, against a project with
+# no .env and no terminal to render one on. The other two need a server that does
+# not answer, and one that answers but was never prepared.
+#
+# The scratch ssh config fences every host but the rig (tests/integration/
+# rig_env.sh), so this name is unreachable in the way ssh itself reports.
+deploy nobody@unreachable.invalid; rc=$?
+assert '[ "$rc" = "3" ]' "an unreachable server exits 3 (exit $rc)
+        stderr: $(cli_err)"
+assert 'grep -qF "cannot reach nobody@unreachable.invalid" "$tmpdir/err"' \
+    "naming the host (said '$(cli_err)')"
+
+# The marker is moved rather than deleted, and put back straight away: everything
+# after this point still needs a prepared server.
+if ! rig_ssh "sudo mv $marker $marker.held" >/dev/null 2>&1; then
+    echo "error: could not move the server marker aside on the rig" >&2
+    exit 2
+fi
+deploy "$RIG_TARGET"; rc=$?
+marker_back=0
+rig_ssh "sudo mv $marker.held $marker" >/dev/null 2>&1 || marker_back=1
+assert '[ "$rc" = "4" ]' "a server with no marker exits 4 (exit $rc)
+        stderr: $(cli_err)"
+assert 'grep -qF "$marker" "$tmpdir/err"' "naming the file it looked for (said '$(cli_err)')"
+assert '[ "$marker_back" = "0" ]' "and the marker was put back for the cleanup below"
+assert '[ "$(rig_ssh "[ -f $marker ] && echo present || echo absent" 2>/dev/null | tr -d "\r")" = "present" ]' \
+    "which the server agrees with"
+
 # --- Leave the rig as it was found, but only on success ---------------------------------
 if [ "$fail" -eq 0 ]; then
-    rig_ssh "docker image rm -f $web $worker $image_web:current $image_worker:current" >/dev/null 2>&1
+    rig_ssh "docker image rm -f $web $worker $image_web:$next_version $image_worker:$next_version $image_web:current $image_worker:current" >/dev/null 2>&1
     rig_clean || fail=1
 fi
 

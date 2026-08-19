@@ -99,6 +99,12 @@ case "${1:-}" in
         exit "$rc"
         ;;
     tag)
+        # Narrates on stdout. Today's `docker tag` is silent on success, so this
+        # models a daemon rather than reports one — deliberately: the property
+        # under test belongs to the script, not to docker. Every command on the
+        # path to the report must be redirected, and a stub that says nothing
+        # makes that guarantee unfalsifiable one command at a time.
+        printf 'tagged %s as %s\n' "$2" "$3"
         if id="$(lookup "$images" "$2")"; then
             # A retag is a second name for one image: the id follows the source,
             # which is what makes the digest field readable after the retag.
@@ -199,6 +205,11 @@ case "${1:-}" in
                 # `up` starts containers: a case that wants a first deploy leaves
                 # `containers` empty and names in `starts` what comes up here.
                 [ ! -f "$STUB_STATE/starts" ] || cat "$STUB_STATE/starts" >> "$STUB_STATE/containers"
+                # And it narrates on *stdout*, which some compose versions do.
+                # The script's stdout is a machine-readable report, so this is
+                # what makes "compose's output must not land in it" falsifiable
+                # rather than a defensive redirect nothing can test.
+                printf 'Container demo-web  Started\n'
                 exit "${DOCKER_UP_RC:-0}" ;;
         esac
         exit 0
@@ -679,6 +690,12 @@ log_line() { cat "$proj/versions.log" 2>/dev/null; }
 # The manifest every execution case starts from: two built images, a hook at
 # each end that leaves a breadcrumb naming the three variables it was given, a
 # backup gated on a sentinel file, and a health container.
+# A hook is project-authored shell and may print anything at all; the script
+# redirects its output to stderr so stdout stays the report's. The pre-deploy
+# hook here therefore writes a `key=value` line to **stdout** before it writes
+# its breadcrumb — with the redirect gone, that line lands in the report and the
+# four-line assertion in X1 fails. A fixture whose every hook tidily redirects
+# its own output into a file cannot see that guard at all.
 run_manifest() {
     local check="$1"
     printf 'schema: 1
@@ -691,7 +708,7 @@ health:
   timeout: 5s
 hooks:
   pre-deploy:
-    - "demo-web echo \\"pre v=$VERSION prev=$PREV_VERSION backup=$DEPLOY_BACKUP\\" >> %s"
+    - "demo-web echo version=9.9.9-from-the-hook; echo \\"pre v=$VERSION prev=$PREV_VERSION backup=$DEPLOY_BACKUP\\" >> %s"
   post-deploy:
     - "demo-web echo \\"post v=$VERSION prev=$PREV_VERSION backup=$DEPLOY_BACKUP\\" >> %s"
 backup:
@@ -706,7 +723,11 @@ backup:
 
 # --- Case X1: the whole order, on the happy path ------------------------------------
 : > "$tmpdir/crumbs"
-setup_run x1 "$(run_manifest "printf 'backup-check\\n' >> $tmpdir/crumbs")" "$built_compose"
+# backup.check is project-authored too, and it runs in the server's own shell
+# rather than in a container — so it is the second thing whose stdout has to be
+# kept off the report. It prints a `key=value` line here for the same reason the
+# hook above does.
+setup_run x1 "$(run_manifest "printf 'backup-check\\n' >> $tmpdir/crumbs; echo backup=leaked-from-the-check")" "$built_compose"
 printf 'demo-web:1.5.0=sha256:aaa\ndemo-worker:1.5.0=sha256:bbb\n' > "$STUB_STATE/images"
 printf 'demo-web\ndemo-db\n' > "$STUB_STATE/containers"
 printf 'demo-web=healthy\n' > "$STUB_STATE/health"
@@ -732,7 +753,7 @@ assert '[ "$(wc -l <<<"$crumbs")" = "3" ]' \
 n_of() { local l; l="$(grep -n -m1 -- "$1" "$DOCKER_LOG")" || return 1; printf '%s' "${l%%:*}"; }
 n_preflight="$(n_of 'docker|image|inspect|demo-web:1.5.0')"
 n_backup="$(n_of 'docker|exec|demo-db|sh|-c|echo kasbah-backup-payload')"
-n_prehook="$(n_of 'demo-web|sh|-c|echo "pre ')"
+n_prehook="$(n_of 'demo-web|sh|-c|echo version=9.9.9-from-the-hook')"
 n_tag="$(n_of 'docker|tag|demo-web:1.5.0|demo-web:current')"
 n_up="$(n_of 'docker|compose|-p|demo|up|-d|--remove-orphans')"
 n_health="$(n_of 'docker|inspect|--format|{{if .State.Health}}')"
@@ -769,6 +790,37 @@ assert '[ "$(wc -l <<<"$line")" = "1" ]' "one line was appended to versions.log 
 assert '[[ "$line" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+[0-9]{2}:[0-9]{2}\ deploy\ 1\.5\.0\ backups/pre-deploy-[0-9]{8}-[0-9]{6}\.txt\.gz\ kasbah=0\.1\.0-test\ digest=sha256:aaa,sha256:bbb$ ]]' \
     "in the frozen shape, with the backup path, this kasbah's version and both digests comma-joined
         line: $line"
+
+# The report on stdout, which is the whole of what this script writes there. The
+# caller parses it unfiltered and treats a missing key as "the run did not reach
+# its end" (lib/deploy.sh → _deploy_remote_deploy), so a `note` that drifted to
+# stdout and a key that stopped being emitted are both protocol breaks.
+assert '[ "$(grep -c . <<<"$run_out")" = "4" ]' \
+    "the report is four lines and nothing else is on stdout (stdout: $(tr "\n" "/" <<<"$run_out"))"
+# The control for that count. Both fixtures deliberately print a `key=value`
+# line to stdout — one from inside a container, one from the server's own shell
+# — and both must come out here instead. Without this, a hook that printed
+# nothing at all would satisfy the count just as well.
+assert 'grep -qF "version=9.9.9-from-the-hook" <<<"$run_err"' \
+    "the pre-deploy hook's own stdout was redirected to stderr (stderr: $run_err)"
+assert 'grep -qF "backup=leaked-from-the-check" <<<"$run_err"' \
+    "and so was backup.check's (stderr: $run_err)"
+assert 'grep -qxF "version=1.5.0" <<<"$run_out"' \
+    "naming the version that ran (stdout: $(tr "\n" "/" <<<"$run_out"))"
+assert 'grep -qxF "prev_version=" <<<"$run_out"' \
+    "with prev_version present and empty on a first deploy rather than omitted — the two
+        are the same thing to a reader that only checks for the key"
+assert 'grep -qxE "backup=backups/pre-deploy-[0-9]{8}-[0-9]{6}\.txt\.gz" <<<"$run_out"' \
+    "the backup path it wrote (stdout: $(tr "\n" "/" <<<"$run_out"))"
+assert 'grep -qxF "digest=sha256:aaa,sha256:bbb" <<<"$run_out"' \
+    "and the digests it recorded (stdout: $(tr "\n" "/" <<<"$run_out"))"
+# Against the log rather than against a constant: the report and versions.log
+# describe one deploy, and a report computed a second time could disagree.
+read -r _ _ _ log_backup _ log_digest <<<"$line"
+assert '[ "backup=$log_backup" = "$(grep -m1 "^backup=" <<<"$run_out")" ]' \
+    "the backup path the report gives is the one the log line carries (log '$log_backup')"
+assert '[ "$log_digest" = "$(grep -m1 "^digest=" <<<"$run_out")" ]' \
+    "and so is the digest field (log '$log_digest')"
 
 # The timestamp field is frozen, and `date -u -Iseconds` is what keeps it UTC:
 # a VPS in Asia/Tokyo writing +09:00 into a space-delimited field every future
@@ -818,6 +870,13 @@ assert 'grep -qF "pre v=1.6.0 prev=1.5.0 " "$tmpdir/crumbs"' \
         crumbs: $(tr "\n" "/" < "$tmpdir/crumbs")"
 assert '[ "$(wc -l < "$proj/versions.log")" = "2" ]' \
     "versions.log is appended to, never rewritten ($(wc -l < "$proj/versions.log") lines)"
+# The one fact in the report that no caller can compute for itself: what this
+# server was running before. A report echoing the version it was asked for would
+# be indistinguishable here if the two were ever the same.
+assert 'grep -qxF "prev_version=1.5.0" <<<"$run_out"' \
+    "and the report carries that previous version, not the one being deployed
+        stdout: $(tr "\n" "/" <<<"$run_out")"
+assert 'grep -qxF "version=1.6.0" <<<"$run_out"' "which is a different field (stdout: $(tr "\n" "/" <<<"$run_out"))"
 
 # --- Case X4: the image preflight, before any side effect -----------------------------
 : > "$tmpdir/crumbs"
@@ -838,6 +897,10 @@ assert '[ "$(find "$proj/backups" -type f 2>/dev/null | wc -l)" = "0" ]' "no bac
 assert '! grep -q "^docker|tag|" "$DOCKER_LOG"' "nothing was retagged"
 assert '! grep -q "^docker|compose|-p|demo|up" "$DOCKER_LOG"' "and nothing was brought up"
 assert '[ ! -e "$proj/versions.log" ]' "and versions.log records nothing"
+# The report is the last thing a completed run writes, which is what lets the
+# caller read "exit 0 and no report" as "this did not finish". A refused run must
+# therefore print none of it.
+assert '[ -z "$run_out" ]' "and nothing at all reached stdout (stdout: '$run_out')"
 
 # --- Case X5: the health wait's three branches ----------------------------------------
 # (a) no health: block — every container in the compose project, and one of them

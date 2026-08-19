@@ -158,9 +158,9 @@ below). The only differences:
    limits read from the server marker). The `KASBAH_` prefix is reserved
    and exempt from drift detection.
 7. Mail claim (if manifest has `mail:`):
-     verify mail stack is up
-     verify claimed domain is configured in /apps/mail/.env
-     copy snappymail_domain pre-seed if file missing on VPS
+     look for a mail stack on the server   # today: warn and continue when absent
+     verify claimed domain is configured in /apps/mail/.env   # roadmap v0.2
+     copy snappymail_domain pre-seed if file missing on VPS   # roadmap v0.2
 8. SSH into VPS and run scripts/remote-deploy.sh deploy <version>:
      a. If manifest has `backup:` AND `backup.check` exits 0 → run backup
         against currently-running (previous version) containers. Rotate.
@@ -171,6 +171,7 @@ below). The only differences:
      f. Run post-deploy hooks against new containers.
      g. Append deploy entry to versions.log. (Rotation is Phase 5 — see
         Rotation below; the log is append-only until then.)
+     h. Print the run's report on stdout — see "The remote report" below.
 9. Rsync traefik-dynamic.yml → /apps/traefik/dynamic/<name>.yml. Done by the
    *local* side once remote-deploy.sh has returned 0 — the file is on the
    workstation, and the ordering is the point (see below).
@@ -406,6 +407,33 @@ Does NOT restore:
   Flags: `--skip-hooks` (pre/post hooks only — the backup still runs, because a
   dry-run-ish deploy must not also discard the data safety net),
   `--no-health-wait`, and `--allow-stopped`.
+
+### The remote report
+
+`remote-deploy.sh` writes nothing to stdout for a human. Its progress, its
+warnings and every command it runs narrate on **stderr**, and stdout carries
+exactly one thing: a `key=value` report, one pair per line, printed as the
+run's last act — *after* the `versions.log` entry is appended.
+
+```
+version=1.3.0
+prev_version=1.2.0
+backup=backups/pre-deploy-20260419-101500.sql.gz
+digest=sha256:9f2a…,sha256:c81b…
+```
+
+That placement makes it two things at once. It is how the local side learns
+facts only the server has — chiefly `prev_version`, which is what step 10's
+`git log <prev-deploy>..<new>` range is computed from and which exists nowhere
+on the workstation. And it is the run's **completion marker**: an exit 0 with no
+report, or with a report missing a key, means the script did not reach its end,
+so the local side treats that as a failed deploy and **stops before shipping the
+Traefik fragment**. A truncated run therefore leaves no route and no state, which
+is the same failure shape the fragment-last ordering exists to prevent.
+
+The local side validates the complete key set as a protocol before reading any
+value, and checks the reported `version` against the one it asked for — the one
+field in the report that can be verified rather than believed.
 
 ### The outgoing stack, and when a stopped one is a refusal
 

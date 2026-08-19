@@ -233,8 +233,15 @@ Flags:
 - `--on-drift=setup|continue|abort` — what step 6 does when the server's `.env`
   has drifted from `.env.prod.example`. Unset it asks; with no terminal to ask
   on the run stops with exit `5`. See `kasbah env` below.
-- `--skip-hooks` — skip pre/post hooks (dry-run style).
+- `--skip-hooks` — skip the pre/post hooks (dry-run style). **The backup still
+  runs**: a flag for a dry-run-ish deploy must not also discard the data safety
+  net.
 - `--no-health-wait` — don't block on healthcheck.
+- `--allow-stopped` — deploy over a stack that has deployed here before but is
+  not running. Without it that is a refusal, because the backup and the
+  `pre-deploy` hooks act on the outgoing containers and skipping them silently
+  is how a backup goes missing exactly when it was worth having. See
+  `build-deploy.md` § the outgoing stack.
 
 ### `kasbah rollback [USER@HOST] [VERSION]`
 

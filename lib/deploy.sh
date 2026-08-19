@@ -37,7 +37,9 @@ _KASBAH_DEPLOY_LOADED=1
 # and the image digests all live on the far side, in templates/remote-deploy.sh,
 # which this command renders per deploy out of the project's manifest and ships
 # to <apps>/<name>/scripts/. What is here is the local half: sync, env, the one
-# remote invocation, the fragment.
+# remote invocation, the fragment — and the changelog, which needs both sides at
+# once: the version the server was running comes back in that invocation's
+# report, and the commits are in this checkout.
 
 _DEPLOY_TARGET=""
 _DEPLOY_TARGET_SOURCE=""
@@ -48,6 +50,14 @@ _DEPLOY_CPU_LIMIT=""
 _DEPLOY_MEM_LIMIT=""
 _DEPLOY_MARKER=""
 _DEPLOY_ON_DRIFT=""
+# The manifest's mail claim, or empty when it has none (docs/project-manifest.md).
+_DEPLOY_MAIL_DOMAIN=""
+# The three switches the shipped script takes. Plain opt-in flags rather than
+# tri-state pairs: each one turns a step of the remote run off, and "unset" has
+# one obvious meaning — run everything (docs/cli.md → kasbah deploy).
+_DEPLOY_SKIP_HOOKS=no
+_DEPLOY_NO_HEALTH_WAIT=no
+_DEPLOY_ALLOW_STOPPED=no
 # The rendered remote-deploy.sh, on this side. Set the moment the path is
 # decided rather than once the file is complete, because a half-written one is
 # exactly what the cleanup exists for.
@@ -65,9 +75,17 @@ _DEPLOY_FRAGMENT=traefik-dynamic.yml
 
 declare -A _DEPLOY_FACT=()
 
+# Lines _deploy_absorb prints after the raw output. A global rather than an
+# argument because the key list is variadic — a trailing option there would be
+# ambiguous with a key — and because exactly one caller needs it: the remote
+# deploy, whose far side has already changed the server by the time its report
+# is read. Set immediately before the call, cleared immediately after.
+_DEPLOY_ABSORB_ADVICE=()
+
 _deploy_usage() {
     cat <<EOF
 Usage: kasbah deploy [USER@HOST] [--on-drift=setup|continue|abort]
+                     [--skip-hooks] [--no-health-wait] [--allow-stopped]
 
 Ships the working tree to a prepared server and brings the project up there.
 Run from the project root. The version is HEAD's v-tag; USER@HOST defaults to
@@ -82,12 +100,22 @@ What it does:
     pre-deploy hooks, retag <image>:current, docker compose -p <name> up -d
     --remove-orphans, health wait, post-deploy hooks, one versions.log entry
   * rsyncs traefik-dynamic.yml to <apps>/traefik/dynamic/<name>.yml, last
+  * prints the commits between the version the server was running and this one
 
 Flags:
   --on-drift=setup      re-run the interactive setup when .env has drifted
   --on-drift=continue   deploy against the .env as it stands
   --on-drift=abort      stop, changing nothing
 Unset, a drifting .env asks; with no terminal to ask on, the run stops (exit 5).
+
+Passed straight through to scripts/remote-deploy.sh on the server:
+  --skip-hooks          skip the pre- and post-deploy hooks. The backup still
+                        runs — a dry-run-ish deploy must not also throw away
+                        the data safety net
+  --no-health-wait      bring the stack up without blocking on its health
+  --allow-stopped       deploy over a stack that has deployed here before and
+                        is not running, which is otherwise refused because its
+                        backup and pre-deploy hooks cannot run
 
 See docs/build-deploy.md and docs/env-template.md.
 EOF
@@ -98,25 +126,31 @@ EOF
 _deploy_parse_args() {
     _DEPLOY_TARGET=""
     _DEPLOY_ON_DRIFT=""
+    _DEPLOY_SKIP_HOOKS=no
+    _DEPLOY_NO_HEALTH_WAIT=no
+    _DEPLOY_ALLOW_STOPPED=no
 
     while [ $# -gt 0 ]; do
         case "$1" in
             -h|--help) _deploy_usage; exit 0 ;;
-            # Named rather than lumped into "unknown flag": all three are
-            # written down in docs/cli.md as part of this command, and a user
-            # who read that page deserves to know what is missing. What is
-            # missing is only the wiring: the script on the server takes both
-            # flags already, so the honest answer names that rather than the
-            # feature.
-            --skip-hooks|--no-health-wait)
-                die "deploy: $1 is not wired into the CLI yet — scripts/remote-deploy.sh on the server accepts it, but \`kasbah deploy\` does not pass it on (docs/cli.md)" ;;
+            # Nothing is decided here: all three are handed to
+            # scripts/remote-deploy.sh, which owns what each one turns off
+            # (docs/build-deploy.md → helper scripts on the VPS).
+            --skip-hooks)     _DEPLOY_SKIP_HOOKS=yes ;;
+            --no-health-wait) _DEPLOY_NO_HEALTH_WAIT=yes ;;
+            --allow-stopped)  _DEPLOY_ALLOW_STOPPED=yes ;;
+            # `--skip-hooks=yes` is a flag this command has, spelled wrong. The
+            # catch-all below would refuse it as unknown *and* list it as known
+            # in the same sentence, which is a message arguing with itself.
+            --skip-hooks=*|--no-health-wait=*|--allow-stopped=*)
+                die "deploy: ${1%%=*} takes no value — pass it on its own (\`kasbah deploy USER@HOST ${1%%=*}\`)" ;;
             --on-drift=*)
                 _DEPLOY_ON_DRIFT="${1#*=}"
                 env_on_drift_check deploy "$_DEPLOY_ON_DRIFT"
                 ;;
             --on-drift)
                 die "deploy: --on-drift takes its value with '=' — --on-drift=setup, --on-drift=continue or --on-drift=abort" ;;
-            -*) die "deploy: unknown flag '${1%%=*}' (deploy takes USER@HOST and --on-drift=)" ;;
+            -*) die "deploy: unknown flag '${1%%=*}' (deploy takes USER@HOST, --on-drift=, --skip-hooks, --no-health-wait and --allow-stopped)" ;;
             *)
                 if [ -z "$_DEPLOY_TARGET" ]; then
                     _DEPLOY_TARGET="${1%$'\r'}"
@@ -307,6 +341,35 @@ _deploy_read_sync() {
     _deploy_parse_sync_lines "$raw"
 }
 
+# The manifest's mail claim, read with the rest of the local checks. `domain` is
+# the whole of what a claim says (docs/project-manifest.md → mail), so a `mail:`
+# block without one claims nothing and is a mistake about this checkout — worth
+# a sentence here rather than a shrug on the server.
+_deploy_read_mail() {
+    local raw kind
+
+    _DEPLOY_MAIL_DOMAIN=""
+    raw="$(manifest_get '.mail // null')"
+    [ "$raw" != null ] && [ -n "$raw" ] || return 0
+
+    # Shape before contents: `.mail.domain` on a `mail: example.com` is a jq
+    # type error, and what reaches the operator is then kasbah's internal filter
+    # rather than the mistake in their manifest.
+    kind="$(manifest_get '.mail | type')"
+    kind="${kind%$'\r'}"
+    [ "$kind" = object ] \
+        || die "kasbah.yml: mail: has type '$kind' — it has to be a block with a domain: under it (docs/project-manifest.md → mail)"
+
+    raw="$(manifest_get '.mail.domain // ""')"
+    raw="${raw%$'\r'}"
+    [ "$raw" != null ] || raw=""
+    _deploy_trim "$raw" raw
+    [ -n "$raw" ] \
+        || die "kasbah.yml: mail: has no domain: — the claim is that the VPS mail stack handles that domain, and there is nothing else in the block for kasbah to check (docs/project-manifest.md)"
+    _DEPLOY_MAIL_DOMAIN="$raw"
+    return 0
+}
+
 # Every source is checked before the first one is shipped, and all the bad ones
 # are reported together: a manifest listing three files that were renamed should
 # cost one run, not three. A path that is not there is a hard failure — a silent
@@ -339,6 +402,11 @@ _deploy_check_sources() {
 # Folds a remote step's key=value report into the fact table, and checks the key
 # set as a protocol before any verdict reads a value: a fact that never arrived
 # must not be absorbed into a passing check (docs/phases/01-rig.md, from 1.3).
+#
+# A repeated key keeps the **last** value, which is what makes the report robust
+# against anything that reached stdout ahead of it: remote-deploy.sh prints its
+# report as its last act, so the report wins over a line some project-authored
+# hook leaked. First-wins would hand the leak the verdict instead.
 _deploy_absorb() {
     local _da_what="$1" _da_out="$2"; shift 2
     local _da_line _da_key
@@ -356,6 +424,9 @@ _deploy_absorb() {
         err "$_da_what on $_DEPLOY_TARGET reported no ${_da_missing[*]}"
         err_cont "the step was truncated, or the remote shell rejected it — raw output:"
         while IFS= read -r _da_line; do err_cont "| $_da_line"; done <<<"$_da_out"
+        for _da_line in ${_DEPLOY_ABSORB_ADVICE[@]+"${_DEPLOY_ABSORB_ADVICE[@]}"}; do
+            err_cont "$_da_line"
+        done
         exit 1
     fi
     return 0
@@ -589,6 +660,49 @@ _deploy_sync_fragment() {
     return 0
 }
 
+# Step 7, and a stub that looks: a project claiming `mail:` says it expects
+# `mail.<domain>` and SMTP to be there, and kasbah checks that the mail stack
+# knows the domain (docs/project-manifest.md → mail). It cannot yet — the mail
+# stack itself is roadmap v0.2 and `server init --with-mail` hard-fails today —
+# so what is here reports what is on the server and warns either way. The claim
+# never stops a deploy: an unmet one costs mail, not the site.
+_deploy_mail_claim() {
+    local dir="$_DEPLOY_APPS_PATH/mail"
+    local out rc=0
+
+    [ -n "$_DEPLOY_MAIL_DOMAIN" ] || return 0
+
+    out=$(ssh_script "$dir" <<'REMOTE'
+set -uo pipefail
+export LC_ALL=C
+dir=$1
+
+if [ -d "$dir" ]; then printf 'mail_stack=yes\n'; else printf 'mail_stack=no\n'; fi
+if [ -f "$dir/.env" ]; then printf 'mail_env=yes\n'; else printf 'mail_env=no\n'; fi
+exit 0
+REMOTE
+    ) || rc=$?
+
+    [ "$rc" -eq 0 ] \
+        || die "could not look for the mail stack at $dir on $_DEPLOY_TARGET (the remote step exited $rc, see above)"
+    _deploy_absorb "the mail claim step" "$out" mail_stack mail_env
+
+    # Three different things to say, because they are three different states of
+    # the server and only one of them is "kasbah has not caught up yet".
+    if [ "${_DEPLOY_FACT[mail_stack]}" != yes ]; then
+        warn "$MANIFEST_NAME claims the mail domain $_DEPLOY_MAIL_DOMAIN, and there is no mail stack at $dir on $_DEPLOY_TARGET"
+        warn "the shared mail stack is roadmap v0.2, so nothing was verified — the deploy continues"
+    elif [ "${_DEPLOY_FACT[mail_env]}" != yes ]; then
+        warn "$MANIFEST_NAME claims the mail domain $_DEPLOY_MAIL_DOMAIN, and $dir on $_DEPLOY_TARGET has no .env"
+        warn "that file is where the domains the stack handles are configured, so the claim"
+        warn "is unmet as far as anything here can tell — the deploy continues"
+    else
+        warn "$MANIFEST_NAME claims the mail domain $_DEPLOY_MAIL_DOMAIN, and kasbah does not yet check that $dir/.env names it"
+        warn "verify it yourself for now — the reconciliation is roadmap v0.2 (docs/project-manifest.md → mail)"
+    fi
+    return 0
+}
+
 # The VPS side of the deploy, run through the helper rather than inlined, so
 # Phase 4 grows one script instead of rewriting this function
 # (docs/phases/02-spine.md → Decisions).
@@ -597,17 +711,98 @@ _deploy_sync_fragment() {
 # versions.log's `kasbah=` field, and the alternative — a positional argument —
 # would fix the shape of a command line docs/build-deploy.md spells out as
 # `remote-deploy.sh deploy <version>`.
+#
+# Its stdout is captured because it carries the report, and only that: the
+# progress an operator watches is on stderr and still streams live. The report
+# is the script's last act, so a run that exits 0 without one did not finish —
+# absorbed as a protocol before the changelog reads a value out of it.
 _deploy_remote_deploy() {
     local script="$_DEPLOY_APPS_PATH/$MANIFEST_NAME/scripts/remote-deploy.sh"
-    local rc=0
+    local out rc=0
+    local flags=()
 
-    ssh_run env "KASBAH_VERSION=$KASBAH_VERSION" "$script" deploy "$_DEPLOY_VERSION" \
-        || rc=$?
+    [ "$_DEPLOY_SKIP_HOOKS" != yes ]     || flags+=(--skip-hooks)
+    [ "$_DEPLOY_NO_HEALTH_WAIT" != yes ] || flags+=(--no-health-wait)
+    [ "$_DEPLOY_ALLOW_STOPPED" != yes ]  || flags+=(--allow-stopped)
+
+    out=$(ssh_run env "KASBAH_VERSION=$KASBAH_VERSION" "$script" deploy "$_DEPLOY_VERSION" \
+                  ${flags[@]+"${flags[@]}"}) || rc=$?
     [ "$rc" -eq 0 ] || {
         err "the deploy failed on $_DEPLOY_TARGET (remote-deploy.sh exited $rc, see above)"
         err_cont "the files are already there — fix what it reported and re-run \`kasbah deploy\`"
         exit 1
     }
+
+    # The one absorb whose failure is not "nothing happened": remote-deploy.sh
+    # prints its report last, so a missing one means the run stopped somewhere
+    # after `compose up` — the stack may well be running, versions.log may
+    # already say so, and the Traefik fragment below has not shipped. Saying only
+    # "the step was truncated" would leave the operator to work that out.
+    _DEPLOY_ABSORB_ADVICE=(
+        "That report is the last thing remote-deploy.sh writes, so this run got"
+        "at least as far as \`compose up\`: the new containers may be up and"
+        "$_DEPLOY_APPS_PATH/$MANIFEST_NAME/versions.log may already record"
+        "$_DEPLOY_VERSION. What did *not* happen is the Traefik fragment, so this"
+        "host still serves whatever it served before. Check the server, then"
+        "re-run \`kasbah deploy\` — it is safe to run again."
+    )
+    _deploy_absorb "the deploy step" "$out" version prev_version backup digest
+    _DEPLOY_ABSORB_ADVICE=()
+    # The one value that can be checked rather than believed: the script on the
+    # server is shipped by this same run, moments earlier, and a report about
+    # some other version means the two are not talking about the same deploy.
+    [ "${_DEPLOY_FACT[version]}" = "$_DEPLOY_VERSION" ] \
+        || die "the deploy step on $_DEPLOY_TARGET reported version '${_DEPLOY_FACT[version]}', not the $_DEPLOY_VERSION it was asked for"
+    return 0
+}
+
+# Step 10 of docs/build-deploy.md: the commits this deploy shipped, from the
+# version the server was running to the one it is running now.
+#
+# The two halves come from different machines and neither can supply the other's:
+# the previous version is whatever this server's versions.log recorded, which is
+# why remote-deploy.sh reports it, and the commits are in this checkout, which is
+# why the log is read here. A range that cannot be resolved is a warning and
+# never a failure — the deploy is already done, and its own success is not a
+# question about git.
+_deploy_changelog() {
+    local prev="${_DEPLOY_FACT[prev_version]}"
+    local range line log=""
+
+    if [ -z "$prev" ]; then
+        info "  changes: first deploy to $_DEPLOY_TARGET — no previous version to compare against"
+        return 0
+    fi
+
+    range="v$prev..v$_DEPLOY_VERSION"
+    if ! git rev-parse -q --verify "refs/tags/v$prev^{commit}" >/dev/null 2>&1; then
+        warn "$_DEPLOY_TARGET was running $prev, and this checkout has no tag v$prev — no changelog"
+        warn "\`git fetch --tags\`, then \`git log $range\`"
+        return 0
+    fi
+    if ! log="$(git log --no-color --format='%h %s' "$range" --)"; then
+        warn "could not read \`git log $range\` (see git's error above) — no changelog"
+        return 0
+    fi
+    if [ -z "$log" ] && [ "$prev" = "$_DEPLOY_VERSION" ]; then
+        info "  changes: none — $range is empty, so this is a redeploy of the version already there"
+        return 0
+    fi
+    if [ -z "$log" ]; then
+        # Empty in this direction means v<version> is not ahead of v<prev>: the
+        # server was running something newer, and this deploy takes it back.
+        # `kasbah rollback` is the command for that (Phase 5), so the wording
+        # says what happened rather than calling it a no-op.
+        info "  changes: none in $range — $_DEPLOY_VERSION is not ahead of the $prev this server was running"
+        info "           this deploy takes it back to $_DEPLOY_VERSION; \`git log v$_DEPLOY_VERSION..v$prev\` is what it gives up"
+        return 0
+    fi
+
+    info "  changes: $range"
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        printf '    %s\n' "$line" >&2
+    done <<<"$log"
     return 0
 }
 
@@ -626,6 +821,7 @@ cmd_deploy() {
     _deploy_resolve_version
     _deploy_read_sync
     _deploy_check_sources
+    _deploy_read_mail
     # The hooks, backup and health blocks that get rendered into the helper. Read
     # and judged here, with the rest of the local checks: a manifest that names a
     # hook with no command, or a backup: block missing half its fields, is a fact
@@ -646,6 +842,9 @@ cmd_deploy() {
     # Between the two: the setup prompts from a template that has to be on the
     # server already, and `compose up` reads the .env it writes.
     _deploy_env_step
+    # Step 7, between the env step and the deploy it cannot stop, exactly where
+    # docs/build-deploy.md's flow puts it.
+    _deploy_mail_claim
     _deploy_remote_deploy
     # Last, and only now: see the header. A route must never point at a
     # container the deploy failed to start.
@@ -665,4 +864,15 @@ cmd_deploy() {
         info "  routing: $_DEPLOY_APPS_PATH/traefik/dynamic/$MANIFEST_NAME.yml (Traefik reloads within a couple of seconds)"
     fi
     info "  logged:  $_DEPLOY_APPS_PATH/$MANIFEST_NAME/versions.log"
+    # Both come out of the report and are nowhere else on this side: whether a
+    # backup was taken is the thing an operator most wants to know before the
+    # next command, and the ids are what actually went live.
+    if [ "${_DEPLOY_FACT[backup]}" = no-backup ]; then
+        info "  backup:  none taken"
+    else
+        info "  backup:  $_DEPLOY_APPS_PATH/$MANIFEST_NAME/${_DEPLOY_FACT[backup]}"
+    fi
+    [ "${_DEPLOY_FACT[digest]}" = - ] \
+        || info "  images:  ${_DEPLOY_FACT[digest]} (read on the server after the retag)"
+    _deploy_changelog
 }

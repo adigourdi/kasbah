@@ -10,7 +10,8 @@
 #
 # The order is fixed, and it is the one docs/build-deploy.md step 8 spells out:
 # backup → pre-deploy hooks → retag :current → compose up -d --remove-orphans →
-# health wait → post-deploy hooks → one appended versions.log line.
+# health wait → post-deploy hooks → one appended versions.log line. Then, on
+# stdout and nowhere else, the `key=value` report `rd_report` describes.
 #
 # Runnable by hand on the server, with nothing of kasbah's installed: everything
 # the manifest says about this project is pre-rendered into the generated block
@@ -57,9 +58,9 @@ RD_NO_HEALTH_WAIT=no
 RD_ALLOW_STOPPED=no
 
 fail() { printf 'remote-deploy: %s\n' "$*" >&2; exit 1; }
-# Progress goes to stderr. Stdout is left clean for the step's own report to a
-# caller that parses it, which is the shape every other remote step kasbah runs
-# already has (lib/build_push.sh's payload).
+# Progress goes to stderr. Stdout carries nothing but `rd_report`'s `key=value`
+# lines, which is the shape every other remote step kasbah runs already has
+# (lib/build_push.sh's payload).
 note() { printf 'remote-deploy: %s\n' "$*" >&2; }
 
 usage() {
@@ -476,7 +477,10 @@ rd_retag() {
     local version="$1" img
 
     for img in ${RD_IMAGES[@]+"${RD_IMAGES[@]}"}; do
-        docker tag "$img:$version" "$img:current" \
+        # >&2 like every other command on this path: stdout is the report's,
+        # and `docker tag` is the one call here that writes to it at all (it is
+        # silent on success today, which is not a promise docker made).
+        docker tag "$img:$version" "$img:current" >&2 \
             || fail "could not retag $img:$version as $img:current"
         note "retagged $img:$version as $img:current"
     done
@@ -539,6 +543,23 @@ rd_health_targets() {
         return 0
     fi
     dc ps -q || fail "could not list the containers of compose project $PROJECT"
+    return 0
+}
+
+# The one thing this script writes to stdout, and the last thing it does: four
+# `key=value` lines naming what the run ended up doing. Everything else it says
+# goes to stderr (see `note`), so the caller reads this without filtering.
+#
+# Two of the four are facts only this server has — the version the previous
+# deploy recorded, and the image ids the daemon here computed after the retag —
+# and `kasbah deploy` needs the first of them to print the changelog for the
+# range it just shipped (docs/build-deploy.md step 10).
+#
+# Printed after the versions.log entry rather than anywhere earlier, which makes
+# it an end-of-run marker as well as a report: a caller that gets an exit status
+# of 0 and no report knows the run did not reach its end.
+rd_report() {
+    printf 'version=%s\nprev_version=%s\nbackup=%s\ndigest=%s\n' "$1" "$2" "$3" "$4"
     return 0
 }
 
@@ -620,7 +641,13 @@ do_deploy() {
     # the moment :current describes what is about to run.
     digest="$(rd_digests)" || fail "could not read the image ids of what went live (see above)"
 
-    dc up -d --remove-orphans \
+    # Compose's progress goes to stderr with the rest of the narration, because
+    # stdout is rd_report's. Not because a stray `key=value` could overwrite a
+    # fact — kasbah's absorber takes the last value for a key, and the report is
+    # last — but because stdout here is an interface: it is read whole, by a
+    # caller with no absorber or by a person piping it, and neither should have
+    # to filter compose out of it.
+    dc up -d --remove-orphans >&2 \
         || fail "docker compose -p $PROJECT up -d --remove-orphans failed in $PROJECT_DIR"
 
     if [ "$RD_NO_HEALTH_WAIT" = yes ]; then
@@ -637,6 +664,7 @@ do_deploy() {
     fi
 
     log_version deploy "$version" "$backup" "$digest"
+    rd_report "$version" "$prev" "$backup" "$digest"
     return 0
 }
 

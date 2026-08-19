@@ -276,11 +276,17 @@ assert 'grep -qF "timestamp is empty" <<<"$out"' "naming the field (said '$out')
 assert '[ ! -f "$proj6/versions.log" ]' "and nothing was appended"
 
 proj7="$(new_project spacey)"
+# The two streams apart, because the report on stdout is what a caller reads as
+# "the run reached its end": it is printed after the versions.log entry, so a
+# refusal that never wrote one must leave stdout empty.
 out=$(env PATH="$stub_dir:$PATH" KASBAH_VERSION='1.0 beta' DOCKER_LOG="$DOCKER_LOG" \
-        bash "$proj7/scripts/remote-deploy.sh" deploy 1.0.0 2>&1); rc=$?
-assert '[ "$rc" != "0" ]' "a KASBAH_VERSION with a space is refused (rc $rc: $out)"
-assert 'grep -qF "kasbah version" <<<"$out"' "naming the field (said '$out')"
+        bash "$proj7/scripts/remote-deploy.sh" deploy 1.0.0 2>"$tmpdir/spacey.err"); rc=$?
+spacey_err="$(cat "$tmpdir/spacey.err")"
+assert '[ "$rc" != "0" ]' "a KASBAH_VERSION with a space is refused (rc $rc: $spacey_err)"
+assert 'grep -qF "kasbah version" <<<"$spacey_err"' "naming the field (said '$spacey_err')"
 assert '[ ! -f "$proj7/versions.log" ]' "and nothing was appended"
+assert '[ -z "$out" ]' \
+    "and no report was printed for a deploy that never finished (stdout: '$out')"
 
 # The control for both: the same script with both values sane writes its line,
 # so the two refusals above are about the values and not about the stubs.
@@ -332,14 +338,27 @@ chmod 0755 "$stub_dir/ssh"
 project="$tmpdir/project"
 rm -rf "$project"
 cp -R "$repo_dir/tests/fixtures/demo" "$project"
+# Two tagged commits, because the changelog is a *range*: with one commit and
+# one tag, `git log v<prev>..v<new>` is empty whatever the code computes, and
+# every mutant of the range survives.
 (
     cd "$project" || exit 1
     git init -q .
     git config user.email kasbah-test@example.invalid
     git config user.name  "kasbah test"
+    git config commit.gpgsign false
     git add -A
-    git commit -qm "fixture"
+    git commit -qm "the commit before the one being deployed"
+    git tag v0.9.0
+    git commit -q --allow-empty -m "the commit this deploy ships"
     git tag v1.0.0
+    # One more, tagged and then left behind: v1.1.0 exists in this checkout and
+    # HEAD is not on it, which is the shape a *downgrade* needs — a server
+    # running something this deploy is not ahead of. HEAD keeps exactly one
+    # v-tag, which is what `kasbah deploy` requires of it.
+    git commit -q --allow-empty -m "a commit this deploy does not ship"
+    git tag v1.1.0
+    git reset -q --hard v1.0.0
 ) >/dev/null 2>&1
 
 # `kasbah`, as installed, with the stub first on PATH and a HOME of its own so
@@ -361,6 +380,19 @@ deploy_cli() {
         SSH_LOG="$ssh_log" CALL_LOG="$call_log" \
         RSYNC_HELPER_COPY="$helper_copy" \
         "$repo_dir/bin/kasbah" deploy "$@" </dev/null 2>&1
+}
+# The same run with the two streams kept apart. kasbah puts every line it prints
+# on stderr (lib/common.sh), and the changelog's commit lines are the newest
+# thing that could have drifted off it — deploy_cli merges 2>&1, so nothing else
+# in this suite can tell.
+split_err="$tmpdir/split.err"
+deploy_cli_split() {
+    : > "$ssh_log"; : > "$call_log"
+    env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
+        HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$run_tmp" \
+        SSH_LOG="$ssh_log" CALL_LOG="$call_log" \
+        RSYNC_HELPER_COPY="$helper_copy" \
+        "$repo_dir/bin/kasbah" deploy "$@" </dev/null 2>"$split_err"
 }
 mkdir -p "$tmpdir/home" "$run_tmp"
 
@@ -427,6 +459,7 @@ case "$last" in
     # The marker read is matched exactly above, so anything else naming the
     # project is the prepare step — whatever apps path the marker steered it to.
     "'bash' '-s' '--' "*" 'demo'"*)
+        [ -z "${PREPARE_OUT+set}" ] || { printf '%s' "$PREPARE_OUT"; exit 0; }
         printf 'prepared=yes\n' ;;
     *"setup-env.sh' '--drift' "*)
         [ -z "${DRIFT_OUT+set}" ] || { printf '%s' "$DRIFT_OUT"; exit "${DRIFT_RC:-0}"; }
@@ -436,7 +469,31 @@ case "$last" in
         printf 'missing=%s\n' "${ENV_MISSING:-}"
         printf 'extra=%s\n' "${ENV_EXTRA:-}" ;;
     *"setup-env.sh' '--inject' "*) exit "${INJECT_RC:-0}" ;;
-    *"remote-deploy.sh' 'deploy' '1.0.0'") ;;
+    # The mail claim's probe, which names <apps>/mail and nothing else. Its
+    # status and its whole output are settable: an ssh that failed here must not
+    # be indistinguishable from a server with no mail stack.
+    *"'bash' '-s' '--' '"*"/mail'")
+        [ -z "${MAIL_OUT+set}" ] || { printf '%s' "$MAIL_OUT"; exit "${MAIL_RC:-0}"; }
+        [ "${MAIL_RC:-0}" = 0 ] || exit "$MAIL_RC"
+        printf 'mail_stack=%s\n' "${MAIL_STACK:-no}"
+        printf 'mail_env=%s\n' "${MAIL_ENV:-no}" ;;
+    # The deploy itself, and its report on stdout. Every key is settable and any
+    # one of them is droppable with REPORT_OMIT, because "the report never
+    # arrived" and "the deploy said nothing changed" must not be the same thing
+    # to the side reading it.
+    *"remote-deploy.sh' 'deploy' '1.0.0'"*)
+        # REPORT_NOISE is whatever reached stdout *before* the report — a hook
+        # or a backup.check on a far side whose redirects were not there. The
+        # report is printed last, so the absorber's last-wins is what decides
+        # which of the two the deploy believes.
+        [ -z "${REPORT_NOISE:-}" ] || printf '%s\n' "$REPORT_NOISE"
+        # `all` is the headline case docs/build-deploy.md's protocol rests on:
+        # exit 0 and no report at all.
+        [ "${REPORT_OMIT:-}" != all ] || exit 0
+        [ "${REPORT_OMIT:-}" = version ]      || printf 'version=%s\n' "${REPORT_VERSION-1.0.0}"
+        [ "${REPORT_OMIT:-}" = prev_version ] || printf 'prev_version=%s\n' "${REPORT_PREV-0.9.0}"
+        [ "${REPORT_OMIT:-}" = backup ]       || printf 'backup=%s\n' "${REPORT_BACKUP-no-backup}"
+        [ "${REPORT_OMIT:-}" = digest ]       || printf 'digest=%s\n' "${REPORT_DIGEST--}" ;;
     *)
         printf 'stub: no answer for remote step %s\n' "$last" >&2
         exit 9 ;;
@@ -594,6 +651,296 @@ assert 'grep -qF "no traefik-dynamic.yml" <<<"$out"' "and says the route was not
 assert '[ "$(grep -c "dynamic/demo.yml" <<<"$calls")" = "0" ]' \
     "nothing at all was sent to the dynamic directory (sent: $(grep -F "dynamic/" <<<"$calls"))"
 mv "$tmpdir/held-fragment.yml" "$project/traefik-dynamic.yml"
+rm -rf "$project/.kasbah"
+
+# --- The three flags --------------------------------------------------------------
+# kasbah decides nothing about them: each is handed to scripts/remote-deploy.sh,
+# whose own suite proves what it then does (tests/remote_deploy_test.sh). What is
+# asserted here is that they arrive, and that nothing arrives when nothing was
+# asked for — the default is the half an author's survey forgets.
+rd_call() { grep -F "remote-deploy.sh' 'deploy'" <<<"$(<"$call_log")"; }
+
+out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a deploy with no flags succeeds (rc $rc: $out)"
+assert '! grep -qE -- "--(skip-hooks|no-health-wait|allow-stopped)" <<<"$(rd_call)"' \
+    "and passes none of the three flags on (ran: $(rd_call))"
+
+for flag in --skip-hooks --no-health-wait --allow-stopped; do
+    out=$( cd "$project" && deploy_cli deploy@vps "$flag" ); rc=$?
+    assert '[ "$rc" = "0" ]' "\`kasbah deploy $flag\` succeeds (rc $rc: $out)"
+    assert 'grep -qF "remote-deploy.sh'\'' '\''deploy'\'' '\''1.0.0'\'' '\''$flag'\''" <<<"$(rd_call)"' \
+        "and $flag reaches the shipped script, after the version (ran: $(rd_call))"
+done
+
+out=$( cd "$project" && deploy_cli deploy@vps --skip-hooks --no-health-wait --allow-stopped ); rc=$?
+assert '[ "$rc" = "0" ]' "all three together succeed (rc $rc: $out)"
+assert 'grep -qF "'\''deploy'\'' '\''1.0.0'\'' '\''--skip-hooks'\'' '\''--no-health-wait'\'' '\''--allow-stopped'\''" <<<"$(rd_call)"' \
+    "and all three travel in one command line (ran: $(rd_call))"
+out=$( cd "$project" && deploy_cli --skip-hooks deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a flag ahead of the target parses as a flag (rc $rc: $out)"
+assert 'grep -qF "'\''deploy'\'' '\''1.0.0'\'' '\''--skip-hooks'\''" <<<"$(rd_call)"' \
+    "and still reaches the far side after the version (ran: $(rd_call))"
+
+out=$( cd "$project" && deploy_cli deploy@vps --skip-hook ); rc=$?
+assert '[ "$rc" != "0" ]' "a near-miss flag is refused rather than silently dropped (rc $rc: $out)"
+assert 'grep -qF -- "--skip-hooks" <<<"$out"' "and the refusal lists the real one (said '$out')"
+
+# A flag of this command's, spelled with a value. The catch-all refusal names all
+# three flags, so it cannot also be the one that says a flag is unknown — the
+# message would deny and confirm the same flag in one sentence.
+for flag in --skip-hooks --no-health-wait --allow-stopped; do
+    out=$( cd "$project" && deploy_cli deploy@vps "$flag=yes" ); rc=$?
+    assert '[ "$rc" != "0" ]' "$flag=yes is refused (rc $rc: $out)"
+    assert 'grep -qF -- "$flag takes no value" <<<"$out"' \
+        "for the reason it is actually wrong (said '$out')"
+    assert '! grep -qF "unknown flag" <<<"$out"' \
+        "and not as an unknown flag it goes on to list as known (said '$out')"
+done
+
+# The three are in docs/cli.md as part of this command, so they are in its own
+# --help too: a flag nobody can discover from the CLI is a flag that does not
+# exist for the operator reading it.
+out=$( cd "$project" && deploy_cli --help ); rc=$?
+assert '[ "$rc" = "0" ]' "\`kasbah deploy --help\` exits 0 (rc $rc)"
+for flag in --skip-hooks --no-health-wait --allow-stopped --on-drift; do
+    assert 'grep -qF -- "$flag" <<<"$out"' "and lists $flag (said '$out')"
+done
+rm -rf "$project/.kasbah"
+
+# --- The report the far side sends back, and the changelog it makes possible -------
+# remote-deploy.sh's last act is a key=value report on stdout. It is absorbed as
+# a protocol — a fact that never arrived must not be read as a value — and the
+# previous version in it is the only way this side can know what the server was
+# running (docs/build-deploy.md step 10).
+out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "the deploy that reports prev=0.9.0 succeeds (rc $rc: $out)"
+assert 'grep -qF "changes: v0.9.0..v1.0.0" <<<"$out"' \
+    "the changelog names the range the server's own report defines (said '$out')"
+assert 'grep -qF "the commit this deploy ships" <<<"$out"' \
+    "and lists the commit inside it (said '$out')"
+assert '! grep -qF "the commit before the one being deployed" <<<"$out"' \
+    "and not the one before it — a range, not a log (said '$out')"
+# The report is data for this side, not something to echo at the operator.
+assert '! grep -qF "prev_version=" <<<"$out"' \
+    "the raw report is absorbed rather than printed (said '$out')"
+
+out=$( cd "$project" && REPORT_PREV= deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a first deploy — the server reports no previous version (rc $rc: $out)"
+assert 'grep -qF "first deploy" <<<"$out"' "says so instead of a changelog (said '$out')"
+assert '! grep -qF "v..v1.0.0" <<<"$out"' "and computes no range from an empty version (said '$out')"
+
+out=$( cd "$project" && REPORT_PREV=1.0.0 deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a redeploy of the version already there succeeds (rc $rc: $out)"
+assert 'grep -qF "v1.0.0..v1.0.0 is empty" <<<"$out"' \
+    "and says the range is empty rather than printing nothing at all (said '$out')"
+assert 'grep -qF "redeploy of the version already there" <<<"$out"' \
+    "calling it a redeploy (said '$out')"
+
+# The other way an empty range happens, and it is not a no-op: the server was
+# running 1.1.0 and this deploy takes it back to 1.0.0. Calling that "a redeploy
+# of what was already there" describes the opposite of what just happened.
+out=$( cd "$project" && REPORT_PREV=1.1.0 deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "deploying a version the server is ahead of succeeds (rc $rc: $out)"
+assert 'grep -qF "is not ahead of the 1.1.0 this server was running" <<<"$out"' \
+    "and says the deploy goes backwards (said '$out')"
+assert 'grep -qF "git log v1.0.0..v1.1.0" <<<"$out"' \
+    "naming the range that says what it gives up (said '$out')"
+assert '! grep -qF "redeploy of the version already there" <<<"$out"' \
+    "and does not call a downgrade a redeploy (said '$out')"
+
+# A version this checkout has never heard of. The deploy is already done by the
+# time the changelog runs, so a missing tag is a warning and the run still ends 0.
+out=$( cd "$project" && REPORT_PREV=9.9.9 deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a previous version with no tag here does not fail the deploy (rc $rc: $out)"
+assert 'grep -qF "no tag v9.9.9" <<<"$out"' "but is said out loud (said '$out')"
+assert 'grep -qF "git fetch --tags" <<<"$out"' "with the way to get it (said '$out')"
+assert 'grep -qF "Deployed demo 1.0.0" <<<"$out"' "and the deploy is still reported (said '$out')"
+rm -rf "$project/.kasbah"
+
+# Each key on its own: a report missing any one of the four is the step not
+# having finished, because the report is the last thing the script writes.
+#
+# The assertion is the protocol *sentence*, not the bare key name. Dropping a key
+# from the required set leaves the run failing either way — but on
+# `${_DEPLOY_FACT[key]}: unbound variable` and a bash backtrace, which happens to
+# contain the key name too. Grepping for the name alone calls that a pass.
+for key in version prev_version backup digest; do
+    out=$( cd "$project" && REPORT_OMIT="$key" deploy_cli deploy@vps ); rc=$?
+    calls=$(<"$call_log")
+    assert '[ "$rc" != "0" ]' "a report with no $key fails the deploy (rc $rc: $out)"
+    assert 'grep -qF "the deploy step on deploy@vps reported no $key" <<<"$out"' \
+        "with the protocol's own sentence, not a bash error that mentions $key (said '$out')"
+    assert '! grep -qF "unbound variable" <<<"$out"' \
+        "and no unbound-variable crash (said '$out')"
+    assert '! grep -qF "dynamic/demo.yml" <<<"$calls"' \
+        "and no route was written for a deploy that cannot be shown to have finished"
+    assert '[ ! -f "$project/.kasbah/state.json" ]' "and no state was recorded"
+done
+
+# The headline shape, which dropping one key at a time never produces: exit 0 and
+# nothing on stdout at all.
+out=$( cd "$project" && REPORT_OMIT=all deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" != "0" ]' "a deploy that exits 0 and reports nothing at all fails (rc $rc: $out)"
+assert 'grep -qF "reported no version prev_version backup digest" <<<"$out"' \
+    "naming all four in one sentence rather than the first one it missed (said '$out')"
+assert '! grep -qF "dynamic/demo.yml" <<<"$calls"' "and no route was written"
+
+# This is the one absorb whose failure is not "nothing happened", so it says so:
+# the far side got at least as far as `compose up`, and the operator has a server
+# to look at. The prepare step's identical failure must *not* carry that.
+assert 'grep -qF "compose up" <<<"$out"' \
+    "and says the far side may already have deployed (said '$out')"
+assert 'grep -qF "safe to run again" <<<"$out"' "and that re-running is safe (said '$out')"
+out=$( cd "$project" && PREPARE_OUT="" deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" != "0" ]' "a truncated prepare report fails the same way (rc $rc: $out)"
+assert 'grep -qF "the prepare step on deploy@vps reported no prepared" <<<"$out"' \
+    "through the same absorber (said '$out')"
+assert '! grep -qF "safe to run again" <<<"$out"' \
+    "but without the deploy step's paragraph — at the prepare step nothing has run,
+        and the advice is one caller's, not the absorber's (said '$out')"
+assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
+
+# Contamination. A hook or a backup.check on a far side whose redirects were
+# missing puts `key=value` lines on stdout ahead of the report; the report is
+# printed last and the absorber keeps the last value, so the report wins. Under
+# first-wins this is a wrong-version refusal and a changelog for the wrong range.
+out=$( cd "$project" && REPORT_NOISE=$'version=9.9.9\nprev_version=9.9.9\nbackup=/tmp/not-a-backup' \
+        deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a report preceded by stray key=value lines still deploys (rc $rc: $out)"
+assert 'grep -qF "changes: v0.9.0..v1.0.0" <<<"$out"' \
+    "with the range the report gave, not the one the noise claimed (said '$out')"
+assert '! grep -qF "9.9.9" <<<"$out"' "and nothing of the noise reaches the operator (said '$out')"
+rm -rf "$project/.kasbah"
+
+# A report about some other version means the two sides are not talking about
+# the same deploy — the shipped script is written by this same run, moments
+# earlier, so there is no benign version skew for this to be.
+out=$( cd "$project" && REPORT_VERSION=0.9.0 deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" != "0" ]' "a report naming another version fails the deploy (rc $rc: $out)"
+assert 'grep -qF "0.9.0" <<<"$out" && grep -qF "1.0.0" <<<"$out"' \
+    "quoting both what it said and what it was asked for (said '$out')"
+rm -rf "$project/.kasbah"
+
+# Stdout is nobody's in a deploy: the report is consumed, and everything the
+# operator reads is on stderr — the changelog's commit lines included.
+split_out=$( cd "$project" && deploy_cli_split deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "the split-stream deploy succeeds (rc $rc: $(cat "$split_err"))"
+assert '[ -z "$split_out" ]' "and writes nothing at all to stdout (stdout: '$split_out')"
+assert 'grep -qF "changes: v0.9.0..v1.0.0" "$split_err"' \
+    "the changelog is on stderr ($(grep -F "changes:" "$split_err"))"
+assert 'grep -qF "the commit this deploy ships" "$split_err"' \
+    "and so are the commit lines under it ($(grep -F "the commit" "$split_err"))"
+
+# The two facts only the report brings back. Neither is on this side otherwise,
+# and "was a backup taken" is the thing an operator most wants before the next
+# command.
+out=$( cd "$project" && REPORT_BACKUP=backups/pre-deploy-20260101-000000.sql.gz \
+        REPORT_DIGEST=sha256:aa,sha256:bb deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a deploy whose server took a backup succeeds (rc $rc: $out)"
+assert 'grep -qF "backup:  /apps/demo/backups/pre-deploy-20260101-000000.sql.gz" <<<"$out"' \
+    "and the banner names the file the server wrote, under the project directory (said '$out')"
+assert 'grep -qF "images:  sha256:aa,sha256:bb" <<<"$out"' \
+    "and the ids that went live (said '$out')"
+
+out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
+assert 'grep -qF "backup:  none taken" <<<"$out"' \
+    "while no-backup is said in words rather than printed as a path (said '$out')"
+assert '! grep -qF "images:" <<<"$out"' \
+    "and a stock-only project's digest=- is left out entirely (said '$out')"
+rm -rf "$project/.kasbah"
+
+# --- The mail claim ----------------------------------------------------------------
+# A stub, and deliberately: the shared mail stack is roadmap v0.2, so all this
+# can do is look. What it must not do is stop the deploy — an unmet mail claim
+# costs mail, not the site.
+cp "$project/kasbah.yml" "$tmpdir/kasbah.yml.orig"
+printf '\nmail:\n  domain: mail.demo.test\n' >> "$project/kasbah.yml"
+
+out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ]' "a project claiming a mail domain deploys against a server with no mail stack (rc $rc: $out)"
+assert 'grep -qF "'\''bash'\'' '\''-s'\'' '\''--'\'' '\''/apps/mail'\''" <<<"$calls"' \
+    "having actually looked for it ($(grep -F "/mail" <<<"$calls"))"
+assert 'grep -qF "mail.demo.test" <<<"$out"' "the warning names the claimed domain (said '$out')"
+assert 'grep -qF "/apps/mail" <<<"$out"' "and where it looked (said '$out')"
+assert 'grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' "and the deploy ran anyway"
+# Step 7 of docs/build-deploy.md's flow, and it is a step number rather than a
+# preference: the claim is judged against the server the deploy is about to run
+# on, after the .env that server will use is settled and before anything starts.
+n_mail=$(line_of "'--' '/apps/mail'")
+n_inject=$(line_of "setup-env.sh' '--inject'")
+n_remote=$(line_of "remote-deploy.sh' 'deploy'")
+for n in n_mail n_inject n_remote; do [ -n "${!n}" ] || printf -v "$n" '%s' 0; done
+assert '[ "$n_mail" -gt "$n_inject" ] && [ "$n_mail" -lt "$n_remote" ]' \
+    "and it looked between the env step and the deploy (inject $n_inject, mail $n_mail, deploy $n_remote)
+        calls: $calls"
+
+out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=yes deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "and so does one against a server that has a mail stack (rc $rc: $out)"
+assert 'grep -qF "does not yet check" <<<"$out"' \
+    "which is a different sentence: the stack is there and kasbah still cannot reconcile the claim (said '$out')"
+assert '! grep -qF "there is no mail stack" <<<"$out"' \
+    "and not the other one (said '$out')"
+
+# The third state, and the reason the probe reads two facts rather than one: a
+# mail directory with no .env in it is a stack that cannot be handling anybody's
+# domain, which is a fact about the server rather than about kasbah's roadmap.
+out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=no deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a mail stack with no .env does not stop the deploy either (rc $rc: $out)"
+assert 'grep -qF "has no .env" <<<"$out"' "and is reported as its own thing (said '$out')"
+assert '! grep -qF "does not yet check" <<<"$out"' \
+    "not as the roadmap sentence (said '$out')"
+assert '! grep -qF "there is no mail stack" <<<"$out"' "and not as the absent-stack one (said '$out')"
+
+# The probe's own failures. An ssh that could not run the payload must not be
+# read as "there is no mail stack": the two are the same absent answer, and only
+# one of them is a fact about the server.
+out=$( cd "$project" && MAIL_RC=255 deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" != "0" ]' "a mail probe that could not run fails the deploy (rc $rc: $out)"
+assert 'grep -qF "could not look for the mail stack" <<<"$out"' "saying so (said '$out')"
+assert '! grep -qF "there is no mail stack" <<<"$out"' \
+    "rather than reporting an absent stack it never managed to look for (said '$out')"
+assert '! grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' "and nothing was deployed"
+
+out=$( cd "$project" && MAIL_OUT="mail_stack=yes"$'\n' deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" != "0" ]' "a half-answered mail probe fails the deploy (rc $rc: $out)"
+assert 'grep -qF "the mail claim step on deploy@vps reported no mail_env" <<<"$out"' \
+    "naming the answer that never came (said '$out')"
+assert '! grep -qF "safe to run again" <<<"$out"' \
+    "and not the deploy step's paragraph — nothing had run yet (said '$out')"
+
+# The claim is the domain. A block without one is a mistake about this checkout,
+# so it costs a sentence before the first connection.
+cp "$tmpdir/kasbah.yml.orig" "$project/kasbah.yml"
+printf '\nmail:\n  snappymail_domain: ./mail/seed.json\n' >> "$project/kasbah.yml"
+out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" != "0" ]' "a mail: block with no domain: is refused (rc $rc: $out)"
+assert 'grep -qF "mail" <<<"$out" && grep -qF "domain" <<<"$out"' "naming both (said '$out')"
+assert '[ ! -s "$ssh_log" ]' "before any connection (ssh saw: $(cat "$ssh_log"))"
+
+# And a mail: that is not a block at all. Without the shape check the operator
+# gets jq's own type error and the name of kasbah's internal filter.
+cp "$tmpdir/kasbah.yml.orig" "$project/kasbah.yml"
+printf '\nmail: mail.demo.test\n' >> "$project/kasbah.yml"
+out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" != "0" ]' "a scalar mail: is refused (rc $rc: $out)"
+assert 'grep -qF "mail: has type '\''string'\''" <<<"$out"' "naming what it found (said '$out')"
+assert '! grep -qF "yq filter failed" <<<"$out"' \
+    "without leaking the filter kasbah ran (said '$out')"
+assert '! grep -qF "Cannot index" <<<"$out"' "or jq's own error (said '$out')"
+assert '[ ! -s "$ssh_log" ]' "before any connection (ssh saw: $(cat "$ssh_log"))"
+
+# The control: with the block gone, no probe is made at all — otherwise the two
+# warnings above prove only that a warning can be printed.
+cp "$tmpdir/kasbah.yml.orig" "$project/kasbah.yml"
+out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ]' "a project with no mail: block deploys (rc $rc: $out)"
+assert '! grep -qF "/apps/mail" <<<"$calls"' \
+    "and nothing looks for a mail stack it never claimed ($(grep -F "/mail" <<<"$calls"))"
 rm -rf "$project/.kasbah"
 
 # --- The env step ---------------------------------------------------------------

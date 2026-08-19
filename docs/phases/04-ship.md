@@ -78,9 +78,19 @@ injection (Phase 3), remote-deploy invocation, changelog print. Mail claim
 real reconciliation is Phase 7.
 
 **Deliverables**
-- [ ] `kasbah deploy user@host` runs the full sequence on the rig
-- [ ] `--skip-hooks` and `--no-health-wait` honored
-- [ ] Exit codes match `cli.md` (3 unreachable, 4 no server state, 5 env declined)
+- [x] `kasbah deploy user@host` runs the full sequence on the rig — steps 1–10
+  including the mail claim and the changelog; `deploy_ship_test.sh` green,
+  1m55s standalone
+- [x] `--skip-hooks` and `--no-health-wait` honored — and `--allow-stopped`,
+  which the shipped script grew in 4.2 with no CLI flag reaching it. On the
+  rig: `--skip-hooks` leaves zero breadcrumbs **and still writes a backup**;
+  `--no-health-wait` skips the wait against a positive control in the same
+  section that reports `built-app-web is healthy`; `--allow-stopped` deploys
+  over a stack the same deploy without it refuses
+- [x] Exit codes match `cli.md` — 3 and 4 out of a real `kasbah deploy`
+  against the rig (unreachable host; marker moved aside and restored), 5 from
+  the suite's first deploy (no `.env`, no terminal) and hermetically from
+  `--on-drift=abort`
 
 **Watch out for:** the working-tree deploy labels *disk state* with HEAD's
 tag — do not add a cleanliness check that blocks it; that's the designed
@@ -414,6 +424,80 @@ with the message adapting when the last line is one no version can be read out
 of. **Round three found it** — after the round that introduced the guard had
 been reviewed and its own fixes re-verified.
 
+### The remote report, and why it is printed last
+
+The local side needs one fact only the server has — the version previously
+deployed — for step 10's `git log <prev>..<new>`. `remote-deploy.sh` therefore
+narrates everything on stderr and keeps stdout for a `key=value` report,
+printed **after** the `versions.log` append.
+
+That placement buys a second property for nothing. The report is the run's
+*completion marker*: exit 0 with no report, or with a key missing, means the
+script did not reach its end, so the local side refuses — **before shipping the
+Traefik fragment**. A truncated run leaves no route and no state, which is the
+same failure shape the fragment-last ordering exists to prevent. The one field
+that can be checked rather than believed is `version`, and it is: a report
+naming a version other than the one asked for is a hard failure.
+
+### A guard is only tested by a fixture that tries to defeat it
+
+Two `>&2` redirects keep project-authored shell — a hook, and `backup.check` —
+off the report channel. Deleting either **survived the entire hermetic suite**,
+because every fixture hook and every `backup.check` in it redirected its own
+output into a file. Nothing in the suite had ever tried to write to stdout, so
+nothing could observe the guard that stops it.
+
+The fix is one fixture hook that runs `echo version=9.9.9-from-the-hook` and
+one `backup.check` that echoes to stdout, with the control the pair needs: the
+leaked lines must show up on *stderr*, so a fixture that quietly stops printing
+can no longer satisfy the four-line count. The general shape — a guard whose
+test fixtures all happen to be well-behaved is not tested at all — is the
+fixture-side cousin of the stub finding below.
+
+Related, and load-bearing under it: `_deploy_absorb` **overwrites**, so a stray
+`version=` arriving before the report loses to the report. That last-wins
+property is what actually defangs contamination, and it was unpinned too;
+first-wins turns the leak above into a wrong-version refusal.
+
+### A test that accepted a crash as its evidence
+
+Dropping `version` from the required key set left the run failing — but with
+`_DEPLOY_FACT[version]: unbound variable` and a bash backtrace, and the
+assertion was `grep -qF "$key"`, which a backtrace mentioning `version`
+satisfies. The other three keys produced the real protocol sentence. The
+assertion now requires the sentence *and* that no `unbound variable` appears
+anywhere in the output. A test whose evidence is "the word appears somewhere in
+the failure" cannot tell a diagnosis from a crash.
+
+### The third defect hidden by what a stub could not say
+
+`docker tag` was the one remote command left unredirected on the stdout path.
+The mutant that removes its redirect survived — because the `docker` stub was
+**silent on `tag`**, so the redirect was unfalsifiable. Giving the stub a voice
+there killed it.
+
+That is three in one phase: a stub that could only say *running* or *no such
+object*, one that ignored the format string entirely, and one silent on a verb.
+Each hid a real defect from a suite that was otherwise green and thorough. The
+rule is worth stating plainly: **before trusting a green case, ask what the stub
+cannot say** — an inexpressible state is not untested, it is untestable, and no
+amount of assertion-writing against that stub will surface it.
+
+Note the honest cost, taken deliberately: the stub now narrates on `tag`, which
+today's docker does not. It models a daemon rather than reporting one, on the
+grounds that the property under test is *kasbah's* guarantee about its own
+stdout, not docker's current behaviour.
+
+### The reviewer was wrong once, and pinning beat fixing
+
+One of the eight survivors was a false positive: the changelog's commit lines
+were reported as going to stdout against the repo's stderr convention. They go
+through `info()`, which is `printf … >&2`, and always did. The right response
+was not to change code that was already correct but to **pin the property that
+was merely unobserved** — the streams are now split in the harness and kasbah
+is asserted to write nothing at all to stdout. A review finding that turns out
+to be wrong is still evidence that something was unpinned.
+
 ### Measured
 
 - `flock` over SSH: the second concurrent deploy refused in **216 ms** against
@@ -443,3 +527,14 @@ been reviewed and its own fixes re-verified.
 - **The "gigabytes leaked on a failed transfer" case is argued, not
   measured.** The trap is proven on a 28 MB tarball with a forced failure,
   against the rig's real `/tmp`.
+- **A rig suite killed mid-run poisons the next one, and the damage presents
+  as unrelated suites failing.** Interrupting `KASBAH_RIG_TESTS=1 ./test.sh`
+  (a tool timeout, a Ctrl-C) leaves the rig half-initialised. The next run
+  showed `deploy_ship_test.sh` exiting 2 and `server_init_test.sh` and
+  `spine_test.sh` failing, with two diagnostic tells worth recognising:
+  `getwd: no such file or directory` — a shell whose working directory was
+  deleted under it, i.e. a stale process from the killed run — and
+  `acme.json exists and is not a regular file`, Docker materialising a missing
+  bind-mount source as a root-owned directory. Each suite's opening
+  `rig_clean` recovers the state, so a **second** run is green with no
+  intervention. Diagnose before fixing: nothing was wrong with the code.
