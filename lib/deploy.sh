@@ -10,6 +10,7 @@ _KASBAH_DEPLOY_LOADED=1
 . "$KASBAH_LIB_DIR/ssh.sh"
 . "$KASBAH_LIB_DIR/marker.sh"
 . "$KASBAH_LIB_DIR/env_cmd.sh"
+. "$KASBAH_LIB_DIR/remote_deploy.sh"
 
 # `kasbah deploy [USER@HOST]` ships the working tree, labelled with HEAD's
 # version tag, to a server `kasbah server init` has already prepared, and runs
@@ -32,10 +33,11 @@ _KASBAH_DEPLOY_LOADED=1
 # before the remote deploy, because `compose up` reads the file it writes. See
 # lib/env_cmd.sh.
 #
-# Thin on purpose. Hooks, backup, the health wait, image digests and versions.log
-# rotation belong to templates/remote-deploy.sh and arrive in Phase 4. What is
-# here is the stock-image path: sync, env, `compose up -d`, one log line,
-# fragment.
+# Thin on purpose. The backup, the hooks, the `:current` retag, the health wait
+# and the image digests all live on the far side, in templates/remote-deploy.sh,
+# which this command renders per deploy out of the project's manifest and ships
+# to <apps>/<name>/scripts/. What is here is the local half: sync, env, the one
+# remote invocation, the fragment.
 
 _DEPLOY_TARGET=""
 _DEPLOY_TARGET_SOURCE=""
@@ -46,6 +48,10 @@ _DEPLOY_CPU_LIMIT=""
 _DEPLOY_MEM_LIMIT=""
 _DEPLOY_MARKER=""
 _DEPLOY_ON_DRIFT=""
+# The rendered remote-deploy.sh, on this side. Set the moment the path is
+# decided rather than once the file is complete, because a half-written one is
+# exactly what the cleanup exists for.
+_DEPLOY_RENDERED=""
 
 # The manifest's sync: list, split into three parallel arrays by
 # _deploy_parse_sync_lines.
@@ -72,8 +78,9 @@ What it does:
   * renders <apps>/<name>/.env when it is missing, checks it for drift against
     .env.prod.example otherwise, and refreshes the KASBAH_* block in it from
     the server marker's resource limits
-  * runs scripts/remote-deploy.sh deploy <version> on the server, which does
-    docker compose -p <name> up -d --remove-orphans and appends versions.log
+  * runs scripts/remote-deploy.sh deploy <version> on the server: backup,
+    pre-deploy hooks, retag <image>:current, docker compose -p <name> up -d
+    --remove-orphans, health wait, post-deploy hooks, one versions.log entry
   * rsyncs traefik-dynamic.yml to <apps>/traefik/dynamic/<name>.yml, last
 
 Flags:
@@ -97,9 +104,12 @@ _deploy_parse_args() {
             -h|--help) _deploy_usage; exit 0 ;;
             # Named rather than lumped into "unknown flag": all three are
             # written down in docs/cli.md as part of this command, and a user
-            # who read that page deserves to know which phase brings them.
+            # who read that page deserves to know what is missing. What is
+            # missing is only the wiring: the script on the server takes both
+            # flags already, so the honest answer names that rather than the
+            # feature.
             --skip-hooks|--no-health-wait)
-                die "deploy: $1 is not implemented yet — hooks and the health wait arrive in Phase 4 (docs/build-deploy.md)" ;;
+                die "deploy: $1 is not wired into the CLI yet — scripts/remote-deploy.sh on the server accepts it, but \`kasbah deploy\` does not pass it on (docs/cli.md)" ;;
             --on-drift=*)
                 _DEPLOY_ON_DRIFT="${1#*=}"
                 env_on_drift_check deploy "$_DEPLOY_ON_DRIFT"
@@ -486,23 +496,41 @@ _deploy_sync_project() {
 # run.
 #
 # They come from different places, and that is not an accident:
-# remote-deploy.sh is a template kasbah renders onto servers, while
-# setup-env.sh *is* lib/env.sh — the same bytes `kasbah check` sources locally,
-# shipped verbatim so that the drift question has one implementation rather than
-# two copies that agree today (env_ship_helper, lib/env_cmd.sh).
+# remote-deploy.sh is a template rendered per deploy — the manifest's hooks,
+# backup and health blocks are written into it here, because the manifest is
+# never synced and a VPS has no yq to read it with (lib/remote_deploy.sh) —
+# while setup-env.sh *is* lib/env.sh, the same bytes `kasbah check` sources
+# locally, shipped verbatim so that the drift question has one implementation
+# rather than two copies that agree today (env_ship_helper, lib/env_cmd.sh).
 _deploy_sync_helper() {
     local tpl="${KASBAH_TEMPLATE_DIR:-}"
     local src="$tpl/remote-deploy.sh"
     local dest="$_DEPLOY_APPS_PATH/$MANIFEST_NAME/scripts/remote-deploy.sh"
+    local tmp="${TMPDIR:-/tmp}"
 
     [ -n "$tpl" ] || die "internal: KASBAH_TEMPLATE_DIR is not set"
     [ -f "$src" ] \
         || die "the remote-deploy helper is missing (looked in $src) — this kasbah installation is incomplete"
 
-    ssh_rsync -pt --chmod=F755 -s "$src" "$SSH_TARGET:$dest" >/dev/null \
+    [ "$tmp" = / ] || tmp="${tmp%/}"
+    _DEPLOY_RENDERED="$(mktemp "$tmp/kasbah-remote-deploy.XXXXXX")" \
+        || die "could not create a temporary file to render remote-deploy.sh into"
+    remote_deploy_render "$src" "$_DEPLOY_RENDERED"
+
+    ssh_rsync -pt --chmod=F755 -s "$_DEPLOY_RENDERED" "$SSH_TARGET:$dest" >/dev/null \
         || die "could not ship remote-deploy.sh to $_DEPLOY_TARGET:$dest"
 
     env_ship_helper "$_DEPLOY_APPS_PATH" "$MANIFEST_NAME"
+    return 0
+}
+
+# The rendered helper, from a trap rather than a closing line: every way the run
+# can end after it exists — a refused env step, a deploy the server rejected, a
+# Ctrl-C — would otherwise leave it in TMPDIR.
+_deploy_cleanup() {
+    [ -n "$_DEPLOY_RENDERED" ] || return 0
+    rm -f "$_DEPLOY_RENDERED" || true
+    _DEPLOY_RENDERED=""
     return 0
 }
 
@@ -598,7 +626,16 @@ cmd_deploy() {
     _deploy_resolve_version
     _deploy_read_sync
     _deploy_check_sources
+    # The hooks, backup and health blocks that get rendered into the helper. Read
+    # and judged here, with the rest of the local checks: a manifest that names a
+    # hook with no command, or a backup: block missing half its fields, is a fact
+    # about this checkout, and the worst place to discover it is on the server
+    # after the backup has run.
+    remote_deploy_read_manifest "$_DEPLOY_VERSION"
 
+    # Installed before ssh_connect, which is what lets lib/ssh.sh chain its own
+    # teardown after this one instead of replacing it.
+    trap '_deploy_cleanup' EXIT
     ssh_connect "$_DEPLOY_TARGET"
 
     _deploy_read_marker

@@ -310,6 +310,8 @@ ssh_log="$tmpdir/ssh.log"
 # whole field. The ordering is the point: which of the remote deploy and the
 # fragment goes first is the defect this phase exists to have caught.
 call_log="$tmpdir/calls.log"
+helper_copy="$tmpdir/shipped-remote-deploy.sh"
+run_tmp="$tmpdir/runtmp"
 cat > "$stub_dir/ssh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$SSH_LOG"
@@ -350,12 +352,17 @@ deploy_cli() {
     # env step asks what to do about drift when there is a terminal to ask on,
     # and a run by hand in a real shell would otherwise stop at a prompt. The
     # refusal that replaces it is asserted below.
+    # A TMPDIR of the suite's own. Both things a deploy puts there — lib/ssh.sh's
+    # control-socket directory and the rendered remote-deploy.sh — are removed by
+    # EXIT traps that have to *chain*, and a directory nothing else writes to is
+    # what makes "it left nothing behind" a question with one answer.
     env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
-        HOME="$tmpdir/home" PATH="$stub_dir:$PATH" \
+        HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$run_tmp" \
         SSH_LOG="$ssh_log" CALL_LOG="$call_log" \
+        RSYNC_HELPER_COPY="$helper_copy" \
         "$repo_dir/bin/kasbah" deploy "$@" </dev/null 2>&1
 }
-mkdir -p "$tmpdir/home"
+mkdir -p "$tmpdir/home" "$run_tmp"
 
 out=$( cd "$tmpdir" && deploy_cli deploy@vps ); rc=$?
 assert '[ "$rc" = "2" ]' "deploy outside a project exits 2 (rc $rc: $out)"
@@ -436,9 +443,14 @@ case "$last" in
 esac
 exit 0
 STUB
+# The helper is rendered into a temp file and removed when the run ends, so the
+# only way to see what actually travelled is to catch it in flight.
 cat > "$stub_dir/rsync" <<'STUB'
 #!/usr/bin/env bash
 { printf 'rsync'; for a in "$@"; do printf '|%s' "$a"; done; printf '\n'; } >> "$CALL_LOG"
+case "${!#}" in
+    *"/scripts/remote-deploy.sh") cp "${@:$#-1:1}" "$RSYNC_HELPER_COPY" ;;
+esac
 exit 0
 STUB
 chmod 0755 "$stub_dir/ssh" "$stub_dir/rsync"
@@ -454,7 +466,7 @@ line_of() { grep -n -m1 -F -- "$1" <<<"$calls" | cut -d: -f1; }
 n_marker=$(grep -n -m1 -E "\|'bash' '-s' '--' '/apps'\$" <<<"$calls" | cut -d: -f1)
 n_prepare=$(line_of "|'bash' '-s' '--' '/apps' '/apps/data' 'demo'")
 n_compose=$(line_of "|compose.prod.yml|")
-n_helper=$(line_of "|$repo_dir/templates/remote-deploy.sh|")
+n_helper=$(line_of "|deploy@vps:/apps/demo/scripts/remote-deploy.sh")
 n_envhelper=$(line_of "|$repo_dir/lib/env.sh|")
 n_drift=$(line_of "setup-env.sh' '--drift'")
 n_inject=$(line_of "setup-env.sh' '--inject'")
@@ -516,8 +528,38 @@ assert 'grep -qF "|-lpt|-s|.env.prod.example|deploy@vps:/apps/demo/.env.prod.exa
     "a plain file keeps its path ($(grep -F ".env.prod.example" <<<"$calls"))"
 assert 'grep -qF "|-rlpt|-s|site/|deploy@vps:/apps/demo/site/" <<<"$calls"' \
     "a directory entry recurses, with the trailing slashes rsync reads as contents-of ($(grep -F "site/" <<<"$calls"))"
-assert 'grep -qF "|-pt|--chmod=F755|-s|$repo_dir/templates/remote-deploy.sh|deploy@vps:/apps/demo/scripts/remote-deploy.sh" <<<"$calls"' \
-    "the helper ships executable, stated rather than inherited from the checkout ($(grep -F "remote-deploy.sh|" <<<"$calls"))"
+assert 'grep -qE "\|-pt\|--chmod=F755\|-s\|[^|]+\|deploy@vps:/apps/demo/scripts/remote-deploy.sh$" <<<"$calls"' \
+    "the helper ships executable, stated rather than inherited from the checkout ($(grep -F "remote-deploy.sh" <<<"$calls"))"
+# Unlike setup-env.sh, this one is *not* a repo file shipped verbatim: it is
+# templates/remote-deploy.sh with the project's manifest rendered into it, since
+# the manifest itself is never synced and a VPS has no yq to read it with. So the
+# source is a temp file, and what matters is what was in it.
+helper_src=$(grep -oE "\|-s\|[^|]+\|deploy@vps:/apps/demo/scripts/remote-deploy.sh$" <<<"$calls")
+helper_src=${helper_src#|-s|}
+helper_src=${helper_src%|deploy@vps:*}
+assert '[ -n "$helper_src" ] && [ "$helper_src" != "$repo_dir/templates/remote-deploy.sh" ]' \
+    "shipped from a rendered file rather than straight from the checkout (source '$helper_src')"
+assert '[ ! -e "$helper_src" ]' \
+    "which is removed when the run ends, not left in TMPDIR ('$helper_src')"
+# Both traps, and the fact that they chain rather than replace one another.
+# cmd_deploy installs its own *before* ssh_connect, which is what lets
+# lib/ssh.sh append to it (`trap -- 'a; b' EXIT`); installed after, the second
+# `trap … EXIT` is last-writer-wins and the control-socket directory outlives
+# every run (docs/phases/02-spine.md — the same rule ssh.sh's header states).
+leftover=$(find "$run_tmp" -mindepth 1 -maxdepth 1 2>/dev/null | sort | tr "\n" " ")
+assert '[ -z "$leftover" ]' \
+    "a finished deploy leaves nothing in TMPDIR — neither the rendered helper nor the ssh control directory (found: $leftover)"
+assert 'grep -qF "# >>> kasbah generated block" "$helper_copy"' \
+    "and the bytes that travelled carry the generated block"
+assert 'grep -qE "^# Generated by kasbah [0-9]" "$helper_copy"' \
+    "naming the kasbah that wrote it ($(grep -m1 "^# Generated by kasbah" "$helper_copy"))"
+# The demo fixture declares no hooks, no backup and no health, so this is what
+# those render to — and asserting the values rather than the block's presence is
+# what makes a render that silently dropped them falsifiable.
+assert 'grep -qxF "RD_IMAGES=( )" "$helper_copy"' \
+    "with no built images for a stock-only project ($(grep -m1 "^RD_IMAGES=" "$helper_copy"))"
+assert 'grep -qxF "RD_HOOKS_PRE=( )" "$helper_copy"' "no pre-deploy hooks"
+assert 'grep -qxF "RD_BACKUP_CHECK='"''"'" "$helper_copy"' "and no backup"
 assert 'grep -qF "|-pt|--chmod=F644|-s|traefik-dynamic.yml|deploy@vps:/apps/traefik/dynamic/demo.yml" <<<"$calls"' \
     "the fragment ships 644 to the name kasbah owns ($(grep -F "traefik-dynamic.yml" <<<"$calls"))"
 

@@ -72,7 +72,7 @@ assert '[ "$cli_out" = "kasbah $(cat "$repo_dir/VERSION")" ]' \
 env_src="$repo_dir/tests/integration/rig_env.sh"
 payload=$(awk "/<<'REMOTE'/{p=1;next} p&&/^REMOTE\$/{p=0} p" "$env_src")
 assert '[ -n "$payload" ]' "the remote payload was found in rig_env.sh (else the checks below are vacuous)"
-for token in 'docker compose -p' 'down -v' 'docker network rm' 'rm -rf /apps'; do
+for token in 'docker compose -p' 'down -v' 'docker network rm' 'docker volume rm' 'rm -rf /apps'; do
     in_file=$(grep -cF -- "$token" "$env_src")
     in_payload=$(grep -cF -- "$token" <<<"$payload")
     assert '[ "$in_payload" -gt 0 ]'            "the payload contains '$token' (else it does not clean)"
@@ -80,9 +80,29 @@ for token in 'docker compose -p' 'down -v' 'docker network rm' 'rm -rf /apps'; d
 done
 for banned in 'docker system prune' 'docker volume prune' 'docker network prune' \
               'docker container prune' 'docker image prune' 'docker rm ' 'docker rmi ' \
-              'docker ps -aq' 'docker volume ls'; do
+              'docker ps -aq'; do
     assert '! grep -qF -- "$banned" "$env_src"' \
         "rig_env.sh contains no '$banned' — nothing sweeps beyond compose projects"
+done
+
+# The two resource classes the payload enumerates rather than names: orphaned
+# project networks, and the anonymous volumes `down -v` cannot reap when it
+# downs a project by label with no compose file to read. Both are allowed only
+# in the filtered form, which is what keeps "sweep" from meaning "everything":
+# `docker volume ls` on its own would list volumes another suite is still using,
+# and `docker volume prune` is banned above precisely because it is that.
+for pair in 'docker volume ls|--filter dangling=true' \
+            'docker network ls|--filter label=com.docker.compose.project'; do
+    listing="${pair%%|*}"
+    filter="${pair#*|}"
+    total=$(grep -cF -- "$listing" "$env_src")
+    filtered=$(grep -F -- "$listing" "$env_src" | grep -cF -- "$filter")
+    assert '[ "$total" -gt 0 ]' \
+        "the payload enumerates with '$listing' (else nothing reaps what compose leaves behind)"
+    assert '[ "$total" = "$filtered" ]' \
+        "and every '$listing' carries '$filter' — an unfiltered one would sweep another suite's resources ($filtered of $total)"
+    assert '[ "$total" = "$(grep -cF -- "$listing" <<<"$payload")" ]' \
+        "and all of them are inside the remote payload"
 done
 
 # The payload does sweep every compose project, so the guard that decides where
@@ -120,7 +140,13 @@ docker network create kasbah-net >/dev/null 2>&1
 tar -cf - -T /dev/null | docker import - kasbah-clean-probe:test >/dev/null 2>&1
 mkdir -p /tmp/kasbah-clean-probe
 { printf 'services:\n  a:\n    image: kasbah-clean-probe:test\n'
-  printf '    command: ["/nonexistent"]\n    volumes: [probe-data:/data]\n'
+  # Two volumes, and the second one is the point: `probe-data` is named and
+  # carries compose's own labels, while `/anon` is anonymous — the shape any
+  # image declaring VOLUME produces (redis:7-alpine, which the built-app fixture
+  # runs). `docker compose down -v` reaps an anonymous volume only when it can
+  # read the compose file, and rig_clean downs by project label with no file in
+  # sight, so this is what its dangling sweep exists for.
+  printf '    command: ["/nonexistent"]\n    volumes: [probe-data:/data, /anon]\n'
   printf 'volumes:\n  probe-data: {}\n'; } > /tmp/kasbah-clean-probe/compose.yml
 cd /tmp/kasbah-clean-probe
 # The container cannot start (the image has no filesystem); created is enough,
@@ -141,7 +167,8 @@ REMOTE
 assert 'grep -qF "seeded_apps=yes" <<<"$seed_out"'                  "/apps was created on the rig (got '$seed_out')"
 assert 'grep -qF "seeded_net=1" <<<"$seed_out"'                     "kasbah-net was created on the rig (got '$seed_out')"
 assert 'grep -qF "seeded_projects=kasbah-clean-probe," <<<"$seed_out"' "a compose project exists on the rig (got '$seed_out')"
-assert 'grep -qF "seeded_volumes=1" <<<"$seed_out"'                 "a compose volume exists on the rig (got '$seed_out')"
+assert 'grep -qF "seeded_volumes=2" <<<"$seed_out"' \
+    "both a named and an anonymous compose volume exist on the rig (got '$seed_out')"
 assert 'grep -qE "^seeded_images=.*kasbah-clean-probe:test," <<<"$seed_out"' \
     "the image that must survive the clean exists on the rig (got '$(grep "^seeded_images=" <<<"$seed_out")')"
 
@@ -164,7 +191,10 @@ projects_after=$(grep "^projects=" <<<"$after_out")
 assert '[ "$projects_after" = "projects=" ]' \
     "clean removes every compose project (got '$projects_after')"
 assert 'grep -qF "containers=0" <<<"$after_out"'      "clean removes every container (got '$(grep "^containers=" <<<"$after_out")')"
-assert 'grep -qF "volumes=0" <<<"$after_out"'         "clean removes the projects' volumes (got '$(grep "^volumes=" <<<"$after_out")')"
+assert 'grep -qF "volumes=0" <<<"$after_out"' \
+    "clean removes the projects' volumes, the anonymous one included — an aborted
+        suite that leaves one behind fails the next run's seed count
+        (got '$(grep "^volumes=" <<<"$after_out")')"
 assert 'grep -qxF "networks=bridge,host,none," <<<"$after_out"' \
     "clean removes kasbah-net and keeps the three built-ins (got '$(grep "^networks=" <<<"$after_out")')"
 assert 'grep -qE "^images=.*kasbah-clean-probe:test," <<<"$after_out"' \

@@ -19,6 +19,7 @@ Compose:
   ✓ All services set json-file logging with rotation
   ✓ Routed services join kasbah-net; internal services stay off it
   ✓ No `version:` field (deprecated)
+  ✓ All built services reference their image as :current
 
 Resources:
   ✓ All services set cpus/mem_limit via KASBAH_* vars
@@ -75,6 +76,7 @@ Exit code 0 if no failures (warnings are informational).
 | C05 | No deprecated `version:` top-level field | warn | yes |
 | C06 | Every service has `container_name` OR project uses compose's default naming | info | no |
 | C07 | No non-routed service joins `kasbah-net` — internal services use a project-internal network (service-name aliases on a shared network round-robin across projects) | fail | no |
+| C08 | Every service with a `build:` key names an `image:` tagged `:current`. Deploy moves `<image>:current` and never rewrites compose, so a service pinned to `:1.2.3` keeps running the old image while the deploy reports success and changes nothing — the quietest failure in the tool. Silent on projects that build nothing | fail | yes |
 
 ### Resources
 
@@ -157,7 +159,7 @@ hook commands. Only edits `compose.prod.yml` and `kasbah.yml` (with a
 diff shown before writing).
 
 Fixable today:
-- C01, C02, C03, C04, C05 (compose hygiene)
+- C01, C02, C03, C04, C05, C08 (compose hygiene — C08 is a mechanical tag rewrite)
 - R01, R02, R03 (insert/replace limits with the `KASBAH_*` var references)
 - Adding `kasbah_version` to manifest if missing
 

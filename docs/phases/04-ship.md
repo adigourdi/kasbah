@@ -41,15 +41,24 @@ failed transfer leaks gigabytes per run.
 The VPS-side orchestrator, generalized from the original project's: modes
 `deploy|rollback <version>`; exclusive `flock` for the whole run; backup
 hook (run `check`, gate on exit 0, `command | pipe > backups/…`, rotate to
-`retain`); pre/post hooks via `docker exec -T` with `VERSION`,
+`retain`); pre/post hooks via `docker exec` with `VERSION`,
 `PREV_VERSION`, `DEPLOY_BACKUP` exported; retag `:current`; `compose up -d
 --remove-orphans`; wait on `health.container` up to `health.timeout`;
 append + rotate `versions.log`.
 
 **Deliverables**
-- [ ] Generated per-deploy, shipped to `/apps/<name>/scripts/`, matching the installed kasbah version
-- [ ] Hook order + env vars asserted by the integration test (hooks write breadcrumbs)
-- [ ] Backup gate: fixture where `check` exits 1 → no backup file, deploy proceeds
+- [x] Generated per-deploy, shipped to `/apps/<name>/scripts/`, matching the
+  installed kasbah version — the rig asserts the shipped file *minus its
+  generated block* is `sha256`-identical to the template minus its own, that
+  the block names the driving kasbah version, that its rendered values match
+  the manifest, mode 755, and that `kasbah.yml` was **not** shipped
+- [x] Hook order + env vars asserted by the integration test (hooks write
+  breadcrumbs) — read back by line number, not by presence:
+  `pre-deploy version=1.5.0 prev=1.5.0 backup=backups/pre-deploy-…txt.gz`
+  then `post-deploy` with the same three. All four reorder mutants die
+- [x] Backup gate: fixture where `check` exits 1 → no backup file, deploy
+  proceeds — the backup listing is unchanged, exit 0, `versions.log` field 4
+  is `no-backup`, and the hooks saw `backup=no-backup`
 
 **Watch out for:** `flock` needs a dedicated lock-file fd
 (`exec 9>.deploy.lock; flock -n 9`) — flocking the directory path itself
@@ -87,11 +96,13 @@ comma-joined, `-` for stock-only).
 - [x] `tests/fixtures/built-app/` with repo + v-tag scaffolding — three
   services, two of them built on different bases, hooks leaving breadcrumbs,
   a backup block emitting a known payload, a health block. `bin/kasbah check`
-  passes: 27 passed, 1 warning, 0 failed (H01, correctly — both healthchecks
+  passes: 28 passed, 1 warning, 0 failed (H01, correctly — both healthchecks
   live in the Dockerfiles so they travel inside the tarball). The scaffolding
   is `tests/fixture_repo.sh`, shared with the spine suite
-- [ ] Digest in the log matches `docker inspect` on the rig — 4.2 owns the
-  write; see the image-id finding below for how it must be read
+- [x] Digest in the log matches `docker inspect` on the rig —
+  `digest=sha256:473485c7c9…,sha256:91a2bd2a65…`, each half compared against a
+  **separate** `docker image inspect` on the rig, because `docker image inspect
+  A B` exits 1 when either is missing and would collapse two facts into one
 
 **Watch out for:** `RepoDigests` stays empty for never-pushed images, so
 the field to record is `docker image inspect --format {{.Id}}` (content ID),
@@ -264,8 +275,157 @@ kills it. Arity is the one thing that derivation looks like it fully covers,
 and it is the only thing it does. No future assertion should lean on it for
 identity.
 
+### Two things the spec said about `docker` that are not true
+
+Both found by running the thing, not by reading it, and both had been copied
+forward into this phase's own briefs.
+
+- **`docker exec -T` does not exist.** `-T` is `docker compose exec`'s flag.
+  `docker exec -T` fails with `unknown shorthand flag: 'T' in -T` and exit
+  125, so every hook would have failed identically on any project. Plain
+  `docker exec` allocates no pty unless asked with `-t`, which means it
+  already *is* the TTY-free form the `-T` was reaching for. `project-manifest.md`,
+  `build-deploy.md` and this file's own 4.2 task text all said `-T`; all three
+  are corrected, and the manifest doc now says why, so it does not come back.
+- **`docker inspect --format '{{.State.Health.Status}}'` does not return an
+  empty string for a container with no healthcheck.** It exits 1 with
+  `template parsing error: … map has no entry for key "Health"`. 4.2's
+  watch-out — treat "no healthcheck defined" as an immediate pass rather than
+  an infinite wait — is right about the behaviour wanted and wrong about how
+  you detect it: the empty string it implies never arrives, an error does. The
+  guarded form is `{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}`.
+
+  The sharper lesson is about the stub, not the daemon. The hermetic suite's
+  first `docker` stub answered health from its own map and ignored the format
+  string, which made those two format strings **indistinguishable** — so the
+  mutant that replaced the guarded template with the unguarded one survived,
+  hiding exactly the infinite-wait trap the task warned about. A stub that
+  models "what I asked for" instead of "what the daemon does" cannot fail the
+  right way.
+
+### A hook that spanned two lines ran half of itself and exited 0
+
+The renderer read the hook list as one newline-joined dump and split it, so a
+`|` block scalar — or any string with an embedded `\n` — became *several*
+hooks, and each continuation line's first word was taken as a container name:
+
+```
+- "web echo one\necho two"     →  RD_HOOKS_PRE=( 'web echo one' 'echo two' )
+
+remote-deploy: pre-deploy hook: web: echo one              ← ran
+remote-deploy: pre-deploy hook skipped: no echo is running ← discarded
+rc=0
+```
+
+`php artisan down && php artisan migrate` written across two lines runs the
+`down`, drops the `migrate`, and reports success. A hook is now **one line**,
+refused otherwise, and `project-manifest.md` says so — refused rather than
+supported because "the first word is the container" has no meaning on the
+second line, and because the failure it produces is silent.
+
+### "Nothing is running" is two different situations and only one of them is safe
+
+The VPS side skipped the backup and the pre-deploy hooks when the outgoing
+containers were not up, which is right on a first deploy — there is no previous
+state to act on, and refusing would make a first deploy impossible for any
+project declaring either. But the test was `.State.Running`, which is equally
+`false` for a container that **crashed**. So a project that had deployed here
+before, declares a backup, and whose database had fallen over would be deployed
+straight over, with `no-backup` in the log — the backup skipped at exactly the
+moment it was worth having. The code half-knew: its own message read "first
+deploy, *or the previous stack is down*".
+
+The discriminator was already being computed one line earlier. `versions.log`
+having no entry for this project is the only condition under which "there is no
+outgoing state" is actually true:
+
+- **no entry** → skip both, say so, proceed. Unchanged.
+- **an entry, and the container is not running** → refuse *before any side
+  effect*, naming each container and the state docker reports for it, with
+  `--allow-stopped` for an operator who knows the stack is meant to be down.
+
+It is a preflight rather than a test inside the backup step, because a stopped
+*hook* container discovered later would already have a backup file on disk
+behind it.
+
+### A stub's expressive range bounds what its suite can ever falsify
+
+The sharpest version of a lesson this phase keeps re-learning. The mutant that
+turns `_rd_running` into "any container docker can inspect" — which is what
+converts the silent skip above into a hard failure — **survived the entire unit
+suite**. Not because an assertion was weak: because the `docker` stub could
+only answer *running* or *no such object*. It had no way to say
+`State.Running=false`, so no test written against it could ever have
+distinguished the two situations, and the defect was unreachable from the
+hermetic suite by construction.
+
+The stub now carries a `stopped` file and a `{{.State.Status}}` branch. The
+general rule: when a stub cannot express a state, that state is not merely
+untested — it is untestable, and no amount of assertion-writing against that
+stub will surface it. Ask what the stub *cannot say* before trusting a green
+suite that depends on it.
+
+### An independently derived survey wins for the third phase running
+
+Author: **59 mutants, 57 killed, 2 survivors, both judged equivalent.**
+Reviewer, building its set from the documented behaviour first: **63 mutants,
+48 killed, 15 survivors — 9 real gaps.** None was a correctness hole in the
+happy path; all nine were unasserted *refusals and defaults*, which is exactly
+the region an author's survey underweights, because the author knows the
+refusal is there.
+
+The one worth its own line is `date -u -Iseconds` → `date -Iseconds`. It
+survives every suite this repo can run: the unit regex accepts any offset and
+the rig's clock is `Etc/UTC`, so nothing here can tell the difference. A VPS in
+`Asia/Tokyo` would write `+09:00` into a **frozen-contract field** that every
+future kasbah must parse. Pinned with a `TZ=Asia/Tokyo` case — a reminder that
+"the rig cannot distinguish it" is a reason to construct the case, not to skip
+it.
+
+### A documented default that no manifest could reach
+
+`project-manifest.md` promised that `health:` defaults to waiting on every
+service with a compose healthcheck. But a `health:` block naming only
+`timeout:` was refused by the renderer *and* by pre-existing `check` H02
+("manifest health.container is empty"), so there was no way to raise the
+timeout for the all-services path — the shipped script supported it, and no
+manifest could ask for it. `health.container` is now optional in both places,
+and H02 fails only when `container:` is present and names something compose
+does not have.
+
+### A guard that fails open, in the guard added to stop a silent skip
+
+The refusal above keyed on `prev` — field 3 of the **last non-empty line** of
+`versions.log`. A log with real history whose last line is malformed therefore
+read as "never deployed here", took the first-deploy branch, printed a message
+provably false about the file it had just read, and appended anyway:
+
+```
+2026-01-01T00:00:00+00:00 deploy 1.4.0 no-backup kasbah=t digest=-
+garbage
+→ "first deploy — versions.log has no entry for this project"   rc=0
+```
+
+A `printf >>` killed mid-append is the realistic producer, and it is exactly
+the state in which the refusal is most wanted. Two questions had been collapsed
+into one variable: *has this project deployed here* (any non-empty line) and
+*what version was it* (field 3, for the message and `$PREV_VERSION`). Split,
+with the message adapting when the last line is one no version can be read out
+of. **Round three found it** — after the round that introduced the guard had
+been reviewed and its own fixes re-verified.
+
 ### Measured
 
+- `flock` over SSH: the second concurrent deploy refused in **216 ms** against
+  a first run holding the lock inside an 8 s pre-deploy hook. The first run
+  completed untouched, one new `versions.log` line.
+- Hook environment, read back off the rig:
+  `pre-deploy version=1.5.0 prev=1.5.0 backup=backups/pre-deploy-20260819-040324.txt.gz`,
+  then `post-deploy` with the same three.
+- `digest=sha256:473485c7c9…,sha256:91a2bd2a65…`, each half matching a separate
+  `docker image inspect` on the rig — inspected one at a time, because
+  `docker image inspect A B` exits 1 if *either* is missing and would collapse
+  two facts into one.
 - `docker save | gzip` of both images **3056 ms** → 28,669,020 B; `rsync`
   **402 ms**; remote `docker load` **1559 ms**. A whole `kasbah build-push`
   against the rig, warm build cache: **5.9–6.2 s**.

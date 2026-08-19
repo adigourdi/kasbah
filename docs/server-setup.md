@@ -15,6 +15,7 @@ assumes.
 | The SSH user can run `docker` without sudo | Avoids mixed sudo/non-sudo ownership in `/apps/data/` | Hard fail, suggest `usermod -aG docker` |
 | `rsync`, `openssl`, `gzip` available on remote | Used by deploy and env setup | Hard fail |
 | `bash` on the remote | Every kasbah step ships a script to `bash -s` over the SSH master | Hard fail |
+| `flock` (util-linux) | `remote-deploy.sh` holds an exclusive lock on `<project>/.deploy.lock` for the whole of a deploy, so a second concurrent deploy fails fast instead of interleaving hooks and retags. The one tool kasbah's shipped scripts use that is **not** coreutils, which is why it gets its own row | The deploy refuses, naming the lock |
 | A POSIX userland — `tr`, `cat`, `stat`, `nproc`, `date`, `find`, `sort`, `comm`, `readlink` | Every remote step is a shell script; these are assumed present rather than checked, because a box without them cannot run `bash -s` usefully in the first place. The rule kasbah's shipped scripts follow is **coreutils and bash builtins, nothing separately packaged** — which is why `scripts/setup-env.sh` parses env files with `read` loops rather than `awk` or `grep` | Not checked; failure surfaces as the step's own error |
 | Passwordless `sudo` — **only** when the apps path does not exist yet | `/apps` lives outside the deploy user's home, so nobody but root can create it. Once it exists and is owned by that user, init never elevates again | Hard fail naming the two commands to run by hand |
 
@@ -332,7 +333,8 @@ kasbah's management layer:
 
 - `/apps/.kasbah/` (server marker)
 - backup cron + S3 credentials (agency-owned secrets never transfer)
-- per project: `kasbah.yml`, `versions.log(.gz)`, `scripts/` helpers
+- per project: `versions.log(.gz)`, `scripts/` helpers, `.deploy.lock`. Not
+  `kasbah.yml` — the manifest is never synced to a server (`project-manifest.md`)
 
 What remains is a plain, self-contained Docker Compose setup the new owner
 fully controls. The trade-off is explicit: deploy history and env tooling

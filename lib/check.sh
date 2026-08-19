@@ -16,7 +16,7 @@ Usage: kasbah check
 Runs structural checks against the current project. Exit 0 if no failures
 (warnings are informational). See docs/compliance.md for the full rule set.
 
-Implemented: Structure (S01–S06), Compose (C01–C07), Resources (R01–R03),
+Implemented: Structure (S01–S06), Compose (C01–C05, C07, C08), Resources (R01–R03),
 Traefik (T01–T07), Healthchecks (H01–H02), Env (E01–E05), Hooks (HK01–HK03).
 Mail (M*), R04, and the --fix / --server modes are not yet wired in.
 EOF
@@ -149,6 +149,52 @@ _check_compose_section() {
     _check_c02_logging "$services"
     _check_c03_c04_c07_networks "$services"
     _check_c05_version
+    # Silent on a project that builds nothing: the rule is about the tag deploy
+    # moves, and a stock-only project has none to move.
+    if _compose_any_built "$services"; then
+        _check_c08_built_current "$services"
+    fi
+}
+
+# C08: every service with a `build:` key names an `image:` tagged `:current`.
+# The whole cutover is deploy retagging `<image>:<version>` as `<image>:current`
+# on the server, and `build-push` strips whatever tag the compose file carries
+# before tagging `<image>:<version>` — so a service pinned to `app:1.2.3` gets a
+# `:current` nothing references, and `compose up -d` keeps running the pinned
+# image. That deploy reports success and changes nothing, which is why this is a
+# failure rather than a warning (docs/build-deploy.md → image tags on the VPS).
+_check_c08_built_current() {
+    local services="$1" svc has_build image
+    local bad=()
+
+    while IFS= read -r svc; do
+        [ -z "$svc" ] && continue
+        has_build="$(yq -r ".services[\"$svc\"] | has(\"build\")" compose.prod.yml 2>/dev/null || echo false)"
+        [ "$has_build" = "true" ] || continue
+
+        image="$(yq -r ".services[\"$svc\"].image // \"\"" compose.prod.yml 2>/dev/null || echo "")"
+        if [ -z "$image" ] || [ "$image" = null ]; then
+            bad+=("$svc (no image:)")
+            continue
+        fi
+        # Anchored on the whole tag, not on the substring: `app:current-rc1`
+        # and an untagged `mycurrentapp` both contain the word and neither is
+        # what deploy moves. A suffix match is all this needs beyond that — the
+        # tag is always last, so a registry with a port
+        # (reg.example:5000/app:current) is matched correctly without splitting
+        # the reference, and an untagged image (`app`, which Compose reads as
+        # `app:latest`) fails, which is right.
+        case "$image" in
+            *:current) ;;
+            *) bad+=("$svc ($image)") ;;
+        esac
+    done <<<"$services"
+
+    if [ "${#bad[@]}" -eq 0 ]; then
+        _check_pass "All built services reference their image as :current"
+    else
+        _check_fail "Built services whose image: is not tagged :current: ${bad[*]} — deploy moves <image>:current, so a pinned tag keeps the old image running"
+    fi
 }
 
 # C01: every service sets restart: unless-stopped (or stronger).
@@ -611,15 +657,20 @@ _check_h01_build_healthchecks() {
     fi
 }
 
-# H02 (fail): manifest's health.container must match an explicit
-# container_name in compose. Auto-generated names depend on the running
-# compose project name, which we can't resolve locally — so the convention
-# is "set container_name on the service you want to wait on".
+# H02 (fail): when the manifest's health: names a container, it must match an
+# explicit container_name in compose. Auto-generated names depend on the running
+# compose project name, which we can't resolve locally — so the convention is
+# "set container_name on the service you want to wait on".
+#
+# `container:` itself is optional. Without it the deploy waits on every container
+# in the compose project, which is what docs/project-manifest.md says health:
+# defaults to — so a block carrying only `timeout:` is how that path's budget is
+# raised, and failing it made the documented default unreachable.
 _check_h02_health_container() {
     local services="$1" container names
     container="$(yq -r '.health.container // ""' "$KASBAH_MANIFEST_FILE")"
     if [ -z "$container" ] || [ "$container" = "null" ]; then
-        _check_fail "manifest health.container is empty"
+        _check_pass "manifest health: names no container — the deploy waits on every container with a healthcheck"
         return 0
     fi
     # Capture into a here-string before grep -q. Piping `_compose_container_names`

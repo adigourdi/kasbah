@@ -255,6 +255,26 @@ while IFS= read -r net; do
     docker network rm "$net" >/dev/null 2>&1 || status=1
 done <<<"$orphans"
 
+# Every volume nothing references any more. `--filter dangling=true` is docker's
+# own predicate for that, and it is wider than "anonymous": a named volume no
+# container holds is selected too. On a marker-verified disposable rig, one
+# sweep after every compose project has been downed, that is the same set and
+# the right one — but the predicate is unreferenced, not anonymous, and a reader
+# deciding whether this is safe elsewhere needs the wider statement.
+#
+# The anonymous ones are why it is here. `docker compose down -v` reaps a
+# project's anonymous volumes only when it can read the compose file, and the
+# loop above downs by project label with no file in sight — so an image that
+# declares VOLUME leaves one per container, outliving every clean. Measured with
+# redis:7-alpine (VOLUME /data), which the built-app fixture runs: an aborted
+# suite left one behind, and the next run of ssh_test.sh failed on a volume
+# count it had not created.
+dangling=$(docker volume ls -q --filter dangling=true 2>/dev/null) || dangling=""
+while IFS= read -r vol; do
+    [ -n "$vol" ] || continue
+    docker volume rm "$vol" >/dev/null 2>&1 || status=1
+done <<<"$dangling"
+
 # /apps is root-owned on a rig where the ssh user is unprivileged; stevedore
 # has passwordless sudo.
 sudo rm -rf /apps || status=1

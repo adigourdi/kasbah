@@ -166,8 +166,26 @@ its own helper scripts. See `traefik.md` for the fragment shape.
 
 ### `health` *(optional)*
 
-Which container to block on during deploy before running `post-deploy` hooks.
-Defaults to waiting on all services with a compose healthcheck.
+Which container to block on during deploy before running `post-deploy` hooks,
+and how long to wait:
+
+```yaml
+health:
+  container: app-php-fpm   # optional
+  timeout: 120s            # optional, default 120s
+```
+
+**Both keys are optional, and the block may carry either alone.** With
+`container:` set, the deploy waits on that one container. Without it — no
+`health:` block at all, or a block naming only `timeout:` — the deploy waits on
+every container in the project that declares a healthcheck, which is what lets
+a project raise the timeout without singling out one container.
+
+A container that declares **no** healthcheck is an immediate pass, never a
+wait. Note that this cannot be detected by reading
+`{{.State.Health.Status}}` and finding it empty: that template *errors* on a
+container with no health block (`map has no entry for key "Health"`). The
+guarded form is `{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}`.
 
 ### `hooks` *(optional)*
 
@@ -181,11 +199,22 @@ The rest of the string is a **shell command**, not an argument vector. Kasbah
 runs it as:
 
 ```
-docker exec -T -e VERSION -e PREV_VERSION -e DEPLOY_BACKUP <container> sh -c '<rest>'
+docker exec -e VERSION -e PREV_VERSION -e DEPLOY_BACKUP <container> sh -c '<rest>'
 ```
 
 so a pipeline, a redirection, a quoted argument and `$VERSION` all mean what
-they look like. The cost is that the target container must have a `/bin/sh` —
+they look like. There is no `-T`: that is `docker compose exec`'s flag, and
+`docker exec` rejects it outright (`unknown shorthand flag: 'T'`). Plain
+`docker exec` allocates no pty unless asked with `-t`, so it already is the
+form a non-interactive hook wants.
+
+**A hook is one line.** A multi-line value — a `|` block scalar, or a string
+with an embedded newline — is refused, because "the first word is the
+container" has no meaning on the second line. Chain with `&&` on one line
+instead, or put the sequence in a script inside the image and call that. This
+is refused rather than accepted because the failure it prevents is silent: read
+as several hooks, the first line would run and the rest would be discarded as
+hooks naming containers that do not exist. The cost is that the target container must have a `/bin/sh` —
 a distroless or scratch image cannot be a hook target. That is the deliberate
 trade: hooks are written by the project's author in the shell they already
 think in, and every base image a kasbah project has ever used has a shell.
@@ -231,7 +260,7 @@ exists before any hook touches live state.
   yourself. It is deliberately not scoped to `backup.container`: the thing
   that decides whether to back up is often not the thing being backed up.
 - `command` — command that writes the backup to stdout. Unlike `check`, this
-  runs *inside* `backup.container`, as `docker exec -T <container> sh -c
+  runs *inside* `backup.container`, as `docker exec <container> sh -c
   '<command>'` — so `$DB_USERNAME` resolves to the container's environment.
 - `pipe` — optional stdout pipe (e.g. `gzip`). Runs on the VPS, not in the
   container.

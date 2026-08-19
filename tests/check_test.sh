@@ -100,6 +100,8 @@ assert 'grep -qF "✓ .env.prod.example has no obvious long secrets" <<<"$out"' 
 assert 'grep -qF "✓ .env.prod.example leaves the KASBAH_* prefix to kasbah" <<<"$out"'       "E05 pass line"
 assert '! grep -q "Healthchecks:" <<<"$out"'  "Healthchecks: header suppressed (nothing to check)"
 assert '! grep -q "Hooks:" <<<"$out"'         "Hooks: header suppressed (no hooks/backup in manifest)"
+assert '! grep -qF "built services" <<<"$out"' \
+    "C08 says nothing about a project that builds nothing — there is no :current to move"
 assert 'grep -qF "23 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
 
 # --- Case 2: missing compose.prod.yml — fail, exit 6 -------------------------
@@ -453,6 +455,8 @@ cat > "$proj25/compose.prod.yml" <<'YAML'
 services:
   api:
     build: ./api
+    # C08: a built service's image: is what deploy retags :current.
+    image: demo-web:current
     container_name: demo-web
     restart: unless-stopped
     cpus: ${KASBAH_CPU_LIMIT}
@@ -472,6 +476,139 @@ out="$(cd "$proj25" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                                                          "H01 warn exits 0 (got $rc)"
 assert 'grep -qF "Healthchecks:" <<<"$out"'                                                                       "Healthchecks: header appears"
 assert 'grep -qF "⚠ Built services without a compose healthcheck (Dockerfile may declare one): api" <<<"$out"'    "H01 warn line"
+assert 'grep -qF "✓ All built services reference their image as :current" <<<"$out"' \
+    "C08 pass line — this service's image: is demo-web:current"
+
+# --- Case 25b: C08 — a built service pinned to a version tag → fail ---------
+# The carried finding this rule closes. `build-push` strips whatever tag the
+# compose file carries and tags `<image>:<version>`; `deploy` then moves
+# `<image>:current`. A service that names a pinned tag therefore keeps running
+# the old image while the deploy reports success and changes nothing
+# (docs/build-deploy.md → image tags on the VPS).
+proj25b="$tmpdir/c08-pinned"
+make_project "$proj25b"
+mkdir -p "$proj25b/api"
+: > "$proj25b/api/Dockerfile"
+cat > "$proj25b/compose.prod.yml" <<'YAML'
+services:
+  api:
+    build: ./api
+    image: demo-web:1.2.3
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks: [kasbah-net, internal]
+networks:
+  kasbah-net:
+    external: true
+  internal: {}
+YAML
+out="$(cd "$proj25b" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]' "C08 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ Built services whose image: is not tagged :current: api (demo-web:1.2.3)" <<<"$out"' \
+    "C08 fail line names the service and the tag it is pinned to
+        said: $(grep "image:" <<<"$out")"
+
+# --- Case 25c: C08 — a built service that names no image at all → fail ------
+proj25c="$tmpdir/c08-noimage"
+make_project "$proj25c"
+mkdir -p "$proj25c/api"
+: > "$proj25c/api/Dockerfile"
+cat > "$proj25c/compose.prod.yml" <<'YAML'
+services:
+  api:
+    build: ./api
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks: [kasbah-net, internal]
+networks:
+  kasbah-net:
+    external: true
+  internal: {}
+YAML
+out="$(cd "$proj25c" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]' "a built service with no image: exits 6 (got $rc)"
+assert 'grep -qF "✗ Built services whose image: is not tagged :current: api (no image:)" <<<"$out"' \
+    "and C08 says so rather than reporting a tag it never saw
+        said: $(grep "image:" <<<"$out")"
+
+# --- Case 25e: C08 — `current` inside the tag is not the tag ----------------
+# A substring match would pass `demo-web:current-rc1`, which build-push tags
+# `demo-web:<version>` and deploy never points at.
+proj25e="$tmpdir/c08-current-substring"
+make_project "$proj25e"
+mkdir -p "$proj25e/api"
+: > "$proj25e/api/Dockerfile"
+cat > "$proj25e/compose.prod.yml" <<'YAML'
+services:
+  api:
+    build: ./api
+    image: demo-web:current-rc1
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks: [kasbah-net, internal]
+networks:
+  kasbah-net:
+    external: true
+  internal: {}
+YAML
+out="$(cd "$proj25e" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]' "a tag that merely contains 'current' still fails C08 (got $rc)"
+assert 'grep -qF "✗ Built services whose image: is not tagged :current: api (demo-web:current-rc1)" <<<"$out"' \
+    "quoting the tag it found (said: $(grep "image:" <<<"$out"))"
+
+# --- Case 25d: C08 — a registry with a port is not a tag ---------------------
+# `reg.example:5000/demo-web:current` has two colons and only the last one is
+# the tag. C08 matches the tag as a suffix, so the port cannot be mistaken for
+# one — this case is what says so out loud.
+proj25d="$tmpdir/c08-registry-port"
+make_project "$proj25d"
+mkdir -p "$proj25d/api"
+: > "$proj25d/api/Dockerfile"
+cat > "$proj25d/compose.prod.yml" <<'YAML'
+services:
+  api:
+    build: ./api
+    image: reg.example:5000/demo-web:current
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks: [kasbah-net, internal]
+networks:
+  kasbah-net:
+    external: true
+  internal: {}
+YAML
+out="$(cd "$proj25d" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]' "a registry-with-a-port image tagged :current passes (got $rc)"
+assert 'grep -qF "✓ All built services reference their image as :current" <<<"$out"' \
+    "with C08's pass line (said: $(grep "current" <<<"$out"))"
 
 # --- Case 26: H02 — manifest health.container not in compose → fail ---------
 proj26="$tmpdir/bad-health-container"
@@ -486,6 +623,22 @@ YAML
 out="$(cd "$proj26" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                                                  "H02 fail exits 6 (got $rc)"
 assert 'grep -qF "✗ manifest health.container '"'"'nonexistent-container'"'"' not found among compose container_names" <<<"$out"' "H02 fail line"
+
+# --- Case 26b: H02 — a health: block with only a timeout is legal -----------
+# docs/project-manifest.md says health: defaults to waiting on every service
+# with a compose healthcheck. Failing a block that names no container made that
+# default's timeout unreachable — `kasbah deploy` refused it too.
+proj26b="$tmpdir/health-timeout-only"
+make_project "$proj26b"
+cat >> "$proj26b/kasbah.yml" <<'YAML'
+
+health:
+  timeout: 300s
+YAML
+out="$(cd "$proj26b" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]' "a health: block with only a timeout passes (got $rc)"
+assert 'grep -qF "✓ manifest health: names no container — the deploy waits on every container with a healthcheck" <<<"$out"' \
+    "and H02 says which path that is (said: $(grep -i health <<<"$out"))"
 
 # --- Case 27: H02 pass — health.container matches a compose container_name --
 proj27="$tmpdir/good-health-container"

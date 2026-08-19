@@ -169,7 +169,8 @@ below). The only differences:
      d. docker compose up -d --remove-orphans.
      e. Wait for manifest's health.container to be healthy.
      f. Run post-deploy hooks against new containers.
-     g. Append deploy entry to versions.log, rotate.
+     g. Append deploy entry to versions.log. (Rotation is Phase 5 — see
+        Rotation below; the log is append-only until then.)
 9. Rsync traefik-dynamic.yml → /apps/traefik/dynamic/<name>.yml. Done by the
    *local* side once remote-deploy.sh has returned 0 — the file is on the
    workstation, and the ordering is the point (see below).
@@ -402,13 +403,46 @@ Does NOT restore:
   - `deploy <version>`  — backup → pre-deploy → retag :current → up → health → post-deploy.
   - `rollback <version>` — pre-rollback → retag :current → up → health → post-rollback.
 
-  Both modes hold an exclusive `flock` on the project directory for the
-  whole run — a second concurrent deploy/rollback fails fast instead of
-  interleaving hooks and retags (multi-operator safety).
+  Flags: `--skip-hooks` (pre/post hooks only — the backup still runs, because a
+  dry-run-ish deploy must not also discard the data safety net),
+  `--no-health-wait`, and `--allow-stopped`.
 
-These are the *only* kasbah-owned files that live on the VPS in a
-project directory. They are overwritten on every deploy / rollback so
-they match the kasbah version driving the operation.
+### The outgoing stack, and when a stopped one is a refusal
+
+The backup and the `pre-*` hooks act on the **outgoing** version's containers.
+When those are not running there is nothing for them to act on, and there are
+two quite different reasons for that:
+
+- **A first deploy** — `versions.log` has no entry for this project. Both steps
+  are skipped, said out loud, and the deploy proceeds. Refusing here would make
+  a first deploy impossible for every project that declares either.
+- **Anything else** — the project has deployed here before, so a stopped stack
+  means a crash, a manual `down`, or a host that rebooted. The deploy
+  **refuses**, before any side effect, naming each container and the state
+  docker reports for it. Deploying over it would skip the backup at exactly the
+  moment it is worth having, and silently.
+
+`--allow-stopped` is the override for an operator who knows the stack is meant
+to be down. Two shapes need it that arguably should not: a `pre-deploy` hook
+targeting a container that is deliberately `restart: "no"`, and a project whose
+`backup.check` would have declined anyway while its backup container happens to
+be stopped. The refusal is computed from static manifest data on purpose —
+consulting `backup.check` first would mean running project-authored shell
+*before* deciding whether the deploy may proceed at all.
+
+  Both modes hold an exclusive `flock` for the whole run, so a second
+  concurrent deploy or rollback fails fast instead of interleaving hooks and
+  retags (multi-operator safety). The lock is a dedicated file,
+  `<project>/.deploy.lock`, held on its own file descriptor — flocking the
+  directory path itself is not portable.
+
+These two scripts are the only kasbah-owned **files** in a project directory
+on the VPS, and they are overwritten on every deploy / rollback so they match
+the kasbah version driving the operation. `remote-deploy.sh` is rendered per
+deploy rather than copied: the manifest never reaches the server, so the data
+it carries — hooks, backup, health, the built-image list — is pre-rendered into
+a marked block inside it. `.deploy.lock` is kasbah's too, but it is created
+rather than shipped, and its contents are never read.
 
 ## What this intentionally skips
 
