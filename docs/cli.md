@@ -215,13 +215,13 @@ Two modes:
   `v-tag`. Fails fast if HEAD isn't tagged. This is the everyday path: you
   may have tweaked compose or env template since cutting the tag, and you
   want to ship current disk state under that version label.
-- **Explicit `VERSION`** *(not implemented — `deploy` refuses it by name
-  today. It is structurally the rollback path and lands with it in the undo
-  phase)* — deploys that tagged version exactly as it was,
-  via `git archive v<VERSION>` (no checkout, working tree untouched). See
-  the rollback flow in `build-deploy.md` — deploy of an explicit version
-  uses the same code path, only the log entry (`action=deploy`) and hook
-  pair (`pre-/post-deploy`) differ.
+- **Explicit `VERSION`** — deploys that tagged version exactly as it was,
+  read out of the `v<VERSION>` ref (no checkout, working tree untouched).
+  See the rollback flow in `build-deploy.md`: it is the same code path, and
+  only three things differ — the log entry is `action=deploy`, the hook pair
+  is `pre-/post-deploy`, and there is no "must already be in versions.log"
+  precondition, since deploying a version here for the first time is exactly
+  what this mode is for.
 
 Flow (no-args / working-tree path):
 1. Open SSH ControlMaster for the whole deploy (reused by every ssh and rsync).
@@ -267,7 +267,8 @@ Flags:
 
 ### `kasbah rollback [USER@HOST] [VERSION]`
 
-Default target: second-most-recent entry in `versions.log` with `action=deploy`.
+Default target: second-most-recent entry with `action=deploy`, read from
+`versions.log` and `versions.log.gz` together (`build-deploy.md` → rollback flow).
 
 Flow (see `build-deploy.md` for full detail):
 1. Resolve target version.
@@ -279,7 +280,9 @@ Flow (see `build-deploy.md` for full detail):
 5. For each `build:` service in v<target>'s compose: `:<target>` must
    still be on the VPS (see image retention in `build-deploy.md`) — if
    pruned, fail with roll-forward / rebuild-from-tag guidance.
-6. `git archive v<target> <v<target>'s sync list> | ssh vps tar -x -C /apps/<name>/`.
+6. Extract v<target> to a temp directory and rsync its sync list into
+   `/apps/<name>/` — not `git archive | tar -x`, which cannot honour the
+   `src -> dst` renames every sync list has (`build-deploy.md` → rollback flow).
 7. On VPS: run `remote-deploy.sh rollback <target>`:
    - Run `pre-rollback` hooks against currently-running containers.
    - Retag `:<target>` as `:current` for each built image.
@@ -287,6 +290,19 @@ Flow (see `build-deploy.md` for full detail):
    - Wait for health.
    - Run `post-rollback` hooks against rolled-back containers.
    - Append rollback entry to `versions.log`, rotate.
+
+Flags:
+- `--on-drift=setup|continue|abort` — rollback runs the same env step
+  `deploy` does (`build-deploy.md` → rollback flow, step 9), because
+  v<target>'s `.env.prod.example` may declare different keys from the one
+  the server was last set up against. Unset it asks; with no terminal, the
+  run stops with exit `5`. See `kasbah env`.
+- `--skip-hooks` — skip the pre-/post-rollback hooks. Unlike `deploy`, there
+  is no backup for this flag to preserve: a rollback never takes one.
+- `--no-health-wait` — don't block on healthcheck.
+- `--allow-stopped` — roll back over a stack that is not running. Per
+  container, and for the same reason as `deploy`'s — except that here only
+  the `pre-rollback` hooks are at stake.
 
 Rollback restores image + sync'd config only. It does **not** restore
 data bind mounts or `.env` secret values. For schema rollback, use

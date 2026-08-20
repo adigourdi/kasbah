@@ -156,3 +156,81 @@ recording `docker` stub and a `date` stub that fakes only `-u +%Y-%m` and
 `-u -Iseconds`; the transport is `tests/integration/deploy_ship_test.sh`'s.
 Rotation's three-month boundary is reachable only with synthetic timestamps, so
 it is **traced, not aged**.
+
+### Unit 2 — `lib/versions_log.sh`, the reader (inserted; the plan names no such task)
+
+**A task the plan did not have.** 5.1 needs to resolve a rollback target and
+prove it was really deployed here; 5.2 needs the same file for `history`,
+`pending` and `changelog`. Both were going to read `versions.log` off a server
+and parse the frozen line. Left unhoisted, 5.1 would have built a
+rollback-shaped reader and 5.2's review would have been a refactor, so the
+substrate became its own unit and both consumers are briefed against one
+contract.
+
+It also collapsed a duplicate: `_ss_parse_log_line` moved out of
+`lib/server_status.sh` into the new library, so the frozen format has **one**
+parser locally. (The four copies of `kasbah_norm_path` are forced — a payload on
+the far side of ssh can source nothing. These two were both local, so there was
+no excuse.)
+
+**The fail-open guard, for the third time in this codebase.** `vlog_has_entries`
+answered "no record here" for a `versions.log` the ssh user cannot read — and
+the suite asserted that answer was correct. The remote step goes to explicit
+trouble to keep `notfile`, `unreadable` and `missing` apart, with a comment
+saying "every 'cannot' is its own state, and none of them is 'missing'", and
+then the one query asking "is there a record here at all?" flattened them. A
+`0600 root:root` log left by a sudo-owned deploy would have handed `rollback`
+the exact shape of "this project has never deployed here". The fix is
+asymmetric on purpose: an unreadable **active** log is now a hard failure,
+because no consumer can proceed honestly from it, while an unreadable
+**archive** is a warning, because the active log is authoritative for what is
+deployed and losing history must not block reading the record.
+
+**A warning that under-described a partial read — the same class as unit 1's,
+one layer up.** The damaged-archive warning said "gzip stopped before the end of
+it", "every entry before the damage is read" and "the likely cause is a rotation
+that ran out of disk", all three of which are false when the archive is not gzip
+at all: gzip never started, nothing was read, no append happened. Empty output
+with a non-zero status is a different state from output-then-failure, and they
+now get different sentences. Three occurrences in two units is enough to call it
+a rule for this codebase: **when a step can half-succeed, the message has to name
+which half.**
+
+**`notdir` was wider than it looked.** With `<apps>/<project>` a regular file,
+both logs reported `missing` — and so did an `<apps>` path that was itself a
+regular file. So a broken or unprepared apps path read as "this project has
+never been deployed", and `rollback` would have answered it with "use
+`kasbah deploy <host> X` for a first-time deploy": advice that cannot work,
+because the path is occupied. Same shape as Phase 4's "stopped" versus "no
+longer exists". No new vocabulary was needed — `server status` already had
+`notdir` and `noaccess`, and reusing them made a comment claiming the two
+commands share a vocabulary true instead of false.
+
+**The tell caught a third time, and at a layer the earlier catches could not
+reach.** The suite claimed "the log comes back byte for byte, so the parsing
+happens on this side". Replacing the *remote* base64 helper with one that
+stripped CRs and trailing blanks from every line before shipping left the entire
+suite green: no fixture under the fake apps tree carried a CR, a trailing space
+or a doubled space, and both sides of the comparison were `$( )` captures, which
+hide a trailing-newline difference too. The loader-level version of the same
+assertion was genuine — its mutant died. The transport-level one was theatre.
+**A test whose name states a property its fixture does not contain** is now the
+single most productive thing to look for in this phase's reviews.
+
+**Two decisions taken after the fact, both now in `build-deploy.md`.**
+`vlog_prev_deploy` searches the whole record rather than the active log alone —
+otherwise a project deploying less often than the 3-month rotation has no
+implicit rollback target at all, and the answer is identical whenever the active
+log holds two deploys. And the fetch reads both files in one round trip; over
+ssh a second round trip costs more than the archive's bytes, and it is the
+*display* that is on demand, not the transport.
+
+**A seam worth naming for whoever writes the consumers:** `vlog_find_version`
+returns the most recent entry naming a version *whatever its action*. A caller
+that reads `VLOG_ACTION` off that index and demands `deploy` would refuse a
+version the server demonstrably ran — a version rolled back to twice has a
+`rollback` line as its most recent mention. The versioning contract in
+`build-deploy.md` used to say the target must appear "with `action=deploy`" and
+now says any entry naming it counts.
+
+

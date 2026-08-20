@@ -14,8 +14,13 @@ Versions come from git tags on the project repo, formatted `vX.Y.Z` (semver).
 - `kasbah deploy X.Y.Z` and `kasbah rollback X.Y.Z` target a specific
   tagged version. Files come from `git archive v<X.Y.Z>` — no checkout,
   working tree untouched.
-- `rollback` additionally requires the target to appear in `versions.log`
-  with `action=deploy`; if not, it refuses (it would be a first-time deploy).
+- `rollback` additionally requires the target to appear in
+  `versions.log(.gz)`; if not, it refuses (it would be a first-time
+  deploy). Any entry naming the version counts — a `rollback` entry is
+  proof the version ran here exactly as a `deploy` entry is, and a
+  version rolled back to twice has a `rollback` line as its most recent
+  mention. Picking the *implicit* target is the separate question that
+  does look at `action=deploy`.
 
 Why tags? No registry means no metadata store outside of git plus image
 tags on the VPS. Semver tags are both human-meaningful and machine-sortable.
@@ -116,6 +121,14 @@ The local side writes into `${TMPDIR:-/tmp}` rather than a hardcoded `/tmp`,
 following the same rule as the ssh control socket; the remote side is
 literally `/tmp`. Both ends are removed by a trap rather than a final line —
 a failed transfer must not leave gigabytes behind on either machine.
+
+**A deploy that fails at `compose up` has already moved `:current`.** The
+order is retag → up, so the tag then points at a version whose containers
+did not start — and because `versions.log` is only appended to at the end of
+a successful run, nothing on the server records that the tag moved. This is
+by design: `:current` is a pointer, not a record, and `versions.log` plus the
+image `:<version>` tags are the record. `kasbah rollback` is what puts the
+pointer back, and the deploy's own failure message says so.
 
 `build-push` does **not** touch `:current` and does **not** run `compose up`.
 That's `deploy`'s job — decoupling lets you build-push without deploying
@@ -313,9 +326,13 @@ Runs at the end of every successful write (`deploy`, `rollback`):
 3. `versions.log` is rewritten with only the retained entries.
 4. Nothing is ever deleted.
 
-`kasbah history` transparently reads both files: `versions.log` first
-(fast, usually enough), and `versions.log.gz` on demand (`--all`, or
-when the requested version isn't in the active log).
+`kasbah history` transparently spans both files. They are fetched
+together, in one round trip — over ssh a second round trip costs far more
+than the archive's bytes ever will — and it is the *display* that is
+on demand: plain `history` shows the active log, `--all` adds the
+archive. Anything that has to answer "was this version ever deployed
+here" (`rollback`) consults both regardless, since a target that has
+aged into the archive was still deployed.
 
 ### Why append-only
 
@@ -331,7 +348,12 @@ small without sacrificing history.
 1. Open SSH ControlMaster.
 2. Resolve target version:
    - explicit: positional VERSION arg
-   - implicit: second-latest entry in versions.log with action=deploy
+   - implicit: second-latest entry with action=deploy, across
+     versions.log **and** versions.log.gz — a project that deploys less
+     often than the 3-month rotation would otherwise have no implicit
+     target at all, and the answer is identical whenever the active log
+     holds two deploys. The image check in step 6 is what refuses a
+     target too old to still be on the VPS.
 3. Verify target appears in versions.log (or versions.log.gz).
      NOT present → fail:
        "Version X was never deployed to this VPS.
@@ -353,10 +375,31 @@ small without sacrificing history.
         Then retry:
           kasbah rollback <user@host> <target>"
 7. Parse v<target>'s manifest for its `sync:` list.
-8. git archive v<target> <v<target>'s sync list> | ssh vps tar -x -C /apps/<name>/
-   (Overwrites whatever HEAD sync produced at the last deploy.)
-9. Restore v<target>'s Traefik config: git archive v<target>:traefik-dynamic.yml
-   → /apps/traefik/dynamic/<name>.yml. Traefik reloads on its own.
+8. Extract v<target> into a temp directory, then rsync it entry by entry
+   into /apps/<name>/, exactly as a deploy ships the working tree.
+   (Overwrites whatever the last deploy's sync produced.)
+
+   **Not** `git archive … | ssh vps tar -x`, which the earlier drafts of
+   this file specified: `git archive` has no rename, and every kasbah
+   project's sync list has at least one — `compose.prod.yml ->
+   compose.yml` is required, since the server runs compose on
+   <apps>/<name>/compose.yml and nothing else. A tar stream would land
+   `compose.prod.yml`, leave the previous deploy's `compose.yml` in
+   place, and bring the stack up on HEAD-era compose against
+   v<target>'s images: the exact silent mismatch the invariant below
+   exists to prevent. Two further `git archive` edges make the same
+   point — a path that never existed at v<target> exits 128 and kills
+   the *whole* archive rather than skipping the entry, so the list is
+   validated against `git ls-tree v<target>` first; and `git ls-tree`
+   exits 0 with empty output for a path it does not have, so the check
+   compares the returned set against the requested one rather than
+   trusting an exit status.
+9. Env drift check, exactly as a deploy runs it (step 6 there): render
+   .env when it is missing, prompt on drift, then refresh the managed
+   KASBAH_* block. v<target>'s .env.prod.example is what just landed in
+   step 8, so this is the step that notices a template whose keys have
+   changed since. --on-drift= answers it without a terminal; exit 5 when
+   there is no answer to be had.
 10. SSH into VPS and run scripts/remote-deploy.sh rollback <target>:
      a. Run pre-rollback hooks against currently-running containers.
      b. Retag :<target> as :current for each v<target>-era built image.
@@ -364,6 +407,13 @@ small without sacrificing history.
      d. Wait for health.container.
      e. Run post-rollback hooks against rolled-back containers.
      f. Append rollback entry to versions.log, rotate.
+11. Restore v<target>'s Traefik fragment: <apps>/traefik/dynamic/<name>.yml,
+    rsynced from the same extraction. **Last**, once the remote step has
+    returned 0 — the same ordering, and the same reason, as a deploy's
+    (see "Why the fragment ships last"). A rollback that dies at
+    `compose up` must not have already pointed the live route at
+    v<target>'s container names. A project with no fragment at v<target>
+    is warned about and rolled back anyway; nothing is ever deleted.
 ```
 
 ### Invariant

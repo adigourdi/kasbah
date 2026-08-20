@@ -11,6 +11,9 @@ _KASBAH_SERVER_STATUS_LOADED=1
 # kasbah's own under <apps>/, which is the same question status asks when it
 # decides what is a project, so the two must not drift apart.
 . "$KASBAH_LIB_DIR/manifest.sh"
+# For vlog_parse_line: the last line of a project's versions.log is the same
+# frozen format the history commands read, and one format has one parser.
+. "$KASBAH_LIB_DIR/versions_log.sh"
 
 # `kasbah server status USER@HOST` reports what a prepared VPS is running: the
 # docker and compose versions, the shared Traefik stack, and every project under
@@ -601,61 +604,6 @@ _server_status_read_marker() {
     return 0
 }
 
-# --- versions.log -------------------------------------------------------------------
-
-# One line of docs/build-deploy.md's frozen format:
-#
-#   <iso-timestamp> <action> <version> <backup-or-no-backup> kasbah=<v> digest=<…|->
-#
-# The four positional fields are frozen forever; everything after them is
-# key=value pairs, and a line written by a newer kasbah carries pairs this one
-# has never heard of. So the tail is scanned for the one key worth printing and
-# every other pair is ignored rather than rejected — the alternative is a status
-# command that stops working the first time a later phase appends a field.
-#
-# Returns 1 for a line that does not carry the four fields, which is a real
-# state: a truncated write, or somebody's note in the file.
-_ss_parse_log_line() {
-    local _pl_line="${1%$'\r'}"
-    local _pl_ts_out="$2" _pl_action_out="$3" _pl_version_out="$4" _pl_backup_out="$5" _pl_kasbah_out="$6"
-    local _pl_ts="" _pl_action="" _pl_version="" _pl_backup="" _pl_rest="" _pl_tok
-    local _pl_kasbah=""
-    local _pl_pairs=()
-
-    printf -v "$_pl_ts_out" '%s' ""
-    printf -v "$_pl_action_out" '%s' ""
-    printf -v "$_pl_version_out" '%s' ""
-    printf -v "$_pl_backup_out" '%s' ""
-    printf -v "$_pl_kasbah_out" '%s' ""
-
-    read -r _pl_ts _pl_action _pl_version _pl_backup _pl_rest <<<"$_pl_line"
-    [ -n "$_pl_ts" ] && [ -n "$_pl_action" ] && [ -n "$_pl_version" ] && [ -n "$_pl_backup" ] \
-        || return 1
-    # The timestamp's leading date, which is the one part of field 1 the format
-    # fixes. It separates a kasbah entry from a line of prose without pinning
-    # anything a later kasbah might legitimately change.
-    [[ "$_pl_ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || return 1
-
-    # `read -ra` and not `for tok in $rest`: the tail is the part a later kasbah
-    # gets to invent, so a pair holding `*`, `?` or `[…]` would be expanded
-    # against whatever directory the operator happens to be standing in. Measured:
-    # in a directory containing a file named `kasbah=EVIL`, a line ending in `*`
-    # reported that file's name as the kasbah version.
-    read -ra _pl_pairs <<<"$_pl_rest"
-    for _pl_tok in ${_pl_pairs[@]+"${_pl_pairs[@]}"}; do
-        case $_pl_tok in
-            kasbah=*) _pl_kasbah="${_pl_tok#kasbah=}" ;;
-        esac
-    done
-
-    printf -v "$_pl_ts_out" '%s' "$_pl_ts"
-    printf -v "$_pl_action_out" '%s' "$_pl_action"
-    printf -v "$_pl_version_out" '%s' "$_pl_version"
-    printf -v "$_pl_backup_out" '%s' "$_pl_backup"
-    printf -v "$_pl_kasbah_out" '%s' "$_pl_kasbah"
-    return 0
-}
-
 # --- The project table ------------------------------------------------------------
 
 # `<name-b64> <total> <running> <logstate> <log-b64>`, one row per project. The
@@ -783,7 +731,7 @@ _ss_print_projects() {
 
         case "${_SS_P_LOGSTATE[$i]}" in
             ok)
-                if _ss_parse_log_line "${_SS_P_LOG[$i]}" ts action version backup kasbah; then
+                if vlog_parse_line "${_SS_P_LOG[$i]}" ts action version backup kasbah; then
                     deployed="$action $ts"
                     [ -z "$kasbah" ] || deployed="$deployed (kasbah $kasbah)"
                 else

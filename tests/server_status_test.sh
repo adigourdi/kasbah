@@ -66,7 +66,7 @@ case "$mode" in
         # spaces without the shell getting a vote.
         line="$(cat)"
         ts="" action="" version="" backup="" kasbah=""
-        if _ss_parse_log_line "$line" ts action version backup kasbah; then
+        if vlog_parse_line "$line" ts action version backup kasbah; then
             printf 'parsed=yes\n'
         else
             printf 'parsed=no\n'
