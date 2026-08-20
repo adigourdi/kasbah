@@ -1,0 +1,788 @@
+#!/usr/bin/env bash
+# Test: lib/rollback.sh — `kasbah rollback`, and `kasbah deploy X.Y.Z`, which is
+# the same code with a different log entry and hook pair.
+#
+# Hermetic. `ssh` and `rsync` are stubs on PATH that record every call and answer
+# as a prepared server does; `git` is real, because the whole subject is what a
+# tag holds. The fixture repository is built so that **HEAD and v1.0.0 disagree
+# about everything the invariant covers** — the sync list, the built-image set,
+# the hooks and the Traefik fragment all differ — so a run that read the working
+# tree instead of the ref produces visibly different calls rather than the same
+# ones by luck.
+#
+# The stub rsync copies what it was handed, which is the only way to see files
+# that exist in a temp directory the run deletes on its way out.
+
+set -uo pipefail
+
+repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+export KASBAH_LIB_DIR="$repo_dir/lib"
+export KASBAH_TEMPLATE_DIR="$repo_dir/templates"
+KASBAH_VERSION="$(cat "$repo_dir/VERSION")"
+export KASBAH_VERSION
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+fail=0
+assert() {
+    if ! eval "$1"; then
+        echo "  FAIL: $2" >&2
+        fail=1
+    fi
+}
+
+# --- The fixture repository -------------------------------------------------------
+# Three tags. v1.0.0 is the rollback target; v2.0.0 is HEAD and differs from it in
+# every way the invariant is about; v3.0.0's manifest lists a file that tag does
+# not carry, which is what the pathspec validation is for.
+project="$tmpdir/demo"
+mkdir -p "$project"
+
+write_v1() {
+    cat > "$project/kasbah.yml" <<'YML'
+schema: 1
+kasbah_version: 0.1.0
+name: demo
+domain: demo.test
+sync:
+  - compose.prod.yml -> compose.yml
+  - .env.prod.example
+hooks:
+  pre-rollback:
+    - 'demo-web echo v1-pre-rollback'
+  post-rollback:
+    - 'demo-web echo v1-post-rollback'
+YML
+    cat > "$project/compose.prod.yml" <<'YML'
+name: demo
+services:
+  web:
+    build:
+      context: .
+    image: demo-web:current
+    container_name: demo-web
+  cache:
+    build:
+      context: .
+    image: demo-cache:current
+    container_name: demo-cache
+YML
+    printf '%s\n' '# fragment at v1.0.0' > "$project/traefik-dynamic.yml"
+    printf '%s\n' 'DEMO_GREETING=hi' > "$project/.env.prod.example"
+    printf '%s\n' '.env' '.kasbah/' > "$project/.gitignore"
+}
+
+write_v2() {
+    cat > "$project/kasbah.yml" <<'YML'
+schema: 1
+kasbah_version: 0.1.0
+name: demo
+domain: demo.test
+sync:
+  - compose.prod.yml -> compose.yml
+  - .env.prod.example
+  - extra.txt
+  - site/
+hooks:
+  pre-rollback:
+    - 'demo-web echo v2-pre-rollback'
+  post-rollback:
+    - 'demo-web echo v2-post-rollback'
+YML
+    cat > "$project/compose.prod.yml" <<'YML'
+name: demo
+services:
+  web:
+    build:
+      context: .
+    image: demo-web:current
+    container_name: demo-web
+  cache:
+    build:
+      context: .
+    image: demo-cache:current
+    container_name: demo-cache
+  api:
+    build:
+      context: .
+    image: demo-api:current
+    container_name: demo-api
+YML
+    printf '%s\n' '# fragment at v2.0.0' > "$project/traefik-dynamic.yml"
+    printf '%s\n' 'a file HEAD syncs and v1.0.0 never had' > "$project/extra.txt"
+    mkdir -p "$project/site"
+    printf '%s\n' '<p>v2</p>' > "$project/site/index.html"
+}
+
+(
+    cd "$project" || exit 1
+    git init -q .
+    git config user.email kasbah-test@example.invalid
+    git config user.name "kasbah test"
+    git config commit.gpgsign false
+    write_v1
+    git add -A
+    git commit -qm "the commit v1.0.0 tags"
+    git tag v1.0.0
+    write_v2
+    git add -A
+    git commit -qm "the commit v2.0.0 tags"
+    git tag v2.0.0
+    # A tag whose own manifest names a file that tag does not carry. `git add`
+    # takes the manifest and nothing else, so ghost.txt is in the sync: list and
+    # in no tree.
+    sed -i 's|^  - extra.txt$|  - ghost.txt|' kasbah.yml
+    printf '%s\n' 'never committed' > ghost.txt
+    git add kasbah.yml
+    git commit -qm "the commit v3.0.0 tags"
+    git tag v3.0.0
+    git reset -q --hard v2.0.0
+    rm -f ghost.txt
+    # A tag whose .gitattributes hides part of the sync: list from `git archive`
+    # while leaving it in the tree — one whole file entry, and one file inside a
+    # directory entry that otherwise survives.
+    printf '%s\n' '<p>kept</p>' > site/keep.html
+    printf '%s\n' '.env.prod.example export-ignore' 'site/index.html export-ignore' > .gitattributes
+    git add -A
+    git commit -qm "the commit v8.0.0 tags, with two paths marked export-ignore"
+    git tag v8.0.0
+    git reset -q --hard v2.0.0
+    # A tag where two sync: entries are the other kind of thing than the
+    # manifest says: `site/` is a file there and `extra.txt` a directory.
+    rm -rf site && printf '%s\n' 'now a file' > site
+    rm -f extra.txt && mkdir extra.txt && printf '%s\n' 'x' > extra.txt/f
+    git add -A
+    git commit -qm "the commit v9.0.0 tags, with site and extra.txt swapped"
+    git tag v9.0.0
+    git reset -q --hard v2.0.0
+    # A tag from before the project was renamed. The server's directory is
+    # <apps>/<name>, so the two names are two projects as far as a rollback can
+    # tell.
+    sed -i 's|^name: demo$|name: renamed|' kasbah.yml
+    git commit -qam "the commit v4.0.0 tags, under the project's old name"
+    git tag v4.0.0
+    git reset -q --hard v2.0.0
+) >/dev/null 2>&1
+
+assert '[ "$(cd "$project" && git show v1.0.0:kasbah.yml | grep -c "extra.txt")" = "0" ]' \
+    "v1.0.0's manifest does not list extra.txt — the fixture the invariant is read against"
+assert '[ "$(cd "$project" && grep -c "extra.txt" kasbah.yml)" = "1" ]' \
+    "while the working tree's does"
+assert 'grep -qF "demo-api" "$project/compose.prod.yml"' \
+    "and HEAD's compose builds a second image v1.0.0 never had"
+assert '[ "$(cd "$project" && git show v1.0.0:compose.prod.yml | grep -c "demo-api")" = "0" ]' \
+    "which is absent at v1.0.0"
+
+# --- The stubs --------------------------------------------------------------------
+stub_dir="$tmpdir/stub"
+mkdir -p "$stub_dir"
+ssh_log="$tmpdir/ssh.log"
+call_log="$tmpdir/calls.log"
+helper_copy="$tmpdir/shipped-remote-deploy.sh"
+frag_copy="$tmpdir/shipped-fragment.yml"
+compose_copy="$tmpdir/shipped-compose.yml"
+run_tmp="$tmpdir/runtmp"
+mkdir -p "$tmpdir/home" "$run_tmp"
+
+cat > "$stub_dir/ssh" <<'STUB'
+#!/usr/bin/env bash
+{ printf 'ssh'; for a in "$@"; do printf '|%s' "$a"; done; printf '\n'; } >> "$CALL_LOG"
+printf '%s\n' "$*" >> "$SSH_LOG"
+last="${!#}"
+for a in "$@"; do [ "$a" = "-n" ] || continue; exec </dev/null; break; done
+case "$*" in
+    *"-O exit"*) exit 0 ;;
+esac
+case "$last" in
+    true) exit 0 ;;
+    "'bash' '-s'"*) cat >/dev/null ;;
+esac
+case "$last" in
+    # The marker read, which every project command opens with.
+    "'bash' '-s' '--' '/apps' '/etc/kasbah/apps-path'")
+        marker_default='{"kasbah_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"2.0","mem_limit":"4g"}'
+        printf 'apps=/apps\nsource=default\n'
+        printf '%s\n' "${MARKER-$marker_default}" ;;
+    # The deploy record: two files, base64, in one round trip. The archive is
+    # handed over as gzip the local side unpacks, so the suite pre-encodes it.
+    "'bash' '-s' '--' '/apps' 'demo'")
+        printf 'active_state=%s\n' "${FAKE_ACTIVE_STATE:-ok}"
+        printf 'active_b64=%s\n' "$(printf '%s' "${FAKE_ACTIVE:-}" | base64 -w0)"
+        printf 'archive_state=%s\n' "${FAKE_ARCHIVE_STATE:-missing}"
+        printf 'archive_b64=%s\n' "${FAKE_ARCHIVE_B64:-}" ;;
+    "'bash' '-s' '--' '/apps' '/apps/data' 'demo'"*)
+        printf 'prepared=yes\n' ;;
+    # The image check. Only this payload is handed image names, which is what
+    # tells it apart from the three above.
+    *"'demo-web'"*|*"'demo-api'"*|*"'demo-cache'"*)
+        # Derived, not answered: a stub that says a constant cannot tell a check
+        # that looked at every image from one that looked at the first.
+        asked=$(grep -o "'demo-[a-z]*'" <<<"$last" | wc -l)
+        printf 'checked=%s\nmissing=%s\n' "${CHECKED_OVERRIDE:-$asked}" "${IMAGES_MISSING:-}" ;;
+    *"setup-env.sh' '--drift' "*)
+        printf 'template_exists=%s\n' "${ENV_TEMPLATE:-yes}"
+        printf 'env_exists=%s\n' "${ENV_EXISTS:-yes}"
+        printf 'missing=%s\n' "${ENV_MISSING:-}"
+        printf 'extra=%s\n' "${ENV_EXTRA:-}" ;;
+    *"setup-env.sh' '--inject' "*) exit 0 ;;
+    *"'bash' '-s' '--' '/apps/mail'")
+        printf 'mail_stack=no\nmail_env=no\n' ;;
+    *"remote-deploy.sh' '"*)
+        [ "${REMOTE_RC:-0}" = 0 ] || exit "$REMOTE_RC"
+        # The version this run asked for, read back off the command line: a
+        # report naming another one is a hard failure on the local side, so the
+        # stub has to answer the question it was actually asked.
+        asked="$(sed -E "s/.*remote-deploy\.sh' '(deploy|rollback)' '([^']*)'.*/\2/" <<<"$last")"
+        [ "${REPORT_OMIT:-}" = version ]         || printf 'version=%s\n' "${REPORT_VERSION-$asked}"
+        [ "${REPORT_OMIT:-}" = prev_version ]    || printf 'prev_version=%s\n' "${REPORT_PREV-2.0.0}"
+        [ "${REPORT_OMIT:-}" = deployed_before ] || printf 'deployed_before=%s\n' "${REPORT_HISTORY-yes}"
+        [ "${REPORT_OMIT:-}" = backup ]          || printf 'backup=%s\n' "${REPORT_BACKUP-no-backup}"
+        [ "${REPORT_OMIT:-}" = digest ]          || printf 'digest=%s\n' "${REPORT_DIGEST--}" ;;
+    *)
+        printf 'stub: no answer for remote step %s\n' "$last" >&2
+        exit 9 ;;
+esac
+exit 0
+STUB
+
+cat > "$stub_dir/rsync" <<'STUB'
+#!/usr/bin/env bash
+{ printf 'rsync'; for a in "$@"; do printf '|%s' "$a"; done; printf '\n'; } >> "$CALL_LOG"
+src="${@:$#-1:1}"
+case "${!#}" in
+    *"/dynamic/demo.yml") [ -z "${RSYNC_FAIL_FRAGMENT:-}" ] || exit 12 ;;
+esac
+case "${!#}" in
+    *"/scripts/remote-deploy.sh") cp "$src" "$RSYNC_HELPER_COPY" ;;
+    *"/dynamic/demo.yml")         cp "$src" "$RSYNC_FRAG_COPY" ;;
+    *"/demo/compose.yml")         cp "$src" "$RSYNC_COMPOSE_COPY" ;;
+esac
+exit 0
+STUB
+chmod 0755 "$stub_dir/ssh" "$stub_dir/rsync"
+
+# Two deploys in the active log, oldest first: rolling back with no version named
+# targets the earlier of them.
+log_two=$'2026-08-01T00:00:00+00:00 deploy 1.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-02T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n'
+
+kasbah_run() {
+    : > "$ssh_log"; : > "$call_log"
+    rm -f "$helper_copy" "$frag_copy" "$compose_copy"
+    env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
+        HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$run_tmp" \
+        SSH_LOG="$ssh_log" CALL_LOG="$call_log" \
+        RSYNC_HELPER_COPY="$helper_copy" RSYNC_FRAG_COPY="$frag_copy" \
+        RSYNC_COMPOSE_COPY="$compose_copy" \
+        FAKE_ACTIVE="${FAKE_ACTIVE-$log_two}" \
+        "$repo_dir/bin/kasbah" "$@" </dev/null 2>&1
+}
+rollback() { ( cd "$project" && kasbah_run rollback "$@" ) ; }
+deploy()   { ( cd "$project" && kasbah_run deploy "$@" ) ; }
+
+# --- A rollback that works, and the invariant it has to hold -----------------------
+out="$(rollback deploy@vps 1.0.0)"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" = "0" ]' "a rollback to a version the server has run succeeds (rc $rc: $out)"
+assert 'grep -qF "Rolled demo back to 1.0.0 on deploy@vps" <<<"$out"' "and says so (said '$out')"
+assert 'grep -qF "remote-deploy.sh'\'' '\''rollback'\'' '\''1.0.0'\''" <<<"$calls"' \
+    "the shipped script is run in rollback mode, with the target version (ran: $(grep -F "remote-deploy.sh" <<<"$calls"))"
+
+# **The invariant.** Every one of these four is a fact about v1.0.0 that HEAD
+# contradicts, so each of them fails against a run that read the working tree.
+assert '! grep -qF "extra.txt" <<<"$calls"' \
+    "the sync: list is v1.0.0's — HEAD's extra.txt is not shipped ($(grep -F "rsync|" <<<"$calls"))"
+assert '! grep -qE "\|site/\|" <<<"$calls"' \
+    "nor HEAD's site/ directory ($(grep -F "site" <<<"$calls"))"
+assert 'grep -qF "|-lpt|-s|compose.prod.yml|deploy@vps:/apps/demo/compose.yml" <<<"$calls"' \
+    "and the rename in it still lands on compose.yml — which \`git archive | tar -x\` could not do
+        calls: $(grep -F "compose" <<<"$calls")"
+assert 'grep -qF "demo-web" <<<"$calls" && grep -qF "demo-cache" <<<"$calls" &&
+        ! grep -qF "demo-api" <<<"$calls"' \
+    "the image check asks about v1.0.0's two built images and not the third HEAD added ($(grep -F "demo-" <<<"$calls"))"
+assert '[ -f "$compose_copy" ] && ! grep -qF "demo-api" "$compose_copy"' \
+    "the compose file that arrived is v1.0.0's ($(head -c 120 "$compose_copy" 2>/dev/null | tr '\n' '/'))"
+assert '[ -f "$frag_copy" ] && grep -qF "fragment at v1.0.0" "$frag_copy"' \
+    "so is the Traefik fragment (got '$(cat "$frag_copy" 2>/dev/null)')"
+assert '! grep -qF "v2.0.0" "$frag_copy" 2>/dev/null' \
+    "and not the working tree's, which says v2.0.0"
+assert 'grep -qxF "RD_HOOKS_PRE_ROLLBACK=( '\''demo-web echo v1-pre-rollback'\'' )" "$helper_copy"' \
+    "the hooks rendered into the shipped script are v1.0.0's ($(grep -m1 "^RD_HOOKS_PRE_ROLLBACK=" "$helper_copy"))"
+assert 'grep -qxF "RD_IMAGES=( '\''demo-cache'\'' '\''demo-web'\'' )" "$helper_copy"' \
+    "and so is the image list it retags ($(grep -m1 "^RD_IMAGES=" "$helper_copy"))"
+
+# The working tree is neither read nor written: `git archive` and `git show` do
+# not touch it, and a rollback that checked anything out would say so here.
+assert '[ "$(cd "$project" && git status --porcelain)" = "" ]' \
+    "the working tree is untouched (git says: $(cd "$project" && git status --porcelain | tr '\n' '/'))"
+assert '[ "$(cd "$project" && git rev-parse HEAD)" = "$(cd "$project" && git rev-parse v2.0.0)" ]' \
+    "and HEAD is still where it was"
+
+# The order the fragment must keep, and the env step's place in it.
+n_of() { grep -n -m1 -F -- "$1" <<<"$calls" | cut -d: -f1; }
+n_vlog=$(grep -n -m1 -E "\|'bash' '-s' '--' '/apps' 'demo'\$" <<<"$calls" | cut -d: -f1)
+n_images=$(n_of "'demo-web'")
+n_sync=$(n_of "|compose.prod.yml|")
+n_drift=$(n_of "setup-env.sh' '--drift'")
+n_remote=$(n_of "remote-deploy.sh' 'rollback'")
+n_frag=$(n_of "/dynamic/demo.yml")
+for n in n_vlog n_images n_sync n_drift n_remote n_frag; do
+    [ -n "${!n}" ] || printf -v "$n" '%s' 0
+done
+assert '[ "$n_vlog" -gt 0 ] && [ "$n_images" -gt 0 ] && [ "$n_sync" -gt 0 ] &&
+        [ "$n_drift" -gt 0 ] && [ "$n_remote" -gt 0 ] && [ "$n_frag" -gt 0 ]' \
+    "the run made every call the order below is about (log $n_vlog, images $n_images, sync $n_sync,
+        drift $n_drift, remote $n_remote, fragment $n_frag)
+        calls: $calls"
+assert '[ "$n_frag" -gt "$n_remote" ]' \
+    "the fragment ships after the remote step returns, never before it (fragment $n_frag, remote $n_remote)"
+assert '[ "$n_images" -lt "$n_sync" ]' \
+    "the image check runs before anything is shipped (images $n_images, first sync $n_sync)"
+assert '[ "$n_drift" -gt "$n_sync" ] && [ "$n_drift" -lt "$n_remote" ]' \
+    "and the env step keeps its place: after the template is on the server, before compose reads
+        the .env it writes (sync $n_sync, drift $n_drift, remote $n_remote)"
+
+# The state file belongs to the project root, not to the extraction the run
+# deletes: written from in there it would vanish with it.
+assert '[ "$(jq -r .last_version "$project/.kasbah/state.json" 2>/dev/null)" = "1.0.0" ]' \
+    "a rollback that worked records the version it went back to"
+assert '[ "$(jq -r .last_server "$project/.kasbah/state.json" 2>/dev/null)" = "deploy@vps" ]' \
+    "and the server it went to"
+leftover=$(find "$run_tmp" -mindepth 1 -maxdepth 1 2>/dev/null | sort | tr '\n' ' ')
+assert '[ -z "$leftover" ]' \
+    "and TMPDIR is empty afterwards — neither the extraction nor the rendered helper nor the
+        ssh control directory outlives the run (found: $leftover)"
+rm -rf "$project/.kasbah"
+
+# --- Which version, and where it comes from ---------------------------------------
+# No version named: the second-latest action=deploy entry, which is 1.0.0 here.
+out="$(rollback deploy@vps)"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" = "0" ]' "a rollback with no version succeeds (rc $rc: $out)"
+assert 'grep -qF "remote-deploy.sh'\'' '\''rollback'\'' '\''1.0.0'\''" <<<"$calls"' \
+    "targeting the deploy before the current one (ran: $(grep -F "remote-deploy.sh" <<<"$calls"))"
+assert 'grep -qF "rolling back to 1.0.0" <<<"$out"' "and says which entry it picked (said '$out')"
+rm -rf "$project/.kasbah"
+
+# The same question when the earlier deploy has aged into the rotation archive.
+# Nothing in the active log names 1.0.0 at all, so a reader of that file alone
+# has no implicit target and refuses.
+arch_b64="$(printf '%s\n' '2026-01-01T00:00:00+00:00 deploy 1.0.0 no-backup kasbah=0.1.0 digest=-' | gzip -c | base64 -w0)"
+out="$( FAKE_ACTIVE=$'2026-08-02T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n' \
+        FAKE_ARCHIVE_STATE=ok FAKE_ARCHIVE_B64="$arch_b64" rollback deploy@vps )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" = "0" ]' "the implicit target is found in the rotation archive too (rc $rc: $out)"
+assert 'grep -qF "remote-deploy.sh'\'' '\''rollback'\'' '\''1.0.0'\''" <<<"$calls"' \
+    "and it is the archived deploy (ran: $(grep -F "remote-deploy.sh" <<<"$calls"))"
+rm -rf "$project/.kasbah"
+
+# One deploy in the whole record: there is no *previous* one to go back to.
+out="$( FAKE_ACTIVE=$'2026-08-02T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n' \
+        rollback deploy@vps )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" != "0" ]' "a record with one deploy in it has no implicit target (rc $rc: $out)"
+assert 'grep -qF "no earlier deploy" <<<"$out"' "and says so (said '$out')"
+assert 'grep -qF "kasbah rollback deploy@vps <X.Y.Z>" <<<"$out"' \
+    "pointing at the argument that would answer it (said '$out')"
+assert '! grep -qF "remote-deploy.sh'"'"' '"'"'" <<<"$calls"' "no implicit target: nothing ran on the server"
+assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "no implicit target: nothing was shipped"
+
+# An empty log is a different sentence: nothing was ever deployed here.
+out="$( FAKE_ACTIVE= FAKE_ACTIVE_STATE=missing rollback deploy@vps )"; rc=$?
+assert '[ "$rc" != "0" ]' "so does a project with no record on this server (rc $rc: $out)"
+assert 'grep -qF "holds no entry for this project at all" <<<"$out"' \
+    "with the sentence that fits an empty log rather than the one about two deploys (said '$out')"
+
+# --- A line the reader could not parse -------------------------------------------
+# A `printf >>` killed mid-append leaves a last line no version can be read out
+# of, and it is still a deploy that ran. Stepped over in silence it makes the
+# deploy *before* it the rollback target — one version too far back, chosen
+# confidently. The record's own damaged-line count is the only thing that can
+# say so, and both answers built on it have to consult it.
+log_damaged=$'2026-08-01T00:00:00+00:00 deploy 1.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-02T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-03T00:00:00+00:0'
+out="$( FAKE_ACTIVE="$log_damaged" rollback deploy@vps )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" = "0" ]' "an unreadable last line does not stop a rollback (rc $rc: $out)"
+assert 'grep -qF "remote-deploy.sh'\'' '\''rollback'\'' '\''1.0.0'\''" <<<"$calls"' \
+    "the target is still the second-most-recent deploy it could read (ran: $(grep -F "remote-deploy.sh" <<<"$calls"))"
+assert 'grep -qF "has 1 line(s) no version can be read" <<<"$out"' \
+    "but the count of lines it stepped over is said out loud (said '$out')"
+assert 'grep -qF "one version further back than it should be" <<<"$out"' \
+    "and what that costs: a deploy this side cannot read is still a deploy (said '$out')"
+assert 'grep -qF "/apps/demo/versions.log" <<<"$out"' \
+    "naming the file to look at (said '$out')"
+rm -rf "$project/.kasbah"
+
+# The control: the same rollback against a record with nothing damaged in it says
+# none of that — otherwise the warning above proves only that a warning exists.
+out="$( rollback deploy@vps )"; rc=$?
+assert '[ "$rc" = "0" ]' "a clean record rolls back with no such warning (rc $rc: $out)"
+assert '! grep -qF "no version can be read" <<<"$out"' "and says nothing about damaged lines (said '$out')"
+rm -rf "$project/.kasbah"
+
+# The other face of the same fact: the only line naming the target may be the one
+# that could not be read, so "never deployed here" is a claim the reader cannot
+# make.
+out="$( FAKE_ACTIVE=$'2026-08-02T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-03T00:00:00+00:0' \
+        rollback deploy@vps 1.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" != "0" ]' "a target that is not in a record with an unreadable line is still refused (rc $rc: $out)"
+assert 'grep -qF "1 line(s) of" <<<"$out"' "counting what could not be read (said '$out')"
+assert '! grep -qF "was never deployed to this VPS" <<<"$out"' \
+    "without asserting an absence the reader cannot see (said '$out')"
+assert 'grep -qF "the same thing as never having deployed it here" <<<"$out"' \
+    "saying so outright (said '$out')"
+assert 'grep -qF "kasbah deploy deploy@vps 1.0.0" <<<"$out"' \
+    "and still offering the first-time deploy, conditioned (said '$out')"
+assert '! grep -qF "remote-deploy.sh'\'' '\''" <<<"$calls"' "and nothing ran on the server"
+
+# --- The three refusals -------------------------------------------------------------
+# Never deployed here. The version is a real tag in this checkout, so this is the
+# record's answer and not git's.
+out="$( FAKE_ACTIVE=$'2026-08-02T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n' \
+        rollback deploy@vps 1.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" != "0" ]' "rolling back to a version this server never ran is refused (rc $rc: $out)"
+assert 'grep -qF "Version 1.0.0 was never deployed to this VPS." <<<"$out"' \
+    "with the spec's own sentence (said '$out')"
+assert 'grep -qF "Use \`kasbah deploy deploy@vps 1.0.0\` for a first-time deploy." <<<"$out"' \
+    "and the command that would do it instead (said '$out')"
+assert '! grep -qF "remote-deploy.sh'"'"' '"'"'" <<<"$calls"' "and nothing ran on the server"
+
+# Any entry naming it counts, whatever its action: a version rolled back to twice
+# has a `rollback` line as its most recent mention, and that is still proof it
+# ran here.
+out="$( FAKE_ACTIVE=$'2026-08-02T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-03T00:00:00+00:00 rollback 1.0.0 no-backup kasbah=0.1.0 digest=-\n' \
+        rollback deploy@vps 1.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" = "0" ]' \
+    "a version whose only mention is a rollback entry is still rollable-to (rc $rc: $out)"
+assert 'grep -qF "remote-deploy.sh'\'' '\''rollback'\'' '\''1.0.0'\''" <<<"$calls"' \
+    "and the rollback ran (ran: $(grep -F "remote-deploy.sh" <<<"$calls"))"
+rm -rf "$project/.kasbah"
+
+# A pruned image. The version is in the record and the tag is here; what is gone
+# is the thing kasbah cannot rebuild and will not pretend to.
+out="$( IMAGES_MISSING=demo-web rollback deploy@vps 1.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" != "0" ]' "a rollback whose image has been pruned is refused (rc $rc: $out)"
+assert 'grep -qF "Image demo-web:1.0.0 is no longer on the VPS (outside the" <<<"$out"' \
+    "naming the image and why (said '$out')"
+assert 'grep -qF "NOT byte-identical to the original" <<<"$out"' \
+    "saying plainly that a rebuild is not the same bytes (said '$out')"
+assert 'grep -qF "git checkout v1.0.0 && kasbah build-push deploy@vps" <<<"$out"' \
+    "with the escape hatch (said '$out')"
+assert 'grep -qF "kasbah rollback deploy@vps 1.0.0" <<<"$out"' "and the retry (said '$out')"
+assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
+assert '! grep -qF "remote-deploy.sh'"'"' '"'"'" <<<"$calls"' "and nothing ran on the server"
+
+# A tag this checkout does not have. `git fetch --tags` is spent on it once,
+# unprompted, and the repository has no remote — so the retry finds nothing.
+out="$( FAKE_ACTIVE=$'2026-08-02T00:00:00+00:00 deploy 7.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-03T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n' \
+        rollback deploy@vps 7.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" != "0" ]' "a target with no tag in this checkout is a hard failure (rc $rc: $out)"
+assert 'grep -qF "this checkout has no tag v7.0.0" <<<"$out"' "saying which tag (said '$out')"
+assert 'grep -qF "fetching tags from the remote" <<<"$out"' \
+    "having tried a fetch first, out loud (said '$out')"
+assert 'grep -qF "is not a tag in this repository" <<<"$out"' "and then giving up (said '$out')"
+assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
+
+# A version that is in neither the record nor this checkout's tags. Both
+# refusals fit, and the record's is the one that comes out: it is step 3 of the
+# flow and the tag check is step 4, which is also the more useful order — the
+# operator learns the server never ran it, not that a tag is missing.
+out="$( FAKE_ACTIVE=$'2026-08-02T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n' \
+        rollback deploy@vps 6.6.6 )"; rc=$?
+assert '[ "$rc" != "0" ]' "a target in neither the record nor the tags is refused (rc $rc: $out)"
+assert 'grep -qF "Version 6.6.6 was never deployed to this VPS." <<<"$out"' \
+    "by the record, which is asked first (said '$out')"
+assert '! grep -qF "is not a tag in this repository" <<<"$out"' \
+    "and not by the tag check below it (said '$out')"
+
+# --- The sync list, against the tree the tag really holds ---------------------------
+# `git archive` exits 128 and produces nothing at all when one pathspec is
+# missing, so the list is checked first. The tell is whose message comes out:
+# git's own `pathspec … did not match any files` means the check was skipped.
+out="$( FAKE_ACTIVE=$'2026-08-02T00:00:00+00:00 deploy 3.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-03T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n' \
+        rollback deploy@vps 3.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" != "0" ]' "a tag whose manifest lists a path it does not carry is refused (rc $rc: $out)"
+assert 'grep -qF "ghost.txt — no such path at v3.0.0" <<<"$out"' \
+    "naming the entry and the tag (said '$out')"
+assert '! grep -qF "did not match any files" <<<"$out"' \
+    "before \`git archive\` was asked for it — that is git's message, and it means the check
+        never ran (said '$out')"
+assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
+
+# A tag from before the project was renamed. Whichever name is right, kasbah
+# cannot know which of the two directories on the server this run is about.
+out="$( FAKE_ACTIVE=$'2026-08-02T00:00:00+00:00 deploy 4.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-03T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n' \
+        rollback deploy@vps 4.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" != "0" ]' "a target tagged under another project name is refused (rc $rc: $out)"
+assert 'grep -qF "called demo today and was called renamed at v4.0.0" <<<"$out"' \
+    "naming both (said '$out')"
+assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
+
+# --- What `git archive` actually produced -----------------------------------------
+# `git ls-tree` says what is in the tree and `git archive` says what gets
+# exported, and .gitattributes export-ignore separates them: the path comes back
+# from ls-tree, and the archive drops it with exit 0 and no message. Only the
+# extraction reflects that, so only the extraction can be trusted.
+out="$( FAKE_ACTIVE=$'2026-08-02T00:00:00+00:00 deploy 8.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-03T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n' \
+        rollback deploy@vps 8.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" != "0" ]' "a tag whose sync: list is partly export-ignored is refused (rc $rc: $out)"
+assert 'grep -qF ".env.prod.example — in the tag'\''s tree, not in the archive" <<<"$out"' \
+    "naming the file entry the archive dropped — the case that used to pass in silence (said '$out')"
+assert 'grep -qF "site/index.html — in the tag'\''s tree, not in the archive" <<<"$out"' \
+    "and the file inside a directory entry that survived without it (said '$out')"
+assert 'grep -qF "export-ignore" <<<"$out"' "with the mechanism that does it (said '$out')"
+assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
+
+# --- Sync entries that are the other kind of thing at the ref ------------------------
+out="$( FAKE_ACTIVE=$'2026-08-02T00:00:00+00:00 deploy 9.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-03T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n' \
+        rollback deploy@vps 9.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" != "0" ]' "a tag where a directory entry is a file is refused (rc $rc: $out)"
+assert 'grep -qF "site/ — listed with a trailing slash" <<<"$out"' \
+    "naming the entry and what it is there instead (said '$out')"
+assert 'grep -qF "extra.txt — is a directory at v9.0.0" <<<"$out"' \
+    "and the other direction in the same run (said '$out')"
+assert '! grep -qF "did not match any files" <<<"$out"' \
+    "before \`git archive\` was asked for either (said '$out')"
+assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
+
+# --- A version with no fragment ------------------------------------------------------
+# v1.0.0 carries one, so the case is constructed by asking for a tag that does
+# not: HEAD's own, with the file removed from the ref by a fourth tag.
+(
+    cd "$project" || exit 1
+    git rm -q --cached traefik-dynamic.yml
+    git commit -qm "the commit v5.0.0 tags, with no fragment"
+    git tag v5.0.0
+    git reset -q --hard v2.0.0
+) >/dev/null 2>&1
+out="$( FAKE_ACTIVE=$'2026-08-02T00:00:00+00:00 deploy 5.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-03T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n' \
+        rollback deploy@vps 5.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" = "0" ]' "a version with no traefik-dynamic.yml is rolled back to anyway (rc $rc: $out)"
+assert 'grep -qF "v5.0.0 carries no traefik-dynamic.yml" <<<"$out"' "with a warning (said '$out')"
+assert '! grep -qF "/dynamic/demo.yml" <<<"$calls"' \
+    "nothing at all was sent to the dynamic directory ($(grep -F "dynamic/" <<<"$calls"))"
+assert 'grep -qF "left as it is" <<<"$out"' \
+    "and the route already there is left alone — removing one is \`kasbah drop\`'s decision (said '$out')"
+rm -rf "$project/.kasbah"
+
+# --- `kasbah deploy X.Y.Z` — the same path, two differences --------------------------
+# It is not in this server's record at all, which a rollback would refuse and a
+# deploy must not: deploying a tagged version for the first time is the point.
+out="$( FAKE_ACTIVE= FAKE_ACTIVE_STATE=missing deploy deploy@vps 1.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" = "0" ]' "deploying a tagged version this server has never run succeeds (rc $rc: $out)"
+assert 'grep -qF "remote-deploy.sh'\'' '\''deploy'\'' '\''1.0.0'\''" <<<"$calls"' \
+    "in deploy mode, so the log entry and the hook pair are the deploy ones
+        (ran: $(grep -F "remote-deploy.sh" <<<"$calls"))"
+assert '! grep -qE "\|'\''bash'\'' '\''-s'\'' '\''--'\'' '\''/apps'\'' '\''demo'\''\$" <<<"$calls"' \
+    "and the deploy record was not even read — there is no precondition on it
+        ($(grep -F "'/apps' 'demo'" <<<"$calls"))"
+assert 'grep -qF "Deployed demo 1.0.0 to deploy@vps" <<<"$out"' "and it reports a deploy (said '$out')"
+# Same ref, same invariant: the files are v1.0.0's here too.
+assert '! grep -qF "extra.txt" <<<"$calls"' "shipping v1.0.0's sync list, not HEAD's"
+assert '[ -f "$frag_copy" ] && grep -qF "fragment at v1.0.0" "$frag_copy"' \
+    "and v1.0.0's fragment (got '$(cat "$frag_copy" 2>/dev/null)')"
+rm -rf "$project/.kasbah"
+
+# --- The image check counts what it looked at ---------------------------------------
+# `missing=` computed over fewer images than were asked about is an empty answer
+# that looks like a pass.
+out="$( CHECKED_OVERRIDE=1 rollback deploy@vps 1.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" != "0" ]' "an image check that looked at fewer images than it was given fails (rc $rc: $out)"
+assert 'grep -qF "looked at 1 of demo'\''s 2 built images" <<<"$out"' \
+    "naming both counts (said '$out')"
+assert '! grep -qF "remote-deploy.sh'\'' '\''" <<<"$calls"' "and nothing ran on the server"
+
+# --- A named version is judged locally before anything is connected to ---------------
+# `kasbah deploy USER@HOST X.Y.Z` has no question for the server to answer first,
+# so it keeps the no-args deploy's rule: every fact about this checkout is
+# settled before the first ssh.
+out="$( deploy deploy@vps 7.0.0 )"; rc=$?
+assert '[ "$rc" != "0" ]' "deploying a version with no tag here fails (rc $rc: $out)"
+assert 'grep -qF "is not a tag in this repository" <<<"$out"' "on the tag (said '$out')"
+assert '[ ! -s "$ssh_log" ]' \
+    "and never opened a connection — a rollback cannot do this, because its target is a fact
+        only the server has (ssh saw: $(cat "$ssh_log"))"
+out="$( deploy deploy@vps 9.0.0 )"; rc=$?
+assert '[ "$rc" != "0" ]' "and so does one whose tag lists paths of the wrong kind (rc $rc: $out)"
+assert '[ ! -s "$ssh_log" ]' "also before any connection (ssh saw: $(cat "$ssh_log"))"
+
+# --- What the operator is told to run next -------------------------------------------
+# The two late failures are where an operator reads most carefully, and `kasbah
+# deploy` is a runnable instruction that ships the working tree — undoing the
+# rollback that just succeeded.
+out="$( RSYNC_FAIL_FRAGMENT=1 rollback deploy@vps 1.0.0 )"; rc=$?
+assert '[ "$rc" != "0" ]' "a fragment that will not ship fails the run (rc $rc: $out)"
+assert 'grep -qF "the rollback itself succeeded" <<<"$out"' \
+    "saying which run succeeded (said '$out')"
+assert 'grep -qF "re-run \`kasbah rollback deploy@vps 1.0.0\`" <<<"$out"' \
+    "and naming the command that repeats it, version and all (said '$out')"
+assert '! grep -qE "re-run \`kasbah deploy" <<<"$out"' \
+    "never \`kasbah deploy\`, which would ship the working tree and undo the rollback (said '$out')"
+rm -rf "$project/.kasbah"
+
+out="$( REPORT_OMIT=digest rollback deploy@vps 1.0.0 )"; rc=$?
+assert '[ "$rc" != "0" ]' "a truncated report fails the run (rc $rc: $out)"
+assert 'grep -qF "the rollback step on deploy@vps reported no digest" <<<"$out"' \
+    "naming the step that ran (said '$out')"
+assert 'grep -qF "re-run \`kasbah rollback deploy@vps 1.0.0\` — it is safe to run again" <<<"$out"' \
+    "and the command to repeat, not one that would deploy HEAD over it (said '$out')"
+
+out="$( RSYNC_FAIL_FRAGMENT=1 FAKE_ACTIVE= FAKE_ACTIVE_STATE=missing deploy deploy@vps 1.0.0 )"; rc=$?
+assert '[ "$rc" != "0" ]' "the same failure in tagged-deploy mode fails too (rc $rc: $out)"
+assert 'grep -qF "re-run \`kasbah deploy deploy@vps 1.0.0\`" <<<"$out"' \
+    "and names the version there too — \`kasbah deploy\` alone is a different command (said '$out')"
+
+# --- The command line ----------------------------------------------------------------
+# An argument with an `@` is the server, anything else is the version, in either
+# order — the rule `kasbah exec` already uses.
+out="$( rollback 1.0.0 deploy@vps )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" = "0" ]' "version before server parses the same way (rc $rc: $out)"
+assert 'grep -qF "remote-deploy.sh'\'' '\''rollback'\'' '\''1.0.0'\''" <<<"$calls"' \
+    "with the same target (ran: $(grep -F "remote-deploy.sh" <<<"$calls"))"
+assert 'grep -qF "deploy@vps" <<<"$calls"' "and the same server"
+rm -rf "$project/.kasbah"
+
+# With the server remembered, the version alone is the whole command line.
+out="$( rollback deploy@vps 1.0.0 )" >/dev/null
+out="$( rollback 1.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" = "0" ]' "\`kasbah rollback 1.0.0\` uses the remembered server (rc $rc: $out)"
+assert 'grep -qF "deploy@vps" <<<"$calls"' "which is the one state.json holds"
+rm -rf "$project/.kasbah"
+
+out="$( rollback deploy@vps other@vps 1.0.0 )"; rc=$?
+assert '[ "$rc" != "0" ]' "two servers is a refusal (rc $rc: $out)"
+assert 'grep -qF "two servers given" <<<"$out"' "saying which two (said '$out')"
+out="$( rollback deploy@vps 1.0.0 2.0.0 )"; rc=$?
+assert '[ "$rc" != "0" ]' "and so is two versions (rc $rc: $out)"
+assert 'grep -qF "two versions given" <<<"$out"' "saying which two (said '$out')"
+
+out="$( rollback deploy@vps v1.0.0 )"; rc=$?
+assert '[ "$rc" != "0" ]' "the tag spelling is refused rather than guessed at (rc $rc: $out)"
+assert 'grep -qF "kasbah rollback 1.0.0" <<<"$out"' "showing the form that works (said '$out')"
+assert '[ ! -s "$ssh_log" ]' "before any connection (ssh saw: $(cat "$ssh_log"))"
+out="$( rollback deploy@vps 1.2 )"; rc=$?
+assert '[ "$rc" != "0" ]' "and so is a version that is not semver (rc $rc: $out)"
+assert 'grep -qF "1.2" <<<"$out"' "quoting it back (said '$out')"
+
+out="$( rollback --help )"; rc=$?
+assert '[ "$rc" = "0" ]' "\`kasbah rollback --help\` exits 0 (rc $rc)"
+for flag in --on-drift --skip-hooks --no-health-wait --allow-stopped; do
+    assert 'grep -qF -- "$flag" <<<"$out"' "and lists $flag (said '$out')"
+done
+
+# The three passthrough flags, which the shipped script takes in rollback mode
+# too — `--allow-stopped` above all, since its own refusal is the one an operator
+# meets when the stack they are rolling back is the stack that fell over.
+for flag in --skip-hooks --no-health-wait --allow-stopped; do
+    out="$( rollback deploy@vps 1.0.0 "$flag" )"; rc=$?
+    calls="$(<"$call_log")"
+    assert '[ "$rc" = "0" ]' "\`kasbah rollback $flag\` succeeds (rc $rc: $out)"
+    assert 'grep -qF "'\''rollback'\'' '\''1.0.0'\'' '\''$flag'\''" <<<"$calls"' \
+        "and $flag reaches the shipped script after the version (ran: $(grep -F "remote-deploy.sh" <<<"$calls"))"
+    rm -rf "$project/.kasbah"
+done
+out="$( rollback deploy@vps 1.0.0 )"; calls="$(<"$call_log")"
+assert '! grep -qE -- "--(skip-hooks|no-health-wait|allow-stopped)" <<<"$calls"' \
+    "and none of them travels when none was asked for (ran: $(grep -F "remote-deploy.sh" <<<"$calls"))"
+rm -rf "$project/.kasbah"
+
+out="$( cd "$tmpdir" && kasbah_run rollback deploy@vps 1.0.0 )"; rc=$?
+assert '[ "$rc" = "2" ]' "rollback outside a project exits 2 (rc $rc: $out)"
+assert 'grep -qF "No kasbah.yml" <<<"$out"' "naming the file it wanted (said '$out')"
+assert '[ ! -s "$ssh_log" ]' "and never opened a connection (ssh saw: $(cat "$ssh_log"))"
+
+out="$( rollback 1.0.0 )"; rc=$?
+assert '[ "$rc" = "1" ]' "no server and no state is a plain failure (rc $rc: $out)"
+assert 'grep -qF "last_server" <<<"$out"' "naming the field that would have answered (said '$out')"
+
+# --- The env step, which a rollback runs exactly as a deploy does ---------------------
+# v<target>'s .env.prod.example may declare different keys from the one on the
+# server, and .env is not in git — so the standard drift question is the only
+# thing that can answer for it.
+out="$( ENV_MISSING=NEW_KEY rollback deploy@vps 1.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" = "5" ]' "a drifting .env with no terminal and no flag stops the rollback with 5 (rc $rc: $out)"
+assert 'grep -qF -- "--on-drift" <<<"$out"' "naming the flag that would have answered (said '$out')"
+assert '! grep -qF "remote-deploy.sh'"'"' '"'"'" <<<"$calls"' "and nothing ran on the server"
+assert '! grep -qF "/dynamic/demo.yml" <<<"$calls"' "and no route was written"
+assert '[ ! -f "$project/.kasbah/state.json" ]' "and no state was recorded"
+
+out="$( ENV_MISSING=NEW_KEY rollback deploy@vps 1.0.0 --on-drift=continue )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" = "0" ]' "--on-drift=continue rolls back anyway (rc $rc: $out)"
+assert 'grep -qF -- "--inject" <<<"$calls"' "and still refreshes the KASBAH_* block"
+rm -rf "$project/.kasbah"
+
+# --- The report is the completion marker here too --------------------------------------
+out="$( REPORT_OMIT=deployed_before rollback deploy@vps 1.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" != "0" ]' "a report missing deployed_before fails the rollback (rc $rc: $out)"
+assert 'grep -qF "the rollback step on deploy@vps reported no deployed_before" <<<"$out"' \
+    "with the protocol's own sentence, naming the step that was actually run — \`the deploy
+        step\` during a rollback is a sentence about a command nobody ran (said '$out')"
+assert '! grep -qF "unbound variable" <<<"$out"' "and no unbound-variable crash (said '$out')"
+assert '! grep -qF "/dynamic/demo.yml" <<<"$calls"' \
+    "and no route was written for a run that cannot be shown to have finished"
+assert '[ ! -f "$project/.kasbah/state.json" ]' "and no state was recorded"
+
+out="$( REPORT_VERSION=9.9.9 rollback deploy@vps 1.0.0 )"; rc=$?
+assert '[ "$rc" != "0" ]' "a report naming another version fails the rollback (rc $rc: $out)"
+assert 'grep -qF "9.9.9" <<<"$out" && grep -qF "1.0.0" <<<"$out"' \
+    "quoting both what it said and what it was asked for (said '$out')"
+
+# A remote step that failed has already retagged :current — the retag runs before
+# `compose up` and versions.log records only runs that finished, so nothing on
+# the server says the tag moved.
+out="$( REMOTE_RC=1 rollback deploy@vps 1.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" != "0" ]' "a remote step that fails fails the rollback (rc $rc: $out)"
+assert 'grep -qF "may already carry :current" <<<"$out"' \
+    "and says the tag may have moved regardless (said '$out')"
+assert '! grep -qF "/dynamic/demo.yml" <<<"$calls"' "with no route written"
+
+out="$( REMOTE_RC=1 FAKE_ACTIVE= FAKE_ACTIVE_STATE=missing deploy deploy@vps 1.0.0 )"; rc=$?
+assert '[ "$rc" != "0" ]' "the same failure in deploy mode fails too (rc $rc: $out)"
+assert 'grep -qF "may already carry :current" <<<"$out"' "and carries the same warning (said '$out')"
+assert 'grep -qF "kasbah rollback deploy@vps" <<<"$out"' \
+    "naming the command that puts the tag back, which only a deploy can be told (said '$out')"
+
+# --- The changelog a rollback prints ----------------------------------------------------
+# The range runs the other way round: what the server was running, back to what it
+# runs now, is what this rollback gave up.
+out="$( rollback deploy@vps 1.0.0 )"; rc=$?
+assert '[ "$rc" = "0" ]' "the rollback that reports prev=2.0.0 succeeds (rc $rc: $out)"
+assert 'grep -qF "gave up: v1.0.0..v2.0.0" <<<"$out"' \
+    "and names the range it gave up, from the server's own report (said '$out')"
+assert 'grep -qF "the commit v2.0.0 tags" <<<"$out"' "listing the commit inside it (said '$out')"
+assert '! grep -qF "the commit v1.0.0 tags" <<<"$out"' \
+    "and not the one before it — a range, not a log (said '$out')"
+rm -rf "$project/.kasbah"
+
+out="$( REPORT_PREV= REPORT_HISTORY=no rollback deploy@vps 1.0.0 )"; rc=$?
+assert '[ "$rc" = "0" ]' "a server reporting no history at all still finishes the rollback (rc $rc: $out)"
+assert 'grep -qF "the two disagree" <<<"$out"' \
+    "and says so: this rollback'\''s target came out of that server'\''s record, so a server with
+        no history contradicts a fact this run already established (said '$out')"
+rm -rf "$project/.kasbah"
+
+out="$( REPORT_PREV=1.0.0 rollback deploy@vps 1.0.0 )"; rc=$?
+assert '[ "$rc" = "0" ]' "rolling back to the version already running succeeds (rc $rc: $out)"
+assert 'grep -qF "was already running 1.0.0" <<<"$out"' \
+    "and says there was nothing to give up (said '$out')"
+rm -rf "$project/.kasbah"
+
+exit "$fail"

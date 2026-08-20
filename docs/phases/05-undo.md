@@ -8,9 +8,9 @@
 **Spec:** `docs/build-deploy.md` (rollback flow + invariant, retention, versions.log rotation), `docs/cli.md` (rollback, history, pending, changelog)
 
 ## Exit criteria
-- [ ] On the rig: deploy v1 → deploy v2 → `rollback` → compose file, fragment, and `:current` all match v1 (asserted from git show + docker inspect)
-- [ ] Rolling back to a never-deployed version fails with the "first-time deploy" message
-- [ ] Rolling back to a pruned-image version fails with the roll-forward guidance (no auto-reship)
+- [x] On the rig: deploy v1 → deploy v2 → `rollback` → compose file, fragment, and `:current` all match v1 (asserted from git show + docker inspect). `sha256sum` of `<apps>/built-app/compose.yml` and of `<apps>/traefik/dynamic/built-app.yml` equal `git show v2.1.0:…`; `built-app-{web,worker}:current` resolve to the v2.1.0 image ids; the recreated container no longer carries the env key v2's compose added; `docker exec … cat index.html` serves the v1 build's page
+- [x] Rolling back to a never-deployed version fails with the "first-time deploy" message
+- [x] Rolling back to a pruned-image version fails with the roll-forward guidance (no auto-reship). `server prune` is roadmap v0.2, so the pruned state is produced by removing the image from the rig by hand — the guidance is real, the prune that would cause it is simulated
 - [ ] `history` renders both the live log and `--all` including `versions.log.gz`
 
 ## Tasks
@@ -25,9 +25,9 @@ noted as not byte-identical); `git archive` the target's own sync list;
 restore the target's fragment; run remote-deploy `rollback` mode.
 
 **Deliverables**
-- [ ] `lib/rollback.sh` + the three failure-path messages from the spec
-- [ ] Integration test: v1→v2→rollback asserts all three surfaces at v1
-- [ ] pre/post-rollback hooks fire with correct VERSION/PREV_VERSION
+- [x] `lib/rollback.sh` + the three failure-path messages from the spec — all three printed and asserted; the never-deployed one grew a second form for a record kasbah could not read through (see Findings)
+- [x] Integration test: v1→v2→rollback asserts all three surfaces at v1 — `tests/integration/rollback_test.sh`, green on the rig (exit 0, 1m12s)
+- [x] pre/post-rollback hooks fire with correct VERSION/PREV_VERSION — read back from what the hooks wrote inside the container, not from kasbah's narration
 
 **Watch out for:** the sync list must come from *v<target>'s* manifest —
 a file added to `sync:` after v<target> would otherwise survive rollback
@@ -233,4 +233,123 @@ version the server demonstrably ran — a version rolled back to twice has a
 `build-deploy.md` used to say the target must appear "with `action=deploy`" and
 now says any entry naming it counts.
 
+### Unit 3 — `rollback` and `deploy X.Y.Z`
 
+**A safety mechanism with no consumer is indistinguishable from no safety
+mechanism.** Unit 2 built `VLOG_SKIPPED_DAMAGED` precisely so a caller could
+tell when a query had stepped over an unreadable log line — the variable's own
+comment says *"otherwise a damaged latest deploy silently makes the deploy
+before it the rollback target"* — and unit 3 read it nowhere. Measured with a
+truncated final append (the shape Phase 4 named as the realistic producer): a
+bare `kasbah rollback` went **two versions back**, announced "rolling back to
+1.0.0 — the deploy before the current one", and exited 0. The mirror case
+refused a rollback to a version the record does mention, recommending a
+first-time deploy of something that had already run. Neither unit was wrong on
+its own; the defect lived entirely in the seam, which is why per-unit review
+could not have found it and a reviewer reading across two units did.
+
+**A wrong noun is cosmetic; a runnable instruction that is wrong for the run in
+flight is a defect.** Two failure paths shared with `deploy` told the operator
+to "re-run `kasbah deploy`" — during a rollback. Following that advice deploys
+HEAD's working tree and silently undoes the rollback, and it sat on exactly the
+two paths where an operator is reading most carefully (the fragment failing
+after a successful stack, and a truncated remote report). The fix is a helper
+that builds the command repeating *this* run, version included, since
+`kasbah deploy <host>` and `kasbah deploy <host> 1.0.0` are different commands.
+
+**`git archive` and `git ls-tree` are different predicates, and
+`.gitattributes export-ignore` separates them.** Validating the sync list with
+`ls-tree` and then extracting with `archive` shipped a directory silently
+missing a file. Measured:
+
+```
+$ git ls-tree -r --name-only v1.0.0 -- site
+site/index.html
+site/private.txt                      # ls-tree sees it
+$ git archive --format=tar v1.0.0 -- site | tar -tf -
+site/
+site/index.html                       # archive drops it, no error
+$ git archive --format=tar v1.0.0 -- site/private.txt; echo $?
+0                                     # a whole-file entry: exits 0, tar holds only the pax header
+```
+
+Which of the two shapes that produces matters, and the orchestrator got it
+backwards before a reviewer measured it. A whole *file* entry fails the run
+**loudly** — rsync exits 23 on the missing local source, blaming a transport
+that is working perfectly (`ssh_rsync` passes no `--ignore-missing-args`). The
+genuinely silent case is a file dropped from *inside* a directory entry that
+otherwise survives. And because the run stops at the first failing entry, the
+loud one can hide the quiet one behind it.
+
+The orchestrator's error is worth recording as its own trap: it measured the
+`git archive` step, saw exit 0 and an empty tar, and asserted a *downstream*
+consequence — "the run simply proceeds without the file" — that it had never
+measured. Reasoning one step past your evidence is the same mistake as a test
+naming a property its fixture does not contain, and it reached both a code
+comment and this file before it was caught.
+
+Either way the guarantee now rests on the **extracted tree**, which is the only
+artefact reflecting every decision `git archive` made; the `ls-tree` pre-check
+keeps its separate job of producing a good message before an archive dies at 128.
+
+**Two more measured `git` edges, both of which defeat the obvious
+implementation.** `git archive <ref> <path-absent-at-ref>` exits **128** and
+produces nothing at all — the whole archive dies, not just the missing entry, so
+the list must be validated first. And `git ls-tree --name-only <ref> <missing>`
+exits **0 with empty output**, so a validation written as `git ls-tree … || die`
+can never fire; it has to compare the returned set against the requested one.
+(`ls-tree <ref> sub` prints `sub`, while `ls-tree <ref> sub/` prints its
+contents — two answers for what a sync entry treats as one thing.)
+
+**The spec said something that cannot be done.** `git archive v<target> <sync
+list> | ssh vps tar -x` was the flow in `build-deploy.md` and `cli.md` from the
+start. `git archive` has no rename, and every kasbah project renames at least
+once — `compose.prod.yml -> compose.yml` is required, since the server runs
+compose on `<apps>/<name>/compose.yml` and nothing else. A literal
+implementation lands `compose.prod.yml`, leaves the previous deploy's
+`compose.yml` untouched, and brings the stack up on **HEAD-era compose against
+v<target>'s images**: exactly the silent mismatch the invariant exists to
+prevent. Both documents were corrected in this phase.
+
+**A project renamed between the tag and HEAD is refused** — no spec anticipated
+it. `manifest.name` decides the server directory, the compose project name and
+the fragment filename, so it is the one thing the v<target> invariant cannot
+read from the ref: the name is what identifies the thing being rolled back.
+
+**A trap for anyone writing tests against `lib/versions_log.sh`:**
+`VLOG_ACTIVE_STATE` and `VLOG_ARCHIVE_STATE` are library globals that
+`vlog_fetch` clears, and the clearing propagates into the exported environment
+of the ssh child — so a stub keyed on those names silently reads empty. Cost a
+debugging round; use a distinct prefix.
+
+**One instruction from the orchestrator was wrong and the implementer caught
+it.** "Everything local first" applied to *any* named version silently reorders
+an explicit rollback: putting the tag check ahead of the record check makes
+`kasbah rollback <host> 9.9.9` answer "v9.9.9 is not a tag in this repository"
+instead of "never deployed to this VPS". Scoped to deploy mode, where nothing
+needs the round trip first. The rig suite's own never-deployed case would have
+caught it.
+
+**Accepted limits.** The rig fixture builds the *same two* services at both
+versions, so the image-set half of the invariant (reading `_BP_COMPOSE` from
+HEAD) is killed only hermetically — growing the fixture to add a third built
+service at v2 would drag in orphan-removal behaviour as well. And
+`deploy X.Y.Z` is exercised hermetically only; no rig case ships a tagged
+version in deploy mode. The engine is shared and the mode difference is one
+argument, so the risk is the wiring, not the path.
+
+Two more, found in the closing round. `readarray -d` is this repo's first use
+and needs **bash 4.4**; nothing declares a minimum anywhere (`declare -A`
+already implied 4.0). Not an issue on any Linux this targets, but it is now
+undocumented rather than absent. And the `git ls-tree` failure guard inside
+`_rollback_check_extraction` has **no test**: reaching it needs the repository
+to break between two git calls in the same run, and no fixture simulates that.
+The guard is there because a `readarray` fed by a process substitution
+swallowed git's status into an empty array, which read as "nothing missing" —
+a guard failing open inside the function written to close one. It is written
+against the mechanism, not against a test.
+
+A NUL-separated list also cannot travel through `$( )`, which is how the first
+attempt at that fix broke the suite: command substitution discards NUL bytes,
+so `readarray -d ''` on the result returns one giant element. The list goes
+through a temp file, cleaned by the same trap as the extraction.

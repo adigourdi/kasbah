@@ -40,6 +40,14 @@ hooks:
     - 'built-app-web echo "pre-deploy version=$VERSION prev=$PREV_VERSION backup=$DEPLOY_BACKUP" >> /var/kasbah/breadcrumbs.log'
   post-deploy:
     - 'built-app-web echo "post-deploy version=$VERSION prev=$PREV_VERSION backup=$DEPLOY_BACKUP" >> /var/kasbah/breadcrumbs.log'
+  # The other pair, which only `kasbah rollback` runs. Both pairs are rendered
+  # into the shipped script on every deploy and rollback alike — the mode picks
+  # one — so tests/integration/rollback_test.sh reads these breadcrumbs back out
+  # of the same bind mount, and $PREV_VERSION is the version being left behind.
+  pre-rollback:
+    - 'built-app-web echo "pre-rollback version=$VERSION prev=$PREV_VERSION backup=$DEPLOY_BACKUP" >> /var/kasbah/breadcrumbs.log'
+  post-rollback:
+    - 'built-app-web echo "post-rollback version=$VERSION prev=$PREV_VERSION backup=$DEPLOY_BACKUP" >> /var/kasbah/breadcrumbs.log'
 
 # `check` runs in the VPS host shell with cwd at the project directory, and its
 # exit status decides whether a backup is taken at all; `command` runs through

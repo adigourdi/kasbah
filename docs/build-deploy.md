@@ -365,7 +365,11 @@ small without sacrificing history.
      git show v<target>:kasbah.yml       → used for the sync list
      git show v<target>:compose.prod.yml  → used for the image set
 6. Image check — for each service with `build:` in v<target>'s compose,
-   `:<target>` must be present on the VPS. Within the retention window
+   `:<target>` must be present on the VPS. Nothing has reached the server
+   at this point and nothing will until step 8; the implementation extracts
+   (step 8's local half) before running this check, because the check reads
+   the ref's compose out of the extraction, and the ordering that matters is
+   that no *remote* write happens before it. Within the retention window
    (see "Retention") it always is. If pruned:
        "Image <image>:<target> is no longer on the VPS (outside the
         retention window). Prefer deploying a fix forward. To force a
@@ -424,6 +428,21 @@ from HEAD. This matters most when v<target>'s compose has a different
 set of built images than HEAD (service added / split / renamed) — the
 image set must match what that version's compose expects, not what HEAD
 expects.
+
+### A project renamed between the tag and HEAD is refused
+
+`manifest.name` decides the server directory (`<apps>/<name>`), the compose
+project name, and the Traefik fragment's filename. A project called `shop`
+today and `store` at v<target> is therefore two directories on the server,
+and a rollback naming one of them would ship v<target>'s files into the
+other's tree, retag images the other's compose does not reference, and
+leave a fragment pointing at containers that never start. Kasbah cannot
+tell which of the two the run is about, so it refuses and says both names.
+The same holds for `kasbah deploy X.Y.Z`.
+
+Not a case any spec anticipated; found while building the tagged path. It
+is the one thing the v<target> invariant *cannot* simply read from the ref,
+because the name is what identifies the thing being rolled back.
 
 ### What rollback restores vs does NOT restore
 

@@ -283,17 +283,28 @@ Flow (see `build-deploy.md` for full detail):
 6. Extract v<target> to a temp directory and rsync its sync list into
    `/apps/<name>/` — not `git archive | tar -x`, which cannot honour the
    `src -> dst` renames every sync list has (`build-deploy.md` → rollback flow).
-7. On VPS: run `remote-deploy.sh rollback <target>`:
+   The extracted tree is then checked to hold every source the list names:
+   `git archive` drops anything marked `export-ignore`, which `git ls-tree`
+   still reports, so the tree that will actually ship is what gets validated.
+7. Env drift check, exactly as `deploy` runs it — v<target>'s
+   `.env.prod.example` has just landed, and its keys may differ from the ones
+   the server was last set up against. `--on-drift=` answers it headlessly.
+8. On VPS: run `remote-deploy.sh rollback <target>`:
    - Run `pre-rollback` hooks against currently-running containers.
    - Retag `:<target>` as `:current` for each built image.
    - `docker compose up -d --remove-orphans`.
    - Wait for health.
    - Run `post-rollback` hooks against rolled-back containers.
    - Append rollback entry to `versions.log`, rotate.
+9. Rsync v<target>'s `traefik-dynamic.yml` to
+   `/apps/traefik/dynamic/<name>.yml` — **last**, once the remote step has
+   returned 0, for the same reason `deploy` ships it last. A version carrying
+   no fragment is rolled back anyway and warned about; the fragment already
+   there is never deleted.
 
 Flags:
 - `--on-drift=setup|continue|abort` — rollback runs the same env step
-  `deploy` does (`build-deploy.md` → rollback flow, step 9), because
+  `deploy` does (step 7 above), because
   v<target>'s `.env.prod.example` may declare different keys from the one
   the server was last set up against. Unset it asks; with no terminal, the
   run stops with exit `5`. See `kasbah env`.

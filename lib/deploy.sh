@@ -15,6 +15,9 @@ _KASBAH_DEPLOY_LOADED=1
 # `kasbah deploy [USER@HOST]` ships the working tree, labelled with HEAD's
 # version tag, to a server `kasbah server init` has already prepared, and runs
 # the project's compose stack there (docs/build-deploy.md, the no-args path).
+# Named a version instead, it ships that tag and nothing off disk — the same
+# code as `kasbah rollback`, in lib/rollback.sh, which this file's shipping,
+# env, remote and banner steps are all shared with.
 #
 # Everything remote rides one ssh master. The order is: read, judge, then write
 # — the marker and the project's .env are read before a single directory is
@@ -44,6 +47,14 @@ _KASBAH_DEPLOY_LOADED=1
 _DEPLOY_TARGET=""
 _DEPLOY_TARGET_SOURCE=""
 _DEPLOY_VERSION=""
+# The version named on the command line, which turns this into the tagged path
+# (lib/rollback.sh). Empty is the everyday no-args deploy of the working tree.
+_DEPLOY_VERSION_ARG=""
+# Which of the two runs this is. Everything below that speaks to the operator
+# reads it, because the wrong noun here is not a wrong noun: "re-run \`kasbah
+# deploy\`" told to someone who has just rolled a server back is a runnable
+# instruction that ships the working tree and undoes the rollback.
+_DEPLOY_MODE=deploy
 _DEPLOY_APPS_PATH=""
 _DEPLOY_DATA_PATH=""
 _DEPLOY_CPU_LIMIT=""
@@ -84,12 +95,18 @@ _DEPLOY_ABSORB_ADVICE=()
 
 _deploy_usage() {
     cat <<EOF
-Usage: kasbah deploy [USER@HOST] [--on-drift=setup|continue|abort]
+Usage: kasbah deploy [USER@HOST] [VERSION] [--on-drift=setup|continue|abort]
                      [--skip-hooks] [--no-health-wait] [--allow-stopped]
 
 Ships the working tree to a prepared server and brings the project up there.
 Run from the project root. The version is HEAD's v-tag; USER@HOST defaults to
 the last server this project deployed to (.kasbah/state.json).
+
+With a VERSION, it ships that tag instead — every file out of \`git archive
+v<VERSION>\`, the working tree neither read nor touched. That is the rollback
+path with a \`deploy\` log entry and the pre-/post-deploy hooks, and it is
+allowed to be the first time that version reaches this server.
+An argument containing '@' is the server, anything else is the version.
 
 What it does:
   * rsyncs every path in the manifest's sync: list to <apps>/<name>/
@@ -125,8 +142,45 @@ EOF
 
 # --- Command line ---------------------------------------------------------------
 
+# An argument with an `@` in it is the server and anything else is the version,
+# each accepted once and in either order — the same rule `kasbah exec` uses to
+# tell a target from a service name (docs/cli.md). Shared with `kasbah
+# rollback`, whose two positionals are the same two things.
+_deploy_classify_arg() {
+    local _ca_cmd="$1" _ca_arg="${2%$'\r'}"
+
+    case $_ca_arg in
+        *@*)
+            [ -z "$_DEPLOY_TARGET" ] \
+                || die "$_ca_cmd: two servers given ('$_DEPLOY_TARGET' and '$_ca_arg') — one run goes to one server"
+            _DEPLOY_TARGET="$_ca_arg" ;;
+        *)
+            [ -z "$_DEPLOY_VERSION_ARG" ] \
+                || die "$_ca_cmd: two versions given ('$_DEPLOY_VERSION_ARG' and '$_ca_arg') — kasbah will not choose between them"
+            _deploy_check_semver "$_ca_cmd" "$_ca_arg"
+            _DEPLOY_VERSION_ARG="$_ca_arg" ;;
+    esac
+    return 0
+}
+
+# The version as versions.log carries it and as `v<version>` names a tag: bare
+# semver. A leading `v` is the tag rather than the version and gets its own
+# sentence, since it is the spelling the operator has just read off `git tag`.
+_deploy_check_semver() {
+    local _cs_cmd="$1" _cs_v="$2"
+
+    if [[ "$_cs_v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+        die "$_cs_cmd: write the version without the 'v' — \`kasbah $_cs_cmd ${_cs_v#v}\` (the tag is v${_cs_v#v}, the version is ${_cs_v#v})"
+    fi
+    [[ "$_cs_v" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] \
+        || die "$_cs_cmd: '$_cs_v' is not a version kasbah can use — expected <major>.<minor>.<patch> (docs/build-deploy.md → versioning contract)"
+    return 0
+}
+
 _deploy_parse_args() {
+    _DEPLOY_MODE=deploy
     _DEPLOY_TARGET=""
+    _DEPLOY_VERSION_ARG=""
     _DEPLOY_ON_DRIFT=""
     _DEPLOY_SKIP_HOOKS=no
     _DEPLOY_NO_HEALTH_WAIT=no
@@ -152,16 +206,8 @@ _deploy_parse_args() {
                 ;;
             --on-drift)
                 die "deploy: --on-drift takes its value with '=' — --on-drift=setup, --on-drift=continue or --on-drift=abort" ;;
-            -*) die "deploy: unknown flag '${1%%=*}' (deploy takes USER@HOST, --on-drift=, --skip-hooks, --no-health-wait and --allow-stopped)" ;;
-            *)
-                if [ -z "$_DEPLOY_TARGET" ]; then
-                    _DEPLOY_TARGET="${1%$'\r'}"
-                else
-                    # `kasbah deploy user@host 1.2.3` is a documented mode, so
-                    # it is refused by name rather than as a stray argument.
-                    die "deploy: deploying an explicit version ('$1') is not implemented yet — it ships from git archive in Phase 4/5. Today's deploy labels the working tree with HEAD's tag."
-                fi
-                ;;
+            -*) die "deploy: unknown flag '${1%%=*}' (deploy takes USER@HOST, VERSION, --on-drift=, --skip-hooks, --no-health-wait and --allow-stopped)" ;;
+            *)  _deploy_classify_arg deploy "$1" ;;
         esac
         shift
     done
@@ -172,7 +218,7 @@ _deploy_parse_args() {
 # neither there is nothing to guess at: the whole point of last_server is that
 # the *first* deploy names the host (docs/project-manifest.md).
 _deploy_resolve_target() {
-    local stored=""
+    local cmd="${1:-deploy}" stored=""
 
     if [ -n "$_DEPLOY_TARGET" ]; then
         _DEPLOY_TARGET_SOURCE=argument
@@ -181,8 +227,8 @@ _deploy_resolve_target() {
 
     state_get last_server stored
     if [ -z "$stored" ] || [ "$stored" = null ]; then
-        err "deploy: no server given, and this project has never deployed to one"
-        err_cont "pass it once — \`kasbah deploy user@vps\` — and it is remembered in"
+        err "$cmd: no server given, and this project has never deployed to one"
+        err_cont "pass it once — \`kasbah $cmd user@vps\` — and it is remembered in"
         err_cont "$KASBAH_STATE_FILE as last_server"
         exit 1
     fi
@@ -416,6 +462,18 @@ _deploy_check_sources() {
     exit 1
 }
 
+# The command line that repeats this run, for the two messages that ask an
+# operator to. A tagged run has to name its version: `kasbah deploy` without one
+# is a different command — it ships the working tree — and `kasbah rollback`
+# without one re-resolves the target against a record this run has just written.
+_deploy_rerun_cmd() {
+    if [ "$_DEPLOY_MODE" = rollback ] || [ -n "$_DEPLOY_VERSION_ARG" ]; then
+        printf 'kasbah %s %s %s' "$_DEPLOY_MODE" "$_DEPLOY_TARGET" "$_DEPLOY_VERSION"
+    else
+        printf 'kasbah deploy %s' "$_DEPLOY_TARGET"
+    fi
+}
+
 # --- The server -------------------------------------------------------------------
 
 # Folds a remote step's key=value report into the fact table, and checks the key
@@ -554,8 +612,10 @@ _deploy_remote_parents() {
 
 # --- Shipping ---------------------------------------------------------------------
 
-# The working tree as it stands, entry by entry (docs/build-deploy.md: the
-# no-args path labels the tree with HEAD's tag rather than reading git).
+# The sync: list, entry by entry, out of whatever directory the caller is
+# standing in: the working tree for the no-args deploy, and the extracted
+# v<target> for a rollback or a tagged deploy (lib/rollback.sh). The paths are
+# relative for exactly that reason — one shipping step, two sources.
 #
 # -s so the remote side never re-splits a path: without it rsync hands the
 # destination to a remote shell, which would take a space in the apps path as an
@@ -668,10 +728,10 @@ _deploy_sync_fragment() {
     # a broken deploy instead of a missing fragment.
     if ! ssh_rsync -pt --chmod=F644 -s "$_DEPLOY_FRAGMENT" "$SSH_TARGET:$dest" >/dev/null; then
         err "could not ship $_DEPLOY_FRAGMENT to $_DEPLOY_TARGET:$dest"
-        err_cont "the deploy itself succeeded — the new containers are up and versions.log"
+        err_cont "the $_DEPLOY_MODE itself succeeded — the new containers are up and versions.log"
         err_cont "already records $_DEPLOY_VERSION. Only the Traefik route is missing, so this"
         err_cont "host serves whatever it served before (404 if it is a first deploy)."
-        err_cont "re-run \`kasbah deploy\` once the server is reachable again."
+        err_cont "re-run \`$(_deploy_rerun_cmd)\` once the server is reachable again."
         exit 1
     fi
     _DEPLOY_FACT[fragment]=shipped
@@ -709,11 +769,11 @@ REMOTE
     # the server and only one of them is "kasbah has not caught up yet".
     if [ "${_DEPLOY_FACT[mail_stack]}" != yes ]; then
         warn "$MANIFEST_NAME claims the mail domain $_DEPLOY_MAIL_DOMAIN, and there is no mail stack at $dir on $_DEPLOY_TARGET"
-        warn "the shared mail stack is roadmap v0.2, so nothing was verified — the deploy continues"
+        warn "the shared mail stack is roadmap v0.2, so nothing was verified — the $_DEPLOY_MODE continues"
     elif [ "${_DEPLOY_FACT[mail_env]}" != yes ]; then
         warn "$MANIFEST_NAME claims the mail domain $_DEPLOY_MAIL_DOMAIN, and $dir on $_DEPLOY_TARGET has no .env"
         warn "that file is where the domains the stack handles are configured, so the claim"
-        warn "is unmet as far as anything here can tell — the deploy continues"
+        warn "is unmet as far as anything here can tell — the $_DEPLOY_MODE continues"
     else
         warn "$MANIFEST_NAME claims the mail domain $_DEPLOY_MAIL_DOMAIN, and kasbah does not yet check that $dir/.env names it"
         warn "verify it yourself for now — the reconciliation is roadmap v0.2 (docs/project-manifest.md → mail)"
@@ -734,7 +794,13 @@ REMOTE
 # progress an operator watches is on stderr and still streams live. The report
 # is the script's last act, so a run that exits 0 without one did not finish —
 # absorbed as a protocol before the changelog reads a value out of it.
-_deploy_remote_deploy() {
+#
+# One function for both modes, because the shipped script is one script:
+# _DEPLOY_MODE is its first argument, and everything this side does with the
+# result — the protocol, the version check, the advice a truncated report
+# carries — is the same either way (lib/rollback.sh).
+_deploy_remote_run() {
+    local mode="$_DEPLOY_MODE"
     local script="$_DEPLOY_APPS_PATH/$MANIFEST_NAME/scripts/remote-deploy.sh"
     local out rc=0
     local flags=()
@@ -743,11 +809,21 @@ _deploy_remote_deploy() {
     [ "$_DEPLOY_NO_HEALTH_WAIT" != yes ] || flags+=(--no-health-wait)
     [ "$_DEPLOY_ALLOW_STOPPED" != yes ]  || flags+=(--allow-stopped)
 
-    out=$(ssh_run env "KASBAH_VERSION=$KASBAH_VERSION" "$script" deploy "$_DEPLOY_VERSION" \
+    out=$(ssh_run env "KASBAH_VERSION=$KASBAH_VERSION" "$script" "$mode" "$_DEPLOY_VERSION" \
                   ${flags[@]+"${flags[@]}"}) || rc=$?
     [ "$rc" -eq 0 ] || {
-        err "the deploy failed on $_DEPLOY_TARGET (remote-deploy.sh exited $rc, see above)"
-        err_cont "the files are already there — fix what it reported and re-run \`kasbah deploy\`"
+        err "the $mode failed on $_DEPLOY_TARGET (remote-deploy.sh exited $rc, see above)"
+        err_cont "the files are already there — fix what it reported and re-run \`$(_deploy_rerun_cmd)\`."
+        # The retag runs before `compose up`, so a run that died at the `up` has
+        # already moved the tag, and versions.log — written only by a run that
+        # finished — has no entry saying so. `:current` is a pointer, not a
+        # record (docs/build-deploy.md), and rollback is what points it back.
+        err_cont "$MANIFEST_NAME's images on $_DEPLOY_TARGET may already carry :current for"
+        err_cont "$_DEPLOY_VERSION even though its containers did not start — the retag runs"
+        err_cont "before \`compose up\`, and nothing on the server records that it moved."
+        if [ "$mode" = deploy ]; then
+            err_cont "\`kasbah rollback $_DEPLOY_TARGET\` is what puts it back."
+        fi
         exit 1
     }
 
@@ -762,21 +838,21 @@ _deploy_remote_deploy() {
         "$_DEPLOY_APPS_PATH/$MANIFEST_NAME/versions.log may already record"
         "$_DEPLOY_VERSION. What did *not* happen is the Traefik fragment, so this"
         "host still serves whatever it served before. Check the server, then"
-        "re-run \`kasbah deploy\` — it is safe to run again."
+        "re-run \`$(_deploy_rerun_cmd)\` — it is safe to run again."
     )
-    _deploy_absorb "the deploy step" "$out" version prev_version deployed_before backup digest
+    _deploy_absorb "the $mode step" "$out" version prev_version deployed_before backup digest
     _DEPLOY_ABSORB_ADVICE=()
     # The one value that can be checked rather than believed: the script on the
     # server is shipped by this same run, moments earlier, and a report about
     # some other version means the two are not talking about the same deploy.
     [ "${_DEPLOY_FACT[version]}" = "$_DEPLOY_VERSION" ] \
-        || die "the deploy step on $_DEPLOY_TARGET reported version '${_DEPLOY_FACT[version]}', not the $_DEPLOY_VERSION it was asked for"
+        || die "the $mode step on $_DEPLOY_TARGET reported version '${_DEPLOY_FACT[version]}', not the $_DEPLOY_VERSION it was asked for"
     # A value outside the two the protocol defines must not read as one of them:
     # anything-but-yes silently becomes "no", which is the changelog calling a
     # server with history a first deploy — the defect this key exists to fix.
     case "${_DEPLOY_FACT[deployed_before]}" in
         yes|no) ;;
-        *) die "the deploy step on $_DEPLOY_TARGET reported deployed_before='${_DEPLOY_FACT[deployed_before]}', which is neither yes nor no" ;;
+        *) die "the $mode step on $_DEPLOY_TARGET reported deployed_before='${_DEPLOY_FACT[deployed_before]}', which is neither yes nor no" ;;
     esac
     return 0
 }
@@ -844,10 +920,42 @@ _deploy_changelog() {
     return 0
 }
 
+# What the run leaves behind, under a headline the caller supplies — the one
+# line a deploy and a rollback do not share. Everything under it is read off the
+# report, and two of the facts are nowhere else on this side: whether a backup
+# was taken is what an operator most wants to know before the next command, and
+# the digests are what actually went live.
+_deploy_banner() {
+    info "$1"
+    info "  project: $_DEPLOY_APPS_PATH/$MANIFEST_NAME   data: $_DEPLOY_DATA_PATH/$MANIFEST_NAME"
+    info "  limits:  KASBAH_CPU_LIMIT=$_DEPLOY_CPU_LIMIT KASBAH_MEM_LIMIT=$_DEPLOY_MEM_LIMIT (from the server marker)"
+    if [ "${_DEPLOY_FACT[fragment]}" = shipped ]; then
+        info "  routing: $_DEPLOY_APPS_PATH/traefik/dynamic/$MANIFEST_NAME.yml (Traefik reloads within a couple of seconds)"
+    fi
+    info "  logged:  $_DEPLOY_APPS_PATH/$MANIFEST_NAME/versions.log"
+    if [ "${_DEPLOY_FACT[backup]}" = no-backup ]; then
+        info "  backup:  none taken"
+    else
+        info "  backup:  $_DEPLOY_APPS_PATH/$MANIFEST_NAME/${_DEPLOY_FACT[backup]}"
+    fi
+    [ "${_DEPLOY_FACT[digest]}" = - ] \
+        || info "  images:  ${_DEPLOY_FACT[digest]} (read on the server after the retag)"
+    return 0
+}
+
 # --- Command ----------------------------------------------------------------------
 
 cmd_deploy() {
     _deploy_parse_args "$@"
+    # `kasbah deploy USER@HOST X.Y.Z` is the rollback path with a `deploy` log
+    # entry and the pre-/post-deploy hooks — one implementation, not two
+    # (docs/build-deploy.md → deploy's two modes). Sourced here rather than at
+    # the top of this file: the everyday path never needs it.
+    if [ -n "$_DEPLOY_VERSION_ARG" ]; then
+        . "$KASBAH_LIB_DIR/rollback.sh"
+        rollback_tagged_run deploy "$_DEPLOY_VERSION_ARG"
+        return
+    fi
     command -v jq >/dev/null || die "jq is required (install jq and retry)"
     command -v rsync >/dev/null || die "rsync is required (install rsync and retry)"
 
@@ -884,7 +992,7 @@ cmd_deploy() {
     # Step 7, between the env step and the deploy it cannot stop, exactly where
     # docs/build-deploy.md's flow puts it.
     _deploy_mail_claim
-    _deploy_remote_deploy
+    _deploy_remote_run
     # Last, and only now: see the header. A route must never point at a
     # container the deploy failed to start.
     _deploy_sync_fragment
@@ -896,22 +1004,6 @@ cmd_deploy() {
         last_deploy  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         last_version "$_DEPLOY_VERSION"
 
-    info "Deployed $MANIFEST_NAME $_DEPLOY_VERSION to $_DEPLOY_TARGET"
-    info "  project: $_DEPLOY_APPS_PATH/$MANIFEST_NAME   data: $_DEPLOY_DATA_PATH/$MANIFEST_NAME"
-    info "  limits:  KASBAH_CPU_LIMIT=$_DEPLOY_CPU_LIMIT KASBAH_MEM_LIMIT=$_DEPLOY_MEM_LIMIT (from the server marker)"
-    if [ "${_DEPLOY_FACT[fragment]}" = shipped ]; then
-        info "  routing: $_DEPLOY_APPS_PATH/traefik/dynamic/$MANIFEST_NAME.yml (Traefik reloads within a couple of seconds)"
-    fi
-    info "  logged:  $_DEPLOY_APPS_PATH/$MANIFEST_NAME/versions.log"
-    # Both come out of the report and are nowhere else on this side: whether a
-    # backup was taken is the thing an operator most wants to know before the
-    # next command, and the ids are what actually went live.
-    if [ "${_DEPLOY_FACT[backup]}" = no-backup ]; then
-        info "  backup:  none taken"
-    else
-        info "  backup:  $_DEPLOY_APPS_PATH/$MANIFEST_NAME/${_DEPLOY_FACT[backup]}"
-    fi
-    [ "${_DEPLOY_FACT[digest]}" = - ] \
-        || info "  images:  ${_DEPLOY_FACT[digest]} (read on the server after the retag)"
+    _deploy_banner "Deployed $MANIFEST_NAME $_DEPLOY_VERSION to $_DEPLOY_TARGET"
     _deploy_changelog
 }
