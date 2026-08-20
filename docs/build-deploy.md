@@ -169,8 +169,8 @@ below). The only differences:
      d. docker compose up -d --remove-orphans.
      e. Wait for manifest's health.container to be healthy.
      f. Run post-deploy hooks against new containers.
-     g. Append deploy entry to versions.log. (Rotation is Phase 5 — see
-        Rotation below; the log is append-only until then.)
+     g. Append deploy entry to versions.log, then rotate it (see Rotation
+        below).
      h. Print the run's report on stdout — see "The remote report" below.
 9. Rsync traefik-dynamic.yml → /apps/traefik/dynamic/<name>.yml. Done by the
    *local* side once remote-deploy.sh has returned 0 — the file is on the

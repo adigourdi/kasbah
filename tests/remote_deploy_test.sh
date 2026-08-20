@@ -289,6 +289,10 @@ hooks:
   post-deploy:
     - demo-web echo post >> /tmp/b
     - demo-worker echo post2 >> /tmp/b
+  pre-rollback:
+    - demo-db echo prerb >> /tmp/b
+  post-rollback:
+    - demo-web echo postrb >> /tmp/b
 backup:
   container: demo-db
   check: test -f ./compose.yml
@@ -303,10 +307,16 @@ r1b="$(block_of "$tmpdir/r1.sh")"
 assert 'grep -qxF "RD_IMAGES=( '"'"'demo-web'"'"' '"'"'demo-worker'"'"' )" <<<"$r1b"' \
     "both built images are rendered, untagged, in sorted service order
         block: $r1b"
-assert 'grep -qxF "RD_HOOKS_PRE=( '"'"'demo-web echo pre >> /tmp/b'"'"' )" <<<"$r1b"' \
+assert 'grep -qxF "RD_HOOKS_PRE_DEPLOY=( '"'"'demo-web echo pre >> /tmp/b'"'"' )" <<<"$r1b"' \
     "the pre-deploy hook is rendered verbatim"
-assert 'grep -qxF "RD_HOOKS_POST=( '"'"'demo-web echo post >> /tmp/b'"'"' '"'"'demo-worker echo post2 >> /tmp/b'"'"' )" <<<"$r1b"' \
+assert 'grep -qxF "RD_HOOKS_POST_DEPLOY=( '"'"'demo-web echo post >> /tmp/b'"'"' '"'"'demo-worker echo post2 >> /tmp/b'"'"' )" <<<"$r1b"' \
     "and both post-deploy hooks, in manifest order"
+# All four lists are rendered, not just the pair a deploy uses: the manifest is
+# the only place a rollback's hooks exist, and it never reaches the server.
+assert 'grep -qxF "RD_HOOKS_PRE_ROLLBACK=( '"'"'demo-db echo prerb >> /tmp/b'"'"' )" <<<"$r1b"' \
+    "the pre-rollback hook is rendered too"
+assert 'grep -qxF "RD_HOOKS_POST_ROLLBACK=( '"'"'demo-web echo postrb >> /tmp/b'"'"' )" <<<"$r1b"' \
+    "and the post-rollback one"
 assert 'grep -qxF "RD_HEALTH_CONTAINER='"'"'demo-web'"'"'" <<<"$r1b"'   "health.container is rendered"
 assert 'grep -qxF "RD_HEALTH_TIMEOUT='"'"'60'"'"'" <<<"$r1b"'           "health.timeout 60s is rendered as seconds"
 assert 'grep -qxF "RD_BACKUP_CHECK='"'"'test -f ./compose.yml'"'"'" <<<"$r1b"' "backup.check is rendered"
@@ -338,8 +348,10 @@ render "$r2" "$tmpdir/r2.sh"; rc=$?
 assert '[ "$rc" = "0" ]' "a stock manifest with no hooks, backup or health renders (exit $rc: $render_err)"
 r2b="$(block_of "$tmpdir/r2.sh")"
 assert 'grep -qxF "RD_IMAGES=( )" <<<"$r2b"'            "a stock-only project renders no images"
-assert 'grep -qxF "RD_HOOKS_PRE=( )" <<<"$r2b"'         "no pre-deploy hooks"
-assert 'grep -qxF "RD_HOOKS_POST=( )" <<<"$r2b"'        "no post-deploy hooks"
+assert 'grep -qxF "RD_HOOKS_PRE_DEPLOY=( )" <<<"$r2b"'   "no pre-deploy hooks"
+assert 'grep -qxF "RD_HOOKS_POST_DEPLOY=( )" <<<"$r2b"'  "no post-deploy hooks"
+assert 'grep -qxF "RD_HOOKS_PRE_ROLLBACK=( )" <<<"$r2b"' "no pre-rollback hooks"
+assert 'grep -qxF "RD_HOOKS_POST_ROLLBACK=( )" <<<"$r2b"' "and no post-rollback hooks"
 assert 'grep -qxF "RD_HEALTH_CONTAINER='"''"'" <<<"$r2b"' "no health.container — the wait falls back to the whole project"
 assert 'grep -qxF "RD_HEALTH_TIMEOUT='"'"'120'"'"'" <<<"$r2b"' "the default timeout is 120s"
 assert 'grep -qxF "RD_BACKUP_CHECK='"''"'" <<<"$r2b"'   "an empty backup.check is what 'no backup:' renders to"
@@ -368,9 +380,9 @@ assert 'bash -n "$tmpdir/r3.sh"' "and the result still parses as bash"
 # an assertion on the rendered text alone would pass on a value that escaped
 # into something else that happens to look right.
 readback="$(bash -c '
-    RD_HOOKS_PRE=(); RD_BACKUP_CHECK=; RD_BACKUP_COMMAND=
+    RD_HOOKS_PRE_DEPLOY=(); RD_BACKUP_CHECK=; RD_BACKUP_COMMAND=
     '"$(block_of "$tmpdir/r3.sh")"'
-    printf "hook=%s\n" "${RD_HOOKS_PRE[0]}"
+    printf "hook=%s\n" "${RD_HOOKS_PRE_DEPLOY[0]}"
     printf "check=%s\n" "$RD_BACKUP_CHECK"
     printf "command=%s\n" "$RD_BACKUP_COMMAND"
 ')"
@@ -686,6 +698,18 @@ deploy() {
 }
 
 log_line() { cat "$proj/versions.log" 2>/dev/null; }
+
+# A planted entry has to sit inside the log's 3-month rotation window, or the
+# rotation at the end of the run under test moves it into versions.log.gz and
+# every assertion about the active log is about the wrong file. The rotation
+# itself is tests/rotation_test.sh's subject; here it must simply not interfere.
+log_ts="$(date -u -Iseconds)"
+# The same timestamp with its last six bytes gone: a `printf >>` killed
+# mid-append, which is a line no version can be read out of.
+log_ts_cut="${log_ts%??????}"
+# The same clock a year back, so an entry planted with it is outside the log's
+# 3-month rotation window whichever month the suite is run in.
+old_ts="$(( ${log_ts:0:4} - 1 ))${log_ts:4}"
 
 # The manifest every execution case starts from: two built images, a hook at
 # each end that leaves a breadcrumb naming the three variables it was given, a
@@ -1139,10 +1163,12 @@ domain: demo.test
 sync:
   - compose.prod.yml -> compose.yml
 ' "$stock_compose"
-deploy rollback 1.5.0; rc=$?
-assert '[ "$rc" != "0" ]' "rollback is refused by name (exit $rc)"
-assert 'grep -qF "rollback is not implemented" <<<"$run_err"' \
-    "rather than as an unknown action (said '$run_err')"
+deploy rollback; rc=$?
+assert '[ "$rc" != "0" ]' "rollback with no version is refused (exit $rc)"
+assert 'grep -qF "rollback needs a version" <<<"$run_err"' \
+    "as an action this script knows, not as an unknown one (said '$run_err')"
+assert '! grep -qF "not implemented" <<<"$run_err"' \
+    "and never as one it does not implement (said '$run_err')"
 deploy deploy; rc=$?
 assert '[ "$rc" != "0" ]' "deploy with no version is refused (exit $rc)"
 assert 'grep -qF "needs a version" <<<"$run_err"' "saying what is missing (said '$run_err')"
@@ -1157,6 +1183,8 @@ deploy --help; rc=$?
 assert '[ "$rc" = "0" ]' "--help exits 0 (exit $rc)"
 assert 'grep -qF -- "--skip-hooks" <<<"$run_err"' "and documents both flags (said '$run_err')"
 assert 'grep -qF -- "--no-health-wait" <<<"$run_err"' "including --no-health-wait"
+assert 'grep -qF "remote-deploy.sh rollback <version>" <<<"$run_err"' \
+    "and both modes (said '$run_err')"
 
 # --- Case X14: a first deploy, with nothing of this project running yet -----------------------
 # The backup and the pre-deploy hooks act on the *outgoing* state, and a first
@@ -1215,7 +1243,7 @@ assert '[ ! -e "$proj/versions.log" ]' "and nothing is written to versions.log"
 setup_run x15 "$(run_manifest "printf 'backup-check\n' >> $tmpdir/crumbs")" "$built_compose"
 printf 'demo-web:1.5.0=sha256:aaa\ndemo-worker:1.5.0=sha256:bbb\n' > "$STUB_STATE/images"
 # This project has deployed here before…
-printf '2026-01-01T00:00:00+00:00 deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-\n' > "$proj/versions.log"
+printf '%s deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-\n' "$log_ts" > "$proj/versions.log"
 # …and its stack is down, not absent.
 : > "$STUB_STATE/containers"
 printf 'demo-web=exited\ndemo-db=exited\n' > "$STUB_STATE/stopped"
@@ -1275,8 +1303,8 @@ assert '[[ "$(log_line)" == *" 1.5.0 no-backup kasbah="* ]]' \
 : > "$tmpdir/crumbs"
 setup_run x15c "$(run_manifest "printf 'backup-check\n' >> $tmpdir/crumbs")" "$built_compose"
 printf 'demo-web:1.5.0=sha256:aaa\ndemo-worker:1.5.0=sha256:bbb\n' > "$STUB_STATE/images"
-{ printf '2026-01-01T00:00:00+00:00 deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-\n'
-  printf '2026-01-02T00:00:00+0'; } > "$proj/versions.log"
+{ printf '%s deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-\n' "$log_ts"
+  printf '%s' "$log_ts_cut"; } > "$proj/versions.log"
 : > "$STUB_STATE/containers"
 printf 'demo-web=exited\ndemo-db=exited\n' > "$STUB_STATE/stopped"
 printf 'demo-web\n' > "$STUB_STATE/starts"
@@ -1320,10 +1348,10 @@ log_after="$(cat "$proj/versions.log")"
 assert '[ "$(wc -l < "$proj/versions.log")" = "3" ]' \
     "the truncated line is terminated and the entry appended below it — three lines, not two
         log: $(tr "\n" "/" <<<"$log_after")"
-assert '[ "$(sed -n 1p "$proj/versions.log")" = "2026-01-01T00:00:00+00:00 deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-" ]' \
+assert '[ "$(sed -n 1p "$proj/versions.log")" = "$log_ts deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-" ]' \
     "the complete earlier entry is byte-for-byte what it was
         got: $(sed -n 1p "$proj/versions.log")"
-assert '[ "$(sed -n 2p "$proj/versions.log")" = "2026-01-02T00:00:00+0" ]' \
+assert '[ "$(sed -n 2p "$proj/versions.log")" = "$log_ts_cut" ]' \
     "and the truncated one is still its own line, holding exactly what it held — nothing
         was written into it (got: $(sed -n 2p "$proj/versions.log"))"
 assert '[[ "$(sed -n 3p "$proj/versions.log")" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+00:00\ deploy\ 1\.5\.0\  ]]' \
@@ -1354,7 +1382,7 @@ backup:
   extension: txt
   retain: 3
 ' "$stock_compose"
-printf '2026-01-01T00:00:00+00:00 deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-\n' > "$proj/versions.log"
+printf '%s deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-\n' "$log_ts" > "$proj/versions.log"
 printf 'demo-db\n' > "$STUB_STATE/containers"
 printf 'demo-worker=exited\n' > "$STUB_STATE/stopped"
 
@@ -1405,7 +1433,7 @@ hooks:
   pre-deploy:
     - "demo-renamed true"
 ' "$stock_compose"
-printf '2026-01-01T00:00:00+00:00 deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-\n' > "$proj/versions.log"
+printf '%s deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-\n' "$log_ts" > "$proj/versions.log"
 : > "$STUB_STATE/containers"
 : > "$STUB_STATE/stopped"
 deploy deploy 1.5.0; rc=$?
@@ -1469,7 +1497,7 @@ hooks:
   pre-deploy:
     - "demo-worker true"
 ' "$stock_compose"
-printf '2026-01-01T00:00:00+00:00 deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-\n' > "$proj/versions.log"
+printf '%s deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-\n' "$log_ts" > "$proj/versions.log"
 : > "$STUB_STATE/containers"
 printf 'demo-worker=exited\n' > "$STUB_STATE/stopped"
 deploy deploy 1.5.0; rc=$?
@@ -1485,7 +1513,7 @@ assert '[ "$rc" = "0" ]' \
 # must not quietly become one that deploys over a stack with no backup taken.
 : > "$tmpdir/crumbs"
 setup_run x16b "$(run_manifest "printf 'backup-check\n' >> $tmpdir/crumbs")" "$stock_compose"
-printf '2026-01-01T00:00:00+00:00 deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-\n' > "$proj/versions.log"
+printf '%s deploy 1.4.0 no-backup kasbah=0.1.0-test digest=-\n' "$log_ts" > "$proj/versions.log"
 : > "$STUB_STATE/containers"
 printf 'demo-db=exited\ndemo-web=exited\n' > "$STUB_STATE/stopped"
 printf 'demo-web=healthy\n' > "$STUB_STATE/health"
@@ -1510,6 +1538,147 @@ assert '[ "$(find "$proj/backups" -name "pre-deploy-*.txt.gz" | wc -l)" = "1" ]'
         backups: $(find "$proj/backups" -type f -printf "%f " 2>/dev/null)"
 assert '[ "$(cat "$tmpdir/crumbs")" = "backup-check" ]' \
     "through its gate, and running no hook (crumbs: $(tr "\n" "/" < "$tmpdir/crumbs"))"
+
+# --- Case X18: rollback mode ---------------------------------------------------------------
+# docs/build-deploy.md's rollback flow, step 10: the deploy order with the backup
+# step gone and the other hook pair in its place. All four hook lists are in the
+# manifest, so a mode that reached for the wrong pair is visible in the crumbs.
+: > "$tmpdir/crumbs"
+setup_run x18 "$(printf 'schema: 1
+name: demo
+domain: demo.test
+sync:
+  - compose.prod.yml -> compose.yml
+health:
+  container: demo-web
+  timeout: 5s
+hooks:
+  pre-deploy:
+    - "demo-web echo deploy-pre-ran >> %s"
+  post-deploy:
+    - "demo-web echo deploy-post-ran >> %s"
+  pre-rollback:
+    - "demo-web echo \\"pre v=$VERSION prev=$PREV_VERSION backup=$DEPLOY_BACKUP\\" >> %s"
+  post-rollback:
+    - "demo-web echo \\"post v=$VERSION prev=$PREV_VERSION backup=$DEPLOY_BACKUP\\" >> %s"
+backup:
+  container: demo-db
+  check: "echo backup-check-ran >> %s"
+  command: echo kasbah-backup-payload
+  extension: txt
+  retain: 3
+' "$tmpdir/crumbs" "$tmpdir/crumbs" "$tmpdir/crumbs" "$tmpdir/crumbs" "$tmpdir/crumbs")" "$built_compose"
+printf 'demo-web:1.4.0=sha256:old\ndemo-worker:1.4.0=sha256:oldw\n' > "$STUB_STATE/images"
+printf 'demo-web\ndemo-db\n' > "$STUB_STATE/containers"
+printf 'demo-web=healthy\n' > "$STUB_STATE/health"
+printf '%s deploy 1.5.0 no-backup kasbah=0.1.0-test digest=-\n' "$log_ts" > "$proj/versions.log"
+deploy rollback 1.4.0; rc=$?
+assert '[ "$rc" = "0" ]' "a rollback exits 0 (exit $rc)
+        stderr: $run_err"
+
+crumbs="$(cat "$tmpdir/crumbs")"
+assert '[ "$(sed -n 1p <<<"$crumbs")" = "pre v=1.4.0 prev=1.5.0 backup=no-backup" ]' \
+    "the pre-rollback hook runs first, with VERSION the target and PREV_VERSION what
+        versions.log recorded (got '$(sed -n 1p <<<"$crumbs")')"
+assert '[ "$(sed -n 2p <<<"$crumbs")" = "post v=1.4.0 prev=1.5.0 backup=no-backup" ]' \
+    "and the post-rollback hook last, with the same three (got '$(sed -n 2p <<<"$crumbs")')"
+assert '[ "$(wc -l <<<"$crumbs")" = "2" ]' \
+    "and nothing else ran: not the deploy pair, not the backup gate
+        crumbs: $(tr "\n" "/" <<<"$crumbs")"
+assert '! grep -qF "backup-check-ran" "$tmpdir/crumbs"' \
+    "backup.check is never consulted — a rollback takes no backup even where one is declared"
+assert '[ "$(find "$proj/backups" -type f 2>/dev/null | wc -l)" = "0" ]' \
+    "and no backup file exists (found: $(find "$proj/backups" -type f 2>/dev/null | tr "\n" " "))"
+assert '! grep -q "echo kasbah-backup-payload" "$DOCKER_LOG"' \
+    "nor was the backup command run in its container"
+# The narration names the pair that ran. A rollback that says "pre-deploy hook"
+# is right about what it did and wrong about what it is, and its failure message
+# would send the reader to the wrong four lines of kasbah.yml.
+assert 'grep -qF "pre-rollback hook: demo-web:" <<<"$run_err"' \
+    "the run narrates its pre-rollback hook by that name (said '$run_err')"
+assert 'grep -qF "post-rollback hook: demo-web:" <<<"$run_err"' \
+    "and its post-rollback one (said '$run_err')"
+assert '! grep -qF "pre-deploy hook" <<<"$run_err"' \
+    "and never names the deploy pair (said '$run_err')"
+
+# The six steps in order, by line number in the stub's log, the same way the
+# deploy order is read.
+n_prehook="$(n_of 'demo-web|sh|-c|echo "pre ')"
+n_tag="$(n_of 'docker|tag|demo-web:1.4.0|demo-web:current')"
+n_up="$(n_of 'docker|compose|-p|demo|up|-d|--remove-orphans')"
+n_health="$(n_of 'docker|inspect|--format|{{if .State.Health}}')"
+n_posthook="$(n_of 'demo-web|sh|-c|echo "post ')"
+assert '[ -n "$n_prehook" ] && [ -n "$n_tag" ] && [ -n "$n_up" ] && [ -n "$n_health" ] && [ -n "$n_posthook" ]' \
+    "every step of the rollback order shows up in the docker log
+$(sed "s/^/        | /" "$DOCKER_LOG")"
+assert '[ "$n_prehook" -lt "$n_tag" ]' "the pre-rollback hook precedes the retag ($n_prehook < $n_tag)"
+assert '[ "$n_tag" -lt "$n_up" ]' "the retag precedes compose up ($n_tag < $n_up)"
+assert '[ "$n_up" -lt "$n_health" ]' "compose up precedes the health wait ($n_up < $n_health)"
+assert '[ "$n_health" -lt "$n_posthook" ]' \
+    "and the health wait precedes the post-rollback hook ($n_health < $n_posthook)"
+assert 'grep -qxF "docker|tag|demo-worker:1.4.0|demo-worker:current" "$DOCKER_LOG"' \
+    "the target version's other image is retagged too"
+# Read off the exec call rather than off the crumb: the crumb proves the shell
+# expanded them, this proves which values kasbah handed over.
+assert 'grep -qF "|-e|VERSION=1.4.0|-e|PREV_VERSION=1.5.0|-e|DEPLOY_BACKUP=no-backup|demo-web|" "$DOCKER_LOG"' \
+    "with the three variables set on the exec itself
+$(sed "s/^/        | /" "$DOCKER_LOG")"
+
+rb_line="$(sed -n 2p "$proj/versions.log")"
+assert '[ "$(wc -l < "$proj/versions.log")" = "2" ]' \
+    "one entry is appended below the deploy that came before it ($(wc -l < "$proj/versions.log") lines)"
+assert '[[ "$rb_line" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+00:00\ rollback\ 1\.4\.0\ no-backup\ kasbah=0\.1\.0-test\ digest=sha256:old,sha256:oldw$ ]]' \
+    "in the frozen shape, with rollback in field 2 and no-backup in field 4
+        line: $rb_line"
+
+assert '[ "$(grep -c . <<<"$run_out")" = "5" ]' \
+    "the report is the same five lines (stdout: $(tr "\n" "/" <<<"$run_out"))"
+assert 'grep -qxF "version=1.4.0" <<<"$run_out"' \
+    "naming the version rolled to, not the one that was running (stdout: $(tr "\n" "/" <<<"$run_out"))"
+assert 'grep -qxF "prev_version=1.5.0" <<<"$run_out"' "and the one that was (stdout: $(tr "\n" "/" <<<"$run_out"))"
+assert 'grep -qxF "deployed_before=yes" <<<"$run_out"' "and that this project has history here"
+assert 'grep -qxF "backup=no-backup" <<<"$run_out"' "and no backup path, because there is none"
+assert 'grep -qxF "digest=sha256:old,sha256:oldw" <<<"$run_out"' "and the digests that went live"
+
+# Rotation runs after the entry in this mode too, and a rollback is the write a
+# suite is likeliest to leave untested: `kasbah rollback`'s own precondition is
+# that the target is already in versions.log, so the file it rotates is never
+# empty.
+printf '%s deploy 1.0.0 no-backup kasbah=0.1.0-test digest=-\n%s deploy 1.5.0 no-backup kasbah=0.1.0-test digest=-\n' \
+    "$old_ts" "$log_ts" > "$proj/versions.log"
+rm -f "$proj/versions.log.gz"
+deploy rollback 1.4.0; rc=$?
+assert '[ "$rc" = "0" ]' "a rollback over a log with an entry to prune exits 0 (exit $rc)
+        stderr: $run_err"
+assert '! grep -qF "$old_ts" "$proj/versions.log"' \
+    "the year-old entry left the active log
+        log: $(tr "\n" "/" < "$proj/versions.log")"
+assert '[ -f "$proj/versions.log.gz" ] && [ "$(gzip -dc "$proj/versions.log.gz")" = "$old_ts deploy 1.0.0 no-backup kasbah=0.1.0-test digest=-" ]' \
+    "for versions.log.gz, byte for byte (got: '$(gzip -dc "$proj/versions.log.gz" 2>/dev/null)')"
+assert 'grep -qF "moved to versions.log.gz" <<<"$run_err"' \
+    "and the rollback said so (said '$run_err')"
+assert '[[ "$(tail -1 "$proj/versions.log")" == *" rollback 1.4.0 no-backup kasbah="* ]]' \
+    "with its own entry still the last line of the log it just rewrote
+        got: $(tail -1 "$proj/versions.log")"
+
+# The outgoing phase of a rollback is the pre-rollback hooks and nothing else, so
+# a stopped backup.container is not a reason to refuse: no step of this run would
+# have touched it.
+: > "$tmpdir/crumbs"
+printf 'demo-web\n' > "$STUB_STATE/containers"
+printf 'demo-db=exited\n' > "$STUB_STATE/stopped"
+deploy rollback 1.4.0; rc=$?
+assert '[ "$rc" = "0" ]' \
+    "a rollback whose backup.container is stopped still runs — nothing in it needs that container (exit $rc)
+        stderr: $run_err"
+assert '! grep -qF "demo-db" <<<"$run_err"' \
+    "and never names it (said '$run_err')"
+
+# The control for that: the same stopped daemon, in deploy mode, is a refusal.
+: > "$tmpdir/crumbs"
+deploy deploy 1.4.0; rc=$?
+assert '[ "$rc" != "0" ]' "while a deploy over the same stopped backup container is refused (exit $rc)"
+assert 'grep -qF "demo-db is exited" <<<"$run_err"' "naming it (said '$run_err')"
 
 # --- Case X13: the preconditions the script has always had -----------------------------------
 setup_run x13 'schema: 1

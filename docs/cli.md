@@ -243,7 +243,7 @@ Flow (no-args / working-tree path):
    - `docker compose up -d --remove-orphans`.
    - Wait for `health.container` to be healthy.
    - Run `post-deploy` hooks against new containers.
-   - Append to `versions.log`. (Rotation lands with `history`, Phase 5.)
+   - Append to `versions.log`, then rotate it (`build-deploy.md` → Rotation).
 9. Rsync `traefik-dynamic.yml` to `/apps/traefik/dynamic/<name>.yml` — locally
    driven, after the stack is up, so a failed deploy leaves no live route.
 10. Print local changelog (`git log <prev>..<new>`).

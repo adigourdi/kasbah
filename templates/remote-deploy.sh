@@ -5,13 +5,20 @@
 # it drives (docs/build-deploy.md → helper scripts on the VPS). Do not edit it
 # on the server; edit this template, or the project's kasbah.yml.
 #
-#   remote-deploy.sh deploy <version> [--skip-hooks] [--no-health-wait]
-#                                     [--allow-stopped]
+#   remote-deploy.sh deploy   <version> [--skip-hooks] [--no-health-wait]
+#                                       [--allow-stopped]
+#   remote-deploy.sh rollback <version> [--skip-hooks] [--no-health-wait]
+#                                       [--allow-stopped]
 #
 # The order is fixed, and it is the one docs/build-deploy.md step 8 spells out:
 # backup → pre-deploy hooks → retag :current → compose up -d --remove-orphans →
-# health wait → post-deploy hooks → one appended versions.log line. Then, on
-# stdout and nowhere else, the `key=value` report `rd_report` describes.
+# health wait → post-deploy hooks → one appended versions.log line, rotated.
+# Then, on stdout and nowhere else, the `key=value` report `rd_report` describes.
+#
+# `rollback` is that order with the backup removed and the other hook pair run
+# (docs/build-deploy.md → `kasbah rollback` → Flow, step 10). The version's own
+# files have already been restored from git by the time it runs, so field 4 of
+# a rollback entry is always `no-backup`.
 #
 # Runnable by hand on the server, with nothing of kasbah's installed: everything
 # the manifest says about this project is pre-rendered into the generated block
@@ -20,7 +27,9 @@
 # ones above and derives everything else from where it is installed.
 #
 # Tool budget, the same rule lib/env.sh's header states: coreutils and bash
-# builtins, plus `docker` and `flock` (util-linux). No awk, no jq, no yq, no bc.
+# builtins, plus `docker`, `flock` (util-linux) and `gzip` — the three a prepared
+# server is guaranteed to have (docs/server-setup.md → prerequisites). No awk, no
+# jq, no yq, no bc.
 
 set -euo pipefail
 # The same locale every payload kasbah sends over ssh runs under; this script
@@ -40,8 +49,10 @@ export LC_ALL=C
 # images, no hooks, no backup and no health: block renders to, which is also
 # what this file does when run straight from the checkout.
 RD_IMAGES=( )            # image names, without a tag; :<version> is appended
-RD_HOOKS_PRE=( )         # each entry "<container> <shell command…>"
-RD_HOOKS_POST=( )
+RD_HOOKS_PRE_DEPLOY=( )  # each entry "<container> <shell command…>"
+RD_HOOKS_POST_DEPLOY=( )
+RD_HOOKS_PRE_ROLLBACK=( )
+RD_HOOKS_POST_ROLLBACK=( )
 RD_HEALTH_CONTAINER=''   # empty: wait on every container that has a healthcheck
 RD_HEALTH_TIMEOUT=120    # seconds; health.timeout is parsed on the local side
 RD_BACKUP_CHECK=''       # empty: this project declares no backup:
@@ -57,6 +68,16 @@ RD_SKIP_HOOKS=no
 RD_NO_HEALTH_WAIT=no
 RD_ALLOW_STOPPED=no
 
+# The mode, and the half of the manifest it selects. main() fills these in once;
+# everything below reads them and never asks again which mode it is running, so
+# one order and one set of guards serve both.
+RD_MODE=deploy
+RD_HOOKS_PRE=( )
+RD_HOOKS_POST=( )
+RD_PRE_HOOK=pre-deploy
+RD_POST_HOOK=post-deploy
+RD_VERB=deploy           # for a message: "refusing to $RD_VERB over a stack…"
+
 fail() { printf 'remote-deploy: %s\n' "$*" >&2; exit 1; }
 # Progress goes to stderr. Stdout carries nothing but `rd_report`'s `key=value`
 # lines, which is the shape every other remote step kasbah runs already has
@@ -65,26 +86,38 @@ note() { printf 'remote-deploy: %s\n' "$*" >&2; }
 
 usage() {
     cat >&2 <<EOF
-Usage: remote-deploy.sh deploy <version> [--skip-hooks] [--no-health-wait]
-                                        [--allow-stopped]
+Usage: remote-deploy.sh deploy   <version> [--skip-hooks] [--no-health-wait]
+                                           [--allow-stopped]
+       remote-deploy.sh rollback <version> [--skip-hooks] [--no-health-wait]
+                                           [--allow-stopped]
 
-Runs from <apps>/<project>/scripts/. In order: backup, pre-deploy hooks, retag
-<image>:current, docker compose up -d --remove-orphans, health wait, post-deploy
-hooks, and one appended entry in ../versions.log.
+Runs from <apps>/<project>/scripts/.
 
-  --skip-hooks       skip the pre- and post-deploy hooks. The backup still runs:
-                     a flag for a dry-run-ish deploy must not also throw away
-                     the data safety net.
+deploy, in order: backup, pre-deploy hooks, retag <image>:current, docker
+compose up -d --remove-orphans, health wait, post-deploy hooks, and one appended
+entry in ../versions.log.
+
+rollback is the same order with the backup dropped and the pre-/post-rollback
+hooks in place of the deploy pair. It takes no backup, so its entry always
+records no-backup.
+
+Either way the entry is followed by the log's 3-month rotation: anything older
+moves into ../versions.log.gz, and nothing is ever deleted.
+
+  --skip-hooks       skip the pre- and post- hooks of whichever mode is running.
+                     In deploy the backup still runs: a flag for a dry-run-ish
+                     deploy must not also throw away the data safety net.
   --no-health-wait   bring the stack up without blocking on its health.
-  --allow-stopped    deploy over a stack whose containers are not running. On a
+  --allow-stopped    run over a stack whose containers are not running. On a
                      first deploy that is the normal state and needs no flag;
                      on a project that has deployed before, each step whose own
-                     container is down is skipped — the backup if that is
-                     backup.container, a pre-deploy hook if it is that hook's —
-                     so it is refused unless you say here that the stack is
-                     meant to be down. It is not the answer for a container that
-                     does not exist at all: that is the manifest and the compose
-                     file disagreeing, and the refusal says so.
+                     container is down is skipped — a pre-deploy or pre-rollback
+                     hook if it is that hook's container, and in deploy the
+                     backup if it is backup.container — so it is refused unless
+                     you say here that the stack is meant to be down. It is not
+                     the answer for a container that does not exist at all: that
+                     is the manifest and the compose file disagreeing, and the
+                     refusal says so.
 EOF
 }
 
@@ -153,9 +186,9 @@ versions_log_line() {
 }
 
 # Appended, never rewritten: the log is the record of what ran on this server,
-# and it outlives every version in it. Rotation (docs/build-deploy.md) belongs
-# to Phase 5, which reopens this file for `rollback` anyway; appending is what
-# it will rotate.
+# and it outlives every version in it. `rd_rotate_log` below is the only thing
+# that rewrites the file, and it moves entries into versions.log.gz rather than
+# dropping any.
 log_version() {
     local line tail_byte
     # Both terminators are this function's, because the file is space- and
@@ -187,6 +220,126 @@ log_version() {
 
     printf '%s\n' "$line" >> "$PROJECT_DIR/versions.log" \
         || fail "could not append to $PROJECT_DIR/versions.log"
+}
+
+# The month a timestamp falls in, as `year * 12 + month`. An integer index is
+# what makes `now - 3` cross a year boundary by arithmetic instead of by string
+# surgery, and it keeps `date -d` — GNU-only, and outside this script's tool
+# budget — out of the one calculation that would otherwise want it.
+#
+# Refused for anything whose leading text is not `YYYY-MM-`: a line rotation
+# cannot read a month out of is not an entry it gets to judge.
+_rd_month_index() {
+    local ts="$1"
+    case "$ts" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-*) ;;
+        *) return 1 ;;
+    esac
+    printf '%s' "$(( 10#${ts:0:4} * 12 + 10#${ts:5:2} ))"
+    return 0
+}
+
+# `YYYY-MM` for a month index, for a message.
+_rd_month_name() {
+    local idx="$1" y
+    y=$(( (idx - 1) / 12 ))
+    printf '%04d-%02d' "$y" "$(( idx - y * 12 ))"
+    return 0
+}
+
+# The 3-month rotation docs/build-deploy.md specifies: entries from months
+# strictly older than (this month − 3) leave the active log for versions.log.gz.
+# Writing in August prunes April and earlier; writing in January 2027 prunes
+# September 2026 and earlier.
+#
+# Two orderings are load-bearing. The gz is appended to *before* the active log
+# is rewritten, so a crash between the two duplicates entries — visible and
+# recoverable — where the other order would lose them; nothing is ever deleted.
+# And a retained line is carried through byte for byte rather than re-rendered
+# from its fields, because those four fields are frozen and a reader has to see
+# exactly what was written. Every retained line comes back with one trailing
+# newline, which also repairs a last line that had none.
+#
+# Three failure shapes, and the caller has to tell them apart, because what the
+# operator is left holding differs in each. Nothing reached either file: exit 1.
+# The append to the archive failed partway, so it may end in a truncated gzip
+# member while the active log is still whole: exit 3. The archive took the
+# entries and the rewrite of the active log then failed, so both files hold them
+# — the duplication decision 4 accepts, but only because it is visible — and
+# every later run re-appends them until someone trims the active log: exit 2.
+# rd_rotate_log_or_warn says which happened.
+rd_rotate_log() {
+    local log="$PROJECT_DIR/versions.log"
+    local gz="$PROJECT_DIR/versions.log.gz"
+    local keep="$PROJECT_DIR/.versions.log.keep"
+    local drop="$PROJECT_DIR/.versions.log.drop"
+    local part="$PROJECT_DIR/.versions.log.part"
+    local now cut line ts idx perm n=0 rc=0
+
+    [ -s "$log" ] || return 0
+    now="$(date -u +%Y-%m)" || return 1
+    idx="$(_rd_month_index "$now-01")" || return 1
+    cut=$(( idx - 3 ))
+
+    : > "$keep" || return 1
+    : > "$drop" || { rm -f "$keep"; return 1; }
+
+    # `|| [ -n "$line" ]` for a last line with no newline on it, the same reason
+    # rd_last_log_line has it — and here it is also what puts the newline back.
+    while IFS= read -r line || [ -n "$line" ]; do
+        ts="${line%%[[:space:]]*}"
+        if idx="$(_rd_month_index "$ts")" && [ "$idx" -lt "$cut" ]; then
+            printf '%s\n' "$line" >> "$drop" || rc=1
+            n=$(( n + 1 ))
+        else
+            printf '%s\n' "$line" >> "$keep" || rc=1
+        fi
+        [ "$rc" -eq 0 ] || break
+    done < "$log"
+
+    if [ "$rc" -eq 0 ] && [ "$n" -gt 0 ]; then
+        # Compressed off to one side first, so a gzip that failed never touches
+        # the archive at all. Concatenated gzip streams are valid gzip and
+        # `zcat` reads them in order, which is what lets the archive grow by
+        # appending rather than by being rebuilt.
+        gzip -c < "$drop" > "$part" || rc=1
+        [ "$rc" -ne 0 ] || cat "$part" >> "$gz" || rc=3
+        # `mv` replaces the inode, so the mode of the file kasbah has been
+        # appending to since the first deploy is carried across rather than
+        # taken from this run's umask. A log that quietly became 0600 on a host
+        # with more than one administrator is a record only one of them can
+        # read. An unreadable mode is not worth failing a rotation over.
+        if [ "$rc" -eq 0 ]; then
+            perm="$(stat -c %a "$log" 2>/dev/null)" || perm=""
+            if mv -f "$keep" "$log"; then
+                [ -z "$perm" ] || chmod "$perm" "$log" 2>/dev/null || true
+            else
+                rc=2
+            fi
+        fi
+    fi
+    rm -f "$keep" "$drop" "$part" 2>/dev/null || true
+
+    [ "$rc" -eq 0 ] || return "$rc"
+    [ "$n" -gt 0 ] || return 0
+    note "versions.log: $n entries older than $(_rd_month_name "$cut") moved to versions.log.gz"
+    return 0
+}
+
+# Called after log_version in both modes. A rotation that cannot run is a
+# warning and never the run's exit status: rd_report is this script's completion
+# marker, and the local side refuses to ship the Traefik fragment when the report
+# is missing — so a failed log *compaction* would cost the project its route.
+rd_rotate_log_or_warn() {
+    local rc=0
+    rd_rotate_log || rc=$?
+    case "$rc" in
+        0) ;;
+        2) note "versions.log was rotated into versions.log.gz but could not then be rewritten, so the entries older than three months are now in BOTH files — and every later run will append them to versions.log.gz again until versions.log is trimmed by hand. The run itself is unaffected; nothing was lost." ;;
+        3) note "versions.log could not be rotated: the append to versions.log.gz stopped partway, so the archive may end in an incomplete gzip member. versions.log is untouched and still holds every entry, so nothing was lost — repair or truncate versions.log.gz before reading it." ;;
+        *) note "versions.log could not be rotated — the entry is written and both files are exactly as they were, only its 3-month compaction into versions.log.gz did not run" ;;
+    esac
+    return 0
 }
 
 # One exclusive lock, on a dedicated fd, held for the whole run. Flocking the
@@ -323,9 +476,16 @@ _rd_is_pre_hook() {
     return 1
 }
 
+# Whether a backup is part of the run in flight. A rollback takes none at all —
+# docs/build-deploy.md's rollback flow has no backup step — so backup.container
+# is neither waited on nor named by anything in that mode.
+_rd_backup_in_play() {
+    [ "$RD_MODE" = deploy ] && [ -n "$RD_BACKUP_CHECK" ]
+}
+
 # The containers the outgoing phase needs: backup.container when a backup is
-# declared, and every pre-deploy hook's container unless --skip-hooks. Printed
-# one per line, deduplicated.
+# declared, and every pre-* hook's container unless --skip-hooks. Printed one
+# per line, deduplicated.
 rd_outgoing_containers() {
     local hook c
     local seen=""
@@ -338,7 +498,7 @@ rd_outgoing_containers() {
             printf '%s\n' "$c"
         done
     fi
-    if [ -n "$RD_BACKUP_CHECK" ]; then
+    if _rd_backup_in_play; then
         c="$RD_BACKUP_CONTAINER"
         case "$seen" in *"|$c|"*) return 0 ;; esac
         printf '%s\n' "$c"
@@ -361,9 +521,9 @@ rd_outgoing_containers() {
 # be down.
 rd_outgoing_preflight() {
     local prev="$1" raw c clause list="" absent="" hooks_down="" backup_down=no
-    local skipped recorded
+    local skipped recorded names
 
-    raw="$(rd_outgoing_containers)" || fail "could not work out which containers the pre-deploy steps need"
+    raw="$(rd_outgoing_containers)" || fail "could not work out which containers the $RD_PRE_HOOK steps need"
     while IFS= read -r c; do
         [ -n "$c" ] || continue
         _rd_running "$c" && continue
@@ -376,7 +536,7 @@ rd_outgoing_preflight() {
             *"does not exist on this server")
                 if [ -z "$absent" ]; then absent="$clause"; else absent="$absent, $clause"; fi ;;
         esac
-        if [ -n "$RD_BACKUP_CHECK" ] && [ "$c" = "$RD_BACKUP_CONTAINER" ]; then backup_down=yes; fi
+        if _rd_backup_in_play && [ "$c" = "$RD_BACKUP_CONTAINER" ]; then backup_down=yes; fi
         if _rd_is_pre_hook "$c"; then
             if [ -z "$hooks_down" ]; then hooks_down="$c"; else hooks_down="$hooks_down, $c"; fi
         fi
@@ -393,12 +553,16 @@ rd_outgoing_preflight() {
     [ "$backup_down" != yes ] || skipped="the backup"
     if [ -n "$hooks_down" ]; then
         [ -z "$skipped" ] || skipped="$skipped and "
-        skipped="${skipped}the pre-deploy hooks in $hooks_down"
+        skipped="${skipped}the $RD_PRE_HOOK hooks in $hooks_down"
     fi
     [ -n "$skipped" ] || skipped="the outgoing steps that need them"
 
     if ! rd_deployed_before; then
-        note "first deploy — versions.log has no entry for this project, and $list, so $skipped will not run"
+        if [ "$RD_MODE" = deploy ]; then
+            note "first deploy — versions.log has no entry for this project, and $list, so $skipped will not run"
+        else
+            note "versions.log has no entry for this project, and $list, so $skipped will not run"
+        fi
         return 0
     fi
     if [ "$RD_ALLOW_STOPPED" = yes ]; then
@@ -419,12 +583,17 @@ rd_outgoing_preflight() {
     # skip that step silently on every deploy after this one, which is the exact
     # thing this preflight exists to stop.
     if [ -n "$absent" ]; then
+        if [ "$RD_MODE" = deploy ]; then
+            names="backup.container, or the first word of a pre-deploy hook"
+        else
+            names="the first word of a pre-rollback hook"
+        fi
         note "$list, and this project has deployed here before ($recorded)"
-        note "$absent — the manifest names it (backup.container, or the first word of a pre-deploy hook) and this server's compose file defines no container_name: that matches"
+        note "$absent — the manifest names it ($names) and this server's compose file defines no container_name: that matches"
         note "\`kasbah check\`'s HK01 catches that on the workstation, before any deploy"
-        fail "make kasbah.yml and the compose file agree on the name. --allow-stopped would deploy past this, and would go on skipping $skipped silently on every deploy after it. Nothing was changed."
+        fail "make kasbah.yml and the compose file agree on the name. --allow-stopped would $RD_VERB past this, and would go on skipping $skipped silently on every $RD_MODE after it. Nothing was changed."
     fi
-    fail "$list, and this project has deployed here before ($recorded) — refusing to deploy over a stack that cannot run $skipped. Start it, or pass --allow-stopped if it is meant to be down. Nothing was changed."
+    fail "$list, and this project has deployed here before ($recorded) — refusing to $RD_VERB over a stack that cannot run $skipped. Start it, or pass --allow-stopped if it is meant to be down. Nothing was changed."
 }
 
 # Newest `retain` kept, oldest removed, and only once the new file is on disk: a
@@ -701,8 +870,14 @@ rd_health_wait() {
     return 0
 }
 
-do_deploy() {
-    local version="$1"
+# Both modes, because only three things separate them: a deploy takes a backup
+# and a rollback never does (docs/build-deploy.md → rollback flow), RD_HOOKS_PRE
+# and RD_HOOKS_POST already hold whichever pair the mode selected, and the
+# action goes into versions.log field 2. Everything else — the lock, the two
+# preflights, the retag, the up, the health wait, the entry, the rotation and
+# the report — is one order run once.
+do_run() {
+    local mode="$1" version="$2"
     local backup prev digest deployed_before
 
     # A backstop for a hand-run, not the first thing that notices: `kasbah
@@ -728,15 +903,22 @@ do_deploy() {
     if rd_deployed_before; then deployed_before=yes; else deployed_before=no; fi
     rd_outgoing_preflight "$prev"
 
-    # `|| fail` because rd_backup's own refusals run in this substitution's
-    # subshell, so its exit status is the only thing that reaches here.
-    backup="$(rd_backup)" || fail "the backup step failed (see above)"
-    [ -n "$backup" ] || fail "internal: the backup step reported no path"
+    if [ "$mode" = deploy ]; then
+        # `|| fail` because rd_backup's own refusals run in this substitution's
+        # subshell, so its exit status is the only thing that reaches here.
+        backup="$(rd_backup)" || fail "the backup step failed (see above)"
+        [ -n "$backup" ] || fail "internal: the backup step reported no path"
+    else
+        # A rollback restores an image and the files git already put back; the
+        # data is untouched, and there is nothing here a backup would protect
+        # that the deploy before it did not already.
+        backup=no-backup
+    fi
 
     if [ "$RD_SKIP_HOOKS" = yes ]; then
-        note "pre-deploy hooks skipped (--skip-hooks)"
+        note "$RD_PRE_HOOK hooks skipped (--skip-hooks)"
     else
-        rd_run_hooks pre-deploy outgoing "$version" "$prev" "$backup" \
+        rd_run_hooks "$RD_PRE_HOOK" outgoing "$version" "$prev" "$backup" \
             ${RD_HOOKS_PRE[@]+"${RD_HOOKS_PRE[@]}"}
     fi
 
@@ -761,13 +943,14 @@ do_deploy() {
     fi
 
     if [ "$RD_SKIP_HOOKS" = yes ]; then
-        note "post-deploy hooks skipped (--skip-hooks)"
+        note "$RD_POST_HOOK hooks skipped (--skip-hooks)"
     else
-        rd_run_hooks post-deploy incoming "$version" "$prev" "$backup" \
+        rd_run_hooks "$RD_POST_HOOK" incoming "$version" "$prev" "$backup" \
             ${RD_HOOKS_POST[@]+"${RD_HOOKS_POST[@]}"}
     fi
 
-    log_version deploy "$version" "$backup" "$digest"
+    log_version "$mode" "$version" "$backup" "$digest"
+    rd_rotate_log_or_warn
     rd_report "$version" "$prev" "$deployed_before" "$backup" "$digest"
     return 0
 }
@@ -776,13 +959,10 @@ main() {
     local action="${1:-}" version=""
 
     case "$action" in
-        deploy) ;;
+        deploy|rollback) ;;
         -h|--help) usage; exit 0 ;;
-        '') usage; fail "no action given (expected: deploy)" ;;
-        # rollback lands in Phase 5, in this same file. Named, so a kasbah that
-        # is ahead of the script on the server says so instead of "unknown".
-        rollback) fail "rollback is not implemented in this version of remote-deploy.sh" ;;
-        *) usage; fail "unknown action '$action' (expected: deploy)" ;;
+        '') usage; fail "no action given (expected: deploy or rollback)" ;;
+        *) usage; fail "unknown action '$action' (expected: deploy or rollback)" ;;
     esac
     shift
 
@@ -806,8 +986,24 @@ main() {
         shift
     done
 
+    # The mode picks one of the manifest's two hook pairs and the words that go
+    # with it, once. `docs/project-manifest.md` → hooks: the pre-* hooks exec
+    # against the outgoing state and the post-* ones against the incoming, which
+    # is the same order in both modes.
+    RD_MODE="$action"
+    if [ "$RD_MODE" = rollback ]; then
+        RD_HOOKS_PRE=(${RD_HOOKS_PRE_ROLLBACK[@]+"${RD_HOOKS_PRE_ROLLBACK[@]}"})
+        RD_HOOKS_POST=(${RD_HOOKS_POST_ROLLBACK[@]+"${RD_HOOKS_POST_ROLLBACK[@]}"})
+        RD_PRE_HOOK=pre-rollback
+        RD_POST_HOOK=post-rollback
+        RD_VERB='roll back'
+    else
+        RD_HOOKS_PRE=(${RD_HOOKS_PRE_DEPLOY[@]+"${RD_HOOKS_PRE_DEPLOY[@]}"})
+        RD_HOOKS_POST=(${RD_HOOKS_POST_DEPLOY[@]+"${RD_HOOKS_POST_DEPLOY[@]}"})
+    fi
+
     _rd_locate
-    do_deploy "$version"
+    do_run "$action" "$version"
 }
 
 main "$@"
