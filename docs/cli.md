@@ -341,24 +341,41 @@ the project's on-VPS backups — everything except the off-VPS restic repo,
 which is operator property (see `backup.md`). Double confirmation (typed
 project name).
 
-### `kasbah history [USER@HOST] [flags]`
+### `kasbah history [USER@HOST] [--all]`
 
 Tabular view of `versions.log`. Columns: timestamp, action, version,
 backup file, kasbah version.
 
+A line the frozen format cannot be read out of is still shown — in place,
+marked, as the bytes the file holds. Inventing column values for it would
+make a truncated write look like a deploy of an unknown version, and the
+footer counts how many such lines the file has.
+
 Flags:
 - `--all` — include the archived rotation (`versions.log.gz`). By default
-  only the active log is shown.
+  only the active log is shown, with a footer naming how many more are
+  archived. Either way, an archive kasbah could not read in full is said
+  so in the report itself, not only as a warning: a run redirected to a
+  file must not read as the whole record.
 
 ### `kasbah pending [USER@HOST] [VERSION]`
 
 `git log <deployed>..<VERSION-or-HEAD>` formatted as a changelog. Useful
-before cutting a tag.
+before cutting a tag. The deployed version is resolved from the VPS at
+runtime, never from `state.json` — state is a cache for defaults, not a
+source of truth for what is running (`project-manifest.md`).
 
 ### `kasbah changelog [USER@HOST]`
 
-`git log <prev-deploy>..<current-deploy>` — what changed in the currently
-deployed version.
+`git log <prev>..<current>` — what changed in the version the server is
+running now.
+
+The two ends are the **last two entries of the record, whatever their
+action** — not the last two `action=deploy` entries. After a rollback the
+currently deployed version is the rollback's target, and a changelog
+describing a version the server is not running would be answering a
+different question. An inverted or empty range is reported as such, in the
+same words `deploy` uses for it.
 
 ### `kasbah env [USER@HOST] [--on-drift=setup|continue|abort]`
 

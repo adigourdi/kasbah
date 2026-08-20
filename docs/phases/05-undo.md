@@ -11,7 +11,7 @@
 - [x] On the rig: deploy v1 → deploy v2 → `rollback` → compose file, fragment, and `:current` all match v1 (asserted from git show + docker inspect). `sha256sum` of `<apps>/built-app/compose.yml` and of `<apps>/traefik/dynamic/built-app.yml` equal `git show v2.1.0:…`; `built-app-{web,worker}:current` resolve to the v2.1.0 image ids; the recreated container no longer carries the env key v2's compose added; `docker exec … cat index.html` serves the v1 build's page
 - [x] Rolling back to a never-deployed version fails with the "first-time deploy" message
 - [x] Rolling back to a pruned-image version fails with the roll-forward guidance (no auto-reship). `server prune` is roadmap v0.2, so the pruned state is produced by removing the image from the rig by hand — the guidance is real, the prune that would cause it is simulated
-- [ ] `history` renders both the live log and `--all` including `versions.log.gz`
+- [x] `history` renders both the live log and `--all` including `versions.log.gz` — plain history footers the archived count, `--all` shows both halves separated by a rotation marker, and an archive that could not be read in full says so in the report itself
 
 ## Tasks
 
@@ -40,11 +40,12 @@ Tabular history (timestamp, action, version, backup, kasbah version;
 `--all` appends the gz rotation). `pending` resolves the deployed version
 from the VPS at runtime — never from state.json (state is a cache, per
 `project-manifest.md`). `changelog` = git log between the two latest
-deploys.
+entries of the record, whatever their action — settled during the run;
+see Findings.
 
 **Deliverables**
-- [ ] Three commands green against the rig's log from 5.1's test run
-- [ ] `pending` with an unreachable VPS exits 3, not garbage
+- [x] Three commands green against the rig's log from 5.1's test run — `tests/integration/history_test.sh`, exit 0, driving deploy 2.1.0 → deploy 2.2.0 → rollback → deploy and reading all three commands back
+- [x] `pending` with an unreachable VPS exits 3, not garbage — all three commands, hermetically and on the rig, with empty stdout and `last_server` unchanged
 
 **Watch out for:** concatenated gzip streams — read the rotation with
 `zcat` (valid for appended gzips), never `gunzip -c` a partial copy.
@@ -56,7 +57,7 @@ synthetic timestamps.
 
 **Deliverables**
 - [x] `tests/rotation_test.sh` covering the month-boundary math — 9 cases (A–I), each mutation-proven. Cutoff `month_index(now) − 3` with `month_index = year*12 + month`; August 2026 → prunes April-and-earlier, January 2027 → prunes September 2026-and-earlier, March 2027 → prunes November 2026-and-earlier.
-- [ ] `history --all` transparently spans the rotation point
+- [x] `history --all` transparently spans the rotation point — the archive it reads is the one `templates/remote-deploy.sh` wrote: `versions.log.gz` asserted absent before the triggering deploy and present after, `zcat` on the rig returning exactly the planted entries, and the active log no longer holding their timestamps
 
 **Watch out for:** month arithmetic in bash (August − 3 crossing the year
 boundary) — compute with `date -d`, not string surgery.
@@ -353,3 +354,61 @@ A NUL-separated list also cannot travel through `$( )`, which is how the first
 attempt at that fix broke the suite: command substitution discards NUL bytes,
 so `readarray -d ''` on the result returns one giant element. The list goes
 through a temp file, cleaned by the same trap as the extraction.
+
+### Unit 4 — `history` / `pending` / `changelog`
+
+**Every defect in this unit was a report contradicting itself inside one run.**
+Four of them, and not one crashed, wrote to the server, or got an exit code
+wrong. One report said *"its archive does [hold entries]"* directly above
+*"no archived entry could be decoded"*; another asserted *"and neither does its
+archive"* about an archive kasbah had just failed to read — telling an operator
+the server never ran this project, on evidence kasbah does not have; a third
+printed advice (`--all` will show it) that cannot work on a truncated gzip
+member. A fourth said *"…missing from this table"* in three callers that print
+no table, which the implementer caught in its own pasted output.
+
+That makes **seven occurrences across four units** of one shape. The rule unit 1
+wrote down — *when a step can half-succeed, the message has to name which half*
+— turns out to generalise well past warnings: it governs every sentence a
+command prints about state it only partly observed. Worth carrying into any
+phase that adds a command which reports on a server.
+
+The corollary this unit adds: **all three of those defects lived on paths the
+suites never reached.** The commands' happy paths were thoroughly tested. What
+was untested was every combination of "the record is partly unreadable" — which
+is exactly the state the previous three units spent their whole effort making
+possible to detect.
+
+**"Structurally unreachable" deserves the same doubt as any other claim.** The
+implementer listed four cases it could not verify; a reviewer measured three of
+them reachable, cheaply. A repository with no HEAD commit is an orphan checkout
+away (`git checkout --orphan` leaves `refs/tags/v1.0.0` resolvable while `HEAD`
+is not — which is precisely the branch's precondition). A damaged line on the
+rig is one more line in a heredoc the suite already writes. An unreadable
+archive is a `chmod 000`, because the rig's ssh user is `stevedore` and not
+root. Only the fourth — `git log` failing on a range both of whose ends
+`rev-parse` already verified — survives as genuinely unreachable, and stands as
+traced rather than proven.
+
+**A row that did not parse is not a row.** `history` shows it in place, marked
+`!!`, as the bytes the file holds with the CR stripped for display and nothing
+else altered. Inventing `?` for four columns would make a truncated write look
+like a deploy of an unknown version — the frozen format's whole point is that
+every reader agrees on what a line says, and a line that says nothing must not
+be rendered as though it did.
+
+**`changelog` reads the last two entries whatever their action**, settled during
+the run against `cli.md`'s original "between the two latest deploys". After a
+rollback the deployed version *is* the rollback's target, so pairing the last
+two `deploy` entries would describe a version the server is not running — in the
+one phase whose entire purpose is making rollbacks happen. Both `cli.md` and
+this file's own 5.2 task text were corrected.
+
+**`VLOG_SKIPPED_DAMAGED` has no reader here, and that is correct.** Unit 3's
+defect was calling a query that *skips* damaged lines without reporting it.
+These three commands call no such query: `history` walks the arrays itself, and
+`pending`/`changelog` reach the record through `vlog_last_entry`, which neither
+skips nor counts. The obligation is discharged in kind rather than by reading a
+counter — every unparsed line is shown, and a range is never built past one.
+Recorded because the next reader will otherwise go looking for a consumer that
+should not exist.

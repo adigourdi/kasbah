@@ -76,6 +76,9 @@ Commands:
   build-push [USER@HOST]                     Build this project's images and load them on a server.
   deploy [USER@HOST] [VERSION]               Ship the working tree, or a tagged version, and bring it up.
   rollback [USER@HOST] [VERSION]             Put a server back on a version it has already run.
+  history [USER@HOST] [--all]                Show a server's deploy record for this project.
+  pending [USER@HOST] [VERSION]              Show the commits a deploy would ship.
+  changelog [USER@HOST]                      Show what changed in the deployed version.
   env [USER@HOST]                            Render the project's .env on the server.
   server init USER@HOST [flags]              Prepare a VPS to host projects.
   server status USER@HOST                    Report what a prepared VPS is running.
@@ -140,6 +143,10 @@ dispatch() {
         rollback)
             . "$KASBAH_LIB_DIR/rollback.sh"
             cmd_rollback "$@"
+            ;;
+        history|pending|changelog)
+            . "$KASBAH_LIB_DIR/history.sh"
+            "cmd_$cmd" "$@"
             ;;
         env)
             . "$KASBAH_LIB_DIR/env_cmd.sh"
