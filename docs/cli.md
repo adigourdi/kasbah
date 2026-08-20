@@ -277,10 +277,13 @@ Flow (see `build-deploy.md` for full detail):
 3. Verify git tag `v<target>` exists locally (`git fetch --tags` if not).
 4. Read v<target>'s files via `git show v<target>:kasbah.yml` and
    `git show v<target>:compose.prod.yml` — no checkout.
-5. For each `build:` service in v<target>'s compose: `:<target>` must
-   still be on the VPS (see image retention in `build-deploy.md`) — if
-   pruned, fail with roll-forward / rebuild-from-tag guidance.
-6. Extract v<target> to a temp directory and rsync its sync list into
+5. Extract v<target> to a temp directory, then check each `build:` service
+   in its compose: `:<target>` must still be on the VPS (see image
+   retention in `build-deploy.md`) — if pruned, fail with roll-forward /
+   rebuild-from-tag guidance. The extraction comes first because the check
+   reads the ref's compose out of it; what matters is that **nothing
+   reaches the server** before the check passes.
+6. Rsync the extracted sync list into
    `/apps/<name>/` — not `git archive | tar -x`, which cannot honour the
    `src -> dst` renames every sync list has (`build-deploy.md` → rollback flow).
    The extracted tree is then checked to hold every source the list names:
@@ -357,6 +360,14 @@ Flags:
   archived. Either way, an archive kasbah could not read in full is said
   so in the report itself, not only as a warning: a run redirected to a
   file must not read as the whole record.
+
+`history`, `pending` and `changelog` split their output on one rule: a
+sentence that **answers the question asked** is the report and goes to
+stdout — including "this project has never deployed here", a line the record
+holds that kasbah cannot parse, and the note saying the archive was not read
+in full. A **diagnostic about this checkout or the transport** goes to
+stderr: a missing tag, an unborn HEAD, a `git log` that failed. Piping any of
+the three gives the answer and nothing else.
 
 ### `kasbah pending [USER@HOST] [VERSION]`
 

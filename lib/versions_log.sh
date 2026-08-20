@@ -39,9 +39,14 @@ VLOG_ARCHIVE_PATH=""
 VLOG_ACTIVE_STATE=""
 VLOG_ARCHIVE_STATE=""
 # yes when the archive did not read as whole gzip: a truncated trailing member,
-# or bytes that are not gzip at all. Whatever was decoded before it gave up is
-# in the arrays below; see _vlog_decode_archive for which of the two happened.
+# bytes that are not gzip at all, or a workstation that cannot decode it.
+# Whatever was decoded before it gave up is in the arrays below.
 VLOG_ARCHIVE_DAMAGED=no
+# Why, as the clause a report puts after the archive's path; empty otherwise.
+# Chosen where the failure happened rather than re-derived by each reader from
+# what it can see, because a reader counting decoded entries cannot tell a
+# truncated member from a payload that is not gzip from a missing zcat.
+VLOG_ARCHIVE_REASON=""
 
 # One entry per non-blank line, archive first (older) then active, each file in
 # its own order. Parallel arrays, indexed together.
@@ -224,6 +229,7 @@ vlog_fetch() {
     VLOG_ACTIVE_STATE=""
     VLOG_ARCHIVE_STATE=""
     VLOG_ARCHIVE_DAMAGED=no
+    VLOG_ARCHIVE_REASON=""
 
     _vf_out=$(ssh_script "$_vf_apps" "$_vf_name" <<'REMOTE'
 set -uo pipefail
@@ -360,19 +366,38 @@ REMOTE
 # killed partway leaves, and zcat reports it *after* writing every complete
 # member — so the output is kept and the failure is a warning.
 #
+# **Every way this can fail is a warning**, which is the promise the header
+# makes. A missing zcat and a payload that is not base64 are archive-only
+# conditions like any other, and dying over one kills `history`, `pending`,
+# `changelog` and `rollback` even when the target is in the active log.
+#
 # Decoded twice rather than through a temporary file: gzip is binary and a shell
 # variable cannot hold a NUL, and a file created here is a file to leak if this
 # process is signalled. The first pass is only asking whether the payload is
-# base64 at all, which is a truncated transport and not an unreadable archive.
+# base64 at all.
 _vlog_decode_archive() {
     local _da_b64="$1" _da_out="$2"
     local _da_text="" _da_rc=0
 
-    command -v zcat >/dev/null \
-        || die "zcat is required to read $VLOG_ARCHIVE_PATH (install gzip and retry)"
+    if ! command -v zcat >/dev/null; then
+        VLOG_ARCHIVE_DAMAGED=yes
+        VLOG_ARCHIVE_REASON="could not be decoded on this workstation: zcat is not on its PATH"
+        warn "$VLOG_ARCHIVE_PATH on $VLOG_TARGET came back and could not be decoded here — zcat is not installed"
+        warn "  the file on the server is untouched and may be perfectly whole; install gzip to read it"
+        warn "  no archived entry is in the record below; the active log is"
+        printf -v "$_da_out" '%s' ""
+        return 0
+    fi
 
-    printf '%s' "$_da_b64" | base64 -d >/dev/null 2>&1 \
-        || die "the deploy record read on $VLOG_TARGET sent $VLOG_ARCHIVE_PATH back as something that is not base64"
+    if ! printf '%s' "$_da_b64" | base64 -d >/dev/null 2>&1; then
+        VLOG_ARCHIVE_DAMAGED=yes
+        VLOG_ARCHIVE_REASON="did not arrive as base64 from $VLOG_TARGET"
+        warn "$VLOG_ARCHIVE_PATH on $VLOG_TARGET did not come back as base64 — the transport was cut, not the file"
+        warn "  the file on the server is untouched; this says nothing about whether it is whole"
+        warn "  no archived entry is in the record below; the active log is"
+        printf -v "$_da_out" '%s' ""
+        return 0
+    fi
 
     _da_text="$(printf '%s' "$_da_b64" | base64 -d 2>/dev/null | zcat 2>/dev/null)" || _da_rc=$?
 
@@ -385,9 +410,11 @@ _vlog_decode_archive() {
     if [ "$_da_rc" -ne 0 ]; then
         VLOG_ARCHIVE_DAMAGED=yes
         if [ -z "$_da_text" ]; then
+            VLOG_ARCHIVE_REASON="is not gzip: no archived entry could be decoded"
             warn "$VLOG_ARCHIVE_PATH on $VLOG_TARGET is not gzip — nothing could be decoded from it"
             warn "  no archived entry is in the record below; look at the file itself"
         else
+            VLOG_ARCHIVE_REASON="ends in a truncated gzip member: whatever is inside it could not be decoded"
             warn "$VLOG_ARCHIVE_PATH on $VLOG_TARGET ends in a truncated gzip member"
             warn "  every entry before it is read; anything inside it is not"
             warn "  the likely cause is a rotation that ran out of disk while appending"
@@ -398,27 +425,71 @@ _vlog_decode_archive() {
     return 0
 }
 
+# --- What the archive is short of -----------------------------------------------
+
+# Is the archived half of the record fully accounted for? Not the same question
+# as "are there archived entries": an archive kasbah could not read, or one
+# whose last gzip member is truncated, leaves entries this side cannot see, and
+# every sentence that would otherwise claim to describe the whole record has to
+# know that (docs/phases/05-undo.md — a message that under-describes a partial
+# read is worse than no message).
+vlog_archive_whole() {
+    [ "$VLOG_ARCHIVE_DAMAGED" = no ] || return 1
+    case "$VLOG_ARCHIVE_STATE" in
+        ok|missing|empty) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# vlog_archive_note <outvar> — the one line that says what is missing from the
+# report above it, for a caller to print with the rest of its own output:
+# `vlog_fetch` has already warned on stderr with the diagnosis, and a report
+# redirected to a file must still not read as complete. Empty when the archive
+# is whole.
+#
+# Every shape ends in the same clause and differs only in the cause, because
+# most callers have no table to be short of rows — what they share is a record
+# they cannot claim to have read.
+vlog_archive_note() {
+    local _an_out="$1"
+
+    printf -v "$_an_out" '%s' ""
+    vlog_archive_whole && return 0
+
+    if [ -n "$VLOG_ARCHIVE_REASON" ]; then
+        printf -v "$_an_out" '%s' \
+            "$VLOG_ARCHIVE_PATH $VLOG_ARCHIVE_REASON, so this is not the whole record"
+    else
+        printf -v "$_an_out" '%s' \
+            "$VLOG_ARCHIVE_PATH could not be read (the probe called it '$VLOG_ARCHIVE_STATE'), so this is not the whole record"
+    fi
+    return 0
+}
+
 # --- The queries ----------------------------------------------------------------
 
-# vlog_has_entries active|all — is there a record here at all? Deliberately not
+# vlog_has_entries active|archive|all — is there a record here at all? Deliberately not
 # the same question as "what version is deployed": collapsing the two has
 # already produced a guard that failed open and a changelog that called a server
 # with history a first deploy (docs/phases/05-undo.md). An entry counts here
 # whether or not it parsed.
 #
 # `active` is exact — an unreadable active log never reaches here, vlog_fetch
-# refuses it. `all` is best-effort in one direction: an archive kasbah could not
-# read was warned about and left out, so a false answer means "none that could
-# be read". VLOG_ARCHIVE_STATE is where that shows.
+# refuses it. `archive` and `all` are best-effort in one direction: an archive
+# kasbah could not read was warned about and left out, so a false answer means
+# "none that could be read". VLOG_ARCHIVE_STATE is where that shows, and a
+# caller naming the archive in a message should ask this first — saying "and
+# its archive hold entries" about one that decoded nothing is the same sentence
+# arguing with the note beneath it.
 vlog_has_entries() {
     local _he_scope="$1" _he_i
 
     case $_he_scope in
-        active|all) ;;
-        *) die "internal: vlog_has_entries takes 'active' or 'all', not '$_he_scope'" ;;
+        active|archive|all) ;;
+        *) die "internal: vlog_has_entries takes 'active', 'archive' or 'all', not '$_he_scope'" ;;
     esac
     for _he_i in "${!VLOG_SRC[@]}"; do
-        if [ "$_he_scope" = all ] || [ "${VLOG_SRC[$_he_i]}" = active ]; then
+        if [ "$_he_scope" = all ] || [ "${VLOG_SRC[$_he_i]}" = "$_he_scope" ]; then
             return 0
         fi
     done

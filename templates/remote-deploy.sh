@@ -229,6 +229,12 @@ log_version() {
 #
 # Refused for anything whose leading text is not `YYYY-MM-`: a line rotation
 # cannot read a month out of is not an entry it gets to judge.
+#
+# Deliberately weaker than the frozen-format test rd_prev_version and
+# vlog_parse_line share: "which month is this line from" is a different question
+# from "is this a kasbah entry", and requiring the whole format here would pin a
+# datable truncated write in the active log forever, which is the one thing
+# rotation exists to stop.
 _rd_month_index() {
     local ts="$1"
     case "$ts" in
@@ -274,7 +280,7 @@ rd_rotate_log() {
     local keep="$PROJECT_DIR/.versions.log.keep"
     local drop="$PROJECT_DIR/.versions.log.drop"
     local part="$PROJECT_DIR/.versions.log.part"
-    local now cut line ts idx perm n=0 rc=0
+    local now cut line ts idx perm gzperm n=0 rc=0
 
     [ -s "$log" ] || return 0
     now="$(date -u +%Y-%m)" || return 1
@@ -303,7 +309,19 @@ rd_rotate_log() {
         # `zcat` reads them in order, which is what lets the archive grow by
         # appending rather than by being rebuilt.
         gzip -c < "$drop" > "$part" || rc=1
-        [ "$rc" -ne 0 ] || cat "$part" >> "$gz" || rc=3
+        if [ "$rc" -eq 0 ]; then
+            # `cat >>` creates the archive under this run's umask, so a root
+            # deploy under 0077 would leave a history only root can read. An
+            # archive that exists keeps its own mode; a new one takes the active
+            # log's, since the two files are one record with one readership.
+            # Failure-tolerant, and applied after a truncated append too — those
+            # bytes are in a file somebody has to open to repair it.
+            if [ -e "$gz" ]; then gzperm="$(stat -c %a "$gz" 2>/dev/null)" || gzperm=""
+            else                  gzperm="$(stat -c %a "$log" 2>/dev/null)" || gzperm=""
+            fi
+            cat "$part" >> "$gz" || rc=3
+            [ -z "$gzperm" ] || chmod "$gzperm" "$gz" 2>/dev/null || true
+        fi
         # `mv` replaces the inode, so the mode of the file kasbah has been
         # appending to since the first deploy is carried across rather than
         # taken from this run's umask. A log that quietly became 0600 on a host
@@ -419,11 +437,21 @@ rd_deployed_before() {
 # that last line is malformed, which is why it is not what decides whether there
 # is history. Used for the message and for the hooks' $PREV_VERSION, both of
 # which an empty value is an honest answer for.
+#
+# The frozen format is tested, not merely tokenised — four non-empty fields and
+# a leading ISO date, the predicate lib/versions_log.sh's vlog_parse_line
+# applies on the workstation. One format read two ways is one run saying two
+# things about the same line.
 rd_prev_version() {
-    local last ts action ver
+    local last ts action ver backup
     last="$(rd_last_log_line)"
     [ -n "$last" ] || return 0
-    read -r ts action ver _ <<<"$last" || true
+    read -r ts action ver backup _ <<<"$last" || true
+    [ -n "$ts" ] && [ -n "$action" ] && [ -n "$ver" ] && [ -n "$backup" ] || return 0
+    case "$ts" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*) ;;
+        *) return 0 ;;
+    esac
     printf '%s' "$ver"
     return 0
 }

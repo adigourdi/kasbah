@@ -46,8 +46,9 @@ set -euo pipefail
 # than in each mode, so every fixture answers all four.
 dump() {
     local i idx=""
-    printf 'active_state=%s\narchive_state=%s\ndamaged=%s\n' \
-        "$VLOG_ACTIVE_STATE" "$VLOG_ARCHIVE_STATE" "$VLOG_ARCHIVE_DAMAGED"
+    printf 'active_state=%s\narchive_state=%s\ndamaged=%s\nreason=%s\n' \
+        "$VLOG_ACTIVE_STATE" "$VLOG_ARCHIVE_STATE" "$VLOG_ARCHIVE_DAMAGED" \
+        "$VLOG_ARCHIVE_REASON"
     printf 'entries=%s\n' "${#VLOG_RAW[@]}"
     for i in "${!VLOG_RAW[@]}"; do
         printf 'entry=%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
@@ -605,6 +606,7 @@ out=$(fetch 1.0.0); rc=$?
 assert '[ "$rc" = "0" ]' "a whole record is fetched without complaint (exit $rc: $(drive_err))"
 assert 'grep -qxF "entries=3" <<<"$out"' "the archive's entry and the active log's two (got '$out')"
 assert 'grep -qxF "damaged=no" <<<"$out"'  "an intact archive is not damaged (got '$out')"
+assert 'grep -qxF "reason=" <<<"$out"' "and carries no clause for a report to print (got '$out')"
 assert 'grep -qxF "find=1.0.0|0|archive|deploy" <<<"$out"' \
     "and the gz is decoded on this side, entries and all (got '$out')"
 assert 'grep -qxF "last=2" <<<"$out"' "with the active log's last line as the deployed version (got '$out')"
@@ -712,6 +714,9 @@ assert 'grep -qF "ends in a truncated gzip member" <<<"$(drive_err)"' \
     "and says which of the two gzip failures this is (said '$(drive_err)')"
 assert 'grep -qF "every entry before it is read" <<<"$(drive_err)"' \
     "and that what came before it was kept (said '$(drive_err)')"
+assert 'grep -qxF "reason=ends in a truncated gzip member: whatever is inside it could not be decoded" <<<"$out"' \
+    "and the same shape travels to the readers as a clause, chosen here where the decode knows
+        which of the four it hit (got '$out')"
 assert 'grep -qxF "entries=4" <<<"$out"' \
     "every complete member is still read — two archived entries plus the active log's two (got '$out')"
 assert 'grep -qxF "find=1.0.0|0|archive|deploy" <<<"$out"' \
@@ -736,6 +741,8 @@ assert '! grep -qF "every entry before it is read" <<<"$(drive_err)"' \
     "and no claim that anything was read (said '$(drive_err)')"
 assert 'grep -qxF "entries=2" <<<"$out"' \
     "the active log is all that is left of the record (got '$out')"
+assert 'grep -qxF "reason=is not gzip: no archived entry could be decoded" <<<"$out"' \
+    "with its own clause for the readers (got '$out')"
 
 # A report the far side could not have written. A fact that never arrived must
 # not be absorbed as an empty log — which is the shape of "never deployed here".
@@ -753,11 +760,69 @@ rc=0; fetch >/dev/null || rc=$?
 assert '[ "$rc" != "0" ]' "an active log that is not base64 fails (exit $rc)"
 assert 'grep -qF "not base64" <<<"$(drive_err)"' \
     "and says so rather than dying mute (said '$(drive_err)')"
+# The archive is the opposite: **everything** about it is a warning, which is
+# the promise the library's header makes. A workstation that dies here loses
+# `history`, `pending`, `changelog` and `rollback` over a file none of them
+# needs when the target is in the active log.
 write_payload ok "$act" ok "$tmpdir/arch.gz"
 sed -i 's/^archive_b64=.*/archive_b64=@@@notbase64@@@/' "$payload_file"
-rc=0; fetch >/dev/null || rc=$?
-assert '[ "$rc" != "0" ]' "an archive that is not base64 fails too (exit $rc)"
-assert 'grep -qF "not base64" <<<"$(drive_err)"' "saying the same (said '$(drive_err)')"
+out=$(fetch 1.4.0); rc=$?
+assert '[ "$rc" = "0" ]' "an archive that is not base64 is a warning, not a failure (exit $rc: $(drive_err))"
+assert 'grep -qxF "damaged=yes" <<<"$out"' "and reaches the readers as a damaged archive (got '$out')"
+assert 'grep -qxF "reason=did not arrive as base64 from deploy@vps" <<<"$out"' \
+    "carrying a clause that blames the transport, which no reader could have derived (got '$out')"
+# Every reason is a clause, never a sentence: vlog_archive_note appends
+# ", so this is not the whole record", and a reason ending in its own ", so …"
+# would double the conjunction. Checked against this shape and the two above it.
+assert '! grep -E "^reason=.*, so " <<<"$out"' \
+    "the reason is a clause and supplies no ', so' of its own (got '$(grep "^reason=" <<<"$out")')"
+assert 'grep -qF "did not come back as base64" <<<"$(drive_err)"' \
+    "saying the transport was cut rather than blaming the file (said '$(drive_err)')"
+assert '! grep -qF "is not gzip" <<<"$(drive_err)"' \
+    "and never the sentence for a file that arrived and would not decode (said '$(drive_err)')"
+assert 'grep -qxF "entries=2" <<<"$out"' \
+    "the active log is read in full regardless (got '$out')"
+assert 'grep -qxF "find=1.4.0|0|active|deploy" <<<"$out"' \
+    "and a target that is in it is still found — the archive is not what the answer rests on (got '$out')"
+
+# A workstation with no gzip. Same rule, and the one shape no count of decoded
+# entries could ever distinguish: the file never reached a decoder at all.
+#
+# The PATH is rebuilt out of symlinks to everything the real one holds, minus
+# zcat — shadowing it with a stub that exits 127 would not do, because the code
+# asks `command -v` and a stub answers yes.
+nozcat="$tmpdir/nozcat-path"
+mkdir -p "$nozcat"
+while IFS= read -r p; do
+    [ -d "$p" ] || continue
+    for f in "$p"/*; do
+        [ -x "$f" ] && [ ! -d "$f" ] || continue
+        [ "${f##*/}" = zcat ] && continue
+        [ -e "$nozcat/${f##*/}" ] || ln -s "$f" "$nozcat/${f##*/}"
+    done
+done <<<"${PATH//:/$'\n'}"
+assert '[ ! -e "$nozcat/zcat" ] && [ -x "$nozcat/base64" ]' \
+    "the zcat-less PATH has everything but zcat — otherwise the case below proves nothing"
+
+write_payload ok "$act" ok "$tmpdir/arch.gz"
+: > "$ssh_log"
+out=$(env -i HOME="$tmpdir/home" PATH="$stub_dir:$nozcat" SSH_LOG="$ssh_log" \
+        SSH_PAYLOAD="$payload_file" KASBAH_LIB_DIR="$repo_dir/lib" \
+        KASBAH_VERSION=0.1.0-test NO_COLOR=1 \
+        bash "$driver" fetch deploy@vps /apps demo 1.4.0 2>"$tmpdir/err"); rc=$?
+assert '[ "$rc" = "0" ]' \
+    "an archive kasbah has no zcat for is a warning too, not a dead run (exit $rc: $(drive_err))"
+assert 'grep -qxF "damaged=yes" <<<"$out"' "and is flagged as damaged (got '$out')"
+assert 'grep -qxF "reason=could not be decoded on this workstation: zcat is not on its PATH" <<<"$out"' \
+    "with the fourth clause, which is about this machine and not about the file (got '$out')"
+assert 'grep -qF "zcat is not installed" <<<"$(drive_err)"' \
+    "naming what is missing on *this* side (said '$(drive_err)')"
+assert 'grep -qF "may be perfectly whole" <<<"$(drive_err)"' \
+    "and refusing to blame the file on the server for it (said '$(drive_err)')"
+assert '! grep -qF "is not gzip" <<<"$(drive_err)"' \
+    "which is what saying 'is not gzip' here would do (said '$(drive_err)')"
+assert 'grep -qxF "entries=2" <<<"$out"' \
+    "the active log is still read, so history stays usable (got '$out')"
 
 # The remote step itself failing is the caller's problem, not a silent no-history.
 write_payload ok "$act" missing ""

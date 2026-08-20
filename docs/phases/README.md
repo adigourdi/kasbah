@@ -15,7 +15,7 @@ during execution.
 | 2 | [Spine](02-spine.md) | **Done.** `server init`, the shared Traefik stack, thin `deploy` and minimal `server status`; a stock project serves through Traefik via a file-provider fragment |
 | 3 | [Env](03-env.md) | **Done.** Env template system ported verbatim with its tests; one shared drift function used by `check` and by the VPS; `KASBAH_*` injected into a managed block |
 | 4 | [Ship](04-ship.md) | **Done.** `build-push` + full `deploy` (hooks, backup, health, flock, digests): a custom-built app ships to the rig |
-| 5 | [Undo](05-undo.md) | `rollback` + `history` / `pending` / `changelog` |
+| 5 | [Undo](05-undo.md) | **Done.** `rollback` + `deploy X.Y.Z` from a git tag, `versions.log` rotation, and `history` / `pending` / `changelog` |
 | 6 | [Proof](06-proof.md) | **The real milestone.** A real project (deliberately unnamed) on a freshly provisioned VPS: bare host → HTTPS with real ACME, change deploy, rollback — kasbah only |
 | 7 | [Operate](07-operate.md) | Mail port, `logs`/`exec`, `check --server`, `upgrade-traefik`, `server prune`, full `server status` |
 | 8 | [Keep](08-keep.md) | `drop [--prune]`, `server destroy`, `--with-backup` (restic), `check --fix` |
@@ -75,7 +75,57 @@ rhythm: one capability slice per task, tests landing with it.
 8. **VPS-side helpers are kasbah-owned** and overwritten on every deploy;
    projects never vendor kasbah bash.
 
-## Before starting Phase 5
+## Before starting Phase 6
+
+Phase 5 is committed and its four exit criteria were walked by hand against the
+rig at the close, driving `kasbah` as an operator. Baselines: `./test.sh`
+**20 PASS in ~6m30s**; `KASBAH_RIG_TESTS=1 ./test.sh` **29 PASS in ~16m**, exit
+0, no skips. **These are the numbers Phase 6 should regress against.**
+
+Two of those 29 failed once for reasons that were not the code, and the shapes
+are worth recognising: `integration/ship_test.sh` asserts a freshly loaded image
+carries exactly one tag, and a hand-walk had left version tags on the rig —
+`rig_clean` removes projects and networks but deliberately **leaves images
+alone**. And `integration/smoke_test.sh` died on a 502 from
+`registry-1.docker.io`. Both were green on re-run. Phase 4's Findings already
+warn that a poisoned rig presents as *unrelated* suites failing: diagnose before
+fixing.
+
+Phase 5 has a
+`## Findings` section that is unusually worth reading before Phase 6 —
+the real-VPS milestone is where several of its accepted limits get their first
+real test.
+
+Four things Phase 5 leaves for whoever opens this code next.
+
+**One predicate decides whether a `versions.log` line is an entry**, and three
+readers apply it: `vlog_parse_line` on the workstation, `rd_prev_version` on the
+VPS, and `kasbah server status` through the first. Four non-empty positional
+fields and a first field beginning `YYYY-MM-DDT`. They disagreeing is a run that
+warns a line has no readable version and then names the version the other reader
+took out of it — which happened, and is fixed. Rotation's `_rd_month_index` is
+the deliberate exception and asks only which month a line falls in; tightening it
+stops rotation entirely (measured: 67 failures).
+
+**The archive is never fatal on the workstation; the active log always is.**
+Every way `versions.log.gz` can fail to arrive — not gzip, truncated member, not
+base64, unreadable, no local `gzip` — is a warning naming which, and
+`VLOG_ARCHIVE_STATE` / `VLOG_ARCHIVE_DAMAGED` / `VLOG_ARCHIVE_REASON` carry it to
+the readers. Any command concluding something from the *absence* of a record must
+consult them first; `rollback` shipped once without doing so and told an operator
+a version had never been deployed on evidence it did not have.
+
+**A safety mechanism with no consumer is indistinguishable from no safety
+mechanism.** This phase produced that defect twice from the same library — once
+caught by unit review, once only by the whole-phase pass. When a unit adds a fact
+so that another unit can act on it, grep for the reader before believing it is
+done.
+
+**`kasbah deploy X.Y.Z` exists now and shares `rollback`'s engine.** The two
+differ in the log action, the hook pair, and whether the deploy record is a
+precondition. It has no rig case — the risk is the wiring, not the path.
+
+## Before starting Phase 5 ✅
 
 Phase 4 is committed and its four exit criteria were walked by hand against the
 rig at the close. Baselines: `./test.sh` **16 PASS in ~5m15s**;

@@ -336,6 +336,36 @@ assert '[ -z "$(sed -n 4p "$proj/versions.log")" ] && [ "$(wc -l < "$proj/versio
 assert '[ "$(zcat "$proj/versions.log.gz")" = "2026-02-01T00:00:00+00:00 deploy 1.0.0 no-backup kasbah=0.1.0-test digest=- " ]' \
     "and the entry that moved out kept its own trailing space (got: '"'"'$(zcat "$proj/versions.log.gz")'"'"')"
 
+# --- Case C3: scratch files a killed rotation left beside the record ------------------
+# `.versions.log.keep`, `.drop` and `.part` live in <apps>/<name>/ and a rotation
+# killed outright leaves them there (docs/build-deploy.md → Rotation). The claim
+# the doc makes is that the next rotation cannot be corrupted by one, which rests
+# on all three being truncated before use rather than appended to — so each is
+# planted holding an entry that must not reach either file.
+new_run c3
+{ entry 2026-01 1.0.0; printf '\n'
+  entry 2026-06 1.1.0; printf '\n'
+} > "$proj/versions.log"
+printf '%s\n' "$(entry 2026-01 9.9.9)" > "$proj/.versions.log.keep"
+printf '%s\n' "$(entry 2026-01 8.8.8)" > "$proj/.versions.log.drop"
+printf 'not gzip at all\n'             > "$proj/.versions.log.part"
+run 2026-08 1.2.0; rc=$?
+assert '[ "$rc" = "0" ]' "a rotation over stale scratch files exits 0 (exit $rc)
+        stderr: $run_err"
+assert '! grep -q "9.9.9" "$proj/versions.log"' \
+    "the stale .keep did not become part of the rewritten log
+        log: $(tr "\n" "/" < "$proj/versions.log")"
+assert '[ "$(wc -l < "$proj/versions.log")" = "2" ]' \
+    "which holds exactly the retained entry and the new one ($(wc -l < "$proj/versions.log") lines)"
+gz="$(zcat "$proj/versions.log.gz" 2>/dev/null)"; gzrc=$?
+assert '[ "$gzrc" = "0" ]' "the archive is whole gzip, so the stale .part was overwritten and not
+        appended (exit $gzrc)"
+assert '[ "$gz" = "$(entry 2026-01 1.0.0)" ]' \
+    "and holds only the entry this rotation moved (got: '"'"'$gz'"'"')"
+assert '! grep -qF "8.8.8" <<<"$gz"' "not the stale .drop's"
+assert '[ -z "$(find "$proj" -maxdepth 1 -name ".versions.log.*" 2>/dev/null)" ]' \
+    "and all three are gone afterwards (found: $(find "$proj" -maxdepth 1 -name ".versions.log.*" | tr "\n" " "))"
+
 # --- Case D: two rotations, one gz ----------------------------------------------------
 # Concatenated gzip streams are valid gzip and zcat reads them in order, which is
 # what lets the archive be appended to rather than rebuilt. One rotation cannot
@@ -512,5 +542,93 @@ assert '[ "$(stat -c %a "$proj/versions.log")" = "664" ]' \
     "and versions.log keeps the mode it had, not the one the umask would give it
         (got $(stat -c %a "$proj/versions.log"))"
 assert '[ -f "$proj/versions.log.gz" ]' "with the rotation itself having happened"
+
+# --- Case H2: the archive is the same record and gets the same treatment -----------------
+# `cat >> versions.log.gz` creates the file under this run's umask, so Case H's
+# defect arrives again four lines later for the other half of the record — and an
+# archive only the deploying user can read is what makes `kasbah rollback` draw
+# conclusions from a file it never read (docs/phases/05-undo.md).
+new_run h2
+{ entry 2026-01 1.0.0; printf '\n'
+  entry 2026-06 1.1.0; printf '\n'
+} > "$proj/versions.log"
+chmod 0644 "$proj/versions.log"
+assert '[ ! -e "$proj/versions.log.gz" ]' \
+    "there is no archive yet, so this rotation is the one that creates it — the case is about
+        a file the append brings into existence"
+( umask 077; run 2026-08 1.2.0 ); rc=$?
+assert '[ "$rc" = "0" ]' "a first rotation under a tight umask exits 0 (exit $rc)
+        stderr: $run_err"
+assert '[ -f "$proj/versions.log.gz" ]' "and the archive is there"
+assert '[ "$(stat -c %a "$proj/versions.log.gz")" = "644" ]' \
+    "carrying the active log's mode and not the 600 the umask would have given it
+        (got $(stat -c %a "$proj/versions.log.gz"))"
+assert '[ "$(stat -c %a "$proj/versions.log")" = "644" ]' \
+    "with the active log itself unchanged (got $(stat -c %a "$proj/versions.log"))"
+
+# A second rotation appends to an archive that already exists, so the mode to
+# keep is that file's own — whoever set it, and whatever the active log says.
+chmod 0640 "$proj/versions.log.gz"
+chmod 0600 "$proj/versions.log"
+( umask 077; run 2026-11 1.3.0 ); rc=$?
+assert '[ "$rc" = "0" ]' "the second rotation exits 0 (exit $rc)
+        stderr: $run_err"
+assert '[ "$(zcat "$proj/versions.log.gz" | grep -c .)" = "2" ]' \
+    "having appended to the archive rather than replaced it (got: $(zcat "$proj/versions.log.gz" | tr "\n" "/"))"
+assert '[ "$(stat -c %a "$proj/versions.log.gz")" = "640" ]' \
+    "the archive keeps its own mode, which is neither the umask's nor the active log's 600
+        (got $(stat -c %a "$proj/versions.log.gz"))"
+
+# The failure-tolerance rule, the same one Case H's mode preservation has, and it
+# needs both halves reached separately. A `chmod` that fails is the half a
+# missing `stat` hides: with no mode to apply, the chmod is never run at all, so
+# a case that breaks both proves only the first.
+nochmod="$tmpdir/nochmod"
+mkdir -p "$nochmod"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$nochmod/chmod"
+chmod 0755 "$nochmod/chmod"
+new_run h3
+{ entry 2026-01 1.0.0; printf '\n'
+  entry 2026-06 1.1.0; printf '\n'
+} > "$proj/versions.log"
+chmod 0644 "$proj/versions.log"
+run 2026-08 1.2.0 "$nochmod"; rc=$?
+assert '[ "$rc" = "0" ]' "a host whose chmod refuses still rotates (exit $rc)
+        stderr: $run_err"
+assert '[ -f "$proj/versions.log.gz" ] && [ "$(zcat "$proj/versions.log.gz")" = "$(entry 2026-01 1.0.0)" ]' \
+    "with the entry in the archive (got: '"'"'$(zcat "$proj/versions.log.gz" 2>/dev/null)'"'"')"
+assert '[ "$(wc -l < "$proj/versions.log")" = "2" ]' \
+    "and the active log rewritten ($(wc -l < "$proj/versions.log") lines)"
+assert 'grep -qF "moved to versions.log.gz" <<<"$run_err"' \
+    "announcing the rotation as the success it was (said '$run_err')"
+assert '! grep -qF "could not be rotated" <<<"$run_err"' \
+    "and the rotation is not reported as failed over a mode it could not set (said '$run_err')"
+assert '! grep -qF "BOTH files" <<<"$run_err"' \
+    "nor as the half-done rewrite, which a chmod folded into the rewrite's status would
+        report (said '$run_err')"
+
+# The other half: no GNU `stat`, so there is no mode to carry and the run loses
+# that and nothing else.
+nostat="$tmpdir/nostat"
+mkdir -p "$nostat"
+printf '#!/usr/bin/env bash\nexit 127\n' > "$nostat/stat"
+chmod 0755 "$nostat/stat"
+new_run h4
+{ entry 2026-01 1.0.0; printf '\n'
+  entry 2026-06 1.1.0; printf '\n'
+} > "$proj/versions.log"
+run 2026-08 1.2.0 "$nostat"; rc=$?
+assert '[ "$rc" = "0" ]' "and so does a host with no GNU stat (exit $rc)
+        stderr: $run_err"
+assert '[ -f "$proj/versions.log.gz" ] && [ "$(zcat "$proj/versions.log.gz")" = "$(entry 2026-01 1.0.0)" ]' \
+    "with the entry in the archive (got: '"'"'$(zcat "$proj/versions.log.gz" 2>/dev/null)'"'"')"
+assert '[ "$(wc -l < "$proj/versions.log")" = "2" ]' \
+    "and the active log rewritten ($(wc -l < "$proj/versions.log") lines)"
+assert 'grep -qF "moved to versions.log.gz" <<<"$run_err"' \
+    "announcing the rotation as the success it was (said '$run_err')"
+assert '! grep -qF "could not be rotated" <<<"$run_err"' \
+    "the rotation is not reported as failed over a mode it could not read (said '$run_err')"
+assert '! grep -qF "BOTH files" <<<"$run_err"' \
+    "nor as the half-done rewrite (said '$run_err')"
 
 exit "$fail"

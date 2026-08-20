@@ -94,6 +94,11 @@ VLOG_ARCHIVE_PATH=/apps/demo/versions.log.gz
 VLOG_ACTIVE_STATE="$HT_ACT"
 VLOG_ARCHIVE_STATE="$HT_ARC"
 VLOG_ARCHIVE_DAMAGED="$HT_DMG"
+# The reason is set where the decode failed (lib/versions_log.sh →
+# _vlog_decode_archive) and carried, not re-derived: a caller counting decoded
+# entries cannot tell a truncated member from a payload that is not gzip from a
+# workstation with no zcat.
+VLOG_ARCHIVE_REASON="$HT_RSN"
 
 readraw ARCH "$arch_file"
 readraw ACT "$act_file"
@@ -110,19 +115,19 @@ DRV
 arch="$tmpdir/arch.log"
 act="$tmpdir/act.log"
 
-H_ACT=ok; H_ARC=missing; H_DMG=no
+H_ACT=ok; H_ARC=missing; H_DMG=no; H_RSN=""
 DRIVE_DIR=""
 DRC=0; OUT=""; ERR=""
 drive() {
     local rc=0 dir="${DRIVE_DIR:-$project}"
     ( cd "$dir" && env KASBAH_LIB_DIR="$repo_dir/lib" KASBAH_VERSION="$kver" \
-          HT_ACT="$H_ACT" HT_ARC="$H_ARC" HT_DMG="$H_DMG" \
+          HT_ACT="$H_ACT" HT_ARC="$H_ARC" HT_DMG="$H_DMG" HT_RSN="$H_RSN" \
           bash "$driver" "$1" "$arch" "$act" "${@:2}" ) \
         >"$tmpdir/o" 2>"$tmpdir/e" || rc=$?
     DRC=$rc
     OUT="$(cat "$tmpdir/o")"
     ERR="$(cat "$tmpdir/e")"
-    H_ACT=ok; H_ARC=missing; H_DMG=no
+    H_ACT=ok; H_ARC=missing; H_DMG=no; H_RSN=""
     DRIVE_DIR=""
     return 0
 }
@@ -276,16 +281,21 @@ assert 'grep -qF "not the whole record" <<<"$OUT"' \
     "and plain history says it too, since its count of what --all would add is short by the same entries (got '$OUT')"
 
 # Damaged, in its two shapes — which differ by whether anything was decoded, and
-# the operator's next move differs with them.
+# the operator's next move differs with them. The clause comes with the record
+# from lib/versions_log.sh, which is where the decode knows which shape it hit;
+# these are its own two spellings, and a reader that re-derived the shape from
+# what it can see is exactly what they replaced.
+rsn_cut='ends in a truncated gzip member: whatever is inside it could not be decoded'
+rsn_notgz='is not gzip: no archived entry could be decoded'
 { printf '%s deploy 0.9.0 no-backup kasbah=0.1.0 digest=-\n' 2026-01-04T10:00:00+00:00; } > "$arch"
-H_ARC=ok; H_DMG=yes; drive history yes
+H_ARC=ok; H_DMG=yes; H_RSN="$rsn_cut"; drive history yes
 assert 'grep -qF "ends in a truncated gzip member" <<<"$OUT"' \
     "an archive that decoded partway says the entries inside the last member are missing (got '$OUT')"
 assert 'grep -qF "not the whole record" <<<"$OUT"' \
     "and lands on the same clause the other two shapes do, since that is the part every caller needs (got '$OUT')"
 assert 'grep -qF "0.9.0" <<<"$OUT"' "while still showing everything that did decode (got '$OUT')"
 : > "$arch"
-H_ARC=ok; H_DMG=yes; drive history yes
+H_ARC=ok; H_DMG=yes; H_RSN="$rsn_notgz"; drive history yes
 assert 'grep -qF "is not gzip" <<<"$OUT"' \
     "an archive nothing decoded from is a different sentence — gzip never started (got '$OUT')"
 assert '! grep -qF "truncated gzip member" <<<"$OUT"' \
@@ -296,7 +306,7 @@ assert '! grep -qF "truncated gzip member" <<<"$OUT"' \
 # must not promise the whole record while the note under it says otherwise.
 { printf '%s deploy 0.9.0 no-backup kasbah=0.1.0 digest=-\n' 2026-01-04T10:00:00+00:00; } > "$arch"
 { printf '%s deploy 1.0.0 no-backup kasbah=0.1.0 digest=-\n' 2026-08-01T00:00:00+00:00; } > "$act"
-H_ARC=ok; H_DMG=yes; drive history
+H_ARC=ok; H_DMG=yes; H_RSN="$rsn_cut"; drive history
 assert 'grep -qF "1 more entry archived in versions.log.gz" <<<"$OUT"' \
     "plain history still counts what did decode (got '$OUT')"
 assert '! grep -qF "shows the whole record" <<<"$OUT"' \
@@ -315,7 +325,7 @@ assert '! grep -qF "could be read of it" <<<"$OUT"' "with no hedge on it (got '$
 # before the note was reached, so the report claimed a record it did not have.
 { printf '%s deploy 0.9.0 no-backup kasbah=0.1.0 digest=-\n' 2026-01-04T10:00:00+00:00; } > "$arch"
 : > "$act"
-H_ACT=empty; H_ARC=ok; H_DMG=yes; drive history
+H_ACT=empty; H_ARC=ok; H_DMG=yes; H_RSN="$rsn_cut"; drive history
 assert 'grep -qF "1 archived entry in versions.log.gz" <<<"$OUT"' \
     "an empty active log still says what did decode (got '$OUT')"
 assert 'grep -qF "ends in a truncated gzip member" <<<"$OUT"' \
@@ -398,14 +408,14 @@ assert 'grep -qF "could not be read (the probe called it '"'"'noaccess'"'"')" <<
 # about an archive it had just read an entry out of.
 { printf '%s deploy 0.9.0 no-backup kasbah=0.1.0 digest=-\n' 2026-01-04T10:00:00+00:00; } > "$arch"
 : > "$act"
-H_ACT=empty; H_ARC=ok; H_DMG=yes; drive pending
+H_ACT=empty; H_ARC=ok; H_DMG=yes; H_RSN="$rsn_cut"; drive pending
 assert 'grep -qF "lost or replaced" <<<"$OUT"' \
     "the active log holds nothing and the archive does, so this is not a first deploy (got '$OUT')"
 assert 'grep -qF "ends in a truncated gzip member" <<<"$OUT"' \
     "and the note is the one for an archive that decoded partway (got '$OUT')"
 assert '! grep -qF "is not gzip" <<<"$OUT"' \
     "not the one for an archive nothing came out of, which the line above contradicts (got '$OUT')"
-H_ACT=empty; H_ARC=ok; H_DMG=yes; drive changelog
+H_ACT=empty; H_ARC=ok; H_DMG=yes; H_RSN="$rsn_cut"; drive changelog
 assert 'grep -qF "ends in a truncated gzip member" <<<"$OUT"' \
     "changelog reads the same record and says the same thing about it (got '$OUT')"
 assert '! grep -qF "is not gzip" <<<"$OUT"' "and not the other one (got '$OUT')"
@@ -514,7 +524,47 @@ assert 'grep -qxF "after 1.0.0 (deploy, 2026-01-04T10:00:00+00:00, archived)" <<
 assert 'grep -qxF "v1.0.0..v3.0.0 — 2 commits" <<<"$OUT"' \
     "so the range spans the rotation point (got '$OUT')"
 
+# The pair spans the rotation point *into* an archive that gave up part of
+# itself. A truncated trailing member loses the newest archived entries — the
+# ones sitting directly against the active log's first — so the entry named as
+# "the entry before it" may not be, and the range built on it crosses a hole.
+# `history` over this record says it is incomplete; the changelog used to build
+# the range and say nothing, and its two dead-end branches carried the note
+# while the one that actually spans the point did not.
+H_ARC=ok; H_DMG=yes; H_RSN="$rsn_cut"; drive changelog
+assert 'grep -qxF "after 1.0.0 (deploy, 2026-01-04T10:00:00+00:00, archived)" <<<"$OUT"' \
+    "the previous entry still comes out of the archive (got '$OUT')"
+assert 'grep -qF "an entry between it and 3.0.0 may be inside the part that could not be decoded" <<<"$OUT"' \
+    "and the report says the pair may not be a pair (got '$OUT')"
+assert 'grep -qF "ends in a truncated gzip member" <<<"$OUT"' \
+    "carrying the same note history gives for the same record (got '$OUT')"
+assert 'grep -qF "not the whole record" <<<"$OUT"' "in the same words (got '$OUT')"
+assert 'grep -qxF "v1.0.0..v3.0.0 — 2 commits" <<<"$OUT"' \
+    "while still giving the range it could build, which is the useful half (got '$OUT')"
+assert '[ -z "$ERR" ]' "all of it on stdout, because all of it is the answer (stderr: '$ERR')"
+
+# The control: the same pair over an archive that is whole says none of it.
+H_ARC=ok; drive changelog
+assert 'grep -qxF "after 1.0.0 (deploy, 2026-01-04T10:00:00+00:00, archived)" <<<"$OUT"' \
+    "the same span (got '$OUT')"
+assert '! grep -qF "not the whole record" <<<"$OUT"' \
+    "with nothing said about a record it read all of (got '$OUT')"
+assert '! grep -qF "may be inside the part that could not be decoded" <<<"$OUT"' \
+    "and no hedge on the pair (got '$OUT')"
+
+# And a pair that does not touch the archive at all takes no note, damaged
+# archive or not: two adjacent entries of the active log have nothing between
+# them for the archive to be short of.
+{ printf '%s deploy 1.0.0 no-backup kasbah=0.1.0 digest=-\n' 2026-08-01T00:00:00+00:00
+  printf '%s deploy 3.0.0 no-backup kasbah=0.1.0 digest=-\n' 2026-08-02T00:00:00+00:00; } > "$act"
+H_ARC=ok; H_DMG=yes; H_RSN="$rsn_cut"; drive changelog
+assert 'grep -qxF "after 1.0.0 (deploy, 2026-08-01T00:00:00+00:00)" <<<"$OUT"' \
+    "the pair is entirely in the active log (got '$OUT')"
+assert '! grep -qF "may be inside the part that could not be decoded" <<<"$OUT"' \
+    "so the archive's hole cannot be between them, and is not raised (got '$OUT')"
+
 # One entry in the whole record, with the archive accounted for: a first deploy.
+{ printf '%s deploy 3.0.0 no-backup kasbah=0.1.0 digest=-\n' 2026-08-02T00:00:00+00:00; } > "$act"
 : > "$arch"
 H_ARC=missing; drive changelog
 assert 'grep -qF "3.0.0 is the first version deploy@vps ran here" <<<"$OUT"' \

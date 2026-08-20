@@ -1360,6 +1360,73 @@ assert '[[ "$(sed -n 3p "$proj/versions.log")" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0
 assert 'grep -qF "had no newline on it" <<<"$run_err"' \
     "and the repair is said out loud rather than done quietly (said '$run_err')"
 
+# --- Case X15c2: a truncated write that got as far as field 3 --------------------------------
+# The shape X15c's fixture cannot reach. Its cut line stops inside field 1, so
+# *any* reading of it yields an empty version; a write killed after field 3
+# leaves a line that still carries a version-shaped token, and a `read -r ts
+# action ver _` hands it over as though the entry were whole. The workstation's
+# reader calls that same line damaged (lib/versions_log.sh → vlog_parse_line, on
+# the four-fields-and-an-ISO-date test), so one run then reports a version out of
+# a line another half of kasbah says has none. Both sides apply one predicate.
+: > "$tmpdir/crumbs"
+setup_run x15c2 "$(run_manifest "printf 'backup-check\n' >> $tmpdir/crumbs")" "$built_compose"
+printf 'demo-web:1.5.0=sha256:aaa\ndemo-worker:1.5.0=sha256:bbb\n' > "$STUB_STATE/images"
+printf 'demo-web\ndemo-db\n' > "$STUB_STATE/containers"
+printf 'demo-web=healthy\n' > "$STUB_STATE/health"
+{ printf '%s deploy 1.3.0 no-backup kasbah=0.1.0-test digest=-\n' "$old_ts"
+  printf '%s deploy 3.0.0' "$log_ts"; } > "$proj/versions.log"
+# The fixture really does carry a version-shaped field 3 on the truncated line —
+# without that this case is X15c again under another name.
+assert '[ "$(sed -n 2p "$proj/versions.log")" = "$log_ts deploy 3.0.0" ]' \
+    "the planted last line stops after field 3, carrying a readable version
+        got: $(sed -n 2p "$proj/versions.log")"
+assert '[ "$(awk "NR==2{print \$3}" "$proj/versions.log")" = "3.0.0" ]' \
+    "which a reader that only splits fields would hand back as the previous version"
+deploy deploy 1.5.0; rc=$?
+assert '[ "$rc" = "0" ]' "a deploy over it succeeds (exit $rc)
+        stderr: $run_err"
+assert 'grep -qxF "prev_version=" <<<"$run_out"' \
+    "and reports no previous version, because no entry there finished being written
+        stdout: $(tr "\n" "/" <<<"$run_out")"
+assert '! grep -qF "prev_version=3.0.0" <<<"$run_out"' \
+    "never field 3 of the line that was cut off after it (stdout: $(tr "\n" "/" <<<"$run_out"))"
+assert 'grep -qxF "deployed_before=yes" <<<"$run_out"' \
+    "while the other question keeps its own answer: any entry at all is history, and
+        that split is what stops a guard failing open (stdout: $(tr "\n" "/" <<<"$run_out"))"
+assert 'grep -qF "prev= " "$tmpdir/crumbs"' \
+    "the hooks are handed an empty \$PREV_VERSION too (crumbs: $(tr "\n" "/" < "$tmpdir/crumbs"))"
+assert '! grep -qF "prev=3.0.0" "$tmpdir/crumbs"' \
+    "and not the fragment (crumbs: $(tr "\n" "/" < "$tmpdir/crumbs"))"
+
+# The control: the same line finished. Field 3 is then a version, and the same
+# report carries it — so the case above is about the truncation and not about
+# the reader having stopped working.
+: > "$tmpdir/crumbs"
+{ printf '%s deploy 1.3.0 no-backup kasbah=0.1.0-test digest=-\n' "$old_ts"
+  printf '%s deploy 3.0.0 no-backup kasbah=0.1.0-test digest=-\n' "$log_ts"; } > "$proj/versions.log"
+printf 'demo-web:1.5.0=sha256:aaa\ndemo-worker:1.5.0=sha256:bbb\n' > "$STUB_STATE/images"
+deploy deploy 1.5.0; rc=$?
+assert '[ "$rc" = "0" ]' "a deploy over the whole line succeeds too (exit $rc)
+        stderr: $run_err"
+assert 'grep -qxF "prev_version=3.0.0" <<<"$run_out"' \
+    "and reports the version, out of the same field of the same shape of line
+        stdout: $(tr "\n" "/" <<<"$run_out")"
+# The four fields are all required, and the ISO date with them: a hand-written
+# note or a line whose timestamp is not one is not an entry a version comes out
+# of either.
+: > "$tmpdir/crumbs"
+{ printf '%s deploy 1.3.0 no-backup kasbah=0.1.0-test digest=-\n' "$old_ts"
+  printf 'yesterday deploy 3.0.0 no-backup kasbah=0.1.0-test digest=-\n'; } > "$proj/versions.log"
+printf 'demo-web:1.5.0=sha256:aaa\ndemo-worker:1.5.0=sha256:bbb\n' > "$STUB_STATE/images"
+deploy deploy 1.5.0; rc=$?
+assert '[ "$rc" = "0" ]' "a deploy over a line with no ISO timestamp succeeds (exit $rc)
+        stderr: $run_err"
+assert 'grep -qxF "prev_version=" <<<"$run_out"' \
+    "and reads no version out of it — field 1 is the one part of the frozen format that is
+        pinned (stdout: $(tr "\n" "/" <<<"$run_out"))"
+assert 'grep -qxF "deployed_before=yes" <<<"$run_out"' \
+    "though it is still an entry, so the history question still answers yes"
+
 # --- Case X15d: a *mixed* outgoing state, which the skips are per container for ---------------
 # backup.container up, one pre-deploy hook's container down. rd_backup checks its
 # own container and rd_run_hooks checks each hook's, so what --allow-stopped

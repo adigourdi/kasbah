@@ -307,7 +307,23 @@ Fields:
   "which image actually ran" even after a rebuild of the same tag.
 
 The four positional fields are **frozen forever** — never reordered, never
-removed. New data lands as `key=value` pairs appended at the end. Every
+removed. New data lands as `key=value` pairs appended at the end.
+
+**One predicate decides whether a line is an entry**, and both sides apply
+it: four non-empty positional fields, and a first field beginning
+`YYYY-MM-DDT`. The server-side reader and the workstation's agree, because
+they disagreeing is a run that warns a line has no readable version and then
+names the version the other reader took out of it. A line that fails the
+test still **counts as history** — it is evidence the project has deployed
+here — but yields no version, so `PREV_VERSION` is empty for the hooks and
+the readers show the line's own bytes rather than inventing fields for it.
+"Has this project deployed here" and "what version was it" are two questions
+throughout, and collapsing them has produced defects in this codebase twice.
+
+Rotation is the deliberate exception: it asks only "which month is this line
+from", a strictly weaker question, so a truncated-but-datable line ages out
+of the active log like any other. Requiring the full format there would pin
+exactly the damaged write rotation exists to move. Every
 kasbah version within the same major must parse every line ever written
 (see the compatibility policy in `overview.md`).
 
@@ -322,9 +338,42 @@ Runs at the end of every successful write (`deploy`, `rollback`):
    `(current month - 3)` are moved out. E.g. writing in August prunes
    April-and-earlier entries.
 2. Pruned entries are `gzip`-appended to `versions.log.gz`. Concatenated
-   gzip streams are valid gzip — `zcat` reads all of them in order.
-3. `versions.log` is rewritten with only the retained entries.
+   gzip streams are valid gzip — `zcat` reads all of them in order. A
+   newly created archive takes the active log's mode and an existing one
+   keeps its own, for the reason step 3 gives: an archive only one
+   administrator can read is what makes a later `rollback` reason about a
+   record it cannot see.
+3. `versions.log` is rewritten with only the retained entries, keeping the
+   mode it already had — `mv` replaces the inode, and a deploy record only
+   one of several administrators can read is not one.
 4. Nothing is ever deleted.
+
+The three scratch files rotation works through — `.versions.log.keep`,
+`.versions.log.drop` and `.versions.log.part` — live beside the record in
+`<apps>/<name>/` and are removed on every path. A rotation killed outright
+leaves them there; the next one truncates them before use, so a stale one
+cannot corrupt it.
+
+**Rotation has three failure shapes and the operator's next move differs in
+each**, so it reports which happened rather than a single "could not
+rotate". Nothing was written anywhere; or the append to the archive stopped
+partway, so it may end in an incomplete gzip member while `versions.log` is
+still whole; or the archive took the entries and the rewrite of
+`versions.log` then failed — in which case **the entries are in both files**,
+and every later run appends them to the archive again until `versions.log`
+is trimmed by hand. That last state is the price of the gz-first ordering:
+duplicated rather than lost, and loud rather than silent. A rotation failure
+never fails the run — the deploy is already recorded, and a log compaction
+must not cost the project its Traefik route.
+
+**On the workstation, nothing about the archive is ever fatal.** It cannot
+be decoded, cannot be read, is not gzip, ends in a truncated member, or the
+workstation has no `gzip` at all: each is a warning naming which, and the
+active log — which is authoritative for what is deployed — is read either
+way. The prerequisite table in `server-setup.md` covers the *server*; a
+workstation missing `gzip` loses the archived history and no more. The
+asymmetry is deliberate: an unreadable **active** log stops the run, because
+no command can answer honestly without it.
 
 `kasbah history` transparently spans both files. They are fetched
 together, in one round trip — over ssh a second round trip costs far more
@@ -358,6 +407,12 @@ small without sacrificing history.
      NOT present → fail:
        "Version X was never deployed to this VPS.
         Use `kasbah deploy <user@host> X` for a first-time deploy."
+     That wording is an assertion about the whole record, so it is only
+     used when the whole record was read. When a line could not be parsed,
+     or the archive could not be decoded, the refusal says instead that
+     the record could not be read through and that an unreadable part may
+     be the one naming the target — kasbah does not answer "never
+     deployed" from evidence it does not have.
 4. Verify git tag v<target> exists locally.
      missing → `git fetch --tags`, retry
      still missing → hard fail
@@ -365,7 +420,11 @@ small without sacrificing history.
      git show v<target>:kasbah.yml       → used for the sync list
      git show v<target>:compose.prod.yml  → used for the image set
 6. Image check — for each service with `build:` in v<target>'s compose,
-   `:<target>` must be present on the VPS. Nothing has reached the server
+   `:<target>` must be present on the VPS. The message below is
+   `rollback`'s: it can say "no longer" because the version provably ran
+   here. `kasbah deploy X.Y.Z` reaches the same check without that
+   evidence — the version may have been pruned or may never have been
+   built — so it names both possibilities rather than asserting one. Nothing has reached the server
    at this point and nothing will until step 8; the implementation extracts
    (step 8's local half) before running this check, because the check reads
    the ref's compose out of the extraction, and the ordering that matters is

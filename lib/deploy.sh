@@ -730,7 +730,15 @@ _deploy_sync_fragment() {
         err "could not ship $_DEPLOY_FRAGMENT to $_DEPLOY_TARGET:$dest"
         err_cont "the $_DEPLOY_MODE itself succeeded — the new containers are up and versions.log"
         err_cont "already records $_DEPLOY_VERSION. Only the Traefik route is missing, so this"
-        err_cont "host serves whatever it served before (404 if it is a first deploy)."
+        # A first deploy is impossible on the rollback path — the version had to
+        # be in the record to get here — so the 404 that fits one mode is a
+        # sentence about a run nobody made in the other.
+        if [ "$_DEPLOY_MODE" = rollback ]; then
+            err_cont "host still serves the route the run before this one left, which points at the"
+            err_cont "containers this rollback replaced, so it 502s for any of them v$_DEPLOY_VERSION renamed."
+        else
+            err_cont "host serves whatever it served before (404 if it is a first deploy)."
+        fi
         err_cont "re-run \`$(_deploy_rerun_cmd)\` once the server is reachable again."
         exit 1
     fi

@@ -143,6 +143,14 @@ administer, which is why `/etc/kasbah/apps-path` exists at all. The mode is now
 captured with `stat -c %a` and reapplied, both steps failure-tolerant: a host
 without GNU `stat` loses the mode preservation and nothing else.
 
+**And that fix was half of the step it described** — the phase's own named class,
+committed in the entry recording it. The same function *creates*
+`versions.log.gz` with a bare `cat >> `, so the archive was still taking the
+run's umask: measured at `600` beside a `644` active log. The group review found
+it, and found what it costs — an archive the ssh user cannot read is what makes
+`rollback` assert things about a record it has not seen. Closed at the phase
+close; both halves of rotation now carry the mode across.
+
 **`RD_VERB` is a verb and one slot needed a noun.** The mode-sensitive messages
 read "refusing to $RD_VERB over a stack" (`roll back`) but also "on every
 ⟨noun⟩ after it", where `$RD_MODE` — literally `deploy` or `rollback` — is what
@@ -317,6 +325,17 @@ it. `manifest.name` decides the server directory, the compose project name and
 the fragment filename, so it is the one thing the v<target> invariant cannot
 read from the ref: the name is what identifies the thing being rolled back.
 
+**The seam was wider than this unit's fix.** `VLOG_SKIPPED_DAMAGED` was the
+one consumed; `VLOG_ARCHIVE_STATE` and `VLOG_ARCHIVE_DAMAGED` are the same idea
+for the same purpose, and `lib/rollback.sh` read neither — `grep -c` returned 0
+here against 11 in `lib/history.sh`. So a version aged into an *unreadable*
+archive was answered "never deployed to this VPS. Use `kasbah deploy …` for a
+first-time deploy", directly above a line claiming the archive had been read.
+Found by the phase-close group review, not by this unit's own rounds, and it is
+the clearest argument for that pass existing: **fixing one instance of a class
+is not fixing the class**, and the unit that fixes an instance is the least
+likely to look for its siblings.
+
 **A trap for anyone writing tests against `lib/versions_log.sh`:**
 `VLOG_ACTIVE_STATE` and `VLOG_ARCHIVE_STATE` are library globals that
 `vlog_fetch` clears, and the clearing propagates into the exported environment
@@ -409,6 +428,160 @@ defect was calling a query that *skips* damaged lines without reporting it.
 These three commands call no such query: `history` walks the arrays itself, and
 `pending`/`changelog` reach the record through `vlog_last_entry`, which neither
 skips nor counts. The obligation is discharged in kind rather than by reading a
-counter — every unparsed line is shown, and a range is never built past one.
-Recorded because the next reader will otherwise go looking for a consumer that
-should not exist.
+counter — every unparsed line is shown. Recorded because the next reader will
+otherwise go looking for a consumer that should not exist.
+
+**Corrected at the phase close:** this entry originally also claimed "a range is
+never built past one", and the group review disproved it — `changelog` built a
+range across a *truncated archive* without a word, on the same record where
+`history` said the record was incomplete. The unparsed-*line* claim holds; the
+general one did not, and was fixed rather than reworded.
+
+### Phase close — the exit criteria, walked by hand
+
+Driven as an operator against the rig with `kasbah` itself, reading every fact
+back off the server rather than inferring it from a green suite. The sequence
+was `server init` → build-push/deploy 3.0.0 → build-push/deploy 3.1.0 →
+`rollback` → build-push/deploy 3.2.0 → `rollback 3.0.0`, then the two refusals
+and the rotation.
+
+**The walk's first attempt proved two of its own three assertions vacuous**, and
+only caught it because each comparison also printed whether the two versions
+differ at all. v3.1.0 had been cut with a `sed` that silently matched nothing,
+so its compose file was byte-identical to v3.0.0's — and because nothing in the
+image changed either, `built-app-web:3.0.0` and `:3.1.0` resolved to the same
+id. "The rollback restored v1's compose" and "`:current` points at v1" were both
+true and both meaningless. v3.2.0 was then cut to differ in **the compose file
+and the image payload**, and the criterion re-walked. The fifth occurrence in
+this phase of an assertion naming a property its fixture did not contain, and
+the first one the orchestrator wrote.
+
+- **Criterion 1** — after `rollback 3.0.0` over a deployed 3.2.0: the server's
+  `compose.yml` sha256 equals `git show v3.0.0:compose.prod.yml`, the fragment
+  at `<apps>/traefik/dynamic/built-app.yml` equals `git show
+  v3.0.0:traefik-dynamic.yml`, and `built-app-web:current` resolves to
+  `:3.0.0`'s id — each with the two versions verified to differ first. The
+  strongest evidence is the container rather than the files: it carries no
+  `WALK_MARKER` (which only v3.2.0's compose declares) and
+  `docker exec … cat index.html` serves the v3.0.0 build's payload, not
+  v3.2.0's. **One sub-assertion is vacuous and stays that way**:
+  `built-app-worker` was never changed between the two versions, so its
+  `:current == :3.0.0` would hold either way. The web image carries the claim.
+- **Criterion 2** — `kasbah rollback stevedore@rig 9.9.9` → exit 1,
+  *"Version 9.9.9 was never deployed to this VPS. Use `kasbah deploy
+  stevedore@rig 9.9.9` for a first-time deploy."*, followed by the line naming
+  both files it read.
+- **Criterion 3** — `docker image rm built-app-web:3.0.0` on the rig (`server
+  prune` is roadmap v0.2, so the pruned state is produced by hand), then
+  `rollback 3.0.0` → exit 1 with the roll-forward guidance and the
+  rebuild-from-tag escape hatch, naming the image. Verified side-effect-free
+  afterwards: `versions.log`'s last line unchanged, and
+  `built-app-web:current` still resolving to `:3.2.0`. Nothing was reshipped.
+- **Criterion 4** — two entries dated 2025-09 and 2025-10 planted in the active
+  log, then a real deploy. `versions.log.gz` **absent before, present after**,
+  holding exactly those two under `zcat`. `kasbah history` shows the 7 active
+  entries and footers *"2 more entries archived"*; `--all` shows all 9 with the
+  rotation marker between the halves.
+
+Two things the walk saw that no suite asserts:
+
+- **The exit-5 message's advice is correct and sufficient.** A first deploy with
+  no `.env` and no terminal stops at exit 5 and prints, among the options,
+  `ssh … 'cp /apps/built-app/.env.prod.example /apps/built-app/.env'`. Running
+  exactly that and re-deploying worked. An error message whose instructions an
+  operator can follow verbatim is worth more than one that is merely accurate.
+- **Phase 4's carried-in `:current` item is closed, and observed firing.** A
+  deploy that failed at `compose up` (the rig's cgroup limitation, before the
+  marker was zeroed) printed: *"built-app's images on stevedore@rig may already
+  carry :current for 3.0.0 even though its containers did not start — the retag
+  runs before `compose up`, and nothing on the server records that it moved.
+  `kasbah rollback stevedore@rig` is what puts it back."*
+
+### Phase close — the group review, and what four approved units still had wrong
+
+A fifth reviewer that had seen none of the four units' rounds judged them
+together. Every unit had been approved on its own; the group pass found five
+seam defects, four consistency defects and three overstatements in this file.
+That is the argument for the pass existing, in one number.
+
+**The phase's headline finding had a sibling nobody looked for.** Unit 3's
+lesson was that `VLOG_SKIPPED_DAMAGED` had no consumer. `VLOG_ARCHIVE_STATE`
+and `VLOG_ARCHIVE_DAMAGED` are the same idea, built by the same unit for the
+same purpose — and `grep -c` in `lib/rollback.sh` returned **0** against 11 in
+`lib/history.sh`. So `rollback` answered a version aged into an *unreadable*
+archive with "never deployed to this VPS. Use `kasbah deploy …` for a
+first-time deploy", directly above a line claiming to have read the archive.
+An operator following that runs a deploy — backup, deploy hook pair — on a
+version that already ran there. **Fixing one instance of a class is not fixing
+the class, and the unit that fixes an instance is the least likely to go
+looking for its siblings.**
+
+**The producer of that defect was the incomplete half of another fix.**
+`rd_rotate_log` preserves `versions.log`'s mode across its rewrite — unit 1's
+own post-review fix, recorded above — and then creates `versions.log.gz` with a
+bare `cat >>` under the run's umask. Measured: `600` archive beside a `644`
+active log. A root-run deploy followed by a non-root `kasbah rollback` is the
+whole chain from "half a fix" to "kasbah reasons about a record it cannot
+read". Both halves of rotation now carry the mode across.
+
+**Three readers of one frozen format disagreed, and one run said both things.**
+`vlog_parse_line` required four fields and a leading ISO timestamp;
+`rd_prev_version` on the VPS did `read -r ts action ver _` with no validation
+at all. On a `printf >>` killed after field 3 — the shape this phase names as
+realistic — the server read `3.0.0` and the workstation called the same line
+damaged, so one `kasbah rollback` warned that a line had no readable version
+and then, four lines later, named the version read out of it. `rd_prev_version`
+now applies the same predicate, and a line failing it yields no `PREV_VERSION`
+while still counting as history — which is exactly what `rd_deployed_before`
+is a separate function for.
+
+**Rotation's third parser stays deliberately weaker, and an orchestrator
+instruction to "align" it was wrong.** `_rd_month_index` is called as
+`_rd_month_index "$now-01"` where `$now` is `date -u +%Y-%m`, so requiring the
+`T` makes every rotation compute no cutoff — measured at **67 FAILs** in
+`rotation_test.sh`. It answers "which month is this line from", a strictly
+weaker question than "is this a kasbah entry", and tightening it would pin a
+datable truncated write in the active log forever, which is the one thing
+rotation exists to move.
+
+**A tell worth keeping, in its sharper form.** Five assertions in this phase
+named a property their fixture did not contain. The last two are the
+instructive ones: one was written by the orchestrator during the exit-criteria
+walk, comparing two versions that were byte-identical; the other was found only
+while *fixing a different defect*, when the mutation went **0 red** because the
+fixture held no damaged line in the archive it claimed to be about. Mutating
+first and confirming red — which every unit here did — still let five through,
+because the mutation and the fixture were chosen from the same wrong
+assumption. **A test that would pass both before and after the code exists is
+not a test**, and the fixture is where to look for that, not the assertion.
+
+**One claim to keep honest:** `_history_archive_note`'s count parameter, which
+four callers each re-derived and one passed a hard-coded `0` to, was a *latent*
+hazard rather than a live defect — the decoder only reports a truncated member
+when something decoded, so the count and the reason always agreed, and the
+hard-coded `0` sat in a branch where the archive contributed nothing and was
+correct by construction. Replacing it with a reason chosen where the failure
+happens is a real improvement and the only thing that could give the two new
+shapes (no `zcat`, not base64) sentences of their own. It did not fix a wrong
+message.
+
+### Accepted limits at the close
+
+- **Rotation's exit-3 message names one state where two are possible.** The
+  append to the archive failing *after* writing bytes and failing *before*
+  writing any are both reported as "stopped partway … may end in an incomplete
+  gzip member". Reproduced with the archive path occupied by a directory:
+  nothing was appended, and the repair advice is wrong for that state. The
+  shell prints its own diagnosis on the line above, and the workstation
+  independently calls that archive `notfile`, so nothing silently believes the
+  wrong thing. Left as it stands rather than widened at a phase close.
+- **The archive's mode under real ownership is rig-proof only in part.**
+  `rotation_test.sh` uses real files and a real umask, but no test has a
+  root-run deploy leaving an archive the ssh user cannot read. That is the one
+  item from the group review's real-infrastructure list that this phase could
+  not close.
+- **No `zcat` on the workstation** is proven hermetically only, by rebuilding
+  `PATH` from symlinks with `zcat` removed.
+- **`deploy X.Y.Z` has no rig case.** The engine is shared with `rollback` and
+  the mode difference is one argument, so the risk is the wiring rather than
+  the path — but it is untested against a real server.

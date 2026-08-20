@@ -29,9 +29,19 @@ _KASBAH_HISTORY_LOADED=1
 # of the round trip these commands have already paid for
 # (docs/project-manifest.md → State file).
 #
-# The report goes to stdout and everything else — progress, warnings, refusals —
-# to stderr through info/warn/err, the way `kasbah server status` splits them.
-# `kasbah history | column -t` has to get the table and nothing else.
+# **stdout is the answer; stderr is everything about this side.** A sentence
+# that *is* the answer to the question the command was asked belongs to the
+# report and goes to stdout — including "there is no such entry", "the last line
+# cannot be read" and "the archive could not be read through", which are answers
+# about the server just as a table is. A diagnostic about this checkout or the
+# transport — a tag never fetched, an unborn HEAD, a git that failed, ssh — is
+# not an answer about the server and goes to stderr through info/warn/err.
+# `kasbah history | column -t` has to get the table and nothing else, and
+# `kasbah changelog > file` has to leave a file that answers on its own.
+#
+# That rule is why two "why there is no changelog" sentences split: "nothing in
+# the record before it" is what the server's record says, and "this checkout has
+# no tag v1.0.0" is what this workstation is missing.
 #
 # Nothing here fails over git. A tag this checkout has never fetched, an
 # inverted range, an empty one: each is a fact about the checkout rather than
@@ -169,47 +179,6 @@ _history_read_record() {
     return 0
 }
 
-# Is the archived half of the record fully accounted for? Not the same question
-# as "are there archived entries": an archive kasbah could not read, or one
-# whose last gzip member is truncated, leaves entries this side cannot see, and
-# every sentence that would otherwise claim to describe the whole record has to
-# know that (docs/phases/05-undo.md — a message that under-describes a partial
-# read is worse than no message).
-_history_archive_whole() {
-    [ "$VLOG_ARCHIVE_DAMAGED" = no ] || return 1
-    case "$VLOG_ARCHIVE_STATE" in
-        ok|missing|empty) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-# The one line that says what is missing from the report above it, on stdout
-# with the rest of it: `vlog_fetch` has already warned on stderr with the
-# diagnosis, and a report redirected to a file must still not read as complete.
-# Empty when the archive is whole.
-#
-# All three shapes end in the same clause and differ only in the cause, because
-# three of the four callers have no table to be short of rows — what they share
-# is a record they cannot claim to have read.
-_history_archive_note() {
-    local _an_out="$1" _an_seen="$2"
-
-    printf -v "$_an_out" '%s' ""
-    _history_archive_whole && return 0
-
-    if [ "$VLOG_ARCHIVE_DAMAGED" = yes ] && [ "$_an_seen" -gt 0 ]; then
-        printf -v "$_an_out" '%s' \
-            "$VLOG_ARCHIVE_PATH ends in a truncated gzip member: whatever is inside it could not be decoded, so this is not the whole record"
-    elif [ "$VLOG_ARCHIVE_DAMAGED" = yes ]; then
-        printf -v "$_an_out" '%s' \
-            "$VLOG_ARCHIVE_PATH is not gzip: no archived entry could be decoded, so this is not the whole record"
-    else
-        printf -v "$_an_out" '%s' \
-            "$VLOG_ARCHIVE_PATH could not be read (the probe called it '$VLOG_ARCHIVE_STATE'), so this is not the whole record"
-    fi
-    return 0
-}
-
 # --- history --------------------------------------------------------------------
 
 # The table. Five columns, the four frozen fields plus kasbah= — the order
@@ -307,7 +276,7 @@ _history_render() {
     # Said in both modes, and for different reasons: with --all the table is
     # short of the entries the archive was holding, and without it the count of
     # what --all would add is short by the same ones.
-    _history_archive_note note "$n_arch"
+    vlog_archive_note note
     [ -z "$note" ] || printf '%s\n' "$note"
     return 0
 }
@@ -335,14 +304,14 @@ _history_render_empty() {
     # Every branch above, not just the last: an empty active log beside an
     # archive kasbah could only half read is the case where the note matters
     # most, and it was the branch that returned before reaching it.
-    _history_archive_note _re_note "$_re_arch"
+    vlog_archive_note _re_note
     [ -z "$_re_note" ] || printf '%s\n' "$_re_note"
     return 0
 }
 
 # What `--all` can honestly promise, for the sentence that recommends it.
 _history_all_offers() {
-    if _history_archive_whole; then
+    if vlog_archive_whole; then
         printf 'shows the whole record'
     else
         printf 'shows what could be read of it'
@@ -379,7 +348,7 @@ _history_deployed() {
         if [ "$_hd_arch" -gt 0 ]; then
             printf '%s holds no entry for %s, and its archive does — so this is a record that was lost or replaced, not a first deploy\n' \
                 "$VLOG_ACTIVE_PATH" "$MANIFEST_NAME"
-        elif _history_archive_whole; then
+        elif vlog_archive_whole; then
             printf '%s has never deployed %s — %s holds no entry, and neither does its archive\n' \
                 "$_DEPLOY_TARGET" "$MANIFEST_NAME" "$VLOG_ACTIVE_PATH"
         else
@@ -389,7 +358,7 @@ _history_deployed() {
             printf '%s holds no entry for %s, and whether its archive holds one cannot be told — this is not evidence that %s has never deployed it\n' \
                 "$VLOG_ACTIVE_PATH" "$MANIFEST_NAME" "$_DEPLOY_TARGET"
         fi
-        _history_archive_note _hd_note "$_hd_arch"
+        vlog_archive_note _hd_note
         [ -z "$_hd_note" ] || printf '%s\n' "$_hd_note"
         return 1
     fi
@@ -523,12 +492,12 @@ _history_changelog_report() {
         # The record holds one entry — unless the archive is what the entry
         # before it was in, and that could not be read. Those are opposite
         # answers and only VLOG_ARCHIVE_STATE tells them apart.
-        if _history_archive_whole; then
+        if vlog_archive_whole; then
             printf 'nothing in the record before it — %s is the first version %s ran here\n' \
                 "$curr" "$_DEPLOY_TARGET"
         else
             printf 'nothing readable in the record before it, so there is no range to compare against\n'
-            _history_archive_note note 0
+            vlog_archive_note note
             [ -z "$note" ] || printf '%s\n' "$note"
         fi
         return 0
@@ -545,6 +514,18 @@ _history_changelog_report() {
     prev="${VLOG_VERSION[$prev_idx]}"
     printf 'after %s (%s, %s%s)\n' "$prev" "${VLOG_ACTION[$prev_idx]}" "${VLOG_TS[$prev_idx]}" \
         "$([ "${VLOG_SRC[$prev_idx]}" = archive ] && printf ', archived' || printf '')"
+
+    # A truncated trailing member loses the *newest* archived entries — the ones
+    # sitting directly against the active log's first — so an entry read out of
+    # a half-read archive may not be the one immediately before, and the range
+    # is then across a gap. Only this half can be short: two adjacent entries of
+    # the active log have nothing between them to lose.
+    if [ "${VLOG_SRC[$prev_idx]}" = archive ] && ! vlog_archive_whole; then
+        printf 'that entry came out of an archive this run could only read part of, so an entry between it and %s may be inside the part that could not be decoded\n' \
+            "$curr"
+        vlog_archive_note note
+        [ -z "$note" ] || printf '%s\n' "$note"
+    fi
 
     range="v$prev..v$curr"
     if ! _history_have_ref "refs/tags/v$prev"; then

@@ -436,6 +436,182 @@ assert 'grep -qF "kasbah deploy deploy@vps 1.0.0" <<<"$out"' \
     "and still offering the first-time deploy, conditioned (said '$out')"
 assert '! grep -qF "remote-deploy.sh'\'' '\''" <<<"$calls"' "and nothing ran on the server"
 
+# --- A damaged line that is in the archive, not in the active log ------------------
+# `VLOG_SKIPPED_DAMAGED` counts across the whole record, so a message that names
+# only the active log sends the operator to a file with nothing wrong in it. The
+# fixture puts the damaged line where the message must not claim it is: the
+# active log below is a single clean entry.
+dmg_arch_b64="$( { printf '%s\n' '2026-01-01T00:00:00+00:00 deploy 1.0.0 no-backup kasbah=0.1.0 digest=-'
+                   printf '%s' '2026-02-01T00:00:00+00:0'; } | gzip -c | base64 -w0 )"
+clean_active=$'2026-08-02T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n'
+out="$( FAKE_ACTIVE="$clean_active" FAKE_ARCHIVE_STATE=ok FAKE_ARCHIVE_B64="$dmg_arch_b64" \
+        rollback deploy@vps )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" = "0" ]' "a damaged line in the archive does not stop a rollback (rc $rc: $out)"
+assert 'grep -qF "remote-deploy.sh'\'' '\''rollback'\'' '\''1.0.0'\''" <<<"$calls"' \
+    "the target is the archived deploy behind it (ran: $(grep -F "remote-deploy.sh" <<<"$calls"))"
+assert 'grep -qF "has 1 line(s) no version can be read" <<<"$out"' \
+    "and the count is said out loud (said '$out')"
+assert 'grep -qF "/apps/demo/versions.log.gz" <<<"$out"' \
+    "naming the archive, which is the file the line is actually in — the active log here is one
+        clean entry, so a message pointing only at it points at nothing (said '$out')"
+rm -rf "$project/.kasbah"
+
+# The same split on the refusal: a target that is in neither file, with the
+# unreadable line in the archive.
+out="$( FAKE_ACTIVE="$clean_active" FAKE_ARCHIVE_STATE=ok FAKE_ARCHIVE_B64="$dmg_arch_b64" \
+        rollback deploy@vps 5.5.5 )"; rc=$?
+assert '[ "$rc" != "0" ]' "a target in neither file is still refused (rc $rc: $out)"
+assert 'grep -qF "1 line(s) of" <<<"$out"' "counting what could not be read (said '$out')"
+assert 'grep -qF "Look at /apps/demo/versions.log and /apps/demo/versions.log.gz" <<<"$out"' \
+    "and sending the operator to both files, since the count spans both (said '$out')"
+
+# --- An archive kasbah could not read through --------------------------------------
+# Every conclusion a rollback draws from the *absence* of a record is a claim
+# about both files. `vlog_fetch` refuses an unreadable *active* log outright, so
+# the only way one half goes unread is the archive — which is a warning, and so
+# reaches all three of the places a rollback concludes something. The worst of
+# them answered with "use `kasbah deploy <host> X` for a first-time deploy" and
+# a line claiming to have read the archive: following that advice takes a backup
+# and runs the deploy hook pair over a version that has already run there.
+#
+# Two shapes, and they are not the same evidence. `noaccess` is an archive
+# nothing was read out of; a truncated trailing gzip member is one that gave up
+# part of itself, and the entries it swallows are the newest archived ones.
+m1="$tmpdir/m1.gz"; m2="$tmpdir/m2.gz"
+printf '%s\n' '2026-01-01T00:00:00+00:00 deploy 0.5.0 no-backup kasbah=0.1.0 digest=-' | gzip -c > "$m1"
+printf '%s\n' '2026-02-01T00:00:00+00:00 deploy 0.6.0 no-backup kasbah=0.1.0 digest=-' | gzip -c > "$m2"
+whole_b64="$( cat "$m1" "$m2" | base64 -w0 )"
+cut_b64="$( { cat "$m1"; head -c 10 "$m2"; } | base64 -w0 )"
+one_deploy=$'2026-08-02T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n'
+# The fixture has to contain what the assertions below name: an entry that is
+# really in the archive and really invisible once the last member is cut.
+assert '[ "$(cat "$m1" "$m2" | zcat 2>/dev/null | grep -cF "0.6.0")" = "1" ]' \
+    "the whole archive holds a 0.6.0 entry"
+assert '[ "$( { cat "$m1"; head -c 10 "$m2"; } | zcat 2>/dev/null | grep -cF "0.6.0")" = "0" ]' \
+    "and the truncated copy does not — that entry is what the cut member swallows"
+assert '[ "$( { cat "$m1"; head -c 10 "$m2"; } | zcat 2>/dev/null | grep -cF "0.5.0")" = "1" ]' \
+    "while the member before it still reads"
+
+# Site 1: an implicit target read *out of* the half that would not decode
+# through. The active log holds one deploy, so the walk has to reach the
+# archive, and the entry a truncated member swallows is the newest archived one
+# — which is the deploy that should have been the target.
+mid="$tmpdir/mid.gz"
+printf '%s\n' '2026-02-15T00:00:00+00:00 deploy 1.5.0 no-backup kasbah=0.1.0 digest=-' | gzip -c > "$mid"
+old_first="$tmpdir/old1.gz"
+printf '%s\n' '2026-01-01T00:00:00+00:00 deploy 1.0.0 no-backup kasbah=0.1.0 digest=-' | gzip -c > "$old_first"
+hidden_whole_b64="$( cat "$old_first" "$mid" | base64 -w0 )"
+hidden_cut_b64="$( { cat "$old_first"; head -c 10 "$mid"; } | base64 -w0 )"
+assert '[ "$(cat "$old_first" "$mid" | zcat 2>/dev/null | grep -cF "1.5.0")" = "1" ]' \
+    "the whole archive holds a deploy of 1.5.0 between 1.0.0 and the active log's entry"
+assert '[ "$( { cat "$old_first"; head -c 10 "$mid"; } | zcat 2>/dev/null | grep -cF "1.5.0")" = "0" ]' \
+    "and the truncated copy loses exactly that one — the nearer deploy is what the cut member
+        swallows, which is what makes the target below wrong"
+
+out="$( FAKE_ACTIVE="$one_deploy" FAKE_ARCHIVE_STATE=ok FAKE_ARCHIVE_B64="$hidden_cut_b64" \
+        rollback deploy@vps )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" = "0" ]' "a half-read archive does not stop a rollback (rc $rc: $out)"
+assert 'grep -qF "rolling back to 1.0.0" <<<"$out"' \
+    "and the target it can reach is one deploy further back (said '$out')"
+assert 'grep -qF "ends in a truncated gzip member" <<<"$out"' \
+    "which it says, in the shape the decode found (said '$out')"
+assert 'grep -qF "1.0.0 was read out of it" <<<"$out"' \
+    "naming where the target came from (said '$out')"
+assert 'grep -qF "a nearer deploy may be among the" <<<"$out"' \
+    "and what the entries it could not decode may have been (said '$out')"
+rm -rf "$project/.kasbah"
+
+# Two controls, because the hedge has to be absent for two different reasons.
+# A whole archive has nothing to be short of — and the target it yields is the
+# 1.5.0 the run above could not see, which is what makes that run's answer
+# wrong rather than merely hedged. (It stops at the tag check, which is step 4:
+# the fixture repository has no v1.5.0, and getting that far is the proof the
+# record check passed.)
+out="$( FAKE_ACTIVE="$one_deploy" FAKE_ARCHIVE_STATE=ok FAKE_ARCHIVE_B64="$hidden_whole_b64" \
+        rollback deploy@vps )"; rc=$?
+assert 'grep -qF "rolling back to 1.5.0" <<<"$out"' \
+    "the whole archive names 1.5.0 as the target, not the 1.0.0 the cut one reached (said '$out')"
+assert 'grep -qF "is not a tag in this repository" <<<"$out"' \
+    "and the run went on to step 4, so nothing in the record refused it (said '$out')"
+assert '! grep -qF "not the whole record" <<<"$out"' \
+    "with nothing said about a record it read all of (said '$out')"
+assert '! grep -qF "a nearer deploy may be" <<<"$out"' "and no hedge on the target (said '$out')"
+rm -rf "$project/.kasbah"
+
+# And a target found in the active log cannot be displaced by anything the
+# archive is missing — rotation moves entries out and never in — so an
+# unreadable archive is raised as a fact and not as a doubt about the target.
+out="$( FAKE_ARCHIVE_STATE=noaccess rollback deploy@vps )"; rc=$?
+assert '[ "$rc" = "0" ]' "an unreadable archive does not stop a rollback either (rc $rc: $out)"
+assert 'grep -qF "rolling back to 1.0.0" <<<"$out"' \
+    "the target is the active log's second-most-recent deploy (said '$out')"
+assert '! grep -qF "a nearer deploy may be" <<<"$out"' \
+    "and nothing in the archive could have been nearer, so nothing says otherwise (said '$out')"
+rm -rf "$project/.kasbah"
+
+# Site 2: no implicit target at all, and an empty active log. "Nothing was ever
+# deployed here" is a claim about both files.
+out="$( FAKE_ACTIVE= FAKE_ACTIVE_STATE=missing FAKE_ARCHIVE_STATE=noaccess rollback deploy@vps )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" != "0" ]' "with no target and no readable archive the rollback is refused (rc $rc: $out)"
+assert '! grep -qF "holds no entry for this project at all" <<<"$out"' \
+    "without the sentence that asserts the whole record is empty (said '$out')"
+assert 'grep -qF "whether its archive holds one cannot be told" <<<"$out"' \
+    "saying what is true instead — the same sentence \`history\` gives for the same record (said '$out')"
+assert 'grep -qF "this is not evidence that" <<<"$out"' \
+    "and naming outright what it is not evidence of (said '$out')"
+assert 'grep -qF "deploy@vps has never deployed it" <<<"$out"' \
+    "which is the claim it is refusing to make (said '$out')"
+assert 'grep -qF "could not be read (the probe called it '\''noaccess'\'')" <<<"$out"' \
+    "with the note under it (said '$out')"
+assert '! grep -qF "remote-deploy.sh'"'"' '"'"'" <<<"$calls"' "and nothing ran on the server"
+
+# The control: the same empty log with the archive accounted for keeps the
+# stronger sentence, which is the one that is true there.
+out="$( FAKE_ACTIVE= FAKE_ACTIVE_STATE=missing rollback deploy@vps )"; rc=$?
+assert 'grep -qF "holds no entry for this project at all" <<<"$out"' \
+    "an accounted-for archive is what lets the absence be stated (said '$out')"
+assert '! grep -qF "cannot be told" <<<"$out"' "with no hedge (said '$out')"
+
+# Site 3, and the one that used to send an operator to `kasbah deploy`. The
+# target is genuinely in the archive, inside the member that will not decode.
+out="$( FAKE_ACTIVE="$one_deploy" FAKE_ARCHIVE_STATE=ok FAKE_ARCHIVE_B64="$whole_b64" \
+        rollback deploy@vps 0.6.0 )"; rc=$?
+assert '[ "$rc" != "0" ]' "the control run also fails, on the tag (rc $rc: $out)"
+assert 'grep -qF "is not a tag in this repository" <<<"$out"' \
+    "which is step 4 — so with the whole archive the record check passed and 0.6.0 really is
+        in there (said '$out')"
+assert '! grep -qF "never deployed to this VPS" <<<"$out"' \
+    "and the record did not refuse it (said '$out')"
+
+out="$( FAKE_ACTIVE="$one_deploy" FAKE_ARCHIVE_STATE=ok FAKE_ARCHIVE_B64="$cut_b64" \
+        rollback deploy@vps 0.6.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" != "0" ]' "with the last archive member truncated, the same target is refused (rc $rc: $out)"
+assert '! grep -qF "was never deployed to this VPS" <<<"$out"' \
+    "but never as an absence — the entry naming it is in the part that would not decode (said '$out')"
+assert '! grep -qF "and its rotation archive on" <<<"$out"' \
+    "and never with the line claiming both files were read (said '$out')"
+assert 'grep -qF "did not come back whole" <<<"$out"' \
+    "it says which half it could not read (said '$out')"
+assert 'grep -qF "ends in a truncated gzip member" <<<"$out"' \
+    "in the shape the decode found, not one re-derived from what got through (said '$out')"
+assert 'grep -qF "not the same thing as never having deployed it here" <<<"$out"' \
+    "and says outright what the refusal is not (said '$out')"
+assert 'grep -qF "kasbah deploy deploy@vps 0.6.0" <<<"$out"' \
+    "still offering the first-time deploy, conditioned on the operator looking (said '$out')"
+assert '! grep -qF "remote-deploy.sh'"'"' '"'"'" <<<"$calls"' "and nothing ran on the server"
+
+# The entry the truncated archive did give up is still a target, so the refusal
+# above is about the missing member and not about an archive being present.
+out="$( FAKE_ACTIVE="$one_deploy" FAKE_ARCHIVE_STATE=ok FAKE_ARCHIVE_B64="$cut_b64" \
+        rollback deploy@vps 0.5.0 )"; rc=$?
+assert '[ "$rc" != "0" ]' "the entry before the damage fails on its tag, not on the record (rc $rc: $out)"
+assert 'grep -qF "is not a tag in this repository" <<<"$out"' \
+    "so the record check passed for it (said '$out')"
+
 # --- The three refusals -------------------------------------------------------------
 # Never deployed here. The version is a real tag in this checkout, so this is the
 # record's answer and not git's.
@@ -475,6 +651,33 @@ assert 'grep -qF "git checkout v1.0.0 && kasbah build-push deploy@vps" <<<"$out"
 assert 'grep -qF "kasbah rollback deploy@vps 1.0.0" <<<"$out"' "and the retry (said '$out')"
 assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
 assert '! grep -qF "remote-deploy.sh'"'"' '"'"'" <<<"$calls"' "and nothing ran on the server"
+assert '! grep -qF "never built" <<<"$out"' \
+    "and it does not hedge: a rollback has already proved the version is in the record, so an
+        absent image is one the retention window let go (said '$out')"
+
+# The same branch in tagged-deploy mode, where the headline above is false. A
+# `kasbah deploy <host> X.Y.Z` for a version that was never built and shipped is
+# the commonest way here, and a deploy reads no record at all — so "no longer on
+# the VPS (outside the retention window)" states a history kasbah never looked
+# for. The advice below it already branched correctly; the headline did not.
+out="$( IMAGES_MISSING=demo-web FAKE_ACTIVE= FAKE_ACTIVE_STATE=missing deploy deploy@vps 1.0.0 )"; rc=$?
+calls="$(<"$call_log")"
+assert '[ "$rc" != "0" ]' "a tagged deploy whose image is not on the server is refused (rc $rc: $out)"
+assert 'grep -qF "Image demo-web:1.0.0 is not on deploy@vps" <<<"$out"' \
+    "naming the image and the server (said '$out')"
+assert '! grep -qF "no longer on the VPS" <<<"$out"' \
+    "without claiming it used to be there — nothing in this run read a record (said '$out')"
+assert '! grep -qF "outside the retention window)." <<<"$out"' \
+    "nor giving a reason it did not establish (said '$out')"
+assert 'grep -qF "either it was never built" <<<"$out"' \
+    "it names both states it cannot tell apart (said '$out')"
+assert 'grep -qF "does not read the deploy record, so kasbah cannot tell which" <<<"$out"' \
+    "and why it cannot (said '$out')"
+assert 'grep -qF "kasbah history deploy@vps --all" <<<"$out"' \
+    "pointing at the command that would answer it (said '$out')"
+assert 'grep -qF "git checkout v1.0.0 && kasbah build-push deploy@vps" <<<"$out"' \
+    "with the advice that fits either state (said '$out')"
+assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
 
 # A tag this checkout does not have. `git fetch --tags` is spent on it once,
 # unprompted, and the repository has no remote — so the retry finds nothing.
@@ -630,6 +833,11 @@ assert 'grep -qF "re-run \`kasbah rollback deploy@vps 1.0.0\`" <<<"$out"' \
     "and naming the command that repeats it, version and all (said '$out')"
 assert '! grep -qE "re-run \`kasbah deploy" <<<"$out"' \
     "never \`kasbah deploy\`, which would ship the working tree and undo the rollback (said '$out')"
+assert '! grep -qF "404 if it is a first deploy" <<<"$out"' \
+    "and the sentence about what the host serves meanwhile is not the one for a first deploy,
+        which a rollback cannot be — the target had to be in the record to get here (said '$out')"
+assert 'grep -qF "the route the run before this one left" <<<"$out"' \
+    "it describes the route that is actually still up (said '$out')"
 rm -rf "$project/.kasbah"
 
 out="$( REPORT_OMIT=digest rollback deploy@vps 1.0.0 )"; rc=$?
@@ -643,6 +851,9 @@ out="$( RSYNC_FAIL_FRAGMENT=1 FAKE_ACTIVE= FAKE_ACTIVE_STATE=missing deploy depl
 assert '[ "$rc" != "0" ]' "the same failure in tagged-deploy mode fails too (rc $rc: $out)"
 assert 'grep -qF "re-run \`kasbah deploy deploy@vps 1.0.0\`" <<<"$out"' \
     "and names the version there too — \`kasbah deploy\` alone is a different command (said '$out')"
+assert 'grep -qF "404 if it is a first deploy" <<<"$out"' \
+    "and there the first-deploy 404 is the right sentence, which is the control for the run above
+        (said '$out')"
 
 # --- The command line ----------------------------------------------------------------
 # An argument with an `@` is the server, anything else is the version, in either

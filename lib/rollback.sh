@@ -140,7 +140,7 @@ _rollback_parse_args() {
 # itself a rollback, the second-most-recent deploy can be the version running
 # now, and calling that "the deploy before the current one" would be wrong.
 _rollback_implicit_target() {
-    local idx="" damaged=0
+    local idx="" damaged=0 note=""
 
     if vlog_prev_deploy idx; then
         damaged="$VLOG_SKIPPED_DAMAGED"
@@ -149,28 +149,66 @@ _rollback_implicit_target() {
         # A line no version can be read out of is what a `printf >>` killed
         # mid-append leaves, and it is still a deploy that ran: stepped over, it
         # makes the deploy before it the target — one version too far back,
-        # chosen silently. The count is the only thing that can say so.
+        # chosen silently. The count is the only thing that can say so, and it
+        # is a count over the whole record, so it names both files.
         if [ "$damaged" != 0 ]; then
-            warn "$VLOG_ACTIVE_PATH on $_DEPLOY_TARGET has $damaged line(s) no version can be read"
-            warn "  out of, and they were stepped over to reach $_ROLLBACK_VERSION — a truncated write"
-            warn "  leaves exactly that, and the deploy it recorded is still a deploy that ran, so"
+            warn "$MANIFEST_NAME's record on $_DEPLOY_TARGET has $damaged line(s) no version can be read"
+            warn "  out of — counted across $VLOG_ACTIVE_PATH and $VLOG_ARCHIVE_PATH — and they were"
+            warn "  stepped over to reach $_ROLLBACK_VERSION. A truncated write leaves exactly that, and the"
+            warn "  deploy it recorded is still a deploy that ran, so"
             warn "  this target may be one version further back than it should be"
-            warn "  read the active log before letting this rollback stand"
+            warn "  read both files before letting this rollback stand"
+        fi
+        # Only when the walk had to reach the archive to find this target, and
+        # then only if the archive is short: rotation moves entries out and
+        # never in, so a target found in the active log cannot be displaced by
+        # anything the archive is missing. Found *in* a half-read archive, it
+        # can — the entries a truncated member swallows are the newest archived
+        # ones, which are exactly the ones that would have come first.
+        if [ "${VLOG_SRC[$idx]}" = archive ]; then
+            vlog_archive_note note
+            [ -z "$note" ] || {
+                warn "$note"
+                warn "  and $_ROLLBACK_VERSION was read out of it, so a nearer deploy may be among the"
+                warn "  entries that could not be decoded"
+            }
         fi
         return 0
     fi
     damaged="$VLOG_SKIPPED_DAMAGED"
 
-    err "there is no earlier deploy of $MANIFEST_NAME on $_DEPLOY_TARGET to roll back to"
+    # The headline stops short of the whole record whenever part of it was not
+    # read: "there is none" and "there is none in what I could read" are the two
+    # answers an operator acts on differently.
+    if [ "$damaged" = 0 ] && vlog_archive_whole; then
+        err "there is no earlier deploy of $MANIFEST_NAME on $_DEPLOY_TARGET to roll back to"
+    else
+        err "there is no earlier deploy of $MANIFEST_NAME on $_DEPLOY_TARGET in what kasbah could read of its record"
+    fi
     [ "$damaged" = 0 ] \
         || err_cont "$damaged line(s) of that record could not be read, and any of them may be one"
+    # Which files "the record" turned out to mean: naming the archive when
+    # nothing came out of it is the same sentence arguing with the note below.
     if vlog_has_entries all; then
-        err_cont "$VLOG_ACTIVE_PATH and its archive hold entries, but not two \`deploy\` ones —"
+        if vlog_has_entries archive; then
+            err_cont "$VLOG_ACTIVE_PATH and its archive hold entries, but not two \`deploy\` ones —"
+        else
+            err_cont "$VLOG_ACTIVE_PATH holds entries, but not two \`deploy\` ones —"
+        fi
         err_cont "a rollback needs a version this server ran before the one it runs now"
-    else
+    elif vlog_archive_whole; then
         err_cont "$VLOG_ACTIVE_PATH holds no entry for this project at all, so nothing was ever"
         err_cont "deployed here to go back to"
+    else
+        # "Nothing was ever deployed here" is a claim about both files, and one
+        # of them was never read. Asserting it anyway is the guard that fails
+        # open, one layer up from where vlog_fetch refuses it.
+        err_cont "$VLOG_ACTIVE_PATH holds no entry for this project, and"
+        err_cont "whether its archive holds one cannot be told — this is not evidence that"
+        err_cont "$_DEPLOY_TARGET has never deployed it"
     fi
+    vlog_archive_note note
+    [ -z "$note" ] || err_cont "$note"
     err_cont "name a version if you know one:  kasbah rollback $_DEPLOY_TARGET <X.Y.Z>"
     exit 1
 }
@@ -181,22 +219,34 @@ _rollback_implicit_target() {
 # once and rolled back to twice has a `rollback` line as its most recent
 # mention, and refusing that would refuse the commonest rollback there is.
 _rollback_require_deployed() {
-    local idx="" damaged=0
+    local idx="" damaged=0 note=""
 
     vlog_find_version "$_ROLLBACK_VERSION" idx && return 0
     damaged="$VLOG_SKIPPED_DAMAGED"
 
-    # "Never deployed here" is a claim about the whole record, and a line this
-    # side could not read is a line that may be the entry naming the target. The
-    # refusal then says what is true — the record could not be read through —
-    # rather than asserting an absence it cannot see.
-    if [ "$damaged" != 0 ]; then
-        err "Version $_ROLLBACK_VERSION is not in this VPS's deploy record, and $damaged line(s) of"
-        err_cont "that record could not be read. A truncated write leaves a line no version can be"
-        err_cont "read out of, and any of them may be the one naming $_ROLLBACK_VERSION — so this is not"
-        err_cont "the same thing as never having deployed it here."
-        err_cont "Look at $VLOG_ACTIVE_PATH on $_DEPLOY_TARGET. If $_ROLLBACK_VERSION really has never"
-        err_cont "run there, \`kasbah deploy $_DEPLOY_TARGET $_ROLLBACK_VERSION\` is a first-time deploy."
+    # "Never deployed here" is a claim about the whole record, and two things
+    # leave part of it unseen: a line this side could not read, and an archive
+    # that did not come back whole — which is where a target old enough to be
+    # worth rolling back to has aged to. Asserting the absence anyway
+    # recommends a *deploy*, which takes a backup and runs the deploy hooks over
+    # a version that has already run here.
+    if [ "$damaged" != 0 ] || ! vlog_archive_whole; then
+        err "Version $_ROLLBACK_VERSION is not in what kasbah could read of this VPS's deploy record,"
+        err_cont "and part of that record could not be read."
+        [ "$damaged" = 0 ] || {
+            err_cont "$damaged line(s) of it could not be read: a truncated write leaves a line no version"
+            err_cont "can be read out of, and any of them may be the one naming $_ROLLBACK_VERSION."
+        }
+        vlog_archive_whole || {
+            err_cont "$VLOG_ARCHIVE_PATH did not come back whole, and rotation moves the oldest entries"
+            err_cont "into it — which is where an entry naming $_ROLLBACK_VERSION would be by now."
+        }
+        err_cont "So this is not the same thing as never having deployed it here."
+        err_cont "Look at $VLOG_ACTIVE_PATH and $VLOG_ARCHIVE_PATH on $_DEPLOY_TARGET. If $_ROLLBACK_VERSION"
+        err_cont "really has never run there, \`kasbah deploy $_DEPLOY_TARGET $_ROLLBACK_VERSION\` is a"
+        err_cont "first-time deploy."
+        vlog_archive_note note
+        [ -z "$note" ] || err_cont "$note"
         exit 1
     fi
     err "Version $_ROLLBACK_VERSION was never deployed to this VPS."
@@ -479,9 +529,21 @@ REMOTE
     [ -n "${_DEPLOY_FACT[missing]}" ] || return 0
     readarray -t missing < <(tr ',' '\n' <<<"${_DEPLOY_FACT[missing]}")
 
+    # Two states, and only a rollback can tell them apart: it has just proved
+    # the version is in the record, so an absent image is one retention let go.
+    # A tagged deploy reads no record at all, and its commonest way here is a
+    # version that was never built — so naming that "outside the retention
+    # window" states a history kasbah never looked for.
     for img in "${missing[@]}"; do
-        err "Image $img:$_ROLLBACK_VERSION is no longer on the VPS (outside the"
-        err_cont "retention window)."
+        if [ "$_ROLLBACK_MODE" = rollback ]; then
+            err "Image $img:$_ROLLBACK_VERSION is no longer on the VPS (outside the"
+            err_cont "retention window)."
+        else
+            err "Image $img:$_ROLLBACK_VERSION is not on $_DEPLOY_TARGET — either it was never built"
+            err_cont "and shipped for this version, or it was and the retention window has let it go."
+            err_cont "A tagged deploy does not read the deploy record, so kasbah cannot tell which;"
+            err_cont "\`kasbah history $_DEPLOY_TARGET --all\` is what answers it."
+        fi
     done
     if [ "$_ROLLBACK_MODE" = rollback ]; then
         err_cont "Prefer deploying a fix forward. To force a rollback anyway, rebuild from the"
