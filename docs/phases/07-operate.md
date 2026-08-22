@@ -57,6 +57,32 @@ its log.
 user-customized `traefik.yml` gets a diff + confirm, not a silent
 replace (`traefik.md` § Ownership).
 
+## Carried in from Phase 6
+
+**Should kasbah's own dashboard redirect from plaintext, or stay HTTPS-only?**
+Observed on the first real VPS: `http://traefik.<apex>/` returns **404**, not a
+301. `templates/traefik/dynamic/_shared.yml` defines an `http-to-https`
+redirect middleware and then gives the `traefik-dashboard` router
+`entryPoints: [websecure]` alone, so the middleware serves project fragments
+and never the dashboard itself. Nothing is broken — HTTPS works, 401 without
+credentials and 200 with — but the tool preaches a pattern it does not apply
+to itself, and an operator who types the hostname without a scheme can land on
+a bare 404.
+
+The two defensible answers, both cheap:
+- **Add a `web` router** for `traefik.<apex>` carrying `http-to-https`. One
+  block in `_shared.yml`, matches what every project fragment does, and makes
+  the tool consistent with its own advice.
+- **Leave it, and say so in `traefik.md`.** An admin surface that exists on
+  443 only is a defensible posture, and a 404 leaks less than a redirect
+  confirming the hostname is live. Then the doc records it as a decision
+  rather than leaving it to look like an omission.
+
+Either way it stops being an accident. Phase 7 owns the dashboard surface
+(`server status`, `check --server`, `upgrade-traefik` all touch it), so it is
+the right place to settle. Evidence and the exact router block are in
+`06-proof.md` → Findings.
+
 ## Carried in from Phase 2
 
 `kasbah server status` exists in minimal form (`lib/server_status.sh`):

@@ -75,8 +75,8 @@ real domain and email (`--no-mail --no-backup` — those are Phases 7/8).
 Verify Traefik health and dashboard auth over the real network.
 
 **Deliverables**
-- [ ] Init from a clean SSH session, no manual server prep beyond Docker
-- [ ] Dashboard reachable over HTTPS at `traefik.<domain>`
+- [x] Init from a clean SSH session, no manual server prep beyond Docker — **20.4 s wall clock**, exit 0, including pulling `traefik:v3.7.10`. No prompt fired with stdin closed; every question was answered by a flag
+- [x] Dashboard reachable over HTTPS at `traefik.<domain>` — 401 without credentials, 200 with, on a staging cert (production switch is the tail of this task, after the deploy proves out)
 
 **Settled — the target host.** Not a freshly provisioned VPS: the existing
 OVH VPS (Ubuntu 26.04, Docker
@@ -227,6 +227,45 @@ and no `--email`, the operator answers the store question and *then* the run
 dies at `_si_unreadable_stack`. One wasted question, nothing created — the tail
 of hoisting the CA decision above the domain/email/auth branches, which is
 worth more than the question is expensive.
+
+**6.2 — first contact with real infrastructure. It worked on the first
+attempt.** `kasbah server init you@vps --domain=example.com
+--email=… --traefik-auth=… --acme-staging --no-mail --no-backup`, stdin
+closed: **exit 0 in 20.4 s**, image pull included. Limits computed from the
+real host: `cpu 1.8, mem 3g` (90% of 2 cores, 3906320 kB). `/apps` created
+with sudo, `acme.json` touched as a file at mode 600, marker and
+`/etc/kasbah/apps-path` written.
+
+**Measured ACME, which the rig cannot fake** — from Traefik's own log, staging
+endpoint, HTTP-01:
+
+| | |
+|---|---|
+| Provider start → account registered | 1 s |
+| Registered → challenge validated | 5 s |
+| Validated → certificate in hand | 3 s |
+| **Total issuance** | **10 s** |
+
+`acme.json` went from 0 to 16256 bytes, so the production switch will take the
+*known-and-different* branch and needs `--yes` under a closed stdin — the first
+real exercise of what 6.0 built.
+
+One number that looks wrong and is not: the certificate's `notBefore` is
+22:58:57 GMT while the issuing log line reads 23:57:29Z. Let's Encrypt
+backdates `notBefore` by roughly an hour to tolerate clock skew; the two agree.
+
+**The dashboard answers HTTPS only — plain HTTP is a 404, not a redirect.**
+`_shared.yml`'s `traefik-dashboard` router lists `websecure` alone, and the
+`http-to-https` middleware sitting three lines above it is offered to project
+fragments rather than used by kasbah's own router. Deliverable met (HTTPS
+works), but kasbah preaches a redirect pattern its own dashboard does not
+follow. **Carried to Phase 7** rather than fixed here: whether an admin
+dashboard *should* redirect from plaintext or stay HTTPS-only is a decision,
+not an oversight, and Phase 7 owns the dashboard surface.
+
+Also observed, and expected: `example.com` itself now returns a Traefik 404
+where it used to refuse the connection, because the apex resolves to this host
+and no router matches it.
 
 **The `httpd:2-alpine` container is the path, not the fallback** — operator
 feedback, and a doc defect rather than a code one. `_si_bcrypt` prefers
