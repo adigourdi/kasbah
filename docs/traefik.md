@@ -209,6 +209,65 @@ Project-specific middlewares go in the same project fragment under
 - TLS options default to TLS 1.2–1.3 with modern cipher suites
   (declared in `_shared.yml`).
 
+### Which CA — production or staging
+
+`kasbah server init --acme-staging` points the resolver at Let's Encrypt's
+staging endpoint; without the flag it is production. Both are written into
+`traefik.yml` as an explicit `caServer`, production included, so the file
+always says which CA is in effect and a re-run decides by comparing one line
+rather than by reasoning about a missing field.
+
+```yaml
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      caServer: "https://acme-staging-v02.api.letsencrypt.org/directory"
+```
+
+Staging certificates are **not trusted by browsers** — that is the point.
+Production rate limits are per registered domain and are spent by failed
+challenges too, so the first run against a fresh VPS should be staging: it
+proves DNS, port 80 and the whole challenge round trip without costing
+issuance budget, and the switch to production afterwards is one command.
+
+**The endpoint is decided on every run, and production is the default.**
+There is no prompt for it and no stored value to fall back on: a re-run
+without `--acme-staging` moves a staging server to production, which is how
+the switch is meant to be made, and equally means a server that is meant to
+stay on staging is re-run with the flag every time.
+
+**A switch resets `acme.json`.** Traefik files certificates by resolver, not
+by endpoint, so entries issued by the CA being left behind stay in the store
+and stay in use — a staging certificate served to the public, or a production
+certificate an operator believes they have moved off. Init therefore archives
+the store beside itself as `acme.json.<UTC timestamp>` (mode 600, never
+deleted — production certificates are real and re-issuing them costs budget),
+re-creates an empty `acme.json` mode 600, and restarts Traefik, which
+re-issues from scratch on the first request for each domain. The reset runs
+after the new `traefik.yml` is in place and before the restart: `acme.json` is
+bind-mounted as a file, so a running Traefik holds the old inode until it is
+restarted.
+
+**Whether it happens turns on the store, not on the config.** An empty or
+absent `acme.json` is never reset and never asked about — nothing is at risk,
+and that covers every fresh server. A non-empty one is left alone when the
+`caServer` on the server matches this run, and reset when it differs.
+
+The two prompts that guard this are different kinds of question:
+
+- **Switching away from a stated endpoint** is a confirmation: `--yes` answers
+  it, and declining aborts with nothing changed.
+- **A non-empty store whose provenance nothing records** — no `caServer`, or a
+  `traefik.yml` missing, empty or unparseable — is a choice, and gets its own
+  tri-state pair, `--reset-acme` / `--keep-acme`. Unset means ask; with no
+  terminal and neither flag the run fails naming both. Keeping proceeds, with
+  a warning, because kasbah raised this question rather than the operator and
+  an abort would strand every server prepared before `caServer` existed.
+  `--yes` deliberately does not answer it.
+
+The run records the endpoint either way, so the unknown case is asked once.
+See `server-setup.md` for the full table.
+
 ## Dashboard
 
 Enabled by default at `traefik.<init-domain>`, protected by basic auth

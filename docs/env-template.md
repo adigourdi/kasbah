@@ -176,7 +176,9 @@ prompt asks whether to re-configure anyway; default is no.
   generated value is stored directly. Useful for:
   - `! docker run --rm alpine …` (random strings, no local deps)
   - `! echo "base64:$(docker run --rm alpine sh -c 'head -c 32 /dev/urandom | base64')"`
-  - `! read -rsp "Password: " P && echo >&2 && echo "user:$(docker run --rm httpd:alpine htpasswd -nbB user "$P" | cut -d: -f2)"`
+  - `! read -rsp "Password: " P && echo >&2 && printf '%s\n' "$P" | docker run --rm -i httpd:2-alpine htpasswd -niB user | cut -d: -f2`
+    — `-niB` reads the password on stdin; `-nbB` would put it in argv, where
+    the process table exposes it to every other user of the machine.
 
 ## Testing
 

@@ -34,6 +34,9 @@ _SI_BACKUP=""
 _SI_DOMAIN=""
 _SI_EMAIL=""
 _SI_AUTH=""
+_SI_ACME_STAGING=""
+_SI_ACME_RESET_CHOICE=""
+_SI_YES=""
 
 # What the probe brought back, and what was derived from it.
 declare -A _SI_FACT=()
@@ -55,6 +58,19 @@ declare -A _SI_TRAEFIK_CURRENT=()
 _SI_TRAEFIK_PROJECT=traefik
 _SI_DASHBOARD_DOMAIN=""
 _SI_ACME_EMAIL=""
+# Let's Encrypt's own two directories, and nothing else: kasbah has no private
+# CA to point at, so the endpoint is a switch rather than a value.
+_SI_ACME_CA_PRODUCTION="https://acme-v02.api.letsencrypt.org/directory"
+_SI_ACME_CA_STAGING="https://acme-staging-v02.api.letsencrypt.org/directory"
+_SI_ACME_CA=""
+_SI_ACME_CA_STORED=""
+# How much is known about the certificate store and about the endpoint that
+# filled it: known/nofield/unreadable/nocontent against absent/notfile/empty/
+# nonempty. Only the pairing decides whether anything is at risk.
+_SI_ACME_CA_ORIGIN=""
+_SI_ACME_STORE=""
+_SI_ACME_RESET=no
+_SI_ACME_KEPT=""
 _SI_AUTH_ENTRY=""
 _SI_AUTH_ORIGIN=""
 _SI_TRAEFIK_CHANGED=()
@@ -76,13 +92,23 @@ Flags:
   --domain=<apex>        the dashboard is served at traefik.<apex>
   --email=<addr>         ACME registration address for Let's Encrypt
   --traefik-auth=user:pass   dashboard basic auth; hashed with bcrypt here
+  --acme-staging         issue from Let's Encrypt's staging CA (untrusted
+                         certificates, far looser rate limits)
+  --reset-acme|--keep-acme   what to do with a certificate store whose CA
+                         nothing on the server records
   --with-mail|--no-mail      scaffold the mail stack, or skip it
   --with-backup|--no-backup  install restic backups, or skip them
+  --yes                  confirm a switch away from a stated endpoint
 
 Every flag is tri-state: leaving one off asks. Domain, email and the
 dashboard credentials are only asked for once — a re-run reuses what is
 already on the server, since bcrypt salts randomly and a fresh hash would
-rewrite the stack on every run. See docs/server-setup.md for the
+rewrite the stack on every run.
+
+The ACME endpoint is production unless --acme-staging says otherwise, on
+every run: a re-run without the flag against a staging server is how you
+switch back. Where that would strand certificates, init archives acme.json
+and re-issues, and asks first. See docs/server-setup.md for the
 prerequisites table and the layout.
 EOF
 }
@@ -93,9 +119,10 @@ EOF
 # one win: the two spellings exist to make an intent explicit, and a command
 # line that states both intents has none.
 _server_init_set_bool() {
-    local _sb_feature="$1" _sb_value="$2" _sb_name="_SI_${1^^}"
+    local _sb_value="$2" _sb_name="_SI_${1^^}"
+    local _sb_yes="${3:---with-$1}" _sb_no="${4:---no-$1}"
     if [ -n "${!_sb_name}" ] && [ "${!_sb_name}" != "$_sb_value" ]; then
-        die "server init: --with-$_sb_feature and --no-$_sb_feature cannot both be given"
+        die "server init: $_sb_yes and $_sb_no cannot both be given"
     fi
     printf -v "$_sb_name" '%s' "$_sb_value"
 }
@@ -245,6 +272,9 @@ _server_init_parse_args() {
     _SI_DOMAIN=""
     _SI_EMAIL=""
     _SI_AUTH=""
+    _SI_ACME_STAGING=""
+    _SI_ACME_RESET_CHOICE=""
+    _SI_YES=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -257,6 +287,10 @@ _server_init_parse_args() {
             # Validated, never echoed: the value carries a password, and an
             # error message is the one place it would end up on a terminal.
             --traefik-auth=*) _SI_AUTH="${1#*=}"; _si_check_auth "$_SI_AUTH" ;;
+            --acme-staging) _SI_ACME_STAGING=yes ;;
+            --reset-acme)  _server_init_set_bool acme_reset_choice yes --reset-acme --keep-acme ;;
+            --keep-acme)   _server_init_set_bool acme_reset_choice no  --reset-acme --keep-acme ;;
+            --yes)         _SI_YES=yes ;;
             --with-mail)   _server_init_set_bool mail yes ;;
             --no-mail)     _server_init_set_bool mail no ;;
             --with-backup) _server_init_set_bool backup yes ;;
@@ -268,7 +302,7 @@ _server_init_parse_args() {
             # log that keeps one. The name is what diagnoses a typo; the value
             # adds nothing, so it is never printed — for any flag, rather than
             # for a list of names that can always miss one.
-            -*)            die "server init: unknown flag '${1%%=*}' (expected --apps-path=, --data-path=, --domain=, --email=, --traefik-auth=, --with-mail/--no-mail, --with-backup/--no-backup)" ;;
+            -*)            die "server init: unknown flag '${1%%=*}' (expected --apps-path=, --data-path=, --domain=, --email=, --traefik-auth=, --acme-staging, --reset-acme/--keep-acme, --with-mail/--no-mail, --with-backup/--no-backup, --yes)" ;;
             *)
                 [ -z "$_SI_TARGET" ] \
                     || die "server init: unexpected argument '$1' (USER@HOST is given once)"
@@ -1217,14 +1251,17 @@ _si_absorb_checked() {
 # What is on the server now, so the fresh render can be compared against it
 # byte for byte: an unchanged file is not shipped, and Traefik is not restarted
 # (docs/server-setup.md, idempotency rules). The same read is where a re-run
-# recovers the dashboard credentials it must not regenerate.
+# recovers the dashboard credentials it must not regenerate, and where it learns
+# whether acme.json holds anything — every ACME decision below turns on that,
+# and asking later would mean a second round trip after the questions.
 _server_init_read_traefik() {
     local out rc=0 rel enc dec
 
-    out=$(ssh_script "$_SI_APPS_PATH" <<'REMOTE'
+    out=$(ssh_script "$_SI_APPS_PATH" "$_SI_DATA_PATH" <<'REMOTE'
 set -uo pipefail
 export LC_ALL=C
 dir="$1/traefik"
+acme="$2/traefik/letsencrypt/acme.json"
 
 # Base64 on one line: this output is a key=value protocol, and a YAML file sent
 # raw would arrive as a dozen keys. openssl is on the prerequisites table;
@@ -1240,6 +1277,17 @@ emit() {
 emit traefik_compose_b64 "$dir/compose.yml"
 emit traefik_static_b64  "$dir/traefik.yml"
 emit traefik_shared_b64  "$dir/dynamic/_shared.yml"
+
+# Whether there are certificates to lose, which is the question an ACME
+# endpoint switch actually turns on — the config says what is configured, only
+# the store says what is stored. Reported as a state rather than a byte count:
+# nothing downstream wants the size, and "not a regular file" is a fourth
+# answer that a number cannot carry.
+if   [ ! -e "$acme" ]; then printf 'acme_store=absent\n'
+elif [ ! -f "$acme" ]; then printf 'acme_store=notfile\n'
+elif [ -s "$acme" ];  then printf 'acme_store=nonempty\n'
+else                       printf 'acme_store=empty\n'
+fi
 exit 0
 REMOTE
     ) || rc=$?
@@ -1248,7 +1296,13 @@ REMOTE
         || die "could not read the Traefik stack on $_SI_TARGET (the remote step exited $rc, see above)"
 
     _si_absorb_checked "the Traefik stack read" "$out" \
-        traefik_compose_b64 traefik_static_b64 traefik_shared_b64
+        traefik_compose_b64 traefik_static_b64 traefik_shared_b64 acme_store
+
+    _SI_ACME_STORE="${_SI_FACT[acme_store]}"
+    case $_SI_ACME_STORE in
+        absent|notfile|empty|nonempty) ;;
+        *) die "the Traefik stack read on $_SI_TARGET reported acme_store='$_SI_ACME_STORE', which this kasbah does not know" ;;
+    esac
 
     _SI_TRAEFIK_CURRENT=()
     for rel in "${_SI_TRAEFIK_FILES[@]}"; do
@@ -1340,6 +1394,17 @@ _si_extract_email() {
         '.certificatesResolvers.letsencrypt.acme.email // ""' "$_xe_out"
 }
 
+# The endpoint the stack on the server is *configured* with — which is not the
+# same fact as the one that issued the certificates sitting in acme.json, and
+# the gap between them is what the caller has to reason about. Unlike the three
+# values beside it this one is never reused: the flag decides the endpoint on
+# every run, and this is read only to be compared against it.
+_si_extract_ca() {
+    local _xc_content="$1" _xc_out="$2"
+    _si_yaml_get "$_xc_content" \
+        '.certificatesResolvers.letsencrypt.acme.caServer // ""' "$_xc_out"
+}
+
 # bcrypt, as docs/cli.md promises. apr1 via `openssl passwd` was rejected as a
 # real weakening — salted MD5, ~1k iterations — for no gain.
 #
@@ -1397,12 +1462,19 @@ _si_unreadable_stack() {
 _server_init_traefik_values() {
     local shared="${_SI_TRAEFIK_CURRENT[dynamic/_shared.yml]}"
     local static="${_SI_TRAEFIK_CURRENT[traefik.yml]}"
-    local stored_domain="" stored_email="" stored_auth="" user="" pass=""
-    local shared_rc=0 static_rc=0
+    local stored_domain="" stored_email="" stored_auth="" stored_ca="" user="" pass=""
+    local shared_rc=0 static_rc=0 ca_rc=0
 
     _si_extract_domain "$shared" stored_domain || shared_rc=$?
     [ "$shared_rc" -ne 0 ] || _si_extract_auth "$shared" stored_auth || shared_rc=$?
     _si_extract_email "$static" stored_email || static_rc=$?
+    _si_extract_ca "$static" stored_ca || ca_rc=$?
+
+    # First, because it is the only question here that can end the run and the
+    # only one whose answer nothing else depends on: a dashboard password typed
+    # and bcrypted before a confirmation the operator then declines is work
+    # thrown away, and a secret on a terminal for no reason.
+    _si_settle_acme_ca "$stored_ca" "$ca_rc"
 
     # A stored value is reproduced verbatim and not re-validated: it is already
     # the configuration in effect, and re-rendering it into the same bytes is
@@ -1456,6 +1528,161 @@ _server_init_traefik_values() {
     return 0
 }
 
+# "production" or "staging" for the two endpoints kasbah renders, and nothing
+# for anything else. A URL that is neither must never be *named* as one of them:
+# the label is what the operator checks the warning against, and a wrong one
+# turns a warning about their own configuration into a warning about a
+# configuration they do not have.
+_si_ca_label() {
+    local _cl_url="$1" _cl_out="$2"
+    case $_cl_url in
+        "$_SI_ACME_CA_PRODUCTION") printf -v "$_cl_out" '%s' production ;;
+        "$_SI_ACME_CA_STAGING")    printf -v "$_cl_out" '%s' staging ;;
+        *)                         printf -v "$_cl_out" '%s' "" ;;
+    esac
+}
+
+# The endpoint is the one Traefik value the server gets no vote on: the flag
+# decides it, production by default, so a re-run without --acme-staging is what
+# moves a staging server back.
+#
+# What the server *is* asked is whether anything would be lost by that. Traefik
+# files certificates by resolver rather than by endpoint, so entries the old CA
+# issued stay in acme.json and stay in use — a staging certificate served to
+# the public, or a production one an operator believes they have moved off —
+# and the only way out is to start the store again from empty. Two facts decide
+# it, and only their pairing:
+#
+#   the store is empty,     nothing to lose whatever the CA was: silent, always,
+#   absent, or not a file   which is every fresh server and so every first init.
+#                           (A non-file is refused by the layout step, later and
+#                           with a better message than one from here.)
+#   the store has content,
+#   and the config records
+#   which CA filled it      equal is a no-op; different is the switch, confirmed
+#                           with --yes, and declining aborts.
+#   the store has content,
+#   and nothing records
+#   what filled it          kasbah cannot tell, so this is a choice rather than a
+#                           confirmation: --reset-acme or --keep-acme, and keep
+#                           proceeds. Every server prepared before caServer
+#                           existed is in this state, and an abort would leave
+#                           them with no way to run init at all. This run records
+#                           the endpoint, so it is asked once.
+#
+# Nothing has been created, rendered or shipped when this returns, which is what
+# lets the confirmation cost nothing when it is declined.
+_si_settle_acme_ca() {
+    local _sa_stored="$1" _sa_rc="$2"
+
+    if [ -n "$_SI_ACME_STAGING" ]; then
+        _SI_ACME_CA="$_SI_ACME_CA_STAGING"
+    else
+        _SI_ACME_CA="$_SI_ACME_CA_PRODUCTION"
+    fi
+
+    if [ "$_sa_rc" -ne 0 ]; then
+        _SI_ACME_CA_ORIGIN=unreadable
+    elif [ -n "$_sa_stored" ]; then
+        _SI_ACME_CA_ORIGIN=known
+        _SI_ACME_CA_STORED="$_sa_stored"
+    elif [ -z "${_SI_TRAEFIK_CURRENT[traefik.yml]}" ]; then
+        # The stack read reports empty for a file that is absent, unreadable or
+        # zero-length alike, and the operator's move is the same for all three.
+        _SI_ACME_CA_ORIGIN=nocontent
+    else
+        _SI_ACME_CA_ORIGIN=nofield
+    fi
+
+    _SI_ACME_RESET=no
+    _SI_ACME_KEPT=""
+    [ "$_SI_ACME_STORE" = nonempty ] || return 0
+    if [ "$_SI_ACME_CA_ORIGIN" = known ]; then
+        [ "$_SI_ACME_CA_STORED" = "$_SI_ACME_CA" ] || _si_confirm_acme_switch
+    else
+        _si_choose_acme_unknown
+    fi
+    return 0
+}
+
+# A switch away from an endpoint the server states. Declining aborts: the
+# likeliest way to arrive here is a mistyped flag, and re-running with the right
+# one costs nothing because nothing has happened yet.
+_si_confirm_acme_switch() {
+    local from="" to="" stay=""
+
+    _si_ca_label "$_SI_ACME_CA_STORED" from
+    _si_ca_label "$_SI_ACME_CA" to
+
+    if [ "$from" = staging ]; then
+        warn "$_SI_TARGET is configured for the Let's Encrypt staging CA and this run renders $to"
+        warn "  $_SI_ACME_CA_STORED -> $_SI_ACME_CA"
+        stay="re-run with --acme-staging"
+    elif [ "$from" = production ]; then
+        warn "$_SI_TARGET is configured for the Let's Encrypt production CA and this run renders $to"
+        warn "  $_SI_ACME_CA_STORED -> $_SI_ACME_CA"
+        stay="re-run without --acme-staging"
+    else
+        # No flag reproduces this URL, so none is offered. Telling the operator
+        # to "re-run with --acme-staging" to keep what they have would move them
+        # to Let's Encrypt staging and reset the store — the loss the warning is
+        # about, caused by the advice about it.
+        warn "$_SI_TARGET is configured for an ACME endpoint kasbah does not render:"
+        warn "  $_SI_ACME_CA_STORED -> $_SI_ACME_CA"
+        warn "it was set outside kasbah. kasbah renders Let's Encrypt production or"
+        warn "staging and nothing else, so this run would replace it with $to."
+        stay="leave the endpoint as it is — no kasbah flag reproduces it"
+    fi
+    warn "no certificate in acme.json survives the switch: the store is archived beside"
+    warn "itself, re-created empty, and re-issued from scratch on the next request."
+
+    if ! prompt_confirm yes \
+        "Switch $_SI_TARGET to the Let's Encrypt $to CA and reset acme.json?" "$_SI_YES"; then
+        err "server init: declined — $_SI_TARGET is unchanged"
+        err_cont "nothing was created, shipped or restarted. To keep what is there, $stay."
+        exit 1
+    fi
+    _SI_ACME_RESET=yes
+    return 0
+}
+
+# A store with certificates in it and nothing that says which CA issued them.
+# A choice with its own flag pair rather than a confirmation, and deliberately
+# **not** answered by --yes: --yes means "I accept the destructive act I asked
+# for", and nobody asked for this one — kasbah raised it about state it cannot
+# interpret, and answering it takes knowing which CA issued those certificates,
+# which a blanket --yes in a CI script cannot supply. Keeping proceeds, loudly,
+# because there is no reading of this question under which refusing to run is
+# the safe answer.
+_si_choose_acme_unknown() {
+    local to=""
+    _si_ca_label "$_SI_ACME_CA" to
+
+    case $_SI_ACME_CA_ORIGIN in
+        unreadable) warn "$_SI_APPS_PATH/traefik/traefik.yml on $_SI_TARGET does not parse, so the endpoint it configures cannot be read" ;;
+        nocontent)  warn "$_SI_APPS_PATH/traefik/traefik.yml on $_SI_TARGET is missing, empty or unreadable, so nothing states which endpoint this server uses" ;;
+        *)          warn "$_SI_APPS_PATH/traefik/traefik.yml on $_SI_TARGET names no caServer — it predates kasbah recording one" ;;
+    esac
+    warn "acme.json is not empty, and nothing here says which CA issued what is in it."
+    warn "This run configures the Let's Encrypt $to CA. If the certificates in the store"
+    warn "came from the other one, Traefik keeps serving them until they renew and then"
+    warn "replaces them with $to ones — resetting the store now is what avoids that."
+
+    if prompt_choice reset-acme keep-acme \
+        "Reset acme.json on $_SI_TARGET (archives it, forces re-issue from the $to CA)?" \
+        "$_SI_ACME_RESET_CHOICE"; then
+        _SI_ACME_RESET=yes
+        return 0
+    fi
+
+    warn "keeping acme.json. $_SI_TARGET is being configured for the $to CA with a"
+    warn "certificate store of unknown provenance — if it holds certificates from the"
+    warn "other endpoint, they stay in service until they renew."
+    warn "this run records the endpoint in traefik.yml, so you are asked this once."
+    _SI_ACME_KEPT=unknown
+    return 0
+}
+
 # Renders the templates into a temp directory. `__NAME__` is the placeholder
 # form because it collides with nothing in the files it appears in: YAML gives
 # `_` no meaning (`@` may not even start a plain scalar), and the `${1}` in
@@ -1476,6 +1703,7 @@ _server_init_traefik_render() {
         [APPS_PATH]="$_SI_APPS_PATH"
         [DATA_PATH]="$_SI_DATA_PATH"
         [ACME_EMAIL]="$_SI_ACME_EMAIL"
+        [ACME_CA]="$_SI_ACME_CA"
         [DASHBOARD_DOMAIN]="$_SI_DASHBOARD_DOMAIN"
         [DASHBOARD_AUTH]="$_SI_AUTH_ENTRY"
     )
@@ -1566,6 +1794,69 @@ _server_init_traefik_sync() {
         ssh_rsync -pt --chmod=F644 "$_SI_TMPDIR/$rel" "$SSH_TARGET:$dest" >/dev/null \
             || die "could not ship the Traefik $rel to $_SI_TARGET:$dest"
     done
+    return 0
+}
+
+# Empties the certificate store for a CA switch, between the new traefik.yml
+# landing and the restart that makes Traefik read it. Not in the layout step:
+# acme.json is bind-mounted as a *file*, so a running Traefik holds the inode
+# and would keep writing to the archive.
+# The restart re-resolves the mount (measured), which is why the reset may only
+# happen where one is guaranteed to follow.
+#
+# The archive is a sibling and never a deletion: on production -> staging the
+# file being set aside holds real certificates, and re-issuing them costs
+# rate-limit budget that a `rm` would spend for nothing.
+_server_init_acme_reset() {
+    local out rc=0 stamp
+
+    if [ "$_SI_ACME_RESET" != yes ]; then
+        _SI_FACT[acme_reset]=skipped
+        _SI_FACT[acme_archive]=""
+        return 0
+    fi
+    [ "$_SI_TRAEFIK_RESTART" = yes ] \
+        || die "internal: the ACME endpoint changed but traefik.yml did not — the reset would outlive nothing"
+
+    # The stamp is taken here because the remote side is coreutils and bash and
+    # nothing else, and one clock beats each host's.
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)" || die "internal: could not read the clock"
+
+    out=$(ssh_script "$_SI_DATA_PATH/traefik/letsencrypt/acme.json" "$stamp" <<'REMOTE'
+set -uo pipefail
+export LC_ALL=C
+acme=$1
+stamp=$2
+
+fail() { printf 'remote: %s\n' "$*" >&2; exit 1; }
+
+if [ -e "$acme" ] && [ ! -f "$acme" ]; then
+    fail "$acme exists and is not a regular file — Traefik needs a file there. Remove it (rm -rf '$acme') and re-run."
+fi
+
+archive=""
+if [ -f "$acme" ]; then
+    archive="$acme.$stamp"
+    [ ! -e "$archive" ] || fail "$archive is already there — kasbah will not write over an archived certificate store"
+    mv "$acme" "$archive" || fail "could not archive $acme as $archive"
+    chmod 600 "$archive" || fail "could not set mode 600 on $archive"
+fi
+printf 'acme_archive=%s\n' "$archive"
+
+# Re-created here rather than left to the restart that follows, for the reason
+# the layout step creates it at all: Docker materialises a missing bind-mount
+# source as a directory.
+: > "$acme" || fail "could not create $acme"
+chmod 600 "$acme" || fail "could not set mode 600 on $acme"
+printf 'acme_reset=done\n'
+exit 0
+REMOTE
+    ) || rc=$?
+
+    [ "$rc" -eq 0 ] \
+        || die "could not reset acme.json on $_SI_TARGET (the remote step exited $rc, see above)"
+
+    _si_absorb_checked "the acme.json reset" "$out" acme_reset acme_archive
     return 0
 }
 
@@ -1722,6 +2013,7 @@ cmd_server_init() {
 
     _server_init_layout
     _server_init_traefik_sync
+    _server_init_acme_reset
     _server_init_traefik_start
     _server_init_marker "$marker_json"
     _server_init_pointer
@@ -1739,6 +2031,16 @@ cmd_server_init() {
     local shipped="nothing re-rendered"
     [ "${#_SI_TRAEFIK_CHANGED[@]}" -eq 0 ] || shipped="shipped ${_SI_TRAEFIK_CHANGED[*]}"
     info "  traefik: ${_SI_FACT[traefik_action]}, ${_SI_FACT[traefik_health]}, ${_SI_FACT[traefik_image]} ($shipped)"
+    local acme_from=""
+    [ -z "$_SI_ACME_CA_STORED" ] || [ "$_SI_ACME_CA_STORED" = "$_SI_ACME_CA" ] \
+        || acme_from="$_SI_ACME_CA_STORED -> "
+    info "  acme: $acme_from$_SI_ACME_CA"
+    if [ "${_SI_FACT[acme_reset]}" = done ]; then
+        info "        acme.json reset, previous store archived as ${_SI_FACT[acme_archive]}"
+    elif [ "$_SI_ACME_KEPT" = unknown ]; then
+        # The one outcome a run can end in without kasbah knowing it is correct.
+        info "        acme.json kept and NOT reset — nothing records which CA issued what is in it"
+    fi
     info "  dashboard: https://traefik.$_SI_DASHBOARD_DOMAIN (basic auth, credentials $_SI_AUTH_ORIGIN)"
     info "  marker: $_SI_APPS_PATH/.kasbah/server.json (${_SI_FACT[marker]})"
     info "  pointer: $KASBAH_APPS_POINTER -> $_SI_APPS_PATH (${_SI_FACT[pointer]})"

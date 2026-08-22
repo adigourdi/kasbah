@@ -28,6 +28,18 @@ assumes.
 
 These are the VPS owner's responsibility.
 
+## On the workstation
+
+The remote table above is what init *checks*. The workstation side is
+unchecked and shorter, but one entry is easy to miss: **Docker**. The
+dashboard password is bcrypt-hashed locally so it never crosses the wire in
+clear, and the hashing runs in a throwaway `httpd:2-alpine` container unless
+`htpasswd` happens to be on `PATH` — it ships in `apache2-utils` /
+`httpd-tools`, which few workstations install. A machine with neither hashes
+nothing and init exits naming both ways out. `rsync`, `ssh`, `gzip`,
+`openssl`, `git`, `jq` and `yq` (the kislyuk wrapper, jq dialect) are the
+rest, and `docker` is needed anyway for `build-push`.
+
 ## What init creates
 
 Default paths (override with `--apps-path`, `--data-path`):
@@ -64,6 +76,70 @@ anywhere else.
 sees a missing path on a bind mount, it silently creates a **directory**,
 which breaks Traefik (and later breaks DMS when it tries to read the file).
 Kasbah's init loop prevents this.
+
+## The ACME endpoint (`--acme-staging`)
+
+`server init` renders the Let's Encrypt directory URL into `traefik.yml` as an
+explicit `caServer`: production by default, staging with `--acme-staging`.
+Production certificates are trusted and rate-limited; staging ones are neither,
+which is what makes staging the right first run against a fresh VPS. The flag
+has no `--no-` twin and there is no prompt, because production is both the
+default and the status quo — the endpoint is re-decided from the command line
+on every run, so **a re-run without `--acme-staging` switches a staging server
+to production**, and a server meant to stay on staging keeps the flag.
+
+### When the store is reset
+
+The reset exists because Traefik files certificates by resolver rather than by
+endpoint: entries the old CA issued stay in `acme.json` and stay in service, so
+a switch that leaves them there serves a staging certificate to the public, or
+keeps a production one an operator believes they have moved off. Resetting
+means `acme.json` is renamed to `acme.json.<UTC timestamp>` (mode 600, kept —
+the certificates in it may be real), a fresh empty `acme.json` mode 600 takes
+its place, and Traefik restarts and re-issues.
+
+**The question is about the store, not about the config.** Two facts decide it,
+and only their pairing — what `acme.json` holds, and whether anything records
+which CA filled it:
+
+| `acme.json` | `caServer` on the server | Init does |
+|---|---|---|
+| Empty, absent, or not a file | anything | Nothing, silently. There is no certificate to lose, which is every fresh server and so every first init |
+| Has content | present and equal to this run's | Nothing — the idempotent re-run |
+| Has content | present and different | **Confirmation** (`--yes`), then resets. Declining aborts with nothing changed |
+| Has content | absent, or `traefik.yml` missing, empty or unparseable | **Choice** (`--reset-acme` / `--keep-acme`) — kasbah cannot tell which CA issued what is there. Keeping proceeds, with a warning and a summary line |
+
+The two prompts are not the same kind of question, and they do not share a flag:
+
+- **The switch is a confirmation.** The server states one endpoint, the run
+  renders another, and there are two outcomes: do it, or do not run. `--yes`
+  answers it; declining aborts with nothing created, shipped or restarted, and
+  the message names the re-run that keeps the endpoint the server is on.
+- **The unknown store is a choice.** Kasbah raised it, not the operator, about
+  state it cannot interpret — answering it takes knowing which CA issued those
+  certificates, which a blanket `--yes` in a CI script cannot supply. So it has
+  its own tri-state pair, `--reset-acme` / `--keep-acme`: unset means ask, and
+  with no terminal and neither flag the run fails naming both. **Keeping is a
+  real answer that proceeds**, because there is no reading of this question
+  under which refusing to run is the safe one.
+
+The last row is the one to read twice. It is the state of every server prepared
+before `caServer` was rendered at all, and reading the config alone would call
+it "no change" — which is how a staging endpoint gets shipped over a store full
+of production certificates, silently, on the most ordinary run there is. The
+run records the endpoint on its way through, so it is asked **once**.
+
+The message distinguishes a `traefik.yml` that names no `caServer` from one
+that does not parse and from one with nothing in it — they are different facts
+and the fix differs. A `caServer` that is neither Let's Encrypt endpoint is
+quoted verbatim and never called "staging" or "production": kasbah renders only
+those two, so nothing it can offer reproduces such a value, and it does not
+pretend otherwise.
+
+The reset happens between shipping the new `traefik.yml` and restarting
+Traefik, never in the layout step above: `acme.json` is bind-mounted as a
+*file*, so a running Traefik holds the old inode and only the restart makes it
+pick the new one up.
 
 ### Who creates the apps path
 
@@ -137,6 +213,7 @@ certificatesResolvers:
   letsencrypt:
     acme:
       email: <baked at render time from --email>
+      caServer: <the production LE directory, or the staging one with --acme-staging>
       storage: /letsencrypt/acme.json
       httpChallenge:
         entryPoint: web
@@ -362,7 +439,8 @@ Traefik API with the dashboard credentials.
 - Folders are `mkdir -p`.
 - `acme.json` is created if missing; its mode is enforced as 600 on every
   run, and a *directory* found at that path is a hard failure rather than
-  something init works around.
+  something init works around. It is archived and re-created only when a CA
+  switch calls for it — a re-run with the same flags never touches it.
 - The Traefik stack has no `.env`; its three baked values (dashboard
   domain, ACME email, auth hash) are read back out of the rendered files,
   so a re-run without the flags reproduces them exactly.

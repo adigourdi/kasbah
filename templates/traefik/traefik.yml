@@ -2,8 +2,9 @@
 # Changing this file requires a Traefik restart — `kasbah server init` does
 # that, and only when the file's bytes actually change.
 #
-# The ACME address below is substituted on the workstation: Traefik expands no
-# environment variables here, so it cannot come from an `.env`.
+# The ACME address and endpoint below are substituted on the workstation:
+# Traefik expands no environment variables here, so neither can come from an
+# `.env`.
 global:
   checkNewVersion: false
   sendAnonymousUsage: false
@@ -30,6 +31,9 @@ certificatesResolvers:
   letsencrypt:
     acme:
       email: "__ACME_EMAIL__"
+      # Written out even when it is Traefik's own default, so that a re-run can
+      # read the endpoint in effect back off the server as one line.
+      caServer: "__ACME_CA__"
       storage: /letsencrypt/acme.json
       httpChallenge:
         entryPoint: web

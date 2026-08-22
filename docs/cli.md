@@ -39,10 +39,35 @@ Flags:
 - `--data-path=<dir>` — bind-mount root (default `<apps-path>/data`, so it
   follows `--apps-path` rather than being pinned to `/apps/data`).
 - `--traefik-auth=user:pass` — basic auth for the dashboard. The password is
-  hashed with bcrypt on the workstation (`htpasswd -niB`, or the same via a
-  throwaway `httpd:2-alpine` container when htpasswd is absent); the hash
-  lands in `dynamic/_shared.yml`. Unset on a re-run means the stored hash is
+  hashed with bcrypt on the workstation and never sent in clear; the hash lands
+  in `dynamic/_shared.yml`. The hashing normally runs in a throwaway
+  `httpd:2-alpine` container, since `htpasswd` ships in a package
+  (`apache2-utils` / `httpd-tools`) that few workstations have — **so Docker on
+  the workstation is what `server init` actually depends on here**, and a
+  machine with neither is a hard fail naming both ways out. An `htpasswd`
+  already on `PATH` is used directly, to save pulling an image. Either way the
+  password arrives on stdin (`-niB`), never in argv, where the process table
+  would expose it to every other user of the machine for as long as it runs. Unset on a re-run means the stored hash is
   reused — bcrypt salts randomly, so re-hashing would break idempotency.
+- `--acme-staging` — render Let's Encrypt's **staging** endpoint as the
+  resolver's `caServer` instead of production. Unset means production: this is
+  the one choice that does not prompt, because production is both the default
+  and the status quo. Rehearse a new server against staging until DNS, port 80
+  and the whole deploy flow are green, then re-run without the flag — failed
+  challenges count against the production rate limits too, so the rehearsal is
+  what keeps a misconfigured DNS from costing a week.
+- `--yes` — answer the `acme.json` reset **confirmation** below: the case where
+  the server records a CA, this run renders a different one, and declining
+  simply aborts. Destructive, hence a confirmation; two outcomes only, hence
+  `--yes` and no `--no-yes` (see `overview.md` → Interactivity).
+- `--reset-acme` / `--keep-acme` — answer the other question below: the server's
+  store has content and **nothing records which CA issued it**. That is a
+  choice, not a confirmation — keeping is a real outcome that leaves the server
+  running, so it gets a flag pair rather than `--yes`, and `--yes` deliberately
+  does not answer it. A blanket `--yes` in a script cannot know which CA filled
+  a store, and guessing wrong archives real certificates.
+  Unset → prompt. Without a TTY, either unanswered question is a hard fail
+  naming its own flags.
 
 What it does:
 1. Verify Docker ≥ 24 and Docker Compose v2 exist. **Does not install.** Fails
@@ -59,20 +84,40 @@ What it does:
    `_shared.yml`. No `.env`: Traefik interpolates no environment variables,
    so `--domain`, `--email` and the `--traefik-auth` hash are baked into the
    rendered files (see `server-setup.md`).
-5. `docker compose -p traefik up -d` in `/apps/traefik/`, restarting only
+5. Reconcile the certificate store with the CA now configured. `acme.json`
+   holds certificates issued by one CA; changing `caServer` does not
+   invalidate them, so Traefik goes on serving certificates from the old
+   endpoint and only swaps them at renewal — which is how a server ends up
+   configured for staging while still presenting a production certificate.
+   **An empty or absent store is never touched and never asks**, so a fresh
+   server stays silent. A store with content takes one of two paths:
+   - **The recorded CA differs from this run's.** Init asks once, archives the
+     store to a timestamped sibling — never deletes it, since a production
+     `acme.json` is real certificates — recreates an empty one at mode 600, and
+     lets the restart below re-issue. Declining aborts with nothing created,
+     shipped or restarted (`--yes` to confirm without asking).
+   - **Nothing records which CA issued it** — a server that predates
+     `caServer`, or a `traefik.yml` kasbah cannot read. Init cannot tell, so it
+     asks which it should be (`--reset-acme` / `--keep-acme`). Keeping is not a
+     refusal: the run proceeds, records the endpoint, and warns that the
+     store's provenance is unknown. The next run has the CA recorded and is
+     quiet.
+
+   See `traefik.md` → "Which CA".
+6. `docker compose -p traefik up -d` in `/apps/traefik/`, restarting only
    when the static config changed and the container was not just recreated.
-6. Health-check Traefik, print dashboard URL.
-7. If `--with-mail`: scaffold `/apps/mail/`, write the cert-trigger +
+7. Health-check Traefik, print dashboard URL.
+8. If `--with-mail`: scaffold `/apps/mail/`, write the cert-trigger +
    webmail router fragment to `/apps/traefik/dynamic/_mail.yml`, run its
    env setup, start it.
-8. If `--with-backup`: install restic, write append-only S3 credentials,
+9. If `--with-backup`: install restic, write append-only S3 credentials,
    schedule the backup cron (see `backup.md`).
-9. Write the server marker `<apps>/.kasbah/server.json` — kasbah version,
-   paths, resource limits computed as 90% of host cores/RAM (see
-   `server-setup.md`). **Last of the steps that signal completion**: its
-   presence is the "init completed" signal, so a failure at any earlier step
-   leaves no marker behind.
-10. Write the discovery pointer `/etc/kasbah/apps-path` (`root:root 644`, in a
+10. Write the server marker `<apps>/.kasbah/server.json` — kasbah version,
+    paths, resource limits computed as 90% of host cores/RAM (see
+    `server-setup.md`). **Last of the steps that signal completion**: its
+    presence is the "init completed" signal, so a failure at any earlier step
+    leaves no marker behind.
+11. Write the discovery pointer `/etc/kasbah/apps-path` (`root:root 644`, in a
     `755` directory, one absolute path) so every project command can find this server without
     being told where it is. Immediately after the marker, never before — a
     run that dies early must leave neither. See `server-setup.md` → the

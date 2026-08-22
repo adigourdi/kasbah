@@ -47,6 +47,9 @@ case "$mode" in
             "${_SI_MAIL:-unset}" "${_SI_BACKUP:-unset}"
         printf 'domain=%s\nemail=%s\nauth=%s\n' \
             "${_SI_DOMAIN:-unset}" "${_SI_EMAIL:-unset}" "${_SI_AUTH:-unset}"
+        printf 'staging=%s\nyes=%s\nacme_choice=%s\n' \
+            "${_SI_ACME_STAGING:-unset}" "${_SI_YES:-unset}" \
+            "${_SI_ACME_RESET_CHOICE:-unset}"
         ;;
     authsplit)
         _si_parse_auth "$1" u p
@@ -61,12 +64,14 @@ case "$mode" in
             auth)   _si_extract_auth   "$body" v ;;
             domain) _si_extract_domain "$body" v ;;
             email)  _si_extract_email  "$body" v ;;
+            ca)     _si_extract_ca     "$body" v ;;
         esac
         printf '%s\n' "$v"
         ;;
     render)
         _SI_APPS_PATH="$1"; _SI_DATA_PATH="$2"; _SI_ACME_EMAIL="$3"
         _SI_DASHBOARD_DOMAIN="$4"; _SI_AUTH_ENTRY="$5"
+        _SI_ACME_CA="${6:-$_SI_ACME_CA_PRODUCTION}"
         _server_init_traefik_render
         [ -z "${RENDER_OUT:-}" ] || cp -R "$_SI_TMPDIR"/. "$RENDER_OUT"/
         for rel in "${_SI_TRAEFIK_FILES[@]}"; do
@@ -81,11 +86,19 @@ case "$mode" in
         shared="$1"; static="$2"; shift 2
         _server_init_parse_args deploy@vps "$@"
         _SI_TARGET=deploy@vps
+        _SI_APPS_PATH=/apps
+        # What the server read brings back about acme.json. `empty` is the
+        # default because that is every fresh server, and the ACME questions
+        # are about a store with something in it.
+        _SI_ACME_STORE="${SI_STORE:-empty}"
         _SI_TRAEFIK_CURRENT=([compose.yml]="" [traefik.yml]="$static" [dynamic/_shared.yml]="$shared")
         _si_bcrypt() { printf -v "$3" '%s' "$1:\$2y\$05\$FRESHFRESHFRESHFRESHFR"; }
         _server_init_traefik_values
         printf 'domain=%s\nemail=%s\nauth=%s\norigin=%s\n' \
             "$_SI_DASHBOARD_DOMAIN" "$_SI_ACME_EMAIL" "$_SI_AUTH_ENTRY" "$_SI_AUTH_ORIGIN"
+        printf 'ca=%s\nstored_ca=%s\nca_origin=%s\nreset=%s\nkept=%s\n' \
+            "$_SI_ACME_CA" "$_SI_ACME_CA_STORED" "$_SI_ACME_CA_ORIGIN" \
+            "$_SI_ACME_RESET" "${_SI_ACME_KEPT:-none}"
         ;;
     sync)
         # Which files ship, and which change forces a Traefik restart. rsync is
@@ -94,6 +107,7 @@ case "$mode" in
         _SI_APPS_PATH=/apps; _SI_DATA_PATH=/apps/data
         _SI_ACME_EMAIL=ops@example.com; _SI_DASHBOARD_DOMAIN=example.com
         _SI_AUTH_ENTRY='admin:$2y$05$STUB'
+        _SI_ACME_CA="$_SI_ACME_CA_PRODUCTION"
         SSH_TARGET=deploy@vps
         _server_init_traefik_render
         _SI_TRAEFIK_CURRENT=()
@@ -108,6 +122,32 @@ case "$mode" in
         printf 'changed=%s\nrestart=%s\n' \
             "${_SI_TRAEFIK_CHANGED[*]-}" "$_SI_TRAEFIK_RESTART"
         rm -rf "$_SI_TMPDIR"
+        ;;
+    readtraefik)
+        # The local half of the stack read: which keys it insists on, and what
+        # it does with an acme_store value it does not know. The remote half is
+        # extracted from its heredoc and run for real further down.
+        _SI_TARGET=deploy@vps; _SI_APPS_PATH=/apps; _SI_DATA_PATH=/apps/data
+        _SI_FACT=()
+        canned="$1"
+        ssh_script() { printf '%s' "$canned"; }
+        _server_init_read_traefik
+        printf 'store=%s\nstatic=%s\n' \
+            "$_SI_ACME_STORE" "${_SI_TRAEFIK_CURRENT[traefik.yml]}"
+        ;;
+    reset)
+        # Whether the reset step goes to the server at all, and what it hands
+        # over when it does. The remote half is driven for real further down,
+        # extracted from its heredoc.
+        _SI_TARGET=deploy@vps; _SI_DATA_PATH=/apps/data
+        _SI_ACME_RESET="$1"; _SI_TRAEFIK_RESTART="$2"
+        _SI_FACT=()
+        ssh_script() {
+            printf 'ssh_script|%s|%s\n' "$1" "$2" >&2
+            printf 'acme_archive=%s.%s\nacme_reset=done\n' "$1" "$2"
+        }
+        _server_init_acme_reset
+        printf 'reset=%s\narchive=%s\n' "${_SI_FACT[acme_reset]}" "${_SI_FACT[acme_archive]}"
         ;;
     limits)
         _server_limits "$1" "$2"
@@ -213,6 +253,27 @@ assert '[ "$rc" = "0" ]'                              "the three Traefik flags p
 assert 'grep -qxF "domain=example.com" <<<"$out"'     "--domain is recorded (got '$out')"
 assert 'grep -qxF "email=ops@example.com" <<<"$out"'  "--email is recorded (got '$out')"
 assert 'grep -qxF "auth=admin:pw" <<<"$out"'          "--traefik-auth is recorded (got '$out')"
+
+# The ACME endpoint is not tri-state: production is the default and the status
+# quo, so the flag's absence is an answer rather than a question. What does get
+# asked is the destructive act it can trigger, and --yes is that flag's pair.
+out=$(drive parse deploy@vps)
+assert 'grep -qxF "staging=unset" <<<"$out"' "--acme-staging is off unless passed — production is the default (got '$out')"
+assert 'grep -qxF "yes=unset" <<<"$out"'     "and --yes is off unless passed (got '$out')"
+out=$(drive parse --acme-staging --yes deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]'                   "--acme-staging and --yes parse (exit $rc: $(drive_err))"
+assert 'grep -qxF "staging=yes" <<<"$out"' "--acme-staging is recorded (got '$out')"
+assert 'grep -qxF "yes=yes" <<<"$out"'     "--yes is recorded (got '$out')"
+
+# The unknown-store question is a choice, so it gets a choice's pair and stays
+# tri-state: unset means ask, which is what makes the no-TTY failure legible.
+out=$(drive parse deploy@vps)
+assert 'grep -qxF "acme_choice=unset" <<<"$out"' \
+    "neither --reset-acme nor --keep-acme leaves the choice unset — the prompt decides (got '$out')"
+out=$(drive parse --reset-acme deploy@vps)
+assert 'grep -qxF "acme_choice=yes" <<<"$out"'   "--reset-acme is an explicit reset (got '$out')"
+out=$(drive parse --keep-acme deploy@vps)
+assert 'grep -qxF "acme_choice=no" <<<"$out"'    "--keep-acme is an explicit keep (got '$out')"
 
 # Every rejection below is a flag the command must not silently accept.
 reject() {
@@ -626,6 +687,32 @@ assert 'grep -qF "is not valid YAML" "$tmpdir/err"' \
 assert 'grep -qF "dynamic/_shared.yml" "$tmpdir/err"' "naming the file that broke"
 assert 'grep -qF "refusing to ship it" "$tmpdir/err"' "and saying it went nowhere"
 
+# --- The ACME endpoint --------------------------------------------------------
+# Always written out, production included: a re-run decides whether the CA
+# changed by comparing one line, which an omitted field cannot be compared to.
+ca_prod="https://acme-v02.api.letsencrypt.org/directory"
+ca_stag="https://acme-staging-v02.api.letsencrypt.org/directory"
+assert '[ "$(yq -r ".certificatesResolvers.letsencrypt.acme.caServer" "$static")" = "$ca_prod" ]' \
+    "the default render names the production CA (got '$(yq -r ".certificatesResolvers.letsencrypt.acme.caServer" "$static")')"
+
+stag_dir="$tmpdir/rendered-staging"
+mkdir -p "$stag_dir"
+RENDER_OUT="$stag_dir" drive render /srv/apps /mnt/vol1 ops@example.com example.com "$hash_admin" "$ca_stag" >/dev/null; rc=$?
+static_stag="$stag_dir/traefik.yml"
+assert '[ "$rc" = "0" ]' "a staging render succeeds (exit $rc: $(drive_err))"
+assert 'yq -e . "$static_stag" >/dev/null 2>&1' "and still parses as YAML"
+assert '[ "$(yq -r ".certificatesResolvers.letsencrypt.acme.caServer" "$static_stag")" = "$ca_stag" ]' \
+    "with the staging CA in it (got '$(yq -r ".certificatesResolvers.letsencrypt.acme.caServer" "$static_stag")')"
+assert '[ "$(yq -r ".certificatesResolvers.letsencrypt.acme.email" "$static_stag")" = "ops@example.com" ]' \
+    "and nothing else about the resolver moved"
+
+# The URLs are the two Let's Encrypt directories and are read back off servers
+# kasbah rendered earlier, so a typo in either is unrecoverable by re-running.
+assert '[ "$(sed -n "s/^_SI_ACME_CA_PRODUCTION=\"\(.*\)\"$/\1/p" "$repo_dir/lib/server_init.sh")" = "$ca_prod" ]' \
+    "the production endpoint is Let's Encrypt's own directory URL"
+assert '[ "$(sed -n "s/^_SI_ACME_CA_STAGING=\"\(.*\)\"$/\1/p" "$repo_dir/lib/server_init.sh")" = "$ca_stag" ]' \
+    "and so is the staging one"
+
 # --- compose.yml --------------------------------------------------------------
 assert '[ "$(yq -r ".services.traefik.image" "$compose")" = "traefik:v3.7.10" ]' \
     "Traefik is pinned to an exact v3 tag (got '$(yq -r ".services.traefik.image" "$compose")')"
@@ -821,6 +908,191 @@ assert '[ -z "$(extract domain "$stored_static")" ]' \
 assert '[ "$(extract email "$stored_static")" = "ops@example.com" ]' \
     "the ACME email is read back out of the static config"
 
+# --- Which CA is in effect, and what a switch costs ---------------------------
+# The endpoint is the one Traefik value the server gets no vote on: the flag
+# decides it every run. The server is read for two other things — which CA the
+# config records, and whether acme.json holds anything — and it is the pairing
+# that decides whether a certificate is at risk.
+stored_static_stag=$(cat "$static_stag")
+assert '[ "$(extract ca "$stored_static")" = "$ca_prod" ]' \
+    "the CA is read back out of the static config (got '$(extract ca "$stored_static")')"
+assert '[ "$(extract ca "$stored_static_stag")" = "$ca_stag" ]' \
+    "staging included (got '$(extract ca "$stored_static_stag")')"
+ca_crlf=$(printf 'certificatesResolvers:\r\n  letsencrypt:\r\n    acme:\r\n      caServer: "%s"\r\n' "$ca_stag")
+assert '[ "$(extract ca "$ca_crlf")" = "$ca_stag" ]' \
+    "and out of a file saved with CRLF line endings (got '$(extract ca "$ca_crlf")')"
+no_ca=$(printf 'certificatesResolvers:\n  letsencrypt:\n    acme:\n      email: "ops@example.com"\n      storage: /letsencrypt/acme.json\n')
+assert '[ -z "$(extract ca "$no_ca")" ]' \
+    "a static config with no caServer yields nothing rather than a guess (got '$(extract ca "$no_ca")')"
+
+# An empty store is the whole of a fresh server, and there is nothing in it to
+# lose: no question is asked whatever the endpoints say. This is the path a
+# first init takes, so anything louder here would be noise on every new VPS.
+out=$(drive values "" "" --domain=example.com --email=a@b.c --traefik-auth=admin:pw --acme-staging); rc=$?
+assert '[ "$rc" = "0" ]' "a bare server takes --acme-staging without asking anything (exit $rc: $(drive_err))"
+assert 'grep -qxF "ca=$ca_stag" <<<"$out"' "and renders staging (got '$out')"
+assert 'grep -qxF "reset=no" <<<"$out"'    "with no store to reset (got '$out')"
+
+out=$(drive values "$stored_shared" "$stored_static" --acme-staging); rc=$?
+assert '[ "$rc" = "0" ]' \
+    "an endpoint change over an empty store asks nothing either (exit $rc: $(drive_err))"
+assert 'grep -qxF "ca=$ca_stag" <<<"$out"' "the flag still decides the endpoint (got '$out')"
+assert 'grep -qxF "reset=no" <<<"$out"'    "and an empty store is not worth archiving (got '$out')"
+
+# Same endpoint, certificates in the store: the idempotent re-run.
+out=$(SI_STORE=nonempty drive values "$stored_shared" "$stored_static"); rc=$?
+assert '[ "$rc" = "0" ]' "a re-run with the same endpoint needs no confirmation (exit $rc: $(drive_err))"
+assert 'grep -qxF "ca=$ca_prod" <<<"$out"'      "the production CA is rendered by default (got '$out')"
+assert 'grep -qxF "ca_origin=known" <<<"$out"'  "read off the server (got '$out')"
+assert 'grep -qxF "reset=no" <<<"$out"'         "and acme.json is left alone (got '$out')"
+
+out=$(SI_STORE=nonempty drive values "$stored_static_stag" "$stored_static_stag" --acme-staging --domain=example.com --traefik-auth=admin:pw); rc=$?
+assert '[ "$rc" = "0" ]' "so does a staging re-run with --acme-staging (exit $rc: $(drive_err))"
+assert 'grep -qxF "ca=$ca_stag" <<<"$out"' "which renders the staging CA (got '$out')"
+assert 'grep -qxF "reset=no" <<<"$out"'    "and resets nothing (got '$out')"
+
+# The switch itself. It discards certificates, so it is confirmed — and with no
+# terminal to confirm at, the run stops naming the flag, exactly as every other
+# kasbah prompt does.
+out=$(SI_STORE=nonempty drive values "$stored_shared" "$stored_static" --acme-staging); rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" != "0" ]' "an endpoint change over a real store is a hard fail with no terminal (exit $rc, printed '$out')"
+assert 'grep -qF -- "--yes" <<<"$err_out"' "naming --yes (said '$err_out')"
+assert 'grep -qF "acme.json" <<<"$err_out"' "and saying what would happen (said '$err_out')"
+
+out=$(SI_STORE=nonempty drive values "$stored_shared" "$stored_static" --acme-staging --yes); rc=$?
+assert '[ "$rc" = "0" ]' "--yes answers it for a script (exit $rc: $(drive_err))"
+assert 'grep -qxF "ca=$ca_stag" <<<"$out"' "production -> staging renders staging (got '$out')"
+assert 'grep -qxF "stored_ca=$ca_prod" <<<"$out"' "against the CA the server was on (got '$out')"
+assert 'grep -qxF "reset=yes" <<<"$out"'   "and acme.json is reset (got '$out')"
+
+out=$(SI_STORE=nonempty drive values "$stored_static_stag" "$stored_static_stag" --yes --domain=example.com --traefik-auth=admin:pw); rc=$?
+assert '[ "$rc" = "0" ]' "and back again, with no flag at all (exit $rc: $(drive_err))"
+assert 'grep -qxF "ca=$ca_prod" <<<"$out"' \
+    "dropping --acme-staging is what moves a server to production (got '$out')"
+assert 'grep -qxF "reset=yes" <<<"$out"'   "resetting acme.json on the way (got '$out')"
+
+# --- A store whose provenance nothing records ---------------------------------
+# The most common run this will ever see: a server prepared before caServer was
+# rendered, holding real production certificates, re-run with --acme-staging.
+# Reading the config alone says "no change", and kasbah would ship a staging
+# endpoint over a production store in silence.
+#
+# It is a *choice*, not a confirmation, and it gets a choice's flag pair. --yes
+# deliberately does not answer it: --yes accepts a destructive act the operator
+# asked for, and this question is one kasbah raises about state it cannot read.
+out=$(SI_STORE=nonempty drive values "" "$no_ca" --acme-staging --domain=example.com --traefik-auth=admin:pw); rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" != "0" ]' \
+    "a non-empty store with no recorded CA is asked about, not assumed safe (exit $rc, printed '$out')"
+assert 'grep -qF -- "--reset-acme or --keep-acme" <<<"$err_out"' \
+    "and with no terminal the run stops naming both flags (said '$err_out')"
+assert 'grep -qF "no caServer" <<<"$err_out"' \
+    "saying which fact is missing — it predates kasbah recording one (said '$err_out')"
+
+out=$(SI_STORE=nonempty drive values "" "$no_ca" --acme-staging --yes --domain=example.com --traefik-auth=admin:pw); rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" != "0" ]' \
+    "--yes does not answer it — the only scriptable answer must not be the destructive one (exit $rc, printed '$out')"
+assert 'grep -qF -- "--reset-acme or --keep-acme" <<<"$err_out"' \
+    "the failure still names the pair that does (said '$err_out')"
+
+out=$(SI_STORE=nonempty drive values "" "$no_ca" --acme-staging --reset-acme --domain=example.com --traefik-auth=admin:pw); rc=$?
+assert '[ "$rc" = "0" ]' "--reset-acme accepts the reset (exit $rc: $(drive_err))"
+assert 'grep -qxF "ca_origin=nofield" <<<"$out"' "the missing field is the reason (got '$out')"
+assert 'grep -qxF "reset=yes" <<<"$out"'         "and the store is reset (got '$out')"
+
+# The answer the design itself calls safe, and the reason the pair exists: it
+# has to be expressible without a terminal, or a CI script's only option is the
+# one that spends production issuance budget on a server that needed nothing.
+out=$(SI_STORE=nonempty drive values "" "$no_ca" --keep-acme --domain=example.com --traefik-auth=admin:pw); rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" = "0" ]' "--keep-acme proceeds with no terminal at all (exit $rc: $err_out)"
+assert 'grep -qxF "ca=$ca_prod" <<<"$out"' "the endpoint is still recorded (got '$out')"
+assert 'grep -qxF "reset=no" <<<"$out"'    "and the store is untouched (got '$out')"
+assert 'grep -qxF "kept=unknown" <<<"$out"' "the run carrying that it was kept (got '$out')"
+assert 'grep -qF "unknown provenance" <<<"$err_out"' "and warning about it (said '$err_out')"
+
+reject "contradicting acme store flags" "cannot both be given" deploy@vps --reset-acme --keep-acme
+
+# No traefik.yml content at all, and one that does not parse: both leave the
+# endpoint unknown, and the operator can act on which of the two it is.
+out=$(SI_STORE=nonempty drive values "$stored_shared" "" --email=a@b.c --reset-acme); rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" = "0" ]' "a missing traefik.yml over a real store asks too (exit $rc: $err_out)"
+assert 'grep -qxF "ca_origin=nocontent" <<<"$out"' "recorded as a file with nothing in it (got '$out')"
+assert 'grep -qF "is missing, empty or unreadable" <<<"$err_out"' \
+    "and said as one, not as a missing field — the read reports all three alike (said '$err_out')"
+
+broken_static=$(printf 'certificatesResolvers: [\n')
+out=$(SI_STORE=nonempty drive values "$stored_shared" "$broken_static" --email=a@b.c --reset-acme); rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" = "0" ]' "an unparseable traefik.yml with --email given asks too (exit $rc: $err_out)"
+assert 'grep -qxF "ca_origin=unreadable" <<<"$out"' \
+    "as a file that does not parse, never collapsed into 'never had one' (got '$out')"
+assert 'grep -qF "does not parse" <<<"$err_out"' "and the operator is told which it is (said '$err_out')"
+assert 'grep -qxF "reset=yes" <<<"$out"' "and --reset-acme resets (got '$out')"
+
+# --- Declining, behind a real terminal ----------------------------------------
+# `[ -t 0 ]` is a property of the pty, and a pipe cannot stand in for it.
+drive_tty() {
+    local input="$1"; shift
+    local cmd; cmd="$(printf '%q ' bash "$driver" "$@")"
+    tty_out=$(printf '%s' "$input" | script -qec "$cmd" /dev/null 2>&1); tty_rc=$?
+    tty_out=${tty_out//$'\r'/}
+}
+
+# A stated endpoint the operator declines to leave: an abort, because the
+# likeliest way to be here is a mistyped flag and nothing has happened yet.
+SI_STORE=nonempty drive_tty $'n\n' values "$stored_shared" "$stored_static" --acme-staging
+assert '[ "$tty_rc" != "0" ]' "declining a stated switch stops the run (exit $tty_rc, said '$tty_out')"
+assert 'grep -qF "declined" <<<"$tty_out"'  "saying it was declined (said '$tty_out')"
+assert 'grep -qF "unchanged" <<<"$tty_out"' "and that the server is untouched (said '$tty_out')"
+assert 'grep -qF -- "re-run without --acme-staging" <<<"$tty_out"' \
+    "and naming the re-run that keeps the production CA it is on (said '$tty_out')"
+assert '! grep -qxF "reset=yes" <<<"$tty_out"' "with no reset decided (said '$tty_out')"
+
+SI_STORE=nonempty drive_tty $'y\n' values "$stored_shared" "$stored_static" --acme-staging
+assert '[ "$tty_rc" = "0" ]' "accepting it at the terminal goes ahead (exit $tty_rc, said '$tty_out')"
+assert 'grep -qxF "reset=yes" <<<"$tty_out"' "with the reset decided (said '$tty_out')"
+assert 'grep -qF "$ca_stag" <<<"$tty_out"'   "and the question named both endpoints (said '$tty_out')"
+
+# An unknown provenance the operator declines: the run *proceeds*. There is no
+# flag that answers this question, so an abort would leave every pre-caServer
+# server with no way to run init at all.
+SI_STORE=nonempty drive_tty $'n\n' values "" "$no_ca" --domain=example.com --traefik-auth=admin:pw
+assert '[ "$tty_rc" = "0" ]' "answering keep at the terminal lets the run continue (exit $tty_rc, said '$tty_out')"
+assert 'grep -qxF "reset=no" <<<"$tty_out"'      "without resetting (said '$tty_out')"
+assert 'grep -qxF "kept=unknown" <<<"$tty_out"'  "and recording that the store was kept (said '$tty_out')"
+assert 'grep -qF "warning:" <<<"$tty_out"'       "loudly (said '$tty_out')"
+assert 'grep -qF "unknown provenance" <<<"$tty_out"' \
+    "saying what is now true of the server (said '$tty_out')"
+assert 'grep -qF "asked this once" <<<"$tty_out"' \
+    "and that this run records the endpoint, so it is asked once (said '$tty_out')"
+
+# --- A caServer that is neither Let's Encrypt endpoint -------------------------
+# Set outside kasbah. It must not be announced as "staging" or "production" —
+# and above all the decline advice must not name a flag, because neither flag
+# reproduces it and both would reset the store the warning is about.
+custom_ca="https://acme.internal.example/dir"
+custom_static=$(printf 'certificatesResolvers:\n  letsencrypt:\n    acme:\n      email: "ops@example.com"\n      caServer: "%s"\n' "$custom_ca")
+out=$(SI_STORE=nonempty drive values "$stored_shared" "$custom_static" --yes); rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" = "0" ]' "a custom endpoint is a switch like any other (exit $rc: $err_out)"
+assert 'grep -qxF "stored_ca=$custom_ca" <<<"$out"' "quoted verbatim (got '$out')"
+assert 'grep -qF "$custom_ca" <<<"$err_out"'        "and shown to the operator (said '$err_out')"
+assert 'grep -qF "kasbah does not render" <<<"$err_out"' \
+    "named as something kasbah does not render (said '$err_out')"
+assert '! grep -qE "for the Let.s Encrypt (staging|production) CA and this run" <<<"$err_out"' \
+    "never announced as one of the two endpoints it is not (said '$err_out')"
+
+SI_STORE=nonempty drive_tty $'n\n' values "$stored_shared" "$custom_static"
+assert '[ "$tty_rc" != "0" ]' "declining it aborts (exit $tty_rc, said '$tty_out')"
+assert '! grep -qF -- "re-run with" <<<"$tty_out"' \
+    "without offering a flag that would cause the loss it warns about (said '$tty_out')"
+assert 'grep -qF "no kasbah flag reproduces it" <<<"$tty_out"' \
+    "saying plainly that none exists (said '$tty_out')"
+
 # A file kasbah cannot parse is not a file it may quietly replace: the value it
 # would invent is the dashboard password.
 broken=$(printf 'http:\n  middlewares:\n   bad indentation: [\n')
@@ -869,6 +1141,154 @@ assert 'grep -qxF "changed=compose.yml traefik.yml dynamic/_shared.yml" <<<"$out
     "a bare server ships all three (got '$out')"
 assert '[ "$(grep -c "rsync->" <<<"$err_out")" = "3" ]' \
     "in three rsync calls (said '$err_out')"
+
+# --- What the server says about the stack, and about the store ----------------
+# The whole ACME decision is keyed on acme_store, and the driver stubs it
+# everywhere above — so the producer is tested here, extracted from its heredoc
+# and run against a scratch tree, or the four-state ladder proves nothing.
+read_payload="$tmpdir/readtraefik.sh"
+awk '/<<'"'"'REMOTE'"'"'$/{buf=""; inb=1; next} inb && /^REMOTE$/{if (buf ~ /acme_store=nonempty/) printf "%s", buf; inb=0; next} inb{buf = buf $0 "\n"}' \
+    "$repo_dir/lib/server_init.sh" > "$read_payload"
+assert '[ -s "$read_payload" ]' "the Traefik stack read was extracted from lib/server_init.sh"
+assert 'grep -qF "traefik_static_b64" "$read_payload"' \
+    "and it is the right block — every case below is empty theatre otherwise"
+
+read_apps="$tmpdir/readfs/apps"
+read_data="$tmpdir/readfs/data"
+run_read() {
+    r_rc=0
+    r_out="$(bash "$read_payload" "$read_apps" "$read_data" 2>"$tmpdir/rerr")" || r_rc=$?
+}
+rfact() { grep -m1 "^$1=" <<<"$r_out" | cut -d= -f2-; }
+
+rm -rf "$tmpdir/readfs"
+mkdir -p "$read_apps/traefik/dynamic" "$read_data/traefik/letsencrypt"
+printf 'a: 1\n' > "$read_apps/traefik/traefik.yml"
+run_read
+assert '[ "$r_rc" = "0" ]' "the read runs against a bare tree (rc $r_rc: $(cat "$tmpdir/rerr"))"
+assert '[ "$(rfact acme_store)" = "absent" ]' \
+    "no acme.json at all is absent, not empty (got '$(rfact acme_store)')"
+assert '[ "$(printf %s "$(rfact traefik_static_b64)" | base64 -d)" = "a: 1" ]' \
+    "and the files still come back base64 on one line — this block is a protocol"
+assert '[ -z "$(rfact traefik_compose_b64)" ]' "a file that is not there reports empty (got '$(rfact traefik_compose_b64)')"
+
+acme_r="$read_data/traefik/letsencrypt/acme.json"
+: > "$acme_r"
+run_read
+assert '[ "$(rfact acme_store)" = "empty" ]' \
+    "a zero-length store is empty — this is the state every fresh init is in (got '$(rfact acme_store)')"
+
+printf '{"letsencrypt":{}}\n' > "$acme_r"
+run_read
+assert '[ "$(rfact acme_store)" = "nonempty" ]' \
+    "one with anything in it is nonempty — the only state that puts a certificate at risk (got '$(rfact acme_store)')"
+
+rm -f "$acme_r"; mkdir -p "$acme_r"
+run_read
+assert '[ "$(rfact acme_store)" = "notfile" ]' \
+    "a directory at the path is its own answer: -e and -s cannot tell it from a store (got '$(rfact acme_store)')"
+rmdir "$acme_r"
+
+# The local half: the key is required, and a value this kasbah does not know is
+# a refusal rather than a state that falls through to "nothing at risk".
+b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
+canned() { printf 'traefik_compose_b64=\ntraefik_static_b64=%s\ntraefik_shared_b64=\nacme_store=%s\n' "$(b64 "$1")" "$2"; }
+
+out=$(drive readtraefik "$(canned 'x: 1' nonempty)"); rc=$?
+assert '[ "$rc" = "0" ]' "the stack read absorbs a well-formed report (exit $rc: $(drive_err))"
+assert 'grep -qxF "store=nonempty" <<<"$out"' "carrying the store state into the run (got '$out')"
+assert 'grep -qxF "static=x: 1" <<<"$out"'    "alongside the decoded files (got '$out')"
+
+out=$(drive readtraefik "$(printf 'traefik_compose_b64=\ntraefik_static_b64=\ntraefik_shared_b64=\n')"); rc=$?
+assert '[ "$rc" != "0" ]' "a report with no acme_store is a truncated step, not a store to guess at (exit $rc, printed '$out')"
+assert 'grep -qF "reported no acme_store" "$tmpdir/err"' \
+    "as the protocol failure it is, naming the key that never arrived (said '$(drive_err)')"
+assert 'grep -qF "the step was truncated" "$tmpdir/err"' \
+    "not as an unbound variable a page later — the check is what makes the key required (said '$(drive_err)')"
+
+out=$(drive readtraefik "$(canned 'x: 1' plenty)"); rc=$?
+assert '[ "$rc" != "0" ]' "an acme_store value this kasbah does not know is refused (exit $rc, printed '$out')"
+assert 'grep -qF "does not know" "$tmpdir/err"' "saying so (said '$(drive_err)')"
+
+# --- The acme.json reset ------------------------------------------------------
+# A CA change always changes traefik.yml's bytes, so it always rides the one
+# restart mechanism there is. The order is load-bearing: acme.json is
+# bind-mounted as a file, so the running Traefik holds the old inode until the
+# restart re-resolves the mount.
+steps=$(sed -n '/^cmd_server_init() {/,/^}/p' "$repo_dir/lib/server_init.sh" \
+        | grep -oE '_server_init_(traefik_sync|acme_reset|traefik_start)' | tr '\n' ' ')
+assert '[ "$steps" = "_server_init_traefik_sync _server_init_acme_reset _server_init_traefik_start " ]' \
+    "the reset runs after the new traefik.yml lands and before the restart (got '$steps')"
+
+out=$(drive reset no no); rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" = "0" ]' "a run that changes no endpoint runs the reset step (exit $rc: $err_out)"
+assert 'grep -qxF "reset=skipped" <<<"$out"'  "which does nothing (got '$out')"
+assert '! grep -qF "ssh_script|" <<<"$err_out"' "and does not go to the server at all (said '$err_out')"
+
+out=$(drive reset yes yes); rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" = "0" ]' "a switch runs it for real (exit $rc: $err_out)"
+assert 'grep -qF "ssh_script|/apps/data/traefik/letsencrypt/acme.json|" <<<"$err_out"' \
+    "against the data path's acme.json (said '$err_out')"
+assert '[[ "$err_out" =~ \|[0-9]{8}T[0-9]{6}Z$ ]]' \
+    "with a UTC timestamp taken here, not on a host with no coreutils to spare (said '$err_out')"
+assert 'grep -qxF "reset=done" <<<"$out"' "and reports what the server did (got '$out')"
+
+out=$(drive reset yes no); rc=$?
+assert '[ "$rc" != "0" ]' "a reset with no restart behind it is refused (exit $rc, printed '$out')"
+assert 'grep -qF "internal:" "$tmpdir/err"' \
+    "as the internal inconsistency it would be — the restart is what makes Traefik adopt the new file (said '$(drive_err)')"
+
+# The remote half, extracted from its heredoc and run against a directory of its
+# own. The rig cannot show the archive it replaces: `rig_clean` never gets as
+# far as a second CA.
+acme_payload="$tmpdir/acmereset.sh"
+awk '/<<'"'"'REMOTE'"'"'$/{buf=""; inb=1; next} inb && /^REMOTE$/{if (buf ~ /acme_reset=done/) printf "%s", buf; inb=0; next} inb{buf = buf $0 "\n"}' \
+    "$repo_dir/lib/server_init.sh" > "$acme_payload"
+assert '[ -s "$acme_payload" ]' "the reset step was extracted from lib/server_init.sh"
+assert 'grep -qF "acme_archive=" "$acme_payload"' \
+    "and it is the right block — every case below is empty theatre otherwise"
+
+acme_dir="$tmpdir/acmefs"
+run_acme() {
+    a_rc=0
+    a_out="$(bash "$acme_payload" "$acme_dir/acme.json" "$1" 2>"$tmpdir/aerr")" || a_rc=$?
+}
+
+rm -rf "$acme_dir"; mkdir -p "$acme_dir"
+printf 'CERTS\n' > "$acme_dir/acme.json"; chmod 600 "$acme_dir/acme.json"
+run_acme 20260822T101500Z
+assert '[ "$a_rc" = "0" ]' "the reset runs (rc $a_rc: $(cat "$tmpdir/aerr"))"
+assert 'grep -qxF "acme_reset=done" <<<"$a_out"' "and says so (got '$a_out')"
+assert '[ "$(cat "$acme_dir/acme.json.20260822T101500Z" 2>&1)" = "CERTS" ]' \
+    "the old store is archived beside itself, never deleted — the certificates in it may be real"
+assert '[ "$(stat -c %a "$acme_dir/acme.json.20260822T101500Z")" = "600" ]' \
+    "keeping mode 600 (got '$(stat -c %a "$acme_dir/acme.json.20260822T101500Z" 2>&1)')"
+assert 'grep -qxF "acme_archive=$acme_dir/acme.json.20260822T101500Z" <<<"$a_out"' \
+    "and the run is told where it went (got '$a_out')"
+assert '[ -f "$acme_dir/acme.json" ] && [ ! -s "$acme_dir/acme.json" ]' \
+    "a fresh empty acme.json takes its place — a missing bind-mount source is what Docker turns into a directory"
+assert '[ "$(stat -c %a "$acme_dir/acme.json")" = "600" ]' \
+    "mode 600 (got '$(stat -c %a "$acme_dir/acme.json" 2>&1)')"
+
+# Twice in the same second is the one way the archive could overwrite an
+# archive. It refuses rather than losing the first one.
+run_acme 20260822T101500Z
+assert '[ "$a_rc" != "0" ]' "a second archive with the same stamp is refused (rc $a_rc, printed '$a_out')"
+assert 'grep -qF "already there" "$tmpdir/aerr"' "saying so (said '$(cat "$tmpdir/aerr")')"
+assert '[ "$(cat "$acme_dir/acme.json.20260822T101500Z")" = "CERTS" ]' "and the first archive is intact"
+
+rm -rf "$acme_dir"; mkdir -p "$acme_dir"
+run_acme 20260822T101501Z
+assert '[ "$a_rc" = "0" ]' "with no store there yet, the reset still creates one (rc $a_rc: $(cat "$tmpdir/aerr"))"
+assert 'grep -qxF "acme_archive=" <<<"$a_out"' "and reports an empty archive (got '$a_out')"
+assert '[ "$(stat -c %a "$acme_dir/acme.json")" = "600" ]' "mode 600 all the same"
+
+rm -rf "$acme_dir"; mkdir -p "$acme_dir/acme.json"
+run_acme 20260822T101502Z
+assert '[ "$a_rc" != "0" ]' "a directory at the path is a hard failure, as in the layout step (rc $a_rc)"
+assert 'grep -qF "not a regular file" "$tmpdir/aerr"' "naming what it found (said '$(cat "$tmpdir/aerr")')"
 
 # --- The command line, through bin/kasbah ------------------------------------
 # The two exports above are for the driver, which sources the libraries

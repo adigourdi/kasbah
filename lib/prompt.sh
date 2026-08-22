@@ -39,24 +39,15 @@ _prompt_out_var() {
         || die "internal: '${1:-}' is not a variable name to write the answer into"
 }
 
-# prompt_bool <feature> <question> [given]
-#   given: "yes" or "no" as parsed from --with-<feature>/--no-<feature>, empty
-#          when neither was passed.
-# Answer is the exit status: 0 yes, 1 no. Used as `if prompt_bool mail …; then`.
-prompt_bool() {
-    local _p_flag="$1" _p_question="$2" _p_given="${3:-}"
-    local _p_flags="--with-$_p_flag or --no-$_p_flag"
-
-    case "${_p_given%$'\r'}" in
-        yes) return 0 ;;
-        no)  return 1 ;;
-        '')  ;;
-        *)   die "internal: prompt_bool $_p_flag was given '$_p_given' (expected yes, no or empty)" ;;
-    esac
+# The terminal half both yes/no prompts share. They differ only in which flags
+# make the answer scriptable, and that difference is real: a feature has two
+# configurations to name, a destructive act has one and a run that does not
+# happen.
+_prompt_yesno() {
+    local _p_question="$1" _p_flags="$2" _p_answer
 
     [ -t 0 ] || _prompt_give_up "stdin is not a terminal" "$_p_question" "$_p_flags"
 
-    local _p_answer
     while :; do
         read -r -p "$_p_question [y/n] " _p_answer \
             || _prompt_give_up "no answer given" "$_p_question" "$_p_flags"
@@ -66,6 +57,59 @@ prompt_bool() {
         esac
         warn "answer y or n"
     done
+}
+
+# prompt_bool <feature> <question> [given]
+#   given: "yes" or "no" as parsed from --with-<feature>/--no-<feature>, empty
+#          when neither was passed.
+# Answer is the exit status: 0 yes, 1 no. Used as `if prompt_bool mail …; then`.
+prompt_bool() {
+    local _p_flag="$1" _p_question="$2" _p_given="${3:-}"
+
+    case "${_p_given%$'\r'}" in
+        yes) return 0 ;;
+        no)  return 1 ;;
+        '')  ;;
+        *)   die "internal: prompt_bool $_p_flag was given '$_p_given' (expected yes, no or empty)" ;;
+    esac
+
+    _prompt_yesno "$_p_question" "--with-$_p_flag or --no-$_p_flag"
+}
+
+# prompt_choice <yes-flag> <no-flag> <question> [given]
+#   given: "yes" or "no" as parsed from --<yes-flag>/--<no-flag>, empty when
+#          neither was passed.
+# prompt_bool with both flags spelled out rather than derived from one feature
+# name: a choice whose two answers are not "with X" and "without X" still has to
+# name them both, or the no-terminal failure names a flag that does not exist.
+prompt_choice() {
+    local _p_yes="$1" _p_no="$2" _p_question="$3" _p_given="${4:-}"
+
+    case "${_p_given%$'\r'}" in
+        yes) return 0 ;;
+        no)  return 1 ;;
+        '')  ;;
+        *)   die "internal: prompt_choice --$_p_yes/--$_p_no was given '$_p_given' (expected yes, no or empty)" ;;
+    esac
+
+    _prompt_yesno "$_p_question" "--$_p_yes or --$_p_no"
+}
+
+# prompt_confirm <flag> <question> [given]
+#   given: "yes" as parsed from --<flag>, empty when it was not passed.
+# For a destructive act rather than a choice between two configurations: "no"
+# is not a second way to run the command, it is not running it, so the only
+# thing a script has to say is yes and `--<flag>` is the whole pair.
+prompt_confirm() {
+    local _p_flag="$1" _p_question="$2" _p_given="${3:-}"
+
+    case "${_p_given%$'\r'}" in
+        yes) return 0 ;;
+        '')  ;;
+        *)   die "internal: prompt_confirm $_p_flag was given '$_p_given' (expected yes or empty)" ;;
+    esac
+
+    _prompt_yesno "$_p_question" "--$_p_flag"
 }
 
 # prompt_value <flag> <question> <given> <outvar> [default]

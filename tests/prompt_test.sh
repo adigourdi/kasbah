@@ -56,10 +56,18 @@ case "$1" in
         captured=$(prompt_value "$2" "$3" "${4:-}" ANSWER "${5:-}")
         echo "captured=[$captured]"
         echo "answer=${ANSWER:-<unset>}" ;;
+    choice)
+        if prompt_choice "$2" "$3" "$4" "${5:-}"; then echo "answer=yes"; else echo "answer=no"; fi ;;
+    confirm)
+        if prompt_confirm "$2" "$3" "${4:-}"; then echo "answer=yes"; else echo "answer=no"; fi ;;
     bad-outvar)
         prompt_value domain "Domain?" "" 'ANSWER; rm -rf /' ;;
     bad-given)
         prompt_bool mail "Mail?" maybe ;;
+    bad-given-confirm)
+        prompt_confirm yes "Reset?" no ;;
+    bad-given-choice)
+        prompt_choice reset-acme keep-acme "Reset?" maybe ;;
 esac
 DRV
 chmod 0755 "$driver"
@@ -191,5 +199,64 @@ assert 'grep -qF "is not a variable name" <<<"$err"' "the bad output variable is
 run_closed bad-given
 assert '[ "$rc" != "0" ]'                        "a tri-state that is neither yes, no nor empty fails (exit $rc)"
 assert 'grep -qF "expected yes, no or empty" <<<"$err"' "the bad tri-state is diagnosed (got '$err')"
+
+run_closed bad-given-confirm
+assert '[ "$rc" != "0" ]'                        "a confirmation given a 'no' fails (exit $rc)"
+assert 'grep -qF "expected yes or empty" <<<"$err"' \
+    "because there is no such answer to script — not confirming is not running the command (got '$err')"
+
+# --- Case 6: confirming a destructive act -------------------------------------
+# The same read loop as prompt_bool, and one flag rather than a pair: "no" is
+# not a second way to run the command, so `--yes` is the whole of what a script
+# has to say.
+run_closed confirm yes "Reset acme.json?" yes
+assert '[ "$rc" = "0" ]'            "--yes confirms without a terminal (exit $rc)"
+assert '[ "$out" = "answer=yes" ]'  "and answers yes (got '$out')"
+assert '[ -z "$err" ]'              "silently (got '$err')"
+
+run_closed confirm yes "Reset acme.json?"
+assert '[ "$rc" != "0" ]'                    "an unconfirmed destructive act with no terminal fails (exit $rc)"
+assert 'grep -qF -- "--yes" <<<"$err"'       "naming --yes (got '$err')"
+assert '! grep -qF -- "--no-yes" <<<"$err"'  "and nothing else, since there is no --no-yes (got '$err')"
+assert 'grep -qF "Reset acme.json?" <<<"$err"' "repeating the question (got '$err')"
+assert '[ -z "$out" ]'                       "and printing nothing on stdout (got '$out')"
+
+run_tty $'y\n' confirm yes "Reset acme.json?"
+assert 'grep -qF "answer=yes" <<<"$tty_out"'      "y at the confirmation means yes (got '$tty_out')"
+run_tty $'n\n' confirm yes "Reset acme.json?"
+assert '[ "$tty_rc" = "0" ]'                      "declining is an answer, not an error (exit $tty_rc)"
+assert 'grep -qF "answer=no" <<<"$tty_out"'       "n at the confirmation means no (got '$tty_out')"
+run_tty '' confirm yes "Reset acme.json?"
+assert '[ "$tty_rc" != "0" ]'                     "EOF at the confirmation fails rather than proceeding (exit $tty_rc)"
+assert 'grep -qF -- "--yes" <<<"$tty_out"'        "naming the flag (got '$tty_out')"
+
+run_closed bad-given-choice
+assert '[ "$rc" != "0" ]'                        "a choice given a value that is neither answer fails (exit $rc)"
+assert 'grep -qF "expected yes, no or empty" <<<"$err"' "and is diagnosed as the caller mistake it is (got '$err')"
+
+# --- Case 7: a choice whose flags are not --with-x/--no-x ---------------------
+# Both spellings are given, not derived, because the two answers of a real
+# choice are rarely "with X" and "without X" — and a give-up that names a flag
+# nobody can pass is worse than no message at all.
+run_closed choice reset-acme keep-acme "Reset the store?" yes
+assert '[ "$rc" = "0" ]'            "--reset-acme answers without a terminal (exit $rc)"
+assert '[ "$out" = "answer=yes" ]'  "as yes (got '$out')"
+run_closed choice reset-acme keep-acme "Reset the store?" no
+assert '[ "$rc" = "0" ]'            "--keep-acme answers without a terminal too (exit $rc)"
+assert '[ "$out" = "answer=no" ]'   "as no — the safe answer is expressible in a script (got '$out')"
+assert '[ -z "$err" ]'              "silently (got '$err')"
+
+run_closed choice reset-acme keep-acme "Reset the store?"
+assert '[ "$rc" != "0" ]'                          "neither flag and no terminal fails (exit $rc)"
+assert 'grep -qF -- "--reset-acme or --keep-acme" <<<"$err"' \
+    "naming both flags, neither of them derived from a feature name (got '$err')"
+assert '! grep -qF -- "--with-" <<<"$err"'         "and inventing no --with- spelling (got '$err')"
+
+run_tty $'n\n' choice reset-acme keep-acme "Reset the store?"
+assert '[ "$tty_rc" = "0" ]'                  "n at a choice is an answer, not an error (exit $tty_rc)"
+assert 'grep -qF "answer=no" <<<"$tty_out"'   "and means no (got '$tty_out')"
+run_tty '' choice reset-acme keep-acme "Reset the store?"
+assert '[ "$tty_rc" != "0" ]'                             "EOF at a choice fails rather than picking one (exit $tty_rc)"
+assert 'grep -qF -- "--reset-acme or --keep-acme" <<<"$tty_out"' "naming both flags (got '$tty_out')"
 
 exit "$fail"
