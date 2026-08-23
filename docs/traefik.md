@@ -96,6 +96,15 @@ round-robins between them, so project A's app can silently connect to
 project B's database. Keeping internal services on a project-internal
 network scopes those aliases. `kasbah check` enforces the split (C03/C07).
 
+**The split scopes the internal half only.** A *routed* service still carries
+its service name as an alias on the shared `kasbah-net`, and nothing warns:
+two projects that each call their routed service `web` both register `web`
+there, and a third project resolving that bare name round-robins between them.
+Only `container_name` is guaranteed unique, because Docker refuses a duplicate
+outright — which is why fragments target it. Name routed services as
+distinctly as their containers, or pin the alias with
+`networks.kasbah-net.aliases:`.
+
 The network is what lets Traefik resolve `http://<container_name>:<port>`
 in the file fragment. Container names — unlike service-name aliases — are
 unique per host (Docker refuses to start a duplicate), so fragments always
@@ -198,6 +207,7 @@ Referenced via `@file` from `_shared.yml`:
 | `security-headers@file` | HSTS, frame-deny, content-type-nosniff, CSP-report-only stub |
 | `gzip-compression@file` | Response compression |
 | `api-rate-limit@file` | 50 avg / 100 burst requests/sec |
+| `traefik-dashboard-auth@file` | Basic auth for the dashboard. **Deliberately outside the frozen set** — `traefik.<apex>` is kasbah's, and no project has a reason to reference it |
 
 Project-specific middlewares go in the same project fragment under
 `http.middlewares.<name>`.
@@ -208,6 +218,12 @@ Project-specific middlewares go in the same project fragment under
 - Stored in `/apps/data/traefik/letsencrypt/acme.json`, `chmod 600`.
 - TLS options default to TLS 1.2–1.3 with modern cipher suites
   (declared in `_shared.yml`).
+- **Never compute a certificate's age from `notBefore`.** Let's Encrypt
+  backdates it by roughly an hour — measured twice against Traefik's own log
+  on synchronised clocks, both UTC: 58m32s and 58m31s. A certificate issued
+  twelve seconds ago reads as an hour old, so anything deciding "is this
+  fresh" (a future `check --server` cert rule, for one) must use the log, or
+  treat anything under ~2 h as just issued.
 
 ### Which CA — production or staging
 
@@ -243,7 +259,12 @@ certificate an operator believes they have moved off. Init therefore archives
 the store beside itself as `acme.json.<UTC timestamp>` (mode 600, never
 deleted — production certificates are real and re-issuing them costs budget),
 re-creates an empty `acme.json` mode 600, and restarts Traefik, which
-re-issues from scratch on the first request for each domain. The reset runs
+re-issues **every routed hostname as soon as the new configuration loads** —
+no request needed, about 10 s per certificate (measured: register 1 s,
+HTTP-01 5 s, certificate 3 s). Two consequences: the rate-limit budget is
+spent at restart, so a hostname whose DNS is wrong burns it with nobody
+visiting; and a switch is verifiable about fifteen seconds later rather than
+whenever traffic happens to arrive. The reset runs
 after the new `traefik.yml` is in place and before the restart: `acme.json` is
 bind-mounted as a file, so a running Traefik holds the old inode until it is
 restarted.
@@ -265,14 +286,45 @@ The two prompts that guard this are different kinds of question:
   an abort would strand every server prepared before `caServer` existed.
   `--yes` deliberately does not answer it.
 
+Neither flag answers the other's question. A choice flag on a run that never
+asks the choice is a warning, not a failure; `--keep-acme` on a run that must
+switch is a refusal, because keeping the store and changing CA cannot both
+happen and `--yes` must not be what decides it.
+
 The run records the endpoint either way, so the unknown case is asked once.
 See `server-setup.md` for the full table.
 
 ## Dashboard
 
-Enabled by default at `traefik.<init-domain>`, protected by basic auth
-(hash generated during `kasbah server init`). The dashboard router lives
-in `_shared.yml`, not the docker-provider API entrypoint.
+Enabled by default at `traefik.<init-domain>`, protected by basic auth (hash
+generated during `kasbah server init`). Both routers live in `_shared.yml`, not
+the docker-provider API entrypoint, and there are two of them:
+
+- `traefik-dashboard-http` on `web` — **redirect only**, carrying
+  `http-to-https` and served by `noop@internal`. It must never carry the auth
+  middleware: a router that asks for credentials over plain HTTP is how they
+  end up on the wire. The redirect answers first, so the browser
+  authenticates against TLS.
+- `traefik-dashboard` on `websecure` — `security-headers` **then**
+  `traefik-dashboard-auth`. Headers first is deliberate: the 401 is the first
+  response a browser sees, and carrying HSTS on it is what stops the *next*
+  visit using plain HTTP at all, which beats depending on the redirect.
+
+The residual exposure, which no arrangement here removes: a client that
+pre-emptively sends `Authorization:` to the `http://` URL has already put the
+password on the wire before any redirect or 404. Browsers do not do this
+unprompted — basic-auth credentials are cached per origin, and `http://` and
+`https://` are different origins — but `curl -u` against an `http://` URL
+does.
+
+### Every other hostname pointing at the box
+
+Once Traefik holds `:80` and `:443`, *any* name resolving to the host that no
+fragment claims gets Traefik's **404** on `:80` and its self-signed
+`TRAEFIK DEFAULT CERT` on `:443` — observed on the apex of a domain whose
+subdomains kasbah serves. Previously those ports refused the connection. This
+is normal and is not an error to chase, but an operator who points an apex at
+the box and expects nothing to change will notice.
 
 ## Health
 

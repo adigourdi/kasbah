@@ -135,6 +135,16 @@ case "$mode" in
         printf 'store=%s\nstatic=%s\n' \
             "$_SI_ACME_STORE" "${_SI_TRAEFIK_CURRENT[traefik.yml]}"
         ;;
+    start)
+        # What a Traefik that will not come up tells the operator. The remote
+        # step is stubbed into failing: what is under test is the local message.
+        _SI_TARGET=deploy@vps; _SI_APPS_PATH=/apps; _SI_TRAEFIK_PROJECT=traefik
+        _SI_TRAEFIK_RESTART=no
+        _SI_FACT=([acme_reset]="$1" [acme_archive]="${2:-}")
+        ssh_script() { return 7; }
+        _server_init_traefik_start
+        printf 'start=ok\n'
+        ;;
     reset)
         # Whether the reset step goes to the server at all, and what it hands
         # over when it does. The remote half is driven for real further down,
@@ -817,10 +827,25 @@ assert '[ "$(yq -r "$router.entryPoints | join(\",\")" "$shared")" = "websecure"
 assert '[ "$(yq -r "$router.tls.certResolver" "$shared")" = "letsencrypt" ]' \
     "with the letsencrypt resolver — a frozen name"
 assert '[ "$(yq -r "$router.service" "$shared")" = "api@internal" ]' "served by api@internal"
-assert '[ "$(yq -r "$router.middlewares | length" "$shared")" -ge 1 ]' "behind at least one middleware"
-auth_mw=$(yq -r "$router.middlewares[0]" "$shared")
+assert '[ "$(yq -r "$router.middlewares | join(\",\")" "$shared")" = "security-headers,traefik-dashboard-auth" ]' \
+    "behind security-headers then basic auth — headers first so the 401 carries HSTS (got '$(yq -r "$router.middlewares | join(\",\")" "$shared")')"
+auth_mw=$(yq -r "$router.middlewares[-1]" "$shared")
 assert '[ "$(yq -r ".http.middlewares[\"$auth_mw\"].basicAuth.users[0]" "$shared")" = "$hash_admin" ]' \
     "which is basic auth carrying the bcrypt entry verbatim (got '$(yq -r ".http.middlewares[\"$auth_mw\"].basicAuth.users[0]" "$shared")')"
+
+# The dashboard's :80 half. Redirect-only: it must never carry the auth
+# middleware, because a router that asks for credentials over plain HTTP is
+# how they end up on the wire.
+http_router='.http.routers["traefik-dashboard-http"]'
+assert '[ "$(yq -r "$http_router.rule" "$shared")" = "$(yq -r "$router.rule" "$shared")" ]' \
+    "the :80 dashboard router matches the same host as the HTTPS one"
+assert '[ "$(yq -r "$http_router.entryPoints | join(\",\")" "$shared")" = "web" ]' "on web only"
+assert '[ "$(yq -r "$http_router.middlewares | join(\",\")" "$shared")" = "http-to-https" ]' \
+    "carrying only the redirect (got '$(yq -r "$http_router.middlewares | join(\",\")" "$shared")')"
+assert '[ "$(yq -r "$http_router.service" "$shared")" = "noop@internal" ]' \
+    "served by noop@internal, the placeholder for a router its middleware answers"
+assert '[ "$(yq -r "$http_router | has(\"tls\")" "$shared")" = "false" ]' \
+    "and declaring no tls — it is the plaintext half"
 
 # 02-spine.md's original warning had this backwards. A single \$ is correct in a
 # file Traefik parses; \$\$ only governs a value that lands in a
@@ -987,8 +1012,18 @@ assert '[ "$rc" != "0" ]' \
     "a non-empty store with no recorded CA is asked about, not assumed safe (exit $rc, printed '$out')"
 assert 'grep -qF -- "--reset-acme or --keep-acme" <<<"$err_out"' \
     "and with no terminal the run stops naming both flags (said '$err_out')"
-assert 'grep -qF "no caServer" <<<"$err_out"' \
-    "saying which fact is missing — it predates kasbah recording one (said '$err_out')"
+assert 'grep -qF "parses but names no caServer" <<<"$err_out"' \
+    "saying which fact is missing (said '$err_out')"
+# A traefik.yml that is not Traefik's parses and has no caServer too, so the
+# message reports the missing field and claims nothing about how it got that way.
+assert '! grep -qF "predates" <<<"$err_out"' \
+    "without asserting a history it cannot know (said '$err_out')"
+not_traefik=$(printf 'hello: world\n')
+out=$(SI_STORE=nonempty drive values "$stored_shared" "$not_traefik" --email=a@b.c --keep-acme); rc=$?
+assert '[ "$rc" = "0" ] && grep -qxF "ca_origin=nofield" <<<"$out"' \
+    "a file that is not Traefik's at all lands in the same state (exit $rc, got '$out')"
+assert '! grep -qF "predates" "$tmpdir/err"' \
+    "and is not told it predates anything (said '$(drive_err)')"
 
 out=$(SI_STORE=nonempty drive values "" "$no_ca" --acme-staging --yes --domain=example.com --traefik-auth=admin:pw); rc=$?
 err_out=$(drive_err)
@@ -1032,6 +1067,64 @@ assert 'grep -qxF "ca_origin=unreadable" <<<"$out"' \
     "as a file that does not parse, never collapsed into 'never had one' (got '$out')"
 assert 'grep -qF "does not parse" <<<"$err_out"' "and the operator is told which it is (said '$err_out')"
 assert 'grep -qxF "reset=yes" <<<"$out"' "and --reset-acme resets (got '$out')"
+
+# --- Where the two flag philosophies meet -------------------------------------
+# --yes answers the confirmation, --reset-acme/--keep-acme answer the choice,
+# and one flag per question only holds if a flag aimed at the other question
+# cannot quietly decide this one.
+#
+# The destructive collision first: --keep-acme states an intent the switch
+# cannot honour, and --yes states the opposite one. Whichever branch read its
+# flag last would win in silence, and the losing direction archives a store the
+# operator asked to keep.
+out=$(SI_STORE=nonempty drive values "$stored_shared" "$stored_static" --acme-staging --keep-acme --yes); rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" != "0" ]' \
+    "--keep-acme with a switch is refused, not overridden by --yes (exit $rc, printed '$out')"
+assert '! grep -qxF "reset=yes" <<<"$out"' \
+    "and above all does not reset a store the operator asked to keep (got '$out')"
+assert 'grep -qF -- "--keep-acme cannot be honoured" <<<"$err_out"' \
+    "naming the contradiction rather than picking a side (said '$err_out')"
+assert 'grep -qF -- "re-run without --keep-acme" <<<"$err_out"' \
+    "and both ways out of it (said '$err_out')"
+assert 'grep -qF -- "with --yes to switch and reset" <<<"$err_out"' \
+    "including the one that resets (said '$err_out')"
+
+out=$(SI_STORE=nonempty drive values "$stored_shared" "$stored_static" --acme-staging --keep-acme); rc=$?
+assert '[ "$rc" != "0" ]' "the same without --yes — the objection is to the flag, not to the pair (exit $rc)"
+assert 'grep -qF -- "--keep-acme cannot be honoured" "$tmpdir/err"' "with the same message (said '$(drive_err)')"
+
+# --reset-acme is merely spare here: it agrees with the outcome but answers a
+# question this run does not ask, and --yes is what settles the one it does.
+out=$(SI_STORE=nonempty drive values "$stored_shared" "$stored_static" --acme-staging --reset-acme --yes); rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" = "0" ]' "--reset-acme alongside a switch is not a failure (exit $rc: $err_out)"
+assert 'grep -qxF "reset=yes" <<<"$out"' "the switch still resets (got '$out')"
+assert 'grep -qF -- "--reset-acme had no effect" <<<"$err_out"' \
+    "and the operator is told the flag did nothing (said '$err_out')"
+
+# A fleet script sets the pair once and meets servers that never ask. Those runs
+# warn and carry on — failing them is what would make the pair unusable.
+out=$(SI_STORE=nonempty drive values "$stored_shared" "$stored_static" --reset-acme); rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" = "0" ]' "a choice flag on an idempotent re-run is a warning, not a refusal (exit $rc: $err_out)"
+assert 'grep -qxF "reset=no" <<<"$out"' "nothing is reset (got '$out')"
+assert 'grep -qF -- "--reset-acme had no effect" <<<"$err_out"' "and it says so (said '$err_out')"
+assert 'grep -qF "records the CA that filled acme.json" <<<"$err_out"' \
+    "naming why the question was not asked (said '$err_out')"
+
+out=$(drive values "$stored_shared" "$stored_static" --keep-acme); rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" = "0" ]' "and likewise over an empty store (exit $rc: $err_out)"
+assert 'grep -qF -- "--keep-acme had no effect" <<<"$err_out"' "naming the flag that was passed (said '$err_out')"
+assert 'grep -qF "holds nothing to decide about" <<<"$err_out"' \
+    "and that there was nothing to decide (said '$err_out')"
+
+# The silence that makes those warnings legible: neither flag, nothing to say.
+out=$(SI_STORE=nonempty drive values "$stored_shared" "$stored_static"); rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" = "0" ] && [ -z "$err_out" ]' \
+    "a re-run that asks nothing says nothing at all (exit $rc, said '$err_out')"
 
 # --- Declining, behind a real terminal ----------------------------------------
 # `[ -t 0 ]` is a property of the pty, and a pipe cannot stand in for it.
@@ -1210,6 +1303,22 @@ out=$(drive readtraefik "$(canned 'x: 1' plenty)"); rc=$?
 assert '[ "$rc" != "0" ]' "an acme_store value this kasbah does not know is refused (exit $rc, printed '$out')"
 assert 'grep -qF "does not know" "$tmpdir/err"' "saying so (said '$(drive_err)')"
 
+# --- What a Traefik that will not start says about the store ------------------
+# The reset is this command's one destructive act, and a failed start is the
+# path where the operator cannot see for themselves that it worked.
+drive start done /apps/data/traefik/letsencrypt/acme.json.20260822T101500Z >/dev/null; rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" != "0" ]' "a Traefik that will not come up fails the run (exit $rc)"
+assert 'grep -qF "could not start Traefik" <<<"$err_out"' "saying so (said '$err_out')"
+assert 'grep -qF "acme.json.20260822T101500Z" <<<"$err_out"' \
+    "and naming where the certificates went — they exist only in the archive now (said '$err_out')"
+
+drive start skipped >/dev/null; rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" != "0" ]' "a start failure with no reset behind it still fails (exit $rc)"
+assert '! grep -qF "acme.json was reset" <<<"$err_out"' \
+    "without inventing an archive that was never made (said '$err_out')"
+
 # --- The acme.json reset ------------------------------------------------------
 # A CA change always changes traefik.yml's bytes, so it always rides the one
 # restart mechanism there is. The order is load-bearing: acme.json is
@@ -1289,6 +1398,14 @@ rm -rf "$acme_dir"; mkdir -p "$acme_dir/acme.json"
 run_acme 20260822T101502Z
 assert '[ "$a_rc" != "0" ]' "a directory at the path is a hard failure, as in the layout step (rc $a_rc)"
 assert 'grep -qF "not a regular file" "$tmpdir/aerr"' "naming what it found (said '$(cat "$tmpdir/aerr")')"
+
+# Every warning wall in this file opens its lines lowercase, so a reader can see
+# where one warning ends and the next begins. Checked structurally: the drift
+# this catches is a single line inside a block nobody reads twice.
+warn_openers=$(grep -oE '^ *warn "[A-Za-z]' "$repo_dir/lib/server_init.sh" | grep -oE '.$' | sort -u | tr -d '\n')
+assert '[ -n "$warn_openers" ]' "the warn lines were found (else the check below is vacuous)"
+assert '[ "$warn_openers" = "$(tr "A-Z" "a-z" <<<"$warn_openers")" ]' \
+    "no warn line opens with a capital (found: '$warn_openers')"
 
 # --- The command line, through bin/kasbah ------------------------------------
 # The two exports above are for the driver, which sources the libraries

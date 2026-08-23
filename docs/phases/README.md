@@ -16,7 +16,7 @@ during execution.
 | 3 | [Env](03-env.md) | **Done.** Env template system ported verbatim with its tests; one shared drift function used by `check` and by the VPS; `KASBAH_*` injected into a managed block |
 | 4 | [Ship](04-ship.md) | **Done.** `build-push` + full `deploy` (hooks, backup, health, flock, digests): a custom-built app ships to the rig |
 | 5 | [Undo](05-undo.md) | **Done.** `rollback` + `deploy X.Y.Z` from a git tag, `versions.log` rotation, and `history` / `pending` / `changelog` |
-| 6 | [Proof](06-proof.md) | **The real milestone.** A real project (deliberately unnamed) on a freshly provisioned VPS: bare host → HTTPS with real ACME, change deploy, rollback — kasbah only |
+| 6 | [Proof](06-proof.md) | **Done.** A real project on a bare VPS: HTTPS with a real ACME cert, change deploy, rollback — kasbah only |
 | 7 | [Operate](07-operate.md) | Mail port, `logs`/`exec`, `check --server`, `upgrade-traefik`, `server prune`, full `server status` |
 | 8 | [Keep](08-keep.md) | `drop [--prune]`, `server destroy`, `--with-backup` (restic), `check --fix` |
 | 9 | [Adopt](09-adopt.md) | Both existing consumers migrated: the original project (scripts/ deleted, mail included, live cutover) and lab (RPi stacks as kasbah projects) |
@@ -54,9 +54,14 @@ rhythm: one capability slice per task, tests landing with it.
 ## Cross-phase rules
 
 1. **Interactive, never assume.** An unset flag means *prompt*, not *no*
-   (`overview.md` → Interactivity). Every prompt has a `--with-x`/`--no-x`
-   flag pair; without a TTY an unanswered prompt is a hard fail naming the
-   flag. This is also what lets the rig tests drive everything headless.
+   (`overview.md` → Interactivity). Every prompt has a flag for scripted use:
+   a `--with-x`/`--no-x` pair for a feature, a differently-spelled pair where
+   that reads better (`--reset-acme`/`--keep-acme`), or a bare `--yes` where
+   the prompt guards a destructive act and declining just aborts. Without a
+   TTY an unanswered prompt is a hard fail naming its own flags. This is also
+   what lets the rig tests drive everything headless. **One deliberate
+   exception, added in Phase 6:** `--acme-staging` does not prompt, because
+   production is both the default and the status quo.
 2. **Frozen contracts — never rename:** `kasbah-net`, entrypoints
    `web`/`websecure`, certresolver `letsencrypt`, `_shared.yml` middleware
    names, versions.log's four positional fields, the `KASBAH_` env prefix.
@@ -75,7 +80,55 @@ rhythm: one capability slice per task, tests landing with it.
 8. **VPS-side helpers are kasbah-owned** and overwritten on every deploy;
    projects never vendor kasbah bash.
 
-## Before starting Phase 6
+## Before starting Phase 7
+
+Phase 6 is committed and all four exit criteria were walked against **real
+infrastructure**, not the rig. Baselines: `./test.sh` **20 PASS in ~7m10s**;
+`KASBAH_RIG_TESTS=1 ./test.sh` **29 PASS in 16m27s**, exit 0, no skips. Phase 7
+now has **two** carried sections — one from Phase 2, one from Phase 6 — and the
+Phase 6 one holds live decisions, not notes.
+
+Five things Phase 6 leaves for whoever opens this next.
+
+**The milestone landed on the first attempt, and that is the least interesting
+thing about it.** Bare Ubuntu host to a healthy, publicly-trusted HTTPS
+deployment in 20.4 s of `server init` plus 10 s of ACME; deploy 11.4 s,
+rollback 11.3 s. The uplink costs ~2.3× loopback on `build-push` and ~1.5× on
+`deploy`, which says the wall clock is **SSH round trips and container
+lifecycle, not bytes** — a much larger image would change that conclusion, and
+nothing here has measured one.
+
+**`notBefore` is not issuance time.** Let's Encrypt backdates it ~58.5 min
+(measured twice, 58m32s and 58m31s, on clocks agreeing to 2 s). Phase 7's
+`check --server` is chartered to report cert status from `acme.json`; the
+obvious implementation is an hour wrong in the direction that calls a fresh
+certificate stale.
+
+**Three review rounds and a real-VPS run all missed the same defect**, and the
+reason generalises: every one of them exercised flags that were *doing*
+something. `--keep-acme --yes` destroyed a certificate store while the operator
+said keep, because the choice variable was read on one code path out of three.
+When a flag can be passed to a run that never consults it, test *that* run.
+
+**The tool assumes every project has an environment**, and it surfaced three
+ways on the first non-fixture project (S04 hard-fails without a template,
+`init-project` scaffolds a `DOMAIN` key nothing reads, the starter compose
+snippet teaches the two-service case as universal). Carried to Phase 7 **as one
+decision** — answering the three separately produces three inconsistent
+answers.
+
+**A hand-set `caServer` is a trap-door**: no flag reproduces it and `--keep-acme`
+does not save the store, so every future `server init` demands `--yes` and a
+reset. That establishes "kasbah always overwrites `caServer`", which task 7.5's
+promised "user-customized `traefik.yml` gets a diff + confirm, not a silent
+replace" has to reconcile deliberately rather than by accident.
+
+And one about running the work rather than the code: **`./test.sh` is only
+evidence when nothing else is writing.** A verdict run started while an
+implementer was live in the same files came back 19 PASS / 1 FAIL — the
+failures were that agent's own new tests, ahead of the code satisfying them.
+
+## Before starting Phase 6 ✅
 
 Phase 5 is committed and its four exit criteria were walked by hand against the
 rig at the close, driving `kasbah` as an operator. Baselines: `./test.sh`
@@ -192,9 +245,13 @@ task baselines are clean. Unit-suite baseline at the start of Phase 1:
 ## Re-read notes
 
 Phases 1–4 are specified tightly. **7–9 are deliberately lighter and need
-a re-read before starting.** The likeliest reorder trigger is what Phase 6
-learns on first contact with real infrastructure (ACME, DNS, TTY quirks,
-where the tool pinches on a non-fixture project); the second is Phase 9's
+a re-read before starting.** The first reorder trigger has now fired: Phase 6
+met real infrastructure and its findings are in `06-proof.md` plus the carried
+section in `07-operate.md` — ACME behaved better than feared (one attempt, no
+rate-limit trouble, staging rehearsal worth keeping), DNS and open ports turned
+out to be unprobed preconditions, and the TTY quirk was that there is no quirk:
+the interactive env step runs fine under a pty, and headless deploys are a
+non-goal by design. The remaining trigger is Phase 9's
 two live cutovers (label→fragment Traefik swap with `acme.json` reuse)
 and its open question — cert strategy on a LAN host where HTTP-01 can't
 reach (DNS-01 vs internal CA), recorded in `09-adopt.md`.

@@ -88,7 +88,8 @@ from compose itself.
      docker load < tarball
      rm tarball
 8. rm local tarball
-9. git push origin v<version>   # if tag not on origin yet
+9. git push origin v<version>   # if tag not on origin yet; a repo with no
+                                # 'origin' warns and continues, tag stays local
 ```
 
 Three details in that flow are load-bearing.

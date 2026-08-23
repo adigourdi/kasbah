@@ -82,7 +82,8 @@ What it does:
    (touch-as-file is mandatory — Docker silently creates a directory otherwise).
 4. Scaffold `/apps/traefik/` — compose.yml, traefik.yml, and dynamic/ with
    `_shared.yml`. No `.env`: Traefik interpolates no environment variables,
-   so `--domain`, `--email` and the `--traefik-auth` hash are baked into the
+   so `--domain`, `--email`, the `--traefik-auth` hash and the ACME `caServer`
+   are baked into the
    rendered files (see `server-setup.md`).
 5. Reconcile the certificate store with the CA now configured. `acme.json`
    holds certificates issued by one CA; changing `caServer` does not
@@ -106,7 +107,8 @@ What it does:
    See `traefik.md` → "Which CA".
 6. `docker compose -p traefik up -d` in `/apps/traefik/`, restarting only
    when the static config changed and the container was not just recreated.
-7. Health-check Traefik, print dashboard URL.
+7. Health-check Traefik, print the dashboard URL. Plain HTTP redirects to
+   HTTPS, and the dashboard carries HSTS on its 401 (`traefik.md` → Dashboard).
 8. If `--with-mail`: scaffold `/apps/mail/`, write the cert-trigger +
    webmail router fragment to `/apps/traefik/dynamic/_mail.yml`, run its
    env setup, start it.
@@ -201,7 +203,12 @@ pass `USER@HOST` explicitly.
 
 Scaffold the kasbah metadata for a new project. Creates:
 - `kasbah.yml` with schema version and sane defaults
-- `.env.prod.example` skeleton
+- `.env.prod.example` skeleton — it leads with a `DOMAIN=<domain>` line as an
+  example of the shape. **Nothing kasbah runs reads `DOMAIN`**: routing comes
+  from the manifest's `domain:` and the fragment. Delete the line if the app
+  does not read it itself — otherwise the first deploy prompts for a variable
+  nothing consumes, and a project with no configuration ends up with one key
+  purely because the scaffold wrote it.
 - `.kasbah/state.json` (empty fields, current `kasbah_version`)
 - `.gitignore` entries for `.env` and `.kasbah/`
 

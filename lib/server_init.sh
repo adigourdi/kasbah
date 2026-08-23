@@ -100,7 +100,9 @@ Flags:
   --with-backup|--no-backup  install restic backups, or skip them
   --yes                  confirm a switch away from a stated endpoint
 
-Every flag is tri-state: leaving one off asks. Domain, email and the
+Every *feature* flag is tri-state: leaving one off asks. --acme-staging and
+--yes are not — production is the default and never asks, and --yes only
+answers a confirmation that a stated CA change raises. Domain, email and the
 dashboard credentials are only asked for once — a re-run reuses what is
 already on the server, since bcrypt salts randomly and a fresh hash would
 rewrite the stack on every run.
@@ -1596,12 +1598,58 @@ _si_settle_acme_ca() {
 
     _SI_ACME_RESET=no
     _SI_ACME_KEPT=""
-    [ "$_SI_ACME_STORE" = nonempty ] || return 0
-    if [ "$_SI_ACME_CA_ORIGIN" = known ]; then
-        [ "$_SI_ACME_CA_STORED" = "$_SI_ACME_CA" ] || _si_confirm_acme_switch
-    else
+
+    if [ "$_SI_ACME_STORE" = nonempty ] && [ "$_SI_ACME_CA_ORIGIN" != known ]; then
         _si_choose_acme_unknown
+        return 0
     fi
+
+    # Every path below leaves the unknown-store question unasked, so
+    # --reset-acme and --keep-acme have nothing here to answer. The two are not
+    # symmetrical about that: one of them states an intent a switch cannot
+    # honour, and the other is merely spare.
+    if [ "$_SI_ACME_STORE" = nonempty ] && [ "$_SI_ACME_CA_STORED" != "$_SI_ACME_CA" ]; then
+        [ "$_SI_ACME_RESET_CHOICE" != no ] || _si_keep_acme_conflict
+        _si_acme_choice_unused "this run is switching away from the endpoint that server states"
+        _si_confirm_acme_switch
+        return 0
+    fi
+
+    if [ "$_SI_ACME_STORE" = nonempty ]; then
+        _si_acme_choice_unused "traefik.yml there records the CA that filled acme.json"
+    else
+        _si_acme_choice_unused "acme.json there holds nothing to decide about"
+    fi
+    return 0
+}
+
+# --keep-acme where the store must be reset for the run to mean anything. Both
+# the flag and the switch are stated intents and only one can happen, which is
+# the objection _server_init_set_bool already makes to --reset-acme --keep-acme
+# on one command line — made here too, rather than resolved by whichever branch
+# reads its flag last. The direction of the refusal is fixed: a store the
+# operator asked to keep is never the one kasbah archives.
+_si_keep_acme_conflict() {
+    err "server init: --keep-acme cannot be honoured on $_SI_TARGET"
+    err_cont "the server states one ACME endpoint and this run renders another, and every"
+    err_cont "certificate in acme.json was issued by the one being left behind — keeping the"
+    err_cont "store and switching CA cannot both happen:"
+    err_cont "  $_SI_ACME_CA_STORED -> $_SI_ACME_CA"
+    err_cont "re-run without --keep-acme to be asked, or with --yes to switch and reset."
+    err_cont "nothing was created, shipped or restarted."
+    exit 1
+}
+
+# A choice flag passed to a run that never reaches the choice. A warning and not
+# a refusal: passing the pair is how the unknown-store question is answered
+# without a terminal, and a fleet script that sets it once must not fail on
+# every server that turned out not to need it.
+_si_acme_choice_unused() {
+    local _cu_flag=--reset-acme
+    [ -n "$_SI_ACME_RESET_CHOICE" ] || return 0
+    [ "$_SI_ACME_RESET_CHOICE" != no ] || _cu_flag=--keep-acme
+    warn "$_cu_flag had no effect: it answers what to do with a certificate store"
+    warn "whose CA nothing on $_SI_TARGET records, and $1"
     return 0
 }
 
@@ -1661,10 +1709,10 @@ _si_choose_acme_unknown() {
     case $_SI_ACME_CA_ORIGIN in
         unreadable) warn "$_SI_APPS_PATH/traefik/traefik.yml on $_SI_TARGET does not parse, so the endpoint it configures cannot be read" ;;
         nocontent)  warn "$_SI_APPS_PATH/traefik/traefik.yml on $_SI_TARGET is missing, empty or unreadable, so nothing states which endpoint this server uses" ;;
-        *)          warn "$_SI_APPS_PATH/traefik/traefik.yml on $_SI_TARGET names no caServer — it predates kasbah recording one" ;;
+        *)          warn "$_SI_APPS_PATH/traefik/traefik.yml on $_SI_TARGET parses but names no caServer under certificatesResolvers.letsencrypt.acme" ;;
     esac
     warn "acme.json is not empty, and nothing here says which CA issued what is in it."
-    warn "This run configures the Let's Encrypt $to CA. If the certificates in the store"
+    warn "this run configures the Let's Encrypt $to CA. If the certificates in the store"
     warn "came from the other one, Traefik keeps serving them until they renew and then"
     warn "replaces them with $to ones — resetting the store now is what avoids that."
 
@@ -1950,8 +1998,15 @@ exit 0
 REMOTE
     ) || rc=$?
 
-    [ "$rc" -eq 0 ] \
-        || die "could not start Traefik on $_SI_TARGET (the remote step exited $rc, see above)"
+    if [ "$rc" -ne 0 ]; then
+        err "could not start Traefik on $_SI_TARGET (the remote step exited $rc, see above)"
+        # The one destructive thing this command does, said on the one path where
+        # the operator cannot see it succeed: after a reset the certificates
+        # exist only in the archive, and a failed start is when that matters.
+        [ "${_SI_FACT[acme_reset]:-}" != done ] \
+            || err_cont "acme.json was reset before this — the previous store is at ${_SI_FACT[acme_archive]}"
+        exit 1
+    fi
 
     _si_absorb_checked "the Traefik start" "$out" \
         traefik_action traefik_health traefik_started_at traefik_image traefik_container

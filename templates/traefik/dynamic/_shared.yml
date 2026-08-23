@@ -58,8 +58,23 @@ http:
           - "__DASHBOARD_AUTH__"
 
   routers:
+    # :80 for the dashboard is redirect-only — the middleware answers before
+    # anything asks for credentials, so the HTTPS router below is the only one
+    # that ever sees them. Without this, the hostname 404s on plain HTTP while
+    # kasbah tells every project to redirect.
+    traefik-dashboard-http:
+      rule: "Host(`traefik.__DASHBOARD_DOMAIN__`)"
+      entryPoints:
+        - web
+      middlewares:
+        - http-to-https
+      service: noop@internal
+
     # api@internal is Traefik's built-in dashboard/API service. It is reached
     # through this router and nowhere else — `api.insecure` stays off.
+    # security-headers comes first so the 401 carries HSTS too: that response is
+    # the first one a browser sees, and it is what stops the next visit using
+    # plain HTTP at all.
     traefik-dashboard:
       rule: "Host(`traefik.__DASHBOARD_DOMAIN__`)"
       entryPoints:
@@ -67,6 +82,7 @@ http:
       tls:
         certResolver: letsencrypt
       middlewares:
+        - security-headers
         - traefik-dashboard-auth
       service: api@internal
 

@@ -18,7 +18,7 @@ port 80, ACME.
 - [x] A fresh VPS goes from bare Docker host to serving the project over HTTPS (valid LE cert) using only kasbah commands — **publicly trusted**, verified by `curl` with no `-k` against the system CA store: issuer `CN = YR2`, no `(STAGING)`. "Fresh" is honestly "pre-existing but bare" (see 6.2)
 - [x] A second deploy of a trivial change lands end to end (tag → build-push → deploy → hooks → live) — `changes: v0.1.0..v0.1.1`, new digest, the change observable in the served HTML. No hooks: the project has none
 - [x] A rollback on the real VPS restores the prior version (the Phase 5 drill, repeated on real infra) — digest back to `7a284e…`, and the change gone from the served HTML
-- [ ] Docs reconciled: everything reality contradicted is fixed in `docs/` now
+- [x] Docs reconciled: everything reality contradicted is fixed in `docs/` now — ten audit findings applied, two of which needed code rather than prose
 
 ## Tasks
 
@@ -36,15 +36,20 @@ Let's Encrypt and burns rate-limit budget on failed challenges.
 - [x] Unit tests in `tests/server_init_test.sh` — and in `tests/prompt_test.sh` for the new `prompt_choice`; the remote store probe is extracted from its heredoc and run for real against a scratch tree, mutation-scored rather than assumed
 
 **Watch out for:** `traefik.yml` is the only file whose byte-change sets
-`_SI_TRAEFIK_RESTART` (`lib/server_init.sh:1544-1561`) — a `caServer` change
+`_SI_TRAEFIK_RESTART` (in `_server_init_traefik_sync`) — a `caServer` change
 must ride that path, not a second restart mechanism. Traefik holds `acme.json`
-open, so the reset cannot ride the layout step that creates it
-(`lib/server_init.sh:1120-1129`, which runs long before the stack ships):
-replacing the file under a running Traefik leaves it writing to the old inode.
-The reset belongs in the ship step, after the new `traefik.yml` is in place and
-before the restart. Detection reads the CA back out of
+open, so the reset cannot ride the layout step that creates it (in
+`_server_init_layout`, which runs long before the stack ships): replacing the
+file under a running Traefik leaves it writing to the old inode. The reset
+belongs in the ship step, after the new `traefik.yml` is in place and before
+the restart. Detection reads the CA back out of
 `_SI_TRAEFIK_CURRENT[traefik.yml]`, which is already fetched — the same
 mechanism as `_si_extract_email`.
+
+*(Written before the work, against `71aab5a`. It cited line numbers, and the
+commit that consumed the guidance moved the code they pointed at — so they are
+function names now. A plan that cites lines in the file it is about to change
+is citing lines that will be wrong by the time anyone reads it.)*
 
 ### 6.1 — Project conformance, locally (M)
 `init-project` in the chosen project, compose in the new pattern (network
@@ -131,8 +136,8 @@ Walk `server-setup.md`, `build-deploy.md`, `traefik.md` against what
 actually happened; fix contradictions. Findings here re-plan Phases 7–9.
 
 **Deliverables**
-- [ ] Doc diffs or an explicit "nothing contradicted"
-- [ ] Findings written
+- [x] Doc diffs or an explicit "nothing contradicted" — plenty contradicted; see below
+- [x] Findings written
 
 ## Findings
 
@@ -345,13 +350,112 @@ backdates `notBefore` by roughly an hour to tolerate clock skew; the two agree.
 `http-to-https` middleware sitting three lines above it is offered to project
 fragments rather than used by kasbah's own router. Deliverable met (HTTPS
 works), but kasbah preaches a redirect pattern its own dashboard does not
-follow. **Carried to Phase 7** rather than fixed here: whether an admin
-dashboard *should* redirect from plaintext or stay HTTPS-only is a decision,
-not an oversight, and Phase 7 owns the dashboard surface.
+follow. Raised as a Phase 7 decision, then **settled by the operator and implemented
+at the close**: `_shared.yml` gained a `traefik-dashboard-http` router on `web`
+carrying `http-to-https` and served by `noop@internal`, and the HTTPS router
+now runs `security-headers` **before** `traefik-dashboard-auth`.
+
+The ordering is the part worth keeping. Headers first means the **401** carries
+HSTS — that response is the first one a browser sees, and it is what stops the
+next visit using plain HTTP at all, which is strictly better than relying on a
+redirect. The `web` router must never carry the auth middleware: a router that
+asks for credentials over plain HTTP is how they reach the wire. What no
+arrangement fixes, and is now written down, is a client that *pre-emptively*
+sends `Authorization:` to the `http://` URL — the 404 never protected against
+that either.
+
+Verified on the real host: `http://` → **301**, the unauthenticated response is
+a **401 carrying HSTS**, authenticated is **200**, the deployed app unaffected.
+Shipping it took **5.4 s** and Traefik reported `running`, not `restarted` —
+only the dynamic file changed, and the file provider takes that live. Mutation
+scores on the new asserts: redirect router removed **4**, HSTS dropped **1**,
+auth wrongly placed on the `:80` router **2**.
 
 Also observed, and expected: `example.com` itself now returns a Traefik 404
 where it used to refuse the connection, because the apex resolves to this host
 and no router matches it.
+
+**6.4 — what reality contradicted.** An audit of the whole `docs/` corpus
+against the observed run. Ten findings; the two that needed **code** are the
+ones worth remembering, because both were places a doc described behaviour the
+tool did not have:
+
+- **`init-project`'s starter fragment printed one router**, while
+  `traefik.md` calls the two-router form the minimum viable HTTPS routing.
+  Every project scaffolded from it would 404 on plain HTTP, and no rule
+  catches it — T03 requires only that a router declare *some* entrypoint. The
+  scaffold now prints the redirect router too. (A `check` warn for "no router
+  on `web` for the manifest domain" would close it properly; carried to
+  Phase 7.)
+- **`server init --help` claimed "every flag is tri-state: leaving one off
+  asks"** — printed directly beneath the two flags this phase added that are
+  neither.
+
+The sharpest prose finding: `traefik.md` said a reset store re-issues **"on the
+first request for each domain"**. It does not. Traefik issues at config load
+for every router carrying a `certResolver`, unprompted — visible in 6.2's log,
+where issuance began two seconds after Traefik started and long before anything
+requested the host. That changes operational advice twice over: the rate-limit
+budget is spent at **restart**, so a hostname with wrong DNS burns it with
+nobody visiting, and a switch is verifiable ~15 s later rather than whenever
+traffic happens to arrive.
+
+Also newly written down, none of it previously anywhere: that `:80`/`:443`
+being free and reachable, and DNS resolving, are **preconditions kasbah never
+probes** (they were absent from a prerequisites table that presents itself as
+the authoritative list); that a routed service's *name* is a global alias on
+`kasbah-net` and only `container_name` is guaranteed unique; that every
+unrouted hostname pointing at the box now gets a Traefik 404 and its
+`TRAEFIK DEFAULT CERT` where the port previously refused; that
+`.env.prod.example` is mandatory even when it declares nothing; and that
+`backups/` directories are always created rather than "opt-in", which three
+files claimed.
+
+**Whole-phase review — the verdict was "it hangs together", and the one defect
+was at the seam between the two flag philosophies.** An unanchored reviewer
+confirmed what mattered most and could not be confirmed from inside a task: the
+ordering invariant is airtight (a reset can only be scheduled when
+`traefik.yml`'s bytes changed, and every path out of the start step ends in a
+container start), the shared-helper change really is behaviour-preserving for
+`--with-mail`/`--no-mail` and `--with-backup`/`--no-backup`, the `prompt.sh`
+extraction is faithful, and no test asserts anything an earlier round
+overturned.
+
+- **`--keep-acme --yes` destroyed the certificate store while the operator said
+  keep — silently.** `_SI_ACME_RESET_CHOICE` was read on exactly one code path,
+  so both `known`-CA branches ignored it. Worse than the bug is where it sits:
+  `_server_init_set_bool` hard-fails `--reset-acme --keep-acme` on the stated
+  principle that "a command line that states both intents has none", and the
+  same contradiction expressed 1500 lines later resolved quietly in the
+  destructive direction. **Fixed:** `--keep-acme` reaching the switch is now a
+  refusal naming both ways out, and either choice flag on a run that never
+  reaches the choice is a *warning*, not a failure — a fleet script that sets
+  the pair once must not fail on the servers that did not need it. Mutation:
+  removing the conflict check costs 6 FAILs, silencing the warning 5.
+  **Three review rounds and a real-infrastructure run all missed it**, because
+  every one of them exercised flags that were doing something.
+- **The one destructive action in the phase was reported only on the happy
+  path.** A failed Traefik start after a reset told the operator the start
+  failed and never where the archive went. **Fixed**, both directions asserted.
+- `nofield` told an operator a `traefik.yml` containing `hello: world`
+  "predates kasbah recording one" — a history it cannot know. **Fixed**, and
+  the suite now extracts every `warn` opener in the file and fails on an
+  uppercase one, so the capitalisation drift it also found cannot come back
+  wherever the next line lands.
+
+Recorded as judgement, not fixed: `--keep-acme` converts an unknown CA into a
+recorded one, and every later run trusts that recording (disclosed in three
+docs, asked once by design); a hand-set third-party `caServer` is a trap-door,
+since no flag reproduces it — which Phase 7's promised "user-customized
+`traefik.yml` gets a diff + confirm, not a silent replace" will have to
+reconcile; and three prompt primitives now take three different first
+arguments.
+
+**A process finding, about this run rather than the code:** `./test.sh` was
+started while an implementer was live in the same files and came back 19 PASS,
+1 FAIL. The failures were that agent's *new tests*, written before the code
+that satisfies them — a verdict taken on a half-finished tree. The suite is
+only evidence when nothing else is writing.
 
 **6.3 — the whole flow on real infrastructure, and the numbers the rig could
 not produce.** Every step first-try; nothing needed a retry, a workaround or a
@@ -364,7 +468,7 @@ manual step on the server.
 | `build-push` 0.1.0 (59.1 MB image → 24.0 MB gz) | 12.7 s | 5.44 s |
 | `deploy` 0.1.0, first, incl. env setup over `ssh -t` | 11.4 s | 7.55 s |
 | **ACME switch, staging → production** | **11.2 s** | cannot |
-| Both certs re-issued after the restart | ≤ 12 s | cannot |
+| Both certs re-issued after the restart | 13–14 s | cannot |
 | `build-push` 0.1.1 | 15.0 s | — |
 | `deploy` 0.1.1 | 11.0 s | — |
 | `rollback` to 0.1.0 | 11.3 s | — |
@@ -378,15 +482,23 @@ than by bytes on the wire. A bigger image would change that; this one does not.
 end to end in one command**: detected `staging -> production`, warned with both
 URLs verbatim, archived the store to
 `acme.json.20260823T001440Z`, recreated it empty, restarted Traefik, and both
-hostnames came back with publicly trusted certificates inside twelve seconds.
+hostnames came back with publicly trusted certificates 13 s and 14 s later
+(restart 00:14:40Z; `Server responded with a certificate` at 00:14:53Z and
+00:14:54Z in Traefik's log).
 The dashboard's bcrypt hash was reused rather than re-generated
 (`credentials reused`), the marker and pointer both reported `unchanged`, and
 nothing but `traefik.yml` shipped — idempotence held across a run that changed
 real state.
 
-**Let's Encrypt backdates `notBefore` by about 58.5 minutes**, measured twice
-(staging: issued 23:57:29Z, `notBefore` 22:58:57; production: `notBefore`
-23:16:22 for a certificate observed trusted ~12 s after a 00:14:40Z restart).
+**Let's Encrypt backdates `notBefore` by about 58.5 minutes** — and it is not
+a clock or timezone artifact, which was the first explanation offered and is
+wrong. Both timestamps are UTC (`openssl` prints `notBefore` in GMT
+explicitly, so the workstation's `+0100` never enters it) and the two machines
+agree to within 2 s (local `00:43:56Z`, VPS `00:43:58Z`). Measured twice, from
+Traefik's own log rather than by inference: staging, issued 23:57:29Z against
+`notBefore` 22:58:57 → **58m32s**; production, issued 00:14:53Z against
+`notBefore` 23:16:22 → **58m31s**. One second apart on two different
+certificates from two different endpoints.
 Anything that reasons about issuance time from a certificate — a future
 `check --server` cert-age rule, for one — must not read `notBefore` as "when
 this was issued", or it will call a fresh certificate an hour old.

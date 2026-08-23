@@ -187,6 +187,11 @@ docs/traefik.md). Starter:
 
   http:
     routers:
+      ${name}-http:
+        rule: "Host(\`${domain}\`)"
+        entryPoints: [web]
+        middlewares: ["http-to-https@file"]
+        service: noop@internal
       ${name}:
         rule: "Host(\`${domain}\`)"
         entryPoints: [websecure]

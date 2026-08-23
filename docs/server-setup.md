@@ -11,12 +11,14 @@ assumes.
 |---|---|---|
 | SSH with key auth to `user@host` | Every kasbah operation is SSH-based | Hard fail, print ssh diagnostic |
 | Docker ≥ 24 | `docker compose` v2 plugin required | Hard fail, link to docker docs |
-| Docker Compose v2 | Manifest uses `include:` and modern syntax | Hard fail |
+| Docker Compose v2 **or newer** | Manifest uses `include:` and modern syntax. The check is on the major version, not the string: a live host ran Compose **v5.2.0** and passed | Hard fail |
 | The SSH user can run `docker` without sudo | Avoids mixed sudo/non-sudo ownership in `/apps/data/` | Hard fail, suggest `usermod -aG docker` |
 | `rsync`, `openssl`, `gzip` available on remote | Used by deploy and env setup | Hard fail |
 | `bash` on the remote | Every kasbah step ships a script to `bash -s` over the SSH master | Hard fail |
 | `flock` (util-linux) | `remote-deploy.sh` holds an exclusive lock on `<project>/.deploy.lock` for the whole of a deploy, so a second concurrent deploy fails fast instead of interleaving hooks and retags. The one tool kasbah's shipped scripts use that is **not** coreutils, which is why it gets its own row | Probed at `server init`, so it fails there rather than mid-deploy. If it goes missing afterwards the deploy refuses naming **flock**, not a concurrent operator — `flock -n \|\| fail` would otherwise turn "not installed" into "someone else is deploying" |
 | A POSIX userland — `tr`, `cat`, `stat`, `nproc`, `date`, `find`, `sort`, `comm`, `readlink` | Every remote step is a shell script; these are assumed present rather than checked, because a box without them cannot run `bash -s` usefully in the first place. The rule kasbah's shipped scripts follow is **coreutils and bash builtins, nothing separately packaged** — which is why `scripts/setup-env.sh` parses env files with `read` loops rather than `awk` or `grep` | Not checked; failure surfaces as the step's own error |
+| **`:80` and `:443` free, and reachable from the internet** | Traefik binds both, and ACME's HTTP-01 challenge is answered on `:80` from outside. **Not probed** — init does not look at what is listening or at any firewall, so a port already held, or a `ufw` rule, surfaces as Traefik failing to start or as a challenge that never validates | Not checked |
+| **DNS in place before the first certificate** — `traefik.<apex>`, plus every project domain | A challenge for a name that does not resolve to this host fails, and **failed challenges count against Let's Encrypt's rate limits**. Rehearse with `--acme-staging` until DNS is right. **Not probed** — kasbah never resolves a name for you | Not checked |
 | Passwordless `sudo` — when the apps path does not exist yet, **and** to write the discovery pointer | `/apps` lives outside the deploy user's home, so nobody but root can create it; `/etc/kasbah/apps-path` is root-owned for the same reason it is machine-wide. Once both exist, init never elevates again — re-runs only read the pointer | Apps path: hard fail naming the two commands to run by hand. Pointer: hard fail at a non-default apps path (the server would be undiscoverable), a warning at `/apps` (the fallback covers it) |
 
 `kasbah server init` does **not**:
@@ -38,7 +40,9 @@ clear, and the hashing runs in a throwaway `httpd:2-alpine` container unless
 `httpd-tools`, which few workstations install. A machine with neither hashes
 nothing and init exits naming both ways out. `rsync`, `ssh`, `gzip`,
 `openssl`, `git`, `jq` and `yq` (the kislyuk wrapper, jq dialect) are the
-rest, and `docker` is needed anyway for `build-push`.
+rest. "Docker" here means the daemon **and the compose plugin** — `build-push`
+runs `docker compose -f compose.prod.yml build` locally, so a workstation with
+`docker` but no `compose` gets through init and fails at the first build.
 
 ## What init creates
 
@@ -53,7 +57,7 @@ Default paths (override with `--apps-path`, `--data-path`):
 ├── data/                            bind-mount root for all projects
 │   └── traefik/letsencrypt/
 │       └── acme.json                touched as a file, chmod 600
-├── backups/                         top-level backups (opt-in per project)
+├── backups/                         top-level backups (always created)
 └── traefik/
     ├── compose.yml                  the shared Traefik stack
     ├── traefik.yml                  static config
@@ -64,13 +68,14 @@ Default paths (override with `--apps-path`, `--data-path`):
 
 **The Traefik stack has no `.env`, deliberately.** Traefik expands
 environment variables in neither its static nor its dynamic configuration,
-so the ACME email, the dashboard domain and the basic-auth hash are baked
-into the rendered files at init time. The rendered `compose.yml` then
+so the ACME email, the dashboard domain, the basic-auth hash and the ACME
+`caServer` are baked into the rendered files at init time. The rendered `compose.yml` then
 contains no `${…}` for compose to interpolate, which leaves an `.env` with
 nothing to hold — and an env knob the container never receives is a dead
-knob. Those three values are read back *out of* the rendered files on a
-re-run, which is what lets init stay idempotent without storing them
-anywhere else.
+knob. All four are read back *out of* the rendered files on a re-run, which is what
+lets init stay idempotent without storing them anywhere else — the first three
+to be reproduced verbatim, the `caServer` to detect that this run renders a
+different CA than the one in effect.
 
 `acme.json` is touched as an empty file before `docker compose up`. If Docker
 sees a missing path on a bind mount, it silently creates a **directory**,
@@ -122,6 +127,17 @@ The two prompts are not the same kind of question, and they do not share a flag:
   with no terminal and neither flag the run fails naming both. **Keeping is a
   real answer that proceeds**, because there is no reading of this question
   under which refusing to run is the safe one.
+
+**Neither flag answers the other's question, and the pair never crosses into
+the switch.** `--yes` cannot answer the choice, and `--reset-acme` cannot answer
+the confirmation. Passing a choice flag to a run that never reaches the choice
+is a **warning** naming why — a fleet script sets the pair once and meets
+servers that do not need it, and failing those runs is what would make the pair
+unusable. The exception is `--keep-acme` reaching a switch: keeping the store
+and changing CA cannot both happen, so the run **refuses** rather than letting
+`--yes` decide it, and refuses in the direction that never archives a store the
+operator asked to keep. Re-run without `--keep-acme` to be asked, or with
+`--yes` to switch and reset.
 
 The last row is the one to read twice. It is the state of every server prepared
 before `caServer` was rendered at all, and reading the config alone would call

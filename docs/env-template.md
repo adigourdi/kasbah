@@ -168,6 +168,17 @@ prompt asks whether to re-configure anyway; default is no.
 
 ## Sensitive value handling
 
+**The template is required even when it declares nothing.** `S04` is a hard
+fail: a project with no `.env.prod.example` does not pass `kasbah check`, and
+there is no opt-out. For a project with no configuration at all — a static
+bundle, say — the conforming shape is a **comment-only file**, which passes
+E01, E04 and E05 (the key extractor yields nothing, so E05 has nothing to
+object to). Note what that does not buy you: the first deploy still runs the
+interactive env setup over `ssh -t` to render `.env` from it, and
+`--on-drift=` does not reach the missing-`.env` case — so a first deploy needs
+a terminal even for a project with zero variables. Deploys come from a
+developer's laptop by design (`overview.md` → No CI).
+
 - `*_PASSWORD`, `*_SECRET`, `*_KEY` are masked in displays and read via
   `read -rs` (no echo).
 - Defaults from the template are never printed in clear for these keys

@@ -70,7 +70,7 @@ the same battle-tested workflow without copying scripts between repos.
 | Hooks | Run via `docker exec` inside a project container. No host scripts get copied into projects. |
 | Rollback | `git archive v<target>` for config + retag `:<target>` as `:current` + `compose up -d`. Target image must still be on the VPS — outside the retention window, rollback fails with roll-forward/rebuild guidance. Does not restore data bind mounts — schema rollback is hook-driven. |
 | Project detection | CLI runs from project root. Reads `./kasbah.yml`. Errors if not a kasbah project. |
-| Interactivity | Commands never assume on an unspecified choice: an unset flag means *prompt*, not *no*. Every prompt has an explicit flag for scripted use: a pair when both answers are real outcomes — spelled `--with-x` / `--no-x` for a feature, or after what it decides where that reads better (`--reset-acme` / `--keep-acme`) — and a single `--yes` only where the prompt guards a destructive act and declining just aborts. Without a TTY, an unanswered prompt is a hard fail that names its own flags. |
+| Interactivity | Commands never assume on an unspecified choice: an unset flag means *prompt*, not *no* — with one deliberate exception, `--acme-staging`, where the default is production because that is also the status quo, and asking every `server init` which certificate authority it wants would make the common path worse. Every prompt has an explicit flag for scripted use: a pair when both answers are real outcomes — spelled `--with-x` / `--no-x` for a feature, or after what it decides where that reads better (`--reset-acme` / `--keep-acme`) — and a single `--yes` only where the prompt guards a destructive act and declining just aborts. Without a TTY, an unanswered prompt is a hard fail that names its own flags. |
 | Version compatibility | Same-major tool ↔ state interop is guaranteed; crossing a major requires `kasbah migrate`. An older tool refuses newer state. `/apps/.kasbah/server.json` records what manages the VPS. |
 | Off-VPS backup | Optional. Each VPS pushes restic snapshots (data bind mounts, hook backups, `.env`) to S3-compatible storage using append-only credentials. One repo per client (`client:` manifest field, defaults to project name). Pruning runs from an operator machine with full credentials. |
 | Removal | `kasbah drop` removes containers, fragment, and images but keeps config/data/backups (redeployable). `drop --prune` deletes those too. `kasbah server destroy` de-brands the whole VPS for handover — containers keep running. |
@@ -129,12 +129,12 @@ Chosen defaults (overridable via `kasbah server init --apps-path=...`):
 │   ├── scripts/                 # minimal helpers copied per deploy
 │   │   ├── setup-env.sh         # rich env template handler
 │   │   └── remote-deploy.sh     # VPS-side deploy steps
-│   └── backups/                 # hook-produced backups (opt-in)
+│   └── backups/                 # hook-produced backups (always created, filled only by a `backup:` block)
 ├── data/                        # all bind mounts, by project
 │   ├── traefik/letsencrypt/acme.json
 │   ├── mail/dms/...
 │   └── <project>/...
-└── backups/                     # top-level backup archive (opt-in)
+└── backups/                     # top-level backup archive (always created)
 ```
 
 ## Constraints that shape the design
