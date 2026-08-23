@@ -53,8 +53,8 @@ template. `kasbah check` clean, then a full rehearsal deploy to the rig
 — hooks and all, if the project has them.
 
 **Deliverables**
-- [ ] `kasbah check` exits 0 in the project
-- [ ] Rehearsal deploy on the rig serves the project via fragment routing
+- [x] `kasbah check` exits 0 in the project — **26 passed, 0 warning, 0 failed**
+- [x] Rehearsal deploy on the rig serves the project via fragment routing — `:80` answers **301** to HTTPS and `:443` serves the bundle with the shared security headers. The 301 is correct, not a miss: the app's folder picker needs a secure context, so `http-to-https@file` on the `web` router is what `traefik.md` prescribes and what the app requires
 
 **Settled:** the project is `~/work/gallery-website` — a Vite/TS static
 bundle served by nginx (`Dockerfile` target `prod`), git, no tags, no
@@ -227,6 +227,92 @@ and no `--email`, the operator answers the store question and *then* the run
 dies at `_si_unreadable_stack`. One wasted question, nothing created — the tail
 of hoisting the CA decision above the domain/email/auth branches, which is
 worth more than the question is expensive.
+
+**6.1 — six places the tool pinched on a project it was not extracted from.**
+The task exists to find these, and it found them. Dispositions:
+
+1. **S04 hard-fails a project with no environment**, exactly as predicted
+   (`lib/check.sh:76-81`). A comment-only `.env.prod.example` does pass E01,
+   E04 and E05 — `env_extract_keys` yields nothing, so E05 stays silent. The
+   file is real; it just declares nothing. **Carried** (see below).
+2. **A first deploy requires a terminal — and that is the design, not a
+   defect.** Reported as a blocker, escalated by the orchestrator, and
+   **rejected on the operator's challenge**: `docs/overview.md:143` says "No
+   CI — deploys are triggered from the developer's laptop",
+   `docs/overview.md:42` lists CI integration as out of scope, `docs/cli.md:451`
+   says a non-interactive contract "would turn into every default silently
+   accepted" and `:464` that `--on-drift=` is deliberately not a general
+   headless escape — and `tests/integration/deploy_ship_test.sh:192` *asserts*
+   exit 5 for "no `.env` and no terminal", then renders the env by running
+   `setup-env.sh` itself. The behaviour is a tested contract.
+   A fix was briefed, started, and reverted before review; the tree returned to
+   `d2e2083` with nothing kept.
+   What survives is narrower and not worth a special case: for a zero-key
+   template the step has nothing to ask, but deciding that on the workstation
+   means predicting what the generator will ask on the server — a second
+   implementation of `lib/env.sh`'s logic, which is the duplication the repo
+   warns about everywhere else.
+   **The lesson is about the orchestrator, not the tool:** an agent reported a
+   defect, the reproduction was real, and the premise behind it was never
+   checked against the spec. "The tool refuses to do X" is only a defect once
+   the docs say X is a goal. Here they said the opposite, twice, in a file the
+   brief had already cited.
+   Consequence for 6.3: the real deploy runs under a pty (`script -qec`),
+   which is not a workaround — it is the developer's laptop the design targets.
+3. **`init-project` scaffolds `DOMAIN=<domain>`** (`lib/init_project.sh:139-149`)
+   into a template nothing reads — `nginx.conf` is `server_name _`, and the
+   manifest's `domain:` plus the fragment are where the hostname is actually
+   load-bearing. **Carried.** Note the interaction with 2: a scaffolded
+   project's template is never empty, so every new project would have needed a
+   terminal for its first deploy. The tool created the environment it then
+   insisted on.
+4. **Deploy creates `/apps/data/<project>/` and `/apps/<project>/backups/`
+   unconditionally**, for a manifest with no volumes and no `backup:` block.
+   Both stayed empty. Recorded, not fixed — cosmetic, but it is the "assumes
+   persistent data" shape.
+5. **`init-project`'s starter compose snippet is fixture-shaped**: it prints
+   `networks: [kasbah-net, internal]` for the single service it scaffolds,
+   teaching the two-service case as though it were the only one. **Carried.**
+6. **For 6.3:** gallery-website has no `origin` remote, so `build-push` warns
+   and the version tag stays on the workstation — which is the correct
+   direction. And `kasbah.yml` carries `kasbah_version: 0.1.0-dev`, a `-dev`
+   string that will land in the project's committed history.
+
+1, 3 and 5 are one decision wearing three hats — **kasbah assumes every
+project has an environment** — and it is carried to Phase 7 whole rather than
+split, because answering it in pieces produces three inconsistent answers.
+
+**Rehearsal timings on the rig, the local baseline the real VPS is measured
+against:** `build-push` **5.44 s** warm (`docker save | gzip` 2.85 s → 24.0 MB
+from a 59.1 MB image, rsync 0.44 s on loopback, `docker load` 1.24 s);
+`deploy` **7.55 s**; `server init` on a clean rig **8 s**. Neither ACME
+question fired on the rig — empty store, so 6.0 stayed silent exactly as
+designed.
+
+**6.1 review — the kasbah files were sound; the prose around them was not.**
+Three defects, all fixed in the project's commit: the README still told a
+reader to create `compose.prod.yml` and fill it with "reverse-proxy labels",
+which T06 **hard-fails** (the docker provider is not wired in) — the change
+created the file and left the instructions pointing at the one thing the tool
+rejects; `docs/architecture.md` drifted the same way; a comment claimed
+`compose.prod.yml` was "the only file kasbah reads" when kasbah also reads
+`kasbah.yml`, `.env.prod.example` and the fragment; and the healthcheck's
+placement was justified by a reason that does not hold (a Dockerfile
+`HEALTHCHECK` is a Docker convention, not a kasbah one). The placement stands
+— in compose, where `kasbah check` can see it — but the comment now states the
+real tradeoff, which `compliance.md` H01 already spells out: the Dockerfile is
+the better place because the check travels inside the image, and a project that
+does it there warns forever, correctly.
+
+**A latent collision worth knowing about, and the fixture teaches it.**
+gallery-website's routed service is named `web`, so it claims the bare `web`
+DNS alias on the shared `kasbah-net` — measured on a throwaway project:
+`aliases=[gbrev-web web]`. Harmless here (Traefik resolves `container_name`,
+which is unique per host, and this container resolves nothing itself), but
+`tests/fixtures/built-app/compose.prod.yml:14` also puts a service called `web`
+on `kasbah-net`. On a host running both, a third project resolving bare `web`
+round-robins between them. No network topology fixes it — only naming does.
+**Carried to Phase 7.**
 
 **6.2 — first contact with real infrastructure. It worked on the first
 attempt.** `kasbah server init you@vps --domain=example.com

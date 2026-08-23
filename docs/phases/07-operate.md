@@ -83,6 +83,20 @@ Either way it stops being an accident. Phase 7 owns the dashboard surface
 the right place to settle. Evidence and the exact router block are in
 `06-proof.md` → Findings.
 
+**Should `check` warn on a generic service name on `kasbah-net`?** Compose
+registers the service name as a DNS alias on *every* attached network, which is
+the stated reason projects keep non-routed services off the shared net (C03/C07)
+— but the routed service keeps its alias there too, and nothing warns.
+Measured: a service named `web` yields `aliases=[<project>-web web]` on the
+shared network. Two projects both naming their routed service `web` (the
+`built-app` fixture does, and so does the first real project) put two claimants
+on one alias; a third project resolving bare `web` round-robins between them.
+Nothing routes through it today — Traefik targets `container_name`, unique per
+host — so this is latent, and the fix is naming, not topology. Either a warn-level
+rule on a short list of generic names (`web`, `app`, `api`, `db`, `cache`), or a
+line in `compliance.md` saying the alias is knowingly left unguarded. Evidence in
+`06-proof.md` → Findings.
+
 ## Carried in from Phase 2
 
 `kasbah server status` exists in minimal form (`lib/server_status.sh`):
