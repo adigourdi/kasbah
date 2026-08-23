@@ -15,9 +15,9 @@ port 80, ACME.
 **Retires:** real-world ACME/DNS/network behavior; "does the generalization hold for a project it wasn't extracted from".
 
 ## Exit criteria
-- [ ] A fresh VPS goes from bare Docker host to serving the project over HTTPS (valid LE cert) using only kasbah commands
-- [ ] A second deploy of a trivial change lands end to end (tag → build-push → deploy → hooks → live)
-- [ ] A rollback on the real VPS restores the prior version (the Phase 5 drill, repeated on real infra)
+- [x] A fresh VPS goes from bare Docker host to serving the project over HTTPS (valid LE cert) using only kasbah commands — **publicly trusted**, verified by `curl` with no `-k` against the system CA store: issuer `CN = YR2`, no `(STAGING)`. "Fresh" is honestly "pre-existing but bare" (see 6.2)
+- [x] A second deploy of a trivial change lands end to end (tag → build-push → deploy → hooks → live) — `changes: v0.1.0..v0.1.1`, new digest, the change observable in the served HTML. No hooks: the project has none
+- [x] A rollback on the real VPS restores the prior version (the Phase 5 drill, repeated on real infra) — digest back to `7a284e…`, and the change gone from the served HTML
 - [ ] Docs reconciled: everything reality contradicted is fixed in `docs/` now
 
 ## Tasks
@@ -110,9 +110,9 @@ what the rig couldn't: `save|gzip|rsync|load` duration over a real uplink,
 ACME issuance time, fragment reload latency in production Traefik.
 
 **Deliverables**
-- [ ] Three `versions.log` entries (deploy, deploy, rollback), all well-formed
-- [ ] `kasbah history` / `pending` / `server status` correct against the real VPS
-- [ ] Measurements recorded in Findings
+- [x] Three `versions.log` entries (deploy, deploy, rollback), all well-formed — four positional fields plus `kasbah=` and `digest=`, and the rollback's digest is byte-identical to the first deploy's
+- [x] `kasbah history` / `pending` / `server status` correct against the real VPS — `pending` gets the post-rollback case right: server on 0.1.0, HEAD one commit ahead
+- [x] Measurements recorded in Findings
 
 **Settled:** version tags do not exist in gallery-website; this task creates
 `v0.1.0`, a trivial change, and `v0.1.1` there, and commits 6.1's conformance
@@ -352,6 +352,50 @@ not an oversight, and Phase 7 owns the dashboard surface.
 Also observed, and expected: `example.com` itself now returns a Traefik 404
 where it used to refuse the connection, because the apex resolves to this host
 and no router matches it.
+
+**6.3 — the whole flow on real infrastructure, and the numbers the rig could
+not produce.** Every step first-try; nothing needed a retry, a workaround or a
+manual step on the server.
+
+| Step | Real VPS | Rig (loopback) |
+|---|---|---|
+| `server init`, bare host | 20.4 s | 8 s |
+| ACME issuance, staging, HTTP-01 | 10 s | cannot |
+| `build-push` 0.1.0 (59.1 MB image → 24.0 MB gz) | 12.7 s | 5.44 s |
+| `deploy` 0.1.0, first, incl. env setup over `ssh -t` | 11.4 s | 7.55 s |
+| **ACME switch, staging → production** | **11.2 s** | cannot |
+| Both certs re-issued after the restart | ≤ 12 s | cannot |
+| `build-push` 0.1.1 | 15.0 s | — |
+| `deploy` 0.1.1 | 11.0 s | — |
+| `rollback` to 0.1.0 | 11.3 s | — |
+
+The uplink costs roughly **2.3×** loopback on `build-push` and **1.5×** on
+`deploy` — smaller than expected for a 24 MB transfer, and it says the wall
+clock is dominated by the SSH round trips and the container lifecycle rather
+than by bytes on the wire. A bigger image would change that; this one does not.
+
+**The staging→production switch is the feature 6.0 was built for and it worked
+end to end in one command**: detected `staging -> production`, warned with both
+URLs verbatim, archived the store to
+`acme.json.20260823T001440Z`, recreated it empty, restarted Traefik, and both
+hostnames came back with publicly trusted certificates inside twelve seconds.
+The dashboard's bcrypt hash was reused rather than re-generated
+(`credentials reused`), the marker and pointer both reported `unchanged`, and
+nothing but `traefik.yml` shipped — idempotence held across a run that changed
+real state.
+
+**Let's Encrypt backdates `notBefore` by about 58.5 minutes**, measured twice
+(staging: issued 23:57:29Z, `notBefore` 22:58:57; production: `notBefore`
+23:16:22 for a certificate observed trusted ~12 s after a 00:14:40Z restart).
+Anything that reasons about issuance time from a certificate — a future
+`check --server` cert-age rule, for one — must not read `notBefore` as "when
+this was issued", or it will call a fresh certificate an hour old.
+
+**The pty question, settled by doing it.** The first deploy runs the env setup
+over `ssh -t` and wants a terminal at both ends; driven under `script -qec` it
+ran the shipped `setup-env.sh`, asked nothing (zero-key template) and wrote
+`/apps/gallery-website/.env`. That is the interactive path exercised, not
+bypassed.
 
 **The `httpd:2-alpine` container is the path, not the fallback** — operator
 feedback, and a doc defect rather than a code one. `_si_bcrypt` prefers
