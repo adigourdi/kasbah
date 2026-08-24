@@ -13,6 +13,30 @@ discipline throughout.
 
 **Spec:** `docs/roadmap.md` (both Phase-1 and Phase-2 exit criteria land here), `docs/mail.md`, `docs/traefik.md`, the homelab repo's `CLAUDE.md` (the model being replaced)
 
+## Carried in from Phase 6
+
+**9.2's cert reuse is what the ACME store choice was built for — use
+`--keep-acme`.** Phase 6 added a certificate-store reconciliation to
+`server init`: when the store has content and nothing records which CA issued
+it, init asks, and `--reset-acme` / `--keep-acme` answer without a terminal.
+At the time it looked like insurance for a population of zero. 9.2 is the
+consumer.
+
+The shape matches exactly. You copy the original project's existing `acme.json` — real
+production certificates — into `/apps/data/traefik/letsencrypt/` on a server
+kasbah has never initialised, so there is no `traefik.yml` for init to read a
+`caServer` out of. That is `store=nonempty` + `ca_origin=nocontent`: the
+unknown-store question, whose wrong answer archives live certificates and
+forces a re-issue during a cutover, against Let's Encrypt's rate limits, on a
+production domain.
+
+**Pass `--keep-acme`.** It proceeds, records the endpoint, warns that the
+store's provenance is unknown, and touches nothing. Do **not** pass `--yes`
+hoping it covers the question — it deliberately does not answer this one, for
+this reason. And copy the store in *before* `server init`, not after: init
+seeing an empty store stays silent, which leaves the reuse unverified at the
+one moment kasbah could have confirmed it.
+
 ## Part A — the original project
 
 ### 9.1 — Conformance, locally (M)
