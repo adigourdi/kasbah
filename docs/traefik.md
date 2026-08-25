@@ -76,7 +76,7 @@ via the project's `default` network:
 ```yaml
 # /apps/<project>/compose.yml
 services:
-  web:
+  myapp-web:
     container_name: myapp-web
     networks: [kasbah-net, internal]
   postgres:
@@ -94,16 +94,16 @@ it joins. On a shared network, two projects that each have a service called
 `postgres` would both register the `postgres` alias — and Docker DNS
 round-robins between them, so project A's app can silently connect to
 project B's database. Keeping internal services on a project-internal
-network scopes those aliases. `kasbah check` enforces the split (C03/C07).
+network scopes those aliases. `kasbah check` enforces the split (C03/C07/C09).
 
 **The split scopes the internal half only.** A *routed* service still carries
-its service name as an alias on the shared `kasbah-net`, and nothing warns:
-two projects that each call their routed service `web` both register `web`
-there, and a third project resolving that bare name round-robins between them.
-Only `container_name` is guaranteed unique, because Docker refuses a duplicate
-outright — which is why fragments target it. Name routed services as
-distinctly as their containers, or pin the alias with
-`networks.kasbah-net.aliases:`.
+its service name as an alias on the shared `kasbah-net`: two projects that each
+call their routed service `web` both register `web` there, and a third project
+resolving that bare name round-robins between them. Only `container_name` is
+guaranteed unique, because Docker refuses a duplicate outright — which is why
+fragments target it. Name routed services for the project, as distinctly as
+their containers, or pin the alias with `networks.kasbah-net.aliases:`;
+`kasbah check` warns on any un-prefixed name on the shared network (C09).
 
 The network is what lets Traefik resolve `http://<container_name>:<port>`
 in the file fragment. Container names — unlike service-name aliases — are
@@ -175,6 +175,10 @@ http:
 
 The service URL names a container on `kasbah-net`. Pin it via compose's
 `container_name:` so the URL stays stable across restarts.
+
+Both routers, not just the `websecure` one: without the `web` half the
+hostname answers plain HTTP with Traefik's 404 rather than a redirect, which
+`kasbah check` warns about (T08).
 
 ### Redirect-only router
 
@@ -354,7 +358,7 @@ server status` surfaces it.
 - Attach non-routed services (databases, caches, workers) to `kasbah-net` —
   internal services stay on a project-internal network.
 
-`kasbah check` enforces these (rules T01–T07, C07).
+`kasbah check` enforces these (rules T01–T08, C07, C09).
 
 ## Upgrading Traefik
 

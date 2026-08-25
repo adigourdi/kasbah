@@ -18,13 +18,15 @@ KASBAH_MANIFEST_SCHEMA=1
 # its compose file over the shared proxy's own, and then run
 # `docker compose -p traefik up -d --remove-orphans` in <apps>/traefik — where
 # the new file has no traefik service, so --remove-orphans takes the reverse
-# proxy down and every site on the host with it. `data` and `backups` are the
-# same collision without the blast radius: the project would be deployed into
-# the bind-mount root, or into the server's backup directory.
+# proxy down and every site on the host with it. `mail` carries the same blast
+# radius one directory over: <apps>/mail holds the shared mail stack, and a
+# project deployed there would take the whole server's mail down the same way.
+# `data` and `backups` are the same collision without it: the project would be
+# deployed into the bind-mount root, or into the server's backup directory.
 #
 # Checked here rather than in deploy, so a project learns it from
 # `kasbah check` and not from the deploy that ate the proxy.
-KASBAH_RESERVED_NAMES=(traefik data backups)
+KASBAH_RESERVED_NAMES=(traefik mail data backups)
 
 # manifest_name_reserved <name> — true when the name is one kasbah owns.
 manifest_name_reserved() {

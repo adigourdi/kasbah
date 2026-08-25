@@ -16,8 +16,8 @@ Usage: kasbah check
 Runs structural checks against the current project. Exit 0 if no failures
 (warnings are informational). See docs/compliance.md for the full rule set.
 
-Implemented: Structure (S01–S06), Compose (C01–C05, C07, C08), Resources (R01–R03),
-Traefik (T01–T07), Healthchecks (H01–H02), Env (E01–E05), Hooks (HK01–HK03).
+Implemented: Structure (S01–S07), Compose (C01–C05, C07–C09), Resources (R01–R03),
+Traefik (T01–T08), Healthchecks (H01–H02), Env (E01–E05), Hooks (HK01–HK03).
 Mail (M*), R04, and the --fix / --server modes are not yet wired in.
 EOF
 }
@@ -118,9 +118,9 @@ cmd_check() {
     [ "$_CHECK_FAIL" -eq 0 ] || exit "$KASBAH_EXIT_COMPLIANCE_FAIL"
 }
 
-# Compose rules (C01–C05). Skipped quietly when compose.prod.yml is missing —
-# S03 has already failed for that case and shouting twice adds noise. The
-# `services` arg is the newline-separated service list precomputed by
+# Compose rules (C01–C05, C07–C09). Skipped quietly when compose.prod.yml is
+# missing — S03 has already failed for that case and shouting twice adds noise.
+# The `services` arg is the newline-separated service list precomputed by
 # cmd_check; an empty value means either "file missing" or "yq parse
 # failure / no services".
 _check_compose_section() {
@@ -147,7 +147,10 @@ _check_compose_section() {
 
     _check_c01_restart "$services"
     _check_c02_logging "$services"
+    # C09 reads the kasbah-net membership C03/C04/C07 already worked out, so it
+    # runs immediately after and nowhere else.
     _check_c03_c04_c07_networks "$services"
+    _check_c09_service_prefix "$_CHECK_ON_KASBAH_NET" "$_CHECK_DEFAULT_ALIASES_HN"
     _check_c05_version
     # Silent on a project that builds nothing: the rule is about the tag deploy
     # moves, and a stock-only project has none to move.
@@ -246,6 +249,23 @@ _check_c02_logging() {
 # network, so generic names (postgres) on the shared network round-robin
 # across projects. The old `networks: { default: { name: kasbah-net } }`
 # shape is banned outright: it puts every service on the shared network.
+#
+# Two out-parameters for C09, both worked out here so the two rules cannot
+# disagree about the same compose file:
+#   _CHECK_ON_KASBAH_NET       newline-separated service names that end up on
+#                              the shared network by either route — an explicit
+#                              list or dict under the service, or the default
+#                              network aliasing kasbah-net for a service that
+#                              declares none.
+#   _CHECK_DEFAULT_ALIASES_HN  1 when the banned default-alias shape is what put
+#                              them there. C07 reports that shape as a pattern
+#                              rather than a per-service list, and C09 stays
+#                              quiet on it for the same reason: the answer is
+#                              "stop aliasing the default network", not a list
+#                              of every service the file happens to contain.
+_CHECK_ON_KASBAH_NET=""
+_CHECK_DEFAULT_ALIASES_HN=0
+
 _check_c03_c04_c07_networks() {
     local services="$1" svc
     local default_name default_ext hn_ext
@@ -259,7 +279,7 @@ _check_c03_c04_c07_networks() {
     local routed_hosts
     routed_hosts="$(_traefik_routed_hosts | sort -u)"
 
-    local bad_c03=() bad_c07=()
+    local bad_c03=() bad_c07=() on_hn=()
     local any_uses_hn=0 any_routed=0
     while IFS= read -r svc; do
         [ -z "$svc" ] && continue
@@ -292,7 +312,10 @@ _check_c03_c04_c07_networks() {
             any_routed=1
         fi
 
-        [ "$joined" = 1 ] && any_uses_hn=1
+        if [ "$joined" = 1 ]; then
+            any_uses_hn=1
+            on_hn+=("$svc")
+        fi
         if [ "$routed" = 1 ] && [ "$joined" = 0 ]; then
             bad_c03+=("$svc")
         fi
@@ -302,6 +325,9 @@ _check_c03_c04_c07_networks() {
             bad_c07+=("$svc")
         fi
     done <<<"$services"
+
+    _CHECK_ON_KASBAH_NET="$(printf '%s\n' "${on_hn[@]+"${on_hn[@]}"}")"
+    _CHECK_DEFAULT_ALIASES_HN="$default_aliases_hn"
 
     # C03
     if [ "${#bad_c03[@]}" -gt 0 ]; then
@@ -329,6 +355,50 @@ _check_c03_c04_c07_networks() {
     else
         _check_pass "No internal services on kasbah-net"
     fi
+}
+
+# C09 (warn): every service on kasbah-net is named for the project. Compose
+# registers a service's *name* — not its container_name — as a DNS alias on
+# every network it joins, so a service called `web` puts the bare alias `web`
+# on the shared network alongside its scoped `<project>-web` one. Two projects
+# doing that leave two claimants on one alias and a third project resolving
+# `web` round-robins between them (measured Phase 6: `aliases=[gbrev-web web]`).
+#
+# Nothing routes through those aliases today — Traefik targets container_name,
+# which Docker keeps unique per host — so this is latent, which is why it warns.
+# It is not auto-fixable either: renaming a service moves depends_on, profiles
+# and every in-project hostname with it, and kasbah will not guess. C07 already
+# fails a non-routed service on the shared network, so in practice this bites on
+# the routed one, which is the service a project is most likely to call `web`.
+#
+# Silent — no line at all, not a pass — in the two cases where it has nothing to
+# say. A project with no service on kasbah-net has no alias to collide (a
+# worker-only project, or one whose routed service is misconfigured and already
+# failing C03), and claiming a pass there would report on a network the file
+# never joins. Under the banned default-alias shape C07 has just failed on the
+# shape itself, and naming every service again would be shouting twice about one
+# mistake with the wrong fix attached.
+_check_c09_service_prefix() {
+    local on_hn="$1" default_aliases_hn="$2" svc bad=()
+    # C07 has already failed the default-alias shape as a pattern, so naming the
+    # same services again is the double report _check_compose_section avoids.
+    if [ "$default_aliases_hn" = 1 ]; then
+        return 0
+    fi
+    [ -n "$on_hn" ] || return 0
+    while IFS= read -r svc; do
+        [ -z "$svc" ] && continue
+        case "$svc" in
+            "$MANIFEST_NAME"|"$MANIFEST_NAME"-*) ;;
+            *) bad+=("$svc") ;;
+        esac
+    done <<<"$on_hn"
+    if [ "${#bad[@]}" -eq 0 ]; then
+        _check_pass "kasbah-net service names are project-prefixed"
+    else
+        _check_warn "Services on kasbah-net whose name is not '$MANIFEST_NAME' or '$MANIFEST_NAME-*': ${bad[*]} — the service name is a DNS alias on the shared network, so a generic one collides with every other project using it"
+    fi
+    return 0
 }
 
 # C05: a top-level `version:` field is deprecated by modern Compose and
@@ -408,16 +478,16 @@ _check_r03_reservations() {
 }
 
 # ----------------------------------------------------------------------------
-# Traefik (T01–T07)
+# Traefik (T01–T08)
 # ----------------------------------------------------------------------------
 # Routing is declared via file-provider fragments (see docs/traefik.md). T06
 # scans compose.prod.yml for `traefik.*` labels (the docker provider is not
-# wired in). T01–T05 inspect the project's own traefik-dynamic.yml; T07
-# cross-checks its loadBalancer targets against compose container_names.
+# wired in). T01–T05 and T08 inspect the project's own traefik-dynamic.yml;
+# T07 cross-checks its loadBalancer targets against compose container_names.
 #
 # T01 is a warn (not fail) so worker-only projects without web routing don't
-# tip the whole check. When the file is missing or malformed, T02–T05 are
-# skipped — there's nothing to verify.
+# tip the whole check. When the file is missing or malformed, T02–T05 and T08
+# are skipped — there's nothing to verify.
 
 _check_traefik_section() {
     local services="$1"
@@ -425,17 +495,19 @@ _check_traefik_section() {
     echo
     echo "Traefik:"
 
-    # Section order matches the docs example: T01 → T02 → T03 → T04 → T05 →
-    # T06. T06 (compose-label scan) is independent of traefik-dynamic.yml,
-    # so it runs unconditionally — even when T01 short-circuited T02–T05.
+    # Section order matches the docs example: T01 → T02 → T03 → T04 → T08 →
+    # T05 → T06. T06 (compose-label scan) is independent of
+    # traefik-dynamic.yml, so it runs unconditionally — even when T01
+    # short-circuited the rest. T08 needs the manifest domain for the same
+    # reason T02 does, and skips with the same message when it is empty.
     local routers="" parsed=0
     if [ ! -f traefik-dynamic.yml ]; then
-        _check_warn "traefik-dynamic.yml missing — skipping T02–T05"
+        _check_warn "traefik-dynamic.yml missing — skipping T02–T05 and T08"
     elif ! routers="$(yq -r '(.http.routers // {}) | keys | .[]' traefik-dynamic.yml 2>/dev/null)"; then
         # T01 is a warn (per docs/compliance.md). A malformed file is the
         # same user-facing condition as a missing one — routing is broken
         # either way — so use the same level rather than flipping to fail.
-        _check_warn "traefik-dynamic.yml does not parse as YAML — skipping T02–T05"
+        _check_warn "traefik-dynamic.yml does not parse as YAML — skipping T02–T05 and T08"
     else
         _check_pass "traefik-dynamic.yml exists"
         parsed=1
@@ -445,10 +517,13 @@ _check_traefik_section() {
         if [ -n "$MANIFEST_DOMAIN" ]; then
             _check_t02_domain_router "$routers"
         else
-            _check_warn "manifest domain is empty — skipping T02 (router/domain match)"
+            _check_warn "manifest domain is empty — skipping T02 and T08 (both match routers against it)"
         fi
         _check_t03_entrypoints "$routers"
         _check_t04_letsencrypt "$routers"
+        if [ -n "$MANIFEST_DOMAIN" ]; then
+            _check_t08_web_entrypoint "$routers"
+        fi
         _check_t05_reserved_hostnames "$routers"
         _check_t07_fragment_targets "$services"
     fi
@@ -541,6 +616,37 @@ _check_t04_letsencrypt() {
     else
         _check_fail "Websecure routers without tls.certResolver=letsencrypt: ${bad[*]}"
     fi
+}
+
+# T08 (warn): some router matching the manifest domain listens on `web`.
+# docs/traefik.md's minimum viable HTTPS routing is two routers for the one
+# hostname — the `websecure` one that serves it and a `web` one that redirects
+# through `http-to-https@file` — and T03 only asks that a router declare some
+# entrypoint, so a fragment carrying the HTTPS half alone satisfies every other
+# rule while answering plain HTTP with Traefik's 404. Warn rather than fail:
+# HTTPS-only is a legitimate choice for an API nothing browses to, and the
+# rule cannot tell that apart from the omission. Domain matching is T02's
+# substring test, for the same reason it is there — a router that mentions the
+# host counts, without parsing Host()/HostRegexp.
+_check_t08_web_entrypoint() {
+    local routers="$1" r found=0
+    while IFS= read -r r; do
+        [ -z "$r" ] && continue
+        local rule plain
+        rule="$(yq -r ".http.routers[\"$r\"].rule // \"\"" traefik-dynamic.yml)"
+        [[ "$rule" == *"$MANIFEST_DOMAIN"* ]] || continue
+        plain="$(yq -r ".http.routers[\"$r\"].entryPoints // [] | any(. == \"web\")" traefik-dynamic.yml)"
+        if [ "$plain" = "true" ]; then
+            found=1
+            break
+        fi
+    done <<<"$routers"
+    if [ "$found" = 1 ]; then
+        _check_pass "A router serves $MANIFEST_DOMAIN on the web entrypoint"
+    else
+        _check_warn "No router serves $MANIFEST_DOMAIN on the web entrypoint — plain HTTP gets Traefik's 404; add a redirect router with middlewares: [\"http-to-https@file\"] and service: noop@internal"
+    fi
+    return 0
 }
 
 # T07: every hostname in the fragment's loadBalancer server URLs must be an

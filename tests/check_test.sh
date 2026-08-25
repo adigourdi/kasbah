@@ -21,18 +21,29 @@ assert() {
 # compose.prod.yml + a traefik-dynamic.yml that together satisfy every
 # check group's pass path (Structure, Compose, Resources, Traefik, Env).
 # The routed service joins kasbah-net explicitly and keeps an internal
-# network (C03/C07); limits reference the KASBAH_* vars (R01/R02); the
-# fragment's loadBalancer targets the container_name (T07). Healthchecks
-# and Hooks sections are silent — manifest has no health/hooks/backup
-# blocks, and the only service has no build:.
+# network (C03/C07); it is named for the project, because the service name
+# is a DNS alias on the shared network (C09); limits reference the KASBAH_*
+# vars (R01/R02); the fragment's loadBalancer targets the container_name
+# (T07) and carries both routers for the domain, the redirect on `web` and
+# the TLS one on `websecure` (T08). Healthchecks and Hooks sections are
+# silent — manifest has no health/hooks/backup blocks, and the only service
+# has no build:.
+#
+# Every case below starts from this, so anything it stops satisfying shows up
+# as a warning in cases that are about something else entirely.
 make_project() {
     local dir="$1" name="${2:-demo}" domain="${3:-demo.example.com}"
     mkdir -p "$dir"
     (cd "$dir" && "$kasbah" init-project --name="$name" --domain="$domain" >/dev/null)
+    # The scaffolded template declares nothing — comment-only is the state a
+    # project with no configuration ships (case 27b covers it untouched). The
+    # env cases need a key to drift about, so the fixture adds one here rather
+    # than each case re-deriving what the scaffold happened to seed.
+    printf 'DOMAIN=%s\n' "$domain" >> "$dir/.env.prod.example"
     # Unquoted heredoc: $name interpolates, \${KASBAH_*} stays literal.
     cat > "$dir/compose.prod.yml" <<YAML
 services:
-  app:
+  ${name}-web:
     image: nginx:alpine
     container_name: ${name}-web
     restart: unless-stopped
@@ -56,6 +67,11 @@ YAML
     {
         printf 'http:\n'
         printf '  routers:\n'
+        printf '    %s-http:\n' "$name"
+        printf '      rule: "Host(`%s`)"\n' "$domain"
+        printf '      entryPoints: [web]\n'
+        printf '      middlewares: ["http-to-https@file"]\n'
+        printf '      service: noop@internal\n'
         printf '    %s:\n' "$name"
         printf '      rule: "Host(`%s`)"\n' "$domain"
         printf '      entryPoints: [websecure]\n'
@@ -85,6 +101,7 @@ assert 'grep -qF "✓ All services set json-file logging with rotation" <<<"$out
 assert 'grep -qF "✓ All routed services join kasbah-net" <<<"$out"'            "C03 pass line"
 assert 'grep -qF "✓ kasbah-net declared external" <<<"$out"'                   "C04 pass line"
 assert 'grep -qF "✓ No internal services on kasbah-net" <<<"$out"'             "C07 pass line"
+assert 'grep -qF "✓ kasbah-net service names are project-prefixed" <<<"$out"'  "C09 pass line"
 assert 'grep -qF "✓ No deprecated '"'"'version:'"'"' field" <<<"$out"'          "C05 pass line"
 assert 'grep -qF "✓ All services set cpus/mem_limit via KASBAH_* vars" <<<"$out"'  "R01/R02 pass line"
 assert 'grep -qF "✓ No resource reservations" <<<"$out"'                            "R03 pass line"
@@ -93,6 +110,7 @@ assert 'grep -qF "✓ traefik-dynamic.yml exists" <<<"$out"'                    
 assert 'grep -qF "✓ At least one router references manifest domain (demo.example.com)" <<<"$out"' "T02 pass line"
 assert 'grep -qF "✓ All routers declare entryPoints" <<<"$out"'                                "T03 pass line"
 assert 'grep -qF "✓ Secure routers reference letsencrypt cert resolver" <<<"$out"'             "T04 pass line"
+assert 'grep -qF "✓ A router serves demo.example.com on the web entrypoint" <<<"$out"'         "T08 pass line"
 assert 'grep -qF "✓ No router claims reserved hostnames" <<<"$out"'                            "T05 pass line"
 assert 'grep -qF "✓ Fragment loadBalancer URLs target explicit container_names" <<<"$out"'     "T07 pass line"
 assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'                              "E01 pass line"
@@ -102,7 +120,7 @@ assert '! grep -q "Healthchecks:" <<<"$out"'  "Healthchecks: header suppressed (
 assert '! grep -q "Hooks:" <<<"$out"'         "Hooks: header suppressed (no hooks/backup in manifest)"
 assert '! grep -qF "built services" <<<"$out"' \
     "C08 says nothing about a project that builds nothing — there is no :current to move"
-assert 'grep -qF "23 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
+assert 'grep -qF "25 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
 
 # --- Case 2: missing compose.prod.yml — fail, exit 6 -------------------------
 # Exit 6 is the documented "compliance check failed" code (docs/cli.md).
@@ -206,7 +224,7 @@ proj13="$tmpdir/no-restart"
 make_project "$proj13"
 cat > "$proj13/compose.prod.yml" <<'YAML'
 services:
-  app:
+  demo-web:
     image: nginx:alpine
     logging:
       driver: json-file
@@ -220,14 +238,14 @@ networks:
 YAML
 out="$(cd "$proj13" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                            "C01 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Services missing restart policy: app" <<<"$out"' "C01 fail line names service"
+assert 'grep -qF "✗ Services missing restart policy: demo-web" <<<"$out"' "C01 fail line names service"
 
 # --- Case 14: C02 — service missing logging rotation → fail, exit 6 ---------
 proj14="$tmpdir/no-logging"
 make_project "$proj14"
 cat > "$proj14/compose.prod.yml" <<'YAML'
 services:
-  app:
+  demo-web:
     image: nginx:alpine
     restart: unless-stopped
 networks:
@@ -237,7 +255,7 @@ networks:
 YAML
 out="$(cd "$proj14" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                    "C02 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Services missing json-file logging with max-size/max-file: app" <<<"$out"' "C02 fail line"
+assert 'grep -qF "✗ Services missing json-file logging with max-size/max-file: demo-web" <<<"$out"' "C02 fail line"
 
 # --- Case 15: C03 — routed service not on kasbah-net → fail, exit 6 --------
 # Fragment targets demo-web (routed), but the service joins no network.
@@ -245,7 +263,7 @@ proj15="$tmpdir/no-kasbahnet"
 make_project "$proj15"
 cat > "$proj15/compose.prod.yml" <<'YAML'
 services:
-  app:
+  demo-web:
     image: nginx:alpine
     container_name: demo-web
     restart: unless-stopped
@@ -259,7 +277,7 @@ services:
 YAML
 out="$(cd "$proj15" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                "C03 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Routed services not on kasbah-net: app" <<<"$out"' "C03 fail line"
+assert 'grep -qF "✗ Routed services not on kasbah-net: demo-web" <<<"$out"' "C03 fail line"
 assert 'grep -qF "✓ No internal services on kasbah-net" <<<"$out"'     "C07 still passes"
 
 # --- Case 16: C04 — kasbah-net referenced but not external → fail, exit 6 --
@@ -267,7 +285,7 @@ proj16="$tmpdir/kasbahnet-not-external"
 make_project "$proj16"
 cat > "$proj16/compose.prod.yml" <<'YAML'
 services:
-  app:
+  demo-web:
     image: nginx:alpine
     container_name: demo-web
     restart: unless-stopped
@@ -288,13 +306,166 @@ assert '[ "$rc" = "6" ]'                                                  "C04 f
 assert 'grep -qF "✓ All routed services join kasbah-net" <<<"$out"'      "C03 still passes"
 assert 'grep -qF "✗ kasbah-net not declared external: true" <<<"$out"'   "C04 fail line"
 
+# --- Case 16b: C09 — a generic service name on kasbah-net → warn ------------
+# The routed service is called `web`, which is what compose publishes as a DNS
+# alias on the shared network — the shape measured in Phase 6 as
+# `aliases=[gbrev-web web]`. Every other rule passes: it is routed, it is on
+# kasbah-net, and its container_name is unique. Warn only, because nothing
+# resolves that alias today.
+proj16b="$tmpdir/generic-service-name"
+make_project "$proj16b"
+cat > "$proj16b/compose.prod.yml" <<'YAML'
+services:
+  web:
+    image: nginx:alpine
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks: [kasbah-net, internal]
+networks:
+  kasbah-net:
+    external: true
+  internal: {}
+YAML
+out="$(cd "$proj16b" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                        "C09 is a warning, so exit stays 0 (got $rc)"
+assert 'grep -qF "⚠ Services on kasbah-net whose name is not '"'"'demo'"'"' or '"'"'demo-*'"'"': web" <<<"$out"' \
+       "C09 warn line names the service, not the container (said '$out')"
+assert 'grep -qF "✓ All routed services join kasbah-net" <<<"$out"'            "and C03 is untouched by it"
+assert 'grep -qF "✓ No internal services on kasbah-net" <<<"$out"'             "as is C07"
+assert 'grep -qF "24 passed, 1 warning, 0 failed" <<<"$out"'                    "one line either way (said '$(tail -1 <<<"$out")')"
+
+# The exact project name is as acceptable as a prefixed one, and a service that
+# never joins the shared network is no business of C09's — the alias only
+# exists on the networks the service is actually on.
+proj16c="$tmpdir/service-name-shapes"
+make_project "$proj16c"
+cat > "$proj16c/compose.prod.yml" <<'YAML'
+services:
+  demo:
+    image: nginx:alpine
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks: [kasbah-net, internal]
+  cache:
+    image: redis:7-alpine
+    container_name: demo-cache
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks: [internal]
+networks:
+  kasbah-net:
+    external: true
+  internal: {}
+YAML
+out="$(cd "$proj16c" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                        "the bare project name and an off-net service exit 0 (got $rc)"
+assert 'grep -qF "✓ kasbah-net service names are project-prefixed" <<<"$out"'  "and C09 passes (said '$out')"
+
+# --- Case 16d: C09 says nothing when it has nothing to say ------------------
+# Two silences, both deliberate and both documented in compliance.md's C09 row,
+# because a rule that emits a line per project shifts the pass count between
+# projects that differ in nothing it judges.
+#
+# First: no service on kasbah-net at all. A worker-only project joins no shared
+# network, so there is no alias to collide on and nothing to pass or warn about.
+proj16d="$tmpdir/nothing-on-kasbah-net"
+make_project "$proj16d"
+cat > "$proj16d/compose.prod.yml" <<'YAML'
+services:
+  demo-worker:
+    image: alpine:3
+    container_name: demo-worker
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks: [internal]
+networks:
+  internal: {}
+YAML
+rm "$proj16d/traefik-dynamic.yml"
+out="$(cd "$proj16d" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                          "a project with nothing on kasbah-net exits 0 (got $rc)"
+assert '! grep -qE "kasbah-net service names|whose name is not" <<<"$out"' \
+       "and C09 emits no line either way — neither its pass nor its warn (said '$out')"
+assert 'grep -qF "✓ No internal services on kasbah-net" <<<"$out"' \
+       "while C07, which does report on the empty case, still speaks (said '$out')"
+
+# Second: the banned default-alias shape. C07 has just failed on the shape
+# itself, deliberately as a pattern rather than a per-service list; C09 naming
+# every service in the file again would be shouting twice about one mistake,
+# and with the wrong fix attached — renaming them all fixes nothing, removing
+# the default alias fixes everything.
+proj16e="$tmpdir/default-alias-shape"
+make_project "$proj16e"
+cat > "$proj16e/compose.prod.yml" <<'YAML'
+services:
+  web:
+    image: nginx:alpine
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  cache:
+    image: redis:7-alpine
+    container_name: demo-cache
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+networks:
+  default:
+    name: kasbah-net
+    external: true
+YAML
+out="$(cd "$proj16e" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                     "the default-alias shape still fails on C07 (got $rc)"
+assert 'grep -qF "✗ default network aliases kasbah-net" <<<"$out"'          "C07 reports the shape (said '$out')"
+assert '! grep -qE "kasbah-net service names|whose name is not" <<<"$out"' \
+       "and C09 emits neither of its two lines, so it does not name the same services a second time (said '$out')"
+assert '[ "$(grep -cF "Non-routed services on kasbah-net" <<<"$out")" = "0" ]' \
+       "nor does C07 fall through to its per-service list (said '$out')"
+
 # --- Case 17: C05 — top-level `version:` → warn, exit 0 ---------------------
 proj17="$tmpdir/version-field"
 make_project "$proj17"
 cat > "$proj17/compose.prod.yml" <<'YAML'
 version: "3.8"
 services:
-  app:
+  demo-web:
     image: nginx:alpine
     container_name: demo-web
     restart: unless-stopped
@@ -334,7 +505,7 @@ make_project "$proj19"
 rm "$proj19/traefik-dynamic.yml"
 cat > "$proj19/compose.prod.yml" <<'YAML'
 services:
-  app:
+  demo-web:
     image: nginx:alpine
     restart: unless-stopped
     cpus: ${KASBAH_CPU_LIMIT}
@@ -421,12 +592,105 @@ assert '[ "$rc" = "6" ]'                                                  "T05 f
 assert 'grep -qF "✗ Routers claim reserved hostnames" <<<"$out"'          "T05 fail line"
 assert 'grep -qF "demo-mail" <<<"$out"'                                   "T05 names offending router"
 
+# --- Case 23b: T08 — HTTPS router only, nothing on `web` → warn -------------
+# The fragment every rule but this one accepts while the site 404s on plain
+# HTTP. T03 is satisfied (the router declares an entrypoint) and so is T04, so
+# T08 is the only thing between a project and a hostname that works in a
+# browser's address bar exactly once the user types the scheme.
+proj23b="$tmpdir/no-http-router"
+make_project "$proj23b"
+cat > "$proj23b/traefik-dynamic.yml" <<'YAML'
+http:
+  routers:
+    demo:
+      rule: "Host(`demo.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: demo
+  services:
+    demo:
+      loadBalancer:
+        servers:
+          - url: "http://demo-web:80"
+YAML
+out="$(cd "$proj23b" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                           "T08 is a warning, so exit stays 0 (got $rc)"
+assert 'grep -qF "⚠ No router serves demo.example.com on the web entrypoint" <<<"$out"' \
+       "T08 warn line (said '$out')"
+assert 'grep -qF "http-to-https@file" <<<"$out"'                                   "and says what to add (said '$out')"
+assert 'grep -qF "✓ All routers declare entryPoints" <<<"$out"'                   "T03 passes on the same fragment — it is not the rule that catches this"
+assert 'grep -qF "24 passed, 1 warning, 0 failed" <<<"$out"'                       "one line either way (said '$(tail -1 <<<"$out")')"
+
+# A `web` router for an unrelated host does not answer for this one: the
+# entrypoint has to be declared by a router whose rule mentions the manifest
+# domain, and `www.example.net` shares no text with `demo.example.com`.
+cat > "$proj23b/traefik-dynamic.yml" <<'YAML'
+http:
+  routers:
+    demo-www:
+      rule: "Host(`www.example.net`)"
+      entryPoints: [web]
+      middlewares: ["http-to-https@file"]
+      service: noop@internal
+    demo:
+      rule: "Host(`demo.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: demo
+  services:
+    demo:
+      loadBalancer:
+        servers:
+          - url: "http://demo-web:80"
+YAML
+out="$(cd "$proj23b" && "$kasbah" check 2>&1)"; rc=$?
+assert 'grep -qF "⚠ No router serves demo.example.com on the web entrypoint" <<<"$out"' \
+       "a web router for another host is not this host's redirect (said '$out')"
+
+# The other side of that line, and the reason it is a line rather than an exact
+# match: `www.demo.example.com` *contains* the manifest domain, so T08 counts
+# it — deliberately, because T08 matches routers to the domain exactly the way
+# T02 does, and T02 would already be passing on a fragment like this one. The
+# substring rule is what makes both tolerant of Host()/HostRegexp/HostHeader
+# without parsing any of them; a www redirect that also carries the apex is the
+# common shape it is tolerant *for*. Pinned so the two rules cannot drift apart
+# without a test saying so.
+cat > "$proj23b/traefik-dynamic.yml" <<'YAML'
+http:
+  routers:
+    demo-www:
+      rule: "Host(`www.demo.example.com`)"
+      entryPoints: [web]
+      middlewares: ["http-to-https@file"]
+      service: noop@internal
+    demo:
+      rule: "Host(`demo.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: demo
+  services:
+    demo:
+      loadBalancer:
+        servers:
+          - url: "http://demo-web:80"
+YAML
+out="$(cd "$proj23b" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                                "the substring-positive fragment exits 0 (got $rc)"
+assert 'grep -qF "✓ A router serves demo.example.com on the web entrypoint" <<<"$out"' \
+       "a web router whose host contains the manifest domain satisfies T08 (said '$out')"
+assert 'grep -qF "✓ At least one router references manifest domain (demo.example.com)" <<<"$out"' \
+       "on the same reading T02 already gives it (said '$out')"
+assert 'grep -qF "25 passed, 0 warning, 0 failed" <<<"$out"'                             "and nothing warns (said '$(tail -1 <<<"$out")')"
+
 # --- Case 24: T06 — service carries traefik.* label → fail ------------------
 proj24="$tmpdir/traefik-label"
 make_project "$proj24"
 cat > "$proj24/compose.prod.yml" <<'YAML'
 services:
-  app:
+  demo-web:
     image: nginx:alpine
     restart: unless-stopped
     logging:
@@ -444,7 +708,7 @@ networks:
 YAML
 out="$(cd "$proj24" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                  "T06 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Services carry traefik.* labels (file provider only): app" <<<"$out"' "T06 fail line"
+assert 'grep -qF "✗ Services carry traefik.* labels (file provider only): demo-web" <<<"$out"' "T06 fail line"
 
 # --- Case 25: H01 — built service without compose healthcheck → warn --------
 proj25="$tmpdir/built-no-hc"
@@ -645,7 +909,7 @@ proj27="$tmpdir/good-health-container"
 make_project "$proj27"
 cat > "$proj27/compose.prod.yml" <<'YAML'
 services:
-  app:
+  demo-web:
     image: nginx:alpine
     container_name: demo-web
     restart: unless-stopped
@@ -671,6 +935,27 @@ YAML
 out="$(cd "$proj27" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                                       "H02 pass exits 0 (got $rc)"
 assert 'grep -qF "✓ manifest health.container '"'"'demo-web'"'"' exists in compose" <<<"$out"' "H02 pass line"
+
+# --- Case 27b: a template that declares nothing is a passing project ---------
+# The scaffold writes comments and no keys, because the hostname lives in the
+# manifest and the fragment and a project with nothing to configure has nothing
+# to seed. S04 still requires the file; E01, E04 and E05 all pass on it, since
+# env_extract_keys yields nothing from comments. Asserted here rather than in
+# init_project_test.sh because "empty is first-class" is a claim about the
+# rules, not about the writer.
+proj27b="$tmpdir/env-declares-nothing"
+make_project "$proj27b"
+# Back to exactly what init-project wrote, before the fixture's own DOMAIN line.
+sed -i '/^DOMAIN=/d' "$proj27b/.env.prod.example"
+out="$(cd "$proj27b" && "$kasbah" check 2>&1)"; rc=$?
+assert '! grep -qE "^[[:space:]]*[^#[:space:]]" "$proj27b/.env.prod.example"' \
+       "the scaffolded template has no line that is not a comment (said: $(cat "$proj27b/.env.prod.example"))"
+assert '[ "$rc" = "0" ]'                                                       "a project whose template declares nothing exits 0 (got $rc)"
+assert 'grep -qF "✓ .env.prod.example exists" <<<"$out"'                       "S04 still passes on it"
+assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'              "E01 passes on comments alone"
+assert 'grep -qF "✓ .env.prod.example has no obvious long secrets" <<<"$out"'  "E04 has nothing to measure"
+assert 'grep -qF "✓ .env.prod.example leaves the KASBAH_* prefix to kasbah" <<<"$out"' "E05 has no key to object to"
+assert 'grep -qF "25 passed, 0 warning, 0 failed" <<<"$out"'                   "and nothing warns about it (said '$(tail -1 <<<"$out")')"
 
 # --- Case 28: E01 — invalid line → fail --------------------------------------
 proj28="$tmpdir/env-bad-syntax"
@@ -797,7 +1082,7 @@ out="$(cd "$proj30e" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                     "E05 is a warning, so exit stays 0 (got $rc)"
 assert 'grep -qF "⚠ .env.prod.example defines reserved KASBAH_* keys (kasbah injects these): KASBAH_CPU_LIMIT KASBAH_MEM_LIMIT" <<<"$out"' \
        "E05 warn line names every reserved key, not just the first (said '$out')"
-assert 'grep -qF "22 passed, 1 warning, 0 failed" <<<"$out"'                 "E05 warns instead of passing, one line either way (said '$out')"
+assert 'grep -qF "24 passed, 1 warning, 0 failed" <<<"$out"'                 "E05 warns instead of passing, one line either way (said '$out')"
 
 # The prefix is matched anchored: MY_KASBAH_URL is the user's key. A substring
 # match here would warn about a key kasbah neither injects nor skips.
@@ -822,7 +1107,7 @@ proj32="$tmpdir/hk01-unknown"
 make_project "$proj32"
 cat > "$proj32/compose.prod.yml" <<'YAML'
 services:
-  app:
+  demo-web:
     image: nginx:alpine
     container_name: demo-web
     restart: unless-stopped
@@ -995,7 +1280,7 @@ printf 'http:\n  routers:\n    bad: [ this is\n      not yaml\n' > "$proj36/trae
 # service must stay off kasbah-net (C07) for the warn-only outcome to hold.
 cat > "$proj36/compose.prod.yml" <<'YAML'
 services:
-  app:
+  demo-web:
     image: nginx:alpine
     restart: unless-stopped
     cpus: ${KASBAH_CPU_LIMIT}
@@ -1019,7 +1304,7 @@ mkdir -p "$proj37"
 (cd "$proj37" && "$kasbah" init-project --name=demo >/dev/null 2>&1)
 cat > "$proj37/compose.prod.yml" <<'YAML'
 services:
-  app:
+  demo-web:
     image: nginx:alpine
     restart: unless-stopped
     cpus: ${KASBAH_CPU_LIMIT}
@@ -1042,7 +1327,7 @@ proj38="$tmpdir/c07-internal-on-shared"
 make_project "$proj38"
 cat > "$proj38/compose.prod.yml" <<'YAML'
 services:
-  app:
+  demo-web:
     image: nginx:alpine
     container_name: demo-web
     restart: unless-stopped
@@ -1081,7 +1366,7 @@ proj39="$tmpdir/c07-default-alias"
 make_project "$proj39"
 cat > "$proj39/compose.prod.yml" <<'YAML'
 services:
-  app:
+  demo-web:
     image: nginx:alpine
     container_name: demo-web
     restart: unless-stopped
@@ -1106,7 +1391,7 @@ proj40="$tmpdir/r-rules"
 make_project "$proj40"
 cat > "$proj40/compose.prod.yml" <<'YAML'
 services:
-  app:
+  demo-web:
     image: nginx:alpine
     container_name: demo-web
     restart: unless-stopped
@@ -1126,8 +1411,8 @@ networks:
 YAML
 out="$(cd "$proj40" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                  "R rules fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Services with missing or literal resource limits: app(cpus)" <<<"$out"' "R01 fail line (literal cpus)"
-assert 'grep -qF "✗ Services declare resource reservations: app" <<<"$out"'                "R03 fail line"
+assert 'grep -qF "✗ Services with missing or literal resource limits: demo-web(cpus)" <<<"$out"' "R01 fail line (literal cpus)"
+assert 'grep -qF "✗ Services declare resource reservations: demo-web" <<<"$out"'                "R03 fail line"
 
 # --- Case 41: T07 — fragment targets a hostname with no container_name ------
 proj41="$tmpdir/t07-unknown-target"
@@ -1137,7 +1422,7 @@ make_project "$proj41"
 # rule that catches the dangling reference.
 cat > "$proj41/compose.prod.yml" <<'YAML'
 services:
-  app:
+  demo-web:
     image: nginx:alpine
     container_name: demo-renamed
     restart: unless-stopped
@@ -1158,7 +1443,7 @@ assert 'grep -qF "✗ Fragment targets unknown container_names: demo-web" <<<"$o
 # over the shared Traefik stack and then removes it as an orphan. It is a
 # manifest rule, so it arrives the same way a bad schema does: manifest_require
 # refuses and the report short-circuits.
-for reserved in traefik data backups; do
+for reserved in traefik mail data backups; do
     proj42="$tmpdir/reserved-$reserved"
     mkdir -p "$proj42"
     cat > "$proj42/kasbah.yml" <<EOF

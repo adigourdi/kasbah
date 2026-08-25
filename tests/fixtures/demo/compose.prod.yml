@@ -5,7 +5,12 @@
 name: demo
 
 services:
-  web:
+  # Named for the project, not `web`: compose publishes the service name as a
+  # DNS alias on every network it joins, and kasbah-net is shared with every
+  # other project on the host, so a bare `web` there has as many claimants as
+  # there are projects using it (C09). A service and its container may carry
+  # the same name.
+  demo-web:
     image: nginx:alpine
     # Traefik resolves the backend by container name over kasbah-net, so this
     # is what traefik-dynamic.yml's loadBalancer URL points at (docs/traefik.md).
@@ -19,8 +24,12 @@ services:
       # file is in play, and what the interactive setup prompts for.
       DEMO_GREETING: ${DEMO_GREETING}
     networks:
-      # Routed service: on kasbah-net for Traefik, and on the project's own
-      # network for anything internal. Nothing else joins kasbah-net (C07).
+      # Two networks for one service, which is not what a single-service project
+      # needs — `internal` is here so the fixture exercises the multi-network
+      # path at all: tests/integration/spine_test.sh inspects the deployed
+      # container's network set, and a project on one network proves nothing
+      # about the split C03/C07 enforce. A real single routed service takes
+      # kasbah-net alone, which is what `init-project` scaffolds.
       - kasbah-net
       - internal
     # Injected into .env by kasbah from the server marker, into its managed

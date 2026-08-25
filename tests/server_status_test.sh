@@ -397,6 +397,7 @@ chmod 0755 "$stub_dir/docker"
 # where a directory would be, and every directory kasbah owns.
 apps="$tmpdir/apps"
 mkdir -p "$apps/.kasbah" "$apps/data/demo" "$apps/backups" "$apps/traefik/dynamic" \
+         "$apps/mail" \
          "$apps/demo" "$apps/dropped" "$apps/emptylog" "$apps/badlog" "$apps/.git"
 printf '{"kasbah_version":"0.1.0","apps_path":"%s","data_path":"%s/data","cpu_limit":"14.4","mem_limit":"54g"}\n' \
     "$apps" "$apps" > "$apps/.kasbah/server.json"
@@ -422,7 +423,7 @@ run_payload() {
     local apps_path="$1"; shift
     env PATH="$stub_dir:$PATH" STUB_TOTAL_demo=2 STUB_RUNNING_demo=1 "$@" \
         bash "$payload" "$apps_path" "$apps" "${POINTER_FILE:-$tmpdir/no-such-pointer}" \
-             " .kasbah data backups traefik "
+             " .kasbah mail data backups traefik "
 }
 probe_out="$(run_payload "$apps" 2>"$tmpdir/perr")"; probe_rc=$?
 assert '[ "$probe_rc" = "0" ]' "the remote script exits 0 on a prepared tree (exit $probe_rc: $(cat "$tmpdir/perr"))"
@@ -452,9 +453,11 @@ assert '[ "$(fact traefik_image)" = "traefik:v3.7.10" ]' \
 assert '[ "$(fact traefik_container)" = "traefik" ]' \
     "and it is named for it (got '$(fact traefik_container)')"
 
-# The filter: six candidates, and not one of kasbah's own four directories.
+# The filter: six candidates, and not one of kasbah's own five directories —
+# `mail` among them, so the far-side filter runs against the same list the
+# workstation sends in production (pinned separately at the ssh log below).
 assert '[ "$(fact project_count)" = "6" ]' \
-    "six candidates under a tree of ten entries (got '$(fact project_count)')"
+    "six candidates under a tree of eleven entries (got '$(fact project_count)')"
 decoded="$(printf '%s' "$(fact projects_b64)" | base64 -d)"
 names=""
 while IFS=' ' read -r nb total running logstate logb64; do
@@ -462,7 +465,7 @@ while IFS=' ' read -r nb total running logstate logb64; do
     names="$names$(printf '%s' "$nb" | base64 -d) $total/$running/$logstate
 "
 done <<<"$decoded"
-for reserved in data backups traefik .kasbah; do
+for reserved in data backups traefik mail .kasbah; do
     assert '! grep -q "^$reserved " <<<"$names"' \
         "$reserved is kasbah's own directory, not a project (rows: $(tr '\n' ' ' <<<"$names"))"
 done
@@ -554,7 +557,7 @@ assert '[ ! -e "$tmpdir/nowhere" ]'               "and looking at a path that do
 nodocker="$tmpdir/nodocker"
 mkdir -p "$nodocker"
 for bin in tr openssl; do ln -sf "$(command -v "$bin")" "$nodocker/$bin"; done
-probe_out="$(env PATH="$nodocker" "$BASH" "$payload" "$apps" "$apps" "$tmpdir/no-such-pointer" " .kasbah data backups traefik " 2>/dev/null)"
+probe_out="$(env PATH="$nodocker" "$BASH" "$payload" "$apps" "$apps" "$tmpdir/no-such-pointer" " .kasbah mail data backups traefik " 2>/dev/null)"
 assert '[ "$(fact have_docker)" = "no" ]'      "no docker on the remote is reported (got '$(fact have_docker)')"
 assert '[ -n "$(fact docker_error)" ]'         "with the error it gave (got '$(fact docker_error)')"
 assert '[ "$(fact traefik_present)" = "no" ]'  "and Traefik unknown rather than assumed (got '$(fact traefik_present)')"
@@ -764,8 +767,8 @@ assert 'grep -qF "Root: /srv/apps" <<<"$out"' "and the report says which path it
 # The reserved list travels with it: the far side filters on names this side
 # owns, so a shortened list would silently start reporting kasbah's own
 # directories as projects.
-assert 'grep -qF ".kasbah traefik data backups" "$ssh_log"' \
-    "the four directories kasbah owns are the ones the far side is told to skip (ssh saw: $(cat "$ssh_log"))"
+assert 'grep -qF ".kasbah traefik mail data backups" "$ssh_log"' \
+    "the directories kasbah owns are the ones the far side is told to skip (ssh saw: $(cat "$ssh_log"))"
 
 # The marker recording a different apps path than the one that was read: not an
 # error — the reader is looking at a real marker — but not silent either.

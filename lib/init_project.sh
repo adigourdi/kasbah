@@ -83,7 +83,7 @@ cmd_init_project() {
     trap '_init_cleanup' ERR
 
     _write_manifest "$name" "$domain"
-    _write_env_example "$domain"
+    _write_env_example
     if [ ! -d .kasbah ]; then
         mkdir .kasbah
         _INIT_MADE_DIR=.kasbah
@@ -131,15 +131,22 @@ _write_manifest() {
     } > kasbah.yml
 }
 
+# The template is mandatory (check S04) and declaring nothing in it is a
+# first-class state, not a gap: the hostname lives in the manifest's `domain:`
+# and in traefik-dynamic.yml, so a project with no configuration of its own
+# ships exactly this file and passes E01, E04 and E05 on it. Seeding a key here
+# would hand every new project an environment it never asked for, and a first
+# deploy that has to prompt for it.
 _write_env_example() {
-    local domain="$1"
     {
         printf '# =============================================================================\n'
         printf '# Production Configuration\n'
         printf '# =============================================================================\n'
-        printf '\n'
-        printf '# --- Domain ---\n'
-        printf 'DOMAIN=%s\n' "$domain"
+        printf '#\n'
+        printf '# One KEY=value per line; the first deploy prompts for each and writes the\n'
+        printf '# answers to .env on the server (docs/env-template.md for hints, defaults and\n'
+        printf '# ! generators). Leave this file as it is if the project configures nothing —\n'
+        printf '# the file is required, the keys are not. KASBAH_* names belong to kasbah.\n'
     } > .env.prod.example
 }
 
@@ -160,7 +167,7 @@ _print_compose_snippet() {
 Next step: author compose.prod.yml. Starter snippet:
 
   services:
-    app:
+    ${name}-web:
       image: nginx:alpine
       container_name: ${name}-web
       restart: unless-stopped
@@ -171,16 +178,19 @@ Next step: author compose.prod.yml. Starter snippet:
         options:
           max-size: "10m"
           max-file: "3"
-      networks: [kasbah-net, internal]
+      networks: [kasbah-net]
 
   networks:
     kasbah-net:
       external: true
-    internal: {}
 
-  Only Traefik-routed containers join kasbah-net; everything else stays on
-  the project-internal network (see docs/traefik.md). The KASBAH_* limits
-  are injected into .env at deploy.
+  Only Traefik-routed containers join kasbah-net — one service needs nothing
+  else. Add a second, project-internal network the moment there is a service
+  nothing routes to, and keep that service off the shared one (see
+  docs/traefik.md). Compose publishes the service *name* as a DNS alias on
+  every network it joins, so name it for the project: a bare \`web\` on
+  kasbah-net collides with every other project that has one. The KASBAH_*
+  limits are injected into .env at deploy.
 
 Routing is declared in traefik-dynamic.yml at the project root (see
 docs/traefik.md). Starter:

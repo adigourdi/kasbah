@@ -11,7 +11,11 @@
 name: built-app
 
 services:
-  web:
+  # Prefixed with the project name because compose registers the service name
+  # as a DNS alias on kasbah-net, which every project on the host shares — a
+  # service called `web` claims the bare `web` alias there (C09). Nothing stops
+  # a service and its container carrying the same name.
+  built-app-web:
     build:
       context: .
       dockerfile: Dockerfile

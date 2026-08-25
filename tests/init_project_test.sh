@@ -36,7 +36,14 @@ assert 'grep -qxF "name: demo" kasbah.yml'                 "manifest has name"
 assert 'grep -qxF "domain: \"demo.example.com\"" kasbah.yml' "manifest has quoted domain"
 assert 'grep -qF "compose.prod.yml -> compose.yml" kasbah.yml' "manifest has sync"
 
-assert 'grep -qxF "DOMAIN=demo.example.com" .env.prod.example' "env example seeds DOMAIN"
+# The template is mandatory and declares nothing: the hostname is load-bearing
+# in the manifest's domain: and in traefik-dynamic.yml, and seeding a key here
+# would hand a project an environment it never asked for — and a first deploy
+# that has to prompt for it. Comments only, which check's E01/E04/E05 all pass.
+assert '! grep -qE "^[[:space:]]*[^#[:space:]]" .env.prod.example' \
+    "env example declares no key (said: $(cat .env.prod.example))"
+assert '[ -s .env.prod.example ]' "but is a real file with something in it"
+assert '! grep -qF "DOMAIN" .env.prod.example' "and does not seed a DOMAIN nothing reads"
 
 assert '[ "$(jq -r .kasbah_version .kasbah/state.json)" = "$version" ]' "state kasbah_version"
 assert '[ "$(jq -r .last_server .kasbah/state.json)" = "null" ]'         "state last_server nulled"
@@ -44,6 +51,62 @@ assert '[ "$(jq -r ".schema_migrations_applied|length" .kasbah/state.json)" = "0
 
 assert 'grep -qxF ".env" .gitignore'      "gitignore has .env"
 assert 'grep -qxF ".kasbah/" .gitignore' "gitignore has .kasbah/"
+
+# --- Case 1b: the starter snippet is a project `kasbah check` accepts ---------
+# It is the first compose file most projects ever have, so what it teaches is
+# what most compose files end up looking like. One routed service: named for
+# the project because compose publishes the service name as a DNS alias on the
+# shared network (C09), on kasbah-net and nothing else because a lone routed
+# service has nothing to keep off it, and behind both routers for the domain so
+# plain HTTP redirects instead of 404ing (T08).
+projs="$tmpdir/snippet"
+mkdir -p "$projs"
+cd "$projs"
+snippet="$("$kasbah" init-project --name=snip --domain=snip.example.com 2>/dev/null)"
+assert 'grep -qF "    snip-web:" <<<"$snippet"'            "the scaffolded service is named for the project (said '$snippet')"
+assert '! grep -qE "^    (app|web):" <<<"$snippet"'        "and not with a name every other project would also pick"
+assert 'grep -qF "networks: [kasbah-net]" <<<"$snippet"'   "the one routed service joins the shared network alone"
+assert '! grep -qF "internal: {}" <<<"$snippet"'           "with no second network it has nothing to put on"
+assert 'grep -qF "entryPoints: [web]" <<<"$snippet"'       "the fragment carries the redirect router"
+assert 'grep -qF "entryPoints: [websecure]" <<<"$snippet"' "and the TLS one"
+
+# --- Case 1c: what it printed is a project `kasbah check` passes clean -------
+# `cli.md` claims both snippets pass; grepping six strings out of them cannot
+# tell whether the whole is coherent, and a claim in a doc that nothing runs is
+# the shape that rots. So do what the operator is told to do: paste both blocks
+# into the files they name, and run the check.
+#
+# The two blocks are indented two spaces inside the prose. Take everything from
+# the block's opening key until the first line that is neither blank nor
+# indented — and, for the compose block, until the prose paragraph that follows
+# it, whose first line is the only one in either block starting with a capital
+# at that indent. The two guards below fail loudly if that ever stops holding,
+# rather than quietly checking an empty file.
+extract() {
+    awk -v start="$1" -v stop_prose="$2" '
+        $0 == start { f = 1 }
+        f {
+            if ($0 !~ /^($|  )/) exit
+            if (stop_prose == "1" && $0 ~ /^  [A-Z]/) exit
+            print
+        }
+    ' <<<"$snippet" | sed 's/^  //'
+}
+extract "  services:" 1 > compose.prod.yml
+extract "  http:"     0 > traefik-dynamic.yml
+assert 'grep -qxF "    container_name: snip-web" compose.prod.yml' \
+    "the compose block came out whole (got: $(cat compose.prod.yml))"
+assert 'grep -qxF "          - url: \"http://snip-web:80\"" traefik-dynamic.yml' \
+    "and so did the fragment (got: $(cat traefik-dynamic.yml))"
+
+check_out="$("$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]' "the scaffolded project passes kasbah check (exit $rc)"
+assert 'grep -qF ", 0 warning, 0 failed" <<<"$check_out"' \
+    "with nothing warned and nothing failed (said '$(tail -1 <<<"$check_out")')"
+assert 'grep -qF "✓ kasbah-net service names are project-prefixed" <<<"$check_out"' \
+    "C09 among them, which is the rule the service name is chosen for"
+assert 'grep -qF "✓ A router serves snip.example.com on the web entrypoint" <<<"$check_out"' \
+    "and T08, which is why the fragment prints two routers"
 
 # --- Case 2: refuses to overwrite existing manifest ---------------------------
 if "$kasbah" init-project --name=demo >/dev/null 2>&1; then
@@ -72,7 +135,7 @@ fi
 # shared proxy's own stack and then `compose -p traefik up -d --remove-orphans`
 # in that directory, removing the proxy. Refused at the moment the name is
 # chosen, and again wherever a manifest is read (tests/manifest_test.sh).
-for reserved in traefik data backups; do
+for reserved in traefik mail data backups; do
     projr="$tmpdir/reserved-$reserved"
     mkdir -p "$projr"
     cd "$projr"

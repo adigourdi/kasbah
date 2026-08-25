@@ -125,14 +125,16 @@ migrate files in the source tree.
 Directory name on the VPS (`/apps/<name>/`) and basis for container names.
 Must match `^[a-z][a-z0-9-]*$`.
 
-**Reserved: `traefik`, `data`, `backups`.** Those directories under `/apps/`
-belong to kasbah, and a project claiming one is not a naming collision but
-a live hazard: a project named `traefik` would rsync its compose file over
+**Reserved: `traefik`, `mail`, `data`, `backups`.** Those directories under
+`/apps/` belong to kasbah, and a project claiming one is not a naming collision
+but a live hazard: a project named `traefik` would rsync its compose file over
 the shared stack's, then run `docker compose -p traefik up -d
 --remove-orphans` in that directory — and since Traefik is not a service in
 the project's file, `--remove-orphans` removes the reverse proxy every site
-on the box is behind. `kasbah check` and `kasbah deploy` both refuse these
-names, and `init-project` will not scaffold one.
+on the box is behind. `mail` is the same hazard one directory over: `/apps/mail/`
+holds the shared mail stack, and `--remove-orphans` there takes mail off the
+whole server. `kasbah check` and `kasbah deploy` both refuse these names, and
+`init-project` will not scaffold one.
 
 ### `domain` *(required)*
 
@@ -164,6 +166,12 @@ The Traefik dynamic config (`traefik-dynamic.yml` at project root) is
 **not** listed here. Kasbah rsyncs it directly to
 `/apps/traefik/dynamic/<name>.yml` out-of-band, the same way it handles
 its own helper scripts. See `traefik.md` for the fragment shape.
+
+`.env.prod.example` is required (check S04) whether or not the project has
+anything to configure: a project with nothing to declare ships a comment-only
+template, which is a normal end state rather than a gap, and what
+`init-project` scaffolds. The hostname is not one of those things — it is
+load-bearing in `domain:` above and in the fragment, not in the environment.
 
 ### `health` *(optional)*
 

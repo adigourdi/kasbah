@@ -18,6 +18,7 @@ Compose:
   ✓ All services set restart policy
   ✓ All services set json-file logging with rotation
   ✓ Routed services join kasbah-net; internal services stay off it
+  ✓ Services on kasbah-net are named for the project
   ✓ No `version:` field (deprecated)
   ✓ All built services reference their image as :current
 
@@ -30,6 +31,7 @@ Traefik:
   ✓ At least one router references manifest domain (myapp.example.com)
   ✓ Routers declare entrypoints (web or websecure)
   ✓ Secure routers reference letsencrypt
+  ✓ A router serves the domain on the web entrypoint
 
 Healthchecks:
   ⚠ Service 'worker' has no HEALTHCHECK (warning only)
@@ -46,7 +48,7 @@ Mail (if manifest has `mail:`):
   ✓ Domain matches an apex or subdomain of a known mail stack domain
     (this check only runs when --server is passed)
 
-Summary: 14 passed, 1 warning, 0 failed
+Summary: 22 passed, 1 warning, 0 failed
 ```
 
 Exit code 0 if no failures (warnings are informational).
@@ -63,7 +65,7 @@ Exit code 0 if no failures (warnings are informational).
 | S04 | `.env.prod.example` exists | fail |
 | S05 | `.gitignore` excludes `.env` | warn |
 | S06 | `.gitignore` excludes `.kasbah/` | warn |
-| S07 | `name` is not one of kasbah's reserved directories (`traefik`, `data`, `backups`) — see `project-manifest.md`. Refused when the manifest loads, so it exits 1 rather than 6: nothing else can be checked about a project that would overwrite the reverse proxy | fail |
+| S07 | `name` is not one of kasbah's reserved directories (`traefik`, `mail`, `data`, `backups`) — see `project-manifest.md`. `mail` is reserved for the same reason `traefik` is: `<apps>/mail` holds the shared mail stack, and a project deployed there would `compose up -d --remove-orphans` it away. Refused when the manifest loads, so it exits 1 rather than 6: nothing else can be checked about a project that would overwrite the reverse proxy | fail |
 
 ### Compose
 
@@ -77,6 +79,7 @@ Exit code 0 if no failures (warnings are informational).
 | C06 | Every service has `container_name` OR project uses compose's default naming | info | no |
 | C07 | No non-routed service joins `kasbah-net` — internal services use a project-internal network (service-name aliases on a shared network round-robin across projects) | fail | no |
 | C08 | Every service with a `build:` key names an `image:` tagged `:current`. Deploy moves `<image>:current` and never rewrites compose, so a service pinned to `:1.2.3` keeps running the old image while the deploy reports success and changes nothing — the quietest failure in the tool. Silent on projects that build nothing | fail | yes |
+| C09 | Every service on `kasbah-net` is named `<manifest.name>` or `<manifest.name>-*`. Compose registers the *service* name — not `container_name` — as a DNS alias on every network it joins, so a service called `web` claims the bare `web` alias on the network every project shares; two projects doing it leave two claimants and a third resolving `web` round-robins between them (measured: `aliases=[gbrev-web web]`). Latent rather than live, since Traefik targets `container_name`, which Docker keeps unique per host — hence warn. C07 already fails a non-routed service there, so in practice this bites the routed one. Silent — no line either way — on a project with no service on `kasbah-net` (nothing joins the shared network, so nothing can collide on it), and on the banned default-alias shape, where C07 has already failed on the shape and the fix is that, not a rename | warn | no |
 
 ### Resources
 
@@ -108,6 +111,7 @@ docker provider is not wired in.
 | T05 | Project fragment's routers don't claim reserved hostnames (`traefik.<domain>`, `mail.<domain>`, `webmail.<domain>`) — those belong to kasbah-owned `_`-prefixed fragments. Implemented locally as a heuristic: any `Host(\`…\`)` whose first DNS label is `traefik`, `mail`, or `webmail` fails. Tightens to the exact server-apex match when `--server` mode lands. | fail |
 | T06 | No service in `compose.prod.yml` carries `traefik.*` labels | fail |
 | T07 | Every fragment `loadBalancer` server URL hostname matches an explicit `container_name` in `compose.prod.yml` | fail |
+| T08 | Some router whose `rule` references `manifest.domain` declares the `web` entrypoint. The minimum viable form (`traefik.md` → Project fragment) is two routers for one hostname, the `websecure` one that serves it and a `web` one that redirects; T03 asks only that a router declare *some* entrypoint, so a fragment carrying the HTTPS half alone passes every other rule and answers plain HTTP with Traefik's 404. Warn, not fail: HTTPS-only is legitimate for an API nothing browses to, and the rule cannot tell that apart from the omission. Domain matching is T02's substring test | warn |
 
 ### Healthchecks
 
@@ -125,6 +129,12 @@ docker provider is not wired in.
 | E03 | `.env` (if present) has no extra keys vs `.env.prod.example` | warn |
 | E04 | No obvious secret leaked into `.env.prod.example` (e.g. lines longer than 64 chars that aren't `!` commands) | warn |
 | E05 | `.env.prod.example` declares no reserved `KASBAH_*` key — kasbah injects those, so a template line naming one is a knob that does nothing | warn |
+
+A template that declares nothing is a first-class state, not a gap. S04 keeps
+requiring the file, and a comment-only one passes E01, E04 and E05 because
+`env_extract_keys` yields no keys from comments — which is exactly what
+`init-project` scaffolds, since the hostname is load-bearing in the manifest's
+`domain:` and in the fragment rather than here.
 
 Keys prefixed `KASBAH_` are reserved — injected and refreshed by kasbah
 at deploy (resource limits) and exempt from E02/E03 and drift detection.
@@ -165,6 +175,8 @@ Fixable today:
 
 Unfixable (must be done by hand):
 - C07 (moving services between networks is topology — kasbah won't guess)
+- C09 (renaming a service drags `depends_on`, profiles and every in-project
+  hostname with it — same reason)
 - Anything under Traefik (routing is policy, kasbah can't guess)
 - Hooks (kasbah can't invent commands)
 - Mail claims

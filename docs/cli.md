@@ -203,19 +203,22 @@ pass `USER@HOST` explicitly.
 
 Scaffold the kasbah metadata for a new project. Creates:
 - `kasbah.yml` with schema version and sane defaults
-- `.env.prod.example` skeleton — it leads with a `DOMAIN=<domain>` line as an
-  example of the shape. **Nothing kasbah runs reads `DOMAIN`**: routing comes
-  from the manifest's `domain:` and the fragment. Delete the line if the app
-  does not read it itself — otherwise the first deploy prompts for a variable
-  nothing consumes, and a project with no configuration ends up with one key
-  purely because the scaffold wrote it.
+- `.env.prod.example` — comments and no keys. The file is required (check S04)
+  and declaring nothing in it is a normal end state: routing comes from the
+  manifest's `domain:` and the fragment, so a project with no configuration of
+  its own has nothing to put here and its first deploy has nothing to prompt
+  for. Add keys as the app grows ones; see `env-template.md` for the line
+  forms.
 - `.kasbah/state.json` (empty fields, current `kasbah_version`)
 - `.gitignore` entries for `.env` and `.kasbah/`
 
 Does **not** scaffold `compose.prod.yml`. The user authors that file — kasbah
 has no opinion on which service is "primary", what ports to expose, etc. After
-running, kasbah prints a minimal starter compose snippet to stdout so the
-user can paste and adapt if useful.
+running, kasbah prints a minimal starter compose snippet and a matching Traefik
+fragment to stdout so the user can paste and adapt if useful. Both are shapes
+`kasbah check` passes clean: one routed service named for the project (C09) on
+`kasbah-net` alone, and two routers for the domain so plain HTTP redirects
+rather than 404s (T08).
 
 Flags:
 - `--name=<name>` (default: current directory name)

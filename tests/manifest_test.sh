@@ -184,7 +184,7 @@ assert '[ "$out" = "crlf|c.test" ]' "CRLF CR is stripped from field values"
 # A project called `traefik` would have deploy write over the shared proxy's
 # stack and then remove it with --remove-orphans. Refused here, so every command
 # that reads a manifest refuses it — `check` included.
-for reserved in traefik data backups; do
+for reserved in traefik mail data backups; do
     projr="$tmpdir/reserved-$reserved"
     mkdir -p "$projr"
     cd "$projr"
@@ -192,7 +192,7 @@ for reserved in traefik data backups; do
     out="$(run_snippet 'manifest_require' 2>&1)"; rc=$?
     assert '[ "$rc" = "1" ]' "manifest_require refuses the reserved name $reserved (got $rc)"
     assert 'grep -qF "is reserved" <<<"$out"' "and says so (said '$out')"
-    assert 'grep -qF "traefik data backups" <<<"$out"' "listing every reserved name (said '$out')"
+    assert 'grep -qF "traefik mail data backups" <<<"$out"' "listing every reserved name (said '$out')"
 done
 
 # The control: a name that merely contains a reserved one is fine, so the rule

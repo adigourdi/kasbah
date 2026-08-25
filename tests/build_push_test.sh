@@ -205,7 +205,7 @@ assert '! grep -q "image: built-app-web" "$projdir/compose.prod.yml"' \
     "the compose file really has lost its image: key — else the case below proves nothing"
 run --build-only; rc=$?
 assert '[ "$rc" = "1" ]' "a build: service with no image: is refused (exit $rc)"
-assert 'grep -qF "service '"'"'web'"'"'" <<<"$err"' "naming the service (said '$err')"
+assert 'grep -qF "service '"'"'built-app-web'"'"'" <<<"$err"' "naming the service (said '$err')"
 assert 'grep -qF "image:" <<<"$err"' "and what to add (said '$err')"
 assert '[ ! -s "$DOCKER_LOG" ]' \
     "before anything is built — the whole compose file is read first (log: $(cat "$DOCKER_LOG"))"
@@ -219,7 +219,7 @@ projdir="$(make images built-app v1.4.2)"
 cat > "$projdir/compose.prod.yml" <<'COMPOSE'
 name: built-app
 services:
-  web:
+  built-app-web:
     build: .
     image: built-app-web:current
   worker:
@@ -299,7 +299,7 @@ projdir="$(make ship built-app v1.4.2)"
 cat > "$projdir/compose.prod.yml" <<'COMPOSE'
 name: built-app
 services:
-  web:
+  built-app-web:
     build: .
     image: built-app-web:current
   worker:
