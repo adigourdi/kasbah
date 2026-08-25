@@ -113,10 +113,33 @@ keeping it that way is deliberate.
 For each additional domain:
 - DNS needs MX → `mail.<primary>` (apps don't need their own MX record).
 - SPF + DKIM + DMARC must be published per domain.
-- DMS `postmaster-aliases.cf` routes `postmaster@<domain>` → the primary mailbox.
+- DMS's `postfix-virtual.cf` routes `postmaster@<domain>` → the primary mailbox.
 - SnappyMail adds the domain via the pre-seeded JSON config.
 
-`kasbah server add-mail-domain <domain>` (v0.2) automates this.
+`kasbah server add-mail-domain USER@HOST <domain>` does the first and third of
+those: the domain joins `domains:` here, and the alias is appended to
+`<data>/mail/dms/config/postfix-virtual.cf`. **That alias is not a courtesy.**
+docker-mailserver builds `/etc/postfix/vhost` — which `main.cf` uses as
+`virtual_mailbox_domains` — out of `postfix-accounts.cf` and
+`postfix-virtual.cf`, taking the domain part of every account and of every alias
+carrying an `@` (`helpers/postfix.sh` → `_vhost_collect_postfix_domains`). So a
+domain with neither a mailbox nor an alias is one Postfix refuses mail for: the
+registry entry alone buys nothing. Verified in the image and against the real
+host, whose `vhost` holds exactly the one domain it serves. DMS watches both
+files and reloads; no restart.
+
+*(The file is `postfix-virtual.cf`, and this document said `postmaster-aliases.cf`
+until 7.1b went looking for it: docker-mailserver 15.1.0 has no such file.
+`setup alias add` writes `postfix-virtual.cf`, space-delimited, one
+`alias recipient` per line, and that is what kasbah appends to.)*
+
+**Additional domains get no routers.** `_mail.yml`'s four routers claim
+`mail.<primary>` and `webmail.<primary>`, which are the stack's own hostnames,
+and an app domain needs an MX record rather than a fragment. `add-mail-domain`
+does not touch the fragment.
+
+DKIM keys, the per-domain block in Rspamd's `dkim_signing.conf`, and DNS stay
+the operator's: `add-mail-domain` prints all three as follow-ups.
 
 ## Account management
 
@@ -168,15 +191,39 @@ mail:
 What kasbah does with it:
 1. On deploy, verify the mail stack is up.
 2. Verify `shop.example.com` is in `/apps/mail/kasbah.yml`'s `domains` list.
-3. If `snappymail_domain` is set and the target file is missing on the VPS,
-   copy it into `/apps/data/mail/snappymail/_data_/_default_/domains/<domain>.json`.
+3. If `snappymail_domain` is set, **step 2 said yes**, and the target file is
+   missing on the VPS, copy it into
+   `/apps/data/mail/snappymail/_data_/_default_/domains/<domain>.json`.
 
-Steps 2 and 3 are not implemented yet; the deploy warns rather than checking.
-Step 3 has a wrinkle worth knowing before it is built: SnappyMail chowns its
-whole data tree to the container's own uid at mode 750 on first boot, so that
-`domains/` directory is **not writable, or even traversable, by the deploy
-user**. The copy has to go through the container (`docker cp`, or a
-`docker exec` writing the file) or through sudo.
+All three are implemented, and **none of them can stop a deploy**: every
+outcome here is a warning, because an unmet claim costs mail and not the site.
+
+Step 2 reads the registry the only way anything reads it — base64 back over ssh,
+parsed with the workstation's yq — and names
+`kasbah server add-mail-domain` when the answer is no.
+
+**Step 3 is conditioned on step 2, and that is the whole of the condition.** A
+SnappyMail domain config for a domain the registry does not list is
+configuration written on a premise the same run has just reported false, and
+nothing in that directory afterwards tells it apart from one that was
+deliberate. So an unmet claim skips the copy and says both things — that the
+seed was not copied, and that the claim above is why. It is still a warning:
+the deploy continues.
+
+Step 3 goes through the container, and has to: SnappyMail chowns its whole data
+tree to the container's own uid at mode 750 on first boot, so that `domains/`
+directory is **not writable, or even traversable, by the deploy user**. kasbah
+uses `docker cp`, which works on a stopped container too — a `docker exec`
+writing the file would not. The file's bytes travel from the checkout as an
+argument, since the far side has no way to fetch them.
+
+`kasbah check`'s **M01** (a `mail:` block names a domain) and **M02** (the
+`snappymail_domain` file exists and is valid JSON) are the local half of the
+same claim. M02 is a failure rather than a warning precisely because the copy
+is copy-if-missing: a broken pre-seed that lands is the version SnappyMail
+keeps. **M03** — "the stack on the VPS knows this domain" — is a `--server`
+rule and lands with `check --server`; the deploy asks that question anyway, on
+every deploy.
 
 What kasbah does NOT do:
 - Create mailboxes.
@@ -184,10 +231,18 @@ What kasbah does NOT do:
 - Publish DNS records.
 
 The mail stack's setup walkthrough (ported from the original project's `mail/SETUP.md`)
-is shown once after `kasbah server init --with-mail` and also accessible
-via `kasbah server mail-setup-guide user@vps`. Neither exists yet; what init
-prints today is the stack's state and the one warning that matters — that
-DMS crashlooping while the first certificate is issued is expected.
+is printed once by the `kasbah server init --with-mail` run that *creates* the
+stack, and on demand by `kasbah server mail-setup-guide user@vps`. A re-run of
+init prints the one-line pointer at that command instead, along with the stack's
+state and the one warning that matters — that DMS crashlooping while the first
+certificate is issued is expected.
+
+The guide is rendered for the server's own registry rather than shown as an
+example: the primary domain, every domain under `domains:`, the DNS records each
+one needs, and the address the ssh session reached the host on. It carries two
+prerequisites nothing in kasbah can check — reverse DNS (PTR) on the VPS IP set
+to `mail.<primary>`, and port 25 **outbound** unblocked by the provider — and
+both are fatal to deliverability when missed.
 
 ## Pre-seeding (first-deploy gotchas, preserved)
 
@@ -211,8 +266,9 @@ the whole of what makes them work, and is asserted rather than assumed.
   every mailbox on the server, so a re-run neither asks for a password nor
   rewrites the account.
 - **SnappyMail domain config** — pre-seeded from the file referenced in a
-  project's manifest, keyed by the project's domain. Not implemented yet; see
-  the wrinkle under "Per-app mail claims" above. What `server init` does today
+  project's manifest, keyed by the project's domain, by `kasbah deploy`
+  (copy-if-missing, through `docker cp` — see "Per-app mail claims" above).
+  What `server init` does
   is create `<data>/mail/snappymail` as the bind-mount source — and *only*
   that, because SnappyMail builds `_data_/_default_/domains/` itself and
   takes ownership of the lot, and a kasbah that pre-created that tree worked
@@ -238,15 +294,22 @@ Empty = direct delivery via port 25 (the original project's default). Apply with
 ## Mail is optional
 
 If `kasbah server init` was run without `--with-mail`, the `mail/`
-directory doesn't exist. A project's `mail:` claim then fails
-compliance at deploy time with a clear message:
+directory doesn't exist. A project's `mail:` claim is then **reported and the
+deploy continues**:
 
 ```
-ERROR: Project claims mail domain `shop.example.com` but no mail stack
-       is installed on the VPS.
-       Enable it with: kasbah server init user@host --with-mail
-       Or remove the `mail:` section from kasbah.yml.
+warning: shop claims the mail domain shop.example.com, and there is no mail
+         stack at /apps/mail on you@vps
+warning: enable it with: kasbah server init you@vps --with-mail — the deploy continues
 ```
+
+**A warning, not a failure, and deliberately.** An unmet mail claim costs mail;
+stopping the deploy costs the site as well, and a site that will not go up
+because nobody has run `add-mail-domain` yet is the worse of the two failures.
+The same holds for every other state the claim can be in — a half-made stack, a
+registry that does not list the domain, a stopped DMS, a pre-seed that could not
+be copied. `docs/project-manifest.md` → `mail` says the same, and
+`lib/deploy.sh` is where it is true.
 
 ## First run, and what "not healthy" means
 

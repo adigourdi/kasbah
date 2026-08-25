@@ -221,6 +221,53 @@ command ran at all; `kasbah logs` writes it when the reader stopped early too,
 since a closed pipe says nothing about whether the logs were readable
 (`project-manifest.md` → write rules).
 
+### `kasbah server add-mail-domain USER@HOST <domain>`
+
+Joins a domain to the VPS's shared mail stack (`mail.md` → Multi-domain).
+Two things change and nothing else does:
+
+- the domain joins `domains:` in `<apps>/mail/kasbah.yml` — the registry, and
+  the only thing asked whether this stack serves a domain. The file is
+  re-rendered from the same template `server init` renders it from, so one
+  writer owns its shape;
+- `postmaster@<domain>` is aliased to the primary mailbox in
+  docker-mailserver's `<data>/mail/dms/config/postfix-virtual.cf`, which is
+  also what makes Postfix accept mail for the domain at all — DMS builds its
+  accepted-domain list out of that file and `postfix-accounts.cf`. DMS watches
+  it and reloads; no restart.
+
+**No router is added.** `mail.<primary>` and `webmail.<primary>` are the
+stack's own hostnames; an app domain needs an MX record pointing at
+`mail.<primary>`, not a fragment of its own.
+
+Adding a domain twice is a no-op that says so — not an error, and never a
+duplicate entry. A domain listed in the registry whose alias is missing is
+converged rather than reported as done: the two halves are what make the claim
+true, and only one of them was there.
+
+What it does not do, because none of it is kasbah's: DKIM keys (DMS's own
+helper generates them on the VPS), the per-domain block in Rspamd's
+`dkim_signing.conf`, and DNS. It prints all three as follow-ups, and
+`mail-setup-guide` prints the records.
+
+### `kasbah server mail-setup-guide USER@HOST`
+
+Prints the mail stack's post-install walkthrough, rendered for this server:
+its primary domain, every domain in the registry, and the DNS records each of
+them needs — MX, SPF, DMARC and both DKIM selectors — with the address the ssh
+session reached the server on filled in. Ported from the original project's
+`mail/SETUP.md`.
+
+Read-only. It reads the registry and changes nothing.
+
+It carries two prerequisites kasbah cannot check and an operator will
+otherwise miss: reverse DNS (PTR) on the VPS IP set to `mail.<primary>`, and
+port 25 **outbound** not blocked by the provider — many block it by default.
+
+The same guide prints once at the end of the `server init --with-mail` run
+that *creates* the stack. A re-run prints the one-line pointer at this command
+instead.
+
 ### `kasbah init-project [flags]`
 
 Scaffold the kasbah metadata for a new project. Creates:
@@ -604,8 +651,6 @@ Referenced elsewhere in the docs but not yet in v0.1:
 
 - `kasbah migrate` — migrate a project's source-tree files to a newer
   kasbah schema. (roadmap v1.0.)
-- `kasbah server add-mail-domain` — add a new domain to the shared mail
-  stack. (roadmap v0.2.)
 - `kasbah server upgrade-traefik` — managed Traefik version bump.
   (roadmap v0.3.)
 - `kasbah check --server` — VPS-aware compliance check. (roadmap v0.2 — see

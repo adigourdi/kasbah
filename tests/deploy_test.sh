@@ -534,14 +534,23 @@ case "$last" in
         printf 'missing=%s\n' "${ENV_MISSING:-}"
         printf 'extra=%s\n' "${ENV_EXTRA:-}" ;;
     *"setup-env.sh' '--inject' "*) exit "${INJECT_RC:-0}" ;;
-    # The mail claim's probe, which names <apps>/mail and nothing else. Its
-    # status and its whole output are settable: an ssh that failed here must not
-    # be indistinguishable from a server with no mail stack.
-    *"'bash' '-s' '--' '"*"/mail'")
+    # The SnappyMail seed, which is its own round trip and names the container
+    # rather than a path under <apps>. Matched before the claim step below,
+    # which is the looser pattern of the two.
+    "'bash' '-s' '--' 'mail-snappymail' "*)
+        printf 'mail_seed=%s\n' "${MAIL_SEED:-copied}" ;;
+    # The mail claim's step, which names <apps>/mail first, the data path and
+    # the claimed domain. Its status and its whole output are settable: an ssh
+    # that failed here must not be indistinguishable from a server with no mail
+    # stack.
+    *"'bash' '-s' '--' '"*"/mail' "*)
         [ -z "${MAIL_OUT+set}" ] || { printf '%s' "$MAIL_OUT"; exit "${MAIL_RC:-0}"; }
         [ "${MAIL_RC:-0}" = 0 ] || exit "$MAIL_RC"
         printf 'mail_stack=%s\n' "${MAIL_STACK:-no}"
-        printf 'mail_env=%s\n' "${MAIL_ENV:-no}" ;;
+        printf 'mail_env=%s\n' "${MAIL_ENV:-no}"
+        printf 'mail_registry_b64=%s\n' "${MAIL_REGISTRY_B64-}"
+        printf 'mail_dms=%s\n' "${MAIL_DMS:-running}"
+        printf 'mail_snappymail=%s\n' "${MAIL_SNAPPY:-running}" ;;
     # The deploy itself, and its report on stdout. Every key is settable and any
     # one of them is droppable with REPORT_OMIT, because "the report never
     # arrived" and "the deploy said nothing changed" must not be the same thing
@@ -944,13 +953,18 @@ assert '! grep -qF "images:" <<<"$out"' \
 rm -rf "$project/.kasbah"
 
 # --- The mail claim ----------------------------------------------------------------
-# A stub, and deliberately: the stack itself now exists, but the registry that
-# would answer "does it serve this domain?" is <apps>/mail/kasbah.yml and
-# reading it needs a YAML parser the VPS does not have, so all this can do is
-# look. What it must not do is stop the deploy — an unmet mail claim costs mail,
-# not the site.
+# Reconciled now, not stubbed: the step reads <apps>/mail/kasbah.yml back as
+# base64 and this side parses it with the workstation's yq, because the VPS has
+# no YAML parser and keeping it that way is deliberate. What it must never do is
+# stop the deploy — an unmet mail claim costs mail, not the site.
 cp "$project/kasbah.yml" "$tmpdir/kasbah.yml.orig"
 printf '\nmail:\n  domain: mail.demo.test\n' >> "$project/kasbah.yml"
+
+# A registry that serves the claimed domain, and one that does not. The
+# difference between them is the whole of what the reconciliation decides.
+registry_with=$(printf 'name: mail\nprimary_domain: demo.test\ndomains:\n  - demo.test\n  - mail.demo.test\n' | openssl base64 -A)
+registry_without=$(printf 'name: mail\nprimary_domain: demo.test\ndomains:\n  - demo.test\n  - other.test\n' | openssl base64 -A)
+registry_broken=$(printf 'name: mail\ndomains:\n  - [unclosed\n' | openssl base64 -A)
 
 out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
 calls=$(<"$call_log")
@@ -971,24 +985,72 @@ assert '[ "$n_mail" -gt "$n_inject" ] && [ "$n_mail" -lt "$n_remote" ]' \
     "and it looked between the env step and the deploy (inject $n_inject, mail $n_mail, deploy $n_remote)
         calls: $calls"
 
-out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=yes deploy_cli deploy@vps ); rc=$?
-assert '[ "$rc" = "0" ]' "and so does one against a server that has a mail stack (rc $rc: $out)"
-assert 'grep -qF "does not yet check" <<<"$out"' \
-    "which is a different sentence: the stack is there and kasbah still cannot reconcile the claim (said '$out')"
-assert '! grep -qF "there is no mail stack" <<<"$out"' \
-    "and not the other one (said '$out')"
+# The green path: the registry lists the domain, so the claim is met and there
+# is nothing to warn about. Asserted on the *distinguishing* sentence and on the
+# absence of the unmet one — a test that only checked rc 0 would pass against
+# every branch here.
+out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_with" \
+       deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a claim the registry serves deploys (rc $rc: $out)"
+assert 'grep -qF "mail.demo.test is served by the stack" <<<"$out"' \
+    "and says the claim is met (said '$out')"
+assert '! grep -qF "does not serve it" <<<"$out"' "and not the unmet sentence (said '$out')"
+assert '! grep -qF "there is no mail stack" <<<"$out"' "and not the absent-stack one (said '$out')"
 
-# The third state, and the reason the probe reads two facts rather than one: a
-# mail directory with no .env in it is a stack that cannot be handling anybody's
+# The claim the stack does not know. A warning, never a failure, and it names
+# the command that fixes it.
+out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_without" \
+       deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ]' "a claim the registry does not serve still deploys (rc $rc: $out)"
+assert 'grep -qF "remote-deploy.sh'\'' '\''deploy'\''" <<<"$calls"' "and the deploy ran (calls: $(grep -c . <<<"$calls") lines)"
+assert 'grep -qF "does not serve it" <<<"$out"' "saying the stack does not serve it (said '$out')"
+assert 'grep -qF "kasbah server add-mail-domain deploy@vps mail.demo.test" <<<"$out"' \
+    "and naming the command that adds it (said '$out')"
+assert 'grep -qF "lists: demo.test other.test" <<<"$out"' \
+    "and what it does serve, read out of the registry (said '$out')"
+assert '! grep -qF "is served by the stack" <<<"$out"' "and not the met sentence (said '$out')"
+
+# A registry that is not there, and one that does not parse. Neither is "the
+# stack does not serve this domain": kasbah could not read the file that would
+# have answered, which is a different thing to tell an operator.
+out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=yes deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "an unreadable registry does not stop the deploy (rc $rc: $out)"
+assert 'grep -qF "is missing or unreadable" <<<"$out"' "and is reported as that (said '$out')"
+assert '! grep -qF "does not serve it" <<<"$out"' "not as an unserved domain (said '$out')"
+
+out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_broken" \
+       deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a registry that does not parse does not stop the deploy (rc $rc: $out)"
+assert 'grep -qF "does not parse as YAML" <<<"$out"' "and is reported as that (said '$out')"
+assert '! grep -qF "does not serve it" <<<"$out"' "not as an unserved domain (said '$out')"
+
+# The stack is known to serve the domain and is not running. Two questions, two
+# answers: the domain is met and the containers are not there.
+out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_with" \
+       MAIL_DMS=absent deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a stopped mail stack does not stop the deploy (rc $rc: $out)"
+assert 'grep -qF "there is no mail-dms container" <<<"$out"' "and is reported (said '$out')"
+assert 'grep -qF "is served by the stack" <<<"$out"' \
+    "while the domain is still reported as served (said '$out')"
+
+out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_with" \
+       MAIL_DMS=restarting deploy_cli deploy@vps ); rc=$?
+assert 'grep -qF "mail-dms on deploy@vps is '\''restarting'\'', not running" <<<"$out"' \
+    "a crashlooping DMS is named as that rather than as absent (said '$out')"
+assert 'grep -qF "acme.json" <<<"$out"' "with the reason it usually is (said '$out')"
+
+# The third state, and the reason the step reads more than one fact: a mail
+# directory with no .env in it is a stack that cannot be handling anybody's
 # domain, which is a fact about the server rather than about kasbah's roadmap.
 out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=no deploy_cli deploy@vps ); rc=$?
 assert '[ "$rc" = "0" ]' "a mail stack with no .env does not stop the deploy either (rc $rc: $out)"
 assert 'grep -qF "has no .env" <<<"$out"' "and is reported as its own thing (said '$out')"
-assert '! grep -qF "does not yet check" <<<"$out"' \
-    "not as the roadmap sentence (said '$out')"
+assert '! grep -qF "does not serve it" <<<"$out"' \
+    "not as an unserved domain — the registry was never reached (said '$out')"
 assert '! grep -qF "there is no mail stack" <<<"$out"' "and not as the absent-stack one (said '$out')"
 
-# The probe's own failures. An ssh that could not run the payload must not be
+# The step's own failures. An ssh that could not run the payload must not be
 # read as "there is no mail stack": the two are the same absent answer, and only
 # one of them is a fact about the server.
 out=$( cd "$project" && MAIL_RC=255 deploy_cli deploy@vps ); rc=$?
@@ -1005,6 +1067,76 @@ assert 'grep -qF "the mail claim step on deploy@vps reported no mail_env" <<<"$o
     "naming the answer that never came (said '$out')"
 assert '! grep -qF "safe to run again" <<<"$out"' \
     "and not the deploy step's paragraph — nothing had run yet (said '$out')"
+
+# --- The SnappyMail pre-seed -------------------------------------------------------
+# Copy-if-missing, and the file travels from the checkout because the far side
+# has no way to fetch it. What is asserted is that it travelled: the fourth
+# argument of the mail step is the base64, and it is empty when nothing is
+# claimed.
+mkdir -p "$project/mail"
+printf '{"name":"mail.demo.test","imap":{"host":"mail.demo.test"}}\n' > "$project/mail/seed.json"
+cp "$tmpdir/kasbah.yml.orig" "$project/kasbah.yml"
+printf '\nmail:\n  domain: mail.demo.test\n  snappymail_domain: ./mail/seed.json\n' >> "$project/kasbah.yml"
+
+seed_b64=$(openssl base64 -A -in "$project/mail/seed.json")
+out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_with" \
+       MAIL_SEED=copied deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ]' "a project naming a snappymail pre-seed deploys (rc $rc: $out)"
+assert 'grep -qF "'"'$seed_b64'"'" <<<"$calls"' \
+    "and the file's bytes travelled with the claim ($(grep -F "/apps/mail" <<<"$calls"))"
+assert 'grep -qF "seeded SnappyMail'\''s mail.demo.test.json" <<<"$out"' \
+    "and the copy is reported (said '$out')"
+
+out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_with" \
+       MAIL_SEED=present deploy_cli deploy@vps ); rc=$?
+assert 'grep -qF "left as it is" <<<"$out"' \
+    "an existing config is left alone and said so — never overwritten (said '$out')"
+assert '! grep -qF "seeded SnappyMail" <<<"$out"' "and not reported as a copy (said '$out')"
+
+out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_with" \
+       MAIL_SEED=failed deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a pre-seed that could not be written does not stop the deploy (rc $rc: $out)"
+assert 'grep -qF "could not seed SnappyMail" <<<"$out"' "and warns (said '$out')"
+
+# The gate. docs/mail.md step 3 is conditioned on step 2: a SnappyMail domain
+# config for a domain the stack does not serve is configuration written on a
+# premise this run has just reported false, and nothing in that directory
+# afterwards tells the two cases apart.
+out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_without" \
+       deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ]' "an unmet claim with a pre-seed still deploys (rc $rc: $out)"
+assert '! grep -qF "mail-snappymail" <<<"$calls"' \
+    "and the seed step never runs ($(grep -F "/apps/mail" <<<"$calls"))"
+assert '! grep -qF "$seed_b64" <<<"$calls"' "so the file never travels"
+assert 'grep -qF "it was NOT copied" <<<"$out"' "which is said out loud (said '$out')"
+assert 'grep -qF "premise kasbah knows to be false" <<<"$out"' \
+    "with the reason, not just the fact (said '$out')"
+assert 'grep -qF "does not serve it" <<<"$out"' \
+    "alongside the claim warning it follows from (said '$out')"
+
+# And the control for it: the same manifest against a registry that does serve
+# the domain seeds normally — otherwise the gate is indistinguishable from a
+# seed step that never works.
+out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_with" \
+       deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert 'grep -qF "mail-snappymail" <<<"$calls"' \
+    "a met claim runs the seed step ($(grep -F "mail-snappymail" <<<"$calls"))"
+assert '! grep -qF "it was NOT copied" <<<"$out"' "and says nothing about a gate (said '$out')"
+
+# A named file that is not in the checkout. `kasbah check`'s M02 is where that
+# is a failure; here it is a warning, because the claim never stops a deploy.
+cp "$tmpdir/kasbah.yml.orig" "$project/kasbah.yml"
+printf '\nmail:\n  domain: mail.demo.test\n  snappymail_domain: ./mail/missing.json\n' >> "$project/kasbah.yml"
+out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_with" \
+       deploy_cli deploy@vps ); rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ]' "a snappymail_domain naming no file does not stop the deploy (rc $rc: $out)"
+assert 'grep -qF "there is no such file in this checkout" <<<"$out"' "and says so (said '$out')"
+assert '! grep -qF "mail-snappymail" <<<"$calls"' \
+    "and no seed step ran at all ($(grep -F "/apps/mail" <<<"$calls"))"
 
 # The claim is the domain. A block without one is a mistake about this checkout,
 # so it costs a sentence before the first connection.
@@ -1030,6 +1162,7 @@ assert '[ ! -s "$ssh_log" ]' "before any connection (ssh saw: $(cat "$ssh_log"))
 # The control: with the block gone, no probe is made at all — otherwise the two
 # warnings above prove only that a warning can be printed.
 cp "$tmpdir/kasbah.yml.orig" "$project/kasbah.yml"
+rm -rf "$project/mail"
 out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
 calls=$(<"$call_log")
 assert '[ "$rc" = "0" ]' "a project with no mail: block deploys (rc $rc: $out)"

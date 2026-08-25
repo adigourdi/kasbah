@@ -662,15 +662,46 @@ assert 'grep -qF "$apps/mail on $RIG_TARGET has no .env" "$tmpdir/err"' \
 assert '! grep -qF "there is no mail stack" "$tmpdir/err"' \
     "not as an absent one (said '$(cli_err)')"
 
+# A stack with an .env and no registry. The registry is the only thing that
+# answers "does this stack serve X?", so a stack without one is a claim kasbah
+# could not check — which is a different sentence from "the stack does not serve
+# it", and the reconciliation must never collapse the two.
 rig_ssh "touch $apps/mail/.env" >/dev/null 2>&1
 deploy "$RIG_TARGET"; rc=$?
 assert '[ "$rc" = "0" ]' "a mail stack with an .env does not stop the deploy either (exit $rc)
         stderr: $(cli_err)"
-assert 'grep -qF "does not yet check that $apps/mail/kasbah.yml lists it" "$tmpdir/err"' \
-    "and kasbah says plainly that it cannot reconcile the claim yet, naming the registry
-     rather than the .env — the domains list moved there when the stack landed
-     (said '$(cli_err)')"
+assert 'grep -qF "$apps/mail/kasbah.yml on $RIG_TARGET is missing or unreadable" "$tmpdir/err"' \
+    "and the registry it could not read is what is named, not the .env (said '$(cli_err)')"
+assert '! grep -qF "does not serve it" "$tmpdir/err"' \
+    "never as a verdict on the domain, which that file was going to decide (said '$(cli_err)')"
 assert '! grep -qF "has no .env" "$tmpdir/err"' "not the state below it (said '$(cli_err)')"
+
+# The registry, for real, listing the claimed domain. This is the reconciliation
+# running end to end against the payload: openssl base64 on the far side, yq on
+# this one.
+rig_ssh "printf 'name: mail\nprimary_domain: built-app.test\ndomains:\n  - built-app.test\n  - mail.built-app.test\n' > $apps/mail/kasbah.yml" >/dev/null 2>&1
+deploy "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "0" ]' "a claim the registry serves deploys (exit $rc)
+        stderr: $(cli_err)"
+assert 'grep -qF "mail.built-app.test is served by the stack at $apps/mail" "$tmpdir/err"' \
+    "and the claim is reported met, read out of the file on the server (said '$(cli_err)')"
+assert '! grep -qF "does not serve it" "$tmpdir/err"' "not unmet (said '$(cli_err)')"
+assert '! grep -qF "missing or unreadable" "$tmpdir/err"' \
+    "and not unreadable — the same file, one line different, decides all three (said '$(cli_err)')"
+
+# The same file with the claimed domain taken out. One line apart from the case
+# above, and the opposite verdict.
+rig_ssh "printf 'name: mail\nprimary_domain: built-app.test\ndomains:\n  - built-app.test\n' > $apps/mail/kasbah.yml" >/dev/null 2>&1
+deploy "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "0" ]' "a claim the registry does not serve still deploys (exit $rc)
+        stderr: $(cli_err)"
+assert 'grep -qF "the stack at $apps/mail does not serve it" "$tmpdir/err"' \
+    "and is reported as unmet (said '$(cli_err)')"
+assert 'grep -qF "$apps/mail/kasbah.yml lists: built-app.test" "$tmpdir/err"' \
+    "with what the registry does list, so the operator can see the typo (said '$(cli_err)')"
+assert 'grep -qF "kasbah server add-mail-domain $RIG_TARGET mail.built-app.test" "$tmpdir/err"' \
+    "and the command that fixes it (said '$(cli_err)')"
+assert '! grep -qF "is served by the stack" "$tmpdir/err"' "not met (said '$(cli_err)')"
 
 rig_ssh "rm -rf $apps/mail" >/dev/null 2>&1
 sed -i '/^mail:$/,$d' "$projdir/kasbah.yml"

@@ -45,8 +45,9 @@ Hooks:
   ✓ Backup hook: check + command + extension all set
 
 Mail (if manifest has `mail:`):
-  ✓ Domain matches an apex or subdomain of a known mail stack domain
-    (this check only runs when --server is passed)
+  ✓ Mail claim names domain 'shop.example.com'
+  ✓ Mail pre-seed './mail/snappymail-domain.json' exists and parses
+    (M03 — the stack on the VPS knows this domain — only runs with --server)
 
 Summary: 22 passed, 1 warning, 0 failed
 ```
@@ -159,7 +160,7 @@ one cannot drift apart by agreeing to differ.
 | ID | Rule | Level |
 |---|---|---|
 | M01 | `domain` set | fail |
-| M02 | `snappymail_domain` file exists (if set) and is valid JSON | fail |
+| M02 | `snappymail_domain` file exists (if set) and is valid JSON. Checked with `jq`, not `yq`: JSON is a subset of YAML, so `{host: mail.example.com}` parses as YAML, is not JSON, and SnappyMail rejects it. It fails rather than warns because the deploy-time copy is **copy-if-missing** — a broken pre-seed that lands is the one SnappyMail keeps | fail |
 | M03 | (with `--server` flag) Mail stack on VPS knows this domain | fail |
 
 ## `--fix` behavior

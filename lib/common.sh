@@ -107,3 +107,26 @@ kasbah_norm_path() {
     printf -v "$_np_out" '%s' "$_np_acc"
     return 0
 }
+
+# yaml_get CONTENT FILTER OUTVAR — one keyed lookup against a YAML document
+# held in a variable. Exit 2 means the document did not parse, which every
+# caller keeps distinct from "the key is not there": kasbah reuses what is on
+# the server rather than regenerating it, and a file it cannot read is a file it
+# cannot reuse from.
+#
+# Here rather than in one command's library because three of them ask the same
+# question of the same file. `server init` reads <apps>/mail/kasbah.yml back to
+# reproduce it, `server add-mail-domain` to append to it, and `deploy` to answer
+# a project's mail claim against it — one registry, one reader. The VPS has no
+# yq, jq or python3 and keeping it that way is deliberate (docs/mail.md), so
+# every one of those reads base64s the file back and parses it here.
+yaml_get() {
+    local _yg_content="$1" _yg_filter="$2" _yg_out="$3" _yg_val=""
+
+    printf -v "$_yg_out" '%s' ""
+    [ -n "$_yg_content" ] || return 0
+    _yg_val=$(printf '%s' "$_yg_content" | yq -r "$_yg_filter" 2>/dev/null) || return 2
+    case $_yg_val in null) _yg_val="" ;; esac
+    printf -v "$_yg_out" '%s' "${_yg_val%$'\r'}"
+    return 0
+}

@@ -226,8 +226,18 @@ case "$last" in
         printf 'missing=%s\n' "${ENV_MISSING:-}"
         printf 'extra=%s\n' "${ENV_EXTRA:-}" ;;
     *"setup-env.sh' '--inject' "*) exit 0 ;;
-    *"'bash' '-s' '--' '/apps/mail'")
-        printf 'mail_stack=no\nmail_env=no\n' ;;
+    # The mail claim step, on the same protocol the deploy path uses: the mail
+    # directory, the data path and the claimed domain.
+    *"'bash' '-s' '--' '/apps/mail' "*)
+        printf 'mail_stack=%s\n' "${MAIL_STACK:-no}"
+        printf 'mail_env=%s\n' "${MAIL_ENV:-no}"
+        printf 'mail_registry_b64=%s\n' "${MAIL_REGISTRY_B64-}"
+        printf 'mail_dms=%s\n' "${MAIL_DMS:-running}"
+        printf 'mail_snappymail=running\n' ;;
+    # The SnappyMail seed's own round trip. No rollback fixture names a
+    # pre-seed, so reaching this is itself the failure it reports.
+    "'bash' '-s' '--' 'mail-snappymail' "*)
+        printf 'mail_seed=%s\n' "${MAIL_SEED:-copied}" ;;
     *"remote-deploy.sh' '"*)
         [ "${REMOTE_RC:-0}" = 0 ] || exit "$REMOTE_RC"
         # The version this run asked for, read back off the command line: a
@@ -994,6 +1004,136 @@ out="$( REPORT_PREV=1.0.0 rollback deploy@vps 1.0.0 )"; rc=$?
 assert '[ "$rc" = "0" ]' "rolling back to the version already running succeeds (rc $rc: $out)"
 assert 'grep -qF "was already running 1.0.0" <<<"$out"' \
     "and says there was nothing to give up (said '$out')"
+rm -rf "$project/.kasbah"
+
+# --- The mail claim, on the rollback path ---------------------------------------------
+# `rollback` calls _deploy_read_mail and _deploy_mail_claim exactly as `deploy`
+# does, and the manifest it reads them out of is **v<target>'s**, not HEAD's. A
+# tag whose manifest claims mail is the only way to see that.
+(
+    cd "$project" || exit 1
+    write_v1
+    cat >> kasbah.yml <<'YML'
+mail:
+  domain: shop.demo.test
+YML
+    git add -A >/dev/null
+    git commit -qm 'v6: a manifest that claims mail'
+    git tag v6.0.0
+) || { echo "  FAIL: could not tag v6.0.0" >&2; fail=1; }
+
+# 6.0.0 has to be in the server's record: a rollback only ever goes to a version
+# that server has run.
+log_mail=$'2026-08-01T00:00:00+00:00 deploy 6.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-02T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n'
+
+registry_with=$(printf 'name: mail\nprimary_domain: demo.test\ndomains:\n  - demo.test\n  - shop.demo.test\n' | openssl base64 -A)
+registry_without=$(printf 'name: mail\nprimary_domain: demo.test\ndomains:\n  - demo.test\n' | openssl base64 -A)
+
+out="$( MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_with" \
+        FAKE_ACTIVE="$log_mail" rollback deploy@vps 6.0.0 )"; rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ]' "a rollback to a version that claims mail succeeds (rc $rc: $out)"
+assert 'grep -qF "'"'"'/apps/mail'"'"' '"'"'/apps/data'"'"' '"'"'shop.demo.test'"'"'" <<<"$calls"' \
+    "and the claim step ran with the domain from the target tag ($(grep -F "/apps/mail" <<<"$calls"))"
+assert 'grep -qF "shop.demo.test is served by the stack" <<<"$out"' \
+    "reconciled against the registry (said '$out')"
+rm -rf "$project/.kasbah"
+
+out="$( MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_without" \
+        FAKE_ACTIVE="$log_mail" rollback deploy@vps 6.0.0 )"; rc=$?
+assert '[ "$rc" = "0" ]' "an unmet claim does not stop a rollback either (rc $rc: $out)"
+assert 'grep -qF "does not serve it" <<<"$out"' "and warns (said '$out')"
+rm -rf "$project/.kasbah"
+
+# --- The pre-seed comes out of the tag, not out of the working tree ------------------
+# Everything else a rollback reads is v<target>'s: the manifest, the compose
+# file, the sync list, the fragment. snappymail_domain: is the one path that
+# reaches lib/deploy.sh as a *file to open*, and the claim step runs with the
+# working directory back at the project root — so without the extraction this
+# ships today's bytes for a version that declared different ones.
+(
+    cd "$project" || exit 1
+    write_v1
+    mkdir -p mail
+    printf 'FROM-THE-TAG\n' > mail/seed.json
+    cat >> kasbah.yml <<'YML'
+mail:
+  domain: shop.demo.test
+  snappymail_domain: ./mail/seed.json
+YML
+    git add -A >/dev/null
+    git commit -qm 'v11: a manifest that claims mail and names a pre-seed'
+    git tag v11.0.0
+    # The working tree moves on. Copy-if-missing means the wrong bytes here are
+    # the ones that would stay on the server.
+    printf 'FROM-THE-WORKING-TREE\n' > mail/seed.json
+) || { echo "  FAIL: could not tag v11.0.0" >&2; fail=1; }
+
+log_seed=$'2026-08-01T00:00:00+00:00 deploy 11.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-02T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n'
+tag_b64=$(printf 'FROM-THE-TAG\n' | openssl base64 -A)
+tree_b64=$(printf 'FROM-THE-WORKING-TREE\n' | openssl base64 -A)
+
+out="$( MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_with" \
+        FAKE_ACTIVE="$log_seed" rollback deploy@vps 11.0.0 )"; rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ]' "a rollback to a version naming a pre-seed succeeds (rc $rc: $out)"
+assert 'grep -qF "$tag_b64" <<<"$calls"' \
+    "and the bytes that travel are the tag's ($(grep -F "mail-snappymail" <<<"$calls"))"
+assert '! grep -qF "$tree_b64" <<<"$calls"' \
+    "not the working tree's — which is what a rollback exists to avoid"
+assert '! grep -qF "there is no such file in this checkout" <<<"$out"' \
+    "and nothing is looked for in the checkout at all (said '$out')"
+rm -rf "$project/.kasbah"
+
+# The same rollback with the file gone from the working tree entirely. Before
+# the extraction this reported the version's own pre-seed as missing.
+mv "$project/mail/seed.json" "$tmpdir/seed.json.aside"
+out="$( MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_with" \
+        FAKE_ACTIVE="$log_seed" rollback deploy@vps 11.0.0 )"; rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ]' "a working tree with no copy of the file rolls back fine (rc $rc: $out)"
+assert 'grep -qF "$tag_b64" <<<"$calls"' "the tag's bytes still travel"
+assert '! grep -qF "there is no such file in this checkout" <<<"$out"' \
+    "and no warning about a checkout this run never reads (said '$out')"
+mv "$tmpdir/seed.json.aside" "$project/mail/seed.json"
+rm -rf "$project/.kasbah"
+
+# A version that names a pre-seed it does not carry. A warning naming the ref —
+# never the checkout — and no seed step at all.
+(
+    cd "$project" || exit 1
+    write_v1
+    cat >> kasbah.yml <<'YML'
+mail:
+  domain: shop.demo.test
+  snappymail_domain: ./mail/never-committed.json
+YML
+    git add -A >/dev/null
+    git commit -qm 'v12: names a pre-seed the tag does not carry'
+    git tag v12.0.0
+) || { echo "  FAIL: could not tag v12.0.0" >&2; fail=1; }
+log_noseed=$'2026-08-01T00:00:00+00:00 deploy 12.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-02T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n'
+printf 'FROM-THE-WORKING-TREE\n' > "$project/mail/never-committed.json"
+out="$( MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_with" \
+        FAKE_ACTIVE="$log_noseed" rollback deploy@vps 12.0.0 )"; rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ]' "a version naming a pre-seed it does not carry still rolls back (rc $rc: $out)"
+assert 'grep -qF "v12.0.0 does not carry that file" <<<"$out"' \
+    "saying so against the ref (said '$out')"
+assert '! grep -qF "mail-snappymail" <<<"$calls"' \
+    "and no seed step runs ($(grep -F "/apps/mail" <<<"$calls"))"
+assert '! grep -qF "$tree_b64" <<<"$calls"' \
+    "least of all with the untracked file sitting right there in the tree"
+rm -f "$project/mail/never-committed.json"
+rm -rf "$project/.kasbah"
+
+# The control: v1.0.0's manifest has no mail: block, so rolling back to it looks
+# for no mail stack at all.
+out="$( MAIL_STACK=yes MAIL_ENV=yes rollback deploy@vps 1.0.0 )"; rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ]' "a rollback to a version with no mail: block succeeds (rc $rc: $out)"
+assert '! grep -qF "/apps/mail" <<<"$calls"' \
+    "and never looks for a mail stack ($(grep -F "/mail" <<<"$calls"))"
 rm -rf "$project/.kasbah"
 
 exit "$fail"

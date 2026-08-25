@@ -17,8 +17,9 @@ Runs structural checks against the current project. Exit 0 if no failures
 (warnings are informational). See docs/compliance.md for the full rule set.
 
 Implemented: Structure (S01–S07), Compose (C01–C05, C07–C09), Resources (R01–R03),
-Traefik (T01–T08), Healthchecks (H01–H02), Env (E01–E05), Hooks (HK01–HK03).
-Mail (M*), R04, and the --fix / --server modes are not yet wired in.
+Traefik (T01–T08), Healthchecks (H01–H02), Env (E01–E05), Hooks (HK01–HK03),
+Mail (M01–M02). M03 needs the server, and R04 and the --fix / --server modes
+are not yet wired in.
 EOF
 }
 
@@ -110,6 +111,7 @@ cmd_check() {
     _check_healthcheck_section "$services"
     _check_env_section
     _check_hooks_section "$services"
+    _check_mail_section
 
     echo
     printf 'Summary: %d passed, %d warning, %d failed\n' \
@@ -979,6 +981,77 @@ _check_hk03_backup_container() {
     else
         _check_fail "Backup hook container '$c' not found among compose container_names"
     fi
+}
+
+# Mail rules (M01–M02), and only when the manifest has a `mail:` block: a
+# project that claims nothing is not asked about mail (docs/compliance.md).
+#
+# Both are **local**. M03 — "the mail stack on the VPS knows this domain" — is a
+# `--server` rule and is not here; `kasbah deploy` asks the registry that
+# question on every deploy and warns, because an unmet claim costs mail, not
+# the site (docs/mail.md → Per-app mail claims).
+_check_mail_section() {
+    _manifest_has_block ".mail" || return 0
+
+    echo
+    echo "Mail:"
+
+    # Shape before contents. `.mail.domain` against a `mail: example.com` is a
+    # jq type error, and what reaches the operator would then be kasbah's
+    # internal filter rather than the mistake in their manifest — the same order
+    # lib/deploy.sh reads the block in.
+    local kind
+    kind="$(yq -r '.mail | type' "$KASBAH_MANIFEST_FILE" 2>/dev/null || true)"
+    kind="${kind%$'\r'}"
+    if [ "$kind" != object ]; then
+        _check_fail "mail: has type '${kind:-unknown}' — it has to be a block with a domain: under it"
+        return 0
+    fi
+
+    _check_m01_domain
+    _check_m02_snappymail
+    return 0
+}
+
+# M01: the claim is the domain. A `mail:` block without one asks the VPS for
+# nothing, and deploy refuses it outright — this is where that is a named rule
+# with a line number rather than a stopped deploy.
+_check_m01_domain() {
+    local d
+    d="$(yq -r '.mail.domain // ""' "$KASBAH_MANIFEST_FILE" 2>/dev/null || true)"
+    d="${d%$'\r'}"
+    if [ -z "$d" ] || [ "$d" = null ]; then
+        _check_fail "mail: has no domain: (the claim is that the VPS mail stack handles that domain)"
+        return 0
+    fi
+    _check_pass "Mail claim names domain '$d'"
+    return 0
+}
+
+# M02: the SnappyMail pre-seed, when one is named. Deploy copies that file into
+# the container **if the target is not already there** — copy-if-missing, never
+# overwritten — so a file that is missing or not JSON becomes the version
+# SnappyMail keeps. Failing here is the only place that is cheap to fix.
+_check_m02_snappymail() {
+    local f
+    f="$(yq -r '.mail.snappymail_domain // ""' "$KASBAH_MANIFEST_FILE" 2>/dev/null || true)"
+    f="${f%$'\r'}"
+    [ -n "$f" ] && [ "$f" != null ] || return 0
+
+    if [ ! -f "$f" ]; then
+        _check_fail "mail: snappymail_domain '$f' is not a file in this project"
+        return 0
+    fi
+    # jq rather than yq, and that is the rule as written: JSON is a subset of
+    # YAML, so `{host: mail.example.com}` — no quotes, not JSON — parses fine as
+    # YAML and would pass a yq check while SnappyMail rejects it. jq is present
+    # wherever yq is: the kislyuk wrapper this project uses shells out to it.
+    if ! jq -e . "$f" >/dev/null 2>&1; then
+        _check_fail "mail: snappymail_domain '$f' is not valid JSON"
+        return 0
+    fi
+    _check_pass "Mail pre-seed '$f' exists and parses"
+    return 0
 }
 
 # ----------------------------------------------------------------------------

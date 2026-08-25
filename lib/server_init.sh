@@ -1402,21 +1402,6 @@ REMOTE
     return 0
 }
 
-# One keyed lookup against a YAML document held in a variable. Exit 2 means the
-# document did not parse, which every caller keeps distinct from "the key is not
-# there": kasbah reuses what is on the server rather than regenerating it, and
-# a file it cannot read is a file it cannot reuse from.
-_si_yaml_get() {
-    local _yg_content="$1" _yg_filter="$2" _yg_out="$3" _yg_val=""
-
-    printf -v "$_yg_out" '%s' ""
-    [ -n "$_yg_content" ] || return 0
-    _yg_val=$(printf '%s' "$_yg_content" | yq -r "$_yg_filter" 2>/dev/null) || return 2
-    case $_yg_val in null) _yg_val="" ;; esac
-    printf -v "$_yg_out" '%s' "${_yg_val%$'\r'}"
-    return 0
-}
-
 # The dashboard's own basic-auth entry. bcrypt salts randomly, so hashing the
 # same password twice gives different bytes: without reuse, every re-run would
 # rewrite the file and "a second run changes nothing" would be unsatisfiable.
@@ -1431,9 +1416,9 @@ _si_extract_auth() {
     local _xa_content="$1" _xa_out="$2" _xa_entry="" _xa_count="" _xa_rc=0
     local _xa_users='(.http.middlewares["traefik-dashboard-auth"].basicAuth.users // [])'
 
-    _si_yaml_get "$_xa_content" "$_xa_users | length"    _xa_count || _xa_rc=$?
+    yaml_get "$_xa_content" "$_xa_users | length"    _xa_count || _xa_rc=$?
     [ "$_xa_rc" -eq 0 ] || return "$_xa_rc"
-    _si_yaml_get "$_xa_content" "$_xa_users | .[0] // \"\"" _xa_entry || _xa_rc=$?
+    yaml_get "$_xa_content" "$_xa_users | .[0] // \"\"" _xa_entry || _xa_rc=$?
     [ "$_xa_rc" -eq 0 ] || return "$_xa_rc"
 
     printf -v "$_xa_out" '%s' ""
@@ -1463,7 +1448,7 @@ _si_extract_domain() {
     local _xd_content="$1" _xd_out="$2" _xd_rule="" _xd_rc=0
     local _xd_re='^Host\(`traefik\.([^`]+)`\)$'
 
-    _si_yaml_get "$_xd_content" '.http.routers["traefik-dashboard"].rule // ""' _xd_rule \
+    yaml_get "$_xd_content" '.http.routers["traefik-dashboard"].rule // ""' _xd_rule \
         || _xd_rc=$?
     [ "$_xd_rc" -eq 0 ] || return "$_xd_rc"
 
@@ -1476,7 +1461,7 @@ _si_extract_domain() {
 
 _si_extract_email() {
     local _xe_content="$1" _xe_out="$2"
-    _si_yaml_get "$_xe_content" \
+    yaml_get "$_xe_content" \
         '.certificatesResolvers.letsencrypt.acme.email // ""' "$_xe_out"
 }
 
@@ -1487,7 +1472,7 @@ _si_extract_email() {
 # every run, and this is read only to be compared against it.
 _si_extract_ca() {
     local _xc_content="$1" _xc_out="$2"
-    _si_yaml_get "$_xc_content" \
+    yaml_get "$_xc_content" \
         '.certificatesResolvers.letsencrypt.acme.caServer // ""' "$_xc_out"
 }
 
@@ -2275,7 +2260,7 @@ _server_init_mail_registry() {
     local rc=0
     local registry="${_SI_MAIL_CURRENT[kasbah.yml]}"
 
-    _si_yaml_get "$registry" '.primary_domain // ""' stored_primary || rc=$?
+    yaml_get "$registry" '.primary_domain // ""' stored_primary || rc=$?
     if [ "$rc" -ne 0 ]; then
         err "$_SI_APPS_PATH/mail/kasbah.yml on $_SI_TARGET could not be read as YAML"
         err_cont "that file is the mail stack's registry — the one thing that says which"
@@ -2300,11 +2285,11 @@ _server_init_mail_registry() {
     # Read one at a time rather than as a block, so a domain carrying a newline
     # cannot smuggle a second list entry into the rendered file.
     _SI_MAIL_DOMAINS=()
-    _si_yaml_get "$registry" '(.domains // []) | length' stored_count || rc=$?
+    yaml_get "$registry" '(.domains // []) | length' stored_count || rc=$?
     [ "$rc" -eq 0 ] || die "internal: the mail registry parsed once and not twice"
     case $stored_count in ''|*[!0-9]*) stored_count=0 ;; esac
     while [ "$i" -lt "$stored_count" ]; do
-        _si_yaml_get "$registry" "(.domains // [])[$i] // \"\"" stored_domain || rc=$?
+        yaml_get "$registry" "(.domains // [])[$i] // \"\"" stored_domain || rc=$?
         [ "$rc" -eq 0 ] || die "internal: the mail registry parsed once and not twice"
         i=$((i + 1))
         [ -n "$stored_domain" ] || continue
@@ -2762,8 +2747,9 @@ _server_init_report_mail() {
     info "        routers: mail.$_SI_MAIL_PRIMARY (cert-trigger, no backend), https://webmail.$_SI_MAIL_PRIMARY"
     info "        .env ${_SI_FACT[mail_env]}, postmaster ${_SI_FACT[mail_account]}, dkim override ${_SI_FACT[mail_dkim_seed]}"
     info "        snappymail ${_SI_FACT[mail_snappymail_health]}, dms ${_SI_FACT[mail_dms_state]} (${_SI_FACT[mail_dms_health]}, ${_SI_FACT[mail_dms_restarts]} restarts)"
+    info "        setup guide: kasbah server mail-setup-guide $_SI_TARGET"
 
-    [ "${_SI_FACT[mail_dms_health]}" != healthy ] || return 0
+    [ "${_SI_FACT[mail_dms_health]}" != healthy ] || { _server_init_mail_guide; return 0; }
 
     # Two different things look the same at this instant, and the warning has to
     # be true of both. A container that was just created or recreated is inside
@@ -2782,6 +2768,33 @@ _server_init_report_mail() {
     warn "  to this host from the public internet. Check in a minute:"
     warn "  ssh $_SI_TARGET 'docker inspect -f \"{{.State.Health.Status}}\" mail-dms'"
     warn "  ssh $_SI_TARGET 'docker logs --tail 40 mail-dms'"
+    _server_init_mail_guide
+    return 0
+}
+
+# The walkthrough, printed once: on the run that created the stack, and never
+# again (docs/mail.md). `mail_dir` is read before anything is created, so
+# `absent` there is exactly "this run is the one that made it" — and a re-run
+# gets the one-line pointer above instead, because an operator re-running init
+# is not looking for a 150-line guide.
+#
+# server_mail.sh is sourced here rather than at the top of this file: it sources
+# *this* one for the template renderer, and a load guard only makes that safe
+# once every function in here is defined.
+_server_init_mail_guide() {
+    [ "${_SI_FACT[mail_dir]:-}" = absent ] || return 0
+
+    . "$KASBAH_LIB_DIR/server_mail.sh"
+    _SM_TARGET="$_SI_TARGET"
+    _SM_APPS_PATH="$_SI_APPS_PATH"
+    _SM_DATA_PATH="$_SI_DATA_PATH"
+    _SM_PRIMARY="$_SI_MAIL_PRIMARY"
+    _SM_DOMAINS=("${_SI_MAIL_DOMAINS[@]}")
+    # Init never asks the server for its own address, so the guide renders the
+    # placeholder here and the standalone command fills it in.
+    _SM_HOST_ADDR=""
+    printf '\n'
+    _sm_guide_print
     return 0
 }
 

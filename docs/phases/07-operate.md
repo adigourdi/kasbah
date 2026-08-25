@@ -816,3 +816,98 @@ consistency rather than by separate argument.
 shows deploy **hard-failing** a mail claim with an `ERROR:` message; the code
 warns and continues, and `docs/project-manifest.md` says so. 7.1b owns the claim
 reconciliation, which is where that text either becomes true or gets rewritten.
+
+**The rig's cgroup limitation is known, handled, and not worth re-diagnosing.**
+The nested cgroup v2 tree runs in threaded mode and the rig's delegated
+controllers are `[cpuset cpu pids]` — **no `memory`** — so a container asking
+for a real `--memory` or `--cpus` limit fails with `cannot enter cgroupv2
+"/sys/fs/cgroup/docker" with domain controllers`. The integration suites
+already detect this and print `note: this rig cannot apply cgroup limits`,
+setting the marker's limits to 0/0, which Docker reads as no limit. The outer
+Docker on the workstation is unaffected.
+
+Half an hour went into re-deriving that during 7.1b because a hand-driven
+deploy hit it and the suites never do. Things that do **not** fix it, all tried:
+restarting the containers, restarting the rig container, and removing and
+recreating the rig container (the named volume `kasbah-rig_docker-data` survives
+that, so the image cache is at least preserved). It is a property of nested
+cgroup v2 delegation on this host, not rig state. **A hand-driven rig deploy
+therefore cannot use real resource limits** — that is the one operator check the
+rig cannot carry, and the real host is where it is observed instead.
+
+**The verification regime's stated risk arrived inside one task.** 7.1b ran only
+its own suites, as the amended regime tells it to, and left
+`tests/integration/deploy_ship_test.sh:670` asserting the message of the stub it
+had just replaced. Nothing in its own suites could see it. This is exactly the
+cross-suite staleness the regime trades away, and it argues for one cheap habit
+rather than reverting the trade: **when a change alters an operator-visible
+message, grep the whole `tests/` tree for that message before reporting** — the
+sweep costs one command, where the full rig suite costs nineteen minutes.
+
+### 7.1b — everything that talks to the mail stack
+
+`add-mail-domain`, `mail-setup-guide`, the deploy-time claim reconciliation that
+replaced the Phase 4 stub, and `M01`/`M02`. Four things worth keeping.
+
+**A 247-line byte-identical duplicate sat in `lib/deploy.sh` and every suite
+passed over it.** Eight functions had two definitions; the file had grown from
+1019 lines to 1477. Bash takes the last definition, the copies agreed, so
+nothing misbehaved — and **every line of the first copy was unreachable**, so any
+later edit there would have been silently dead. `bash -n` cannot see this class.
+The proof that it mattered: a reviewer injected `die "POISON"` into the *first*
+`_deploy_sync_fragment` and got `deploy_test` **rc=0, 0 FAILs, POISON never
+printed**. After the deletion the same probe fires 51 times and rc=1. This is the
+second duplicate-definition accident in one task — the implementer caught its own
+smaller one (`_deploy_mail_claim`) when 35 assertions failed at once.
+
+**The sweep that catches it, and the naive version that cries wolf.**
+`grep -oE '^[a-z_]+\(\)' | sort | uniq -d` reports `dc()`, `emit()` and `fail()`
+in `lib/server_init.sh` — all false, because they live inside separate
+`<<'REMOTE'` heredocs: different shell programs, one namespace each. A sweep that
+false-positives on six remote payloads is one nobody keeps running. The
+heredoc-aware form:
+
+    awk '/<<.REMOTE./{r=1} /^REMOTE$/{r=0} r==0 && /^[a-z_]+\(\)/{print $1}' "$f" \
+      | sort | uniq -d
+
+**`rollback` shipped the working tree's SnappyMail pre-seed, not the target
+version's.** `_deploy_read_mail` reads the *extracted tag's* manifest — rollback
+repoints `KASBAH_MANIFEST_FILE` into the extract — so the declared path was the
+tag's; but `_deploy_mail_claim` runs outside `_rollback_in_extract`, with the
+working directory back at the checkout, so both the existence test and the
+base64 read resolved against today's tree. A rollback to a version that shipped
+a pre-seed warned that it had not, and when it did seed, it seeded current bytes.
+The same file already solved this for the Traefik fragment; the mail seed simply
+missed the precedent. Copy-if-missing kept it latent, which is exactly why it
+needed a test — when it bites, the wrong bytes are the ones that stay. Mutation:
+removing the fix costs **7 FAILs**, and the diagnostic is the bug naming itself
+(`RlJPTS1USEUtV09SS0lORy1UUkVF` decodes to `FROM-THE-WORKING-TREE`).
+
+**A tri-state with one consumer, resolved by deleting the producer rather than
+testing it.** `mail_aliases` reported `absent|notfile|unreadable|present` and only
+`present` was ever distinguished; collapsing the remote to two states scored
+**0 FAILs**. The fix went past collapsing: once it is `present|absent` it is a
+second copy of a fact the payload bytes already carry, since "no alias seen"
+falls out of scanning them. The producer is gone; the distinction stayed where it
+belongs, in the write step, which is the only place holding both a file
+descriptor and a verdict. The two neighbouring facts got *readers* instead —
+a registry with no `.env` beside it is an unfinished init and the stack cannot
+start, and the write step's `registry` key is now judged rather than merely
+demanded.
+
+**`postfix-aliases.cf` does not exist in docker-mailserver 15.1.0** — the alias
+database is `postfix-virtual.cf`, and this brief and `docs/mail.md` both had it
+wrong. It is load-bearing rather than cosmetic: DMS builds `/etc/postfix/vhost`
+— `main.cf`'s `virtual_mailbox_domains` — from `postfix-accounts.cf` plus
+`postfix-virtual.cf`, taking the domain of every account and of every alias
+carrying an `@` (`helpers/postfix.sh` → `_vhost_collect_postfix_domains`), so a
+registry entry without the alias is a domain Postfix refuses mail for. Verified
+in the image *and* against the real host, whose `vhost` holds exactly the one
+domain it serves.
+
+**A process note, third instance of one cause.** A suite is evidence only when
+nothing else is writing. It has now bitten this phase three ways: a false green
+from a mis-expanded `$?`, a dead agent's orphaned runs still driving the rig,
+and the orchestrator launching suites in the same turn it resumed an implementer
+that was mid-edit in the file under test. **Never start a verification run in the
+same turn as a spawn or a resume.**

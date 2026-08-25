@@ -284,12 +284,19 @@ Declares the project uses the VPS mail stack. **The block is a mapping and
 since a claim naming no domain claims nothing.
 
 - `domain` — the domain the project expects the mail stack to handle. At
-  deploy, kasbah checks a mail stack exists on the server and **warns and
-  continues** when it does not. Checking that this particular domain is
-  listed in `/apps/mail/kasbah.yml` — the stack's registry — is not
-  implemented yet; the stack itself is (`kasbah server init --with-mail`).
-- `snappymail_domain` — optional JSON file to seed SnappyMail's domain config.
-  **Not yet copied by anything**; it is read by no code today.
+  deploy, kasbah checks that a mail stack exists on the server, that
+  `/apps/mail/kasbah.yml` — the stack's registry — lists this domain, and that
+  DMS is running. Every one of those **warns and continues**: an unmet mail
+  claim costs mail, not the site. `kasbah server add-mail-domain USER@HOST
+  <domain>` is what makes it met. `kasbah check`'s **M01** is the local half —
+  a `mail:` block with no `domain` fails there and is refused at deploy.
+- `snappymail_domain` — optional JSON file to seed SnappyMail's domain config,
+  copied on deploy to
+  `<data>/mail/snappymail/_data_/_default_/domains/<domain>.json` **if the
+  domain check above passed and it is not already there** — copy-if-missing, never over one SnappyMail has since
+  edited, and through `docker cp`, because that directory belongs to the
+  container's uid at mode 750. `kasbah check`'s **M02** fails when the named
+  file is missing or is not valid JSON: what lands is what stays.
 
 No `accounts` field — mailboxes are created/removed out-of-band with:
 

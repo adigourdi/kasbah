@@ -137,7 +137,9 @@ case "$mode" in
     report)
         # The summary line and the one warning an operator acts on. $1 is DMS's
         # state, $2 its health, $3 its restart count — the three facts the start
-        # step brings back and the only ones that decide what is said.
+        # step brings back and the only ones that decide what is said. $4 is the
+        # mail directory's state *before* this run created anything, which is
+        # what decides whether the setup guide is printed.
         _SI_MAIL_ENABLED=yes
         _SI_TARGET=deploy@vps; _SI_APPS_PATH=/apps; _SI_DATA_PATH=/apps/data
         _SI_MAIL_PRIMARY=example.com; _SI_MAIL_DOMAINS=(example.com)
@@ -147,6 +149,7 @@ case "$mode" in
             [mail_env]=created [mail_account]=seeded [mail_dkim_seed]=seeded
             [mail_snappymail_health]=healthy
             [mail_dms_state]="$1" [mail_dms_health]="$2" [mail_dms_restarts]="$3"
+            [mail_dir]="${4:-dir}"
         )
         _server_init_report_mail
         printf 'reported=ok\n'
@@ -625,6 +628,28 @@ assert 'grep -qF "7 restarts so far" <<<"$err_out"' \
     "a crashlooping DMS reports its restarts (said '$err_out')"
 assert 'grep -qF "dms restarting (starting, 7 restarts)" <<<"$err_out"' \
     "on the summary line too (said '$err_out')"
+
+# --- The setup guide, printed once --------------------------------------------
+# docs/mail.md: the walkthrough is shown after the run that *creates* the stack,
+# and on demand afterwards. `mail_dir` is read before anything is created, so
+# `absent` there is exactly "this run made it". The guide is stdout, the summary
+# is stderr, and they are asserted apart.
+out=$(drive report running healthy 0 absent); rc=$?
+err_out=$(drive_err)
+assert '[ "$rc" = "0" ]' "a first run reports and prints the guide (exit $rc: $err_out)"
+assert 'grep -qF "Mail setup — deploy@vps" <<<"$out"' "the guide is printed (said '$out')"
+assert 'grep -qF "Primary domain: example.com" <<<"$out"' \
+    "rendered for this run'\''s registry (said '$out')"
+assert 'grep -qF "Reverse DNS (PTR)" <<<"$out"' "carrying the prerequisites (said '$out')"
+assert 'grep -qF "<VPS IP>" <<<"$out"' \
+    "with a placeholder address — init never asks the server for its own (said '$out')"
+
+# The re-run. A one-line pointer, and not 150 lines an operator has read once.
+out=$(drive report running healthy 0 dir); err_out=$(drive_err)
+assert '! grep -qF "Mail setup — deploy@vps" <<<"$out"' \
+    "a re-run does not print the guide again (said '$out')"
+assert 'grep -qF "kasbah server mail-setup-guide deploy@vps" <<<"$err_out"' \
+    "and points at the command that does (said '$err_out')"
 
 # --- Every step is a no-op with mail off --------------------------------------
 # The stubs fail if reached, so this is about the guards and not about a summary

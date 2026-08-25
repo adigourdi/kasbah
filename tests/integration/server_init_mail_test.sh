@@ -550,6 +550,72 @@ assert '[ "$(rig_ssh "[ -f $frag ] && echo yes || echo no" 2>/dev/null | tr -d "
 assert '! grep -qF "mail:" "$tmpdir/err"' \
     "and says nothing about mail, because it did nothing to it (said '$(init_err)')"
 
+# --- add-mail-domain and mail-setup-guide, against the running stack ----------
+# 7.1b's two commands, driven where the registry they read is a real file on a
+# real server and the alias they append is one docker-mailserver is watching.
+# The stack is up from the runs above, and --no-mail left it that way.
+add_domain() { kasbah_cli server add-mail-domain "$RIG_TARGET" "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; }
+guide() { kasbah_cli server mail-setup-guide "$RIG_TARGET" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; }
+extra_domain="shop.$rig_domain"
+aliases="$mail_data/dms/config/postfix-virtual.cf"
+
+# Read off the server rather than written down here: the cases above moved the
+# primary and moved it back, and `server init` prepends a primary without ever
+# removing the old one — so what is in domains: at this point is a fact about
+# this run, and the assertion is that the new domain is *appended* to it.
+domains_before=$(yq -r '.domains | join(" ")' <<<"$(rig_ssh "cat $mail_dir/kasbah.yml" 2>/dev/null)")
+add_domain "$extra_domain"; rc=$?
+assert '[ "$rc" = "0" ]' "add-mail-domain adds a domain (exit $rc: $(init_err))"
+registry_after=$(rig_ssh "cat $mail_dir/kasbah.yml" 2>/dev/null)
+domains_after=$(yq -r '.domains | join(" ")' <<<"$registry_after")
+assert '[ "$domains_after" = "$domains_before $extra_domain" ]' \
+    "and the registry on the server gains it and keeps everything it had (was '$domains_before', is '$domains_after')"
+assert '[ "$(yq -r ".primary_domain" <<<"$registry_after")" = "$rig_domain" ]' \
+    "with the primary untouched — the MX target and both certificates hang off it"
+aliases_after=$(rig_ssh "cat $aliases" 2>/dev/null | tr -d '\r')
+assert 'grep -qxF "postmaster@$extra_domain postmaster@$rig_domain" <<<"$aliases_after"' \
+    "and postfix-virtual.cf carries the alias that makes Postfix accept the domain (got '$aliases_after')"
+# The fragment is the primary's and nobody else's: an app domain needs an MX
+# record, not a router (docs/mail.md → Multi-domain).
+frag_after=$(rig_ssh "cat $frag" 2>/dev/null)
+assert '! grep -qF "$extra_domain" <<<"$frag_after"' \
+    "and the Traefik fragment is untouched (got '$frag_after')"
+
+# Twice. A no-op that says so, and the file is byte-identical afterwards —
+# "nothing to do" has to mean nothing was done.
+digest_before=$(rig_ssh "cat $mail_dir/kasbah.yml $aliases | md5sum" 2>/dev/null | tr -d '\r')
+add_domain "$extra_domain"; rc=$?
+digest_after=$(rig_ssh "cat $mail_dir/kasbah.yml $aliases | md5sum" 2>/dev/null | tr -d '\r')
+assert '[ "$rc" = "0" ]' "adding the same domain again is not an error (exit $rc: $(init_err))"
+assert 'grep -qF "already served" "$tmpdir/err"' "and says so (said '$(init_err)')"
+assert '[ "$digest_before" = "$digest_after" ]' \
+    "with neither file touched ($digest_before vs $digest_after)"
+
+# And a re-run of init reproduces the registry add-mail-domain wrote, byte for
+# byte: two writers of one file that disagreed would lose the added domain on
+# the next init.
+init --with-mail --no-backup; rc=$?
+registry_reinit=$(rig_ssh "cat $mail_dir/kasbah.yml" 2>/dev/null)
+assert '[ "$rc" = "0" ]' "init re-runs against the extended registry (exit $rc: $(init_err))"
+assert '[ "$registry_reinit" = "$registry_after" ]' \
+    "and reproduces it unchanged — one template, one shape"
+
+guide; rc=$?
+guide_out=$(cat "$tmpdir/out")
+assert '[ "$rc" = "0" ]' "mail-setup-guide prints (exit $rc: $(init_err))"
+assert 'grep -qF "Domains served: $domains_after" <<<"$guide_out"' \
+    "rendered for this server's registry, every domain in it (said '$(head -8 <<<"$guide_out")')"
+assert 'grep -qF "$extra_domain.                    IN MX    10 mail.$rig_domain." <<<"$guide_out"' \
+    "with an MX for the added domain pointing at the primary's hostname"
+assert 'grep -qF "Reverse DNS (PTR)" <<<"$guide_out"' "and the PTR prerequisite"
+assert 'grep -qF "Port 25 **outbound**" <<<"$guide_out"' "and the port 25 one"
+# Read-only: the whole mail directory is unchanged across the run.
+digest_before=$(rig_ssh "find $mail_dir -type f | sort | xargs md5sum | md5sum" 2>/dev/null | tr -d '\r')
+guide >/dev/null 2>&1
+digest_after=$(rig_ssh "find $mail_dir -type f | sort | xargs md5sum | md5sum" 2>/dev/null | tr -d '\r')
+assert '[ "$digest_before" = "$digest_after" ]' \
+    "and changed nothing on the server ($digest_before vs $digest_after)"
+
 if [ "$fail" -eq 0 ]; then
     rig_clean >/dev/null 2>&1 || true
 fi

@@ -63,6 +63,13 @@ _DEPLOY_MARKER=""
 _DEPLOY_ON_DRIFT=""
 # The manifest's mail claim, or empty when it has none (docs/project-manifest.md).
 _DEPLOY_MAIL_DOMAIN=""
+# The `snappymail_domain:` path from the same block, relative to the project
+# root, or empty. Pre-seed, not configuration: it is copied only when the
+# target is not already there.
+_DEPLOY_MAIL_SNAPPY=""
+# <apps>/mail/kasbah.yml as it came back off the server — the registry, and the
+# only thing asked whether the stack serves the claimed domain (docs/mail.md).
+_DEPLOY_MAIL_REGISTRY=""
 # The three switches the shipped script takes. Plain opt-in flags rather than
 # tri-state pairs: each one turns a step of the remote run off, and "unset" has
 # one obvious meaning — run everything (docs/cli.md → kasbah deploy).
@@ -414,6 +421,7 @@ _deploy_read_mail() {
     local raw kind
 
     _DEPLOY_MAIL_DOMAIN=""
+    _DEPLOY_MAIL_SNAPPY=""
     raw="$(manifest_get '.mail // null')"
     [ "$raw" != null ] && [ -n "$raw" ] || return 0
 
@@ -432,6 +440,17 @@ _deploy_read_mail() {
     [ -n "$raw" ] \
         || die "kasbah.yml: mail: has no domain: — the claim is that the VPS mail stack handles that domain, and there is nothing else in the block for kasbah to check (docs/project-manifest.md)"
     _DEPLOY_MAIL_DOMAIN="$raw"
+
+    # The optional pre-seed. Read here with the domain because it is part of the
+    # same claim, and checked for existence rather than assumed: `kasbah check`'s
+    # M02 fails on a missing or unparseable one, and a deploy that skips the
+    # check would ship an empty file into SnappyMail's data tree — which is
+    # copy-if-missing, so it would be the version that stays.
+    raw="$(manifest_get '.mail.snappymail_domain // ""')"
+    raw="${raw%$'\r'}"
+    [ "$raw" != null ] || raw=""
+    _deploy_trim "$raw" raw
+    _DEPLOY_MAIL_SNAPPY="$raw"
     return 0
 }
 
@@ -506,6 +525,17 @@ _deploy_absorb() {
         done
         exit 1
     fi
+    return 0
+}
+
+# base64 back into a variable, keeping trailing newlines: the `printf x`
+# sentinel is there because $(…) strips them, and a truncated payload must not
+# be fatal here — `local x=$(… | base64 -d)` under errexit would kill the run
+# before the caller could say what it could not read.
+_deploy_b64_into() {
+    local _bi_out="$2" _bi_dec
+    _bi_dec=$( { printf '%s' "$1" | base64 -d 2>/dev/null; printf x; } )
+    printf -v "$_bi_out" '%s' "${_bi_dec%x}"
     return 0
 }
 
@@ -746,37 +776,101 @@ _deploy_sync_fragment() {
     return 0
 }
 
-# Step 7, and a stub that looks: a project claiming `mail:` says it expects
-# `mail.<domain>` and SMTP to be there, and kasbah checks that the mail stack
-# knows the domain (docs/project-manifest.md → mail). The stack itself now
-# exists — `server init --with-mail` scaffolds it — but the registry that
-# answers "does it serve this domain?" is <apps>/mail/kasbah.yml, and reading it
-# needs a YAML parser the VPS does not have, so the reconciliation is its own
-# unit. Until then this reports what is on the server and warns either way. The
-# claim never stops a deploy: an unmet one costs mail, not the site.
+# Step 7: the mail claim, reconciled (docs/mail.md -> Per-app mail claims). A
+# project claiming `mail:` says it expects mail.<domain> and SMTP to be there,
+# and three things are checked — that the stack is up, that
+# <apps>/mail/kasbah.yml lists the domain, and, when the manifest names a
+# SnappyMail pre-seed, that the file is in the container or gets put there.
+#
+# The registry is read the way every reader of it reads it: base64 back and
+# parse with the workstation's yq. The VPS has no yq, jq or python3 and keeping
+# it that way is deliberate.
+#
+# Two round trips at most, and the second one only when there is a pre-seed to
+# copy *and* the claim it derives from was met. Whether the domain is served is
+# decided here, from bytes the first step brought back, so the copy cannot be
+# folded into it — and it must not be: writing SnappyMail a configuration for a
+# domain kasbah has just reported the stack does not serve is state written on a
+# premise this run knows to be false, and nothing in that directory afterwards
+# tells the two cases apart.
+#
+# **The claim never stops a deploy.** Every outcome here is a warning: an unmet
+# claim costs mail, not the site, and a site that will not deploy because
+# somebody has not published an MX record yet is a worse failure than the one
+# being reported.
 _deploy_mail_claim() {
     local dir="$_DEPLOY_APPS_PATH/mail"
-    local out rc=0
+    local out rc=0 seed_b64="" domains="" count="" d="" i=0 claim=unmet
 
     [ -n "$_DEPLOY_MAIL_DOMAIN" ] || return 0
 
-    out=$(ssh_script "$dir" <<'REMOTE'
+    # Read on this side, shipped as an argument: the file is in the checkout, so
+    # the far side has no way to fetch it. A claim naming a file that is not
+    # there is reported and the deploy goes on — `kasbah check`'s M02 is where
+    # that is a failure.
+    if [ -n "$_DEPLOY_MAIL_SNAPPY" ]; then
+        if [ ! -f "$_DEPLOY_MAIL_SNAPPY" ]; then
+            warn "kasbah.yml names snappymail_domain: $_DEPLOY_MAIL_SNAPPY, and there is no such file in this checkout"
+            warn "nothing is seeded — run kasbah check (M02); the $_DEPLOY_MODE continues"
+            _DEPLOY_MAIL_SNAPPY=""
+        else
+            seed_b64="$(openssl base64 -A -in "$_DEPLOY_MAIL_SNAPPY" 2>/dev/null)" || seed_b64=""
+            [ -n "$seed_b64" ] || {
+                warn "could not read $_DEPLOY_MAIL_SNAPPY — nothing is seeded; the $_DEPLOY_MODE continues"
+                _DEPLOY_MAIL_SNAPPY=""
+            }
+        fi
+    fi
+
+    out=$(ssh_script "$dir" "$_DEPLOY_DATA_PATH" "$_DEPLOY_MAIL_DOMAIN" <<'REMOTE'
 set -uo pipefail
 export LC_ALL=C
 dir=$1
+data=$2
+domain=$3
 
 if [ -d "$dir" ]; then printf 'mail_stack=yes\n'; else printf 'mail_stack=no\n'; fi
 if [ -f "$dir/.env" ]; then printf 'mail_env=yes\n'; else printf 'mail_env=no\n'; fi
+
+# The registry, as bytes. This output is a key=value protocol and a YAML file
+# sent raw would arrive as a dozen keys.
+enc=""
+if [ -f "$dir/kasbah.yml" ] && [ -r "$dir/kasbah.yml" ]; then
+    enc=$(openssl base64 -A -in "$dir/kasbah.yml" 2>/dev/null) || enc=""
+fi
+printf 'mail_registry_b64=%s\n' "$enc"
+
+# Container state, not health: a crashlooping DMS is `restarting`, and that is
+# the documented first-run state while Traefik finishes the certificate — a
+# different thing to say than "there is no container".
+state() {
+    local s=""
+    s=$(docker inspect -f '{{.State.Status}}' "$1" 2>/dev/null) || s=""
+    [ -n "$s" ] || s=absent
+    printf '%s' "$s"
+}
+if command -v docker >/dev/null 2>&1; then
+    printf 'mail_dms=%s\n' "$(state mail-dms)"
+    printf 'mail_snappymail=%s\n' "$(state mail-snappymail)"
+else
+    printf 'mail_dms=nodocker\n'
+    printf 'mail_snappymail=nodocker\n'
+fi
+# Read by nothing above: the data path is in the argument list because it is
+# where SnappyMail's bind mount lives, and the seed step names it in its own
+# diagnostics.
+: "$data" "$domain"
 exit 0
 REMOTE
     ) || rc=$?
 
     [ "$rc" -eq 0 ] \
         || die "could not look for the mail stack at $dir on $_DEPLOY_TARGET (the remote step exited $rc, see above)"
-    _deploy_absorb "the mail claim step" "$out" mail_stack mail_env
+    _deploy_absorb "the mail claim step" "$out" \
+        mail_stack mail_env mail_registry_b64 mail_dms mail_snappymail
 
-    # Three different things to say, because they are three different states of
-    # the server and only one of them is "kasbah has not caught up yet".
+    # Four different things to say, because they are four different states of
+    # the server, and only the last one is about the domain.
     if [ "${_DEPLOY_FACT[mail_stack]}" != yes ]; then
         warn "$MANIFEST_NAME claims the mail domain $_DEPLOY_MAIL_DOMAIN, and there is no mail stack at $dir on $_DEPLOY_TARGET"
         warn "enable it with: kasbah server init $_DEPLOY_TARGET --with-mail — the $_DEPLOY_MODE continues"
@@ -785,9 +879,125 @@ REMOTE
         warn "the stack there looks half-made, so the claim is unmet as far as anything here"
         warn "can tell — re-run server init --with-mail; the $_DEPLOY_MODE continues"
     else
-        warn "$MANIFEST_NAME claims the mail domain $_DEPLOY_MAIL_DOMAIN, and kasbah does not yet check that $dir/kasbah.yml lists it"
-        warn "verify it yourself for now: ssh $_DEPLOY_TARGET 'cat $dir/kasbah.yml' (docs/project-manifest.md → mail)"
+        _deploy_b64_into "${_DEPLOY_FACT[mail_registry_b64]}" _DEPLOY_MAIL_REGISTRY
+        if [ -z "$_DEPLOY_MAIL_REGISTRY" ]; then
+            warn "$MANIFEST_NAME claims the mail domain $_DEPLOY_MAIL_DOMAIN, and $dir/kasbah.yml on $_DEPLOY_TARGET is missing or unreadable"
+            warn "that file is the registry — the only thing that answers whether this stack serves"
+            warn "a domain — so the claim cannot be checked; the $_DEPLOY_MODE continues"
+        else
+            # One key at a time, exactly as `server init` reads it: a newline
+            # inside a domain value cannot then smuggle an extra list entry into
+            # the answer.
+            yaml_get "$_DEPLOY_MAIL_REGISTRY" '(.domains // []) | length' count || rc=$?
+            if [ "$rc" -ne 0 ]; then
+                warn "$MANIFEST_NAME claims the mail domain $_DEPLOY_MAIL_DOMAIN, and $dir/kasbah.yml on $_DEPLOY_TARGET does not parse as YAML"
+                warn "the claim cannot be checked against a registry kasbah cannot read; the $_DEPLOY_MODE continues"
+            else
+                case $count in ''|*[!0-9]*) count=0 ;; esac
+                while [ "$i" -lt "$count" ]; do
+                    yaml_get "$_DEPLOY_MAIL_REGISTRY" "(.domains // [])[$i] // \"\"" d || d=""
+                    i=$((i + 1))
+                    [ -n "$d" ] || continue
+                    domains+="${domains:+ }$d"
+                    [ "$d" != "$_DEPLOY_MAIL_DOMAIN" ] || claim=met
+                done
+                if [ "$claim" = met ]; then
+                    info "  mail: $_DEPLOY_MAIL_DOMAIN is served by the stack at $dir (dms ${_DEPLOY_FACT[mail_dms]}, snappymail ${_DEPLOY_FACT[mail_snappymail]})"
+                else
+                    warn "$MANIFEST_NAME claims the mail domain $_DEPLOY_MAIL_DOMAIN, and the stack at $dir does not serve it"
+                    warn "$dir/kasbah.yml lists: ${domains:-nothing}"
+                    warn "add it with: kasbah server add-mail-domain $_DEPLOY_TARGET $_DEPLOY_MAIL_DOMAIN"
+                    warn "mail for $_DEPLOY_MAIL_DOMAIN is not accepted until then; the $_DEPLOY_MODE continues"
+                fi
+            fi
+        fi
+
+        # Whether the stack is *up* is a separate question from whether it knows
+        # the domain, and both matter to a project that expects to send mail.
+        case "${_DEPLOY_FACT[mail_dms]}" in
+            running|nodocker) ;;
+            absent)
+                warn "$MANIFEST_NAME claims mail, and there is no mail-dms container on $_DEPLOY_TARGET"
+                warn "bring the stack up: ssh $_DEPLOY_TARGET 'cd $dir && docker compose -p mail up -d'" ;;
+            *)
+                warn "$MANIFEST_NAME claims mail, and mail-dms on $_DEPLOY_TARGET is '${_DEPLOY_FACT[mail_dms]}', not running"
+                warn "a restarting DMS is usually the certificate for mail.<primary> not being in acme.json yet"
+                warn "  ssh $_DEPLOY_TARGET 'docker logs --tail 40 mail-dms'" ;;
+        esac
     fi
+
+    _deploy_mail_seed "$seed_b64" "$claim"
+    return 0
+}
+
+# The SnappyMail pre-seed, copy-if-missing and gated on the claim (docs/mail.md
+# -> Per-app mail claims, step 3). Its own round trip, because whether the claim
+# was met is decided on this side.
+#
+# It goes through the container because it has to: SnappyMail chowns its whole
+# data tree to its own uid at mode 750 on first boot, so
+# <data>/mail/snappymail/_data_ is not readable, writable or even traversable by
+# the deploy user. `docker cp` works on a stopped container too, which a
+# `docker exec` writing the file would not.
+_deploy_mail_seed() {
+    local seed_b64="$1" claim="$2" out rc=0
+    local target="/var/lib/snappymail/_data_/_default_/domains/$_DEPLOY_MAIL_DOMAIN.json"
+
+    [ -n "$seed_b64" ] || return 0
+
+    # The gate, and the operator is told both halves: that the seed was skipped,
+    # and that the reason is the claim above rather than anything about the file.
+    if [ "$claim" != met ]; then
+        warn "kasbah.yml names snappymail_domain: $_DEPLOY_MAIL_SNAPPY, and it was NOT copied"
+        warn "the claim on $_DEPLOY_MAIL_DOMAIN is unmet (see above), and a SnappyMail domain"
+        warn "config for a domain this stack does not serve is configuration written on a"
+        warn "premise kasbah knows to be false — fix the claim and re-$_DEPLOY_MODE"
+        return 0
+    fi
+
+    out=$(ssh_script mail-snappymail "$target" "$seed_b64" <<'REMOTE'
+set -uo pipefail
+export LC_ALL=C
+container=$1
+target=$2
+seed=$3
+
+seed_state=nocontainer
+if docker inspect "$container" >/dev/null 2>&1; then
+    tmp=$(mktemp -d 2>/dev/null) || tmp=""
+    if [ -z "$tmp" ]; then
+        seed_state=failed
+    elif docker cp "$container:$target" "$tmp/probe" >/dev/null 2>&1; then
+        seed_state=present
+    elif ! printf '%s' "$seed" | openssl base64 -d -A > "$tmp/domain.json" 2>/dev/null; then
+        seed_state=failed
+    elif docker cp "$tmp/domain.json" "$container:$target" >/dev/null 2>&1; then
+        seed_state=copied
+    else
+        seed_state=failed
+    fi
+    [ -z "$tmp" ] || rm -rf "$tmp"
+fi
+printf 'mail_seed=%s\n' "$seed_state"
+exit 0
+REMOTE
+    ) || rc=$?
+
+    [ "$rc" -eq 0 ] \
+        || die "could not seed SnappyMail's config on $_DEPLOY_TARGET (the remote step exited $rc, see above)"
+    _deploy_absorb "the SnappyMail seed step" "$out" mail_seed
+
+    case "${_DEPLOY_FACT[mail_seed]}" in
+        copied)  info "  mail: seeded SnappyMail's $_DEPLOY_MAIL_DOMAIN.json from $_DEPLOY_MAIL_SNAPPY" ;;
+        present) info "  mail: SnappyMail already has a config for $_DEPLOY_MAIL_DOMAIN — left as it is" ;;
+        nocontainer)
+            warn "kasbah.yml names snappymail_domain: $_DEPLOY_MAIL_SNAPPY, and there is no mail-snappymail container on $_DEPLOY_TARGET"
+            warn "nothing was seeded; the $_DEPLOY_MODE continues" ;;
+        *)
+            warn "could not seed SnappyMail's config for $_DEPLOY_MAIL_DOMAIN from $_DEPLOY_MAIL_SNAPPY"
+            warn "SnappyMail builds _data_/_default_/domains/ on its first boot; if the container has"
+            warn "never come up, that directory is not there yet. The $_DEPLOY_MODE continues." ;;
+    esac
     return 0
 }
 

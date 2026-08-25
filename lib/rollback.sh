@@ -641,10 +641,59 @@ _rollback_read_ref() {
     _rollback_require_tag
     _rollback_extract
     _deploy_read_mail
+    _rollback_extract_mail_seed
     # The hooks, the health block, the backup block and the built-image list, all
     # read out of v<target>'s manifest: they are what that version expects of the
     # script it is brought up by.
     remote_deploy_read_manifest "$_ROLLBACK_VERSION"
+    return 0
+}
+
+# The SnappyMail pre-seed named by v<target>'s manifest, taken out of v<target>.
+#
+# Everything else this run reads has already been repointed into the extraction
+# — the manifest and the compose file by _rollback_extract, the fragment beside
+# them — and this is the one path that reaches lib/deploy.sh as a *file to open*
+# rather than as a value. `_deploy_mail_claim` runs outside _rollback_in_extract,
+# with the working directory back at the project root, so a relative
+# snappymail_domain: would otherwise resolve against the checkout: a rollback
+# would ship today's bytes for a version that declared different ones, and
+# report "there is no such file in this checkout" for one whose file has since
+# been deleted. Both measured before this existed.
+#
+# Copy-if-missing is what keeps that latent — the wrong bytes only land on a
+# server that has none yet — and is exactly why it needs pinning: when it bites,
+# the wrong version is the one that stays.
+#
+# Not in the sync list and not required to be: like the fragment, it is fetched
+# from the ref by name. Absent at the ref is a warning and not a failure, for
+# the reason every mail claim is one — an unmet claim costs mail, not the site.
+_rollback_extract_mail_seed() {
+    local ref="v$_ROLLBACK_VERSION" rel type=""
+
+    [ -n "$_DEPLOY_MAIL_SNAPPY" ] || return 0
+
+    # `./mail/x.json` and `mail/x.json` name one blob; git ls-tree wants the
+    # second spelling.
+    rel="${_DEPLOY_MAIL_SNAPPY#./}"
+    _rollback_ref_type "$ref" "$rel" type
+    if [ "$type" != blob ]; then
+        warn "$ref's kasbah.yml names snappymail_domain: $rel, and $ref does not carry that file"
+        warn "nothing is seeded — the checkout's copy is deliberately not used here; the $_ROLLBACK_MODE continues"
+        _DEPLOY_MAIL_SNAPPY=""
+        return 0
+    fi
+
+    # Only when there is one to make: `${rel%/*}` on a path with no slash is the
+    # path itself, and a directory created under that name is what `git show`
+    # would then try to write the blob over.
+    case $rel in
+        */*) mkdir -p "$_ROLLBACK_EXTRACT/${rel%/*}" \
+                 || die "could not create a directory for $rel under $_ROLLBACK_EXTRACT" ;;
+    esac
+    git show "$ref:$rel" > "$_ROLLBACK_EXTRACT/$rel" \
+        || die "could not read $rel out of $ref (see git's error above)"
+    _DEPLOY_MAIL_SNAPPY="$_ROLLBACK_EXTRACT/$rel"
     return 0
 }
 
