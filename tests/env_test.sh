@@ -1347,4 +1347,45 @@ out=$(bash -c '
 assert '[ "$rc" = "0" ]' "a sourced env_main --drift returns to its caller (got $rc: $out)"
 assert 'grep -qF "caller-alive" <<<"$out"' "alive (said '$out')"
 
+# env_extract_keys reads a path that is not a regular file — the one thing
+# `check --server` needs of it. The VPS's `.env` holds the project's secrets, so
+# it is never written to disk on the workstation: it arrives as bytes and is
+# handed to `env_drift` through a process substitution, which is a pipe. Without
+# this the drift call would silently see *no* keys on the .env side and report
+# every template key as missing, which is the failure that looks like a verdict.
+out=$(bash -c '
+    set -euo pipefail
+    . "$1"
+    keys="$(env_extract_keys <(printf "%s" "ALPHA=1
+export BETA=2
+# a comment
+"))"
+    printf "keys=%s\n" "$(tr "\n" " " <<<"$keys")"
+    ENV_DRIFT_MISSING=""; ENV_DRIFT_EXTRA=""
+    env_drift <(printf "%s" "ALPHA=x
+GAMMA=y
+") <(printf "%s" "ALPHA=1
+BETA=2
+KASBAH_CPU_LIMIT=9
+")
+    printf "missing=%s\nextra=%s\n" "$ENV_DRIFT_MISSING" "$ENV_DRIFT_EXTRA"
+' _ "$env_sh" 2>&1); rc=$?
+assert '[ "$rc" = "0" ]' "env_extract_keys reads a process substitution (got $rc: $out)"
+assert 'grep -qF "keys=ALPHA BETA" <<<"$out"' "and finds its keys (said '"'"'$out'"'"')"
+assert 'grep -qF "missing=GAMMA" <<<"$out"' \
+    "env_drift over two pipes reports the template key that is absent (said '"'"'$out'"'"')"
+assert 'grep -qF "extra=BETA" <<<"$out"' \
+    "and the extra one, with the reserved KASBAH_* key exempt as always (said '"'"'$out'"'"')"
+
+# A directory is not a file of keys, and reading one would fail the redirect
+# rather than come back empty.
+out=$(bash -c '
+    set -euo pipefail
+    . "$1"
+    keys="$(env_extract_keys "$2")"
+    printf "keys=[%s]\n" "$keys"
+' _ "$env_sh" "$tmpdir" 2>&1); rc=$?
+assert '[ "$rc" = "0" ]' "env_extract_keys on a directory returns empty rather than dying (got $rc: $out)"
+assert 'grep -qF "keys=[]" <<<"$out"' "with no keys (said '"'"'$out'"'"')"
+
 exit "$fail"

@@ -911,3 +911,80 @@ from a mis-expanded `$?`, a dead agent's orphaned runs still driving the rig,
 and the orchestrator launching suites in the same turn it resumed an implementer
 that was mid-edit in the file under test. **Never start a verification run in the
 same turn as a spawn or a resume.**
+
+**Agents stall themselves on polling loops, and it needs saying in the brief.**
+The operator had to intervene on a run where an agent had stacked **nine**
+`until ! pgrep …; do sleep …; done` waiters, each blocking on the last. Nothing
+was wrong with the work — the agent was waiting for its own suites and had
+invented a busy-wait to do it. Every brief from here forbids polling outright:
+run the command in the **foreground** and read `rc=$?` on the next line, which
+is all the waiting anyone needs, and let the harness notify about genuine
+background work. The single legitimate use of `pgrep` is one non-looping call to
+check nothing else is writing before a verification run.
+
+Together with the earlier `echo "$(cmd) rc=$?"` mis-expansion and the two
+concurrent-writer incidents, that is four separate ways this phase lost time to
+**how a result was waited for or read**, rather than to the work itself.
+
+### 7.3 — `check --server` and R04
+
+**Delivered.** `lib/acme.sh` (the `acme.json` reader) plus `lib/check_server.sh`;
+all six server rules, R04, and the T05 tightening `compliance.md` promised.
+Against the real host: **`34 passed, 0 warning, 0 failed`**, reading
+`gallery.example.com valid for 87 more day(s) (until Nov 20 23:16:21 2026 GMT,
+CN = YR2)` — matching the `notAfter` measured independently before the task was
+briefed — with nothing written there. Four things worth keeping.
+
+**A reserved-hostname set built per family left one family guarded by nothing.**
+T05 has two forms: a local heuristic on the first DNS label, and an exact match
+against the real apex and mail registry under `--server`. The first
+implementation built the exact set per family, so a server whose `_shared.yml`
+was unreadable but whose mail registry was fine still produced a **non-empty**
+set — which sent T05 down the exact-match branch, where `traefik.<apex>` was
+guarded by neither the set (it was not in it) nor the heuristic (that branch was
+skipped). A project claiming the dashboard hostname passed silently.
+`docs/compliance.md` promised the opposite in as many words, so the **code**
+changed, not the doc. The fix is better than the brief asked for: T05 now asks
+*both* questions of every hostname — exact membership, then heuristic label — so
+the local run became the same code path with the same two answers, **removing** a
+branch rather than adding one. And it caught a case the instruction missed: apex
+known, registry absent, nothing falls back, because `--with-mail` defaults
+`primary_domain` to the apex, so those *are* the hostnames the server claims;
+a registry naming a different primary is the case that genuinely is not
+reserved, and reading it is what tells the two apart.
+
+**An assertion bit its own author, and was widened rather than loosened.** The
+read-only suite asserts *every docker verb in the payload is `inspect`*. Adding
+a `docker version` probe — the cheapest question separating "daemon down" from
+"container absent", which the health rule previously collapsed into "not
+running" — made that assertion fail. It was widened to `(inspect|version)` with
+a comment that both are reads and these two are the only ones allowed. A
+read-only guarantee that erodes to "any docker command" is not a guarantee.
+
+**`lib/env.sh` was widened, and that file also runs on the VPS.** `check --server`
+must not write the server's `.env` to disk, so it hands `env_drift` a **process
+substitution** — a pipe, which the old `[ -f ]` guard rejected, silently
+reporting *every* template key as missing. A wrong verdict, not an error. The
+widening to "readable and not a directory" was verified input by input against
+the old copy: directory, nonexistent and regular-readable are unchanged, and the
+only input that moves is an **unreadable** regular file, which was already the
+wrong verdict and now merely loses a stderr breadcrumb. The real boundary is a
+**fifo** `.env`, which `[ -f ]` skipped and `[ -r ]` accepts and would block on
+forever — unreachable because `_env_report` refuses `[ -e ] && [ ! -f ]` on both
+files before `env_drift` is called, and the local caller is gated on
+`[ -f .env ]`. That is now a comment at the guard, naming the three call sites,
+so the next person to widen it knows what the boundary was.
+
+**A test that cannot fail for the reason it claims.** The redaction assertion
+grepped the diagnostic for the *decoded* secret — but the payload carries
+`acme.json` **base64'd**, so a mutant echoing the entire payload still would not
+contain the plaintext. It scored **0 FAILs**. It now greps for the blob itself
+and asserts the blob exceeds 200 bytes, so it cannot pass vacuously in either
+direction. Same family as the phase's other zero-scoring assertions, with a new
+twist: the encoding, not the wording, was what made it blind.
+
+*Forward hazard for 7.6:* `_ss_absorb_checked` clips raw output to 20×120 bytes
+and **prints it** on a truncated read. If `server status` adds `acme_b64` to its
+batched probe it will spill key material onto stderr. `lib/acme.sh` warns in a
+comment; nothing enforces it. `check --server` avoided this by writing its own
+absorb rather than reusing that helper.

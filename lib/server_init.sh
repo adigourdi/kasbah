@@ -1440,24 +1440,13 @@ _si_extract_auth() {
     exit 1
 }
 
-# The apex the dashboard router already hangs off. Read back off the server
-# rather than stored in the marker, so the file in effect stays the single
-# source of truth. A rule the operator rewrote into some other shape simply
-# yields nothing, and the flag or the prompt answers instead.
-_si_extract_domain() {
-    local _xd_content="$1" _xd_out="$2" _xd_rule="" _xd_rc=0
-    local _xd_re='^Host\(`traefik\.([^`]+)`\)$'
-
-    yaml_get "$_xd_content" '.http.routers["traefik-dashboard"].rule // ""' _xd_rule \
-        || _xd_rc=$?
-    [ "$_xd_rc" -eq 0 ] || return "$_xd_rc"
-
-    printf -v "$_xd_out" '%s' ""
-    if [[ "$_xd_rule" =~ $_xd_re ]]; then
-        printf -v "$_xd_out" '%s' "${BASH_REMATCH[1]}"
-    fi
-    return 0
-}
+# The apex the dashboard router already hangs off lives in lib/common.sh as
+# `traefik_dashboard_apex`: `check --server` reads the same rule out of the same
+# file to tighten T05 to the exact `traefik.<apex>` match, and one rule has one
+# reader. Read back off the server rather than stored in the marker, so the file
+# in effect stays the single source of truth — a rule the operator rewrote into
+# some other shape simply yields nothing, and the flag or the prompt answers
+# instead.
 
 _si_extract_email() {
     local _xe_content="$1" _xe_out="$2"
@@ -1567,7 +1556,7 @@ _server_init_traefik_values() {
     local stored_domain="" stored_email="" stored_auth="" stored_ca="" user="" pass=""
     local shared_rc=0 static_rc=0 ca_rc=0
 
-    _si_extract_domain "$shared" stored_domain || shared_rc=$?
+    traefik_dashboard_apex "$shared" stored_domain || shared_rc=$?
     [ "$shared_rc" -ne 0 ] || _si_extract_auth "$shared" stored_auth || shared_rc=$?
     _si_extract_email "$static" stored_email || static_rc=$?
     _si_extract_ca "$static" stored_ca || ca_rc=$?

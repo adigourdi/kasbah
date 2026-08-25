@@ -424,9 +424,27 @@ env_setup_run() {
 # bare: an `export ` prefix and leading blanks belong to the line, not the key.
 # A missing or key-less file comes back empty with status 0: under pipefail a
 # `grep` finding nothing would tip the caller's `var=$(…)` instead.
+#
+# "Readable and not a directory" rather than "a regular file", because one
+# caller has no regular file to offer: `check --server` reads the VPS's `.env`
+# back as bytes — it holds the project's secrets, so it is never written to
+# disk here — and hands it over as a process substitution, which is a pipe.
+# The alternative was a second key extractor for the remote case, and
+# docs/compliance.md is explicit that the local check and the remote one must
+# not be able to drift apart by agreeing to differ. A missing path is still
+# `-r`-false and still comes back empty.
+#
+# **The boundary, for whoever widens this next.** `-f` also excluded a fifo, and
+# `-r` accepts one: reading a fifo nobody writes blocks forever, which is a hang
+# rather than a wrong answer. No caller can reach that today — `_env_report`
+# refuses `[ -e ] && [ ! -f ]` on both paths before calling env_drift, the local
+# E02/E03 caller is gated on `[ -f .env ]`, and E05's bare call is on
+# `.env.prod.example`, which S04 has already required to be a regular file. A
+# new caller that hands this a path a user controls has to make that check
+# itself, or put it back here.
 env_extract_keys() {
     local f="$1" line
-    [ -f "$f" ] || return 0
+    [ -r "$f" ] && [ ! -d "$f" ] || return 0
     while IFS= read -r line || [ -n "$line" ]; do
         line="${line%$'\r'}"
         if [[ "$line" =~ $ENV_ASSIGN_RE ]]; then

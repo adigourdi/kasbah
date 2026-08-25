@@ -114,10 +114,11 @@ kasbah_norm_path() {
 # the server rather than regenerating it, and a file it cannot read is a file it
 # cannot reuse from.
 #
-# Here rather than in one command's library because three of them ask the same
+# Here rather than in one command's library because four of them ask the same
 # question of the same file. `server init` reads <apps>/mail/kasbah.yml back to
-# reproduce it, `server add-mail-domain` to append to it, and `deploy` to answer
-# a project's mail claim against it — one registry, one reader. The VPS has no
+# reproduce it, `server add-mail-domain` to append to it, `deploy` to answer a
+# project's mail claim against it, and `check --server` to answer M03 and to
+# learn which mail hostnames T05 must reserve — one registry, one reader. The VPS has no
 # yq, jq or python3 and keeping it that way is deliberate (docs/mail.md), so
 # every one of those reads base64s the file back and parses it here.
 yaml_get() {
@@ -128,5 +129,33 @@ yaml_get() {
     _yg_val=$(printf '%s' "$_yg_content" | yq -r "$_yg_filter" 2>/dev/null) || return 2
     case $_yg_val in null) _yg_val="" ;; esac
     printf -v "$_yg_out" '%s' "${_yg_val%$'\r'}"
+    return 0
+}
+
+# traefik_dashboard_apex CONTENT OUTVAR — the apex the dashboard router hangs
+# off, read out of <apps>/traefik/dynamic/_shared.yml. Empty when the rule is
+# not the shape kasbah renders; exit 2 when the document does not parse
+# (yaml_get's contract).
+#
+# Here rather than in `server init`'s library because two commands ask the same
+# question of the same file, and the answer is the server's apex: init recovers
+# the domain it must not regenerate, and `check --server` needs it to tighten
+# T05 from a first-label heuristic to the exact `traefik.<apex>` the dashboard
+# actually claims. The file in effect stays the single source of truth for it —
+# it is deliberately not in the server marker — so a rule an operator rewrote
+# into some other shape yields nothing here, and the caller says so rather than
+# guessing.
+traefik_dashboard_apex() {
+    local _xd_content="$1" _xd_out="$2" _xd_rule="" _xd_rc=0
+    local _xd_re='^Host\(`traefik\.([^`]+)`\)$'
+
+    yaml_get "$_xd_content" '.http.routers["traefik-dashboard"].rule // ""' _xd_rule \
+        || _xd_rc=$?
+    [ "$_xd_rc" -eq 0 ] || return "$_xd_rc"
+
+    printf -v "$_xd_out" '%s' ""
+    if [[ "$_xd_rule" =~ $_xd_re ]]; then
+        printf -v "$_xd_out" '%s' "${BASH_REMATCH[1]}"
+    fi
     return 0
 }

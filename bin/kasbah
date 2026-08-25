@@ -72,7 +72,7 @@ Usage: kasbah [--version] [--help] <command> [args...]
 
 Commands:
   init-project [--name=<n>] [--domain=<d>]   Scaffold kasbah metadata in cwd.
-  check                                      Run structural checks on the project.
+  check [--server [USER@HOST]]               Run structural checks on the project, optionally against a server.
   build-push [USER@HOST]                     Build this project's images and load them on a server.
   deploy [USER@HOST] [VERSION]               Ship the working tree, or a tagged version, and bring it up.
   rollback [USER@HOST] [VERSION]             Put a server back on a version it has already run.

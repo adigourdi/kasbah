@@ -293,10 +293,20 @@ Flags:
 - `--name=<name>` (default: current directory name)
 - `--domain=<fqdn>`
 
-### `kasbah check [--fix]`
+### `kasbah check [--server [USER@HOST]] [--fix]`
 
 Run the compliance check on the current project. See `compliance.md` for
 the full rule set. Exit code 0 on pass, 6 on any failure (see "Exit codes" below).
+
+`--server USER@HOST` also asks that VPS: whether the project is deployed there,
+whether its `.env` still matches this checkout's `.env.prod.example`, whether
+the mail stack knows the claimed domain (M03), whether `health.container` is
+healthy, what Traefik's `acme.json` holds for the project's domain, and whether
+the effective resource limits are within the host's ceiling (R04). It also
+tightens T05 from a first-label heuristic to the hostnames that server really
+owns. Read-only: it changes nothing on the server. Given without a `USER@HOST`
+it asks `last_server`, and a run that reaches the server records it — the same
+rule every other server-targeting command follows (`project-manifest.md`).
 
 `--fix` *(not implemented — `check` refuses the flag today)* would apply
 safe auto-fixes (add missing restart policy, add missing logging rotation).
@@ -653,8 +663,6 @@ Referenced elsewhere in the docs but not yet in v0.1:
   kasbah schema. (roadmap v1.0.)
 - `kasbah server upgrade-traefik` — managed Traefik version bump.
   (roadmap v0.3.)
-- `kasbah check --server` — VPS-aware compliance check. (roadmap v0.2 — see
-  `compliance.md`.)
 
 ## Exit codes
 

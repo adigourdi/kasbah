@@ -1,7 +1,8 @@
 # Compliance Check — `kasbah check`
 
 Runs a set of structural/conventional checks against the current project so
-the user knows it will behave sensibly when hosted. Runs locally (no SSH).
+the user knows it will behave sensibly when hosted. Runs locally (no SSH)
+unless `--server USER@HOST` is given, which adds the VPS-aware rules below.
 
 ```
 $ cd ~/projects/myapp
@@ -109,7 +110,7 @@ docker provider is not wired in.
 | T02 | At least one router's `rule` references `manifest.domain` | fail |
 | T03 | Every router declares `entryPoints` (non-empty list) | fail |
 | T04 | Routers on `websecure` reference `tls.certResolver: letsencrypt` | fail |
-| T05 | Project fragment's routers don't claim reserved hostnames (`traefik.<domain>`, `mail.<domain>`, `webmail.<domain>`) — those belong to kasbah-owned `_`-prefixed fragments. Implemented locally as a heuristic: any `Host(\`…\`)` whose first DNS label is `traefik`, `mail`, or `webmail` fails. Tightens to the exact server-apex match when `--server` mode lands. | fail |
+| T05 | Project fragment's routers don't claim reserved hostnames (`traefik.<domain>`, `mail.<domain>`, `webmail.<domain>`) — those belong to kasbah-owned `_`-prefixed fragments. Locally a heuristic: any `Host(\`…\`)` whose first DNS label is `traefik`, `mail`, or `webmail` fails, because the server apex is not knowable from a checkout. Under `--server` it is the exact match instead: `traefik.<apex>` from the dashboard router in `<apps>/traefik/dynamic/_shared.yml`, and `mail.`/`webmail.` of the mail registry's `primary_domain` (falling back to the apex when there is no registry, since `server init --with-mail` would claim exactly those). That tightens the case the rule exists for and lets go of a hostname on somebody else's apex, which the strict rule never reserved. The two families answer separately, because they have two sources: `traefik.` comes from the dashboard fragment and `mail.`/`webmail.` from the registry, so either can be unreadable alone. A family whose source was read matches exactly; a family whose source was not **keeps the local heuristic** — never neither, which would let an unreadable `_shared.yml` on a mail-enabled server turn a dashboard-hostname claim into a silent pass. With no registry the mail pair is taken exactly from the apex, since that is what `server init --with-mail` would claim. | fail |
 | T06 | No service in `compose.prod.yml` carries `traefik.*` labels | fail |
 | T07 | Every fragment `loadBalancer` server URL hostname matches an explicit `container_name` in `compose.prod.yml` | fail |
 | T08 | Some router whose `rule` references `manifest.domain` declares the `web` entrypoint. The minimum viable form (`traefik.md` → Project fragment) is two routers for one hostname, the `websecure` one that serves it and a `web` one that redirects; T03 asks only that a router declare *some* entrypoint, so a fragment carrying the HTTPS half alone passes every other rule and answers plain HTTP with Traefik's 404. Warn, not fail: HTTPS-only is legitimate for an API nothing browses to, and the rule cannot tell that apart from the omission. Domain matching is T02's substring test | warn |
@@ -145,7 +146,11 @@ setting a variable, so it is inside the namespace the frozen contract claims.
 E02/E03 are not implemented here. They call `env_drift` in `lib/env.sh` —
 the same function, in the same bytes, that runs on the VPS as
 `scripts/setup-env.sh` during a deploy, so the local check and the remote
-one cannot drift apart by agreeing to differ.
+one cannot drift apart by agreeing to differ. `--server` runs that same
+function over the VPS's own `.env`, which comes back as bytes and is handed
+to it through a process substitution: the file holds the project's secrets,
+so it is never written to disk on the workstation, and only key *names* are
+ever printed.
 
 ### Hooks
 
@@ -184,13 +189,43 @@ Unfixable (must be done by hand):
 
 ## `kasbah check --server USER@HOST`
 
-Extended check that also queries the VPS:
-- Does the project dir exist on VPS?
-- Does `.env` on VPS match current `.env.prod.example`?
-- Is the claimed mail domain known to the mail stack?
-- Is the manifest's `health.container` currently healthy (if deployed)?
-- Cert status for the project's `domain` in Traefik's `acme.json`.
-- Effective resource limits vs host size (R04: above 90% fails, below warns).
+Extended check that also queries the VPS. Everything in the local run still
+runs; these are added, and T05 tightens (above).
+
+| Asked | Level |
+|---|---|
+| Does the project dir exist on VPS? | warn if absent — a project that has not been deployed yet is the ordinary state a pre-deploy check runs in; **fail** if the path is there and is not a directory. Every rule below that needs the tree is then skipped rather than answered about a tree that is not there |
+| Does `.env` on VPS match the current `.env.prod.example`? | warn — E02/E03 against the server's real file, and against *this checkout's* template rather than the copy the last deploy shipped |
+| Is the claimed mail domain known to the mail stack? (M03) | fail — the registry `<apps>/mail/kasbah.yml` is the only thing asked, read one key at a time. A registry that cannot be parsed warns instead: "cannot be checked" is not "not served". This is where `deploy`'s warning has a level; deploy keeps warning, because an unmet claim costs mail rather than the site |
+| Is the manifest's `health.container` currently healthy (if deployed)? | fail when the container reports `unhealthy` — Traefik keeps routing to it. Warn when it is starting, has no healthcheck, or is not running at all |
+| Cert status for the project's `domain` in Traefik's `acme.json` | fail when the certificate has expired; warn inside Traefik's 30-day renewal window, and warn for every way the store can decline to answer, each with its own message (absent, empty, unreadable, not a regular file, no entry for this domain, not JSON, a resolver key that is not `letsencrypt`, a `Certificates` that is not a list, an entry with no `certificate`, one that is not base64, one openssl will not read) — they have different remedies, so collapsing them into "no certificate" throws away the only thing that says what to do next |
+| Effective resource limits vs host size (R04) | above the marker's ceiling fails, below warns |
+
+The effective limits are `KASBAH_CPU_LIMIT` / `KASBAH_MEM_LIMIT` in the VPS's
+own `<apps>/<name>/.env` — the values compose interpolates into every service's
+`cpus:` and `mem_limit:`, which R01/R02 have already pinned as references rather
+than literals. The ceiling is the server marker's, which `server init` computed
+as 90% of the host. Sizes are compared in bytes, so `55296m` and `54g` are the
+same limit.
+
+**`--server` writes nothing.** It is a linter, and the remote step is `[ -f ]`,
+`openssl base64 -A -in` and `docker inspect` — no mkdir, no touch, no
+redirection onto the server's filesystem. Two round trips: the server marker,
+then one batched read. The far side never needs `jq`, `yq` or `python3`; files
+come back base64'd and are parsed on the workstation, which is the same rule the
+mail registry and the marker are read under.
+
+`acme.json` holds private key material — the resolver's account key and every
+certificate's private key — so nothing that reads it writes it to a temp file,
+echoes it, or puts it in a diagnostic. A truncated report names the keys that
+arrived and does not quote the payload. And expiry is reported, never age:
+Let's Encrypt backdates `notBefore` by ~58.5 minutes, so a certificate cannot
+say when it was issued.
+
+Given without a `USER@HOST`, `--server` asks the server this project last
+talked to, and a run that reaches one records it as `last_server` in
+`.kasbah/state.json` — the one thing `check` writes anywhere, and the same rule
+every other server-targeting command follows (`project-manifest.md`).
 
 Not run by default because it needs SSH and is slower. Useful as a
 pre-deploy sanity check.

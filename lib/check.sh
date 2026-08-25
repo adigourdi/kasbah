@@ -11,15 +11,25 @@ _KASBAH_CHECK_LOADED=1
 
 _check_usage() {
     cat <<EOF
-Usage: kasbah check
+Usage: kasbah check [--server [USER@HOST]]
 
 Runs structural checks against the current project. Exit 0 if no failures
 (warnings are informational). See docs/compliance.md for the full rule set.
 
-Implemented: Structure (S01–S07), Compose (C01–C05, C07–C09), Resources (R01–R03),
-Traefik (T01–T08), Healthchecks (H01–H02), Env (E01–E05), Hooks (HK01–HK03),
-Mail (M01–M02). M03 needs the server, and R04 and the --fix / --server modes
-are not yet wired in.
+Flags:
+  --server USER@HOST  also ask that VPS: is the project deployed, does its .env
+                      still match .env.prod.example, does the mail stack know
+                      the claimed domain (M03), is health.container healthy, is
+                      there a certificate for the domain, and are the effective
+                      resource limits within the host's ceiling (R04). It also
+                      tightens T05 to the hostnames this server really owns.
+                      Read-only: --server changes nothing on the server.
+                      Without USER@HOST it asks the server this project last
+                      talked to, and it remembers the one it is given.
+
+Implemented: Structure (S01–S07), Compose (C01–C05, C07–C09), Resources
+(R01–R04), Traefik (T01–T08), Healthchecks (H01–H02), Env (E01–E05), Hooks
+(HK01–HK03), Mail (M01–M03). The --fix mode is not yet wired in.
 EOF
 }
 
@@ -27,6 +37,10 @@ EOF
 _CHECK_PASS=0
 _CHECK_WARN=0
 _CHECK_FAIL=0
+# The target `--server` was given, once the connection and the one batched read
+# have succeeded. Empty on a purely local run, which is what every rule that can
+# tighten under `--server` reads to decide which of its two forms it is in.
+_CHECK_SERVER=""
 
 _check_pass() { _CHECK_PASS=$((_CHECK_PASS + 1)); printf '  ✓ %s\n' "$1"; }
 _check_warn() { _CHECK_WARN=$((_CHECK_WARN + 1)); printf '  ⚠ %s\n' "$1"; }
@@ -43,16 +57,46 @@ _gitignore_has() {
 }
 
 cmd_check() {
+    local server="" server_given=0 server_empty=0
     while [ $# -gt 0 ]; do
         case "$1" in
-            -h|--help) _check_usage; return 0 ;;
-            *)         die "check: unknown argument '$1'" ;;
+            -h|--help)  _check_usage; return 0 ;;
+            --server)
+                server_given=1
+                # The value only when there is one to take: bare `--server`, or
+                # `--server` followed by another flag, means "the server this
+                # project last talked to" — how every other server-targeting
+                # command reads a missing target (docs/project-manifest.md →
+                # last_server), and `check --server` is on that list.
+                case "${2:-}" in
+                    ''|-*) ;;
+                    *) server="${2%$'\r'}"; shift ;;
+                esac
+                ;;
+            --server=*)
+                server_given=1
+                server="${1#*=}"; server="${server%$'\r'}"
+                [ -n "$server" ] || server_empty=1
+                ;;
+            *)          die "check: unknown argument '$1'" ;;
         esac
+        shift
     done
+    # An empty `--server=` is a stated intent that cannot be honoured, so it
+    # fails rather than falling back to a remembered server the operator has
+    # just overridden with nothing.
+    [ "$server_empty" = 0 ] \
+        || die "check: --server= must name the server to ask (USER@HOST)"
+    # Bare `--server`: the remembered one, or a refusal that says how to set it.
+    if [ "$server_given" = 1 ] && [ -z "$server" ]; then
+        . "$KASBAH_LIB_DIR/check_server.sh"
+        check_server_stored_target server
+    fi
 
     _CHECK_PASS=0
     _CHECK_WARN=0
     _CHECK_FAIL=0
+    _CHECK_SERVER=""
 
     # Report goes to stdout (the ✓/⚠/✗ lines do, too) so `kasbah check >
     # report.txt` captures the whole thing. Diagnostics from helpers (info/
@@ -67,6 +111,19 @@ cmd_check() {
     # short-circuit the whole check.
     manifest_require
     _check_pass "kasbah.yml exists (schema $MANIFEST_SCHEMA)"
+
+    # The server is asked here rather than at the end, because one local rule's
+    # verdict depends on the answer: T05 is a first-label heuristic without a
+    # server and an exact match against this server's own hostnames with one
+    # (docs/compliance.md → T05). Everything the far side reports is read here,
+    # in one batched round trip after the marker read; the rules that report it
+    # run last, in the Server section. Nothing is printed on success — a
+    # connection that fails ends the run with ssh's own error.
+    if [ -n "$server" ]; then
+        . "$KASBAH_LIB_DIR/check_server.sh"
+        check_server_connect "$server"
+        _CHECK_SERVER="$server"
+    fi
 
     # S03
     if [ -f compose.prod.yml ]; then
@@ -112,6 +169,7 @@ cmd_check() {
     _check_env_section
     _check_hooks_section "$services"
     _check_mail_section
+    [ -z "$_CHECK_SERVER" ] || check_server_section
 
     echo
     printf 'Summary: %d passed, %d warning, %d failed\n' \
@@ -680,15 +738,43 @@ _check_t07_fragment_targets() {
     fi
 }
 
-# T05: heuristic — any router rule whose Host() argument's first DNS label is
-# `traefik`, `mail`, or `webmail` is treated as claiming a kasbah-owned
-# subdomain. The strict spec says `traefik.<server-apex>` etc., but the
-# server apex isn't available locally. The first-label check catches the
-# common-mistake shape (project tries to add its own dashboard/mail router)
-# while accepting domains like `mailhog.example.com` that just happen to
-# start with mail-adjacent text.
+# T05, in its two forms — and, under `--server`, in both at once.
+#
+# Locally it is a heuristic: any router rule whose Host() argument's first DNS
+# label is `traefik`, `mail`, or `webmail` is treated as claiming a kasbah-owned
+# subdomain. The strict spec says `traefik.<server-apex>`, `mail.<server-apex>`
+# and `webmail.<server-apex>`, and the server apex is not available locally. The
+# first-label check catches the common-mistake shape (a project adding its own
+# dashboard or mail router) while accepting domains like `mailhog.example.com`
+# that merely start with mail-adjacent text.
+#
+# Under `--server` each family tightens to the exact match when its source could
+# be read: `traefik.<apex>` from the dashboard router in
+# <apps>/traefik/dynamic/_shared.yml, and `mail.`/`webmail.` of the mail
+# registry's primary_domain. That is a genuine tightening on the case the rule
+# exists for — the dashboard hostname is caught by name rather than by shape —
+# and it lets go of a hostname on somebody else's apex, which the strict rule
+# never reserved.
+#
+# **A family whose source could not be read keeps the heuristic; it is never
+# dropped.** The two families have two sources and either can be unreadable
+# alone, so a single "is the set empty" test would let an unreadable
+# `_shared.yml` on a mail-enabled server turn a dashboard-hostname claim into a
+# silent pass — guarded neither by a set it is not in nor by a heuristic that
+# was skipped. lib/check_server.sh answers per family for that reason, and the
+# loop below asks both questions of every hostname.
+#
+# The local run is the same code with the same two answers: no exact hostnames,
+# and all three labels on the heuristic.
 _check_t05_reserved_hostnames() {
     local routers="$1" r bad=()
+    local reserved="" heuristic=$'traefik\nmail\nwebmail' note=""
+    if [ -n "$_CHECK_SERVER" ]; then
+        reserved="$(check_server_reserved_hosts)"
+        heuristic="$(check_server_heuristic_labels)"
+        note="$(check_server_reserved_note)"
+    fi
+
     while IFS= read -r r; do
         [ -z "$r" ] && continue
         local rule
@@ -697,19 +783,49 @@ _check_t05_reserved_hostnames() {
         # everything up through the matched substring, advancing the loop.
         local s="$rule"
         while [[ "$s" =~ Host\(\`([^\`]+)\`\) ]]; do
-            local host="${BASH_REMATCH[1]}"
-            local first="${host%%.*}"
-            case "$first" in
-                traefik|mail|webmail) bad+=("$r→$host") ;;
-            esac
+            local host="${BASH_REMATCH[1]}" claimed=0
+            # Here-strings, never a pipe into `grep -q`: grep exits at the first
+            # match and the producer's next write takes a SIGPIPE that pipefail
+            # then propagates.
+            if [ -n "$reserved" ] && grep -qxF -- "$host" <<<"$reserved"; then
+                claimed=1
+            elif [ -n "$heuristic" ] && grep -qxF -- "${host%%.*}" <<<"$heuristic"; then
+                claimed=1
+            fi
+            [ "$claimed" = 0 ] || bad+=("$r→$host")
             s="${s#*"${BASH_REMATCH[0]}"}"
         done
     done <<<"$routers"
-    if [ "${#bad[@]}" -eq 0 ]; then
-        _check_pass "No router claims reserved hostnames (traefik.*, mail.*, webmail.*)"
-    else
-        _check_fail "Routers claim reserved hostnames: ${bad[*]}"
+
+    # What the line says it checked against. Exact hostnames first, then any
+    # family still on the heuristic named as such — so a mixed answer is legible
+    # rather than looking like a short exact list. `note` carries the sentence
+    # for a `--server` run that could read neither source, where the line is
+    # otherwise identical to a purely local one and an operator who asked a
+    # server deserves to know it could not tell them anything.
+    local against=""
+    [ -z "$reserved" ] || against="$(printf '%s' "$reserved" | tr '\n' ' ')"
+    against="${against% }"
+    if [ -n "$heuristic" ] && [ -n "$reserved" ]; then
+        local label
+        while IFS= read -r label; do
+            [ -n "$label" ] || continue
+            against="$against; $label.* by heuristic"
+        done <<<"$heuristic"
     fi
+
+    if [ -n "$reserved" ]; then
+        if [ "${#bad[@]}" -gt 0 ]; then
+            _check_fail "Routers claim hostnames kasbah owns on $_CHECK_SERVER: ${bad[*]} ($against)"
+        else
+            _check_pass "No router claims a hostname kasbah owns on $_CHECK_SERVER ($against)"
+        fi
+    elif [ "${#bad[@]}" -gt 0 ]; then
+        _check_fail "Routers claim reserved hostnames: ${bad[*]}$note"
+    else
+        _check_pass "No router claims reserved hostnames (traefik.*, mail.*, webmail.*)$note"
+    fi
+    return 0
 }
 
 # ----------------------------------------------------------------------------

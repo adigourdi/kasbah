@@ -1540,4 +1540,600 @@ assert '[ "$rc" = "0" ]' "a mail: block with only a domain passes (rc $rc)
 assert '! grep -qF "snappymail_domain" <<<"$out"' \
     "and nothing is said about a pre-seed nobody named (said '$out')"
 
+
+# =============================================================================
+# `check --server USER@HOST` — the VPS-aware rules
+# =============================================================================
+# Driven through a stub ssh that answers the reachability probe, the marker read
+# and the one batched check step with whatever this suite writes. That is what
+# makes states no rig can be put into on demand — an unhealthy container, an
+# expired certificate, an acme.json whose schema has shifted, a store this user
+# cannot read — reachable without a server. The rig-driven half (that the
+# numbers match a real server, and that nothing is written there) is in
+# tests/integration/check_server_test.sh.
+
+stub_dir="$tmpdir/stub"
+mkdir -p "$stub_dir"
+ssh_log="$tmpdir/ssh.log"
+marker_payload="$tmpdir/marker-payload"
+check_payload="$tmpdir/check-payload"
+
+cat > "$stub_dir/ssh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SSH_LOG"
+last="${!#}"
+case "$last" in true) exit 0 ;; esac
+case "$*" in *"-O exit"*) exit 0 ;; esac
+# The marker read is the step that names the apps pointer; everything else is
+# the check step.
+case "$*" in
+    *"/etc/kasbah/apps-path"*) cat "$MARKER_PAYLOAD"; exit "${MARKER_RC:-0}" ;;
+esac
+[ -z "${CHECK_STEP_RC:-}" ] || exit "$CHECK_STEP_RC"
+cat "$CHECK_PAYLOAD"
+STUB
+chmod 0755 "$stub_dir/ssh"
+
+check_cli() {
+    local dir="$1"; shift
+    : > "$ssh_log"
+    (cd "$dir" && env PATH="$stub_dir:$PATH" SSH_LOG="$ssh_log" \
+        MARKER_PAYLOAD="$marker_payload" CHECK_PAYLOAD="$check_payload" \
+        "$kasbah" check "$@" 2>&1)
+}
+
+b64() { printf '%s' "$1" | base64 -w0; }
+
+# A server prepared at /apps, 16 cores and 60 GiB, so the marker's 90% ceiling
+# is the 14.4 / 54g `server init` computes.
+write_marker() {
+    {
+        printf 'apps=/apps\nsource=default\n'
+        printf '%s\n' "${1:-{\"kasbah_version\":\"0.1.0-dev\",\"apps_path\":\"/apps\",\"data_path\":\"/apps/data\",\"cpu_limit\":\"14.4\",\"mem_limit\":\"54g\"\}}"
+    } > "$marker_payload"
+}
+write_marker
+
+# A certificate the store can carry. Generated per run for the valid cases, so
+# they never start failing on a fixed date; the expired one is a fixed literal
+# below, because openssl 3.0 cannot backdate a certificate it issues.
+gen_cert() {
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout /dev/null -out /dev/stdout \
+        -subj "/CN=$2/O=kasbah test fixture" -days "$1" 2>/dev/null
+}
+cert_valid="$(gen_cert 400 demo.example.com)"
+cert_soon="$(gen_cert 7 demo.example.com)"
+# Self-signed, CN=demo.example.com, notAfter 2024-03-01 — expired since, and
+# always will be.
+cert_expired='-----BEGIN CERTIFICATE-----
+MIIDHzCCAgegAwIBAgIUIGcPNgzoFnaGV2ty8ce2hky1lxEwDQYJKoZIhvcNAQEL
+BQAwOTEZMBcGA1UEAwwQZGVtby5leGFtcGxlLmNvbTEcMBoGA1UECgwTa2FzYmFo
+IHRlc3QgZml4dHVyZTAeFw0yNDAxMDExMjAwMDBaFw0yNDAzMDExMjAwMDBaMDkx
+GTAXBgNVBAMMEGRlbW8uZXhhbXBsZS5jb20xHDAaBgNVBAoME2thc2JhaCB0ZXN0
+IGZpeHR1cmUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDbyhCRvnet
+ftg7hTfbIBQ8JITW1j2GO2Yc+T+L1oHjUEsN8apeE3RB4UNY8BgFAStxzSOuLufW
+geLVYn/OV7IA8ucxIT7XCh0kLs4OVzt1Qvcz/ZcSVkiWW4myAxeAc25CBbwUGjMQ
+sgvHyK/OKgKtgKN4phHxdy74oNpkh2lWZzrLZYA50FNVf0o20pNNS6I7dSl/UjwN
+WdEdu/jffSSHQe0urPaFmWD4sbPZvIhdylQHZYiLX7BwQvWV3DyA8PARKFCXidic
+fR9bnorTc5R3BcnZ62MEsUqHhFeoWvJ/10I0xrpjBv+GezSY9RZznhAiqewiDKAk
+4ZstM8qJLW2FAgMBAAGjHzAdMBsGA1UdEQQUMBKCEGRlbW8uZXhhbXBsZS5jb20w
+DQYJKoZIhvcNAQELBQADggEBAG4I62Myy2heOxlrHxzWtdY96J194qS4zxQ8h+FO
+F+Nzf8j6lP4GFV7s0WU0NWhLdxWww6V3EGPD0Hp+lzvhkpfn0ww7rrTYknjkGgyZ
+VjFtg1THz9/KXefj9WoMXRdlsSoASBDoW4k1h/cEP1P9sHxFWqU6aUVWmUDBoKaa
+weJvDg3SWoEj9dTO0rrEydfIWuF7orYUFiOWudauArrIpzutng1rBLw3ZVnOnN8V
+uEgNKjiCJx3XIfxY/oBMHlTEdlJf9E71S1Js/PiB+ngV1X3LK6fc1217sGmDDhOG
+V3o4fyEFLUqSkQEc1/9oc3bhzM3sOqITTy9RjwS75WQYZgw=
+-----END CERTIFICATE-----'
+
+# The store, shaped the way Traefik writes it. `Account.PrivateKey` and each
+# entry's `key` carry a recognisable marker so the redaction assertions below
+# can look for something that must never be printed.
+ACME_SECRET=THIS-IS-PRIVATE-KEY-MATERIAL
+acme_store() {
+    local main="$1" pem="$2"
+    jq -nc --arg m "$main" --arg c "$(b64 "$pem")" --arg s "$ACME_SECRET" \
+        '{letsencrypt:{Account:{Email:"ops@example.com",PrivateKey:$s},
+          Certificates:[{domain:{main:$m,sans:["www."+$m]},certificate:$c,key:$s,Store:"default"}]}}'
+}
+
+srv_env='DOMAIN=demo.example.com
+# >>> kasbah managed block - do not edit, rewritten on every deploy >>>
+KASBAH_CPU_LIMIT=14.4
+KASBAH_MEM_LIMIT=54g
+# <<< kasbah managed block <<<'
+
+srv_registry='name: mail
+primary_domain: rig.test
+domains:
+  - rig.test
+  - shop.rig.test'
+
+srv_shared='http:
+  routers:
+    traefik-dashboard:
+      rule: "Host(`traefik.rig.test`)"
+      entryPoints: [websecure]'
+
+# The whole batched report, as the remote step writes it. Every case starts
+# from this and moves one key.
+# The blob the default payload carries, kept so the redaction assertions can
+# look for the thing that must never be printed. Grepping for the *decoded*
+# secret proves nothing on its own: the payload carries acme.json base64'd, so a
+# diagnostic that echoed the whole of it would still not contain the plaintext
+# — which is exactly how a redaction test scores zero against a mutant that
+# removes the redaction.
+ACME_B64=""
+write_check_payload() {
+    ACME_B64="$(b64 "$(acme_store demo.example.com "$cert_valid")")"
+    {
+        printf 'project_state=dir\n'
+        printf 'env_state=file\n'
+        printf 'env_b64=%s\n'      "$(b64 "$srv_env")"
+        printf 'registry_state=file\n'
+        printf 'registry_b64=%s\n' "$(b64 "$srv_registry")"
+        printf 'shared_state=file\n'
+        printf 'shared_b64=%s\n'   "$(b64 "$srv_shared")"
+        printf 'acme_state=file\n'
+        printf 'acme_b64=%s\n'     "$ACME_B64"
+        printf 'health_state=running\n'
+        printf 'health_health=healthy\n'
+        printf 'docker_error=\n'
+    } > "$check_payload"
+}
+
+payload_set() {
+    local key="${1%%=*}"
+    grep -v "^$key=" "$check_payload" > "$check_payload.next"
+    printf '%s\n' "$1" >> "$check_payload.next"
+    mv "$check_payload.next" "$check_payload"
+}
+
+# --- Case S1: the golden --server run ----------------------------------------
+srv1="$tmpdir/srv-ok"
+make_project "$srv1"
+printf 'health:\n  container: demo-web\n' >> "$srv1/kasbah.yml"
+printf 'mail:\n  domain: shop.rig.test\n' >> "$srv1/kasbah.yml"
+write_check_payload
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "a deployed, healthy, certified project passes --server (rc $rc)
+$out"
+assert 'grep -qF "Server (deploy@vps at /apps):" <<<"$out"' "the section names the target and the apps path (said '$out')"
+assert 'grep -qF "✓ /apps/demo exists on deploy@vps" <<<"$out"'  "the project dir (said '$out')"
+assert 'grep -qF "✓ .env on deploy@vps has no missing keys" <<<"$out"' "E02 against the server (said '$out')"
+assert 'grep -qF "✓ .env on deploy@vps has no extra keys" <<<"$out"'   "E03 against the server (said '$out')"
+assert 'grep -qF "✓ the mail stack on deploy@vps serves '"'"'shop.rig.test'"'"' (listed under domains:)" <<<"$out"' \
+    "M03 against the registry (said '$out')"
+assert 'grep -qF "✓ manifest health.container '"'"'demo-web'"'"' is running and healthy on deploy@vps" <<<"$out"' \
+    "the health container (said '$out')"
+assert 'grep -qE "✓ certificate for .demo.example.com. valid for 39[0-9] more day" <<<"$out"' \
+    "the certificate, with days left rather than an age (said '$out')"
+assert 'grep -qF "✓ effective resource limits on deploy@vps match the host'"'"'s 90% ceiling (14.4 cpus, 54g)" <<<"$out"' \
+    "R04 at the ceiling (said '$out')"
+# Two round trips and no more: the marker read, then one batched step.
+assert '[ "$(grep -c "bash. .-s" "$ssh_log")" = "2" ]' \
+    "one batched read after the marker, not one per fact (ssh saw: $(cat "$ssh_log"))"
+# Redaction, the reason this command does not reuse _ss_absorb_checked.
+assert '[ "${#ACME_B64}" -gt 200 ]' "the fixture store is a blob worth redacting (${#ACME_B64} bytes)"
+assert '! grep -qF "${ACME_B64:0:60}" <<<"$out"' \
+    "the acme payload is never printed (said '$out')"
+assert '! grep -qF "$ACME_SECRET" <<<"$out"' \
+    "nor is anything decoded out of it (said '$out')"
+
+# T05 tightened: the exact hostnames this server owns, named in the line.
+assert 'grep -qF "✓ No router claims a hostname kasbah owns on deploy@vps (traefik.rig.test mail.rig.test webmail.rig.test)" <<<"$out"' \
+    "T05 tightens to the server's own hostnames (said '$out')"
+assert '! grep -qF "reserved hostnames (traefik.*" <<<"$out"' \
+    "and the local heuristic line is gone (said '$out')"
+
+# --- Case S2: project not deployed -------------------------------------------
+write_check_payload
+payload_set project_state=absent
+payload_set env_state=absent
+payload_set env_b64=
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "a project that has not been deployed yet is a warning, not a failure (rc $rc)"
+assert 'grep -qF "⚠ /apps/demo does not exist on deploy@vps" <<<"$out"' "saying so (said '$out')"
+assert '! grep -qF "has no missing keys" <<<"$out"' \
+    "and the env rules say nothing about a .env that cannot exist (said '$out')"
+
+# A path that is there and is not a directory is a different answer: a deploy
+# would try to write the project into it.
+write_check_payload
+payload_set project_state=notdir
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "6" ]' "a project path that is not a directory fails (rc $rc)"
+assert 'grep -qF "✗ /apps/demo on deploy@vps exists and is not a directory" <<<"$out"' "saying so (said '$out')"
+
+# --- Case S3: env drift against the server ------------------------------------
+write_check_payload
+payload_set "env_b64=$(b64 'KASBAH_CPU_LIMIT=14.4
+KASBAH_MEM_LIMIT=54g
+SURPRISE=1')"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "drift on the server is a warning (rc $rc)"
+assert 'grep -qF "⚠ .env on deploy@vps is missing keys vs .env.prod.example: DOMAIN" <<<"$out"' \
+    "E02 names the missing key (said '$out')"
+assert 'grep -qF "⚠ .env on deploy@vps has extra keys not in .env.prod.example: SURPRISE" <<<"$out"' \
+    "E03 names the extra one (said '$out')"
+assert '! grep -qF "KASBAH_CPU_LIMIT" <<<"$(grep "extra keys" <<<"$out")"' \
+    "and the reserved prefix is exempt there exactly as it is locally (said '$out')"
+
+write_check_payload
+payload_set env_state=absent
+payload_set env_b64=
+out="$(check_cli "$srv1" --server deploy@vps)"
+assert 'grep -qF "⚠ /apps/demo/.env does not exist on deploy@vps" <<<"$out"' \
+    "a deployed project with no .env (said '$out')"
+
+# --- Case S4: M03 -------------------------------------------------------------
+write_check_payload
+payload_set "registry_b64=$(b64 'name: mail
+primary_domain: rig.test
+domains:
+  - rig.test')"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "6" ]' "M03 fails a claim the registry does not carry (rc $rc)"
+assert 'grep -qF "✗ the mail stack on deploy@vps does not serve '"'"'shop.rig.test'"'"'" <<<"$out"' \
+    "saying so, and naming add-mail-domain (said '$out')"
+assert 'grep -qF "kasbah server add-mail-domain deploy@vps shop.rig.test" <<<"$out"' \
+    "with the command that fixes it (said '$out')"
+
+write_check_payload
+payload_set registry_state=absent
+payload_set registry_b64=
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "6" ]' "M03 fails a claim on a server with no mail stack (rc $rc)"
+assert 'grep -qF "there is no mail stack on deploy@vps" <<<"$out"' "saying so (said '$out')"
+
+# The primary_domain is served whether or not anyone listed it — the same rule
+# `server init` renders the registry under.
+srvm="$tmpdir/srv-primary"
+make_project "$srvm"
+printf 'mail:\n  domain: rig.test\n' >> "$srvm/kasbah.yml"
+write_check_payload
+out="$(check_cli "$srvm" --server deploy@vps)"
+assert 'grep -qF "✓ the mail stack on deploy@vps serves '"'"'rig.test'"'"' (its primary_domain)" <<<"$out"' \
+    "the primary counts as served (said '$out')"
+
+# A project that claims no mail is asked nothing.
+srvn="$tmpdir/srv-nomail"
+make_project "$srvn"
+write_check_payload
+out="$(check_cli "$srvn" --server deploy@vps)"
+assert '! grep -qF "mail stack on deploy@vps" <<<"$out"' \
+    "M03 says nothing about a project with no mail: block (said '$out')"
+
+# --- Case S5: the health container --------------------------------------------
+write_check_payload
+payload_set health_health=unhealthy
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "6" ]' "an unhealthy health.container fails (rc $rc)"
+assert 'grep -qF "✗ manifest health.container '"'"'demo-web'"'"' is running and UNHEALTHY on deploy@vps" <<<"$out"' \
+    "saying so (said '$out')"
+
+write_check_payload
+payload_set health_state=absent
+payload_set health_health=none
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "a container that is not running warns (rc $rc)"
+assert 'grep -qF "⚠ manifest health.container '"'"'demo-web'"'"' is not running on deploy@vps" <<<"$out"' \
+    "saying so (said '$out')"
+
+write_check_payload
+payload_set health_state=restarting
+payload_set health_health=starting
+out="$(check_cli "$srv1" --server deploy@vps)"
+assert 'grep -qF "⚠ manifest health.container '"'"'demo-web'"'"' is restarting and still starting" <<<"$out"' \
+    "a starting container warns and says which state it is in (said '$out')"
+
+# --- Case S6: certificate status ----------------------------------------------
+write_check_payload
+payload_set "acme_b64=$(b64 "$(acme_store demo.example.com "$cert_expired")")"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "6" ]' "an expired certificate fails (rc $rc)"
+assert 'grep -qF "✗ certificate for '"'"'demo.example.com'"'"' EXPIRED" <<<"$out"' "saying so (said '$out')"
+assert 'grep -qF "Mar  1 12:00:00 2024 GMT" <<<"$out"' "with the expiry openssl read (said '$out')"
+assert '! grep -qiF "notBefore" <<<"$out"' \
+    "and nothing about notBefore, which Let's Encrypt backdates (said '$out')"
+
+write_check_payload
+payload_set "acme_b64=$(b64 "$(acme_store demo.example.com "$cert_soon")")"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "a certificate inside Traefik's renewal window warns (rc $rc)"
+assert 'grep -qE "⚠ certificate for .demo.example.com. expires in [0-9]+ day" <<<"$out"' "saying so (said '$out')"
+
+# A certificate that carries the domain as a SAN rather than as its main name.
+write_check_payload
+payload_set "acme_b64=$(b64 "$(jq -nc --arg c "$(b64 "$cert_valid")" \
+    '{letsencrypt:{Account:{},Certificates:[{domain:{main:"other.example.com",sans:["demo.example.com"]},certificate:$c,Store:"default"}]}}')")"
+out="$(check_cli "$srv1" --server deploy@vps)"
+assert 'grep -qF "certificate for '"'"'demo.example.com'"'"' (as a SAN of other.example.com)" <<<"$out"' \
+    "a SAN match says which certificate it found (said '$out')"
+
+# The five ways a store can fail to answer, which are five different remedies.
+write_check_payload
+payload_set "acme_b64=$(b64 '{"letsencrypt":{"Account":{},"Certificates":[]}}')"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "an empty store warns rather than failing (rc $rc)"
+assert 'grep -qF "⚠ the certificate store at /apps/data/traefik/letsencrypt/acme.json on deploy@vps holds no certificates" <<<"$out"' \
+    "saying so (said '$out')"
+
+write_check_payload
+payload_set "acme_b64=$(b64 "$(acme_store other.example.com "$cert_valid")")"
+out="$(check_cli "$srv1" --server deploy@vps)"
+assert 'grep -qF "⚠ no certificate for '"'"'demo.example.com'"'"'" <<<"$out"' \
+    "a store with certificates but not this one (said '$out')"
+assert 'grep -qF "(1 in the store)" <<<"$out"' "and how many there were (said '$out')"
+
+write_check_payload
+payload_set "acme_b64=$(b64 'this is not json at all { {')"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "an unparseable store warns (rc $rc)"
+assert 'grep -qF "does not parse as JSON" <<<"$out"' "saying so (said '$out')"
+
+# Schema-shifted two ways: another resolver name, and a Certificates that is
+# not a list.
+write_check_payload
+payload_set "acme_b64=$(b64 '{"myresolver":{"Account":{},"Certificates":[]}}')"
+out="$(check_cli "$srv1" --server deploy@vps)"
+assert 'grep -qF "has no '"'"'letsencrypt'"'"' store" <<<"$out"' \
+    "a store keyed by another resolver name (said '$out')"
+
+write_check_payload
+payload_set "acme_b64=$(b64 '{"letsencrypt":{"Account":{},"Certificates":{"main":"demo.example.com"}}}')"
+out="$(check_cli "$srv1" --server deploy@vps)"
+assert 'grep -qF "whose Certificates is a object, not a list" <<<"$out"' \
+    "a Certificates that is not an array (said '$out')"
+
+# Permission denied — the file is there and this user cannot read it.
+write_check_payload
+payload_set acme_state=unreadable
+payload_set acme_b64=
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "an unreadable store warns (rc $rc)"
+assert 'grep -qF "cannot be read by this user" <<<"$out"' "saying so (said '$out')"
+assert 'grep -qF "mode 600 and owned by the deploy user" <<<"$out"' \
+    "with what it should have been (said '$out')"
+
+write_check_payload
+payload_set acme_state=absent
+payload_set acme_b64=
+out="$(check_cli "$srv1" --server deploy@vps)"
+assert 'grep -qF "⚠ no certificate store at /apps/data/traefik/letsencrypt/acme.json" <<<"$out"' \
+    "no store at all is a different answer from an empty one (said '$out')"
+
+# --- Case S7: R04 --------------------------------------------------------------
+write_check_payload
+payload_set "env_b64=$(b64 'DOMAIN=demo.example.com
+KASBAH_CPU_LIMIT=15.9
+KASBAH_MEM_LIMIT=54g')"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "6" ]' "R04 fails a limit above the host's ceiling (rc $rc)"
+assert 'grep -qF "✗ effective resource limits on deploy@vps are above the host'"'"'s 90% ceiling: cpus 15.9 > 14.4" <<<"$out"' \
+    "naming the dimension and both numbers (said '$out')"
+
+write_check_payload
+payload_set "env_b64=$(b64 'DOMAIN=demo.example.com
+KASBAH_CPU_LIMIT=14.4
+KASBAH_MEM_LIMIT=60g')"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "6" ]' "R04 fails a memory limit above the ceiling too (rc $rc)"
+assert 'grep -qF "mem_limit 60g > 54g" <<<"$out"' "naming that dimension (said '$out')"
+
+write_check_payload
+payload_set "env_b64=$(b64 'DOMAIN=demo.example.com
+KASBAH_CPU_LIMIT=2.0
+KASBAH_MEM_LIMIT=1g')"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "R04 warns rather than fails below the ceiling (rc $rc)"
+assert 'grep -qF "⚠ effective resource limits on deploy@vps are below the host'"'"'s 90% ceiling: cpus 2.0 < 14.4; mem_limit 1g < 54g" <<<"$out"' \
+    "naming both dimensions (said '$out')"
+
+# The same limit in another spelling is the same limit: 55296m is 54g.
+write_check_payload
+payload_set "env_b64=$(b64 'DOMAIN=demo.example.com
+KASBAH_CPU_LIMIT=14.4
+KASBAH_MEM_LIMIT=55296m')"
+out="$(check_cli "$srv1" --server deploy@vps)"
+assert 'grep -qF "✓ effective resource limits on deploy@vps match" <<<"$out"' \
+    "sizes are compared in bytes, not as strings (said '$out')"
+
+write_check_payload
+payload_set "env_b64=$(b64 'DOMAIN=demo.example.com')"
+out="$(check_cli "$srv1" --server deploy@vps)"
+assert 'grep -qF "carries no KASBAH_CPU_LIMIT or KASBAH_MEM_LIMIT" <<<"$out"' \
+    "a .env whose managed block was edited out (said '$out')"
+
+write_check_payload
+payload_set "env_b64=$(b64 'DOMAIN=demo.example.com
+KASBAH_CPU_LIMIT=all-of-them
+KASBAH_MEM_LIMIT=54g')"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "a limit that is not a number warns rather than failing (rc $rc)"
+assert 'grep -qF "cpus '"'"'all-of-them'"'"' is not a number" <<<"$out"' "saying so (said '$out')"
+
+# --- Case S8: T05, the tightening that changes a verdict -----------------------
+# `mail.other.example.com` is not a hostname this server owns. The local
+# heuristic fails it on the first label; the exact match passes it.
+srvt="$tmpdir/srv-t05"
+make_project "$srvt" t05 mail.other.example.com
+out="$(cd "$srvt" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]' "locally, the first-label heuristic fails mail.other.example.com (rc $rc)"
+assert 'grep -qF "✗ Routers claim reserved hostnames:" <<<"$out"' "with the heuristic's wording (said '$out')"
+write_check_payload
+out="$(check_cli "$srvt" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "and under --server the exact match passes it (rc $rc)
+$out"
+assert 'grep -qF "✓ No router claims a hostname kasbah owns on deploy@vps" <<<"$out"' \
+    "with the exact form's wording (said '$out')"
+
+# And the hostname the server really owns fails, named as the server's.
+srvt2="$tmpdir/srv-t05-owned"
+make_project "$srvt2" webmailer webmail.rig.test
+write_check_payload
+out="$(check_cli "$srvt2" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "6" ]' "a router on webmail.<primary> fails under --server (rc $rc)"
+assert 'grep -qF "✗ Routers claim hostnames kasbah owns on deploy@vps:" <<<"$out"' "saying so (said '$out')"
+assert 'grep -qF "webmail.rig.test" <<<"$out"' "and naming the hostname (said '$out')"
+
+# A server whose dashboard fragment cannot be read and which has no mail
+# registry yields no set at all, and T05 falls back to the heuristic rather
+# than passing every hostname on a server it could not ask.
+write_check_payload
+payload_set shared_state=unreadable
+payload_set shared_b64=
+payload_set registry_state=absent
+payload_set registry_b64=
+out="$(check_cli "$srvt" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "6" ]' "with no reserved set, T05 keeps the local heuristic (rc $rc)"
+assert 'grep -qF "✗ Routers claim reserved hostnames:" <<<"$out"' "and its wording (said '$out')"
+assert 'grep -qF "heuristic: deploy@vps was asked and neither its dashboard fragment nor a mail registry could be read" <<<"$out"' \
+    "saying which form answered — the line is otherwise the local one (said '$out')"
+
+# --- Case S8b: T05 falls back per family, never per set -------------------------
+# The two hostname families have two sources, and either can be unreadable
+# alone. A set built as one list would then be non-empty, the exact branch would
+# run, and the family with no source would be guarded by nothing at all — a
+# dashboard-hostname claim passing in silence because a file could not be read.
+#
+# Half one: the dashboard fragment is unreadable, the registry is fine.
+srvt3="$tmpdir/srv-t05-noapex"
+make_project "$srvt3" dash traefik.rig.test
+write_check_payload
+payload_set shared_state=unreadable
+payload_set shared_b64=
+out="$(check_cli "$srvt3" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "6" ]' \
+    "with no apex, a claim on the dashboard hostname still fails — by heuristic (rc $rc)
+$out"
+assert 'grep -qF "✗ Routers claim hostnames kasbah owns on deploy@vps:" <<<"$out"' \
+    "in the exact form's line, because the mail family was read (said '$out')"
+assert 'grep -qF "traefik.* by heuristic" <<<"$out"' \
+    "which names the family that fell back (said '$out')"
+assert 'grep -qF "mail.rig.test webmail.rig.test" <<<"$out"' \
+    "beside the two it matched exactly (said '$out')"
+
+# And the same server still lets go of a mail-shaped hostname on somebody
+# else's apex, which is the exact match doing its job for the family that has one.
+write_check_payload
+payload_set shared_state=unreadable
+payload_set shared_b64=
+out="$(check_cli "$srvt" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' \
+    "the mail family keeps matching exactly while traefik falls back (rc $rc)
+$out"
+
+# Half two: the registry is gone, the dashboard fragment is fine. The mail pair
+# is then exact off the apex — `server init --with-mail` would claim precisely
+# those — so nothing falls back at all.
+write_check_payload
+payload_set registry_state=absent
+payload_set registry_b64=
+out="$(check_cli "$srvt2" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "6" ]' "with no registry, webmail.<apex> is still reserved (rc $rc)"
+assert 'grep -qF "webmail.rig.test" <<<"$out"' "and named (said '$out')"
+assert '! grep -qF "by heuristic" <<<"$out"' \
+    "with no family on the heuristic — the apex answers for all three (said '$out')"
+
+# --- Case S8c: a SAN carrying a space must not match by accident -----------------
+# The store is read one index at a time for this: a SAN list joined into one
+# string and split back on spaces turns `"x demo.example.com"` into two tokens,
+# and the domain would be reported as covered by a certificate that does not
+# cover it — a ✓ with an expiry date on it.
+write_check_payload
+payload_set "acme_b64=$(b64 "$(jq -nc --arg c "$(b64 "$cert_valid")" \
+    '{letsencrypt:{Account:{},Certificates:[{domain:{main:"other.example.com",sans:["evil.test demo.example.com"]},certificate:$c,Store:"default"}]}}')")"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "a SAN with a space in it is one SAN (rc $rc)"
+assert 'grep -qF "⚠ no certificate for '"'"'demo.example.com'"'"'" <<<"$out"' \
+    "and does not cover demo.example.com (said '$out')"
+assert '! grep -qF "✓ certificate for '"'"'demo.example.com'"'"'" <<<"$out"' \
+    "so nothing reports an expiry for a certificate that is not for it (said '$out')"
+# The control: the same list without the space does match, so the assertion
+# above is about the space and not about the reader being broken.
+write_check_payload
+payload_set "acme_b64=$(b64 "$(jq -nc --arg c "$(b64 "$cert_valid")" \
+    '{letsencrypt:{Account:{},Certificates:[{domain:{main:"other.example.com",sans:["evil.test","demo.example.com"]},certificate:$c,Store:"default"}]}}')")"
+out="$(check_cli "$srv1" --server deploy@vps)"
+assert 'grep -qF "✓ certificate for '"'"'demo.example.com'"'"' (as a SAN of other.example.com)" <<<"$out"' \
+    "a real second SAN still matches (said '$out')"
+
+# --- Case S8d: a daemon that is not answering is not a container that is gone ----
+write_check_payload
+payload_set health_state=nodaemon
+payload_set health_health=none
+payload_set "docker_error=Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "a daemon that is down warns (rc $rc)"
+assert 'grep -qF "the docker daemon on deploy@vps is not answering" <<<"$out"' \
+    "and says that, not that the container is down (said '$out')"
+assert 'grep -qF "nothing here says the container is down" <<<"$out"' \
+    "explicitly (said '$out')"
+assert 'grep -qF "Is the docker daemon running?" <<<"$out"' \
+    "quoting what docker itself said (said '$out')"
+assert '! grep -qF "is not running on deploy@vps" <<<"$out"' \
+    "and never the absent-container wording (said '$out')"
+
+# --- Case S9: the protocol, and what a broken one may print --------------------
+write_check_payload
+grep -v '^health_health=' "$check_payload" > "$check_payload.t" && mv "$check_payload.t" "$check_payload"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "1" ]' "a truncated report ends the run rather than being absorbed (rc $rc)"
+assert 'grep -qF "reported no health_health" <<<"$out"' "naming the key that never arrived (said '$out')"
+assert '! grep -qF "${ACME_B64:0:60}" <<<"$out"' \
+    "and the diagnostic does not echo the payload, which carries acme.json (said '$out')"
+assert '! grep -qF "$ACME_SECRET" <<<"$out"' \
+    "nor anything decoded out of it (said '$out')"
+assert 'grep -qF "acme_state acme_b64 health_state" <<<"$out"' \
+    "what it reports instead is the key names, which kasbah chose (said '$out')"
+assert 'grep -qF "private key material" <<<"$out"' "saying why it does not (said '$out')"
+
+# --- Case S10: the flag itself, and last_server --------------------------------
+# `check --server` is on docs/project-manifest.md's list of commands that read
+# and write last_server, so a bare `--server` means the server this project last
+# talked to — and a project that has never talked to one is refused with the
+# remedy rather than run locally.
+srvl="$tmpdir/srv-laststate"
+make_project "$srvl"
+out="$(cd "$srvl" && "$kasbah" check --server 2>&1)"; rc=$?
+assert '[ "$rc" = "1" ]' "a bare --server on a project with no last_server is refused (rc $rc)"
+assert 'grep -qF "has never talked to one" <<<"$out"' "saying so (said '$out')"
+assert 'grep -qF "last_server" <<<"$out"' "and naming where the value would live (said '$out')"
+
+write_check_payload
+out="$(check_cli "$srvl" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "the same project with the server named runs (rc $rc)"
+assert '[ "$(jq -r .last_server "$srvl/.kasbah/state.json" 2>/dev/null)" = "deploy@vps" ]' \
+    "and the run records last_server (state: $(cat "$srvl/.kasbah/state.json" 2>/dev/null))"
+out="$(check_cli "$srvl" --server)"; rc=$?
+assert '[ "$rc" = "0" ]' "so a bare --server afterwards uses it (rc $rc)"
+assert 'grep -qF "Server (deploy@vps at /apps):" <<<"$out"' \
+    "against the remembered server (said '$out')"
+
+out="$(cd "$srvl" && "$kasbah" check --server= 2>&1)"; rc=$?
+assert '[ "$rc" = "1" ]' "an empty --server= is refused rather than falling back to it (rc $rc)"
+assert 'grep -qF "must name the server to ask" <<<"$out"' "saying so (said '$out')"
+out="$(cd "$srv1" && "$kasbah" check --help 2>&1)"
+assert 'grep -qF -- "--server USER@HOST" <<<"$out"' "--help documents the flag (said '$out')"
+
+# --- Case S11: the remote step writes nothing ----------------------------------
+# Read from the source rather than asserted about behaviour: the payload is the
+# whole of what runs on the server, and a reviewer can check this claim by
+# reading the same lines. The rig-driven proof (a digest of the apps and data
+# trees across a real run) is in tests/integration/check_server_test.sh.
+payload_src="$(awk '/<<.REMOTE./{p=1;next} /^REMOTE$/{p=0} p' "$repo_dir/lib/check_server.sh")"
+assert '[ -n "$payload_src" ]' "the remote payload was found in lib/check_server.sh"
+# The two redirections a read-only step legitimately makes are dropped first,
+# so what is left to look for is any redirection at all.
+payload_writes="$(sed -e "s#2>/dev/null##g" -e "s#>/dev/null##g" -e "s#2>&1##g" <<<"$payload_src")"
+assert '! grep -qE "mkdir|touch|[^a-z_]rm |[^a-z_]mv |chmod|chown|tee |[0-9]?>" <<<"$payload_writes"' \
+    "the remote step has no verb that writes to the server's filesystem"
+docker_verbs="$(grep -oE "[^a-z_]docker [a-z]+" <<<"$payload_src")"
+assert '[ -n "$docker_verbs" ]' "the remote step calls docker at all — else the next assertion is vacuous"
+# `inspect` reads one container; `version` asks the daemon whether it is there
+# at all, which is how a dead daemon is told apart from an absent container.
+# Both are reads, and they are the only two allowed.
+assert '[ -z "$(grep -vE "docker (inspect|version)" <<<"$docker_verbs")" ]' \
+    "and every docker verb it uses is a read (found: $(tr -d " " <<<"$docker_verbs" | sort -u | tr "\n" " "))"
+
 exit "$fail"

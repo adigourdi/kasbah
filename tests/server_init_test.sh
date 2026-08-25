@@ -62,7 +62,7 @@ case "$mode" in
         v=""
         case "$1" in
             auth)   _si_extract_auth   "$body" v ;;
-            domain) _si_extract_domain "$body" v ;;
+            domain) traefik_dashboard_apex "$body" v ;;
             email)  _si_extract_email  "$body" v ;;
             ca)     _si_extract_ca     "$body" v ;;
         esac

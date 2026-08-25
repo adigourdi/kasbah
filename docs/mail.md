@@ -222,8 +222,9 @@ argument, since the far side has no way to fetch them.
 same claim. M02 is a failure rather than a warning precisely because the copy
 is copy-if-missing: a broken pre-seed that lands is the version SnappyMail
 keeps. **M03** — "the stack on the VPS knows this domain" — is a `--server`
-rule and lands with `check --server`; the deploy asks that question anyway, on
-every deploy.
+rule and runs under `kasbah check --server`, which reads this file and fails a
+claim it does not carry; the deploy asks that question anyway, on every deploy,
+and only warns, because an unmet claim costs mail rather than the site.
 
 What kasbah does NOT do:
 - Create mailboxes.
