@@ -44,13 +44,20 @@ two tags per image.
 
 ### Retention
 
-`:<version>` tags are pruned routinely: `kasbah server prune` (roadmap v0.2)
+`:<version>` tags are pruned routinely: `kasbah server prune`
 removes version tags that are **both** older than 3 months **and** not
 among the project's last 3 deployed versions — where the version
 `:current` points at counts as the first of the 3. `:current` itself is
 never pruned. The time window mirrors the versions.log rotation cutoff;
 the count floor guarantees rollback targets exist (current plus two
 older) even on rarely-deployed projects.
+
+Three further things are never removed, and `cli.md` → `kasbah server
+prune` states them with the command: the image `:current` resolves to
+(whatever the record says), a tag any container was created from, and
+every tag of a repository more than one project declares — or that a
+project whose `compose.yml` kasbah could not read *might* declare, which
+stops the run outright.
 
 The retention window **is** the rollback window. Anything older is a
 roll-forward (ship a fix), not a rollback. Kasbah does not promise to

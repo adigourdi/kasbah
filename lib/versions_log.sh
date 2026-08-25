@@ -321,24 +321,75 @@ REMOTE
     # caller the exact shape of "this project has never been deployed here",
     # which is the guard that fails open (docs/phases/05-undo.md). The archive
     # is history, and losing it must not stop the record being read at all — so
-    # the same states are a warning there.
-    case "$VLOG_ACTIVE_STATE" in
-        ok|missing|empty) ;;
-        *)
-            err "$VLOG_ACTIVE_PATH on $VLOG_TARGET cannot be read — the probe called it '$VLOG_ACTIVE_STATE'"
-            case "$VLOG_ACTIVE_STATE" in
-                notfile)    err_cont "something that is not a regular file is where the deploy record should be" ;;
-                unreadable) err_cont "the file is there and this ssh user cannot read it — a deploy that ran under sudo leaves that" ;;
-                noaccess)   err_cont "the directory holding it cannot be entered by this ssh user — a deploy that ran under sudo leaves that" ;;
-                notdir)     err_cont "a path above it is occupied by something that is not a directory" ;;
-                *)          err_cont "which is a state this kasbah does not know" ;;
-            esac
-            err_cont "kasbah will not read this as an empty record: 'the record cannot be read' and 'this"
-            err_cont "project has never been deployed here' are different answers, and rollback acts on"
-            err_cont "the difference."
-            exit 1
-            ;;
+    # the same states are a warning there (in vlog_adopt, below).
+    #
+    # Which of the two this *is* is vlog_active_usable's answer, asked here and
+    # by `server prune` on the same states, so that the one command that refuses
+    # rather than dies refuses on the same evidence.
+    if ! vlog_active_usable "$VLOG_ACTIVE_STATE"; then
+        err "$VLOG_ACTIVE_PATH on $VLOG_TARGET cannot be read — the probe called it '$VLOG_ACTIVE_STATE'"
+        case "$VLOG_ACTIVE_STATE" in
+            notfile)    err_cont "something that is not a regular file is where the deploy record should be" ;;
+            unreadable) err_cont "the file is there and this ssh user cannot read it — a deploy that ran under sudo leaves that" ;;
+            noaccess)   err_cont "the directory holding it cannot be entered by this ssh user — a deploy that ran under sudo leaves that" ;;
+            notdir)     err_cont "a path above it is occupied by something that is not a directory" ;;
+            *)          err_cont "which is a state this kasbah does not know" ;;
+        esac
+        err_cont "kasbah will not read this as an empty record: 'the record cannot be read' and 'this"
+        err_cont "project has never been deployed here' are different answers, and rollback acts on"
+        err_cont "the difference."
+        exit 1
+    fi
+    vlog_adopt "$VLOG_TARGET" "$VLOG_ACTIVE_PATH" \
+        "${_vf_fact[active_state]}" "${_vf_fact[archive_state]}" \
+        "$_vf_active_b64" "$_vf_archive_b64" \
+        || die "the deploy record read on $VLOG_TARGET sent $VLOG_ACTIVE_PATH back as something that is not base64"
+    return 0
+}
+
+# vlog_active_usable STATE — is that one of the states a reader may read an
+# active log's *contents* out of? ok, missing and empty are; the four "cannot"
+# states are not, and an empty answer there is indistinguishable from a project
+# that has never been deployed.
+#
+# A predicate rather than a case in each caller because the two callers do
+# different things with the answer and must not differ about the question:
+# vlog_fetch dies, `server prune` skips the project whole and keeps going.
+vlog_active_usable() {
+    case "${1%$'\r'}" in
+        ok|missing|empty) return 0 ;;
     esac
+    return 1
+}
+
+# vlog_adopt TARGET ACTIVE_PATH ACTIVE_STATE ARCHIVE_STATE ACTIVE_B64 ARCHIVE_B64
+#
+# The half of vlog_fetch that has nothing to do with ssh: the two states and the
+# two base64 payloads, turned into VLOG_* variables and the entry arrays. Split
+# out so that a caller which read those four values in *its own* batched probe
+# gets the same reader — `kasbah server prune` reads every project's record in
+# one round trip and would otherwise need a second copy of the archive decode,
+# and a second copy of the archive decode is a second opinion about whether a
+# record is whole.
+#
+# Returns 1 when the active payload is not base64 — the caller says what that
+# means, because vlog_fetch dies over it and prune declines that project. Every
+# archive condition is a warning here exactly as it is in vlog_fetch; what a
+# reader does about it is vlog_archive_whole's to be asked.
+#
+# The active state is *not* checked: vlog_active_usable is a separate question,
+# asked before this, so that each caller's refusal is its own.
+vlog_adopt() {
+    VLOG_TARGET="$1"
+    VLOG_ACTIVE_PATH="$2"
+    VLOG_ARCHIVE_PATH="$2.gz"
+    VLOG_ACTIVE_STATE="${3%$'\r'}"
+    VLOG_ARCHIVE_STATE="${4%$'\r'}"
+    VLOG_ARCHIVE_DAMAGED=no
+    VLOG_ARCHIVE_REASON=""
+    local _ad_active_b64="$5" _ad_archive_b64="$6"
+    local _ad_active="" _ad_archive=""
+
     case "$VLOG_ARCHIVE_STATE" in
         ok|missing|empty) ;;
         *)
@@ -348,16 +399,21 @@ REMOTE
     esac
 
     if [ "$VLOG_ACTIVE_STATE" = ok ]; then
-        _vlog_b64_decode "$_vf_active_b64" _vf_active \
-            || die "the deploy record read on $VLOG_TARGET sent $VLOG_ACTIVE_PATH back as something that is not base64"
+        if ! _vlog_b64_decode "$_ad_active_b64" _ad_active; then
+            # Loaded empty rather than left holding the previous project's
+            # entries: a caller that ignored the status must not read one
+            # project's record as another's.
+            vlog_load "" ""
+            return 1
+        fi
         # A file of nothing but blank lines is empty in the only sense a reader
         # cares about, and `kasbah server status` already calls it that.
-        [ -n "${_vf_active//[[:space:]]/}" ] || { VLOG_ACTIVE_STATE=empty; _vf_active=""; }
+        [ -n "${_ad_active//[[:space:]]/}" ] || { VLOG_ACTIVE_STATE=empty; _ad_active=""; }
     fi
 
-    [ "$VLOG_ARCHIVE_STATE" != ok ] || _vlog_decode_archive "$_vf_archive_b64" _vf_archive
+    [ "$VLOG_ARCHIVE_STATE" != ok ] || _vlog_decode_archive "$_ad_archive_b64" _ad_archive
 
-    vlog_load "$_vf_archive" "$_vf_active"
+    vlog_load "$_ad_archive" "$_ad_active"
     return 0
 }
 

@@ -144,14 +144,61 @@ Re-running init against a server whose pointer records a **different** apps
 path is refused: one machine runs one kasbah, because one Traefik holds `:80`
 and `:443`.
 
-### `kasbah server prune USER@HOST` *(roadmap v0.2)*
+### `kasbah server prune USER@HOST [--yes]`
 
 Image retention cleanup across all projects on the VPS: removes
 `:<version>` image tags that are both older than 3 months and not among
 the project's last 3 deployed versions — the version `:current` points
 at counts as the first of the 3, and `:current` itself is never pruned.
 The time window mirrors versions.log rotation — see `build-deploy.md`.
-Prints what it would remove and asks once.
+Prints what it would remove and asks once; `--yes` answers that question
+for scripts, and without it and without a terminal the run stops naming
+the flag. There is **no `--apps-path`** — `server status` is the only
+command that takes one. Where the server was prepared is the server's own
+answer, and aiming a destructive command at a tree the server does not
+consider its own is not a recovery path: a damaged pointer refuses, and
+the refusal sends you to `kasbah server status <host> --apps-path=<dir>`
+(read-only) to find the tree and then to `kasbah server init` to repair
+the pointer.
+
+What a project's version tags *are* comes from the compose file on the
+server: every service with a `build:` key, and the repository its
+`image:` names. A stock image (`redis:7-alpine`) is in no project's
+`build:` and is therefore never a candidate, and a repository two
+projects both declare is left alone — no single project's record is
+evidence about it.
+
+"Last 3 deployed" comes from `versions.log`, never from an image's tags
+or dates: a re-tagged image lies about its age. An image's age is its own
+`Created`, which a `docker load` preserves. A tag a container holds is
+kept and the report says which container.
+
+**A project kasbah cannot read whole is skipped entirely**, with a
+warning and not one tag removed — an unreadable `versions.log`, an
+archive that did not decode whole, a record holding a line the parser
+could not read among the entries it had to walk, a record with no
+entries at all, or a `compose.yml` it cannot read **or cannot parse**.
+Deleting on the absence of a record is deleting on no evidence.
+
+A project whose `compose.yml` cannot be read or parsed is a stronger
+condition than that, and it stops the whole run: kasbah cannot enumerate
+what images that project declares, so it cannot rule it out as a second
+claimant of *any* repository on the host, and nothing on the server is
+provably single-owner. Prune removes nothing anywhere, says so in its own
+sentence, and names the project to fix. Reading such a project as
+"declares nothing" would defeat the multi-owner guard with the very
+condition that triggers the skip, and there is no honest narrowing — the
+file that would say which repositories it might have claimed is the file
+kasbah could not read.
+
+The bind-mount root is not a project: `--data-path` can put it under the
+apps path with any name, so prune reads `data_path` out of the server
+marker and drops that row, exactly as `server status` does.
+
+Two round trips: one batched read of the whole server, and — only if
+there is something to remove and the operator said yes — one
+`docker image rm`. Exits 4 on a host with no server marker: prune does
+not delete images on a machine it cannot tell is a kasbah server.
 
 ### `kasbah server destroy USER@HOST` *(roadmap v0.3)*
 

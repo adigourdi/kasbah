@@ -84,6 +84,7 @@ Commands:
   exec [USER@HOST] SERVICE -- CMD...         Run a command in one of this project's containers.
   server init USER@HOST [flags]              Prepare a VPS to host projects.
   server status USER@HOST                    Report what a prepared VPS is running.
+  server prune USER@HOST [--yes]             Remove image tags outside the retention window.
   server add-mail-domain USER@HOST DOMAIN    Join a domain to the VPS's shared mail stack.
   server mail-setup-guide USER@HOST          Print the mail stack's setup walkthrough.
 
@@ -105,6 +106,10 @@ dispatch_server() {
             . "$KASBAH_LIB_DIR/server_status.sh"
             cmd_server_status "$@"
             ;;
+        prune)
+            . "$KASBAH_LIB_DIR/prune.sh"
+            cmd_server_prune "$@"
+            ;;
         add-mail-domain)
             . "$KASBAH_LIB_DIR/server_mail.sh"
             cmd_server_add_mail_domain "$@"
@@ -120,6 +125,8 @@ Usage: kasbah server <subcommand> USER@HOST [args...]
 Subcommands:
   init USER@HOST [flags]   Prepare a VPS to host projects.
   status USER@HOST         Report what a prepared VPS is running (read-only).
+  prune USER@HOST [--yes]  Remove <image>:<version> tags older than 3 months and
+                           outside each project's last 3 deployed versions.
   add-mail-domain USER@HOST DOMAIN
                            Join a domain to the shared mail stack (docs/mail.md).
   mail-setup-guide USER@HOST
@@ -129,10 +136,10 @@ Run \`kasbah server <subcommand> --help\` for its flags.
 EOF
             ;;
         '')
-            die "server: no subcommand given (expected: init, status, add-mail-domain, mail-setup-guide)"
+            die "server: no subcommand given (expected: init, status, prune, add-mail-domain, mail-setup-guide)"
             ;;
         *)
-            die "server: unknown subcommand '$sub' (expected: init, status, add-mail-domain, mail-setup-guide)"
+            die "server: unknown subcommand '$sub' (expected: init, status, prune, add-mail-domain, mail-setup-guide)"
             ;;
     esac
 }

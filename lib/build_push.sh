@@ -137,18 +137,10 @@ _bp_resolve_version() {
 
 # --- What the compose file says to build ------------------------------------------
 
-# `<image>:current` → `<image>`. The last colon counts only when it is in the
-# final path segment: a registry with a port (`reg.example:5000/app`) puts one
-# earlier, and stripping that would ship an image nobody can name.
-_bp_image_base() {
-    local _ib_ref="$1" _ib_out="$2" _ib_base="$1"
-
-    case "${_ib_ref##*/}" in
-        *:*) _ib_base="${_ib_ref%:*}" ;;
-    esac
-    printf -v "$_ib_out" '%s' "$_ib_base"
-    return 0
-}
+# `<image>:current` → `<image>` is `image_base` in lib/common.sh: `server prune`
+# reduces a compose `image:` to the same repository from the other end — what it
+# may delete — and one rule with two spellings is two answers to what an image
+# is called.
 
 # Every service with a `build:` key, and the image each one names. That is the
 # whole definition of "this project builds something" (docs/build-deploy.md →
@@ -187,7 +179,7 @@ _bp_read_built_services() {
             exit 1
         fi
 
-        _bp_image_base "$image" base
+        image_base "$image" base
         _BP_SERVICE+=("$svc")
         _BP_SOURCE+=("$image")
         _BP_IMAGE+=("$base:$_BP_VERSION")

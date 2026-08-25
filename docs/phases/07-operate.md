@@ -1050,3 +1050,81 @@ array element against a credential on stderr.
 the real-host report is byte-identical either way — a single-project server
 cannot show that defect. The evidence is a two-row unit case asserting both rows'
 state columns start at the same offset.
+
+### 7.4 — `server prune`
+
+**Delivered.** The retention policy exactly as `build-deploy.md` states it, across
+all projects, with a tri-state confirmation. Against the real host the answer was
+the one that proves the policy does not over-delete:
+
+    keep   gallery-website-web:0.1.0  :current points at this image
+    keep   gallery-website-web:0.1.1  among the last 3 deployed (0.1.0 0.1.1)
+    nothing to remove: every version tag on you@vps is inside the retention window.
+
+13 images before and after, unchanged. The shared/stock rule proved itself on
+real data rather than a fixture: `docker-mailserver:13` (2024-01),
+`snappymail:v2.38.2`, `traefik:2.11`, and **two non-kasbah projects on that host**
+(a static site and a UDP relay) are all older than the window and all
+untouched, because none is a version tag of a built image under `/apps`.
+
+**The safety hole was not in what prune deletes but in what a *skip* protects.**
+"Skipped whole" protected the skipped project's own tags. It did not protect the
+tags whose ownership that project could have **contested** — ownership was
+collected before any skip was decided, so a project whose `compose.yml` could not
+be read contributed no claims, and the multi-owner guard was defeated by the very
+condition that triggered the skip. The reproduction indicts itself:
+
+    skipped — nothing of these was removed
+      omega: its compose.yml cannot be read …, so which images it builds is unknown
+    …
+      removed shared-web:1.0.0
+
+The run states the premise that invalidates the deletion, and deletes anyway.
+
+**The rule chosen is a deliberate cliff:** while kasbah cannot enumerate *any*
+project's declared images, no repository on the server is provably single-owner
+and prune removes nothing anywhere. Server-wide, not narrowed — because the file
+that would say which repositories the project might have claimed is the file
+nobody could read, and image names are not derivable from project names
+(`image:` is whatever the compose says). Every narrowing is a guess about the
+contents of an unread file. An *absent* compose poisons alike: a directory with a
+`versions.log` and no compose is a project that has deployed, whose images sit on
+the host under names only that file records. One rule, not four. The cliff is
+loud — a dedicated report sentence naming the projects to fix, a per-tag reason
+on every kept tag, and a warning pair — and prune is maintenance, so nothing is
+blocked by deferring it.
+
+**A pairing the orchestrator asked for that cannot exist.** Every "did not remove
+X" assertion in this suite is paired with a positive on the same mechanism, and
+the brief demanded one for D1 too. Under a server-wide rule that pair is
+impossible in a single run: if unknown ownership poisons everything, no tag
+anywhere stays removable. The implementer said so rather than faking it, and
+moved the pairing to **two runs of one fixture** — same tags, same ages, differing
+only in whether an unknowable project is present — with the in-run positive being
+the exact reason string, so a keep for some other cause cannot masquerade as the
+guard firing. When a safety rule is global, the counterfactual has to move to the
+run level; there is nothing left inside one run to contrast with.
+
+**Two skips that looked like one.** A `compose.yml` that read fine but did not
+*parse* was neither skipped nor warned about: the skip test was on **file state**,
+the parse failure was swallowed, and the project fell into the branch commented
+"Nothing to prune, and nothing wrong: a project of stock images only." The
+function-level test did assert bad YAML is refused — but no command-level fixture
+had an `ok`-state compose that fails to parse, which is exactly why the
+drop-through was invisible. The two now carry distinct reasons, and the split is
+the legible statement of the two categories: **a record-side skip protects only
+its own tags; a compose-side skip stops the server.**
+
+**A shared predicate that nothing shared.** `vlog_active_usable` was extracted so
+that `vlog_fetch` and prune would refuse on the same evidence, and its comment
+said so — but `vlog_fetch` kept its own inline `case`. Gutting the predicate left
+history, rollback and status at **0 FAILs** and only prune failing. The seam the
+refactor existed to close was still open, and only a mutation across four suites
+showed it. Now 16 FAILs in `versions_log_test` when gutted.
+
+**`--apps-path` was added here and removed on review.** `docs/cli.md` states that
+no command but `server status` takes it — a value repeated on every invocation is
+a belief each caller holds separately — and an operator-supplied path is worse on
+a *destructive* command, because it aims deletion at a tree the server does not
+consider its own. The recovery messages were **re-pointed rather than deleted**:
+find the tree with `server status --apps-path`, then repair the pointer.

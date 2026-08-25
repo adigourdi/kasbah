@@ -58,7 +58,7 @@ one-line `kasbah.yml` and deploy identically.
 - `kasbah logs user@host [service]` / `kasbah exec`
 - `kasbah server upgrade-traefik`
 - `kasbah server prune` — image retention (keep the last 3 deployed
-  versions including current, plus anything < 3 months)
+  versions including current, plus anything < 3 months) — **shipped**
 
 **Exit criteria:** the original project's mail stack migrated to kasbah; at least one
 other project (e.g. a jellyfin stock, a second custom app) deployed

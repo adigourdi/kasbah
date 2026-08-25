@@ -8,7 +8,7 @@ _KASBAH_REMOTE_DEPLOY_LOADED=1
 . "$KASBAH_LIB_DIR/manifest.sh"
 # One definition of "which images this project builds", and it is build-push's:
 # what deploy retags has to be exactly what build-push tagged, down to the
-# registry-with-a-port case in an image name (_bp_image_base). The load guards
+# registry-with-a-port case in an image name (common.sh's image_base). The load guards
 # make the cycle through deploy.sh a no-op, and build_push.sh already sources
 # deploy.sh for the same kind of reason — one version contract.
 . "$KASBAH_LIB_DIR/build_push.sh"
@@ -163,7 +163,7 @@ _rd_read_images() {
     _bp_read_built_services
 
     for i in "${!_BP_SOURCE[@]}"; do
-        _bp_image_base "${_BP_SOURCE[$i]}" base
+        image_base "${_BP_SOURCE[$i]}" base
         _RD_IMAGES+=("$base")
     done
     return 0
