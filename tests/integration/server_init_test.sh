@@ -118,9 +118,12 @@ traefik_boot_count() {
     rig_ssh "docker logs traefik 2>&1 | grep -c 'Traefik version' || true" 2>/dev/null
 }
 
-# The pin the templates carry, so a version bump does not silently turn a case
-# that needs a real image into `assert false`.
-traefik_image=$(yq -r '.services.traefik.image' "$repo_dir/templates/traefik/compose.yml" 2>/dev/null)
+# The pin kasbah renders with, so a version bump does not silently turn a case
+# that needs a real image into `assert false`. It comes from lib/common.sh, not
+# from the template: the template carries the `__TRAEFIK_IMAGE__` placeholder
+# because `upgrade-traefik` recovers the tag off the server, and reading the
+# placeholder here would hand `docker create` a name no registry has.
+traefik_image=$(sed -n 's/^KASBAH_TRAEFIK_IMAGE=//p' "$repo_dir/lib/common.sh" | tr -d '"'"'"'"')
 
 # Curl from inside the rig, so the suite never depends on a host port being
 # free. --resolve rather than -H Host: the TLS handshake has to carry the real

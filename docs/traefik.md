@@ -422,9 +422,12 @@ starts announcing deprecations.
 
 Those excluded lines are also the proof the dry run read anything: the file
 provider emits one per TLS router it built out of the mounted fragments,
-naming it, so a run that loaded nothing has none of them. The upgrade
-refuses unless `traefik-dashboard@file` is among them — a clean log on its
-own is not evidence.
+naming it, so a run that loaded nothing has none of them. The upgrade refuses
+unless `traefik-dashboard@file` is among them **and** — when the server's
+`dynamic/` holds any fragment besides `_shared.yml` — at least one router that
+is not `_shared.yml`'s. The dashboard router comes from the `_shared.yml` this
+run renders and overlays, so it alone would appear even with the server's
+directory empty; a clean log on its own is not evidence.
 
 The throwaway is isolated in four ways: `--network none`, no published
 port, both mounts read-only, and its own entrypoints moved to `:8080`

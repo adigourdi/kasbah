@@ -801,6 +801,7 @@ _deploy_sync_fragment() {
 _deploy_mail_claim() {
     local dir="$_DEPLOY_APPS_PATH/mail"
     local out rc=0 seed_b64="" domains="" count="" d="" i=0 claim=unmet
+    local primary="" primary_listed=no
 
     [ -n "$_DEPLOY_MAIL_DOMAIN" ] || return 0
 
@@ -894,13 +895,32 @@ REMOTE
                 warn "the claim cannot be checked against a registry kasbah cannot read; the $_DEPLOY_MODE continues"
             else
                 case $count in ''|*[!0-9]*) count=0 ;; esac
+
+                # The primary is served by the stack it is the MX for whether or
+                # not anyone wrote it under domains:. Four readers ask this one
+                # question — check --server's M03, `server init`, `server
+                # add-mail-domain` and this step — and they have to give the one
+                # answer. init and add-mail-domain normalise the primary into
+                # the list as they write, so every registry *kasbah* wrote
+                # already carries it; a hand-edited one need not, and
+                # templates/mail/kasbah.yml invites the hand edit in as many
+                # words. Reading .domains alone made `deploy` warn "does not
+                # serve it" about exactly the registry `check --server` had just
+                # passed. Normalised the same way the writers do — prepended, so
+                # the `lists:` line below reads in the order init renders.
+                yaml_get "$_DEPLOY_MAIL_REGISTRY" '.primary_domain // ""' primary || primary=""
                 while [ "$i" -lt "$count" ]; do
                     yaml_get "$_DEPLOY_MAIL_REGISTRY" "(.domains // [])[$i] // \"\"" d || d=""
                     i=$((i + 1))
                     [ -n "$d" ] || continue
+                    [ "$d" != "$primary" ] || primary_listed=yes
                     domains+="${domains:+ }$d"
                     [ "$d" != "$_DEPLOY_MAIL_DOMAIN" ] || claim=met
                 done
+                if [ -n "$primary" ] && [ "$primary_listed" != yes ]; then
+                    domains="$primary${domains:+ }$domains"
+                    [ "$primary" != "$_DEPLOY_MAIL_DOMAIN" ] || claim=met
+                fi
                 if [ "$claim" = met ]; then
                     info "  mail: $_DEPLOY_MAIL_DOMAIN is served by the stack at $dir (dms ${_DEPLOY_FACT[mail_dms]}, snappymail ${_DEPLOY_FACT[mail_snappymail]})"
                 else

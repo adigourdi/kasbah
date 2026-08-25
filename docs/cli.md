@@ -153,8 +153,10 @@ at counts as the first of the 3, and `:current` itself is never pruned.
 The time window mirrors versions.log rotation — see `build-deploy.md`.
 Prints what it would remove and asks once; `--yes` answers that question
 for scripts, and without it and without a terminal the run stops naming
-the flag. There is **no `--apps-path`** — `server status` is the only
-command that takes one. Where the server was prepared is the server's own
+the flag. There is **no `--apps-path`** here: among the commands that only
+*read* an apps path, `server status` is the sole holder of that escape hatch
+(`server init` takes one too, because it *establishes* the path).
+Where the server was prepared is the server's own
 answer, and aiming a destructive command at a tree the server does not
 consider its own is not a recovery path: a damaged pointer refuses, and
 the refusal sends you to `kasbah server status <host> --apps-path=<dir>`
@@ -226,8 +228,12 @@ and every project's fragment, not just kasbah's — and **any line it logs at
 certificate authority and spends no rate-limit budget. Its one error family
 — the certificate it therefore cannot obtain — is excluded from the verdict
 by both the message and that URL, and those same lines are what proves it
-read the fragments at all: one per TLS router it built, naming it. A dry
-run that loaded no `traefik-dashboard@file` router is a failure, not a pass.
+read the fragments at all: one per TLS router it built, naming it. Two things
+must hold or the run is a failure rather than a pass — `traefik-dashboard@file`
+must be among them, and, whenever the server's `dynamic/` holds any fragment
+besides `_shared.yml`, so must a router that is not one of `_shared.yml`'s. The
+dashboard router comes from the `_shared.yml` this run renders and overlays, so
+on its own it would appear even if the server's directory read as empty.
 
 The target image is pulled during the dry run, so a tag that does not exist
 fails while the live proxy is still untouched, and the pull cannot fail
@@ -306,7 +312,9 @@ every one of those states, since refusing to read a path the caller named
 outright would leave no way in at all. Without it, `status` resolves the apps
 path the same way every other command does — `/etc/kasbah/apps-path`, else
 `/apps` — and
-prints which of the three it used. No other command takes the flag: a value
+prints which of the three it used. No other command that merely *reads* an
+apps path takes the flag — `server init` has one because it establishes the
+path, not because it reads one. A value
 repeated on every invocation is a belief each caller holds separately, and the
 apps path is a property of the server (see `server-setup.md` → the discovery
 pointer).

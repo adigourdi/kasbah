@@ -81,11 +81,11 @@ KASBAH_APPS_POINTER=/etc/kasbah/apps-path
 # compared with one. `..` is kept as a segment: the flags reject one outright,
 # so a value carrying it compares unequal, which is the safe direction.
 #
-# Three remote steps read /etc/kasbah/apps-path — lib/marker.sh, the `server
-# init` probe and the `server status` probe — and each carries its own `norm_path`
-# copy, because a payload on the far side of ssh can source nothing. Four
-# implementations of one rule: tests/norm_path_test.sh asserts the three copies
-# are byte-identical and drives the same table through a copy and through this
+# Four remote steps read /etc/kasbah/apps-path — lib/marker.sh, the `server
+# init` probe, the `server status` probe and the `server prune` probe — and each
+# carries its own `norm_path` copy, because a payload on the far side of ssh can
+# source nothing. Five implementations of one rule:
+# tests/norm_path_test.sh asserts the four copies are byte-identical and drives the same table through a copy and through this
 # function, which is the only thing standing between them and drift.
 kasbah_norm_path() {
     local _np_out="$1" _np_p="${2%$'\r'}" _np_acc="" _np_seg

@@ -137,8 +137,10 @@ EOF
 
 # --- Command line -----------------------------------------------------------------
 
-# There is deliberately no --apps-path here, and `server status` is deliberately
-# the only command that has one (docs/cli.md): a value repeated on every
+# There is deliberately no --apps-path here. Among the commands that only *read*
+# an apps path, `server status` is the sole holder of that escape hatch
+# (`server init` has one because it establishes the path, not because it reads
+# one) — docs/cli.md: a value repeated on every
 # invocation is a belief each caller holds separately, and the apps path is a
 # property of the server. On a command that deletes, an operator-supplied path
 # is worse than redundant — it aims the deletion at a tree the server does not

@@ -8,10 +8,44 @@ Findings before starting; task order here is a guess made pre-Proof.**
 **Spec:** `docs/mail.md`, `docs/cli.md` (logs, exec, server prune, upgrade-traefik), `docs/compliance.md` (`--server`, R04), `docs/build-deploy.md` (retention)
 
 ## Exit criteria
-- [ ] The `--with-mail` path works end to end on the rig (container wiring, domain claims, SnappyMail seeding) — live mail migration itself is Phase 9.3
-- [ ] `check --server` runs the full VPS-aware rule set incl. R04 against production without side effects
-- [ ] `server prune` on the rig removes exactly the tags outside (3 months ∪ last 3 deployed incl. current)
-- [ ] `upgrade-traefik` validates every existing fragment against the target version before switching
+
+- [x] **The `--with-mail` path works end to end on the rig** (container wiring, domain claims, SnappyMail seeding) — live mail migration itself is Phase 9.3.
+      Rig proves the fragment, the routers Traefik registers, SnappyMail healthy,
+      the seeded postmaster and DKIM override, `add-mail-domain`, claim
+      reconciliation and idempotence. **The rig cannot prove DMS boots** —
+      `SSL_TYPE: letsencrypt` makes a certificate a boot requirement and HTTP-01
+      never validates there, so DMS crashloops forever and the suite asserts the
+      cert-missing log signature instead. The real host supplies that half:
+      `mail-dms` and `mail-snappymail` both **healthy**, `webmail.example.com`
+      **200** and `mail.example.com` **418** on publicly trusted certificates.
+- [x] **`check --server` runs the full VPS-aware rule set incl. R04 against production without side effects.**
+      `34 passed, 0 warning, 0 failed` against `you@vps`, reading four real
+      certificates; the remote payload is `[ -f ]`, `openssl base64 -A -in`,
+      `docker inspect` and `docker version` and nothing else — no redirection, no
+      `mkdir`/`touch`/`cp`/`rm` — with an apps-and-data digest across the run to
+      prove it.
+- [x] **`server prune` removes exactly the tags outside (3 months ∪ last 3 deployed incl. current)** — **with the criterion itself now understating the policy.**
+      The integration suite asserts the removal set as one exact string in a run
+      that simultaneously holds backdated images, a container-held tag, a
+      multi-owner repository, a skipped project and stock images. Against the real
+      host it correctly removed **nothing**. But the implemented keep set exceeds
+      this criterion by three terms — the image `:current` points at,
+      container-held tags, and multi-claimed or unknown-ownership repositories —
+      all three added deliberately during the task and now stated in
+      `docs/build-deploy.md`. **Read literally against the criterion as written,
+      the tool keeps tags the criterion says to remove.** Read against the spec as
+      amended in the same change, it is exact. Ticked on the amended spec, and
+      recorded here so nobody walking the original sentence thinks they found a bug.
+- [x] **`upgrade-traefik` validates every existing fragment against the target version before switching.**
+      Rig, both directions: a real bump with `_mail.yml` and a project fragment
+      present, and a deliberately broken fragment refusing in Traefik's own words
+      while the proxy kept serving. Real host: `v3.7.10 → v3.7.11`, **933 ms of
+      downtime**, **all four certificates survived** with `acme.json`
+      byte-identical, and no project or mail container restarted. The dry run
+      mounts the server's whole `dynamic/` read-only, so every fragment is in the
+      load — and after the group review the pass condition is a **conjunction**,
+      requiring a router that could only have come off the server, not just the
+      `_shared.yml` this run overlays.
 
 ## Run order
 
@@ -1197,3 +1231,86 @@ the line also names this run's own loopback CA — and in the `awk` form that wa
 a conjunction only by construction (two `index()` tests), which is precisely how
 the first version shipped as a **disjunction**, excluding any "unable to obtain
 certificate" line whatever CA it named. As a nested `case` it cannot be misread.
+
+## Phase close
+
+**Gate, run clean with nothing else writing:** `./test.sh` **25 PASS, exit 0**;
+`KASBAH_RIG_TESTS=1 ./test.sh` **39 PASS, exit 0, no skips**. Phase baselines
+were 20 and 29. Real host at the close: Traefik **v3.7.11** healthy, four
+certificates, mail healthy, `gallery-website` running — and all four hostnames
+answering on publicly trusted certificates (`gallery` 200, `webmail` 200,
+`mail` 418, `traefik` 401).
+
+**The whole-phase review's verdict was "it hangs together"**, and its value was
+in the seams no per-task review can reach. Every shared helper extracted
+mid-phase — `yaml_get`, `lib/acme.sh`, `traefik_dashboard_apex`, `image_base`,
+`vlog_active_usable`/`vlog_adopt`, `KASBAH_RESERVED_NAMES`, the apps-path
+resolution, the three kasbah-owned files — came back with one implementation and
+one answer. Two things did not.
+
+**One question, four readers, two answers.** "Does this stack serve domain X?"
+is asked by `deploy`, `check --server`, `server status` and `add-mail-domain`.
+Three treat `primary_domain` as served whether or not it also appears under
+`domains:`; `deploy` iterated `domains` only. All four agree on any registry
+**kasbah wrote**, because init and `add-mail-domain` both normalise the primary
+into the list — they diverge only on a **hand-edited** registry, which
+`templates/mail/kasbah.yml` explicitly invites. On such a file `check --server`
+passed M03 while `deploy` warned "the stack does not serve it" and printed a
+`lists:` line the primary was absent from: two commands, one question, opposite
+answers, in one run. **The fix normalises in `deploy` too** — because checking
+the primary alone would have left the second sentence still describing the
+registry a third way.
+
+**A defect this phase had already fixed, re-committed by a later task.** 7.2's
+review caught `--apps-path` being overclaimed as `server status`'s alone
+(`server init` takes one too) and fixed both sites. 7.4 then wrote the false
+form into two *new* places, and `lib/prune.sh` cited it as its authority. A
+regression of a known defect is the cheapest finding available and the easiest
+to miss, because the fix and the re-introduction are in different commits by
+different agents.
+
+**The anti-vacuity anchor proved the wrong thing.** `upgrade-traefik` refused
+unless `traefik-dashboard@file` was among the routers built — but that router
+comes from the `_shared.yml` the run itself renders and **overlays**, present
+whatever the server's directory holds. It proved the file provider ran; it did
+not prove the server's `dynamic/` mount applied. Now a conjunction: the
+dashboard router **and**, when the server's directory holds any fragment besides
+`_shared.yml`, a router that is not `_shared.yml`'s.
+
+**The gate caught a regression nothing else could have.**
+`tests/integration/server_init_test.sh` read the Traefik pin out of
+`templates/traefik/compose.yml` — and 7.5 replaced that literal with the
+`__TRAEFIK_IMAGE__` placeholder, so a case needing a real image tried
+`docker create --name traefik __TRAEFIK_IMAGE__`. It failed as an
+`assert false` in a *setup* step, which is why it read at first like rig state.
+It reproduced standalone, which is what proved it real. **Second instance of
+what the amended verification regime trades away** — and the sharper rule than
+"grep the tests for the string you changed": *when you change what a file
+**contains** rather than what it says, grep for readers of that file.* Nothing
+here was a string match.
+
+**Six ways an assertion can be vacuous while reading as proof**, all found this
+phase, all passing a green suite: by **wording** (grepping a rule's pass line,
+which shares no words with its warn line), by **encoding** (grepping for a
+decoded secret in a payload that travels base64'd), by **position** (the secret
+past a 20-line clip window), by **clip length** (a 120-byte needle in a line
+that prints at most 111), by **reading nothing** (a dry run that passes on an
+empty directory), and by **an ambiguous status** (`[ "$rc" = 1 ]`, where an
+un-refused run also exits 1 at the next stub). The rule that covers all six: **a
+negative assertion is vacuous by default and has to be made meaningful** — pair
+it with a positive that pins the same mechanism from the other side, so the pair
+cannot both go silent. And **mutation is the only thing that says which** — an
+unapplied mutation scoring zero is worse than no mutation at all.
+
+**Four ways this run lost time to how a result was waited for or read**, none of
+them to the work: an `echo "$(cmd) rc=$?"` that reports the substitution's
+status and produced a false green; a dead agent's orphaned processes still
+driving the rig; a suite launched in the same turn as the resume of an
+implementer mid-edit in the file under test; and an agent stacking nine
+`until ! pgrep` waiters until the operator killed them. All four are recorded
+above with their fixes.
+
+**Not verified here, and left so deliberately:** SMTP deliverability, MX, DKIM,
+SPF and DMARC end to end — no public DNS on the rig and the real host's mail is
+not in the delivery path; traced, and Phase 9.3's to prove. `_dmarc` and the
+DKIM selector are still absent from the zone.

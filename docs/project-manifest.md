@@ -92,8 +92,8 @@ backup:
   retain: 10
 
 # Mail claim — tells kasbah this project expects `mail.<domain>` (and SMTP)
-# to be available. Today the deploy only looks for a mail stack and warns when
-# there is none; validating the domain against it is roadmap v0.2. Account
+# to be available. The deploy checks the stack is there and that its registry
+# serves the domain, and warns without stopping when either is not so. Account
 # management is NOT done here — use `docker exec mail-dms setup.sh email add
 # foo@domain` on the VPS directly.
 mail:
@@ -350,7 +350,7 @@ for defaults, not a source of truth for what's actually running.
   (the reader closed the pipe) and 130 (interrupted) — and not when compose
   failed.
 - `last_server` is updated by: `build-push`, `deploy`, `rollback`, `env`,
-  `history`, `changelog`, `pending`, `logs`, `exec`, `check --server` *(v0.2)*.
+  `history`, `changelog`, `pending`, `logs`, `exec`, `check --server`.
 - `init-project` creates the file with empty fields and the current
   `kasbah_version`. First server-targeting command must be passed
   `USER@HOST` explicitly; subsequent ones default to `last_server`.

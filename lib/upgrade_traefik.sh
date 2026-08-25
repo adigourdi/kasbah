@@ -124,14 +124,44 @@ _UT_DRY_LABEL=kasbah.role=traefik-dry-run
 # by a URL kasbah chose, which no genuine error can carry.
 _UT_DRY_CA="https://127.0.0.1:1/kasbah-dry-run-no-ca"
 _UT_DRY_ACME_ERROR="Unable to obtain ACME certificate for domains"
-# The router the dry-run must be seen to have loaded. `_shared.yml` always
-# declares `traefik-dashboard` with `certResolver: letsencrypt` — this run has
-# just recovered its rule and its credentials out of that file, so it is there —
-# and every TLS router the file provider builds produces exactly one excluded
-# ACME line naming itself. So the lines that are filtered *out* of the verdict
-# are the same lines that prove the fragments were read: a dry-run that read
-# nothing has none of them and fails, and cannot pass by silence.
+# What the dry-run must be seen to have loaded. Every TLS router the file
+# provider builds produces exactly one excluded ACME line naming itself, so the
+# lines filtered *out* of the verdict are the same lines that prove something
+# was read — a dry-run that read nothing has none of them and cannot pass by
+# silence (measured: an empty dynamic directory logs nothing at ERR at all).
+#
+# **Which router, though.** The throwaway mounts two things: the server's
+# `dynamic/` directory, and kasbah's freshly rendered `_shared.yml` laid over
+# its own copy inside it. `traefik-dashboard@file` comes from that overlay — a
+# file this side wrote and shipped as an argument — so seeing it proves the file
+# provider ran and read *kasbah's own file*, and nothing at all about the
+# server's directory. A mount that silently resolved empty would still produce
+# it, and the run would report "passed" having validated only what it brought
+# with it.
+#
+# So the verdict asks for both, as a conjunction: `traefik-dashboard@file` for
+# "the file provider ran", **and** a router that is not one of `_shared.yml`'s
+# for "the server's directory applied" — the second can only have come off the
+# server. The second is required whenever the directory read in step 2 holds a
+# fragment besides `_shared.yml`, which is the only case where there is anything
+# on the server's side to prove was read. A directory holding kasbah's overlay
+# alone asks the first half only: there are no project fragments to validate, so
+# "the file provider ran" is the strongest true statement, and the run says
+# exactly that out loud rather than letting the pass line imply more.
+#
+# `_UT_SHARED_ROUTERS` is the router names `_shared.yml` itself declares — the
+# only two the overlay can contribute. Only the TLS one ever reaches the log
+# (the `web` half carries no `tls:`, so it asks for no certificate and names
+# itself nowhere); it is listed anyway so that a future `tls:` on it cannot
+# quietly become the anchor. Everything else counts as the server's, including
+# kasbah's own `_mail.yml`: that file is *not* overlaid, so a router out of it
+# is evidence the server's directory was read, which is the whole property.
 _UT_DRY_ANCHOR='traefik-dashboard@file'
+_UT_SHARED_ROUTERS=('traefik-dashboard@file' 'traefik-dashboard-http@file')
+# The one name in dynamic/ that kasbah overlays, so a fragment list holding only
+# this is a server with nothing of its own to read (_SI_TRAEFIK_FILES's
+# `dynamic/_shared.yml`, basename).
+_UT_SHARED_FRAGMENT='_shared.yml'
 
 _server_upgrade_traefik_usage() {
     cat <<EOF
@@ -555,11 +585,13 @@ _ut_render() {
 #
 # **And it cannot pass by reading nothing.** The excluded lines are the proof:
 # the file provider emits one per TLS router it built out of the mounted
-# fragments, naming it. The verdict requires `traefik-dashboard@file` among
-# them — the router `_shared.yml` always declares, whose rule and credentials
-# this run has just read out of that same file. An empty dynamic directory
-# produces no such line and no error either, and is a hard failure rather than
-# a pass (measured: an empty directory logs nothing at ERR at all).
+# fragments, naming it. The verdict requires the dashboard router *and*, when the
+# server's directory holds any fragment besides `_shared.yml`, a router that is
+# not `_shared.yml`'s — see `_UT_SHARED_ROUTERS`. The dashboard router comes from
+# the copy this run rendered and laid over the mount, so it alone would still
+# appear if the server's directory resolved empty. An empty dynamic directory
+# produces no error either, and is a hard failure rather than a pass (measured:
+# an empty directory logs nothing at ERR at all).
 _ut_dry_run() {
     local out rc=0 shared_b64 static_b64
 
@@ -774,18 +806,56 @@ REMOTE
         exit 1
     fi
 
+    # The anti-vacuity anchor, in the shape the mounts make it — a conjunction,
+    # because the throwaway mounts two things and each one is a separate claim.
+    #
+    # First: `traefik-dashboard@file`, out of the `_shared.yml` this run
+    # rendered and laid over the mount. It proves the file provider ran at all.
+    # It proves nothing about the server, which is the trap this used to sit in:
+    # that file is kasbah's own, shipped as an argument, and it would be read
+    # whatever the server's directory held — including nothing.
+    #
+    # Second, and only when step 2 found a fragment besides `_shared.yml`: a
+    # router that is *not* one of `_shared.yml`'s. The server's directory is the
+    # only place one can come from, so it is the evidence the read-only mount of
+    # that directory applied.
+    local frag router server_frags=0 off_server=""
+    for frag in ${_UT_FRAGMENTS[@]+"${_UT_FRAGMENTS[@]}"}; do
+        [ "$frag" != "$_UT_SHARED_FRAGMENT" ] || continue
+        server_frags=$((server_frags + 1))
+    done
+    for router in $_UT_DRY_ROUTERS; do
+        case " ${_UT_SHARED_ROUTERS[*]} " in
+            *" $router "*) ;;
+            *) off_server="$router"; break ;;
+        esac
+    done
+
     case " $_UT_DRY_ROUTERS " in
         *" $_UT_DRY_ANCHOR "*) ;;
         *)
             err "the dry run of $_UT_IMAGE_NEW loaded no $_UT_DRY_ANCHOR router — it validated nothing"
             err_cont "every TLS router the file provider builds asks this run's own unreachable CA"
             err_cont "for a certificate and names itself doing it, and the dashboard router is in"
-            err_cont "dynamic/_shared.yml, which this run has just read. Seeing none of them means"
-            err_cont "the dynamic directory was not read, so the verdict is not evidence."
+            err_cont "the dynamic/_shared.yml this run rendered and mounted over the directory."
+            err_cont "Seeing not even that one means the file provider read nothing at all, so the"
+            err_cont "verdict is not evidence."
             err_cont "routers seen: ${_UT_DRY_ROUTERS:-<none>}"
             _ut_dry_fail "$log"
             ;;
     esac
+
+    if [ "$server_frags" -gt 0 ] && [ -z "$off_server" ]; then
+        err "the dry run of $_UT_IMAGE_NEW loaded no router out of $_UT_APPS_PATH/traefik/dynamic — it validated nothing"
+        err_cont "that directory holds $server_frags fragment(s) besides _shared.yml —"
+        err_cont "${_UT_FRAGMENTS[*]} — and not one router came out of them."
+        err_cont "$_UT_DRY_ANCHOR is kasbah's own _shared.yml, rendered here and mounted over"
+        err_cont "the directory, so it answers the same whether that directory was read or not."
+        err_cont "Either the read-only mount of it did not apply, or nothing in it declares a"
+        err_cont "router on websecure with certResolver: letsencrypt."
+        err_cont "routers seen: ${_UT_DRY_ROUTERS:-<none>}"
+        _ut_dry_fail "$log"
+    fi
 
     if [ -n "$warns" ]; then
         warn "$_UT_IMAGE_NEW logged warnings against the current configuration (not fatal):"
@@ -794,6 +864,8 @@ REMOTE
     fi
 
     info "  dry run passed: $_UT_IMAGE_NEW built ${_UT_DRY_ROUTERS% } out of ${#_UT_FRAGMENTS[@]} fragment(s)"
+    [ "$server_frags" -gt 0 ] \
+        || info "  (that directory holds only kasbah's own _shared.yml — there were no project fragments to validate)"
     return 0
 }
 

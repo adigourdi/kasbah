@@ -580,6 +580,58 @@ assert '[ "$rc" = 1 ]' "a dry run that never loaded the dashboard router is refu
 assert '[ "$(steps)" = "marker read dry " ]' "and changes nothing (got '$(steps)')"
 assert 'grep -qF "validated nothing" <<<"$out"' "saying why (got '$out')"
 
+# The other half of the mount, and the failure the assertion above cannot see.
+# The throwaway mounts two things: the server's dynamic/ directory, and the
+# _shared.yml this run rendered laid over it. `traefik-dashboard@file` comes out
+# of that overlay — a file this side wrote and shipped as an argument — so it is
+# built whatever the server's directory holds, including nothing. A dry run that
+# reports it and nothing else has validated only kasbah's own file: exactly what
+# a directory mount that silently resolved empty looks like, and it used to read
+# as "dry run passed".
+set_stack traefik:v3.7.10   # dynamic/ holds _shared.yml and gallery.yml
+dry_reply '' 'traefik-dashboard@file '
+out=$(cli deploy@vps --version=v3.6.7); rc=$?
+# rc alone would be vacuous here: the ship step is rsync, which no stub can
+# play, so an un-refused run dies at 1 as well. What separates them is where it
+# stopped — measured, reverting the fix turns these steps into "marker read dry
+# backup ship " with the same rc.
+assert '[ "$rc" = 1 ] && ! grep -qF "STEP backup" "$ssh_log"' \
+    "a dry run that built only kasbah's own overlaid router is refused before anything
+        is backed up (rc=$rc, steps '$(steps)'): $out"
+assert '[ "$(steps)" = "marker read dry " ]' "and changes nothing (got '$(steps)')"
+assert 'grep -qF "loaded no router out of /apps/traefik/dynamic" <<<"$out"' \
+    "naming the directory whose fragments never showed up (got '$out')"
+assert 'grep -qF "gallery.yml" <<<"$out"' \
+    "and the fragment step 2 read off the server (got '$out')"
+
+# The control for it, on the same mechanism: one router off the server, and the
+# same reply passes. Without this the assertion above is satisfied by a dry run
+# that refuses everything.
+dry_reply '' 'traefik-dashboard@file gallery@file '
+out=$(cli deploy@vps --version=v3.6.7); rc=$?
+assert 'grep -qF "dry run passed" <<<"$out"' \
+    "a router built out of a server fragment is the evidence that directory was read (got '$out')"
+assert '! grep -qF "loaded no router out of" <<<"$out"' "and nothing is refused (got '$out')"
+
+# The edge: a server whose dynamic/ holds kasbah's _shared.yml and nothing else.
+# There are no project fragments to prove were read, so demanding a router off
+# the server would refuse an upgrade that is fine. The run asks the first half
+# only — the file provider ran — and says out loud that this is all it checked,
+# so "dry run passed" is never read as more than it is.
+sed -i "s|^fragments_b64=.*|fragments_b64=$(printf '_shared.yml\n' | openssl base64 -A)|" "$reply/read"
+dry_reply '' 'traefik-dashboard@file '
+out=$(cli deploy@vps --version=v3.6.7); rc=$?
+assert 'grep -qF "dry run passed" <<<"$out"' \
+    "a server with no project fragments still passes the dry run (rc=$rc: $out)"
+assert 'grep -qF "no project fragments to validate" <<<"$out"' \
+    "and the pass line says that is all there was to validate (got '$out')"
+# ...and the first half still bites there: no dashboard router, no pass.
+dry_reply '' 'x@file '
+out=$(cli deploy@vps --version=v3.6.7); rc=$?
+assert '[ "$rc" = 1 ]' "with no dashboard router it is still refused (rc=$rc: $out)"
+assert 'grep -qF "validated nothing" <<<"$out"' "saying why (got '$out')"
+set_stack traefik:v3.7.10
+
 # The four values are recovered, never invented. Each refusal below is the same
 # stack with one value taken out of it.
 dry_reply

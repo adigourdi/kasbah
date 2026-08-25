@@ -965,6 +965,12 @@ printf '\nmail:\n  domain: mail.demo.test\n' >> "$project/kasbah.yml"
 registry_with=$(printf 'name: mail\nprimary_domain: demo.test\ndomains:\n  - demo.test\n  - mail.demo.test\n' | openssl base64 -A)
 registry_without=$(printf 'name: mail\nprimary_domain: demo.test\ndomains:\n  - demo.test\n  - other.test\n' | openssl base64 -A)
 registry_broken=$(printf 'name: mail\ndomains:\n  - [unclosed\n' | openssl base64 -A)
+# The registry a hand edit leaves behind: the primary is the MX target and is
+# *not* duplicated under domains:. Both of these are that shape, and the pair is
+# what keeps either assertion from going quiet — the first names the primary as
+# the claimed domain, the second names a domain in neither field.
+registry_primary_only=$(printf 'name: mail\nprimary_domain: mail.demo.test\ndomains:\n  - other.test\n' | openssl base64 -A)
+registry_primary_other=$(printf 'name: mail\nprimary_domain: shop.demo.test\ndomains:\n  - other.test\n' | openssl base64 -A)
 
 out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
 calls=$(<"$call_log")
@@ -1010,6 +1016,35 @@ assert 'grep -qF "kasbah server add-mail-domain deploy@vps mail.demo.test" <<<"$
 assert 'grep -qF "lists: demo.test other.test" <<<"$out"' \
     "and what it does serve, read out of the registry (said '$out')"
 assert '! grep -qF "is served by the stack" <<<"$out"' "and not the met sentence (said '$out')"
+
+# The seam between this step and `kasbah check`'s M03. Three readers — M03,
+# `server init` and `server add-mail-domain` — hold that the primary is served
+# by the stack it is the MX for whether or not anyone wrote it under domains:,
+# and the two writers normalise it in, so every registry kasbah wrote agrees
+# either way. A **hand-edited** one need not, and templates/mail/kasbah.yml
+# invites the hand edit ("a hand edit here survives"). On that file this step
+# used to read .domains alone and warn "does not serve it" about the very
+# registry check --server had just passed — two commands, one question,
+# opposite answers in the same run.
+out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_primary_only" \
+       deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a claim on a primary_domain not repeated under domains: deploys (rc $rc: $out)"
+assert 'grep -qF "mail.demo.test is served by the stack" <<<"$out"' \
+    "and the claim is met — the primary is served by the stack it is the MX for (said '$out')"
+assert '! grep -qF "does not serve it" <<<"$out"' \
+    "not warned as unserved, which is what check --server would contradict (said '$out')"
+
+# The other half of the pair, on the same mechanism and the same file shape: a
+# domain in neither primary_domain nor domains: is still unserved. Without this
+# the assertion above is satisfied by a step that calls everything served.
+out=$( cd "$project" && MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_primary_other" \
+       deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a claim in neither field still deploys (rc $rc: $out)"
+assert 'grep -qF "does not serve it" <<<"$out"' \
+    "and is still reported unserved (said '$out')"
+assert '! grep -qF "is served by the stack" <<<"$out"' "and not met (said '$out')"
+assert 'grep -qF "lists: shop.demo.test other.test" <<<"$out"' \
+    "with the primary at the head of what it does serve, as init renders it (said '$out')"
 
 # A registry that is not there, and one that does not parse. Neither is "the
 # stack does not serve this domain": kasbah could not read the file that would

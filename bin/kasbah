@@ -87,6 +87,8 @@ Commands:
   server prune USER@HOST [--yes]             Remove image tags outside the retention window.
   server add-mail-domain USER@HOST DOMAIN    Join a domain to the VPS's shared mail stack.
   server mail-setup-guide USER@HOST          Print the mail stack's setup walkthrough.
+  server upgrade-traefik USER@HOST --version=<tag>
+                                             Dry-run the fragments against a Traefik version, then switch.
 
 See docs/cli.md for the full planned surface.
 EOF
