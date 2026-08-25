@@ -131,14 +131,10 @@ curl_dash() {
 }
 
 # --- A refusal must reach the server not at all -------------------------------
-# Both cases run against a rig with no /apps, so "nothing was created" is
-# checkable rather than assumed.
-init --with-mail --no-backup; rc=$?
-assert '[ "$rc" != "0" ]'                       "--with-mail fails rather than skipping mail silently (exit $rc)"
-assert 'grep -qF "Phase 7" "$tmpdir/err"'       "--with-mail names the phase that builds it (said '$(init_err)')"
-assert 'grep -qF -- "--no-mail" "$tmpdir/err"'  "--with-mail says how to proceed today"
-assert '[ "$(apps_state)" = "absent" ]'         "a refused --with-mail run created nothing on the rig"
-
+# Runs against a rig with no /apps, so "nothing was created" is checkable rather
+# than assumed. The mail half of this suite lives in
+# tests/integration/server_init_mail_test.sh — everything below here is
+# --no-mail, so what it proves stays about Traefik and the layout.
 init; rc=$?
 assert '[ "$rc" != "0" ]'                                  "no flags and no terminal is a hard fail (exit $rc)"
 assert 'grep -qF -- "--with-mail or --no-mail" "$tmpdir/err"' \

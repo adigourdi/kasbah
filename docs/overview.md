@@ -115,12 +115,14 @@ Chosen defaults (overridable via `kasbah server init --apps-path=...`):
 │   ├── traefik.yml              # static config
 │   └── dynamic/                 # file-provider watch dir
 │       ├── _shared.yml          # middlewares, TLS opts
+│       ├── _mail.yml            # cert-trigger + webmail routers (with --with-mail)
 │       └── <project>.yml        # one per deployed project
 │   # no .env: Traefik interpolates no environment variables, so the ACME
 │   # email, dashboard domain and auth hash are baked in at render time
 ├── mail/                        # optional mail stack (kasbah-managed)
 │   ├── compose.yml
-│   └── .env
+│   ├── kasbah.yml               # the registry: primary_domain + domains
+│   └── .env                     # kasbah's three keys + the operator's relay block
 ├── <project>/                   # one per deployed project
 │   ├── compose.yml              # from project's compose.prod.yml
 │   ├── .env                     # generated via setup-env

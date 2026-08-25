@@ -666,8 +666,10 @@ rig_ssh "touch $apps/mail/.env" >/dev/null 2>&1
 deploy "$RIG_TARGET"; rc=$?
 assert '[ "$rc" = "0" ]' "a mail stack with an .env does not stop the deploy either (exit $rc)
         stderr: $(cli_err)"
-assert 'grep -qF "does not yet check that $apps/mail/.env names it" "$tmpdir/err"' \
-    "and kasbah says plainly that it cannot reconcile the claim yet (said '$(cli_err)')"
+assert 'grep -qF "does not yet check that $apps/mail/kasbah.yml lists it" "$tmpdir/err"' \
+    "and kasbah says plainly that it cannot reconcile the claim yet, naming the registry
+     rather than the .env — the domains list moved there when the stack landed
+     (said '$(cli_err)')"
 assert '! grep -qF "has no .env" "$tmpdir/err"' "not the state below it (said '$(cli_err)')"
 
 rig_ssh "rm -rf $apps/mail" >/dev/null 2>&1

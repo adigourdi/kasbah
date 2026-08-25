@@ -173,7 +173,7 @@ below). The only differences:
    and exempt from drift detection.
 7. Mail claim (if manifest has `mail:`):
      look for a mail stack on the server   # today: warn and continue when absent
-     verify claimed domain is configured in /apps/mail/.env   # roadmap v0.2
+     verify claimed domain is listed in /apps/mail/kasbah.yml   # roadmap v0.2
      copy snappymail_domain pre-seed if file missing on VPS   # roadmap v0.2
 8. SSH into VPS and run scripts/remote-deploy.sh deploy <version>:
      a. If manifest has `backup:` AND `backup.check` exits 0 → run backup

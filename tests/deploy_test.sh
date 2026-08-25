@@ -944,9 +944,11 @@ assert '! grep -qF "images:" <<<"$out"' \
 rm -rf "$project/.kasbah"
 
 # --- The mail claim ----------------------------------------------------------------
-# A stub, and deliberately: the shared mail stack is roadmap v0.2, so all this
-# can do is look. What it must not do is stop the deploy — an unmet mail claim
-# costs mail, not the site.
+# A stub, and deliberately: the stack itself now exists, but the registry that
+# would answer "does it serve this domain?" is <apps>/mail/kasbah.yml and
+# reading it needs a YAML parser the VPS does not have, so all this can do is
+# look. What it must not do is stop the deploy — an unmet mail claim costs mail,
+# not the site.
 cp "$project/kasbah.yml" "$tmpdir/kasbah.yml.orig"
 printf '\nmail:\n  domain: mail.demo.test\n' >> "$project/kasbah.yml"
 

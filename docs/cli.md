@@ -27,14 +27,23 @@ hard fail naming the flag to pass.
 Flags:
 - `--domain=<apex>` — domain for the Traefik dashboard and acme email config.
 - `--email=<addr>` — ACME email for Let's Encrypt registration.
-- `--with-mail` / `--no-mail` — scaffold `/apps/mail/` (DMS + SnappyMail),
-  or explicitly skip it. Unset → prompt. **The mail stack itself arrives in
-  roadmap v0.2**, so `--with-mail`, and answering yes at the prompt, both
-  hard-fail today rather than silently doing nothing. `--no-mail` works.
+- `--with-mail` / `--no-mail` — scaffold `/apps/mail/` (DMS + SnappyMail) and
+  start it, or explicitly skip it. Unset → prompt. `--no-mail` against a
+  server that already has mail leaves it alone: init scaffolds mail, it never
+  removes it. See `mail.md` and `server-setup.md` → With mail.
+- `--postmaster-password=<pw>` — the password for `postmaster@<mail domain>`,
+  which DMS is seeded with before its first start because Dovecot panics
+  without an account. Hashed on the workstation with `openssl passwd -6`;
+  only the hash crosses the wire. Asked for interactively when the flag is
+  absent, and **not asked at all** when the server already has an account —
+  init never rewrites that file. A trailing carriage return is stripped, like
+  `--domain`'s and `--email`'s; a newline is refused, because only the first
+  line would be hashed. Only meaningful with `--with-mail`.
 - `--with-backup` / `--no-backup` — install restic + append-only S3
   credentials + daily backup cron (see `backup.md`), or explicitly skip.
-  Unset → prompt. **Backup arrives in roadmap v0.3**; as with mail, asking
-  for it today is a hard failure rather than a silent no-op.
+  Unset → prompt. **Backup arrives in roadmap v0.3**, so asking for it today
+  is a hard failure rather than a silent no-op. Mail no longer is: `--with-mail`
+  scaffolds the stack.
 - `--apps-path=/apps` — root directory on the VPS (default `/apps`).
 - `--data-path=<dir>` — bind-mount root (default `<apps-path>/data`, so it
   follows `--apps-path` rather than being pinned to `/apps/data`).
@@ -109,9 +118,15 @@ What it does:
    when the static config changed and the container was not just recreated.
 7. Health-check Traefik, print the dashboard URL. Plain HTTP redirects to
    HTTPS, and the dashboard carries HSTS on its 401 (`traefik.md` → Dashboard).
-8. If `--with-mail`: scaffold `/apps/mail/`, write the cert-trigger +
-   webmail router fragment to `/apps/traefik/dynamic/_mail.yml`, run its
-   env setup, start it.
+8. If `--with-mail`: this is spread across steps 5-7 rather than sitting
+   after them, because the ordering is what breaks the boot deadlock.
+   `/apps/mail/` (`compose.yml`, `kasbah.yml`, `.env`), the cert-trigger +
+   webmail fragment at `/apps/traefik/dynamic/_mail.yml`, and the two
+   pre-seeds land **before** Traefik starts, so Traefik requests both
+   certificates at configuration load. The mail containers start **after**
+   Traefik is healthy, because DMS reads `mail.<domain>`'s certificate out of
+   `acme.json`. Init waits for SnappyMail and reports DMS without waiting for
+   it — a first-run crashloop is expected while the certificate is issued.
 9. If `--with-backup`: install restic, write append-only S3 credentials,
    schedule the backup cron (see `backup.md`).
 10. Write the server marker `<apps>/.kasbah/server.json` — kasbah version,

@@ -1,0 +1,30 @@
+# <apps>/mail/.env — read by docker compose for this directory, and through it
+# by docker-mailserver. Installed by `kasbah server init --with-mail`.
+#
+# The three values below the next line are **kasbah's**. They are derived from
+# kasbah.yml beside this file and rewritten, by name, on every run of
+# `kasbah server init --with-mail` — editing one here does not survive. Change
+# kasbah.yml instead.
+MAIL_HOSTNAME=__MAIL_HOSTNAME__
+DOMAIN=__MAIL_PRIMARY_DOMAIN__
+DATA_PATH=__DATA_PATH__
+
+# ---------------------------------------------------------------------------
+# Everything below here is **yours**. kasbah rewrites the three keys above by
+# name and copies every other line through untouched, so what you set here
+# survives a re-run — and never leaves this server.
+#
+# Outbound relay (opt-in). Empty means direct delivery on port 25, which needs a
+# clean IP, a PTR record for __MAIL_HOSTNAME__, and port 25 outbound unblocked
+# by the VPS provider — many block it by default. Fill all three to route
+# outbound through a relay, e.g. Brevo:
+#
+#   DEFAULT_RELAY_HOST=[smtp-relay.brevo.com]:587
+#   RELAY_USER=<smtp-login>
+#   RELAY_PASSWORD=<smtp-key>
+#
+# then, in this directory: docker compose -p mail up -d
+# ---------------------------------------------------------------------------
+DEFAULT_RELAY_HOST=
+RELAY_USER=
+RELAY_PASSWORD=

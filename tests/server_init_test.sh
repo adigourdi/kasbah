@@ -1459,15 +1459,23 @@ assert 'grep -qF "unknown subcommand '\''statsu'\''" "$tmpdir/err"' \
 run --help
 assert 'grep -qF "server init" "$tmpdir/out"' "usage advertises server init"
 
-# Mail and backup are scaffolded in Phases 7 and 8. Accepting the flag and doing
-# nothing would be a lie, so it is a hard failure that names the phase — and the
-# refusal comes before the connection, which the empty ssh log is what proves.
+# Mail is built now, so --with-mail is no longer a refusal: it goes on to the
+# server like any other answered run. What is checked here is that it *reaches*
+# the transport rather than stopping at a leftover guard, and that it does not
+# ask for the postmaster password before it knows whether the server already has
+# an account — that question is settled from the server, not from the flag.
 run server init deploy@kasbah-unit-test.invalid --with-mail --no-backup; rc=$?
-assert '[ "$rc" != "0" ]' "--with-mail fails rather than silently skipping mail (exit $rc)"
-assert 'grep -qF "Phase 7" "$tmpdir/err"' "--with-mail names the phase that builds it (said '$(cat "$tmpdir/err")')"
-assert 'grep -qF -- "--no-mail" "$tmpdir/err"' "--with-mail says how to proceed today"
-assert '[ ! -s "$si_ssh_log" ]' "and nothing was contacted first (ssh saw: $(cat "$si_ssh_log"))"
+assert '[ "$rc" = "3" ]' \
+    "--with-mail goes on to the server, and this one is unreachable (exit $rc: $(cat "$tmpdir/err"))"
+assert '! grep -qF "not implemented" "$tmpdir/err"' \
+    "and no longer refuses (said '$(cat "$tmpdir/err")')"
+assert '[ -s "$si_ssh_log" ]' "the stub ssh is what it reached (ssh saw: $(cat "$si_ssh_log"))"
+assert '! grep -qF "postmaster" "$tmpdir/err"' \
+    "and it did not ask for a postmaster password before reading the server (said '$(cat "$tmpdir/err")')"
 
+# Backup is still Phase 8. Accepting the flag and doing nothing would be a lie,
+# so it is a hard failure that names the phase — and the refusal comes before the
+# connection, which the empty ssh log is what proves.
 run server init deploy@kasbah-unit-test.invalid --no-mail --with-backup; rc=$?
 assert '[ "$rc" != "0" ]' "--with-backup fails rather than silently skipping backups (exit $rc)"
 assert 'grep -qF "Phase 8" "$tmpdir/err"' "--with-backup names the phase that builds it (said '$(cat "$tmpdir/err")')"

@@ -286,11 +286,10 @@ since a claim naming no domain claims nothing.
 - `domain` — the domain the project expects the mail stack to handle. At
   deploy, kasbah checks a mail stack exists on the server and **warns and
   continues** when it does not. Checking that this particular domain is
-  configured there is roadmap v0.2, with the mail stack itself
-  (`docs/phases/07-operate.md`).
+  listed in `/apps/mail/kasbah.yml` — the stack's registry — is not
+  implemented yet; the stack itself is (`kasbah server init --with-mail`).
 - `snappymail_domain` — optional JSON file to seed SnappyMail's domain config.
-  **Not yet copied by anything**; it is read by no code today. Roadmap v0.2,
-  same phase.
+  **Not yet copied by anything**; it is read by no code today.
 
 No `accounts` field — mailboxes are created/removed out-of-band with:
 

@@ -1,0 +1,93 @@
+# Kasbah-owned dynamic configuration for the shared mail stack, installed at
+# <apps>/traefik/dynamic/_mail.yml by `kasbah server init --with-mail` and
+# watched by the file provider. The `_` prefix marks it kasbah's: a re-run
+# re-ships it whenever its bytes differ, without a backup (docs/traefik.md →
+# Ownership).
+#
+# **Why both routers live in a file and not on a container.** DMS refuses to
+# start without a Let's Encrypt certificate for mail.<domain>, and Traefik only
+# requests a certificate for a hostname some router claims. A router carried by
+# DMS would therefore deadlock: DMS will not boot, so the router never
+# registers, so the certificate is never issued, so DMS will not boot.
+# The original project broke that by hanging the cert-trigger router on the *SnappyMail*
+# container's labels — it boots in ten seconds regardless. kasbah does not wire
+# the docker provider in at all, so the routers move here, and the boot order
+# stops mattering: Traefik loads this file at startup and asks for both
+# certificates before either container exists.
+#
+# Traefik issues at configuration load rather than on the first request
+# (measured, docs/traefik.md → Which CA), so both hostnames must resolve to this
+# host before this file lands. A certResolver on a name that does not resolve
+# spends Let's Encrypt rate-limit budget with nobody visiting.
+#
+# The domain is substituted on the workstation. Traefik expands environment
+# variables in neither its static nor its dynamic configuration, so it arrives
+# as literal bytes.
+http:
+  routers:
+    # The cert-trigger. Nothing user-facing is served at mail.<domain>: the
+    # router exists so that Traefik asks Let's Encrypt for the hostname DMS
+    # reads out of acme.json, and `noop@internal` is Traefik's own placeholder
+    # for a router with no backend — the same one _shared.yml's dashboard
+    # redirect uses. The original project needed a `replacepathregex` middleware pointing
+    # at a path that does not exist, because under the *docker* provider every
+    # router must name a real service; under the file provider that middleware
+    # buys nothing.
+    #
+    # It answers **418**, not 404 — that is what Traefik's noop service returns,
+    # measured. Either way nothing is served and no backend is reached, which is
+    # the whole requirement; the original project's 404 came from SnappyMail being asked for
+    # a path it did not have.
+    mail-cert:
+      rule: "Host(`mail.__MAIL_PRIMARY_DOMAIN__`)"
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+      service: noop@internal
+
+    # Not what makes the certificate happen: Traefik answers the HTTP-01
+    # challenge on :80 from its own `acme-http@internal` router
+    # (`PathPrefix(/.well-known/acme-challenge/)`), at a priority no
+    # file-provider rule can reach, so nothing in this file can shadow it —
+    # the original project's comment on the equivalent router says otherwise and is wrong.
+    # Measured rather than assumed: with this fragment loaded,
+    # http://mail.<domain>/.well-known/acme-challenge/<token> answers 404 while
+    # http://mail.<domain>/ answers 301 (tests/integration/server_init_mail_test.sh).
+    # What it buys is that plain HTTP to mail.<domain> redirects rather than
+    # 404s, which is the shape kasbah asks of every project fragment (T08).
+    mail-cert-http:
+      rule: "Host(`mail.__MAIL_PRIMARY_DOMAIN__`)"
+      entryPoints:
+        - web
+      middlewares:
+        - http-to-https
+      service: noop@internal
+
+    # Webmail, and the one router here with a real backend. The URL names the
+    # container, not the compose service: container names are unique per host
+    # because Docker refuses a duplicate, service names are only DNS aliases on
+    # a shared network (docs/traefik.md → Network, T07).
+    webmail:
+      rule: "Host(`webmail.__MAIL_PRIMARY_DOMAIN__`)"
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+      middlewares:
+        - security-headers
+      service: webmail
+
+    webmail-http:
+      rule: "Host(`webmail.__MAIL_PRIMARY_DOMAIN__`)"
+      entryPoints:
+        - web
+      middlewares:
+        - http-to-https
+      service: noop@internal
+
+  services:
+    webmail:
+      loadBalancer:
+        servers:
+          - url: "http://mail-snappymail:8888"

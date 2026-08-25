@@ -32,6 +32,37 @@ reference elsewhere to 7.1–7.5 stays valid.
 Sequential, no parallelism — every rig task owns `/apps` and Traefik, which is
 what made Phase 6 serialise 6.0 and 6.1.
 
+## Verification regime — amended 2026-08-25, mid-run
+
+The first three tasks spent **~226 min of wall clock on full suite runs** — 16
+full unit runs at ~7 min and 6 full rig runs at ~19 min — against ~8.6 h of
+agent time. The operator asked for the completion time down. Measured first,
+because one obvious suspect was innocent: **the real host is not a cost**. It
+was touched four times in three tasks, all brief. Moving VPS work to the phase
+close would have saved nothing.
+
+What changes for 7.1b onward:
+
+1. **Per task, the affected suites only** — `bash tests/<x>_test.sh`, seconds
+   rather than seven minutes. The unit suites are cleanly separated by library,
+   so "affected" is legible rather than a guess.
+2. **Per task, the task's own integration suite only**, not all eleven.
+3. **The full `./test.sh` and the full `KASBAH_RIG_TESTS=1 ./test.sh` run once,
+   at the phase close.** They become the gate rather than a per-round ritual.
+4. **No routine confirmation review round.** The orchestrator verifies fixes
+   directly and re-reviews only when the fix was *structural* — a new
+   out-parameter, a protocol field, an ordering change. This is the single
+   biggest lever: roughly 35 min per task.
+5. **Agent briefs carry a tool-use budget** and forbid re-deriving what the
+   brief already states or running a full suite.
+
+**What this gives up, stated plainly:** a regression that crosses suite
+boundaries can now land and stay hidden until the phase close, where it arrives
+mixed with four other tasks' changes. The close is the gate that catches it, and
+`git bisect` over five commits is cheap. The per-task bars in each task block
+below are otherwise unchanged — the operator pass against the rig stays, because
+that is what catches what suites do not.
+
 **Baselines to regress against:** `./test.sh` **20 PASS, exit 0, 6m55s**
 (measured 2026-08-25, matching Phase 6's ~7m10s); `KASBAH_RIG_TESTS=1 ./test.sh`
 **29 PASS, 16m27s**, no skips.
@@ -657,3 +688,131 @@ kind of honesty about testing a branch rather than a scenario.
 purpose" from "inherited", which is the argument for it being a warning rather
 than a refusal; its second clause now states what was measured (a pipe or a
 file) instead of guessing at intent.
+
+### 7.1a — the mail stack
+
+**The implementing agent died mid-report from an API error**, having finished
+the work. Everything below the code itself — the mutation table, the design
+rationale, the real-host evidence — was reconstructed afterwards by the
+orchestrator and by a review briefed as the sole source of mutation evidence.
+Two lessons came out of that alone, and both are about the run rather than the
+tool.
+
+**An agent's death leaves its children running.** Two orphaned `./test.sh` runs
+were still driving the rig minutes later, one of them mid-`deploy` against it.
+That is precisely the state Phase 6 recorded as making a suite result
+worthless, arriving by a route Phase 6 did not anticipate: not a human starting
+a second run, but a dead agent's process tree outliving it. Check
+`pgrep -af 'test.sh|bin/kasbah'` before trusting any verdict taken after an
+agent fails.
+
+**A diagnostic can lie in the direction of good news.** The orchestrator ran
+three suites in a loop with `echo "$(basename $t) exit=$?"` and reported all
+three green. The command substitution runs **before** `$?` is expanded, so
+every line reported `basename`'s status, not the suite's. `server_init_test.sh`
+had been failing the whole time, and its 70-byte log said so. Write `rc=$?`
+first, then interpolate.
+
+**What was failing was the assertion Phase 6 added**, which has now earned its
+keep twice: four `warn` lines opened with a capital. `tests/server_init_test.sh`
+extracts every `warn` opener in the file and fails on an uppercase one. The dead
+agent's last transmitted words were that it had found this; it never fixed it.
+
+**The design decisions, recovered from the code and confirmed by measurement.**
+The original project broke the DMS boot deadlock — DMS will not start without a certificate
+for `mail.<domain>`, and Traefik only requests certificates a router claims — by
+hanging the cert-trigger router on the *SnappyMail* container's labels, since
+under the **docker** provider every router must name a real service, plus a
+`replacepathregex` middleware rewriting every path so SnappyMail answered 404.
+kasbah does not wire the docker provider in at all, so both routers move into
+the kasbah-owned `_mail.yml` file fragment and the middleware disappears:
+`service: noop@internal` is Traefik's own backend-less placeholder, already used
+by `_shared.yml`'s dashboard redirect.
+
+**`noop@internal` answers 418, not 404** — measured on both the rig and the real
+host. The original project's 404 came from SnappyMail being handed a path it did not have.
+
+**The original project's comment claiming its `:80` router is what lets ACME work is
+wrong**, and the review's evidence is sharper than the suite's. Traefik answers
+HTTP-01 from its own internal `acme-http@internal` router
+(`PathPrefix(/.well-known/acme-challenge/)`, priority `MaxInt`, so no fragment
+can shadow it). The decisive measurement:
+`http://mail.<domain>/.well-known/acme-challenge/xyz` returns **404** —
+acme-http's unknown-token answer — while `http://mail.<domain>/` returns **301**
+to the redirect middleware. The `web` routers are genuinely not in the ACME
+path, and equally do not break it. For `webmail` the redirect is the difference
+between a working bookmark and a 404; for `mail` it is only consistency.
+
+**Four traps that live only in code comments, recorded here so they survive the
+file.** SnappyMail chowns its `_data_` directory to mode 750, which breaks the
+*second* run's `mkdir -p`. The data path's checksum races itself — `rspamd.rrd`
+and `mail.log` moved a digest twice in three seconds. A crashlooping container
+reports its ports under `HostConfig.PortBindings` and **not** under
+`NetworkSettings.Ports`, so anything inspecting a container that has not stayed
+up must read the former. And the registry read makes three separate
+`_si_yaml_get` calls rather than one, so a newline inside a domain value cannot
+smuggle an extra list entry.
+
+**Real-host result: the deadlock resolution works.** All four certificates in
+`acme.json` — `gallery`, `traefik`, and the two new ones — `mail-dms` and
+`mail-snappymail` both healthy, `gallery-website` undisturbed throughout.
+`https://webmail.example.com` 200 with a publicly trusted certificate,
+`https://mail.example.com` 418, `https://gallery.example.com` 200. This is
+the one thing the rig can never show: there, `SSL_TYPE: letsencrypt` makes a
+certificate a boot requirement that can never be met, so DMS crashloops forever
+and the rig suite correctly asserts on the **cert-missing log signature** rather
+than on health — a compose file broken for any *other* reason produces exactly
+one FAIL against it.
+
+**Idempotence was re-run, not read.** With a relay credential, an unrecognised
+operator key and a mailbox planted first, a second no-flag run with stdin closed
+left the data-path digest byte-identical, the postmaster hash unchanged and all
+three operator values intact. The half-made case was driven over the real
+transport too: `postfix-accounts.cf` truncated to zero, re-run with no flag and
+no TTY, gives exit 1 naming `--postmaster-password=` and changes nothing.
+
+**7.1a review and fix rounds — approved at round 2. Four findings worth keeping.**
+
+**A brief can carry the very defect it is trying to fix.** The orchestrator told
+the fix agent to pin the fragment-before-Traefik ordering by mirroring an
+existing mtime assertion. That does not work: `ssh_rsync -pt` **preserves the
+workstation's render mtime**, and the render precedes the Traefik start in
+*both* orderings, so the assertion is green either way — reproducing exactly the
+0-FAIL blindness it was written to close. The fix reads the fragment's **ctime**
+instead, which rsync cannot preserve. Measured on a broken-ordering clean run:
+`mtime < started` **TRUE** (blind), `ctime < started` **FALSE** (bites), with
+mtime 607 ms *before* the start and ctime 6.5 s after it.
+
+**And the nanoseconds are load-bearing, not decoration.** On a correctly ordered
+clean run the gap is `ctime …304300089428` against `start …304597011574` — 296
+ms, *inside the same second*. A whole-second comparison would not have been
+merely coarse; it would have been a flaky false FAIL.
+
+**A property test needs a control, or it passes vacuously.** D2 pins that no
+password reaches a hasher's argv, using a stub `openssl`/`htpasswd` on `PATH`
+that records its own arguments. The assertion that matters is not "the password
+is absent from argv" — that is trivially true if the stub never ran. The suite
+also asserts the stub *was reached*, and mutating the hasher to call
+`/usr/bin/openssl` directly produces exactly that FAIL. Without it the whole
+test is green for the wrong reason.
+
+**Two claims this run got wrong and corrected by measuring.** `notBefore` is not
+issuance time (Phase 6, reconfirmed here). And the reason `awk` rather than
+`[ -gt ]` compares Traefik's ACME router priority is **not** int64 overflow, as
+this file and two briefs first said: jq 1.7 prints the literal
+`9223372036854775807`, which is exactly `INT64_MAX` and which bash compares
+without complaint. The real hazard is jq ≤ 1.6, which renders it through a
+double as `9.223372036854776e+18` — a float literal bash refuses outright with
+`integer expression expected`. `awk` reads both. Verified both ways on this
+machine.
+
+*Accepted, not fixed:* the new unconditional `chmod 600` turns a `.env` kasbah
+cannot chmod — hand-chowned to root, say — into a hard init failure where it
+previously reported `mail_env=unchanged` and continued. That is precisely how
+`_server_init_layout` already treats `acme.json`, so it is correct by
+consistency rather than by separate argument.
+
+*Deferred to 7.1b, with a home:* `docs/mail.md`'s "Mail is optional" block still
+shows deploy **hard-failing** a mail claim with an `ERROR:` message; the code
+warns and continues, and `docs/project-manifest.md` says so. 7.1b owns the claim
+reconciliation, which is where that text either becomes true or gets rewritten.

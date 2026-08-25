@@ -58,13 +58,27 @@ Default paths (override with `--apps-path`, `--data-path`):
 │   └── traefik/letsencrypt/
 │       └── acme.json                touched as a file, chmod 600
 ├── backups/                         top-level backups (always created)
+├── mail/                            only with --with-mail (see below)
+│   ├── compose.yml                  DMS + SnappyMail
+│   ├── kasbah.yml                   the registry: primary_domain + domains
+│   └── .env                         mode 600 — kasbah's three keys, the operator's relay block
 └── traefik/
     ├── compose.yml                  the shared Traefik stack
     ├── traefik.yml                  static config
     └── dynamic/                     file-provider watch dir
         ├── _shared.yml              middlewares + TLS options + dashboard router
+        ├── _mail.yml                cert-trigger + webmail routers (only with --with-mail)
         └── <project>.yml            one per deployed project (copied in on deploy)
 ```
+
+With `--with-mail`, the data path gains `mail/dms/{mail-data,mail-state,mail-logs,config}`
+and `mail/snappymail`. Only those; SnappyMail builds its own `_data_/` tree
+inside the last one and chowns it to the container's uid — pre-creating any of
+it is what makes the *second* run fail, since the deploy user can no longer
+traverse in. The postmaster account (`mail/dms/config/postfix-accounts.cf`,
+mode 600) and the Rspamd DKIM override
+(`mail/dms/config/rspamd/override.d/dkim_signing.conf`) are seeded there before
+DMS first starts, and never written over afterwards.
 
 **The Traefik stack has no `.env`, deliberately.** Traefik expands
 environment variables in neither its static nor its dynamic configuration,
@@ -404,13 +418,79 @@ credential model, restore, pruning — in `backup.md`.
 
 ## With mail (`--with-mail`)
 
-*Not implemented yet — roadmap v0.2. `server init` hard-fails on
-`--with-mail` rather than pretending.* Additionally scaffolds `/apps/mail/` with DMS + SnappyMail (ported from
-the original project's mail/compose.yml). See `mail.md` for details.
+Scaffolds `/apps/mail/` with docker-mailserver + SnappyMail (ported from
+the original project's `mail/compose.yml`) and starts it. See `mail.md` for the stack
+itself; this section is what `server init` does with it.
+
+Three files land in `/apps/mail/`, and they have different owners:
+
+| File | Owner | On a re-run |
+|---|---|---|
+| `compose.yml` | kasbah | Re-shipped whenever its bytes differ, like Traefik's three. A hand edit is reverted without a backup |
+| `kasbah.yml` | kasbah, seeded from you | The registry — `primary_domain` and `domains:`. Both are **read back off the server** and reproduced, so an edit here survives and is how you move the MX hostname |
+| `.env` | **split** | Three keys are kasbah's — `MAIL_HOSTNAME`, `DOMAIN`, `DATA_PATH` — derived from `kasbah.yml` and rewritten by name on every run. Every other line is copied through untouched, so the relay block stays yours |
+
+A fourth file, `/apps/traefik/dynamic/_mail.yml`, carries the routers — the
+cert-trigger for `mail.<domain>`, webmail for `webmail.<domain>`, and a `web`
+redirect for each — and belongs to Traefik's watch directory rather than to
+`mail/`. It is kasbah's and re-shipped on difference like the rest.
+
+`primary_domain` defaults to `--domain`'s apex on the first run — the same
+apex the dashboard hangs off, and the one `mail.<domain>` and
+`webmail.<domain>` are formed from. Nothing prompts for it, because the
+operator has already named it; changing it later is an edit to `kasbah.yml`
+and a re-run.
+
+### The postmaster account
+
+DMS's Dovecot panics within 120 s if `postfix-accounts.cf` holds no account,
+so init seeds one. It **prompts on the workstation** for the password
+(`--postmaster-password=` for a script), hashes it locally with
+`openssl passwd -6`, and ships only the hash — hashed where it was typed and
+never sent in any other form, which is the rule the dashboard's bcrypt hash
+follows too. The two do not travel the same way: the bcrypt entry is rendered
+into `_shared.yml` and rsynced, while this hash is an argument to the remote
+seed step and so sits in that step's argv on the server for as long as it
+runs. What is exposed there is a hash.
+
+A trailing carriage return in the value is stripped, not refused — the flag
+exists to be scripted, and a fleet script may have been saved on Windows. A
+password with a *newline* in it is refused outright, because
+`openssl passwd -6 -stdin` reads one line and would hash the part before it.
+
+It is asked **once**. A server that already has an account is neither asked
+about nor written to: that file holds every mailbox on the host, and a re-run
+that rotated the postmaster password would be a re-run that locked somebody
+out. Passing `--postmaster-password` to such a run is a warning, not a change.
+To rotate it: `docker exec -it mail-dms setup email update postmaster@<domain>`.
+
+### Ordering, and the mail ports
 
 Mail requires the main Traefik stack to be running first so that the
-`mail.<domain>` cert-trigger router can issue an ACME cert; init handles
-the ordering automatically.
+`mail.<domain>` cert-trigger router can issue an ACME cert; init handles the
+ordering automatically. Concretely: the fragment and both pre-seeds land
+*before* Traefik starts, so Traefik requests both certificates at
+configuration load; the mail containers start *after* Traefik is healthy.
+
+**`25`, `465`, `587` and `993` are bound on the host** by DMS, and are not in
+the prerequisites table above — nothing probes them. A port already held
+surfaces as `docker compose up` failing in `/apps/mail`. Port 25 *outbound*
+is blocked by default at many providers; that is a deliverability problem, not
+a startup one, and the relay block in `.env` is the way out.
+
+**DMS not being healthy the moment init finishes is expected**, not a failure,
+and it has two quite different causes that look identical at that instant: a
+container that was just created is inside its healthcheck's 60 s
+`start_period`, and a container that cannot find a certificate for
+`mail.<domain>` restarts until one appears. Init reports the state and the
+restart count and says both rather than waiting.
+
+Because the fragment lands before the containers start, issuance usually
+finishes during the image pull and DMS comes up healthy on its first try —
+measured on a real host, 0 restarts on a first run. Where it does not, expect
+30–90 s. If `mail.<domain>` does not resolve to the host from the public
+internet the challenge never validates, so the restarts are permanent — which
+is also why this is not something init can wait on.
 
 ## `kasbah server status`
 
@@ -464,6 +544,20 @@ Traefik API with the dashboard credentials.
   `compose up -d` did not already create or recreate the container — a
   container two seconds old has read the new config on its way up.
 - Adding `--with-mail` on re-run scaffolds mail without touching Traefik.
+- With mail on, a re-run: re-ships `mail/compose.yml`, `mail/kasbah.yml` and
+  `dynamic/_mail.yml` only when their bytes differ; **rewrites `.env`'s three
+  kasbah keys and copies every other line through**, so a hand-edited relay
+  block is not a difference; **never rewrites `postfix-accounts.cf`**, so the
+  postmaster password is not regenerated and no mailbox is lost; **never
+  rewrites the Rspamd DKIM override**, which `setup config dkim` extends; and
+  never touches mail data. It does not prompt for a password it will not use.
+- `mail/.env`'s mode is enforced as 600 on every run, exactly as `acme.json`'s
+  is and for the same reason: the mode is a fact about the file, not about the
+  run that happened to write it, so a file left 644 by a hand edit converges on
+  the next re-run rather than staying wrong while this document says otherwise.
+- `--no-mail` on a server that already has mail **leaves it alone**. Init
+  scaffolds mail; it does not remove it. Taking the stack down is
+  `docker compose -p mail down` on the server.
 
 ## Handover / teardown
 

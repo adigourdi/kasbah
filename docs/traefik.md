@@ -127,8 +127,19 @@ Traefik restart, no `compose up` on the project.
 
 Kasbah-owned fragments (written by `kasbah server init`):
 - `_shared.yml` — middlewares, TLS options, dashboard router.
-- `_mail.yml` — cert-trigger + webmail routers. Only written when
-  `--with-mail` is passed. See `mail.md`.
+- `_mail.yml` — four routers, only written when `--with-mail` is passed:
+  `mail-cert` (`websecure`, `certResolver: letsencrypt`, `noop@internal`) is
+  the cert-trigger that makes DMS bootable at all; `webmail` (`websecure`,
+  `security-headers`) proxies to `http://mail-snappymail:8888`; and
+  `mail-cert-http` / `webmail-http` redirect on `web`. It defines no
+  middlewares of its own — the frozen ones are `_shared.yml`'s. See `mail.md`.
+
+  `https://mail.<domain>` answers **418**: that is what `noop@internal`
+  returns when a router reaches it with no middleware in front, and nothing
+  user-facing lives there. The `web` half is not what makes ACME work —
+  Traefik answers the HTTP-01 challenge from its own `acme-http@internal`
+  router on `:80` regardless of any fragment — it is only the redirect T08
+  asks of every hostname.
 
 Project fragments are named `<manifest.name>.yml`. Filenames starting
 with `_` belong to kasbah and get overwritten on

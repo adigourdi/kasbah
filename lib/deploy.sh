@@ -748,10 +748,12 @@ _deploy_sync_fragment() {
 
 # Step 7, and a stub that looks: a project claiming `mail:` says it expects
 # `mail.<domain>` and SMTP to be there, and kasbah checks that the mail stack
-# knows the domain (docs/project-manifest.md → mail). It cannot yet — the mail
-# stack itself is roadmap v0.2 and `server init --with-mail` hard-fails today —
-# so what is here reports what is on the server and warns either way. The claim
-# never stops a deploy: an unmet one costs mail, not the site.
+# knows the domain (docs/project-manifest.md → mail). The stack itself now
+# exists — `server init --with-mail` scaffolds it — but the registry that
+# answers "does it serve this domain?" is <apps>/mail/kasbah.yml, and reading it
+# needs a YAML parser the VPS does not have, so the reconciliation is its own
+# unit. Until then this reports what is on the server and warns either way. The
+# claim never stops a deploy: an unmet one costs mail, not the site.
 _deploy_mail_claim() {
     local dir="$_DEPLOY_APPS_PATH/mail"
     local out rc=0
@@ -777,14 +779,14 @@ REMOTE
     # the server and only one of them is "kasbah has not caught up yet".
     if [ "${_DEPLOY_FACT[mail_stack]}" != yes ]; then
         warn "$MANIFEST_NAME claims the mail domain $_DEPLOY_MAIL_DOMAIN, and there is no mail stack at $dir on $_DEPLOY_TARGET"
-        warn "the shared mail stack is roadmap v0.2, so nothing was verified — the $_DEPLOY_MODE continues"
+        warn "enable it with: kasbah server init $_DEPLOY_TARGET --with-mail — the $_DEPLOY_MODE continues"
     elif [ "${_DEPLOY_FACT[mail_env]}" != yes ]; then
         warn "$MANIFEST_NAME claims the mail domain $_DEPLOY_MAIL_DOMAIN, and $dir on $_DEPLOY_TARGET has no .env"
-        warn "that file is where the domains the stack handles are configured, so the claim"
-        warn "is unmet as far as anything here can tell — the $_DEPLOY_MODE continues"
+        warn "the stack there looks half-made, so the claim is unmet as far as anything here"
+        warn "can tell — re-run server init --with-mail; the $_DEPLOY_MODE continues"
     else
-        warn "$MANIFEST_NAME claims the mail domain $_DEPLOY_MAIL_DOMAIN, and kasbah does not yet check that $dir/.env names it"
-        warn "verify it yourself for now — the reconciliation is roadmap v0.2 (docs/project-manifest.md → mail)"
+        warn "$MANIFEST_NAME claims the mail domain $_DEPLOY_MAIL_DOMAIN, and kasbah does not yet check that $dir/kasbah.yml lists it"
+        warn "verify it yourself for now: ssh $_DEPLOY_TARGET 'cat $dir/kasbah.yml' (docs/project-manifest.md → mail)"
     fi
     return 0
 }

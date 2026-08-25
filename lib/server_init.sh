@@ -24,6 +24,17 @@ _KASBAH_SERVER_INIT_LOADED=1
 # signal completion, because its presence is the "init completed" signal. The
 # seventh writes /etc/kasbah/apps-path, immediately after the marker: a run that
 # dies before the marker leaves no pointer either.
+#
+# --with-mail adds four more, and where each one sits is load-bearing. Its read
+# joins the others at the front, before anything is created, because whether the
+# postmaster account is already seeded decides whether this run asks for a
+# password at all. Its layout-and-seed and its file sync land *before* Traefik
+# starts, so Traefik boots with <apps>/traefik/dynamic/_mail.yml already in the
+# watch directory and requests both certificates at configuration load. Its
+# start comes *after* Traefik is healthy, which is docs/server-setup.md's
+# ordering rule: DMS reads mail.<domain>'s certificate out of acme.json, and
+# nothing puts one there until the cert-trigger router is live. The marker still
+# goes last.
 
 # The parsed command line.
 _SI_TARGET=""
@@ -37,6 +48,7 @@ _SI_AUTH=""
 _SI_ACME_STAGING=""
 _SI_ACME_RESET_CHOICE=""
 _SI_YES=""
+_SI_POSTMASTER_PASSWORD=""
 
 # What the probe brought back, and what was derived from it.
 declare -A _SI_FACT=()
@@ -77,6 +89,36 @@ _SI_TRAEFIK_CHANGED=()
 _SI_TRAEFIK_RESTART=no
 _SI_TMPDIR=""
 
+# The mail stack. Three kasbah-owned files, two of them in <apps>/mail and the
+# third in Traefik's watch directory, plus a registry whose two values a re-run
+# reads back rather than regenerating — the same rule the dashboard domain and
+# the ACME address follow, for the same reason.
+_SI_MAIL_ENABLED=no
+_SI_MAIL_FILES=(compose.yml kasbah.yml _mail.yml)
+declare -A _SI_MAIL_KEY=(
+    [compose.yml]=mail_compose_b64
+    [kasbah.yml]=mail_registry_b64
+    [_mail.yml]=mail_fragment_b64
+)
+# Where each one lands, relative to the apps path. _mail.yml is Traefik's, not
+# the mail stack's: it is a file-provider fragment and has to sit where the
+# watcher looks.
+declare -A _SI_MAIL_DEST=(
+    [compose.yml]=mail/compose.yml
+    [kasbah.yml]=mail/kasbah.yml
+    [_mail.yml]=traefik/dynamic/_mail.yml
+)
+declare -A _SI_MAIL_CURRENT=()
+_SI_MAIL_PROJECT=mail
+_SI_MAIL_PRIMARY=""
+_SI_MAIL_DOMAINS=()
+_SI_MAIL_PRIMARY_ORIGIN=""
+# The seeded postmaster line, `user@domain|{SHA512-CRYPT}$6$…`, or empty when
+# the server already has an account and this run must not touch it.
+_SI_MAIL_ACCOUNT_LINE=""
+_SI_MAIL_ACCOUNT_ORIGIN=""
+_SI_MAIL_CHANGED=()
+
 _server_init_usage() {
     cat <<EOF
 Usage: kasbah server init USER@HOST [flags]
@@ -97,6 +139,8 @@ Flags:
   --reset-acme|--keep-acme   what to do with a certificate store whose CA
                          nothing on the server records
   --with-mail|--no-mail      scaffold the mail stack, or skip it
+  --postmaster-password=<pw> password for postmaster@<mail domain>, seeded
+                         before DMS first starts; hashed here, never sent
   --with-backup|--no-backup  install restic backups, or skip them
   --yes                  confirm a switch away from a stated endpoint
 
@@ -112,6 +156,14 @@ every run: a re-run without the flag against a staging server is how you
 switch back. Where that would strand certificates, init archives acme.json
 and re-issues, and asks first. See docs/server-setup.md for the
 prerequisites table and the layout.
+
+--with-mail scaffolds <apps>/mail (compose.yml, .env, kasbah.yml), writes the
+cert-trigger and webmail routers to <apps>/traefik/dynamic/_mail.yml, seeds the
+postmaster account and the DKIM signing config before DMS first starts, and
+brings the stack up after Traefik. The mail domain defaults to --domain's apex;
+it is read back out of <apps>/mail/kasbah.yml on a re-run, so an edit there
+survives. The postmaster password is asked for once — a re-run against a server
+that already has the account neither asks nor changes it. See docs/mail.md.
 EOF
 }
 
@@ -245,6 +297,27 @@ _si_check_auth_pass() {
     esac
 }
 
+# The postmaster password. Nothing but its hash is ever written, so the YAML
+# scalar rules do not apply — what does is that `openssl passwd -6 -stdin` reads
+# exactly one line, so a value carrying a newline would be silently truncated to
+# the part before it and the operator would be locked out of an account whose
+# password they believe they know.
+#
+# A trailing carriage return is stripped rather than refused, because a password
+# read out of a CRLF file is the ordinary CRLF case and the stripped form is
+# what a Unix tool would have hashed anyway. The strip happens in the two places
+# the value arrives — the flag's own case in _server_init_parse_args, beside
+# --domain's and --email's, and prompt_secret — so this checker only ever sees
+# an already-stripped value and refuses a *newline*, which no strip can save.
+_si_check_postmaster_password() {
+    local p="$1"
+    [ -n "$p" ] || die "server init: --postmaster-password= must not be empty"
+    case $p in
+        *$'\n'*) die "server init: --postmaster-password= must not contain a newline — only the first line would be hashed" ;;
+    esac
+    return 0
+}
+
 _si_check_auth() {
     local v="$1"
     case $v in
@@ -277,6 +350,7 @@ _server_init_parse_args() {
     _SI_ACME_STAGING=""
     _SI_ACME_RESET_CHOICE=""
     _SI_YES=""
+    _SI_POSTMASTER_PASSWORD=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -295,6 +369,16 @@ _server_init_parse_args() {
             --yes)         _SI_YES=yes ;;
             --with-mail)   _server_init_set_bool mail yes ;;
             --no-mail)     _server_init_set_bool mail no ;;
+            # Validated, never echoed, for the reason --traefik-auth is not.
+            # Stripped of a trailing \r like --domain and --email above, and for
+            # a sharper consequence: a password scripted out of a CRLF file
+            # would otherwise hash with the carriage return in it, and the
+            # account it seeds would be one nobody can log into — on the one
+            # file init then deliberately refuses to rewrite.
+            --postmaster-password=*)
+                           _SI_POSTMASTER_PASSWORD="${1#*=}"
+                           _SI_POSTMASTER_PASSWORD="${_SI_POSTMASTER_PASSWORD%$'\r'}"
+                           _si_check_postmaster_password "$_SI_POSTMASTER_PASSWORD" ;;
             --with-backup) _server_init_set_bool backup yes ;;
             --no-backup)   _server_init_set_bool backup no ;;
             -h|--help)     _server_init_usage; exit 0 ;;
@@ -304,7 +388,7 @@ _server_init_parse_args() {
             # log that keeps one. The name is what diagnoses a typo; the value
             # adds nothing, so it is never printed — for any flag, rather than
             # for a list of names that can always miss one.
-            -*)            die "server init: unknown flag '${1%%=*}' (expected --apps-path=, --data-path=, --domain=, --email=, --traefik-auth=, --acme-staging, --reset-acme/--keep-acme, --with-mail/--no-mail, --with-backup/--no-backup, --yes)" ;;
+            -*)            die "server init: unknown flag '${1%%=*}' (expected --apps-path=, --data-path=, --domain=, --email=, --traefik-auth=, --acme-staging, --reset-acme/--keep-acme, --with-mail/--no-mail, --postmaster-password=, --with-backup/--no-backup, --yes)" ;;
             *)
                 [ -z "$_SI_TARGET" ] \
                     || die "server init: unexpected argument '$1' (USER@HOST is given once)"
@@ -1441,6 +1525,37 @@ _si_bcrypt() {
     return 0
 }
 
+# SHA512-CRYPT, because that is the one thing docker-mailserver's own account
+# file holds: `setup email add` shells out to `doveadm pw -s SHA512-CRYPT` and
+# writes `<address>|{SHA512-CRYPT}$6$…` (verified against the pinned 15.1.0
+# image, both that a hash from `openssl passwd -6` verifies under that prefix
+# and that a wrong password does not). openssl is on the *workstation's*
+# unchecked list beside htpasswd; it is also a remote prerequisite, but the
+# hashing happens here so the password never crosses the wire, exactly as
+# _si_bcrypt does for the dashboard.
+#
+# `-stdin` rather than a positional argument: `openssl passwd -6 "$pass"` puts
+# the password in the process table, where any other user of this workstation
+# can read it for as long as it runs.
+_si_sha512_crypt() {
+    local _sc_pass="$1" _sc_out="$2"
+    local _sc_hash="" _sc_rc=0
+    local _sc_re='^\$6\$[^$]+\$[./A-Za-z0-9]+$'
+
+    command -v openssl >/dev/null 2>&1 \
+        || die "cannot hash the postmaster password: no openssl on PATH (it is what produces the SHA512-CRYPT hash docker-mailserver's account file holds)"
+
+    _sc_hash=$(printf '%s\n' "$_sc_pass" | openssl passwd -6 -stdin) || _sc_rc=$?
+    _sc_hash="${_sc_hash%$'\r'}"
+    if [ "$_sc_rc" -ne 0 ] || ! [[ "$_sc_hash" =~ $_sc_re ]]; then
+        err "could not produce a SHA512-CRYPT hash for the postmaster password (openssl exited $_sc_rc)"
+        err_cont "expected one line of '\$6\$<salt>\$<hash>' — see openssl's own error above"
+        exit 1
+    fi
+    printf -v "$_sc_out" '%s' "$_sc_hash"
+    return 0
+}
+
 # Flag wins, else what the server already has, else ask. The middle branch is
 # the one that makes a re-run a no-op, and it is why these questions are put
 # after the connection rather than beside the mail and backup ones: whether
@@ -1731,30 +1846,58 @@ _si_choose_acme_unknown() {
     return 0
 }
 
-# Renders the templates into a temp directory. `__NAME__` is the placeholder
-# form because it collides with nothing in the files it appears in: YAML gives
-# `_` no meaning (`@` may not even start a plain scalar), and the `${1}` in
-# _shared.yml's redirect middlewares is a different shape, so the guard below
-# cannot mistake one for the other.
+# The substitution table the renderer reads. A global rather than a parameter
+# because bash passes no associative array by value, and one table rather than
+# one per stack because the renderer is shared: `_server_init_traefik_render`
+# and `_server_init_mail_render` fill it and then hand files to
+# `_si_render_template`, so neither carries a private copy of the substitution
+# loop.
+declare -A _SI_SUBST=()
+
+# One template rendered into one destination. `__NAME__` is the placeholder form
+# because it collides with nothing in the files it appears in: YAML gives `_` no
+# meaning (`@` may not even start a plain scalar), and the `${1}` in _shared.yml's
+# redirect middlewares is a different shape, so the guard below cannot mistake
+# one for the other.
 #
 # A token the renderer has no value for is a hard failure, and it is looked for
 # in the *template* rather than in the output: an operator whose --apps-path
 # happens to contain __STAGE__ has done nothing wrong, and must not be told
 # kasbah's templates are out of step. Substituted values are never rescanned,
 # which is the same property from the other side.
-#
-# Every rendered file is then parsed before it is allowed near the server.
+_si_render_template() {
+    local _rt_src="$1" _rt_dst="$2" _rt_label="$3"
+    local _rt_content _rt_out _rt_rest _rt_tok _rt_key
+
+    [ -f "$_rt_src" ] || die "the $_rt_label template $_rt_src is missing"
+    mkdir -p "${_rt_dst%/*}" || die "could not create ${_rt_dst%/*}"
+
+    _rt_content="$(cat "$_rt_src"; printf x)" || die "could not read $_rt_src"
+    _rt_content="${_rt_content%x}"
+
+    # One left-to-right pass: each token is replaced where it stands and the
+    # text that replaces it is never looked at again.
+    _rt_out=""
+    _rt_rest="$_rt_content"
+    while [[ "$_rt_rest" =~ __[A-Z0-9_]+__ ]]; do
+        _rt_tok="${BASH_REMATCH[0]}"
+        _rt_key="${_rt_tok#__}"; _rt_key="${_rt_key%__}"
+        [ -n "${_SI_SUBST[$_rt_key]+set}" ] \
+            || die "internal: the $_rt_label template uses $_rt_tok, which the renderer has no value for — templates and renderer are out of step"
+        _rt_out+="${_rt_rest%%"$_rt_tok"*}${_SI_SUBST[$_rt_key]}"
+        _rt_rest="${_rt_rest#*"$_rt_tok"}"
+    done
+
+    printf '%s' "$_rt_out$_rt_rest" > "$_rt_dst" || die "could not write $_rt_dst"
+    chmod 644 "$_rt_dst" || die "could not set mode 644 on $_rt_dst"
+    return 0
+}
+
+# Renders the Traefik templates into a temp directory. Every rendered file is
+# then parsed before it is allowed near the server.
 _server_init_traefik_render() {
-    local rel src dst content out rest tok key yq_err
+    local rel dst yq_err
     local tpl="${KASBAH_TEMPLATE_DIR:-}"
-    declare -A subst=(
-        [APPS_PATH]="$_SI_APPS_PATH"
-        [DATA_PATH]="$_SI_DATA_PATH"
-        [ACME_EMAIL]="$_SI_ACME_EMAIL"
-        [ACME_CA]="$_SI_ACME_CA"
-        [DASHBOARD_DOMAIN]="$_SI_DASHBOARD_DOMAIN"
-        [DASHBOARD_AUTH]="$_SI_AUTH_ENTRY"
-    )
 
     [ -n "$tpl" ] || die "internal: KASBAH_TEMPLATE_DIR is not set"
     [ -d "$tpl/traefik" ] \
@@ -1765,31 +1908,18 @@ _server_init_traefik_render() {
     _SI_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/kasbah-traefik.XXXXXX")" \
         || die "could not create a temp directory to render the Traefik stack in"
 
+    _SI_SUBST=(
+        [APPS_PATH]="$_SI_APPS_PATH"
+        [DATA_PATH]="$_SI_DATA_PATH"
+        [ACME_EMAIL]="$_SI_ACME_EMAIL"
+        [ACME_CA]="$_SI_ACME_CA"
+        [DASHBOARD_DOMAIN]="$_SI_DASHBOARD_DOMAIN"
+        [DASHBOARD_AUTH]="$_SI_AUTH_ENTRY"
+    )
+
     for rel in "${_SI_TRAEFIK_FILES[@]}"; do
-        src="$tpl/traefik/$rel"
         dst="$_SI_TMPDIR/$rel"
-        [ -f "$src" ] || die "the Traefik template $src is missing"
-        mkdir -p "${dst%/*}" || die "could not create ${dst%/*}"
-
-        content="$(cat "$src"; printf x)" || die "could not read $src"
-        content="${content%x}"
-
-        # One left-to-right pass: each token is replaced where it stands and the
-        # text that replaces it is never looked at again.
-        out=""
-        rest="$content"
-        while [[ "$rest" =~ __[A-Z0-9_]+__ ]]; do
-            tok="${BASH_REMATCH[0]}"
-            key="${tok#__}"; key="${key%__}"
-            [ -n "${subst[$key]+set}" ] \
-                || die "internal: the $rel template uses $tok, which the renderer has no value for — templates and renderer are out of step"
-            out+="${rest%%"$tok"*}${subst[$key]}"
-            rest="${rest#*"$tok"}"
-        done
-        content="$out$rest"
-
-        printf '%s' "$content" > "$dst" || die "could not write $dst"
-        chmod 644 "$dst" || die "could not set mode 644 on $dst"
+        _si_render_template "$tpl/traefik/$rel" "$dst" "$rel"
 
         # The guarantee behind the input checks. A quote or a backslash in any
         # substituted value ends the YAML scalar it sits in, and for
@@ -2013,6 +2143,648 @@ REMOTE
     return 0
 }
 
+
+# --- The mail stack -------------------------------------------------------------
+
+# `--with-mail` scaffolds <apps>/mail and the Traefik fragment that makes it
+# reachable (docs/mail.md). Three files are kasbah's and are re-rendered every
+# run — compose.yml, kasbah.yml, and traefik/dynamic/_mail.yml. Two more are
+# seeded once and never touched again: postfix-accounts.cf, because it holds
+# every account on the server, and rspamd's dkim_signing.conf, because DMS's own
+# `setup config dkim` helper extends it. The .env is a third thing again: kasbah
+# owns three keys in it by name and copies every other line through, which is
+# how a relay credential set by hand survives a re-run without ever leaving the
+# server.
+#
+# The registry is <apps>/mail/kasbah.yml and nothing else asks "does this stack
+# serve X?" of any other file. `.env`'s kasbah-owned values are *derived* from
+# it and rewritten on every run, so there is one writer per fact and the two
+# cannot drift.
+
+# What is on the server now: the three kasbah-owned files, and the two facts
+# that decide whether this run seeds anything. Read before anything is created
+# and before the postmaster question is asked — whether that question needs
+# asking at all is a fact about the server, exactly like the dashboard
+# credentials.
+#
+# Base64 on one line for the same reason the Traefik read uses it: this output
+# is a key=value protocol and a YAML file sent raw would arrive as a dozen keys.
+_server_init_read_mail() {
+    local out rc=0 rel enc dec
+
+    [ "$_SI_MAIL_ENABLED" = yes ] || return 0
+
+    out=$(ssh_script "$_SI_APPS_PATH" "$_SI_DATA_PATH" <<'REMOTE'
+set -uo pipefail
+export LC_ALL=C
+dir="$1/mail"
+frag="$1/traefik/dynamic/_mail.yml"
+mdata="$2/mail"
+
+emit() {
+    local enc=""
+    if [ -f "$2" ]; then enc=$(openssl base64 -A -in "$2" 2>/dev/null) || enc=""; fi
+    printf '%s=%s\n' "$1" "$enc"
+}
+
+emit mail_compose_b64  "$dir/compose.yml"
+emit mail_registry_b64 "$dir/kasbah.yml"
+emit mail_fragment_b64 "$frag"
+
+# Three states, because the verdict differs for each. `empty` is a file that
+# exists and holds no account — a run that died between creating the tree and
+# seeding it — and is seeded like an absent one. `present` is the state that
+# must never be written over: it is every mailbox on the server.
+accounts="$mdata/dms/config/postfix-accounts.cf"
+state=absent
+if [ -f "$accounts" ]; then
+    state=empty
+    while IFS= read -r line || [ -n "$line" ]; do
+        line=${line%$'\r'}
+        case $line in
+            ''|'#'*) ;;
+            *) state=present; break ;;
+        esac
+    done < "$accounts"
+fi
+printf 'mail_accounts=%s\n' "$state"
+
+# Deliberately *not* reported here: whether the Rspamd DKIM override already
+# exists. Nothing on this side decides anything with it — the seed step is
+# copy-if-missing and tests the file where it is about to write it, and reports
+# mail_dkim_seed=kept/seeded, which is what the caller and the summary read. A
+# fact with no verdict behind it is a fact that reads as a safety mechanism and
+# is not one, so it is left to whichever later command grows a use for it.
+
+# Refused rather than worked around, and here rather than in mkdir: a file where
+# the mail directory belongs stops the whole stack, and `mkdir -p` says
+# "File exists" about it.
+if [ -e "$dir" ] && [ ! -d "$dir" ]; then printf 'mail_dir=notdir\n'
+elif [ -d "$dir" ];                  then printf 'mail_dir=dir\n'
+else                                      printf 'mail_dir=absent\n'
+fi
+exit 0
+REMOTE
+    ) || rc=$?
+
+    [ "$rc" -eq 0 ] \
+        || die "could not read the mail stack on $_SI_TARGET (the remote step exited $rc, see above)"
+
+    _si_absorb_checked "the mail stack read" "$out" \
+        mail_compose_b64 mail_registry_b64 mail_fragment_b64 \
+        mail_accounts mail_dir
+
+    case "${_SI_FACT[mail_accounts]}" in
+        absent|empty|present) ;;
+        *) die "the mail stack read on $_SI_TARGET reported mail_accounts='${_SI_FACT[mail_accounts]}', which this kasbah does not know" ;;
+    esac
+    case "${_SI_FACT[mail_dir]}" in
+        absent|dir) ;;
+        notdir)
+            err "$_SI_APPS_PATH/mail on $_SI_TARGET exists and is not a directory"
+            err_cont "that is where the shared mail stack lives — its compose file, its .env and"
+            err_cont "its registry. Look at it, remove it, and re-run. Nothing has been changed."
+            exit 1
+            ;;
+        *) die "the mail stack read on $_SI_TARGET reported mail_dir='${_SI_FACT[mail_dir]}', which this kasbah does not know" ;;
+    esac
+
+    _SI_MAIL_CURRENT=()
+    for rel in "${_SI_MAIL_FILES[@]}"; do
+        enc="${_SI_FACT[${_SI_MAIL_KEY[$rel]}]}"
+        # The `printf x` sentinel keeps trailing newlines, which $(…) strips.
+        dec=$( { printf '%s' "$enc" | base64 -d 2>/dev/null; printf x; } )
+        _SI_MAIL_CURRENT[$rel]="${dec%x}"
+    done
+    return 0
+}
+
+# The registry's two values, reproduced from the server when it has them and
+# invented once when it does not. Same rule as the dashboard domain, and for a
+# sharper reason: `primary_domain` is the MX target and the name both
+# certificates are issued for, so a re-run that quietly moved it would abandon
+# two certificates and every DNS record pointing at them.
+#
+# The default is --domain's apex, not a prompt. It is not an assumption: the
+# operator has already named that apex on this command line or on an earlier
+# run, `traefik.<apex>` is served from it, and mail.<apex>/webmail.<apex> are
+# the names docs/mail.md uses throughout. An operator who wants a different one
+# edits kasbah.yml once and every later run honours it.
+_server_init_mail_registry() {
+    local stored_primary="" stored_count="" stored_domain="" i=0
+    local rc=0
+    local registry="${_SI_MAIL_CURRENT[kasbah.yml]}"
+
+    _si_yaml_get "$registry" '.primary_domain // ""' stored_primary || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        err "$_SI_APPS_PATH/mail/kasbah.yml on $_SI_TARGET could not be read as YAML"
+        err_cont "that file is the mail stack's registry — the one thing that says which"
+        err_cont "domains this server's mail handles — and kasbah reproduces what is in it"
+        err_cont "rather than regenerating it. Guessing past a file it cannot parse would"
+        err_cont "move the MX hostname and abandon two certificates. Fix it, or remove it to"
+        err_cont "start the registry over from --domain."
+        exit 1
+    fi
+
+    if [ -n "$stored_primary" ]; then
+        _SI_MAIL_PRIMARY="$stored_primary"
+        _SI_MAIL_PRIMARY_ORIGIN=reused
+    else
+        _SI_MAIL_PRIMARY="$_SI_DASHBOARD_DOMAIN"
+        _SI_MAIL_PRIMARY_ORIGIN=domain
+    fi
+    _si_check_yaml_scalar "the mail primary domain" "$_SI_MAIL_PRIMARY"
+    _is_fqdn "$_SI_MAIL_PRIMARY" \
+        || die "server init: the mail stack's primary domain is '$_SI_MAIL_PRIMARY', which is not a domain name (it is the MX target, and mail.<domain> is what DMS's certificate is issued for)"
+
+    # Read one at a time rather than as a block, so a domain carrying a newline
+    # cannot smuggle a second list entry into the rendered file.
+    _SI_MAIL_DOMAINS=()
+    _si_yaml_get "$registry" '(.domains // []) | length' stored_count || rc=$?
+    [ "$rc" -eq 0 ] || die "internal: the mail registry parsed once and not twice"
+    case $stored_count in ''|*[!0-9]*) stored_count=0 ;; esac
+    while [ "$i" -lt "$stored_count" ]; do
+        _si_yaml_get "$registry" "(.domains // [])[$i] // \"\"" stored_domain || rc=$?
+        [ "$rc" -eq 0 ] || die "internal: the mail registry parsed once and not twice"
+        i=$((i + 1))
+        [ -n "$stored_domain" ] || continue
+        _si_check_yaml_scalar "a domain in the mail registry" "$stored_domain"
+        _is_fqdn "$stored_domain" \
+            || die "server init: $_SI_APPS_PATH/mail/kasbah.yml lists '$stored_domain' under domains:, which is not a domain name"
+        _SI_MAIL_DOMAINS+=("$stored_domain")
+    done
+
+    # The primary is always served by the stack it is the MX for, so it is in
+    # the list whether or not anyone wrote it there. Prepended rather than
+    # appended: the list is read in order and the primary is the one every other
+    # domain's MX points at.
+    local d found=no
+    for d in ${_SI_MAIL_DOMAINS[@]+"${_SI_MAIL_DOMAINS[@]}"}; do
+        [ "$d" != "$_SI_MAIL_PRIMARY" ] || { found=yes; break; }
+    done
+    if [ "$found" != yes ]; then
+        _SI_MAIL_DOMAINS=("$_SI_MAIL_PRIMARY" ${_SI_MAIL_DOMAINS[@]+"${_SI_MAIL_DOMAINS[@]}"})
+    fi
+    return 0
+}
+
+# The postmaster account, which exists because Dovecot panics within 120 s if
+# postfix-accounts.cf holds none (docs/mail.md → Pre-seeding). Asked for on the
+# workstation and hashed here; only the hash travels, exactly as the dashboard
+# password does.
+#
+# Asked **once**. A server that already has an account is not asked again and
+# not written to: the file holds every mailbox on the host, and a re-run of init
+# that rotated the postmaster password would be a re-run that locked somebody
+# out.
+_server_init_mail_values() {
+    local pass="" hash=""
+
+    [ "$_SI_MAIL_ENABLED" = yes ] || return 0
+
+    _server_init_mail_registry
+
+    if [ "${_SI_FACT[mail_accounts]}" = present ]; then
+        _SI_MAIL_ACCOUNT_LINE=""
+        _SI_MAIL_ACCOUNT_ORIGIN=existing
+        _si_postmaster_flag_unused
+        return 0
+    fi
+
+    if [ -n "$_SI_POSTMASTER_PASSWORD" ]; then
+        pass="$_SI_POSTMASTER_PASSWORD"
+        _SI_MAIL_ACCOUNT_ORIGIN=flag
+    else
+        prompt_secret postmaster-password \
+            "Password for postmaster@$_SI_MAIL_PRIMARY (seeded before DMS starts; DMS will not boot without an account)" \
+            "" pass
+        _si_check_postmaster_password "$pass"
+        _SI_MAIL_ACCOUNT_ORIGIN=prompt
+    fi
+
+    _si_sha512_crypt "$pass" hash
+    # The shape docker-mailserver's own file provisioner writes: one line of
+    # `<address>|<scheme><hash>`, delimiter `|`, scheme prefix included
+    # (verified against the pinned image's helpers/database/db.sh).
+    _SI_MAIL_ACCOUNT_LINE="postmaster@$_SI_MAIL_PRIMARY|{SHA512-CRYPT}$hash"
+    return 0
+}
+
+# --postmaster-password on a run that already has an account. A warning rather
+# than a refusal, for the reason a spare --reset-acme is: a fleet script sets it
+# once and meets servers that are already seeded, and failing those runs is what
+# would make the flag unusable. It is emphatically not an offer to rotate — that
+# is `docker exec mail-dms setup email update`.
+_si_postmaster_flag_unused() {
+    [ -n "$_SI_POSTMASTER_PASSWORD" ] || return 0
+    warn "--postmaster-password had no effect: postmaster is already in"
+    warn "$_SI_DATA_PATH/mail/dms/config/postfix-accounts.cf on $_SI_TARGET, and init never rewrites that file"
+    warn "to change the password: ssh $_SI_TARGET 'docker exec -it mail-dms setup email update postmaster@$_SI_MAIL_PRIMARY'"
+    return 0
+}
+
+# Renders the mail templates beside the Traefik ones, into the same temp
+# directory the EXIT trap already removes. Only the three YAML files are parsed
+# before shipping — .env and the Rspamd override are not YAML, and both are
+# handled by the seed step rather than rsynced.
+_server_init_mail_render() {
+    local rel dst yq_err d domains=""
+    local tpl="${KASBAH_TEMPLATE_DIR:-}"
+
+    [ "$_SI_MAIL_ENABLED" = yes ] || return 0
+
+    [ -n "$tpl" ] || die "internal: KASBAH_TEMPLATE_DIR is not set"
+    [ -d "$tpl/mail" ] \
+        || die "the mail templates are missing (looked in $tpl/mail) — this kasbah installation is incomplete"
+    [ -n "$_SI_TMPDIR" ] || die "internal: the mail render ran before the Traefik one made a temp directory"
+
+    # Built here rather than in the template because the list has a variable
+    # number of entries. Every element has already been checked as a domain
+    # name, so nothing in it can start a second YAML key.
+    for d in "${_SI_MAIL_DOMAINS[@]}"; do
+        domains+="${domains:+$'\n'}  - $d"
+    done
+
+    _SI_SUBST=(
+        [APPS_PATH]="$_SI_APPS_PATH"
+        [DATA_PATH]="$_SI_DATA_PATH"
+        [MAIL_PRIMARY_DOMAIN]="$_SI_MAIL_PRIMARY"
+        [MAIL_HOSTNAME]="mail.$_SI_MAIL_PRIMARY"
+        [MAIL_DOMAINS]="$domains"
+    )
+
+    for rel in "${_SI_MAIL_FILES[@]}"; do
+        dst="$_SI_TMPDIR/mail/$rel"
+        _si_render_template "$tpl/mail/$rel" "$dst" "mail $rel"
+
+        # The same guarantee the Traefik render gives, and one file here carries
+        # a sharper version of it: _mail.yml lands in the directory Traefik
+        # watches, so a document that does not parse is a fragment the running
+        # proxy rejects while going on answering /ping.
+        if ! yq_err="$(yq -e . "$dst" 2>&1 >/dev/null)"; then
+            err "the rendered mail $rel is not valid YAML — refusing to ship it"
+            err_cont "${yq_err:-yq rejected the file and said nothing}"
+            err_cont "a substituted value is the likely cause; this run rendered it with:"
+            err_cont "  primary domain  $_SI_MAIL_PRIMARY"
+            err_cont "  domains         ${_SI_MAIL_DOMAINS[*]}"
+            err_cont "  apps / data     $_SI_APPS_PATH, $_SI_DATA_PATH"
+            exit 1
+        fi
+    done
+
+    # Not YAML and not shipped by rsync: the seed step decides whether either
+    # one may be written at all, so both are rendered here and handed over as
+    # arguments.
+    _si_render_template "$tpl/mail/env" "$_SI_TMPDIR/mail/env" "mail .env"
+    _si_render_template "$tpl/mail/rspamd-dkim-signing.conf" \
+        "$_SI_TMPDIR/mail/dkim_signing.conf" "mail dkim_signing.conf"
+    return 0
+}
+
+# The mail tree, the .env, and the two files that are seeded once. All of it
+# before Traefik starts, and all of it before DMS could possibly run: the
+# postmaster account and the DKIM override both have to be in place *before* the
+# container's first boot, one because Dovecot panics without an account and the
+# other because DMS's dkim helper writes its own default over an override that
+# is not already there.
+#
+# Nothing here is destructive. The .env is merged key by key, the two seeds are
+# written only when absent, and the mail data directories are mkdir -p.
+#
+# The account arrives as an argument, so it is in the remote `bash`'s argv for
+# as long as the step runs. What is in it is the SHA512-CRYPT *hash*: the
+# password was typed on the workstation and hashed there, and never crosses the
+# wire in any form. That much it shares with the dashboard's bcrypt entry —
+# hashed on the workstation, never the cleartext — and no more: the bcrypt entry
+# is rendered into _shared.yml and rsynced, so it never enters any argv, while
+# this hash sits in the remote process table for the length of this step. Both
+# are hashes, so what is exposed there is a hash. The .env travels the same way
+# and carries no secret; the operator's relay block is the one thing in that
+# file this step never sends and never reads back.
+_server_init_mail_layout() {
+    local out rc=0 env_default dkim
+
+    [ "$_SI_MAIL_ENABLED" = yes ] || return 0
+
+    env_default="$(cat "$_SI_TMPDIR/mail/env"; printf x)" || die "could not read the rendered mail .env"
+    env_default="${env_default%x}"
+    dkim="$(cat "$_SI_TMPDIR/mail/dkim_signing.conf"; printf x)" || die "could not read the rendered dkim_signing.conf"
+    dkim="${dkim%x}"
+
+    out=$(ssh_script "$_SI_APPS_PATH" "$_SI_DATA_PATH" "$_SI_MAIL_PRIMARY" \
+                     "$env_default" "$dkim" "$_SI_MAIL_ACCOUNT_LINE" <<'REMOTE'
+set -uo pipefail
+export LC_ALL=C
+apps=$1
+data=$2
+primary=$3
+env_default=$4
+dkim=$5
+account_line=$6
+
+dir="$apps/mail"
+mdata="$data/mail"
+
+fail() { printf 'remote: %s\n' "$*" >&2; exit 1; }
+
+# Every bind-mount source, created here because Docker materialises a missing
+# one as a root-owned *directory* — the same trap acme.json is guarded against,
+# and the reason everything below the apps path is otherwise the deploy user's.
+#
+# Only snappymail/ itself, never the tree inside it, and that is not tidiness.
+# SnappyMail's entrypoint chowns its whole data directory to its own uid at mode
+# 750 on first boot, so from the second run on the deploy user cannot traverse
+# it — and `mkdir -p a/b/c` walks *into* `a` even when the whole path is already
+# there, while `mkdir -p a` on an existing `a` succeeds without entering it
+# (measured both ways). A kasbah that pre-created
+# snappymail/_data_/_default_/domains therefore worked once and then failed
+# every re-run with "mkdir: cannot create directory '.../snappymail':
+# Permission denied". It has no reason to: SnappyMail builds that tree itself,
+# domains/ included, which is where a per-project config is seeded
+# (docs/mail.md). What kasbah owes it is the bind-mount source, because Docker
+# materialises a missing one as a *root*-owned directory — the same trap
+# acme.json is guarded against.
+for d in "$dir" \
+         "$mdata/dms/mail-data" "$mdata/dms/mail-state" "$mdata/dms/mail-logs" \
+         "$mdata/dms/config/rspamd/override.d" \
+         "$mdata/snappymail"; do
+    mkdir -p "$d" || fail "could not create $d"
+done
+
+# The .env, and the one file here with two owners. Three keys are kasbah's and
+# are rewritten by name on every run; every other line is copied through
+# untouched, which is what lets a relay credential set by hand survive without
+# ever crossing the wire. A key kasbah owns that the file does not carry is
+# appended rather than silently dropped.
+env_file="$dir/.env"
+if [ -e "$env_file" ] && [ ! -f "$env_file" ]; then
+    fail "$env_file exists and is not a regular file"
+fi
+if [ ! -f "$env_file" ]; then
+    tmp="$env_file.tmp.$$"
+    printf '%s' "$env_default" > "$tmp" || fail "could not write $tmp"
+    chmod 600 "$tmp" || fail "could not set mode 600 on $tmp"
+    mv -f "$tmp" "$env_file" || fail "could not install $env_file"
+    printf 'mail_env=created\n'
+else
+    # The values kasbah owns, pulled out of the rendered default so this side
+    # never has to know their spelling twice.
+    want_hostname=""; want_domain=""; want_data=""
+    while IFS= read -r line || [ -n "$line" ]; do
+        line=${line%$'\r'}
+        case $line in
+            MAIL_HOSTNAME=*) want_hostname=${line#*=} ;;
+            DOMAIN=*)        want_domain=${line#*=} ;;
+            DATA_PATH=*)     want_data=${line#*=} ;;
+        esac
+    done <<EOF
+$env_default
+EOF
+
+    merged=""
+    saw_hostname=no; saw_domain=no; saw_data=no
+    while IFS= read -r line || [ -n "$line" ]; do
+        stripped=${line%$'\r'}
+        case $stripped in
+            MAIL_HOSTNAME=*) line="MAIL_HOSTNAME=$want_hostname"; saw_hostname=yes ;;
+            DOMAIN=*)        line="DOMAIN=$want_domain";          saw_domain=yes ;;
+            DATA_PATH=*)     line="DATA_PATH=$want_data";         saw_data=yes ;;
+        esac
+        merged="$merged$line
+"
+    done < "$env_file"
+    [ "$saw_hostname" = yes ] || merged="${merged}MAIL_HOSTNAME=$want_hostname
+"
+    [ "$saw_domain" = yes ]   || merged="${merged}DOMAIN=$want_domain
+"
+    [ "$saw_data" = yes ]     || merged="${merged}DATA_PATH=$want_data
+"
+
+    current=$(cat "$env_file"; printf x) || fail "could not read $env_file"
+    current=${current%x}
+    if [ "$current" = "$merged" ]; then
+        printf 'mail_env=unchanged\n'
+    else
+        tmp="$env_file.tmp.$$"
+        printf '%s' "$merged" > "$tmp" || fail "could not write $tmp"
+        chmod 600 "$tmp" || fail "could not set mode 600 on $tmp"
+        mv -f "$tmp" "$env_file" || fail "could not install $env_file"
+        printf 'mail_env=rewritten\n'
+    fi
+fi
+
+# Every run, on every branch, exactly as the layout step chmods acme.json: the
+# mode is a fact about the file rather than about this run, and the two branches
+# that write are not the ones that need it. An .env left 644 by a hand edit or
+# by an older kasbah is otherwise `mail_env=unchanged` forever, with
+# docs/server-setup.md's tree describing a mode that never converges — and the
+# thing being kept from the rest of the machine is the operator's relay
+# credential, which this step never reads and never re-sends.
+chmod 600 "$env_file" || fail "could not set mode 600 on $env_file"
+
+# The postmaster account. Written only when the caller decided one was needed —
+# it hands over an empty line otherwise — and even then only onto a file with no
+# account in it. This file holds every mailbox on the server.
+accounts="$mdata/dms/config/postfix-accounts.cf"
+if [ -e "$accounts" ] && [ ! -f "$accounts" ]; then
+    fail "$accounts exists and is not a regular file"
+fi
+if [ -z "$account_line" ]; then
+    printf 'mail_account=kept\n'
+elif [ -s "$accounts" ]; then
+    printf 'mail_account=kept\n'
+else
+    tmp="$accounts.tmp.$$"
+    printf '%s\n' "$account_line" > "$tmp" || fail "could not write $tmp"
+    chmod 600 "$tmp" || fail "could not set mode 600 on $tmp"
+    mv -f "$tmp" "$accounts" || fail "could not install $accounts"
+    printf 'mail_account=seeded\n'
+fi
+
+# The Rspamd DKIM override, copy-if-missing. Once DMS has run `setup config
+# dkim` this file names real key paths, and re-shipping kasbah's copy over it
+# would break signing for a domain added after this run.
+dkim_file="$mdata/dms/config/rspamd/override.d/dkim_signing.conf"
+if [ -e "$dkim_file" ] && [ ! -f "$dkim_file" ]; then
+    fail "$dkim_file exists and is not a regular file"
+fi
+if [ -f "$dkim_file" ]; then
+    printf 'mail_dkim_seed=kept\n'
+else
+    tmp="$dkim_file.tmp.$$"
+    printf '%s' "$dkim" > "$tmp" || fail "could not write $tmp"
+    chmod 644 "$tmp" || fail "could not set mode 644 on $tmp"
+    mv -f "$tmp" "$dkim_file" || fail "could not install $dkim_file"
+    printf 'mail_dkim_seed=seeded\n'
+fi
+
+printf 'mail_layout=done\n'
+exit 0
+REMOTE
+    ) || rc=$?
+
+    [ "$rc" -eq 0 ] \
+        || die "could not lay out the mail stack on $_SI_TARGET (the remote step exited $rc, see above)"
+
+    _si_absorb_checked "the mail layout step" "$out" \
+        mail_layout mail_env mail_account mail_dkim_seed
+    return 0
+}
+
+# Ships only what differs, the same rule and the same rsync as the Traefik
+# stack. _mail.yml goes to Traefik's watch directory rather than to <apps>/mail,
+# so the destination is looked up rather than derived from the name.
+_server_init_mail_sync() {
+    local rel rendered dest
+    local changed=()
+
+    [ "$_SI_MAIL_ENABLED" = yes ] || return 0
+
+    for rel in "${_SI_MAIL_FILES[@]}"; do
+        rendered="$(cat "$_SI_TMPDIR/mail/$rel"; printf x)" \
+            || die "could not read $_SI_TMPDIR/mail/$rel"
+        rendered="${rendered%x}"
+        [ "$rendered" != "${_SI_MAIL_CURRENT[$rel]}" ] || continue
+        changed+=("$rel")
+    done
+
+    _SI_MAIL_CHANGED=(${changed[@]+"${changed[@]}"})
+    [ "${#changed[@]}" -gt 0 ] || return 0
+
+    for rel in "${changed[@]}"; do
+        dest="$_SI_APPS_PATH/${_SI_MAIL_DEST[$rel]}"
+        ssh_rsync -pt --chmod=F644 "$_SI_TMPDIR/mail/$rel" "$SSH_TARGET:$dest" >/dev/null \
+            || die "could not ship the mail $rel to $_SI_TARGET:$dest"
+    done
+    return 0
+}
+
+# Starts the stack, and waits for exactly one of its two containers.
+#
+# SnappyMail is waited for because it settles in about ten seconds whatever else
+# is true. **DMS is not**, and that is not a shortcut: `SSL_TYPE: letsencrypt`
+# makes a certificate for mail.<domain> a *boot requirement*, so on a first run
+# DMS crashloops until Traefik finishes the HTTP-01 exchange and writes the
+# certificate into acme.json — 30-90 s on a real host (the original project's own setup
+# guide records the same window). Where the challenge cannot validate at all —
+# no public DNS, which is every test rig — it crashloops forever, and a wait
+# would turn "mail is not reachable from the internet yet" into "init failed".
+# Its state is reported instead, and the caller says what it means.
+_server_init_mail_start() {
+    local out rc=0
+
+    [ "$_SI_MAIL_ENABLED" = yes ] || return 0
+
+    out=$(ssh_script "$_SI_APPS_PATH" "$_SI_MAIL_PROJECT" 180 <<'REMOTE'
+set -uo pipefail
+export LC_ALL=C
+apps=$1
+project=$2
+timeout_s=$3
+
+fail() { printf 'remote: %s\n' "$*" >&2; exit 1; }
+
+cd "$apps/mail" || fail "could not enter $apps/mail"
+
+# -p on every call, for the reason templates/traefik/compose.yml gives: `name:`
+# in the file is the weakest source of the project name and COMPOSE_PROJECT_NAME
+# in this login shell outranks it.
+dc() { docker compose -p "$project" "$@"; }
+
+dc up -d || fail "docker compose -p $project up -d failed in $apps/mail"
+
+sm=$(dc ps -a -q mail-snappymail 2>/dev/null) || sm=""
+[ -n "$sm" ] || fail "compose reported no mail-snappymail container after up -d"
+dms=$(dc ps -a -q mail-dms 2>/dev/null) || dms=""
+[ -n "$dms" ] || fail "compose reported no mail-dms container after up -d"
+
+health_of() {
+    docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$1" 2>/dev/null \
+        || printf gone
+}
+
+deadline=$((SECONDS + timeout_s))
+health=""
+while :; do
+    health=$(health_of "$sm")
+    [ "$health" != healthy ] || break
+    if [ "$health" = none ]; then
+        printf 'remote: the mail-snappymail container declares no healthcheck — compose.yml lost it\n' >&2
+        dc ps -a >&2 || true
+        exit 1
+    fi
+    running=$(docker inspect -f '{{.State.Running}}' "$sm" 2>/dev/null) || running=false
+    if [ "$running" != true ]; then
+        printf 'remote: mail-snappymail is not running (health %s) — it exited instead of coming up\n' "$health" >&2
+        dc ps -a >&2 || true
+        dc logs --no-color --tail 60 mail-snappymail >&2 || true
+        exit 1
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+        printf 'remote: mail-snappymail did not report healthy within %ss (last health: %s)\n' "$timeout_s" "$health" >&2
+        dc ps -a >&2 || true
+        dc logs --no-color --tail 60 mail-snappymail >&2 || true
+        exit 1
+    fi
+    sleep 2
+done
+
+printf 'mail_snappymail_health=%s\n' "$health"
+printf 'mail_dms_state=%s\n' "$(docker inspect -f '{{.State.Status}}' "$dms" 2>/dev/null)"
+printf 'mail_dms_health=%s\n' "$(health_of "$dms")"
+printf 'mail_dms_restarts=%s\n' "$(docker inspect -f '{{.RestartCount}}' "$dms" 2>/dev/null)"
+printf 'mail_dms_image=%s\n' "$(docker inspect -f '{{.Config.Image}}' "$dms" 2>/dev/null)"
+exit 0
+REMOTE
+    ) || rc=$?
+
+    [ "$rc" -eq 0 ] \
+        || die "could not start the mail stack on $_SI_TARGET (the remote step exited $rc, see above)"
+
+    _si_absorb_checked "the mail start" "$out" \
+        mail_snappymail_health mail_dms_state mail_dms_health \
+        mail_dms_restarts mail_dms_image
+    return 0
+}
+
+# What the mail stack ended up as, and — when DMS is not healthy — what that
+# most likely means. Not being healthy at this instant is ordinary rather than
+# wrong, so it is said out loud rather than left for the operator to find in
+# `docker ps` and misread.
+_server_init_report_mail() {
+    local shipped="nothing re-rendered"
+
+    [ "$_SI_MAIL_ENABLED" = yes ] || return 0
+
+    [ "${#_SI_MAIL_CHANGED[@]}" -eq 0 ] || shipped="shipped ${_SI_MAIL_CHANGED[*]}"
+    info "  mail: $_SI_APPS_PATH/mail ($shipped)"
+    info "        domains: ${_SI_MAIL_DOMAINS[*]} (primary $_SI_MAIL_PRIMARY, $_SI_MAIL_PRIMARY_ORIGIN)"
+    info "        routers: mail.$_SI_MAIL_PRIMARY (cert-trigger, no backend), https://webmail.$_SI_MAIL_PRIMARY"
+    info "        .env ${_SI_FACT[mail_env]}, postmaster ${_SI_FACT[mail_account]}, dkim override ${_SI_FACT[mail_dkim_seed]}"
+    info "        snappymail ${_SI_FACT[mail_snappymail_health]}, dms ${_SI_FACT[mail_dms_state]} (${_SI_FACT[mail_dms_health]}, ${_SI_FACT[mail_dms_restarts]} restarts)"
+
+    [ "${_SI_FACT[mail_dms_health]}" != healthy ] || return 0
+
+    # Two different things look the same at this instant, and the warning has to
+    # be true of both. A container that was just created or recreated is inside
+    # its healthcheck's 60 s start_period and will go green on its own; a
+    # container that cannot find its certificate crashloops. Restarts tell them
+    # apart *once they have happened*, and at the moment this runs they usually
+    # have not — so the message names the certificate trap without asserting it,
+    # rather than telling an operator their perfectly ordinary re-run is a
+    # crashloop.
+    warn "mail-dms is ${_SI_FACT[mail_dms_state]} and its healthcheck says '${_SI_FACT[mail_dms_health]}' (${_SI_FACT[mail_dms_restarts]} restarts so far)."
+    warn "that is expected right after a start: the healthcheck has a 60 s start_period."
+    warn "if it does not settle, the reason is almost always the certificate."
+    warn "  SSL_TYPE=letsencrypt makes one for mail.$_SI_MAIL_PRIMARY a *boot* requirement, so"
+    warn "  DMS restarts until Traefik has finished the HTTP-01 exchange and written it into"
+    warn "  acme.json — 30-90 s on a first run, and forever if that hostname does not resolve"
+    warn "  to this host from the public internet. Check in a minute:"
+    warn "  ssh $_SI_TARGET 'docker inspect -f \"{{.State.Health.Status}}\" mail-dms'"
+    warn "  ssh $_SI_TARGET 'docker logs --tail 40 mail-dms'"
+    return 0
+}
+
 # --- Command ------------------------------------------------------------------
 
 # The rendered stack lives in a temp directory until it is shipped. The trap is
@@ -2033,10 +2805,13 @@ cmd_server_init() {
     # Both questions are asked before anything is opened or created: a run that
     # cannot be answered must cost nothing, and a feature that would be a silent
     # no-op must not be accepted at all.
+    # Answered here and acted on much later: the mail stack's own questions
+    # cannot be asked until the server has been read, and this one decides
+    # whether that read happens at all.
     if prompt_bool mail "Scaffold the mail stack (DMS + SnappyMail) on $_SI_TARGET?" "$_SI_MAIL"; then
-        err "server init: mail is not implemented yet — it is scaffolded in Phase 7 (docs/mail.md)"
-        err_cont "re-run with --no-mail; adding mail later is a re-run of init"
-        exit 1
+        _SI_MAIL_ENABLED=yes
+    else
+        _SI_MAIL_ENABLED=no
     fi
     if prompt_bool backup "Install restic backups on $_SI_TARGET?" "$_SI_BACKUP"; then
         err "server init: backup is not implemented yet — it is scaffolded in Phase 8 (docs/backup.md)"
@@ -2063,13 +2838,38 @@ cmd_server_init() {
     # a run nobody can answer and a template that will not render both cost
     # nothing on the far side.
     _server_init_read_traefik
+    _server_init_read_mail
     _server_init_traefik_values
+    _server_init_mail_values
     _server_init_traefik_render
+    _server_init_mail_render
 
     _server_init_layout
     _server_init_traefik_sync
+    # Before the Traefik start, deliberately. _mail.yml is a file-provider
+    # fragment, so a Traefik that comes up with it already in the watch
+    # directory requests both certificates at configuration load rather than
+    # waiting for the watcher — which is about ten seconds of head start on the
+    # certificate DMS cannot boot without. The seeds land here for a harder
+    # reason: they have to exist before DMS's *first* start, and that is the
+    # step after next.
+    _server_init_mail_layout
+    _server_init_mail_sync
     _server_init_acme_reset
     _server_init_traefik_start
+    # docs/server-setup.md's ordering rule, and the only part of it that is not
+    # free: mail needs the Traefik stack running, because DMS reads
+    # mail.<domain>'s certificate out of acme.json and nothing puts one there
+    # until the cert-trigger router above is live.
+    #
+    # This half of the rule already defends itself, and by accident:
+    # templates/mail/compose.yml declares kasbah-net `external: true`, and the
+    # Traefik start is what creates it — so a mail start moved above it dies in
+    # `docker compose up` on a network that does not exist. That is a loud
+    # failure rather than a wrong one, which is why no test asserts this
+    # ordering directly; the fragment-before-Traefik ordering above has no such
+    # backstop and is pinned in tests/integration/server_init_mail_test.sh.
+    _server_init_mail_start
     _server_init_marker "$marker_json"
     _server_init_pointer
 
@@ -2097,6 +2897,7 @@ cmd_server_init() {
         info "        acme.json kept and NOT reset — nothing records which CA issued what is in it"
     fi
     info "  dashboard: https://traefik.$_SI_DASHBOARD_DOMAIN (basic auth, credentials $_SI_AUTH_ORIGIN)"
+    _server_init_report_mail
     info "  marker: $_SI_APPS_PATH/.kasbah/server.json (${_SI_FACT[marker]})"
     info "  pointer: $KASBAH_APPS_POINTER -> $_SI_APPS_PATH (${_SI_FACT[pointer]})"
 }
