@@ -14,7 +14,13 @@ name: traefik
 
 services:
   traefik:
-    image: traefik:v3.7.10
+    # Substituted on the workstation. The tag kasbah pins lives in
+    # lib/common.sh as KASBAH_TRAEFIK_IMAGE, because two commands decide it: a
+    # first `server init` renders that pin, and `server upgrade-traefik` renders
+    # whatever --version says. Every later init reads the tag back out of the
+    # copy on the server and reproduces it (docs/traefik.md -> Ownership), so a
+    # managed upgrade is not undone by the next re-run.
+    image: __TRAEFIK_IMAGE__
     container_name: traefik
     restart: unless-stopped
     ports:

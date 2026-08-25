@@ -337,8 +337,11 @@ becomes discoverable by `deploy` and `env`.
 
 ## Server marker (`<apps>/.kasbah/server.json`)
 
-Written by `server init`, updated by any server-mutating command
-(`upgrade-traefik`, re-run with `--with-mail` / `--with-backup`):
+Written by `server init`, and by any later run of it (`--with-mail`,
+`--with-backup`). **`server upgrade-traefik` deliberately does not touch
+it**: nothing the marker records — the paths, the resource limits — changes
+when the proxy's image tag does, and the marker's presence is init's
+"this completed" signal, which no other command should be able to write:
 
 ```json
 {

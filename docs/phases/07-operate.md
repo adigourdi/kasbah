@@ -1128,3 +1128,72 @@ a belief each caller holds separately — and an operator-supplied path is worse
 a *destructive* command, because it aims deletion at a tree the server does not
 consider its own. The recovery messages were **re-pointed rather than deleted**:
 find the tree with `server status --apps-path`, then repair the pointer.
+
+### 7.5 — `upgrade-traefik`
+
+**Delivered, and the interesting half is the dry run.** `traefik:v3.7.10 →
+v3.7.11` on the real host: **933 ms of downtime** (on-host 200 ms sampler: last
+301, two refusals, one 404 while Traefik was up but the fragments not yet
+loaded, then 301 again), **all four certificates survived** with `acme.json`
+byte-identical (sha256 `e523033d…6fb966` before and after), and
+`gallery-website-web`, `mail-dms` and `mail-snappymail` never restarted. On the
+rig, both directions: a real bump to a different tag with `_mail.yml` and a
+project fragment present, and a deliberately broken fragment refusing the
+upgrade with Traefik's own words and leaving the proxy serving.
+
+**A dry run that passes because it read nothing would have been the fifth
+vacuity mode**, and it was reachable: an **empty** `dynamic/` directory logs
+nothing at `ERR` at all, so "no errors" is satisfied by reading zero files. The
+anchor is that `traefik-dashboard@file` must appear among the routers the file
+provider reports building. Recorded so nobody re-derives it: relying on
+`websecure`'s `options: default` to error when `_shared.yml` is unread **does
+not work** — with no fragments, no router uses TLS and nothing complains.
+
+**A naive dry run has real production side effects.** With the resolver as
+shipped, the throwaway registers a **fresh ACME account** and fires failing
+HTTP-01 challenges for every real hostname — spending rate-limit budget on live
+domains, for a validation run. It now rewrites `caServer` to an unreachable
+loopback and the storage path to a throwaway inside the container, applied to
+kasbah's *own freshly rendered* `traefik.yml` rather than the server's, so it
+cannot miss a path an operator wrote differently. `--network none` is the second,
+independent barrier.
+
+**The ownership model collides with a version pin, and the collision was
+silent.** "kasbah owns `compose.yml`, `traefik.yml` and `_shared.yml` outright
+and re-ships any whose bytes differ" is right — but with the Traefik tag a
+literal in the template, **the next `server init` would re-ship that file and
+downgrade the proxy back**, with no message. The tag became the **fourth** value
+init reproduces off the server, beside the dashboard domain, the ACME email and
+the auth hash, narrowed by a regex that admits the official repo only — no
+registry component, no digest, no second colon, no newline.
+
+**The riskiest edit in the change had no unit coverage, and the mutation table
+is what exposed it.** That image branch only runs when the server's
+`compose.yml` is non-empty, and the unit driver hardcoded it empty — so a mutant
+making init ignore the server's pin and silently downgrade scored **0 in both
+unit suites**, caught only on the rig. Now 2. The general shape: a branch whose
+precondition the test harness never constructs is untested *and* looks tested,
+and only a mutation says so.
+
+**This was the first remote payload in the project to need `awk`.** No test
+could have caught it — the rig and the real host both have `awk`. It is visible
+only by asking what does **not** appear anywhere else: no `<<'REMOTE'` block in
+`lib/*.sh` uses `awk`, `sed` or `grep`, and `server_init.sh` hand-rolls a
+`while read` over `/proc/meminfo` with a comment saying why. The payload was
+rewritten in builtins. A correction worth keeping, because it nearly became a
+false rule here: **`tr` and `sort` do have precedent** in other payloads — they
+are coreutils, which `docs/server-setup.md` permits; `awk`/`sed`/`grep` are
+separately packaged, which it does not.
+
+**A builtin that fails silently in the common case.** `tail -c 8000` became
+`${clip: -8000}` — and bash returns the **empty string** when the string is
+shorter than N, so the unguarded form would have dropped the entire diagnostic
+log whenever it was under 8 KB, which is almost always. Caught by measuring, not
+by review. It is now guarded on length.
+
+Also worth keeping: the rewrite made the classifier *more* honest than the
+original. The exemption is a conjunction — an ACME failure is ignored only when
+the line also names this run's own loopback CA — and in the `awk` form that was
+a conjunction only by construction (two `index()` tests), which is precisely how
+the first version shipped as a **disjunction**, excluding any "unable to obtain
+certificate" line whatever CA it named. As a nested `case` it cannot be misread.

@@ -68,6 +68,7 @@ declare -A _SI_TRAEFIK_KEY=(
 )
 declare -A _SI_TRAEFIK_CURRENT=()
 _SI_TRAEFIK_PROJECT=traefik
+_SI_TRAEFIK_IMAGE=""
 _SI_DASHBOARD_DOMAIN=""
 _SI_ACME_EMAIL=""
 # Let's Encrypt's own two directories, and nothing else: kasbah has no private
@@ -1465,6 +1466,31 @@ _si_extract_ca() {
         '.certificatesResolvers.letsencrypt.acme.caServer // ""' "$_xc_out"
 }
 
+# The Traefik image the stack on the server already runs, read out of its own
+# compose.yml. The fourth value a re-run reproduces rather than decides, and the
+# newest: `server upgrade-traefik` moves the tag after validating it, and an
+# init that re-rendered the template's pin over the top would silently undo a
+# managed upgrade the next time anyone touched the server (docs/traefik.md ->
+# Ownership).
+#
+# Narrow on purpose. Only the official repository with a Docker tag on it is
+# reproduced; anything else — a mirror, a digest pin, a value with a newline in
+# it — falls back to this kasbah's pin with a warning, because the value is
+# substituted into a YAML scalar and into a `docker run` argument, and a
+# compose.yml is a file an operator can write anything into.
+_si_extract_image() {
+    local _xi_content="$1" _xi_out="$2" _xi_ref="" _xi_rc=0
+
+    yaml_get "$_xi_content" '.services.traefik.image // ""' _xi_ref || _xi_rc=$?
+    [ "$_xi_rc" -eq 0 ] || return "$_xi_rc"
+
+    printf -v "$_xi_out" '%s' ""
+    [ -n "$_xi_ref" ] || return 0
+    [[ "$_xi_ref" =~ ^traefik:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || return 0
+    printf -v "$_xi_out" '%s' "$_xi_ref"
+    return 0
+}
+
 # bcrypt, as docs/cli.md promises. apr1 via `openssl passwd` was rejected as a
 # real weakening — salted MD5, ~1k iterations — for no gain.
 #
@@ -1553,13 +1579,28 @@ _si_unreadable_stack() {
 _server_init_traefik_values() {
     local shared="${_SI_TRAEFIK_CURRENT[dynamic/_shared.yml]}"
     local static="${_SI_TRAEFIK_CURRENT[traefik.yml]}"
+    local compose="${_SI_TRAEFIK_CURRENT[compose.yml]}"
     local stored_domain="" stored_email="" stored_auth="" stored_ca="" user="" pass=""
-    local shared_rc=0 static_rc=0 ca_rc=0
+    local stored_image=""
+    local shared_rc=0 static_rc=0 ca_rc=0 compose_rc=0
 
     traefik_dashboard_apex "$shared" stored_domain || shared_rc=$?
     [ "$shared_rc" -ne 0 ] || _si_extract_auth "$shared" stored_auth || shared_rc=$?
     _si_extract_email "$static" stored_email || static_rc=$?
     _si_extract_ca "$static" stored_ca || ca_rc=$?
+    _si_extract_image "$compose" stored_image || compose_rc=$?
+
+    # The image is the one recovered value with a default behind it, so an
+    # unreadable compose.yml costs nothing: init owns that file and is about to
+    # replace it. A value it will not reproduce is said out loud rather than
+    # reverted in silence — the operator is about to lose it.
+    if [ -n "$stored_image" ] && [ "$compose_rc" -eq 0 ]; then
+        _SI_TRAEFIK_IMAGE="$stored_image"
+    else
+        _SI_TRAEFIK_IMAGE="$KASBAH_TRAEFIK_IMAGE"
+        [ -z "$compose" ] \
+            || warn "the traefik image in compose.yml on $_SI_TARGET is not one kasbah reproduces — rendering $KASBAH_TRAEFIK_IMAGE (a managed bump is \`kasbah server upgrade-traefik --version=\`)"
+    fi
 
     # First, because it is the only question here that can end the run and the
     # only one whose answer nothing else depends on: a dashboard password typed
@@ -1889,6 +1930,7 @@ _server_init_traefik_render() {
         [ACME_CA]="$_SI_ACME_CA"
         [DASHBOARD_DOMAIN]="$_SI_DASHBOARD_DOMAIN"
         [DASHBOARD_AUTH]="$_SI_AUTH_ENTRY"
+        [TRAEFIK_IMAGE]="$_SI_TRAEFIK_IMAGE"
     )
 
     for rel in "${_SI_TRAEFIK_FILES[@]}"; do

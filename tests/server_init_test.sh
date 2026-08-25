@@ -72,6 +72,7 @@ case "$mode" in
         _SI_APPS_PATH="$1"; _SI_DATA_PATH="$2"; _SI_ACME_EMAIL="$3"
         _SI_DASHBOARD_DOMAIN="$4"; _SI_AUTH_ENTRY="$5"
         _SI_ACME_CA="${6:-$_SI_ACME_CA_PRODUCTION}"
+        _SI_TRAEFIK_IMAGE="${7:-$KASBAH_TRAEFIK_IMAGE}"
         _server_init_traefik_render
         [ -z "${RENDER_OUT:-}" ] || cp -R "$_SI_TMPDIR"/. "$RENDER_OUT"/
         for rel in "${_SI_TRAEFIK_FILES[@]}"; do
@@ -91,9 +92,13 @@ case "$mode" in
         # default because that is every fresh server, and the ACME questions
         # are about a store with something in it.
         _SI_ACME_STORE="${SI_STORE:-empty}"
-        _SI_TRAEFIK_CURRENT=([compose.yml]="" [traefik.yml]="$static" [dynamic/_shared.yml]="$shared")
+        # The compose.yml the server already has. Its own variable because it
+        # answers a fourth question — which Traefik image this run renders —
+        # and because most cases here are about the other three.
+        _SI_TRAEFIK_CURRENT=([compose.yml]="${SI_COMPOSE:-}" [traefik.yml]="$static" [dynamic/_shared.yml]="$shared")
         _si_bcrypt() { printf -v "$3" '%s' "$1:\$2y\$05\$FRESHFRESHFRESHFRESHFR"; }
         _server_init_traefik_values
+        printf 'image=%s\n' "$_SI_TRAEFIK_IMAGE"
         printf 'domain=%s\nemail=%s\nauth=%s\norigin=%s\n' \
             "$_SI_DASHBOARD_DOMAIN" "$_SI_ACME_EMAIL" "$_SI_AUTH_ENTRY" "$_SI_AUTH_ORIGIN"
         printf 'ca=%s\nstored_ca=%s\nca_origin=%s\nreset=%s\nkept=%s\n' \
@@ -660,7 +665,7 @@ bad_tpl="$tmpdir/badtpl"
 mkdir -p "$bad_tpl/traefik/dynamic"
 cp "$repo_dir/templates/traefik/traefik.yml" "$bad_tpl/traefik/traefik.yml"
 cp "$repo_dir/templates/traefik/dynamic/_shared.yml" "$bad_tpl/traefik/dynamic/_shared.yml"
-sed 's|image: traefik:.*|image: "__NOPE__"|' "$repo_dir/templates/traefik/compose.yml" \
+sed 's|image: __TRAEFIK_IMAGE__|image: "__NOPE__"|' "$repo_dir/templates/traefik/compose.yml" \
     > "$bad_tpl/traefik/compose.yml"
 out=$(KASBAH_TEMPLATE_DIR="$bad_tpl" drive render /apps /apps/data a@b.c example.com "$hash_admin"); rc=$?
 assert '[ "$rc" != "0" ]' "an unsubstituted placeholder is a hard failure (exit $rc, printed '$out')"
@@ -724,6 +729,19 @@ assert '[ "$(sed -n "s/^_SI_ACME_CA_STAGING=\"\(.*\)\"$/\1/p" "$repo_dir/lib/ser
     "and so is the staging one"
 
 # --- compose.yml --------------------------------------------------------------
+#
+# The pin is a token in the template and a constant in lib/common.sh, because
+# `server upgrade-traefik` renders the same file with a tag of its own and every
+# later init reproduces whatever the server already runs (docs/traefik.md ->
+# Ownership). A literal put back into the template would make a managed upgrade
+# revert on the next re-run, silently.
+pin=$(sed -n 's/^KASBAH_TRAEFIK_IMAGE=//p' "$repo_dir/lib/common.sh")
+assert 'grep -qF "image: __TRAEFIK_IMAGE__" "$repo_dir/templates/traefik/compose.yml"' \
+    "the template carries the image as a token, not a literal"
+assert '[[ "$pin" =~ ^traefik:v3\.[0-9]+\.[0-9]+$ ]]' \
+    "and KASBAH_TRAEFIK_IMAGE is a full version, never a moving tag (got '$pin')"
+assert '[ "$(yq -r ".services.traefik.image" "$compose")" = "$pin" ]' \
+    "which is what a first init renders (got '$(yq -r ".services.traefik.image" "$compose")')"
 assert '[ "$(yq -r ".services.traefik.image" "$compose")" = "traefik:v3.7.10" ]' \
     "Traefik is pinned to an exact v3 tag (got '$(yq -r ".services.traefik.image" "$compose")')"
 assert '[[ "$(yq -r ".services.traefik.image" "$compose")" =~ ^traefik:v3\.[0-9]+\.[0-9]+$ ]]' \
@@ -893,6 +911,42 @@ assert 'grep -qF -- "--traefik-auth=<value>" "$tmpdir/err"' "naming --traefik-au
 out=$(drive values "" "" --domain=example.com --email=a@b.c --traefik-auth=admin:pw); rc=$?
 assert '[ "$rc" = "0" ]' "all three flags on a bare server is enough (exit $rc: $(drive_err))"
 assert 'grep -qxF "origin=flag" <<<"$out"' "and the credentials come from the flag (got '$out')"
+
+# --- Which Traefik image a re-run renders --------------------------------------
+#
+# The fourth value read back off the server, and the one with a default behind
+# it. It exists so that `server upgrade-traefik` is not undone by the next
+# init: an init that rendered kasbah's own pin over a tag somebody upgraded to
+# would downgrade a live proxy on a re-run nobody thought was risky
+# (docs/traefik.md -> Ownership). Three cases, and the pairing matters — "falls
+# back" is only meaningful beside a case where it does not.
+pin=$(sed -n 's/^KASBAH_TRAEFIK_IMAGE=//p' "$repo_dir/lib/common.sh")
+compose_doc() { printf 'services:\n  traefik:\n    image: %s\n' "$1"; }
+
+out=$(SI_COMPOSE="$(compose_doc traefik:v3.6.7)" drive values "$stored_shared" "$stored_static"); rc=$?
+assert '[ "$rc" = "0" ]' "a server carrying its own traefik tag needs no flags (exit $rc: $(drive_err))"
+assert 'grep -qxF "image=traefik:v3.6.7" <<<"$out"' \
+    "the tag on the server wins over KASBAH_TRAEFIK_IMAGE ($pin) — an upgrade survives a re-run (got '$out')"
+assert '[ -z "$(drive_err)" ]' "and nothing is warned about (said '$(drive_err)')"
+
+out=$(SI_COMPOSE="" drive values "$stored_shared" "$stored_static"); rc=$?
+assert 'grep -qxF "image=$pin" <<<"$out"' \
+    "a server with no compose.yml yet renders kasbah's own pin (got '$out')"
+assert '[ -z "$(drive_err)" ]' \
+    "silently — there is nothing to lose on a fresh server (said '$(drive_err)')"
+
+# The same document with one field changed, so the fallback is a decision about
+# the value and not about the file.
+out=$(SI_COMPOSE="$(compose_doc mirror.example/traefik:v3.7.10)" drive values "$stored_shared" "$stored_static"); rc=$?
+assert '[ "$rc" = "0" ]' "an image kasbah does not reproduce is not fatal (exit $rc: $(drive_err))"
+assert 'grep -qxF "image=$pin" <<<"$out"' "it falls back to the pin (got '$out')"
+assert 'grep -qF "upgrade-traefik" "$tmpdir/err"' \
+    "and says so out loud, because the operator is about to lose that value (said '$(drive_err)')"
+
+out=$(SI_COMPOSE="services: [" drive values "$stored_shared" "$stored_static"); rc=$?
+assert '[ "$rc" = "0" ]' "a compose.yml that does not parse is not fatal either — init owns that file (exit $rc)"
+assert 'grep -qxF "image=$pin" <<<"$out"' "and the pin is rendered (got '$out')"
+assert '[ -n "$(drive_err)" ]' "with a warning (said '$(drive_err)')"
 
 # The extractors on their own, against shapes an operator's editor produces.
 extract() { printf '%s' "$2" | drive_stdin extract "$1"; }

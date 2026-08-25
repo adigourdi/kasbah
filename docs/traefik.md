@@ -50,8 +50,26 @@ The Traefik stack lives at `/apps/traefik/` on the VPS and is managed by
 **`compose.yml`, `traefik.yml` and `_shared.yml` are kasbah's, and every
 `server init` re-ships any of them whose bytes differ.** A hand edit to either is reverted on the next run, with
 no backup — so treat them as generated files, not as configuration you own.
-What survives a re-run is exactly the three values init reads back out of
-them: the dashboard domain, the ACME email, and the basic-auth hash.
+What survives a re-run is exactly the four values init reads back out of
+them: the dashboard domain, the ACME email, the basic-auth hash, and the
+Traefik image tag.
+
+The image tag is the newest of the four and is there for one reason:
+`kasbah server upgrade-traefik` changes it, and an init that re-rendered
+kasbah's own pin over the top would revert a managed upgrade silently, on
+a re-run nobody thought was risky. So the pin in `lib/common.sh`
+(`KASBAH_TRAEFIK_IMAGE`) is what a *first* init renders, and every later
+one reproduces whatever the server's own `compose.yml` already names. Only
+the official repository with a Docker tag on it is reproduced — a mirror,
+a digest pin or anything else falls back to kasbah's pin with a warning,
+because that value is substituted into a YAML scalar and into a `docker
+run` argument.
+
+**`upgrade-traefik` is the one command that backs these files up.** It
+re-renders all three exactly as init does and copies the bytes that were
+there to `<apps>/traefik/backups/<UTC timestamp>/` first. That copy is the
+whole of the difference between the two commands: neither asks, because
+neither is editing configuration you own.
 
 Project fragments in `dynamic/<project>.yml` are a different matter — those
 belong to their projects and init never touches them. Files you add under
@@ -142,8 +160,9 @@ Kasbah-owned fragments (written by `kasbah server init`):
   asks of every hostname.
 
 Project fragments are named `<manifest.name>.yml`. Filenames starting
-with `_` belong to kasbah and get overwritten on
-`kasbah server upgrade-traefik` — don't author your own `_`-prefixed files.
+with `_` belong to kasbah and are re-shipped whenever their bytes differ —
+`_shared.yml` by `server init` and by `server upgrade-traefik`, `_mail.yml`
+by `server init --with-mail`. Don't author your own `_`-prefixed files.
 
 ## Project fragment
 
@@ -376,11 +395,59 @@ server status` surfaces it.
 ## Upgrading Traefik
 
 ```
-kasbah server upgrade-traefik user@vps --version=v3.7
+kasbah server upgrade-traefik user@vps --version=v3.7.10
 ```
 
-(Roadmap v0.3.) Until then, change the pinned tag in kasbah's own
-`templates/traefik/compose.yml` and re-run `kasbah server init` — **not**
-the copy on the VPS. `compose.yml` is one of the three kasbah-owned files
-init re-ships whenever its bytes differ, so an edit made on the server is
-reverted by the next init, without a backup and without a warning.
+Two halves, and the second one is the point.
+
+**Backup before overwrite.** The three kasbah-owned files are re-rendered
+from this kasbah's templates, with the new tag in `compose.yml` and the
+four recovered values reproduced verbatim, and the bytes already on the
+server are copied to `<apps>/traefik/backups/<UTC timestamp>/` before any
+of them is replaced. Backups are never deleted and never land in
+`dynamic/`, which Traefik watches.
+
+**The dry run.** Before anything is touched, a throwaway Traefik of the
+*target* version is booted with `<apps>/traefik/dynamic/` mounted
+read-only and the freshly rendered `_shared.yml` laid over its own copy —
+so what is validated is the configuration that will be live, and every
+fragment in that directory is in it: `_shared.yml`, `_mail.yml` and every
+project's `<project>.yml`. **Any line the throwaway logs at `ERR` fails the
+upgrade**, with one family excluded: the certificate it cannot obtain from
+the deliberately unreachable CA the dry run points it at
+(`https://127.0.0.1:1/…`), which is how it contacts no CA, registers no
+account, answers no challenge and spends no rate-limit budget. Warnings
+are reported and are never fatal — a version bump is exactly when Traefik
+starts announcing deprecations.
+
+Those excluded lines are also the proof the dry run read anything: the file
+provider emits one per TLS router it built out of the mounted fragments,
+naming it, so a run that loaded nothing has none of them. The upgrade
+refuses unless `traefik-dashboard@file` is among them — a clean log on its
+own is not evidence.
+
+The throwaway is isolated in four ways: `--network none`, no published
+port, both mounts read-only, and its own entrypoints moved to `:8080`
+/`:8443` so nothing depends on remembering to leave `-p` off. Its name
+carries the run's timestamp and it carries a label the next run sweeps by,
+so a leftover from a crashed run is inert and is cleaned up rather than
+colliding.
+
+**`acme.json` is never opened for writing.** The certificates are the thing
+that has to survive a version bump. The run digests the store before and
+after and reports whether the new Traefik wrote to it, which is an
+observation and not a failure — a renewal landing during the restart is
+normal.
+
+**What a failure leaves.** Everything up to the backup is read-only on the
+server, so a dry run that says no leaves the old proxy running and
+untouched. If the new version will not come up healthy, the backup is
+copied back **on the server** and the old version brought up again — the
+restore is part of the same step rather than a round trip, so a dropped
+connection cannot strand the proxy with the fix on the wrong machine.
+
+The endpoint (`caServer`), the ACME address, the dashboard apex and its
+basic-auth entry are recovered off the server and reproduced. A stack that
+will not yield all four is refused and the operator is sent to `server
+init`: repairing one of those is init's job, and a version bump must not
+move a server's CA or its dashboard credentials as a side effect.

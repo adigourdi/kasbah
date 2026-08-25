@@ -52,6 +52,13 @@ KASBAH_EXIT_NO_REMOTE_STATE=4
 KASBAH_EXIT_ENV_SETUP=5
 KASBAH_EXIT_COMPLIANCE_FAIL=6  # `kasbah check` recorded one or more failures
 
+# The Traefik image a first `server init` pins. Here rather than literal in
+# templates/traefik/compose.yml because the template now carries a token: init
+# renders this, `server upgrade-traefik` renders the tag it was given, and a
+# later init renders whatever the server's own compose.yml already says. One
+# constant, so "which Traefik does kasbah ship" has one answer.
+KASBAH_TRAEFIK_IMAGE=traefik:v3.7.10
+
 # Where the server marker lives when nobody said otherwise. `server init`
 # defaults its --apps-path to this, and every project command finds the marker
 # there and reads the real paths back out of it.

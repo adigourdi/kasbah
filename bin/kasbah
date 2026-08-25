@@ -110,6 +110,10 @@ dispatch_server() {
             . "$KASBAH_LIB_DIR/prune.sh"
             cmd_server_prune "$@"
             ;;
+        upgrade-traefik)
+            . "$KASBAH_LIB_DIR/upgrade_traefik.sh"
+            cmd_server_upgrade_traefik "$@"
+            ;;
         add-mail-domain)
             . "$KASBAH_LIB_DIR/server_mail.sh"
             cmd_server_add_mail_domain "$@"
@@ -127,6 +131,10 @@ Subcommands:
   status USER@HOST         Report what a prepared VPS is running (read-only).
   prune USER@HOST [--yes]  Remove <image>:<version> tags older than 3 months and
                            outside each project's last 3 deployed versions.
+  upgrade-traefik USER@HOST --version=<tag>
+                           Move the shared Traefik to another image tag: backs
+                           up the three kasbah-owned files and dry-runs every
+                           dynamic fragment against the target version first.
   add-mail-domain USER@HOST DOMAIN
                            Join a domain to the shared mail stack (docs/mail.md).
   mail-setup-guide USER@HOST
@@ -136,10 +144,10 @@ Run \`kasbah server <subcommand> --help\` for its flags.
 EOF
             ;;
         '')
-            die "server: no subcommand given (expected: init, status, prune, add-mail-domain, mail-setup-guide)"
+            die "server: no subcommand given (expected: init, status, prune, upgrade-traefik, add-mail-domain, mail-setup-guide)"
             ;;
         *)
-            die "server: unknown subcommand '$sub' (expected: init, status, prune, add-mail-domain, mail-setup-guide)"
+            die "server: unknown subcommand '$sub' (expected: init, status, prune, upgrade-traefik, add-mail-domain, mail-setup-guide)"
             ;;
     esac
 }

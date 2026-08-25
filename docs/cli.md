@@ -200,6 +200,53 @@ there is something to remove and the operator said yes — one
 `docker image rm`. Exits 4 on a host with no server marker: prune does
 not delete images on a machine it cannot tell is a kasbah server.
 
+### `kasbah server upgrade-traefik USER@HOST --version=<tag>`
+
+A managed Traefik version bump. `--version=` is required — the command
+exists to change the tag and there is no default to fall back on — and is
+checked against Docker's own tag grammar before it reaches a compose file
+and a `docker run`. There is **no `--apps-path`**, for the same reason
+`prune` has none: where the server was prepared is the server's own answer.
+
+Two halves, and the second is the point.
+
+**Backup before overwrite.** `compose.yml`, `traefik.yml` and
+`dynamic/_shared.yml` are kasbah's outright (`traefik.md` → Ownership), so
+they are re-rendered from this kasbah's templates exactly as `server init`
+does them and nothing is asked. What init does not do is keep a copy: the
+bytes already on the server go to `<apps>/traefik/backups/<UTC timestamp>/`
+first, and that directory is never deleted.
+
+**The dry run.** A throwaway Traefik of the *target* version is booted with
+`<apps>/traefik/dynamic/` mounted read-only — `_shared.yml`, `_mail.yml`
+and every project's fragment, not just kasbah's — and **any line it logs at
+`ERR` fails the upgrade before anything switches**. The throwaway runs on
+`--network none`, publishes no port, mounts nothing writable and never sees
+`acme.json`; it points at an unreachable loopback CA, so it contacts no
+certificate authority and spends no rate-limit budget. Its one error family
+— the certificate it therefore cannot obtain — is excluded from the verdict
+by both the message and that URL, and those same lines are what proves it
+read the fragments at all: one per TLS router it built, naming it. A dry
+run that loaded no `traefik-dashboard@file` router is a failure, not a pass.
+
+The target image is pulled during the dry run, so a tag that does not exist
+fails while the live proxy is still untouched, and the pull cannot fail
+later, mid-switch.
+
+Four values are recovered off the server and reproduced verbatim: the
+dashboard apex, its basic-auth entry, the ACME address and the ACME
+endpoint. A stack that will not yield all four is refused, naming the one
+that is missing and pointing at `server init` — repairing a stack is init's
+job, and a version bump must not move a server's CA or its dashboard
+credentials as a side effect. `acme.json` is never written; the run digests
+it before and after and reports whether the new Traefik touched it.
+
+If the new version does not come up healthy, the backup is copied back **on
+the server** and the old version brought up again, in the same step rather
+than a round trip later — so a dropped connection cannot leave the proxy
+down with the fix on the wrong machine. Exits 4 on a host with no server
+marker.
+
 ### `kasbah server destroy USER@HOST` *(roadmap v0.3)*
 
 De-brand the VPS for handover. Every container keeps running — projects
@@ -739,8 +786,6 @@ Referenced elsewhere in the docs but not yet in v0.1:
 
 - `kasbah migrate` — migrate a project's source-tree files to a newer
   kasbah schema. (roadmap v1.0.)
-- `kasbah server upgrade-traefik` — managed Traefik version bump.
-  (roadmap v0.3.)
 
 ## Exit codes
 

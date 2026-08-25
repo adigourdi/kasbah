@@ -56,7 +56,8 @@ one-line `kasbah.yml` and deploy identically.
 - `kasbah server mail-setup-guide` — printed walkthrough
 - `kasbah check --server user@host` — VPS-aware checks
 - `kasbah logs user@host [service]` / `kasbah exec`
-- `kasbah server upgrade-traefik`
+- `kasbah server upgrade-traefik` — version bump with backup-before-overwrite
+  and a dry run of every dynamic fragment against the target version — **shipped**
 - `kasbah server prune` — image retention (keep the last 3 deployed
   versions including current, plus anything < 3 months) — **shipped**
 
