@@ -495,25 +495,43 @@ is also why this is not something init can wait on.
 ## `kasbah server status`
 
 Read-only — it never creates, modifies or removes anything. Walks the apps
-path, asks docker for each project's container *state* (health is reported
-for Traefik alone, which is the only container kasbah gives a healthcheck),
-reads `versions.log` for each project, and prints:
-
-What it prints today:
+path, asks docker for every container's state and health, reads `versions.log`
+and the Traefik fragment for each project, asks `df` about the apps and data
+paths, and reads Traefik's certificate store:
 
 ```
 VPS: you@vps (connected)
-Docker: 29.7.2, Compose: 5.4.0
+Docker: 29.6.0, Compose: 5.2.0
 Root: /apps (pointer)  Data: /apps/data
-Marker: kasbah 0.1.0-dev, cpu 14.4, mem 54g
+Marker: kasbah 0.1.0-dev, cpu 1.8, mem 3g
+Disk: /apps  12.8G of 37.6G used (35%), 24.8G free — /dev/sda1 on /
+      /apps/data  the same filesystem
 
 Traefik: running (healthy)
   Image: traefik:v3.7.10 (sha256:9c3b91d5fb77)
   Container: traefik
+  Certificates: 4 in /apps/data/traefik/letsencrypt/acme.json
+  Dashboard: traefik.example.com
+      certificate valid for 87 more day(s) (until Nov 20 23:16:22 2026 GMT, C = US, O = Let's Encrypt, CN = YR2)
+
+Mail: /apps/mail
+  mail-dms         running (healthy)
+  mail-snappymail  running (healthy)
+  Primary: example.com   Domains: example.com
+  mail.example.com
+      certificate valid for 89 more day(s) (until Nov 23 08:05:25 2026 GMT, C = US, O = Let's Encrypt, CN = YR1)
+  webmail.example.com
+      certificate valid for 89 more day(s) (until Nov 23 08:05:31 2026 GMT, C = US, O = Let's Encrypt, CN = YR1)
 
 Projects:
-  shop           1/1 running    1.3.0      deploy 2026-04-01T09:12:44+00:00 (kasbah 0.1.0)
+  gallery        1/1 running    0.1.0      rollback 2026-08-23T00:16:46+00:00 (kasbah 0.1.0-dev)
+      gallery.example.com
+          certificate valid for 87 more day(s) (until Nov 20 23:16:21 2026 GMT, C = US, O = Let's Encrypt, CN = YR2)
+      1 container(s), all running and none unhealthy
   jellyfin       0/1 stopped    2.4.1      deploy 2026-03-15T22:05:10+00:00 (kasbah 0.1.0)
+      jellyfin.example.com
+          no certificate — Traefik issues one when the hostname resolves here
+      jellyfin-web             exited (none)
 ```
 
 Versions appear exactly as `versions.log` holds them — no `v` prefix, and
@@ -522,12 +540,41 @@ the log is the source of truth and a reformat invites a mismatch. Both the
 image tag and the resolved image id are shown: a tag can be re-pushed under
 the same name, the id cannot.
 
-The fuller report — cert status and expiry, disk usage, the mail stack,
-per-container health — arrives with the rest of the operational surface in
-roadmap v0.2. So does the per-project **domain**, which is not simply
-missing: it lives in each project's Traefik fragment, so printing it means
-parsing YAML on a server where `yq` is not a prerequisite, or asking the
-Traefik API with the dashboard credentials.
+**The per-project domain comes from `<apps>/traefik/dynamic/<name>.yml`**,
+fetched base64 in the same round trip and parsed with the *workstation's* `yq`.
+`yq` stays off the VPS, as `jq` and `python3` do. Every `Host()` in the
+fragment's rules is listed, once, in the order they appear.
+
+**Certificate expiry comes from `<data>/traefik/letsencrypt/acme.json`**,
+Traefik's own store, read by the same `lib/acme.sh` that answers
+`check --server`. The store holds the ACME account key and every certificate's
+private key: it is never written to disk, echoed, or quoted in a message, and
+the diagnostic that echoes a truncated probe back reports that one line by name
+and length only. `notBefore` is deliberately not read — Let's Encrypt backdates
+it by roughly an hour, so it is not issuance time.
+
+**Disk is `df`, not `du`.** The question is whether the host is about to run out
+of room, and it is answered in constant time; a `du` walk of a data path holding
+a mail spool would make the report cost whatever the server happens to hold. A
+data path on the apps path's filesystem is named as sharing it rather than
+counted twice.
+
+**Health is per container now**, not Traefik's alone. A project whose containers
+are all running and none unhealthy gets one line saying so; a project that is
+not gets one line per container, because a running-but-unhealthy container is
+exactly what `1/1 running` cannot show.
+
+**A server with no mail stack says so and moves on** — `Mail: not installed`
+is an ordinary state, not a fault.
+
+**All of it is one SSH round trip.** Each of those reads performed on its own is
+what turns `status` into several sessions; the rig's `maxstartups 10` is what
+that costs. The one value the far side has to work out for itself is the data
+path, since the certificate store and the data disk figure hang off it and there
+is no `jq` there to read the marker properly: the probe scrapes it out of the
+marker's bytes and reports the scrape, and the workstation compares it with what
+`jq` read out of the same bytes. A disagreement makes both of those reads
+unreportable rather than wrong.
 
 ## Idempotency rules
 

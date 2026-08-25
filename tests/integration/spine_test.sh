@@ -794,7 +794,11 @@ assert '! grep -qF "$want_image_id" "$tmpdir/out"' \
 # The project list is the set of directories that are there, not a name this
 # file knows: a status that printed `demo` because someone typed it here would
 # pass the row assertion below and fail this one.
-listed=$(sed -n '/^Projects:/,/^$/p' "$tmpdir/out" | sed -n 's/^  \([^ ]*\) .*/\1 /p' | sort | tr -d '\n')
+# `[^ ][^ ]*` rather than `[^ ]*`: a project row is two spaces then a name, and
+# every line under it — the domain, its certificate, the containers — is
+# indented further. A pattern that lets the name be empty matches those too and
+# turns the list into a row of blanks.
+listed=$(sed -n '/^Projects:/,/^$/p' "$tmpdir/out" | sed -n 's/^  \([^ ][^ ]*\) .*/\1 /p' | sort | tr -d '\n')
 assert '[ "$listed" = "$want_projects" ]' \
     "the projects listed are the directories under $apps (wanted '$want_projects', listed '$listed')"
 assert '[ "$want_total" != "0" ] && [ "$want_running" = "$want_total" ]' \
@@ -811,6 +815,30 @@ assert 'grep -qF "$want_action $want_ts (kasbah ${want_kasbah#kasbah=})" "$tmpdi
     "and the action, timestamp and kasbah version of the *last* entry
         wanted: $want_action $want_ts (kasbah ${want_kasbah#kasbah=})
         said:   $(grep "^  $project" "$tmpdir/out")"
+
+# The five things 7.6 added, against a rig that has them: the project's domain
+# comes out of its own Traefik fragment (parsed here — the rig has no yq), the
+# disk figure out of df, and the container list out of docker. Read off the rig
+# moments before the comparison, exactly as everything above is.
+want_host=$(rig_ssh "cat $apps/traefik/dynamic/$project.yml" 2>/dev/null \
+    | tr -d '\r' | sed -n 's/.*Host(`\([^`]*\)`).*/\1/p' | head -1)
+want_cnames=$(rig_ssh "docker ps -a --filter label=com.docker.compose.project=$project --format '{{.Names}}'" 2>/dev/null | tr -d '\r' | sort | tr '\n' ' ')
+assert '[ -n "$want_host" ]' "the deployed project's fragment claims a hostname (got '$want_host')"
+assert 'grep -qxF "      $want_host" "$tmpdir/out"' \
+    "status prints the domain out of $apps/traefik/dynamic/$project.yml (wanted '$want_host', said '$(status_out)')"
+assert 'grep -qE "^Disk: $apps  [0-9]" "$tmpdir/out"' \
+    "and a disk figure for the apps path (said '$(grep -A1 "^Disk:" "$tmpdir/out")')"
+assert 'grep -qE "^  Certificates: " "$tmpdir/out"' \
+    "and what the certificate store can answer — on the rig, an empty one (said '$(grep "Certificates:" "$tmpdir/out")')"
+assert 'grep -qE "container\(s\), all running|^      [a-z0-9_.-]+ +[a-z]+ \(" "$tmpdir/out"' \
+    "and the project's containers, which is the health nothing but Traefik had (wanted '$want_cnames', said '$(status_out)')"
+# The precondition of the assertion above it, not a round-trip check: the
+# container line can only be evidence if the project has containers. **The
+# one-round-trip guarantee is pinned in tests/server_status_test.sh**, by
+# counting `bash -s` invocations in a stub ssh's log — nothing here counts ssh
+# sessions, and a comment claiming otherwise would describe a check that is not
+# in this file.
+assert '[ -n "${want_cnames// /}" ]' "the project has containers to report on (got '$want_cnames')"
 
 # Read-only, proved on a real server rather than argued: the tree is unmoved to
 # the mtime, and neither container was recreated.

@@ -988,3 +988,65 @@ and **prints it** on a truncated read. If `server status` adds `acme_b64` to its
 batched probe it will spill key material onto stderr. `lib/acme.sh` warns in a
 comment; nothing enforces it. `check --server` avoided this by writing its own
 absorb rather than reusing that helper.
+
+### 7.6 — full `server status`
+
+**Delivered.** The five things the Phase 2 carry assigned here: the per-project
+domain, cert status and expiry, disk usage, the mail stack, and per-container
+health — **in one round trip**, which was the carry's stated constraint. Against
+the real host the tool now prints four certificates with issuers and expiry, both
+mail containers healthy, the dashboard apex, disk, and `gallery-website` with its
+domain and certificate inline. One incidental observation only possible now that
+the issuer is printed: the mail certificates came back `CN = YR1` at 89 days
+against `gallery`'s `YR2` at 87 — Let's Encrypt rotated intermediates between the
+two issuances.
+
+**The vacuity class produced two more variants here, making four in the phase.**
+An assertion can fail to be an assertion by **wording** (7.0: grepping a rule's
+pass line, which shares no words with its warn line), by **encoding** (7.3:
+grepping for a decoded secret in a payload that travels base64'd), by
+**position** (found by the implementer: `_ss_absorb_checked` prints only the
+first 20 lines of a truncated payload, so a fixture emitting the secret at line
+36 put it outside the window the test existed to exercise), and by **clip
+length** (found by the review: the needle was 120 bytes of a line that can only
+ever print 111, because `acme_b64=` eats 9 of the 120-byte clip — it could never
+match).
+
+The last block was vacuous **three ways at once** — position, needle length, and
+no positive counterpart — and the fixes had to be simultaneous: the needle fix
+alone leaves it passing for the wrong reason, the position fix alone leaves it
+silent. Under a mutant that disables redaction the block went from **2 FAILs to
+5**, which is what proves all three assertions now bite.
+
+**The generalisation worth carrying past this phase:** every one of the four
+variants passes a green suite, reads as proof to a human, and dies under
+mutation. A negative assertion — "the secret is *not* in the output" — is
+vacuous by default and has to be *made* meaningful; the reliable way is to pair
+it with a positive one that pins the same mechanism from the other side, so the
+pair cannot both stay silent.
+
+**A trap that guards itself, but only by accident until it is labelled.** The
+20-line clip window means anyone adding a probe key ahead of `acme_b64` pushes it
+out of the diagnostic's reach and silently un-tests the redaction. That *is*
+caught — inserting three filler keys makes two assertions fail loudly — but only
+because those assertions happen to pin position while reading like output
+assertions. They now say so in a comment. An implicit guard nobody can see is one
+edit away from being deleted as redundant.
+
+**Also fixed:** a comment in `tests/integration/spine_test.sh` claiming a
+one-round-trip guarantee the assertion beneath it did not make — that assertion
+was wrong by construction as well (`grep -c` on a `tr`-joined single line is
+always 1). The guarantee is real and pinned, in the *unit* suite, by counting
+`bash -s` in the stub ssh log. A comment describing a check that is not there is
+worse than no comment.
+
+**`shared_b64` joined `acme_b64` in the redaction list.** `_shared.yml` carries
+the dashboard's bcrypt hash — an offline-crackable credential. It sits outside
+the 120-byte clip today only because the fragment's first line is short, and
+nothing pins that; the file gains a line whenever a middleware is added. One
+array element against a credential on stderr.
+
+*Traced, not proven:* the name column now sizes to the longest project name, and
+the real-host report is byte-identical either way — a single-project server
+cannot show that defect. The evidence is a two-row unit case asserting both rows'
+state columns start at the same offset.

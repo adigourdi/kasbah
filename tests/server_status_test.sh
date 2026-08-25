@@ -85,6 +85,26 @@ case "$mode" in
         _ss_decode_projects
         printf 'rows=%s\n' "${#_SS_P_NAME[@]}"
         ;;
+    hosts)
+        # The fragment parser on its own: content on stdin, one hostname per
+        # line out, exit 2 when the document is not YAML.
+        frag="$(cat)"
+        hosts=""
+        rc=0
+        _ss_fragment_hosts "$frag" hosts || rc=$?
+        printf 'rc=%s\n' "$rc"
+        while IFS= read -r h; do
+            [ -n "$h" ] || continue
+            printf 'host=%s\n' "$h"
+        done <<<"$hosts"
+        ;;
+    disk)
+        # One df line, base64'd on the way in exactly as the probe sends it.
+        line="" fs=""
+        rc=0
+        _ss_disk_sentence "$(printf '%s' "$1" | base64 -w0)" line fs || rc=$?
+        printf 'rc=%s\nline=%s\nfs=%s\n' "$rc" "$line" "$fs"
+        ;;
     rows)
         # The project table as it arrives from the far side: one base64 blob,
         # decoded into the parallel arrays the printer walks. $3/$4 are the two
@@ -97,6 +117,10 @@ case "$mode" in
         for i in "${!_SS_P_NAME[@]}"; do
             printf 'row=%s|%s|%s|%s|%s\n' "${_SS_P_NAME[$i]}" "${_SS_P_TOTAL[$i]}" \
                 "${_SS_P_RUNNING[$i]}" "${_SS_P_LOGSTATE[$i]}" "${_SS_P_LOG[$i]}"
+            printf 'frag=%s|%s|%s\n' "${_SS_P_NAME[$i]}" "${_SS_P_FRAGSTATE[$i]}" \
+                "$(printf '%s' "${_SS_P_FRAG[$i]}" | tr '\n' '~')"
+            printf 'cont=%s|%s\n' "${_SS_P_NAME[$i]}" \
+                "$(printf '%s' "${_SS_P_CONT[$i]}" | tr '\n' '~')"
         done
         printf 'rows=%s\n' "${#_SS_P_NAME[@]}"
         ;;
@@ -263,7 +287,20 @@ for bad in '2026-08-13T22:30:37+00:00 deploy 1.0.0' '' 'just a note someone left
 done
 
 # --- The project table -------------------------------------------------------------
-row() { printf '%s %s %s %s %s\n' "$(printf '%s' "$1" | base64 -w0)" "$2" "$3" "$4" "$(printf '%s' "$5" | base64 -w0)"; }
+# `row <name> <total> <running> <logstate> <log> [fragstate] [fragment] [containers]`
+# — the eight positional fields the far side builds, with `-` where a base64
+# field is empty. The sentinel is not decoration: the reader splits on
+# whitespace, so an empty field in the middle would shift every field after it.
+row() {
+    local logb=- fragb=- contb=-
+    [ -z "$5" ]      || logb="$(printf '%s' "$5" | base64 -w0)"
+    [ -z "${7:-}" ]  || fragb="$(printf '%s' "$7" | base64 -w0)"
+    [ -z "${8:-}" ]  || contb="$(printf '%s' "$8" | base64 -w0)"
+    printf '%s %s %s %s %s %s %s %s\n' "$(printf '%s' "$1" | base64 -w0)" \
+        "$2" "$3" "$4" "$logb" "${6:-absent}" "$fragb" "$contb"
+}
+# One container line as the probe builds it, for the rows above.
+cont() { printf '%s %s %s\n' "$(printf '%s' "$1" | base64 -w0)" "$2" "$3"; }
 
 table="$(row demo 1 1 ok '2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0 digest=-')
 $(row 'two words' 0 0 missing '')"
@@ -319,6 +356,69 @@ rc=0; drive rows "$table" 3 >/dev/null || rc=$?; out=$(drive_err)
 assert '[ "$rc" != "0" ]' "a table shorter than the count it came with is refused (exit $rc: $out)"
 assert 'grep -qF "counted 3 projects and described 2" <<<"$out"' "saying so (said '$out')"
 
+# --- The domain, out of a project's Traefik fragment -----------------------------------
+# Parsed here rather than on the server: the VPS has no yq, jq or python3 and
+# keeping it that way is deliberate, so the fragment travels back as bytes.
+hosts() { drive_stdin hosts <<<"$1"; }
+
+out=$(hosts 'http:
+  routers:
+    demo-http:
+      rule: "Host(`demo.example.com`)"
+    demo:
+      rule: "Host(`demo.example.com`) || Host(`www.demo.example.com`)"
+      tls:
+        certResolver: letsencrypt')
+assert 'grep -qxF "rc=0" <<<"$out"'                     "a fragment kasbah rendered parses (got '$out')"
+assert 'grep -qxF "host=demo.example.com" <<<"$out"'    "its domain is read (got '$out')"
+assert 'grep -qxF "host=www.demo.example.com" <<<"$out"' "and a second Host() in the same rule (got '$out')"
+assert '[ "$(grep -c "^host=" <<<"$out")" = "2" ]' \
+    "with the domain two routers share reported once, not twice (got '$out')"
+
+# A router *key* carrying a newline. The routers are counted and then indexed
+# through to_entries — never listed with `keys | .[]`, which would arrive as one
+# line per line of the key and turn one router into two, the second of them a
+# lookup that finds nothing.
+out=$(hosts 'http:
+  routers:
+    "first\nsecond":
+      rule: "Host(`smuggled.example.com`)"
+    real:
+      rule: "Host(`real.example.com`)"')
+assert 'grep -qxF "rc=0" <<<"$out"' "a fragment with a newline in a router name still parses (got '$out')"
+assert '[ "$(grep -c "^host=" <<<"$out")" = "2" ]' \
+    "two routers are two routers however their names are spelled (got '$out')"
+assert 'grep -qxF "host=real.example.com" <<<"$out"' \
+    "and the router after the odd one is still read (got '$out')"
+
+out=$(hosts 'http:
+  routers:
+    demo:
+      rule: "PathPrefix(`/`)"')
+assert 'grep -qxF "rc=0" <<<"$out"'        "a router with no Host() parses (got '$out')"
+assert '! grep -q "^host=" <<<"$out"'      "and claims no domain (got '$out')"
+out=$(hosts 'http:
+  services:
+    demo: {}')
+assert '! grep -q "^host=" <<<"$out"'      "a fragment with no routers claims none either (got '$out')"
+out=$(hosts 'http: [not: a mapping')
+assert 'grep -qxF "rc=2" <<<"$out"'        "a fragment that is not YAML is its own answer (got '$out')"
+
+# --- df's line, turned into a sentence -------------------------------------------------
+out=$(drive disk '/dev/sda1 41152812 12345678 26906134 32% /')
+assert 'grep -qxF "rc=0" <<<"$out"' "a df -Pk line reads (got '$out')"
+assert 'grep -qF "11.7G of 39.2G used (32%), 25.6G free" <<<"$out"' \
+    "in the units df -h would have printed (got '$out')"
+assert 'grep -qxF "fs=/dev/sda1 on /" <<<"$out"' \
+    "and the filesystem it is about, which is how two paths are known to share one (got '$out')"
+out=$(drive disk 'Filesystem 1024-blocks Used Available Capacity Mounted on')
+assert 'grep -qxF "rc=1" <<<"$out"' "a header line is not a figure (got '$out')"
+out=$(drive disk '')
+assert 'grep -qxF "rc=1" <<<"$out"' "and neither is nothing (got '$out')"
+out=$(drive disk '/dev/sda1 4096 2048 2048 50% /mnt/my disk')
+assert 'grep -qxF "fs=/dev/sda1 on /mnt/my disk" <<<"$out"' \
+    "a mount point with a space in it is one field, not two (got '$out')"
+
 # --- The remote script, run locally ---------------------------------------------------
 # Extracted from its heredoc and run against a fake apps tree — the only way to
 # reach the project filter and the versions.log states without a server, and
@@ -342,6 +442,27 @@ case "$1 $2" in
     "compose version")  printf '2.29.7\n'; exit 0 ;;
 esac
 if [ "$1" = inspect ]; then
+    # Two compound formats first, by their shape: the per-project container list
+    # (one line per id, however many ids it was given) and the mail stack's
+    # three-facts-in-one-line. A container id ending in `-stopped` is down, and
+    # one ending in `-sick` is up and unhealthy, so a case can put a project in
+    # any per-container state without a daemon.
+    case "$3" in
+        *'{{.Name}} {{.State.Status}}'*)
+            shift 3
+            for cid in "$@"; do
+                st=running; hl=healthy
+                case "$cid" in
+                    *-stopped) st=exited;  hl=none ;;
+                    *-sick)    st=running; hl=unhealthy ;;
+                esac
+                printf '/%s %s %s\n' "$cid" "$st" "$hl"
+            done
+            exit 0 ;;
+        *'{{.State.Status}} {{if .State.Health}}'*)
+            printf '%s\n' "${STUB_MAIL_INSPECT-running healthy 0}"
+            exit 0 ;;
+    esac
     # Answers per container, not per question: the traefik project holds a
     # sidecar as well, and a probe that stopped filtering on the service label
     # would inspect that one instead.
@@ -374,6 +495,13 @@ if [ "$1" = ps ]; then
             label=com.docker.compose.service=*) service="${a#*service=}" ;;
         esac
     done
+    if [ "$project" = mail ]; then
+        case "$service" in
+            mail-dms)        printf '%s\n' "${STUB_MAIL_DMS-cid-mail-dms}" ;;
+            mail-snappymail) printf '%s\n' "${STUB_MAIL_WEB-cid-mail-snappymail}" ;;
+        esac
+        exit 0
+    fi
     if [ "$project" = traefik ]; then
         # Sidecar first, so the id a probe takes without the service filter is
         # the wrong one rather than the right one by luck.
@@ -406,6 +534,39 @@ printf '2026-08-01T00:00:00+00:00 deploy 0.9.0 no-backup kasbah=0.1.0 digest=-\n
 : > "$apps/emptylog/versions.log"
 printf 'just a note someone left\n' > "$apps/badlog/versions.log"
 touch "$apps/not-a-dir"
+
+# What the five additions are read out of: the dashboard fragment (the only
+# record of the server's apex), one project fragment, the mail registry, and
+# Traefik's certificate store under the *data* path the marker names.
+cat > "$apps/traefik/dynamic/_shared.yml" <<'YML'
+http:
+  routers:
+    traefik-dashboard:
+      rule: "Host(`traefik.example.com`)"
+      entryPoints: [websecure]
+YML
+cat > "$apps/traefik/dynamic/demo.yml" <<'YML'
+http:
+  routers:
+    demo-http:
+      rule: "Host(`demo.example.com`)"
+      entryPoints: [web]
+    demo:
+      rule: "Host(`demo.example.com`) || Host(`www.demo.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+YML
+cat > "$apps/mail/kasbah.yml" <<'YML'
+name: mail
+primary_domain: example.com
+domains:
+  - example.com
+  - other.example
+YML
+mkdir -p "$apps/data/traefik/letsencrypt"
+printf '{"letsencrypt":{"Account":{"PrivateKey":"c3VwZXItc2VjcmV0"},"Certificates":[]}}' \
+    > "$apps/data/traefik/letsencrypt/acme.json"
 
 # Type, mode, size and mtime of everything, plus the bytes of every file: the
 # probe below must move none of it.
@@ -453,6 +614,71 @@ assert '[ "$(fact traefik_image)" = "traefik:v3.7.10" ]' \
 assert '[ "$(fact traefik_container)" = "traefik" ]' \
     "and it is named for it (got '$(fact traefik_container)')"
 
+# --- what the one probe brings back for the five additions --------------------
+# The data path first: there is no jq on the far side, so the probe scrapes it
+# out of the marker's bytes and the caller checks the scrape against jq. Every
+# read below that is not under the apps path hangs off this one value.
+assert '[ "$(fact probe_data_path)" = "$apps/data" ]' \
+    "the data path is scraped out of the marker without a JSON parser (got '$(fact probe_data_path)')"
+assert '[ "$(fact acme_state)" = "file" ]' "the certificate store is found under it (got '$(fact acme_state)')"
+assert '[ "$(printf "%s" "$(fact acme_b64)" | base64 -d)" = "$(cat "$apps/data/traefik/letsencrypt/acme.json")" ]' \
+    "and comes back byte for byte — there is no jq on the VPS to read it there"
+assert '[ "$(fact shared_state)" = "file" ]' "the dashboard fragment is read (got '$(fact shared_state)')"
+assert '[ "$(fact mail_dir_state)" = "dir" ]' "the mail stack is found (got '$(fact mail_dir_state)')"
+assert '[ "$(fact mail_registry_state)" = "file" ]' "with its registry (got '$(fact mail_registry_state)')"
+assert '[ "$(fact mail_dms_state)" = "running" ]' \
+    "mail-dms is found by its compose labels, not by container name (got '$(fact mail_dms_state)')"
+assert '[ "$(fact mail_dms_health)" = "healthy" ]' "with its health (got '$(fact mail_dms_health)')"
+assert '[ "$(fact mail_dms_restarts)" = "0" ]' \
+    "and its restart count — a DMS with no certificate restarts forever (got '$(fact mail_dms_restarts)')"
+assert '[ "$(fact mail_web_state)" = "running" ]' "and so is mail-snappymail (got '$(fact mail_web_state)')"
+assert '[ "$(fact apps_df_state)" = "ok" ]' "df answered for the apps path (got '$(fact apps_df_state)')"
+apps_df_line="$(printf '%s' "$(fact apps_df_b64)" | base64 -d)"
+assert '[ -n "$apps_df_line" ]' "and its line came back (got '$apps_df_line')"
+assert '[ "$(set -- $apps_df_line; printf %s "$2")" -gt 0 ] 2>/dev/null' \
+    "with a block count in it, so it is a df line and not a header (got '$apps_df_line')"
+assert '[ "$(fact data_df_state)" = "ok" ]' "and for the data path (got '$(fact data_df_state)')"
+
+# A mail stack that is scaffolded and not running, and one that was never
+# scaffolded: both ordinary states, neither a fault.
+probe_out="$(run_payload "$apps" STUB_MAIL_DMS= 2>/dev/null)"
+assert '[ "$(fact mail_dms_state)" = "absent" ]' \
+    "a mail stack whose DMS is not running says absent (got '$(fact mail_dms_state)')"
+assert '[ "$(fact mail_web_state)" = "running" ]' \
+    "and the other container is still reported (got '$(fact mail_web_state)')"
+probe_out="$(run_payload "$tmpdir/nowhere" 2>/dev/null)"
+assert '[ "$(fact mail_dir_state)" = "absent" ]' \
+    "a server with no mail directory reports absent, not an error (got '$(fact mail_dir_state)')"
+assert '[ "$(fact acme_state)" = "nopath" ]' \
+    "and with no marker there is no data path to look for a store under (got '$(fact acme_state)')"
+assert '[ "$(fact apps_df_state)" = "absent" ]' \
+    "df is not asked about a path that is not there (got '$(fact apps_df_state)')"
+probe_out="$(run_payload "$apps" 2>/dev/null)"
+
+# The fragment and the container list travel per project, in the same row.
+decoded="$(printf '%s' "$(fact projects_b64)" | base64 -d)"
+demo_row="$(grep -F "$(printf %s demo | base64 -w0) " <<<"$decoded")"
+assert '[ -n "$demo_row" ]' "demo has a row (rows: $decoded)"
+assert '[ "$(set -- $demo_row; printf %s "$6")" = "ok" ]' \
+    "carrying the state of its Traefik fragment (row: $demo_row)"
+assert '[ "$(set -- $demo_row; printf %s "$7" | base64 -d)" = "$(cat "$apps/traefik/dynamic/demo.yml")" ]' \
+    "and the fragment itself, byte for byte — yq stays off the VPS"
+demo_conts="$(set -- $demo_row; printf %s "$8" | base64 -d)"
+assert '[ "$(wc -l <<<"$demo_conts")" = "2" ]' \
+    "with one line per container of the project (got '$demo_conts')"
+assert 'grep -q " running healthy$" <<<"$demo_conts"' \
+    "each carrying its state and health (got '$demo_conts')"
+# A project with no fragment: the field is a `-`, not an empty column. An empty
+# one would collapse under the reader's whitespace split and shift every field
+# after it.
+dropped_row="$(grep -F "$(printf %s dropped | base64 -w0) " <<<"$decoded")"
+assert '[ "$(set -- $dropped_row; printf %s "$6")" = "absent" ]' \
+    "a project with no fragment says absent (row: $dropped_row)"
+assert '[ "$(set -- $dropped_row; printf %s "$7")" = "-" ]' \
+    "and its empty fields are sentinels, not blanks (row: $dropped_row)"
+assert '[ "$(set -- $dropped_row; printf %s "$#")" = "8" ]' \
+    "so every row is eight fields wide whatever is missing (row: $dropped_row)"
+
 # The filter: six candidates, and not one of kasbah's own five directories —
 # `mail` among them, so the far-side filter runs against the same list the
 # workstation sends in production (pinned separately at the ssh log below).
@@ -460,7 +686,7 @@ assert '[ "$(fact project_count)" = "6" ]' \
     "six candidates under a tree of eleven entries (got '$(fact project_count)')"
 decoded="$(printf '%s' "$(fact projects_b64)" | base64 -d)"
 names=""
-while IFS=' ' read -r nb total running logstate logb64; do
+while IFS=' ' read -r nb total running logstate logb64 fragstate fragb64 contb64; do
     [ -n "$nb" ] || continue
     names="$names$(printf '%s' "$nb" | base64 -d) $total/$running/$logstate
 "
@@ -487,7 +713,7 @@ assert 'grep -q "^.git 0/0/missing" <<<"$names"' \
     "a directory kasbah did not create is shown, not hidden (rows: $(tr '\n' ' ' <<<"$names"))"
 
 # The last *entry*, not the last byte: demo's log ends in a blank line.
-demo_log="$(while IFS=' ' read -r nb total running logstate logb64; do
+demo_log="$(while IFS=' ' read -r nb total running logstate logb64 fragstate fragb64 contb64; do
     [ "$(printf '%s' "$nb" | base64 -d)" = demo ] || continue
     printf '%s' "$logb64" | base64 -d
 done <<<"$decoded")"
@@ -509,7 +735,7 @@ else
     probe_out="$(run_payload "$apps" 2>"$tmpdir/perr")"; probe_rc=$?
     decoded="$(printf '%s' "$(fact projects_b64)" | base64 -d)"
     states=""
-    while IFS=' ' read -r nb total running logstate logb64; do
+    while IFS=' ' read -r nb total running logstate logb64 fragstate fragb64 contb64; do
         [ -n "$nb" ] || continue
         states="$states$(printf '%s' "$nb" | base64 -d) $logstate
 "
@@ -531,7 +757,7 @@ before="$(tree_digest "$apps")"
 printf '2026-08-14T00:00:00+00:00 deploy 1.1.0 no-backup kasbah=0.1.0 digest=-' >> "$apps/demo/versions.log"
 probe_out="$(run_payload "$apps" 2>/dev/null)"
 decoded="$(printf '%s' "$(fact projects_b64)" | base64 -d)"
-demo_log="$(while IFS=' ' read -r nb total running logstate logb64; do
+demo_log="$(while IFS=' ' read -r nb total running logstate logb64 fragstate fragb64 contb64; do
     [ "$(printf '%s' "$nb" | base64 -d)" = demo ] || continue
     printf '%s' "$logb64" | base64 -d
 done <<<"$decoded")"
@@ -705,10 +931,46 @@ status_cli() {
 
 # A server with one project, written as the remote step writes it.
 marker_default='{"kasbah_version":"0.1.0-test","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"14.4","mem_limit":"54g"}'
+
+# A real certificate, because the certificate lines are read out of one:
+# lib/acme.sh base64-decodes the store's entry and hands the PEM to
+# `openssl x509`, so a fixture that is not a certificate would exercise the
+# refusals and never the verdict.
+cert_dir="$tmpdir/cert"
+mkdir -p "$cert_dir"
+openssl req -x509 -newkey rsa:2048 -nodes -days 90 \
+    -keyout "$cert_dir/key.pem" -out "$cert_dir/cert.pem" \
+    -subj "/CN=demo.example.com" \
+    -addext "subjectAltName=DNS:demo.example.com,DNS:www.demo.example.com" >/dev/null 2>&1
+cert_b64="$(base64 -w0 < "$cert_dir/cert.pem")"
+assert '[ -n "$cert_b64" ]' "openssl made a certificate for the store fixture"
+# The store as Traefik writes it, private key material included: the account
+# key and the entry's own `.key` are here precisely so the redaction assertions
+# below have something real to fail against.
+acme_json="$(jq -cn --arg c "$cert_b64" '{letsencrypt:{Account:{Email:"a@example.com",PrivateKey:"TUlHSEFnRUFNQk1HQnlxR1NNNDlBZ0VHQ0NxR1NNNDlBd0VI"},Certificates:[{domain:{main:"demo.example.com",sans:["www.demo.example.com"]},certificate:$c,key:"TUlHSEFnRUFNQk1HQnlxR1NNNDlBZ0VHQ0NxR1NNNDlBd0VI"}]}}')"
+assert '[ -n "$acme_json" ] && jq -e . >/dev/null 2>&1 <<<"$acme_json"' "the certificate store fixture is JSON"
+acme_b64_default="$(printf '%s' "$acme_json" | base64 -w0)"
+
+shared_yml='http:
+  routers:
+    traefik-dashboard:
+      rule: "Host(`traefik.example.com`)"'
+demo_frag='http:
+  routers:
+    demo-http:
+      rule: "Host(`demo.example.com`)"
+    demo:
+      rule: "Host(`demo.example.com`) || Host(`www.demo.example.com`)"'
+registry_yml='name: mail
+primary_domain: example.com
+domains:
+  - example.com
+  - other.example'
+df_apps='/dev/sda1 41152812 12345678 26906134 32% /'
 write_payload() {
     local marker_state="${1:-ok}" marker_json="${2:-$marker_default}"
     local traefik_present="${3:-yes}" traefik_state="${4:-running}" traefik_health="${5:-healthy}"
-    local rows="${6-$(row demo 1 1 ok '2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0-dev digest=-')}"
+    local rows="${6-$(row demo 1 1 ok '2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0-dev digest=-' ok "$demo_frag" "$(cont demo-web running healthy)")}"
     local count="${7-1}"
     {
         # Where the step looked, and how it got there: a server with no pointer,
@@ -719,6 +981,18 @@ write_payload() {
         printf 'apps_state=dir\n'
         printf 'marker_state=%s\n' "$marker_state"
         printf 'marker_b64=%s\n' "$(printf '%s' "$marker_json" | base64 -w0)"
+        # The five additions, in the same one payload: the data path the probe
+        # scraped, the two df lines, the certificate store, the dashboard
+        # fragment and the mail stack.
+        printf 'probe_data_path=/apps/data\n'
+        printf 'apps_df_state=ok\napps_df_b64=%s\n' "$(printf '%s' "$df_apps" | base64 -w0)"
+        printf 'data_df_state=ok\ndata_df_b64=%s\n' "$(printf '%s' "$df_apps" | base64 -w0)"
+        printf 'acme_state=file\nacme_b64=%s\n' "$acme_b64_default"
+        printf 'shared_state=file\nshared_b64=%s\n' "$(printf '%s' "$shared_yml" | base64 -w0)"
+        printf 'mail_dir_state=dir\n'
+        printf 'mail_registry_state=file\nmail_registry_b64=%s\n' "$(printf '%s' "$registry_yml" | base64 -w0)"
+        printf 'mail_dms_state=running\nmail_dms_health=healthy\nmail_dms_restarts=0\n'
+        printf 'mail_web_state=running\nmail_web_health=healthy\nmail_web_restarts=0\n'
         printf 'traefik_present=%s\ntraefik_state=%s\ntraefik_health=%s\n' \
             "$traefik_present" "$traefik_state" "$traefik_health"
         printf 'traefik_image=traefik:v3.7.10\ntraefik_image_id=sha256:abcdef0123456789\ntraefik_container=traefik\n'
@@ -738,6 +1012,7 @@ payload_set() {
 
 write_payload
 out=$(status_cli deploy@vps); rc=$?
+[ -z "${SS_DUMP:-}" ] || printf '%s\n' "$out" > "$SS_DUMP"
 assert '[ "$rc" = "0" ]' "a prepared server reports and exits 0 (exit $rc: $out)"
 assert 'grep -qF "Docker: 27.3.1, Compose: 2.29.7" <<<"$out"' "the two versions (said '$out')"
 assert 'grep -qF "Traefik: running (healthy)" <<<"$out"'      "Traefik's state and health (said '$out')"
@@ -746,6 +1021,182 @@ assert 'grep -qE "^  demo +1/1 running +1\.0\.0 +deploy 2026-08-13T22:30:37\+00:
     "and the project row: name, state, version, last entry (said '$out')"
 assert '[ "$(grep -c "bash. .-s" "$ssh_log")" = "1" ]' \
     "one remote step, not one per fact (ssh saw: $(cat "$ssh_log"))"
+# Still one, with five more things reported than the minimal status had. This is
+# the assertion the whole shape of the payload exists to keep true: the domain,
+# the certificate store, the two df lines, the mail stack and the per-container
+# health ride the same session as everything else.
+assert '[ "$(grep -c "bash. .-s" "$ssh_log")" = "1" ]' \
+    "the domain, certs, disk, mail and container health did not each cost a session (ssh saw: $(cat "$ssh_log"))"
+
+# --- The five additions, as lines a reader sees ---------------------------------------
+assert 'grep -qF "Disk: /apps  11.7G of 39.2G used (32%), 25.6G free — /dev/sda1 on /" <<<"$out"' \
+    "df's figures for the apps path, in the units df -h would print (said '$out')"
+assert 'grep -qF "/apps/data  the same filesystem" <<<"$out"' \
+    "and the data path is not counted twice when it shares one (said '$out')"
+assert 'grep -qF "Certificates: 1 in /apps/data/traefik/letsencrypt/acme.json" <<<"$out"' \
+    "the certificate store's shape and count (said '$out')"
+assert 'grep -qE "^      demo\.example\.com$" <<<"$out"' \
+    "the project's domain, parsed out of its fragment with the workstation's yq (said '$out')"
+# 89 *or* 90: the fixture is `-days 90` and the days remaining are
+# (notAfter - now) / 86400 off two `date +%s` reads. A run landing in the same
+# wall-clock second as `openssl req` gets 90 and one a second later gets 89 —
+# both have been seen inside a single report.
+assert 'grep -qE "certificate valid for (89|90) more day\(s\) \(until .*, CN ?= ?demo\.example\.com\)" <<<"$out"' \
+    "with its expiry and issuer out of the store (said '$out')"
+assert 'grep -qF "www.demo.example.com" <<<"$out"' \
+    "a second Host() in the same rule is a second domain (said '$out')"
+assert 'grep -qF "(as a SAN of demo.example.com)" <<<"$out"' \
+    "and a SAN match says which certificate answered for it (said '$out')"
+assert 'grep -qF "Dashboard: traefik.example.com" <<<"$out"' \
+    "the dashboard hostname, out of _shared.yml — the only record of the apex (said '$out')"
+assert 'grep -qF "mail-dms         running (healthy)" <<<"$out"' \
+    "the mail stack's containers (said '$out')"
+assert 'grep -qF "Primary: example.com   Domains: example.com other.example" <<<"$out"' \
+    "and the registry's primary and domains (said '$out')"
+assert 'grep -qF "1 container(s), all running and none unhealthy" <<<"$out"' \
+    "a project whose containers are all well says so in one line (said '$out')"
+# The store'"'"'s bytes are private key material and never reach the report.
+assert '! grep -qF "PrivateKey" <<<"$out"' "the account key is not printed (said '"'"'$out'"'"')"
+assert '! grep -qF "BEGIN CERTIFICATE" <<<"$out"' "nor the PEM it decoded (said '"'"'$out'"'"')"
+
+# Per-container health is the point of the list: a project reporting 2/3 must
+# say which one, and an unhealthy container that is *running* is the case the
+# count cannot show at all.
+write_payload ok "$marker_default" yes running healthy \
+    "$(row demo 3 2 ok '2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0-dev digest=-' ok "$demo_frag" \
+        "$(cont demo-web running healthy)
+$(cont demo-worker running unhealthy)
+$(cont demo-db exited none)")" 1
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a project with a sick container still reports (exit $rc: $out)"
+assert 'grep -qE "^      demo-worker +running \(unhealthy\)$" <<<"$out"' \
+    "a running-but-unhealthy container is named — the count cannot show it (said '$out')"
+assert 'grep -qE "^      demo-db +exited \(none\)$" <<<"$out"' \
+    "and so is the stopped one (said '$out')"
+assert '! grep -qF "all running and none unhealthy" <<<"$out"' \
+    "the one-line summary is not printed when there is something to say (said '$out')"
+
+# A project with no fragment: silent for a stray directory, said out loud for a
+# project kasbah deployed — that one has nothing routing to it.
+write_payload ok "$marker_default" yes running healthy \
+    "$(row deployed 1 1 ok '2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0-dev digest=-')
+$(row stray 0 0 missing '')" 2
+out=$(status_cli deploy@vps)
+assert 'grep -qF "no Traefik fragment at /apps/traefik/dynamic/deployed.yml" <<<"$out"' \
+    "a deployed project with no fragment is news (said '$out')"
+assert '! grep -qF "stray.yml" <<<"$out"' \
+    "a directory nobody deployed is not (said '$out')"
+
+# A fragment that does not parse, and one that routes nothing.
+write_payload ok "$marker_default" yes running healthy \
+    "$(row demo 1 1 ok '2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0-dev digest=-' ok 'http: [this is not: a mapping')" 1
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a fragment that is not YAML does not fail the report (exit $rc: $out)"
+assert 'grep -qF "does not parse as YAML" <<<"$out"' "it says so (said '"'"'$out'"'"')"
+write_payload ok "$marker_default" yes running healthy \
+    "$(row demo 1 1 ok '2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0-dev digest=-' ok 'http:
+  routers:
+    demo:
+      rule: "PathPrefix(`/`)"')" 1
+out=$(status_cli deploy@vps)
+assert 'grep -qF "declares no Host() rule" <<<"$out"' \
+    "a router with no Host() claims no domain, and that is a state (said '$out')"
+
+# --- The certificate store, in the states a rig cannot be put into ---------------------
+write_payload
+payload_set acme_state=empty
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "an empty store still reports (exit $rc: $out)"
+assert 'grep -qF "is empty — nothing has been issued yet" <<<"$out"' "saying so (said '"'"'$out'"'"')"
+assert '! grep -qF "certificate valid" <<<"$out"' "and no hostname claims a certificate (said '"'"'$out'"'"')"
+
+write_payload
+payload_set acme_state=unreadable
+out=$(status_cli deploy@vps)
+assert 'grep -qF "cannot be read by deploy@vps" <<<"$out"' \
+    "a store this user cannot read is its own state — it is mode 600 (said '$out')"
+
+write_payload
+payload_set "acme_b64=$(printf '%s' 'not json at all' | base64 -w0)"
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a store that is not JSON does not fail the report (exit $rc: $out)"
+assert 'grep -qF "does not parse as JSON" <<<"$out"' "it says so (said '"'"'$out'"'"')"
+assert 'grep -qF "not shown" <<<"$out"' \
+    "and says the bytes are withheld rather than showing them (said '$out')"
+assert '! grep -qF "not json at all" <<<"$out"' \
+    "the store's content never reaches a message, whatever is in it (said '$out')"
+
+write_payload
+payload_set "acme_b64=$(printf '%s' '{"other":{}}' | base64 -w0)"
+out=$(status_cli deploy@vps)
+assert 'grep -qF "no '"'"'letsencrypt'"'"' store" <<<"$out"' \
+    "a store keyed by another resolver is a schema shift, not zero certificates (said '$out')"
+
+# The data path the two data-side reads hang off. The probe scraped it out of
+# the marker with no JSON parser; jq has now read the same bytes. A disagreement
+# means both reads describe a tree nobody asked about.
+write_payload
+payload_set probe_data_path=/somewhere/else
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a scrape that disagrees with the parser still reports (exit $rc: $out)"
+assert 'grep -qF "Certificates: not read — the probe and the marker disagree about the data path" <<<"$out"' \
+    "and refuses to read a certificate store it cannot place (said '$out')"
+assert 'grep -qF "not read — the probe and the marker disagree" <<<"$out"' \
+    "the disk figure for the data path goes the same way (said '$out')"
+assert '! grep -qF "certificate valid" <<<"$out"' \
+    "no certificate line is printed off a store read from the wrong tree (said '$out')"
+
+# --- Disk, in the shapes df can answer in ---------------------------------------------
+write_payload
+payload_set "data_df_b64=$(printf '%s' '/dev/sdb1 10485760 1048576 9437184 10% /srv/data' | base64 -w0)"
+out=$(status_cli deploy@vps)
+assert 'grep -qF "1.0G of 10.0G used (10%), 9.0G free — /dev/sdb1 on /srv/data" <<<"$out"' \
+    "a data path on its own filesystem gets its own figures (said '$out')"
+assert '! grep -qF "the same filesystem" <<<"$out"' "and is not called the same one (said '"'"'$out'"'"')"
+
+write_payload
+payload_set "apps_df_b64=$(printf '%s' 'Filesystem 1024-blocks Used Available Capacity Mounted on' | base64 -w0)"
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a df answer this reader does not understand is not fatal (exit $rc: $out)"
+assert 'grep -qF "df answered in a shape this kasbah does not read" <<<"$out"' \
+    "and is reported as unread rather than as a figure (said '$out')"
+
+write_payload
+payload_set apps_df_state=absent
+out=$(status_cli deploy@vps)
+assert 'grep -qF "Disk: /apps  unknown — the path is not there" <<<"$out"' \
+    "a path df was never asked about says so (said '$out')"
+
+# --- The mail stack --------------------------------------------------------------------
+write_payload
+payload_set mail_dir_state=absent
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a server without mail reports and exits 0 (exit $rc: $out)"
+assert 'grep -qF "Mail: not installed — no /apps/mail" <<<"$out"' \
+    "an absent mail stack is an ordinary state, not a fault (said '$out')"
+assert 'grep -qF -- "--with-mail" <<<"$out"' "and the flag that scaffolds one (said '"'"'$out'"'"')"
+
+write_payload
+payload_set mail_dms_state=restarting
+payload_set mail_dms_health=starting
+payload_set mail_dms_restarts=17
+out=$(status_cli deploy@vps)
+assert 'grep -qF "mail-dms         restarting (starting), 17 restart(s)" <<<"$out"' \
+    "a DMS that cannot find its certificate restarts, and the count is what says so (said '$out')"
+
+write_payload
+payload_set mail_dms_state=absent
+out=$(status_cli deploy@vps)
+assert 'grep -qF "mail-dms         absent — the stack is scaffolded and not running" <<<"$out"' \
+    "a scaffolded stack that is down is not the same as no stack (said '$out')"
+
+write_payload
+payload_set mail_registry_state=absent
+out=$(status_cli deploy@vps)
+assert 'grep -qF "registry /apps/mail/kasbah.yml: absent" <<<"$out"' \
+    "a mail directory with no registry says which file is missing (said '$out')"
+assert '! grep -qF "mail.example.com" <<<"$out"' \
+    "and claims no hostnames, since the registry is what names them (said '$out')"
 # The id is shortened the way docker shortens one, and the assertion is an exact
 # line rather than a substring: an untruncated id *contains* the truncated one,
 # so `grep -F` on the short form passes against the long one.
@@ -839,6 +1290,23 @@ assert 'grep -qF "Traefik: unknown — docker did not answer" <<<"$out"' \
     "and refusing to call Traefik absent on that evidence (said '$out')"
 assert '[[ "$(row_of deployed)" =~ ^"  deployed       ?" ]]' \
     "every project's state is '?' rather than a count of nothing (said '$(row_of deployed)')"
+
+# A project name wider than the column. `gallery-website` is fifteen characters
+# on the real host, and a fixed `%-14s` pushed every field on its row one place
+# right of every other row's — the one shape a single-project report cannot
+# show. Two rows, and the second field of each must begin at the same offset.
+write_payload ok "$marker_default" yes running healthy \
+    "$(row gallery-website 1 1 ok '2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0 digest=-')
+$(row demo 1 1 ok '2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0 digest=-')" 2
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a project name wider than the column reports (exit $rc: $out)"
+col_of() { local l; l="$(grep -E "^  $1 " <<<"$out")"; l="${l%%1/1 running*}"; printf '%s' "${#l}"; }
+assert '[ "$(col_of gallery-website)" = "$(col_of demo)" ]' \
+    "the state column starts at one offset for every row, whatever the names are
+        gallery-website at $(col_of gallery-website), demo at $(col_of demo)
+        said: $(grep -E "^  (gallery-website|demo) " <<<"$out")"
+assert '[ "$(col_of demo)" -gt 16 ]' \
+    "and the column grew to fit the wider name rather than the name overflowing it (offset $(col_of demo))"
 
 # A container that docker named and then would not describe.
 write_payload
@@ -1032,6 +1500,90 @@ assert 'grep -qF "reported no traefik_health" <<<"$out"' "naming the missing fac
 assert '[ "$(wc -c <<<"$out")" -lt 3000 ]' \
     "and the echoed payload is clipped rather than dumped whole ($(wc -c <<<"$out") bytes)"
 assert 'grep -qF "bytes in all" <<<"$out"' "saying how much was left out (said '$(head -c 300 <<<"$out")')"
+
+# --- The diagnostic must not print the certificate store ------------------------------
+# acme.json travels in the same payload — it has to, or the report costs a
+# second ssh session — and it holds the ACME account key and every
+# certificate's private key. The echo above clips to 120 bytes and prints, and
+# 120 bytes of a private key on stderr is 120 bytes of a private key on stderr.
+#
+# The assertions below grep for the *blob as it travels*, base64'd, not for the
+# plaintext: a mutant echoing the whole payload would not contain the decoded
+# bytes, so an assertion looking for those cannot fail (7.3's Findings — that
+# exact test scored zero).
+write_payload
+# 100 bytes, not 120. The clip is 120 bytes *of the whole line* and the line
+# begins `acme_b64=`, so at most 111 blob bytes are ever printed: a 120-byte
+# needle could never appear and the assertion below could never fail. Fourth
+# variant of this family in the phase — by wording, by encoding, by position,
+# and now by arithmetic.
+acme_head="${acme_b64_default:0:100}"
+assert '[ "${#acme_b64_default}" -gt 200 ]' \
+    "the store fixture is big enough that a clip would show part of it (${#acme_b64_default} bytes)"
+grep -v '^traefik_health=' "$payload_file" > "$payload_file.trimmed"
+mv "$payload_file.trimmed" "$payload_file"
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "1" ]' "a truncated report carrying the store is still a failure (exit $rc)"
+assert 'grep -qF "reported no traefik_health" <<<"$out"' \
+    "and still names the missing fact (said '$(head -c 200 <<<"$out")')"
+assert '! grep -qF "$acme_head" <<<"$out"' \
+    "the store's bytes are not echoed back (said '$(head -c 400 <<<"$out")')"
+# This one and the next are *position* assertions as much as output ones. The
+# diagnostic stops after twenty lines, so a payload key added ahead of
+# `acme_b64` pushes it past the window, where nothing is printed about it at all
+# and the negative assertion above becomes vacuous. Both fail loudly when that
+# happens — verified by inserting three filler keys before `acme_state`.
+# `acme_b64` must stay inside the clip window.
+assert 'grep -qF "acme_b64= (" <<<"$out"' \
+    "the line is reported by name and length instead (said '$(head -c 400 <<<"$out")')"
+assert 'grep -qF "private key material" <<<"$out"' \
+    "saying why it is withheld (said '$(head -c 400 <<<"$out")')"
+# Other long values are still clipped and shown: the diagnostic exists to tell a
+# truncated step from a rejected one, and a redaction that swallowed everything
+# would diagnose nothing.
+assert 'grep -qF "marker_b64=" <<<"$out"' \
+    "a payload key that is not secret is still shown, clipped (said '$(head -c 400 <<<"$out")')"
+assert 'grep -qF "bytes in all" <<<"$out"' \
+    "with how much of it was left out (said '$(head -c 400 <<<"$out")')"
+
+# The hazard is a *truncated* read, which is where the clip fires: the store's
+# line arrives cut off mid-blob. It still begins with its key, which is what the
+# redaction matches on.
+#
+# Replaced **in place**, not through payload_set: that one rebuilds the file as
+# grep -v plus append, which moves the key to the end and past the twenty-line
+# window — where the diagnostic prints `… and more, not shown` and never reaches
+# it, and every assertion about it then passes for the wrong reason.
+payload_set_here() {
+    local key="${1%%=*}" line
+    while IFS= read -r line; do
+        if [ "${line%%=*}" = "$key" ]; then printf '%s\n' "$1"; else printf '%s\n' "$line"; fi
+    done < "$payload_file" > "$payload_file.next"
+    mv "$payload_file.next" "$payload_file"
+}
+write_payload
+payload_set_here "acme_b64=${acme_b64_default:0:400}"
+grep -v '^traefik_health=' "$payload_file" > "$payload_file.trimmed"
+mv "$payload_file.trimmed" "$payload_file"
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "1" ]' "a payload cut mid-store is a failure (exit $rc)"
+assert '! grep -qF "${acme_b64_default:0:100}" <<<"$out"' \
+    "and a half-arrived store is redacted exactly as a whole one is (said '$(head -c 400 <<<"$out")')"
+# The positive counterpart, which is what keeps the line above honest: it says
+# the redaction ran on this line, in this position — not that the line was
+# never printed at all.
+assert 'grep -qF "acme_b64= (400 bytes, not shown" <<<"$out"' \
+    "the half-arrived line is redacted by name and length, in the window where the clip fires (said '$(head -c 400 <<<"$out")')"
+
+# The other path a store can reach a message from: a blob that is not base64.
+# The complaint says the store could not be read and never quotes it.
+write_payload
+payload_set "acme_b64=@@@not base64@@@"
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a store that is not base64 does not fail the report (exit $rc: $out)"
+assert 'grep -qF "did not come back as readable bytes" <<<"$out"' "it says so (said '$out')"
+assert '! grep -qF "@@@not base64@@@" <<<"$out"' \
+    "without quoting the blob back, which is what every other decode failure does (said '$out')"
 
 write_payload
 cat > "$stub_dir/ssh" <<'STUB'

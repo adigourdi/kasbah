@@ -14,6 +14,10 @@ _KASBAH_SERVER_STATUS_LOADED=1
 # For vlog_parse_line: the last line of a project's versions.log is the same
 # frozen format the history commands read, and one format has one parser.
 . "$KASBAH_LIB_DIR/versions_log.sh"
+# For acme_lookup: Traefik's certificate store has one reader (lib/acme.sh),
+# written for `check --server` and consumed here — two commands answering
+# "when does this expire" out of two parsers is how the two answers drift.
+. "$KASBAH_LIB_DIR/acme.sh"
 
 # `kasbah server status USER@HOST` reports what a prepared VPS is running: the
 # docker and compose versions, the shared Traefik stack, and every project under
@@ -33,10 +37,19 @@ _KASBAH_SERVER_STATUS_LOADED=1
 # the prerequisites table promises rsync, openssl, gzip and bash — so the marker
 # travels back as bytes and is parsed here.
 #
-# The rest of docs/server-setup.md's sketch — certificates and ACME expiry, the
-# dashboard URL and its ACME address, the mail stack, disk usage, per-container
-# health — arrives with the full `status` in Phase 7. What is here is what
-# verifies the spine by hand.
+# **Still one round trip**, with five more things to report than the minimal
+# status had: the per-project domain, certificate expiry, disk, the mail stack
+# and per-container health are all folded into the same single probe. Each of
+# them read on its own is what turns this command into several ssh sessions,
+# which is what makes a rig's `maxstartups 10` refuse one of them.
+#
+# Nothing is parsed on the far side that can be parsed here. The fragments and
+# the mail registry come back as bytes and meet the workstation's yq; acme.json
+# comes back as bytes and meets lib/acme.sh, the same reader `check --server`
+# uses. The one exception is the data path, which the reads for the certificate
+# store and the data disk hang off: it is scraped out of the marker without a
+# JSON parser and then checked against jq's answer here, because the alternative
+# is a second round trip to learn it.
 
 _SS_TARGET=""
 _SS_APPS_PATH=""
@@ -60,6 +73,38 @@ _SS_P_TOTAL=()
 _SS_P_RUNNING=()
 _SS_P_LOGSTATE=()
 _SS_P_LOG=()
+# Per project: the state of its Traefik fragment, the fragment itself, and one
+# line of `<name-b64> <state> <health>` per container the project owns.
+_SS_P_FRAGSTATE=()
+_SS_P_FRAG=()
+_SS_P_CONT=()
+
+# The files the probe brought back whole. `_SS_ACME` is Traefik's certificate
+# store: it holds `.letsencrypt.Account.PrivateKey` and every certificate's
+# `.key`, so nothing writes it to disk, echoes it, or puts it in a message —
+# see _ss_absorb_checked, which is where a diagnostic would otherwise spill it.
+_SS_ACME=""
+_SS_SHARED=""
+_SS_REGISTRY=""
+_SS_DASH_HOST=""
+_SS_MAIL_PRIMARY=""
+_SS_MAIL_DOMAINS=()
+# Whether the path the probe used for the two data-side reads is the one the
+# marker records. The probe scrapes it out of the marker's bytes without a JSON
+# parser (there is none on the far side); this is the parser's answer against
+# the scrape, and a disagreement makes both reads unreportable rather than
+# wrong.
+_SS_DATA_TRUSTED=no
+
+# Keys whose *values* must never reach a diagnostic. The probe's report is
+# echoed back when it looks truncated, and two of the files in it carry
+# credentials: acme.json holds the ACME account key and every certificate's
+# private key, and `_shared.yml` holds the dashboard's **bcrypt hash**. The
+# hash is short enough today that the 120-byte clip would not reach past the
+# fragment's first line — but nothing pins that, the file gains a line whenever
+# a middleware is added, and an offline-crackable credential on stderr is not
+# worth the one array element it costs to keep off.
+_SS_SECRET_KEYS=(acme_b64 shared_b64)
 
 # The fixed names kasbah owns under the apps path (docs/server-setup.md → What
 # init creates). The bind-mount root is not always among them — `--data-path`
@@ -86,7 +131,9 @@ Flags:
                       falls back to $KASBAH_DEFAULT_APPS_PATH when there is none. The flag is
                       the escape hatch for a server whose pointer is gone.
 
-Certs, mail and disk usage are not reported yet; see docs/server-setup.md.
+It also prints the filesystem behind the apps and data paths, the mail stack,
+each project's domain out of its Traefik fragment, and what Traefik's ACME
+store says about every hostname on the server.
 EOF
 }
 
@@ -159,11 +206,27 @@ _server_status_parse_args() {
 # is read: a truncated step must not be absorbed into a passing verdict.
 #
 # The raw output is echoed back on failure, clipped to twenty lines of 120
-# bytes: two of these values are base64 blobs that grow with the server, and a
-# diagnostic that scrolls a megabyte of them past the reader diagnoses nothing.
+# bytes: several of these values are base64 blobs that grow with the server, and
+# a diagnostic that scrolls a megabyte of them past the reader diagnoses nothing.
+#
+# **One of those blobs is acme.json**, which holds Traefik's ACME account key
+# and every certificate's private key, so the clip alone is not enough: 120
+# bytes of a private key on stderr is 120 bytes of a private key on stderr. The
+# redaction lives *in this helper* rather than in a second copy of it beside —
+# `check --server` wrote its own absorb because it is in another file, but
+# `status` has exactly one, and two copies of a thirty-line function in one file
+# are two things to keep in step. A line whose key is secret is reported by name
+# and length only; the key is what a reader needs to tell a truncated step from
+# a rejected one, and the value never was.
+#
+# Redaction is by key *prefix*, which is what a truncated read leaves: the far
+# side emits `acme_b64=<one line, no newlines in base64>` and truncation removes
+# the tail, so a partial secret line still begins with its key. A line with no
+# `=` at all is the remote shell's own complaint and is shown — that is the
+# whole diagnostic value of this path.
 _ss_absorb_checked() {
     local _ac_out="$1"; shift
-    local _ac_line _ac_key _ac_shown=0
+    local _ac_line _ac_key _ac_shown=0 _ac_secret=0 _ac_s
     local _ac_missing=()
 
     while IFS= read -r _ac_line; do
@@ -183,9 +246,23 @@ _ss_absorb_checked() {
                 err_cont "| … and more, not shown"
                 break
             fi
-            [ "${#_ac_line}" -le 120 ] \
-                || _ac_line="${_ac_line:0:120}… (${#_ac_line} bytes in all)"
-            err_cont "| $_ac_line"
+            _ac_key=""
+            _ac_secret=0
+            case $_ac_line in *=*) _ac_key="${_ac_line%%=*}" ;; esac
+            # Compared literally, never as a case pattern: the keys in this
+            # line came off the wire, and a `*` among them would be a glob.
+            for _ac_s in "${_SS_SECRET_KEYS[@]}"; do
+                [ "$_ac_key" = "$_ac_s" ] || continue
+                _ac_secret=1
+                break
+            done
+            if [ "$_ac_secret" = 1 ]; then
+                err_cont "| $_ac_key= ($(( ${#_ac_line} - ${#_ac_key} - 1 )) bytes, not shown: it holds private key material)"
+            else
+                [ "${#_ac_line}" -le 120 ] \
+                    || _ac_line="${_ac_line:0:120}… (${#_ac_line} bytes in all)"
+                err_cont "| $_ac_line"
+            fi
         done <<<"$_ac_out"
         exit 1
     fi
@@ -206,6 +283,21 @@ _ss_b64_decode() {
     local _bd_out="$2" _bd_val=""
     _bd_val="$(printf '%s' "$1" | base64 -d 2>/dev/null)" || return 1
     printf -v "$_bd_out" '%s' "$_bd_val"
+    return 0
+}
+
+# The same, for a positional field of the project table, where `-` means "this
+# value is empty". The row is split on whitespace and a run of it collapses, so
+# an empty field in the middle would shift every field after it left by one —
+# the far side sends `-`, which is not in the base64 alphabet, and this is where
+# it comes back off.
+_ss_b64_field() {
+    local _bf_out="$2"
+    if [ "$1" = - ]; then
+        printf -v "$_bf_out" '%s' ""
+        return 0
+    fi
+    _ss_b64_decode "$1" "$_bf_out" || return 1
     return 0
 }
 
@@ -347,6 +439,132 @@ fi
 kv marker_state "$marker_state"
 kv marker_b64 "$marker_b64"
 
+# The data path, needed on *this* side for the two reads that hang off it — the
+# certificate store and the disk figure — and there is no jq here to get it out
+# of the marker properly. So it is scraped, reported as `probe_data_path`, and
+# the caller compares it with what jq read out of the same bytes: a scrape that
+# disagrees with the parser is refused there rather than quietly describing some
+# other tree. Two round trips would be the alternative, and the single trip is
+# what keeps a rig's `maxstartups` from biting.
+data=""
+if [ "$marker_state" = ok ]; then
+    while IFS= read -r line; do
+        line=${line%$'\r'}
+        case $line in
+            *'"data_path"'*)
+                v=${line#*'"data_path"'}
+                v=${v#*:}
+                case $v in
+                    *'"'*) v=${v#*'"'}; data=${v%%'"'*} ;;
+                esac
+                break
+                ;;
+        esac
+    done < "$marker"
+fi
+kv probe_data_path "$data"
+
+# Six states for a file, because they have six different remedies: acme.json is
+# mode 600 and a store that is there and unreadable is something an operator
+# acts on, while absent and empty are not the same news either.
+fstate() {
+    local p="$2" s=""
+    if   [ -z "$p" ];    then s=nopath
+    elif [ ! -e "$p" ];  then s=absent
+    elif [ -d "$p" ];    then s=dir
+    elif [ ! -f "$p" ];  then s=notfile
+    elif [ ! -r "$p" ];  then s=unreadable
+    elif [ ! -s "$p" ];  then s=empty
+    else                      s=file
+    fi
+    kv "$1" "$s"
+}
+encfile() {
+    local enc=""
+    if [ -n "$2" ] && [ -f "$2" ] && [ -r "$2" ]; then
+        enc=$(openssl base64 -A -in "$2" 2>/dev/null) || enc=""
+    fi
+    kv "$1" "$enc"
+}
+
+# `df -Pk`, not `du`: the question a status answers is whether the host is about
+# to run out of room, and it must answer it in constant time. A `du` walk of a
+# data path holding a mail spool would make the report's cost a function of how
+# much mail the server has. The line travels base64'd — a filesystem or a mount
+# point can carry a space — and is split on this side.
+disk() {
+    local st=nopath enc="" out="" l="" last=""
+    if [ -n "$2" ]; then
+        if [ ! -e "$2" ]; then
+            st=absent
+        else
+            out=$(df -Pk "$2" 2>/dev/null) || out=""
+            while IFS= read -r l; do
+                [ -n "$l" ] || continue
+                last=$l
+            done <<<"$out"
+            case $last in
+                ''|Filesystem*) st=error ;;
+                *) st=ok; enc=$(printf '%s' "$last" | b64) ;;
+            esac
+        fi
+    fi
+    kv "${1}_state" "$st"
+    kv "${1}_b64" "$enc"
+}
+disk apps_df "$apps"
+disk data_df "$data"
+
+# The certificate store. It holds private key material — `.Account.PrivateKey`
+# and every entry's `.key` — so the caller redacts it out of every diagnostic;
+# nothing here writes it anywhere but this pipe.
+acme=""
+[ -z "$data" ] || acme="$data/traefik/letsencrypt/acme.json"
+fstate acme_state  "$acme"
+encfile acme_b64   "$acme"
+
+# The dashboard fragment, for the hostname Traefik's own router claims — the
+# apex is deliberately not in the marker, so this file is the only record of it.
+fstate shared_state "$apps/traefik/dynamic/_shared.yml"
+encfile shared_b64  "$apps/traefik/dynamic/_shared.yml"
+
+# The mail stack. Absent is an ordinary state — a server prepared without
+# --with-mail — and not a fault, so every key still arrives.
+mail_dir=absent
+if   [ -d "$apps/mail" ]; then mail_dir=dir
+elif [ -e "$apps/mail" ]; then mail_dir=notdir
+fi
+kv mail_dir_state "$mail_dir"
+fstate mail_registry_state "$apps/mail/kasbah.yml"
+encfile mail_registry_b64  "$apps/mail/kasbah.yml"
+
+# By compose labels, exactly as Traefik is found above: a container merely
+# *named* mail-dms did not come from kasbah's stack. One inspect per container,
+# three facts out of it — the restart count is here because a DMS that cannot
+# find its certificate restarts forever, and the count is what says so.
+mailc() {
+    local ids="" id="" line="" st=absent hl="" rs=""
+    if [ "$docker_rc" -ne 0 ]; then
+        st=nodocker
+    else
+        ids=$(docker ps -a --filter label=com.docker.compose.project=mail \
+                          --filter "label=com.docker.compose.service=$2" \
+                          --format '{{.ID}}' 2>/dev/null) || ids=""
+        id=${ids%%$'\n'*}
+    fi
+    if [ -n "$id" ]; then
+        line=$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}}' \
+                   "$id" 2>/dev/null | flat) || line=""
+        read -r st hl rs <<<"$line"
+        [ -n "$st" ] || st=unknown
+    fi
+    kv "${1}_state" "$st"
+    kv "${1}_health" "$hl"
+    kv "${1}_restarts" "$rs"
+}
+mailc mail_dms   mail-dms
+mailc mail_web   mail-snappymail
+
 # Traefik by its compose labels, which is the frozen contract: the project name
 # is `traefik` wherever the stack was rendered. A container merely *named*
 # traefik did not come from kasbah's stack, and reporting it as the proxy would
@@ -392,6 +610,22 @@ if [ "$apps_state" = dir ]; then
         running=0
         logstate=missing
         last=""
+        fragstate=absent
+        fragb64=""
+        contb64=""
+
+        # The project's Traefik fragment, whether or not the directory beside it
+        # can be entered: the two are different files with different owners, and
+        # a project whose directory a root deploy locked still routes.
+        frag="$apps/traefik/dynamic/$name.yml"
+        if [ -e "$frag" ] && [ ! -f "$frag" ]; then
+            fragstate=notfile
+        elif [ -f "$frag" ] && [ ! -r "$frag" ]; then
+            fragstate=unreadable
+        elif [ -f "$frag" ]; then
+            fragb64=$(openssl base64 -A -in "$frag" 2>/dev/null) || fragb64=""
+            if [ -n "$fragb64" ]; then fragstate=ok; else fragstate=empty; fi
+        fi
 
         if [ ! -d "$path" ]; then
             logstate=notdir
@@ -399,6 +633,23 @@ if [ "$apps_state" = dir ]; then
             if [ "$docker_rc" -eq 0 ]; then
                 ids=$(docker ps -a --filter "label=com.docker.compose.project=$name" -q 2>/dev/null) || ids=""
                 total=$(count_lines "$ids")
+                # Every container of the project, in one inspect rather than one
+                # per container: name, state and health, which is the health
+                # Traefik's line has and nothing else did.
+                if [ -n "$ids" ]; then
+                    info=$(docker inspect -f '{{.Name}} {{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+                               $ids 2>/dev/null) || info=""
+                    while IFS=' ' read -r cname cstate chealth; do
+                        [ -n "$cname" ] || continue
+                        cname=${cname#/}
+                        [ -n "$cstate" ] || cstate=unknown
+                        [ -n "$chealth" ] || chealth=none
+                        contb64="$contb64$(printf '%s %s %s' \
+                            "$(printf '%s' "$cname" | b64)" "$cstate" "$chealth")
+"
+                    done <<<"$info"
+                    contb64=$(printf '%s' "$contb64" | b64)
+                fi
                 ids=$(docker ps --filter "label=com.docker.compose.project=$name" -q 2>/dev/null) || ids=""
                 running=$(count_lines "$ids")
             fi
@@ -435,9 +686,18 @@ if [ "$apps_state" = dir ]; then
             fi
         fi
 
-        rows="$rows$(printf '%s %s %s %s %s' \
+        # Eight positional fields, and every base64 one is `-` when it holds
+        # nothing. An empty field would not survive the trip: the reader splits
+        # the row on whitespace, which collapses a run of it, so one empty value
+        # in the middle would shift every field after it left by one. `-` is not
+        # in the base64 alphabet, so it cannot be mistaken for a payload.
+        lastb64=$(printf '%s' "$last" | b64)
+        [ -n "$lastb64" ] || lastb64=-
+        [ -n "$fragb64" ] || fragb64=-
+        [ -n "$contb64" ] || contb64=-
+        rows="$rows$(printf '%s %s %s %s %s %s %s %s' \
             "$(printf '%s' "$name" | b64)" "$total" "$running" "$logstate" \
-            "$(printf '%s' "$last" | b64)")
+            "$lastb64" "$fragstate" "$fragb64" "$contb64")
 "
     done
 fi
@@ -457,7 +717,12 @@ REMOTE
     _ss_absorb_checked "$out" \
         pointer_state pointer_value apps_path apps_source \
         have_docker docker_server docker_error compose_version \
-        apps_state marker_state marker_b64 \
+        apps_state marker_state marker_b64 probe_data_path \
+        apps_df_state apps_df_b64 data_df_state data_df_b64 \
+        acme_state acme_b64 shared_state shared_b64 \
+        mail_dir_state mail_registry_state mail_registry_b64 \
+        mail_dms_state mail_dms_health mail_dms_restarts \
+        mail_web_state mail_web_health mail_web_restarts \
         traefik_present traefik_state traefik_health traefik_image \
         traefik_image_id traefik_container \
         project_count projects_b64
@@ -618,6 +883,7 @@ _server_status_read_marker() {
 # kasbah's own directory, and the marker is the only thing that says so.
 _ss_decode_projects() {
     local table row name_b64 total running logstate log_b64 rest name log
+    local fragstate frag_b64 cont_b64 frag cont
     local data_dir="" described=0
 
     _SS_P_NAME=()
@@ -625,6 +891,9 @@ _ss_decode_projects() {
     _SS_P_RUNNING=()
     _SS_P_LOGSTATE=()
     _SS_P_LOG=()
+    _SS_P_FRAGSTATE=()
+    _SS_P_FRAG=()
+    _SS_P_CONT=()
 
     case "$_SS_MARKER_DATA" in
         "$_SS_APPS_PATH"/?*)
@@ -639,16 +908,21 @@ _ss_decode_projects() {
 
     while IFS= read -r row; do
         [ -n "$row" ] || continue
-        read -r name_b64 total running logstate log_b64 rest <<<"$row"
-        if [ -z "$name_b64" ] || [ -z "$logstate" ] || [ -n "$rest" ]; then
+        read -r name_b64 total running logstate log_b64 fragstate frag_b64 cont_b64 rest <<<"$row"
+        if [ -z "$name_b64" ] || [ -z "$logstate" ] || [ -z "$fragstate" ] \
+           || [ -z "$frag_b64" ] || [ -z "$cont_b64" ] || [ -n "$rest" ]; then
             err "the status probe on $_SS_TARGET returned a project row it did not build: '$row'"
             exit 1
         fi
         described=$((described + 1))
         _ss_b64_decode "$name_b64" name \
             || die "the status probe on $_SS_TARGET sent a project name that is not base64: '$name_b64'"
-        _ss_b64_decode "$log_b64" log \
+        _ss_b64_field "$log_b64" log \
             || die "the status probe on $_SS_TARGET sent $name's versions.log line as something that is not base64"
+        _ss_b64_field "$frag_b64" frag \
+            || die "the status probe on $_SS_TARGET sent $name's Traefik fragment as something that is not base64"
+        _ss_b64_field "$cont_b64" cont \
+            || die "the status probe on $_SS_TARGET sent $name's container list as something that is not base64"
         [ "$name" != "$data_dir" ] || continue
 
         _SS_P_NAME+=("$name")
@@ -656,6 +930,9 @@ _ss_decode_projects() {
         _SS_P_RUNNING+=("$running")
         _SS_P_LOGSTATE+=("$logstate")
         _SS_P_LOG+=("$log")
+        _SS_P_FRAGSTATE+=("$fragstate")
+        _SS_P_FRAG+=("$frag")
+        _SS_P_CONT+=("$cont")
     done <<<"$table"
 
     # The count and the table are two statements about the same walk, so a
@@ -669,7 +946,354 @@ _ss_decode_projects() {
     return 0
 }
 
+# --- The files the probe brought back ------------------------------------------------
+
+# The three whole files, decoded once, and the two facts read out of two of
+# them. A blob that is not base64 leaves its variable empty and the line that
+# reads it says so — and in acme.json's case the complaint never quotes the
+# blob, which is the same rule the diagnostic in _ss_absorb_checked follows.
+_ss_decode_extras() {
+    local apex="" rc=0 count="" d="" i=0
+
+    _ss_b64_decode "${_SS_FACT[acme_b64]}"          _SS_ACME     || _SS_ACME=""
+    _ss_b64_decode "${_SS_FACT[shared_b64]}"        _SS_SHARED   || _SS_SHARED=""
+    _ss_b64_decode "${_SS_FACT[mail_registry_b64]}" _SS_REGISTRY || _SS_REGISTRY=""
+
+    # The dashboard's hostname, out of the fragment that is the only record of
+    # the server's apex — it is deliberately not in the marker.
+    _SS_DASH_HOST=""
+    rc=0
+    traefik_dashboard_apex "$_SS_SHARED" apex || rc=$?
+    if [ "$rc" -eq 0 ] && [ -n "$apex" ]; then
+        _SS_DASH_HOST="traefik.$apex"
+    fi
+
+    # The mail registry, one key at a time and one *index* at a time: a newline
+    # inside a value cannot then smuggle an extra domain past the list, which is
+    # the rule `server init`, `add-mail-domain` and `deploy` all read it under.
+    _SS_MAIL_PRIMARY=""
+    _SS_MAIL_DOMAINS=()
+    rc=0
+    yaml_get "$_SS_REGISTRY" '.primary_domain // ""' _SS_MAIL_PRIMARY || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        _SS_MAIL_PRIMARY=""
+    else
+        rc=0
+        yaml_get "$_SS_REGISTRY" '(.domains // []) | length' count || rc=$?
+        [ "$rc" -eq 0 ] || count=0
+        case $count in ''|*[!0-9]*) count=0 ;; esac
+        while [ "$i" -lt "$count" ]; do
+            rc=0
+            yaml_get "$_SS_REGISTRY" "(.domains // [])[$i] // \"\" | tostring" d || rc=$?
+            i=$((i + 1))
+            [ "$rc" -eq 0 ] && [ -n "$d" ] || continue
+            _SS_MAIL_DOMAINS+=("$d")
+        done
+    fi
+
+    # The probe had no JSON parser and scraped the data path out of the marker's
+    # bytes; jq has now read the same bytes properly. They agree on every marker
+    # kasbah wrote. When they do not, the two reads that hang off that path —
+    # the certificate store and the data disk figure — describe a tree nobody
+    # asked about, so they are reported as unread rather than as facts.
+    _SS_DATA_TRUSTED=no
+    if [ -n "$_SS_MARKER_DATA" ] && [ "${_SS_FACT[probe_data_path]}" = "$_SS_MARKER_DATA" ]; then
+        _SS_DATA_TRUSTED=yes
+    fi
+    return 0
+}
+
+# The hostnames one project's fragment claims, one per line, in the order they
+# appear and without repeats. Exit 2 when the fragment does not parse as YAML.
+#
+# One indexed read per router, never one combined parse: a value carrying a
+# newline would otherwise arrive as two entries, and this list decides which
+# hostname a certificate line is printed about. The routers are indexed through
+# `to_entries` rather than looked up by name, so a router *key* is never
+# interpolated into a jq filter either.
+_ss_fragment_hosts() {
+    local _fh_content="$1" _fh_out="$2"
+    local _fh_n="" _fh_i=0 _fh_rule="" _fh_s="" _fh_host="" _fh_acc="" _fh_rc=0
+
+    printf -v "$_fh_out" '%s' ""
+    [ -n "$_fh_content" ] || return 0
+
+    yaml_get "$_fh_content" '(.http.routers // {}) | length' _fh_n || _fh_rc=$?
+    [ "$_fh_rc" -eq 0 ] || return 2
+    case $_fh_n in ''|*[!0-9]*) return 2 ;; esac
+
+    while [ "$_fh_i" -lt "$_fh_n" ]; do
+        _fh_rc=0
+        yaml_get "$_fh_content" \
+            "((.http.routers // {}) | to_entries)[$_fh_i].value.rule // \"\" | tostring" \
+            _fh_rule || _fh_rc=$?
+        _fh_i=$((_fh_i + 1))
+        [ "$_fh_rc" -eq 0 ] || continue
+        _fh_s="$_fh_rule"
+        # Every Host(`…`) in the rule, not just the first: a router may claim
+        # several. ${s#*"$match"} chops off everything up through the match,
+        # which is what advances the loop.
+        while [[ "$_fh_s" =~ Host\(\`([^\`]+)\`\) ]]; do
+            _fh_host="${BASH_REMATCH[1]}"
+            _fh_s="${_fh_s#*"${BASH_REMATCH[0]}"}"
+            # A here-string, never a pipe into grep -q: grep exits at the first
+            # match and the producer takes a SIGPIPE that pipefail propagates.
+            if [ -z "$_fh_acc" ] || ! grep -qxF -- "$_fh_host" <<<"$_fh_acc"; then
+                _fh_acc="$_fh_acc$_fh_host"$'\n'
+            fi
+        done
+    done
+
+    printf -v "$_fh_out" '%s' "${_fh_acc%$'\n'}"
+    return 0
+}
+
 # --- Output --------------------------------------------------------------------------
+
+# Kibibytes as df counts them, rendered the way df -h renders them. Integer
+# arithmetic with one decimal place: a status line does not need bc.
+_ss_human_kb() {
+    local _hk_v="$1" _hk_out="$2" _hk_unit=K _hk_div=1 _hk_n=""
+
+    case $_hk_v in ''|*[!0-9]*) printf -v "$_hk_out" '%s' "?"; return 0 ;; esac
+    if   [ "$_hk_v" -ge 1073741824 ]; then _hk_unit=T; _hk_div=1073741824
+    elif [ "$_hk_v" -ge 1048576 ];    then _hk_unit=G; _hk_div=1048576
+    elif [ "$_hk_v" -ge 1024 ];       then _hk_unit=M; _hk_div=1024
+    fi
+    if [ "$_hk_div" = 1 ]; then
+        printf -v "$_hk_out" '%s%s' "$_hk_v" "$_hk_unit"
+        return 0
+    fi
+    _hk_n=$(( _hk_v * 10 / _hk_div ))
+    printf -v "$_hk_out" '%s.%s%s' "$((_hk_n / 10))" "$((_hk_n % 10))" "$_hk_unit"
+    return 0
+}
+
+# `df -Pk`'s last line, turned into a sentence. OUTVAR is left empty when the
+# line is not one this reader understands, and the caller says so rather than
+# printing a figure it made up.
+_ss_disk_sentence() {
+    local _dl_b64="$1" _dl_out="$2" _dl_fs_out="$3"
+    local _dl_line="" _dl_fs="" _dl_total="" _dl_used="" _dl_avail="" _dl_cap="" _dl_mount=""
+    local _dl_ht="" _dl_hu="" _dl_ha=""
+
+    printf -v "$_dl_out" '%s' ""
+    printf -v "$_dl_fs_out" '%s' ""
+    _ss_b64_field "$_dl_b64" _dl_line || return 1
+    [ -n "$_dl_line" ] || return 1
+
+    read -r _dl_fs _dl_total _dl_used _dl_avail _dl_cap _dl_mount <<<"$_dl_line"
+    case $_dl_total in ''|*[!0-9]*) return 1 ;; esac
+    case $_dl_used  in ''|*[!0-9]*) return 1 ;; esac
+    case $_dl_avail in ''|*[!0-9]*) return 1 ;; esac
+
+    _ss_human_kb "$_dl_total" _dl_ht
+    _ss_human_kb "$_dl_used"  _dl_hu
+    _ss_human_kb "$_dl_avail" _dl_ha
+    printf -v "$_dl_out" '%s of %s used (%s), %s free — %s on %s' \
+        "$_dl_hu" "$_dl_ht" "${_dl_cap:-?}" "$_dl_ha" "$_dl_fs" "${_dl_mount:-?}"
+    printf -v "$_dl_fs_out" '%s on %s' "$_dl_fs" "${_dl_mount:-?}"
+    return 0
+}
+
+# The filesystems the two paths live on, which is the question a status can
+# answer in constant time: `du` over a data path holding a mail spool would make
+# the report cost what the server happens to hold.
+_ss_print_disk() {
+    local apps_line="" apps_fs="" data_line="" data_fs="" rc=0
+
+    case "${_SS_FACT[apps_df_state]}" in
+        ok)
+            rc=0
+            _ss_disk_sentence "${_SS_FACT[apps_df_b64]}" apps_line apps_fs || rc=$?
+            if [ "$rc" -eq 0 ]; then
+                printf 'Disk: %s  %s\n' "$_SS_APPS_PATH" "$apps_line"
+            else
+                printf 'Disk: %s  unknown — df answered in a shape this kasbah does not read\n' "$_SS_APPS_PATH"
+            fi
+            ;;
+        absent) printf 'Disk: %s  unknown — the path is not there\n' "$_SS_APPS_PATH" ;;
+        *)      printf 'Disk: %s  unknown — df did not answer\n' "$_SS_APPS_PATH" ;;
+    esac
+
+    # The data path is usually inside the apps path and on the same filesystem,
+    # and repeating one figure as two facts invites a reader to add them up.
+    if [ "$_SS_DATA_TRUSTED" != yes ]; then
+        printf '      %s  not read — %s\n' "${_SS_MARKER_DATA:-<no data path in the marker>}" \
+            "the probe and the marker disagree about where the data path is"
+        return 0
+    fi
+    case "${_SS_FACT[data_df_state]}" in
+        ok)
+            rc=0
+            _ss_disk_sentence "${_SS_FACT[data_df_b64]}" data_line data_fs || rc=$?
+            if [ "$rc" -ne 0 ]; then
+                printf '      %s  unknown — df answered in a shape this kasbah does not read\n' "$_SS_MARKER_DATA"
+            elif [ -n "$apps_fs" ] && [ "$data_fs" = "$apps_fs" ]; then
+                printf '      %s  the same filesystem\n' "$_SS_MARKER_DATA"
+            else
+                printf '      %s  %s\n' "$_SS_MARKER_DATA" "$data_line"
+            fi
+            ;;
+        absent) printf '      %s  unknown — the path is not there\n' "$_SS_MARKER_DATA" ;;
+        *)      printf '      %s  unknown — df did not answer\n' "$_SS_MARKER_DATA" ;;
+    esac
+    return 0
+}
+
+# What the certificate store can answer at all, said once. Every hostname below
+# is then either given a certificate line or given none — the alternative is the
+# same sentence about an unreadable store repeated under every project.
+_SS_ACME_READY=no
+_ss_print_certs() {
+    local path="${_SS_MARKER_DATA:-<data>}/traefik/letsencrypt/acme.json"
+
+    _SS_ACME_READY=no
+    if [ "$_SS_DATA_TRUSTED" != yes ]; then
+        printf '  Certificates: not read — the probe and the marker disagree about the data path\n'
+        return 0
+    fi
+    case "${_SS_FACT[acme_state]}" in
+        file) ;;
+        absent)
+            printf '  Certificates: no store at %s — this Traefik is not the one kasbah prepared\n' "$path"
+            return 0 ;;
+        empty)
+            printf '  Certificates: the store at %s is empty — nothing has been issued yet\n' "$path"
+            return 0 ;;
+        unreadable)
+            printf '  Certificates: %s cannot be read by %s — it is mode 600 and owned by the deploy user\n' \
+                "$path" "$_SS_TARGET"
+            return 0 ;;
+        *)
+            printf '  Certificates: %s is %s, not a regular file\n' "$path" "${_SS_FACT[acme_state]}"
+            return 0 ;;
+    esac
+
+    if [ -z "$_SS_ACME" ]; then
+        printf '  Certificates: %s did not come back as readable bytes\n' "$path"
+        return 0
+    fi
+
+    # One lookup for a hostname nothing claims, purely to learn the store's
+    # shape and how many certificates are in it. Its bytes are never printed:
+    # the file holds the ACME account key and every certificate's private key.
+    acme_lookup "$_SS_ACME" ""
+    case "$ACME_STATE" in
+        notjson)
+            printf '  Certificates: %s does not parse as JSON (its bytes are not shown — it holds private key material)\n' "$path" ;;
+        noresolver)
+            printf "  Certificates: %s has no '%s' store — the schema has shifted, or this Traefik uses another resolver\\n" \
+                "$path" "$ACME_RESOLVER" ;;
+        notarray)
+            printf "  Certificates: %s holds a '%s' whose Certificates is a %s, not a list\\n" \
+                "$path" "$ACME_RESOLVER" "$ACME_KIND" ;;
+        empty)
+            printf '  Certificates: none issued yet (the store at %s is empty)\n' "$path" ;;
+        *)
+            printf '  Certificates: %s in %s\n' "$ACME_COUNT" "$path"
+            _SS_ACME_READY=yes ;;
+    esac
+    return 0
+}
+
+# One hostname's certificate, indented under whatever claims it. Printed only
+# when the store answered at all — _ss_print_certs said why otherwise.
+_ss_cert_line() {
+    local host="$1" indent="$2" via="" issuer=""
+
+    [ "$_SS_ACME_READY" = yes ] || return 0
+    acme_lookup "$_SS_ACME" "$host"
+    [ "$ACME_MAIN" = "$host" ] || via=" (as a SAN of $ACME_MAIN)"
+
+    case "$ACME_STATE" in
+        found) ;;
+        nomatch)   printf '%sno certificate — Traefik issues one when the hostname resolves here\n' "$indent"; return 0 ;;
+        nocert)    printf '%sthe store entry carries no certificate field\n' "$indent"; return 0 ;;
+        notbase64) printf '%sthe store entry is not base64\n' "$indent"; return 0 ;;
+        nopem)     printf '%sthe store entry is not a certificate openssl reads\n' "$indent"; return 0 ;;
+        *)         printf '%sno certificate (%s)\n' "$indent" "$ACME_STATE"; return 0 ;;
+    esac
+
+    # The issuer is not decoration: it is what separates a certificate from
+    # Let's Encrypt's staging CA — which browsers reject — from a real one, and
+    # kasbah renders `caServer` into traefik.yml where a hand edit reaches it.
+    issuer="${ACME_ISSUER:-unknown issuer}"
+
+    # Traefik renews at 30 days remaining, so a smaller number means renewal has
+    # already missed its window and somebody has to look at why.
+    if [ -z "$ACME_DAYS" ]; then
+        printf '%scertificate%s expires %s, %s (unparseable date, so no days remaining)\n' \
+            "$indent" "$via" "$ACME_NOTAFTER" "$issuer"
+    elif [ "$ACME_DAYS" -lt 0 ]; then
+        printf '%scertificate%s EXPIRED %s day(s) ago (%s, %s) — renewal has been failing\n' \
+            "$indent" "$via" "$(( -ACME_DAYS ))" "$ACME_NOTAFTER" "$issuer"
+    elif [ "$ACME_DAYS" -le 14 ]; then
+        printf '%scertificate%s expires in %s day(s) (%s, %s) — Traefik renews at 30, so renewal has missed its window\n' \
+            "$indent" "$via" "$ACME_DAYS" "$ACME_NOTAFTER" "$issuer"
+    else
+        printf '%scertificate%s valid for %s more day(s) (until %s, %s)\n' \
+            "$indent" "$via" "$ACME_DAYS" "$ACME_NOTAFTER" "$issuer"
+    fi
+    return 0
+}
+
+# The mail stack. Absent is an ordinary state — a server prepared without
+# --with-mail — and is reported as one, not as a fault.
+_ss_print_mail() {
+    local d state health restarts detail=""
+
+    case "${_SS_FACT[mail_dir_state]}" in
+        absent)
+            printf 'Mail: not installed — no %s/mail (kasbah server init --with-mail scaffolds it)\n' "$_SS_APPS_PATH"
+            return 0 ;;
+        notdir)
+            printf 'Mail: %s/mail exists and is not a directory\n' "$_SS_APPS_PATH"
+            return 0 ;;
+    esac
+
+    printf 'Mail: %s/mail\n' "$_SS_APPS_PATH"
+    for d in dms web; do
+        case $d in
+            dms) state="${_SS_FACT[mail_dms_state]}"; health="${_SS_FACT[mail_dms_health]}"
+                 restarts="${_SS_FACT[mail_dms_restarts]}"; detail=mail-dms ;;
+            *)   state="${_SS_FACT[mail_web_state]}";  health="${_SS_FACT[mail_web_health]}"
+                 restarts="${_SS_FACT[mail_web_restarts]}"; detail=mail-snappymail ;;
+        esac
+        case $state in
+            absent)   printf '  %-16s absent — the stack is scaffolded and not running\n' "$detail" ;;
+            nodocker) printf '  %-16s unknown — docker did not answer\n' "$detail" ;;
+            *)
+                # The restart count is not decoration: a DMS that cannot find a
+                # certificate for mail.<primary> restarts until one appears, and
+                # the count is the only thing that says which of the two it is.
+                printf '  %-16s %s (%s)%s\n' "$detail" "$state" \
+                    "${health:-none}" \
+                    "$([ "${restarts:-0}" = 0 ] || printf ', %s restart(s)' "$restarts")"
+                ;;
+        esac
+    done
+
+    if [ "${_SS_FACT[mail_registry_state]}" != file ]; then
+        printf '  registry %s/mail/kasbah.yml: %s — the one record of which domains this stack serves\n' \
+            "$_SS_APPS_PATH" "${_SS_FACT[mail_registry_state]}"
+        return 0
+    fi
+    if [ -z "$_SS_MAIL_PRIMARY" ]; then
+        printf '  registry %s/mail/kasbah.yml: no primary_domain — it is the MX target and the name both certificates are issued for\n' \
+            "$_SS_APPS_PATH"
+        return 0
+    fi
+
+    printf '  Primary: %s   Domains: %s\n' "$_SS_MAIL_PRIMARY" \
+        "$(printf '%s' "${_SS_MAIL_DOMAINS[*]:-none}")"
+    for d in "mail.$_SS_MAIL_PRIMARY" "webmail.$_SS_MAIL_PRIMARY"; do
+        printf '  %s\n' "$d"
+        _ss_cert_line "$d" '      '
+    done
+    return 0
+}
+
 
 # Whatever the container itself says, rather than a state kasbah infers: a
 # stopped Traefik and a running-but-unhealthy one are different problems.
@@ -716,12 +1340,21 @@ _ss_print_traefik() {
 
 _ss_print_projects() {
     local i name state version deployed detail ts action backup kasbah note
+    local width=14
 
     printf 'Projects:\n'
     if [ "${#_SS_P_NAME[@]}" -eq 0 ]; then
         printf '  none — no project directory under %s\n' "$_SS_APPS_PATH"
         return 0
     fi
+
+    # The column is as wide as the widest name, with 14 as the floor so the
+    # ordinary server looks like the sample in docs/server-setup.md. A fixed 14
+    # is not a column: `gallery-website` is fifteen characters and pushed every
+    # field on its row one place right, which is what the real host showed.
+    for name in "${_SS_P_NAME[@]}"; do
+        [ "${#name}" -le "$width" ] || width="${#name}"
+    done
 
     for i in "${!_SS_P_NAME[@]}"; do
         name="${_SS_P_NAME[$i]}"
@@ -771,8 +1404,83 @@ _ss_print_projects() {
         # is not a line to explain.
         detail="$deployed"
         [ -n "$detail" ] || detail="$note"
-        printf '  %-14s %-14s %-10s %s\n' "$name" "$state" "$version" "$detail"
+        printf '  %-*s %-14s %-10s %s\n' "$width" "$name" "$state" "$version" "$detail"
+        _ss_print_project_hosts "$i" "$name"
+        _ss_print_project_containers "$i"
     done
+    return 0
+}
+
+# What the project's Traefik fragment claims, and what the certificate store
+# says about each hostname. The fragment is parsed *here*, with the
+# workstation's yq: the VPS has no yq, jq or python3 and keeping it that way is
+# deliberate (docs/mail.md), so the file travels back base64'd like every other
+# one status reads.
+_ss_print_project_hosts() {
+    local i="$1" name="$2" hosts="" host="" rc=0
+    local path="$_SS_APPS_PATH/traefik/dynamic/$name.yml"
+
+    case "${_SS_P_FRAGSTATE[$i]}" in
+        ok) ;;
+        absent)
+            # Silent for a directory that is plainly not a kasbah project:
+            # every stray directory under the apps path is listed above, and a
+            # line about a routing file none of them was ever going to have is
+            # noise. A project kasbah deployed having none is the real news.
+            if [ "${_SS_P_LOGSTATE[$i]}" = ok ] || [ "${_SS_P_TOTAL[$i]}" != 0 ]; then
+                printf '      no Traefik fragment at %s — nothing routes to this project\n' "$path"
+            fi
+            return 0 ;;
+        empty)      printf '      %s is empty — nothing routes to this project\n' "$path"; return 0 ;;
+        unreadable) printf '      %s cannot be read by the ssh user\n' "$path"; return 0 ;;
+        notfile)    printf '      %s exists and is not a regular file\n' "$path"; return 0 ;;
+        *)          printf '      unknown fragment state %s\n' "${_SS_P_FRAGSTATE[$i]}"; return 0 ;;
+    esac
+
+    _ss_fragment_hosts "${_SS_P_FRAG[$i]}" hosts || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        printf '      %s does not parse as YAML, so this project'"'"'s domain cannot be read\n' "$path"
+        return 0
+    fi
+    if [ -z "$hosts" ]; then
+        printf '      %s declares no Host() rule, so this project claims no domain\n' "$path"
+        return 0
+    fi
+
+    while IFS= read -r host; do
+        [ -n "$host" ] || continue
+        printf '      %s\n' "$host"
+        _ss_cert_line "$host" '          '
+    done <<<"$hosts"
+    return 0
+}
+
+# Per-container state and health — the health Traefik'"'"'s own line has had since
+# the minimal status, and no other container did. A project whose containers are
+# all running and healthy says so in one line rather than one per container:
+# the row above already carries the count, and the reason to print names is that
+# one of them is not what the count implies.
+_ss_print_project_containers() {
+    local i="$1" line cname cstate chealth listed=0 odd=0
+
+    [ -n "${_SS_P_CONT[$i]}" ] || return 0
+    while IFS=' ' read -r cname cstate chealth; do
+        [ -n "$cname" ] || continue
+        listed=$((listed + 1))
+        [ "$cstate" = running ] || odd=1
+        case $chealth in ''|none|healthy) ;; *) odd=1 ;; esac
+    done <<<"${_SS_P_CONT[$i]}"
+
+    [ "$listed" -gt 0 ] || return 0
+    if [ "$odd" = 0 ]; then
+        printf '      %s container(s), all running and none unhealthy\n' "$listed"
+        return 0
+    fi
+    while IFS=' ' read -r cname cstate chealth; do
+        [ -n "$cname" ] || continue
+        _ss_b64_decode "$cname" line || line="<name not base64>"
+        printf '      %-24s %s (%s)\n' "$line" "$cstate" "${chealth:-none}"
+    done <<<"${_SS_P_CONT[$i]}"
     return 0
 }
 
@@ -791,6 +1499,7 @@ _server_status_print() {
         "$_SS_APPS_PATH" "$_SS_APPS_SOURCE" "${_SS_MARKER_DATA:-unknown}"
     printf 'Marker: kasbah %s, cpu %s, mem %s\n' \
         "${_SS_MARKER_VERSION:-unknown}" "${_SS_MARKER_CPU:-unknown}" "${_SS_MARKER_MEM:-unknown}"
+    _ss_print_disk
 
     # The marker is the record of where init put things; the apps path is where
     # this run looked. They disagree when a prepared tree was moved, and every
@@ -801,9 +1510,15 @@ _server_status_print() {
 
     printf '\n'
     _ss_print_traefik
+    _ss_print_certs
+    if [ -n "$_SS_DASH_HOST" ]; then
+        printf '  Dashboard: %s\n' "$_SS_DASH_HOST"
+        _ss_cert_line "$_SS_DASH_HOST" '      '
+    fi
+    printf '\n'
+    _ss_print_mail
     printf '\n'
     _ss_print_projects
-    printf '\nCerts, mail and disk usage are not reported yet (Phase 7).\n'
     return 0
 }
 
@@ -818,6 +1533,9 @@ cmd_server_status() {
     _server_status_collect
     _server_status_read_marker
     _ss_decode_projects
+    # After the marker, because two of the files the probe brought back are only
+    # trustworthy once jq has confirmed the data path they were read from.
+    _ss_decode_extras
 
     # Only a difference in majors is worth a word: within one, docs/overview.md's
     # compatibility policy says everything interoperates. Unlike `server init`

@@ -171,13 +171,40 @@ hostname). See `server-setup.md` ("Handover / teardown").
 
 Read-only — it never creates, modifies or removes anything on the server.
 
-Prints today:
+Prints:
 - Docker + Compose versions
 - The server marker: kasbah version, paths, resource limits
+- Disk: the filesystem behind the apps path and the one behind the data path,
+  with used/total/free and the mount point. `df`, not `du` — the question is
+  whether the host is about to run out of room, and it is answered in constant
+  time. A `du` walk of a data path holding a mail spool would make the report
+  cost whatever the server happens to hold, and the data path is named as
+  sharing the apps path's filesystem rather than counted twice.
 - Traefik: running state, health, the image tag it was created from **and**
-  the resolved image id (a tag can be re-pushed; the id cannot)
-- Projects under the apps path — name, running/total containers, and the
-  last `versions.log` entry (action, version, timestamp, kasbah version)
+  the resolved image id (a tag can be re-pushed; the id cannot), what its ACME
+  store holds, and the dashboard hostname out of `_shared.yml`
+- The mail stack: `mail-dms` and `mail-snappymail` by their compose labels with
+  state, health and **restart count** — a DMS that cannot find a certificate for
+  `mail.<primary>` restarts until one appears, and only the count says so — plus
+  the registry's primary domain and the domains it serves. A server prepared
+  without `--with-mail` has none, and that is an ordinary state, not a fault.
+- Projects under the apps path — name, running/total containers, the
+  last `versions.log` entry (action, version, timestamp, kasbah version), **the
+  domains its Traefik fragment claims**, what the certificate store says about
+  each of them, and each container's state and health. A project whose
+  containers are all running and none unhealthy gets one line saying so; one
+  that is not gets a line per container, because that is the case a count
+  cannot show.
+
+**Certificate expiry comes from Traefik's own `acme.json`**, read by the same
+`lib/acme.sh` that answers `check --server` — one store, one reader. The file
+holds the ACME account key and every certificate's private key, so it is never
+written to a temp file, echoed, or quoted in a message: the diagnostic that
+echoes a truncated probe back reports that line by name and length only.
+
+**All of it is one SSH round trip.** Each addition read on its own is what turns
+`status` into several sessions, and the rig's `maxstartups 10` is what that
+costs. One probe, one report, absorbed and key-checked before anything is read.
 
 `--apps-path` is the escape hatch for a server whose discovery pointer is
 missing, unreadable, or in a directory nobody can enter — and it is honoured in
@@ -190,18 +217,22 @@ repeated on every invocation is a belief each caller holds separately, and the
 apps path is a property of the server (see `server-setup.md` → the discovery
 pointer).
 
-Deferred to roadmap v0.2 (`docs/phases/07-operate.md`):
-- Cert status and last refresh
-- Disk usage on the apps and data paths
-- Mail stack status
-- Per-container health beyond Traefik's
+**The project's domain was the one open decision, and it is settled.** It lives
+in `<apps>/traefik/dynamic/<name>.yml`, so printing it costs either a YAML parse
+on a server where `yq` is not a prerequisite or a Traefik API call with the
+dashboard credentials. kasbah **fetches the fragment base64 in the same round
+trip and parses it with the workstation's `yq`**. The credentials route would
+yield certificates and router health in one call, but `status` holds only the
+bcrypt hash from `_shared.yml` — never the password — so it would need a new
+flag or prompt plus reachability to `traefik.<apex>`. The VPS has no `yq`, `jq`
+or `python3` and keeps needing none.
 
-**The project's domain is not printed and is not merely deferred.** It lives
-in `<apps>/traefik/dynamic/<name>.yml`, so printing it means parsing every
-fragment on a server where yq is not a prerequisite, or querying the Traefik
-API with the dashboard credentials. Both are real work with a real
-dependency; whichever a later phase picks, it is a decision rather than an
-omission.
+One value does cross that line and is checked rather than trusted: the **data
+path**, which the certificate store and the data disk figure both hang off. The
+probe scrapes it out of the marker's bytes without a JSON parser, and the
+workstation compares the scrape with what `jq` read out of the same bytes. They
+disagree only on a marker kasbah did not write; when they do, both reads are
+reported as unread rather than as facts about some other tree.
 
 ## Project commands
 
