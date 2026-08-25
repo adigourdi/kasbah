@@ -80,6 +80,8 @@ Commands:
   pending [USER@HOST] [VERSION]              Show the commits a deploy would ship.
   changelog [USER@HOST]                      Show what changed in the deployed version.
   env [USER@HOST]                            Render the project's .env on the server.
+  logs [USER@HOST] [SERVICE] [-f] [--tail=N] Show this project's container logs on a server.
+  exec [USER@HOST] SERVICE -- CMD...         Run a command in one of this project's containers.
   server init USER@HOST [flags]              Prepare a VPS to host projects.
   server status USER@HOST                    Report what a prepared VPS is running.
 
@@ -151,6 +153,10 @@ dispatch() {
         env)
             . "$KASBAH_LIB_DIR/env_cmd.sh"
             cmd_env "$@"
+            ;;
+        logs|exec)
+            . "$KASBAH_LIB_DIR/ops.sh"
+            "cmd_$cmd" "$@"
             ;;
         server)
             dispatch_server "$@"

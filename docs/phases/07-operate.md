@@ -23,8 +23,8 @@ reference elsewhere to 7.1–7.5 stays valid.
 |---|---|---|
 | 1 | 7.0 | Closes three Phase 6 carries before anything extends `check`, and reserves `mail` as a project name **before** 7.1 creates `/apps/mail/` |
 | 2 | 7.2 | Small, independent, nothing depends on it |
-| 3 | 7.1 | Biggest unknown early; the DMS image pull is a one-time rig cost. Ahead of its dependants so M03, `status`'s mail line and 7.5's dry-run over `_mail.yml` are native rather than retrofits |
-| 4 | 7.3 | Builds the `acme.json` cert reader 7.6 consumes |
+| 3 | 7.1a, 7.1b | Biggest unknown early; the DMS image pull is a one-time rig cost (both images are already in the rig's cache: DMS 1.22 GB, SnappyMail 293 MB). Ahead of its dependants so M03, `status`'s mail line and 7.5's dry-run over `_mail.yml` are native rather than retrofits |
+| 4 | 7.3 | Builds the `acme.json` cert reader 7.6 consumes, and `M03` against 7.1's registry |
 | 5 | 7.6 | The phase index and the Phase 2 carry both say Phase 7 owns full `status`; the plan had no task for it |
 | 6 | 7.4 | Reuses the per-project `versions.log` read `status` already does |
 | 7 | 7.5 | Last on purpose: its dry-run must validate every existing fragment, and `_mail.yml` exists only after 7.1 |
@@ -113,6 +113,36 @@ Thin wrappers per `cli.md`, including the `--` argument rule for exec.
 `logs --tail=N`, `exec <svc> -- sh -c …`, and the missing-`--` refusal, driven
 as an operator. `./test.sh`.
 
+**Delivered.** Approved at round 3. `lib/ops.sh` carries both commands and the
+one shared positional rule (an argument containing `@` is the server, not the
+service) — mutating that rule's arm costs **45 FAILs spanning the first `logs`
+assertion to the last `exec` one**, which is what proves neither command kept a
+private copy. `./test.sh` **21 PASS**, `KASBAH_RIG_TESTS=1 ./test.sh` **31
+PASS**, both exit 0, no skips. Hand-driven on the rig against a deployed
+`built-app`: `logs`, `logs <service>`, `logs --tail=5`, `logs -f`,
+`exec … -- sh -c 'echo hi'`, a command carrying quotes, a glob and a
+redirection (`a b hostname hosts`), `exit 7` propagating as 7, and every
+refusal — missing `--`, no `--` at all, not a kasbah project (exit 2),
+unreachable host (exit 3), unknown service.
+
+**The two decisions the task turned on.** `logs` never allocates a pty, `-f`
+included: `ssh -t` cooks output through a line discipline, putting a CR before
+every LF in data that exists to be piped and redirected, and following a log
+needs an interrupt rather than a keystroke. `exec` allocates one iff
+`[ -t 0 ] && [ -t 1 ]` — the pair `lib/env_cmd.sh` already checks — because
+stdin alone is not enough: `kasbah exec db -- pg_dump … > dump.sql` from a
+terminal would put CRs in the file. Neither branch refuses, since unlike the
+`.env` generator there is no prompt to strand. `exec` propagates its command's
+status and writes `last_server` whenever that command *ran*; `logs` does not
+propagate compose's status, because the whole command line there is kasbah's
+own.
+
+*Not proven here, and honestly so:* an interactive `exec` into a real shell got
+as far as a pty existing at both ends (`TTY` under `script -qec`, `-t` on the
+ssh line, `-T` dropped) — a human at a keyboard is the part no suite drives.
+`logs -f` interrupted by a real Ctrl-C was simulated with a signal to the
+process group; the mechanism is the same but the keystroke path is untested.
+
 ### 7.1 — Mail stack port (L)
 `server init --with-mail` / `add-mail-domain` / `_mail.yml` cert-trigger
 fragment, ported from the original project's `mail/`. Deploy-time claim
@@ -122,8 +152,31 @@ here — it happens with its owner's migration in Phase 9.3.
 
 Also in scope, named because the task text did not: `kasbah server
 mail-setup-guide USER@HOST` (roadmap v0.2, `mail.md` → the walkthrough shown
-once after init), and **M03** in `check --server` — the rule needs the registry
-this task creates, so it lands here rather than in 7.3.
+once after init), and the **local** mail rules `M01`/`M02` from
+`compliance.md`. **`M03` does not land here** — it is a `--server` rule and
+`check --server` does not exist until 7.3. Because 7.1 runs first, 7.3 builds
+it against a registry that already exists, which is the whole reason for the
+order.
+
+**Split into 7.1a and 7.1b** (same concept, letter suffixes; the id `7.1` stays
+valid as their parent). The task is L and its two halves have a clean seam:
+**7.1a is the stack** — `server init --with-mail`, the templates, `_mail.yml`,
+the seeding, and a running pair of containers on the rig. **7.1b is everything
+that talks to it** — `add-mail-domain`, `mail-setup-guide`, the deploy-time
+claim reconciliation that replaces the Phase 4 stub, and `M01`/`M02`. A single
+brief covering both produces a review with traction on neither.
+
+**The constraint that shapes 7.1a's verification, and it is not negotiable.**
+`SSL_TYPE: letsencrypt` makes a certificate a **boot requirement** for DMS, not
+a nicety: the original project's own setup guide records the mailserver crashlooping for
+30–90 s on a first deploy while Traefik completes the HTTP-01 challenge, then
+coming up once the cert is in `acme.json`. **The rig cannot issue a
+certificate** — no public DNS, the challenge never validates — so on the rig DMS
+crashloops *forever* and there is no settling to wait for. The rig therefore
+proves the fragment, the routers Traefik registers, SnappyMail up and seeded,
+and idempotence; **DMS reaching healthy is provable only on the real host**,
+where `mail.example.com` and `webmail.example.com` both resolve. Anyone who
+briefs "wait for DMS healthy on the rig" has set an impossible task.
 
 **Watch out for:** SMTP won't route from the rig, but container wiring,
 claim checks, and seeding all can — test those with a throwaway domain
@@ -451,3 +504,156 @@ property of a project alone. C09 is silent when nothing joins `kasbah-net`, so
 two otherwise identical projects report 25 and 22. Any future test asserting a
 total rather than a line will be wrong for a reason that has nothing to do with
 what it is testing.
+
+**A trap in the orchestrator's own instructions, found by 7.2.** Every brief in
+this phase asks the implementer to drive the tool by hand against the rig,
+because a passing suite is not evidence the thing works. That hand-driven pass
+**contaminates the next rig run**: it leaves version-tagged images behind, and
+`tests/integration/ship_test.sh` asserts a freshly loaded image carries exactly
+one tag. `rig_clean` removes projects and networks and deliberately leaves
+images alone, so nothing cleans them up. 7.2's first rig verdict came back with
+`["built-app-web:1.5.0","built-app-web:3.0.0"]` and a FAIL that had nothing to
+do with the code — the same shape Phase 4's Findings warn about, where a
+poisoned rig presents as an *unrelated* suite failing. Removing
+`built-app-{web,worker}:<version>` at both ends and re-running gave 31 PASS.
+
+Every brief from here says so: **an operator pass against the rig ends by
+removing the image tags it created**, at both ends, before any verdict run.
+
+**Two things 7.2 measured that are worth not re-deriving.** `docker compose
+exec -T` is **not load-bearing on this docker**: removing it costs 5 FAILs in
+the unit suite and **0** on the rig, because compose v2 already declines a tty
+when its own stdin is not one. It stays as stated intent and for older compose,
+but the rig cannot prove it and nothing should imply otherwise. And the rig
+still issues transient `ssh` exit-255 refusals when several sessions are open at
+once — almost certainly `maxstartups 10`, retried clean, container healthy
+throughout. That is the pressure the single-batched-round-trip protocol exists
+to stay under, and 7.6 is the task most able to break it.
+
+**7.2, round 1 review — findings and dispositions.** Verdict needs-work; the
+design work was sound and both terminal decisions survived scrutiny. All
+findings **fixed**; none deferred, rejected or carried.
+
+- *`kasbah logs | head` printed an error and exited 1.* The headline defect,
+  user-visible, on the exact use the new documentation advertises: correct log
+  lines, then `could not read the logs … exited 255`, with a `(see above)`
+  pointing at nothing. Neither suite could catch it — both redirect kasbah's
+  stdout to a **file**, so nothing ever closes the pipe early. Fixed by
+  exempting the pipe-closed statuses and passing them through silently, rather
+  than flattening to 0: flattening would claim the whole log arrived when it did
+  not, and would break a caller's `pipefail`. `git log | head` passes its own
+  number through the same way. The exemption is narrow — 125 still gets the full
+  paragraph and exit 1 (mutation: widening it to swallow everything, 6 FAILs).
+
+  **`ssh` exits 255 where a local process exits 141, and both the review and
+  this record first said 141.** OpenSSH ignores `SIGPIPE` — it has a socket to
+  look after — so a failed write to a closed stdout becomes `fatal()` and 255.
+  Measured against the rig:
+  `ssh -n rig 'seq 1 500000' | head -3` gives **255**, while a bare
+  `seq 1 500000 | head -3` gives **141**. The implementer found it because a rig
+  assertion pinned 141 and failed; its *unit* stub had been `exec seq …`, which
+  dies of SIGPIPE honestly and would have blessed the wrong number for good. The
+  stub now exits 255 explicitly. **An unfaithful stub agrees with a wrong
+  expectation and nothing complains** — this is the second time in two tasks
+  that only a real-transport assertion separated a shared guess from the truth.
+
+  Two conditions, neither unconditional: the log has to **outrun the pipe
+  buffer** *and* the reader has to stop early enough. A finite `logs | head -3`
+  on a small project completes into the buffer and exits 0; `grep -q` drains a
+  large block before exiting and returns 0 even matching line 1 of a 118 KB log.
+  The suite proves 255 through `-f` (nginx's 5-second healthcheck line is the
+  write that lands on the closed pipe) and keeps the finite case asserting 0, so
+  255 reads as "the pipe closed under a write" rather than "piping is 255".
+- *The state-file spec was left saying the opposite of the code.*
+  `exec` deliberately writes `last_server` even when the inner command exits
+  non-zero (`kasbah exec web -- test -f /srv/x` returning 1 is an answer about
+  the container, not a failed run). `docs/cli.md`'s preamble was reconciled;
+  `docs/project-manifest.md` — the file `lib/ops.sh` cites as its authority for
+  the write rule — still read "written **only on success**", and
+  `lib/state.sh`'s own comment claimed the same.
+- *The rule offered for telling exit codes apart did not hold.* `cli.md` said a
+  status from a run that printed no kasbah error is the command's own. Measured:
+  `docker compose exec -T nosuch true` prints `service "nosuch" is not running`
+  and exits 1 with no kasbah error at all — so the two likeliest `exec` failures,
+  a typo'd service and a stopped container, are indistinguishable from the
+  inner command's own 1. The propagation decision is right; the disambiguation
+  rule was false, in the one section whose job is preventing that confusion.
+- *`--apps-path` overclaimed as `server status`'s alone* — `server init` takes
+  it too, in both the doc and a code comment.
+
+**The `logs -f` orphan: documented, and the alternatives are on record.** No
+pty means a client that dies leaves `docker compose logs -f` resident on the
+server until its next write to a closed pipe — indefinitely for a quiet service,
+measured still present at t+80s. Rejected: `ssh -tt` (a CR before every LF on
+data meant to be piped, and the interrupt would go to the *remote* process, so
+ssh returns 130 and the failure branch fires on an ordinary quit); a remote
+wrapper that dies with its pipe (works, but needs a fourth transport mode in
+`lib/ssh.sh`, since `ssh_run` uses `-n` and `ssh_script` spends stdin on the
+payload — and remote shell syntax is what `ssh_run`'s contract exists to
+forbid); and an INT trap firing `pkill` over the still-live master. That last
+one is ten lines and would work, and is refused on this repo's own history:
+`lib/ssh.sh` records a read-only `server status` tearing down a concurrent
+`server init` because a teardown reached another process's work. Kill-by-pattern
+on a shared VPS is that mistake automated. **A broom an operator reaches for
+deliberately is not the same object as one the CLI swings on every Ctrl-C.**
+What changed instead: the doc now says the leak **accumulates** — one resident
+follower per interrupted follow, each holding an open dockerd stream, on a box
+chosen for being small — the `pkill` recipe is narrowed to `… /compose.yml
+logs` so it cannot take out a concurrent `kasbah exec` on the same project, and
+"this is ssh's behaviour rather than kasbah's" is gone. kasbah chose no-pty for
+good reasons and owns the consequence.
+
+**Four guards that a green suite did not defend.** All fixed, and the first is
+the sharpest instance yet of this phase's recurring shape: the assertion that
+`logs` does not write `last_server` on failure scored **0 FAILs**, because the
+failing run targeted **the same host** as the passing one — so a spurious write
+rewrote byte-identical JSON and the assertion passed anyway. It needed a second
+host to become real. Also unguarded: all three `\r` strips (0 FAILs each, and
+CLAUDE.md mandates them), the `-f=VALUE` refusal, and `--help` for both
+commands.
+
+**7.2, round 3 — approved after a documentation-only sweep, and the sweep is
+the finding.** The confirmation round found every fix landed and every mutation
+number exact, then reported that the change had turned `logs` into a *partial*
+status-propagator while **six passages still described the world before it** —
+three of them saying in so many words that `exec` is the only command that
+reports a status it did not choose. One was `--help` output. One was inside the
+same comment block that explained the new behaviour twenty lines above. Two were
+stale `141`s in test comments, i.e. the exact belief the round existed to
+correct. All fixed by the orchestrator; no code or test change was needed for
+any of them.
+
+**The shape worth keeping:** a behaviour change lands in one place and its
+description lives in six, and the ones that bite are the confident ones — "the
+one command that", "the one exception to this list". A sentence that names
+something as unique is a sentence that a later change silently falsifies, and
+`grep` does not find it, because it does not contain the thing that changed.
+
+*One stated reason for a decision was neutralised by the same round's fix.* The
+anti-pty comment argued, among other things, that under `-t` ssh returns 130 and
+"the refusal below would fire on an ordinary quit" — and the refusal below now
+exempts 130. The decision stands on the CR argument alone, which is
+independently sufficient; the dead reason is gone.
+
+**The operator-facing rule the reviewer extracted, now in `docs/cli.md`.** 255
+is both "the reader stopped" and "the link broke", and no exit code can separate
+them — but nothing needs to, because the closed-pipe path is **silent** (OpenSSH's
+fatal exit writes nothing, pinned by an integration assertion) while a genuine
+drop writes `client_loop: send disconnect`. So: **255 with nothing on stderr is
+the reader stopping; 255 with a line on it is the link stopping.** Rejected as
+more expensive than the fact is worth: capturing ssh's stderr to branch on it
+(breaks `lib/ssh.sh`'s no-wrapper rule), and probing kasbah's own stdout for
+EPIPE (writing to a closed pipe under bash kills bash).
+
+`130` was confirmed unable to mask anything: without a pty an interactive Ctrl-C
+signals the whole foreground group, so bash dies inside `ssh_run` and never
+evaluates `rc` — the branch is reachable only when ssh alone is signalled. The
+unit test drives it with a forced return code and says so, which is the right
+kind of honesty about testing a branch rather than a scenario.
+
+*Accepted, not fixed:* the dropped-stdin warning still fires on
+`while read … done < file`, where `ssh -n` is doing exactly the job
+`lib/ssh.sh` says it exists for. There is no clean predicate separating "fed on
+purpose" from "inherited", which is the argument for it being a warning rather
+than a refusal; its second clause now states what was measured (a pipe or a
+file) instead of guessing at intent.

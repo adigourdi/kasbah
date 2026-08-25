@@ -199,6 +199,13 @@ next invocation in the same project defaults to it. `kasbah init-project`
 writes an empty state file; the first command that needs a server must
 pass `USER@HOST` explicitly.
 
+"Succeeds" means kasbah's own work — reach the server, find the project, do
+what was asked, which is not always the same as exiting 0. `kasbah exec` exits
+with the status of the command it ran, and writes `last_server` whenever that
+command ran at all; `kasbah logs` writes it when the reader stopped early too,
+since a closed pipe says nothing about whether the logs were readable
+(`project-manifest.md` → write rules).
+
 ### `kasbah init-project [flags]`
 
 Scaffold the kasbah metadata for a new project. Creates:
@@ -479,20 +486,102 @@ a terminal (exit `5`); only the drift case has a question for it to answer.
 the difference is that `deploy` runs the setup only when the `.env` is missing
 or has drifted, while `env` runs it every time, since that is what it is for.
 
-### `kasbah logs [USER@HOST] [SERVICE] [flags]`
+### `kasbah logs [USER@HOST] [SERVICE] [-f] [--tail=N]`
 
 Thin wrapper around `docker compose logs` on the VPS. If `SERVICE` is
 omitted, shows all services in the project.
 
 Flags:
 - `-f` — follow.
-- `--tail=100` — lines of history (default 100).
+- `--tail=100` — lines of history (default 100). `--tail=all` for the whole
+  buffer; anything that is neither a count nor `all` is refused here rather
+  than by compose on the far side.
+
+Both positionals are optional, which is the same ambiguity `exec` has and it
+is resolved the same way: **an argument carrying an `@` is the server, and
+anything else is the service.** So `kasbah logs web` reads one service on the
+remembered server, and `kasbah logs you@vps` reads every service on a named
+one.
+
+Run against `<apps>/<name>/compose.yml` as `docker compose -p <name>`, where
+`<apps>` comes from the server's own discovery pointer exactly as `deploy` and
+`env` find it. `logs` takes no `--apps-path`: `server init` has the flag
+because it is what *establishes* the path, and among the commands that only
+read one, `server status` is the sole holder — as the escape hatch for a server
+whose pointer is gone.
+
+**Exit status.** `0`, or `1` with a message when `docker compose logs` itself
+failed — `logs` does **not** pass compose's status through the way `exec` does,
+because the whole command line here is kasbah's (you supplied a service name
+and a line count).
+
+Two statuses are neither, and kasbah says nothing about either:
+
+- `255` — the process reading kasbah's stdout closed the pipe: `kasbah logs |
+  head`, `| sed 3q`, quitting `less`. 255 rather than the 141 you would expect,
+  because OpenSSH ignores `SIGPIPE` — it has a socket to look after — and turns
+  the failed write into its own fatal exit. It only arises when the log outruns
+  the pipe buffer: a log small enough to fit in it is written in full before the
+  reader is missed, and that run is an ordinary `0` (measured both ways on the
+  rig). This is also the status of a session that broke for a real reason, and
+  in that case ssh has already said so on stderr in its own words — kasbah
+  passes those through untouched and adds nothing, rather than printing a
+  sentence that would be wrong far more often than right. That is what tells
+  the two apart, and it needs no exit code of its own: **255 with nothing on
+  stderr is the reader stopping; 255 with a line on it is the link stopping.**
+  The closed-pipe path is silent because OpenSSH's fatal exit writes nothing.
+- `130` — interrupted.
+
+Both are passed through rather than flattened to `0`, so a caller under
+`set -o pipefail` is not told the whole log arrived when it did not; `git log |
+head` does the same with its own number.
+
+**No terminal is allocated**, `-f` included. `ssh -t` would cook the far side's
+output through a pty's line discipline and put a CR before every LF, so
+`kasbah logs | grep …` and `kasbah logs > file` would get a different byte
+stream from the one compose wrote. Following a log needs no keystroke, only an
+interrupt, and Ctrl-C reaches ssh through the terminal's foreground process
+group without a pty.
+
+**One consequence, and it accumulates.** A session with no pty is not hung up
+when its client dies, so *every* interrupted `kasbah logs -f` leaves a
+`docker compose logs -f` resident on the server, each holding an open stream
+from dockerd, until its next write to a closed pipe — for a busy service that
+is immediate, for a quiet one it is never. One per interrupted follow, forever,
+on a box chosen for being small. This is the price of the choice above, not a
+detail of ssh: kasbah picked no-pty and owns it. The broom, spelled narrowly
+enough not to be a second problem:
+
+```
+ssh you@vps "pkill -f '<apps>/<name>/compose.yml logs'"
+```
+
+Not `pkill -f 'compose -f <apps>/<name>'`: that also matches a concurrent
+`kasbah exec` on the same project, and another operator's follower with it.
+A pty would hang the session up and cost every piped log its CRs, which is not
+a trade this command makes.
 
 ### `kasbah exec [USER@HOST] SERVICE -- CMD…`
 
 `docker compose exec SERVICE CMD…` over SSH. The `--` is mandatory so flags
 after it belong to the inner command. `SERVICE` is required; if it looks
 like `user@host` (contains `@`) kasbah treats it as the server.
+
+Same apps-path discovery and same `-p <name>` as `logs` above.
+
+**The terminal is decided per invocation, not per command.** A pty is asked for
+only when this side has one at *both* ends — stdin and stdout are both a tty —
+which is the shape an interactive shell has. That keeps
+`kasbah exec db -- pg_dump … > dump.sql` free of the CRs a pty would insert.
+Otherwise the command runs under `docker compose exec -T`, compose's own
+spelling of "no tty", with its stdin closed: feeding data *into* an exec'd
+command is not something this command does.
+
+**CMD's own exit status is `kasbah exec`'s exit status** — see "Exit codes"
+below. `last_server` is written whichever it is: kasbah's own work (resolve the
+server, find the stack, run what was asked) succeeded the moment the command
+ran, and `kasbah exec web -- test -f /srv/x` answering 1 is a fact about the
+container rather than a failed run.
 
 ## Deferred commands
 
@@ -541,3 +630,24 @@ Referenced elsewhere in the docs but not yet in v0.1:
   code rather than several, because the operator's next move is the same in
   every case: run `kasbah env` from a terminal, or pass `--on-drift=`.
 - `6` compliance check failed
+
+`kasbah exec` departs from this list furthest: it exits with **the status of
+the command it was asked to run**, whatever that is, because a wrapper that
+collapses its payload's status to 0 or 1 lies about the only thing it exists to
+do. Every layer underneath it — ssh, `docker compose exec`, the command — passes
+the status through already.
+
+kasbah's own refusals still come first and still use the codes above (`2` with
+no `kasbah.yml`, `3` for a server that does not answer, `4` with no marker).
+**But a non-zero status from `exec` is not therefore the command's**, and there
+is no rule that makes it one: `docker compose exec -T nosuch true` exits `1`
+with `service "nosuch" is not running`, having never run anything, and an ssh
+connection lost mid-command exits `255`. Both are indistinguishable by code
+from `kasbah exec web -- test -f /srv/x` answering `1`. What separates them is
+the text on stderr, and in those two cases it is **compose's or ssh's own line,
+not kasbah's** — so read it rather than the number. A script that must know
+whether its command ran should have the command say so.
+
+`kasbah logs` does not propagate: compose failing is `1` with a kasbah message.
+Its `255`/`130` — a reader that stopped reading, and an interrupt — are
+described in its own section above.

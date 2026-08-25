@@ -320,7 +320,7 @@ to the VPS. Tracks:
 | Field | Written by | Read by |
 |---|---|---|
 | `kasbah_version` | `init-project`, `check --fix`, any migration | future `kasbah migrate` (bash→Go cutover) |
-| `last_server` | every project command that targets a server, on success | every project command — used as default when `USER@HOST` is omitted |
+| `last_server` | every project command that targets a server, once kasbah's own work on it succeeded (see Write rules) | every project command — used as default when `USER@HOST` is omitted |
 | `last_deploy` | `deploy`, `rollback` on success | `kasbah check` (diff deployed vs local) |
 | `last_version` | `deploy`, `rollback` on success | `kasbah check` |
 | `schema_migrations_applied` | `kasbah migrate` | `kasbah migrate` (idempotency) |
@@ -331,7 +331,18 @@ for defaults, not a source of truth for what's actually running.
 
 ### Write rules
 
-- Written **only on success**. Failed commands leave state untouched.
+- Written **only on success**, where success means *kasbah's* work — reach the
+  server, find the project, do what was asked. Failed commands leave state
+  untouched.
+- `kasbah exec` is where those two come apart, and it writes `last_server`
+  whenever the command it was asked to run **ran at all**, whatever that
+  command answered. Its own exit status is the command's (`cli.md` → exit
+  codes), so `kasbah exec web -- test -f /srv/x` exits 1 on a file that is not
+  there — a fact about the container, not a run that failed, and not a reason
+  to make the next invocation name the server again. `kasbah logs` writes on
+  0 and on the two statuses that mean the run stopped rather than failed — 255
+  (the reader closed the pipe) and 130 (interrupted) — and not when compose
+  failed.
 - `last_server` is updated by: `build-push`, `deploy`, `rollback`, `env`,
   `history`, `changelog`, `pending`, `logs`, `exec`, `check --server` *(v0.2)*.
 - `init-project` creates the file with empty fields and the current

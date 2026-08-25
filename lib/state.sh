@@ -46,7 +46,10 @@ state_get() {
 # (kasbah_version, schema_migrations_applied) and, one day, fields written by a
 # newer kasbah. Rendered to a temp file and renamed, so a reader never catches
 # a half-written one. Callers invoke this only after the operation succeeded —
-# docs/project-manifest.md's write rule.
+# docs/project-manifest.md's write rule, where "the operation" is kasbah's own
+# work and not the exit status it ends up reporting. `kasbah exec` is the one
+# caller those differ for: it hands back the status of the command it ran, and
+# records last_server whenever that command ran at all.
 state_record() {
     local _sr_args=() _sr_filter="." _sr_key _sr_value _sr_tmp _sr_current _sr_defaults
 
