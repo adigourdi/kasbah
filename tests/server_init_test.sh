@@ -1527,14 +1527,17 @@ assert '[ -s "$si_ssh_log" ]' "the stub ssh is what it reached (ssh saw: $(cat "
 assert '! grep -qF "postmaster" "$tmpdir/err"' \
     "and it did not ask for a postmaster password before reading the server (said '$(cat "$tmpdir/err")')"
 
-# Backup is still Phase 8. Accepting the flag and doing nothing would be a lie,
-# so it is a hard failure that names the phase — and the refusal comes before the
-# connection, which the empty ssh log is what proves.
-run server init deploy@kasbah-unit-test.invalid --no-mail --with-backup; rc=$?
-assert '[ "$rc" != "0" ]' "--with-backup fails rather than silently skipping backups (exit $rc)"
-assert 'grep -qF "Phase 8" "$tmpdir/err"' "--with-backup names the phase that builds it (said '$(cat "$tmpdir/err")')"
-assert 'grep -qF -- "--no-backup" "$tmpdir/err"' "--with-backup says how to proceed today"
-assert '[ ! -s "$si_ssh_log" ]' "and nothing was contacted first (ssh saw: $(cat "$si_ssh_log"))"
+# Backup no longer refuses: --with-backup goes on to the server exactly as
+# --with-mail does, because what it has to ask — which repositories this server
+# needs a password for — is a fact about the server. The unreachable host is
+# what proves it got that far.
+run server init deploy@kasbah-unit-test.invalid --no-mail --with-backup \
+    --backup-repo-base=rest:http://example.invalid/ --no-backup-env; rc=$?
+assert '[ "$rc" = "3" ]' \
+    "--with-backup goes on to the server, and this one is unreachable (exit $rc: $(cat "$tmpdir/err"))"
+assert '! grep -qF "not implemented" "$tmpdir/err"' \
+    "and no longer refuses (said '$(cat "$tmpdir/err")')"
+assert '[ -s "$si_ssh_log" ]' "the stub ssh is what it reached (ssh saw: $(cat "$si_ssh_log"))"
 
 # The tri-state rule: no flag and no terminal is a hard fail naming the flag,
 # never an assumed "no". Nothing is contacted first — and that half matters as

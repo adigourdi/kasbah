@@ -7,6 +7,11 @@ _KASBAH_SERVER_INIT_LOADED=1
 . "$KASBAH_LIB_DIR/common.sh"
 . "$KASBAH_LIB_DIR/prompt.sh"
 . "$KASBAH_LIB_DIR/ssh.sh"
+# The --with-backup half: its flags are parsed here, and everything it then does
+# lives there. Sourced at the top rather than lazily because init is where it is
+# used, and because backup.sh needs this file's template renderer — one of the
+# two has to be loaded first and a load guard makes the pairing free.
+. "$KASBAH_LIB_DIR/backup.sh"
 
 # `kasbah server init` lays out the directory tree every later command assumes
 # and records what it found in the server marker. It checks prerequisites and
@@ -35,6 +40,15 @@ _KASBAH_SERVER_INIT_LOADED=1
 # ordering rule: DMS reads mail.<domain>'s certificate out of acme.json, and
 # nothing puts one there until the cert-trigger router is live. The marker still
 # goes last.
+#
+# --with-backup adds five, all of them after the two stacks are up and all of
+# them in lib/backup.sh. Its read joins the others at the front, because which
+# projects are on the server is what decides how many repository passwords this
+# run asks for. Then the tree and the credentials land, the credential probe
+# runs against the storage those credentials actually reach, and only then are
+# the compose file and the runner shipped and the scheduler started — so a
+# credential that can delete its own history is refused *before* anything is
+# scheduled to use it. The marker still goes last.
 
 # The parsed command line.
 _SI_TARGET=""
@@ -142,7 +156,17 @@ Flags:
   --with-mail|--no-mail      scaffold the mail stack, or skip it
   --postmaster-password=<pw> password for postmaster@<mail domain>, seeded
                          before DMS first starts; hashed here, never sent
-  --with-backup|--no-backup  install restic backups, or skip them
+  --with-backup|--no-backup  install the restic backup stack, or skip it
+  --backup-repo-base=<url>   where snapshots go; kasbah appends <client> to it
+  --backup-env=KEY=VALUE     environment restic needs to reach it (repeatable)
+  --no-backup-env            state that it needs none
+  --backup-password=<repo>=<pw>  the restic password for one repository
+  --backup-at=HH:MM      daily slot, local time (default 02:00)
+  --backup-jitter=<s>    seconds added to the slot (default: derived per server)
+  --backup-keep-daily=N  retention, applied by "server backup-prune"
+  --backup-keep-weekly=N
+  --backup-keep-monthly=N
+  --backup-timeout=<s>   bound on one restic invocation (default 900)
   --yes                  confirm a switch away from a stated endpoint
 
 Every *feature* flag is tri-state: leaving one off asks. --acme-staging and
@@ -165,6 +189,15 @@ brings the stack up after Traefik. The mail domain defaults to --domain's apex;
 it is read back out of <apps>/mail/kasbah.yml on a re-run, so an edit there
 survives. The postmaster password is asked for once — a re-run against a server
 that already has the account neither asks nor changes it. See docs/mail.md.
+
+--with-backup scaffolds <apps>/.kasbah/backup — a compose stack that sleeps
+until the daily slot and then pushes restic snapshots of every project's data,
+hook-produced dumps and .env off the box, one repository per "client:" plus one
+for mail. kasbah never parses the repository URL and never generates a
+repository password. Before the stack is started, init writes a probe object
+with the credentials in effect and tries to delete it again: a credential that
+can delete its own history is refused, because that is the one property the
+whole feature rests on. See docs/backup.md.
 EOF
 }
 
@@ -341,6 +374,10 @@ _si_parse_auth() {
 _server_init_parse_args() {
     local apps="" data=""
     local apps_given=0 data_given=0
+    # Where --backup-password='s two halves land while they are being checked.
+    # The pair is kept whole in _BK_PASS_GIVEN; only the validation needs them
+    # apart, and it must happen here so a typo costs no connection.
+    local _si_bk_repo="" _si_bk_pass=""
 
     _SI_TARGET=""
     _SI_MAIL=""
@@ -352,6 +389,17 @@ _server_init_parse_args() {
     _SI_ACME_RESET_CHOICE=""
     _SI_YES=""
     _SI_POSTMASTER_PASSWORD=""
+    _BK_REPO_BASE=""
+    _BK_REPO_BASE_ORIGIN=""
+    _BK_AT=""
+    _BK_JITTER=""
+    _BK_KEEP_DAILY=""
+    _BK_KEEP_WEEKLY=""
+    _BK_KEEP_MONTHLY=""
+    _BK_TIMEOUT=""
+    _BK_ENV_GIVEN=()
+    _BK_ENV_NONE=""
+    _BK_PASS_GIVEN=()
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -382,6 +430,35 @@ _server_init_parse_args() {
                            _si_check_postmaster_password "$_SI_POSTMASTER_PASSWORD" ;;
             --with-backup) _server_init_set_bool backup yes ;;
             --no-backup)   _server_init_set_bool backup no ;;
+            # The third of these flags that can carry a credential, and the one
+            # that cannot be kept off a terminal: --backup-env= and
+            # --backup-password= are never echoed at all, the way --traefik-auth
+            # is not, but the repository base has to be *named* — in the run's
+            # summary, in every refusal, and in the server marker, which is mode
+            # 644 by contract. So it is echoed with its userinfo redacted the way
+            # restic redacts its own (_bk_redact_url), and `_bk_values` says once
+            # that a credential in the URL is a credential in a world-readable
+            # file.
+            --backup-repo-base=*)
+                           _BK_REPO_BASE="${1#*=}"; _BK_REPO_BASE="${_BK_REPO_BASE%$'\r'}"
+                           _bk_check_repo_base --backup-repo-base= "$_BK_REPO_BASE"
+                           _BK_REPO_BASE_ORIGIN=flag ;;
+            # Validated, never echoed, for the reason --traefik-auth is not: both
+            # values carry a credential, and an error message is the one place it
+            # would end up on a terminal and in every CI log that keeps one.
+            --backup-env=*)      _bk_check_env_entry --backup-env= "${1#*=}"; _BK_ENV_GIVEN+=("${1#*=}") ;;
+            --no-backup-env)     _BK_ENV_NONE=yes ;;
+            --backup-password=*) _bk_split_password "${1#*=}" _si_bk_repo _si_bk_pass
+                                 _BK_PASS_GIVEN+=("${1#*=}") ;;
+            --backup-at=*)       _BK_AT="${1#*=}"; _BK_AT="${_BK_AT%$'\r'}"
+                                 _bk_check_at "$_BK_AT" ;;
+            --backup-jitter=*)   _BK_JITTER="${1#*=}"; _BK_JITTER="${_BK_JITTER%$'\r'}"
+                                 _bk_check_jitter "$_BK_JITTER" ;;
+            --backup-keep-daily=*)   _BK_KEEP_DAILY="${1#*=}";   _bk_check_keep --backup-keep-daily= "$_BK_KEEP_DAILY" ;;
+            --backup-keep-weekly=*)  _BK_KEEP_WEEKLY="${1#*=}";  _bk_check_keep --backup-keep-weekly= "$_BK_KEEP_WEEKLY" ;;
+            --backup-keep-monthly=*) _BK_KEEP_MONTHLY="${1#*=}"; _bk_check_keep --backup-keep-monthly= "$_BK_KEEP_MONTHLY" ;;
+            --backup-timeout=*)      _BK_TIMEOUT="${1#*=}"; _BK_TIMEOUT="${_BK_TIMEOUT%$'\r'}"
+                                     _bk_check_timeout "$_BK_TIMEOUT" ;;
             -h|--help)     _server_init_usage; exit 0 ;;
             # Only the flag's *name* is quoted back. An unknown flag is most
             # often a mistyped known one, and `--traefik-auths=admin:hunter2`
@@ -389,7 +466,7 @@ _server_init_parse_args() {
             # log that keeps one. The name is what diagnoses a typo; the value
             # adds nothing, so it is never printed — for any flag, rather than
             # for a list of names that can always miss one.
-            -*)            die "server init: unknown flag '${1%%=*}' (expected --apps-path=, --data-path=, --domain=, --email=, --traefik-auth=, --acme-staging, --reset-acme/--keep-acme, --with-mail/--no-mail, --postmaster-password=, --with-backup/--no-backup, --yes)" ;;
+            -*)            die "server init: unknown flag '${1%%=*}' (expected --apps-path=, --data-path=, --domain=, --email=, --traefik-auth=, --acme-staging, --reset-acme/--keep-acme, --with-mail/--no-mail, --postmaster-password=, --with-backup/--no-backup, --backup-repo-base=, --backup-env=/--no-backup-env, --backup-password=, --backup-at=, --backup-jitter=, --backup-keep-daily=/-weekly=/-monthly=, --backup-timeout=, --yes)" ;;
             *)
                 [ -z "$_SI_TARGET" ] \
                     || die "server init: unexpected argument '$1' (USER@HOST is given once)"
@@ -455,27 +532,45 @@ _server_limits() {
 # fixed — the file is compared byte for byte on every re-run.
 #
 # An existing marker is merged into, never replaced: this command owns five keys
-# and knows nothing about the rest. `backup` is the one that matters today —
-# Phase 8 puts a repo_base beside `enabled`, and a plain re-run of init must not
-# take an operator's backup configuration with it. Same for any key a newer
-# kasbah wrote and this one has never heard of.
+# and knows nothing about the rest. `backup` is the one that matters today — it
+# carries repo_base, and a plain re-run of init must not take an operator's
+# backup configuration with it. Same for any key a newer kasbah wrote and this
+# one has never heard of.
+#
+# The seventh argument is what `--with-backup` decided, or empty. Empty leaves
+# whatever `backup` is already there untouched, which is `--no-backup`'s
+# documented behaviour: init scaffolds backups and never removes them. When it
+# is given it is *merged into* the existing object, and its `retention` is
+# merged into the existing retention rather than replacing it — a key inside
+# `backup` written by a newer kasbah survives exactly as a top-level one does.
+#
+# `+` keeps the left operand's key order for keys both sides carry, so a second
+# run against an unchanged server renders the same bytes as the first. That is
+# what makes the marker something a re-run can compare against.
 _server_marker_json() {
-    local existing="${6:-}"
+    local existing="${6:-}" backup="${7:-}"
     jq -n \
         --argjson existing "${existing:-null}" \
+        --argjson backup "${backup:-null}" \
         --arg version "$1" \
         --arg apps_path "$2" \
         --arg data_path "$3" \
         --arg cpu_limit "$4" \
         --arg mem_limit "$5" \
-        '(($existing // {}) + {
-            kasbah_version: $version,
-            apps_path: $apps_path,
-            data_path: $data_path,
-            cpu_limit: $cpu_limit,
-            mem_limit: $mem_limit
-        })
-        | if has("backup") then . else . + { backup: { enabled: false } } end'
+        '(($existing // {}) as $e
+          | ($e + {
+                kasbah_version: $version,
+                apps_path: $apps_path,
+                data_path: $data_path,
+                cpu_limit: $cpu_limit,
+                mem_limit: $mem_limit
+            })
+          | if $backup == null then
+                (if has("backup") then . else . + { backup: { enabled: false } } end)
+            else
+                .backup = ((($e.backup // {}) + ($backup | del(.retention)))
+                           + { retention: ((($e.backup.retention) // {}) + ($backup.retention // {})) })
+            end)'
 }
 
 # --- Preflight ----------------------------------------------------------------
@@ -2857,10 +2952,13 @@ cmd_server_init() {
     else
         _SI_MAIL_ENABLED=no
     fi
-    if prompt_bool backup "Install restic backups on $_SI_TARGET?" "$_SI_BACKUP"; then
-        err "server init: backup is not implemented yet — it is scaffolded in Phase 8 (docs/backup.md)"
-        err_cont "re-run with --no-backup; adding backups later is a re-run of init"
-        exit 1
+    if prompt_bool backup "Install the restic backup stack on $_SI_TARGET?" "$_SI_BACKUP"; then
+        _BK_ENABLED=yes
+    else
+        _BK_ENABLED=no
+        # Said before anything is asked or opened: a flag that will do nothing
+        # is worth naming while the operator is still at the prompt.
+        _bk_flags_unused
     fi
 
     ssh_connect "$_SI_TARGET"
@@ -2873,9 +2971,11 @@ cmd_server_init() {
     _server_init_check_pointer
     _server_limits "${_SI_FACT[nproc]}" "${_SI_FACT[memtotal_kb]}"
 
-    local marker_json
-    marker_json="$(_server_marker_json "$KASBAH_VERSION" "$_SI_APPS_PATH" \
-        "$_SI_DATA_PATH" "$_SI_CPU_LIMIT" "$_SI_MEM_LIMIT" "$_SI_MARKER_EXISTING")"
+    # The backup configuration this server already records, so a re-run with no
+    # backup flags reproduces it instead of asking again — and so `--no-backup`
+    # against a server that has it says so rather than looking like a removal.
+    [ "$_BK_ENABLED" != yes ] || _bk_from_marker "$_SI_MARKER_EXISTING"
+    _bk_note_left_alone "$_SI_TARGET" "$_SI_APPS_PATH" "$_SI_MARKER_EXISTING"
 
     # Everything the Traefik stack needs is settled — asked for or recovered
     # from the server — and rendered before the first directory is created, so
@@ -2883,10 +2983,21 @@ cmd_server_init() {
     # nothing on the far side.
     _server_init_read_traefik
     _server_init_read_mail
+    _bk_read "$_SI_TARGET" "$_SI_APPS_PATH" "$_SI_DATA_PATH"
     _server_init_traefik_values
     _server_init_mail_values
+    _bk_values "$_SI_TARGET"
     _server_init_traefik_render
     _server_init_mail_render
+    _bk_render "$_SI_TMPDIR" "$_SI_APPS_PATH" "$_SI_DATA_PATH"
+
+    # Computed once every value it records is settled, and written by the last
+    # step of all. Its `backup` object is what --with-backup decided, or nothing
+    # — and nothing means the object already on the server is left alone.
+    local marker_json backup_json
+    backup_json="$(_bk_marker_json)"
+    marker_json="$(_server_marker_json "$KASBAH_VERSION" "$_SI_APPS_PATH" \
+        "$_SI_DATA_PATH" "$_SI_CPU_LIMIT" "$_SI_MEM_LIMIT" "$_SI_MARKER_EXISTING" "$backup_json")"
 
     _server_init_layout
     _server_init_traefik_sync
@@ -2914,6 +3025,21 @@ cmd_server_init() {
     # ordering directly; the fragment-before-Traefik ordering above has no such
     # backstop and is pinned in tests/integration/server_init_mail_test.sh.
     _server_init_mail_start
+
+    # The backup stack, last of the things that are started, and in this order
+    # for one reason: the credentials have to be on the server before the probe
+    # can test the ones that will actually be in effect, and the stack must not
+    # be started with a credential the probe then refuses. So the tree and the
+    # secrets land, the probe runs, and only a credential that could write and
+    # could not delete gets a scheduler. A refusal leaves the credentials where
+    # they are — the next run reuses them — and no marker, because that is still
+    # the last thing init writes.
+    _bk_layout "$_SI_TARGET" "$_SI_APPS_PATH"
+    _bk_ship_secrets "$_SI_TARGET" "$_SI_APPS_PATH"
+    _bk_probe "$_SI_TARGET" "$_SI_APPS_PATH"
+    _bk_sync "$_SI_TARGET" "$_SI_APPS_PATH"
+    _bk_start "$_SI_TARGET" "$_SI_APPS_PATH"
+
     _server_init_marker "$marker_json"
     _server_init_pointer
 
@@ -2942,6 +3068,7 @@ cmd_server_init() {
     fi
     info "  dashboard: https://traefik.$_SI_DASHBOARD_DOMAIN (basic auth, credentials $_SI_AUTH_ORIGIN)"
     _server_init_report_mail
+    _bk_report "$_SI_TARGET" "$_SI_APPS_PATH"
     info "  marker: $_SI_APPS_PATH/.kasbah/server.json (${_SI_FACT[marker]})"
     info "  pointer: $KASBAH_APPS_POINTER -> $_SI_APPS_PATH (${_SI_FACT[pointer]})"
 }

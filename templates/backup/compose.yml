@@ -1,0 +1,92 @@
+# The backup stack — one instance per VPS, installed at
+# <apps>/.kasbah/backup/compose.yml by `kasbah server init --with-backup`.
+#
+# One always-on container that sleeps until the daily slot and then runs
+# restic. The schedule is a compose stack rather than cron because cron is not
+# on the prerequisites table (docs/server-setup.md) and kasbah installs no
+# packages: restic itself runs as a container, so the thing that invokes it may
+# as well be the same container (docs/backup.md, docs/phases/08-keep.md D1/D3).
+#
+# The apps and data paths below are substituted on the workstation before this
+# file is shipped, and they are mounted at their own names — a snapshot's paths
+# are therefore the server's real paths, which is what makes
+# `restic restore --target /` put a project's data back where it came from.
+# Both mounts are read-only: this stack reads the server and writes only to the
+# repository.
+#
+# No `.env`, deliberately, and no `env_file:`. The repository base and the
+# operator's credentials live in <apps>/.kasbah/backup/env at mode 600, which
+# backup.sh reads itself — so nothing secret is in this file, in the service's
+# environment, or in `docker inspect`.
+#
+# Run by hand as: docker compose -p kasbah-backup up -d
+# The `-p` is not optional — `name:` below is the weakest source of the project
+# name, and COMPOSE_PROJECT_NAME in the environment outranks it.
+name: kasbah-backup
+
+services:
+  backup:
+    # Substituted on the workstation from KASBAH_RESTIC_IMAGE (lib/common.sh),
+    # so one constant answers "which restic does kasbah run" for the scheduled
+    # backup, the credential probe and `server backup-prune` alike.
+    image: __RESTIC_IMAGE__
+    container_name: kasbah-backup
+    # Fixed rather than derived from the VPS: it is what restic records as a
+    # snapshot's host, and a value that followed the ssh alias would rewrite
+    # this file whenever an operator reached the server by another name.
+    hostname: kasbah-backup
+    restart: unless-stopped
+    # The restic image's entrypoint is restic itself; the runner replaces it.
+    # /bin/sh there is busybox ash — see backup.sh's header.
+    entrypoint: ["/bin/sh", "__APPS_PATH__/.kasbah/backup/backup.sh"]
+    environment:
+      KASBAH_BACKUP_APPS: __APPS_PATH__
+      KASBAH_BACKUP_DATA: __DATA_PATH__
+      KASBAH_BACKUP_AT: __BACKUP_AT__
+      KASBAH_BACKUP_JITTER: __BACKUP_JITTER__
+      KASBAH_BACKUP_TIMEOUT: __BACKUP_TIMEOUT__
+    volumes:
+      - "__APPS_PATH__:__APPS_PATH__:ro"
+      # The one writable window in an otherwise read-only tree, and it is
+      # narrower than the directory above it: Docker orders bind mounts by
+      # target depth, so this rw mount wins for this path and the ro one still
+      # covers everything else. backup.sh writes its status here, which is what
+      # the healthcheck below reads and what anything other than `docker logs`
+      # has to go on.
+      - "__APPS_PATH__/.kasbah/backup/state:__APPS_PATH__/.kasbah/backup/state"
+__BACKUP_DATA_MOUNT__
+      # So __BACKUP_AT__ is the server's local time and not UTC.
+      - "/etc/localtime:/etc/localtime:ro"
+      # restic's cache. A named volume rather than the container's own layer,
+      # so a `compose up` that recreates the container does not throw away the
+      # index every repository would then have to be re-read from.
+      - "cache:/root/.cache/restic"
+    # Without one, a scheduler wedged inside restic is a container `docker ps`
+    # calls "running" for ever and `restart: unless-stopped` never acts on —
+    # measured against a black-holed endpoint. The check asks backup.sh whether
+    # the state it last recorded has outlived its own deadline, so a run that
+    # never returned and a sleep that never woke both show up.
+    healthcheck:
+      test: ["CMD", "/bin/sh", "__APPS_PATH__/.kasbah/backup/backup.sh", "health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      # The container writes `starting` as its first act, so this only has to
+      # cover the seconds before that.
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Deliberately no `cpus:` / `mem_limit:`, for the reason
+# templates/traefik/compose.yml gives: those ceilings exist so one *project*
+# cannot lock out Traefik and SSH, and `kasbah check`'s R01-R03 govern project
+# compose files rather than kasbah-owned stacks.
+
+# Named, not left to compose's `<project>_cache`: `kasbah server destroy` has to
+# be able to name every artifact this stack leaves behind.
+volumes:
+  cache:
+    name: kasbah-backup-cache

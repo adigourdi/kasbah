@@ -1,0 +1,35 @@
+# <apps>/.kasbah/backup/env — read by <apps>/.kasbah/backup/backup.sh, by the
+# credential probe `kasbah server init --with-backup` runs, and by nothing else.
+# Mode 600: on an S3-compatible target this file holds the VPS's append-only
+# key pair.
+#
+# It is not a shell script and is never sourced. Every line is either blank, a
+# comment, or KEY=VALUE with the value taken literally to the end of the line —
+# no quoting, no expansion, no continuation.
+#
+# The value below is **kasbah's**. It is rewritten by name on every run of
+# `kasbah server init --with-backup`, so editing it here does not survive;
+# re-run init with --backup-repo-base= instead. kasbah never parses it: it is
+# handed to restic as RESTIC_REPOSITORY with the repository name appended, so
+# `s3:`, `rest:`, `sftp:` and a local path are all the same to kasbah
+# (docs/phases/08-keep.md D5). It is also recorded in the server marker, which
+# is mode 644 — so a credential belongs in the block below, not in this URL.
+KASBAH_BACKUP_REPO_BASE=__BACKUP_REPO_BASE__
+
+# ---------------------------------------------------------------------------
+# Everything below here is **yours**. kasbah rewrites the key above by name,
+# rewrites any key it was given with --backup-env=KEY=VALUE, and copies every
+# other line through untouched — so what you set here survives a re-run, and
+# never leaves this server.
+#
+# This is the environment restic is run with. For S3-compatible storage it is
+# the append-only key pair the VPS is allowed to write with and not to delete
+# with; kasbah cannot create such a key, which is why `server init
+# --with-backup` writes a probe object and refuses when it can delete it again.
+#
+#   AWS_ACCESS_KEY_ID=<append-only key id>
+#   AWS_SECRET_ACCESS_KEY=<append-only secret>
+#
+# A `rest:` target carries its credential in the URL above and needs nothing
+# here.
+# ---------------------------------------------------------------------------

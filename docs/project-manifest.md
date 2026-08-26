@@ -151,6 +151,18 @@ deletes) exactly one repo per client — and per-client degenerates
 gracefully into per-project when the field is omitted. Same charset rules
 as `name`. See `backup.md`.
 
+**Read by `kasbah deploy`**, which renders the effective value (this field, or
+`name` when absent) to `<apps>/<name>/.kasbah-client` on the server. The
+manifest itself is never synced, so that record is how the VPS-side backup run
+learns which repository a project belongs to — the same "render, never copy"
+rule `remote-deploy.sh` follows for hooks, backup and health. The value must
+match `^[a-z][a-z0-9-]*$` and may not be one of the reserved names kasbah owns
+under `<apps>/` (`traefik`, `mail`, `data`, `backups`): a project claiming
+`mail` would put every mailbox on the host into one client's handover. A
+project deployed before backups were enabled has no record, and the backup run
+falls back to its directory name — which is this field's default — while naming
+it, so a project filing into the wrong repository is visible rather than silent.
+
 ### `sync` *(required, list)*
 
 Rsync list applied on every deploy. Each entry is either `src` or `src -> dst`

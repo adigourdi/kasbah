@@ -641,6 +641,10 @@ _rollback_read_ref() {
     _rollback_require_tag
     _rollback_extract
     _deploy_read_mail
+    # Out of v<target>'s manifest like everything else here: `client:` decides
+    # which backup repository the project files into, and a rollback that left
+    # the record empty would erase it (docs/phases/08-keep.md D12).
+    _deploy_read_client
     _rollback_extract_mail_seed
     # The hooks, the health block, the backup block and the built-image list, all
     # read out of v<target>'s manifest: they are what that version expects of the

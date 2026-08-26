@@ -74,8 +74,8 @@ successfully.
   data + backups (double confirmation) ✅
 - `kasbah server destroy` — de-brand a VPS for handover; containers
   keep running (double confirmation)
-- Off-VPS backups: `server init --with-backup` — restic → S3-compatible,
-  append-only creds, per-client repos (see `backup.md`)
+- Off-VPS backups: `server init --with-backup` — restic → any restic backend,
+  append-only creds, per-client repos (see `backup.md`) ✅
 
 ## Phase 4 — v1.0 (Go rewrite preparation)
 

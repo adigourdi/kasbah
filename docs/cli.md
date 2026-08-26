@@ -39,11 +39,39 @@ Flags:
   init never rewrites that file. A trailing carriage return is stripped, like
   `--domain`'s and `--email`'s; a newline is refused, because only the first
   line would be hashed. Only meaningful with `--with-mail`.
-- `--with-backup` / `--no-backup` — install restic + append-only S3
-  credentials + daily backup cron (see `backup.md`), or explicitly skip.
-  Unset → prompt. **Backup arrives in roadmap v0.3**, so asking for it today
-  is a hard failure rather than a silent no-op. Mail no longer is: `--with-mail`
-  scaffolds the stack.
+- `--with-backup` / `--no-backup` — scaffold the off-box backup scheduler at
+  `<apps>/.kasbah/backup/` and start it, or explicitly skip. Unset → prompt.
+  **Installs nothing** — restic runs as a container (see `backup.md`).
+  `--no-backup` against a server that already has backups leaves them alone:
+  init scaffolds, it never removes. Init **refuses** if the storage credential
+  turns out to be able to delete.
+- `--backup-repo-base=<url>` — the repository base, ending in `/`. kasbah never
+  parses it, so any restic backend works. Asked only when the marker records
+  none. **Do not embed credentials in it** — the marker is mode 644 by
+  contract, so a secret in this URL is world-readable on the VPS.
+- `--backup-env=KEY=VALUE` (repeatable) / `--no-backup-env` — the storage
+  credentials and anything else restic needs in its environment, written mode
+  600. Asked once, on the run that creates the file; after that the file is the
+  operator's, like `mail/.env`. **Five keys are refused**, here and in the
+  environment file: `RESTIC_REPOSITORY`, `RESTIC_REPOSITORY_FILE`,
+  `RESTIC_PASSWORD`, `RESTIC_PASSWORD_FILE` and `RESTIC_PASSWORD_COMMAND`. They
+  decide which repository restic opens and what opens it — kasbah sets them, and
+  an entry naming one would point the credential probe somewhere other than
+  where the backups go, which is the one shape of that bug nothing else catches.
+- `--backup-password=<repo>=<pw>` (repeatable) — the encryption password for one
+  repository. Operator-supplied, never generated, **never rewritten** by a later
+  run. A repository with no password is not backed up, and the run says so.
+- `--backup-timeout=<seconds>` — how long **one** restic invocation may take before
+  it is killed. Default 900, floor 30, recorded in the marker. This is what keeps
+  a storage endpoint that accepts a connection and then answers nothing from
+  wedging the scheduler forever: without a bound the run never returns to its
+  sleep, so the container stays "running" and backs nothing up.
+- `--backup-at=HH:MM`, `--backup-jitter=<seconds>` — when the daily run fires.
+  The jitter defaults to a value derived from the server's own identity, so it
+  is stable across re-runs and spreads load across hosts.
+- `--backup-keep-daily=N`, `--backup-keep-weekly=N`, `--backup-keep-monthly=N` —
+  retention, recorded in the marker and applied by `server backup-prune`, not on
+  the VPS. Default 7 / 4 / 3.
 - `--apps-path=/apps` — root directory on the VPS (default `/apps`).
 - `--data-path=<dir>` — bind-mount root (default `<apps-path>/data`, so it
   follows `--apps-path` rather than being pinned to `/apps/data`).
@@ -127,8 +155,14 @@ What it does:
    Traefik is healthy, because DMS reads `mail.<domain>`'s certificate out of
    `acme.json`. Init waits for SnappyMail and reports DMS without waiting for
    it — a first-run crashloop is expected while the certificate is issued.
-9. If `--with-backup`: install restic, write append-only S3 credentials,
-   schedule the backup cron (see `backup.md`).
+9. If `--with-backup`: scaffold `<apps>/.kasbah/backup/` — the scheduler stack,
+   the runner, the mode-600 environment file and one encryption password per
+   repository — then **probe the storage credential before starting anything**:
+   write a probe repository, take two snapshots, attempt a real delete, count
+   again. A credential that can delete stops the run with the stack unstarted,
+   because a backup history the VPS can destroy is not a backup. Only then does
+   the stack come up. Installs nothing: restic runs as a container
+   (see `backup.md`).
 10. Write the server marker `<apps>/.kasbah/server.json` — kasbah version,
     paths, resource limits computed as 90% of host cores/RAM (see
     `server-setup.md`). **Last of the steps that signal completion**: its
@@ -143,6 +177,40 @@ What it does:
 Re-running init against a server whose pointer records a **different** apps
 path is refused: one machine runs one kasbah, because one Traefik holds `:80`
 and `:443`.
+
+### `kasbah server backup-prune USER@HOST [flags]`
+
+Apply retention to the server's backup repositories: `restic forget` plus
+`prune`. The counterpart to `server init --with-backup` — the VPS writes
+snapshots and cannot delete them, so this is the only thing that ever removes
+one.
+
+**restic runs on the workstation, not the VPS.** The whole credential design is
+that the full-access storage credential lives only on operator machines;
+shipping it to the box the threat model assumes is compromised would defeat it.
+The `USER@HOST` argument is for *discovery* — which repositories exist, and the
+`repo_base` and retention the marker records. The repositories' **encryption**
+passwords do come back over ssh, staged locally at mode 600: restic cannot write
+a snapshot without them, so they are on the VPS already and fetching them widens
+nothing (`backup.md` → Credentials).
+
+It dry-runs every repository first, prints the plan, confirms once, then forgets
+and prunes.
+
+Flags:
+- `--repo-base=<url>`, `--repo=<name>` — override discovery, or act on one repository.
+- `--env=KEY=VALUE` / `--no-env` — the **full-access** storage credentials. These
+  are the operator's, and are never read off the server.
+- `--keep-daily=N`, `--keep-weekly=N`, `--keep-monthly=N` — override the marker's retention.
+- `--dry-run` — plan only.
+- `--yes` — skip the confirmation.
+- `--docker-network=<name>` — put the restic container on a specific Docker
+  network. Storage on the internet needs nothing; a self-hosted endpoint on
+  another bridge is unreachable from the default one.
+
+**Repositories are emptied, never removed.** There is no wire operation that
+deletes a repository — deleting one is a manual act at the storage provider,
+which is also what makes a client offboarding a deliberate decision.
 
 ### `kasbah server prune USER@HOST [--yes]`
 

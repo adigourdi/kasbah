@@ -80,6 +80,9 @@ _DEPLOY_ALLOW_STOPPED=no
 # decided rather than once the file is complete, because a half-written one is
 # exactly what the cleanup exists for.
 _DEPLOY_RENDERED=""
+# The effective `client:` — the manifest's, defaulting to the project name. Read
+# with the other local checks and written onto the server by _deploy_prepare.
+_DEPLOY_CLIENT=""
 
 # The manifest's sync: list, split into three parallel arrays by
 # _deploy_parse_sync_lines.
@@ -413,6 +416,34 @@ _deploy_check_compose_dst() {
     exit 1
 }
 
+# The manifest's `client:`, which groups this project's off-VPS backups into one
+# restic repository per client and defaults to the project name
+# (docs/project-manifest.md, docs/backup.md). Read here with the other local
+# checks, and *rendered* onto the server rather than synced, because the
+# manifest never reaches a VPS and the backup runner runs there.
+#
+# The charset is `name`'s, and the four names kasbah owns under <apps> are
+# refused for a sharper reason than tidiness: `mail` is the repository the whole
+# server's mailboxes go to (docs/phases/08-keep.md D7), and a project claiming
+# it would put every mailbox on the host into one client's handover.
+_deploy_read_client() {
+    local raw
+
+    raw="$(manifest_get '.client // "" | tostring')"
+    raw="${raw%$'\r'}"
+    [ "$raw" != null ] || raw=""
+    if [ -z "$raw" ]; then
+        _DEPLOY_CLIENT="$MANIFEST_NAME"
+        return 0
+    fi
+    [[ "$raw" =~ ^[a-z][a-z0-9-]*$ ]] \
+        || die "kasbah.yml: client '$raw' must match ^[a-z][a-z0-9-]*\$ — it names a backup repository, the same charset as name (docs/project-manifest.md)"
+    ! manifest_name_reserved "$raw" \
+        || die "kasbah.yml: client '$raw' is reserved — kasbah owns the backup repository of that name (reserved: ${KASBAH_RESERVED_NAMES[*]})"
+    _DEPLOY_CLIENT="$raw"
+    return 0
+}
+
 # The manifest's mail claim, read with the rest of the local checks. `domain` is
 # the whole of what a claim says (docs/project-manifest.md → mail), so a `mail:`
 # block without one claims nothing and is a mistake about this checkout — worth
@@ -585,13 +616,14 @@ _deploy_prepare() {
     readarray -t parents < <(_deploy_remote_parents)
 
     out=$(ssh_script "$_DEPLOY_APPS_PATH" "$_DEPLOY_DATA_PATH" "$MANIFEST_NAME" \
-                     ${parents[@]+"${parents[@]}"} <<'REMOTE'
+                     "$_DEPLOY_CLIENT" ${parents[@]+"${parents[@]}"} <<'REMOTE'
 set -uo pipefail
 export LC_ALL=C
 apps=$1
 data=$2
 name=$3
-shift 3
+client=$4
+shift 4
 
 fail() { printf 'remote: %s\n' "$*" >&2; exit 1; }
 
@@ -602,6 +634,26 @@ for d in "$apps/$name" "$apps/$name/scripts" "$apps/$name/backups" "$data/$name"
     mkdir -p "$d" || fail "could not create $d"
 done
 
+# The effective `client:`, rendered here because the manifest is never synced to
+# a server and the backup runner — which reads this file to decide which restic
+# repository the project belongs in — runs on the server (08-keep.md D12).
+# Written through a temp file and a rename: the runner may be reading it.
+record="$apps/$name/.kasbah-client"
+if [ -e "$record" ] && [ ! -f "$record" ]; then
+    fail "$record exists and is not a regular file"
+fi
+current=""
+[ ! -f "$record" ] || IFS= read -r current < "$record" || current=""
+if [ "$current" = "$client" ]; then
+    printf 'client=unchanged\n'
+else
+    tmp="$record.tmp.$$"
+    printf '%s\n' "$client" > "$tmp" || fail "could not write $tmp"
+    chmod 644 "$tmp" || fail "could not set mode 644 on $tmp"
+    mv -f "$tmp" "$record" || fail "could not install $record"
+    printf 'client=written\n'
+fi
+
 printf 'prepared=yes\n'
 exit 0
 REMOTE
@@ -610,7 +662,7 @@ REMOTE
     [ "$rc" -eq 0 ] \
         || die "could not prepare $_DEPLOY_APPS_PATH/$MANIFEST_NAME on $_DEPLOY_TARGET (the remote step exited $rc, see above)"
 
-    _deploy_absorb "the prepare step" "$out" prepared
+    _deploy_absorb "the prepare step" "$out" prepared client
     return 0
 }
 
@@ -1173,6 +1225,11 @@ _deploy_banner() {
         info "  routing: $_DEPLOY_APPS_PATH/traefik/dynamic/$MANIFEST_NAME.yml (Traefik reloads within a couple of seconds)"
     fi
     info "  logged:  $_DEPLOY_APPS_PATH/$MANIFEST_NAME/versions.log"
+    # The off-VPS backup repository this project files into, said out loud on
+    # the run that decided it: the record is the only thing on the server that
+    # knows, and an operator who changed `client:` should see where the next
+    # snapshot goes rather than find out at the next handover.
+    info "  client:  $_DEPLOY_CLIENT (${_DEPLOY_FACT[client]}, at $_DEPLOY_APPS_PATH/$MANIFEST_NAME/.kasbah-client — the backup repository this project files into)"
     if [ "${_DEPLOY_FACT[backup]}" = no-backup ]; then
         info "  backup:  none taken"
     else
@@ -1209,6 +1266,7 @@ cmd_deploy() {
     _deploy_check_compose_dst
     _deploy_check_sources
     _deploy_read_mail
+    _deploy_read_client
     # The hooks, backup and health blocks that get rendered into the helper. Read
     # and judged here, with the rest of the local checks: a manifest that names a
     # hook with no command, or a backup: block missing half its fields, is a fact

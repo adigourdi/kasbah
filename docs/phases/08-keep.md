@@ -25,7 +25,8 @@ elsewhere to 8.1–8.4 stays valid.
 | 2 | 8.1 | Independent of everything. Adds `prompt_typed` to `lib/prompt.sh`, which 8.2 reuses, and establishes the "remove a project's remote footprint" shape |
 | 3 | 8.3 | Needs 8.0. Moved **ahead of 8.2**: the plan's own order has destroy removing a backup stack and credentials that do not exist yet, so destroy's second half would land untested |
 | 4 | 8.2 | Needs 8.3's artifacts to remove and to assert removed; reuses 8.1's `prompt_typed` and its removal idioms |
-| 5 | 8.4 | Purely local — no rig, no SSH. The only unit nothing can block, so it makes the safest tail |
+| 5 | 8.4 | Purely local — no rig, no SSH. The only unit nothing can block |
+| 6 | 8.5 | *Inserted mid-run from 8.3's review.* Reads the record 8.3 writes, so it cannot precede it; small, and last because nothing depends on it |
 
 **Fully sequential**, by the operator's choice. 8.4 is genuinely parallel-safe
 (it touches only `lib/check.sh`, `tests/check_test.sh` and docs — not even the
@@ -252,6 +253,29 @@ load-bearing comments in real projects.
 compliant, with its comments intact, and a compliant one is left
 byte-identical.
 
+### 8.5 — `server status` and `check` learn about backups (S) *(inserted)*
+Carried out of 8.3's review, with a home rather than a hope. 8.3 writes a
+last-run record beside the backup config; **nothing reads it**. `server status`
+prints no backup line at all, `check` has no rule for it, and the stack has no
+healthcheck a `docker ps` would show — so a backup that has silently stopped is
+visible only in `docker logs`, on a feature whose entire value is that somebody
+notices before the restore.
+
+Deliverables: a backup section in `kasbah server status` following
+`_ss_print_mail`'s shape (enabled, repo base with credentials redacted, when it
+last ran and how it went, which repositories have no password); and a rule in
+`check --server` that fails a stack whose last run failed or is older than its
+cadence allows.
+
+**Watch out for:** Phase 5's rule — a command concluding something from the
+*absence* of a record must say so rather than inferring. A missing last-run file
+on a server whose stack has never fired once is not the same fact as a stack
+that stopped a month ago, and reporting them identically is how this rule
+becomes decoration.
+
+**Verify on:** rig — status reports a healthy stack, a never-run stack and a
+failed run distinctly; `check --server` fails the last of the three.
+
 ## Findings
 
 **Approved scope, 2026-08-26:** the whole phase, fully sequential, in the order
@@ -458,3 +482,156 @@ called bare under `errexit` — so an operator answering `n` and an operator
 hitting a failure saw the identical run. `drop` answering the same question in
 two sentences while `prune` answered it in silence is the inconsistency this
 project keeps rediscovering under a different name.
+
+**D12 — `deploy` records the effective `client` on the server.** Found before
+8.3 was briefed: `backup.md` puts each project's snapshots in
+`<repo_base>/<client>`, `project-manifest.md` documents `client:` as a manifest
+field defaulting to `name` — and **the manifest is never synced to a server**,
+so nothing on the VPS can know it. `client:` is also read by no code anywhere
+today. The backup stack runs *on* the VPS, so it needs the answer there.
+Resolved the way Phase 4 already established for hooks, backup and health:
+manifest data is **rendered** onto the server, never synced. `deploy` writes the
+effective client alongside the project; the backup run reads it, falls back to
+the project's directory name when it is absent — which is `client`'s documented
+default, so the fallback is correct rather than a guess — and **names every
+project that fell back**, so a project deployed before backups were enabled and
+filing into the wrong repo is visible instead of silent. Rejected: dropping
+per-client grouping and giving every project its own repo. That is a smaller
+change, and it discards the offboarding property — one client, one repo, handed
+over or deleted whole — that D7 had just invoked to give mail a repo of its own.
+
+**D13 — `server backup-prune` runs restic on the workstation, not the VPS.** The
+whole credential design is that full-access keys live only on operator machines;
+shipping them to the VPS for the duration of a prune would put them on the box
+the model assumes is compromised. The host argument is for *discovery* — which
+repositories exist, from the marker's `repo_base` and the server's project list
+— and the deletion runs locally. The workstation already needs Docker for
+`server init`'s bcrypt hashing, so the containerised restic of D1 works on both
+sides.
+
+### 8.3 — `--with-backup`
+
+Review verdict: **needs-work**, on one critical defect, one high, five
+medium/low and five matters of taste. Idempotency, the marker merge, the file
+modes and transport, D5, the POSIX runner, D12's blast radius and the whole
+interactivity sweep came back clean and independently verified — three
+consecutive inits left `/apps/.kasbah` byte-identical by sha256, container id
+and start time included.
+
+**The critical one is the shape to remember: a security check with a one-flag
+bypass, followed by a report asserting the check it never ran.** The probe built
+its `--env-file` with kasbah's keys **first** and the operator's after;
+`docker --env-file` is last-wins; and the reserved-key check covered only
+`KASBAH_BACKUP_*`. So `--backup-env=RESTIC_REPOSITORY=<somewhere else>`
+redirected the probe while the runner — which sets that variable *after* loading
+the operator's file — went on writing to the real target. Demonstrated on the
+rig: a **full-access** credential, the exact thing the feature exists to refuse,
+accepted with exit 0, stack started, marker written, under a summary line naming
+a URL nothing had contacted. And sticky, because the key lands in the operator
+half of the env file, which is copied through untouched for ever. Fixed in three
+layers, because each alone leaves a hole: the five `RESTIC_*` keys that redirect
+target or key material are reserved; kasbah's keys are written **last** so
+last-wins works for the invariant instead of against it; and an env file already
+carrying one is refused at read time rather than copied. **What made it
+invisible was that probe and runner disagreed silently** — two readers of one
+question, which is this project's most-repeated defect, in its most dangerous
+possible location.
+
+Second: **kasbah was less careful with a credential than the tool it wraps.**
+`repo_base` was printed verbatim in nine places, including refusal messages, on
+a URL whose whole point is that it may carry userinfo — while restic's own lines
+in the *same output* printed `kasbah-ops:***`. The marker holding it is mode 644
+by contract, so it is world-readable on the VPS. Now redacted on print and
+warned about once, not refused: the rig's harness embeds credentials, and
+refusing would put a rig-shaped constraint on production.
+
+Also fixed: `backup-prune`'s errors named `server init` and three flags it does
+not have (its tests asserted exit status and the word "unknown flag" only, so
+nothing saw it); a **fifth and sixth** unpinned copy of `KASBAH_RESERVED_NAMES`
+in a file whose own header explains why there must be one list; `_bk_read` and
+the runner disagreeing about a non-default `--data-path` under the apps path, so
+init would prompt for a repository the runner would never write to; the probe's
+refusal failing open on a listing that *errored* rather than listed zero; and a
+comment claiming `set -o pipefail` was "supported and used" in a script with no
+pipeline in it.
+
+**A wedged backup never slept again.** Pointed at a black-holed endpoint,
+`backup.sh once` printed `run started` and was still running with twelve restic
+threads five minutes later; the schedule loop never returns to `sleep`, so the
+container stays "running" and backs nothing up for ever, and
+`restart: unless-stopped` cannot help because the stack declared no healthcheck.
+`backup.md` promised a failed run is "slept off" — a *wedged* one was not slept
+off at all. Now bounded by a timeout with an operator-visible knob, with a
+healthcheck and a last-run record. **Carried to 8.5:** nothing yet *reads* that
+record — `server status` prints no backup line and `check` has no rule — and a
+safety mechanism with no consumer is indistinguishable from no safety mechanism,
+which is Phase 5's finding arriving for the third time in this project.
+
+**Two restic facts, both measured twice and both load-bearing.**
+
+*Exit status is a property of the content, not of the credential.*
+`forget <id> --prune` over the append-only endpoint with two snapshots that
+**differ** exits non-zero — but the fatal is on the *index* rebuild, not the
+snapshot. With two **identical** snapshots the same command over the same
+endpoint prints `403 Forbidden` and `unable to remove` and exits **0**. Any
+probe judging the status is judging its fixture. Every verdict here rests on the
+snapshot listing instead, and the design was vindicated end to end: pointed at
+the full-access endpoint, init refused **in exactly the case where restic exited
+0** — an exit-status probe would have waved it through.
+
+*`forget --keep-last 1` is a vacuous delete probe.* restic groups snapshots by
+host and paths before applying retention, and `docker run` assigns a random
+hostname — so two probe snapshots are two groups, each keeps its last, and
+nothing is removed **however much access the credential has**. That version
+passed against the full-access endpoint. Both the `--hostname` pin and the
+named-id spelling are load-bearing, and the rig test is what caught it.
+
+**8.0's own assertion was fragile, and is now fixed here.**
+`backup_harness_test.sh` asserted a non-zero exit as one of four checks on the
+same property. It was not wrong — the failure direction holds, and the other
+three rest on the listing — but it was reliable only because that fixture's two
+snapshots differ. Make them identical, a one-line change nobody would connect to
+the security property, and the suite goes red while the property still holds.
+The status is now **reported and not asserted**, with the reason in the comment;
+mutating the credential to the full-access endpoint still turns the suite red on
+three listing-based assertions, so nothing was hollowed out by removing it.
+
+Two more found by hand rather than by any suite, continuing this phase's
+pattern: the env file grew **one newline per run**, so it was re-shipped for ever
+and "a re-run changes nothing" was false — and the unit assertion that should
+have caught it was itself vacuous, because `$(…)` strips trailing newlines and
+both sides compared equal. And the probe repository was **un-prunable**: random
+container hostnames made every probe snapshot its own retention group, so it grew
+by two snapshots per init run, permanently.
+
+The fix round closed all twelve and cost one round. Two judgement calls stand as
+made. **`backup-prune`'s own restic is deliberately unbounded**, alone among
+every restic call: it is an interactive foreground command whose legitimate
+`prune` repack can take a very long time, and a bound there would fail exactly
+the runs that most need patience. The wedge this phase fixed was an *unattended
+loop that never slept again*; a foreground command with an operator watching it
+is a different animal. And **`forget --keep-last 1` alone no longer reddens the
+suite, which is correct**: the `--hostname` pin added for the prune-growth
+defect independently makes the policy spelling work. Mutating *both* halves —
+the spelling and a random hostname — reproduces the original defect and goes red
+end to end. Two independent fixes for one bug, and the named-id spelling is the
+stronger, because it does not depend on the pin.
+
+Two more the implementer found in its own work while fixing, both about how a
+result was read rather than what the code did — the fourth and fifth instances
+of that class this project has recorded:
+
+**`_server_init_usage` is an unquoted heredoc**, and two added lines used
+backticks, so `kasbah server init --help` printed `retention, applied by` and
+`one repository per` with the words in between **executed and discarded**. Now
+pinned by a `--help` test that also asserts every backup flag is listed.
+
+**The unit suite could exit non-zero while printing zero `FAIL` lines** — an
+unbound variable inside an `assert`'s `eval` killed it under `set -u` — and
+`grep -c FAIL` returning 0 was read as green across two rounds of edits. This is
+Phase 7's `echo "$(cmd) rc=$?"` finding wearing a different hat: **the count of
+failure lines is not the exit status, and only the exit status is the verdict.**
+Relatedly, the wedge case had to stop capturing through `$( )`: `timeout`
+signals only the process it starts, and descendants holding the capture's pipe
+kept the outer bound as ineffective as the inner one it stood in for — measured
+at 600 s against a 30 s bound before the harness cut it.

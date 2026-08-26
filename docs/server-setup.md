@@ -53,7 +53,12 @@ Default paths (override with `--apps-path`, `--data-path`):
 └── apps-path                        root:root 644 — the discovery pointer
 /apps/                               root owned by deploy user
 ├── .kasbah/
-│   └── server.json                  server marker (version, paths, limits, backup)
+│   ├── server.json                  server marker (version, paths, limits, backup)
+│   └── backup/                      only with --with-backup (see below)
+│       ├── compose.yml              the scheduler stack
+│       ├── backup.sh                the runner — POSIX sh, no bash on this path
+│       ├── env                      mode 600 — kasbah's repo_base, the operator's credentials
+│       └── repos/<repo>.pass        mode 600 — one encryption password per repository
 ├── data/                            bind-mount root for all projects
 │   └── traefik/letsencrypt/
 │       └── acme.json                touched as a file, chmod 600
@@ -350,7 +355,9 @@ when the proxy's image tag does, and the marker's presence is init's
   "data_path": "/apps/data",
   "cpu_limit": "3.6",
   "mem_limit": "7g",
-  "backup": { "enabled": true, "repo_base": "s3:https://…/kasbah-backups" }
+  "backup": { "enabled": true, "repo_base": "s3:https://…/kasbah-backups/",
+              "at": "02:00", "jitter": 1847, "timeout": 900,
+              "retention": { "daily": 7, "weekly": 4, "monthly": 3 } }
 }
 ```
 
@@ -413,11 +420,54 @@ and fails anything above (R04).
 
 ## With backup (`--with-backup`)
 
-*Not implemented yet — roadmap v0.3. `server init` hard-fails on
-`--with-backup` rather than pretending.* Optional. Installs restic, writes append-only S3-compatible credentials,
-and schedules a daily cron that snapshots each project's data bind
-mounts, hook-produced backups, and `.env`. Full design — repo layout,
-credential model, restore, pruning — in `backup.md`.
+Optional. Scaffolds a kasbah-owned scheduler stack that pushes restic
+snapshots off-box daily: each project's data bind mounts, hook-produced
+backups and `.env`, plus the shared mail stack's data into a repository of
+its own. Full design — repository layout, the two-secret credential model,
+restore and pruning — in `backup.md`.
+
+**It installs nothing.** restic runs as a container
+(`restic/restic:<pinned>`), so this section does not weaken the promise at
+the top of this file. No apt, no sudo, no binary download.
+
+What lands under the apps path:
+
+| Path | Mode | Owner | On a re-run |
+|---|---|---|---|
+| `.kasbah/backup/` | 700 | kasbah | — |
+| `.kasbah/backup/compose.yml` | 644 | kasbah | Re-shipped whenever its bytes differ, like Traefik's three |
+| `.kasbah/backup/backup.sh` | 755 | kasbah | Re-shipped on difference; a change restarts the container |
+| `.kasbah/backup/env` | 600 | **split** | `KASBAH_BACKUP_REPO_BASE` is kasbah's and rewritten by name; every other line is the operator's and copied through untouched — the same split `mail/.env` has |
+| `.kasbah/backup/repos/` | 700 | kasbah | — |
+| `.kasbah/backup/repos/<repo>.pass` | 600 | operator | **Written once, never rewritten.** A password kasbah could overwrite is a repository kasbah could orphan |
+| `.kasbah/backup/state/` | 700 | kasbah | The one writable path in an otherwise read-only tree |
+| `.kasbah/backup/state/status` | 644 | kasbah | The last-run record — when the run started and finished, how it went, which repositories, and the deadline the healthcheck reads |
+
+Docker objects: compose project and container `kasbah-backup`, network
+`kasbah-backup_default`, and the named volume `kasbah-backup-cache`.
+
+The idempotency rules mirror mail's, and for the same reasons:
+
+- **`--no-backup` on a server that already has backups leaves them alone.**
+  Init scaffolds; it does not remove. Taking the stack down is
+  `docker compose -p kasbah-backup down` on the server, and removing it
+  entirely is `kasbah server destroy`.
+- The repository base is asked only when the marker does not already record
+  one; the environment block is asked only on the run that creates the
+  file; a password is asked only for a repository that has none. Everything
+  with a documented default — the time, the jitter, the retention counts —
+  is read back off the marker rather than re-asked, the same rule the
+  dashboard credentials follow.
+- The marker's `backup` object **merges**, it never replaces — including
+  `backup.retention`. This is the field the compatibility rule above
+  already anticipated.
+
+**Init refuses rather than pretending** when the storage credential turns
+out not to be append-only. Before the stack is started, it writes a probe
+repository, takes two snapshots, attempts a real delete and counts again;
+if the count drops, the credential can destroy history and init stops with
+the stack unstarted. See `backup.md` → Credentials for the three refusals
+and why the exit status of the delete is not what decides it.
 
 ## With mail (`--with-mail`)
 
@@ -616,8 +666,10 @@ server passes to a client or another operator. Every container keeps
 running, projects **and** Traefik: the sites stay up. What's removed is
 kasbah's management layer:
 
-- `/apps/.kasbah/` (server marker)
-- backup cron + S3 credentials (agency-owned secrets never transfer)
+- `/apps/.kasbah/` (server marker, and the backup scheduler stack with its
+  credentials — agency-owned secrets never transfer). The repositories
+  themselves are **not** removed: they are operator property, and an
+  append-only credential could not delete them in any case
 - per project: `versions.log(.gz)`, `scripts/` helpers, `.deploy.lock`. Not
   `kasbah.yml` — the manifest is never synced to a server (`project-manifest.md`)
 

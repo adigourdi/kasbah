@@ -59,6 +59,13 @@ KASBAH_EXIT_COMPLIANCE_FAIL=6  # `kasbah check` recorded one or more failures
 # constant, so "which Traefik does kasbah ship" has one answer.
 KASBAH_TRAEFIK_IMAGE=traefik:v3.7.10
 
+# The restic kasbah runs, everywhere it runs one. kasbah installs no packages
+# (docs/phases/08-keep.md D1), so restic is always a container: the scheduled
+# backup stack on the VPS, the credential probe `server init --with-backup`
+# runs there, and `server backup-prune` on the workstation. One pin, so all
+# three speak the same repository format.
+KASBAH_RESTIC_IMAGE=restic/restic:0.18.0
+
 # Where the server marker lives when nobody said otherwise. `server init`
 # defaults its --apps-path to this, and every project command finds the marker
 # there and reads the real paths back out of it.

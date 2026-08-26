@@ -525,7 +525,10 @@ case "$last" in
     # project is the prepare step — whatever apps path the marker steered it to.
     "'bash' '-s' '--' "*" 'demo'"*)
         [ -z "${PREPARE_OUT+set}" ] || { printf '%s' "$PREPARE_OUT"; exit 0; }
-        printf 'prepared=yes\n' ;;
+        # Two keys, because the prepare step also renders the effective
+        # `client:` onto the server — the manifest never gets there, and the
+        # backup runner that reads it runs there (docs/phases/08-keep.md D12).
+        printf 'prepared=yes\nclient=%s\n' "${PREPARE_CLIENT:-written}" ;;
     *"setup-env.sh' '--drift' "*)
         [ -z "${DRIFT_OUT+set}" ] || { printf '%s' "$DRIFT_OUT"; exit "${DRIFT_RC:-0}"; }
         [ -z "${DRIFT_RC:-}" ] || exit "$DRIFT_RC"
@@ -1203,6 +1206,78 @@ calls=$(<"$call_log")
 assert '[ "$rc" = "0" ]' "a project with no mail: block deploys (rc $rc: $out)"
 assert '! grep -qF "/apps/mail" <<<"$calls"' \
     "and nothing looks for a mail stack it never claimed ($(grep -F "/mail" <<<"$calls"))"
+rm -rf "$project/.kasbah"
+
+# --- The effective client, rendered onto the server (D12) --------------------------
+# `client:` groups a project's off-VPS backups into one restic repository and
+# defaults to `name`. The manifest never reaches a VPS, and the backup runner
+# that needs the answer runs there — so deploy renders it, the way Phase 4
+# established for hooks, backup and health. What is asserted is the value that
+# crossed the wire, not kasbah's summary.
+prepare_arg5() {
+    # Field 5 of the prepare step's argument list: apps, data, name, client.
+    grep -F "|'bash' '-s' '--' '/apps' '/apps/data' 'demo'" <<<"$(<"$call_log")" \
+        | head -1 | sed "s|.*'--' '/apps' '/apps/data' 'demo' '\([^']*\)'.*|\1|"
+}
+
+cp "$tmpdir/kasbah.yml.orig" "$project/kasbah.yml"
+out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a manifest with no client: deploys (rc $rc: $out)"
+assert '[ "$(prepare_arg5)" = "demo" ]' \
+    "and the record written to the server is the project name, which is what client: defaults to (got '$(prepare_arg5)')"
+assert 'grep -qF ".kasbah-client" <<<"$out"' \
+    "the run names the file it wrote (said '$out')"
+
+cp "$tmpdir/kasbah.yml.orig" "$project/kasbah.yml"
+printf '\nclient: acme-corp\n' >> "$project/kasbah.yml"
+out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "a manifest with client: deploys (rc $rc: $out)"
+assert '[ "$(prepare_arg5)" = "acme-corp" ]' \
+    "and the manifest's client is what crosses the wire (got '$(prepare_arg5)')"
+assert 'grep -qF "client:  acme-corp" <<<"$out"' \
+    "and the run says which repository the project files into (said '$out')"
+
+# The charset is `name`'s, because the value becomes a path segment of a
+# repository URL nothing parses.
+for bad in Acme "acme corp" "acme/corp" "9acme" "-acme"; do
+    cp "$tmpdir/kasbah.yml.orig" "$project/kasbah.yml"
+    printf '\nclient: "%s"\n' "$bad" >> "$project/kasbah.yml"
+    out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
+    assert '[ "$rc" != "0" ]' "client '\''$bad'\'' is refused (rc $rc: $out)"
+    assert 'grep -qF "client" <<<"$out"' "naming the field (said '\''$out'\'')"
+    assert '[ ! -s "$ssh_log" ]' "before any connection (ssh saw: $(cat "$ssh_log"))"
+done
+
+# And the four names kasbah owns, `mail` above all: that repository holds every
+# mailbox on the server (docs/phases/08-keep.md D7), and a project claiming it
+# would put all of them into one client's handover.
+for bad in mail traefik data backups; do
+    cp "$tmpdir/kasbah.yml.orig" "$project/kasbah.yml"
+    printf '\nclient: %s\n' "$bad" >> "$project/kasbah.yml"
+    out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
+    assert '[ "$rc" != "0" ]' "client '\''$bad'\'' is refused as reserved (rc $rc: $out)"
+    assert 'grep -qF "reserved" <<<"$out"' "and says why (said '\''$out'\'')"
+done
+
+# An explicitly empty value is the same as an absent one: `client:` is optional,
+# and "" is how a scaffolder writes "not set".
+cp "$tmpdir/kasbah.yml.orig" "$project/kasbah.yml"
+printf '\nclient: ""\n' >> "$project/kasbah.yml"
+out=$( cd "$project" && deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" = "0" ]' "an empty client: deploys (rc $rc: $out)"
+assert '[ "$(prepare_arg5)" = "demo" ]' \
+    "and falls back to the project name (got '$(prepare_arg5)')"
+
+# The record is not written by kasbah's summary but by the far side, so a
+# prepare step that did not report writing it is a failure and not a shrug.
+cp "$tmpdir/kasbah.yml.orig" "$project/kasbah.yml"
+out=$( cd "$project" && PREPARE_OUT="prepared=yes" deploy_cli deploy@vps ); rc=$?
+assert '[ "$rc" != "0" ]' "a prepare step that reports no client fails (rc $rc: $out)"
+assert 'grep -qF "reported no client" <<<"$out"' "naming what was missing (said '$out')"
+
+cp "$tmpdir/kasbah.yml.orig" "$project/kasbah.yml"
+# The successful deploys above each recorded project state; the env cases below
+# assert that a *refused* one records none.
 rm -rf "$project/.kasbah"
 
 # --- The env step ---------------------------------------------------------------

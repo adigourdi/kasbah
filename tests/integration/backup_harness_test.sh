@@ -129,15 +129,23 @@ survivor="${ids[1]}"
 # would read as a refusal: `--keep-last 0` gives "no policy was specified",
 # adding `--unsafe-allow-remove-all` gives "not allowed unless a snapshot filter
 # option is specified" (restic 0.18.0, against a repository with snapshots in
-# it). Three independent things are asserted, because any one of them alone
-# has a way of passing for the wrong reason: a non-zero status, the server's own
-# 403 in the output, and the snapshot still being there afterwards.
+# it).
+#
+# The verdict is the snapshot listing, never the exit status. restic's status
+# here is a property of the *content*, not of the credential: with two snapshots
+# that differ, prune has blobs of its own to remove and the index rebuild 403s,
+# giving a non-zero exit; with two identical snapshots the same command over the
+# same append-only endpoint prints `403 Forbidden` and `unable to remove` and
+# still exits 0 (both measured, restic 0.18.0). This fixture's snapshots differ,
+# so the status is reliably non-zero here — but reliable because of a fixture
+# detail nobody would connect to the security property, so it is reported and
+# not asserted. What is asserted: the server's own 403, and the snapshot still
+# being listed afterwards.
 out=$(rig_restic "$vps_repo" forget "$victim" --prune 2>&1); rc=$?
-assert '[ "$rc" != "0" ]' \
-    "forget $victim over the append-only endpoint fails (exit $rc)
-        output: $out"
 assert 'grep -qF "403 Forbidden" <<<"$out"' \
-    "and fails because the server refused it, not for a reason of restic's own (output: $out)"
+    "forget \$victim over the append-only endpoint is refused by the server, not by
+        restic's own argument check (exit \$rc, which is not the verdict)
+        output: \$out"
 
 mapfile -t after_refusal < <(snapshot_ids "$vps_repo")
 assert '[ "${#after_refusal[@]}" = "2" ]' \
