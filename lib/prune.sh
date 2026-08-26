@@ -1064,8 +1064,15 @@ cmd_server_prune() {
     fi
     [ "${#_PR_REMOVE[@]}" -gt 0 ] || return 0
 
-    prompt_confirm yes \
-        "remove ${#_PR_REMOVE[@]} image tag(s) from $_PR_TARGET?" "$_PR_YES"
+    # Not a bare call: under errexit a declined confirmation would exit 1 with
+    # nothing printed, so an operator answering `n` and an operator hitting a
+    # failure would see the same run. `drop` answers the same question the same
+    # way.
+    if ! prompt_confirm yes \
+        "remove ${#_PR_REMOVE[@]} image tag(s) from $_PR_TARGET?" "$_PR_YES"; then
+        err "not confirmed — nothing was removed"
+        exit 1
+    fi
 
     _prune_remove
     return 0

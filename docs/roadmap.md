@@ -71,7 +71,7 @@ successfully.
 - `kasbah check --fix` for C01-C05
 - Dashboard-optional Traefik template
 - `kasbah drop [--prune]` — remove a project; `--prune` also deletes
-  data + backups (double confirmation)
+  data + backups (double confirmation) ✅
 - `kasbah server destroy` — de-brand a VPS for handover; containers
   keep running (double confirmation)
 - Off-VPS backups: `server init --with-backup` — restic → S3-compatible,

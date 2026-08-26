@@ -772,6 +772,34 @@ for f in lib/prune.sh lib/versions_log.sh lib/common.sh lib/build_push.sh \
     assert '[ -z "$dups" ]' "$f defines each function once (duplicates: $dups)"
 done
 
+# --- A declined confirmation says so -----------------------------------------------------------------------
+# Under errexit a bare `prompt_confirm` would exit 1 with nothing printed, so an
+# operator answering `n` and an operator hitting a failure read the same run.
+decline_out=$(cd "$repo_dir" && printf 'n\n' | script -qec \
+    "bash -c '. lib/common.sh; . lib/prompt.sh; \
+       if ! prompt_confirm yes \"remove 3 image tag(s) from you@vps?\"; then \
+         err \"not confirmed — nothing was removed\"; exit 1; fi'" /dev/null 2>&1)     && decline_rc=0 || decline_rc=$?
+assert '[ "$decline_rc" != 0 ]' "declining the prune confirmation is a non-zero exit (got $decline_rc)"
+assert 'grep -q "not confirmed" <<<"$decline_out"' \
+    "declining the prune confirmation says so rather than exiting in silence"
+# The pair: confirming must NOT print it, or the needle above would match a run
+# that went ahead.
+accept_out=$(cd "$repo_dir" && printf 'y\n' | script -qec \
+    "bash -c '. lib/common.sh; . lib/prompt.sh; \
+       if ! prompt_confirm yes \"remove 3 image tag(s) from you@vps?\"; then \
+         err \"not confirmed — nothing was removed\"; exit 1; fi; echo WENT-AHEAD'" /dev/null 2>&1)
+assert 'grep -q "WENT-AHEAD" <<<"$accept_out"' "confirming the prune confirmation proceeds"
+assert '! grep -q "not confirmed" <<<"$accept_out"' \
+    "confirming does not print the decline message"
+
+# Two halves, because either alone passes a bare call: the string cmd_server_prune
+# prints, and the guarded shape that makes it reachable. A bare `prompt_confirm`
+# under errexit exits before any message it is paired with.
+assert 'grep -q "not confirmed — nothing was removed" "$repo_dir/lib/prune.sh"' \
+    "cmd_server_prune prints the decline message this suite asserts"
+assert 'grep -q "if ! prompt_confirm" "$repo_dir/lib/prune.sh"' \
+    "cmd_server_prune tests the confirmation rather than calling it bare"
+
 if [ "$fail" = 0 ]; then
     echo "prune: ok"
 else

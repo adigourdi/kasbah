@@ -374,8 +374,10 @@ server status` surfaces it.
   so Traefik sees a single atomic replace event and reloads.
 - **Rollback** — kasbah reads `traefik-dynamic.yml` from
   `git archive v<target>` and rsyncs it to the same destination.
-- **Drop** (roadmap v0.3) — `rm /apps/traefik/dynamic/<manifest.name>.yml`
-  before `docker compose down`. (`kasbah server destroy` deliberately
+- **Drop** — `rm /apps/traefik/dynamic/<manifest.name>.yml` before
+  `docker compose down`. That order is the point: the route goes first, so a
+  run that dies between the two leaves a stopped project nothing is routing to,
+  rather than a live route onto nothing. (`kasbah server destroy` deliberately
   leaves fragments in place — a handover keeps every site routing.)
 
 ## What projects may NOT do

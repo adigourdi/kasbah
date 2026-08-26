@@ -60,6 +60,12 @@ case "$1" in
         if prompt_choice "$2" "$3" "$4" "${5:-}"; then echo "answer=yes"; else echo "answer=no"; fi ;;
     confirm)
         if prompt_confirm "$2" "$3" "${4:-}"; then echo "answer=yes"; else echo "answer=no"; fi ;;
+    typed)
+        if prompt_typed "$2" "$3" "$4" "${5:-}"; then echo "answer=match"; else echo "answer=mismatch"; fi ;;
+    bad-given-typed)
+        prompt_typed yes demo "Name?" no ;;
+    bad-expected-typed)
+        prompt_typed yes "" "Name?" ;;
     bad-outvar)
         prompt_value domain "Domain?" "" 'ANSWER; rm -rf /' ;;
     bad-given)
@@ -229,6 +235,44 @@ assert 'grep -qF "answer=no" <<<"$tty_out"'       "n at the confirmation means n
 run_tty '' confirm yes "Reset acme.json?"
 assert '[ "$tty_rc" != "0" ]'                     "EOF at the confirmation fails rather than proceeding (exit $tty_rc)"
 assert 'grep -qF -- "--yes" <<<"$tty_out"'        "naming the flag (got '$tty_out')"
+
+# --- Case 8: the typed half of a double confirmation --------------------------
+# What is expected is a parameter, not a noun this function knows: `drop` types
+# a project name at it and `server destroy` a hostname, and one function is what
+# keeps "double confirmation" meaning the same in both (08-keep.md, D10).
+run_closed typed yes demo "Type the name:" yes
+assert '[ "$rc" = "0" ]'              "--yes answers the typed confirmation without a terminal (exit $rc)"
+assert '[ "$out" = "answer=match" ]'  "as a match (got '$out')"
+assert '[ -z "$err" ]'                "silently (got '$err')"
+
+run_closed typed yes demo "Type the name:"
+assert '[ "$rc" != "0" ]'                     "no flag and no terminal fails (exit $rc)"
+assert 'grep -qF -- "--yes" <<<"$err"'        "naming --yes (got '$err')"
+assert '! grep -qF -- "--no-yes" <<<"$err"'   "and nothing else, since there is no --no-yes (got '$err')"
+assert 'grep -qF "Type the name:" <<<"$err"'  "repeating the question (got '$err')"
+assert '[ -z "$out" ]'                        "and answering nothing (got '$out')"
+
+run_tty $'demo\n' typed yes demo "Type the name:"
+assert 'grep -qF "answer=match" <<<"$tty_out"'    "the expected string typed back is a match (got '$tty_out')"
+run_tty $'vps.example.com\n' typed yes vps.example.com "Type the host:"
+assert 'grep -qF "answer=match" <<<"$tty_out"'    "and so is a hostname — the function bakes in no noun (got '$tty_out')"
+run_tty $'  demo  \n' typed yes demo "Type the name:"
+assert 'grep -qF "answer=match" <<<"$tty_out"' \
+    "surrounding blanks are read's to strip, here as in prompt_value (got '$tty_out')"
+run_tty $'demonstration\n' typed yes demo "Type the name:"
+assert 'grep -qF "answer=mismatch" <<<"$tty_out"' \
+    "a name the expected one is a prefix of is not it (got '$tty_out')"
+run_tty '' typed yes demo "Type the name:"
+assert '[ "$tty_rc" != "0" ]'                     "EOF at the typed prompt fails rather than proceeding (exit $tty_rc)"
+assert 'grep -qF -- "--yes" <<<"$tty_out"'        "naming the flag (got '$tty_out')"
+
+run_closed bad-given-typed
+assert '[ "$rc" != "0" ]'                             "a typed confirmation given a 'no' fails (exit $rc)"
+assert 'grep -qF "expected yes or empty" <<<"$err"'   "because declining is not running the command (got '$err')"
+run_closed bad-expected-typed
+assert '[ "$rc" != "0" ]'                                  "and one given nothing to expect fails (exit $rc)"
+assert 'grep -qF "nothing for the operator to type" <<<"$err"' \
+    "as the caller mistake it is — an empty expectation any answer could match (got '$err')"
 
 run_closed bad-given-choice
 assert '[ "$rc" != "0" ]'                        "a choice given a value that is neither answer fails (exit $rc)"

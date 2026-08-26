@@ -361,3 +361,100 @@ the ready line printed and `backup_env.sh` **absent**, and the harness suite
 exits 2 — the environment-is-wrong code — instead of failing. The `--no-auth`
 case is also the direct proof that F5's fix bites: that server passed the old
 single-404 gate and is refused by the new one.
+
+### 8.1 — `drop [--prune]`
+
+Review verdict: **needs-work**, on eight defects and four matters of taste. The
+part that could destroy a server came back clean and was left alone: the
+reviewer attacked the `rm -rf` path directly with `../beta`, `alpha/../beta`,
+`.`, `..`, `/`, `-rf`, `Demo`, empty, an embedded `;`, an embedded newline and
+CRLF — every one refused — and independently re-ran two of the implementer's
+mutations, both red. **The payload's own guard is the last word**, and that is
+the layer that matters: a payload on the far side of ssh can source nothing and
+must not trust an argument this side assembled.
+
+Dispositions:
+
+- **A, B (fix) — the failure path lies twice.** A failed image removal printed
+  *above* the route and `down` lines, under a comment claiming lines were
+  collected precisely so the report reads in the order the far side did the
+  work. Only the success branch was collected. And the closing paragraph printed
+  unconditionally, so a failed run's last line was "alpha is off <host>, and
+  everything a redeploy needs is still there" — then exit 1. The same exit also
+  skipped `state_record last_server` on a run that had reached and changed the
+  server. **The ordering defect was found by hand, fixed once, and left on the
+  failure path — which is where the operator is least able to check the claim.**
+- **C (fix) — `--prune`'s refusal gave a reason that was false in two of the
+  three cases that triggered it.** When the unreadable compose belonged to a
+  *different* project, the message named this one. And when **this** project's
+  directory held no `compose.yml` at all, it refused with "Fix the compose.yml
+  above" — naming a file that is not there, leaving a hand-run `rm -rf` on the
+  server as the only remedy, which is the exact act `--prune` exists to avoid. A
+  deploy that dies between `mkdir` and the compose rsync leaves precisely that
+  state. Now: refusal kept where it is defensible, with the true reason and the
+  right project named; and `--prune` proceeds when there is no record to destroy.
+- **D (fix) — a whole validation layer could not fire.** `_drop_check_name` ran
+  one line *after* `manifest_require`, which already enforces the identical
+  regex and the identical reserved list, so every hostile manifest came back in
+  `manifest.sh`'s words and never `drop.sh`'s. Verified before ordering the
+  deletion. Its 24 unit assertions were exercising the dead copy, not the guard
+  — **a test suite can be thorough about the wrong layer and read as coverage.**
+- **E (fix) — the plan and the act disagreed about which containers exist.** The
+  probe filtered on the project label alone; `docker compose down` additionally
+  requires `com.docker.compose.oneoff=False`. A container carrying only the
+  project label survives `down` with rc=0, so the run reported "brought down"
+  while the container the confirmation had listed was untouched, and
+  `_drop_anything_to_do` would report work outstanding forever.
+- **F (fix ×4) — message defects:** a `build-push` hint printed in the cliff case
+  where nothing was removed and the images are all still there; an unparseable
+  registry tolerated while a parseable-but-invalid one killed the run before the
+  plan printed, with a message never mentioning `drop`; named volumes never
+  removed by `--prune` and nowhere said; and the plan going to stdout while the
+  outcome went to stderr, so `kasbah drop > log` captures what was planned and
+  not what happened.
+- **G (fix ×3) — test gaps**, one of them the "reading nothing" vacuity pattern:
+  `[ -e $data/$neighbour ] || [ -e $apps/$neighbour ]` where the right-hand side
+  is always true because that project is never dropped, so the assertion could
+  not fail.
+- **H (fix ×3) — taste:** `drop.sh` sourced `server_mail.sh` → `server_init.sh`
+  (~2000 lines) on *every* drop, while a comment eleven hundred lines down
+  explains declining to source `deploy.sh` on exactly that ground; the payload's
+  hardcoded reserved-name list had nothing pinning it to `KASBAH_RESERVED_NAMES`
+  (now pinned by assertion, the `norm_path_test.sh` answer to the same problem);
+  and `keep` rows printed under a heading reading `removed`.
+- **Reject:** unquoted `for repo in $_DROP_REPOS`. Same shape as `prune.sh:804`
+  — matching the established idiom is right, and changing one of two copies is
+  the drift.
+
+**Three round trips, not the two the idiom uses** — `marker_read`, the batched
+probe, the act — and that is correct here. Folding the marker in would need a
+*fifth* copy of the path-normalising helper on the far side, and
+`tests/norm_path_test.sh` hardcodes the four it knows; a fifth would be drift no
+suite can see. And `lib/ssh.sh` multiplexes over one ControlMaster, so none of
+the three is a new sshd session and `maxstartups 10` is not in play. The brief
+asserted the two-trip rule; the implementer was right to push back.
+
+**The plan's own watch-out contradicted `cli.md`.** The watch-out said image
+removal covers "project-specific pulls only if unreferenced"; `cli.md` says "the
+project's **loaded** images", which is `build-push`'s `docker load` set — built
+images. Built-images-only is implemented, both the implementer and the reviewer
+independently judged `cli.md` right, and the reason is the stronger argument: a
+"pulls if unreferenced" rule would let dropping one project reach images no
+compose file attributes to it, which is the very thing the ownership rule
+exists to prevent. **The watch-out above is corrected; `cli.md` wins.**
+
+**A plain `drop` leaves a redeploy needing `--allow-stopped`.** `versions.log`
+survives by design, so `rd_outgoing_preflight` sees "this project has deployed
+here before" while the hook and backup containers no longer exist, and refuses.
+It bites only projects declaring hooks or `backup:` — `--prune` removes the
+record, so that path is a clean first deploy. `cli.md` promised a later deploy
+"fully resurrects the project" with no caveat, which was wrong as written.
+`drop` now prints the exact return command, flag included when the manifest
+needs it, because the doc nobody rereads is not where that belongs.
+
+**Found in a neighbouring command and fixed here:** declining
+`kasbah server prune` exited 1 with **nothing printed** — `prompt_confirm`
+called bare under `errexit` — so an operator answering `n` and an operator
+hitting a failure saw the identical run. `drop` answering the same question in
+two sentences while `prune` answered it in silence is the inconsistency this
+project keeps rediscovering under a different name.

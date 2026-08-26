@@ -589,27 +589,99 @@ Rollback restores image + sync'd config only. It does **not** restore
 data bind mounts or `.env` secret values. For schema rollback, use
 `pre-rollback` hooks.
 
-### `kasbah drop [USER@HOST] [--prune]` *(roadmap v0.3)*
+### `kasbah drop [USER@HOST] [--prune] [--yes]`
 
 Remove the project from the VPS. Plain `drop` is reversible:
 
 Removes:
 - containers (`docker compose down`)
 - the Traefik fragment (`/apps/traefik/dynamic/<name>.yml`)
-- the project's loaded images (every `:<version>` tag + `:current`)
+- the project's own images — every tag of every repository the project's
+  server-side `compose.yml` declares on a service with a `build:` key
 
 Keeps:
 - `/apps/<name>/` (compose, `.env`, manifest, versions.log, scripts)
 - `/apps/data/<name>/` (bind mounts)
 - backups (on-VPS and off-VPS)
+- named volumes — `down` runs without `-v`, because drop keeps data
+- pulled images (`postgres:16`, `nginx:alpine`) — nothing declares them as
+  this project's, and unpicking that is `kasbah server prune`'s job
 
-A later `kasbah deploy` fully resurrects the project (images must be
-re-shipped via `build-push` first).
+**Which images are the project's, exactly.** The rule is `server prune`'s, in
+the same code (`_prune_project_repos`), narrowed to one project — and then
+widened in one direction: drop takes *every* tag of a repository it owns, with
+no age window and no last-three floor, because after a drop there is no version
+to roll back to. A repository **any other project on the server also declares**
+is kept. And while **any** project's `compose.yml` cannot be read or parsed, no
+repository anywhere is provably single-owner, so **no image is removed at all**
+— on any project — and the report names who made it unknowable. This is the
+same cliff `server prune` stands on, and for the same reason: a wrong deletion
+here takes another project's image with it.
 
-`--prune` additionally deletes `/apps/<name>/`, `/apps/data/<name>/`, and
-the project's on-VPS backups — everything except the off-VPS restic repo,
-which is operator property (see `backup.md`). Double confirmation (typed
-project name).
+A later `kasbah deploy` brings the project back; the images must be re-shipped
+with `build-push` first. **A project that declares hooks or `backup:` needs
+`kasbah deploy --allow-stopped` for that first return trip** — `versions.log`
+survives a plain drop, so the remote preflight sees a project that has deployed
+here before while the containers those steps need no longer exist, and refuses
+rather than skipping them silently. `drop` prints the exact return command,
+flag included when the manifest needs it. (`--prune` removes the record, so that
+path is an ordinary first deploy and needs nothing.)
+
+`--prune` additionally deletes `/apps/<name>/`, `/apps/data/<name>/`, and the
+project's on-VPS backups (`/apps/<name>/backups/` — **not** the server's
+top-level `/apps/backups/`) — everything except the off-VPS restic repo, which
+is operator property (see `backup.md`). It also **releases the project's claim on
+the shared mail stack**: the domain leaves `<apps>/mail/kasbah.yml`, read and
+re-rendered through the same normalising reader `deploy`, `check --server`,
+`server status` and `add-mail-domain` use, so all five answer "does this stack
+serve X" identically. Two deliberate exclusions — a project claiming the
+registry's `primary_domain` is refused (releasing it would unmake the stack for
+every other project), and docker-mailserver's own `postfix-virtual.cf` alias is
+left alone, with the `setup alias del` line printed instead. The reversal is
+`kasbah server add-mail-domain USER@HOST <domain>`. Plain `drop` keeps the
+claim, and says so.
+
+`--prune` behaves three ways when a compose file cannot be read, because the
+three have different reasons:
+
+- **Another project's compose is unreadable** — refused, naming *that* project.
+  No repository here is provably single-owner, so none of this project's tags
+  can be removed; and `--prune` would stop it being a project on this server,
+  after which nothing can attribute those tags to it again. Plain `drop` still
+  works and changes nothing a redeploy cannot undo.
+- **This project's own compose is unreadable or unparseable** — refused, because
+  the deletion would take the only record of what this project builds with it.
+  Here "fix the compose.yml" is a remedy that exists.
+- **This project's directory holds no `compose.yml` at all** — **proceeds.**
+  There is no record to destroy and nothing to fix; the deletion removes no
+  images, says so, and names the orphan tags it leaves behind (repositories
+  carrying a `:current` that no readable project claims — `:current` is written
+  by `deploy` and nothing else, so stock images never appear in that list). A
+  deploy that died between `mkdir` and the compose rsync leaves exactly this
+  state, and refusing it would leave a hand-run `rm -rf` on the server as the
+  only way out.
+
+The plan and the outcome both go to **stdout**; only `warning:` and `error:`
+lines go to stderr, so `kasbah drop > log` captures what was planned *and* what
+happened. If anything is still wearing the project's compose label after
+`down` — `docker compose` selects on `com.docker.compose.oneoff=False`, so an
+operator's one-off container survives it — the outcome names it rather than
+claiming the project came down.
+
+**Double confirmation:** a yes/no question, then the project name typed back.
+Either decline exits 1 having changed nothing. `--yes` skips both, for scripts;
+without a terminal an unanswered prompt is a hard fail naming `--yes`.
+
+Takes `<project>/.deploy.lock` for the whole operation, the same exclusive lock
+`remote-deploy.sh` holds, so a drop cannot interleave with a deploy's hooks and
+retags. A held lock and a missing `flock` are reported as themselves, never as
+each other.
+
+Given without a `USER@HOST` it asks the server this project last talked to, and
+a run that reaches one records it as `last_server` (`project-manifest.md`).
+
+Exits 4 on a host with no server marker; 1 on a decline, a held lock, a missing
+`flock`, or a refused `--prune`.
 
 ### `kasbah history [USER@HOST] [--all]`
 

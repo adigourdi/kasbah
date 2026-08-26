@@ -175,3 +175,36 @@ prompt_secret() {
         warn "an answer is required"
     done
 }
+
+# prompt_typed <flag> <expected> <question> [given]
+#   given: "yes" as parsed from --<flag>, empty when it was not passed.
+# The second half of a double confirmation (docs/phases/08-keep.md → D10):
+# prompt_confirm asks whether, this asks *which*, and the operator answers by
+# typing the name back. Answer is the exit status, 0 only on an exact match.
+#
+# What is expected is a parameter because two commands type two different
+# things at it — `drop` a project name, `server destroy` a hostname — and one
+# function is what keeps "double confirmation" meaning the same in both.
+#
+# A mismatch returns 1 and is never re-asked. Unlike an unparsable y/n, a name
+# that is not the one asked for is an answer: it says the operator has some
+# other target in mind, and offering a second attempt turns the one deliberate
+# step of the confirmation into a typing exercise.
+prompt_typed() {
+    local _p_flag="$1" _p_expected="$2" _p_question="$3" _p_given="${4:-}" _p_answer
+
+    [ -n "$_p_expected" ] \
+        || die "internal: prompt_typed $_p_flag was given nothing for the operator to type"
+    case "${_p_given%$'\r'}" in
+        yes) return 0 ;;
+        '')  ;;
+        *)   die "internal: prompt_typed $_p_flag was given '$_p_given' (expected yes or empty)" ;;
+    esac
+
+    [ -t 0 ] || _prompt_give_up "stdin is not a terminal" "$_p_question" "--$_p_flag"
+
+    read -r -p "$_p_question " _p_answer \
+        || _prompt_give_up "no answer given" "$_p_question" "--$_p_flag"
+    [ "${_p_answer%$'\r'}" = "$_p_expected" ] || return 1
+    return 0
+}
