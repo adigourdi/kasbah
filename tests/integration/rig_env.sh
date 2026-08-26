@@ -70,6 +70,28 @@ RIG_WORK_TIMEOUT="${RIG_WORK_TIMEOUT:-120}"
 RIG_HOME=""
 RIG_SHIM_DIR=""
 
+# The rig's backup harness: two restic/rest-server endpoints over one store, one
+# started `--append-only` (what a VPS is given) and one not (what the operator
+# prunes with). `rig.sh up` writes the addresses and credentials here after both
+# answer, and `rig.sh down` removes the file, so its absence means "no usable
+# harness" and never "stale credentials". Absent is not fatal on its own: only a
+# suite that asks for a backup endpoint needs one.
+#
+# Defines: RIG_BACKUP_{URL,USER,PASSWORD,REPO_BASE} and the ADMIN_ four.
+# REPO_BASE is a restic `rest:` URL with the credential in it and a trailing
+# slash, so `$RIG_BACKUP_REPO_BASE<repo>` is a repository — kasbah never parses
+# it (08-keep.md, D5).
+RIG_BACKUP_ENV="$RIG_REPO_DIR/tests/rig/backup_env.sh"
+# shellcheck source=/dev/null
+[ ! -f "$RIG_BACKUP_ENV" ] || . "$RIG_BACKUP_ENV"
+
+# Pinned, like every other image a suite depends on: restic's own output is what
+# the append-only assertion is read from, and a version moving underneath it is
+# a failure nobody would diagnose. Backups run as a container per 08-keep.md D1,
+# so this is also the shape production uses.
+RIG_RESTIC_IMAGE="${RIG_RESTIC_IMAGE:-restic/restic:0.18.0}"
+RIG_RESTIC_PASSWORD="${RIG_RESTIC_PASSWORD:-rig-repo-password}"
+
 # Builds the scratch HOME and the ssh wrapper under a directory the caller
 # owns, so the suite's own cleanup removes them.
 rig_env_init() {
@@ -168,6 +190,36 @@ rig_ssh() {
 # ssh's own flag says so at the point of use.
 rig_reachable() {
     timeout "$RIG_PROBE_TIMEOUT" ssh -n -F "$RIG_SSH_CONFIG" "$RIG_SSH_ALIAS" true >/dev/null 2>&1
+}
+
+# Both backup endpoints, probed from the rig itself in one session. Two answers
+# each, because neither alone says anything: 404 to the real credential on a
+# path that is no repository (an empty htpasswd would answer 401), and 401 to a
+# bogus one — a server started `--no-auth` answers 404 to any credential at all.
+rig_backup_ready() {
+    [ -n "${RIG_BACKUP_REPO_BASE:-}" ] && [ -n "${RIG_BACKUP_ADMIN_REPO_BASE:-}" ] || return 1
+    local codes probe='curl -s -o /dev/null -w "%{http_code} " --max-time 5 -u' path=kasbah-rig-readiness/config
+    codes=$(rig_ssh "$probe '$RIG_BACKUP_USER:$RIG_BACKUP_PASSWORD' '$RIG_BACKUP_URL$path'; \
+                     $probe 'kasbah-rig-no-such-user:wrong' '$RIG_BACKUP_URL$path'; \
+                     $probe '$RIG_BACKUP_ADMIN_USER:$RIG_BACKUP_ADMIN_PASSWORD' '$RIG_BACKUP_ADMIN_URL$path'; \
+                     $probe 'kasbah-rig-no-such-user:wrong' '$RIG_BACKUP_ADMIN_URL$path'" 2>/dev/null) || return 1
+    [ "${codes//$'\r'/}" = "404 401 404 401 " ]
+}
+
+# restic the way a VPS runs it (08-keep.md, D1): a container on the rig's *own*
+# daemon, two network namespaces from the endpoint. $1 is the repository, the
+# rest are restic's own arguments; RIG_RESTIC_MOUNT, when set, is bind-mounted
+# at /src for `backup /src`. The streams are left unmerged: restic puts its
+# Fatal lines on stderr, so a caller asserting on the server's own 403 has to
+# ask for it.
+rig_restic() {
+    local repo=$1 arg cmd
+    shift
+    printf -v cmd 'docker run --rm -e RESTIC_PASSWORD=%q' "$RIG_RESTIC_PASSWORD"
+    [ -z "${RIG_RESTIC_MOUNT:-}" ] || printf -v cmd '%s -v %q:/src' "$cmd" "$RIG_RESTIC_MOUNT"
+    printf -v cmd '%s %q -r %q' "$cmd" "$RIG_RESTIC_IMAGE" "$repo"
+    for arg in "$@"; do printf -v cmd '%s %q' "$cmd" "$arg"; done
+    rig_ssh "$cmd"
 }
 
 # Returns the rig to the state kasbah has never touched — no compose projects,

@@ -58,5 +58,70 @@ services:
       # delays the report of a broken one.
       start_period: 30s
 
+  # The backup target Phase 8 tests against, as two servers over one store.
+  # rest-server's `--append-only` is a process-wide flag, not a per-user
+  # permission (checked against `rest-server --help`, 0.14.0), so one endpoint
+  # cannot hold both credential sets: `backup-store` is what a VPS is given and
+  # `backup-store-admin` is what the operator prunes with. Separate htpasswd
+  # files in the shared store keep each user unknown to the other endpoint.
+  backup-store:
+    image: &rest_server restic/rest-server:0.14.0
+    container_name: kasbah-rig-backup-store
+    environment: &rest_env
+      RIG_BACKUP_USER: kasbah-vps
+      RIG_BACKUP_PASSWORD: append-only-secret
+      PASSWORD_FILE: /data/.htpasswd-vps
+      OPTIONS: --append-only
+    # The stock entrypoint only warns when no user exists and serves anyway.
+    # Creating the user here instead makes a credential-less server a container
+    # that never starts, which the readiness probe reports.
+    entrypoint: &rest_entrypoint
+      - /bin/sh
+      - -c
+      - 'umask 027 && : > "$$PASSWORD_FILE" && create_user "$$RIG_BACKUP_USER" "$$RIG_BACKUP_PASSWORD" && exec /entrypoint.sh'
+    volumes:
+      - backup-store:/data
+    networks:
+      default:
+        ipv4_address: 10.77.29.10
+
+  backup-store-admin:
+    image: *rest_server
+    container_name: kasbah-rig-backup-store-admin
+    environment:
+      <<: *rest_env
+      RIG_BACKUP_USER: kasbah-ops
+      RIG_BACKUP_PASSWORD: full-access-secret
+      PASSWORD_FILE: /data/.htpasswd-ops
+      OPTIONS: ""
+    entrypoint: *rest_entrypoint
+    volumes:
+      - backup-store:/data
+    networks:
+      default:
+        ipv4_address: 10.77.29.11
+
+networks:
+  # Pinned so the backup endpoints have addresses a *nested* container can be
+  # handed. Nested dockerd copies the rig's /etc/resolv.conf, sees the embedded
+  # DNS at 127.0.0.11, and substitutes 8.8.8.8 — so service names resolve from
+  # the rig's own shell and not from the restic container two namespaces down
+  # (measured 2026-08-26). Routing works either way, so the repo URL carries a
+  # literal IP and no DNS.
+  #
+  # 10.77.29.0/24 is outside the 172.16.0.0/12 Docker draws /16 blocks from
+  # when DefaultAddressPools is unset, which it is here. A subnet inside that
+  # range would be claimable by any unrelated project started while the rig is
+  # down, and every integration suite would then be blocked on a "Pool
+  # overlaps" failure until someone hand-edited this file.
+  default:
+    ipam:
+      config:
+        - subnet: 10.77.29.0/24
+
 volumes:
   docker-data:
+  # Lives on the workstation's Docker, deliberately out of the rig's reach:
+  # rig_clean sweeps every volume the *nested* daemon knows, so a snapshot store
+  # here is what makes "restore onto a fresh rig" a thing a suite can run.
+  backup-store:

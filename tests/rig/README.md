@@ -11,7 +11,7 @@ tests/rig/rig.sh up                 # build if needed, start, wait until usable
 tests/rig/rig.sh ssh                # interactive session as stevedore
 tests/rig/rig.sh ssh -- 'docker ps' # run a command, exit status propagates
 tests/rig/rig.sh reset              # pristine rig, ~3 s
-tests/rig/rig.sh down               # stop and remove its volume
+tests/rig/rig.sh down               # stop and remove its volumes
 ```
 
 Integration tests assume a running rig and never start one:
@@ -47,6 +47,7 @@ changing nothing. That is the intended direction of failure.
 | Storage | named volume at `/var/lib/docker`; nested driver `overlayfs` |
 | Keypair | generated per checkout by `rig.sh`, gitignored, never committed |
 | Connection contract | the generated `tests/rig/ssh_config` — hand it to `ssh -F`, `scp -F`, `rsync -e`. Do not restate its flags anywhere |
+| Backup harness | two `restic/rest-server:0.14.0` sidecars at `10.77.29.10` and `10.77.29.11`, over one named volume; contract in the generated `tests/rig/backup_env.sh` |
 
 `KASBAH_RIG_BIND` and `KASBAH_RIG_SSH_PORT` affect only a container being
 *created*. Once one exists, `rig.sh` reads the published endpoint back out
@@ -67,6 +68,92 @@ snapshot of one build, not a property of the rig: it moves whenever a
 cache-busting rebuild happens. Ask the rig, don't trust this paragraph.
 To reproduce an old version:
 `KASBAH_RIG_DOCKER_VERSION=5:27.1.1-1~debian.12~bookworm tests/rig/rig.sh reset`.
+
+## The backup harness
+
+Phase 8 backs a VPS up with restic, and the property worth testing is not
+"a snapshot was taken" but "the credential the VPS holds cannot delete
+one". So the rig ships a target that really enforces it: two
+`restic/rest-server` containers over a single named volume.
+
+```
+10.77.29.10:8000   --append-only   user kasbah-vps   what a VPS is given
+10.77.29.11:8000   (full access)   user kasbah-ops   what the operator prunes with
+```
+
+Two servers rather than two accounts because `--append-only` is a
+process-wide flag in rest-server, not a per-user permission — one server
+cannot hold both credential sets. They keep separate `htpasswd` files in
+the shared store, so each user is unknown to the other endpoint.
+
+`rig.sh up` waits until each endpoint gives **two** answers: `404` to the
+real credential on a path that is no repository, and `401` to a bogus
+one. Neither is worth anything alone — an empty `htpasswd` answers `401`
+to everything, and a server started `--no-auth` answers `404` to any
+credential at all (measured), one word in `compose.yml`'s `OPTIONS` away.
+Only then does it write `tests/rig/backup_env.sh`:
+
+```
+RIG_BACKUP_{URL,USER,PASSWORD,REPO_BASE}          the append-only endpoint
+RIG_BACKUP_ADMIN_{URL,USER,PASSWORD,REPO_BASE}    the full-access one
+```
+
+`tests/integration/rig_env.sh` sources it and adds `rig_backup_ready` and
+`rig_restic`. Its absence means "no usable harness", never "stale
+credentials": every path that cannot write it removes it, and so does
+`rig.sh down`. **A broken harness never fails `rig.sh up`** — it warns and
+carries on, because fourteen of the fifteen integration suites never touch
+the harness and the one that does exits 2 on its own. The values are read
+back out of the running containers, so `compose.yml` is the only place
+they are declared — restating a credential is how two copies of one drift.
+They are also refused unless they match `[A-Za-z0-9._~-]+`: they go into a
+`rest:` URL and onto an ssh command line unescaped, and refusing is
+cheaper than encoding for a constant nobody needs to vary.
+
+**The addresses are literal because DNS does not reach that far down.**
+Backups run as a container (`docker run --rm … restic/restic`), so on the
+rig they are a *nested* container, two network namespaces from the server.
+Nested dockerd copies the rig's `/etc/resolv.conf`, finds Docker's
+embedded resolver at `127.0.0.11`, decides a loopback nameserver cannot be
+inherited, and substitutes `8.8.8.8`. Measured 2026-08-26: `getent hosts
+backup-store` answers from the rig's own shell and fails inside `docker
+run --rm alpine`; the same address reached by IP works from both. Routing
+is fine — it is only the name that does not survive. Hence an `ipam`
+subnet in `compose.yml` and static IPs, so the repository URL a suite
+hands to restic is one no resolver has to be involved in, and kasbah is
+never asked to carry a rig-shaped special case.
+
+`10.77.29.0/24` sits **outside** the `172.16.0.0/12` that Docker draws
+`/16` blocks from when `DefaultAddressPools` is unset — which it is here
+(`docker info --format '{{json .DefaultAddressPools}}'` → `null`). Any
+subnet inside that range, however free today, is claimable by the next
+unrelated compose project started while the rig is down, and every
+integration suite would then be blocked on `Pool overlaps with other one
+on this address space` until someone hand-edited `compose.yml`.
+
+### What it can and cannot prove
+
+It **can** prove that a credential is refused a delete by a server that
+enforces append-only, that another credential is not, and that the
+snapshot store outlives `rig_clean` — the last is what makes "restore onto
+a fresh rig" executable, since `rig_clean` only reaches the *nested*
+daemon and the store is a volume on the workstation's.
+
+It **cannot** prove anything about S3. Production points at an
+S3-compatible bucket where append-only is an IAM policy on a key, not a
+server-wide flag; `rest:` and `s3:` are different restic backends, and
+only the fact that kasbah never parses the repository URL makes the two
+interchangeable here. A bucket policy that does not do what its author
+thought is out of reach of this rig, and stays a real-host check.
+
+It also **cannot** prove retention against the clock: everything here is
+an immediate `forget`, and the daily schedule's timing is a unit-test
+subject.
+
+Repositories are not removable over the wire — rest-server 0.14.0 answers
+`405` to a `DELETE` on a repository path — so a suite names its repository
+per run and prunes it empty at the end. The few-KB skeletons that leaves
+accumulate in the volume until `rig.sh down`.
 
 ## Limitations — what the rig cannot prove
 
@@ -100,6 +187,12 @@ be proven end to end here** — a fixture must seed those variables as `0`,
 which Docker reads as "no limit". The values themselves are exercised by
 unit tests and by the server marker; that they are *enforced* waits for
 Phase 6 and a real VPS.
+
+**The snapshot store goes with `down`, not with `rig_clean`.** `rig.sh
+down` removes the `backup-store` volume along with the nested image
+cache. That is deliberate — the store is disposable with the rig; it is
+only a *clean* it has to outlive — but it does mean a `reset` in the
+middle of a restore drill throws the snapshot away.
 
 **sshd runs `maxstartups 10:30:100`.** More than about ten concurrent SSH
 sessions get random early drops — `Connection closed`, exit 255. Batch

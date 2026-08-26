@@ -21,6 +21,19 @@ rig_image=kasbah-rig
 # Mirrors `name:` in compose.yml, but passed as `-p` — see compose().
 rig_project=kasbah-rig
 
+# The two rest-server endpoints of compose.yml, and the file that hands them to
+# a suite. Addresses and credentials are read back out of the containers rather
+# than restated here: compose.yml declares them, and a second copy of a
+# credential is a copy that drifts.
+backup_service=backup-store
+backup_admin_service=backup-store-admin
+backup_port=8000
+# The contract a suite reads, gitignored like ssh_config but not rendered on
+# every verb the way that one is: `up` writes it when both endpoints serve and
+# deletes it when they do not, so its absence is the signal and never a stale
+# credential.
+backup_env_file="$rig_dir/backup_env.sh"
+
 # Where a *new* container gets published: compose.yml reads the same variables,
 # so an override here moves the publish side. It does not move the connect side
 # on its own — once a container exists, write_ssh_config reads the binding back
@@ -57,7 +70,7 @@ usage() {
 usage: rig.sh <up|down|reset|ssh>
 
   up            build if needed, start the rig, wait until it is usable
-  down          stop the rig and remove its volume
+  down          stop the rig and remove its volumes
   reset         down then up — a pristine rig
   ssh [-- cmd]  ssh in as stevedore; with a command, propagate its exit status
 
@@ -252,6 +265,138 @@ wait_ready() {
     done
 }
 
+# ip, username and password of one rest-server, one field per line. Read from
+# the container because that is what is actually serving; a stopped or
+# never-created service returns 1 and says which one.
+backup_facts() {
+    local svc=$1 cid ip env_lines user password
+    cid=$(compose ps -q "$svc" 2>/dev/null) || cid=
+    [ -n "$cid" ] || { note "no $svc container — the backup harness is not up"; return 1; }
+    # Separated and the first taken: concatenated, a second attached network
+    # would hand out "10.77.29.1010.77.30.5" and the non-empty guard below would
+    # pass it straight through.
+    ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$cid" 2>/dev/null) || ip=
+    read -r ip _ <<<"$ip"
+    env_lines=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$cid" 2>/dev/null) || env_lines=
+    user=$(grep -m1 '^RIG_BACKUP_USER=' <<<"$env_lines" || true); user=${user#*=}
+    password=$(grep -m1 '^RIG_BACKUP_PASSWORD=' <<<"$env_lines" || true); password=${password#*=}
+    [ -n "$ip" ] && [ -n "$user" ] && [ -n "$password" ] \
+        || { note "$svc does not declare an address and a credential — see compose.yml"; return 1; }
+    printf '%s\n%s\n%s\n' "$ip" "$user" "$password"
+}
+
+# The credentials end up unescaped in two places: a restic `rest:` URL, which
+# would need percent-encoding, and inside single quotes on an ssh command line,
+# which a quote would end. They are constants in compose.yml, so the answer is
+# to refuse anything that would need encoding rather than to encode it.
+backup_credential_safe() {
+    case ${1-} in
+        ''|*[!A-Za-z0-9._~-]*) return 1 ;;
+    esac
+    return 0
+}
+
+# Absence is the signal (see backup_env_file), so a harness that is not serving
+# must not leave the file behind. Never fatal: fourteen of the fifteen
+# integration suites never touch the harness, and the one that does exits 2 on
+# its own — killing `up` here would turn one suite's environment problem into a
+# rig nobody has.
+backup_unavailable() {
+    rm -f "$backup_env_file"
+    note "backup harness unavailable, continuing without it — $1"
+}
+
+# One ssh session that retries on the far side: the consumer of these endpoints
+# is a container the *rig's* daemon starts, so the honest probe is made from the
+# rig. Two answers per endpoint, because neither alone is worth anything: 404 to
+# the real credential on a path that is no repository (an empty htpasswd would
+# give 401 instead), and 401 to a bogus one — measured, a server started
+# --no-auth answers 404 to any credential at all, one word in compose.yml's
+# OPTIONS away.
+wait_backup_ready() {
+    local log rc=0
+    log=$(mktemp "${TMPDIR:-/tmp}/kasbah-rig-backup.XXXXXX") || die 'could not create a temp file for the backup probe'
+    # Not $(ssh … <<'REMOTE'): bash cannot see a here-document delimiter through
+    # a command substitution and warns "unterminated here-document".
+    ssh -F "$ssh_config" "$ssh_alias" \
+        "bash -s '$1' '$2' '$3' '$4' '$5' '$6' '$backup_port' '$ready_timeout'" >"$log" 2>&1 <<'REMOTE' || rc=$?
+set -uo pipefail
+vps_ip=$1; vps_user=$2; vps_pw=$3
+ops_ip=$4; ops_user=$5; ops_pw=$6
+port=$7
+deadline=$((SECONDS + $8))
+bogus_user=kasbah-rig-no-such-user
+probe() {
+    curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+        -u "$2:$3" "http://$1:$port/kasbah-rig-readiness/config" 2>/dev/null
+}
+while :; do
+    vps="$(probe "$vps_ip" "$vps_user" "$vps_pw")/$(probe "$vps_ip" "$bogus_user" wrong)"
+    ops="$(probe "$ops_ip" "$ops_user" "$ops_pw")/$(probe "$ops_ip" "$bogus_user" wrong)"
+    [ "$vps" = 404/401 ] && [ "$ops" = 404/401 ] && exit 0
+    [ "$SECONDS" -lt "$deadline" ] || break
+    sleep 0.5
+done
+printf 'append-only endpoint answered %s, full-access endpoint answered %s (wanted 404/401 from both: the credential known, a bogus one rejected)\n' \
+    "${vps:-nothing}" "${ops:-nothing}" >&2
+exit 1
+REMOTE
+    local out
+    out=$(<"$log")
+    rm -f "$log"
+    [ "$rc" = 0 ] && return 0
+    compose logs --tail 20 "$backup_service" "$backup_admin_service" >&2 2>&1 || true
+    note "the backup harness did not answer from inside the rig within ${ready_timeout}s: $out"
+    return 1
+}
+
+# The endpoints as a suite consumes them (tests/integration/rig_env.sh sources
+# this). Written only once both answer; every path that cannot write it removes
+# it instead, and none of them stops `up`.
+write_backup_env() {
+    local vps ops tmp
+    vps=$(backup_facts "$backup_service") || { backup_unavailable "$backup_service is not serving"; return 0; }
+    ops=$(backup_facts "$backup_admin_service") || { backup_unavailable "$backup_admin_service is not serving"; return 0; }
+    local vps_ip vps_user vps_pw ops_ip ops_user ops_pw
+    { read -r vps_ip; read -r vps_user; read -r vps_pw; } <<<"$vps"
+    { read -r ops_ip; read -r ops_user; read -r ops_pw; } <<<"$ops"
+
+    local cred
+    for cred in "$vps_user" "$vps_pw" "$ops_user" "$ops_pw"; do
+        backup_credential_safe "$cred" || {
+            backup_unavailable "a credential in compose.yml is not URL- and shell-safe (only A-Z a-z 0-9 . _ ~ - are accepted)"
+            return 0
+        }
+    done
+
+    wait_backup_ready "$vps_ip" "$vps_user" "$vps_pw" "$ops_ip" "$ops_user" "$ops_pw" \
+        || { backup_unavailable 'the endpoints did not answer'; return 0; }
+
+    tmp=$(mktemp "$backup_env_file.XXXXXX") || { backup_unavailable "could not create a temp file next to $backup_env_file"; return 0; }
+    if ! cat > "$tmp" <<EOF
+# Generated by tests/rig/rig.sh — edits are overwritten. Sourced by
+# tests/integration/rig_env.sh; the values are read back out of the running
+# rest-server containers, so compose.yml is the only place they are declared.
+# Unquoted because backup_credential_safe has already refused anything that
+# would need quoting, encoding or escaping.
+RIG_BACKUP_URL=http://$vps_ip:$backup_port/
+RIG_BACKUP_USER=$vps_user
+RIG_BACKUP_PASSWORD=$vps_pw
+RIG_BACKUP_REPO_BASE=rest:http://$vps_user:$vps_pw@$vps_ip:$backup_port/
+RIG_BACKUP_ADMIN_URL=http://$ops_ip:$backup_port/
+RIG_BACKUP_ADMIN_USER=$ops_user
+RIG_BACKUP_ADMIN_PASSWORD=$ops_pw
+RIG_BACKUP_ADMIN_REPO_BASE=rest:http://$ops_user:$ops_pw@$ops_ip:$backup_port/
+EOF
+    then
+        rm -f "$tmp"
+        backup_unavailable "could not write $backup_env_file"
+        return 0
+    fi
+    chmod 0644 "$tmp" && mv -f "$tmp" "$backup_env_file" \
+        || { rm -f "$tmp"; backup_unavailable "could not install $backup_env_file"; }
+}
+
 # compose.yml pairs `build:` with a fixed `image:`, so `up` on its own reuses
 # whatever `kasbah-rig` already is and silently ignores an edited Dockerfile or
 # entrypoint. Rebuild control lives here, and the rule is "always ask the
@@ -281,15 +426,21 @@ cmd_up() {
     # contract. wait_ready's probe is the first thing to depend on it.
     write_ssh_config
     wait_ready
+    # After wait_ready, because it probes over the rig's own ssh: a rig that is
+    # not up yet must be reported as a rig that is not up. It never fails the
+    # verb — see backup_unavailable.
+    write_backup_env
     note "ready — ssh -F $ssh_config $ssh_alias"
 }
 
 cmd_down() {
-    # -v removes the rig's own docker-data volume and nothing else. `down`
-    # deletes by project label, not by the services listed in the file, so the
-    # whole safety of this line rests on compose() forcing the project with
-    # `-p` — without that, an inherited COMPOSE_PROJECT_NAME aims it at
-    # somebody else's running stack.
+    rm -f "$backup_env_file"
+    # -v removes the rig's own docker-data and backup-store volumes and nothing
+    # else: the snapshot store is disposable with the rig, it is only rig_clean
+    # it has to outlive. `down` deletes by project label, not by the services
+    # listed in the file, so the whole safety of this line rests on compose()
+    # forcing the project with `-p` — without that, an inherited
+    # COMPOSE_PROJECT_NAME aims it at somebody else's running stack.
     compose down -v
 }
 
