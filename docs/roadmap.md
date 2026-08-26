@@ -68,7 +68,8 @@ successfully.
 ## Phase 3 — v0.3 (Quality of life)
 
 - Backups retention rotation
-- `kasbah check --fix` for C01-C05
+- `kasbah check --fix` for C01–C05, C08, R01–R03 and the `kasbah_version`
+  backfill ✅
 - Dashboard-optional Traefik template
 - `kasbah drop [--prune]` — remove a project; `--prune` also deletes
   data + backups (double confirmation) ✅

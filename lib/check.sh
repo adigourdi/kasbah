@@ -11,7 +11,7 @@ _KASBAH_CHECK_LOADED=1
 
 _check_usage() {
     cat <<EOF
-Usage: kasbah check [--server [USER@HOST]]
+Usage: kasbah check [--server [USER@HOST]] [--fix [--yes]]
 
 Runs structural checks against the current project. Exit 0 if no failures
 (warnings are informational). See docs/compliance.md for the full rule set.
@@ -26,10 +26,17 @@ Flags:
                       Read-only: --server changes nothing on the server.
                       Without USER@HOST it asks the server this project last
                       talked to, and it remembers the one it is given.
+  --fix               repair the auto-fixable rules before reporting: C01–C05,
+                      C08, R01–R03 and a missing kasbah_version. Only
+                      compose.prod.yml and kasbah.yml are ever edited, as
+                      targeted changes that leave comments, key order and line
+                      endings alone. The diff is shown first and the edits are
+                      applied only when you agree.
+  --yes               answer that question yes, for a run with no terminal.
 
 Implemented: Structure (S01–S07), Compose (C01–C05, C07–C09), Resources
 (R01–R04), Traefik (T01–T08), Healthchecks (H01–H02), Env (E01–E05), Hooks
-(HK01–HK03), Mail (M01–M03). The --fix mode is not yet wired in.
+(HK01–HK03), Mail (M01–M03).
 EOF
 }
 
@@ -57,10 +64,12 @@ _gitignore_has() {
 }
 
 cmd_check() {
-    local server="" server_given=0 server_empty=0
+    local server="" server_given=0 server_empty=0 fix=0 yes=""
     while [ $# -gt 0 ]; do
         case "$1" in
             -h|--help)  _check_usage; return 0 ;;
+            --fix)      fix=1 ;;
+            --yes)      yes=yes ;;
             --server)
                 server_given=1
                 # The value only when there is one to take: bare `--server`, or
@@ -82,6 +91,11 @@ cmd_check() {
         esac
         shift
     done
+    # --yes answers --fix's one question. On its own it answers nothing, and a
+    # flag that silently does nothing is how an operator comes to believe a
+    # prompt was skipped on purpose.
+    [ -z "$yes" ] || [ "$fix" = 1 ] \
+        || die "check: --yes answers --fix's prompt; it does nothing on its own"
     # An empty `--server=` is a stated intent that cannot be honoured, so it
     # fails rather than falling back to a remembered server the operator has
     # just overridden with nothing.
@@ -102,6 +116,16 @@ cmd_check() {
     # report.txt` captures the whole thing. Diagnostics from helpers (info/
     # warn/err) keep going to stderr.
     printf 'Checking %s\n\n' "$PWD"
+
+    # --fix runs first and the report that follows describes the project as it
+    # now is, so `check --fix` ends with the same verdict a plain `check` would
+    # give afterwards. It needs the manifest (for the kasbah_version backfill),
+    # which is also S01/S02's rule, so it is loaded here rather than twice.
+    if [ "$fix" = 1 ]; then
+        manifest_require
+        . "$KASBAH_LIB_DIR/check_fix.sh"
+        check_fix_run "$yes"
+    fi
 
     echo "Structure:"
 

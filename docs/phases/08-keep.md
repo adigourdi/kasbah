@@ -738,3 +738,85 @@ wrong sum whenever anything skips. The file count is 28 and 46, and it predicts
 the PASS line only on a run where nothing skips. Phase 7's numbers happened to
 match their file counts exactly, which is what made the wrong arithmetic look
 right.
+
+### 8.4 — `check --fix`
+
+Review verdict: **needs-work**, on one blocking byte-fidelity defect, one
+falsified comment, one cosmetic leak and four matters of taste. Everything else
+survived a genuinely aggressive attack: the reviewer built five mutants of its
+own and the suite killed all five, pushed the insertion-ordering design to
+**four distinct indent levels sharing one anchor** (all seven landed correctly),
+drove SIGINT at the prompt over a real pty (trap fires, no candidate left), and
+verified the regression that would have been least visible — plain
+`kasbah check` is **byte-identical to HEAD across 13 projects**, spanning six
+failure classes, malformed, comment-only, multi-document and BOM inputs.
+
+**The design that came out of this is the thing to remember: `yq` decides what
+is true; the line scanner only finds where it is written.** Every verdict and
+every insert-versus-replace decision comes from the parser, and a key the
+scanner cannot then locate is refused and named rather than guessed. A YAML
+round-trip was never an option — it reorders keys and drops comments, and
+compose files carry load-bearing ones — so the whole feature is targeted text
+edits over the existing bytes.
+
+**The blocking defect was the one shape that broke that contract in both
+directions.** `_cf_block_end` stepped over blank and comment lines to find a
+block's last content line, with no notion of `|`/`>` block scalars. For a
+service whose last key is an `entrypoint: |` shell script ending in comments,
+those lines looked like file trailer — so a `restart:` key was spliced **into
+the middle of the string value**, and two lines vanished from it. Every guard
+passed: the file parsed, the top-level keys matched, the service names matched,
+the re-plan came out empty, and `kasbah check` then reported the project clean
+at exit 0. The output was also a lie in the other direction — a compose key
+sitting inside what reads as a shell script. Fixed by **teaching the scanner**:
+a `|`/`>` header opens a region running to the first non-blank line at or above
+the key's indent, which is YAML's own rule, and `|+`/`>+` keep their trailing
+blanks because those newlines *are* the value. Under default chomping YAML
+discards them, so they stay outside the region and an insertion goes above.
+
+**A comment quoting evidence against reality, and the fix went the right way.**
+The code claimed a `#` inside a quoted value "cannot happen in the five scalars
+this rewrites" — it happens in `mem_limit: "512m # sized for the box"`. Rather
+than widening the comment to excuse the behaviour, the splitter was made
+correct: a value opening with a quote is scanned to its **closing** quote, with
+`\"` and `''` honoured, and only what follows can be a comment. Where the split
+is genuinely ambiguous — a quoted scalar with no closing quote on the line — it
+now refuses through the existing "shape `--fix` cannot rewrite" path.
+
+**A pushback I accepted after checking it.** I asked for the block-scalar
+knowledge in `_cf_child_indent` too; the implementer declined, on the grounds
+that it stops at the block's *first* child, a scalar's content is by definition
+deeper than its own header, and the header is itself a child line — so the
+header is always reached first and no scan can enter a region. Correct, and it
+**pinned the reason with a test** rather than adding unreachable code under a
+comment claiming otherwise. That is the right instinct in a repo whose comments
+are its design record.
+
+**Three mutations survived their first run in this task alone, each buying real
+coverage** — the pattern is now unmistakable across the phase. The sharpest:
+no case had a rule failing on a **value** rather than a missing key, so the
+entire in-place-replace path was untested — and since both `yq` and compose take
+the **last** of two duplicate keys, simply appending a duplicate would have
+satisfied every rule while being wrong. The third: every rewritten-with-a-comment
+value in the suite happened to be *quoted*, so the quoted branch was covered
+three times and the plain branch not once.
+
+**And a mutation harness that lied.** One batch was invalidated mid-run because
+the harness re-captured its "pristine" copy while a mutant was installed — so
+the baseline *was* the mutant. It now refuses to run unless the file matches a
+pinned copy. Third instance this phase of a defect in how a result was measured
+rather than in the code.
+
+**Measured, and deferred with a home:** `tests/check_test.sh` went 7m26s → 10m25s,
+and the new cases run at *exactly* the suite's pre-existing per-case rate, so the
+cost is not in this change and cannot be fixed there. A plain `kasbah check` on a
+**one-service** project forks a Python `yq` **41 times** at ~87 ms each — about
+3.5 s of process startup for a linter reading two files. Filed with its
+measurements and four options as `docs/backlog/20260826-check-yq-fork-per-rule.md`;
+8.4's own reviewer recommended against holding this task for it.
+
+**I was wrong about the docs and the implementer caught it.** The brief asserted
+`roadmap.md`'s `check --fix` line had already been corrected while simultaneously
+forbidding any `docs/` edit — it had not been, and the phase file's own task text
+said 8.4 would fix it "in the same change". Corrected here, along with
+`cli.md` and a `How it edits` section in `compliance.md`.

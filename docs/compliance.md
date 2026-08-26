@@ -187,6 +187,72 @@ Unfixable (must be done by hand):
 - Hooks (kasbah can't invent commands)
 - Mail claims
 
+### How it edits
+
+**Targeted text edits, never a YAML round-trip.** `yq` reorders keys and drops
+comments, and compose files carry load-bearing ones — this repo's own do. So
+everything not being changed comes back byte for byte: comments, blank lines,
+key order, quoting, hand-spacing, CRLF line endings, and a missing final
+newline.
+
+**`yq` decides what is true; the line scanner only finds where it is written.**
+Every verdict and every insert-versus-replace decision comes from `yq`. If the
+scanner then cannot locate that key in the text — a quoted key, a flow mapping,
+an inline value — the fix is **refused and named**, never guessed. That split is
+what keeps a pattern-matcher from deciding semantics.
+
+Where a new service-level key lands: the last *content* line of the service
+block, stepping over blank lines and trailing comments, so an inserted key
+appears above someone's `# TODO` rather than below it. **A `|` or `>` block
+scalar is the exception, and it has to be**: inside one, `#` lines and blank
+lines are the *value*, not commentary. The scanner skips such a region whole —
+it runs from the header to the first non-blank line at or above the key's own
+indent, which is YAML's rule — so an insertion cannot be spliced into the middle
+of somebody's shell script. Under `|+`/`>+` the trailing blank lines are kept by
+the scalar and belong to the region; under the default chomping YAML discards
+them, so they stay outside it and the insertion goes above. The indent comes from
+the block's own first child, and a deeper level uses the file's own step — a
+4-space file gets 4-space nesting. When several insertions share an anchor (a
+service's last line is also its last sub-block's last line) they are emitted
+**deepest-indent first**: the other order puts `restart:` inside
+`logging.options`, which is valid YAML and the wrong meaning.
+
+Before anything is written, the staged candidate must parse, must declare the
+same services and the same top-level keys (only `version:` may leave, only
+`networks:` may appear), and must **re-plan to an empty plan** — idempotency
+proved at runtime rather than assumed. Any failure removes the candidate and
+writes nothing.
+
+**A comment immediately above a removed key is left.** It cannot be told from a
+file header, and a compose file that opens with prose and then `version:` is the
+ordinary shape.
+
+### Refusals, each reported rather than skipped
+
+- A `compose.prod.yml` that does not parse — refused, not pattern-matched.
+- **C08** on a built service naming no `image:` at all. It is a tag rewrite;
+  kasbah will not invent an image name.
+- **C04** under the banned default-alias shape, where declaring the default
+  network external would entrench precisely what C07 is failing on.
+- Any key written in a shape the scanner cannot take apart — including a quoted
+  scalar with no closing quote on its line (a multi-line quoted value), where
+  the value and a trailing comment cannot be told apart.
+
+One edge worth stating: a `compose.prod.yml` that is a **symlink** is written
+*through* — the link survives and its target is updated. Still only those two
+filenames are ever edited; where the bytes actually live is the project's
+choice, and replacing an operator's symlink with a regular file would be the
+more surprising of the two behaviours.
+
+### Interaction
+
+`--fix` plans, stages, prints a unified diff of every file it would touch, and
+**then asks**. `--yes` answers; without a terminal and without `--yes` it is a
+hard fail naming the flag; declining writes nothing and leaves no candidate.
+`--yes` alone is refused, since it does nothing without `--fix`. The fix pass
+runs **before** the report, so the lines printed and the exit code returned
+describe the project as it now is.
+
 ## `kasbah check --server USER@HOST`
 
 Extended check that also queries the VPS. Everything in the local run still

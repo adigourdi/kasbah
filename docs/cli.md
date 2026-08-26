@@ -547,7 +547,7 @@ Flags:
 - `--name=<name>` (default: current directory name)
 - `--domain=<fqdn>`
 
-### `kasbah check [--server [USER@HOST]] [--fix]`
+### `kasbah check [--server [USER@HOST]] [--fix [--yes]]`
 
 Run the compliance check on the current project. See `compliance.md` for
 the full rule set. Exit code 0 on pass, 6 on any failure (see "Exit codes" below).
@@ -562,9 +562,35 @@ owns. Read-only: it changes nothing on the server. Given without a `USER@HOST`
 it asks `last_server`, and a run that reaches the server records it — the same
 rule every other server-targeting command follows (`project-manifest.md`).
 
-`--fix` *(not implemented — `check` refuses the flag today)* would apply
-safe auto-fixes (add missing restart policy, add missing logging rotation).
-Traefik rules are never auto-fixed — routing is policy.
+`--fix` applies the auto-fixable rules — **C01–C05, C08, R01–R03** and the
+`kasbah_version` backfill — and touches only `compose.prod.yml` and `kasbah.yml`.
+It plans, stages a candidate, prints a unified diff of every file it would
+change, and **then asks**; `--yes` answers that question, and without a terminal
+and without `--yes` it is a hard fail naming the flag. Declining writes nothing
+and leaves no candidate behind. `--yes` on its own is refused rather than
+ignored — it does nothing without `--fix`.
+
+The fixes are **targeted text edits, never a YAML round-trip**: `yq` reorders
+keys and drops comments, and compose files carry load-bearing ones. Everything
+not being changed comes back byte for byte — comments, blank lines, key order,
+quoting, hand-spacing, CRLF line endings and a missing final newline included. A
+comment sitting immediately *above* a removed key is **left**, because it cannot
+be told from a file header, and a compose file that opens with prose and then
+`version:` is the ordinary shape.
+
+`yq` decides what is true; the text scanner only finds where it is written. When
+the scanner cannot take a shape apart — a quoted key, a flow mapping, an
+inline value — the fix is **refused and named**, never guessed. So is a
+`compose.prod.yml` that does not parse. Two rules are also refused case by case,
+with the reason printed: **C08** on a built service that names no `image:` at
+all (it is a tag rewrite, and kasbah will not invent an image name), and **C04**
+under the banned default-alias shape, where declaring the default network
+external would entrench exactly what C07 is failing on.
+
+`--fix` runs **before** the report, so the lines you read and the exit code you
+get describe the project as it now is. Traefik rules, C07, C09, hooks and mail
+claims are never auto-fixed — routing and topology are policy, and kasbah cannot
+invent a command.
 
 ### `kasbah build-push [USER@HOST]`
 

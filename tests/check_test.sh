@@ -2136,4 +2136,1107 @@ assert '[ -n "$docker_verbs" ]' "the remote step calls docker at all — else th
 assert '[ -z "$(grep -vE "docker (inspect|version)" <<<"$docker_verbs")" ]' \
     "and every docker verb it uses is a read (found: $(tr -d " " <<<"$docker_verbs" | sort -u | tr "\n" " "))"
 
+
+# =============================================================================
+# `check --fix` — the auto-fixable half of docs/compliance.md
+# =============================================================================
+# Two things every case here does on purpose.
+#
+# Whole files are compared with `cmp`, never through `$(cat …)`: command
+# substitution strips trailing newlines, so a fix that appended one per run
+# would compare equal for ever — which is exactly how 8.3 shipped a file that
+# grew a newline every time (docs/phases/08-keep.md → 8.3).
+#
+# And each `before` carries comments above, inside and below the block being
+# edited, blank lines, and hand-spacing, because the whole reason --fix is a
+# line editor rather than a yq round trip is that those survive it. An
+# assertion that only checked the rule now passes would be satisfied by a
+# reformatter.
+
+# fx_project DIR — the make_project scaffold (manifest, template, .gitignore and
+# a fragment routing demo-web) with compose.prod.yml taken from stdin.
+fx_project() {
+    local dir="$1"
+    make_project "$dir"
+    cat > "$dir/compose.prod.yml"
+}
+
+fx_run() { (cd "$1" && "$kasbah" check --fix --yes 2>&1); }
+
+# --- Case F1: C01 into a service written around comments and blank lines -----
+f1="$tmpdir/fix-c01"
+fx_project "$f1" <<'YAML'
+# file header comment
+services:
+
+  # above the service
+  demo-web:
+    # inside, above image
+    image: nginx:alpine
+    container_name: demo-web
+
+    # inside, near the end
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    networks: [kasbah-net]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# below everything
+networks:
+  kasbah-net:
+    external: true
+YAML
+cat > "$f1/expected" <<'YAML'
+# file header comment
+services:
+
+  # above the service
+  demo-web:
+    # inside, above image
+    image: nginx:alpine
+    container_name: demo-web
+
+    # inside, near the end
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    networks: [kasbah-net]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
+# below everything
+networks:
+  kasbah-net:
+    external: true
+YAML
+out="$(fx_run "$f1")"; rc=$?
+assert '[ "$rc" = "0" ]' "F1: the fixed project passes (rc $rc)
+$out"
+assert 'grep -qF "C01 demo-web — add restart: unless-stopped" <<<"$out"' \
+    "F1: the plan names the rule and the service (said '$out')"
+assert 'cmp -s "$f1/compose.prod.yml" "$f1/expected"' \
+    "F1: one inserted line and nothing else$(diff -u "$f1/expected" "$f1/compose.prod.yml" 2>&1 || true)"
+
+# --- Case F2: C02 repaired key by key, so interior comments survive ----------
+# A wrong driver, a missing max-size and a whole missing block, in one file. The
+# partially-wrong service is the interesting one: replacing its logging: wholesale
+# would be simpler code and would eat both comments inside it.
+f2="$tmpdir/fix-c02"
+fx_project "$f2" <<'YAML'
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    networks: [kasbah-net]
+    logging:
+      # why this project rotates the way it does
+      driver: syslog
+      options:
+        # the second one matters more than the first
+        max-file: "3"
+
+  demo-worker:
+    image: busybox
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    # no logging block at all
+    command: ["sleep", "1000"]
+
+networks:
+  kasbah-net:
+    external: true
+YAML
+cat > "$f2/expected" <<'YAML'
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    networks: [kasbah-net]
+    logging:
+      # why this project rotates the way it does
+      driver: json-file
+      options:
+        # the second one matters more than the first
+        max-file: "3"
+        max-size: "10m"
+
+  demo-worker:
+    image: busybox
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    # no logging block at all
+    command: ["sleep", "1000"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: true
+YAML
+out="$(fx_run "$f2")"; rc=$?
+assert '[ "$rc" = "0" ]' "F2: the fixed project passes (rc $rc)
+$out"
+assert 'cmp -s "$f2/compose.prod.yml" "$f2/expected"' \
+    "F2: driver rewritten, max-size added, both interior comments in place$(diff -u "$f2/expected" "$f2/compose.prod.yml" 2>&1 || true)"
+# The positive that pins the same mechanism as the comment survival: the author
+# wrote max-file first and it is still first, which a block replaced wholesale
+# could not manage — the canonical block this would have written puts max-size
+# ahead of it. Line numbers, because "the line exists" is satisfied by a rewrite
+# that happens to contain it.
+f2_mf="$(grep -n 'max-file' "$f2/compose.prod.yml" | head -1 | cut -d: -f1)"
+f2_ms="$(grep -n 'max-size' "$f2/compose.prod.yml" | head -1 | cut -d: -f1)"
+assert '[ -n "$f2_mf" ] && [ -n "$f2_ms" ] && [ "$f2_mf" -lt "$f2_ms" ]' \
+    "F2: the author's key order survived — max-file (line $f2_mf) still precedes max-size (line $f2_ms)"
+
+# --- Case F3: R03's cascade, C05, and C08's tag rewrite ----------------------
+# demo-web keeps a `deploy:` that holds something else; demo-worker's holds
+# nothing else and goes entirely. The image carries a registry port, which is a
+# colon that is not the tag.
+f3="$tmpdir/fix-r03"
+fx_project "$f3" <<'YAML'
+# a comment above version, which stays: a header and a key comment cannot be
+# told apart, and eating a file header would be worse than one stale line
+version: "3.8"
+
+services:
+  demo-web:
+    build:
+      context: .
+    image: "registry.example:5000/demo-web:1.4.2"   # pinned by hand # twice
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    networks: [kasbah-net]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1"
+        reservations:
+          cpus: "0.25"
+          memory: 64M
+
+  demo-side:
+    build:
+      context: ./side
+    image: registry.example:5000/demo-side
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  demo-worker:
+    image: busybox
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    mem_reservation: 128m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        reservations:
+          memory: 32M
+
+networks:
+  kasbah-net:
+    external: true
+YAML
+cat > "$f3/expected" <<'YAML'
+# a comment above version, which stays: a header and a key comment cannot be
+# told apart, and eating a file header would be worse than one stale line
+
+services:
+  demo-web:
+    build:
+      context: .
+    image: "registry.example:5000/demo-web:current"   # pinned by hand # twice
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    networks: [kasbah-net]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1"
+
+  demo-side:
+    build:
+      context: ./side
+    image: registry.example:5000/demo-side:current
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  demo-worker:
+    image: busybox
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: true
+YAML
+out="$(fx_run "$f3")"; rc=$?
+assert '[ "$rc" = "0" ]' "F3: the fixed project passes (rc $rc)
+$out"
+assert 'grep -qF "C08 demo-web — image: registry.example:5000/demo-web:1.4.2 → registry.example:5000/demo-web:current" <<<"$out"' \
+    "F3: the pinned tag is replaced, and the registry port left alone (said '$out')"
+# demo-side is the case that tells `image_base` apart from stripping at the last
+# colon: there is no tag, so the only colon in the reference is the registry
+# port, and `${img%:*}` would tag the registry itself.
+assert 'grep -qF "C08 demo-side — image: registry.example:5000/demo-side → registry.example:5000/demo-side:current" <<<"$out"' \
+    "F3: an untagged image behind a registry port keeps its port (said '$out')"
+assert 'grep -qF "R03 demo-worker — remove deploy (it held nothing else)" <<<"$out"' \
+    "F3: an emptied deploy: goes with the reservations it held (said '$out')"
+assert 'grep -qF "   # pinned by hand # twice" "$f3/compose.prod.yml"' \
+    "F3: the rewritten line keeps its trailing comment, both halves of it"
+assert 'cmp -s "$f3/compose.prod.yml" "$f3/expected"' \
+    "F3: quotes, the trailing comment, the surviving deploy: and the header all as written$(diff -u "$f3/expected" "$f3/compose.prod.yml" 2>&1 || true)"
+
+# --- Case F4: CRLF, four-space indentation, and a networks mapping ----------
+# The file's own line ending and its own indentation step are what inserted
+# lines take, so a Windows-authored 4-space compose comes back as one.
+f4="$tmpdir/fix-crlf"
+fx_project "$f4" <<'YAML'
+# a CRLF file
+services:
+    demo-web:
+        image: nginx:alpine
+        container_name: demo-web
+        restart: unless-stopped
+        cpus: ${KASBAH_CPU_LIMIT}
+        mem_limit: ${KASBAH_MEM_LIMIT}
+        networks:
+            internal: {}
+        logging:
+            driver: json-file
+            options:
+                max-size: "10m"
+                max-file: "3"
+
+networks:
+    internal: {}
+YAML
+sed -i 's/$/\r/' "$f4/compose.prod.yml"
+cat > "$f4/expected" <<'YAML'
+# a CRLF file
+services:
+    demo-web:
+        image: nginx:alpine
+        container_name: demo-web
+        restart: unless-stopped
+        cpus: ${KASBAH_CPU_LIMIT}
+        mem_limit: ${KASBAH_MEM_LIMIT}
+        networks:
+            internal: {}
+            kasbah-net:
+        logging:
+            driver: json-file
+            options:
+                max-size: "10m"
+                max-file: "3"
+
+networks:
+    internal: {}
+    kasbah-net:
+        external: true
+YAML
+sed -i 's/$/\r/' "$f4/expected"
+out="$(fx_run "$f4")"; rc=$?
+assert '[ "$rc" = "0" ]' "F4: the fixed project passes (rc $rc)
+$out"
+assert 'cmp -s "$f4/compose.prod.yml" "$f4/expected"' \
+    "F4: CRLF kept and the file's own 4-space step used for the new nesting$(diff -u "$f4/expected" "$f4/compose.prod.yml" 2>&1 || true)"
+# Paired with the byte comparison: a fix that wrote LF lines into a CRLF file
+# would still parse and still satisfy C03/C04, so count the CRs directly.
+assert '[ "$(tr -cd "\r" < "$f4/compose.prod.yml" | wc -c)" = "$(wc -l < "$f4/compose.prod.yml")" ]' \
+    "F4: every line of the result still ends CRLF ($(tr -cd "\r" < "$f4/compose.prod.yml" | wc -c) CRs, $(wc -l < "$f4/compose.prod.yml") lines)"
+
+# --- Case F5: the last service in the file, with no final newline -----------
+f5="$tmpdir/fix-nonl"
+fx_project "$f5" <<'YAML'
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    networks:
+      internal: {}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+YAML
+truncate -s -1 "$f5/compose.prod.yml"
+printf 'services:\n  demo-web:\n    image: nginx:alpine\n    container_name: demo-web\n    restart: unless-stopped\n    cpus: ${KASBAH_CPU_LIMIT}\n    mem_limit: ${KASBAH_MEM_LIMIT}\n    networks:\n      internal: {}\n      kasbah-net:\n    logging:\n      driver: json-file\n      options:\n        max-size: "10m"\n        max-file: "3"\n\nnetworks:\n  kasbah-net:\n    external: true' > "$f5/expected"
+out="$(fx_run "$f5")"; rc=$?
+assert '[ "$rc" = "0" ]' "F5: the fixed project passes (rc $rc)
+$out"
+assert 'cmp -s "$f5/compose.prod.yml" "$f5/expected"' \
+    "F5: a block appended at EOF, and the missing final newline still missing$(diff -u "$f5/expected" "$f5/compose.prod.yml" 2>&1 || true)"
+assert '[ "$(tail -c 1 "$f5/compose.prod.yml" | wc -l)" = "0" ]' \
+    "F5: the file still ends mid-line, as its author left it"
+
+# --- Case F6: --fix is idempotent -------------------------------------------
+# Run it again over every file the cases above left behind and compare bytes.
+# `cmp`, not `$(cat …)`: the failure this guards against is a file that gains a
+# newline per run, and command substitution cannot see that at all.
+for d in "$f1" "$f2" "$f3" "$f4" "$f5"; do
+    cp "$d/compose.prod.yml" "$d/first-run"
+    cp "$d/kasbah.yml" "$d/first-run-manifest"
+    out="$(fx_run "$d")"; rc=$?
+    assert '[ "$rc" = "0" ]' "F6 ($(basename "$d")): the second run still passes (rc $rc)"
+    assert 'grep -qF "nothing --fix can change" <<<"$out"' \
+        "F6 ($(basename "$d")): the second run finds nothing to do (said '$out')"
+    assert 'cmp -s "$d/compose.prod.yml" "$d/first-run"' \
+        "F6 ($(basename "$d")): compose.prod.yml is byte-identical after a second --fix"
+    assert 'cmp -s "$d/kasbah.yml" "$d/first-run-manifest"' \
+        "F6 ($(basename "$d")): kasbah.yml is byte-identical after a second --fix"
+done
+
+# --- Case F7: the kasbah_version backfill, and only when it is missing -------
+f7="$tmpdir/fix-manifest"
+make_project "$f7"
+grep -v '^kasbah_version:' "$f7/kasbah.yml" > "$f7/k.next" && mv "$f7/k.next" "$f7/kasbah.yml"
+cp "$f7/kasbah.yml" "$f7/before"
+out="$(fx_run "$f7")"; rc=$?
+assert '[ "$rc" = "0" ]' "F7: the backfilled project passes (rc $rc)
+$out"
+assert 'grep -qxF "kasbah_version: $(cat "$repo_dir/VERSION")" "$f7/kasbah.yml"' \
+    "F7: the manifest now names this kasbah ($(cat "$f7/kasbah.yml"))"
+assert '[ "$(grep -c "^schema: 1$" "$f7/kasbah.yml")" = 1 ]' \
+    "F7: written after schema:, which is still there exactly once"
+# The rest of the manifest is untouched: same bytes with that one line removed.
+grep -v '^kasbah_version:' "$f7/kasbah.yml" > "$f7/stripped"
+assert 'cmp -s "$f7/stripped" "$f7/before"' \
+    "F7: nothing else in kasbah.yml moved$(diff -u "$f7/before" "$f7/stripped" 2>&1 || true)"
+# A manifest that already names a version keeps the one it names — the rule is
+# "if missing", and a version already written is the author's statement.
+f7b="$tmpdir/fix-manifest-present"
+make_project "$f7b"
+sed -i 's/^kasbah_version: .*/kasbah_version: 0.0.1/' "$f7b/kasbah.yml"
+cp "$f7b/kasbah.yml" "$f7b/before"
+out="$(fx_run "$f7b")"
+assert 'cmp -s "$f7b/kasbah.yml" "$f7b/before"' \
+    "F7: an existing kasbah_version is not overwritten"
+assert 'grep -qxF "kasbah_version: 0.0.1" "$f7b/kasbah.yml"' \
+    "F7: and it still says what the author wrote"
+
+# --- Case F8: what --fix will not do ----------------------------------------
+# A project failing C07, C09, T02, T03, T05, HK01 and C08-by-absence. The
+# fixable rules are fixed; every one of those is still failing afterwards, still
+# reported, and the run still exits 6.
+f8="$tmpdir/fix-unfixable"
+fx_project "$f8" <<'YAML'
+services:
+  web:
+    image: nginx:alpine
+    container_name: demo-web
+    networks: [kasbah-net]
+  cache:
+    image: redis:7
+    container_name: demo-cache
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    networks: [kasbah-net]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  builder:
+    build: .
+    container_name: demo-builder
+    restart: always
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: true
+YAML
+{
+    printf 'http:\n  routers:\n    demo:\n      rule: "Host(`traefik.example.com`)"\n'
+    printf '      service: demo\n  services:\n    demo:\n      loadBalancer:\n'
+    printf '        servers:\n          - url: "http://demo-web:80"\n'
+} > "$f8/traefik-dynamic.yml"
+printf 'hooks:\n  post-deploy:\n    - "nope echo hi"\n' >> "$f8/kasbah.yml"
+out="$(fx_run "$f8")"; rc=$?
+assert '[ "$rc" = "6" ]' "F8: the unfixable failures still fail the run (rc $rc)
+$out"
+assert 'grep -qF "C01 web — add restart: unless-stopped" <<<"$out"' \
+    "F8: what it could fix, it fixed (said '$out')"
+assert 'grep -qF "C08 builder — builds an image but names no image:" <<<"$out"' \
+    "F8: and says which one it declined, with the reason (said '$out')"
+assert 'grep -qF "✗ Non-routed services on kasbah-net: cache" <<<"$out"'   "F8: C07 still reported"
+assert 'grep -qF "Services on kasbah-net whose name is not" <<<"$out"'      "F8: C09 still reported"
+assert 'grep -qF "✗ No router rule references manifest domain" <<<"$out"'   "F8: T02 still reported"
+assert 'grep -qF "✗ Routers without entryPoints: demo" <<<"$out"'           "F8: T03 still reported"
+assert 'grep -qF "✗ Routers claim reserved hostnames" <<<"$out"'            "F8: T05 still reported"
+assert 'grep -qF "✗ Hooks reference unknown container_names: nope" <<<"$out"' "F8: HK01 still reported"
+# The paired positive: those rules were not merely *reported* untouched, the
+# file really is untouched where they live. A --fix that had renamed `cache` or
+# rewritten the fragment would satisfy every grep above by making them pass.
+assert 'grep -qxF "  cache:" "$f8/compose.prod.yml"'   "F8: the generically-named service was not renamed"
+assert 'grep -qF "traefik.example.com" "$f8/traefik-dynamic.yml"' "F8: the fragment was not rewritten"
+assert 'grep -qF "nope echo hi" "$f8/kasbah.yml"'      "F8: the hook command was not rewritten"
+assert 'grep -qF "    build: ." "$f8/compose.prod.yml"' "F8: no image: was invented for the built service"
+assert '! grep -q "image: builder" "$f8/compose.prod.yml"' "F8: nor one named after the service"
+
+# --- Case F9: a file that will not parse is not a file to rewrite ------------
+f9="$tmpdir/fix-malformed"
+make_project "$f9"
+printf 'services:\n  web:\n   image: [oops\n' > "$f9/compose.prod.yml"
+cp "$f9/compose.prod.yml" "$f9/before"
+out="$(fx_run "$f9")"; rc=$?
+assert '[ "$rc" = "6" ]' "F9: a malformed compose still fails the check (rc $rc)"
+assert 'grep -qF "does not parse as YAML — --fix will not pattern-match" <<<"$out"' \
+    "F9: --fix says why it refused (said '$out')"
+assert 'cmp -s "$f9/compose.prod.yml" "$f9/before"' \
+    "F9: and the file is byte-identical afterwards"
+assert '[ -z "$(find "$f9" -name "*.kasbah-fix.*" -print -quit)" ]' \
+    "F9: no candidate file left in the project tree"
+
+# --- Case F10: the diff is a decision, so it is asked ------------------------
+# docs/overview.md → Interactivity: an unset flag means prompt. Without a
+# terminal and without --yes the run stops naming the flag, and writes nothing.
+f10="$tmpdir/fix-prompt"
+fx_project "$f10" <<'YAML'
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    networks: [kasbah-net]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: true
+YAML
+cp "$f10/compose.prod.yml" "$f10/before"
+out="$(cd "$f10" && "$kasbah" check --fix </dev/null 2>&1)"; rc=$?
+assert '[ "$rc" = "1" ]' "F10: no terminal and no --yes is a hard fail (rc $rc)"
+assert 'grep -qF "cannot ask: Apply these edits?" <<<"$out"' \
+    "F10: naming the question (said '$out')"
+assert 'grep -qF "pass --yes instead" <<<"$out"' \
+    "F10: and the flag that answers it (said '$out')"
+assert 'grep -qF "+    restart: unless-stopped" <<<"$out"' \
+    "F10: the diff was shown before the question, not after (said '$out')"
+assert 'cmp -s "$f10/compose.prod.yml" "$f10/before"' \
+    "F10: an unanswered prompt writes nothing"
+assert '[ -z "$(find "$f10" -name "*.kasbah-fix.*" -print -quit)" ]' \
+    "F10: and leaves no candidate behind"
+# --yes on its own answers nothing, and a flag that silently does nothing is
+# worse than one that is refused.
+out="$(cd "$f10" && "$kasbah" check --yes 2>&1)"; rc=$?
+assert '[ "$rc" = "1" ]' "F10: --yes without --fix is refused (rc $rc)"
+assert 'grep -qF "it does nothing on its own" <<<"$out"' "F10: saying so (said '$out')"
+# The paired positive: the same project with --yes *and* --fix is written.
+out="$(fx_run "$f10")"; rc=$?
+assert '[ "$rc" = "0" ]' "F10: --fix --yes applies the same edits (rc $rc)
+$out"
+assert '! cmp -s "$f10/compose.prod.yml" "$f10/before"' "F10: and the file did change"
+assert 'grep -qF "  wrote compose.prod.yml" <<<"$out"' "F10: and it says which file (said '$out')"
+assert '[ -z "$(find "$f10" -name "*.kasbah-fix.*" -print -quit)" ]' \
+    "F10: with no candidate left over"
+
+# --- Case F11: the real fixture, broken every fixable way, comes back clean --
+# tests/fixtures/demo is a compose file whose comments carry the reasoning for
+# every choice in it. It is broken here in the awkward shapes an operator would
+# leave — a literal cpus:, a flow-mapping network, a removed logging block — and
+# has to come back to exit 0 with all of that prose still in it.
+f11="$tmpdir/fix-fixture"
+mkdir -p "$f11"
+cp -a "$repo_dir/tests/fixtures/demo/." "$f11/"
+printf '.env\n.kasbah/\n' > "$f11/.gitignore"
+comments_before="$(grep -c '#' "$f11/compose.prod.yml")"
+# Line-oriented on purpose: sed, so the suite needs nothing yq does not already
+# bring, and so the breakage is legible next to the fixture it is applied to.
+sed -i -e '1i version: "3.7"' \
+       -e '/^    restart: unless-stopped$/d' \
+       -e 's/^    cpus: ${KASBAH_CPU_LIMIT}$/    cpus: "0.5"/' \
+       -e 's/^    mem_limit: ${KASBAH_MEM_LIMIT}$/    mem_limit: 512m/' \
+       -e '/^      - kasbah-net$/d' \
+       -e '/^    logging:$/,/^        max-file: "3"$/d' \
+       -e 's/^  kasbah-net:$/  kasbah-net: {}/' \
+       -e '/^    external: true$/d' \
+       "$f11/compose.prod.yml"
+sed -i '/^    mem_limit: 512m$/a\    mem_reservation: 64m' "$f11/compose.prod.yml"
+grep -v '^kasbah_version:' "$f11/kasbah.yml" > "$f11/k.next" && mv "$f11/k.next" "$f11/kasbah.yml"
+out="$(cd "$f11" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]' "F11: the broken fixture fails first (rc $rc)"
+assert '[ "$comments_before" -ge 20 ]' \
+    "F11: the fixture really does carry prose to lose ($comments_before comment lines)"
+out="$(fx_run "$f11")"; rc=$?
+assert '[ "$rc" = "0" ]' "F11: and --fix takes it to a clean run (rc $rc)
+$out"
+assert 'grep -qF "0 failed" <<<"$out"' "F11: with nothing failing (said '$out')"
+assert '[ "$(grep -c "#" "$f11/compose.prod.yml")" = "$comments_before" ]' \
+    "F11: every one of the $comments_before comment lines survived (found $(grep -c '#' "$f11/compose.prod.yml"))"
+assert 'grep -qF "compose publishes the service name" "$f11/compose.prod.yml"' \
+    "F11: including the one inside the block that was edited"
+assert 'grep -qF "kasbah-net alone, which is what \`init-project\` scaffolds" "$f11/compose.prod.yml"' \
+    "F11: and the one inside the networks list that gained a member"
+
+# --- Case F12: a compliant project is left byte-identical --------------------
+# The control that makes F11 mean something: --fix that rewrote every file it
+# read would pass F11 just as well.
+f12="$tmpdir/fix-compliant"
+mkdir -p "$f12"
+cp -a "$repo_dir/tests/fixtures/demo/." "$f12/"
+printf '.env\n.kasbah/\n' > "$f12/.gitignore"
+cp "$f12/compose.prod.yml" "$f12/before"
+cp "$f12/kasbah.yml" "$f12/before-manifest"
+out="$(fx_run "$f12")"; rc=$?
+assert '[ "$rc" = "0" ]' "F12: the untouched fixture passes (rc $rc)
+$out"
+assert 'grep -qF "nothing --fix can change" <<<"$out"' "F12: and --fix says so (said '$out')"
+assert 'cmp -s "$f12/compose.prod.yml" "$f12/before"' "F12: compose.prod.yml byte-identical"
+assert 'cmp -s "$f12/kasbah.yml" "$f12/before-manifest"' "F12: kasbah.yml byte-identical"
+
+# --- Case F13: --fix is an addition, not a change to the report -------------
+# The report a plain `kasbah check` prints is exactly what it printed before the
+# flag existed: on a project with nothing to fix, the --fix run is that same
+# report with a Fix block in front of it, and the same exit code.
+out_plain="$(cd "$f12" && "$kasbah" check 2>&1)"; rc_plain=$?
+out_fix="$(cd "$f12" && "$kasbah" check --fix --yes 2>&1)"; rc_fix=$?
+out_stripped="$(sed '/^Fix:$/,/^$/d' <<<"$out_fix")"
+assert '[ "$rc_plain" = "$rc_fix" ]' "F13: same exit code ($rc_plain vs $rc_fix)"
+assert '[ "$out_plain" = "$out_stripped" ]' \
+    "F13: same report, line for line$(diff -u <(printf '%s\n' "$out_plain") <(printf '%s\n' "$out_stripped") 2>&1 || true)"
+# Paired with it, so "equal" cannot be equal-because-nothing-was-removed: the
+# plain run has no Fix block at all, and the --fix run does.
+assert '! grep -q "^Fix:$" <<<"$out_plain"' "F13: a plain check prints no Fix block"
+assert 'grep -q "^Fix:$" <<<"$out_fix"'     "F13: and a --fix run does"
+assert '[ "$out_fix" != "$out_stripped" ]'  "F13: so the strip above removed something"
+out="$(cd "$f12" && "$kasbah" check --help 2>&1)"
+assert 'grep -qF -- "--fix " <<<"$out"' "F13: --help documents --fix (said '$out')"
+assert '! grep -qF "not yet wired in" <<<"$out"' "F13: and no longer says it is unimplemented"
+
+# The same equality on a project that *fails*, since a clean project exercises
+# none of the ✗ lines and none of the exit-6 path. $f8 has been through --fix
+# already, so it has nothing left to fix and everything left to report.
+out_plain="$(cd "$f8" && "$kasbah" check 2>&1)"; rc_plain=$?
+out_fix="$(cd "$f8" && "$kasbah" check --fix --yes 2>&1)"; rc_fix=$?
+out_stripped="$(sed '/^Fix:$/,/^$/d' <<<"$out_fix")"
+assert '[ "$rc_plain" = "6" ]' "F13: the failing project still exits 6 without --fix (rc $rc_plain)"
+assert '[ "$rc_plain" = "$rc_fix" ]' "F13: and with it ($rc_plain vs $rc_fix)"
+assert '[ "$out_plain" = "$out_stripped" ]' \
+    "F13: the failing report is the same line for line$(diff -u <(printf '%s\n' "$out_plain") <(printf '%s\n' "$out_stripped") 2>&1 || true)"
+assert '[ "$(grep -c "✗" <<<"$out_plain")" -ge 5 ]' \
+    "F13: and it really is a failing report ($(grep -c "✗" <<<"$out_plain") ✗ lines)"
+assert '[ "$out_fix" != "$out_stripped" ]' "F13: the strip removed a Fix block here too"
+
+# --- Case F14: three insertions anchored on one line, and an implicit network -
+# demo-web's last content line is the last line of its logging.options, so the
+# two service-level keys and the options entry are all anchored there and have
+# to come out deepest-first: a `restart:` emitted at the options' indentation
+# would be a logging option called restart, and it would still parse.
+#
+# The same service declares no networks: at all, which means compose's implicit
+# default. C03 adds kasbah-net there by writing `default` alongside it — joining
+# the shared network must not quietly take the service off the one it had, which
+# is the topology guess C07 exists because kasbah will not make.
+f14="$tmpdir/fix-anchors"
+fx_project "$f14" <<'YAML'
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+YAML
+cat > "$f14/expected" <<'YAML'
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: "10m"
+    restart: unless-stopped
+    networks:
+      - default
+      - kasbah-net
+
+networks:
+  kasbah-net:
+    external: true
+YAML
+out="$(fx_run "$f14")"; rc=$?
+assert '[ "$rc" = "0" ]' "F14: the fixed project passes (rc $rc)
+$out"
+assert 'cmp -s "$f14/compose.prod.yml" "$f14/expected"' \
+    "F14: deepest-first, and the implicit default written out$(diff -u "$f14/expected" "$f14/compose.prod.yml" 2>&1 || true)"
+# Paired positives, so the byte comparison is not the only thing holding these
+# two properties up. Both would still parse if they were wrong: `restart` as a
+# logging option is legal YAML, and dropping `default` is legal compose.
+assert '[ "$(yq -r ".services[\"demo-web\"].restart" "$f14/compose.prod.yml")" = "unless-stopped" ]' \
+    "F14: restart landed on the service, not inside logging.options"
+assert '[ "$(yq -r ".services[\"demo-web\"].logging.options | keys | length" "$f14/compose.prod.yml")" = "2" ]' \
+    "F14: and logging.options gained exactly the one key it was missing"
+assert '[ "$(yq -r ".services[\"demo-web\"].networks | join(\",\")" "$f14/compose.prod.yml")" = "default,kasbah-net" ]' \
+    "F14: the service is on kasbah-net and still on the default it had"
+assert 'grep -qF "default spelled out so the service keeps the network it had" <<<"$out"' \
+    "F14: and the plan says why (said '$out')"
+
+# --- Case F15: rewritten in place, never appended beside ---------------------
+# Every rule here fails on a value rather than on a missing key, so the repair
+# is a rewrite of the line that is already there. Appending the right key next
+# to the wrong one would satisfy the rule just as well — compose and yq both
+# take the last of two duplicate keys — and would leave a file saying two
+# things. Hence the per-key counts below, which are what tell the two apart.
+f15="$tmpdir/fix-rewrite"
+fx_project "$f15" <<'YAML'
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    restart: "no"     # compose's default, spelled out
+    cpus: "0.5"
+    mem_limit: 512m   # sized for the old box
+    networks: [kasbah-net]
+    logging:
+      driver: local
+      options:
+        max-size:
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: false
+YAML
+cat > "$f15/expected" <<'YAML'
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    restart: "unless-stopped"     # compose's default, spelled out
+    cpus: "${KASBAH_CPU_LIMIT}"
+    mem_limit: ${KASBAH_MEM_LIMIT}   # sized for the old box
+    networks: [kasbah-net]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: true
+YAML
+out="$(fx_run "$f15")"; rc=$?
+assert '[ "$rc" = "0" ]' "F15: the fixed project passes (rc $rc)
+$out"
+assert 'cmp -s "$f15/compose.prod.yml" "$f15/expected"' \
+    "F15: five values rewritten where they stood, quoting and the comment kept$(diff -u "$f15/expected" "$f15/compose.prod.yml" 2>&1 || true)"
+# Each key appears exactly once. Without these, a --fix that appended
+# `restart: unless-stopped` under the `restart: "no"` it was supposed to correct
+# would pass every rule and every yq lookup above.
+for key in restart cpus mem_limit max-size driver external; do
+    assert '[ "$(grep -c "^ *$key:" "$f15/compose.prod.yml")" = 1 ]' \
+        "F15: '$key' is written once, not twice ($(grep -c "^ *$key:" "$f15/compose.prod.yml") lines)"
+done
+assert 'grep -qF "C01 demo-web — restart: no → unless-stopped" <<<"$out"' \
+    "F15: and the plan says it rewrote rather than added (said '$out')"
+# Both halves of the value/comment split are exercised here, and they are
+# different code: `restart:` and `cpus:` are quoted values, scanned to their
+# closing quote, while `mem_limit:` is a plain one, ended at the first `#` that
+# follows a blank. Only the second keeps a trailing comment through a rewrite,
+# so without this line nothing tests that path at all.
+assert 'grep -qxF "    mem_limit: \${KASBAH_MEM_LIMIT}   # sized for the old box" "$f15/compose.prod.yml"' \
+    "F15: an unquoted value keeps its trailing comment, spacing included"
+
+# --- Case F16: block scalars are text, and the scanner has to know it --------
+# `_cf_block_end` walks past blank and comment lines to find a block's last
+# content line. Under a `|` or `>` header those lines are not blanks and
+# comments, they are the value — so without a rule for it the block's "last
+# line" lands in the middle of a shell script and an insertion is spliced into
+# it. That splice parses, keeps every top-level and service key, and settles, so
+# every guard downstream waves it through while two lines vanish from a string.
+#
+# Three shapes in one file, and the last-key ones are the ones that bite:
+#   demo-mid   a scalar that is the service's *first* key, with more keys after
+#              it — the case that already worked, pinned so it stays working,
+#              and the witness for _cf_child_indent needing no rule of its own
+#              (the header is reached before any of its content).
+#   demo-web   a scalar that is the last key, ending in two comment lines.
+#   demo-keep  a `|+` that is the last key, ending in two blank lines the header
+#              keeps — those newlines are the value, so the insertion has to go
+#              after them, not between them and the text.
+f16="$tmpdir/fix-scalars"
+fx_project "$f16" <<'YAML'
+services:
+  # the scalar comes first, and its content is deeper than its own header —
+  # which is why finding a block's first child never walks into one
+  demo-mid:
+    entrypoint: |
+      set -e
+      # inside the scalar, and therefore not a comment
+    image: nginx:alpine
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    networks: [kasbah-net]
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    entrypoint: |
+      set -e
+      nginx -g 'daemon off;'
+      # the trailing comment the author wrote
+      # and a second one
+
+  demo-keep:
+    image: busybox
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command: |+
+      echo hi
+
+
+networks:
+  kasbah-net:
+    external: true
+YAML
+# The three values as YAML sees them, read *before* the fix so the comparison
+# below is against what the author wrote and not against what --fix produced.
+f16_mid="$(yq -r '.services["demo-mid"].entrypoint'  "$f16/compose.prod.yml" | od -An -c)"
+f16_web="$(yq -r '.services["demo-web"].entrypoint'  "$f16/compose.prod.yml" | od -An -c)"
+f16_keep="$(yq -r '.services["demo-keep"].command'   "$f16/compose.prod.yml" | od -An -c)"
+cat > "$f16/expected" <<'YAML'
+services:
+  # the scalar comes first, and its content is deeper than its own header —
+  # which is why finding a block's first child never walks into one
+  demo-mid:
+    entrypoint: |
+      set -e
+      # inside the scalar, and therefore not a comment
+    image: nginx:alpine
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    networks: [kasbah-net]
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    entrypoint: |
+      set -e
+      nginx -g 'daemon off;'
+      # the trailing comment the author wrote
+      # and a second one
+    restart: unless-stopped
+
+  demo-keep:
+    image: busybox
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command: |+
+      echo hi
+
+
+    restart: unless-stopped
+networks:
+  kasbah-net:
+    external: true
+YAML
+out="$(fx_run "$f16")"; rc=$?
+assert '[ "$rc" = "0" ]' "F16: the fixed project passes (rc $rc)
+$out"
+assert 'cmp -s "$f16/compose.prod.yml" "$f16/expected"' \
+    "F16: each restart: lands after its whole scalar, never inside one$(diff -u "$f16/expected" "$f16/compose.prod.yml" 2>&1 || true)"
+# Paired with the byte comparison, and the assertion that actually names the
+# damage: the splice is invisible in the *text* diff of a reviewer skimming it —
+# it is the string's contents that lose two lines. Compared through od, so a
+# `|+`'s trailing newlines count.
+assert '[ "$(yq -r ".services[\"demo-mid\"].entrypoint" "$f16/compose.prod.yml" | od -An -c)" = "$f16_mid" ]' \
+    "F16: demo-mid's scalar is the same string it was"
+assert '[ "$(yq -r ".services[\"demo-web\"].entrypoint" "$f16/compose.prod.yml" | od -An -c)" = "$f16_web" ]' \
+    "F16: demo-web's scalar kept the two comment lines that are its text"
+assert '[ "$(yq -r ".services[\"demo-keep\"].command" "$f16/compose.prod.yml" | od -An -c)" = "$f16_keep" ]' \
+    "F16: demo-keep's |+ kept the trailing newlines that are its value"
+# And the negative that would otherwise be vacuous on its own: a `restart:` key
+# spliced into a scalar becomes part of the string, so it must not be there.
+assert '! grep -qF "restart" <<<"$(yq -r ".services[\"demo-web\"].entrypoint" "$f16/compose.prod.yml")"' \
+    "F16: no compose key ended up inside the shell script"
+cp "$f16/compose.prod.yml" "$f16/first-run"
+out="$(fx_run "$f16")"; rc=$?
+assert '[ "$rc" = "0" ]' "F16: and a second run still passes (rc $rc)"
+assert 'cmp -s "$f16/compose.prod.yml" "$f16/first-run"' "F16: byte-identical after a second --fix"
+
+# --- Case F17: a `#` inside a quoted value is not a comment ------------------
+# YAML ends a plain scalar at a `#` that follows a blank; inside quotes it ends
+# nothing. Splitting on the first `#` regardless writes the new value next to
+# the tail of the old one's quoting, and the file then carries a stray `"` in
+# what reads as a comment. The value is scanned to its closing quote instead,
+# and a quote that never closes on the line is refused rather than guessed at.
+f17="$tmpdir/fix-hash-in-value"
+fx_project "$f17" <<'YAML'
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    networks: [kasbah-net]
+    restart: unless-stopped
+    cpus: '1.5 # measured on the old box'
+    mem_limit: "512m # sized for the box"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: true
+YAML
+cat > "$f17/expected" <<'YAML'
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    networks: [kasbah-net]
+    restart: unless-stopped
+    cpus: '${KASBAH_CPU_LIMIT}'
+    mem_limit: "${KASBAH_MEM_LIMIT}"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: true
+YAML
+out="$(fx_run "$f17")"; rc=$?
+assert '[ "$rc" = "0" ]' "F17: the fixed project passes (rc $rc)
+$out"
+assert 'cmp -s "$f17/compose.prod.yml" "$f17/expected"' \
+    "F17: both values replaced whole, and no quote left stranded$(diff -u "$f17/expected" "$f17/compose.prod.yml" 2>&1 || true)"
+# The paired positive, because "the bytes match" would also hold if --fix had
+# refused both and the expected file said so: yq has to read the references.
+assert '[ "$(yq -r ".services[\"demo-web\"].cpus" "$f17/compose.prod.yml")" = "\${KASBAH_CPU_LIMIT}" ]' \
+    "F17: cpus reads as the variable reference"
+assert '[ "$(yq -r ".services[\"demo-web\"].mem_limit" "$f17/compose.prod.yml")" = "\${KASBAH_MEM_LIMIT}" ]' \
+    "F17: mem_limit too"
+assert '! grep -q "sized for the box" "$f17/compose.prod.yml"' \
+    "F17: the old value went whole — no half of it survives as a comment"
+
+# A quoted scalar that runs onto the next line cannot be split by looking at one
+# line, so it is refused and the file is left exactly as it was.
+f17b="$tmpdir/fix-multiline-quote"
+fx_project "$f17b" <<'YAML'
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    networks: [kasbah-net]
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: "512m
+      # this is a continuation, not a comment"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: true
+YAML
+cp "$f17b/compose.prod.yml" "$f17b/before"
+out="$(fx_run "$f17b")"; rc=$?
+assert '[ "$rc" = "6" ]' "F17: the unsplittable value still fails R02 (rc $rc)"
+assert 'grep -qF "R02 demo-web — its mem_limit: is written in a shape --fix cannot rewrite" <<<"$out"' \
+    "F17: and --fix says so rather than guessing (said '$out')"
+assert 'cmp -s "$f17b/compose.prod.yml" "$f17b/before"' "F17: the file is byte-identical"
+assert '! grep -qF "nothing --fix can change" <<<"$out"' \
+    "F17: a run that refused something does not also claim there was nothing to change"
+
+# --- Case F18: a candidate that cannot be written says so, and only that -----
+# `chmod --reference` copies a read-only mode onto the candidate, and the
+# redirection that then fails is reported by the shell before `2>/dev/null` is
+# applied — a raw `Permission denied` in front of the tidy message. Running as
+# root ignores the write bits entirely, so there is nothing to prove there.
+if [ "$(id -u)" != 0 ]; then
+    f18="$tmpdir/fix-readonly"
+    fx_project "$f18" <<'YAML'
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    networks: [kasbah-net]
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: true
+YAML
+    cp "$f18/compose.prod.yml" "$f18/before"
+    # A read-only *file* in a writable directory: the candidate is written while
+    # it is still writable, so the fix lands and the file keeps its mode.
+    chmod a-w "$f18/compose.prod.yml"
+    out="$(fx_run "$f18")"; rc=$?
+    f18_mode="$(stat -c '%a' "$f18/compose.prod.yml")"
+    chmod u+w "$f18/compose.prod.yml"
+    assert '[ "$rc" = "0" ]' "F18: a read-only compose is still fixed (rc $rc)
+$out"
+    assert '! grep -q "Permission denied" <<<"$out"' \
+        "F18: with no raw shell error in the output (said '$out')"
+    assert 'grep -qF "restart: unless-stopped" "$f18/compose.prod.yml"' "F18: and the fix really landed"
+    assert '[ "$f18_mode" = "444" ]' "F18: the file's mode came through the rename (was $f18_mode)"
+
+    # A read-only *directory*: nothing can be written beside the file, so the
+    # run refuses — one tidy message, the reason in the report, file untouched.
+    f18b="$tmpdir/fix-readonly-dir"
+    fx_project "$f18b" <<'YAML'
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    networks: [kasbah-net]
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: true
+YAML
+    cp "$f18b/compose.prod.yml" "$f18b/before"
+    chmod a-w "$f18b"
+    out="$(fx_run "$f18b")"; rc=$?
+    chmod u+w "$f18b"
+    assert '[ "$rc" = "6" ]' "F18: an unwritable directory leaves the failures in place (rc $rc)"
+    assert '! grep -q "Permission denied" <<<"$out"' \
+        "F18: no raw shell error there either (said '$out')"
+    assert 'grep -qF "cannot write beside compose.prod.yml" <<<"$out"' \
+        "F18: the message kasbah wrote is the one shown (said '$out')"
+    assert 'grep -qF "nothing could be written beside it" <<<"$out"' \
+        "F18: and the report says which file was left alone (said '$out')"
+    assert 'cmp -s "$f18b/compose.prod.yml" "$f18b/before"' "F18: the file is byte-identical"
+    assert '[ -z "$(find "$f18b" -name "*.kasbah-fix.*" -print -quit)" ]' \
+        "F18: and no candidate was left behind"
+fi
+
 exit "$fail"
