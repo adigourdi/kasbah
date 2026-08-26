@@ -321,19 +321,72 @@ than a round trip later — so a dropped connection cannot leave the proxy
 down with the fix on the wrong machine. Exits 4 on a host with no server
 marker.
 
-### `kasbah server destroy USER@HOST` *(roadmap v0.3)*
+### `kasbah server destroy USER@HOST [--yes]`
 
-De-brand the VPS for handover. Every container keeps running — projects
-**and** Traefik, the sites stay up. Removes kasbah's management layer only:
+De-brand the VPS for handover. **Every container keeps running throughout** —
+projects *and* Traefik, the sites stay up, and a project still `compose up`s
+afterwards from the server's own files. Removes kasbah's management layer, and
+above all every agency-owned secret.
 
-- `/apps/.kasbah/` server marker
-- backup cron + S3 credentials (agency-owned secrets never transfer)
-- per project: `versions.log(.gz)`, `scripts/` helpers, `.deploy.lock` (not
-  `kasbah.yml` — the manifest is never synced to a server)
+Server-wide:
+- `<apps>/.kasbah/server.json`, and `<apps>/.kasbah/` once empty
+- `/etc/kasbah/apps-path` and `/etc/kasbah/` — root-owned, so this needs
+  passwordless `sudo`. Without it the run **warns and continues**, exits 0, and
+  prints the exact command to finish by hand. A server left in that state has no
+  marker but still has its pointer, and destroy says so on a re-run rather than
+  claiming there is nothing to remove.
+- the **backup stack**, stopped rather than merely unlinked: `docker compose -p
+  kasbah-backup down`, then the container, the `kasbah-backup-cache` volume, the
+  `kasbah-backup_default` network, then `<apps>/.kasbah/backup/` entire —
+  `compose.yml`, `backup.sh`, `env`, `repos/*.pass`, `state/`. A schedule left
+  running would go on pushing the new owner's data into the departing agency's
+  storage. **The restic repositories are never touched**: operator property, and
+  an append-only credential could not delete them anyway.
 
-The new owner inherits a plain, working Docker Compose setup; deploy
-history and env tooling leave with kasbah. Double confirmation (typed
-hostname). See `server-setup.md` ("Handover / teardown").
+Per project:
+- `versions.log` and `versions.log.gz`
+- the `scripts/` helpers, **by name** — `remote-deploy.sh` and `setup-env.sh`,
+  then `rmdir`. The directory survives if it holds anything else, because
+  destroy cannot tell an operator's file from kasbah's except by name
+- `.deploy.lock`, and `.kasbah-client` (written by `deploy`, read by the backup
+  run — see `project-manifest.md`)
+- the **managed-block sentinel comments** in `.env`. The `KASBAH_CPU_LIMIT` and
+  `KASBAH_MEM_LIMIT` lines between them **stay**, as ordinary lines: compose
+  interpolates them into every service's `cpus:` and `mem_limit:`, so removing
+  them would stop the new owner's containers on their next `up`. What goes is
+  the comment promising the block is "rewritten on every deploy", which becomes
+  false the moment this command runs. Every other line survives byte for byte,
+  carriage returns included; the edit happens **on the server**, because the
+  file is the project's only copy of its secrets and it is not going to travel.
+
+Mail, if the stack is there:
+- every line of `<apps>/mail/.env` that is not `MAIL_HOSTNAME`, `DOMAIN` or
+  `DATA_PATH` — the operator's relay block, and kasbah's own explanatory
+  comments with it. The three keys stay, so the stack still starts. Outbound
+  relay stops until the new owner configures their own.
+- `<apps>/mail/kasbah.yml`, the registry — read by kasbah and nothing else.
+- **`postfix-accounts.cf` stays.** Removing the postmaster would leave
+  containers running that nobody can authenticate to.
+
+Kept: every container and image, Traefik and its fragments, `data/`,
+`<apps>/backups/`, named volumes, and the projects' compose files and `.env`
+values. There is no `kasbah.yml` to remove — the manifest is never synced to a
+server.
+
+**The trade-off is explicit, and it is wider than it looks.** Deploy history and
+env tooling leave with kasbah — and so does the mail registry, which is the only
+record of `primary_domain` and the domain list. A later re-branding
+`kasbah server init --with-mail` cannot reproduce either; both must be
+re-entered.
+
+**Double confirmation:** a yes/no question, then the **hostname** typed back.
+Either decline exits 1 having changed nothing. `--yes` skips both.
+
+A run that cannot finish **holds back the marker and the pointer**, so the
+server is still discoverable and the command can be re-run. It exits 1 and says
+which step failed. A second run on a fully de-branded server reports that the
+server carries nothing of kasbah's and exits 0 — it does not exit 4, because a
+completed destroy removes its own marker by design.
 
 ### `kasbah server status USER@HOST [--apps-path=<dir>]`
 

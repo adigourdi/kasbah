@@ -86,6 +86,7 @@ Commands:
   server init USER@HOST [flags]              Prepare a VPS to host projects.
   server status USER@HOST                    Report what a prepared VPS is running.
   server prune USER@HOST [--yes]             Remove image tags outside the retention window.
+  server destroy USER@HOST [--yes]           De-brand a VPS for handover; every container keeps running.
   server add-mail-domain USER@HOST DOMAIN    Join a domain to the VPS's shared mail stack.
   server mail-setup-guide USER@HOST          Print the mail stack's setup walkthrough.
   server upgrade-traefik USER@HOST --version=<tag>
@@ -117,6 +118,10 @@ dispatch_server() {
             . "$KASBAH_LIB_DIR/backup.sh"
             cmd_server_backup_prune "$@"
             ;;
+        destroy)
+            . "$KASBAH_LIB_DIR/server_destroy.sh"
+            cmd_server_destroy "$@"
+            ;;
         upgrade-traefik)
             . "$KASBAH_LIB_DIR/upgrade_traefik.sh"
             cmd_server_upgrade_traefik "$@"
@@ -141,6 +146,11 @@ Subcommands:
   backup-prune USER@HOST   Apply the retention policy to this server's restic
                            repositories. restic runs here, not on the VPS: the
                            full-access credential never goes to the server.
+  destroy USER@HOST [--yes]
+                           De-brand a VPS for handover: the marker, the backup
+                           stack and its credentials, each project's deploy
+                           record and helpers, and the mail relay block. Every
+                           container keeps running.
   upgrade-traefik USER@HOST --version=<tag>
                            Move the shared Traefik to another image tag: backs
                            up the three kasbah-owned files and dry-runs every
@@ -154,10 +164,10 @@ Run \`kasbah server <subcommand> --help\` for its flags.
 EOF
             ;;
         '')
-            die "server: no subcommand given (expected: init, status, prune, backup-prune, upgrade-traefik, add-mail-domain, mail-setup-guide)"
+            die "server: no subcommand given (expected: init, status, prune, backup-prune, destroy, upgrade-traefik, add-mail-domain, mail-setup-guide)"
             ;;
         *)
-            die "server: unknown subcommand '$sub' (expected: init, status, prune, backup-prune, upgrade-traefik, add-mail-domain, mail-setup-guide)"
+            die "server: unknown subcommand '$sub' (expected: init, status, prune, backup-prune, destroy, upgrade-traefik, add-mail-domain, mail-setup-guide)"
             ;;
     esac
 }

@@ -73,7 +73,7 @@ successfully.
 - `kasbah drop [--prune]` — remove a project; `--prune` also deletes
   data + backups (double confirmation) ✅
 - `kasbah server destroy` — de-brand a VPS for handover; containers
-  keep running (double confirmation)
+  keep running (double confirmation) ✅
 - Off-VPS backups: `server init --with-backup` — restic → any restic backend,
   append-only creds, per-client repos (see `backup.md`) ✅
 

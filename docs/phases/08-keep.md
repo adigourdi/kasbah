@@ -635,3 +635,106 @@ Relatedly, the wedge case had to stop capturing through `$( )`: `timeout`
 signals only the process it starts, and descendants holding the capture's pipe
 kept the outer bound as ineffective as the inner one it stood in for — measured
 at 600 s against a 30 s bound before the harness cut it.
+
+### 8.2 — `server destroy`
+
+Review verdict: **needs-work**, on two behavioural defects, one demonstrated-
+vacuous assertion, one weak witness and two message defects. The `.env` rewrite
+— the one thing here that edits a file holding a project's only copy of its
+secrets — came back **clean under every mutation the reviewer could construct**:
+every awkward shape, mode preservation, `umask 077` creation with the mode set
+before content, an atomic rename, and a genuinely unchanged file on every
+failure branch. The sentinel-provenance claim held too: the strings appear
+nowhere in `lib/server_destroy.sh`, both payloads take them as `ssh_script`
+arguments from `lib/env.sh`'s own variables, so the two readers cannot disagree.
+
+**The headline defect is 8.1's, recurring in a worse form.** Three far-side
+outcomes warned and carried on without setting `bad` — an unreadable project
+`.env`, an unreadable mail `.env`, and no passwordless sudo — while the closing
+paragraph was gated on `bad` alone. So a run that could not strip a relay
+credential ended with *"nothing kasbah installed is left to hand over with it"*
+and **exit 0**. Worse than 8.1's version, because the marker and pointer are
+removed on the same run: a second destroy then cannot enumerate the server and
+reports it clean while `RELAY_PASSWORD=` is still in `<apps>/mail/.env`. The
+command's headline security promise is the thing that failed silently, and the
+comment above the paragraph claimed it "is only true of a run where every step
+did what it was asked". Now split: an unreadable `.env` is a **failure** that
+holds the marker and pointer and exits 1, while `nosudo` keeps its spec'd exit 0
+and gets its own honest sentence.
+
+**A stray file under `<apps>` blocked the whole command, after both
+confirmations.** The probe enumerated every non-reserved entry including files
+and dotfiles; the act's name guard then refused on the first one that was not a
+project name. A `README.md`, a `notes.txt`, an `Old-Site`, a `.DS_Store` — each
+an unrecoverable block on de-branding, on a tree `server status` and
+`server prune` both walk happily. The fix is in the **probe**: such an entry is
+reported as left alone and never presented as a project. The act guard stays
+exactly as it is — it must keep trusting nothing this side assembled; it should
+simply stop being reachable in the ordinary case. `drop`'s equivalent guard can
+never fire because its name came from a validated manifest; this one fired on a
+tree walk, which is the difference nobody had noticed.
+
+**The seventh vacuous assertion of the phase, and this one was demonstrated
+rather than argued.** `! ls "$dir/" | grep -q kasbah-destroy` — the temp file is
+`.env.kasbah-destroy.$$`, a **dotfile**, which plain `ls` never lists. The
+reviewer mutated the code to leave the temp file behind and the suite still
+exited 0. The same line was also the change's only `producer | grep -q` under
+pipefail, the shape CLAUDE.md bans for the SIGPIPE race: one line, both defects,
+and the banned shape is what made the assertion vacuous.
+
+**A witness whose floor did not bound its coverage.** The continuity test
+asserted at least 20 samples and that none was non-200 — but nothing tied the
+sample window to the destroy window, and "no sample is non-200" is trivially
+true of an empty file. Measured: mean inter-sample gap **6.9 ms**, so 20 samples
+is **~0.14 s** against a ~13 s operation — a sampler that died half a second in
+passes both assertions and prints a green "the site never went down". *The
+property itself is real*: the reviewer's own instrumented run got 68/68 in-window
+samples at 200, and confirmed `200` discriminates as claimed — Traefik down
+gives `000`, a stopped project container `502`, a missing fragment `404`. The
+bookkeeping was the weak part, not the claim.
+
+All four of the implementer's pushbacks against the brief were upheld. Two are
+worth keeping: **`scripts/` is removed as its two named helpers plus an `rmdir`**
+rather than `rm -rf`, so an operator's own file there survives and the last
+`rm -rf` built from a project-name-derived path leaves the command entirely; and
+**exit 4 and "a clean second run" are in genuine tension for this one command**,
+since a completed destroy removes its own marker by design — resolved toward the
+clean second run, with exit 4 kept for the different case where the marker names
+an apps path that is not there.
+
+Two defects the implementer's own hand-driven pass found before review, which is
+now every task in this phase: `local IFS=', '` with `${parts[*]}` joins on the
+**first character only**, so the plan printed `versions.log,scripts/ (…)` with no
+spaces; and after `compose down` had taken the container, the report said "there
+was no kasbah-backup container" — true, and reading as though the plan that had
+just said "running" had lied.
+
+**Baselines after this task: 28 unit suites, 46 rig-inclusive** — counted, not
+inferred; the implementer's report quoted 26/42 from a stale base.
+
+The fix round closed all seven and cost one round. Three of the eleven new
+mutations **survived their first run**, each exposing a gap the fix had not
+closed: nothing asserted the per-project `FAILED:` wording, nothing exercised
+the plan under `sudo_state=no`, and `_sd_nothing_to_find` had **no unit coverage
+at all**. All thirteen original mutations were re-run against the revised code
+and stayed red, so nothing was hollowed out by the changes.
+
+Two decisions in the fix worth keeping. The failing-mail-`.env` case is the
+**last** case in the integration suite, on a re-prepared server, because the act
+takes the backup stack and the project artifacts *before* it reaches the mail
+file — run earlier it would strip the server of everything the main destroy has
+to be seen removing, and every "is gone" assertion above it would then pass for
+the wrong reason. **A test's position in a suite can make its neighbours
+vacuous.** And the no-sudo case stays hand-driven and out of the suite on
+purpose: proving it means moving `/etc/sudoers.d/stevedore` aside, and restoring
+it needs the privilege the test just removed — a suite that can wedge the rig's
+sudo would wedge it for the other seventeen.
+
+**A number that measures two different things.** The implementer's 26/42 came
+from adding its two new suites to the phase file's "25 PASS / 40 PASS"
+baselines. Those baselines are `PASS` **counts**, and a suite that skips on
+preconditions lands in `unrunnable`, not `PASS` — so "baseline plus mine" is the
+wrong sum whenever anything skips. The file count is 28 and 46, and it predicts
+the PASS line only on a run where nothing skips. Phase 7's numbers happened to
+match their file counts exactly, which is what made the wrong arithmetic look
+right.

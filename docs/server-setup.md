@@ -661,7 +661,7 @@ unreportable rather than wrong.
 
 ## Handover / teardown
 
-`kasbah server destroy` (roadmap v0.3) de-brands a VPS for handover — when the
+`kasbah server destroy` de-brands a VPS for handover — when the
 server passes to a client or another operator. Every container keeps
 running, projects **and** Traefik: the sites stay up. What's removed is
 kasbah's management layer:
@@ -670,12 +670,21 @@ kasbah's management layer:
   credentials — agency-owned secrets never transfer). The repositories
   themselves are **not** removed: they are operator property, and an
   append-only credential could not delete them in any case
-- per project: `versions.log(.gz)`, `scripts/` helpers, `.deploy.lock`. Not
+- per project: `versions.log(.gz)`, the `scripts/` helpers by name,
+  `.deploy.lock`, `.kasbah-client`, and the `.env` managed-block **sentinel
+  comments** — the `KASBAH_*` values between them stay, or compose loses the
+  interpolation every service's `cpus:`/`mem_limit:` depends on. Not
   `kasbah.yml` — the manifest is never synced to a server (`project-manifest.md`)
+- mail, if present: the operator's relay block in `<apps>/mail/.env` (kasbah's
+  three keys stay so the stack still starts) and the registry
+  `<apps>/mail/kasbah.yml`. The postmaster account stays
 
 What remains is a plain, self-contained Docker Compose setup the new owner
-fully controls. The trade-off is explicit: deploy history and env tooling
-leave with kasbah. Double confirmation (typed hostname).
+fully controls, still serving — every container keeps running *through* the
+operation, and a project still `compose up`s from the server's own files
+afterwards. The trade-off is explicit: deploy history and env tooling leave with
+kasbah, and so does the mail registry, the only record of `primary_domain` and
+the domain list. Double confirmation (typed hostname); full detail in `cli.md`.
 
 Full teardown (actually stopping everything) stays manual on purpose —
 too easy to misfire:
