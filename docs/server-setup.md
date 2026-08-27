@@ -441,7 +441,7 @@ What lands under the apps path:
 | `.kasbah/backup/repos/` | 700 | kasbah | — |
 | `.kasbah/backup/repos/<repo>.pass` | 600 | operator | **Written once, never rewritten.** A password kasbah could overwrite is a repository kasbah could orphan |
 | `.kasbah/backup/state/` | 700 | kasbah | The one writable path in an otherwise read-only tree |
-| `.kasbah/backup/state/status` | 644 | kasbah | The last-run record — when the run started and finished, how it went, which repositories, and the deadline the healthcheck reads |
+| `.kasbah/backup/state/status` | 644 | kasbah | The last-run record — when the run started and finished, how it went, which repositories, and the deadline. Three readers: the container's own healthcheck, `kasbah server status`, and `check --server`'s B01, the last two through one shared parser |
 
 Docker objects: compose project and container `kasbah-backup`, network
 `kasbah-backup_default`, and the named volume `kasbah-backup-cache`.
@@ -550,7 +550,8 @@ is also why this is not something init can wait on.
 Read-only — it never creates, modifies or removes anything. Walks the apps
 path, asks docker for every container's state and health, reads `versions.log`
 and the Traefik fragment for each project, asks `df` about the apps and data
-paths, and reads Traefik's certificate store:
+paths, reads Traefik's certificate store, and reads the backup stack's last-run
+record:
 
 ```
 VPS: you@vps (connected)
@@ -576,6 +577,12 @@ Mail: /apps/mail
   webmail.example.com
       certificate valid for 89 more day(s) (until Nov 23 08:05:31 2026 GMT, C = US, O = Let's Encrypt, CN = YR1)
 
+Backup: rest:http://kasbah-vps:***@backups.example.com:8000/  daily at 02:00 plus 42s jitter
+  kasbah-backup    running (healthy)
+  last run         ok 4h ago — repositories: gallery jellyfin mail
+  next run         in 19h
+  repositories     gallery jellyfin mail
+
 Projects:
   gallery        1/1 running    0.1.0      rollback 2026-08-23T00:16:46+00:00 (kasbah 0.1.0-dev)
       gallery.example.com
@@ -592,6 +599,15 @@ the full ISO timestamp the log records rather than a truncated date, because
 the log is the source of truth and a reformat invites a mismatch. Both the
 image tag and the resolved image id are shown: a tag can be re-pushed under
 the same name, the id cannot.
+
+**The backup line's repository base is redacted**, here and everywhere else it
+is printed: the base may carry a credential and the marker recording it is mode
+644 by contract. A stack that has never fired, one whose record cannot be read,
+one whose last run failed and one whose state has outlived its own deadline are
+four different sentences, not one — a missing record on a server that has never
+run a backup is not the same fact as a scheduler that stopped a month ago, and
+reporting them identically would make the line decoration. `check --server`
+answers the same question as a rule (B01) through the same parser.
 
 **The per-project domain comes from `<apps>/traefik/dynamic/<name>.yml`**,
 fetched base64 in the same round trip and parsed with the *workstation's* `yq`.

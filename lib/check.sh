@@ -20,8 +20,10 @@ Flags:
   --server USER@HOST  also ask that VPS: is the project deployed, does its .env
                       still match .env.prod.example, does the mail stack know
                       the claimed domain (M03), is health.container healthy, is
-                      there a certificate for the domain, and are the effective
-                      resource limits within the host's ceiling (R04). It also
+                      there a certificate for the domain, are the effective
+                      resource limits within the host's ceiling (R04), and — on
+                      a server with backups configured — has the backup stack
+                      run, and did the last run work (B01). It also
                       tightens T05 to the hostnames this server really owns.
                       Read-only: --server changes nothing on the server.
                       Without USER@HOST it asks the server this project last
@@ -36,7 +38,7 @@ Flags:
 
 Implemented: Structure (S01–S07), Compose (C01–C05, C07–C09), Resources
 (R01–R04), Traefik (T01–T08), Healthchecks (H01–H02), Env (E01–E05), Hooks
-(HK01–HK03), Mail (M01–M03).
+(HK01–HK03), Mail (M01–M03), Backup (B01).
 EOF
 }
 

@@ -1678,6 +1678,18 @@ write_check_payload() {
         printf 'health_state=running\n'
         printf 'health_health=healthy\n'
         printf 'docker_error=\n'
+        # The backup stack. By default a server with none — the marker above
+        # records no `backup` object, so B01 is not asked and every case that
+        # predates it prints exactly what it printed before.
+        printf 'backup_dir_state=%s\n' "${BK_DIR_STATE:-absent}"
+        printf 'backup_status_state=%s\n' "${BK_STATUS_STATE:-absent}"
+        printf 'backup_status_b64=%s\n' "$(b64 "${BK_RECORD:-}")"
+        printf 'now=%s\n' "${BK_NOW:-2000000000}"
+        printf 'backup_haspass=%s\n' "${BK_HASPASS-}"
+        printf 'backup_projects=%s\n' "${BK_PROJECTS-}"
+        printf 'backup_mail=%s\n' "${BK_MAIL:-no}"
+        printf 'backup_c_state=%s\n' "${BK_C_STATE:-absent}"
+        printf 'backup_c_health=%s\n' "${BK_C_HEALTH:-none}"
     } > "$check_payload"
 }
 
@@ -2135,6 +2147,313 @@ assert '[ -n "$docker_verbs" ]' "the remote step calls docker at all — else th
 # Both are reads, and they are the only two allowed.
 assert '[ -z "$(grep -vE "docker (inspect|version)" <<<"$docker_verbs")" ]' \
     "and every docker verb it uses is a read (found: $(tr -d " " <<<"$docker_verbs" | sort -u | tr "\n" " "))"
+
+# --- Case S12: B01, the backup stack's last run --------------------------------
+# The record templates/backup/backup.sh writes is the only thing on a VPS that
+# says whether backups are still happening. Nothing read it until this rule, so
+# a stack that had silently stopped was visible only in `docker logs`.
+#
+# Absence is never a conclusion: a stack that has never written a record, a
+# record nobody can read and a record with no completed run in it each warn and
+# say which. Only a record asserting a failed run, or one whose own deadline has
+# passed, fails.
+bk_marker="$(jq -cn '{kasbah_version:"0.1.0-dev",apps_path:"/apps",data_path:"/apps/data",
+                      cpu_limit:"14.4",mem_limit:"54g",
+                      backup:{enabled:true,repo_base:"s3:https://s3.example/bucket/",
+                              at:"02:00",jitter:42,timeout:900}}')"
+# state deadline next_run since started finished status repos
+bk_rec() {
+    printf 'state=%s\nsince=%s\ndeadline=%s\nnext_run=%s\nlast_run_started=%s\nlast_run_finished=%s\nlast_run_status=%s\nlast_run_repos=%s\ntimeout=900\nat=02:00\njitter=42\n' \
+        "$1" "$4" "$2" "$3" "$5" "$6" "$7" "$8"
+}
+bk_ok="$(bk_rec sleeping 2000086400 2000082800 1999990000 1999980000 1999983600 ok ' demo mail')"
+# A backup-enabled server with one repository that has its password and a
+# scheduler that is running — the shape every case below moves one key of.
+bk_srv() {
+    BK_DIR_STATE="$1" BK_STATUS_STATE="$2" BK_RECORD="$3"
+    BK_HASPASS="demo mail" BK_PROJECTS="demo=" BK_MAIL=yes
+    BK_C_STATE=running BK_C_HEALTH=healthy
+    write_check_payload
+    write_marker "$bk_marker"
+}
+
+# A server that was never asked to back anything up is not asked about. Backups
+# are optional, `--no-backup` is a documented answer, and `check` is a project
+# linter rather than an opinion about a server's disaster-recovery policy.
+write_marker
+write_check_payload
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+srv_section="$(sed -n '/^Server (/,$p' <<<"$out")"
+assert '[ "$rc" = "0" ]' "a server with no backups configured still passes (rc $rc)"
+assert '! grep -qF "backup" <<<"$srv_section"' \
+    "and B01 says nothing at all about it (server section said '$srv_section')"
+
+# The healthy stack.
+bk_srv dir file "$bk_ok"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "a backed-up server whose last run succeeded passes (rc $rc)
+$out"
+assert 'grep -qF "✓ the last backup on deploy@vps finished 4h ago and succeeded (repositories: demo mail)" <<<"$out"' \
+    "with the age off the server's own clock and what it reached (said '$out')"
+
+# The stack that has never fired once — the plan's own watch-out. It must not
+# read like a stack that stopped a month ago, and it must not fail.
+bk_srv dir file "$(bk_rec sleeping 2000086400 2000082800 1999999000 0 0 - -)"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "a stack that has never run warns rather than failing (rc $rc)"
+assert 'grep -qF "⚠ backups are configured on deploy@vps and no run has finished yet" <<<"$out"' \
+    "saying exactly that (said '$out')"
+assert 'grep -qF "rather than one that has stopped" <<<"$out"' \
+    "and saying which fact it is not (said '$out')"
+
+# A stack that has written no record at all: the container writes one as its
+# first act, so this is a scheduler that has not started.
+bk_srv dir absent ""
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "no record warns (rc $rc)"
+assert 'grep -qF "⚠ the backup scheduler on deploy@vps has written no record at /apps/.kasbah/backup/state/status" <<<"$out"' \
+    "naming the file (said '$out')"
+assert 'grep -qF "docker compose -p kasbah-backup up -d" <<<"$out"' "and the remedy (said '$out')"
+
+# A record that is there and cannot be read. `kasbah server prune` refuses to
+# conclude from a record it could not read, and so does this.
+bk_srv dir unreadable ""
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "an unreadable record warns (rc $rc)"
+assert 'grep -qF "cannot be read by the ssh user, so nothing here says whether a backup has ever run" <<<"$out"' \
+    "and refuses to conclude from it (said '$out')"
+assert 'grep -qF "not the same fact as a backup that has stopped" <<<"$out"' \
+    "explicitly (said '$out')"
+# Bytes that are not this record at all.
+bk_srv dir file "there is no deadline in here"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "a record this kasbah cannot parse warns (rc $rc)"
+assert 'grep -qF "is not a record this kasbah reads" <<<"$out"' "saying so (said '$out')"
+
+# The marker enables backups and the stack is not on the server.
+bk_srv absent absent ""
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "a marker naming a stack the server does not have warns (rc $rc)"
+assert 'grep -qF "records off-box backups and /apps/.kasbah/backup is not there" <<<"$out"' \
+    "saying which is missing (said '$out')"
+
+# The failed run: the case this rule exists to fail.
+bk_srv dir file "$(bk_rec sleeping 2000086400 2000082800 1999990000 1999980000 1999983600 failed ' none')"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "6" ]' "a last backup that failed fails the check (rc $rc)"
+assert 'grep -qF "✗ the last backup on deploy@vps FAILED 4h ago (repositories backed up: none)" <<<"$out"' \
+    "naming what it did and did not reach (said '$out')"
+assert 'grep -qF "docker logs kasbah-backup" <<<"$out"' "and where the reason is (said '$out')"
+
+# The stack that stopped: the state it last recorded has outlived its own
+# deadline. Its last run went fine, which is exactly why the age of that run
+# cannot be the verdict.
+bk_srv dir file "$(bk_rec sleeping 1999900000 1999896000 1999800000 1999780000 1999783600 ok ' demo')"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "6" ]' "a scheduler past its own deadline fails the check (rc $rc)"
+assert 'grep -qF "✗ the backup scheduler on deploy@vps is 27h past its own deadline in state '"'"'sleeping'"'"'" <<<"$out"' \
+    "saying how far past and in which state (said '$out')"
+assert 'grep -qF "the last run finished 2 day(s) ago" <<<"$out"' \
+    "with the run that did work, which is not a contradiction (said '$out')"
+
+# A run that never returned: same verdict, and the state is what tells them apart.
+bk_srv dir file "$(bk_rec running 1999990000 0 1999980000 1999980000 0 - -)"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "6" ]' "a run that never returned fails too (rc $rc)"
+assert 'grep -qF "in state '"'"'running'"'"'" <<<"$out"' "named as a wedged run (said '$out')"
+assert '! grep -qF "the last run finished" <<<"$out"' \
+    "and claims no finished run, because there has never been one (said '$out')"
+
+# A marker whose `backup` is not an object: jq answers that with a type error
+# rather than a null, and an unguarded read would end the run before any verdict
+# printed.
+write_check_payload
+write_marker '{"kasbah_version":"0.1.0-dev","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"14.4","mem_limit":"54g","backup":"yes please"}'
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "a marker with a backup field that is not an object still reports (rc $rc)
+$out"
+assert 'grep -qF "Server (deploy@vps at /apps):" <<<"$out"' "and the section still runs (said '$out')"
+srv_section="$(sed -n '/^Server (/,$p' <<<"$out")"
+assert '! grep -qF "backup" <<<"$srv_section"' \
+    "with B01 not asked, rather than answered off a field it could not read (said '$srv_section')"
+
+# B01 is a fact about the server, not about the project: a project nobody has
+# deployed still gets the verdict, because the backups it will need are the same
+# backups.
+bk_srv dir file "$(bk_rec sleeping 2000086400 2000082800 1999990000 1999980000 1999983600 failed ' none')"
+payload_set project_state=absent
+payload_set env_state=absent
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "6" ]' "a failed backup fails even where the project is not deployed (rc $rc)"
+assert 'grep -qF "✗ the last backup on deploy@vps FAILED" <<<"$out"' "saying so (said '$out')"
+
+# --- Case S13: the two shapes of deadline bash arithmetic refuses ---------------
+# A digits-only admission test is not one. A leading zero makes the value an
+# invalid *octal* literal — a fatal arithmetic error that ended `server status`
+# mid-report with exit 1 — and a digit string past 2^63 makes `[ -gt ]` say
+# "integer expression expected" and be silently false, so the record came out
+# the other side as a passing backup. Both are records a hand edit or a
+# truncated write produces, and `unparsed` exists for exactly them.
+for bad_deadline in 01999000009 999999999999999999999999 12x 1e9 " 2000086400"; do
+    bk_srv dir file "$(bk_rec sleeping "$bad_deadline" 2000082800 1999990000 1999980000 1999983600 ok ' demo')"
+    out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+    assert '[ "$rc" = "0" ]' "a deadline of '$bad_deadline' warns rather than ending the run (rc $rc)
+$out"
+    assert 'grep -qF "is not a record this kasbah reads" <<<"$out"' \
+        "and is refused as unreadable (deadline '$bad_deadline', said '$out')"
+    assert 'grep -qF "not a unix time this kasbah can compare" <<<"$out"' \
+        "naming what was wrong with it (deadline '$bad_deadline', said '$out')"
+    assert '! grep -qF "✓ the last backup" <<<"$out"' \
+        "and never as a backup that worked (deadline '$bad_deadline', said '$out')"
+    assert '! grep -qF "integer expression" <<<"$out"' \
+        "with no shell arithmetic complaint reaching the operator (said '$out')"
+done
+# The control: the same record with a deadline bash can read is judged, so the
+# refusals above are about the value and not about the reader being broken.
+bk_srv dir file "$(bk_rec sleeping 2000086400 2000082800 1999990000 1999980000 1999983600 ok ' demo')"
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "the same record with a usable deadline passes (rc $rc)"
+assert 'grep -qF "✓ the last backup on deploy@vps finished 4h ago and succeeded" <<<"$out"' \
+    "and is judged rather than refused (said '$out')"
+# `0` is a real epoch and the writer uses it for "no next run yet", so it must
+# not be swept up with the refusals above.
+bk_srv dir file "$(bk_rec sleeping 2000086400 0 1999990000 1999980000 1999983600 ok ' demo')"
+out="$(check_cli "$srv1" --server deploy@vps)"
+assert 'grep -qF "✓ the last backup on deploy@vps" <<<"$out"' \
+    "a next_run of 0 is a value the writer really writes, not a refusal (said '$out')"
+
+# A verdict the reader cannot produce, driven straight at B01 with the reader
+# stubbed — the arm no payload can reach, and the one that decides what an
+# unknown answer looks like. `ok` is not the catch-all: on a rule whose subject
+# is that absence is not a value, success must never be what a verdict falls
+# into by failing to match.
+b01_driver="$tmpdir/b01_driver.sh"
+cat > "$b01_driver" <<'B01'
+set -euo pipefail
+. "$KASBAH_LIB_DIR/common.sh"
+. "$KASBAH_LIB_DIR/check.sh"
+. "$KASBAH_LIB_DIR/check_server.sh"
+_CS_TARGET=deploy@vps
+MARKER_APPS_PATH=/apps
+MARKER_JSON='{"backup":{"enabled":true}}'
+_CS_FACT=([backup_dir_state]=dir [backup_status_state]=file [backup_status_b64]="$(printf x | base64 -w0)"
+          [now]=2000000000 [backup_haspass]="demo" [backup_projects]="demo=" [backup_mail]=no
+          [backup_c_state]=running [backup_c_health]=healthy [docker_error]=)
+# The stub is the point: BKR_VERDICT is set to whatever this case asks for, with
+# every other field as a healthy record would carry them.
+eval "backup_record_read() { BKR_VERDICT=$1; BKR_REASON=''; BKR_STATE=sleeping; BKR_SINCE=1999990000;
+      BKR_DEADLINE=2000086400; BKR_NEXT_RUN=2000082800; BKR_STARTED=1999980000;
+      BKR_FINISHED=1999983600; BKR_STATUS=ok; BKR_REPOS=' demo'; BKR_OVERDUE=0; BKR_AGE=16400;
+      BKR_NOW=2000000000; BKR_CLOCK=server; return ${2:-0}; }"
+_CHECK_PASS=0; _CHECK_WARN=0; _CHECK_FAIL=0
+_cs_b01_backup
+printf 'counts=%s/%s/%s\n' "$_CHECK_PASS" "$_CHECK_WARN" "$_CHECK_FAIL"
+B01
+b01() { env KASBAH_LIB_DIR="$repo_dir/lib" NO_COLOR=1 bash "$b01_driver" "$@" 2>&1; }
+
+out="$(b01 ok)"
+assert 'grep -qF "✓ the last backup on deploy@vps finished 4h ago and succeeded" <<<"$out"' \
+    "the stub reaches B01 at all — else every line below is theatre (said '$out')"
+assert 'grep -qF "counts=1/0/0" <<<"$out"' "and lands on the pass counter (said '$out')"
+for bogus in "" sideways; do
+    out="$(b01 "$bogus")"
+    assert 'grep -qF "the backup record reader returned" <<<"$out"' \
+        "a verdict of '${bogus:-<empty>}' is reported as unknown (said '$out')"
+    assert '! grep -qF "✓" <<<"$out"' "and never as a backup that worked (said '$out')"
+    assert 'grep -qF "counts=0/1/0" <<<"$out"' "as a warning, not a pass (said '$out')"
+done
+out="$(b01 "" 1)"
+assert 'grep -qF "(exit 1)" <<<"$out"' \
+    "with the reader's own exit status, which B01 captured rather than letting errexit have (said '$out')"
+
+# --- Case S14: a repository with no password ------------------------------------
+# The runner refuses to back one up, so the *next* run's record reads `failed` —
+# but between a deploy creating a project and 02:00 the record still says `ok`
+# while `server status` is already printing "no password". Both readers answer
+# out of one `_bk_repo_set`, at the same moment, so they cannot disagree for a
+# day.
+bk_srv dir file "$bk_ok"
+BK_PROJECTS="demo= other=" BK_HASPASS="demo mail"
+write_check_payload
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "a repository with no password warns rather than failing (rc $rc)
+$out"
+assert 'grep -qF "⚠ backup repositories on deploy@vps with no password: other" <<<"$out"' \
+    "naming it, on the same run whose record still says the last backup worked (said '$out')"
+assert 'grep -qF "✓ the last backup on deploy@vps" <<<"$out"' \
+    "and both facts are printed, because both are true (said '$out')"
+# Two projects sharing a client are one repository, and mail is one of its own:
+# the repository set is server init's answer, not a second list.
+BK_PROJECTS="demo=acme other=acme" BK_HASPASS="acme"
+write_check_payload
+out="$(check_cli "$srv1" --server deploy@vps)"
+assert 'grep -qF "with no password: mail" <<<"$out"' \
+    "the mail repository is one of them (said '$out')"
+assert '! grep -qF "no password: acme" <<<"$out"' \
+    "and two projects declaring one client are not two (said '$out')"
+BK_MAIL=no
+write_check_payload
+out="$(check_cli "$srv1" --server deploy@vps)"
+assert '! grep -qF "with no password" <<<"$out"' \
+    "a server with no mail stack needs no mail repository (said '$out')"
+
+# --- Case S15: the scheduler container ------------------------------------------
+# `docker compose -p kasbah-backup down` leaves the last `sleeping` record
+# looking valid for about a day. A container that is not running is an
+# observation and not an absence, which is why it is allowed to fail.
+for down_state in absent exited created; do
+    bk_srv dir file "$bk_ok"
+    BK_C_STATE="$down_state" BK_C_HEALTH=none
+    write_check_payload
+    out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+    assert '[ "$rc" = "6" ]' "a scheduler that is $down_state fails the check (rc $rc)
+$out"
+    assert 'grep -qF "✗ the backup scheduler on deploy@vps is $down_state, so nothing is being shipped off-box" <<<"$out"' \
+        "saying so (said '$out')"
+    assert '! grep -qF "✓ the last backup" <<<"$out"' \
+        "and the record it left behind is not read as a working backup (said '$out')"
+done
+# A container of that name from some other compose project is not kasbah's.
+bk_srv dir file "$bk_ok"
+BK_C_STATE=notours BK_C_HEALTH=none
+write_check_payload
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "6" ]' "a container merely named kasbah-backup is not the stack (rc $rc)"
+assert 'grep -qF "is not in the kasbah-backup compose project" <<<"$out"' "saying so (said '$out')"
+# Docker not answering is not a container that is down.
+for unknown in nodocker nodaemon; do
+    bk_srv dir file "$bk_ok"
+    BK_C_STATE="$unknown" BK_C_HEALTH="$unknown"
+    write_check_payload
+    out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+    assert '[ "$rc" = "0" ]' "with docker in state '$unknown' B01 warns rather than failing (rc $rc)
+$out"
+    assert 'grep -qF "cannot be read" <<<"$out"' "saying it could not tell (said '$out')"
+    assert '! grep -qF "✗ the backup scheduler" <<<"$out"' \
+        "and never claims the scheduler is down (said '$out')"
+done
+
+# --- Case S16: a run that succeeded and shipped nothing --------------------------
+# `back_up_repo` returns 0 for a repository with no paths, so a run can end
+# `ok` with `last_run_repos= none` — a server where nothing left the box. A
+# backup-enabled server with no projects yet is the ordinary instance.
+bk_srv dir file "$(bk_rec sleeping 2000086400 2000082800 1999990000 1999980000 1999983600 ok ' none')"
+BK_PROJECTS="" BK_MAIL=no BK_HASPASS=""
+write_check_payload
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "a run that shipped nothing warns rather than failing (rc $rc)
+$out"
+assert 'grep -qF "⚠ the last backup on deploy@vps finished 4h ago and shipped nothing" <<<"$out"' \
+    "saying so (said '$out')"
+assert 'grep -qF "nothing of this server exists off-box yet" <<<"$out"' \
+    "and what that means (said '$out')"
+assert '! grep -qF "✓ the last backup" <<<"$out"' \
+    "rather than a tick for a backup that backed nothing up (said '$out')"
+
+BK_DIR_STATE=absent BK_STATUS_STATE=absent BK_RECORD=""
+BK_HASPASS="" BK_PROJECTS="" BK_MAIL=no BK_C_STATE=absent BK_C_HEALTH=none
+write_marker
+write_check_payload
 
 
 # =============================================================================

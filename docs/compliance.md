@@ -168,6 +168,12 @@ ever printed.
 | M02 | `snappymail_domain` file exists (if set) and is valid JSON. Checked with `jq`, not `yq`: JSON is a subset of YAML, so `{host: mail.example.com}` parses as YAML, is not JSON, and SnappyMail rejects it. It fails rather than warns because the deploy-time copy is **copy-if-missing** — a broken pre-seed that lands is the one SnappyMail keeps | fail |
 | M03 | (with `--server` flag) Mail stack on VPS knows this domain | fail |
 
+### Backup (only with `--server`, and only on a server that has backups)
+
+| ID | Rule | Level |
+|---|---|---|
+| B01 | The VPS's backup stack has run, and its last run worked. **Silent** on a server whose marker records no backup — `--no-backup` is a documented answer, not a defect, and this is a project linter. Otherwise it reads `<apps>/.kasbah/backup/state/status`, the record the scheduler writes, through the same parser `kasbah server status` uses. **Fails** on three states: the last run reported failure, the recorded state has outlived its own deadline, and the scheduler container is not running — a stopped container is an observation rather than an absence, and it is asked first, because the record is only current while something is maintaining it. **Warns** on every way the record can decline to answer or fall short, each with its own message: the stack directory is gone, the record is absent (the scheduler writes it as its first act, so absence means it has never fired), it cannot be read by the ssh user, it is not a record this kasbah understands, no run has finished yet, a repository has **no password** and so is not being backed up at all, and a run that succeeded and **shipped nothing** — `repositories: none` is a green tick for a server where no data left the box. Those seven are warnings for the same reason the `acme.json` states are: "cannot be checked" is not "is broken", and they have different remedies. Timestamps are judged against the **server's** clock, collected in the same round trip, because a verdict computed against the workstation's would be a function of clock skew | fail/warn |
+
 ## `--fix` behavior
 
 Only auto-fixable rules get applied. Never modifies `.env`. Never modifies
@@ -266,6 +272,7 @@ runs; these are added, and T05 tightens (above).
 | Is the manifest's `health.container` currently healthy (if deployed)? | fail when the container reports `unhealthy` — Traefik keeps routing to it. Warn when it is starting, has no healthcheck, or is not running at all |
 | Cert status for the project's `domain` in Traefik's `acme.json` | fail when the certificate has expired; warn inside Traefik's 30-day renewal window, and warn for every way the store can decline to answer, each with its own message (absent, empty, unreadable, not a regular file, no entry for this domain, not JSON, a resolver key that is not `letsencrypt`, a `Certificates` that is not a list, an entry with no `certificate`, one that is not base64, one openssl will not read) — they have different remedies, so collapsing them into "no certificate" throws away the only thing that says what to do next |
 | Effective resource limits vs host size (R04) | above the marker's ceiling fails, below warns |
+| Has the backup stack run, and did the last run work? (B01) | fail when the last run failed, when the scheduler's state has outlived its deadline, or when its container is not running; warn for every way the record can decline to answer, for a repository with no password, and for a run that shipped nothing; silent on a server with no backups. The record is `<apps>/.kasbah/backup/state/status`, read through the one parser `server status` shares |
 
 The effective limits are `KASBAH_CPU_LIMIT` / `KASBAH_MEM_LIMIT` in the VPS's
 own `<apps>/<name>/.env` — the values compose interpolates into every service's

@@ -56,6 +56,29 @@ see what `docker logs` alone would hide. Each run writes a record to
 `<apps>/.kasbah/backup/state/status` — when it started and finished, how it
 went, which repositories it touched.
 
+**Two commands read it, through one parser.** `kasbah server status` prints the
+record — the schedule, the container's state and health, when the last run was
+and how it went, which repositories exist and which lack a password — and
+`kasbah check --server` asks the same question as a rule (**B01**,
+`compliance.md`), failing a stack whose last run failed or whose state has
+outlived its own deadline. They share `lib/backup_record.sh` and the same
+deadline arithmetic, so the two cannot disagree about whether a backup is
+healthy. Timestamps are judged against the **server's** clock, read in the same
+round trip: a verdict computed against the workstation's would be a function of
+clock skew.
+
+**A restart resets what the record knows.** The runner holds the last run's
+facts in shell variables, so a container that restarts — a reboot, a
+`compose up`, a crash — writes its next `sleeping` record with no last run in
+it. A stack that has backed up faithfully for months then reads as one that has
+never fired, until its next run completes. `status` and B01 report that honestly
+rather than guessing, which means **a warning for up to a day after any
+reboot** is expected and is not a fault.
+
+A safety mechanism nothing reads is indistinguishable from no safety mechanism,
+which is why these readers exist at all — the healthcheck alone would have left
+a stopped backup visible only in `docker logs`.
+
 The runner takes three verbs, and they are the operator's interface to it
 rather than a test hook:
 

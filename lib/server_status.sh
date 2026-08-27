@@ -18,6 +18,16 @@ _KASBAH_SERVER_STATUS_LOADED=1
 # written for `check --server` and consumed here — two commands answering
 # "when does this expire" out of two parsers is how the two answers drift.
 . "$KASBAH_LIB_DIR/acme.sh"
+# For backup_record_read: the same rule for the backup stack's last-run record,
+# shared with `check --server` and with the runner's own healthcheck, which asks
+# the deadline question this reader asks.
+. "$KASBAH_LIB_DIR/backup_record.sh"
+# For _bk_shown and _bk_repo_set. The repository base may carry userinfo and the
+# marker holding it is mode 644 by contract, so there is one answer to "does
+# kasbah print credentials" (lib/backup.sh) rather than a second one here; and
+# "which repositories does this server have" is `server init`'s own question,
+# asked of the same two facts.
+. "$KASBAH_LIB_DIR/backup.sh"
 
 # `kasbah server status USER@HOST` reports what a prepared VPS is running: the
 # docker and compose versions, the shared Traefik stack, and every project under
@@ -37,11 +47,12 @@ _KASBAH_SERVER_STATUS_LOADED=1
 # the prerequisites table promises rsync, openssl, gzip and bash — so the marker
 # travels back as bytes and is parsed here.
 #
-# **Still one round trip**, with five more things to report than the minimal
-# status had: the per-project domain, certificate expiry, disk, the mail stack
-# and per-container health are all folded into the same single probe. Each of
-# them read on its own is what turns this command into several ssh sessions,
-# which is what makes a rig's `maxstartups 10` refuse one of them.
+# **Still one round trip**, with six more things to report than the minimal
+# status had: the per-project domain, certificate expiry, disk, the mail stack,
+# per-container health and the backup stack's last-run record are all folded
+# into the same single probe. Each of them read on its own is what turns this
+# command into several ssh sessions, which is what makes a rig's
+# `maxstartups 10` refuse one of them.
 #
 # Nothing is parsed on the far side that can be parsed here. The fragments and
 # the mail registry come back as bytes and meet the workstation's yq; acme.json
@@ -66,6 +77,13 @@ _SS_MARKER_DATA=""
 _SS_MARKER_VERSION=""
 _SS_MARKER_CPU=""
 _SS_MARKER_MEM=""
+# The marker's `backup` object: whether the feature is configured at all, and
+# the three fields a report names. The record on the server says what the
+# scheduler has *done*; these say what it was told to do.
+_SS_MARKER_BK_ENABLED=""
+_SS_MARKER_BK_BASE=""
+_SS_MARKER_BK_AT=""
+_SS_MARKER_BK_JITTER=""
 
 # The project table, decoded from the remote payload into parallel arrays.
 _SS_P_NAME=()
@@ -132,8 +150,8 @@ Flags:
                       the escape hatch for a server whose pointer is gone.
 
 It also prints the filesystem behind the apps and data paths, the mail stack,
-each project's domain out of its Traefik fragment, and what Traefik's ACME
-store says about every hostname on the server.
+the backup stack with its last run, each project's domain out of its Traefik
+fragment, and what Traefik's ACME store says about every hostname on the server.
 EOF
 }
 
@@ -541,14 +559,17 @@ encfile mail_registry_b64  "$apps/mail/kasbah.yml"
 # By compose labels, exactly as Traefik is found above: a container merely
 # *named* mail-dms did not come from kasbah's stack. One inspect per container,
 # three facts out of it — the restart count is here because a DMS that cannot
-# find its certificate restarts forever, and the count is what says so.
-mailc() {
+# find its certificate restarts forever, and the count is what says so — and
+# because the backup scheduler is restarted by `restart: unless-stopped` when it
+# *exits* and never for failing its healthcheck, so the count is the only thing
+# that separates a scheduler that keeps dying from one sitting there wedged.
+stackc() {
     local ids="" id="" line="" st=absent hl="" rs=""
     if [ "$docker_rc" -ne 0 ]; then
         st=nodocker
     else
-        ids=$(docker ps -a --filter label=com.docker.compose.project=mail \
-                          --filter "label=com.docker.compose.service=$2" \
+        ids=$(docker ps -a --filter "label=com.docker.compose.project=$2" \
+                          --filter "label=com.docker.compose.service=$3" \
                           --format '{{.ID}}' 2>/dev/null) || ids=""
         id=${ids%%$'\n'*}
     fi
@@ -562,8 +583,72 @@ mailc() {
     kv "${1}_health" "$hl"
     kv "${1}_restarts" "$rs"
 }
-mailc mail_dms   mail-dms
-mailc mail_web   mail-snappymail
+stackc mail_dms  mail mail-dms
+stackc mail_web  mail mail-snappymail
+
+# The backup stack (docs/backup.md → The schedule). Everything here is a read:
+# the directory's state, the last-run record's bytes, the names of the
+# repositories that hold a password — never a password itself — and the
+# scheduler container by the compose labels templates/backup/compose.yml
+# declares. A server prepared without --with-backup answers `absent` to all of
+# it, which is an ordinary state and not a fault.
+bdir="$apps/.kasbah/backup"
+backup_dir=absent
+if   [ -d "$bdir" ]; then backup_dir=dir
+elif [ -e "$bdir" ]; then backup_dir=notdir
+fi
+kv backup_dir_state "$backup_dir"
+fstate backup_status_state "$bdir/state/status"
+encfile backup_status_b64  "$bdir/state/status"
+# The compose project and service templates/backup/compose.yml declares, spelled
+# literally here as `traefik` and the two mail services are above: a payload on
+# the far side of ssh can source nothing, and a name passed as an argument would
+# make this one call unlike its three neighbours in the same script.
+stackc backup_c kasbah-backup backup
+
+# Which repositories already hold a password. Only their names travel; a
+# repository with no password is not backed up (docs/backup.md → Scope), and
+# naming which is the whole point of reporting this at all.
+have=""
+for f in "$bdir"/repos/*.pass; do
+    [ -f "$f" ] || continue
+    b=${f##*/}
+    have="$have ${b%.pass}"
+done
+kv backup_haspass "${have# }"
+
+# One `<name>=<client>` per project, space separated, with `?` for a record that
+# is not a repository name. **The same loop as lib/backup.sh's own read
+# payload**, which is what `server init --with-backup` decides how many
+# passwords to ask for from — tests/server_status_test.sh runs both against one
+# tree and pins the two answers together, charset rule and reserved list alike.
+# A payload on the far side of ssh can source nothing, so one *file* is not
+# available; one pinned answer is. The data path is excluded by path and not by
+# the name `data`, because --data-path can put it here under any name.
+list=""
+for d in "$apps"/*; do
+    [ -d "$d" ] || continue
+    [ "$d" != "$data" ] || continue
+    n=${d##*/}
+    case $reserved in *" $n "*) continue ;; esac
+    c=""
+    if [ -f "$d/.kasbah-client" ]; then
+        IFS= read -r c < "$d/.kasbah-client" || c=""
+        c=${c%$'\r'}
+        case $c in
+            '') ;;
+            *[!a-z0-9-]*|[!a-z]*) c='?' ;;
+            *) case $reserved in *" $c "*) c='?' ;; esac ;;
+        esac
+    fi
+    list="$list $n=$c"
+done
+kv backup_projects "${list# }"
+
+# The server's own clock. Every epoch in the record above is written by it, and
+# judging them against a workstation's would make the verdict a function of the
+# skew between two machines.
+kv now "$(date +%s)"
 
 # Traefik by its compose labels, which is the frozen contract: the project name
 # is `traefik` wherever the stack was rendered. A container merely *named*
@@ -723,6 +808,9 @@ REMOTE
         mail_dir_state mail_registry_state mail_registry_b64 \
         mail_dms_state mail_dms_health mail_dms_restarts \
         mail_web_state mail_web_health mail_web_restarts \
+        backup_dir_state backup_status_state backup_status_b64 \
+        backup_c_state backup_c_health backup_c_restarts \
+        backup_haspass backup_projects now \
         traefik_present traefik_state traefik_health traefik_image \
         traefik_image_id traefik_container \
         project_count projects_b64
@@ -866,6 +954,19 @@ _server_status_read_marker() {
     _SS_MARKER_VERSION="$(jq -r '.kasbah_version // "" | tostring' <<<"$_SS_MARKER")"
     _SS_MARKER_CPU="$(jq -r '.cpu_limit // "" | tostring' <<<"$_SS_MARKER")"
     _SS_MARKER_MEM="$(jq -r '.mem_limit // "" | tostring' <<<"$_SS_MARKER")"
+    # `backup.enabled` is the one fact that says whether this server was ever
+    # asked to ship anything off-box. A marker written before backups existed
+    # has no `backup` object at all, and that is a different server from one
+    # whose stack has stopped — the two must not print the same line.
+    #
+    # Guarded, because a hand-edited `backup:` that is not an object makes
+    # `.backup.enabled` a jq *type error* rather than a null — and a failing
+    # command substitution under errexit would end the run before any line of
+    # the report printed.
+    _SS_MARKER_BK_ENABLED="$(jq -r '.backup.enabled // false | tostring' <<<"$_SS_MARKER" 2>/dev/null)" || _SS_MARKER_BK_ENABLED=false
+    _SS_MARKER_BK_BASE="$(jq -r '.backup.repo_base // "" | tostring' <<<"$_SS_MARKER" 2>/dev/null)" || _SS_MARKER_BK_BASE=""
+    _SS_MARKER_BK_AT="$(jq -r '.backup.at // "" | tostring' <<<"$_SS_MARKER" 2>/dev/null)" || _SS_MARKER_BK_AT=""
+    _SS_MARKER_BK_JITTER="$(jq -r '.backup.jitter // "" | tostring' <<<"$_SS_MARKER" 2>/dev/null)" || _SS_MARKER_BK_JITTER=""
     return 0
 }
 
@@ -1294,6 +1395,178 @@ _ss_print_mail() {
     return 0
 }
 
+# The backup stack (docs/backup.md → The schedule). Absent is an ordinary state
+# — a server prepared without --with-backup — and is reported as one, not as a
+# fault.
+#
+# Three sources, deliberately kept apart. The marker says what was *configured*;
+# the record at <apps>/.kasbah/backup/state/status says what the scheduler has
+# *done*; `docker inspect` says what the container is doing now. A server with
+# no marker entry, a stack that has never written a record, a record nobody can
+# read and a record saying the last run failed are four different facts with
+# four different remedies, and the entire value of this feature is that somebody
+# tells them apart before the restore rather than after it.
+_ss_print_backup() {
+    local dir="$_SS_APPS_PATH/.kasbah/backup" rec=""
+    local content="" ago="" due="" since="" nextin="" ran="" have="" missing="" r=""
+    local rc=0 clock=""
+    local state="${_SS_FACT[backup_c_state]}" health="${_SS_FACT[backup_c_health]}"
+    local restarts="${_SS_FACT[backup_c_restarts]}"
+
+    rec="$dir/state/status"
+
+    if [ "$_SS_MARKER_BK_ENABLED" != true ]; then
+        printf 'Backup: not configured — the marker records none (kasbah server init --with-backup ships snapshots off-box)\n'
+        # Not silent about a stack the marker does not describe: `server
+        # destroy` removes the two together, so one without the other is a hand
+        # edit or a half-finished init, and neither is "no backups configured".
+        [ "${_SS_FACT[backup_dir_state]}" = absent ] \
+            || printf '  %-16s %s is %s, and no marker entry describes it\n' \
+                   stack "$dir" "${_SS_FACT[backup_dir_state]}"
+        return 0
+    fi
+
+    _ss_b64_decode "${_SS_FACT[backup_status_b64]}" content || content=""
+    # Captured, never called bare: the reader answers 1 when there was no record
+    # to judge, and a bare call would put that exit status on a `set -e` shell
+    # halfway through a report.
+    backup_record_read "${_SS_FACT[backup_dir_state]}" "${_SS_FACT[backup_status_state]}" \
+                       "$content" "${_SS_FACT[now]}" || rc=$?
+    backup_record_ago "$BKR_AGE" ago
+    backup_record_ago "$BKR_OVERDUE" due
+    # Left empty when the record carried no usable `since`, and every line that
+    # would interpolate it checks first — "(for )" is not a duration.
+    [ -z "$BKR_SINCE" ] || backup_record_ago "$(( BKR_NOW > BKR_SINCE ? BKR_NOW - BKR_SINCE : 0 ))" since
+    [ "$BKR_CLOCK" != local ] \
+        || clock=" (judged against this machine's clock: the probe did not report the server's)"
+    if [ -n "$BKR_NEXT_RUN" ] && [ "$BKR_NEXT_RUN" != 0 ]; then
+        backup_record_ago "$(( BKR_NEXT_RUN > BKR_NOW ? BKR_NEXT_RUN - BKR_NOW : 0 ))" nextin
+    fi
+    # The writer joins the repositories it backed up with a leading space, and
+    # writes ` none` for a run that reached none and `-` before any run.
+    ran="${BKR_REPOS# }"
+
+    if [ -n "$_SS_MARKER_BK_BASE" ]; then
+        printf 'Backup: %s  daily at %s plus %ss jitter%s\n' \
+            "$(_bk_shown "$_SS_MARKER_BK_BASE")" \
+            "${_SS_MARKER_BK_AT:-unknown}" "${_SS_MARKER_BK_JITTER:-?}" "$clock"
+    else
+        printf 'Backup: enabled, and the marker records no repository base — nothing on this server says where the snapshots go%s\n' "$clock"
+    fi
+
+    case $state in
+        absent)   printf '  %-16s absent — the stack is scaffolded and no container is running it\n' kasbah-backup ;;
+        nodocker) printf '  %-16s unknown — docker did not answer\n' kasbah-backup ;;
+        *)
+            # Docker restarts a container that *exits*, never one whose
+            # healthcheck fails (templates/backup/compose.yml says so where it
+            # declares the check). So this line and the record below answer two
+            # different questions — is the process alive, and has it done any
+            # work — and neither substitutes for the other. The health word is
+            # the container's own reading of the same file read below, which is
+            # why there is one comparison and not two.
+            printf '  %-16s %s (%s)%s\n' kasbah-backup "$state" "${health:-none}" \
+                "$([ "${restarts:-0}" = 0 ] || printf ', %s restart(s)' "$restarts")"
+            ;;
+    esac
+
+
+    case "$BKR_VERDICT" in
+        nostack)
+            printf '  %-16s none — %s %s, so nothing here says whether a backup has ever run\n' \
+                'last run' "$dir" "$BKR_REASON" ;;
+        norecord)
+            printf '  %-16s none — %s is not there, and the scheduler writes it as its first act\n' \
+                'last run' "$rec" ;;
+        unreadable)
+            printf '  %-16s unknown — %s %s\n' 'last run' "$rec" "$BKR_REASON" ;;
+        unparsed)
+            printf '  %-16s unknown — %s is not a record this kasbah reads%s\n' \
+                'last run' "$rec" "${BKR_REASON:+ (it $BKR_REASON)}" ;;
+        never)
+            printf '  %-16s none yet — the scheduler is %s%s\n' 'last run' "$BKR_STATE" \
+                "$({ [ "$BKR_STATE" != running ] || [ -z "$since" ]; } \
+                    || printf ', and a run has been going for %s' "$since")"
+            [ -z "$nextin" ] || printf '  %-16s in %s\n' 'next run' "$nextin"
+            ;;
+        failed)
+            printf '  %-16s FAILED %s ago — repositories backed up: %s (docker logs %s says why)\n' \
+                'last run' "$ago" "${ran:--}" kasbah-backup
+            [ "$BKR_OVERDUE" = 0 ] \
+                || printf '  %-16s %s past its own deadline in state '"'"'%s'"'"' — nothing has run since\n' \
+                       scheduler "$due" "$BKR_STATE"
+            # When the next attempt is: a failed run is slept off rather than
+            # exited (docs/backup.md), so there is one, and it is the first
+            # thing an operator wants after the failure itself.
+            [ -z "$nextin" ] || printf '  %-16s in %s\n' 'next run' "$nextin"
+            ;;
+        overdue)
+            # Which of the two it is depends on the container: a scheduler that
+            # is not running did not wedge and did not oversleep — it was taken
+            # down, and its record has simply stood still since.
+            if [ "$state" = running ]; then
+                printf '  %-16s %s past its own deadline in state '"'"'%s'"'"'%s — a run that never returned, or a sleep that never woke\n' \
+                    scheduler "$due" "$BKR_STATE" "${since:+ (for $since)}"
+            else
+                printf '  %-16s %s past its own deadline in state '"'"'%s'"'"'%s — the container is %s, so nothing has moved it on\n' \
+                    scheduler "$due" "$BKR_STATE" "${since:+ (for $since)}" "$state"
+            fi
+            if [ -n "$BKR_AGE" ]; then
+                printf '  %-16s %s %s ago — repositories: %s\n' 'last run' "$BKR_STATUS" "$ago" "${ran:--}"
+            else
+                printf '  %-16s none yet\n' 'last run'
+            fi
+            ;;
+        ok)
+            # `none` is what the writer records for a run that reached no
+            # repository at all — every one of them had nothing to back up. The
+            # run worked and nothing left the box, which is not the same news as
+            # a backup, so it does not get the same sentence.
+            if [ -z "$ran" ] || [ "$ran" = none ]; then
+                printf '  %-16s ok %s ago, and shipped nothing — no repository had anything to back up\n' \
+                    'last run' "$ago"
+            else
+                printf '  %-16s ok %s ago — repositories: %s\n' 'last run' "$ago" "$ran"
+            fi
+            [ -z "$nextin" ] || printf '  %-16s in %s\n' 'next run' "$nextin"
+            ;;
+        *)
+            # Not the success branch. On a command whose subject is that absence
+            # is not a value, the catch-all must be the loud arm: an empty or
+            # unknown verdict is a reader this kasbah does not have, and printing
+            # `ok` off it is exactly the plausible-looking line status exists not
+            # to produce.
+            printf '  %-16s unknown — the record reader returned '"'"'%s'"'"' (exit %s), which this kasbah does not know\n' \
+                'last run' "${BKR_VERDICT:-<nothing>}" "$rc"
+            ;;
+    esac
+
+    # Which repositories this server has, out of `server init`'s own answer to
+    # that question (lib/backup.sh's _bk_repo_set, fed the two facts it reads):
+    # one per effective client, plus mail. A repository with no password is not
+    # backed up at all (docs/backup.md → Scope), and the run says so in a log
+    # nobody reads — which is the whole reason this line exists.
+    _BK_FACT[backup_projects]="${_SS_FACT[backup_projects]}"
+    _BK_FACT[backup_mail]=no
+    [ "${_SS_FACT[mail_dir_state]}" != dir ] || _BK_FACT[backup_mail]=yes
+    _bk_repo_set
+    if [ "${#_BK_REPOS[@]}" -eq 0 ]; then
+        printf '  %-16s none — nothing under %s to back up yet\n' repositories "$_SS_APPS_PATH"
+        return 0
+    fi
+    have="${_SS_FACT[backup_haspass]}"
+    for r in "${_BK_REPOS[@]}"; do
+        case " $have " in
+            *" $r "*) ;;
+            *) missing="${missing:+$missing }$r" ;;
+        esac
+    done
+    printf '  %-16s %s\n' repositories "${_BK_REPOS[*]}"
+    [ -z "$missing" ] \
+        || printf '  %-16s %s — not backed up until kasbah server init %s --with-backup supplies one\n' \
+               'no password' "$missing" "$_SS_TARGET"
+    return 0
+}
 
 # Whatever the container itself says, rather than a state kasbah infers: a
 # stopped Traefik and a running-but-unhealthy one are different problems.
@@ -1517,6 +1790,8 @@ _server_status_print() {
     fi
     printf '\n'
     _ss_print_mail
+    printf '\n'
+    _ss_print_backup
     printf '\n'
     _ss_print_projects
     return 0

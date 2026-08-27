@@ -10,17 +10,29 @@ _KASBAH_CHECK_SERVER_LOADED=1
 . "$KASBAH_LIB_DIR/marker.sh"
 . "$KASBAH_LIB_DIR/env.sh"
 . "$KASBAH_LIB_DIR/acme.sh"
+# For backup_record_read: the backup stack's last-run record has one reader,
+# shared with `kasbah server status` and asking the same question the stack's
+# own healthcheck asks. Two parsers of one file is how a report and a
+# healthcheck come to disagree about whether backups are happening.
+. "$KASBAH_LIB_DIR/backup_record.sh"
+# For _bk_repo_set: "which repositories does this server have" is `server init
+# --with-backup`'s own question — it is what decides how many passwords it asks
+# for — and `server status` reads it out of the same function. B01 warns about a
+# repository with no password, so a third answer here would be a third list of
+# repositories on one server.
+. "$KASBAH_LIB_DIR/backup.sh"
 # For last_server: `check --server` is on docs/project-manifest.md's list of
 # commands that read and write it, so a bare `--server` means the server this
 # project last talked to.
 . "$KASBAH_LIB_DIR/state.sh"
 
-# `kasbah check --server USER@HOST` adds the six rules docs/compliance.md lists
-# under that heading to the local run: the project directory, `.env` drift
+# `kasbah check --server USER@HOST` adds the seven rules docs/compliance.md
+# lists under that heading to the local run: the project directory, `.env` drift
 # against the *current* `.env.prod.example`, M03, the health container's health,
-# certificate status out of Traefik's acme.json, and R04. It also tightens T05
-# from a first-label heuristic to the exact hostnames this server's Traefik and
-# mail stack claim — see `check_server_reserved_hosts`.
+# certificate status out of Traefik's acme.json, R04, and B01 on a server that
+# has backups configured at all. It also tightens T05 from a first-label
+# heuristic to the exact hostnames this server's Traefik and mail stack claim —
+# see `check_server_reserved_hosts`.
 #
 # **It writes nothing.** Every remote step is a read: `[ -f ]`, `openssl base64
 # -A -in`, and `docker inspect`. There is no mkdir, no touch, no redirection
@@ -54,6 +66,12 @@ _CS_HEURISTIC=""
 _CS_RESERVED_NOTE=""
 _CS_APEX=""
 _CS_MAIL_PRIMARY=""
+# The names kasbah owns under <apps>, handed to the read payload as an argument
+# rather than written out inside it. Every neighbour that walks <apps> does the
+# same — prune.sh, drop.sh, server_status.sh and backup.sh all build this exact
+# array — and a payload on the far side of ssh can source nothing, so an
+# argument is the only way one list stays one list.
+_CS_RESERVED_DIRS=(.kasbah "${KASBAH_RESERVED_NAMES[@]}")
 
 # --- Discovery ------------------------------------------------------------------
 
@@ -171,14 +189,16 @@ _cs_collect() {
     local out rc=0
 
     out=$(ssh_script "$MARKER_APPS_PATH" "$MARKER_DATA_PATH" "$MANIFEST_NAME" \
-                     "$(_cs_manifest_health_container)" <<'REMOTE'
+                     "$(_cs_manifest_health_container)" "${_CS_RESERVED_DIRS[*]}" <<'REMOTE'
 set -uo pipefail
 export LC_ALL=C
 apps=$1
 data=$2
 name=$3
 health=$4
+reserved=" $5 "
 dir="$apps/$name"
+bdir="$apps/.kasbah/backup"
 acme="$data/traefik/letsencrypt/acme.json"
 
 # One line per value: the reader parses this output as a protocol, so a
@@ -221,6 +241,85 @@ fstate shared_state   "$apps/traefik/dynamic/_shared.yml"
 b64    shared_b64     "$apps/traefik/dynamic/_shared.yml"
 fstate acme_state     "$acme"
 b64    acme_b64       "$acme"
+
+# The backup stack's last-run record (docs/backup.md → The schedule), and the
+# server's own clock to judge it by: every epoch in that file is written by this
+# clock, and comparing them with a workstation's would make B01 a function of
+# the skew between two machines. Both are reads.
+if   [ -d "$bdir" ]; then printf 'backup_dir_state=dir\n'
+elif [ -e "$bdir" ]; then printf 'backup_dir_state=notdir\n'
+else                      printf 'backup_dir_state=absent\n'
+fi
+fstate backup_status_state "$bdir/state/status"
+b64    backup_status_b64   "$bdir/state/status"
+printf 'now=%s\n' "$(date +%s)"
+
+# Which repositories hold a password, and which projects exist with which
+# effective client. Only the *names* travel; a password never does. B01 warns
+# about a repository nothing can write to, and this is what it is warned about
+# — the same two facts lib/backup.sh's own read brings back, so the workstation
+# can put them through one `_bk_repo_set` rather than a second list.
+have=""
+for f in "$bdir"/repos/*.pass; do
+    [ -f "$f" ] || continue
+    b=${f##*/}
+    have="$have ${b%.pass}"
+done
+printf 'backup_haspass=%s\n' "${have# }"
+if [ -d "$apps/mail" ]; then printf 'backup_mail=yes\n'; else printf 'backup_mail=no\n'; fi
+list=""
+for d in "$apps"/*; do
+    [ -d "$d" ] || continue
+    [ "$d" != "$data" ] || continue
+    n=${d##*/}
+    case $reserved in *" $n "*) continue ;; esac
+    c=""
+    if [ -f "$d/.kasbah-client" ]; then
+        IFS= read -r c < "$d/.kasbah-client" || c=""
+        c=${c%$'\r'}
+        case $c in
+            '') ;;
+            *[!a-z0-9-]*|[!a-z]*) c='?' ;;
+            *) case $reserved in *" $c "*) c='?' ;; esac ;;
+        esac
+    fi
+    list="$list $n=$c"
+done
+printf 'backup_projects=%s\n' "${list# }"
+
+# The scheduler container, by name **and** by the compose project label: a
+# container merely *named* kasbah-backup did not come from kasbah's stack. One
+# `inspect`, which is the only shape of call this step is allowed and the only
+# one it needs — a label-filtered listing would be a second kind for a container
+# whose name templates/backup/compose.yml fixes.
+bstate=absent
+bhealth=none
+if ! command -v docker >/dev/null 2>&1; then
+    bstate=nodocker
+    bhealth=nodocker
+else
+    binfo=$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{index .Config.Labels "com.docker.compose.project"}}' \
+        kasbah-backup 2>/dev/null) || binfo=""
+    if [ -z "$binfo" ]; then
+        if docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+            bstate=absent
+        else
+            bstate=nodaemon
+            bhealth=nodaemon
+        fi
+    else
+        read -r bs bh bp <<<"$(printf '%s' "$binfo" | tr -d '\r')"
+        if [ "$bp" = kasbah-backup ]; then
+            bstate=${bs:-unknown}
+            bhealth=${bh:-none}
+        else
+            bstate=notours
+            bhealth=none
+        fi
+    fi
+fi
+printf 'backup_c_state=%s\n' "$bstate"
+printf 'backup_c_health=%s\n' "$bhealth"
 
 # State and health are two facts: a container that is `restarting` has no
 # health status yet and one without a HEALTHCHECK never will, and neither is
@@ -265,7 +364,10 @@ REMOTE
     _cs_absorb_checked "$out" \
         project_state env_state env_b64 registry_state registry_b64 \
         shared_state shared_b64 acme_state acme_b64 \
-        health_state health_health docker_error
+        health_state health_health docker_error \
+        backup_dir_state backup_status_state backup_status_b64 now \
+        backup_haspass backup_projects backup_mail \
+        backup_c_state backup_c_health
     return 0
 }
 
@@ -373,6 +475,160 @@ check_server_section() {
     _cs_health
     _cs_cert
     _cs_r04_limits
+    _cs_b01_backup
+    return 0
+}
+
+# B01: has this server's backup stack run, and did the last run work?
+#
+# The record is the only thing on a VPS that answers that. The stack's own
+# healthcheck reads the same file and asks the same deadline question, but
+# Docker restarts a container for *exiting* and never for failing a healthcheck
+# (templates/backup/compose.yml says so where it declares the check) — so a
+# wedged scheduler sits there `Up (unhealthy)` and tells nobody. Without this
+# rule a backup that has silently stopped is visible only in `docker logs`, on a
+# feature whose whole value is that somebody notices before the restore.
+#
+# **Absence is never a conclusion here.** A server with no backup configured is
+# not asked about at all: `--no-backup` is a documented answer and this is a
+# project linter, not an opinion about a server's disaster-recovery policy. A
+# stack that has never written a record, a record nobody can read and a record
+# with no completed run in it each say exactly that and *warn* — they are not
+# evidence that backups have stopped.
+#
+# What does fail is the server asserting, positively, that nothing is being
+# shipped off-box: a record saying the last run failed, a record whose own
+# deadline has passed, and a scheduler container that is not running. The third
+# is an observation and not an absence, which is why it is allowed to be a
+# failure while the four above are not — and it comes first, because a record is
+# only current while something is maintaining it.
+#
+# **And a repository with no password gets a line of its own.** The runner
+# refuses to back one up, so the *next* run's record will read `failed` — but
+# between a deploy creating a project and 02:00 the record still says `ok`,
+# while `server status` is already printing "no password". Two readers of one
+# server disagreeing for a day is the defect this project keeps producing; both
+# now answer out of the same `_bk_repo_set` at the same moment.
+_cs_b01_backup() {
+    local enabled="" content="" ago="" due="" state="" repos="" rc=0 clock=""
+    local dir="$MARKER_APPS_PATH/.kasbah/backup" rec="" missing="" r="" have=""
+    local cstate="${_CS_FACT[backup_c_state]}"
+
+    rec="$dir/state/status"
+    # A hand-edited `backup:` that is not an object makes `.backup.enabled` a jq
+    # *type error* rather than a null, and an unguarded substitution under
+    # errexit would end the run with no verdict printed at all.
+    enabled="$(jq -r '.backup.enabled // false | tostring' <<<"$MARKER_JSON" 2>/dev/null)" || enabled=false
+    [ "$enabled" = true ] || return 0
+
+    _cs_b64_into "${_CS_FACT[backup_status_b64]}" content || content=""
+    # Captured, never called bare: the reader answers 1 when there was no record
+    # to judge, and a bare call would put that exit status on a `set -e` shell
+    # in the middle of a report.
+    backup_record_read "${_CS_FACT[backup_dir_state]}" "${_CS_FACT[backup_status_state]}" \
+                       "$content" "${_CS_FACT[now]}" || rc=$?
+    backup_record_ago "$BKR_AGE" ago
+    backup_record_ago "$BKR_OVERDUE" due
+    state="$BKR_STATE"
+    repos="${BKR_REPOS# }"
+    [ "$BKR_CLOCK" != local ] \
+        || clock=" (judged against this machine's clock: the probe did not report the server's)"
+
+    case "$BKR_VERDICT" in
+        nostack)
+            _check_warn "$MARKER_APPS_PATH/.kasbah/server.json on $_CS_TARGET records off-box backups and $dir $BKR_REASON — nothing on this server would take one, and there is no record here to say when the last one ran; re-run: kasbah server init $_CS_TARGET --with-backup"
+            ;;
+        norecord)
+            _check_warn "the backup scheduler on $_CS_TARGET has written no record at $rec — it writes one as its first act, so it has not started since backups were configured (its container is $cstate); bring it up: docker compose -p kasbah-backup up -d"
+            ;;
+        unreadable)
+            _check_warn "$rec on $_CS_TARGET $BKR_REASON, so nothing here says whether a backup has ever run — this is not the same fact as a backup that has stopped"
+            ;;
+        unparsed)
+            _check_warn "$rec on $_CS_TARGET is not a record this kasbah reads — it $BKR_REASON, so nothing here says whether a backup has ever run"
+            ;;
+        never|failed|overdue|ok)
+            _cs_b01_verdict "$cstate" "$state" "$ago" "$due" "$repos" "$clock"
+            ;;
+        *)
+            # Not the success branch. The catch-all on a rule whose subject is
+            # that absence is not a value must be the loud arm: a verdict this
+            # kasbah does not know is a reader it does not have, and answering
+            # `✓ succeeded` off one is the plausible-looking line B01 exists not
+            # to produce.
+            _check_warn "the backup record reader returned '${BKR_VERDICT:-<nothing>}' (exit $rc) for $rec on $_CS_TARGET, which this kasbah does not know — nothing here says whether a backup has run"
+            ;;
+    esac
+
+    # Which repositories this server has, out of `server init`'s own answer
+    # (lib/backup.sh's _bk_repo_set, fed the two facts it reads) rather than a
+    # second list: one per effective client, plus mail.
+    _BK_FACT[backup_projects]="${_CS_FACT[backup_projects]}"
+    _BK_FACT[backup_mail]="${_CS_FACT[backup_mail]}"
+    _bk_repo_set
+    [ "${#_BK_REPOS[@]}" -gt 0 ] || return 0
+    have="${_CS_FACT[backup_haspass]}"
+    for r in "${_BK_REPOS[@]}"; do
+        case " $have " in
+            *" $r "*) ;;
+            *) missing="${missing:+$missing }$r" ;;
+        esac
+    done
+    [ -n "$missing" ] || return 0
+    _check_warn "backup repositories on $_CS_TARGET with no password: $missing — a repository with no password is not backed up at all (docs/backup.md), and the run says so only in its own log; supply one with: kasbah server init $_CS_TARGET --with-backup"
+    return 0
+}
+
+# The four verdicts that come off a record that was read, with the scheduler
+# container in front of them: a record is only current while something is
+# maintaining it, and `docker compose -p kasbah-backup down` leaves the last
+# `sleeping` record valid-looking for about a day.
+_cs_b01_verdict() {
+    local _bv_c="$1" _bv_state="$2" _bv_ago="$3" _bv_due="$4" _bv_repos="$5" _bv_clock="$6"
+
+    case $_bv_c in
+        running) ;;
+        nodocker)
+            _check_warn "there is no docker on $_CS_TARGET, so whether its backup scheduler is running cannot be read — the record says '$BKR_VERDICT'"
+            return 0 ;;
+        nodaemon)
+            _check_warn "the docker daemon on $_CS_TARGET is not answering, so whether its backup scheduler is running cannot be read — nothing here says it is down (docker said: ${_CS_FACT[docker_error]:-nothing})"
+            return 0 ;;
+        notours)
+            _check_fail "the container named kasbah-backup on $_CS_TARGET is not in the kasbah-backup compose project, so kasbah's scheduler is not the thing running under that name and nothing is shipping this server off-box"
+            return 0 ;;
+        *)
+            _check_fail "the backup scheduler on $_CS_TARGET is $_bv_c, so nothing is being shipped off-box — its record still reads '$BKR_VERDICT'$([ -z "$BKR_AGE" ] || printf ', last run %s ago' "$_bv_ago"); bring it up: docker compose -p kasbah-backup up -d"
+            return 0 ;;
+    esac
+
+    case "$BKR_VERDICT" in
+        failed)
+            _check_fail "the last backup on $_CS_TARGET FAILED $_bv_ago ago (repositories backed up: ${_bv_repos:--}) — nothing new has been shipped off-box since; docker logs kasbah-backup says which repository and why$([ "$BKR_OVERDUE" = 0 ] || printf ', and the scheduler is %s past its own deadline' "$_bv_due")$_bv_clock"
+            ;;
+        overdue)
+            _check_fail "the backup scheduler on $_CS_TARGET is $_bv_due past its own deadline in state '$_bv_state' — a run that never returned, or a sleep that never woke, so nothing is being shipped off-box$([ -z "$BKR_AGE" ] || printf ' (the last run finished %s ago)' "$_bv_ago"); docker logs kasbah-backup$_bv_clock"
+            ;;
+        never)
+            _check_warn "backups are configured on $_CS_TARGET and no run has finished yet — the scheduler is '$_bv_state' and inside its own deadline, so this is a stack that has not fired rather than one that has stopped$_bv_clock"
+            ;;
+        ok)
+            # `none` is the writer's word for a run that reached no repository:
+            # every one of them had nothing to back up. The run worked and
+            # nothing left the box, which is not what a ✓ here would mean.
+            if [ -z "$_bv_repos" ] || [ "$_bv_repos" = none ]; then
+                _check_warn "the last backup on $_CS_TARGET finished $_bv_ago ago and shipped nothing — no repository had anything to back up, so nothing of this server exists off-box yet$_bv_clock"
+            else
+                _check_pass "the last backup on $_CS_TARGET finished $_bv_ago ago and succeeded (repositories: $_bv_repos)$_bv_clock"
+            fi
+            ;;
+        *)
+            # Unreachable through the caller's own `case`, and loud rather than
+            # silent all the same: success is never the arm a verdict falls into
+            # by not matching.
+            _check_warn "the backup record on $_CS_TARGET was judged '${BKR_VERDICT:-<nothing>}', which this kasbah does not know — nothing here says whether a backup has run"
+            ;;
+    esac
     return 0
 }
 

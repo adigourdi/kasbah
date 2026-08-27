@@ -85,6 +85,49 @@ case "$mode" in
         _ss_decode_projects
         printf 'rows=%s\n' "${#_SS_P_NAME[@]}"
         ;;
+    record)
+        # The backup last-run record's reader, on its own: the two file states
+        # and the server's clock as arguments, the record's bytes on stdin. This
+        # is the only way to reach a stack that stopped a month ago without
+        # waiting a month, and it is the reader `check --server` calls too.
+        content="$(cat)"
+        # Captured, not called bare: the driver runs under `set -e` like
+        # bin/kasbah, and the reader answers 1 when there was no record to judge.
+        rc=0
+        backup_record_read "$1" "$2" "$content" "$3" || rc=$?
+        printf 'rc=%s\nverdict=%s\nreason=%s\nstate=%s\nstatus=%s\nrepos=%s\noverdue=%s\nage=%s\nnext=%s\nclock=%s\n' \
+            "$rc" "$BKR_VERDICT" "$BKR_REASON" "$BKR_STATE" "$BKR_STATUS" "$BKR_REPOS" \
+            "$BKR_OVERDUE" "$BKR_AGE" "$BKR_NEXT_RUN" "$BKR_CLOCK"
+        ;;
+    ago)
+        # The humaniser, which every one of those lines is printed through.
+        said=""
+        backup_record_ago "$1" said
+        printf 'ago=%s\n' "$said"
+        ;;
+    printbackup)
+        # The backup section's printer with the record reader stubbed, which is
+        # the only way to hand it a verdict the reader cannot produce. `ok` is
+        # not the catch-all arm, so a verdict this kasbah does not know has to
+        # come out as one.
+        _SS_TARGET=deploy@vps
+        _SS_APPS_PATH=/apps
+        _SS_MARKER_BK_ENABLED=true
+        _SS_MARKER_BK_BASE=rest:http://u:p@h/base/
+        _SS_MARKER_BK_AT=02:00
+        _SS_MARKER_BK_JITTER=42
+        _SS_FACT=([backup_dir_state]=dir [backup_status_state]=file
+                  [backup_status_b64]="$(printf 'x' | base64 -w0)"
+                  [backup_c_state]=running [backup_c_health]=healthy [backup_c_restarts]=0
+                  [backup_haspass]="demo" [backup_projects]="demo=" [mail_dir_state]=absent
+                  [now]=2000000000)
+        eval "backup_record_read() { BKR_VERDICT=$1; BKR_REASON=''; BKR_STATE=sleeping;
+              BKR_SINCE=1999990000; BKR_DEADLINE=2000086400; BKR_NEXT_RUN=2000082800;
+              BKR_STARTED=1999980000; BKR_FINISHED=1999983600; BKR_STATUS=ok;
+              BKR_REPOS=' demo'; BKR_OVERDUE=0; BKR_AGE=16400; BKR_NOW=2000000000;
+              BKR_CLOCK=server; return ${2:-0}; }"
+        _ss_print_backup
+        ;;
     hosts)
         # The fragment parser on its own: content on stdin, one hostname per
         # line out, exit 2 when the document is not YAML.
@@ -419,6 +462,168 @@ out=$(drive disk '/dev/sda1 4096 2048 2048 50% /mnt/my disk')
 assert 'grep -qxF "fs=/dev/sda1 on /mnt/my disk" <<<"$out"' \
     "a mount point with a space in it is one field, not two (got '$out')"
 
+# --- The backup stack's last-run record ------------------------------------------------
+# The five states the plan names, and the three more the record can be in, fed
+# to the reader as bytes. Absence is not a value here: a server with no stack, a
+# stack that has never written a record, a record nobody can read and a record
+# saying the last run failed are four different facts, and a status that
+# reported them identically would be the decoration this rule exists not to be.
+rec_now=2000000000
+# state deadline next_run since started finished status repos
+rec() {
+    printf 'state=%s\nsince=%s\ndeadline=%s\nnext_run=%s\nlast_run_started=%s\nlast_run_finished=%s\nlast_run_status=%s\nlast_run_repos=%s\ntimeout=900\nat=02:00\njitter=42\n' \
+        "$1" "$4" "$2" "$3" "$5" "$6" "$7" "$8"
+}
+record() { drive_stdin record "$1" "$2" "$rec_now"; }
+
+# The healthy stack: a run that finished, said ok, and a scheduler still inside
+# the deadline it wrote for itself.
+ok_rec="$(rec sleeping 2000086400 2000082800 1999990000 1999980000 1999983600 ok ' demo mail')"
+out=$(record dir file <<<"$ok_rec")
+assert 'grep -qxF "verdict=ok" <<<"$out"'          "a run that finished and succeeded reads ok (got '$out')"
+assert 'grep -qxF "age=16400" <<<"$out"'           "with its age off the server's own clock (got '$out')"
+assert 'grep -qxF "overdue=0" <<<"$out"'           "and nothing overdue (got '$out')"
+assert 'grep -qxF "repos= demo mail" <<<"$out"'    "carrying which repositories it reached (got '$out')"
+
+# The stack that has never fired. `last_run_started=0` and `last_run_status=-`
+# are what templates/backup/backup.sh writes before any run — a different fact
+# from a stack that stopped a month ago, and the plan's own watch-out.
+out=$(record dir file <<<"$(rec sleeping 2000086400 2000082800 1999999000 0 0 - -)")
+assert 'grep -qxF "verdict=never" <<<"$out"' \
+    "a scheduler that has reported in and never run is 'never', not 'ok' and not 'failed' (got '$out')"
+assert 'grep -qxF "age=" <<<"$out"' "with no age, because there is no run to date (got '$out')"
+
+# A first run in progress is still 'never' — nothing has *finished* — and the
+# state says one is under way.
+out=$(record dir file <<<"$(rec running 2000003000 0 1999999900 1999999900 0 - -)")
+assert 'grep -qxF "verdict=never" <<<"$out"'  "a first run in progress has no finished run yet (got '$out')"
+assert 'grep -qxF "state=running" <<<"$out"'  "and says one is running (got '$out')"
+
+# The failed run: the case check --server fails on.
+out=$(record dir file <<<"$(rec sleeping 2000086400 2000082800 1999990000 1999980000 1999983600 failed ' none')")
+assert 'grep -qxF "verdict=failed" <<<"$out"' "a run that reported failure reads failed (got '$out')"
+assert 'grep -qxF "overdue=0" <<<"$out"'      "inside its deadline, which is a different fact (got '$out')"
+
+# The stack that stopped: the state it last recorded has outlived its own
+# deadline. This is the question templates/backup/backup.sh's `health` verb asks
+# of the same field, which is why there is one reader and not two.
+out=$(record dir file <<<"$(rec sleeping 1999900000 1999896000 1999800000 1999780000 1999783600 ok ' demo')")
+assert 'grep -qxF "verdict=overdue" <<<"$out"' \
+    "a deadline in the past is a stack that stopped, however well its last run went (got '$out')"
+assert 'grep -qxF "overdue=100000" <<<"$out"'  "with how far past (got '$out')"
+
+# A wedged run: `running` that never came back. Same verdict, different state,
+# and the state is what tells an operator which of the two it is.
+out=$(record dir file <<<"$(rec running 1999990000 0 1999980000 1999980000 0 - -)")
+assert 'grep -qxF "verdict=overdue" <<<"$out"' "a run that never returned is overdue too (got '$out')"
+assert 'grep -qxF "state=running" <<<"$out"'   "and says so (got '$out')"
+
+# Both at once: a failure is the concrete thing and is named first, with the
+# deadline still reported so the message can carry both.
+out=$(record dir file <<<"$(rec sleeping 1999900000 1999896000 1999800000 1999780000 1999783600 failed ' none')")
+assert 'grep -qxF "verdict=failed" <<<"$out"'  "a failed run outranks the deadline (got '$out')"
+assert 'grep -qxF "overdue=100000" <<<"$out"'  "which is still reported (got '$out')"
+
+# Nothing to read, in the four shapes it comes in. None of them may be reported
+# as a backup that ran, and none as one that failed.
+out=$(record absent absent </dev/null)
+assert 'grep -qxF "verdict=nostack" <<<"$out"' "no stack directory is its own state (got '$out')"
+assert 'grep -qF "reason=is not there" <<<"$out"' "with the clause a reader prints (got '$out')"
+out=$(record notdir absent </dev/null)
+assert 'grep -qF "reason=exists and is not a directory" <<<"$out"' \
+    "and a file where the stack belongs is a different one (got '$out')"
+out=$(record dir absent </dev/null)
+assert 'grep -qxF "verdict=norecord" <<<"$out"' \
+    "a stack with no record has not started — not the same as one that stopped (got '$out')"
+for fstate in empty unreadable notfile dir; do
+    out=$(record dir "$fstate" </dev/null)
+    assert 'grep -qxF "verdict=unreadable" <<<"$out"' \
+        "a record that is $fstate is unreadable, never absent (got '$out')"
+    assert '! grep -qxF "reason=" <<<"$out"' "and says which (got '$out')"
+done
+out=$(record dir file </dev/null)
+assert 'grep -qxF "verdict=unreadable" <<<"$out"' \
+    "a record whose bytes did not arrive is unreadable (got '$out')"
+
+# Bytes that are not this record. A deadline is the one field the verdict rests
+# on, so a record without a usable one is refused rather than judged.
+out=$(record dir file <<<"nothing to see here")
+assert 'grep -qxF "verdict=unparsed" <<<"$out"' "bytes that are not a record read as unparsed (got '$out')"
+out=$(record dir file <<<"$(printf 'state=sleeping\ndeadline=soon\n')")
+assert 'grep -qxF "verdict=unparsed" <<<"$out"' "and so does a deadline that is not a number (got '$out')"
+out=$(record dir file <<<"$(rec sleeping 2000086400 2000082800 1999990000 1999980000 1999983600 sideways ' demo')")
+assert 'grep -qxF "verdict=unparsed" <<<"$out"' \
+    "a last_run_status this kasbah does not know is not read as success (got '$out')"
+assert 'grep -qF "sideways" <<<"$out"' "and is quoted back (got '$out')"
+
+# A record a later kasbah wrote: fields this one has never heard of, and the
+# frozen ones still read.
+out=$(record dir file <<<"$(printf '%s\nlast_run_bytes=12345\nnew_field=whatever\n' "$ok_rec")")
+assert 'grep -qxF "verdict=ok" <<<"$out"' "keys this kasbah does not know are ignored (got '$out')"
+# CRLF, on the field that would carry it.
+out=$(record dir file <<<"$(printf 'state=sleeping\r\ndeadline=2000086400\r\nlast_run_started=1999980000\r\nlast_run_finished=1999983600\r\nlast_run_status=ok\r\n')")
+assert 'grep -qxF "verdict=ok" <<<"$out"' "a record with CRLF line endings still reads (got '$out')"
+
+# The clock the record is judged by is the server's. A probe that answered with
+# something that is not one falls back to this machine's rather than declining
+# to judge — a deadline in 2033 is not overdue on either.
+out=$(drive_stdin record dir file "not-a-clock" <<<"$ok_rec")
+assert 'grep -qxF "verdict=ok" <<<"$out"' "a clock this kasbah cannot read does not stop the verdict (got '$out')"
+assert 'grep -qxF "clock=local" <<<"$out"' \
+    "but it is not silent about whose clock the verdict was measured on (got '$out')"
+out=$(record dir file <<<"$ok_rec")
+assert 'grep -qxF "clock=server" <<<"$out"' \
+    "and the ordinary case says the server's, which is the one that wrote the record (got '$out')"
+out=$(drive_stdin record dir file "not-a-clock" <<<"$(rec sleeping 1000000000 0 999000000 999000000 999003600 ok ' demo')")
+assert 'grep -qxF "verdict=overdue" <<<"$out"' "and a 2001 deadline is still past (got '$out')"
+
+# A deadline bash arithmetic refuses. `case $v in *[!0-9]*)` admits both of
+# these and `$(( ))` then dies on them: `01999000009` is an invalid *octal*
+# literal, which is a fatal arithmetic error that took `server status` down
+# mid-report with exit 1 and no Projects section at all, and a digit string past
+# 2^63 makes `[ -gt ]` answer "integer expression expected" and be silently
+# false — so the record came out as a passing backup. `unparsed` is for exactly
+# these, and the reader answers 1 for it.
+for bad in 01999000009 999999999999999999999999 12x 1e9 -1 ' 2000086400'; do
+    out=$(record dir file <<<"$(rec sleeping "$bad" 2000082800 1999990000 1999980000 1999983600 ok ' demo')" 2>&1)
+    assert 'grep -qxF "verdict=unparsed" <<<"$out"' \
+        "a deadline of '$bad' is refused, not judged (got '$out')"
+    assert 'grep -qF "not a unix time this kasbah can compare" <<<"$out"' \
+        "with the reason (deadline '$bad', got '$out')"
+    assert '! grep -q "arithmetic\|integer expression\|value too great" <<<"$out"' \
+        "and no shell arithmetic complaint escapes (deadline '$bad', got '$out')"
+done
+# The control, twice: the same record with a deadline bash can read is judged,
+# and `0` is a real epoch the writer uses for "no next run yet".
+out=$(record dir file <<<"$ok_rec")
+assert 'grep -qxF "verdict=ok" <<<"$out"' "a usable deadline is still judged (got '$out')"
+out=$(record dir file <<<"$(rec sleeping 2000086400 0 1999990000 1999980000 1999983600 ok ' demo')")
+assert 'grep -qxF "verdict=ok" <<<"$out"' "and next_run=0 is a value, not a refusal (got '$out')"
+# The other epoch fields go the same way, and a bad one there is not a verdict:
+# only the deadline decides whether the record can be judged at all.
+out=$(record dir file <<<"$(rec sleeping 2000086400 2000082800 1999990000 1999980000 007 ok ' demo')")
+assert 'grep -qxF "verdict=ok" <<<"$out"' "a bad last_run_finished does not refuse the record (got '$out')"
+assert 'grep -qxF "age=" <<<"$out"' "it just yields no age to print (got '$out')"
+
+# The reader's exit status, which both callers capture. Bare, it would put a
+# non-zero status on a `set -e` shell in the middle of a report.
+out=$(record dir file <<<"$ok_rec")
+assert 'grep -qxF "rc=0" <<<"$out"' "a record that was judged answers 0 (got '$out')"
+for pair in "absent absent" "dir absent" "dir unreadable"; do
+    out=$(record $pair </dev/null)
+    assert 'grep -qxF "rc=1" <<<"$out"' "and one that could not be answers 1 ($pair, got '$out')"
+done
+out=$(record dir file <<<"$(rec sleeping 2000086400 2000082800 1999990000 1999980000 1999983600 sideways ' demo')")
+assert 'grep -qxF "rc=1" <<<"$out"' "as does a last_run_status this kasbah does not know (got '$out')"
+
+# The humaniser every one of those lines is printed through.
+assert 'grep -qxF "ago=45s" <<<"$(drive ago 45)"'          "seconds under a minute"
+assert 'grep -qxF "ago=25m" <<<"$(drive ago 1500)"'        "minutes under an hour"
+assert 'grep -qxF "ago=4h" <<<"$(drive ago 16400)"'        "hours under two days"
+assert 'grep -qxF "ago=3 day(s)" <<<"$(drive ago 300000)"' "and days above that"
+assert 'grep -qxF "ago=unknown" <<<"$(drive ago "")"' \
+    "a field the record did not carry is 'unknown', never 0"
+
 # --- The remote script, run locally ---------------------------------------------------
 # Extracted from its heredoc and run against a fake apps tree — the only way to
 # reach the project filter and the versions.log states without a server, and
@@ -460,7 +665,13 @@ if [ "$1" = inspect ]; then
             done
             exit 0 ;;
         *'{{.State.Status}} {{if .State.Health}}'*)
-            printf '%s\n' "${STUB_MAIL_INSPECT-running healthy 0}"
+            # The mail containers and the backup scheduler come back through the
+            # same compound format; the id says which stack is being asked
+            # about, so a case can move one without moving the other.
+            case "${!#}" in
+                cid-kasbah-backup) printf '%s\n' "${STUB_BACKUP_INSPECT-running healthy 0}" ;;
+                *)                 printf '%s\n' "${STUB_MAIL_INSPECT-running healthy 0}" ;;
+            esac
             exit 0 ;;
     esac
     # Answers per container, not per question: the traefik project holds a
@@ -500,6 +711,13 @@ if [ "$1" = ps ]; then
             mail-dms)        printf '%s\n' "${STUB_MAIL_DMS-cid-mail-dms}" ;;
             mail-snappymail) printf '%s\n' "${STUB_MAIL_WEB-cid-mail-snappymail}" ;;
         esac
+        exit 0
+    fi
+    if [ "$project" = kasbah-backup ]; then
+        # The compose project and service templates/backup/compose.yml declares.
+        # A probe that stopped filtering on the service label would find nothing
+        # here, which is what the `absent` assertions are about.
+        [ "$service" != backup ] || printf '%s\n' "${STUB_BACKUP_ID-cid-kasbah-backup}"
         exit 0
     fi
     if [ "$project" = traefik ]; then
@@ -568,6 +786,17 @@ mkdir -p "$apps/data/traefik/letsencrypt"
 printf '{"letsencrypt":{"Account":{"PrivateKey":"c3VwZXItc2VjcmV0"},"Certificates":[]}}' \
     > "$apps/data/traefik/letsencrypt/acme.json"
 
+# The backup stack as `server init --with-backup` leaves it: the runner's
+# last-run record, one password file per repository, and the client record
+# `kasbah deploy` writes beside a project. The password *file* is here rather
+# than only its name, because the probe must be seen reporting the name and not
+# the contents.
+mkdir -p "$apps/.kasbah/backup/state" "$apps/.kasbah/backup/repos"
+printf 'state=sleeping\nsince=1756180000\ndeadline=1756270000\nnext_run=1756268000\nlast_run_started=1756179000\nlast_run_finished=1756179600\nlast_run_status=ok\nlast_run_repos= demo mail\ntimeout=900\nat=02:00\njitter=42\n' \
+    > "$apps/.kasbah/backup/state/status"
+printf 'THIS-IS-A-REPOSITORY-PASSWORD\n' > "$apps/.kasbah/backup/repos/demo.pass"
+printf 'demo\n' > "$apps/demo/.kasbah-client"
+
 # Type, mode, size and mtime of everything, plus the bytes of every file: the
 # probe below must move none of it.
 tree_digest() {
@@ -632,12 +861,82 @@ assert '[ "$(fact mail_dms_health)" = "healthy" ]' "with its health (got '$(fact
 assert '[ "$(fact mail_dms_restarts)" = "0" ]' \
     "and its restart count — a DMS with no certificate restarts forever (got '$(fact mail_dms_restarts)')"
 assert '[ "$(fact mail_web_state)" = "running" ]' "and so is mail-snappymail (got '$(fact mail_web_state)')"
+# The backup stack, in the same one probe. The password file's *name* travels
+# and its bytes never do — a probe that shipped the repository passwords back
+# would be shipping the only thing standing between a stolen snapshot and its
+# contents.
+assert '[ "$(fact backup_dir_state)" = "dir" ]' "the backup stack directory is found (got '$(fact backup_dir_state)')"
+assert '[ "$(fact backup_status_state)" = "file" ]' "with its last-run record (got '$(fact backup_status_state)')"
+assert '[ "$(printf "%s" "$(fact backup_status_b64)" | base64 -d)" = "$(cat "$apps/.kasbah/backup/state/status")" ]' \
+    "which comes back byte for byte — the VPS has no parser and none is wanted there"
+assert '[ "$(fact backup_haspass)" = "demo" ]' \
+    "the repositories holding a password are named (got '$(fact backup_haspass)')"
+assert '! grep -q "THIS-IS-A-REPOSITORY-PASSWORD" <<<"$probe_out"' \
+    "and no password itself is in the payload"
+assert 'grep -qF "demo=demo" <<<"$(fact backup_projects)"' \
+    "the project/client list carries the .kasbah-client record kasbah deploy writes (got '$(fact backup_projects)')"
+assert 'grep -qF "dropped=" <<<"$(fact backup_projects)"' \
+    "and a project with no record is listed with an empty client, not dropped (got '$(fact backup_projects)')"
+assert '[ "$(fact backup_c_state)" = "running" ]' \
+    "the scheduler is found by its compose labels (got '$(fact backup_c_state)')"
+assert '[ "$(fact backup_c_health)" = "healthy" ]' \
+    "with the health its own healthcheck reports (got '$(fact backup_c_health)')"
+assert '[ -n "$(fact now)" ] && [ "$(fact now)" -gt 1700000000 ] 2>/dev/null' \
+    "and the server's own clock, which every epoch in the record is written by (got '$(fact now)')"
 assert '[ "$(fact apps_df_state)" = "ok" ]' "df answered for the apps path (got '$(fact apps_df_state)')"
 apps_df_line="$(printf '%s' "$(fact apps_df_b64)" | base64 -d)"
 assert '[ -n "$apps_df_line" ]' "and its line came back (got '$apps_df_line')"
 assert '[ "$(set -- $apps_df_line; printf %s "$2")" -gt 0 ] 2>/dev/null' \
     "with a block count in it, so it is a df line and not a header (got '$apps_df_line')"
 assert '[ "$(fact data_df_state)" = "ok" ]' "and for the data path (got '$(fact data_df_state)')"
+
+# The list of projects and their effective clients decides which repositories
+# this server has — the question `server init --with-backup` asks the same tree
+# when it decides how many passwords to prompt for. Two payloads answering it
+# two ways is how a status would name a repository init never created, so the
+# two are run against one tree and their answers compared.
+#
+# `buf ~ /backup_projects=/` picks the block out of each file by what it emits:
+# lib/backup.sh has five REMOTE heredocs and only one of them is this read.
+bk_read_payload="$tmpdir/bk_read.sh"
+awk '/<<'"'"'REMOTE'"'"'$/{buf=""; inb=1; next} inb && /^REMOTE$/{if (buf ~ /backup_projects=/) printf "%s", buf; inb=0; next} inb{buf = buf $0 "\n"}' \
+    "$repo_dir/lib/backup.sh" > "$bk_read_payload"
+assert '[ -s "$bk_read_payload" ]' "lib/backup.sh's own read payload was found"
+bk_out=$(bash "$bk_read_payload" "$apps" "$apps/data" " .kasbah mail data backups traefik " 2>&1)
+bk_projects=$(sed -n 's/^backup_projects=//p' <<<"$bk_out")
+assert '[ -n "$bk_projects" ]' "and it lists this tree's projects (got '$bk_projects')"
+assert '[ "$(fact backup_projects)" = "$bk_projects" ]' \
+    "status and server init read one tree the same way
+        status:      '$(fact backup_projects)'
+        server init: '$bk_projects'"
+# The pin is only evidence if it can tell: a client record neither reads the
+# same way as one nobody wrote.
+printf 'MAIL\n' > "$apps/demo/.kasbah-client"
+bk_out=$(bash "$bk_read_payload" "$apps" "$apps/data" " .kasbah mail data backups traefik " 2>&1)
+probe_out="$(run_payload "$apps" 2>/dev/null)"
+assert '[ "$(fact backup_projects)" = "$(sed -n "s/^backup_projects=//p" <<<"$bk_out")" ]' \
+    "including a record that is not a repository name, which both refuse as '?'
+        status:      '$(fact backup_projects)'
+        server init: '$(sed -n "s/^backup_projects=//p" <<<"$bk_out")'"
+assert 'grep -qF "demo=?" <<<"$(fact backup_projects)"' \
+    "and it really is refused rather than passed on (got '$(fact backup_projects)')"
+# The other half of the same rule, and the half a charset mutation cannot reach:
+# a record naming a directory kasbah owns is a valid *name* and still refused,
+# because filing a project into the mail repository puts one client's data in
+# with every mailbox on the server. Both payloads carry the reserved list as an
+# argument, and this is what pins them to agreeing about it.
+printf 'mail\n' > "$apps/demo/.kasbah-client"
+bk_out=$(bash "$bk_read_payload" "$apps" "$apps/data" " .kasbah mail data backups traefik " 2>&1)
+probe_out="$(run_payload "$apps" 2>/dev/null)"
+assert 'grep -qF "demo=?" <<<"$(fact backup_projects)"' \
+    "a client naming a reserved directory is refused (got '$(fact backup_projects)')"
+assert '[ "$(fact backup_projects)" = "$(sed -n "s/^backup_projects=//p" <<<"$bk_out")" ]' \
+    "by both payloads, out of the one reserved list they are both handed
+        status:      '$(fact backup_projects)'
+        server init: '$(sed -n "s/^backup_projects=//p" <<<"$bk_out")'"
+printf 'demo\n' > "$apps/demo/.kasbah-client"
+probe_out="$(run_payload "$apps" 2>/dev/null)"
+before="$(tree_digest "$apps")"
 
 # A mail stack that is scaffolded and not running, and one that was never
 # scaffolded: both ordinary states, neither a fault.
@@ -993,6 +1292,20 @@ write_payload() {
         printf 'mail_registry_state=file\nmail_registry_b64=%s\n' "$(printf '%s' "$registry_yml" | base64 -w0)"
         printf 'mail_dms_state=running\nmail_dms_health=healthy\nmail_dms_restarts=0\n'
         printf 'mail_web_state=running\nmail_web_health=healthy\nmail_web_restarts=0\n'
+        # The backup stack, and by default a server that has none: `Backup: not
+        # configured` is what the default marker above describes, and every
+        # other state is reached by moving these keys and the marker together.
+        # Written *after* shared_b64 on purpose — the protocol diagnostic clips
+        # at twenty lines, and a key inserted above acme_b64 would push it out
+        # of that window and make the redaction assertions below vacuous.
+        printf 'backup_dir_state=%s\n' "${BK_DIR_STATE:-absent}"
+        printf 'backup_status_state=%s\n' "${BK_STATUS_STATE:-absent}"
+        printf 'backup_status_b64=%s\n' "$(printf '%s' "${BK_RECORD:-}" | base64 -w0)"
+        printf 'backup_c_state=%s\nbackup_c_health=%s\nbackup_c_restarts=%s\n' \
+            "${BK_C_STATE:-absent}" "${BK_C_HEALTH:-}" "${BK_C_RESTARTS:-}"
+        printf 'backup_haspass=%s\n' "${BK_HASPASS-demo}"
+        printf 'backup_projects=%s\n' "${BK_PROJECTS-demo=}"
+        printf 'now=%s\n' "${BK_NOW:-2000000000}"
         printf 'traefik_present=%s\ntraefik_state=%s\ntraefik_health=%s\n' \
             "$traefik_present" "$traefik_state" "$traefik_health"
         printf 'traefik_image=traefik:v3.7.10\ntraefik_image_id=sha256:abcdef0123456789\ntraefik_container=traefik\n'
@@ -1204,6 +1517,263 @@ payload_set traefik_image_id=sha256:0123456789abcdef0123456789abcdef0123456789ab
 out=$(status_cli deploy@vps)
 assert 'grep -qE "^  Image: traefik:v3\.7\.10 \(sha256:0123456789ab\)$" <<<"$out"' \
     "a 64-digit image id is cut to twelve, with nothing after it (said '$out')"
+
+# --- The backup stack, as lines a reader sees -------------------------------------------
+# Three sources and they are kept apart: the marker says what was configured,
+# the record says what the scheduler has done, and docker says what the
+# container is doing now. Every state below is one a rig cannot be put into on
+# demand — a stack that stopped a month ago most of all.
+bk_reset() {
+    BK_DIR_STATE=absent BK_STATUS_STATE=absent BK_RECORD=""
+    BK_C_STATE=absent BK_C_HEALTH="" BK_C_RESTARTS=""
+    BK_HASPASS=demo BK_PROJECTS="demo=" BK_NOW=2000000000
+}
+bk_reset
+# The base carries userinfo, which is what a `rest:` target is and what the rig's
+# own harness hands kasbah. The marker holding it is mode 644 by contract.
+bk_secret=append-only-secret
+marker_backup="$(jq -cn --arg b "rest:http://kasbah-vps:$bk_secret@10.0.0.2:8000/" \
+    '{kasbah_version:"0.1.0-test",apps_path:"/apps",data_path:"/apps/data",
+      cpu_limit:"14.4",mem_limit:"54g",
+      backup:{enabled:true,repo_base:$b,at:"02:00",jitter:42,timeout:900,
+              retention:{daily:7,weekly:4,monthly:3}}}')"
+assert '[ -n "$marker_backup" ]' "the backup-enabled marker fixture is JSON"
+
+# A server that was never asked to back anything up. Not a fault, and not the
+# same sentence as a stack that has stopped.
+write_payload
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a server with no backups reports and exits 0 (exit $rc: $out)"
+assert 'grep -qF "Backup: not configured" <<<"$out"' \
+    "an absent backup stack is an ordinary state, not a fault (said '$out')"
+assert 'grep -qF -- "--with-backup" <<<"$out"' "and the flag that scaffolds one (said '"'"'$out'"'"')"
+assert '! grep -qF "last run" <<<"$out"' \
+    "with nothing claimed about a run on a server that was never asked for one (said '$out')"
+
+# A stack the marker does not describe: `server destroy` removes the two
+# together, so one without the other is a hand edit and is said out loud.
+BK_DIR_STATE=dir
+write_payload
+out=$(status_cli deploy@vps)
+assert 'grep -qF "/apps/.kasbah/backup is dir, and no marker entry describes it" <<<"$out"' \
+    "a stack with no marker entry is reported, not hidden (said '$out')"
+bk_reset
+
+# The healthy stack.
+BK_DIR_STATE=dir BK_STATUS_STATE=file BK_C_STATE=running BK_C_HEALTH=healthy BK_C_RESTARTS=0
+BK_RECORD="$(rec sleeping 2000086400 2000082800 1999990000 1999980000 1999983600 ok ' demo mail')"
+BK_PROJECTS="demo=" BK_HASPASS="demo mail"
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a backed-up server reports and exits 0 (exit $rc: $out)"
+assert 'grep -qF "daily at 02:00 plus 42s jitter" <<<"$out"' \
+    "the schedule the marker records (said '$out')"
+assert 'grep -qF "kasbah-backup    running (healthy)" <<<"$out"' \
+    "the scheduler container, found by its compose labels (said '$out')"
+assert 'grep -qF "last run         ok 4h ago — repositories: demo mail" <<<"$out"' \
+    "the last run, its age off the server's own clock, and what it reached (said '$out')"
+assert 'grep -qF "next run         in 23h" <<<"$out"' "and when the next one is due (said '$out')"
+assert 'grep -qF "repositories     demo mail" <<<"$out"' \
+    "the repositories this server has: one per client, plus mail (said '$out')"
+assert '! grep -qF "no password" <<<"$out"' \
+    "and nothing about a missing password when every repository has one (said '$out')"
+# The credential, which is the reason there is one redactor and not two.
+assert '! grep -qF "$bk_secret" <<<"$out"' \
+    "no credential in the repository base reaches the report (said '$out')"
+assert 'grep -qF "rest:http://kasbah-vps:***@10.0.0.2:8000/" <<<"$out"' \
+    "which is still named, redacted the way lib/backup.sh redacts it (said '$out')"
+# Still one round trip, with the backup stack folded into the same probe.
+assert '[ "$(grep -c "bash. .-s" "$ssh_log")" = "1" ]' \
+    "the backup record did not cost a second ssh session (ssh saw: $(cat "$ssh_log"))"
+
+# A repository with no password is not backed up at all, and the run says so in
+# a log nobody reads — which is why this line exists.
+BK_PROJECTS="demo= other=" BK_HASPASS="demo"
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps)
+assert 'grep -qF "repositories     demo other mail" <<<"$out"' \
+    "a second project is a second repository (said '$out')"
+assert 'grep -qF "no password      other" <<<"$out"' \
+    "and the one with no password is named (said '$out')"
+assert 'grep -qF "kasbah server init deploy@vps --with-backup" <<<"$out"' \
+    "with the command that supplies one (said '$out')"
+# Projects sharing a client share a repository — the offboarding unit.
+BK_PROJECTS="demo=acme other=acme" BK_HASPASS="acme mail"
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps)
+assert 'grep -qF "repositories     acme mail" <<<"$out"' \
+    "two projects declaring one client are one repository (said '$out')"
+assert '! grep -qF "no password" <<<"$out"' "which has its password (said '"'"'$out'"'"')"
+BK_PROJECTS="demo=" BK_HASPASS="demo mail"
+
+# The stack that has never fired once. The plan's own watch-out: this is not the
+# same fact as a stack that stopped a month ago, and it must not read like one.
+BK_RECORD="$(rec sleeping 2000086400 2000082800 1999999000 0 0 - -)"
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a stack that has never run still reports (exit $rc: $out)"
+assert 'grep -qF "last run         none yet — the scheduler is sleeping" <<<"$out"' \
+    "a stack that has never fired says exactly that (said '$out')"
+assert '! grep -qF "FAILED" <<<"$out"'  "and is not reported as a failure (said '"'"'$out'"'"')"
+assert '! grep -qF "ok " <<<"$(grep "last run" <<<"$out")"' \
+    "nor as a run that went fine (said '$out')"
+
+# A stack with no record at all: the container writes one as its first act, so
+# this is a stack that has not started — a third fact again.
+BK_STATUS_STATE=absent BK_RECORD="" BK_C_STATE=exited BK_C_HEALTH=none
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps)
+assert 'grep -qF "last run         none — /apps/.kasbah/backup/state/status is not there" <<<"$out"' \
+    "no record is its own state, naming the file (said '$out')"
+assert 'grep -qF "kasbah-backup    exited (none)" <<<"$out"' \
+    "with the container that would have written it (said '$out')"
+
+# A record that is there and cannot be read. Nothing may be concluded from it.
+BK_STATUS_STATE=unreadable BK_C_STATE=running BK_C_HEALTH=healthy
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps)
+assert 'grep -qF "last run         unknown — /apps/.kasbah/backup/state/status cannot be read" <<<"$out"' \
+    "an unreadable record is unknown, never absent and never ok (said '$out')"
+
+# The failed run.
+BK_STATUS_STATE=file
+BK_RECORD="$(rec sleeping 2000086400 2000082800 1999990000 1999980000 1999983600 failed ' none')"
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a failed backup does not fail the report — status reports, check judges (exit $rc)"
+assert 'grep -qF "last run         FAILED 4h ago — repositories backed up: none" <<<"$out"' \
+    "a failed run is named as one, with what it did reach (said '$out')"
+assert 'grep -qF "docker logs kasbah-backup" <<<"$out"' "and where the reason is (said '$out')"
+assert 'grep -qF "next run         in 23h" <<<"$out"' \
+    "with when the next attempt is — a failed run is slept off, not exited (said '$out')"
+
+# The stack that stopped: the state it last recorded has outlived its own
+# deadline, which is the question the container's healthcheck asks of the same
+# field. A container `docker ps` still calls running is exactly the case.
+BK_RECORD="$(rec sleeping 1999900000 1999896000 1999800000 1999780000 1999783600 ok ' demo')"
+BK_C_HEALTH=unhealthy BK_C_RESTARTS=3
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps)
+assert 'grep -qF "scheduler        27h past its own deadline in state '"'"'sleeping'"'"'" <<<"$out"' \
+    "a sleep that never woke is reported as that (said '$out')"
+assert 'grep -qF "last run         ok 2 day(s) ago" <<<"$out"' \
+    "with the last run that did work, which is not a contradiction (said '$out')"
+assert 'grep -qF "kasbah-backup    running (unhealthy), 3 restart(s)" <<<"$out"' \
+    "and the container's own verdict beside it (said '$out')"
+
+# The stack the marker enables and the server does not have.
+BK_DIR_STATE=absent BK_C_STATE=absent BK_C_HEALTH="" BK_C_RESTARTS=""
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps)
+assert 'grep -qF "last run         none — /apps/.kasbah/backup is not there" <<<"$out"' \
+    "a marker naming a stack the server does not have says so (said '$out')"
+assert 'grep -qF "kasbah-backup    absent" <<<"$out"' "and no container is running it (said '$out')"
+
+# A run that succeeded and shipped nothing. `back_up_repo` returns 0 for a
+# repository with no paths, so `ok` with `last_run_repos= none` is a real record
+# — and a server where nothing left the box is not what "ok, repositories: none"
+# reads like at a glance.
+BK_DIR_STATE=dir BK_STATUS_STATE=file BK_C_STATE=running BK_C_HEALTH=healthy BK_C_RESTARTS=0
+BK_RECORD="$(rec sleeping 2000086400 2000082800 1999990000 1999980000 1999983600 ok ' none')"
+BK_PROJECTS="" BK_HASPASS=""
+write_payload ok "$marker_backup"
+# No mail stack either, so this is the whole of the ordinary instance: backups
+# on, nothing on the server to back up yet.
+payload_set mail_dir_state=absent
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a run that shipped nothing still reports (exit $rc: $out)"
+assert 'grep -qF "last run         ok 4h ago, and shipped nothing — no repository had anything to back up" <<<"$out"' \
+    "and says so rather than listing a repository it did not write (said '$out')"
+assert 'grep -qF "repositories     none — nothing under /apps to back up yet" <<<"$out"' \
+    "with the reason there was nothing (said '$out')"
+BK_PROJECTS="demo=" BK_HASPASS="demo mail"
+
+# A scheduler past its deadline whose container is *not running*. It did not
+# wedge and it did not oversleep — it was taken down, and saying otherwise would
+# send an operator looking at restic.
+BK_RECORD="$(rec sleeping 1999900000 1999896000 1999800000 1999780000 1999783600 ok ' demo')"
+BK_C_STATE=exited BK_C_HEALTH=none
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps)
+assert 'grep -qF "the container is exited, so nothing has moved it on" <<<"$out"' \
+    "a stopped scheduler is not called a run that never returned (said '$out')"
+assert '! grep -qF "never woke" <<<"$out"' "which is what it is not (said '"'"'$out'"'"')"
+# The control: the same record with the container up keeps the other sentence,
+# so the line above is about the container and not about the wording changing.
+BK_C_STATE=running BK_C_HEALTH=unhealthy
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps)
+assert 'grep -qF "a run that never returned, or a sleep that never woke" <<<"$out"' \
+    "a scheduler that is up and past its deadline did one of those two (said '$out')"
+BK_C_HEALTH=healthy
+
+# A record with no usable `since`: the duration clauses are left out rather than
+# printed empty. "(for )" is not a duration.
+BK_RECORD="$(printf 'state=sleeping\ndeadline=1999900000\nlast_run_started=0\nlast_run_finished=0\nlast_run_status=-\n')"
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a record carrying no since still reports (exit $rc: $out)"
+assert '! grep -qF "(for )" <<<"$out"' "with no empty duration in the line (said '$out')"
+assert 'grep -qF "past its own deadline in state '"'"'sleeping'"'"'" <<<"$out"' \
+    "and the verdict is still printed (said '$out')"
+# Both spellings of that line — the container up and the container down — since
+# the two branches carry the clause separately.
+BK_C_STATE=exited BK_C_HEALTH=none
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps)
+assert '! grep -qF "(for )" <<<"$out"' \
+    "and the stopped-container spelling of the same line leaves it out too (said '$out')"
+assert 'grep -qF "the container is exited, so nothing has moved it on" <<<"$out"' \
+    "while still saying what it does know (said '$out')"
+BK_C_STATE=running BK_C_HEALTH=healthy
+
+# The clock the record is judged on, said out loud when it is not the server's.
+BK_RECORD="$(rec sleeping 2000086400 2000082800 1999990000 1999980000 1999983600 ok ' demo')"
+BK_NOW=not-a-clock
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a probe that did not report the server's clock still reports (exit $rc)"
+assert 'grep -qF "judged against this machine'"'"'s clock" <<<"$out"' \
+    "and the report says which clock the ages below it came off (said '$out')"
+BK_NOW=2000000000
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps)
+assert '! grep -qF "judged against this machine" <<<"$out"' \
+    "the ordinary case says nothing, because the server's own clock is the expected one (said '$out')"
+
+# A verdict the reader cannot produce, driven through the printer with the
+# reader stubbed. `ok` is not the catch-all arm: on a command whose subject is
+# that absence is not a value, the success sentence must never be what a verdict
+# falls into by not matching.
+out=$(drive printbackup ok)
+assert 'grep -qF "last run         ok 4h ago" <<<"$out"' \
+    "the stub reaches the printer at all — else every line below is theatre (said '$out')"
+for bogus in '' sideways; do
+    out=$(drive printbackup "$bogus")
+    assert 'grep -qF "the record reader returned" <<<"$out"' \
+        "a verdict of '${bogus:-<empty>}' is reported as unknown (said '$out')"
+    assert '! grep -qF "last run         ok" <<<"$out"' \
+        "and never as a backup that worked (said '$out')"
+done
+out=$(drive printbackup '' 1)
+assert 'grep -qF "(exit 1)" <<<"$out"' \
+    "with the reader's own exit status, which the caller captured (said '$out')"
+
+# A marker whose backup object is not an object at all. jq would make that a
+# type error rather than a null, and an unguarded read would end the run with no
+# report printed.
+bk_reset
+write_payload ok '{"kasbah_version":"0.1.0-test","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"1","mem_limit":"1g","backup":"yes please"}'
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a marker with a backup field that is not an object still reports (exit $rc: $out)"
+assert 'grep -qF "Backup: not configured" <<<"$out"' \
+    "and is read as no backups rather than dying mid-report (said '$out')"
+# Backups on, and the marker records nowhere to put them.
+write_payload ok '{"kasbah_version":"0.1.0-test","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"1","mem_limit":"1g","backup":{"enabled":true}}'
+out=$(status_cli deploy@vps)
+assert 'grep -qF "the marker records no repository base" <<<"$out"' \
+    "an enabled backup with no repository base says nothing says where the snapshots go (said '$out')"
+bk_reset
 
 # --- The apps path reaches the far side ------------------------------------------------
 # The one thing status has that deploy does not. Without this, --apps-path could

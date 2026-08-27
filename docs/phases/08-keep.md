@@ -820,3 +820,98 @@ measurements and four options as `docs/backlog/20260826-check-yq-fork-per-rule.m
 forbidding any `docs/` edit — it had not been, and the phase file's own task text
 said 8.4 would fix it "in the same change". Corrected here, along with
 `cli.md` and a `How it edits` section in `compliance.md`.
+
+### 8.5 — `server status` and `check` learn about backups
+
+Review verdict: **needs-work**, on five defects and six lower findings; the
+reviewer judged the shape right. What held: **no narrowing** — a byte diff of
+`server status` on a no-backup server, HEAD against the change, is purely
+additive, two lines, nothing else moved; the round-trip budget and the
+write-nothing contract; credentials reaching output only through 8.3's
+`_bk_shown`; the eight states genuinely reachable and distinct; and all seven
+mutations re-run and dead.
+
+**The blocking defect is a validation gate that admits what it cannot use.**
+`BKR_DEADLINE` was accepted as any digit string, then handed to bash
+arithmetic. `deadline=01999000009` is an invalid octal literal, so
+`kasbah server status` **aborted mid-report at exit 1** — the last-run line, the
+repositories and the *entire Projects section* never printed, on a command whose
+contract is that it reports. And `deadline=999999999999999999999999` overflowed
+to a large negative, making the overdue test false, so the verdict silently
+became `never`: "the scheduler is sleeping", for a record whose deadline could
+not be read. The `unparsed` state existed for exactly this and was unreachable.
+Both readers called the same line the same way and **neither checked the
+parser's return status**. The lesson generalises past this bug: *a character-class
+gate is not a type check — `[0-9]*` admits values arithmetic refuses, at both
+ends of the range.*
+
+**`ok` was the default branch in both readers** — spelled `*)`, not `ok)`. On a
+task whose whole thesis is that absence is not a value, the success sentence was
+the catch-all, so an unset verdict printed `last run  ok  ago`. The unknown arm
+has to be the loud one.
+
+**The same false Docker claim, in a second place.** A comment said the
+scheduler's restart count is what `restart: unless-stopped` acting on a failing
+healthcheck looks like from outside. Docker restarts on **exit**, never on
+health. The implementer had already caught and fixed this exact sentence by hand
+during its own pass — it lived in two files, and the payload half survived. **A
+false claim corrected once is not corrected; grep for the claim, not the line.**
+
+**And the disagreement the comment was hiding.** `check --server` carried a
+comment arguing a repository with no password "gets no rule of its own … one
+reader, one verdict" — true only *after the next scheduled run*. Between a
+deploy creating a project and the 02:00 slot, `server status` said "not backed
+up" while `check --server` said "✓ succeeded" and exited 0. **The two-readers-
+one-question defect again, and this time the comment asserting there was one
+reader is what stopped anyone looking.** Fixed in the code rather than the
+prose: B01 now warns on a repository nothing can write to.
+
+Two more ninth states the reviewer found collapsed into `ok`: a **scheduler
+container that has been taken down** (the last `sleeping` record stays valid for
+about a day, during which B01 says ✓ while `status` says `absent`), and **a run
+that succeeded and shipped nothing** (`repositories: none` — a green tick for a
+server where nothing left the box).
+
+The reviewer also upheld all four of the implementer's pushbacks, with one
+sharpening worth keeping: the new `lib/backup_record.sh` is right, but its
+stated rationale — that either alternative would make one command source another
+— is undercut by the same change making `server_status.sh` source `backup.sh`
+for the redaction. The principle is **share the question, not the command**.
+
+The fix round closed all eleven and cost one round. Two things it turned up that
+neither the review nor the brief had.
+
+**A third octal shape, and the one that actually matters.** D1 was found through
+two spellings that *error*: an invalid octal (`0999000009`) that killed the
+report, and a 24-digit value that overflowed. The implementer then tried
+`deadline=01700000000` — a **valid** octal, every digit 0–7. It does not error.
+It silently *changes the number*, and `server status` reported
+`scheduler 17779 day(s) past its own deadline`: a fabricated figure and a false
+`overdue` verdict on a perfectly healthy record, with no warning anywhere. So the
+rule is sharper than "a character-class gate is not a type check at either end of
+the range" — **in the middle it does not fail, it lies.**
+
+**A mutation that survived because the arm it targeted was unreachable.** The
+first attempt at D3's check-side mutation flipped `ok)` back to `*)` inside
+`_cs_b01_verdict` and stayed green — the outer case in `_cs_b01_backup` already
+restricts to the four known verdicts, so that arm cannot be reached. Re-aimed at
+the reachable arm, it went red. The defensive inner arm stays, now under a
+comment saying it is unreachable rather than one implying otherwise. **A
+surviving mutation is not always a missing test; sometimes it is proof the code
+is dead** — and telling those two apart is the whole value of running it.
+
+**Found by the rig, and out of scope by construction:** `templates/backup/backup.sh`
+holds the last run's facts in shell **variables**, so a container restart writes
+its next record with no last run in it — a stack that has backed up faithfully
+for months reads as one that has never fired, until its next run completes. It
+cost a false failure while ordering the integration states, which is how it was
+noticed. The readers report it honestly rather than guessing, because a reader
+cannot invent a fact the writer discarded; the consequence is an expected warning
+for up to a day after any reboot. Documented in `backup.md`, and filed as
+`docs/backlog/20260827-backup-record-survives-restart.md` with three options —
+the writer was explicitly off-limits to this task.
+
+The implementer also caught my documentation outrunning the code again: the
+`server status` sample block I wrote had a restart clause the code omits at zero,
+the wrong gutter, and `repositories` in the wrong position. Corrected against
+real output.

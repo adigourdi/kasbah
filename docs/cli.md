@@ -409,6 +409,17 @@ Prints:
   `mail.<primary>` restarts until one appears, and only the count says so — plus
   the registry's primary domain and the domains it serves. A server prepared
   without `--with-mail` has none, and that is an ordinary state, not a fault.
+- The backup stack, when the marker records one: the repository base with any
+  credential **redacted**, the schedule and its jitter, the `kasbah-backup`
+  container's state, health and restart count, when the last run happened and
+  how it went, the repositories this server has, and any that lack a password
+  and are therefore not being backed up. A server prepared without
+  `--with-backup` gets one line saying so, and a verdict measured against the
+  workstation's clock rather than the server's says so on the header. The record it reads is the same one
+  `check --server`'s B01 judges, through the same parser — so `status` and
+  `check` cannot disagree about whether a backup is healthy, and its timestamps
+  are read against the **server's** clock, in the same round trip, since a
+  verdict computed against the workstation's would be a function of clock skew.
 - Projects under the apps path — name, running/total containers, the
   last `versions.log` entry (action, version, timestamp, kasbah version), **the
   domains its Traefik fragment claims**, what the certificate store says about
