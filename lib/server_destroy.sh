@@ -1540,8 +1540,12 @@ cmd_server_destroy() {
     ssh_connect "$_SD_TARGET"
     _sd_marker_read || rc=$?
     if [ "$rc" -eq "$KASBAH_EXIT_NO_REMOTE_STATE" ]; then
-        _sd_nothing_to_find
-        return 0
+        # Captured, never called bare: a server whose credentials outlived its
+        # marker ends this run non-zero, and a bare call would put that status
+        # on an errexit shell rather than returning it.
+        local ntf_rc=0
+        _sd_nothing_to_find || ntf_rc=$?
+        return "$ntf_rc"
     fi
     [ "$rc" -eq 0 ] || exit "$rc"
 
@@ -1621,6 +1625,20 @@ _sd_nothing_to_find() {
 
     if [ "$left" -ne 0 ]; then
         printf '  nothing else can be enumerated without a marker, and nothing was removed\n'
+        # The function graded the three leftovers above — `err` for the
+        # credentials, `warn` for a stray .kasbah/ and `warn` for the pointer —
+        # and the exit status carries that grading rather than discarding it.
+        #
+        # A pointer or an empty .kasbah/ is a world-readable discovery hint and
+        # no secret, which is the same judgement `nosudo` already makes about the
+        # same class of leftover at its spec'd exit 0 (docs/cli.md). Credentials
+        # are the other thing: the repository URL and one password per
+        # repository at mode 600, still pushing this server's data into the
+        # departing operator's storage at the next 02:00 slot. A handover script
+        # spelled `kasbah server destroy "$h" && mark_handed_over "$h"` must not
+        # read that run as a de-branding — which is why _sd_report_act exits 1
+        # and holds the marker on an unreadable `.env` for exactly this reason.
+        [ -z "$_SD_LEFT_CREDS" ] || return 1
         return 0
     fi
 

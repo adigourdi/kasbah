@@ -600,11 +600,54 @@ fi
 kv backup_dir_state "$backup_dir"
 fstate backup_status_state "$bdir/state/status"
 encfile backup_status_b64  "$bdir/state/status"
-# The compose project and service templates/backup/compose.yml declares, spelled
-# literally here as `traefik` and the two mail services are above: a payload on
-# the far side of ssh can source nothing, and a name passed as an argument would
-# make this one call unlike its three neighbours in the same script.
-stackc backup_c kasbah-backup backup
+# --- the backup scheduler container -------------------------------------------
+# **Both read payloads carry this block verbatim** — lib/server_status.sh's and
+# lib/check_server.sh's — pinned byte-for-byte by tests/server_status_test.sh. A
+# payload on the far side of ssh can source nothing, so the copy is forced; one
+# question with two queries is exactly how `server status` and `check --server`
+# came to give opposite answers about the same container.
+#
+# By name **and** by the compose project label. A container merely *named*
+# kasbah-backup did not come from kasbah's stack, and it is holding the name
+# kasbah's stack needs: the scheduler cannot start while it is there, so nothing
+# is going off-box. That is `notours`, and it is not the same fact as `absent`.
+# `docker inspect` fails identically for "no such container" and "the daemon is
+# not answering", so a failed inspect is followed by the cheapest question that
+# separates them — an operator told their container is not running when dockerd
+# is down goes and looks at the wrong thing.
+backup_container() {
+    bk_state=absent
+    bk_health=none
+    bk_restarts=""
+    if ! command -v docker >/dev/null 2>&1; then
+        bk_state=nodocker
+        bk_health=nodocker
+        return 0
+    fi
+    bk_info=$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}} {{index .Config.Labels "com.docker.compose.project"}}' \
+                  kasbah-backup 2>/dev/null) || bk_info=""
+    if [ -z "$bk_info" ]; then
+        docker version --format '{{.Server.Version}}' >/dev/null 2>&1 || {
+            bk_state=nodaemon
+            bk_health=nodaemon
+        }
+        return 0
+    fi
+    set -- $(printf '%s' "$bk_info" | tr -d '\r')
+    if [ "${4:-}" = kasbah-backup ]; then
+        bk_state="${1:-unknown}"
+        bk_health="${2:-none}"
+        bk_restarts="${3:-}"
+    else
+        bk_state=notours
+    fi
+    return 0
+}
+backup_container
+# --- end the backup scheduler container ---------------------------------------
+kv backup_c_state    "$bk_state"
+kv backup_c_health   "$bk_health"
+kv backup_c_restarts "$bk_restarts"
 
 # Which repositories already hold a password. Only their names travel; a
 # repository with no password is not backed up (docs/backup.md → Scope), and
@@ -1408,7 +1451,7 @@ _ss_print_mail() {
 # tells them apart before the restore rather than after it.
 _ss_print_backup() {
     local dir="$_SS_APPS_PATH/.kasbah/backup" rec=""
-    local content="" ago="" due="" since="" nextin="" ran="" have="" missing="" r=""
+    local content="" ago="" due="" since="" nextin="" ran="" have="" missing="" orphan="" r=""
     local rc=0 clock=""
     local state="${_SS_FACT[backup_c_state]}" health="${_SS_FACT[backup_c_health]}"
     local restarts="${_SS_FACT[backup_c_restarts]}"
@@ -1454,9 +1497,21 @@ _ss_print_backup() {
         printf 'Backup: enabled, and the marker records no repository base — nothing on this server says where the snapshots go%s\n' "$clock"
     fi
 
+    # The same five answers `check --server` gets, out of the same query — the
+    # two commands ask "is the scheduler running" once (the block both read
+    # payloads carry verbatim). A container of another compose project holding
+    # the name is `notours` and not `absent`: kasbah's stack cannot take a name
+    # something else already has, so the scheduler is not merely missing, it
+    # cannot start.
     case $state in
         absent)   printf '  %-16s absent — the stack is scaffolded and no container is running it\n' kasbah-backup ;;
-        nodocker) printf '  %-16s unknown — docker did not answer\n' kasbah-backup ;;
+        nodocker) printf '  %-16s unknown — there is no docker on this server\n' kasbah-backup ;;
+        nodaemon) printf '  %-16s unknown — the docker daemon did not answer\n' kasbah-backup ;;
+        notours)
+            printf '  %-16s a container of that name is running here and is not in the kasbah-backup\n' kasbah-backup
+            printf '  %-16s compose project — kasbah'"'"'s scheduler cannot take a name something else\n' ''
+            printf '  %-16s already holds, so nothing is being shipped off-box\n' ''
+            ;;
         *)
             # Docker restarts a container that *exits*, never one whose
             # healthcheck fails (templates/backup/compose.yml says so where it
@@ -1550,21 +1605,38 @@ _ss_print_backup() {
     _BK_FACT[backup_mail]=no
     [ "${_SS_FACT[mail_dir_state]}" != dir ] || _BK_FACT[backup_mail]=yes
     _bk_repo_set
-    if [ "${#_BK_REPOS[@]}" -eq 0 ]; then
-        printf '  %-16s none — nothing under %s to back up yet\n' repositories "$_SS_APPS_PATH"
-        return 0
-    fi
     have="${_SS_FACT[backup_haspass]}"
-    for r in "${_BK_REPOS[@]}"; do
+    for r in ${_BK_REPOS[@]+"${_BK_REPOS[@]}"}; do
         case " $have " in
             *" $r "*) ;;
             *) missing="${missing:+$missing }$r" ;;
         esac
     done
-    printf '  %-16s %s\n' repositories "${_BK_REPOS[*]}"
+    # And the other direction, which nothing walked at all. `drop --prune`
+    # removes a project's directory and its data and leaves its client's restic
+    # password where it is, so removing a client's *last* project leaves a
+    # credential at mode 600 that no reporting command names — while `server
+    # backup-prune` goes on discovering and pruning that repository, because it
+    # reads repos/*.pass off the disk. Reported and **never removed**: that
+    # password is what decrypts the snapshots already off-box, and deleting it
+    # would make the client's repository unrecoverable.
+    for r in $have; do
+        case " ${_BK_REPOS[*]-} " in
+            *" $r "*) ;;
+            *) orphan="${orphan:+$orphan }$r" ;;
+        esac
+    done
+    if [ "${#_BK_REPOS[@]}" -eq 0 ]; then
+        printf '  %-16s none — nothing under %s to back up yet\n' repositories "$_SS_APPS_PATH"
+    else
+        printf '  %-16s %s\n' repositories "${_BK_REPOS[*]}"
+    fi
     [ -z "$missing" ] \
         || printf '  %-16s %s — not backed up until kasbah server init %s --with-backup supplies one\n' \
                'no password' "$missing" "$_SS_TARGET"
+    [ -z "$orphan" ] \
+        || printf '  %-16s %s — a password for a repository no project files into any more; kasbah keeps it, because it is what decrypts the snapshots already off-box\n' \
+               'orphan password' "$orphan"
     return 0
 }
 

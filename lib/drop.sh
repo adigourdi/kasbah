@@ -997,6 +997,15 @@ if [ -d "$dir" ]; then
         || fail "another deploy or rollback is already running in $dir — it holds the lock on $dir/.deploy.lock. Nothing was changed."
 fi
 
+# Every guard is above this line: the name and path checks, the missing-flock
+# refusal and the lock another operator holds all exit without removing a route,
+# a container or an image. So a run that never printed this changed nothing —
+# which is what separates the caller's two diagnoses for a non-zero status. The
+# one thing above it that touches the filesystem is `$dir/.deploy.lock` coming
+# into existence, which is the file a deploy creates anyway and which `--prune`
+# removes with the directory.
+printf 'started=yes\n'
+
 # The route first, containers second — the mirror of the order a deploy ships
 # them in (docs/build-deploy.md → why the fragment ships last). Either order
 # leaves a window; this one's failure mode is a running stack nobody can reach,
@@ -1087,11 +1096,20 @@ REMOTE
 
     if [ "$rc" -ne 0 ]; then
         err "the drop step on $_DROP_TARGET exited $rc"
-        err_cont "some of it may have run — \`kasbah drop $_DROP_TARGET$_DROP_PRUNE_ARG\` again to see what is left"
+        # Every guard in that payload sits above its `started=yes` and each of
+        # them refuses without removing anything — so the two diagnoses are not
+        # the same sentence, and guessing the worse one sends an operator
+        # looking for damage that is not there. `server destroy` answers this
+        # question the same way, for the same reason.
+        if grep -q '^started=yes' <<<"$out"; then
+            err_cont "some of it may have run — \`kasbah drop $_DROP_TARGET$_DROP_PRUNE_ARG\` again to see what is left"
+        else
+            err_cont "it refused before changing anything — nothing was removed"
+        fi
         return 1
     fi
 
-    local keys=(fragment down down_detail down_left done)
+    local keys=(started fragment down down_detail down_left done)
     [ "$_DROP_PRUNE" != yes ] || keys+=(mail data config)
     _drop_absorb_checked "$out" "${keys[@]}"
 

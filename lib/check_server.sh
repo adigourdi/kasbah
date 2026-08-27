@@ -10,10 +10,14 @@ _KASBAH_CHECK_SERVER_LOADED=1
 . "$KASBAH_LIB_DIR/marker.sh"
 . "$KASBAH_LIB_DIR/env.sh"
 . "$KASBAH_LIB_DIR/acme.sh"
-# For backup_record_read: the backup stack's last-run record has one reader,
-# shared with `kasbah server status` and asking the same question the stack's
-# own healthcheck asks. Two parsers of one file is how a report and a
-# healthcheck come to disagree about whether backups are happening.
+# For backup_record_read: the backup stack's last-run record has one reader on
+# this side, shared with `kasbah server status` and asking the same question the
+# stack's own healthcheck asks. The healthcheck is the third reader and cannot
+# share the code — it is POSIX sh inside the restic image, and a script in a
+# container can source nothing — so it is one rule with two implementations,
+# pinned against each other by tests/backup_test.sh. Two parsers of one file
+# that are *not* pinned is how a report and a healthcheck come to disagree about
+# whether backups are happening.
 . "$KASBAH_LIB_DIR/backup_record.sh"
 # For _bk_repo_set: "which repositories does this server have" is `server init
 # --with-backup`'s own question — it is what decides how many passwords it asks
@@ -287,39 +291,53 @@ for d in "$apps"/*; do
 done
 printf 'backup_projects=%s\n' "${list# }"
 
-# The scheduler container, by name **and** by the compose project label: a
-# container merely *named* kasbah-backup did not come from kasbah's stack. One
-# `inspect`, which is the only shape of call this step is allowed and the only
-# one it needs — a label-filtered listing would be a second kind for a container
-# whose name templates/backup/compose.yml fixes.
-bstate=absent
-bhealth=none
-if ! command -v docker >/dev/null 2>&1; then
-    bstate=nodocker
-    bhealth=nodocker
-else
-    binfo=$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{index .Config.Labels "com.docker.compose.project"}}' \
-        kasbah-backup 2>/dev/null) || binfo=""
-    if [ -z "$binfo" ]; then
-        if docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
-            bstate=absent
-        else
-            bstate=nodaemon
-            bhealth=nodaemon
-        fi
-    else
-        read -r bs bh bp <<<"$(printf '%s' "$binfo" | tr -d '\r')"
-        if [ "$bp" = kasbah-backup ]; then
-            bstate=${bs:-unknown}
-            bhealth=${bh:-none}
-        else
-            bstate=notours
-            bhealth=none
-        fi
+# --- the backup scheduler container -------------------------------------------
+# **Both read payloads carry this block verbatim** — lib/server_status.sh's and
+# lib/check_server.sh's — pinned byte-for-byte by tests/server_status_test.sh. A
+# payload on the far side of ssh can source nothing, so the copy is forced; one
+# question with two queries is exactly how `server status` and `check --server`
+# came to give opposite answers about the same container.
+#
+# By name **and** by the compose project label. A container merely *named*
+# kasbah-backup did not come from kasbah's stack, and it is holding the name
+# kasbah's stack needs: the scheduler cannot start while it is there, so nothing
+# is going off-box. That is `notours`, and it is not the same fact as `absent`.
+# `docker inspect` fails identically for "no such container" and "the daemon is
+# not answering", so a failed inspect is followed by the cheapest question that
+# separates them — an operator told their container is not running when dockerd
+# is down goes and looks at the wrong thing.
+backup_container() {
+    bk_state=absent
+    bk_health=none
+    bk_restarts=""
+    if ! command -v docker >/dev/null 2>&1; then
+        bk_state=nodocker
+        bk_health=nodocker
+        return 0
     fi
-fi
-printf 'backup_c_state=%s\n' "$bstate"
-printf 'backup_c_health=%s\n' "$bhealth"
+    bk_info=$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}} {{index .Config.Labels "com.docker.compose.project"}}' \
+                  kasbah-backup 2>/dev/null) || bk_info=""
+    if [ -z "$bk_info" ]; then
+        docker version --format '{{.Server.Version}}' >/dev/null 2>&1 || {
+            bk_state=nodaemon
+            bk_health=nodaemon
+        }
+        return 0
+    fi
+    set -- $(printf '%s' "$bk_info" | tr -d '\r')
+    if [ "${4:-}" = kasbah-backup ]; then
+        bk_state="${1:-unknown}"
+        bk_health="${2:-none}"
+        bk_restarts="${3:-}"
+    else
+        bk_state=notours
+    fi
+    return 0
+}
+backup_container
+# --- end the backup scheduler container ---------------------------------------
+printf 'backup_c_state=%s\n' "$bk_state"
+printf 'backup_c_health=%s\n' "$bk_health"
 
 # State and health are two facts: a container that is `restarting` has no
 # health status yet and one without a HEALTHCHECK never will, and neither is
@@ -511,7 +529,7 @@ check_server_section() {
 # now answer out of the same `_bk_repo_set` at the same moment.
 _cs_b01_backup() {
     local enabled="" content="" ago="" due="" state="" repos="" rc=0 clock=""
-    local dir="$MARKER_APPS_PATH/.kasbah/backup" rec="" missing="" r="" have=""
+    local dir="$MARKER_APPS_PATH/.kasbah/backup" rec="" missing="" r="" have="" orphan=""
     local cstate="${_CS_FACT[backup_c_state]}"
 
     rec="$dir/state/status"
@@ -566,16 +584,33 @@ _cs_b01_backup() {
     _BK_FACT[backup_projects]="${_CS_FACT[backup_projects]}"
     _BK_FACT[backup_mail]="${_CS_FACT[backup_mail]}"
     _bk_repo_set
-    [ "${#_BK_REPOS[@]}" -gt 0 ] || return 0
     have="${_CS_FACT[backup_haspass]}"
-    for r in "${_BK_REPOS[@]}"; do
+    for r in ${_BK_REPOS[@]+"${_BK_REPOS[@]}"}; do
         case " $have " in
             *" $r "*) ;;
             *) missing="${missing:+$missing }$r" ;;
         esac
     done
-    [ -n "$missing" ] || return 0
-    _check_warn "backup repositories on $_CS_TARGET with no password: $missing — a repository with no password is not backed up at all (docs/backup.md), and the run says so only in its own log; supply one with: kasbah server init $_CS_TARGET --with-backup"
+    # And the other direction, which nothing reported at all. `drop --prune`
+    # removes a project's directory and its data and leaves its client's restic
+    # password where it is, so removing a client's *last* project leaves a
+    # credential at mode 600 that `server status` and this rule both walked
+    # straight past — only `server backup-prune` still discovers it, because it
+    # reads repos/*.pass off the disk.
+    #
+    # Reported and **never removed**: that password is what decrypts the
+    # snapshots already off-box, and deleting it would make that client's
+    # repository unrecoverable — the opposite of what this feature is for.
+    for r in $have; do
+        case " ${_BK_REPOS[*]-} " in
+            *" $r "*) ;;
+            *) orphan="${orphan:+$orphan }$r" ;;
+        esac
+    done
+    [ -z "$missing" ] \
+        || _check_warn "backup repositories on $_CS_TARGET with no password: $missing — a repository with no password is not backed up at all (docs/backup.md), and the run says so only in its own log; supply one with: kasbah server init $_CS_TARGET --with-backup"
+    [ -z "$orphan" ] \
+        || _check_warn "backup repository passwords on $_CS_TARGET that no project files into any more: $orphan — the last project of that client was dropped and its password stayed behind at mode 600. Keep it: it is what decrypts the snapshots already off-box, and kasbah never deletes one. Take it off by hand once that repository has been handed over or emptied (docs/backup.md → Handover)."
     return 0
 }
 

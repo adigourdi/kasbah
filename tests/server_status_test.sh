@@ -643,9 +643,12 @@ cat > "$stub_dir/docker" <<'STUB'
 # environment, one variable per project, so a case can put a project in any
 # running/total state without a daemon.
 case "$1 $2" in
-    "version --format") printf '27.3.1\n'; exit 0 ;;
+    # A daemon that is not answering: `inspect` and `version` both fail, which
+    # is the pair the probe uses to tell "no such container" from "no daemon".
+    "version --format") [ -z "${STUB_DOCKER_DOWN:-}" ] || exit 1; printf '27.3.1\n'; exit 0 ;;
     "compose version")  printf '2.29.7\n'; exit 0 ;;
 esac
+[ -z "${STUB_DOCKER_DOWN:-}" ] || exit 1
 if [ "$1" = inspect ]; then
     # Two compound formats first, by their shape: the per-project container list
     # (one line per id, however many ids it was given) and the mail stack's
@@ -665,13 +668,17 @@ if [ "$1" = inspect ]; then
             done
             exit 0 ;;
         *'{{.State.Status}} {{if .State.Health}}'*)
-            # The mail containers and the backup scheduler come back through the
-            # same compound format; the id says which stack is being asked
-            # about, so a case can move one without moving the other.
-            case "${!#}" in
-                cid-kasbah-backup) printf '%s\n' "${STUB_BACKUP_INSPECT-running healthy 0}" ;;
-                *)                 printf '%s\n' "${STUB_MAIL_INSPECT-running healthy 0}" ;;
+            # The mail containers are found by their compose labels and inspected
+            # by id. The backup scheduler is asked for by *name* and additionally
+            # for its compose project label — the fourth field, which is what
+            # tells kasbah's own stack from a stranger holding its name — so the
+            # format itself says which of the two is being asked about.
+            case "$3" in
+                *'.Config.Labels'*)
+                    printf '%s\n' "${STUB_BACKUP_INSPECT-running healthy 0 kasbah-backup}"
+                    exit 0 ;;
             esac
+            printf '%s\n' "${STUB_MAIL_INSPECT-running healthy 0}"
             exit 0 ;;
     esac
     # Answers per container, not per question: the traefik project holds a
@@ -713,13 +720,7 @@ if [ "$1" = ps ]; then
         esac
         exit 0
     fi
-    if [ "$project" = kasbah-backup ]; then
-        # The compose project and service templates/backup/compose.yml declares.
-        # A probe that stopped filtering on the service label would find nothing
-        # here, which is what the `absent` assertions are about.
-        [ "$service" != backup ] || printf '%s\n' "${STUB_BACKUP_ID-cid-kasbah-backup}"
-        exit 0
-    fi
+
     if [ "$project" = traefik ]; then
         # Sidecar first, so the id a probe takes without the service filter is
         # the wrong one rather than the right one by luck.
@@ -878,9 +879,51 @@ assert 'grep -qF "demo=demo" <<<"$(fact backup_projects)"' \
 assert 'grep -qF "dropped=" <<<"$(fact backup_projects)"' \
     "and a project with no record is listed with an empty client, not dropped (got '$(fact backup_projects)')"
 assert '[ "$(fact backup_c_state)" = "running" ]' \
-    "the scheduler is found by its compose labels (got '$(fact backup_c_state)')"
+    "the scheduler is found by name and by its compose project label (got '$(fact backup_c_state)')"
 assert '[ "$(fact backup_c_health)" = "healthy" ]' \
     "with the health its own healthcheck reports (got '$(fact backup_c_health)')"
+assert '[ "$(fact backup_c_restarts)" = "0" ]' \
+    "and its restart count (got '$(fact backup_c_restarts)')"
+
+# A container of another compose project sitting on the name. It is not `absent`
+# — kasbah's stack cannot take a name something else already holds, so the
+# scheduler cannot start and nothing is going off-box.
+probe_out="$(run_payload "$apps" STUB_BACKUP_INSPECT='running healthy 0 someone-else' 2>/dev/null)"
+assert '[ "$(fact backup_c_state)" = "notours" ]' \
+    "a container merely named kasbah-backup is notours, not absent (got '$(fact backup_c_state)')"
+assert '[ "$(fact backup_c_restarts)" = "" ]' \
+    "and nothing of its own is reported as the scheduler's (got '$(fact backup_c_restarts)')"
+
+# No such container, with a daemon that answers.
+probe_out="$(run_payload "$apps" STUB_BACKUP_INSPECT='' 2>/dev/null)"
+assert '[ "$(fact backup_c_state)" = "absent" ]' \
+    "no container at all is absent (got '$(fact backup_c_state)')"
+
+# `docker inspect` fails identically for "no such container" and "no daemon",
+# and an operator told their container is not running when dockerd is down goes
+# and looks at the wrong thing.
+probe_out="$(run_payload "$apps" STUB_DOCKER_DOWN=1 2>/dev/null)"
+assert '[ "$(fact backup_c_state)" = "nodaemon" ]' \
+    "a daemon that is not answering is its own state (got '$(fact backup_c_state)')"
+probe_out="$(run_payload "$apps" 2>/dev/null)"
+
+# **One question, one query.** `server status` and `check --server` both ask "is
+# the backup scheduler running"; a payload on the far side of ssh can source
+# nothing, so the block is copied — and a copy with nothing pinning it to the
+# original is drift no suite can see (tests/norm_path_test.sh's answer to the
+# same problem). Two queries is how one container came out `absent` from status
+# and `✗ ... is not in the kasbah-backup compose project` from check, on the same
+# server at the same moment.
+shared_block() {
+    sed -n '/^# --- the backup scheduler container /,/^# --- end the backup scheduler container /p' "$1"
+}
+ss_blk="$(shared_block "$repo_dir/lib/server_status.sh")"
+cs_blk="$(shared_block "$repo_dir/lib/check_server.sh")"
+assert '[ "$(grep -c "" <<<"$ss_blk")" -gt 20 ]' \
+    "the shared container query was found in lib/server_status.sh (got $(grep -c "" <<<"$ss_blk") lines)"
+assert '[ "$ss_blk" = "$cs_blk" ]' \
+    "and lib/check_server.sh carries it byte for byte
+$(diff <(printf '%s\n' "$ss_blk") <(printf '%s\n' "$cs_blk"))"
 assert '[ -n "$(fact now)" ] && [ "$(fact now)" -gt 1700000000 ] 2>/dev/null' \
     "and the server's own clock, which every epoch in the record is written by (got '$(fact now)')"
 assert '[ "$(fact apps_df_state)" = "ok" ]' "df answered for the apps path (got '$(fact apps_df_state)')"
@@ -1086,6 +1129,8 @@ probe_out="$(env PATH="$nodocker" "$BASH" "$payload" "$apps" "$apps" "$tmpdir/no
 assert '[ "$(fact have_docker)" = "no" ]'      "no docker on the remote is reported (got '$(fact have_docker)')"
 assert '[ -n "$(fact docker_error)" ]'         "with the error it gave (got '$(fact docker_error)')"
 assert '[ "$(fact traefik_present)" = "no" ]'  "and Traefik unknown rather than assumed (got '$(fact traefik_present)')"
+assert '[ "$(fact backup_c_state)" = "nodocker" ]' \
+    "and the scheduler as unreadable rather than gone (got '$(fact backup_c_state)')"
 assert '[ "$(fact project_count)" = "6" ]'     "the projects are still listed — they are directories, not containers (got '$(fact project_count)')"
 assert '[ "$(tree_digest "$apps")" = "$before" ]' "and still nothing was written"
 
@@ -1758,6 +1803,71 @@ done
 out=$(drive printbackup '' 1)
 assert 'grep -qF "(exit 1)" <<<"$out"' \
     "with the reader's own exit status, which the caller captured (said '$out')"
+
+# A container of another compose project holding the name. `absent` would be the
+# wrong news: kasbah's stack cannot take a name something else already has, so
+# the scheduler is not merely missing — it cannot start. `check --server` has
+# always said so; this is the arm `server status` did not have.
+BK_RECORD="$(rec sleeping 2000086400 2000082800 1999990000 1999980000 1999983600 ok ' demo')"
+BK_C_STATE=notours BK_C_HEALTH=none BK_C_RESTARTS=""
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps); rc=$?
+assert '[ "$rc" = "0" ]' "a foreign container under kasbah's name still reports (exit $rc: $out)"
+assert 'grep -qF "is not in the kasbah-backup" <<<"$out"' \
+    "and says whose container it is not (said '$out')"
+assert '! grep -qF "kasbah-backup    absent" <<<"$out"' \
+    "rather than calling the scheduler simply absent (said '$out')"
+assert 'grep -qF "nothing is being shipped off-box" <<<"$out"' \
+    "and what follows from it (said '$out')"
+
+# The two docker states, kept apart here as `check --server` already keeps them:
+# a host with no docker and a daemon that is not answering are different
+# problems, and `server status` folded the second into the first.
+BK_C_STATE=nodaemon BK_C_HEALTH=nodaemon
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps)
+assert 'grep -qF "the docker daemon did not answer" <<<"$out"' \
+    "a daemon that is not answering says so (said '$out')"
+BK_C_STATE=nodocker BK_C_HEALTH=nodocker
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps)
+assert 'grep -qF "there is no docker on this server" <<<"$out"' \
+    "and a host with no docker at all says that instead (said '$out')"
+
+# A repository password nothing files into any more. `drop --prune` takes a
+# project's directory and its data and never its client's password, so removing
+# a client's *last* project leaves a credential at mode 600 that no reporting
+# command named — while `server backup-prune` went on discovering and pruning
+# that repository, because it reads repos/*.pass off the disk.
+BK_C_STATE=running BK_C_HEALTH=healthy BK_C_RESTARTS=0
+BK_PROJECTS="demo=" BK_HASPASS="demo acme"
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps)
+assert 'grep -qE "orphan password +acme" <<<"$out"' \
+    "an orphaned password is named (said '$out')"
+assert '! grep -qE "orphan password +.*demo" <<<"$out"' \
+    "and a repository that does have a project is not (said '$out')"
+assert 'grep -qF "kasbah keeps it" <<<"$out"' \
+    "saying kasbah never removes one — deleting it makes the snapshots already
+        off-box unreadable, which is the opposite of the point (said '$out')"
+# The paired negative, one fact changed: give the orphan a project and the line
+# goes. Otherwise "it printed a line" would pass on a printer that always does.
+BK_PROJECTS="demo= other=acme"
+write_payload ok "$marker_backup"
+out=$(status_cli deploy@vps)
+assert '! grep -qF "orphan password" <<<"$out"' \
+    "a password every repository claims is not reported as an orphan (said '$out')"
+# And the case that produced it: the client's last project is gone, so there are
+# no repositories at all — the early return this used to take before looking.
+BK_PROJECTS="" BK_HASPASS="acme"
+write_payload ok "$marker_backup"
+payload_set mail_dir_state=absent
+out=$(status_cli deploy@vps)
+assert 'grep -qF "repositories     none — nothing under /apps to back up yet" <<<"$out"' \
+    "a server with nothing left to back up says so (said '$out')"
+assert 'grep -qE "orphan password +acme" <<<"$out"' \
+    "and still names the password the last drop left behind (said '$out')"
+bk_reset
 
 # A marker whose backup object is not an object at all. jq would make that a
 # type error rather than a null, and an unguarded read would end the run with no

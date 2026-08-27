@@ -151,7 +151,8 @@ deletes) exactly one repo per client — and per-client degenerates
 gracefully into per-project when the field is omitted. Same charset rules
 as `name`. See `backup.md`.
 
-**Read by `kasbah deploy`**, which renders the effective value (this field, or
+**Checked by `kasbah check` as S08** (`compliance.md`) and **read by
+`kasbah deploy`**, which renders the effective value (this field, or
 `name` when absent) to `<apps>/<name>/.kasbah-client` on the server. The
 manifest itself is never synced, so that record is how the VPS-side backup run
 learns which repository a project belongs to — the same "render, never copy"
@@ -161,7 +162,10 @@ under `<apps>/` (`traefik`, `mail`, `data`, `backups`): a project claiming
 `mail` would put every mailbox on the host into one client's handover. A
 project deployed before backups were enabled has no record, and the backup run
 falls back to its directory name — which is this field's default — while naming
-it, so a project filing into the wrong repository is visible rather than silent.
+it, so a project filing into the wrong repository is visible rather than silent. A **tag's** manifest carrying a value this kasbah refuses is a
+warning, not a failure: `kasbah rollback` falls back to the directory name and
+carries on, because a version the server has already run must stay rollable
+after a rule tightens.
 
 ### `sync` *(required, list)*
 

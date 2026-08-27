@@ -56,14 +56,18 @@ see what `docker logs` alone would hide. Each run writes a record to
 `<apps>/.kasbah/backup/state/status` — when it started and finished, how it
 went, which repositories it touched.
 
-**Two commands read it, through one parser.** `kasbah server status` prints the
+**Three readers, one rule, two implementations.** `kasbah server status` prints the
 record — the schedule, the container's state and health, when the last run was
 and how it went, which repositories exist and which lack a password — and
 `kasbah check --server` asks the same question as a rule (**B01**,
 `compliance.md`), failing a stack whose last run failed or whose state has
-outlived its own deadline. They share `lib/backup_record.sh` and the same
-deadline arithmetic, so the two cannot disagree about whether a backup is
-healthy. Timestamps are judged against the **server's** clock, read in the same
+outlived its own deadline. They share `lib/backup_record.sh`. The **third** reader is the container's own
+healthcheck, which runs inside the stack and so cannot source a workstation
+library — it carries its own copy of the same rule, in POSIX `sh`, and the two
+are pinned against each other by a test driving the identical values through
+both. That pin is what makes "they cannot disagree" true rather than hoped for:
+a deadline one accepts and the other refuses is exactly how a report and a
+healthcheck come to describe one file three different ways. Timestamps are judged against the **server's** clock, read in the same
 round trip: a verdict computed against the workstation's would be a function of
 clock skew.
 
@@ -227,6 +231,13 @@ Step 2 is what makes step 3 possible: without `.env` back on the box, the
 deploy's env step has nothing to deploy against and exits 5.
 
 ## Handover
+
+`kasbah drop --prune` removes a project but **never** a repository password: if
+it was that client's last project, the password stays at mode 600 and both
+`server status` and `check --server` report it as an orphan. kasbah does not
+delete it, because the password is the only thing that can ever open that
+client's snapshots again — removing it on a drop would destroy the backups the
+drop was careful to leave alone.
 
 `kasbah server destroy` removes the scheduler stack and the credentials
 from the VPS — agency-owned secrets never transfer. It does **not** remove

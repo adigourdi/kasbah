@@ -37,6 +37,38 @@ manifest_name_reserved() {
     return 1
 }
 
+# manifest_client_check RAW OUTVAR — is this a usable `client:`? Exit 0 when it
+# is, with OUTVAR emptied; exit 1 when it is not, with OUTVAR set to the reason
+# in the words every reader prints.
+#
+# One function because there are three readers and they do not all agree on the
+# verdict: `kasbah check`'s S08 and `deploy` refuse, while `rollback` against a
+# *tag's* manifest warns and falls back — a version cut before kasbah checked
+# this field has to stay rollable. One question with three answers written three
+# times is this project's most-repeated defect; the question is spelled here and
+# the answers stay where they belong.
+#
+# The charset is `name`'s, and for a sharper reason than symmetry: `client:`
+# names a backup repository (docs/phases/08-keep.md D12), and the four names
+# kasbah owns under <apps> are refused because `mail` is the repository every
+# mailbox on the server goes to (D7) — a project claiming it would put the whole
+# host's mail into one client's handover.
+manifest_client_check() {
+    local _cc_raw="$1" _cc_out="$2"
+    printf -v "$_cc_out" '%s' ""
+    if [[ ! "$_cc_raw" =~ ^[a-z][a-z0-9-]*$ ]]; then
+        printf -v "$_cc_out" '%s' \
+            "client '$_cc_raw' must match ^[a-z][a-z0-9-]*\$ — it names a backup repository, the same charset as name (docs/project-manifest.md)"
+        return 1
+    fi
+    if manifest_name_reserved "$_cc_raw"; then
+        printf -v "$_cc_out" '%s' \
+            "client '$_cc_raw' is reserved — kasbah owns the backup repository of that name (reserved: ${KASBAH_RESERVED_NAMES[*]})"
+        return 1
+    fi
+    return 0
+}
+
 # Populated by manifest_require.
 MANIFEST_SCHEMA=""
 MANIFEST_KASBAH_VERSION=""

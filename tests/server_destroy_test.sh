@@ -1102,21 +1102,35 @@ assert '[ "$rc" = 0 ]' "a server with no marker and nothing left exits 0 (rc=$rc
 assert 'grep -qF "carries nothing of" <<<"$out"' "and says so (got '$out')"
 assert 'grep -qF "no .kasbah directory" <<<"$out"' "having said it looked (got '$out')"
 
+# Credentials that outlived the marker are a **failure**, not a report. This is
+# the same grading _sd_report_act applies one function over: an unreadable .env
+# exits 1 and holds the marker, `nosudo` keeps its spec'd exit 0. A handover
+# script spelled `kasbah server destroy "$h" && mark_handed_over "$h"` marks the
+# machine handed over on exit 0 — while the departing operator's repository URL
+# and one password per repository sit on it at mode 600 and the scheduler pushes
+# the new owner's data to them at the next 02:00 slot.
 out=$(SSH_LEFT_CREDS=/apps/.kasbah/backup SSH_LEFT_KASBAH=/apps/.kasbah nomarker </dev/null); rc=$?
-assert '[ "$rc" = 0 ]' "and one whose marker was removed by hand still exits 0 (rc=$rc)"
+assert '[ "$rc" != 0 ]' \
+    "a marker removed by hand over live backup credentials is a failure, not a clean run (rc=$rc: $out)"
 assert '! grep -qF "carries nothing of" <<<"$out"' \
-    "but is never called clean while the backup credentials are still on it (got '$out')"
+    "and is never called clean while they are still on it (got '$out')"
 assert 'grep -qF "/apps/.kasbah/backup is still there" <<<"$out"' "naming them (got '$out')"
 assert 'grep -qF "password per repository, at mode 600" <<<"$out"' "and what they are (got '$out')"
 assert 'grep -qF "rm -rf /apps/.kasbah/backup" <<<"$out"' "and the command that takes them off"
 
-out=$(SSH_LEFT_POINTER=yes nomarker </dev/null)
+# The other two leftovers are a discovery hint and a directory — world-readable,
+# no secret — so they stay at exit 0, which is what `nosudo` is specified to do
+# about the very same pointer (docs/cli.md). Split from the case above because
+# one assertion covering both could only pin the weaker of the two answers.
+out=$(SSH_LEFT_POINTER=yes nomarker </dev/null); rc=$?
+assert '[ "$rc" = 0 ]' "a pointer that outlived the marker is reported, at exit 0 (rc=$rc: $out)"
 assert '! grep -qF "carries nothing of" <<<"$out"' \
-    "nor while the discovery pointer is still there (got '$out')"
+    "and the server is not called clean while it is there (got '$out')"
 assert 'grep -qF "sudo rm -f /etc/kasbah/apps-path" <<<"$out"' "naming the command that removes it"
-out=$(SSH_LEFT_KASBAH=/apps/.kasbah nomarker </dev/null)
+out=$(SSH_LEFT_KASBAH=/apps/.kasbah nomarker </dev/null); rc=$?
+assert '[ "$rc" = 0 ]' "and so is a .kasbah directory with nothing secret in it (rc=$rc: $out)"
 assert '! grep -qF "carries nothing of" <<<"$out"' \
-    "nor while a .kasbah directory outlived the marker (got '$out')"
+    "nor is a server carrying one called clean (got '$out')"
 cp "$tmpdir/ssh.good" "$stub/ssh" 2>/dev/null || true
 
 # --- Nothing left to do ---------------------------------------------------------------------

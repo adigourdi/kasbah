@@ -210,6 +210,40 @@ case "$mode" in
         done
         rm -rf "$_BP_TMPDIR"
         ;;
+    bpprune)
+        # The plan and the act, end to end. Two things are stubbed and nothing
+        # else: the server — the marker and the repository discovery, neither of
+        # which this case is about — and restic itself, whose every call is
+        # recorded so "which repositories reached the destructive call" is an
+        # assertion about what was run rather than about what was printed.
+        ssh_connect() { :; }
+        ssh_disconnect() { :; }
+        marker_read() {
+            MARKER_JSON='{"backup":{"enabled":true,"repo_base":"rest:http://b/","retention":{"daily":1,"weekly":1,"monthly":1}}}'
+            MARKER_APPS_PATH=/apps
+            MARKER_PATH=/apps/.kasbah/server.json
+        }
+        _bp_discover() { _BK_FACT=([repos]="${BP_REPOS:-alpha beta}"); }
+        _bp_stage() { _BP_TMPDIR="$tmp_root/bpprune"; mkdir -p "$_BP_TMPDIR"; }
+        _bp_cleanup() { :; }
+        _bp_restic() {
+            local _r_repo="$1"; shift
+            printf '%s %s\n' "$_r_repo" "$*" >> "$BP_CALLS"
+            case " $* " in
+                *" --dry-run "*)
+                    case " ${BP_FAIL_DRY:-} " in
+                        *" $_r_repo "*) printf 'Fatal: unable to open repository\n'; return 3 ;;
+                    esac ;;
+                *" --prune "*)
+                    case " ${BP_FAIL_ACT:-} " in
+                        *" $_r_repo "*) printf 'Fatal: unable to open repository\n'; return 3 ;;
+                    esac ;;
+            esac
+            printf 'keep 1 snapshot, remove 1 snapshot\n'
+            return 0
+        }
+        cmd_server_backup_prune "$@"
+        ;;
     bpparse)
         _bp_parse_args "$@"
         printf 'target=%s\nrepo_base=%s\nenv=%s\nnoenv=%s\nonly=%s\n' \
@@ -864,7 +898,7 @@ mkdir -p "$read_tree/data"
 out=$(bash "$read_payload" "$read_tree" "$read_tree/data" "$reserved_list" 2>&1)
 projects=$(sed -n 's/^backup_projects=//p' <<<"$out")
 assert '[ "$projects" = "alpha=acme vol=" ]' \
-    "and with the default data path it is `data` that drops out (got '$projects')"
+    "and with the default data path it is the reserved name data that drops out (got '$projects')"
 
 # A client record naming something kasbah owns comes back as `?` — the caller
 # falls it back to the project's own name rather than filing it into the mail
@@ -960,6 +994,108 @@ alpha_env=$(sed -n '/^== 600 env\/alpha.env$/,/^== /p' <<<"$out" | sed '1d;/^== 
 assert '[ "$(grep -c "" <<<"$alpha_env")" = "2" ]' \
     "an empty environment stages exactly kasbah's two lines (got '$alpha_env')"
 assert '! grep -qx "" <<<"$alpha_env"' "and no blank line among them"
+
+# --- backup-prune's plan, its act, and where its report goes --------------------------
+# `docker` is stubbed onto PATH only so the command's own prerequisite check
+# passes: every restic call is intercepted in the driver above, so nothing here
+# reaches a daemon and the suite does not need one.
+bp_stub="$tmpdir/bpstub"
+mkdir -p "$bp_stub"
+printf '#!/bin/sh\nexit 0\n' > "$bp_stub/docker"
+chmod 0755 "$bp_stub/docker"
+bp_calls="$tmpdir/bp.calls"
+prune_drive() {
+    : > "$bp_calls"
+    tmp_root="$tmpdir" BP_CALLS="$bp_calls" PATH="$bp_stub:$PATH" \
+        bash "$driver" bpprune deploy@vps --repo-base=rest:http://b/ --no-env \
+        --keep-daily=1 --keep-weekly=1 --keep-monthly=1 "$@" \
+        >"$tmpdir/bpout" 2>"$tmpdir/err" </dev/null
+}
+bp_out() { cat "$tmpdir/bpout"; }
+
+prune_drive --yes; rc=$?
+assert '[ "$rc" = "0" ]' "a prune of three repositories exits 0 (exit $rc: $(drive_err))"
+# docs/cli.md: the plan and the outcome both go to stdout, so a redirected run
+# keeps its own report. This is the command that deletes backup history — an
+# empty prune.log is the worst place for this defect to live.
+assert 'grep -qF "Retention on deploy@vps" "$tmpdir/bpout"' \
+    "the retention header is on stdout (stdout was '$(bp_out)')"
+assert 'grep -qF "alpha — what would be removed" "$tmpdir/bpout"' "and the plan"
+assert 'grep -qF "alpha — forgetting and pruning" "$tmpdir/bpout"' "and the act"
+assert 'grep -qF "Pruned 3 repositories" "$tmpdir/bpout"' "and the closing count"
+assert 'grep -qF "keep 1 snapshot, remove 1 snapshot" "$tmpdir/bpout"' "and restic's own lines"
+assert '[ ! -s "$tmpdir/err" ]' \
+    "with nothing on stderr on a clean run — only warning: and error: lines go there (said '$(drive_err)')"
+
+# The probe repository is in the default set, which is what makes the closing
+# count three: the two the server has passwords for, plus kasbah's own.
+assert 'grep -qxF "kasbah.probe forget --prune --keep-daily 1 --keep-weekly 1 --keep-monthly 1" "$bp_calls"' \
+    "the probe repository is pruned with the rest (calls: $(cat "$bp_calls"))"
+
+# A repository whose dry run failed is *skipped*, and the act must honour that:
+# the operator confirmed a plan that did not include it, and a transient dry-run
+# failure would otherwise put the destructive call against a repository whose
+# plan nobody saw.
+BP_FAIL_DRY=beta prune_drive --yes; rc=$?
+assert '[ "$rc" = "0" ]' "a prune whose dry run failed on one repository still exits 0 (exit $rc: $(drive_err))"
+assert 'grep -qF "beta — restic exited 3 above; this repository is skipped" "$tmpdir/err"' \
+    "saying so as a warning, on stderr (said '$(drive_err)')"
+assert '! grep -q "^beta forget --prune" "$bp_calls"' \
+    "and beta never reaches forget --prune (calls: $(cat "$bp_calls"))"
+assert 'grep -q "^alpha forget --prune" "$bp_calls"' \
+    "while the repositories that did plan are pruned (calls: $(cat "$bp_calls"))"
+assert 'grep -qF "Pruned 2 repositories" "$tmpdir/bpout"' \
+    "and the count is of what was pruned, not of what was discovered (stdout was '$(bp_out)')"
+
+# Every dry run failing is not a prune with nothing to do: it is a run that
+# could read nothing, and it refuses rather than confirming an empty plan.
+BP_FAIL_DRY="alpha beta kasbah.probe" prune_drive --yes; rc=$?
+assert '[ "$rc" != "0" ]' "a prune that could plan nothing fails (exit $rc)"
+assert '! grep -q "forget --prune" "$bp_calls"' "having pruned nothing (calls: $(cat "$bp_calls"))"
+
+# --dry-run stops before the act and says so on stdout with the rest of it.
+prune_drive --dry-run; rc=$?
+assert '[ "$rc" = "0" ]' "--dry-run exits 0 (exit $rc: $(drive_err))"
+assert 'grep -qF -- "--dry-run: nothing was removed" "$tmpdir/bpout"' "and says so on stdout"
+assert '! grep -q "forget --prune" "$bp_calls"' "having run no destructive call"
+
+# A failed *act* is still a failure, and names how many of the planned set.
+BP_FAIL_ACT=alpha prune_drive --yes; rc=$?
+assert '[ "$rc" != "0" ]' "a repository the act could not prune fails the run (exit $rc)"
+assert 'grep -qF "1 of 3 repositories were not pruned" "$tmpdir/err"' \
+    "counted against the plan (said '$(drive_err)')"
+
+# --repo=kasbah.probe: the flag's own --help names the probe repository as part
+# of the default set, and pruning only it is the obvious use of the flag — it
+# grows by two snapshots per init run. The `.` is exactly what a repository
+# *name* may not carry, so the two checks are deliberately different.
+out=$(drive bpparse deploy@vps --repo=kasbah.probe); rc=$?
+assert '[ "$rc" = "0" ]' "--repo=kasbah.probe parses (exit $rc: $(drive_err))"
+assert 'grep -qxF "only=kasbah.probe" <<<"$out"' "and is kept (got '$out')"
+prune_drive --yes --repo=kasbah.probe; rc=$?
+assert '[ "$rc" = "0" ]' "and prunes (exit $rc: $(drive_err))"
+assert 'grep -qxF "kasbah.probe forget --prune --keep-daily 1 --keep-weekly 1 --keep-monthly 1" "$bp_calls"' \
+    "the probe repository (calls: $(cat "$bp_calls"))"
+assert '! grep -q "^alpha " "$bp_calls"' "and nothing else (calls: $(cat "$bp_calls"))"
+# The dot is still refused everywhere a repository *name* is taken: --repo= is
+# wider on purpose, and widening the charset would have been the wrong fix.
+drive check repo-name kasbah.probe >/dev/null; rc=$?
+assert '[ "$rc" != "0" ]' "and a --backup-password= repository named kasbah.probe is still refused (exit $rc)"
+
+# lib/server_init.sh is where _si_render_template lives, and lib/backup.sh does
+# not source it: three of its four entry points load it alone. A render from one
+# of those is refused by name rather than dying on an undefined function.
+render_alone=$(KASBAH_LIB_DIR="$repo_dir/lib" bash -c '
+    set -uo pipefail
+    . "$KASBAH_LIB_DIR/common.sh"
+    . "$KASBAH_LIB_DIR/backup.sh"
+    declare -F _si_render_template >/dev/null && { echo "server_init was loaded after all"; exit 0; }
+    _BK_ENABLED=yes
+    _bk_render /tmp/nowhere /apps /apps/data' 2>&1); rc=$?
+assert '[ "$rc" != "0" ]' "_bk_render on a bare lib/backup.sh refuses (exit $rc: $render_alone)"
+assert 'grep -qF "needs lib/server_init.sh loaded" <<<"$render_alone"' \
+    "naming the file it is missing (said '$render_alone')"
+assert '! grep -qF "command not found" <<<"$render_alone"' "rather than dying on an undefined function"
 
 # --- The runner ---------------------------------------------------------------------
 # Driven for real against a fake tree. The runner ships to a busybox container,
@@ -1149,6 +1285,48 @@ assert '[ "$rc" != "0" ]' "and so is a sleep that never woke (exit $rc: $out)"
 printf 'state=running\ndeadline=nonsense\n' > "$run_state_dir/status"
 out=$(run_runner_all health); rc=$?
 assert '[ "$rc" != "0" ]' "a status file with no usable deadline is unhealthy, not healthy (exit $rc: $out)"
+
+# The shapes a digits-only gate admits and arithmetic does not. The first is the
+# dangerous one: `01700000000` is a *valid* octal, so nothing errors — the number
+# silently changes. The rest make `[ -gt ]` say `Illegal number`, and a false
+# comparison here reads as **inside** the deadline, which is how one record came
+# out `unhealthy` from docker, `unknown` from `server status` and `warn` from
+# `check --server` all at once.
+for bad in 01700000000 01999000009 1000000000000000000 999999999999999999999999; do
+    printf 'state=running\ndeadline=%s\n' "$bad" > "$run_state_dir/status"
+    out=$(run_runner_all health); rc=$?
+    assert '[ "$rc" != "0" ]' \
+        "deadline=$bad is not a unix time the healthcheck can compare (exit $rc: $out)"
+    assert 'grep -qF "not a unix time" <<<"$out"' \
+        "and it says so rather than judging it (got '$out')"
+done
+# The paired positive, so the four above are the gate and not a healthcheck that
+# fails on everything: eighteen digits is the cap, and the value at the cap that
+# is already past is judged rather than refused.
+printf 'state=running\ndeadline=999999999999999999\n' > "$run_state_dir/status"
+out=$(run_runner_all health); rc=$?
+assert '[ "$rc" = "0" ]' "an 18-digit deadline is compared, not refused (exit $rc: $out)"
+
+# One rule, two implementations. lib/backup_record.sh's `_bkr_epoch` is bash on a
+# workstation; the runner's `is_epoch` is POSIX sh inside a container that can
+# source nothing, so the code cannot be shared and the *answers* are pinned
+# instead. This is the drift that shipped: the runner went on admitting any digit
+# string long after the reader stopped.
+epoch_fn="$tmpdir/is_epoch.sh"
+{
+    sed -n '/^is_epoch() {$/,/^}$/p' "$runner"
+    printf 'if is_epoch "$1"; then echo yes; else echo no; fi\n'
+} > "$epoch_fn"
+assert '[ "$(grep -c "" "$epoch_fn")" -gt 4 ]' \
+    "is_epoch was extracted from the runner (got $(grep -c "" "$epoch_fn") lines)"
+for v in 0 1 1787000000 999999999999999999 01700000000 01999000009 \
+         1000000000000000000 999999999999999999999999 "" abc 12a -1 "+1" " 1" "1 " 007; do
+    runner_says=$($runner_sh "$epoch_fn" "$v")
+    lib_says=$(bash -c '. "$KASBAH_LIB_DIR/common.sh"; . "$KASBAH_LIB_DIR/backup_record.sh"
+        if _bkr_epoch "$1" v; then echo yes; else echo no; fi' _ "$v")
+    assert '[ "$runner_says" = "$lib_says" ]' \
+        "is_epoch and _bkr_epoch agree on '$v' (runner said '$runner_says', lib said '$lib_says')"
+done
 
 # A real run leaves the record behind: what ran, when it finished, and how it
 # went. Nothing but `docker logs` knew before, and a log is not a thing another

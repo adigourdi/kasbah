@@ -18,7 +18,7 @@ during execution.
 | 5 | [Undo](05-undo.md) | **Done.** `rollback` + `deploy X.Y.Z` from a git tag, `versions.log` rotation, and `history` / `pending` / `changelog` |
 | 6 | [Proof](06-proof.md) | **Done.** A real project on a bare VPS: HTTPS with a real ACME cert, change deploy, rollback — kasbah only |
 | 7 | [Operate](07-operate.md) | **Done.** Mail stack (`--with-mail`, `add-mail-domain`, claim reconciliation, setup guide), `logs`/`exec`, `check --server` + R04, full `server status`, `server prune`, `upgrade-traefik` |
-| 8 | [Keep](08-keep.md) | `drop [--prune]`, `server destroy`, `--with-backup` (restic), `check --fix` |
+| 8 | [Keep](08-keep.md) | **Done.** `drop [--prune]`, `server destroy`, `--with-backup` (restic push, append-only, proved), `check --fix`, and backups visible to `server status` / `check --server` |
 | 9 | [Adopt](09-adopt.md) | Both existing consumers migrated: the original project (scripts/ deleted, mail included, live cutover) and lab (RPi stacks as kasbah projects) |
 
 ## The real milestone
@@ -79,6 +79,52 @@ rhythm: one capability slice per task, tests landing with it.
    docker-compose.yml), no `version:` attribute.
 8. **VPS-side helpers are kasbah-owned** and overwritten on every deploy;
    projects never vendor kasbah bash.
+
+## Before starting Phase 9
+
+Phase 8 is committed and all four exit criteria were walked — two of them **against the
+real host**, not the rig. Baselines: `KASBAH_RIG_TESTS=1 ./test.sh` **47 PASS, 0 FAIL, 0
+SKIP, exit 0** (28 unit, 19 integration; Phase 7 closed at 25 and 39). `tests/check_test.sh`
+alone is ~13 minutes and dominates the unit half — see the backlog item before you go
+looking for a regression in it.
+
+**The real host is no longer a kasbah server.** `you@vps` was de-branded by
+`server destroy` at the close, deliberately and with the price agreed: its marker,
+`/etc/kasbah`, `gallery-website`'s deploy record and `/apps/mail/kasbah.yml` are gone for
+good. Every container is still running and `gallery.example.com` still serves. Phase 9
+must **re-run `kasbah server init` there** before it can use it, and the mail registry's
+`primary_domain` and domain list have to be re-entered by hand — nothing else reproduces
+them.
+
+Four things Phase 8 leaves for whoever opens this next.
+
+**Five commands ask "does this stack serve domain X" and only two share a reader.**
+`drop --prune` and `add-mail-domain` call `_sm_read_registry`; `deploy`, `check --server`
+and `server status` each carry their own copy of the same normalisation. On a registry
+kasbah wrote they agree. On a **hand-edited** one with no `primary_domain` they do not —
+the shared reader refuses where the three copies fall back to an empty primary and carry
+on. **Phase 9's live cutovers make a hand-edited registry the ordinary case**, so this is
+the phase that has to converge them, and `docs/cli.md` now states the divergence plainly
+rather than claiming it is already solved.
+
+**A claim that there is one reader is what stops anyone looking.** This happened twice in
+Phase 8 — once in a comment, once in the spec — and both times the assertion was written
+in good faith by someone who had just done the work. When a document says two things
+cannot disagree, check that they share an implementation and not merely a rule; and when
+they share only a rule, say so and pin them against each other with a test.
+
+**`check --fix` will edit a project's compose file, and `client:` is now S08.** A project
+whose manifest carries a `client:` outside `^[a-z][a-z0-9-]*$` fails `kasbah check`
+rather than dying at the deploy — but a **tag's** manifest carrying one only warns, and
+the rollback falls back to the directory name, so a version a server has already run
+stays rollable after the rule tightened. Both consumers migrate in Phase 9; check theirs
+before the first cutover.
+
+**Backups are proven against `rest:` and traced against `s3:`.** The append-only
+credential is refused a delete by a server that really enforces it, and init proves the
+operator's credential the same way on any backend — but the bucket-policy JSON a real
+provider needs has never been exercised. The first `--with-backup` against real storage
+is a real test, not a formality.
 
 ## Before starting Phase 7
 

@@ -96,6 +96,7 @@ assert 'grep -qF "✓ compose.prod.yml exists" <<<"$out"'        "S03 pass line"
 assert 'grep -qF "✓ .env.prod.example exists" <<<"$out"'       "S04 pass line"
 assert 'grep -qF "✓ .gitignore excludes .env" <<<"$out"'       "S05 pass line"
 assert 'grep -qF "✓ .gitignore excludes .kasbah/" <<<"$out"'  "S06 pass line"
+assert 'grep -qF "✓ client is not set — backups file under the project name (demo)" <<<"$out"' "S08 pass line"
 assert 'grep -qF "✓ All services set restart policy" <<<"$out"'                 "C01 pass line"
 assert 'grep -qF "✓ All services set json-file logging with rotation" <<<"$out"' "C02 pass line"
 assert 'grep -qF "✓ All routed services join kasbah-net" <<<"$out"'            "C03 pass line"
@@ -120,7 +121,7 @@ assert '! grep -q "Healthchecks:" <<<"$out"'  "Healthchecks: header suppressed (
 assert '! grep -q "Hooks:" <<<"$out"'         "Hooks: header suppressed (no hooks/backup in manifest)"
 assert '! grep -qF "built services" <<<"$out"' \
     "C08 says nothing about a project that builds nothing — there is no :current to move"
-assert 'grep -qF "25 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
+assert 'grep -qF "26 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
 
 # --- Case 2: missing compose.prod.yml — fail, exit 6 -------------------------
 # Exit 6 is the documented "compliance check failed" code (docs/cli.md).
@@ -193,6 +194,51 @@ make_project "$proj9"
 out="$(cd "$proj9" && "$kasbah" check --bogus 2>&1)"; rc=$?
 assert '[ "$rc" = "1" ]'                            "unknown flag exits 1 (got $rc)"
 assert 'grep -qF "unknown argument" <<<"$out"'      "unknown flag message"
+# Naming what it does take, as every other command in the CLI does — a refusal
+# that only says "no" leaves the operator guessing at a typo.
+assert 'grep -qF -- "--server [USER@HOST], --fix, --yes" <<<"$out"' \
+    "and it lists the flags check has (said '$out')"
+assert '! grep -qF "Summary:" <<<"$out"' \
+    "with no report behind it, so a typo cannot read as a clean project (said '$out')"
+
+# --- Case 9b: S08 — `client:` outside name's charset, and the reserved names --
+#
+# `client:` names the backup repository this project's snapshots file into
+# (08-keep.md D12). `deploy` and `rollback` both refuse a value that is not a
+# repository name, so a project whose only fault is this one was reported fully
+# compliant at exit 0 and then died at the deploy — which is the inversion
+# lib/manifest.sh's own note about `name` exists to prevent.
+proj9b="$tmpdir/bad-client"
+make_project "$proj9b"
+printf 'client: Acme Corp\n' >> "$proj9b/kasbah.yml"
+out="$(cd "$proj9b" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]' "S08: a client: outside the charset fails the check (got $rc)"
+assert 'grep -qF "✗ kasbah.yml: client '"'"'Acme Corp'"'"' must match" <<<"$out"' \
+    "naming the value and the rule (said '$out')"
+# The deploy refuses it in the same words, out of the same
+# `manifest_client_check` — pinned in tests/rollback_test.sh, which has the git
+# fixture a deploy needs before it reaches this field.
+
+# A name kasbah owns under <apps> is the sharper half: `mail` is the repository
+# every mailbox on the server files into (D7), so a project claiming it would
+# put the whole host's mail into one client's handover.
+proj9c="$tmpdir/reserved-client"
+make_project "$proj9c"
+printf 'client: mail\n' >> "$proj9c/kasbah.yml"
+out="$(cd "$proj9c" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]' "S08: a client: naming a kasbah directory fails too (got $rc)"
+assert 'grep -qF "✗ kasbah.yml: client '"'"'mail'"'"' is reserved" <<<"$out"' \
+    "and says which list it is on (said '$out')"
+
+# The positive, so the two above are the rule and not a check that fails on any
+# client: at all.
+proj9d="$tmpdir/good-client"
+make_project "$proj9d"
+printf 'client: acme\n' >> "$proj9d/kasbah.yml"
+out="$(cd "$proj9d" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]' "S08: a well-formed client: passes (got $rc: $out)"
+assert 'grep -qF "✓ client '"'"'acme'"'"' names a backup repository kasbah can create" <<<"$out"' \
+    "and says which repository it is (said '$out')"
 
 # --- Case 10: --help in dispatcher lists check -------------------------------
 out="$("$kasbah" --help 2>&1)"
@@ -339,7 +385,7 @@ assert 'grep -qF "⚠ Services on kasbah-net whose name is not '"'"'demo'"'"' or
        "C09 warn line names the service, not the container (said '$out')"
 assert 'grep -qF "✓ All routed services join kasbah-net" <<<"$out"'            "and C03 is untouched by it"
 assert 'grep -qF "✓ No internal services on kasbah-net" <<<"$out"'             "as is C07"
-assert 'grep -qF "24 passed, 1 warning, 0 failed" <<<"$out"'                    "one line either way (said '$(tail -1 <<<"$out")')"
+assert 'grep -qF "25 passed, 1 warning, 0 failed" <<<"$out"'                    "one line either way (said '$(tail -1 <<<"$out")')"
 
 # The exact project name is as acceptable as a prefixed one, and a service that
 # never joins the shared network is no business of C09's — the alias only
@@ -620,7 +666,7 @@ assert 'grep -qF "⚠ No router serves demo.example.com on the web entrypoint" <
        "T08 warn line (said '$out')"
 assert 'grep -qF "http-to-https@file" <<<"$out"'                                   "and says what to add (said '$out')"
 assert 'grep -qF "✓ All routers declare entryPoints" <<<"$out"'                   "T03 passes on the same fragment — it is not the rule that catches this"
-assert 'grep -qF "24 passed, 1 warning, 0 failed" <<<"$out"'                       "one line either way (said '$(tail -1 <<<"$out")')"
+assert 'grep -qF "25 passed, 1 warning, 0 failed" <<<"$out"'                       "one line either way (said '$(tail -1 <<<"$out")')"
 
 # A `web` router for an unrelated host does not answer for this one: the
 # entrypoint has to be declared by a router whose rule mentions the manifest
@@ -683,7 +729,7 @@ assert 'grep -qF "✓ A router serves demo.example.com on the web entrypoint" <<
        "a web router whose host contains the manifest domain satisfies T08 (said '$out')"
 assert 'grep -qF "✓ At least one router references manifest domain (demo.example.com)" <<<"$out"' \
        "on the same reading T02 already gives it (said '$out')"
-assert 'grep -qF "25 passed, 0 warning, 0 failed" <<<"$out"'                             "and nothing warns (said '$(tail -1 <<<"$out")')"
+assert 'grep -qF "26 passed, 0 warning, 0 failed" <<<"$out"'                             "and nothing warns (said '$(tail -1 <<<"$out")')"
 
 # --- Case 24: T06 — service carries traefik.* label → fail ------------------
 proj24="$tmpdir/traefik-label"
@@ -955,7 +1001,7 @@ assert 'grep -qF "✓ .env.prod.example exists" <<<"$out"'                      
 assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'              "E01 passes on comments alone"
 assert 'grep -qF "✓ .env.prod.example has no obvious long secrets" <<<"$out"'  "E04 has nothing to measure"
 assert 'grep -qF "✓ .env.prod.example leaves the KASBAH_* prefix to kasbah" <<<"$out"' "E05 has no key to object to"
-assert 'grep -qF "25 passed, 0 warning, 0 failed" <<<"$out"'                   "and nothing warns about it (said '$(tail -1 <<<"$out")')"
+assert 'grep -qF "26 passed, 0 warning, 0 failed" <<<"$out"'                   "and nothing warns about it (said '$(tail -1 <<<"$out")')"
 
 # --- Case 28: E01 — invalid line → fail --------------------------------------
 proj28="$tmpdir/env-bad-syntax"
@@ -1082,7 +1128,7 @@ out="$(cd "$proj30e" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                     "E05 is a warning, so exit stays 0 (got $rc)"
 assert 'grep -qF "⚠ .env.prod.example defines reserved KASBAH_* keys (kasbah injects these): KASBAH_CPU_LIMIT KASBAH_MEM_LIMIT" <<<"$out"' \
        "E05 warn line names every reserved key, not just the first (said '$out')"
-assert 'grep -qF "24 passed, 1 warning, 0 failed" <<<"$out"'                 "E05 warns instead of passing, one line either way (said '$out')"
+assert 'grep -qF "25 passed, 1 warning, 0 failed" <<<"$out"'                 "E05 warns instead of passing, one line either way (said '$out')"
 
 # The prefix is matched anchored: MY_KASBAH_URL is the user's key. A substring
 # match here would warn about a key kasbah neither injects nor skips.
@@ -2396,6 +2442,43 @@ write_check_payload
 out="$(check_cli "$srv1" --server deploy@vps)"
 assert '! grep -qF "with no password" <<<"$out"' \
     "a server with no mail stack needs no mail repository (said '$out')"
+
+# --- Case S14b: a repository password nothing files into any more ----------------
+# The other direction, which nothing walked at all. `drop --prune` takes a
+# project's directory and its data and never its client's password, so removing
+# a client's *last* project leaves a restic password at mode 600 that no
+# reporting command named — while `server backup-prune` went on discovering and
+# pruning that repository, because it reads repos/*.pass off the disk.
+bk_srv dir file "$bk_ok"
+BK_PROJECTS="demo=" BK_HASPASS="demo acme" BK_MAIL=no
+write_check_payload
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "an orphaned repository password warns rather than failing (rc $rc)
+$out"
+assert 'grep -qF "⚠ backup repository passwords on deploy@vps that no project files into any more: acme" <<<"$out"' \
+    "naming it (said '$out')"
+assert 'grep -qF "kasbah never deletes one" <<<"$out"' \
+    "and saying kasbah keeps it — deleting it makes the snapshots already off-box
+        unreadable, which is the opposite of what this feature is for (said '$out')"
+assert '! grep -qF "into any more: demo" <<<"$out"' \
+    "while a repository that does have a project is not an orphan (said '$out')"
+# The paired negative, one fact changed: give the orphan a project and the
+# warning goes. Otherwise "it warned" would pass on a rule that always does.
+BK_PROJECTS="demo= other=acme"
+write_check_payload
+out="$(check_cli "$srv1" --server deploy@vps)"; rc=$?
+assert '[ "$rc" = "0" ]' "and the same server with that project back is clean (rc $rc)"
+assert '! grep -qF "no project files into any more" <<<"$out"' \
+    "with no orphan reported (said '$out')"
+# And the state that produces it: the client's last project is gone, so the
+# server has no repositories at all — the early return this rule used to take
+# before it ever looked.
+BK_PROJECTS="" BK_HASPASS="acme"
+write_check_payload
+out="$(check_cli "$srv1" --server deploy@vps)"
+assert 'grep -qF "into any more: acme" <<<"$out"' \
+    "a server with no repositories left still names the password the drop left (said '$out')"
+BK_MAIL=no
 
 # --- Case S15: the scheduler container ------------------------------------------
 # `docker compose -p kasbah-backup down` leaves the last `sleeping` record

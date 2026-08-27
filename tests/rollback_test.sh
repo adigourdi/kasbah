@@ -45,6 +45,7 @@ schema: 1
 kasbah_version: 0.1.0
 name: demo
 domain: demo.test
+client: acme
 sync:
   - compose.prod.yml -> compose.yml
   - .env.prod.example
@@ -79,6 +80,7 @@ schema: 1
 kasbah_version: 0.1.0
 name: demo
 domain: demo.test
+client: beta-corp
 sync:
   - compose.prod.yml -> compose.yml
   - .env.prod.example
@@ -163,6 +165,14 @@ YML
     git commit -qam "the commit v4.0.0 tags, under the project's old name"
     git tag v4.0.0
     git reset -q --hard v2.0.0
+    # A tag cut before kasbah checked `client:` at all, carrying a value this
+    # kasbah refuses. Its bytes cannot be edited, so a rollback that died on it
+    # would be a previously-working rollback made impossible over a field that
+    # has a documented default.
+    sed -i 's|^client: beta-corp$|client: Acme Corp|' kasbah.yml
+    git commit -qam "the commit v10.0.0 tags, with a client: this kasbah refuses"
+    git tag v10.0.0
+    git reset -q --hard v2.0.0
 ) >/dev/null 2>&1
 
 assert '[ "$(cd "$project" && git show v1.0.0:kasbah.yml | grep -c "extra.txt")" = "0" ]' \
@@ -212,7 +222,10 @@ case "$last" in
         printf 'archive_state=%s\n' "${FAKE_ARCHIVE_STATE:-missing}"
         printf 'archive_b64=%s\n' "${FAKE_ARCHIVE_B64:-}" ;;
     "'bash' '-s' '--' '/apps' '/apps/data' 'demo'"*)
-        printf 'prepared=yes\n' ;;
+        # `client` is the fourth argument and comes back as a key: rollback runs
+        # the same _deploy_prepare deploy does (08-keep.md D12), so a stub that
+        # answers only `prepared` is a stub of a payload that no longer exists.
+        printf 'prepared=yes\nclient=%s\n' "${PREPARE_CLIENT:-written}" ;;
     # The image check. Only this payload is handed image names, which is what
     # tells it apart from the three above.
     *"'demo-web'"*|*"'demo-api'"*|*"'demo-cache'"*)
@@ -320,6 +333,18 @@ assert 'grep -qxF "RD_HOOKS_PRE_ROLLBACK=( '\''demo-web echo v1-pre-rollback'\''
     "the hooks rendered into the shipped script are v1.0.0's ($(grep -m1 "^RD_HOOKS_PRE_ROLLBACK=" "$helper_copy"))"
 assert 'grep -qxF "RD_IMAGES=( '\''demo-cache'\'' '\''demo-web'\'' )" "$helper_copy"' \
     "and so is the image list it retags ($(grep -m1 "^RD_IMAGES=" "$helper_copy"))"
+
+# `.kasbah-client` is the server's only record of which backup repository this
+# project files into (08-keep.md D12), and the prepare step is what writes it —
+# so a rollback that did not read v<target>'s `client:` would hand that step an
+# empty value and *erase* the record. Asserted where it crosses to the server,
+# and asserted as the **tag's** value: HEAD says beta-corp.
+assert 'grep -qF "'\''/apps'\'' '\''/apps/data'\'' '\''demo'\'' '\''acme'\''" "$ssh_log"' \
+    "the prepare step is handed v1.0.0's client: (ssh saw: $(grep -F "/apps/data" "$ssh_log"))"
+assert '! grep -qF "beta-corp" "$ssh_log"' \
+    "and not the working tree's, which says beta-corp (ssh saw: $(grep -F "/apps/data" "$ssh_log"))"
+assert 'grep -qF "client:  acme (written," <<<"$out"' \
+    "and the run says which repository the record now names (said '$out')"
 
 # The working tree is neither read nor written: `git archive` and `git show` do
 # not touch it, and a rollback that checked anything out would say so here.
@@ -766,6 +791,31 @@ assert 'grep -qF "extra.txt — is a directory at v9.0.0" <<<"$out"' \
 assert '! grep -qF "did not match any files" <<<"$out"' \
     "before \`git archive\` was asked for either (said '$out')"
 assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
+
+# --- A tag whose `client:` this kasbah refuses -----------------------------------------
+# `deploy` and `kasbah check` (S08) both refuse such a value, and they are right
+# to: the operator has a file they can fix. A **tag** is different — its bytes
+# cannot be edited, and dying here would make a rollback that used to work
+# impossible over a field whose documented default is the project name. So it
+# warns and falls back to that default, which is exactly what the runner does
+# with a record it cannot read.
+out="$( FAKE_ACTIVE=$'2026-08-02T00:00:00+00:00 deploy 10.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-03T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n' \
+        rollback deploy@vps 10.0.0 )"; rc=$?
+assert '[ "$rc" = "0" ]' "a tag whose client: this kasbah refuses still rolls back (rc $rc: $out)"
+assert 'grep -qF "Acme Corp" <<<"$out"' "naming the value it would not take (said '$out')"
+assert 'grep -qF "falling back to '\''demo'\''" <<<"$out"' \
+    "and the default it used instead (said '$out')"
+assert 'grep -qF "'\''/apps'\'' '\''/apps/data'\'' '\''demo'\'' '\''demo'\''" "$ssh_log"' \
+    "which is what the prepare step was handed (ssh saw: $(grep -F "/apps/data" "$ssh_log"))"
+# The paired refusal, one command over: the same value in the working tree's
+# manifest is a hard failure, because there the file can be fixed.
+badclient="$tmpdir/badclient"
+rm -rf "$badclient"; cp -R "$project" "$badclient"
+sed -i 's|^client: beta-corp$|client: Acme Corp|' "$badclient/kasbah.yml"
+out="$( cd "$badclient" && kasbah_run deploy deploy@vps )"; rc=$?
+assert '[ "$rc" != "0" ]' "the same value in the working tree fails a deploy (rc $rc: $out)"
+assert 'grep -qF "kasbah.yml: client '\''Acme Corp'\''" <<<"$out"' \
+    "naming the file the operator can fix (said '$out')"
 
 # --- A version with no fragment ------------------------------------------------------
 # v1.0.0 carries one, so the case is constructed by asking for a tag that does

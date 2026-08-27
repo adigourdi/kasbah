@@ -408,6 +408,34 @@ write_sleeping() {
     write_status sleeping "$(( _wsl_now + _wsl_d + timeout_s + grace ))" "$(( _wsl_now + _wsl_d ))"
 }
 
+# One epoch field of the status file, admitted only when this shell can do
+# arithmetic on it. **This is lib/backup_record.sh's `_bkr_epoch` rule, written
+# out a second time**, because there is one rule and there have to be two
+# implementations: that one is bash on a workstation, this one is POSIX sh
+# inside the restic image, and a script in a container can source nothing. The
+# workstation copy carries the same note.
+#
+# A digits-only gate is not a type check, and it fails at three points. A
+# leading zero makes `01999000009` an invalid octal literal — a fatal error on
+# the reader's side. A 24-digit value makes `[ -gt ]` answer `Illegal number`
+# here, and a *false* comparison reads as **inside** the deadline, so the record
+# the workstation calls `unparsed` came back healthy from this check. And in the
+# middle it does not fail at all: `01700000000` is a valid octal that silently
+# means a different number. Eighteen digits is the cap because
+# 999999999999999999 < 2^63-1, which makes everything that gets through safe for
+# both `$(( ))` and `[ -gt ]`.
+is_epoch() {
+    case "$1" in
+        0|[1-9]*) ;;
+        *) return 1 ;;
+    esac
+    case "$1" in
+        *[!0-9]*) return 1 ;;
+    esac
+    [ "${#1}" -le 18 ] || return 1
+    return 0
+}
+
 # One field of the status file, or empty. Read rather than sourced, like the env
 # file and for the same reason: this one is kasbah's, but one reader is one rule.
 status_field() {
@@ -430,7 +458,14 @@ health() {
         warn "no $statefile — the scheduler has not reported in"
         return 1
     fi
-    case "$_h_deadline" in ''|*[!0-9]*) warn "$statefile has no usable deadline"; return 1 ;; esac
+    if [ -z "$_h_deadline" ]; then
+        warn "$statefile carries no deadline, which is the one field this check rests on"
+        return 1
+    fi
+    if ! is_epoch "$_h_deadline"; then
+        warn "$statefile records deadline='$_h_deadline', which is not a unix time this check can compare"
+        return 1
+    fi
     _h_now=$(date +%s)
     if [ "$_h_now" -gt "$_h_deadline" ]; then
         warn "state '$_h_state' has outlived its deadline by $((_h_now - _h_deadline))s"

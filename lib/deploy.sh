@@ -422,12 +422,19 @@ _deploy_check_compose_dst() {
 # checks, and *rendered* onto the server rather than synced, because the
 # manifest never reaches a VPS and the backup runner runs there.
 #
-# The charset is `name`'s, and the four names kasbah owns under <apps> are
-# refused for a sharper reason than tidiness: `mail` is the repository the whole
-# server's mailboxes go to (docs/phases/08-keep.md D7), and a project claiming
-# it would put every mailbox on the host into one client's handover.
+# The rule itself is lib/manifest.sh's `manifest_client_check`, so `kasbah check`
+# (S08), this, and rollback's read of a *tag's* manifest all judge the field the
+# same way and only differ in what they do about it.
+#
+# _deploy_read_client [historical] — with `historical`, a value this kasbah
+# refuses is a **warning** and the fallback is the project's directory name,
+# which is `client:`'s documented default. That is for a manifest out of
+# v<target>: the tag was cut before this field was checked anywhere, its bytes
+# cannot be edited, and dying would turn a previously-working rollback into an
+# unrecoverable one over a field that has a default. A deploy of the working
+# tree has a file the operator can fix, so it still refuses.
 _deploy_read_client() {
-    local raw
+    local raw why="" historical="${1:-}"
 
     raw="$(manifest_get '.client // "" | tostring')"
     raw="${raw%$'\r'}"
@@ -436,10 +443,14 @@ _deploy_read_client() {
         _DEPLOY_CLIENT="$MANIFEST_NAME"
         return 0
     fi
-    [[ "$raw" =~ ^[a-z][a-z0-9-]*$ ]] \
-        || die "kasbah.yml: client '$raw' must match ^[a-z][a-z0-9-]*\$ — it names a backup repository, the same charset as name (docs/project-manifest.md)"
-    ! manifest_name_reserved "$raw" \
-        || die "kasbah.yml: client '$raw' is reserved — kasbah owns the backup repository of that name (reserved: ${KASBAH_RESERVED_NAMES[*]})"
+    if ! manifest_client_check "$raw" why; then
+        [ -n "$historical" ] || die "kasbah.yml: $why"
+        warn "the manifest in this version says $why"
+        warn "falling back to '$MANIFEST_NAME', which is client:'s documented default — a"
+        warn "version tagged before kasbah checked this field still has to roll back"
+        _DEPLOY_CLIENT="$MANIFEST_NAME"
+        return 0
+    fi
     _DEPLOY_CLIENT="$raw"
     return 0
 }

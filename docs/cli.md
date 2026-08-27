@@ -195,10 +195,18 @@ a snapshot without them, so they are on the VPS already and fetching them widens
 nothing (`backup.md` → Credentials).
 
 It dry-runs every repository first, prints the plan, confirms once, then forgets
-and prunes.
+and prunes. **The plan and the outcome both go to stdout**, as `drop` and
+`server destroy` do; only `warning:` and `error:` lines go to stderr, so
+`kasbah server backup-prune … > prune.log` keeps the record. A repository whose
+dry run fails is **skipped and not pruned** — it never reaches the plan, so it
+is never in the set the act iterates — and the closing count is of what was
+actually pruned, not of what was discovered.
 
 Flags:
-- `--repo-base=<url>`, `--repo=<name>` — override discovery, or act on one repository.
+- `--repo-base=<url>`, `--repo=<name>` — override discovery, or act on one
+  repository. `--repo=` accepts `kasbah.probe` as well as ordinary repository
+  names, since it is in the default set; the dot is still refused everywhere a
+  repository *name* is taken, such as `--backup-password=`.
 - `--env=KEY=VALUE` / `--no-env` — the **full-access** storage credentials. These
   are the operator's, and are never read off the server.
 - `--keep-daily=N`, `--keep-weekly=N`, `--keep-monthly=N` — override the marker's retention.
@@ -330,7 +338,7 @@ above all every agency-owned secret.
 
 Server-wide:
 - `<apps>/.kasbah/server.json`, and `<apps>/.kasbah/` once empty
-- `/etc/kasbah/apps-path` and `/etc/kasbah/` — root-owned, so this needs
+- `/etc/kasbah/apps-path`, and `/etc/kasbah/` once it is empty — root-owned, so this needs
   passwordless `sudo`. Without it the run **warns and continues**, exits 0, and
   prints the exact command to finish by hand. A server left in that state has no
   marker but still has its pointer, and destroy says so on a re-run rather than
@@ -386,7 +394,13 @@ A run that cannot finish **holds back the marker and the pointer**, so the
 server is still discoverable and the command can be re-run. It exits 1 and says
 which step failed. A second run on a fully de-branded server reports that the
 server carries nothing of kasbah's and exits 0 — it does not exit 4, because a
-completed destroy removes its own marker by design.
+completed destroy removes its own marker by design. But a server with **no
+marker and a surviving `<apps>/.kasbah/backup/`** exits **1**: that directory is
+the repository URL and one password per repository at mode 600, and without a
+marker destroy cannot enumerate the rest to remove them. The contrast with the
+no-sudo case above is deliberate — what that leaves is a world-readable
+discovery pointer, and what this leaves is the credentials the command exists to
+take away.
 
 ### `kasbah server status USER@HOST [--apps-path=<dir>]`
 
@@ -413,7 +427,13 @@ Prints:
   credential **redacted**, the schedule and its jitter, the `kasbah-backup`
   container's state, health and restart count, when the last run happened and
   how it went, the repositories this server has, and any that lack a password
-  and are therefore not being backed up. A server prepared without
+  and are therefore not being backed up, and any **orphan password** — a
+  repository file left behind when its last project was dropped, which kasbah
+  reports and never deletes, because deleting it would make that client's
+  off-box snapshots unrecoverable. The container is found by name **and**
+  compose-project label, the same query `check --server` uses, so a foreign
+  container holding the name reads as one (`notours`) rather than as an absence.
+  A server prepared without
   `--with-backup` gets one line saying so, and a verdict measured against the
   workstation's clock rather than the server's says so on the header. The record it reads is the same one
   `check --server`'s B01 judges, through the same parser — so `status` and
@@ -777,8 +797,9 @@ same cliff `server prune` stands on, and for the same reason: a wrong deletion
 here takes another project's image with it.
 
 A later `kasbah deploy` brings the project back; the images must be re-shipped
-with `build-push` first. **A project that declares hooks or `backup:` needs
-`kasbah deploy --allow-stopped` for that first return trip** — `versions.log`
+with `build-push` first. **A project that declares `backup:` or a `pre-deploy` hook needs
+`kasbah deploy --allow-stopped` for that first return trip** (a post-deploy
+hook alone does not) — `versions.log`
 survives a plain drop, so the remote preflight sees a project that has deployed
 here before while the containers those steps need no longer exist, and refuses
 rather than skipping them silently. `drop` prints the exact return command,
@@ -790,9 +811,15 @@ project's on-VPS backups (`/apps/<name>/backups/` — **not** the server's
 top-level `/apps/backups/`) — everything except the off-VPS restic repo, which
 is operator property (see `backup.md`). It also **releases the project's claim on
 the shared mail stack**: the domain leaves `<apps>/mail/kasbah.yml`, read and
-re-rendered through the same normalising reader `deploy`, `check --server`,
-`server status` and `add-mail-domain` use, so all five answer "does this stack
-serve X" identically. Two deliberate exclusions — a project claiming the
+re-rendered through `_sm_read_registry`, which folds `primary_domain` into the
+served list the way the writers do. **Five commands ask "does this stack serve
+X" and they share the rule, not the reader** — `drop` and `add-mail-domain` call
+that function; `deploy`, `check --server` and `server status` each carry their
+own copy of the same normalisation. On a registry kasbah wrote they agree; on a
+**hand-edited** one with no `primary_domain` they do not, because the shared
+reader refuses where the three copies fall back to an empty primary and
+continue. Converging them belongs to Phase 9, where the live mail cutovers make
+a hand-edited registry the ordinary case. Two deliberate exclusions — a project claiming the
 registry's `primary_domain` is refused (releasing it would unmake the stack for
 every other project), and docker-mailserver's own `postfix-virtual.cf` alias is
 left alone, with the `setup alias del` line printed instead. The reversal is
@@ -830,13 +857,20 @@ claiming the project came down.
 Either decline exits 1 having changed nothing. `--yes` skips both, for scripts;
 without a terminal an unanswered prompt is a hard fail naming `--yes`.
 
-Takes `<project>/.deploy.lock` for the whole operation, the same exclusive lock
-`remote-deploy.sh` holds, so a drop cannot interleave with a deploy's hooks and
-retags. A held lock and a missing `flock` are reported as themselves, never as
-each other.
+Takes `<project>/.deploy.lock` **in the act**, the same exclusive lock
+`remote-deploy.sh` holds, so nothing is removed while a deploy is running. The
+batched read, the plan and both confirmations run **unlocked** — a read step
+never writes into the tree it is reading — so a deploy starting while you answer
+the second prompt makes the act refuse. That refusal reads as one: a run stopped
+at a guard says it changed nothing, and only a run that got past them says some
+of it may have run. A held lock and a missing `flock` are reported as
+themselves, never as each other.
 
 Given without a `USER@HOST` it asks the server this project last talked to, and
-a run that reaches one records it as `last_server` (`project-manifest.md`).
+`last_server` is recorded by a run that **acts** — the nothing-to-do path and a
+completed act — not by one that reaches the server and then declines, meets a
+held lock, finds no `flock`, or has `--prune` refused
+(`project-manifest.md`).
 
 Exits 4 on a host with no server marker; 1 on a decline, a held lock, a missing
 `flock`, or a refused `--prune`.

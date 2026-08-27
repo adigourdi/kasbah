@@ -239,6 +239,10 @@ for bad in "" "." ".." "../other" "de/mo" "Demo" "1demo" "de mo" "traefik" "mail
     out=$(run_act "$bad" yes); rc=$?
     assert '[ "$rc" != 0 ]' "the act payload refuses the name '$bad' (rc=$rc: $out)"
     assert 'grep -qF "refusing to act" <<<"$out"' "loudly (got '$out')"
+    # `started=yes` is the one thing that separates the caller's two diagnoses,
+    # so a guard that refuses must not have printed it (got '$out')
+    assert '! grep -qF "started=yes" <<<"$out"' \
+        "and never says it started for '$bad' (got '$out')"
     assert '[ "$before" = "$(tree_digest)" ]' \
         "and nothing under the tree changed for '$bad'
         $(diff <(printf '%s\n' "$before") <(printf '%s\n' "$(tree_digest)"))"
@@ -249,6 +253,8 @@ done
 make_tree
 out=$(run_act demo yes); rc=$?
 assert '[ "$rc" = 0 ]' "a well-formed name runs the act (rc=$rc: $out)"
+assert 'grep -qxF "started=yes" <<<"$out"' \
+    "a run that got past the guards says so (got '$out')"
 assert '[ ! -e "$tmpdir/srv/apps/demo" ]' "--prune deleted the project directory"
 assert '[ ! -e "$tmpdir/srv/data/demo" ]' "and the data directory"
 assert '[ ! -e "$tmpdir/srv/apps/traefik/dynamic/demo.yml" ]' "and the fragment"
@@ -290,6 +296,7 @@ assert '[ "$rc" != 0 ]' "a server without flock stops the act payload (rc=$rc: $
 assert 'grep -qF "flock is not installed" <<<"$out"' "as the missing prerequisite it is (got '$out')"
 assert '! grep -qF "already running" <<<"$out"' \
     "and never as a concurrent operator who does not exist (got '$out')"
+assert '! grep -qF "started=yes" <<<"$out"' "having refused before it started (got '$out')"
 assert '[ "$before" = "$(tree_digest)" ]' "and nothing was removed"
 
 # The same payload with flock back on PATH, so the refusal above is the missing
@@ -306,6 +313,7 @@ if command -v flock >/dev/null; then
     out=$( { flock -n 7 || exit 1; run_act demo yes; } 7>"$tmpdir/srv/apps/demo/.deploy.lock" 2>&1 ); rc=$?
     assert '[ "$rc" != 0 ]' "a held .deploy.lock stops the act payload (rc=$rc: $out)"
     assert 'grep -qF "already running" <<<"$out"' "naming the concurrent run (got '$out')"
+    assert '! grep -qF "started=yes" <<<"$out"' "having refused before it started (got '$out')"
     assert '[ "$before" = "$(tree_digest)" ]' "and nothing was removed"
 fi
 
@@ -460,6 +468,18 @@ act_registry=$5
   printf 'registry=%s\n' "$(printf '%s' "$5" | base64 -w0)"; } > "$SSH_ACT_LOG"
 shift 5
 for ref in "$@"; do printf 'tag=%s\n' "$ref" >> "$SSH_ACT_LOG"; done
+# A guard refusing before the payload's own `started=yes`, and a step that dies
+# after it: the two shapes the caller has to tell apart.
+if [ -n "${SSH_ACT_REFUSE:-}" ]; then
+    printf 'remote: refusing to act: %s\n' "$SSH_ACT_REFUSE" >&2
+    exit 1
+fi
+printf 'started=yes\n'
+if [ -n "${SSH_ACT_DIE:-}" ]; then
+    printf 'fragment=removed\n'
+    printf 'remote: %s\n' "$SSH_ACT_DIE" >&2
+    exit 1
+fi
 printf 'fragment=%s\ndown=%s\ndown_detail=\n' "${SSH_FRAGMENT:-removed}" "${SSH_DOWN:-ok}"
 printf 'down_left=%s\n' "$(printf '%s' "${SSH_DOWN_LEFT:-}" | base64 -w0)"
 for ref in "$@"; do
@@ -500,6 +520,7 @@ drop_cli() {
         SSH_COUNT="$tmpdir/ssh.count" SSH_ACT_LOG="$act_log" SSH_PAYLOAD="$payload_file" \
         SSH_RM_FAIL="${SSH_RM_FAIL:-}" SSH_DOWN_LEFT="${SSH_DOWN_LEFT:-}" \
         SSH_DOWN="${SSH_DOWN:-ok}" SSH_FRAGMENT="${SSH_FRAGMENT:-removed}" \
+        SSH_ACT_REFUSE="${SSH_ACT_REFUSE:-}" SSH_ACT_DIE="${SSH_ACT_DIE:-}" \
         "$repo_dir/bin/kasbah" drop "$@" 2>&1 )
 }
 act_tags() { sed -n 's/^tag=//p' "$act_log" | LC_ALL=C sort | tr '\n' ' '; }
@@ -843,6 +864,28 @@ assert 'grep -qE "^    alpha-web:current +built by alpha" <<<"$sout"' \
     "stdout alone holds the plan (got '$sout')"
 assert 'grep -qF "removed image alpha-web:current" <<<"$sout"' "and what came of it (got '$sout')"
 assert 'grep -qF "brought down" <<<"$sout"' "and the container step (got '$sout')"
+
+# --- A remote step that exited non-zero: refused, or half-done ------------------------------
+#
+# Two different pieces of news, and telling an operator the worse one sends them
+# looking for damage that is not there. `server destroy` already answers this
+# with `started=yes`; the same mechanism, one file back.
+write_payload "$rows_ok" 3
+out=$(SSH_ACT_REFUSE="project name 'alpha' is not a project" drop_cli deploy@vps --yes); rc=$?
+assert '[ "$rc" != 0 ]' "a payload that refused fails the run (rc=$rc: $out)"
+assert 'grep -qF "it refused before changing anything — nothing was removed" <<<"$out"' \
+    "and is reported as a refusal (out: $out)"
+assert '! grep -qF "some of it may have run" <<<"$out"' \
+    "not as a half-done one (out: $out)"
+
+out=$(SSH_ACT_DIE="the fragment could not be removed" drop_cli deploy@vps --yes); rc=$?
+assert '[ "$rc" != 0 ]' "a payload that died after starting fails the run too (rc=$rc: $out)"
+assert 'grep -qF "some of it may have run" <<<"$out"' \
+    "and *that* one is the half-done sentence (out: $out)"
+assert 'grep -qF -- "kasbah drop deploy@vps" <<<"$out"' \
+    "with the command that says what is left (out: $out)"
+assert '! grep -qF "refused before changing anything" <<<"$out"' \
+    "and not the refusal one (out: $out)"
 
 # --- The return trip, and whether it needs --allow-stopped ----------------------------------
 #

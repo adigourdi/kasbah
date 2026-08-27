@@ -14,6 +14,15 @@ _KASBAH_BACKUP_RECORD_LOADED=1
 # `check --server` both call it. Two parsers of one file is how a report and a
 # healthcheck come to disagree about whether backups are happening.
 #
+# **The runner is the third reader and has a parser of its own.** It has to: it
+# is POSIX sh inside the restic image and a script in a container can source
+# nothing, so there is one *rule* and two *implementations* — `_bkr_epoch` below
+# and `is_epoch` in templates/backup/backup.sh, kept in step by
+# tests/backup_test.sh, which drives both over the same values. That pairing was
+# not free: the runner admitted any digit string long after this file stopped
+# doing so, and one record then yielded three verdicts — `unhealthy` from
+# `docker ps`, `unknown` from `server status`, `warn` from `check --server`.
+#
 # A file of its own rather than a home in either command: **share the question,
 # not the command.** `server status` does source lib/backup.sh, for the one
 # answer to "how is a repository URL printed" and the one answer to "which

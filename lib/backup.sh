@@ -256,6 +256,20 @@ _bk_check_repo_name() {
     return 0
 }
 
+# A repository this server *has*, which is a wider set than the repositories an
+# operator supplies a password for. `server backup-prune --repo=` names one to
+# prune, and its default set is every repository with a password **plus** the
+# probe repository — whose name carries the `.` that _bk_check_repo_name refuses
+# on purpose, since that dot is what stops any project ever claiming it. So it
+# is admitted here by identity rather than by widening a charset that exists to
+# keep project names and repository names the same shape. Pruning only the probe
+# is the obvious use of the flag: it grows by two snapshots per init run.
+_bk_check_repo_ref() {
+    local flag="$1" v="$2"
+    [ "$v" != "$KASBAH_BACKUP_PROBE_REPO" ] || return 0
+    _bk_check_repo_name "$flag" "$v"
+}
+
 # One KEY=VALUE for the restic environment. The key has to be a variable name
 # because the runner exports it; the value may be anything that fits on a line,
 # because it is a credential and kasbah has no business narrowing it.
@@ -747,6 +761,16 @@ _bk_render() {
     local tpl="${KASBAH_TEMPLATE_DIR:-}"
 
     [ "$_BK_ENABLED" = yes ] || return 0
+    # `server init` is the only caller of this function, and lib/server_init.sh
+    # is where `_si_render_template` lives. This file deliberately does not
+    # source those ~2000 lines: `server backup-prune`, `server status` and
+    # `check --server` all load it on its own and none of them renders anything
+    # (the argument lib/drop.sh makes about declining to source lib/deploy.sh).
+    # So the dependency is stated where it is real, and a fourth caller that
+    # forgets it is told which file it is missing rather than
+    # `_si_render_template: command not found` halfway through a render.
+    declare -F _si_render_template >/dev/null \
+        || die "internal: _bk_render needs lib/server_init.sh loaded for _si_render_template — this caller loaded lib/backup.sh alone"
     [ -n "$tpl" ] || die "internal: KASBAH_TEMPLATE_DIR is not set"
     [ -d "$tpl/backup" ] \
         || die "the backup templates are missing (looked in $tpl/backup) — this kasbah installation is incomplete"
@@ -1360,6 +1384,9 @@ _BP_YES=""
 _BP_NETWORK=""
 _BP_TMPDIR=""
 _BP_REPOS=()
+# The repositories the plan actually covered — every one whose dry run was shown
+# to the operator, and the only ones the act below is allowed to touch.
+_BP_PLANNED=()
 
 _bp_usage() {
     cat <<EOF
@@ -1426,7 +1453,7 @@ _bp_parse_args() {
             # error message is the one place it would end up on a terminal.
             --env=*)       _bk_check_env_entry --env= "${1#*=}"; _BP_ENV_GIVEN+=("${1#*=}") ;;
             --no-env)      _BP_ENV_NONE=yes ;;
-            --repo=*)      _bk_check_repo_name --repo= "${1#*=}"; _BP_ONLY+=("${1#*=}") ;;
+            --repo=*)      _bk_check_repo_ref --repo= "${1#*=}"; _BP_ONLY+=("${1#*=}") ;;
             --keep-daily=*)   _BP_KEEP_DAILY="${1#*=}";   _bk_check_keep --keep-daily= "$_BP_KEEP_DAILY" ;;
             --keep-weekly=*)  _BP_KEEP_WEEKLY="${1#*=}";  _bk_check_keep --keep-weekly= "$_BP_KEEP_WEEKLY" ;;
             --keep-monthly=*) _BP_KEEP_MONTHLY="${1#*=}"; _bk_check_keep --keep-monthly= "$_BP_KEEP_MONTHLY" ;;
@@ -1555,8 +1582,18 @@ _bp_restic() {
         "$KASBAH_RESTIC_IMAGE" --no-cache "$@" 2>&1
 }
 
+# One plan or outcome line, on stdout. This command's whole report goes there —
+# it is the one that permanently deletes backup history, so `kasbah server
+# backup-prune … > prune.log` must capture what was planned *and* what happened
+# (docs/cli.md: only `warning:` and `error:` lines go to stderr). The same shape
+# and the same reason as `drop`'s _drop_say and `server destroy`'s _sd_say.
+_bp_say() {
+    printf '%s\n' "$*"
+    return 0
+}
+
 cmd_server_backup_prune() {
-    local repo out rc=0 apps enabled line planned=0
+    local repo out rc=0 apps enabled line
 
     _bp_parse_args "$@"
     command -v jq >/dev/null || die "jq is required (install jq and retry)"
@@ -1634,27 +1671,34 @@ cmd_server_backup_prune() {
     _bp_stage
     ssh_disconnect
 
-    info "Retention on $_BP_TARGET: keep $_BP_KEEP_DAILY daily, $_BP_KEEP_WEEKLY weekly, $_BP_KEEP_MONTHLY monthly"
-    info "  base: $(_bk_shown "$_BP_REPO_BASE")   restic: $KASBAH_RESTIC_IMAGE, run here and not on the VPS${_BP_NETWORK:+, on the $_BP_NETWORK network}"
+    _bp_say "Retention on $_BP_TARGET: keep $_BP_KEEP_DAILY daily, $_BP_KEEP_WEEKLY weekly, $_BP_KEEP_MONTHLY monthly"
+    _bp_say "  base: $(_bk_shown "$_BP_REPO_BASE")   restic: $KASBAH_RESTIC_IMAGE, run here and not on the VPS${_BP_NETWORK:+, on the $_BP_NETWORK network}"
+    # Only a repository that reaches the end of this loop is in the plan, and
+    # only the plan is pruned below. A repository whose dry run failed was
+    # announced as skipped, and running the destructive call against it anyway
+    # would prune a repository whose plan nobody was shown — usually the second
+    # call fails the same way, but a *transient* dry-run failure is exactly the
+    # case where it does not.
+    _BP_PLANNED=()
     for repo in "${_BP_REPOS[@]}"; do
-        info "  $repo — what would be removed:"
+        _bp_say "  $repo — what would be removed:"
         out=$(_bp_restic "$repo" forget --dry-run \
                 --keep-daily "$_BP_KEEP_DAILY" --keep-weekly "$_BP_KEEP_WEEKLY" \
                 --keep-monthly "$_BP_KEEP_MONTHLY") || rc=$?
-        while IFS= read -r line; do info "    $line"; done <<<"$out"
+        while IFS= read -r line; do _bp_say "    $line"; done <<<"$out"
         if [ "$rc" -ne 0 ]; then
             warn "  $repo — restic exited $rc above; this repository is skipped"
             rc=0
             continue
         fi
-        planned=$((planned + 1))
+        _BP_PLANNED+=("$repo")
     done
 
-    [ "$planned" -gt 0 ] \
+    [ "${#_BP_PLANNED[@]}" -gt 0 ] \
         || die "server backup-prune: no repository could be read with these credentials — nothing was changed"
 
     if [ -n "$_BP_DRY_RUN" ]; then
-        info "--dry-run: nothing was removed"
+        _bp_say "--dry-run: nothing was removed"
         return 0
     fi
 
@@ -1665,23 +1709,27 @@ cmd_server_backup_prune() {
         exit 1
     fi
 
-    local failed=0
-    for repo in "${_BP_REPOS[@]}"; do
-        info "  $repo — forgetting and pruning:"
+    local failed=0 pruned=0
+    for repo in "${_BP_PLANNED[@]}"; do
+        _bp_say "  $repo — forgetting and pruning:"
         out=$(_bp_restic "$repo" forget --prune \
                 --keep-daily "$_BP_KEEP_DAILY" --keep-weekly "$_BP_KEEP_WEEKLY" \
                 --keep-monthly "$_BP_KEEP_MONTHLY") || rc=$?
-        while IFS= read -r line; do info "    $line"; done <<<"$out"
+        while IFS= read -r line; do _bp_say "    $line"; done <<<"$out"
         if [ "$rc" -ne 0 ]; then
             err "  $repo — restic exited $rc"
             failed=$((failed + 1))
             rc=0
+            continue
         fi
+        pruned=$((pruned + 1))
     done
 
     [ "$failed" -eq 0 ] \
-        || die "server backup-prune: $failed of ${#_BP_REPOS[@]} repositories were not pruned (see above)"
-    info "Pruned ${#_BP_REPOS[@]} repositories on $_BP_TARGET"
-    info "  the repositories themselves stay: there is no way to remove one over the wire"
+        || die "server backup-prune: $failed of ${#_BP_PLANNED[@]} repositories were not pruned (see above)"
+    # The count of what was pruned, not of what was discovered: a repository the
+    # plan skipped was never pruned and must not be reported as one that was.
+    _bp_say "Pruned $pruned repositories on $_BP_TARGET"
+    _bp_say "  the repositories themselves stay: there is no way to remove one over the wire"
     return 0
 }

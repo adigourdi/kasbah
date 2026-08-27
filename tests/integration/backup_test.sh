@@ -493,11 +493,14 @@ rig_ssh "rm -rf $apps/stray" >/dev/null 2>&1
 prune --repo-base="$admin_base" --no-env --docker-network="$rig_network" \
       --keep-daily=1 --keep-weekly=0 --keep-monthly=0 --dry-run; rc=$?
 assert '[ "$rc" = "0" ]' "backup-prune plans (exit $rc: $(cli_err))"
-assert 'grep -qF "  $client — what would be removed" "$tmpdir/err"' \
-    "and found the repositories from the server's own list (said '$(cli_err)')"
-assert 'grep -qF "  mail — what would be removed" "$tmpdir/err"' "mail included"
-assert 'grep -qF "  kasbah.probe — what would be removed" "$tmpdir/err"' "and the probe repository"
-assert 'grep -qF "run here and not on the VPS" "$tmpdir/err"' "saying where restic ran"
+# On **stdout**: this is the command that deletes backup history for good, so
+# `backup-prune > prune.log` has to capture the plan and the outcome both
+# (docs/cli.md — only warning: and error: lines go to stderr).
+assert 'grep -qF "  $client — what would be removed" "$tmpdir/out"' \
+    "and found the repositories from the server's own list (said '$(cli_out)')"
+assert 'grep -qF "  mail — what would be removed" "$tmpdir/out"' "mail included"
+assert 'grep -qF "  kasbah.probe — what would be removed" "$tmpdir/out"' "and the probe repository"
+assert 'grep -qF "run here and not on the VPS" "$tmpdir/out"' "saying where restic ran"
 
 # The proof that it really ran locally: the VPS was never asked to run restic.
 # Its docker has no such container, and the only restic on the rig is the
@@ -521,6 +524,10 @@ fi
 prune --repo-base="$admin_base" --no-env --docker-network="$rig_network" \
       --repo="$client" --keep-daily=1 --keep-weekly=0 --keep-monthly=0 --yes; rc=$?
 assert '[ "$rc" = "0" ]' "backup-prune prunes (exit $rc: $(cli_err))"
+assert 'grep -qF "forgetting and pruning" "$tmpdir/out"' \
+    "with the outcome on stdout beside the plan (said '$(cli_out)')"
+assert 'grep -qF "Pruned 1 repositories" "$tmpdir/out"' \
+    "counting only the repository --repo= named (said '$(cli_out)')"
 after_prune=$(snapshot_ids "${server_base}$client/" "$client_pass" | wc -l)
 assert '[ "$after_prune" -lt "$before" ]' \
     "and really removes something ($before before, $after_prune after) — a prune that

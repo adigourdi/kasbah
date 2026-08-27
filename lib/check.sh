@@ -36,7 +36,7 @@ Flags:
                       applied only when you agree.
   --yes               answer that question yes, for a run with no terminal.
 
-Implemented: Structure (S01–S07), Compose (C01–C05, C07–C09), Resources
+Implemented: Structure (S01–S08), Compose (C01–C05, C07–C09), Resources
 (R01–R04), Traefik (T01–T08), Healthchecks (H01–H02), Env (E01–E05), Hooks
 (HK01–HK03), Mail (M01–M03), Backup (B01).
 EOF
@@ -89,7 +89,7 @@ cmd_check() {
                 server="${1#*=}"; server="${server%$'\r'}"
                 [ -n "$server" ] || server_empty=1
                 ;;
-            *)          die "check: unknown argument '$1'" ;;
+            *)          die "check: unknown argument '$1' (expected --server [USER@HOST], --fix, --yes)" ;;
         esac
         shift
     done
@@ -177,6 +177,25 @@ cmd_check() {
         _check_pass ".gitignore excludes .kasbah/"
     else
         _check_warn ".gitignore does not exclude .kasbah/"
+    fi
+
+    # S08. `client:` names the backup repository a project's snapshots file into
+    # (docs/phases/08-keep.md D12), and `deploy` and `rollback` both refuse a
+    # value outside `name`'s charset or naming a directory kasbah owns. Checked
+    # here for the reason lib/manifest.sh gives about `name` itself: a project
+    # learns it from `kasbah check` and not from the deploy that died before
+    # shipping anything. The rule is `manifest_client_check`, which is the same
+    # function deploy calls — S07's own charset with one list of reserved names.
+    local client_raw="" client_why=""
+    client_raw="$(manifest_get '.client // "" | tostring')"
+    client_raw="${client_raw%$'\r'}"
+    [ "$client_raw" != null ] || client_raw=""
+    if [ -z "$client_raw" ]; then
+        _check_pass "client is not set — backups file under the project name ($MANIFEST_NAME)"
+    elif manifest_client_check "$client_raw" client_why; then
+        _check_pass "client '$client_raw' names a backup repository kasbah can create"
+    else
+        _check_fail "kasbah.yml: $client_why"
     fi
 
     # Compose-derived data is reused by Traefik (T06), Healthchecks (H01,

@@ -8,10 +8,22 @@ includes mail data). **Lighter spec — re-read before starting.**
 **Spec:** `docs/backup.md` (whole file), `docs/cli.md` (drop, server destroy), `docs/server-setup.md` (Handover / teardown), `docs/compliance.md` (`--fix`)
 
 ## Exit criteria
-- [ ] Rig: deploy → `drop` → redeploy resurrects fully (data intact); `drop --prune` leaves no trace under `/apps/<name>` or `/apps/data/<name>`
-- [ ] Rig: `server destroy` → every container still serving, no `kasbah.yml` / `versions.log` / helpers / marker / backup creds / backup stack remain
-- [ ] A restic snapshot from the rig restores onto a **fresh** rig and the project comes back (the restore drill from `backup.md`, executed once for real). *"Fresh" is operationalised as `rig_clean`: `/apps` and every nested compose project wiped. The snapshot store is a named volume on the workstation's Docker, outside the rig, so it survives that.*
-- [ ] `check --fix` applies C01–C05, C08, R01–R03 and the `kasbah_version` backfill with a diff shown first, and never touches anything else
+- [x] Rig: deploy → `drop` → redeploy resurrects fully (data intact); `drop --prune` leaves no trace under `/apps/<name>` or `/apps/data/<name>` — `tests/integration/drop_test.sh`, **and walked on the real host** (2026-08-27): 200 → **404** → 200, the deploy record surviving the drop with three pre-drop entries plus the new one, the certificate never reissued, and `nginx`/`traefik` images untouched
+- [x] Rig: `server destroy` → every container still serving, no `kasbah.yml` / `versions.log` / helpers / marker / backup creds / backup stack remain — `tests/integration/server_destroy_test.sh`, **and walked on the real host**: de-branded in **1.89 s** with **46/46 HTTP samples at 200**, the witness bracketing the window on both sides, and `docker compose up -d` still working afterwards
+- [x] A restic snapshot from the rig restores onto a **fresh** rig and the project comes back — the drill ran for real in 8.3: snapshot, `rig_clean`, `server init`, `restic restore --target /`, `kasbah deploy`, and the project back with `db.txt`, a hook dump and a `.env` value that existed nowhere but that VPS, asserted both on disk and in the running container's environment. **Rig only, and necessarily** — see D14
+- [x] `check --fix` applies C01–C05, C08, R01–R03 and the `kasbah_version` backfill with a diff shown first, and never touches anything else — `tests/check_test.sh` F1–F18, plus plain `check` proven **byte-identical to HEAD across 13 projects**
+
+**Gate, run clean with nothing else writing (2026-08-27):** `KASBAH_RIG_TESTS=1 ./test.sh`
+**47 PASS, 0 FAIL, 0 SKIP, exit 0** — 28 unit suites and 19 integration, up from 25 and 39
+at Phase 7's close. The unit half is the same 28 suites `./test.sh` runs, so the
+rig-inclusive run subsumes it rather than repeating it.
+
+**What is not proven here.** The **S3 half of the credential model**: the rig speaks
+`rest:` and the real host has no S3 endpoint to point at, so append-only enforcement is
+proven against a server that really enforces it and the bucket-policy JSON stays traced.
+Reboot survival of the backup stack (`restart: unless-stopped`, on a rig that is a
+container). The 02:00 schedule elapsing for real. And SMTP deliverability end to end,
+which was Phase 7's exclusion and remains Phase 9.3's.
 
 ## Run order
 
@@ -275,6 +287,19 @@ becomes decoration.
 
 **Verify on:** rig — status reports a healthy stack, a never-run stack and a
 failed run distinctly; `check --server` fails the last of the three.
+
+**D14 — the real-host pass, amended at the close (2026-08-27).** Two conflicts
+surfaced when the close was planned. **`~/work/gallery-website` was on the
+off-limits list**, inherited from Phase 7 — and exit criterion 1's redeploy needs
+it, so `drop` on the real host would have taken `gallery.example.com` down with
+no sanctioned way back. The operator **lifted the flag for `build-push` only**,
+so the full drop → build-push → redeploy → destroy walk runs on real
+infrastructure. And **the backup drills cannot run on the real host at all**:
+they need credentials for a real S3-compatible endpoint, and the rig's
+rest-server is bound to a local Docker network the VPS cannot reach. Exit
+criterion 3 stays a rig criterion, and the S3 half of the credential model stays
+**traced, not proven** — as `backup.md` and `tests/rig/README.md` both already
+say.
 
 ## Findings
 
@@ -915,3 +940,82 @@ The implementer also caught my documentation outrunning the code again: the
 `server status` sample block I wrote had a restart clause the code omits at zero,
 the wrong gutter, and `repositories` in the wrong position. Corrected against
 real output.
+
+## Phase close
+
+**Gate:** `KASBAH_RIG_TESTS=1 ./test.sh` **47 PASS, 0 FAIL, 0 SKIP, exit 0** (28 unit,
+19 integration; Phase 7 closed at 25 and 39). The phase is 47 files, +17572/−169, six
+task commits plus this one, and **fourteen new suites**.
+
+**The whole-phase review's verdict, in its own words:** *"The dangerous code converged;
+the connective tissue did not, and the documentation now claims a convergence the code
+has not reached."*
+
+Both halves are worth keeping. The places where a mistake destroys something are the
+best work here — four `rm -rf` payloads that validate every path they build on the far
+side of ssh, an append-only proof that survives restic's own exit-status treachery, an
+`.env` rewrite byte-exact through mode, atomicity and a missing final newline, and a
+`--fix` proven byte-identical to HEAD across thirteen projects. **Eight of eleven shared
+questions have exactly one answer**, including six readers of the effective `client:`
+agreeing — the review called that the best-executed shared question in the phase.
+
+But **four commands landed in one phase and each answered four *connective* questions
+differently**: which stream a report goes to, what a refused-versus-half-done remote step
+is called, which exit code a failed run uses, and whether "nothing to do" is a success.
+Every one was invisible from inside its own task and obvious with all six in the tree.
+That is what a group review is for, and it is the characteristic failure of a phase built
+task by task.
+
+**Twice in this phase, a claim that there was one reader is what stopped anyone looking.**
+8.5 recorded the lesson on Monday about a comment in `check --server` asserting a
+passwordless repository "gets no rule of its own — one reader, one verdict", which was
+true only *after* the next scheduled run. The group review then found the same shape in
+`docs/cli.md`, asserting that five commands answer "does this stack serve X" identically
+when three of the five carry their own copy and **diverge on exactly the hand-edited
+registry Phase 7's original defect was about**. In a repo whose stated rule is *docs are
+the spec*, a confident false claim is worse than silence.
+
+**A third `error:` with exit 0, in a third command.** `server destroy` on a marker-less
+server still carrying `.kasbah/backup/` printed `error:` about credentials it could not
+remove and exited **0** — so `destroy "$h" && mark_handed_over "$h"` marks a machine
+handed over with the departing agency's storage keys still on it. Not a regression: 8.2's
+fix round split two branches and both survived. This was a *third* path that only became
+credential-bearing when 8.3 put `repos/*.pass` under `.kasbah/`, after 8.2's brief was
+written. **The fix's own principle was applied to two of the three places the command can
+meet a credential it cannot remove, and the third was never revisited** — which is the
+seam in one sentence.
+
+**The gate earned its keep, for the second time in this project's history.**
+`tests/rollback_test.sh`'s stub of `_deploy_prepare` still answered only `prepared=yes`
+after D12 added a required `client` key, and no per-task run touched that suite. The
+production code was correct; the stub was three weeks stale. What makes it worth
+recording is *why* it survived: **8.3's reviewer wrote, in as many words, that "rollback
+reaches the same `_deploy_prepare`" — and the brief never turned that observation into a
+suite to run.** The observation existed; the conversion did not. This is the second
+instance of the amended verification regime's stated trade coming due, and both times the
+close is what caught it.
+
+**Backticks executed as command substitution, twice, in two different quoting contexts.**
+8.3 found `kasbah server init --help` printing text with words silently executed away
+inside an unquoted heredoc; the close found `` `data` `` inside a double-quoted *assert
+message* doing the same, printing `data: command not found` into a suite that still
+reported PASS. Markdown habits in shell strings are a defect this project now has twice.
+
+**A surviving mutation is not always a missing test.** 8.5's first attempt at one arm
+stayed green because the arm was **unreachable** — an outer `case` already restricted the
+values. Re-aimed at the reachable arm, it went red, and the defensive inner arm stayed
+under a comment saying it is unreachable rather than one implying otherwise. Telling
+"untested" from "dead" apart is most of the value of running a mutation at all.
+
+**Measured, and left as it is:** `tests/check_test.sh` is now ~13 minutes and the
+dominant cost of the unit gate. The new cases run at *exactly* the suite's pre-existing
+per-case rate, so the cost is not in this phase's work; a plain `kasbah check` on a
+**one-service** project forks a Python `yq` **41 times** at ~87 ms each. Filed with four
+options as `docs/backlog/20260826-check-yq-fork-per-rule.md`.
+
+**Two backlog items, both found by the rig and both out of scope by construction:** the
+`yq` fork cost above, and `docs/backlog/20260827-backup-record-survives-restart.md` — the
+backup runner holds the last run's facts in shell variables, so a container restart makes
+a stack that has run for months read as one that has never fired, until its next run.
+The readers report that honestly rather than guessing, because a reader cannot invent a
+fact the writer discarded.
