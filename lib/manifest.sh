@@ -79,14 +79,14 @@ _manifest_require_yq() {
     command -v yq >/dev/null || die "yq is required (install python3-yq and retry)"
 }
 
-# Run a jq filter against the manifest and print the result. Dies on yq
-# error (letting yq's own stderr through) so callers get a real diagnostic
-# instead of silent emptiness.
+# Run a jq filter against the manifest and print the result. Dies on a parse or
+# filter error (letting the parser's own stderr through) so callers get a real
+# diagnostic instead of silent emptiness.
 manifest_get() {
     _manifest_require_yq
     [ -f "$KASBAH_MANIFEST_FILE" ] \
         || die "$KASBAH_MANIFEST_FILE: not found (cwd=$PWD)"
-    yq -r "$1" "$KASBAH_MANIFEST_FILE" \
+    yaml_query "$KASBAH_MANIFEST_FILE" "$1" \
         || die "$KASBAH_MANIFEST_FILE: yq filter failed: $1"
 }
 
@@ -120,6 +120,17 @@ manifest_require() {
     if [ "${#fields[@]}" -ne 5 ] || [ "${fields[4]}" != "__EOM__" ]; then
         die "$KASBAH_MANIFEST_FILE: expected a single YAML document"
     fi
+
+    # The manifest is read twice, and each read earns its fork. The one above
+    # lets yq's parse error through to the operator and carries the sentinel
+    # that catches a multi-document manifest; this one converts the document so
+    # that every later manifest_get answers from a variable. It runs in the
+    # caller's shell because a conversion made inside a `$(manifest_get …)`
+    # would die with that subshell (lib/common.sh → yaml_load). Its failure is
+    # not reported: the document just parsed, so the only way here is a file
+    # that changed underneath, and the callers that then ask get manifest_get's
+    # own die().
+    yaml_load "$KASBAH_MANIFEST_FILE" || true
 
     # Strip trailing CR from CRLF-authored manifests. Otherwise a Windows
     # `name: demo<CR>` value would fail the regex with a bewildering error

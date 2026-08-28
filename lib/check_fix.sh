@@ -498,7 +498,7 @@ _cf_delete_key() {
 # the same parser the same question.
 _cf_yq() {
     local out
-    out="$(yq -r "$2" "$1" 2>/dev/null || true)"
+    out="$(yaml_query "$1" "$2" 2>/dev/null || true)"
     case "$out" in null) out="" ;; esac
     printf '%s' "${out%$'\r'}"
     return 0
@@ -509,7 +509,7 @@ _cf_yq() {
 # error, and that is a false.
 _cf_has() {
     local out
-    out="$(yq -r "$2 | has(\"$3\")" "$1" 2>/dev/null || echo false)"
+    out="$(yaml_query "$1" "$2 | has(\"$3\")" 2>/dev/null || echo false)"
     [ "${out%$'\r'}" = "true" ]
 }
 
@@ -1052,8 +1052,8 @@ _cf_plan_manifest() {
 # is allowed to remove.
 _cf_verify_compose() {
     local ka kb sa sb k
-    ka="$(yq -r 'keys | .[]' "$1" 2>/dev/null || true)"
-    kb="$(yq -r 'keys | .[]' "$2" 2>/dev/null || true)"
+    ka="$(yaml_query "$1" 'keys | .[]' 2>/dev/null || true)"
+    kb="$(yaml_query "$2" 'keys | .[]' 2>/dev/null || true)"
     # `version` is the one key --fix removes (C05) and `networks` the one it
     # adds (C04). Anything else appearing or disappearing at the top level is an
     # edit that landed at the wrong indentation.
@@ -1067,8 +1067,8 @@ _cf_verify_compose() {
         grep -qxF -- "$k" <<<"$ka" && continue
         [ "$k" = networks ] || return 1
     done <<<"$kb"
-    sa="$(yq -r '(.services // {}) | keys | .[]' "$1" 2>/dev/null || true)"
-    sb="$(yq -r '(.services // {}) | keys | .[]' "$2" 2>/dev/null || true)"
+    sa="$(yaml_query "$1" '(.services // {}) | keys | .[]' 2>/dev/null || true)"
+    sb="$(yaml_query "$2" '(.services // {}) | keys | .[]' 2>/dev/null || true)"
     [ "$sa" = "$sb" ] || return 1
     return 0
 }
@@ -1078,8 +1078,8 @@ _cf_verify_compose() {
 # top-level key has to be there before and after.
 _cf_verify_manifest() {
     local ka kb
-    ka="$(yq -r 'keys | .[]' "$1" 2>/dev/null || true)"
-    kb="$(yq -r 'keys | .[]' "$2" 2>/dev/null || true)"
+    ka="$(yaml_query "$1" 'keys | .[]' 2>/dev/null || true)"
+    kb="$(yaml_query "$2" 'keys | .[]' 2>/dev/null || true)"
     kb="$(grep -vx kasbah_version <<<"$kb" || true)"
     ka="$(grep -vx kasbah_version <<<"$ka" || true)"
     [ "$ka" = "$kb" ] || return 1
@@ -1129,21 +1129,23 @@ _cf_stage() {
     # fails is reported by the shell *before* `2>/dev/null` is applied to the
     # command — a raw `Permission denied` ahead of the tidy message.
     if ! _cf_render 2>/dev/null > "$tmp"; then
-        rm -f "$tmp"
+        rm -f "$tmp"; yaml_forget "$tmp"
         err "check --fix: cannot write beside $f — nothing was changed"
         _cf_left "$f — nothing could be written beside it, so it was left exactly as it was"
         return 2
     fi
     chmod --reference="$f" "$tmp" 2>/dev/null || true
 
-    if ! yq -r '.' "$tmp" >/dev/null 2>&1; then
-        rm -f "$tmp"
+    # Converting the candidate is the parse check, and it caches the JSON the
+    # verifier and the re-plan two steps down are about to query.
+    if ! yaml_load "$tmp"; then
+        rm -f "$tmp"; yaml_forget "$tmp"
         err "check --fix: the edited $f would not parse as YAML — nothing was written"
         _cf_left "$f — the edited file would not have parsed as YAML; it was left exactly as it was"
         return 2
     fi
     if ! "$verifier" "$f" "$tmp"; then
-        rm -f "$tmp"
+        rm -f "$tmp"; yaml_forget "$tmp"
         err "check --fix: the edited $f no longer declares the same keys — nothing was written"
         _cf_left "$f — the edited file no longer declared the same keys; it was left exactly as it was"
         return 2
@@ -1156,7 +1158,7 @@ _cf_stage() {
     _CF_COLLECT=1
     if [ "${#_CF_PLAN[@]}" -ne 0 ]; then
         local leftover="${_CF_PLAN[*]}"
-        rm -f "$tmp"
+        rm -f "$tmp"; yaml_forget "$tmp"
         err "check --fix: the fix to $f did not settle — a second run would change it again ($leftover). Nothing was written"
         _cf_left "$f — the fix did not settle, so a second run would change it again; it was left exactly as it was"
         return 2
@@ -1187,16 +1189,25 @@ _cf_commit() {
     local f="$1" tmp="$2" target="$1"
     if [ -L "$f" ]; then
         target="$(readlink -f -- "$f")" || {
-            rm -f "$tmp"
+            rm -f "$tmp"; yaml_forget "$tmp"
             err "check --fix: cannot resolve the symlink $f — it was left alone"
             return 1
         }
     fi
     if ! mv -f "$tmp" "$target"; then
-        rm -f "$tmp"
+        rm -f "$tmp"; yaml_forget "$tmp"
         err "check --fix: could not replace $f"
         return 1
     fi
+    # The bytes at $f are now the candidate's, and nothing watches mtimes
+    # (lib/common.sh → yaml_load), so any conversion cached for these paths is
+    # now a lie about a file this function changed. The writer says so, rather
+    # than leaving it to whoever reads next: cmd_check does reload both files
+    # after the fix, but that is the report phase drawing its own boundary and
+    # not a guarantee this function may lean on.
+    yaml_forget "$f"
+    yaml_forget "$target"
+    yaml_forget "$tmp"
     return 0
 }
 
@@ -1204,7 +1215,10 @@ _cf_commit() {
 # candidate has already been renamed into place: those paths no longer exist.
 _cf_cleanup() {
     local t
-    for t in ${_CF_TEMPS[@]+"${_CF_TEMPS[@]}"}; do rm -f "$t" 2>/dev/null || true; done
+    for t in ${_CF_TEMPS[@]+"${_CF_TEMPS[@]}"}; do
+        rm -f "$t" 2>/dev/null || true
+        yaml_forget "$t"
+    done
     return 0
 }
 
@@ -1232,8 +1246,16 @@ check_fix_run() {
     local -a files=() tmps=() plans=()
     local rc=0
 
+    # C03's planner asks `_traefik_routed_hosts` which service is routed, and it
+    # asks from inside a `$(…)`. A conversion made there dies with the subshell
+    # (lib/common.sh → yaml_load), so the fragment is converted here instead —
+    # once, rather than once for the plan and again for the idempotency re-plan.
+    # `--fix` never edits it; cmd_check converts it again for the report, which
+    # is that phase's own boundary and not this one's business.
+    if [ -f traefik-dynamic.yml ]; then yaml_load traefik-dynamic.yml || true; fi
+
     if [ -f compose.prod.yml ]; then
-        if ! yq -r '.' compose.prod.yml >/dev/null 2>&1; then
+        if ! yaml_load compose.prod.yml; then
             _cf_left "compose.prod.yml does not parse as YAML — --fix will not pattern-match its way through a file it cannot read"
         else
             rc=0
@@ -1282,7 +1304,7 @@ check_fix_run() {
     echo
 
     if ! prompt_confirm yes "Apply these edits?" "$yes_given"; then
-        for ((i = 0; i < ${#files[@]}; i++)); do rm -f "${tmps[i]}"; done
+        for ((i = 0; i < ${#files[@]}; i++)); do rm -f "${tmps[i]}"; yaml_forget "${tmps[i]}"; done
         echo "  nothing was written"
         echo
         return 0

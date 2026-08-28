@@ -198,13 +198,29 @@ cmd_check() {
         _check_fail "kasbah.yml: $client_why"
     fi
 
+    # The two project files every section below interrogates, converted here and
+    # nowhere else. A rule asks its question from this shell's cache — never
+    # from inside the `$(…)` that reads the answer, because that subshell's
+    # conversion would die with it (lib/common.sh → yaml_load). manifest_require
+    # has already done the same for kasbah.yml. Load failures are not reported
+    # here: each section has its own line for a file that does not parse, and
+    # yaml_query returns non-zero for every rule that then asks.
+    #
+    # After `--fix`, deliberately: it rewrites both of these, and the report
+    # describes the project as it now is.
+    if [ -f compose.prod.yml ];    then yaml_load compose.prod.yml    || true; fi
+    if [ -f traefik-dynamic.yml ]; then yaml_load traefik-dynamic.yml || true; fi
+
     # Compose-derived data is reused by Traefik (T06), Healthchecks (H01,
     # H02), and Hooks (HK01, HK03). Compute it once at the top so every
     # downstream section gets the same view, and a single yq parse error in
-    # compose.prod.yml short-circuits all of them cleanly.
+    # compose.prod.yml short-circuits all of them cleanly: a file that does not
+    # parse yields *no* services, not the ones from whichever of its documents
+    # happened to be readable, so every rule below reports one broken file
+    # rather than half a project (lib/common.sh → yaml_load).
     local services=""
     if [ -f compose.prod.yml ]; then
-        services="$(yq -r '(.services // {}) | keys | .[]' compose.prod.yml 2>/dev/null || true)"
+        services="$(yaml_query compose.prod.yml '(.services // {}) | keys | .[]' 2>/dev/null || true)"
     fi
 
     _check_compose_section "$services"
@@ -235,10 +251,10 @@ _check_compose_section() {
     echo
     echo "Compose:"
 
-    # Re-run the parse here just to detect "file exists but invalid YAML" —
-    # we want a clean ✗ line in the Compose section rather than just an
+    # Ask the parse question separately, to detect "file exists but invalid
+    # YAML" — we want a clean ✗ line in the Compose section rather than just an
     # empty services list silently triggering the no-services warn.
-    if ! yq -r '.' compose.prod.yml >/dev/null 2>&1; then
+    if ! yaml_query compose.prod.yml '.' >/dev/null 2>&1; then
         _check_fail "compose.prod.yml does not parse as YAML"
         return 0
     fi
@@ -277,10 +293,10 @@ _check_c08_built_current() {
 
     while IFS= read -r svc; do
         [ -z "$svc" ] && continue
-        has_build="$(yq -r ".services[\"$svc\"] | has(\"build\")" compose.prod.yml 2>/dev/null || echo false)"
+        has_build="$(yaml_query compose.prod.yml ".services[\"$svc\"] | has(\"build\")" 2>/dev/null || echo false)"
         [ "$has_build" = "true" ] || continue
 
-        image="$(yq -r ".services[\"$svc\"].image // \"\"" compose.prod.yml 2>/dev/null || echo "")"
+        image="$(yaml_query compose.prod.yml ".services[\"$svc\"].image // \"\"" 2>/dev/null || echo "")"
         if [ -z "$image" ] || [ "$image" = null ]; then
             bad+=("$svc (no image:)")
             continue
@@ -314,7 +330,7 @@ _check_c01_restart() {
     local valid='^(unless-stopped|always|on-failure(:[0-9]+)?)$'
     local bad=()
     while IFS= read -r svc; do
-        r="$(yq -r ".services[\"$svc\"].restart // \"\"" compose.prod.yml 2>/dev/null || echo "")"
+        r="$(yaml_query compose.prod.yml ".services[\"$svc\"].restart // \"\"" 2>/dev/null || echo "")"
         [[ "$r" =~ $valid ]] || bad+=("$svc")
     done <<<"$services"
 
@@ -331,9 +347,9 @@ _check_c02_logging() {
     local services="$1" svc drv ms mf
     local bad=()
     while IFS= read -r svc; do
-        drv="$(yq -r ".services[\"$svc\"].logging.driver // \"\""              compose.prod.yml 2>/dev/null || echo "")"
-        ms="$(yq  -r ".services[\"$svc\"].logging.options[\"max-size\"] // \"\"" compose.prod.yml 2>/dev/null || echo "")"
-        mf="$(yq  -r ".services[\"$svc\"].logging.options[\"max-file\"] // \"\"" compose.prod.yml 2>/dev/null || echo "")"
+        drv="$(yaml_query compose.prod.yml ".services[\"$svc\"].logging.driver // \"\"" 2>/dev/null || echo "")"
+        ms="$(yaml_query compose.prod.yml ".services[\"$svc\"].logging.options[\"max-size\"] // \"\"" 2>/dev/null || echo "")"
+        mf="$(yaml_query compose.prod.yml ".services[\"$svc\"].logging.options[\"max-file\"] // \"\"" 2>/dev/null || echo "")"
         if [ "$drv" != "json-file" ] || [ -z "$ms" ] || [ -z "$mf" ]; then
             bad+=("$svc")
         fi
@@ -374,9 +390,9 @@ _CHECK_DEFAULT_ALIASES_HN=0
 _check_c03_c04_c07_networks() {
     local services="$1" svc
     local default_name default_ext hn_ext
-    default_name="$(yq -r '.networks.default.name // ""'                compose.prod.yml)"
-    default_ext="$(yq  -r '.networks.default.external // false'         compose.prod.yml)"
-    hn_ext="$(yq       -r '.networks["kasbah-net"].external // false'  compose.prod.yml)"
+    default_name="$(yaml_query compose.prod.yml '.networks.default.name // ""')"
+    default_ext="$(yaml_query compose.prod.yml '.networks.default.external // false')"
+    hn_ext="$(yaml_query compose.prod.yml '.networks["kasbah-net"].external // false')"
 
     local default_aliases_hn=0
     [ "$default_name" = "kasbah-net" ] && default_aliases_hn=1
@@ -391,14 +407,14 @@ _check_c03_c04_c07_networks() {
         local has_hn joined=0 routed=0 cn
         # `.networks` may be a list (["a", "b"]) or a dict ({a: {…}, b: {…}}).
         # Normalize to a list of names, then check membership.
-        has_hn="$(yq -r "
+        has_hn="$(yaml_query compose.prod.yml "
             .services[\"$svc\"].networks
             | if . == null then []
               elif type == \"object\" then keys
               else .
               end
             | any(. == \"kasbah-net\")
-        " compose.prod.yml 2>/dev/null || echo "false")"
+        " 2>/dev/null || echo "false")"
 
         if [ "$has_hn" = "true" ]; then
             joined=1
@@ -406,11 +422,11 @@ _check_c03_c04_c07_networks() {
             # Services with no explicit networks key inherit the default;
             # an explicit list overrides it entirely.
             local has_nets
-            has_nets="$(yq -r ".services[\"$svc\"] | has(\"networks\")" compose.prod.yml 2>/dev/null || echo false)"
+            has_nets="$(yaml_query compose.prod.yml ".services[\"$svc\"] | has(\"networks\")" 2>/dev/null || echo false)"
             [ "$has_nets" = "true" ] || joined=1
         fi
 
-        cn="$(yq -r ".services[\"$svc\"].container_name // \"\"" compose.prod.yml 2>/dev/null)"
+        cn="$(yaml_query compose.prod.yml ".services[\"$svc\"].container_name // \"\"" 2>/dev/null)"
         if [ -n "$cn" ] && [ "$cn" != "null" ] && [ -n "$routed_hosts" ] \
             && grep -qxF -- "$cn" <<<"$routed_hosts"; then
             routed=1
@@ -510,7 +526,7 @@ _check_c09_service_prefix() {
 # silently ignored. Warn rather than fail — the file still works.
 _check_c05_version() {
     local v
-    v="$(yq -r '.version // ""' compose.prod.yml)"
+    v="$(yaml_query compose.prod.yml '.version // ""')"
     if [ -n "$v" ]; then
         _check_warn "compose.prod.yml uses deprecated 'version:' field"
     else
@@ -530,7 +546,7 @@ _check_resources_section() {
     local services="$1"
     [ -f compose.prod.yml ] || return 0
     [ -n "$services" ] || return 0
-    yq -r '.' compose.prod.yml >/dev/null 2>&1 || return 0
+    yaml_query compose.prod.yml '.' >/dev/null 2>&1 || return 0
 
     echo
     echo "Resources:"
@@ -547,8 +563,8 @@ _check_r01_r02_limits() {
     while IFS= read -r svc; do
         [ -z "$svc" ] && continue
         local wrong=""
-        cpus="$(yq -r ".services[\"$svc\"].cpus // \"\"" compose.prod.yml 2>/dev/null || echo "")"
-        mem="$(yq  -r ".services[\"$svc\"].mem_limit // \"\"" compose.prod.yml 2>/dev/null || echo "")"
+        cpus="$(yaml_query compose.prod.yml ".services[\"$svc\"].cpus // \"\"" 2>/dev/null || echo "")"
+        mem="$(yaml_query compose.prod.yml ".services[\"$svc\"].mem_limit // \"\"" 2>/dev/null || echo "")"
         [ "$cpus" = '${KASBAH_CPU_LIMIT}' ] || wrong="cpus"
         if [ "$mem" != '${KASBAH_MEM_LIMIT}' ]; then
             wrong="${wrong:+$wrong,}mem_limit"
@@ -569,8 +585,8 @@ _check_r03_reservations() {
     while IFS= read -r svc; do
         [ -z "$svc" ] && continue
         local resv memr
-        resv="$(yq -r ".services[\"$svc\"].deploy.resources.reservations // null" compose.prod.yml 2>/dev/null || echo null)"
-        memr="$(yq -r ".services[\"$svc\"].mem_reservation // \"\"" compose.prod.yml 2>/dev/null || echo "")"
+        resv="$(yaml_query compose.prod.yml ".services[\"$svc\"].deploy.resources.reservations // null" 2>/dev/null || echo null)"
+        memr="$(yaml_query compose.prod.yml ".services[\"$svc\"].mem_reservation // \"\"" 2>/dev/null || echo "")"
         if [ "$resv" != "null" ] || { [ -n "$memr" ] && [ "$memr" != "null" ]; }; then
             bad+=("$svc")
         fi
@@ -608,7 +624,7 @@ _check_traefik_section() {
     local routers="" parsed=0
     if [ ! -f traefik-dynamic.yml ]; then
         _check_warn "traefik-dynamic.yml missing — skipping T02–T05 and T08"
-    elif ! routers="$(yq -r '(.http.routers // {}) | keys | .[]' traefik-dynamic.yml 2>/dev/null)"; then
+    elif ! routers="$(yaml_query traefik-dynamic.yml '(.http.routers // {}) | keys | .[]' 2>/dev/null)"; then
         # T01 is a warn (per docs/compliance.md). A malformed file is the
         # same user-facing condition as a missing one — routing is broken
         # either way — so use the same level rather than flipping to fail.
@@ -648,14 +664,14 @@ _check_t06_no_labels() {
     while IFS= read -r svc; do
         [ -z "$svc" ] && continue
         local has
-        has="$(yq -r "
+        has="$(yaml_query compose.prod.yml "
             .services[\"$svc\"].labels
             | if . == null then []
               elif type == \"object\" then keys
               else map(tostring | sub(\"=.*\"; \"\"))
               end
             | any(startswith(\"traefik.\"))
-        " compose.prod.yml 2>/dev/null || echo "false")"
+        " 2>/dev/null || echo "false")"
         [ "$has" = "true" ] && bad+=("$svc")
     done <<<"$services"
     if [ "${#bad[@]}" -eq 0 ]; then
@@ -674,7 +690,7 @@ _check_t02_domain_router() {
     while IFS= read -r r; do
         [ -z "$r" ] && continue
         local rule
-        rule="$(yq -r ".http.routers[\"$r\"].rule // \"\"" traefik-dynamic.yml)"
+        rule="$(yaml_query traefik-dynamic.yml ".http.routers[\"$r\"].rule // \"\"")"
         if [[ "$rule" == *"$MANIFEST_DOMAIN"* ]]; then
             found=1
             break
@@ -694,7 +710,7 @@ _check_t03_entrypoints() {
     while IFS= read -r r; do
         [ -z "$r" ] && continue
         local n
-        n="$(yq -r ".http.routers[\"$r\"].entryPoints // [] | length" traefik-dynamic.yml)"
+        n="$(yaml_query traefik-dynamic.yml ".http.routers[\"$r\"].entryPoints // [] | length")"
         [ "$n" = "0" ] && bad+=("$r")
     done <<<"$routers"
     if [ "${#bad[@]}" -eq 0 ]; then
@@ -711,9 +727,9 @@ _check_t04_letsencrypt() {
     while IFS= read -r r; do
         [ -z "$r" ] && continue
         local secure cert
-        secure="$(yq -r ".http.routers[\"$r\"].entryPoints // [] | any(. == \"websecure\")" traefik-dynamic.yml)"
+        secure="$(yaml_query traefik-dynamic.yml ".http.routers[\"$r\"].entryPoints // [] | any(. == \"websecure\")")"
         [ "$secure" = "true" ] || continue
-        cert="$(yq -r ".http.routers[\"$r\"].tls.certResolver // \"\"" traefik-dynamic.yml)"
+        cert="$(yaml_query traefik-dynamic.yml ".http.routers[\"$r\"].tls.certResolver // \"\"")"
         [ "$cert" = "letsencrypt" ] || bad+=("$r")
     done <<<"$routers"
     if [ "${#bad[@]}" -eq 0 ]; then
@@ -738,9 +754,9 @@ _check_t08_web_entrypoint() {
     while IFS= read -r r; do
         [ -z "$r" ] && continue
         local rule plain
-        rule="$(yq -r ".http.routers[\"$r\"].rule // \"\"" traefik-dynamic.yml)"
+        rule="$(yaml_query traefik-dynamic.yml ".http.routers[\"$r\"].rule // \"\"")"
         [[ "$rule" == *"$MANIFEST_DOMAIN"* ]] || continue
-        plain="$(yq -r ".http.routers[\"$r\"].entryPoints // [] | any(. == \"web\")" traefik-dynamic.yml)"
+        plain="$(yaml_query traefik-dynamic.yml ".http.routers[\"$r\"].entryPoints // [] | any(. == \"web\")")"
         if [ "$plain" = "true" ]; then
             found=1
             break
@@ -823,7 +839,7 @@ _check_t05_reserved_hostnames() {
     while IFS= read -r r; do
         [ -z "$r" ] && continue
         local rule
-        rule="$(yq -r ".http.routers[\"$r\"].rule // \"\"" traefik-dynamic.yml)"
+        rule="$(yaml_query traefik-dynamic.yml ".http.routers[\"$r\"].rule // \"\"")"
         # Walk every Host(`…`) match in the rule. ${s#*"$match"} chops off
         # everything up through the matched substring, advancing the loop.
         local s="$rule"
@@ -914,9 +930,9 @@ _check_h01_build_healthchecks() {
     while IFS= read -r svc; do
         [ -z "$svc" ] && continue
         local has_build hc
-        has_build="$(yq -r ".services[\"$svc\"] | has(\"build\")" compose.prod.yml 2>/dev/null || echo false)"
+        has_build="$(yaml_query compose.prod.yml ".services[\"$svc\"] | has(\"build\")" 2>/dev/null || echo false)"
         [ "$has_build" = "true" ] || continue
-        hc="$(yq -r ".services[\"$svc\"].healthcheck // null" compose.prod.yml 2>/dev/null)"
+        hc="$(yaml_query compose.prod.yml ".services[\"$svc\"].healthcheck // null" 2>/dev/null)"
         [ "$hc" = "null" ] && bad+=("$svc")
     done <<<"$services"
     if [ "${#bad[@]}" -eq 0 ]; then
@@ -937,14 +953,14 @@ _check_h01_build_healthchecks() {
 # raised, and failing it made the documented default unreachable.
 _check_h02_health_container() {
     local services="$1" container names
-    container="$(yq -r '.health.container // ""' "$KASBAH_MANIFEST_FILE")"
+    container="$(yaml_query "$KASBAH_MANIFEST_FILE" '.health.container // ""')"
     if [ -z "$container" ] || [ "$container" = "null" ]; then
         _check_pass "manifest health: names no container — the deploy waits on every container with a healthcheck"
         return 0
     fi
     # Capture into a here-string before grep -q. Piping `_compose_container_names`
     # straight into `grep -q` raced: grep exits at first match, the producer's
-    # next yq write hits SIGPIPE, pipefail propagates, errexit kills the script.
+    # next write hits SIGPIPE, pipefail propagates, errexit kills the script.
     names="$(_compose_container_names "$services")"
     if grep -qxF -- "$container" <<<"$names"; then
         _check_pass "manifest health.container '$container' exists in compose"
@@ -1088,7 +1104,7 @@ _check_hooks_section() {
 _check_hk01_hook_targets() {
     local container_names="$1"
     local hooks
-    hooks="$(yq -r '.hooks // {} | to_entries[] | .value[]?' "$KASBAH_MANIFEST_FILE" 2>/dev/null)"
+    hooks="$(yaml_query "$KASBAH_MANIFEST_FILE" '.hooks // {} | to_entries[] | .value[]?' 2>/dev/null)"
     if [ -z "$hooks" ]; then
         _check_pass "Hooks block is empty"
         return 0
@@ -1116,7 +1132,7 @@ _check_hk01_hook_targets() {
 _check_hk02_backup_fields() {
     local missing=() f v
     for f in check command extension; do
-        v="$(yq -r ".backup[\"$f\"] // \"\"" "$KASBAH_MANIFEST_FILE")"
+        v="$(yaml_query "$KASBAH_MANIFEST_FILE" ".backup[\"$f\"] // \"\"")"
         if [ -z "$v" ] || [ "$v" = "null" ]; then
             missing+=("$f")
         fi
@@ -1132,7 +1148,7 @@ _check_hk02_backup_fields() {
 # rationale as HK01.
 _check_hk03_backup_container() {
     local container_names="$1" c
-    c="$(yq -r '.backup.container // ""' "$KASBAH_MANIFEST_FILE")"
+    c="$(yaml_query "$KASBAH_MANIFEST_FILE" '.backup.container // ""')"
     if [ -z "$c" ] || [ "$c" = "null" ]; then
         _check_fail "Backup hook missing 'container' field"
         return 0
@@ -1162,7 +1178,7 @@ _check_mail_section() {
     # internal filter rather than the mistake in their manifest — the same order
     # lib/deploy.sh reads the block in.
     local kind
-    kind="$(yq -r '.mail | type' "$KASBAH_MANIFEST_FILE" 2>/dev/null || true)"
+    kind="$(yaml_query "$KASBAH_MANIFEST_FILE" '.mail | type' 2>/dev/null || true)"
     kind="${kind%$'\r'}"
     if [ "$kind" != object ]; then
         _check_fail "mail: has type '${kind:-unknown}' — it has to be a block with a domain: under it"
@@ -1179,7 +1195,7 @@ _check_mail_section() {
 # with a line number rather than a stopped deploy.
 _check_m01_domain() {
     local d
-    d="$(yq -r '.mail.domain // ""' "$KASBAH_MANIFEST_FILE" 2>/dev/null || true)"
+    d="$(yaml_query "$KASBAH_MANIFEST_FILE" '.mail.domain // ""' 2>/dev/null || true)"
     d="${d%$'\r'}"
     if [ -z "$d" ] || [ "$d" = null ]; then
         _check_fail "mail: has no domain: (the claim is that the VPS mail stack handles that domain)"
@@ -1195,7 +1211,7 @@ _check_m01_domain() {
 # SnappyMail keeps. Failing here is the only place that is cheap to fix.
 _check_m02_snappymail() {
     local f
-    f="$(yq -r '.mail.snappymail_domain // ""' "$KASBAH_MANIFEST_FILE" 2>/dev/null || true)"
+    f="$(yaml_query "$KASBAH_MANIFEST_FILE" '.mail.snappymail_domain // ""' 2>/dev/null || true)"
     f="${f%$'\r'}"
     [ -n "$f" ] && [ "$f" != null ] || return 0
 
@@ -1223,7 +1239,7 @@ _check_m02_snappymail() {
 # (e.g. ".health", ".hooks", ".backup"). Used to gate whole sections.
 _manifest_has_block() {
     local path="$1" v
-    v="$(yq -r "$path // null" "$KASBAH_MANIFEST_FILE" 2>/dev/null)"
+    v="$(yaml_query "$KASBAH_MANIFEST_FILE" "$path // null" 2>/dev/null)"
     [ "$v" != "null" ] && [ -n "$v" ]
 }
 
@@ -1233,7 +1249,7 @@ _compose_any_built() {
     while IFS= read -r svc; do
         [ -z "$svc" ] && continue
         local hb
-        hb="$(yq -r ".services[\"$svc\"] | has(\"build\")" compose.prod.yml 2>/dev/null || echo false)"
+        hb="$(yaml_query compose.prod.yml ".services[\"$svc\"] | has(\"build\")" 2>/dev/null || echo false)"
         [ "$hb" = "true" ] && return 0
     done <<<"$services"
     return 1
@@ -1245,8 +1261,9 @@ _compose_any_built() {
 # rules (C03/C07 routed-service detection) and T07.
 _traefik_routed_hosts() {
     [ -f traefik-dynamic.yml ] || return 0
-    { yq -r '(.http.services // {}) | to_entries[] | (.value.loadBalancer.servers // [])[] | .url // ""' \
-        traefik-dynamic.yml 2>/dev/null || true; } \
+    { yaml_query traefik-dynamic.yml \
+        '(.http.services // {}) | to_entries[] | (.value.loadBalancer.servers // [])[] | .url // ""' \
+        2>/dev/null || true; } \
         | sed -E 's#^[A-Za-z0-9+.-]+://##; s#[:/].*$##' | awk 'NF'
     return 0
 }
@@ -1258,7 +1275,7 @@ _compose_container_names() {
     local services="$1" svc cn
     while IFS= read -r svc; do
         [ -z "$svc" ] && continue
-        cn="$(yq -r ".services[\"$svc\"].container_name // \"\"" compose.prod.yml 2>/dev/null)"
+        cn="$(yaml_query compose.prod.yml ".services[\"$svc\"].container_name // \"\"" 2>/dev/null)"
         [ -n "$cn" ] && [ "$cn" != "null" ] && printf '%s\n' "$cn"
     done <<<"$services"
     # Loop ends with read returning 1 (EOF); under errexit a bare

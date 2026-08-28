@@ -122,6 +122,118 @@ kasbah_norm_path() {
     return 0
 }
 
+# ----------------------------------------------------------------------------
+# yaml_load / yaml_query / yaml_forget — one conversion per file, every rule
+# ----------------------------------------------------------------------------
+# `yq` here is the kislyuk wrapper: it parses YAML with PyYAML, writes the
+# document out as JSON and execs `jq` with the caller's filter, exiting with
+# jq's status. Which means `yq -r F file` and `jq -r F <<<"$(yq -c . file)"` are
+# the same parser answering the same filter with the same exit code — the only
+# difference is that the first pays ~180 ms of Python start-up and the second
+# ~5 ms of jq. `kasbah check` asks one compose file thirty-odd questions, so
+# converting once and querying the result is the whole rule set for the price of
+# one rule.
+#
+# The one place the two spellings answer differently is a YAML infinity: `.inf`
+# has no JSON literal, so the conversion already renders it as the largest
+# double and a re-parse prints that with jq's own exponent spelling. Nothing
+# kasbah reads is a float that large.
+#
+# **A subshell cannot fill this cache.** Nearly every reader is written
+# `x="$(yaml_query …)"`, and a command substitution is a subshell: whatever it
+# converts dies with it. So the conversion has to be started from the shell the
+# rules run in — manifest_require loads kasbah.yml and cmd_check the two project
+# files, and the substitutions below them inherit the variables. yaml_query
+# still converts on a miss, so a caller nobody preloaded for gets a correct
+# answer rather than an empty one; it just pays the fork.
+#
+# **Invalidation is explicit.** The cache is keyed by the path as given and is
+# never checked against the file's mtime: a query after the file changed on disk
+# answers from the conversion. Anything that writes a file it has read has to
+# say so — `check --fix` calls yaml_forget on the path it renames over.
+#
+# Multi-document files stay multi-document: jq reads a stream of documents the
+# same way yq does, so a filter still runs once per document. `-c` is not what
+# makes that work — jq reads pretty-printed documents just as happily — it is
+# there because the whole document is carried in a shell variable, and compact
+# is a third to a half fewer bytes to hold and to feed back through a
+# here-string (1.3-1.9x on this project's own files).
+#
+# **A document that does not parse yields nothing at all.** `yq -c` can write a
+# document *and* exit non-zero, which is what a multi-document file with one
+# broken document does; the JSON from a failed conversion is dropped rather than
+# half-kept, so every rule downstream sees "this file did not parse" instead of
+# the half of it that happened to survive. That is what cmd_check's own comment
+# has always claimed — one parse error short-circuits the compose rules cleanly.
+#
+# A parse error is the one diagnostic a user needs (line and column), and it is
+# produced once while many rules go on to ask — so a failed conversion is asked
+# a second time for its stderr alone, and that text is replayed on every failed
+# query for the file. A call site's own `2>/dev/null` still silences it. `$(…)`
+# strips the trailing newline off what it captures, so the replay puts exactly
+# one back. Stderr from a conversion that *succeeds* is dropped: a warning
+# PyYAML emits about a document it went on to parse used to reach the terminal
+# once per unsuppressed call site, and no rule reads one. Keeping it would mean
+# either printing it on every query or separating the two streams by hand, and
+# the second cost more in string handling than the forks it saved.
+declare -A _KASBAH_YAML_JSON=()   # path → the JSON, one document per line
+declare -A _KASBAH_YAML_RC=()     # path → 0 parsed, 2 did not; key present = loaded
+declare -A _KASBAH_YAML_ERR=()    # path → yq's diagnostic, for the replay
+
+# jq is not an extra dependency: it is what yq runs. Named anyway, because
+# "kasbah check printed nothing" is a worse way to learn it is missing.
+_yaml_require_jq() {
+    command -v jq >/dev/null || die "jq is required (install jq and retry)"
+}
+
+# yaml_load FILE — convert now, replacing anything cached for that path.
+# Exit 2 when the file is missing or does not parse.
+yaml_load() {
+    local _yl_f="$1" _yl_json="" _yl_rc=0
+    _yaml_require_jq
+
+    _yl_json="$(yq -c '.' "$_yl_f" 2>/dev/null)" || _yl_rc=$?
+    if [ "$_yl_rc" = 0 ]; then
+        _KASBAH_YAML_JSON["$_yl_f"]="$_yl_json"
+        _KASBAH_YAML_RC["$_yl_f"]=0
+        _KASBAH_YAML_ERR["$_yl_f"]=""
+        return 0
+    fi
+
+    # The second read is the whole cost of the failure path, and it buys the
+    # diagnostic in the shape yq wrote it. Splitting the two streams out of one
+    # fork means carrying the JSON through shell string operations, and those go
+    # superlinear: ~30 s on a 1 MB document, against ~1.6 s of yq.
+    _KASBAH_YAML_JSON["$_yl_f"]=""
+    _KASBAH_YAML_RC["$_yl_f"]=2
+    _KASBAH_YAML_ERR["$_yl_f"]="$(yq -c '.' "$_yl_f" 2>&1 >/dev/null)" || true
+    return 2
+}
+
+# yaml_query FILE FILTER — print the filter's answer. Exit 2 when the document
+# does not parse (with yq's diagnostic on stderr), or jq's own status when the
+# filter fails at runtime — the same non-zero the `|| true` and `|| echo false`
+# fallbacks throughout lib/check.sh are written for.
+yaml_query() {
+    local _yq_f="$1" _yq_filter="$2"
+    if [ -z "${_KASBAH_YAML_RC[$_yq_f]+set}" ]; then
+        yaml_load "$_yq_f" || true
+    fi
+    if [ "${_KASBAH_YAML_RC[$_yq_f]}" != 0 ]; then
+        [ -z "${_KASBAH_YAML_ERR[$_yq_f]}" ] \
+            || printf '%s\n' "${_KASBAH_YAML_ERR[$_yq_f]}" >&2
+        return 2
+    fi
+    jq -r "$_yq_filter" <<<"${_KASBAH_YAML_JSON[$_yq_f]}"
+}
+
+# yaml_forget FILE — drop the entry, so the next query reads the file again.
+yaml_forget() {
+    local _yf_f="$1"
+    unset "_KASBAH_YAML_JSON[$_yf_f]" "_KASBAH_YAML_RC[$_yf_f]" "_KASBAH_YAML_ERR[$_yf_f]"
+    return 0
+}
+
 # yaml_get CONTENT FILTER OUTVAR — one keyed lookup against a YAML document
 # held in a variable. Exit 2 means the document did not parse, which every
 # caller keeps distinct from "the key is not there": kasbah reuses what is on

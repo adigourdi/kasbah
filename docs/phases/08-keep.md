@@ -1019,3 +1019,105 @@ backup runner holds the last run's facts in shell variables, so a container rest
 a stack that has run for months read as one that has never fired, until its next run.
 The readers report that honestly rather than guessing, because a reader cannot invent a
 fact the writer discarded.
+
+## Post-close follow-ups — the two backlog items, tackled 2026-08-27
+
+Both items this phase filed were picked up in one run, after the close and before Phase 9
+opens. Scope as approved: the `yq` fork cost first (it makes every later suite run
+cheaper), then the backup runner's amnesia. One commit each; the backlog files are deleted
+in their unit's commit and the outcome recorded here, so `docs/phases/` stays the only
+tracker.
+
+Three decisions settled before the first agent:
+
+- **The fork cost is answered by converting each file once, not by collapsing doubled
+  reads.** kislyuk `yq` *is* `yaml→json | jq`, so one `yq -c '.'` per file into a shell
+  variable and `jq` for every rule is the same parser answering the same questions —
+  measured at 42 forks / 7.72 s for one `kasbah check`, against ~5 ms for a `jq` fork.
+  The item's own "collapse `_cf_yq` + `_cf_has`" option is refused: it buys ~20 × 5 ms
+  once the forks are `jq`, at the cost of restructuring rules four commits depend on.
+- **The runner reloads its last-run facts at start-up *and* at the top of every run.**
+  The second one closes a window the item did not name: `docker exec … once` updates the
+  record while the scheduler sleeps holding older values, and the scheduler's next run
+  would overwrite them.
+- **The verdict is one full `KASBAH_RIG_TESTS=1 ./test.sh` at the end**, refreshing the
+  47-suite baseline the Phase 9 preamble carries.
+
+Baseline before either change, this workstation, nothing else writing:
+`tests/check_test.sh` **13m52s**, exit 0.
+
+### `kasbah check` reads each file once — 42 `yq` forks to 4
+
+`yaml_load` / `yaml_query` / `yaml_forget` in `lib/common.sh`, beside the content-based
+`yaml_get` that was already there. kislyuk `yq` parses YAML with PyYAML, writes JSON and
+execs `jq`, so one `yq -c '.'` per file into a shell variable plus `jq` per rule is the
+same parser answering the same filters — identical by construction rather than by care.
+Converted: all 37 sites in `lib/check.sh`, `_cf_yq`/`_cf_has` and the direct reads in
+`lib/check_fix.sh`, and `manifest_get`. `manifest_require` keeps its own `yq` sentinel: it
+exists to let yq's stderr through on a parse error and to catch a multi-document manifest,
+and every command depends on those paths.
+
+`kasbah check` on a one-service project: **42 forks / 7.72 s → 4 forks / 0.52 s**.
+`check --fix --yes` on a project with a real violation: **83 → 9**. `tests/check_test.sh`:
+**13m52s → 4m04.8s**. The four that remain are `manifest_require`'s sentinel and one
+conversion per file.
+
+**A command substitution cannot fill the cache**, and that one fact shapes the whole
+thing: every reader is written `x="$(…)"`, and a subshell's conversion dies with it. So
+`manifest_require` loads the manifest and `cmd_check` the two project files, in the shell
+the rules run in, and the substitutions below them inherit it. `yaml_query` still converts
+on a miss — a correct answer that merely costs a fork beats an empty one — which means the
+win is invisible to correctness and can rot silently. **F20 pins the fork shape** against
+an exact literal, not a bound: which file, how many times, per phase.
+
+**The first implementation was 27× slower than the forks it removed, on a large file.** It
+got stdout, stderr and the exit status out of a single `yq` with fd 3 and a `\001`
+sentinel, and the shell string operations that unpacked the result went superlinear —
+~30 s on a 1 MB document against ~1.6 s of `yq`, and a 5 MB one never finished. What made
+it findable was asking the reviewer the question directly — *is this construct necessary?*
+— and a reviewer who measured the alternative instead of arguing about it: suppress stderr
+on the read, re-run `yq` once on the failure path only. Twelve lines and three concepts
+became three lines, and both new suites passed **unchanged** across the swap. A clever
+construct in a function written for speed is worth a measurement, not a compliment.
+
+**Three numeric claims in the new comments were wrong, and execution caught all three**:
+that pretty-printed JSON would "fuse the documents into one unreadable blob" (jq reads
+that stream perfectly well — `-c` earns its place for size, not correctness), "several
+times fewer bytes" (1.3–1.9× on this project's own files), and a `0.54 s` figure carried
+across from an end-to-end run on a tiny project. In a repo whose comments are its design
+record, a number in one is a claim under test.
+
+**The change made a stated intent true that the code had only half-kept.** `cmd_check`'s
+comment said a parse error in `compose.prod.yml` "short-circuits all of them cleanly";
+`yq -c` will write a document *and* exit non-zero, so a multi-document file with one bad
+half used to hand its readable services on to T07, which printed a `✓` off half a file.
+A file that does not parse now yields nothing at all. Pinned by **F21**, which forbids
+T07's pass line, its failure line, and the container name.
+
+Two accepted limits, stated in the header rather than discovered later. The cache is keyed
+by path and never revalidated against mtime, so **anything that rewrites a file it has read
+calls `yaml_forget`** — `check --fix` does, on the path it renames over. And stderr from a
+conversion that *succeeds* is dropped, where it used to reach the terminal once per
+unsuppressed call site.
+
+**A mechanism can be right and still not be the thing holding the line.** The `yaml_forget`
+in `_cf_commit` turned out not to be load-bearing for `check --fix`: `cmd_check` reloads
+both files after the fix step anyway, so deleting the forget changed no output. Both were
+kept — the forget is the writer's local contract, the reload is the report phase's
+boundary — but the seam was made directly testable (**F19b** drives `_cf_commit` and
+asserts the next query sees the new bytes) rather than left as a mechanism whose failure
+nothing would show. The `|| true` on the failure path's diagnostic capture is the same
+shape of thing: nothing reaches it today, and without it errexit kills the shell before
+the documented `return 2`.
+
+Equivalence was not taken on trust: 40 fixtures — unparseable, empty, comments-only, CRLF,
+multi-document, scalar, missing, unreadable, symlinked, read-only — driven through
+`check` and `check --fix --yes` under HEAD and under the change **in the same directory
+path**, comparing stdout, stderr, exit code and the resulting tree. 40/40 byte-identical,
+the accepted multi-document divergence aside.
+
+Left alone deliberately: the doubled `_cf_yq` + `_cf_has` reads (two calls answering one
+question) — worth ~20 × 5 ms now that the forks are `jq`, against restructuring rules four
+commits depend on; and the 1–4 `yq` calls each in `build_push`, `server_init`,
+`check_server`, `upgrade_traefik`, `server_mail` and `backup`, all in commands whose floor
+is an SSH round trip.

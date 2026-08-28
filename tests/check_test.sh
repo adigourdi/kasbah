@@ -3641,4 +3641,200 @@ YAML
         "F18: and no candidate was left behind"
 fi
 
+# --- Case F19: the report describes the file --fix just wrote ----------------
+# `--fix` renames its candidate over the real file and cmd_check then runs the
+# whole rule set over that path. Documents are converted once per file per phase
+# and nothing watches mtimes (lib/common.sh -> yaml_load), so "the report is
+# about the file that is there now" is a fact somebody has to arrange rather
+# than one that falls out: cmd_check converts after the fix, and _cf_commit
+# drops what it renamed over. The contract is asserted first, then the seam on
+# its own — either mechanism alone would satisfy the contract, so the second
+# assertion is what keeps _cf_commit honest.
+f19="$tmpdir/fix-reread"
+fx_project "$f19" <<'YAML'
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    networks: [kasbah-net]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: true
+YAML
+out="$(cd "$f19" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]' "F19: the project fails C01 before anything is fixed (rc $rc)"
+out="$(fx_run "$f19")"; rc=$?
+assert 'grep -qF "wrote compose.prod.yml" <<<"$out"' \
+    "F19: --fix wrote the file (said '$out')"
+assert 'grep -qF "✓ All services set restart policy" <<<"$out"' \
+    "F19: and the report in the same run reads the file it just wrote (said '$out')"
+assert '! grep -qF "✗ Services missing restart policy" <<<"$out"' \
+    "F19: rather than the failure it repaired"
+assert '[ "$rc" = "0" ]' "F19: so the run ends clean (rc $rc)
+$out"
+# And the seam itself, since cmd_check reloading after the fix would hide a
+# _cf_commit that forgot to say it had rewritten the file: the rename drops the
+# conversion cached for the path it landed on.
+f19b="$tmpdir/fix-commit-forgets"
+mkdir -p "$f19b"
+printf 'a: 1\n' > "$f19b/f.yml"
+printf 'a: 2\n' > "$f19b/f.new"
+out="$(cd "$f19b" && env KASBAH_LIB_DIR="$repo_dir/lib" bash -c '
+    set -uo pipefail
+    . "$KASBAH_LIB_DIR/check_fix.sh"
+    yaml_load f.yml
+    _cf_commit f.yml f.new >/dev/null
+    yaml_query f.yml ".a"
+' 2>&1)"
+assert '[ "$out" = "2" ]' \
+    "F19: _cf_commit drops the conversion cached for the path it renamed over (said '$out')"
+
+# --- Case F20: one yq fork per file, never one per rule ----------------------
+# The linter converts each document once and answers every rule from that, so
+# the only `yq` a run may fork is a whole-file read: `-c .` per file, plus
+# manifest_require's own sentinel read, which stays as it is because it is where
+# a YAML parse error reaches the operator. A rule that goes back to forking per
+# service still produces the right report — it just takes ~180 ms per question —
+# so nothing else in this suite would notice. This is the pin that does.
+#
+# The shape is asserted, not a ceiling: which file was read, by which kind of
+# read, how many times. A bound would pass by luck on a fixture that never
+# reaches the code that regressed, and the `--fix` half in particular has to run
+# against a project that really gets fixed — a compliant one never stages a
+# candidate and so never exercises the staging or the re-plan.
+#
+# A shim on PATH records every call and execs the real thing, so the run under
+# test is the real run.
+shimdir="$tmpdir/forkshim"
+mkdir -p "$shimdir"
+real_yq="$(command -v yq)"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'printf "YQCALL %%s\\\\n" "$*" >> "$YQ_COUNT_FILE"\n'
+    printf 'exec %s "$@"\n' "$real_yq"
+} > "$shimdir/yq"
+chmod +x "$shimdir/yq"
+
+fork_run() { # DIR ARGS...
+    local d="$1"; shift
+    : > "$tmpdir/forks.log"
+    (cd "$d" && PATH="$shimdir:$PATH" YQ_COUNT_FILE="$tmpdir/forks.log" \
+        "$kasbah" "$@" >/dev/null 2>&1)
+    return 0
+}
+# `KIND FILE COUNT` per distinct read, sorted. The candidate carries the run's
+# pid, so it is folded back to a fixed name; anything that is neither a whole
+# file conversion nor the sentinel keeps its raw text and shows up as a stray.
+fork_shape() {
+    sed -E -e 's/^YQCALL -c \. /convert /' \
+           -e 's/^YQCALL -r \.schema .* /sentinel /' \
+           -e 's/\.kasbah-fix\.[0-9]+$/.kasbah-fix.PID/' "$tmpdir/forks.log" \
+        | sort | uniq -c | awk '{ print $2, $3, $1 }' | sort
+}
+
+f20="$tmpdir/forks-plain"
+make_project "$f20"
+fork_run "$f20" check
+got="$(fork_shape)"
+want="convert compose.prod.yml 1
+convert kasbah.yml 1
+convert traefik-dynamic.yml 1
+sentinel kasbah.yml 1"
+assert '[ "$got" = "$want" ]' \
+    "F20: a plain check reads each file once, and kasbah.yml once more for the sentinel
+$(diff -u <(printf '%s\n' "$want") <(printf '%s\n' "$got") 2>&1 || true)
+        raw:
+$(sed 's/^/        /' < "$tmpdir/forks.log")"
+
+# A project with a real C01 violation, so --fix stages a candidate, verifies it
+# and re-plans it — the three places that read a document during the fix.
+f20b="$tmpdir/forks-fix"
+fx_project "$f20b" <<'YAML'
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    networks: [kasbah-net]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: true
+YAML
+fork_run "$f20b" check --fix --yes
+got="$(fork_shape)"
+# Twice each for the project's own files: the fix reads them, then the report
+# re-reads what the fix wrote (lib/check.sh — the loads sit after check_fix_run
+# deliberately). The candidate is converted once, which is both its parse check
+# and what the verifier and the re-plan then query.
+want="convert compose.prod.yml 2
+convert compose.prod.yml.kasbah-fix.PID 1
+convert kasbah.yml 2
+convert traefik-dynamic.yml 2
+sentinel kasbah.yml 2"
+assert '[ "$got" = "$want" ]' \
+    "F20: --fix reads each file once per phase, and the candidate once
+$(diff -u <(printf '%s\n' "$want") <(printf '%s\n' "$got") 2>&1 || true)
+        raw:
+$(sed 's/^/        /' < "$tmpdir/forks.log")"
+# The fixture really was fixed, so the shape above is the shape of a run that
+# went all the way through staging rather than one that found nothing to do.
+assert 'grep -qF "restart: unless-stopped" "$f20b/compose.prod.yml"' \
+    "F20: and the --fix fixture really was rewritten"
+
+# --- Case F21: a document that does not parse yields no services at all ------
+# `yq -c .` will write the documents it managed to read *and* exit non-zero, so
+# a multi-document compose file with one broken document has a good half. That
+# half is dropped: the rules see one unreadable file rather than a project made
+# of whichever documents happened to survive, which is what cmd_check's comment
+# about short-circuiting has always promised. Pinned because the failure it
+# prevents is silent — T07 passed on this fixture by checking the fragment
+# against container_names read out of half a file.
+f21="$tmpdir/partial-parse"
+make_project "$f21"
+{
+    printf 'services:\n'
+    printf '  demo-web:\n'
+    printf '    image: nginx:alpine\n'
+    printf '    container_name: demo-web\n'
+    printf -- '---\n'
+    printf 'services:\n'
+    printf '\tbroken: 1\n'
+} > "$f21/compose.prod.yml"
+# The precondition, asserted rather than assumed: this file really is *partly*
+# readable. A fixture that failed outright would satisfy everything below while
+# proving nothing.
+f21_half="$(cd "$f21" && yq -c '.' compose.prod.yml 2>/dev/null)"; f21_rc=$?
+assert '[ "$f21_rc" != 0 ]' "F21: the fixture does not parse (rc $f21_rc)"
+assert 'grep -q "demo-web" <<<"$f21_half"' \
+    "F21: and yet one of its documents converts (said '$f21_half')"
+
+out="$(cd "$f21" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]' "F21: the run fails (rc $rc)"
+assert 'grep -qF "✗ compose.prod.yml does not parse as YAML" <<<"$out"' \
+    "F21: and says the file does not parse (said '$out')"
+# T07 is the rule that used to answer from the readable half. With no services
+# it has nothing to check and says nothing at all — neither its pass line nor
+# its failure may appear.
+assert '! grep -qF "Fragment loadBalancer URLs target explicit container_names" <<<"$out"' \
+    "F21: T07 does not pass on the half that parsed (said '$out')"
+assert '! grep -qF "Fragment targets unknown container_names" <<<"$out"' \
+    "F21: and does not fail on it either (said '$out')"
+assert '! grep -q "demo-web" <<<"$out"' \
+    "F21: no rule reports on a service from the half that parsed (said '$out')"
+
 exit "$fail"

@@ -19,6 +19,11 @@ plan and the only progress tracker (the roadmap is scope, not status).
 - **yq is the kislyuk wrapper (jq dialect).** Never write mikefarah v4
   syntax (`type == "object"`, `to_entries[]`, `sub("a";"b")` are jq forms
   and correct here).
+- **Read a YAML file once, never per rule.** `yq` is Python — ~180 ms a
+  fork. `yaml_load`/`yaml_query` (`lib/common.sh`) convert a file once and
+  answer every question with `jq`. A command substitution cannot fill that
+  cache, so load in the shell the rules run in; invalidation is explicit —
+  whatever rewrites a file it has read calls `yaml_forget`.
 - **Bash:** `set -euo pipefail` everywhere; libs are sourced with load
   guards (`_KASBAH_X_LOADED`). Under pipefail, never pipe a producer
   into `grep -q` (SIGPIPE race) — capture to a variable, then
