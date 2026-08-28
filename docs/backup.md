@@ -71,13 +71,23 @@ healthcheck come to describe one file three different ways. Timestamps are judge
 round trip: a verdict computed against the workstation's would be a function of
 clock skew.
 
-**A restart resets what the record knows.** The runner holds the last run's
-facts in shell variables, so a container that restarts — a reboot, a
-`compose up`, a crash — writes its next `sleeping` record with no last run in
-it. A stack that has backed up faithfully for months then reads as one that has
-never fired, until its next run completes. `status` and B01 report that honestly
-rather than guessing, which means **a warning for up to a day after any
-reboot** is expected and is not a fault.
+**A restart does not reset what the record knows.** The runner reads the last
+run's facts back out of the record before it writes anything — at start-up, and
+again at the top of every run. A scheduler brought up by a reboot, a
+`compose up` or a re-ship of the script carries the history the stack already
+had, and a hand-driven `once` running beside a sleeping scheduler cannot have
+its run overwritten by a copy of the record taken before it happened. So the
+record's never-fired state — `last_run_status=-`, which is what `status` and
+B01 both read as *never* — now means what it says. The last run is carried as
+**one fact or none**: the epochs are admitted by the same `is_epoch` rule the
+healthcheck uses, and a record that was hand-edited or half-written is left
+where a runner with no history starts, rather than carried in halves that
+describe a run nobody had.
+
+One consequence worth expecting: **a failed run stays failed across a restart.**
+Bouncing the container does not clear a ✗ from B01 — the verdict comes back out
+of the record — so `kasbah check --server` keeps exiting 6 until a run actually
+succeeds.
 
 A safety mechanism nothing reads is indistinguishable from no safety mechanism,
 which is why these readers exist at all — the healthcheck alone would have left

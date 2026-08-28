@@ -1121,3 +1121,69 @@ question) — worth ~20 × 5 ms now that the forks are `jq`, against restructuri
 commits depend on; and the 1–4 `yq` calls each in `build_push`, `server_init`,
 `check_server`, `upgrade_traefik`, `server_mail` and `backup`, all in commands whose floor
 is an SSH round trip.
+
+### The backup record survives its container
+
+`load_last_run` in `templates/backup/backup.sh` reads the four `last_run_*` fields back
+out of `<apps>/.kasbah/backup/state/status` through the file's existing `status_field`, and
+admits epochs through the existing `is_epoch` — one rule, no second parser. Called at
+start-up before the scheduler writes its first record, and again at the top of every run.
+The second call site was not in the backlog item: a `docker exec … once` updates the record
+while the scheduler sleeps holding an older copy, and whichever process writes next must
+carry the other's run rather than overwrite it.
+
+**The amnesia was not only producing a spurious warning — it was clearing a real
+failure.** The backlog framed this as "a stack that has run for months reads as one that
+has never fired", and the rig suite's own restart case proved the other half: the run
+before the restart had *failed*, and forgetting it turned `failed` into `never`, a ✗ into
+a ⚠. The old assertion that `check --server` "stops failing once it is back" was green
+**because of the defect**. It now exits 6, correctly, and bouncing the container no longer
+clears a failed backup. A defect that makes a suite greener is the kind that survives
+review.
+
+**Four fields, validated four ways, produced a state the writer never emits.** The first
+implementation validated each field independently, so a record truncated after
+`last_run_status=ok` came back as `ok` with the `-` placeholder for repos — and
+`lib/check_server.sh:654` reads `-` as a repository list, not as the writer's word for
+nothing, so B01 went from ⚠ *"shipped nothing"* to ✓ *"succeeded (repositories: -)"*. The
+runner was upgrading a garbled record to a passing backup. **The last run is one fact:**
+all four fields valid or none carried. The trap in the fix is that `-` *is* a legitimate
+repos value — `run_once`'s `load_env` failure path writes `status=failed` with `repos=-` —
+so the gate is presence and individual validity, never a rejection of `-`. Both directions
+are pinned, at the runner and against the real reader.
+
+**A test helper that was correct only by accident of its fixtures.** `sched_record` waited
+for `state=sleeping` to appear in the file; every fixture until then had used
+`state=seed`, so it worked. The first realistic fixture — a *sleeping* record truncated
+mid-write, which is what a half-written record actually looks like — matched the seed, and
+the helper returned before the scheduler had written anything. It now snapshots the file
+and waits for content that differs *and* says `sleeping`.
+
+Three claims in the new comments were contradicted by execution, all of the same shape —
+a true sentence about a neighbouring thing, applied where it does not hold.
+`last_run_started=0` is *not* how the record spells "has never fired": `BKR_STARTED` is
+parsed and validated in `lib/backup_record.sh` and then read by nothing, and `never` comes
+from `last_run_status` alone. The no-CR-stripping rationale argued from `health`, which is
+a pure reader, where `load_last_run` is a read-modify-**write** that would have written a
+carried `\r` back into a file kasbah authored — the gate makes that unreachable, because a
+CRLF record fails `is_epoch` on its first field, and that is the argument the comment
+should have made. One of the three had already propagated into `docs/backup.md` by the
+time it was caught.
+
+Suites: `tests/backup_test.sh` 10.1 s, `tests/integration/backup_status_test.sh` 1m05,
+`tests/integration/backup_test.sh` 4m54, `tests/integration/backup_harness_test.sh` 21.5 s.
+The unit suite drives the runner under `busybox sh`, so the POSIX constraint is exercised
+rather than scanned. Not verified anywhere but the rig: the real host is no longer a kasbah
+server, and reboot behaviour on real hardware is traced, not proved.
+
+One narrower shape survives and is left alone: a CR on the `last_run_repos` line *only* —
+the first three fields pass their gates, so the all-or-nothing rule admits it and the byte
+round-trips into the file. No verdict moves (`lib/backup_record.sh` strips a trailing CR
+per line, and `health` never reads that field), and it is reachable only by hand-editing
+one line of a machine-written file. The comment's claim is about a *CRLF record*, which
+stays true.
+
+**Verdict for both follow-ups:** `KASBAH_RIG_TESTS=1 ./test.sh` **48 PASS, 0 FAIL, 0 SKIP,
+exit 0** in 32m22s (29 unit, 19 integration), against Phase 8's closing 47. Neither item
+was proved anywhere but this workstation and the rig — the real host is no longer a kasbah
+server, so reboot behaviour on real hardware stays traced rather than proved.

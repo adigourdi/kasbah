@@ -1352,6 +1352,189 @@ assert 'grep -qxF "timeout=900" "$run_state_dir/status"' "and the bound it was r
 out=$(run_runner_all health); rc=$?
 assert '[ "$rc" = "0" ]' "and the healthcheck accepts it (exit $rc: $out)"
 
+# --- The last run, carried across a process ---------------------------------------
+# The record is the only place a run exists once its process is gone, so the next
+# process to write it has to read it first. Two writers do: a scheduler starting
+# up, which is a container after a reboot or a re-ship, and a `docker exec … once`
+# running beside a scheduler that is asleep holding an older copy in memory.
+seed_record() { printf '%s\n' "$@" > "$run_state_dir/status"; }
+
+# The scheduler's own start-up path, driven for real and then stopped. It writes
+# `starting`, then `sleeping`, then sleeps until the slot; what is asserted is
+# the record it leaves before it has run anything, which is what a restarted
+# container shows for up to a day.
+sched_record() {
+    # Waited for by content and not by state: a seed may itself say `sleeping`,
+    # and polling for the word alone would read the seed back and call it the
+    # scheduler's answer.
+    local before="" now=""
+    [ ! -f "$run_state_dir/status" ] || before=$(cat "$run_state_dir/status")
+    env KASBAH_BACKUP_APPS="$tree/apps" KASBAH_BACKUP_DATA="$tree/data" \
+        KASBAH_BACKUP_AT=02:00 KASBAH_BACKUP_JITTER=0 \
+        $runner_sh "$runner" schedule >/dev/null 2>&1 &
+    local pid=$! waited=0
+    while [ "$waited" -lt 200 ]; do
+        now=""
+        [ ! -f "$run_state_dir/status" ] || now=$(cat "$run_state_dir/status")
+        [ "$now" = "$before" ] || ! grep -qxF "state=sleeping" <<<"$now" || break
+        sleep 0.05
+        waited=$((waited + 1))
+    done
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    printf '%s\n' "$now"
+}
+
+# A completed run in the record, and a scheduler that never performed it: the
+# four last-run fields come back out of the file, and the four this process owns
+# are its own. `last_run_repos` carries its leading space, because that is a byte
+# the writer wrote and not one a reader may tidy.
+seed_record 'state=seed' 'since=1700000000' 'deadline=1700000900' 'next_run=1700086400' \
+            'last_run_started=1700000000' 'last_run_finished=1700000123' \
+            'last_run_status=ok' 'last_run_repos= acme mail' \
+            'timeout=900' 'at=02:00' 'jitter=0'
+rec=$(sched_record)
+assert 'grep -qxF "last_run_started=1700000000" <<<"$rec"' \
+    "a scheduler starting on an existing record carries when the last run began (record: $rec)"
+assert 'grep -qxF "last_run_finished=1700000123" <<<"$rec"' "and when it ended (record: $rec)"
+assert 'grep -qxF "last_run_status=ok" <<<"$rec"' "and how it went (record: $rec)"
+assert 'grep -qxF "last_run_repos= acme mail" <<<"$rec"' \
+    "and what it reached, byte for byte (record: $rec)"
+assert 'grep -qxF "state=sleeping" <<<"$rec"' \
+    "while the state is this process's own (record: $rec)"
+assert '! grep -qxF "since=1700000000" <<<"$rec"' \
+    "and so is the moment it entered it (record: $rec)"
+assert '! grep -qxF "deadline=1700000900" <<<"$rec"' \
+    "and the deadline the healthcheck judges it by (record: $rec)"
+assert '! grep -qxF "next_run=1700086400" <<<"$rec"' \
+    "and the slot it computed for itself (record: $rec)"
+
+# Nothing to carry, and every way of having nothing. `-`/`0` is what a runner
+# with no history writes, and it is what all of these have to produce: a record
+# this script cannot believe must leave it where an empty one does, never
+# half-carried.
+rm -f "$run_state_dir/status"
+rec=$(sched_record)
+assert 'grep -qxF "last_run_started=0" <<<"$rec"' \
+    "no record at all is a scheduler with no last run (record: $rec)"
+assert 'grep -qxF "last_run_status=-" <<<"$rec"' "and no last status (record: $rec)"
+
+: > "$run_state_dir/status"
+rec=$(sched_record)
+assert 'grep -qxF "last_run_started=0" <<<"$rec"' \
+    "and so is an empty one (record: $rec)"
+assert 'grep -qxF "last_run_repos=-" <<<"$rec"' "with nothing claimed as backed up (record: $rec)"
+
+# One bad field at a time, and all four fall back. Separate seeds rather than one
+# thoroughly garbled record: a record that fails every gate cannot say which gate
+# refused it, and a gate that is never the only reason is one no suite can see go
+# missing.
+llr_case() {
+    seed_record 'state=seed' 'since=1700000000' 'deadline=1700000900' 'next_run=1700086400' \
+                "last_run_started=$1" "last_run_finished=$2" \
+                "last_run_status=$3" "last_run_repos=$4" \
+                'timeout=900' 'at=02:00' 'jitter=0'
+    sched_record
+}
+# The gate is all-or-nothing, so this is the whole assertion every time: a
+# record short of four good fields yields the four a fresh runner yields, and
+# not a mixture of its own good fields and this script's placeholders — that
+# mixture is a pair of values no run ever wrote, and lib/check_server.sh reads
+# `ok` beside a repos field of `-` as a backup that succeeded.
+llr_none() {
+    assert 'grep -qxF "last_run_started=0" <<<"$2"'  "$1: no start is carried (record: $2)"
+    assert 'grep -qxF "last_run_finished=0" <<<"$2"' "$1: nor a finish (record: $2)"
+    assert 'grep -qxF "last_run_status=-" <<<"$2"'   "$1: nor a status (record: $2)"
+    assert 'grep -qxF "last_run_repos=-" <<<"$2"'    "$1: nor a repository list (record: $2)"
+}
+
+# The two epoch shapes is_epoch exists for: `01700000000` is a valid octal that
+# silently means another number, and 24 digits makes `[ -gt ]` say `Illegal
+# number`. Both come with three good fields beside them, which is what makes
+# them a test of the gate rather than of is_epoch.
+rec=$(llr_case 01700000000 1700000123 ok ' acme mail')
+llr_none "a leading-zero epoch, read as octal by everything downstream" "$rec"
+rec=$(llr_case 1700000000 999999999999999999999999 ok ' acme mail')
+llr_none "a 24-digit epoch, which no comparison here can make" "$rec"
+rec=$(llr_case 1700000000 1700000123 bogus ' acme mail')
+llr_none "a status this writer never writes" "$rec"
+rec=$(llr_case 1700000000 1700000123 ok '')
+llr_none "a repository list that is there and empty" "$rec"
+
+# The truncated record: a write cut off after `last_run_status`. Carried field by
+# field it becomes `ok` with no repositories, which is the shape that turns
+# check --server's ⚠ 'shipped nothing' into a ✓ 'succeeded'. A runner must not
+# upgrade a half-written record to a passing backup.
+seed_record 'state=sleeping' "deadline=$(( $(date +%s) + 600 ))" "next_run=$(( $(date +%s) + 600 ))" \
+            'last_run_started=1700000000' 'last_run_finished=1700000123' \
+            'last_run_status=ok'
+rec=$(sched_record)
+llr_none "a record truncated mid-write, after last_run_status" "$rec"
+# And judged by the reader that would have to live with it: lib/backup_record.sh
+# is the workstation half of this file, and `never` is the verdict that keeps
+# B01 out of its ✓ arm. Asserted against the real function rather than reasoned
+# about, because the flip this case exists for happens in the reader.
+record_verdict() {
+    bash -c '. "$KASBAH_LIB_DIR/common.sh"; . "$KASBAH_LIB_DIR/backup_record.sh"
+        backup_record_read dir file "$1" "$(date +%s)" >/dev/null 2>&1 || true
+        printf "%s|%s" "$BKR_VERDICT" "$BKR_STATUS"' _ "$1"
+}
+verdict=$(record_verdict "$rec")
+assert '[ "$verdict" = "never|-" ]' \
+    "and the workstation reader calls what the runner wrote 'never' (got '$verdict')"
+# The same reader on the bytes the gate refused to copy forward, so the line
+# above is a verdict this change produced and not one it inherited.
+verdict=$(record_verdict "$(printf 'state=sleeping\ndeadline=%s\nlast_run_started=1700000000\nlast_run_finished=1700000123\nlast_run_status=ok\nlast_run_repos=-\n' "$(( $(date +%s) + 600 ))")")
+assert '[ "$verdict" = "ok|ok" ]' \
+    "where the half-carried record it would otherwise have written reads as a backup that worked (got '$verdict')"
+
+# `-` is a value a real run writes: run_once records `failed` with no
+# repositories reached when it cannot read its env file. The gate is about a
+# field being present and valid, never about refusing that spelling.
+rec=$(llr_case 1700000000 1700000123 failed '-')
+assert 'grep -qxF "last_run_started=1700000000" <<<"$rec"' \
+    "a run that failed having reached nothing is still a run, and is carried (record: $rec)"
+assert 'grep -qxF "last_run_finished=1700000123" <<<"$rec"' "with when it ended (record: $rec)"
+assert 'grep -qxF "last_run_status=failed" <<<"$rec"' "and how it went (record: $rec)"
+assert 'grep -qxF "last_run_repos=-" <<<"$rec"' \
+    "and the placeholder it really wrote for what it reached (record: $rec)"
+
+# The reload inside the run, pinned mid-run rather than after it. The window is
+# real: `docker exec … once` writes the record while the scheduler sleeps on an
+# older copy, and a run that started from memory would blank the other's facts
+# for as long as it lasted. restic is called inside the `running` window, so a
+# stub that copies the record aside is a snapshot of exactly that moment.
+mkdir -p "$tmpdir/sbin-snap"
+cat > "$tmpdir/sbin-snap/restic" <<'STUB'
+#!/bin/sh
+[ -f "$KASBAH_TEST_SNAP" ] || cp "$KASBAH_TEST_STATUS" "$KASBAH_TEST_SNAP" 2>/dev/null
+exit 1
+STUB
+chmod 0755 "$tmpdir/sbin-snap/restic"
+rm -f "$tmpdir/midrun"
+seed_record 'state=sleeping' 'since=1600000000' 'deadline=1600000900' 'next_run=1600086400' \
+            'last_run_started=1600000000' 'last_run_finished=1600000500' \
+            'last_run_status=ok' 'last_run_repos= zeta' \
+            'timeout=900' 'at=02:00' 'jitter=0'
+printf 'KASBAH_BACKUP_REPO_BASE=/nowhere/\n' > "$tree/apps/.kasbah/backup/env"
+env KASBAH_BACKUP_APPS="$tree/apps" KASBAH_BACKUP_DATA="$tree/data" \
+    KASBAH_TEST_STATUS="$run_state_dir/status" KASBAH_TEST_SNAP="$tmpdir/midrun" \
+    PATH="$tmpdir/sbin-snap:$PATH" \
+    $runner_sh "$runner" once >/dev/null 2>&1
+mid=$(cat "$tmpdir/midrun" 2>/dev/null)
+assert 'grep -qxF "state=running" <<<"$mid"' \
+    "the snapshot was taken while the run was in flight — else nothing below is about mid-run (record: $mid)"
+assert 'grep -qxF "last_run_finished=1600000500" <<<"$mid"' \
+    "a run in flight carries the finished run it found in the file (record: $mid)"
+assert 'grep -qxF "last_run_status=ok" <<<"$mid"' \
+    "including how that one went, which this process never saw (record: $mid)"
+assert 'grep -qxF "last_run_repos= zeta" <<<"$mid"' \
+    "and what it reached (record: $mid)"
+assert '! grep -qxF "last_run_started=1600000000" <<<"$mid"' \
+    "while last_run_started is this run's own, because this run is the one running (record: $mid)"
+assert 'grep -qE "^last_run_started=[0-9]{9,}$" <<<"$mid"' \
+    "and is a clock reading (record: $mid)"
+
 # The wedge itself, without waiting for one: a bound of the minimum against a
 # restic that never returns. The run has to come back, and say which repository
 # it gave up on.

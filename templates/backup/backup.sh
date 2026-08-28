@@ -337,6 +337,13 @@ EOF
 }
 
 run_once() {
+    # The record, not this process's memory: the loop and a hand-driven
+    # `docker exec … once` are two processes writing one file, and whichever
+    # writes next must carry the other's finished run rather than overwrite it
+    # with a copy taken before it happened. Three of the four survive that far —
+    # `last_run_started` is reclaimed on the next line, because for as long as
+    # this run is in flight it is this run that started.
+    load_last_run
     LAST_STARTED=$(date +%s)
     say "run started $(date '+%Y-%m-%dT%H:%M:%S%z')"
 
@@ -447,6 +454,57 @@ status_field() {
     printf '%s' "$_sf_v"
 }
 
+# The last run's facts, read back out of the record this script itself wrote.
+# They live in shell variables between one write_status and the next, so a
+# process that did not perform that run holds none of them: a scheduler brought
+# up by a reboot, a `docker compose up` or a re-ship of this script, and equally
+# a `docker exec … once` running beside a scheduler asleep on an older copy.
+# `last_run_status=-` is the placeholder every reader turns into "no run has
+# finished yet", and a stack that has backed up faithfully for months is not
+# that — a reader can only report what is written, so the writer is where the
+# fact has to survive.
+#
+# **All four, or none.** Each field is judged on its own — the epochs by
+# `is_epoch`, the one gate this script has for them; the status against the two
+# spellings a run writes; the repository list for presence only, because `-` is
+# a value a real run leaves (a run that could not read its env file records
+# `failed` having reached nothing). But they are carried *together*, because a
+# record is a file and a file can be truncated mid-write: one cut after
+# `last_run_status=ok` would otherwise be carried on as `ok` beside the
+# no-history placeholder for the repository list, which is a pair no run ever
+# writes and which lib/check_server.sh reads as a backup that succeeded. Short
+# of four good fields, this process starts where a runner with no history does.
+#
+# No CR stripping, and the gate is why none is needed. This is a
+# read-modify-write and not a read: a `\r` admitted here would be written back
+# into a file this script authored and re-carried on every start after that. A
+# CRLF record fails `is_epoch` on its very first field, so nothing is carried at
+# all — which is the same answer this function gives every other record it
+# cannot believe.
+load_last_run() {
+    _llr_started=$(status_field last_run_started)
+    _llr_finished=$(status_field last_run_finished)
+    _llr_status=$(status_field last_run_status)
+    _llr_repos=$(status_field last_run_repos)
+    LAST_STARTED=0
+    LAST_FINISHED=0
+    LAST_STATUS=-
+    LAST_REPOS=-
+    if is_epoch "$_llr_started" \
+        && is_epoch "$_llr_finished" \
+        && { [ "$_llr_status" = ok ] || [ "$_llr_status" = failed ]; } \
+        && [ -n "$_llr_repos" ]
+    then
+        LAST_STARTED=$_llr_started
+        LAST_FINISHED=$_llr_finished
+        LAST_STATUS=$_llr_status
+        # Verbatim: it is the list of repository names the run built, and its
+        # leading space is part of what was written.
+        LAST_REPOS=$_llr_repos
+    fi
+    return 0
+}
+
 # The healthcheck, and `docker inspect`'s answer to "is this thing working".
 # One question: has the state this scheduler last recorded outlived its own
 # deadline? A wedged run and a sleep that never woke both fail it; a container
@@ -502,6 +560,9 @@ case "$mode" in
     schedule)
         say "scheduled daily at $at plus ${jitter}s jitter; apps $apps, data $data"
         say "one restic call may take ${timeout_s}s (kasbah server init --backup-timeout=)"
+        # Before the first record this process writes, so a scheduler that has
+        # only just started reports the stack's history and not its own age.
+        load_last_run
         write_status starting "$(( $(date +%s) + grace ))"
         while :; do
             d=$(delay_secs)

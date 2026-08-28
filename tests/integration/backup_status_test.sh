@@ -20,6 +20,8 @@
 #     rather than a day apart;
 #   * a scheduler container really stopped, whose still-valid record would
 #     otherwise read as a working backup for about a day;
+#   * that container started again, and the run it performed before the stop
+#     still in the record the fresh process writes on its way back up;
 #   * the repositories a real `server init --with-backup` created passwords for,
 #     against the project tree a real server has;
 #   * the container's own healthcheck verdict beside the record it reads;
@@ -375,28 +377,70 @@ assert 'grep -qF "✗ the backup scheduler on $RIG_TARGET is exited, so nothing 
 assert '! grep -qF "✓ the last backup" <<<"$out"' \
     "and the still-valid record it left behind is not read as a working backup (said '$out')"
 
+# The record the stopped scheduler left behind, so what happens next can be
+# waited for rather than raced: `since` is the field the runner moves on every
+# write, whatever else it says.
+stopped_since=$(nocr "$(rig_ssh "sed -n 's/^since=//p' $record" 2>/dev/null)")
+if [ -z "$stopped_since" ]; then
+    echo "error: could not read since= out of $record while the scheduler was stopped" >&2
+    exit 2
+fi
 rig_ssh "docker start $backup_container" >/dev/null 2>&1
 restarted=$(rig_ssh "docker inspect -f '{{.State.Status}}' $backup_container" 2>/dev/null)
 if [ "$(nocr "$restarted")" != running ]; then
     echo "error: could not start $backup_container again — the cases below need it" >&2
     exit 2
 fi
+# An ssh that answered nothing is not a record that moved, and breaking on one
+# would race exactly what this loop exists to serialise. Counted in wall-clock
+# seconds too: thirty round trips to the rig are not thirty seconds, and the
+# message has to name the time that really passed.
+wait_from=$(date +%s)
+waited=0
+fresh_since="$stopped_since"
+while [ "$waited" -lt 30 ]; do
+    fresh_since=$(nocr "$(rig_ssh "sed -n 's/^since=//p' $record" 2>/dev/null)")
+    [ -z "$fresh_since" ] || [ "$fresh_since" = "$stopped_since" ] || break
+    sleep 1
+    waited=$((waited + 1))
+done
+if [ -z "$fresh_since" ] || [ "$fresh_since" = "$stopped_since" ]; then
+    echo "error: the restarted scheduler rewrote no record in $(( $(date +%s) - wait_from ))s" >&2
+    rig_ssh "docker logs $backup_container 2>&1 | tail -20" >&2
+    exit 2
+fi
+
+# **A restart carries the last run forward.** The runner reads its own record
+# back before it writes its first one, so a process that performed no run still
+# reports the one the file remembers. The alternative is the four no-history
+# placeholders, and `last_run_status=-` is what both readers turn into "no run
+# has finished yet" — on a stack that ran minutes ago, and for however long it
+# takes the next slot to come round. What is carried here is State 3's failed
+# run, because that is the last run this stack really had; a restart is not an
+# event that changes it.
+rec="$(rig_ssh "cat $record" 2>/dev/null)"
+assert 'grep -qE "^last_run_started=[0-9]{9,}" <<<"$rec"' \
+    "a restarted scheduler still knows when the last run began (record: $rec)"
+assert 'grep -qF "last_run_status=failed" <<<"$rec"' \
+    "and how it went — State 3's run, still the last one this stack had (record: $rec)"
+assert 'grep -qF "last_run_repos= $project" <<<"$rec"' \
+    "and the repository it did reach before it failed (record: $rec)"
+
 check; rc=$?
 out="$(cli_out)"
-assert '[ "$rc" = "0" ]' "and stops failing once it is back (exit $rc)
-$out"
-# **A restart empties the last-run half of the record.** The runner holds
-# LAST_RUN_* in shell variables, so a fresh process writes `sleeping` with
-# `last_run_started=0` — a stack that has run for months looks like one that has
-# never fired until the next run. Found here rather than reasoned about, and
-# asserted so it cannot change silently: it is a property of
-# templates/backup/backup.sh, which this task does not touch.
-rec="$(rig_ssh "cat $record" 2>/dev/null)"
-assert 'grep -qF "last_run_started=0" <<<"$rec"' \
-    "a restarted scheduler reports no last run at all (record: $rec)"
-assert 'grep -qF "⚠ backups are configured on $RIG_TARGET and no run has finished yet" <<<"$out"' \
-    "and B01 says that, rather than repeating a verdict from before the restart (said '$out')"
-
+assert '! grep -qF "is exited, so nothing is being shipped off-box" <<<"$out"' \
+    "the scheduler being down stops being the failure once it is up (said '$out')"
+assert '[ "$rc" = "6" ]' "and what is left is the run the record carried across the restart (exit $rc)
+$out
+$(cli_err)"
+# `[0-9]+[smh]` and not `[0-9]+s`: backup_record_ago switches to minutes at 60
+# seconds, and the gap between State 3's run and this read is about half of that
+# on a rig that is a container on this machine. A suite that goes red on a slow
+# day pins the day, not the behaviour.
+assert 'grep -qE "✗ the last backup on $RIG_TARGET FAILED [0-9]+[smh] ago" <<<"$out"' \
+    "reported again rather than forgotten (said '$out')"
+assert '! grep -qF "no run has finished yet" <<<"$out"' \
+    "and never as a stack that has never fired (said '$out')"
 
 # --- Done -------------------------------------------------------------------------------
 rig_clean || fail=1

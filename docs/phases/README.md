@@ -83,10 +83,11 @@ rhythm: one capability slice per task, tests landing with it.
 ## Before starting Phase 9
 
 Phase 8 is committed and all four exit criteria were walked — two of them **against the
-real host**, not the rig. Baselines: `KASBAH_RIG_TESTS=1 ./test.sh` **47 PASS, 0 FAIL, 0
-SKIP, exit 0** (28 unit, 19 integration; Phase 7 closed at 25 and 39). `tests/check_test.sh`
-alone was ~13 minutes and dominated the unit half; the post-close follow-up in
-`08-keep.md` took it to ~4, so a run that looks like the old numbers is now a
+real host**, not the rig. Baselines, after the two post-close follow-ups recorded at the
+end of `08-keep.md`: `KASBAH_RIG_TESTS=1 ./test.sh` **48 PASS, 0 FAIL, 0 SKIP, exit 0** in
+**32m22s** (29 unit, 19 integration; Phase 8 closed at 47, Phase 7 at 25 and 39 — the
+new unit suite is `tests/yaml_test.sh`). `tests/check_test.sh` alone was ~13 minutes and
+dominated the unit half; it is now ~4, so a run that looks like the old numbers is a
 regression rather than the norm.
 
 **The real host is no longer a kasbah server.** `you@vps` was de-branded by
