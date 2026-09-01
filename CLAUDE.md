@@ -52,3 +52,4 @@ prefix (reserved, injected at deploy, exempt from drift).
 - `tests/` — `*_test.sh` unit suites; `tests/rig/` fake VPS; `tests/integration/` rig-driven; `tests/fixtures/` sample projects.
 - `docs/` — the spec; start with `overview.md` (decisions table) and `compliance.md` (rule catalog).
 - `docs/phases/` — build plan; phase Findings sections are the project's memory of traps. Read the relevant phase file before touching its area.
+- `docs/research/` — dated competitive/background notes. **Not spec, not normative**; acted on by lifting findings into a spec doc, the roadmap, or the backlog.
