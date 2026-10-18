@@ -1,0 +1,12 @@
+Expected markers, rendered by the real jq program: lib/server_init.sh's
+_server_marker_json, called as
+
+  _server_marker_json 1.0.0 /apps /data 2 1g "" ""                         fresh.json
+  _server_marker_json 1.0.0 /srv/apps /srv/data 14.4 54g "$E" ""            existing.json
+  _server_marker_json 1.0.0 /srv/apps /srv/data 14.4 54g "$E" "$B"          existing-backup.json
+  _server_marker_json 1.0.0 /apps /data 2 1g "" "$B"                        fresh-backup.json
+  _server_marker_json 1.0.0 /apps /data 2 1g '{"backup":null}' ""           null-backup.json
+
+with E = existing-input.json and
+B = {"enabled":true,"repo_base":"s3:x","at":"03:00","jitter":30,"timeout":3600,"retention":{"daily":7,"weekly":4,"monthly":6}},
+each output written with printf '%s\n', as the remote step writes the marker.

@@ -1,0 +1,14 @@
+services:
+  web:
+    image: nginx:1.27
+    restart: unless-stopped
+    ports: ["80:80", 8080:80, 22:22]
+    environment:
+      DEBUG: on
+      MODE: 0644
+      FLAG: yes
+    cpus: 0.5
+    mem_limit: 512m
+    healthcheck:
+      interval: 1m30s
+      retries: 3

@@ -1,0 +1,1 @@
+{"http":{"routers":{"demo":{"rule":"Host(`traefik.example.com`)","service":"demo"}},"services":{"demo":{"loadBalancer":{"servers":[{"url":"http://demo-web:80"}]}}}}}

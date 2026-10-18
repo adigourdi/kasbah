@@ -1,0 +1,7 @@
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+---
+services:
+	broken: 1

@@ -1,0 +1,32 @@
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    networks: [kasbah-net]
+    logging:
+      # why this project rotates the way it does
+      driver: json-file
+      options:
+        # the second one matters more than the first
+        max-file: "3"
+        max-size: "10m"
+
+  demo-worker:
+    image: busybox
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    # no logging block at all
+    command: ["sleep", "1000"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: true

@@ -1,0 +1,19 @@
+{
+  "kasbah_version": "1.0.0",
+  "apps_path": "/apps",
+  "data_path": "/data",
+  "cpu_limit": "2",
+  "mem_limit": "1g",
+  "backup": {
+    "enabled": true,
+    "repo_base": "s3:x",
+    "at": "03:00",
+    "jitter": 30,
+    "timeout": 3600,
+    "retention": {
+      "daily": 7,
+      "weekly": 4,
+      "monthly": 6
+    }
+  }
+}

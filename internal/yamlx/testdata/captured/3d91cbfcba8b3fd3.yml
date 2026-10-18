@@ -1,0 +1,15 @@
+schema: 1
+kasbah_version: 0.1.0-dev
+
+name: demo
+domain: "demo.example.com"
+
+sync:
+  - compose.prod.yml -> compose.yml
+  - .env.prod.example
+
+backup:
+  container: demo-db
+  check: "true"
+  command: "pg_dump -U u d"
+  # extension intentionally omitted

@@ -1,0 +1,1 @@
+{"http":{"routers":{"mailer2-http":{"rule":"Host(`mailer2.example.com`)","entryPoints":["web"],"middlewares":["http-to-https@file"],"service":"noop@internal"},"mailer2":{"rule":"Host(`mailer2.example.com`)","entryPoints":["websecure"],"tls":{"certResolver":"letsencrypt"},"service":"mailer2"}},"services":{"mailer2":{"loadBalancer":{"servers":[{"url":"http://mailer2-web:80"}]}}}}}

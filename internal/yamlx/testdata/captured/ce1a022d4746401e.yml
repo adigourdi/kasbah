@@ -1,0 +1,18 @@
+http:
+  routers:
+    mailer5-http:
+      rule: "Host(`mailer5.example.com`)"
+      entryPoints: [web]
+      middlewares: ["http-to-https@file"]
+      service: noop@internal
+    mailer5:
+      rule: "Host(`mailer5.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: mailer5
+  services:
+    mailer5:
+      loadBalancer:
+        servers:
+          - url: "http://mailer5-web:80"

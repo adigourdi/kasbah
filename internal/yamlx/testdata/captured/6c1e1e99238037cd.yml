@@ -1,0 +1,19 @@
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: "10m"
+    restart: unless-stopped
+    networks:
+      - default
+      - kasbah-net
+
+networks:
+  kasbah-net:
+    external: true

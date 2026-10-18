@@ -1,0 +1,4 @@
+a: !!set [a, b]
+b: !!set x
+c: !!binary [1]
+d: !!set {k: 1}

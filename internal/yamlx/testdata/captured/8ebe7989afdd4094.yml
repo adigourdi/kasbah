@@ -1,0 +1,4 @@
+name: mail
+primary_domain: rig.test
+domains:
+  - rig.test

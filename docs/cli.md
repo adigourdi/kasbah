@@ -9,7 +9,7 @@ Two levels of commands:
 ```
 $ cd ~/some/random/path
 $ kasbah deploy you@vps
-ERROR: No kasbah.yml in current directory.
+error: No kasbah.yml in current directory.
        Run from the project root, or `kasbah init-project` to scaffold.
 ```
 

@@ -1,0 +1,11 @@
+services:
+  demo-web:
+    image: nginx:alpine
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

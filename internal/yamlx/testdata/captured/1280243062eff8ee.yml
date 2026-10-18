@@ -1,0 +1,17 @@
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    networks: [kasbah-net]
+    restart: unless-stopped
+    cpus: '1.5 # measured on the old box'
+    mem_limit: "512m # sized for the box"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: true

@@ -1,0 +1,5 @@
+http:
+  routers:
+    demo:
+      rule: "Host(`demo.example.com`)"
+      service: noop@internal

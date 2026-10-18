@@ -1,0 +1,18 @@
+# The spine fixture: a stock-image project, small enough to reason about and
+# real enough to route. Deployed to the rig by tests/integration/spine_test.sh,
+# which copies this directory somewhere writable, gives it a git repo with a
+# v-tag, and runs `kasbah deploy` from the copy.
+schema: 1
+kasbah_version: 0.1.0-dev
+
+name: demo
+domain: demo.test
+
+# Three shapes on purpose: a rename, a plain file, and a directory whose
+# contents recurse. traefik-dynamic.yml is deliberately absent from this list —
+# kasbah ships it out of band to <apps>/traefik/dynamic/demo.yml
+# (docs/project-manifest.md).
+sync:
+  - compose.prod.yml -> compose.yml
+  - .env.prod.example
+  - site/

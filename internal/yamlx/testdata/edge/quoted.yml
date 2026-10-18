@@ -1,0 +1,12 @@
+a: "yes"
+b: '0755'
+c: "1.5"
+d: "~"
+e: ""
+f: ''
+g: "line\nbreak"
+h: "tab\there"
+i: "\x01\x7f\u00e9\u2028\U0001F600"
+j: 'it''s'
+k: "a\\b\"c"
+m: "\e\0\a\b\f\v\N\_\L\P"

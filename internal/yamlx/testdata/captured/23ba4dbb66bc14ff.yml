@@ -1,0 +1,5 @@
+schema: 99
+kasbah_version: 0.1.0
+name: future
+domain: "x.test"
+sync: []

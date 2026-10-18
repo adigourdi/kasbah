@@ -1,0 +1,17 @@
+{
+  "zeta": 1,
+  "apps_path": "/srv/apps",
+  "backup": {
+    "enabled": false,
+    "repo_base": "keep",
+    "future": "f",
+    "retention": {
+      "daily": 1,
+      "yearly": 2
+    }
+  },
+  "kasbah_version": "1.0.0",
+  "data_path": "/srv/data",
+  "cpu_limit": "14.4",
+  "mem_limit": "54g"
+}

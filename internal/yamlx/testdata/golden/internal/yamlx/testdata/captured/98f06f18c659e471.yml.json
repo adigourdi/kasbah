@@ -1,0 +1,1 @@
+{"services":{"demo-web":{"image":"nginx:alpine","container_name":"demo-web","restart":"unless-stopped","replicas":3,"read_only":true,"healthcheck":null,"networks":["kasbah-net","internal"]}},"networks":{"kasbah-net":{"external":true},"internal":{}}}

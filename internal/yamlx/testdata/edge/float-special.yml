@@ -1,0 +1,14 @@
+a: .inf
+b: .Inf
+c: .INF
+d: -.inf
+e: +.inf
+f: .nan
+g: .NaN
+h: .NAN
+i: inf
+j: nan
+k: .infinity
+l: 1e400
+m: -1e400
+n: 1e-400

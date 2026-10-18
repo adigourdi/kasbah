@@ -1,0 +1,18 @@
+http:
+  routers:
+    demo-www:
+      rule: "Host(`www.demo.example.com`)"
+      entryPoints: [web]
+      middlewares: ["http-to-https@file"]
+      service: noop@internal
+    demo:
+      rule: "Host(`demo.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: demo
+  services:
+    demo:
+      loadBalancer:
+        servers:
+          - url: "http://demo-web:80"

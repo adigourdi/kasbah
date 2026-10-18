@@ -1,0 +1,1 @@
+{"http":{"routers":{"demo":{"rule":"Host(`other.test`)","entryPoints":["websecure"],"tls":{"certResolver":"letsencrypt"},"service":"noop@internal"}}}}

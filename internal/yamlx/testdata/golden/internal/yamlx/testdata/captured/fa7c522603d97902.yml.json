@@ -1,0 +1,1 @@
+{"http":{"routers":{"traefik-dashboard":{"rule":"Host(`traefik.rig.test`)","entryPoints":["websecure"]}}}}

@@ -178,21 +178,29 @@ The packages every command consumes: YAML and the manifest/state/marker models,
 prompts, errors and exit codes, output, CRLF handling.
 
 **Deliverables**
-- [ ] YAML loading with PyYAML's YAML 1.1 reading where `check` depends on it —
+- [x] YAML loading with PyYAML's YAML 1.1 reading where `check` depends on it —
       prove parity (candidate: `go.yaml.in/yaml/v3`; returning with a better one
-      is a valid outcome) over every fixture and the 13 projects Phase 8 used
-- [ ] Manifest, state (`.kasbah/state.json`, per
-      `docs/project-manifest.md`) and marker readers/writers
-- [ ] Prompt layer: TTY detection, `--with-x`/`--no-x` pairs, `--yes` for
+      is a valid outcome) over every fixture and the 13 projects Phase 8 used —
+      the premise was wrong: yq 3.1.0 resolves scalars per **YAML 1.2** (only
+      octal survives from 1.1), over libyaml, with jq 1.7 re-spelling numbers.
+      `internal/yamlx` + `internal/jv` match `yq -c .` on 255 of 258 goldens made
+      by the real yq (3 known divergences, all refusals or safe), and on all 727
+      YAML files under `~/work`. The 13 projects are not in the repo; the inputs
+      `check_test.sh` feeds yq were captured instead
+- [x] Manifest, state (`.kasbah/state.json`, per
+      `docs/project-manifest.md`) and marker readers/writers — byte-identical to
+      the Bash writers (the review diffed 21 state, 29 manifest and 5 marker cases)
+- [x] Prompt layer: TTY detection, `--with-x`/`--no-x` pairs, `--yes` for
       destructive acts, no-TTY hard fail naming the flags, the `--acme-staging`
-      exception
-- [ ] Exit-code and stdout/stderr conventions from `docs/cli.md`, as one package
+      exception — secret input restores echo on SIGINT, proven on a pty
+- [x] Exit-code and stdout/stderr conventions from `docs/cli.md`, as one package — `internal/cli`
 
 **Verify on:** tests + build (`go test` over the shared fixtures).
 
-**Watch out for:** YAML 1.1 vs 1.2 — `on`/`yes`/`no` are booleans and `0755` is
-octal under PyYAML, strings under a 1.2 parser. A compose value read as the
-wrong type flips a compliance rule silently. Strip `\r` before matching any
+**Watch out for:** the reading to match is the installed yq's, not PyYAML's
+default — `on`/`yes` are strings, `0755` is octal 493, numbers carry jq's
+spelling (`cpus: 0.5` is `"0.5"`, `1e3` is `1000.0`). A value read as the wrong
+type flips a compliance rule silently; query the `jv` tree, never re-parse. Strip `\r` before matching any
 user-authored file. "Read a YAML file once" stays a rule: parse into a struct
 once per command.
 
@@ -466,9 +474,12 @@ Run approved 2026-10-18: whole phase, plan order, unit bar as in Rulings.
 - **A reset rig has an empty image store**, and suites that assert on stock
   images must pull them themselves — `integration/prune_test.sh` assumed two that
   only rig history had. Expect the same shape elsewhere after any `rig.sh reset`.
-- **`state.json`'s spec overclaims** (`docs/project-manifest.md:344-368`):
-  `kasbah_version` is set only at creation, never by `check --fix`; nothing reads
-  `last_deploy`/`last_version`; `drop` is missing from the `last_server` writers.
-  10.3 ports state — settle the doc there.
+- **`prompt.Secret` exits on SIGINT without running a command's cleanup.**
+  Bash ran EXIT traps around those prompts (`lib/backup.sh` trap at 1603 around
+  the prompt at 1647, `lib/server_init.sh` trap at 2942): the commands that port
+  them (10.9, 10.13) must pass an `Exit` that cleans up.
+- **The Bash tool's YAML reading depends on the installed yq's version** — 3.1.0
+  reads YAML 1.2 scalars; older wrappers may not. The Go binary fixes the 3.1.0
+  reading for good.
 - **The unit half is now ~9m40s** (Go checks + a build + 29 suites), up from
   ~7 min; the full rig run 31m10s.

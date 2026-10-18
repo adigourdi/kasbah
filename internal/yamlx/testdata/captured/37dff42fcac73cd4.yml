@@ -1,0 +1,17 @@
+services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    restart: "no"     # compose's default, spelled out
+    cpus: "0.5"
+    mem_limit: 512m   # sized for the old box
+    networks: [kasbah-net]
+    logging:
+      driver: local
+      options:
+        max-size:
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: false

@@ -1,0 +1,9 @@
+schema: 1
+kasbah_version: 0.1.0-dev
+
+name: webmailer
+domain: "webmail.rig.test"
+
+sync:
+  - compose.prod.yml -> compose.yml
+  - .env.prod.example

@@ -1,0 +1,18 @@
+http:
+  routers:
+    t05-http:
+      rule: "Host(`mail.other.example.com`)"
+      entryPoints: [web]
+      middlewares: ["http-to-https@file"]
+      service: noop@internal
+    t05:
+      rule: "Host(`mail.other.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: t05
+  services:
+    t05:
+      loadBalancer:
+        servers:
+          - url: "http://t05-web:80"

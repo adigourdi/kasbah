@@ -1,0 +1,20 @@
+a: !!str 123
+b: !!int "42"
+c: !!int "0x10"
+d: !!float "1"
+e: !!bool yes
+f: !!bool "off"
+g: !!null whatever
+h: !!binary aGVsbG8=
+i: !!set {x, y}
+j: !!omap [k1: 1, k2: 2]
+k: !!pairs [k1: 1, k1: 2]
+l: !custom scalar
+m: !custom [1, 2]
+n: !custom {p: q}
+o: !!str yes
+p: ! 123
+q: !!map {r: s}
+r: !!seq [t]
+s: !!float 3
+t: !!int "0755"

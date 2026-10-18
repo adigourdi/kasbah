@@ -1,0 +1,1 @@
+{"services":{"demo-web":{"image":"nginx:alpine","container_name":"demo-web","restart":"no","cpus":"0.5","mem_limit":"512m","networks":["kasbah-net"],"logging":{"driver":"local","options":{"max-size":null,"max-file":"3"}}}},"networks":{"kasbah-net":{"external":false}}}

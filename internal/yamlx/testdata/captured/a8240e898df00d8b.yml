@@ -1,0 +1,49 @@
+# Synced to <apps>/demo/compose.yml on deploy, and brought up there as
+# `docker compose -p demo up -d`. The `-p` is what fixes the project name;
+# `name:` below is the weakest source of it and COMPOSE_PROJECT_NAME in the
+# server's login shell outranks it (docs/phases/01-rig.md).
+name: demo
+
+services:
+  # Named for the project, not `web`: compose publishes the service name as a
+  # DNS alias on every network it joins, and kasbah-net is shared with every
+  # other project on the host, so a bare `web` there has as many claimants as
+  # there are projects using it (C09). A service and its container may carry
+  # the same name.
+  demo-web:
+    image: nginx:alpine
+    # Traefik resolves the backend by container name over kasbah-net, so this
+    # is what traefik-dynamic.yml's loadBalancer URL points at (docs/traefik.md).
+    container_name: demo-web
+    restart: unless-stopped
+    volumes:
+      # The page itself, synced from the project's site/ directory.
+      - "./site:/usr/share/nginx/html:ro"
+    environment:
+      # Read from <apps>/demo/.env by compose — proof that the environment
+      # file is in play, and what the interactive setup prompts for.
+      DEMO_GREETING: ${DEMO_GREETING}
+    networks:
+      # Two networks for one service, which is not what a single-service project
+      # needs — `internal` is here so the fixture exercises the multi-network
+      # path at all: tests/integration/spine_test.sh inspects the deployed
+      # container's network set, and a project on one network proves nothing
+      # about the split C03/C07 enforce. A real single routed service takes
+      # kasbah-net alone, which is what `init-project` scaffolds.
+      - kasbah-net
+      - internal
+    # Injected into .env by kasbah from the server marker, into its managed
+    # block. Unset, compose fails outright — an empty value is not a valid
+    # cpus:.
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah-net:
+    external: true
+  internal: {}

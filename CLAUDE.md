@@ -10,8 +10,8 @@ plan and the only progress tracker (the roadmap is scope, not status).
 
 ## Commands
 
-- `./test.sh` — Go checks, a build of `dist/`, then the unit suites (~10 min,
-  needs Docker, no server). Must pass before any commit. `KASBAH_BIN=<path>`
+- `./test.sh` — Go checks, a build of `dist/`, then the unit suites (10–13 min,
+  past the 10-minute Bash ceiling: run it in the background; needs Docker, no server). Must pass before any commit. `KASBAH_BIN=<path>`
   tests that binary instead and skips the build.
 - `KASBAH_RIG_TESTS=1 ./test.sh` — adds integration tests against the
   fake-VPS rig. Run `tests/rig/rig.sh up` first; see `tests/rig/README.md`
@@ -29,8 +29,10 @@ plan and the only progress tracker (the roadmap is scope, not status).
 
 ## Hard conventions
 
-- **yq is the kislyuk wrapper (jq dialect).** Never write mikefarah v4
-  syntax (`type == "object"`, `to_entries[]`, `sub("a";"b")` are jq forms
+- **yq is the kislyuk wrapper (jq dialect)**, 3.1.0: plain scalars resolve
+  per YAML 1.2 (`yes`/`on` are strings) but `0755` is still octal; Go's
+  `internal/yamlx` matches its JSON byte for byte (goldens from the real yq).
+  Never write mikefarah v4 syntax (`type == "object"`, `to_entries[]`, `sub("a";"b")` are jq forms
   and correct here).
 - **Read a YAML file once, never per rule.** `yq` is Python — ~180 ms a
   fork. `yaml_load`/`yaml_query` (`lib/common.sh`) convert a file once and

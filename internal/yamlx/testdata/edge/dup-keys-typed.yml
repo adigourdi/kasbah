@@ -1,0 +1,4 @@
+1: int
+"1": str
+true: bool
+1.0: float

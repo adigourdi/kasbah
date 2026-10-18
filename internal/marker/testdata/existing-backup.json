@@ -1,0 +1,22 @@
+{
+  "zeta": 1,
+  "apps_path": "/srv/apps",
+  "backup": {
+    "enabled": true,
+    "repo_base": "s3:x",
+    "future": "f",
+    "retention": {
+      "daily": 7,
+      "yearly": 2,
+      "weekly": 4,
+      "monthly": 6
+    },
+    "at": "03:00",
+    "jitter": 30,
+    "timeout": 3600
+  },
+  "kasbah_version": "1.0.0",
+  "data_path": "/srv/data",
+  "cpu_limit": "14.4",
+  "mem_limit": "54g"
+}

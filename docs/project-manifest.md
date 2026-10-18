@@ -343,10 +343,10 @@ to the VPS. Tracks:
 
 | Field | Written by | Read by |
 |---|---|---|
-| `kasbah_version` | `init-project`, `check --fix`, any migration | future `kasbah migrate` (bash→Go cutover) |
+| `kasbah_version` | `init-project` (set once, when the file is created) | future `kasbah migrate` |
 | `last_server` | every project command that targets a server, once kasbah's own work on it succeeded (see Write rules) | every project command — used as default when `USER@HOST` is omitted |
-| `last_deploy` | `deploy`, `rollback` on success | `kasbah check` (diff deployed vs local) |
-| `last_version` | `deploy`, `rollback` on success | `kasbah check` |
+| `last_deploy` | `deploy`, `rollback` on success | nothing yet — recorded for a future deployed-vs-local diff |
+| `last_version` | `deploy`, `rollback` on success | nothing yet |
 | `schema_migrations_applied` | `kasbah migrate` | `kasbah migrate` (idempotency) |
 
 `kasbah pending` does **not** read `last_version`. It resolves the deployed
@@ -367,8 +367,8 @@ for defaults, not a source of truth for what's actually running.
   0 and on the two statuses that mean the run stopped rather than failed — 255
   (the reader closed the pipe) and 130 (interrupted) — and not when compose
   failed.
-- `last_server` is updated by: `build-push`, `deploy`, `rollback`, `env`,
-  `history`, `changelog`, `pending`, `logs`, `exec`, `check --server`.
+- `last_server` is updated by: `build-push`, `deploy`, `rollback`, `drop`,
+  `env`, `history`, `changelog`, `pending`, `logs`, `exec`, `check --server`.
 - `init-project` creates the file with empty fields and the current
   `kasbah_version`. First server-targeting command must be passed
   `USER@HOST` explicitly; subsequent ones default to `last_server`.
