@@ -19,6 +19,7 @@ during execution.
 | 6 | [Proof](06-proof.md) | **Done.** A real project on a bare VPS: HTTPS with a real ACME cert, change deploy, rollback — kasbah only |
 | 7 | [Operate](07-operate.md) | **Done.** Mail stack (`--with-mail`, `add-mail-domain`, claim reconciliation, setup guide), `logs`/`exec`, `check --server` + R04, full `server status`, `server prune`, `upgrade-traefik` |
 | 8 | [Keep](08-keep.md) | **Done.** `drop [--prune]`, `server destroy`, `--with-backup` (restic push, append-only, proved), `check --fix`, and backups visible to `server status` / `check --server` |
+| 10 | [Recast](10-recast.md) | kasbah is a Go binary on the workstation and on every VPS; no kasbah Bash left on either side; every file, format, exit code and prompt contract unchanged. **Runs before Phase 9** |
 | 9 | [Adopt](09-adopt.md) | Both existing consumers migrated: the original project (scripts/ deleted, mail included, live cutover) and lab (RPi stacks as kasbah projects) |
 
 ## The real milestone
@@ -43,6 +44,10 @@ via `container_name`, no docker socket — never run by either reference
 repo) against a throwaway fixture, so a routing-model failure costs a day
 instead of a Ship rework. Within phases, tasks keep the repo's established
 rhythm: one capability slice per task, tests landing with it.
+
+**Execution order is 0–8, 10, 9.** Phase 10 (the Go port) was inserted on
+2026-10-18 and runs before Adopt, so both consumers migrate onto the tool they
+will keep. Ids are addresses and do not move; Phase 9 now depends on Phase 10.
 
 ## Parallelism
 
@@ -80,7 +85,22 @@ rhythm: one capability slice per task, tests landing with it.
 8. **VPS-side helpers are kasbah-owned** and overwritten on every deploy;
    projects never vendor kasbah bash.
 
+## Before starting Phase 10
+
+Phase 8's baselines below are Phase 10's starting line: **48 PASS, 0 FAIL, 0 SKIP
+in 32m22s.** Read the `## Rulings` and `## Verification` sections of
+`10-recast.md` first — the strangler, the containerised toolchain (root
+`compose.yml`; no Go on the host), newer-binary-wins, and `vps` as the disposable
+real target are settled there. Phase 8's four carried notes below still apply,
+and the first of them — five readers of the mail registry — is now settled
+inside the port (10.9, open decision D4) rather than in Phase 9.
+
 ## Before starting Phase 9
+
+**Read this after Phase 10 closes.** Phase 10.15 leaves `vps` a kasbah server
+again, run by the Go binary, so the paragraph below about re-running
+`server init` there describes the state *entering* Phase 10, not Phase 9.
+
 
 Phase 8 is committed and all four exit criteria were walked — two of them **against the
 real host**, not the rig. Baselines, after the two post-close follow-ups recorded at the
@@ -105,9 +125,9 @@ Four things Phase 8 leaves for whoever opens this next.
 and `server status` each carry their own copy of the same normalisation. On a registry
 kasbah wrote they agree. On a **hand-edited** one with no `primary_domain` they do not —
 the shared reader refuses where the three copies fall back to an empty primary and carry
-on. **Phase 9's live cutovers make a hand-edited registry the ordinary case**, so this is
-the phase that has to converge them, and `docs/cli.md` now states the divergence plainly
-rather than claiming it is already solved.
+on. **Phase 9's live cutovers make a hand-edited registry the ordinary case** — Phase 10
+converges the readers as part of the port (10.9, D4), and until then `docs/cli.md` states
+the divergence plainly rather than claiming it is already solved.
 
 **A claim that there is one reader is what stops anyone looking.** This happened twice in
 Phase 8 — once in a comment, once in the spec — and both times the assertion was written

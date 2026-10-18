@@ -80,6 +80,13 @@ successfully.
 
 ## Phase 4 — v1.0 (Go rewrite preparation)
 
+> **Superseded by build-plan Phase 10 (`docs/phases/10-recast.md`), ruled
+> 2026-10-18; this section and the next are rewritten at its cutover (10.14).**
+> The file inventory lands first (10.2), the schema freezes at the Go cutover
+> (v1.0.0), and `kasbah migrate` waits for the first format change that has
+> users. The Go binary also runs on the VPS, and is built locally — no GitHub
+> releases until publishing is decided.
+
 Where the `kasbah_version` field starts earning its keep.
 
 - Define the migration story: v0.x → v1.0 may rename/move files in the

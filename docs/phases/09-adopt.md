@@ -5,13 +5,21 @@
 > the lab RPi runs its stacks as independent kasbah projects with the
 > root-compose + single-.env model retired.
 
-**Prerequisite:** Phase 8 (drop/backup wanted before touching live
-services; the original project's mail migration uses Phase 7's `--with-mail` path).
+**Prerequisite:** Phase 10 — the Go port runs first, so both consumers
+migrate onto the binary they will keep (ruled 2026-10-18) — and through it
+Phase 8 (drop/backup wanted before touching live services; the original project's mail
+migration uses Phase 7's `--with-mail` path).
 **Lightest spec — re-read mandatory; the lab cert question below gates
 its half.** Both halves touch live production — checklist-first, same
 discipline throughout.
 
 **Spec:** `docs/roadmap.md` (both Phase-1 and Phase-2 exit criteria land here), `docs/mail.md`, `docs/traefik.md`, the homelab repo's `CLAUDE.md` (the model being replaced)
+
+## Carried in from Phase 10
+
+**The `linux/arm64` server binary has never run.** Phase 10 builds and
+unit-tests it, but the rig and `vps` are both x86_64; 9.5 is its first real
+execution, and Phase 10's last exit criterion stays unticked until it passes.
 
 ## Carried in from Phase 6
 
