@@ -46,6 +46,12 @@ predicate ×3, path normalisation ×4)
   that has users — nothing kasbah wrote exists in the wild today.
 - **One phase.** The whole port is this phase; task boundaries are the stopping
   points.
+- **Run (approved 2026-10-18):** the whole phase, 10.1–10.15, in plan order.
+  Each unit passes `docker compose run --rm test`, `docker compose run --rm
+  build`, the full `./test.sh` and the rig suites of the family it ported; the
+  full `KASBAH_RIG_TESTS=1 ./test.sh` runs after 10.4, 10.7, 10.10 and at the end.
+- **The Bash dispatcher moves to `libexec/kasbah-bash`** for the strangler's
+  lifetime — its `../install.sh` sibling detection still resolves from there.
 
 ## Verification
 
@@ -388,19 +394,33 @@ Leave `vps` as a kasbah server at the end — Phase 9 starts from it.
   and the workstation's wins on a mismatch, releases follow the rule exactly
   (recommended); (b) stamp a build counter into every version; (c) an explicit
   `--replace-server-binary` flag.
+  **Settled 2026-10-18: (b), a build counter.** A clean tree stamps
+  `<VERSION>.<commit count>` (`0.1.0-dev.142`); a dirty tree appends build time
+  in unix seconds (`0.1.0-dev.142.1760790000`), so every rebuild inside a unit
+  outranks the last under semver pre-release ordering. Release versions
+  (`1.0.0`) carry no counter, and from then on the rule applies exactly.
 - **D2 — the backup runner (settle at 10.13).** `backup.sh` runs inside
   restic's own image, not on the host. Options: (a) keep it `sh` — it is
   container content, like a compose file; (b) mount the static linux binary into
   the container and run `kasbah remote backup`.
+  **Settled 2026-10-18: (b).** Mounted read-only from the shared path;
+  `backup.sh` retires. A newer binary reaches the container at its next restart.
 - **D3 — `--version` content (settle at 10.14).** Roadmap Phase 5 asked for tool
   and schema version both. Options: both, or tool version only.
+  **Settled 2026-10-18: both** — `kasbah 1.0.0 (schema 1)`.
 - **D4 — a hand-edited mail registry with no `primary_domain` (settle at
   10.9).** Today the shared reader refuses while three copies fall back to an
   empty primary (`docs/cli.md` states the divergence). One reader means one
   behaviour; Phase 9's cutovers make hand-edited registries the ordinary case.
+  **Settled 2026-10-18: refuse**, in every command, naming the file and the key
+  to add.
 - **D5 — the checkout entry point (settle at 10.1).** `bin/kasbah` is the
   documented way to run from a checkout. Options: (a) the built binary at a
   fixed path (e.g. `dist/kasbah`) becomes it and `bin/` goes at cutover
   (recommended); (b) keep `bin/kasbah` as a small launcher of the built binary.
+  **Settled 2026-10-18: (a)** — `dist/kasbah` (gitignored) is the checkout entry
+  and the tests' default `KASBAH_BIN`; `bin/` goes at cutover.
 
 ## Findings
+
+Run approved 2026-10-18: whole phase, plan order, unit bar as in Rulings.
