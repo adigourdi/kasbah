@@ -5,11 +5,14 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/check"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/handoff"
+	"github.com/adigourdi/kasbah/internal/initproject"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
@@ -33,6 +36,18 @@ func main() {
 				code = c
 			}
 			atexit.Exit(code)
+		case "check":
+			// Plain `check` only: --fix and --server are still the Bash tool's.
+			if len(args) == 1 {
+				atexit.HandleSignals()
+				atexit.Exit(checkCmd())
+			}
+		case "init-project":
+			// --help falls through: the usage text is still the Bash tool's.
+			if o, err := initproject.Parse(args[1:]); err != initproject.ErrHelp {
+				atexit.HandleSignals()
+				atexit.Exit(initProjectCmd(o, err))
+			}
 		}
 	}
 
@@ -128,4 +143,62 @@ func ensureServer(out *cli.Output, args []string) error {
 	}
 	fmt.Fprintf(out.Stdout, "shipped=%s->%s\n", old, res.Now)
 	return nil
+}
+
+// kasbahVersion is VERSION as the Bash dispatcher reads it: from
+// KASBAH_LIB_DIR when set, else from where this binary's files live. It is
+// what files kasbah writes record, never the build stamp.
+func kasbahVersion() (string, error) {
+	dir := os.Getenv("KASBAH_LIB_DIR")
+	if dir == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return "", fmt.Errorf("cannot locate this binary: %v", err)
+		}
+		if dir, _, err = handoff.Home(exe, os.Getenv); err != nil {
+			return "", err
+		}
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "VERSION"))
+	if err != nil {
+		return "", fmt.Errorf("cannot read VERSION: %v", err)
+	}
+	return strings.TrimRight(string(b), "\n"), nil
+}
+
+func checkCmd() int {
+	out := cli.Std()
+	v, err := kasbahVersion()
+	if err != nil {
+		return out.Report(err)
+	}
+	pwd, err := os.Getwd()
+	if err != nil {
+		return out.Report(cli.Fail("cannot read the current directory: %v", err))
+	}
+	code := check.Run(check.Env{Out: out, PWD: pwd, Version: v})
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
+}
+
+func initProjectCmd(o initproject.Options, err error) int {
+	out := cli.Std()
+	if err != nil {
+		return out.Report(err)
+	}
+	v, err := kasbahVersion()
+	if err != nil {
+		return out.Report(err)
+	}
+	pwd, err := os.Getwd()
+	if err != nil {
+		return out.Report(cli.Fail("cannot read the current directory: %v", err))
+	}
+	code := out.Report(initproject.Run(out, o, pwd, v))
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
 }

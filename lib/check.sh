@@ -61,8 +61,14 @@ _check_fail() { _CHECK_FAIL=$((_CHECK_FAIL + 1)); printf '  ✗ %s\n' "$1"; }
 # actually ignore the path" (which would need `git check-ignore`). The `tr`
 # strips trailing CR so a CRLF-authored .gitignore (Windows editors) doesn't
 # false-warn — same parity as manifest.sh's CR stripping.
+#
+# Fed through a process substitution, never a pipe: grep -q exits at the first
+# match, and under pipefail tr's SIGPIPE would turn that match into a miss on a
+# large file. Not via a variable either — `$(…)` drops NUL bytes, which GNU
+# grep reads as line ends.
 _gitignore_has() {
-    [ -f .gitignore ] && tr -d '\r' < .gitignore | grep -qxF "$1"
+    [ -f .gitignore ] || return 1
+    grep -qxF -- "$1" < <(tr -d '\r' < .gitignore)
 }
 
 cmd_check() {

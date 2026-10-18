@@ -213,14 +213,18 @@ cmd_init_project() {
 }
 STUB
 
+# `init-project --help`, never a bare init-project: the Go binary owns the
+# command and hands only --help to the dispatcher, which then reaches the stub.
+# From $tmpdir, so a probe that ever reaches the real command scaffolds nothing
+# into the checkout.
 resolved() {
     local out
-    out=$(env "$@" 2>&1)
+    out=$(cd "$tmpdir" && env "$@" 2>&1)
     printf '%s' "${out#template_dir=}"
 }
 
 got=$(resolved KASBAH_LIB_DIR="$stub_lib" KASBAH_TEMPLATE_DIR="$tmpdir/elsewhere" \
-               "$repo/dist/kasbah" init-project)
+               "$repo/dist/kasbah" init-project --help)
 assert '[ "$got" = "$tmpdir/elsewhere" ]' \
     "an explicit KASBAH_TEMPLATE_DIR wins (got '$got')"
 
@@ -228,14 +232,14 @@ assert '[ "$got" = "$tmpdir/elsewhere" ]' \
 # the checkout's templates would pair an installed kasbah's code with a
 # working tree's files — a mix neither of them was tested as.
 got=$(resolved -u KASBAH_TEMPLATE_DIR KASBAH_LIB_DIR="$stub_lib" \
-               "$repo/dist/kasbah" init-project)
+               "$repo/dist/kasbah" init-project --help)
 assert '[ "$got" = "$stub_lib/templates" ]' \
     "an explicit KASBAH_LIB_DIR takes the templates with it, even inside a checkout (got '$got')"
 
 # A plain checkout run — nothing in the environment — uses the checkout's own.
 cp "$stub_lib/init_project.sh" "$repo/lib/init_project.sh"
 got=$(resolved -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u XDG_DATA_HOME \
-               "$repo/dist/kasbah" init-project)
+               "$repo/dist/kasbah" init-project --help)
 assert '[ "$got" = "$repo/templates" ]' \
     "a checkout uses its own templates/ (got '$got')"
 
@@ -243,7 +247,7 @@ assert '[ "$got" = "$repo/templates" ]' \
 # the ones that shipped next to the libraries.
 cp "$stub_lib/init_project.sh" "$lib_dir/init_project.sh"
 got=$(resolved -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR XDG_DATA_HOME="$prefix/share" \
-               "$bin_dir/kasbah" init-project)
+               "$bin_dir/kasbah" init-project --help)
 assert '[ "$got" = "$lib_dir/templates" ]' \
     "an installed kasbah reads templates from beside its libraries (got '$got')"
 

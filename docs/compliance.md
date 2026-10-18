@@ -55,6 +55,10 @@ Summary: 22 passed, 1 warning, 0 failed
 
 Exit code 0 if no failures (warnings are informational).
 
+The verdicts do not depend on the locale: names and URL schemes are ASCII
+everywhere, values are measured in UTF-8 characters, and lists (missing keys,
+hosts) are in byte order — what the Bash tool printed under `LC_ALL=C.UTF-8`.
+
 ## Rule catalog
 
 ### Structure

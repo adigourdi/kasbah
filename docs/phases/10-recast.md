@@ -50,6 +50,10 @@ predicate ×3, path normalisation ×4)
   Each unit passes `docker compose run --rm test`, `docker compose run --rm
   build`, the full `./test.sh` and the rig suites of the family it ported; the
   full `KASBAH_RIG_TESTS=1 ./test.sh` runs after 10.4, 10.7, 10.10 and at the end.
+- **R1 — output is locale-independent** (2026-10-19, 10.5): Go reads and
+  reports as the Bash tool did under `LC_ALL=C.UTF-8` — ASCII names and schemes,
+  UTF-8 character counts, byte-order lists. Bash under `en_US` let `démo` pass
+  and sorted the glibc way; that is not reproduced.
 - **The Bash dispatcher moves to `libexec/kasbah-bash`** for the strangler's
   lifetime — its `../install.sh` sibling detection still resolves from there.
 
@@ -249,12 +253,18 @@ Purely local; the first family to leave Bash, and the one with the strongest
 ready-made parity suite.
 
 **Deliverables**
-- [ ] `init-project`, `check` (every rule in `docs/compliance.md`), `check --fix`
-      (diff shown first, touches only what it fixes)
-- [ ] Env-template parsing and drift detection in Go (the local half of
-      `lib/env.sh`; its VPS half moves in 10.6)
-- [ ] `tests/check_test.sh` and `tests/init_project_test.sh` green against Go;
-      plain `check` output rule-for-rule equal to Bash over the 13 projects
+- [x] `init-project`, `check` (every rule in `docs/compliance.md`), `check --fix`
+      (diff shown first, touches only what it fixes) — `check --fix` split off to
+      **10.5b**; plain `check` (no arguments) and `init-project` are Go, any
+      `check` argument still reaches Bash
+- [x] Env-template parsing and drift detection in Go (the local half of
+      `lib/env.sh`; its VPS half moves in 10.6) — `internal/envtpl`
+- [x] `tests/check_test.sh` and `tests/init_project_test.sh` green against Go;
+      plain `check` output rule-for-rule equal to Bash over the 13 projects —
+      `tests/check_parity_test.sh`: 672 projects (fixtures, the captured documents,
+      ~300 edge cases, 79 checks lifted from `check_test.sh`), stdout and exit code
+      equal with Bash under `C.UTF-8` and Go under five locales; also clean on
+      `../gallery-website` and 40 sibling compose files. `check_test.sh` 2m18s, was ~4 min
 
 **Verify on:** tests + build; rig suites untouched by this family must stay green.
 
@@ -262,6 +272,25 @@ ready-made parity suite.
 not. Phase 8 proved plain `check` byte-identical across 13 projects
 (`08-keep.md` Findings) — keep that comparison as a test, not a memory. `client:` is S08 on the working
 tree but only warns on a tag's manifest.
+
+### 10.5b — `check --fix` (L)
+Split from 10.5 on contact: `lib/check_fix.sh` is 1,320 lines of targeted text
+edits Phase 8 hardened, and deserves its own review.
+
+**Deliverables**
+- [ ] `check --fix [--yes]` in Go: C01–C05, C08, R01–R03 and the `kasbah_version`
+      backfill, diff shown first, nothing else touched; plain-check verdicts come
+      from the same `internal/check` queries
+- [ ] `tests/check_test.sh` F-cases green against Go; the parity harness extended to
+      `--fix` (resulting files byte-identical to Bash's, under `C.UTF-8`)
+
+**Verify on:** tests + build.
+
+**Watch out for:** Phase 8's design — *yq decides what is true; the line scanner
+only finds where it is written* — a key the scanner cannot locate is refused and
+named, never guessed; never a YAML round-trip (comments are load-bearing). Block
+scalars (`|`, `>`) ending in comments broke `_cf_block_end` once. Bash `--fix`
+still sorts with the user's locale until this lands.
 
 ### 10.6 — Env on both sides (M)
 `kasbah env` and the deploy's env step, with the VPS side running
@@ -471,6 +500,11 @@ Leave `vps` as a kasbah server at the end — Phase 9 starts from it.
   behaviour; Phase 9's cutovers make hand-edited registries the ordinary case.
   **Settled 2026-10-18: refuse**, in every command, naming the file and the key
   to add.
+- **D6 — exit codes on malformed input (settle at 10.14).** Plain `check` exits
+  5 or 3 when a query fails on a badly shaped file (`services: {web: nginx}`) —
+  jq's status under errexit in the Bash tool, kept for parity — and those collide
+  with `docs/cli.md`'s 5 (env setup) and 3 (ssh unreachable). Options: map every
+  such abort to 1 at cutover, when the parity harness retires; or keep.
 - **D5 — the checkout entry point (settle at 10.1).** `bin/kasbah` is the
   documented way to run from a checkout. Options: (a) the built binary at a
   fixed path (e.g. `dist/kasbah`) becomes it and `bin/` goes at cutover

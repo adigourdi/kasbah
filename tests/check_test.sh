@@ -3698,6 +3698,24 @@ out="$(cd "$f19b" && env KASBAH_LIB_DIR="$repo_dir/lib" bash -c '
 assert '[ "$out" = "2" ]' \
     "F19: _cf_commit drops the conversion cached for the path it renamed over (said '$out')"
 
+# --- Case F19b: S05/S06's Bash reader on a large .gitignore ------------------
+# `check --fix` and `--server` still report S05/S06 from lib/check.sh. A pipe
+# into `grep -q` lost a match near the top of a large file to tr's SIGPIPE under
+# pipefail; the reading has to be the plain check's, whatever the size.
+f19c="$tmpdir/big-gitignore"
+mkdir -p "$f19c"
+{ printf '.env\n.kasbah/\n'; for i in $(seq 1 200000); do printf 'build/artifact-%d\n' "$i"; done; } > "$f19c/.gitignore"
+out="$(cd "$f19c" && env KASBAH_LIB_DIR="$repo_dir/lib" bash -c '
+    set -euo pipefail
+    . "$KASBAH_LIB_DIR/check.sh"
+    for i in 1 2 3 4 5; do
+        _gitignore_has .env && _gitignore_has .kasbah/ || { echo miss; exit 0; }
+    done
+    _gitignore_has nope && echo "false match" || echo ok
+' 2>&1)"
+assert '[ "$out" = "ok" ]' \
+    "F19b: _gitignore_has finds .env at the top of a large .gitignore every time (said '$out')"
+
 # --- Case F20: one yq fork per file, never one per rule ----------------------
 # The linter converts each document once and answers every rule from that, so
 # the only `yq` a run may fork is a whole-file read: `-c .` per file, plus
@@ -3741,16 +3759,15 @@ fork_shape() {
         | sort | uniq -c | awk '{ print $2, $3, $1 }' | sort
 }
 
+# Plain check is the Go binary's, which reads YAML itself (once per file,
+# internal/yamlx.Cache): it forks no yq at all.
 f20="$tmpdir/forks-plain"
 make_project "$f20"
 fork_run "$f20" check
 got="$(fork_shape)"
-want="convert compose.prod.yml 1
-convert kasbah.yml 1
-convert traefik-dynamic.yml 1
-sentinel kasbah.yml 1"
+want=""
 assert '[ "$got" = "$want" ]' \
-    "F20: a plain check reads each file once, and kasbah.yml once more for the sentinel
+    "F20: a plain check forks no yq
 $(diff -u <(printf '%s\n' "$want") <(printf '%s\n' "$got") 2>&1 || true)
         raw:
 $(sed 's/^/        /' < "$tmpdir/forks.log")"

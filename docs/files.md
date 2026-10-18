@@ -42,11 +42,11 @@ commands not named as writers below write nothing — `check` (but see `--fix`),
 
 | Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |
 |---|---|---|---|---|---|---|---|
-| `<project-dir>/kasbah.yml` | `init-project`; `check --fix` (temp + rename) | every project command | YAML → `project-manifest.md` | umask on create; `--fix` keeps the original's (`chmod --reference`) | `deploy` | never removed by kasbah | `lib/init_project.sh:119`, `lib/check_fix.sh:1188` |
+| `<project-dir>/kasbah.yml` | `init-project`; `check --fix` (temp + rename) | every project command | YAML → `project-manifest.md` | umask on create; `--fix` keeps the original's (`chmod --reference`) | `deploy` | never removed by kasbah | `internal/initproject/initproject.go:137`, `lib/check_fix.sh:1188` |
 | `<project-dir>/compose.prod.yml` | `check --fix` (edits, never creates) | `build-push`, `deploy`, `check` | YAML → `compliance.md` (`--fix`) | the original's | `deploy` | never removed | `lib/check_fix.sh:1188` |
 | `<project-dir>/*.kasbah-fix.<pid>` | `check --fix` staging, one per file fixed | `diff`, the re-plan | YAML candidate | `600`, then the original's | `deploy` | *transient*: renamed or removed by the EXIT trap; SIGKILL leaves it | `lib/check_fix.sh:1119`, trap `:1244` |
-| `<project-dir>/.env.prod.example` | `init-project` | `env`, `check`, the deploy sync | text → `env-template.md` | umask | `deploy` | created once, never rewritten | `lib/init_project.sh:140` |
-| `<project-dir>/.gitignore` | `init-project` appends `.env` and `.kasbah/` | `check` S05/S06 | text | umask if created | `deploy` | never removed | `lib/init_project.sh:153` |
+| `<project-dir>/.env.prod.example` | `init-project` | `env`, `check`, the deploy sync | text → `env-template.md` | umask | `deploy` | created once, never rewritten | `internal/initproject/initproject.go:140` |
+| `<project-dir>/.gitignore` | `init-project` appends `.env` and `.kasbah/` | `check` S05/S06 | text | umask if created | `deploy` | never removed | `internal/initproject/initproject.go:178` |
 | `<project-dir>/.git/**` | `rollback`, `deploy X.Y.Z`: `git fetch --tags` when the tag is missing | git | git's | git's | `deploy` | git's; not otherwise kasbah's | `lib/rollback.sh:261` |
 
 `deploy` in this table is the invoking user.
@@ -55,7 +55,7 @@ commands not named as writers below write nothing — `check` (but see `--fix`),
 
 | Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |
 |---|---|---|---|---|---|---|---|
-| `<project-dir>/.kasbah` | `init-project`; `mkdir -p` by every state write | — | directory | umask | `deploy` | never removed (`drop --prune` and `server destroy` included) | `lib/init_project.sh:88`, `lib/state.sh:16,66` |
+| `<project-dir>/.kasbah` | `init-project`; `mkdir -p` by every state write | — | directory | umask | `deploy` | never removed (`drop --prune` and `server destroy` included) | `internal/initproject/initproject.go:144`, `lib/state.sh:16,66` |
 | `<project-dir>/.kasbah/state.json` | created by `init-project`; merged by `build-push`, `deploy`, `rollback`, `env`, `history`, `pending`, `changelog`, `logs`, `exec`, `check --server`, `drop` | every server-targeting command (`last_server`) | JSON → `project-manifest.md` (State file) | umask — each merge re-creates the file | `deploy` | rewritten on success only; never removed | `lib/state.sh:14,53` |
 | `<project-dir>/.kasbah/state.json.tmp.<pid>` | the merge's staging | — | JSON | umask | `deploy` | *transient*: renamed into place; a kill between render and `mv` leaves it | `lib/state.sh:88` |
 
