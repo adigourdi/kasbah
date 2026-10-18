@@ -623,8 +623,8 @@ attempted.
   `<project>/.deploy.lock`, held on its own file descriptor — flocking the
   directory path itself is not portable.
 
-These two scripts are the only kasbah-owned **files** in a project directory
-on the VPS, and they are overwritten on every deploy / rollback so they match
+These two scripts are the only kasbah-owned **scripts** in a project directory
+on the VPS (every file kasbah writes there is listed in `files.md`), and they are overwritten on every deploy / rollback so they match
 the kasbah version driving the operation. `remote-deploy.sh` is rendered per
 deploy rather than copied: the manifest never reaches the server, so the data
 it carries — hooks, backup, health, the built-image list — is pre-rendered into

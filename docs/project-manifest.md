@@ -324,6 +324,8 @@ This keeps accounts decoupled from the deploy cycle.
 
 ## State file (`.kasbah/state.json`, not manifest)
 
+Every file kasbah writes, with mode and owner: `docs/files.md`.
+
 Stored in the project root. Not committed (add to `.gitignore`). Not synced
 to the VPS. Tracks:
 

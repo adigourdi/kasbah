@@ -152,16 +152,22 @@ Roadmap Phase 4's file list, written against the Bash tool as it stands — the
 contract every later task is checked against.
 
 **Deliverables**
-- [ ] `docs/files.md`: every path kasbah writes on the workstation and on a VPS —
+- [x] `docs/files.md`: every path kasbah writes on the workstation and on a VPS —
       writer(s), reader(s), format and its owning spec, mode, owner, when it is
       rewritten or removed (`drop`, `drop --prune`, `server destroy`)
-- [ ] Cross-linked from `docs/project-manifest.md` and `docs/server-setup.md`
+- [x] Cross-linked from `docs/project-manifest.md` and `docs/server-setup.md`
       rather than duplicating them
-- [ ] One rig assertion helper that snapshots the written-file set of a run, so
-      later tasks can diff Bash against Go
+- [x] One rig assertion helper that snapshots the written-file set of a run, so
+      later tasks can diff Bash against Go — `tests/integration/rig_files.sh`;
+      `KASBAH_FILES_SNAPSHOT_DIR` keeps normalised snapshots, and two passing runs
+      diff byte-identical
 
 **Verify on:** rig — snapshot after a full `server init --with-mail
---with-backup` + deploy + rollback matches the document.
+--with-backup` + deploy + rollback matches the document. **Observed:**
+`tests/integration/files_test.sh` rc=0 (~80 s); a deliberately broken row fails
+it. Rows for `drop`, `drop --prune`, `server destroy`, `upgrade-traefik`,
+`add-mail-domain`, `backup-prune`, `env`, `deploy X.Y.Z`, `init-project` and
+`check --fix` are code-read, not run — the units porting those commands assert them.
 
 **Watch out for:** modes and owners are contract — `versions.log` keeps its mode
 across rotation, `/etc/kasbah/apps-path` is `root:root 644`, the SSH control
@@ -255,7 +261,9 @@ tree but only warns on a tag's manifest.
 
 **Verify on:** rig, under a real terminal and piped.
 
-**Watch out for:** in `lib/env.sh`, EOF at the menu aborts — that is errexit
+**Watch out for:** the project `.env` holds secrets but `lib/env.sh:414` creates
+it at umask (`644` on the rig); only the inject path starts it `600` — decide
+the Go mode deliberately and record it in `files.md`. In `lib/env.sh`, EOF at the menu aborts — that is errexit
 behaviour and must become an explicit abort. `export FOO=x` is rewritten as
 `FOO=x`. The env step sits after the project rsync and before the remote deploy.
 
@@ -276,6 +284,9 @@ once: shipping the binary, the protocol, the remote lock, prompts over SSH.
 Bash `server init` until 10.9).
 
 **Watch out for:**
+- `docs/build-deploy.md:303-305` calls `digest=` an `image@sha256` content
+  digest; the code writes the image id (`templates/remote-deploy.sh:787`) — keep
+  the bytes, fix the doc.
 - The completion report is printed **after** the `versions.log` append and is
   the run's completion marker; no report → refuse **before shipping the Traefik
   fragment**. The fragment ships last, always.
@@ -313,7 +324,10 @@ the entry predicate (tightening it stopped rotation: 67 failures).
 
 **Verify on:** rig; `vps` for real sudo and `--acme-staging`.
 
-**Watch out for:** `--keep-acme --yes` once destroyed a store because one code
+**Watch out for:** `/etc/kasbah` gets its `755` only when the pointer is
+rewritten (`lib/server_init.sh:1207-1216`), and the backup `env` gets `600` only
+when its content changes (`lib/backup.sh:878-884`) — Go should enforce both on
+every run. `--keep-acme --yes` once destroyed a store because one code
 path out of three read the choice — test the run that **never consults** a flag.
 `--yes` does not answer the unknown-store question, deliberately. kasbah always
 overwrites `caServer`.
@@ -356,7 +370,13 @@ version `:current` points at as the first.
 
 **Verify on:** rig; `vps` once — destroy with gallery-website serving throughout.
 
-**Watch out for:** destroy keeps every container running. `/etc/kasbah` is
+**Watch out for:** the Bash rewrite of `mail/.env` renames its temp file over
+the real one without checking the write finished (`lib/server_destroy.sh:1148-1168`)
+— a full disk truncates the operator's relay block; Go checks before renaming.
+`docs/server-setup.md:681-700` says every container keeps running, but destroy
+removes the `kasbah-backup` container and its volume (`server_destroy.sh:948-966`)
+and the discovery pointer — reconcile the doc. `docs/cli.md:870-873` says `drop`
+records no `last_server` after a held lock; `lib/drop.sh:1376-1380` does. Destroy keeps every project container running. `/etc/kasbah` is
 root-owned. A binary that destroy removes must not be the one executing the
 removal mid-step — order the last remote call accordingly.
 
@@ -370,7 +390,10 @@ removal mid-step — order the last remote call accordingly.
 
 **Verify on:** rig (`rest:`); `s3:` stays traced.
 
-**Watch out for:** the full-access credential never reaches the server. The
+**Watch out for:** `templates/backup/env:23` promises the backup credentials
+"never leave this server", but init reads the whole `env` back to the
+workstation (`lib/backup.sh:452`) and re-ships it (`:824`, `:879`). With Go on the
+server the merge can happen there — make the promise true. The full-access credential never reaches the server. The
 backup record survives container restarts (commit `12e543a`).
 
 ### 10.14 — Cutover (M)
@@ -443,5 +466,9 @@ Run approved 2026-10-18: whole phase, plan order, unit bar as in Rulings.
 - **A reset rig has an empty image store**, and suites that assert on stock
   images must pull them themselves — `integration/prune_test.sh` assumed two that
   only rig history had. Expect the same shape elsewhere after any `rig.sh reset`.
+- **`state.json`'s spec overclaims** (`docs/project-manifest.md:344-368`):
+  `kasbah_version` is set only at creation, never by `check --fix`; nothing reads
+  `last_deploy`/`last_version`; `drop` is missing from the `last_server` writers.
+  10.3 ports state — settle the doc there.
 - **The unit half is now ~9m40s** (Go checks + a build + 29 suites), up from
   ~7 min; the full rig run 31m10s.

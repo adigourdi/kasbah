@@ -46,6 +46,8 @@ runs `docker compose -f compose.prod.yml build` locally, so a workstation with
 
 ## What init creates
 
+Every file kasbah writes, with mode and owner: `docs/files.md`.
+
 Default paths (override with `--apps-path`, `--data-path`):
 
 ```

@@ -97,7 +97,7 @@ domains:
 **This file is the registry, and nothing else is.** It is the only thing
 asked "does this stack serve X?". The `.env` beside it carries what compose
 and DMS interpolate — `MAIL_HOSTNAME`, `DOMAIN`, `DATA_PATH` — and those are
-*derived from here* and rewritten by every mail command, so there is one
+*derived from here* and rewritten by `server init --with-mail`, so there is one
 writer per fact and the two cannot drift. Below them sits the operator's
 relay block, which kasbah copies through and never reads back to the
 workstation.

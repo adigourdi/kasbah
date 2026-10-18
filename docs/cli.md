@@ -778,7 +778,7 @@ Removes:
   server-side `compose.yml` declares on a service with a `build:` key
 
 Keeps:
-- `/apps/<name>/` (compose, `.env`, manifest, versions.log, scripts)
+- `/apps/<name>/` (compose, `.env`, versions.log, scripts)
 - `/apps/data/<name>/` (bind mounts)
 - backups (on-VPS and off-VPS)
 - named volumes — `down` runs without `-v`, because drop keeps data
