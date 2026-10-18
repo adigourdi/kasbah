@@ -13,7 +13,7 @@
 #     awkward files, compared byte for byte;
 #   * the read payload, likewise extracted, against a fake apps tree and a stub
 #     docker;
-#   * the command itself, through bin/kasbah with a stub ssh — which is what
+#   * the command itself, through the CLI with a stub ssh — which is what
 #     fixes the exact removal set and both no-TTY refusals.
 #
 # **The whole command is negatives**, so every "X is gone" assertion here is
@@ -28,6 +28,7 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+. "$repo_dir/tests/cli.sh"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -72,7 +73,7 @@ extract_remote() {   # extract_remote <n> <outfile>
 driver="$tmpdir/driver.sh"
 cat > "$driver" <<'DRV'
 #!/usr/bin/env bash
-# `set -e` like bin/kasbah: a helper that dies under errexit before its own
+# `set -e` like the dispatcher: a helper that dies under errexit before its own
 # caller can decide what the failure means is a defect this driver reproduces.
 set -euo pipefail
 . "$KASBAH_LIB_DIR/common.sh"
@@ -113,10 +114,10 @@ assert 'grep -qF "unknown flag" <<<"$out"' "an unknown flag is refused rather th
 out=$(drive parse deploy@vps other@vps)
 assert 'grep -qF "two servers given" <<<"$out"' "two targets are refused (got '$out')"
 
-# Through bin/kasbah with the suite's own KASBAH_LIB_DIR unset: the dispatcher
+# Through the CLI with the suite's own KASBAH_LIB_DIR unset: the dispatcher
 # reads VERSION from beside whatever library directory it is given, and an
 # exported one pointing at lib/ has no VERSION in it.
-cli() { env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION "$repo_dir/bin/kasbah" "$@"; }
+cli() { env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION "$KASBAH_BIN" "$@"; }
 usage_out=$(cli server destroy --help 2>&1); usage_rc=$?
 assert '[ "$usage_rc" = 0 ]' "--help exits 0 (rc=$usage_rc: $usage_out)"
 assert 'grep -qF -- "--yes" <<<"$usage_out"' "and lists the flag that answers both confirmations"
@@ -831,7 +832,7 @@ destroy_cli() {
         SSH_BK_DOWN="${SSH_BK_DOWN:-ok}" SSH_BK_CONTAINER="${SSH_BK_CONTAINER:-removed}" \
         SSH_BK_NETWORK="${SSH_BK_NETWORK:-removed}" SSH_MAIL_ENV="${SSH_MAIL_ENV:-stripped}" \
         SSH_PROJ_ENV="${SSH_PROJ_ENV:-stripped}" SSH_POINTER="${SSH_POINTER:-removed}" \
-        "$repo_dir/bin/kasbah" server destroy "$@" 2>&1
+        "$KASBAH_BIN" server destroy "$@" 2>&1
 }
 act_names() { sed -n 's/^name=//p' "$act_log" | LC_ALL=C sort | tr '\n' ' '; }
 
@@ -1029,7 +1030,7 @@ run_tty() {   # run_tty <input> <args...>
     cmd="$(printf '%q ' env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
         HOME="$tmpdir/home" PATH="$stub:$PATH" SSH_LOG="$ssh_log" \
         SSH_COUNT="$tmpdir/ssh.count" SSH_ACT_LOG="$act_log" SSH_PAYLOAD="$payload_file" \
-        SSH_BK_DOWN=ok "$repo_dir/bin/kasbah" server destroy "$@")"
+        SSH_BK_DOWN=ok "$KASBAH_BIN" server destroy "$@")"
     tty_out=$(printf '%s' "$input" | script -qec "$cmd" /dev/null 2>&1)
     tty_rc=$?
     tty_out=${tty_out//$'\r'/}
@@ -1095,7 +1096,7 @@ nomarker() {
         HOME="$tmpdir/home" PATH="$stub:$PATH" SSH_COUNT="$tmpdir/ssh.count" \
         SSH_LEFT_POINTER="${SSH_LEFT_POINTER:-no}" SSH_LEFT_KASBAH="${SSH_LEFT_KASBAH:-}" \
         SSH_LEFT_CREDS="${SSH_LEFT_CREDS:-}" \
-        "$repo_dir/bin/kasbah" server destroy deploy@vps 2>&1
+        "$KASBAH_BIN" server destroy deploy@vps 2>&1
 }
 out=$(nomarker </dev/null); rc=$?
 assert '[ "$rc" = 0 ]' "a server with no marker and nothing left exits 0 (rc=$rc: $out)"

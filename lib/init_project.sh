@@ -1,5 +1,5 @@
 # kasbah — init-project command
-# Sourced by bin/kasbah. Do not execute directly.
+# Sourced by libexec/kasbah-bash. Do not execute directly.
 
 [ -n "${_KASBAH_INIT_PROJECT_LOADED:-}" ] && return 0
 _KASBAH_INIT_PROJECT_LOADED=1

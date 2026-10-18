@@ -16,7 +16,7 @@
 #     lives: every "this was not treated as an error" has a positive beside it
 #     that would fire if the classifier stopped reading altogether;
 #   * the start payload, whose rollback is the difference between a failed
-#     upgrade and a dark server, and the command itself through bin/kasbah with
+#     upgrade and a dark server, and the command itself through the CLI with
 #     a stub ssh — which is what fixes the **ordering**: nothing is backed up,
 #     shipped or restarted when the dry run says no.
 #
@@ -33,6 +33,7 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+. "$repo_dir/tests/cli.sh"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -59,7 +60,7 @@ export NO_COLOR=1
 driver="$tmpdir/driver.sh"
 cat > "$driver" <<'DRV'
 #!/usr/bin/env bash
-# `set -e` like bin/kasbah: a helper that dies under errexit before its caller
+# `set -e` like the dispatcher: a helper that dies under errexit before its caller
 # can decide what the failure means is a defect this driver reproduces.
 set -euo pipefail
 . "$KASBAH_LIB_DIR/common.sh"
@@ -529,7 +530,7 @@ cli() {
     env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" SSH_LOG="$ssh_log" \
         SSH_REPLY_DIR="$reply" \
-        "$repo_dir/bin/kasbah" server upgrade-traefik "$@" 2>&1
+        "$KASBAH_BIN" server upgrade-traefik "$@" 2>&1
 }
 steps() { sed -n 's/^STEP //p' "$ssh_log" | tr '\n' ' '; }
 

@@ -1,5 +1,5 @@
 # kasbah — the SSH transport: one multiplexed connection per process
-# Sourced by bin/kasbah. Do not execute directly.
+# Sourced by libexec/kasbah-bash. Do not execute directly.
 
 [ -n "${_KASBAH_SSH_LOADED:-}" ] && return 0
 _KASBAH_SSH_LOADED=1

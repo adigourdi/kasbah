@@ -4,7 +4,7 @@
 # Both commands are one `docker compose` on the far side, so what a unit suite
 # can prove is the command line: the flags, the positional-ambiguity rule they
 # share, which of lib/ssh.sh's three run-helpers carries each one, and the exit
-# status each returns. Everything runs end to end through `bin/kasbah` against a
+# status each returns. Everything runs end to end through the CLI against a
 # stub `ssh` that answers as a prepared server does and records every argument
 # it was given — the composed line is read back out of that log and compared
 # **whole**, because an assertion that only looks for a substring cannot tell a
@@ -17,6 +17,7 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+. "$repo_dir/tests/cli.sh"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -108,7 +109,7 @@ kasbah() {
           CALL_LOG="$call_log" \
           FAKE_DC_RC="${FAKE_DC_RC:-0}" FAKE_DC_OUT="${FAKE_DC_OUT:-}" \
           FAKE_UNREACHABLE="${FAKE_UNREACHABLE:-}" FAKE_MARKER="${FAKE_MARKER-1}" \
-          "$repo_dir/bin/kasbah" "$@" ) >"$tmpdir/o" 2>"$tmpdir/e" </dev/null || rc=$?
+          "$KASBAH_BIN" "$@" ) >"$tmpdir/o" 2>"$tmpdir/e" </dev/null || rc=$?
     CRC=$rc; COUT="$(cat "$tmpdir/o")"; CERR="$(cat "$tmpdir/e")"
     DCALL="$(grep -F "'docker' 'compose'" "$call_log" 2>/dev/null || true)"
     DC="${DCALL##*|}"
@@ -127,7 +128,7 @@ kasbah_piped() {
     ( cd "$project" && env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
           HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$tmpdir/runtmp" \
           CALL_LOG="$call_log" FAKE_MARKER=1 FAKE_DC_LINES="${FAKE_DC_LINES:-50000}" \
-          "$repo_dir/bin/kasbah" "$@" 2>"$tmpdir/e" </dev/null
+          "$KASBAH_BIN" "$@" 2>"$tmpdir/e" </dev/null
       echo "$?" > "$tmpdir/prc" ) | $reader >"$tmpdir/o" 2>/dev/null
     PRC="$(cat "$tmpdir/prc" 2>/dev/null)"
     POUT="$(cat "$tmpdir/o")"; PERR="$(cat "$tmpdir/e")"
@@ -141,7 +142,7 @@ kasbah_fed() {
     ( cd "$project" && env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
           HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$tmpdir/runtmp" \
           CALL_LOG="$call_log" FAKE_MARKER=1 \
-          "$repo_dir/bin/kasbah" "$@" ) >"$tmpdir/o" 2>"$tmpdir/e" <"$src"
+          "$KASBAH_BIN" "$@" ) >"$tmpdir/o" 2>"$tmpdir/e" <"$src"
     CRC=$?; COUT="$(cat "$tmpdir/o")"; CERR="$(cat "$tmpdir/e")"
     return 0
 }
@@ -182,7 +183,7 @@ assert '[ "$trc" != 0 ]' "while a count with anything else in it is refused (rc 
 KASBAH_TEST_CWD="$notproject" kasbah logs --help
 assert '[ "$CRC" = 0 ]' "kasbah logs --help exits 0 (rc $CRC: $CERR)"
 assert 'grep -qxF "Usage: kasbah logs [USER@HOST] [SERVICE] [-f] [--tail=N]" <<<"$COUT"' \
-    "with the shape bin/kasbah and docs/cli.md both spell (got: $(head -1 <<<"$COUT"))"
+    "with the shape the CLI and docs/cli.md both spell (got: $(head -1 <<<"$COUT"))"
 assert 'grep -qF -- "--tail=N" <<<"$COUT"' "naming --tail (got '$COUT')"
 assert '[ -z "$CERR" ]' "and nothing on stderr (stderr: '$CERR')"
 assert '[ "$(grep -c "^ssh|" "$call_log")" = "0" ]' \
@@ -507,7 +508,7 @@ cd "$project" || exit 9
 exec env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \\
     HOME="$tmpdir/home" PATH="$stub_dir:\$PATH" TMPDIR="$tmpdir/runtmp" \\
     CALL_LOG="$call_log" FAKE_MARKER=1 NO_COLOR=1 \\
-    "$repo_dir/bin/kasbah" "\$@"
+    "$KASBAH_BIN" "\$@"
 RUNNER
     chmod 0755 "$runner"
 

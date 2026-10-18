@@ -112,7 +112,7 @@ deploy_bounded() (
     cd "$projdir" || return 2
     timeout "${DEPLOY_TIMEOUT:-180}" \
         env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-            "$RIG_REPO_DIR/bin/kasbah" deploy "$@" \
+            "$KASBAH_BIN" deploy "$@" \
         >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
 )
 cli_err() { cat "$tmpdir/err"; }

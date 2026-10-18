@@ -1,0 +1,92 @@
+# The Go toolchain, containerised: the Go version is pinned by the image tag
+# below and nowhere else — GOTOOLCHAIN=local stops go.mod from fetching another.
+#
+#   docker compose run --rm build   dist/kasbah                      linux, for the docker engine's own
+#                                                                    architecture: the checkout entry
+#                                   dist/server/kasbah-linux-amd64   the server binaries
+#                                   dist/server/kasbah-linux-arm64
+#   docker compose run --rm test    go vet, the gofmt check, go test
+#
+# All three binaries are static (CGO_ENABLED=0) and carry the build stamp from
+# `go run ./tools/stamp`: VERSION, plus the commit count on a pre-release,
+# plus the build time when the tree is dirty. Each is written beside its final
+# name and renamed into place, so a reader never sees a partial file.
+name: kasbah
+
+x-go: &go
+  # Debian, not alpine: the image's git is what tools/stamp counts commits with.
+  image: golang:1.27.2-trixie
+  user: "${UID:-1000}:${GID:-1000}"
+  working_dir: /workspace
+  init: true
+  volumes:
+    - .:/workspace
+  environment:
+    GOTOOLCHAIN: local
+    CGO_ENABLED: "0"
+    # -modcacherw: the module cache is otherwise read-only, and `rm -rf .cache`
+    # on the host would fail on it.
+    GOFLAGS: -buildvcs=false -modcacherw
+    # The container user has no home of its own, and a named volume would be
+    # created root-owned; the caches live in the tree instead (gitignored).
+    HOME: /workspace/.cache/home
+    GOCACHE: /workspace/.cache/go-build
+    GOMODCACHE: /workspace/.cache/go-mod
+    # Command-scope config, so it reaches no git config on the host: the tree's
+    # owner differs from the container user whenever UID is not exported.
+    GIT_CONFIG_COUNT: "1"
+    GIT_CONFIG_KEY_0: safe.directory
+    GIT_CONFIG_VALUE_0: /workspace
+
+services:
+  build:
+    <<: *go
+    command:
+      - sh
+      - -euc
+      - |
+        v=$$(go run ./tools/stamp)
+        ldflags="-s -w -X main.build=$$v"
+        go build -trimpath -ldflags "$$ldflags" -o dist/.kasbah.new ./cmd/kasbah
+        mv -f dist/.kasbah.new dist/kasbah
+        for arch in amd64 arm64; do
+            out=dist/server/kasbah-linux-$$arch
+            GOOS=linux GOARCH=$$arch go build -trimpath -ldflags "$$ldflags" \
+                -o "$$(dirname "$$out")/.$$(basename "$$out").new" ./cmd/kasbah
+            mv -f "$$(dirname "$$out")/.$$(basename "$$out").new" "$$out"
+        done
+        echo "built kasbah $$v"
+
+  test:
+    <<: *go
+    command:
+      - sh
+      - -euc
+      - |
+        go vet ./...
+        # Over the module's packages only: a bare `gofmt -l .` would walk the
+        # module cache under .cache/.
+        unformatted=$$(gofmt -l $$(go list -f '{{.Dir}}' ./...))
+        if [ -n "$$unformatted" ]; then
+            echo "gofmt: not formatted:" >&2
+            echo "$$unformatted" >&2
+            exit 1
+        fi
+        go test ./...
+
+  # The inner loop: started once with `up -d dev`, then driven with `exec`, so a
+  # check run a dozen times in a row does not pay for a container start each time.
+  #
+  #   docker compose up -d dev
+  #   docker compose exec dev go test ./internal/...
+  #
+  # It holds no state worth keeping; anything whose result matters is still `run --rm`.
+  dev:
+    <<: *go
+    command: sleep infinity
+
+  shell:
+    <<: *go
+    stdin_open: true
+    tty: true
+    command: bash

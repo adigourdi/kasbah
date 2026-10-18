@@ -61,7 +61,7 @@ fi
 # wrapper, which is the environment Units B-E will get.
 cli_out=$(kasbah_cli --version 2>&1); cli_rc=$?
 assert '[ "$cli_rc" = "0" ]' "kasbah_cli runs the checkout's CLI (exit $cli_rc: $cli_out)"
-assert '[ "$cli_out" = "kasbah $(cat "$repo_dir/VERSION")" ]' \
+assert '[ "$cli_out" = "kasbah $(kasbah_bin_version)" ]' \
     "kasbah_cli runs this checkout, not an installed copy (got '$cli_out')"
 
 # --- The cleanup payload cannot run locally -----------------------------------

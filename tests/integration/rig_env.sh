@@ -40,6 +40,7 @@
 _KASBAH_RIG_ENV_LOADED=1
 
 RIG_REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$RIG_REPO_DIR/tests/cli.sh"
 RIG_SSH_CONFIG="$RIG_REPO_DIR/tests/rig/ssh_config"
 # A constant, deliberately not an environment knob. It is the only thing that
 # decides where rig_clean's payload lands, and an overridable one turns
@@ -134,10 +135,11 @@ rig_env_init() {
     chmod 0755 "$tmp" && mv -f "$tmp" "$RIG_SHIM_DIR/ssh" || return 1
 }
 
-# kasbah, exactly as installed, under the scratch HOME and the wrapper.
+# kasbah — the binary under test (tests/cli.sh) — under the scratch HOME and
+# the wrapper.
 kasbah_cli() {
     env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-        "$RIG_REPO_DIR/bin/kasbah" "$@"
+        "$KASBAH_BIN" "$@"
 }
 
 # Nothing below is ever handed the terminal as stdin.

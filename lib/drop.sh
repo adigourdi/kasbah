@@ -1,5 +1,5 @@
 # kasbah — drop: remove one project's footprint from a VPS
-# Sourced by bin/kasbah. Do not execute directly.
+# Sourced by libexec/kasbah-bash. Do not execute directly.
 
 [ -n "${_KASBAH_DROP_LOADED:-}" ] && return 0
 _KASBAH_DROP_LOADED=1

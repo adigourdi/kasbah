@@ -1,18 +1,31 @@
 # kasbah
 
-Bash CLI that turns a plain VPS into a multi-project Docker host
+CLI that turns a plain VPS into a multi-project Docker host
 (Traefik file-provider routing, registry-less image shipping over SSH).
+Written in Bash, being ported to Go strangler-style (`docs/phases/10-recast.md`):
+the Go binary is `kasbah` and hands every command it does not own yet to
+the Bash dispatcher, `libexec/kasbah-bash`.
 `docs/` is the spec and the source of truth; `docs/phases/` is the build
 plan and the only progress tracker (the roadmap is scope, not status).
 
 ## Commands
 
-- `./test.sh` — unit suites (fast, no server needed). Must pass before any commit.
+- `./test.sh` — Go checks, a build of `dist/`, then the unit suites (~10 min,
+  needs Docker, no server). Must pass before any commit. `KASBAH_BIN=<path>`
+  tests that binary instead and skips the build.
 - `KASBAH_RIG_TESTS=1 ./test.sh` — adds integration tests against the
   fake-VPS rig. Run `tests/rig/rig.sh up` first; see `tests/rig/README.md`
   for what the rig can and cannot prove. Exit 2 means the environment is
   wrong (rig down), not that a test failed.
-- `bin/kasbah <cmd>` — run the CLI from the checkout (repo detection via the `install.sh` sibling; no install needed).
+- `docker compose run --rm build` — `dist/kasbah` plus the linux/amd64 and
+  linux/arm64 server binaries in `dist/server/`; `docker compose run --rm test`
+  — vet, gofmt, `go test`. Inner loop: `docker compose up -d dev`, then
+  `docker compose exec dev go test ./...`. No Go on the host: the version
+  lives in `compose.yml` alone. Build from the main checkout — a git worktree's
+  `.git` points outside the mounted tree and the version stamp fails.
+- `dist/kasbah <cmd>` — run the CLI from the checkout (repo detection via the `install.sh` sibling; no install needed).
+- Versions: files kasbah writes record `VERSION`; `--version` prints the build
+  stamp (`KASBAH_BUILD`: `VERSION` + commit count, + build time when dirty).
 
 ## Hard conventions
 
@@ -47,9 +60,10 @@ prefix (reserved, injected at deploy, exempt from drift).
 
 ## Layout
 
-- `bin/kasbah` — dispatcher; `lib/*.sh` — one file per concern, sourced lazily.
+- `cmd/kasbah`, `internal/` — the Go binary; `tools/stamp` — the build stamp.
+- `libexec/kasbah-bash` — Bash dispatcher; `lib/*.sh` — one file per concern, sourced lazily.
 - `templates/` — files kasbah renders onto servers.
-- `tests/` — `*_test.sh` unit suites; `tests/rig/` fake VPS; `tests/integration/` rig-driven; `tests/fixtures/` sample projects.
+- `tests/` — `*_test.sh` unit suites (`tests/cli.sh` resolves `KASBAH_BIN`); `tests/rig/` fake VPS; `tests/integration/` rig-driven; `tests/fixtures/` sample projects.
 - `docs/` — the spec; start with `overview.md` (decisions table) and `compliance.md` (rule catalog).
 - `docs/phases/` — build plan; phase Findings sections are the project's memory of traps. Read the relevant phase file before touching its area.
 - `docs/research/` — dated competitive/background notes. **Not spec, not normative**; acted on by lifting findings into a spec doc, the roadmap, or the backlog.

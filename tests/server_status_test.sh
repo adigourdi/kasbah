@@ -8,7 +8,7 @@
 #   * the remote script, extracted from its heredoc and run against a fake apps
 #     tree with a stub docker on PATH — which is also where "read-only" is
 #     proved, by digesting the tree before and after;
-#   * the command itself, through bin/kasbah with a stub ssh that hands back a
+#   * the command itself, through the CLI with a stub ssh that hands back a
 #     crafted protocol block, which is what fixes the exit codes and the output
 #     for states no rig can be put into on demand.
 #
@@ -18,6 +18,7 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+. "$repo_dir/tests/cli.sh"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -40,7 +41,7 @@ export NO_COLOR=1
 driver="$tmpdir/driver.sh"
 cat > "$driver" <<'DRV'
 #!/usr/bin/env bash
-# `set -e` like bin/kasbah: a decode that dies under errexit before its own
+# `set -e` like the dispatcher: a decode that dies under errexit before its own
 # error message runs is a defect this driver has to be able to reproduce.
 set -euo pipefail
 . "$KASBAH_LIB_DIR/common.sh"
@@ -92,7 +93,7 @@ case "$mode" in
         # waiting a month, and it is the reader `check --server` calls too.
         content="$(cat)"
         # Captured, not called bare: the driver runs under `set -e` like
-        # bin/kasbah, and the reader answers 1 when there was no record to judge.
+        # the dispatcher, and the reader answers 1 when there was no record to judge.
         rc=0
         backup_record_read "$1" "$2" "$content" "$3" || rc=$?
         printf 'rc=%s\nverdict=%s\nreason=%s\nstate=%s\nstatus=%s\nrepos=%s\noverdue=%s\nage=%s\nnext=%s\nclock=%s\n' \
@@ -1270,7 +1271,7 @@ status_cli() {
     env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" SSH_LOG="$ssh_log" \
         SSH_PAYLOAD="$payload_file" \
-        "$repo_dir/bin/kasbah" server status "$@" 2>&1
+        "$KASBAH_BIN" server status "$@" 2>&1
 }
 
 # A server with one project, written as the remote step writes it.
@@ -2278,18 +2279,18 @@ assert '[ "$rc" = "3" ]' "an unreachable server exits 3 (exit $rc: $out)"
 assert 'grep -qF "cannot reach deploy@vps" <<<"$out"' "saying which host (said '$out')"
 
 # --- Dispatch --------------------------------------------------------------------------
-out=$(env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION HOME="$tmpdir/home" "$repo_dir/bin/kasbah" server bogus 2>&1); rc=$?
+out=$(env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION HOME="$tmpdir/home" "$KASBAH_BIN" server bogus 2>&1); rc=$?
 assert '[ "$rc" != "0" ]' "an unknown server subcommand fails (exit $rc: $out)"
 assert 'grep -qF "unknown subcommand" <<<"$out"' "saying so (said '$out')"
 assert 'grep -qF "init, status" <<<"$out"' "and naming what exists (said '$out')"
-out=$(env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION HOME="$tmpdir/home" "$repo_dir/bin/kasbah" server 2>&1); rc=$?
+out=$(env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION HOME="$tmpdir/home" "$KASBAH_BIN" server 2>&1); rc=$?
 assert '[ "$rc" != "0" ]' "a missing server subcommand fails (exit $rc: $out)"
 assert 'grep -qF "init, status" <<<"$out"' "naming what exists (said '$out')"
-out=$(env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION HOME="$tmpdir/home" "$repo_dir/bin/kasbah" --help 2>&1)
+out=$(env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION HOME="$tmpdir/home" "$KASBAH_BIN" --help 2>&1)
 assert 'grep -qF "server status" <<<"$out"' "the top-level usage lists server status (said '$out')"
-out=$(env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION HOME="$tmpdir/home" "$repo_dir/bin/kasbah" server --help 2>&1)
+out=$(env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION HOME="$tmpdir/home" "$KASBAH_BIN" server --help 2>&1)
 assert 'grep -qF "status USER@HOST" <<<"$out"' "and so does the server usage (said '$out')"
-out=$(env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION HOME="$tmpdir/home" "$repo_dir/bin/kasbah" server status --help 2>&1); rc=$?
+out=$(env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION HOME="$tmpdir/home" "$KASBAH_BIN" server status --help 2>&1); rc=$?
 assert '[ "$rc" = "0" ]' "server status --help exits 0 (exit $rc)"
 assert 'grep -qF -- "--apps-path" <<<"$out"' "and documents the one flag it takes (said '$out')"
 

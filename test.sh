@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run every tests/*_test.sh. Each test is a standalone bash script; exit 0 = pass.
+# Run the Go checks, then every tests/*_test.sh against the binary under test.
+# Each test is a standalone bash script; exit 0 = pass.
 
 set -uo pipefail
 
@@ -10,8 +11,8 @@ shopt -s nullglob
 tests=("$tests_dir"/*_test.sh)
 
 # Integration tests need a rig (tests/rig/rig.sh up) and are opt-in, so the
-# default run stays fast and works on a machine with no Docker. Off, this costs
-# one string comparison — no glob, no stat, nothing that grows with the repo.
+# default run stays fast. Off, this costs one string comparison — no glob, no
+# stat, nothing that grows with the repo.
 #
 # An unrecognised value is a hard failure rather than "off": `KASBAH_RIG_TESTS=true`
 # treated as off prints the same three PASS lines and the same exit 0 as a run
@@ -32,8 +33,53 @@ if [ ${#tests[@]} -eq 0 ]; then
     exit 0
 fi
 
+# The Go toolchain lives in compose.yml. UID is a read-only shell variable that
+# is never exported, so it goes through env; without it the container writes as
+# uid 1000. -p because an exported COMPOSE_PROJECT_NAME outranks the file's
+# `name:`; stdin from /dev/null because -T still forwards it, and a run put in
+# the background would stop on SIGTTIN.
+go_compose() {
+    env UID="$(id -u)" GID="$(id -g)" \
+        docker compose -p kasbah -f "$repo_dir/compose.yml" run --rm -T "$@" </dev/null
+}
+# No usable Docker is a fact about this machine, not the code: exit 2, like a
+# rig that is down. A missing binary, a missing compose plugin and a daemon
+# that is down or refuses this user all land here.
+if ! command -v docker >/dev/null 2>&1 \
+   || ! docker compose version >/dev/null 2>&1 \
+   || ! docker info >/dev/null 2>&1; then
+    echo "docker is needed: the Go checks and the build run in compose.yml's toolchain" >&2
+    echo "  (checked: docker on PATH, \`docker compose version\`, \`docker info\`)" >&2
+    exit 2
+fi
+
 failed=0
 unrunnable=0
+
+go_compose test; rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo "PASS go (docker compose run --rm test)"
+else
+    echo "FAIL go (docker compose run --rm test)" >&2
+    failed=$((failed + 1))
+fi
+
+# Every suite drives KASBAH_BIN (tests/cli.sh). Unset, it is this checkout's
+# dist/kasbah, rebuilt here so no suite runs a binary older than the tree. A
+# build that fails stops the run: whatever dist/ still holds is not this tree.
+if [ -z "${KASBAH_BIN:-}" ]; then
+    if ! go_compose build; then
+        echo "FAIL build (docker compose run --rm build) — no suite run" >&2
+        exit 1
+    fi
+    KASBAH_BIN="$repo_dir/dist/kasbah"
+fi
+if [ ! -x "$KASBAH_BIN" ]; then
+    echo "KASBAH_BIN=$KASBAH_BIN is not an executable — no suite run" >&2
+    exit 2
+fi
+export KASBAH_BIN
+
 for t in "${tests[@]}"; do
     # Relative to tests/, not just the basename: a unit suite and an
     # integration suite for the same library share a name (ssh_test.sh), and

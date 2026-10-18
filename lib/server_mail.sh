@@ -1,5 +1,5 @@
 # kasbah — the mail stack's own server commands
-# Sourced by bin/kasbah. Do not execute directly.
+# Sourced by libexec/kasbah-bash. Do not execute directly.
 
 [ -n "${_KASBAH_SERVER_MAIL_LOADED:-}" ] && return 0
 _KASBAH_SERVER_MAIL_LOADED=1

@@ -1,5 +1,5 @@
 # kasbah — common shell library
-# Sourced by bin/kasbah and lib/*.sh. Do not execute directly.
+# Sourced by libexec/kasbah-bash and lib/*.sh. Do not execute directly.
 
 [ -n "${_KASBAH_COMMON_LOADED:-}" ] && return 0
 _KASBAH_COMMON_LOADED=1

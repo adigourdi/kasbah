@@ -1,5 +1,5 @@
 # kasbah — check command (compliance linter)
-# Sourced by bin/kasbah. Do not execute directly.
+# Sourced by libexec/kasbah-bash. Do not execute directly.
 
 [ -n "${_KASBAH_CHECK_LOADED:-}" ] && return 0
 _KASBAH_CHECK_LOADED=1

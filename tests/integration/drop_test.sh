@@ -98,7 +98,7 @@ kasbah_bounded() (
     cd "${KASBAH_CWD:-$projdir}" || return 2
     timeout "${DEPLOY_TIMEOUT:-240}" \
         env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-            "$RIG_REPO_DIR/bin/kasbah" "$@" \
+            "$KASBAH_BIN" "$@" \
         >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
 )
 build_push() { kasbah_bounded build-push "$@"; }

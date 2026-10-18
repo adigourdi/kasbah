@@ -100,7 +100,7 @@ run_bounded() (
     cd "$projdir" || return 2
     timeout "${DEPLOY_TIMEOUT:-240}" \
         env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-            "$RIG_REPO_DIR/bin/kasbah" "$cmd" "$@" \
+            "$KASBAH_BIN" "$cmd" "$@" \
         >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
 )
 exists() { rig_ssh "[ -e '$1' ] && echo present || echo absent" 2>/dev/null | tr -d '\r'; }

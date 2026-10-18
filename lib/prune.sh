@@ -1,5 +1,5 @@
 # kasbah — server prune: image retention across every project on a VPS
-# Sourced by bin/kasbah. Do not execute directly.
+# Sourced by libexec/kasbah-bash. Do not execute directly.
 
 [ -n "${_KASBAH_PRUNE_LOADED:-}" ] && return 0
 _KASBAH_PRUNE_LOADED=1

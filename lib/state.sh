@@ -1,5 +1,5 @@
 # kasbah — project state file (.kasbah/state.json)
-# Sourced by bin/kasbah. Do not execute directly.
+# Sourced by libexec/kasbah-bash. Do not execute directly.
 
 [ -n "${_KASBAH_STATE_LOADED:-}" ] && return 0
 _KASBAH_STATE_LOADED=1

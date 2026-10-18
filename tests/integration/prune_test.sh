@@ -112,6 +112,11 @@ month0=$3
 root=/tmp/kasbah-prune-build
 rm -rf "$root"; mkdir -p "$root"
 
+# The two stock images asserted untouched below that no other step pulls; a
+# BuildKit `FROM` does not leave its base tagged, so a fresh rig has neither.
+docker pull -q alpine:3.20 >/dev/null || exit 1
+docker pull -q alpine:latest >/dev/null || exit 1
+
 # One image per tag, each with a layer of its own so no two share an id.
 build() {  # build <tag> <epoch|now>
     local tag=$1 epoch=$2 dir="$root/${1//[:\/]/_}"

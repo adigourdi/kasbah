@@ -1,5 +1,5 @@
 # kasbah — reading the deploy record: history, pending, changelog
-# Sourced by bin/kasbah. Do not execute directly.
+# Sourced by libexec/kasbah-bash. Do not execute directly.
 
 [ -n "${_KASBAH_HISTORY_LOADED:-}" ] && return 0
 _KASBAH_HISTORY_LOADED=1

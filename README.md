@@ -9,7 +9,7 @@ except it's auditable bash and nothing but Docker runs on the server.
 ## Install
 
 ```sh
-./install.sh    # copies bin/ to ~/.local/bin, lib/ to ~/.local/share/kasbah
+./install.sh    # builds through Docker; kasbah to ~/.local/bin, the rest to ~/.local/share/kasbah
 ```
 
 ## Quick start

@@ -1,9 +1,21 @@
 #!/usr/bin/env bash
 # Install kasbah. Override targets via KASBAH_BIN_DIR and KASBAH_LIB_DIR.
-# KASBAH_LIB_DIR is the same variable bin/kasbah reads at runtime, so a
+# KASBAH_LIB_DIR is the same variable kasbah reads at runtime, so a
 # non-default install location stays consistent across install and run.
+#
+# Builds first, through the toolchain container (docker compose run --rm
+# build). KASBAH_SKIP_BUILD=1 installs the dist/ already there instead.
 
 set -euo pipefail
+
+case "${KASBAH_SKIP_BUILD:-}" in
+    ''|0) skip_build=0 ;;
+    1)    skip_build=1 ;;
+    *)    echo "install: KASBAH_SKIP_BUILD='$KASBAH_SKIP_BUILD' is not a valid value" >&2
+          echo "  1        install the dist/ already built" >&2
+          echo "  0/empty  build first (docker compose run --rm build)" >&2
+          exit 2 ;;
+esac
 
 repo_dir="$(cd "$(dirname "$0")" && pwd)"
 
@@ -33,9 +45,39 @@ if [ -d "$lib_dir" ] && [ -n "$(ls -A "$lib_dir" 2>/dev/null)" ] \
     exit 1
 fi
 
+dist="$repo_dir/dist"
+if [ "$skip_build" = 0 ]; then
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "install: docker is needed to build kasbah" >&2
+        echo "         (or KASBAH_SKIP_BUILD=1 to install a dist/ built elsewhere)" >&2
+        exit 1
+    fi
+    # UID is a read-only shell variable, never exported: without env the build
+    # container falls back to uid 1000 and writes dist/ as somebody else. -p
+    # because an exported COMPOSE_PROJECT_NAME outranks the file's `name:`, and
+    # stdin from /dev/null because -T still forwards it.
+    env UID="$(id -u)" GID="$(id -g)" \
+        docker compose -p kasbah -f "$repo_dir/compose.yml" run --rm -T build >&2 </dev/null
+fi
+for f in kasbah server/kasbah-linux-amd64 server/kasbah-linux-arm64; do
+    if [ ! -f "$dist/$f" ]; then
+        echo "install: $dist/$f is missing — build it: docker compose run --rm build" >&2
+        exit 1
+    fi
+done
+
 install -d "$bin_dir" "$lib_dir"
-install -m 0755 "$repo_dir/bin/kasbah" "$bin_dir/kasbah"
-install -m 0644 "$repo_dir/VERSION"     "$lib_dir/VERSION"
+install -m 0755 "$dist/kasbah"      "$bin_dir/kasbah"
+install -m 0644 "$repo_dir/VERSION" "$lib_dir/VERSION"
+
+# The Bash dispatcher the binary hands unported commands to, and the server
+# binaries kasbah ships to a VPS. Replaced whole, like the templates below.
+rm -rf "${lib_dir:?}/libexec" "${lib_dir:?}/server"
+install -d "$lib_dir/libexec" "$lib_dir/server"
+install -m 0755 "$repo_dir/libexec/kasbah-bash" "$lib_dir/libexec/kasbah-bash"
+for arch in amd64 arm64; do
+    install -m 0755 "$dist/server/kasbah-linux-$arch" "$lib_dir/server/kasbah-linux-$arch"
+done
 
 # Remove stale *.sh so a rename/deletion upstream doesn't leave orphans behind.
 shopt -s nullglob
@@ -44,7 +86,7 @@ for f in "$repo_dir"/lib/*.sh; do
     install -m 0644 "$f" "$lib_dir/$(basename "$f")"
 done
 
-# Templates ship beside the libraries: bin/kasbah looks for them there when it
+# Templates ship beside the libraries: kasbah looks for them there when it
 # is not running from a checkout, so without this an installed kasbah has
 # nothing to render onto a server. The whole tree is replaced rather than
 # merged, for the same reason the *.sh copy is — a template deleted upstream
@@ -67,7 +109,9 @@ if [ -d "$repo_dir/templates" ]; then
     done < <(find "$repo_dir/templates" -type f -print0)
 fi
 
-echo "installed kasbah $(cat "$repo_dir/VERSION")"
+# Asked of the installed copy, so a layout it cannot run from fails here.
+installed="$(KASBAH_LIB_DIR="$lib_dir" "$bin_dir/kasbah" --version)"
+echo "installed $installed"
 echo "  bin: $bin_dir/kasbah"
 echo "  lib: $lib_dir"
 

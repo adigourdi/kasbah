@@ -7,7 +7,7 @@
 # What the stubs record is the contract — which calls the command makes, in
 # which order, with which arguments.
 #
-# Two halves. Everything headless is driven straight through bin/kasbah with
+# Two halves. Everything headless is driven straight through the CLI with
 # stdin on /dev/null, which is the shape a CI runner produces and the one that
 # must never stop at a prompt. The prompt itself needs a terminal, so those
 # cases run behind script(1): `[ -t 0 ]` is a property of the pty and no
@@ -16,6 +16,7 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+. "$repo_dir/tests/cli.sh"
 
 if ! command -v script >/dev/null 2>&1; then
     echo "script(1) is required to prove the drift prompt only fires on a terminal" >&2
@@ -105,7 +106,7 @@ env_cli() {
     : > "$call_log"
     env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" CALL_LOG="$call_log" \
-        "$repo_dir/bin/kasbah" env "$@" </dev/null 2>&1
+        "$KASBAH_BIN" env "$@" </dev/null 2>&1
 }
 
 # The same command behind a pty, with the answers on its stdin. script(1) merges
@@ -136,7 +137,7 @@ env_cli_tty() {
     cmd+="$(printf '%q ' env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" CALL_LOG="$call_log" NO_COLOR=1 \
         "${TTY_ENV[@]+"${TTY_ENV[@]}"}" \
-        "$repo_dir/bin/kasbah" env "$@")$redirect"
+        "$KASBAH_BIN" env "$@")$redirect"
     timeout 60 script -qfec "$cmd" "$tmpdir/tty-out" < "$tmpdir/tty-in" >/dev/null 2>&1
     tty_rc=$?
     tty_out=$(<"$tmpdir/tty-out")

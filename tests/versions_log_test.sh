@@ -36,7 +36,7 @@ export NO_COLOR=1
 driver="$tmpdir/driver.sh"
 cat > "$driver" <<'DRV'
 #!/usr/bin/env bash
-# `set -e` like bin/kasbah: a query or a decode that dies under errexit before
+# `set -e` like the dispatcher: a query or a decode that dies under errexit before
 # its own message runs is a defect this driver has to be able to reproduce.
 set -euo pipefail
 . "$KASBAH_LIB_DIR/common.sh"

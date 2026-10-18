@@ -4,7 +4,8 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
-kasbah="$repo_dir/bin/kasbah"
+. "$repo_dir/tests/cli.sh"
+kasbah="$KASBAH_BIN"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT

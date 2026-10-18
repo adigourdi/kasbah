@@ -1,5 +1,5 @@
 # kasbah — day-2 operations over the project's compose stack: logs, exec
-# Sourced by bin/kasbah. Do not execute directly.
+# Sourced by libexec/kasbah-bash. Do not execute directly.
 
 [ -n "${_KASBAH_OPS_LOADED:-}" ] && return 0
 _KASBAH_OPS_LOADED=1

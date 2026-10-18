@@ -11,7 +11,7 @@
 #     than three months" is the drift the whole policy hangs on;
 #   * the remote read step, extracted from its heredoc and run against a fake
 #     apps tree with a stub docker;
-#   * the command itself, through bin/kasbah with a stub ssh that hands back a
+#   * the command itself, through the CLI with a stub ssh that hands back a
 #     crafted protocol block and records the removal step's arguments — which is
 #     what fixes the **exact removal set** for a server nothing can be put into
 #     on demand.
@@ -29,6 +29,7 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+. "$repo_dir/tests/cli.sh"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -57,7 +58,7 @@ b64() { printf '%s' "$1" | base64 -w0; }
 driver="$tmpdir/driver.sh"
 cat > "$driver" <<'DRV'
 #!/usr/bin/env bash
-# `set -e` like bin/kasbah: a helper that dies under errexit before its own
+# `set -e` like the dispatcher: a helper that dies under errexit before its own
 # caller can decide what the failure means is a defect this driver reproduces.
 set -euo pipefail
 . "$KASBAH_LIB_DIR/common.sh"
@@ -364,7 +365,7 @@ prune_cli() {
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" SSH_LOG="$ssh_log" \
         SSH_COUNT="$tmpdir/ssh.count" SSH_RM_LOG="$rm_log" \
         SSH_PAYLOAD="$payload_file" \
-        "$repo_dir/bin/kasbah" server prune "$@" 2>&1
+        "$KASBAH_BIN" server prune "$@" 2>&1
 }
 
 # --- The fixture ------------------------------------------------------------------------------
@@ -766,7 +767,7 @@ write_payload
 # (docs/phases/07-operate.md → 7.1b). Heredoc-aware: the remote payload is a
 # different shell program with a namespace of its own.
 for f in lib/prune.sh lib/versions_log.sh lib/common.sh lib/build_push.sh \
-         lib/remote_deploy.sh bin/kasbah; do
+         lib/remote_deploy.sh libexec/kasbah-bash; do
     dups=$(awk '/<<.REMOTE./{r=1} /^REMOTE$/{r=0} r==0 && /^[a-z_]+\(\)/{print $1}' \
                "$repo_dir/$f" | LC_ALL=C sort | uniq -d)
     assert '[ -z "$dups" ]' "$f defines each function once (duplicates: $dups)"

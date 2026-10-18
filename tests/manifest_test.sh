@@ -4,6 +4,7 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+. "$repo_dir/tests/cli.sh"
 export KASBAH_LIB_DIR="$repo_dir/lib"
 export KASBAH_VERSION="$(cat "$repo_dir/VERSION")"
 
@@ -121,8 +122,8 @@ assert 'grep -qF "could not parse YAML" <<<"$out"' "malformed YAML message"
 proj7="$tmpdir/integration"
 mkdir -p "$proj7"
 cd "$proj7"
-# Unset KASBAH_LIB_DIR so bin/kasbah auto-detects VERSION via its repo-checkout path.
-env -u KASBAH_LIB_DIR "$repo_dir/bin/kasbah" init-project --name=integration --domain=i.example.com >/dev/null
+# Unset KASBAH_LIB_DIR so the dispatcher finds lib/ via its repo-checkout path.
+env -u KASBAH_LIB_DIR "$KASBAH_BIN" init-project --name=integration --domain=i.example.com >/dev/null
 out="$(run_snippet 'manifest_require; echo "$MANIFEST_NAME"')"; rc=$?
 assert '[ "$rc" = "0" ]'          "init-project output passes manifest_require"
 assert '[ "$out" = "integration" ]' "init-project output parses to name=integration"
@@ -132,7 +133,7 @@ assert '[ "$out" = "integration" ]' "init-project output parses to name=integrat
 proj8="$tmpdir/nodomain"
 mkdir -p "$proj8"
 cd "$proj8"
-env -u KASBAH_LIB_DIR "$repo_dir/bin/kasbah" init-project --name=nodomain >/dev/null 2>&1
+env -u KASBAH_LIB_DIR "$KASBAH_BIN" init-project --name=nodomain >/dev/null 2>&1
 out="$(run_snippet 'manifest_require; printf "%s|%s\n" "$MANIFEST_NAME" "$MANIFEST_DOMAIN"')"; rc=$?
 assert '[ "$rc" = "0" ]'             "init-project (no --domain) output passes manifest_require"
 assert '[ "$out" = "nodomain|" ]'     "empty domain parses as empty string"

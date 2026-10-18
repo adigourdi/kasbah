@@ -1,5 +1,5 @@
 # kasbah — `kasbah env`, and the same env step inside a deploy
-# Sourced by bin/kasbah and lib/deploy.sh. Do not execute directly.
+# Sourced by libexec/kasbah-bash and lib/deploy.sh. Do not execute directly.
 
 [ -n "${_KASBAH_ENV_CMD_LOADED:-}" ] && return 0
 _KASBAH_ENV_CMD_LOADED=1

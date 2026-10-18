@@ -95,7 +95,7 @@ kasbah_bounded() (
     cd "${KASBAH_CWD:-$projdir}" || return 2
     timeout "${DEPLOY_TIMEOUT:-240}" \
         env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-            "$RIG_REPO_DIR/bin/kasbah" "$@" \
+            "$KASBAH_BIN" "$@" \
         >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
 )
 deploy() { kasbah_bounded deploy "$@"; }
@@ -285,7 +285,7 @@ rig_ssh "mv -f $project_dir/.env.kasbah-suite-backup $project_dir/.env" >/dev/nu
 notdir="$tmpdir/not-deployed"
 mkdir -p "$notdir"
 (cd "$notdir" && env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-    "$RIG_REPO_DIR/bin/kasbah" init-project --name=neverdeployed --domain=never.test) \
+    "$KASBAH_BIN" init-project --name=neverdeployed --domain=never.test) \
     >/dev/null 2>&1
 KASBAH_CWD="$notdir" check --server "$RIG_TARGET"; rc=$?
 out="$(cli_out)"

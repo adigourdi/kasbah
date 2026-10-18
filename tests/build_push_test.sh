@@ -17,6 +17,7 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+. "$repo_dir/tests/cli.sh"
 . "$repo_dir/tests/fixture_repo.sh"
 
 tmpdir="$(mktemp -d)"
@@ -115,7 +116,7 @@ bp() (
     env PATH="$stub_dir:$PATH" HOME="$fakehome" TMPDIR="$scratch" \
         DOCKER_LOG="$DOCKER_LOG" SSH_LOG="$SSH_LOG" SSH_STDIN_LOG="$SSH_STDIN_LOG" \
         RSYNC_LOG="$RSYNC_LOG" RSYNC_COPY="$tmpdir/travelled" \
-        "$repo_dir/bin/kasbah" build-push "$@" </dev/null
+        "$KASBAH_BIN" build-push "$@" </dev/null
 )
 
 run() {
@@ -603,7 +604,7 @@ assert '[ -f "$probe/tests/fixture_repo.sh" ]' "and nothing under the probe chec
 # it has to keep passing the compliance check: a fixture that quietly stopped
 # would take its own failures into the deploy tests instead of finding them here.
 
-check_out="$(cd "$built" && env HOME="$fakehome" "$repo_dir/bin/kasbah" check 2>&1)"; rc=$?
+check_out="$(cd "$built" && env HOME="$fakehome" "$KASBAH_BIN" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "kasbah check passes on the built-app fixture (exit $rc)"
 assert 'grep -qF ", 0 failed" <<<"$check_out"' \
     "with no failed rule (said '$(tail -1 <<<"$check_out")')"

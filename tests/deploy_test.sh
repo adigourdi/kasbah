@@ -13,6 +13,7 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+. "$repo_dir/tests/cli.sh"
 export KASBAH_LIB_DIR="$repo_dir/lib"
 export KASBAH_TEMPLATE_DIR="$repo_dir/templates"
 export KASBAH_VERSION="$(cat "$repo_dir/VERSION")"
@@ -436,7 +437,7 @@ deploy_cli() {
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$run_tmp" \
         SSH_LOG="$ssh_log" CALL_LOG="$call_log" \
         RSYNC_HELPER_COPY="$helper_copy" \
-        "$repo_dir/bin/kasbah" deploy "$@" </dev/null 2>&1
+        "$KASBAH_BIN" deploy "$@" </dev/null 2>&1
 }
 # The same run with the two streams kept apart. kasbah puts every line it prints
 # on stderr (lib/common.sh), and the changelog's commit lines are the newest
@@ -449,7 +450,7 @@ deploy_cli_split() {
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$run_tmp" \
         SSH_LOG="$ssh_log" CALL_LOG="$call_log" \
         RSYNC_HELPER_COPY="$helper_copy" \
-        "$repo_dir/bin/kasbah" deploy "$@" </dev/null 2>"$split_err"
+        "$KASBAH_BIN" deploy "$@" </dev/null 2>"$split_err"
 }
 mkdir -p "$tmpdir/home" "$run_tmp"
 

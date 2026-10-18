@@ -1,5 +1,5 @@
 # kasbah — the deploy record: versions.log and its rotation archive
-# Sourced by bin/kasbah and lib/*.sh. Do not execute directly.
+# Sourced by libexec/kasbah-bash and lib/*.sh. Do not execute directly.
 
 [ -n "${_KASBAH_VERSIONS_LOG_LOADED:-}" ] && return 0
 _KASBAH_VERSIONS_LOG_LOADED=1

@@ -8,7 +8,8 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
-kasbah="$repo_dir/bin/kasbah"
+. "$repo_dir/tests/cli.sh"
+kasbah="$KASBAH_BIN"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -1461,10 +1462,10 @@ assert '[ -n "$warn_openers" ]' "the warn lines were found (else the check below
 assert '[ "$warn_openers" = "$(tr "A-Z" "a-z" <<<"$warn_openers")" ]' \
     "no warn line opens with a capital (found: '$warn_openers')"
 
-# --- The command line, through bin/kasbah ------------------------------------
+# --- The command line, through the CLI ---------------------------------------
 # The two exports above are for the driver, which sources the libraries
-# directly. bin/kasbah must not see them: it takes VERSION from beside
-# KASBAH_LIB_DIR, and a checkout has no lib/VERSION.
+# directly. The CLI must not see KASBAH_LIB_DIR: the dispatcher would read
+# VERSION from beside it, and a checkout has no lib/VERSION.
 #
 # A recording ssh goes first on PATH, and every case below asserts its log is
 # empty. That is what makes "the question is asked before anything is opened" an

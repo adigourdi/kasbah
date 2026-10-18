@@ -11,7 +11,7 @@
 #     the command;
 #   * the read payload, likewise extracted, against a fake apps tree and a stub
 #     docker;
-#   * the command itself, through bin/kasbah with a stub ssh that answers the
+#   * the command itself, through the CLI with a stub ssh that answers the
 #     marker read, hands back a crafted probe block and records what the act
 #     step was asked to do — which is what fixes the **exact removal set**;
 #   * the two confirmations, over a real pty, including the one answered wrong.
@@ -29,6 +29,7 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+. "$repo_dir/tests/cli.sh"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -67,7 +68,7 @@ extract_remote() {   # extract_remote <n> <outfile>
 driver="$tmpdir/driver.sh"
 cat > "$driver" <<'DRV'
 #!/usr/bin/env bash
-# `set -e` like bin/kasbah: a helper that dies under errexit before its own
+# `set -e` like the dispatcher: a helper that dies under errexit before its own
 # caller can decide what the failure means is a defect this driver reproduces.
 set -euo pipefail
 . "$KASBAH_LIB_DIR/common.sh"
@@ -521,7 +522,7 @@ drop_cli() {
         SSH_RM_FAIL="${SSH_RM_FAIL:-}" SSH_DOWN_LEFT="${SSH_DOWN_LEFT:-}" \
         SSH_DOWN="${SSH_DOWN:-ok}" SSH_FRAGMENT="${SSH_FRAGMENT:-removed}" \
         SSH_ACT_REFUSE="${SSH_ACT_REFUSE:-}" SSH_ACT_DIE="${SSH_ACT_DIE:-}" \
-        "$repo_dir/bin/kasbah" drop "$@" 2>&1 )
+        "$KASBAH_BIN" drop "$@" 2>&1 )
 }
 act_tags() { sed -n 's/^tag=//p' "$act_log" | LC_ALL=C sort | tr '\n' ' '; }
 
@@ -859,7 +860,7 @@ rm -f "$tmpdir/ssh.count"; : > "$act_log"
 sout=$( cd "$proj" && env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" SSH_LOG="$ssh_log" \
         SSH_COUNT="$tmpdir/ssh.count" SSH_ACT_LOG="$act_log" SSH_PAYLOAD="$payload_file" \
-        NO_COLOR=1 "$repo_dir/bin/kasbah" drop deploy@vps --yes 2>/dev/null )
+        NO_COLOR=1 "$KASBAH_BIN" drop deploy@vps --yes 2>/dev/null )
 assert 'grep -qE "^    alpha-web:current +built by alpha" <<<"$sout"' \
     "stdout alone holds the plan (got '$sout')"
 assert 'grep -qF "removed image alpha-web:current" <<<"$sout"' "and what came of it (got '$sout')"
@@ -960,13 +961,13 @@ assert '[ ! -s "$act_log" ]' "and changes nothing"
 drop_tty() {   # drop_tty <input> <args...>
     local cmd
     : > "$act_log"; rm -f "$tmpdir/ssh.count"
-    cmd="$(printf '%q ' "$repo_dir/bin/kasbah" drop "$@")"
+    cmd="$(printf '%q ' "$KASBAH_BIN" drop "$@")"
     tty_out=$(printf '%s' "$1" | { shift; cd "$proj" && \
         env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
             HOME="$tmpdir/home" PATH="$stub_dir:$PATH" SSH_LOG="$ssh_log" \
             SSH_COUNT="$tmpdir/ssh.count" SSH_ACT_LOG="$act_log" \
             SSH_PAYLOAD="$payload_file" NO_COLOR=1 \
-            script -qec "$(printf '%q ' "$repo_dir/bin/kasbah" drop "$@")" /dev/null; } 2>&1)
+            script -qec "$(printf '%q ' "$KASBAH_BIN" drop "$@")" /dev/null; } 2>&1)
     tty_rc=$?
     tty_out=${tty_out//$'\r'/}
 }

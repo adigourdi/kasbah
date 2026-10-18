@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # kasbah — multi-project Docker host CLI. See docs/ for design.
+# The Bash half: the Go `kasbah` execs this for every command it does not own.
 
 set -euo pipefail
 
@@ -14,13 +15,13 @@ _resolve_self_dir() {
     cd -P "$(dirname "$src")" && pwd
 }
 
-_bin_dir="$(_resolve_self_dir)"
+_self_dir="$(_resolve_self_dir)"
 
-# A checkout is recognised by the install.sh sibling — unambiguous, and the
-# same test decides where both the libraries and the templates come from.
+# A checkout is recognised by the install.sh sibling of libexec/ — unambiguous,
+# and the same test decides where both the libraries and the templates come from.
 _repo_dir=""
-if [ -f "$_bin_dir/../install.sh" ] && [ -f "$_bin_dir/../VERSION" ]; then
-    _repo_dir="$(cd "$_bin_dir/.." && pwd)"
+if [ -f "$_self_dir/../install.sh" ] && [ -f "$_self_dir/../VERSION" ]; then
+    _repo_dir="$(cd "$_self_dir/.." && pwd)"
 fi
 
 # Prefer an explicit override, else a repo checkout, else the XDG share dir.
@@ -62,11 +63,15 @@ fi
 . "$KASBAH_LIB_DIR/common.sh"
 
 KASBAH_VERSION="$(cat "$KASBAH_VERSION_FILE")"
+# What --version and the usage print: the Go binary's build stamp (VERSION plus
+# a build counter), or VERSION itself when this file runs on its own. Files
+# kasbah writes record KASBAH_VERSION, never the stamp.
+KASBAH_BUILD="${KASBAH_BUILD:-$KASBAH_VERSION}"
 export KASBAH_LIB_DIR KASBAH_TEMPLATE_DIR KASBAH_VERSION
 
 usage() {
     cat <<EOF
-kasbah — multi-project Docker host CLI (v$KASBAH_VERSION)
+kasbah — multi-project Docker host CLI (v$KASBAH_BUILD)
 
 Usage: kasbah [--version] [--help] <command> [args...]
 
@@ -228,7 +233,7 @@ main() {
     fi
 
     case "$1" in
-        -v|--version) echo "kasbah $KASBAH_VERSION" ;;
+        -v|--version) echo "kasbah $KASBAH_BUILD" ;;
         -h|--help)    usage ;;
         *)            dispatch "$@" ;;
     esac

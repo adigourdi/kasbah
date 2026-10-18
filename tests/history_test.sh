@@ -7,7 +7,7 @@
 #     blobs a fetch would have produced. stdout and stderr are captured apart,
 #     because which of the two a line lands on is part of the contract
 #     (docs/cli.md: a report is stdout, everything else is stderr).
-#   * the commands end to end through `bin/kasbah`, against a stub `ssh` that
+#   * the commands end to end through the CLI, against a stub `ssh` that
 #     answers as a prepared server does — the argument rules, the state file's
 #     write rule, exit 3 for a server that does not answer, and the fact that
 #     nothing these three do reaches the server as a write.
@@ -18,6 +18,7 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+. "$repo_dir/tests/cli.sh"
 kver="$(cat "$repo_dir/VERSION")"
 
 tmpdir="$(mktemp -d)"
@@ -71,7 +72,7 @@ assert '[ "$(cd "$project" && git rev-parse v3.0.0)" = "$(cd "$project" && git r
 driver="$tmpdir/driver.sh"
 cat > "$driver" <<'DRV'
 #!/usr/bin/env bash
-# `set -e` like bin/kasbah: a predicate called bare under errexit dies before
+# `set -e` like the dispatcher: a predicate called bare under errexit dies before
 # its own message runs, and this driver has to be able to reproduce that.
 set -euo pipefail
 . "$KASBAH_LIB_DIR/common.sh"
@@ -646,7 +647,7 @@ kasbah() {
           HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$tmpdir/runtmp" \
           CALL_LOG="$call_log" FAKE_ACTIVE="${FAKE_ACTIVE-$cli_log}" \
           FAKE_ACTIVE_STATE="${FAKE_ACTIVE_STATE:-ok}" FAKE_UNREACHABLE="${FAKE_UNREACHABLE:-}" \
-          "$repo_dir/bin/kasbah" "$@" ) >"$tmpdir/o" 2>"$tmpdir/e" </dev/null || rc=$?
+          "$KASBAH_BIN" "$@" ) >"$tmpdir/o" 2>"$tmpdir/e" </dev/null || rc=$?
     CRC=$rc; COUT="$(cat "$tmpdir/o")"; CERR="$(cat "$tmpdir/e")"
     return 0
 }

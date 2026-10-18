@@ -11,7 +11,8 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
-kasbah="$repo_dir/bin/kasbah"
+. "$repo_dir/tests/cli.sh"
+kasbah="$KASBAH_BIN"
 runner="$repo_dir/templates/backup/backup.sh"
 
 tmpdir="$(mktemp -d)"
@@ -340,8 +341,8 @@ assert '! grep -qF "s3cr3t-do-not-print" "$tmpdir/err"' \
 # substitution: `--backup-keep-daily=N  retention, applied by <nothing>` is what
 # an operator saw, because the shell had run the words instead of printing them.
 # The two exports at the top of this file are for the driver, which sources the
-# libraries directly. bin/kasbah must not see them: it takes VERSION from beside
-# KASBAH_LIB_DIR, and a checkout has no lib/VERSION.
+# libraries directly. The CLI must not see KASBAH_LIB_DIR: the dispatcher would
+# read VERSION from beside it, and a checkout has no lib/VERSION.
 usage_out=$(env -u KASBAH_LIB_DIR -u KASBAH_VERSION "$kasbah" server init --help 2>&1); rc=$?
 assert '[ "$rc" = "0" ]' "server init --help exits 0 (exit $rc)"
 for flag in --backup-repo-base= --backup-env= --no-backup-env --backup-password= \

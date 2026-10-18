@@ -114,7 +114,7 @@ kasbah_bounded() (
     cd "${KASBAH_CWD:-$projdir}" || return 2
     timeout "${DEPLOY_TIMEOUT:-240}" \
         env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-            "$RIG_REPO_DIR/bin/kasbah" "$@" \
+            "$KASBAH_BIN" "$@" \
         >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
 )
 deploy() { kasbah_bounded deploy "$@"; }
@@ -248,7 +248,7 @@ assert 'grep -qF "nosuch" "$tmpdir/err"' "and the service it was given (stderr: 
 # closed pipe. Bounded, so a case that never gets one fails the suite instead of
 # hanging it.
 ( cd "$projdir" && timeout 60 env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-    "$RIG_REPO_DIR/bin/kasbah" logs "$RIG_TARGET" -f --tail=all "$c_web" \
+    "$KASBAH_BIN" logs "$RIG_TARGET" -f --tail=all "$c_web" \
     2>"$tmpdir/err" </dev/null
   echo "$?" > "$tmpdir/prc" ) | head -3 > "$tmpdir/out"
 prc="$(cat "$tmpdir/prc" 2>/dev/null)"
@@ -267,7 +267,7 @@ assert '[ "$(grep -c . "$tmpdir/out")" = "3" ]' \
 # writing before the reader is missed, and the run is an ordinary 0. Recorded so
 # the 255 above reads as "the pipe closed under a write", not "piping is 255".
 ( cd "$projdir" && env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-    "$RIG_REPO_DIR/bin/kasbah" logs "$RIG_TARGET" "$c_web" 2>"$tmpdir/err" </dev/null
+    "$KASBAH_BIN" logs "$RIG_TARGET" "$c_web" 2>"$tmpdir/err" </dev/null
   echo "$?" > "$tmpdir/prc" ) | head -3 > "$tmpdir/out"
 prc="$(cat "$tmpdir/prc" 2>/dev/null)"
 assert '[ "$prc" = "0" ]' \
@@ -280,7 +280,7 @@ assert '[ "$prc" = "0" ]' \
 # side needs taking back explicitly.
 follow_out="$tmpdir/follow.out"
 ( cd "$projdir" && env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-    "$RIG_REPO_DIR/bin/kasbah" logs -f cache >"$follow_out" 2>"$tmpdir/follow.err" </dev/null ) &
+    "$KASBAH_BIN" logs -f cache >"$follow_out" 2>"$tmpdir/follow.err" </dev/null ) &
 follow_pid=$!
 sleep 8
 if kill -0 "$follow_pid" 2>/dev/null; then follow_alive=yes; else follow_alive=no; fi
@@ -328,7 +328,7 @@ assert '[ "$rc" = "0" ] && [ "$(cli_out)" = "/etc/hostname" ]' \
 
 # --- stdin goes nowhere, and is not silent about it -------------------------------------
 ( cd "$projdir" && env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-    "$RIG_REPO_DIR/bin/kasbah" exec "$c_web" -- cat ) \
+    "$KASBAH_BIN" exec "$c_web" -- cat ) \
     >"$tmpdir/out" 2>"$tmpdir/err" <<<"fed-into-kasbah"
 rc=$?
 assert '[ "$rc" = "0" ]' "a fed exec runs (exit $rc: $(cli_err))"

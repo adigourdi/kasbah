@@ -107,27 +107,38 @@ Bash. After this task, nothing changes for a user and every later task is just
 "move one command family across".
 
 **Deliverables**
-- [ ] Root `compose.yml` (no `version:`): pinned `golang` image, `.:/workspace`,
+- [x] Root `compose.yml` (no `version:`): pinned `golang` image, `.:/workspace`,
       `user: ${UID:-1000}:${GID:-1000}`, `GOTOOLCHAIN=local`, module and build
-      caches persisted; services `build`, `test`, `dev`, `shell`
-- [ ] `go.mod` (`github.com/adigourdi/kasbah`), `cmd/kasbah`, version stamped
-      from `VERSION` at build time, `kasbah --version` unchanged in content
-- [ ] The handoff: an unowned command is replaced by the Bash dispatcher
-      in-process (`exec`, not a child), argv/env/TTY/exit code intact
-- [ ] `install.sh` builds through compose and installs the Go binary as `kasbah`,
+      caches persisted; services `build`, `test`, `dev`, `shell` — `golang:1.27.2-trixie`;
+      caches under `.cache/` in the tree (a named volume is root-owned); cold
+      `run --rm test` and `build` both rc=0
+- [x] `go.mod` (`github.com/adigourdi/kasbah`), `cmd/kasbah`, version stamped
+      from `VERSION` at build time, `kasbah --version` unchanged in content —
+      the stamp travels as `KASBAH_BUILD` and only `--version`/usage print it;
+      every file kasbah writes still records plain `VERSION`
+- [x] The handoff: an unowned command is replaced by the Bash dispatcher
+      in-process (`exec`, not a child), argv/env/TTY/exit code intact — review
+      drove `-x "" -- "a b" $'nl\nx'`, exit 42, an ignored SIGINT and rlimits
+      through it unchanged; the dispatcher is `libexec/kasbah-bash`
+- [x] `install.sh` builds through compose and installs the Go binary as `kasbah`,
       the two server binaries and the Bash tree it still hands off to;
-      `tests/install_test.sh` follows
-- [ ] `KASBAH_BIN` honoured by `kasbah_cli` and every unit suite that runs the
-      CLI; `./test.sh` runs `docker compose run --rm test` first
-- [ ] `.gitignore` covers build output and any cache directory in the tree
+      `tests/install_test.sh` follows — `<lib>/libexec/`, `<lib>/server/`;
+      `KASBAH_SKIP_BUILD=1` installs an existing `dist/`
+- [x] `KASBAH_BIN` honoured by `kasbah_cli` and every unit suite that runs the
+      CLI; `./test.sh` runs `docker compose run --rm test` first — one default,
+      in `tests/cli.sh`; an unusable Docker exits 2
+- [x] `.gitignore` covers build output and any cache directory in the tree
 
 **Verify on:** rig — full `KASBAH_RIG_TESTS=1 ./test.sh` green with the Go
-binary in front, run both under a real terminal and piped.
+binary in front, run both under a real terminal and piped. **Observed:** 48 PASS,
+1 FAIL in 31m10s (`integration/prune_test.sh`, a test that assumed two stock
+images a reset rig no longer holds — it now pulls them; rc=0 from a rig without
+them). Unit half 30 PASS piped and under `script -qec`.
 
 **Watch out for:**
-- **A child process under a pty takes SIGTTIN** — Phase 2's integration suites
-  hung forever that way. The handoff must replace the process (`syscall.Exec`),
-  not wait on a child, or every prompt-driving test regresses.
+- **Exec, not a child:** same PID, so signals reach the dispatcher and its exit
+  status is kasbah's with no parent in between. (Phase 2's SIGTTIN hang came from
+  `timeout` running its child in a process group of its own, not from exec.)
 - The golang image runs as root; named volumes are created root-owned, so a
   `user:` container cannot write its caches into them. Give the caches a
   writable home (`HOME`, `GOCACHE`, `GOMODCACHE`) and prove it with a cold run.
@@ -202,6 +213,10 @@ command ported after this rides.
 - The ControlPath budget is **90 bytes** (measured, OpenSSH 9.6p1) — `lib/ssh.sh`.
 - `ssh host cmd args` re-joins argv with spaces; quote word by word as
   `_ssh_quote` does, or arguments with spaces split on the server.
+- **D1's counter does not order every pair of builds**: a dirty build
+  (`.142.<ts>`) outranks the later clean rebuild of the same commit (`.142`), and
+  `commit --amend` or a rewritten history reuses or lowers the count. Decide what
+  shipping does on those, or a stale binary survives on the rig (from 10.1's review).
 - Replace by upload-then-rename: a deploy already running the old binary keeps
   its inode; an in-place write would corrupt a running process.
 - The deploy user is not root and `<apps>` may sit on a `noexec` mount — exec
@@ -424,3 +439,9 @@ Leave `vps` as a kasbah server at the end — Phase 9 starts from it.
 ## Findings
 
 Run approved 2026-10-18: whole phase, plan order, unit bar as in Rulings.
+
+- **A reset rig has an empty image store**, and suites that assert on stock
+  images must pull them themselves — `integration/prune_test.sh` assumed two that
+  only rig history had. Expect the same shape elsewhere after any `rig.sh reset`.
+- **The unit half is now ~9m40s** (Go checks + a build + 29 suites), up from
+  ~7 min; the full rig run 31m10s.

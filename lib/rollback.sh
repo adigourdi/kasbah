@@ -1,5 +1,5 @@
 # kasbah — rollback, and the tagged half of deploy
-# Sourced by bin/kasbah. Do not execute directly.
+# Sourced by libexec/kasbah-bash. Do not execute directly.
 
 [ -n "${_KASBAH_ROLLBACK_LOADED:-}" ] && return 0
 _KASBAH_ROLLBACK_LOADED=1

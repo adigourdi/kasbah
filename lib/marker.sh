@@ -1,5 +1,5 @@
 # kasbah — the server marker, read once per run
-# Sourced by bin/kasbah and lib/*.sh. Do not execute directly.
+# Sourced by libexec/kasbah-bash and lib/*.sh. Do not execute directly.
 
 [ -n "${_KASBAH_MARKER_LOADED:-}" ] && return 0
 _KASBAH_MARKER_LOADED=1

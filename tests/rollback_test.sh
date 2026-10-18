@@ -16,6 +16,7 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+. "$repo_dir/tests/cli.sh"
 export KASBAH_LIB_DIR="$repo_dir/lib"
 export KASBAH_TEMPLATE_DIR="$repo_dir/templates"
 KASBAH_VERSION="$(cat "$repo_dir/VERSION")"
@@ -298,7 +299,7 @@ kasbah_run() {
         RSYNC_HELPER_COPY="$helper_copy" RSYNC_FRAG_COPY="$frag_copy" \
         RSYNC_COMPOSE_COPY="$compose_copy" \
         FAKE_ACTIVE="${FAKE_ACTIVE-$log_two}" \
-        "$repo_dir/bin/kasbah" "$@" </dev/null 2>&1
+        "$KASBAH_BIN" "$@" </dev/null 2>&1
 }
 rollback() { ( cd "$project" && kasbah_run rollback "$@" ) ; }
 deploy()   { ( cd "$project" && kasbah_run deploy "$@" ) ; }

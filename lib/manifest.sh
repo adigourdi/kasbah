@@ -1,5 +1,5 @@
 # kasbah — project manifest (kasbah.yml) reader
-# Sourced by bin/kasbah. Do not execute directly.
+# Sourced by libexec/kasbah-bash. Do not execute directly.
 
 [ -n "${_KASBAH_MANIFEST_LOADED:-}" ] && return 0
 _KASBAH_MANIFEST_LOADED=1

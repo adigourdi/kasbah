@@ -1,5 +1,5 @@
 # kasbah — build-push command
-# Sourced by bin/kasbah. Do not execute directly.
+# Sourced by libexec/kasbah-bash. Do not execute directly.
 
 [ -n "${_KASBAH_BUILD_PUSH_LOADED:-}" ] && return 0
 _KASBAH_BUILD_PUSH_LOADED=1

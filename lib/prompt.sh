@@ -1,5 +1,5 @@
 # kasbah — flag-or-prompt helpers
-# Sourced by bin/kasbah. Do not execute directly.
+# Sourced by libexec/kasbah-bash. Do not execute directly.
 
 [ -n "${_KASBAH_PROMPT_LOADED:-}" ] && return 0
 _KASBAH_PROMPT_LOADED=1
