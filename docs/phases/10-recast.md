@@ -209,17 +209,27 @@ SSH in Go and the binary's arrival on a server: the substrate every remote
 command ported after this rides.
 
 **Deliverables**
-- [ ] Transport over the system `ssh`/`rsync` with one multiplexed master per
+- [x] Transport over the system `ssh`/`rsync` with one multiplexed master per
       run, cleaned up on every exit path including SIGINT
-- [ ] Arch detection and shipping to `<apps>/.kasbah/bin/kasbah`: absent or
+      — `internal/ssh` + `internal/atexit`; a second signal forces the exit
+- [x] Arch detection and shipping to `<apps>/.kasbah/bin/kasbah`: absent or
       older → copy; same or newer → keep (per D1 for dev builds); atomic replace
-- [ ] A versioned workstation↔server protocol under `kasbah remote …`; a newer
+      — `internal/serverbin`: the uploaded build proves its own stamp, then
+      `kasbah remote install-self` re-checks under `bin/.lock` and renames, so two
+      racing workstations leave the newer; every server-binary run is bounded at 30 s
+- [x] A versioned workstation↔server protocol under `kasbah remote …`; a newer
       major on the server makes an older workstation refuse, naming both versions
-- [ ] Unit tests for version ordering and protocol negotiation; rig cases for
+      — `remote version` prints `build=… protocol=1 min_protocol=1`, a line meant
+      never to change across majors
+- [x] Unit tests for version ordering and protocol negotiation; rig cases for
       all three newer-wins outcomes
+      — `tests/integration/server_binary_test.sh`: absent, older, same, newer,
+      newer major, a racing pair, a hung binary, SIGINT mid-probe and mid-upload,
+      noexec, the bootstrap mode, the stale-upload sweep
 
 **Verify on:** rig, plus one `vps` shipping run (real uplink, real
-`~/.ssh/config` port and user).
+`~/.ssh/config` port and user) — **moved to 10.7**, which prepares `vps` anyway.
+**Observed:** full `KASBAH_RIG_TESTS=1 ./test.sh` 51 PASS, 0 FAIL in 31m35s.
 
 **Watch out for:**
 - Never `x/crypto/ssh`: kasbah inherits the user's ssh config, agent and jump
@@ -227,10 +237,6 @@ command ported after this rides.
 - The ControlPath budget is **90 bytes** (measured, OpenSSH 9.6p1) — `lib/ssh.sh`.
 - `ssh host cmd args` re-joins argv with spaces; quote word by word as
   `_ssh_quote` does, or arguments with spaces split on the server.
-- **D1's counter does not order every pair of builds**: a dirty build
-  (`.142.<ts>`) outranks the later clean rebuild of the same commit (`.142`), and
-  `commit --amend` or a rewritten history reuses or lowers the count. Decide what
-  shipping does on those, or a stale binary survives on the rig (from 10.1's review).
 - Replace by upload-then-rename: a deploy already running the old binary keeps
   its inode; an in-place write would corrupt a running process.
 - The deploy user is not root and `<apps>` may sit on a `noexec` mount — exec
@@ -289,7 +295,8 @@ once: shipping the binary, the protocol, the remote lock, prompts over SSH.
 - [ ] `tests/integration/deploy_ship_test.sh`, `ship_test.sh`, `spine_test.sh` green
 
 **Verify on:** rig; then gallery-website on `vps` once (server prepared by the
-Bash `server init` until 10.9).
+Bash `server init` until 10.9) — including 10.4's deferred first shipping of the
+binary over the real uplink and `~/.ssh/config` (a non-standard port).
 
 **Watch out for:**
 - `docs/build-deploy.md:303-305` calls `digest=` an `image@sha256` content
@@ -332,7 +339,10 @@ the entry predicate (tightening it stopped rotation: 67 failures).
 
 **Verify on:** rig; `vps` for real sudo and `--acme-staging`.
 
-**Watch out for:** `/etc/kasbah` gets its `755` only when the pointer is
+**Watch out for:** init ships the binary into the `<apps>` it has just created,
+before the marker exists — `serverbin.Ensure` with `Options{Apps}`; that mode
+ignores any pointer and accepts `..` segments, so init's pointer-conflict refusal
+and path validation must run first. `/etc/kasbah` gets its `755` only when the pointer is
 rewritten (`lib/server_init.sh:1207-1216`), and the backup `env` gets `600` only
 when its content changes (`lib/backup.sh:878-884`) — Go should enforce both on
 every run. `--keep-acme --yes` once destroyed a store because one code
@@ -440,11 +450,12 @@ Leave `vps` as a kasbah server at the end — Phase 9 starts from it.
   and the workstation's wins on a mismatch, releases follow the rule exactly
   (recommended); (b) stamp a build counter into every version; (c) an explicit
   `--replace-server-binary` flag.
-  **Settled 2026-10-18: (b), a build counter.** A clean tree stamps
-  `<VERSION>.<commit count>` (`0.1.0-dev.142`); a dirty tree appends build time
-  in unix seconds (`0.1.0-dev.142.1760790000`), so every rebuild inside a unit
-  outranks the last under semver pre-release ordering. Release versions
-  (`1.0.0`) carry no counter, and from then on the rule applies exactly.
+  **Settled 2026-10-18: (b), a build counter.** Every pre-release build stamps
+  `<VERSION>.<commit count>.<unix build time>` (`0.1.0-dev.66.1792355995`) — the
+  build time on clean builds too, since 10.4, so a clean rebuild outranks the dirty
+  build before it and an amend still orders. Release versions (`1.0.0`) carry
+  nothing, and from then on the rule applies exactly. A history rewritten to fewer
+  commits still loses — accepted.
 - **D2 — the backup runner (settle at 10.13).** `backup.sh` runs inside
   restic's own image, not on the host. Options: (a) keep it `sh` — it is
   container content, like a compose file; (b) mount the static linux binary into
@@ -474,10 +485,14 @@ Run approved 2026-10-18: whole phase, plan order, unit bar as in Rulings.
 - **A reset rig has an empty image store**, and suites that assert on stock
   images must pull them themselves — `integration/prune_test.sh` assumed two that
   only rig history had. Expect the same shape elsewhere after any `rig.sh reset`.
-- **`prompt.Secret` exits on SIGINT without running a command's cleanup.**
-  Bash ran EXIT traps around those prompts (`lib/backup.sh` trap at 1603 around
-  the prompt at 1647, `lib/server_init.sh` trap at 2942): the commands that port
-  them (10.9, 10.13) must pass an `Exit` that cleans up.
+- **Every Go-owned command calls `atexit.HandleSignals()` and leaves through
+  `atexit.Exit`**, or its cleanups (ssh master, temp files, terminal echo) are
+  skipped on a signal. `kasbah __ensure-server USER@HOST [--apps-path=]` is a
+  hidden driver for the rig suites, absent from usage and `cli.md`.
+- **Bash ran EXIT traps around its secret prompts** (`lib/backup.sh` trap at
+  1603 around the prompt at 1647, `lib/server_init.sh` trap at 2942); in Go a
+  signal at `prompt.Secret` runs the `atexit` stack, so 10.9 and 10.13 push their
+  cleanups there.
 - **The Bash tool's YAML reading depends on the installed yq's version** — 3.1.0
   reads YAML 1.2 scalars; older wrappers may not. The Go binary fixes the 3.1.0
   reading for good.

@@ -108,8 +108,9 @@ reachable=yes
 if [ -f "$pointer" ]; then
     source=pointer
     if [ -r "$pointer" ]; then
-        # The first line only: this is a file a human may have edited.
-        IFS= read -r pointed < "$pointer" || pointed=""
+        # The first line only: this is a file a human may have edited, and
+        # its last line may lack a newline, which `read` reports as failure.
+        IFS= read -r pointed < "$pointer" || [ -n "$pointed" ] || pointed=""
         pointed=$(norm_path "$pointed")
     else
         # World-readable is the contract, and this command deploys as whatever

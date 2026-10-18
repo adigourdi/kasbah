@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/term"
 )
@@ -62,7 +63,8 @@ type Prompter struct {
 	TTY bool
 	// NoEcho hides typing for a secret and returns what restores it.
 	NoEcho func() (func() error, error)
-	// Exit ends the process when a signal interrupts a secret; nil is os.Exit.
+	// Exit ends the process when a signal interrupts a secret; nil is
+	// atexit.Exit, which runs the command's registered cleanups first.
 	Exit func(code int)
 }
 
@@ -234,6 +236,9 @@ func (p *Prompter) askHidden(prompt string) (a string, err error) {
 	if err != nil {
 		return "", cli.Fail("could not hide typing on the terminal: %v", err)
 	}
+	// Whichever handler takes the signal — this one, or atexit's if the
+	// command installed it — the terminal is put back.
+	pop := atexit.Push(func() { restore() })
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	done := make(chan struct{})
@@ -244,7 +249,7 @@ func (p *Prompter) askHidden(prompt string) (a string, err error) {
 			fmt.Fprintln(p.Out.Stderr)
 			exit := p.Exit
 			if exit == nil {
-				exit = os.Exit
+				exit = atexit.Exit
 			}
 			exit(128 + int(s.(syscall.Signal)))
 		case <-done:
@@ -253,6 +258,7 @@ func (p *Prompter) askHidden(prompt string) (a string, err error) {
 	defer func() {
 		signal.Stop(sigs)
 		close(done)
+		pop()
 		if rerr := restore(); rerr != nil && err == nil {
 			err = cli.Fail("could not restore the terminal: %v", rerr)
 		}

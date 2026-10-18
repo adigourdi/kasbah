@@ -325,7 +325,7 @@ elif [ -f "$pointer" ] && [ ! -r "$pointer" ]; then
     pointer_state=unreadable
 elif [ -f "$pointer" ]; then
     pointer_state=present
-    IFS= read -r pointer_value < "$pointer" || pointer_value=""
+    IFS= read -r pointer_value < "$pointer" || [ -n "$pointer_value" ] || pointer_value=""
     pointer_value=$(norm_path "$pointer_value")
 elif [ -d "$pointer_dir" ] && [ ! -x "$pointer_dir" ]; then
     pointer_state=unreachable

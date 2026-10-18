@@ -240,7 +240,7 @@ if [ -e "$pointer" ]; then printf 'pointer=yes\n'; else printf 'pointer=no\n'; f
 
 pointed=""
 if [ -f "$pointer" ] && [ -r "$pointer" ]; then
-    IFS= read -r pointed < "$pointer" || pointed=""
+    IFS= read -r pointed < "$pointer" || [ -n "$pointed" ] || pointed=""
     pointed=${pointed%$'\r'}
     case $pointed in /?*) ;; *) pointed="" ;; esac
 fi

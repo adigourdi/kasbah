@@ -685,7 +685,7 @@ if [ -e "$pointer" ] && [ ! -f "$pointer" ]; then
 elif [ -f "$pointer" ]; then
     pointer_state=present
     if [ -r "$pointer" ]; then
-        IFS= read -r pointer_value < "$pointer" || pointer_value=""
+        IFS= read -r pointer_value < "$pointer" || [ -n "$pointer_value" ] || pointer_value=""
     elif [ "$sudo_ok" = yes ]; then
         pointer_value=$(sudo -n cat "$pointer" 2>/dev/null) || pointer_value=""
         pointer_value=${pointer_value%%$'\n'*}
@@ -1206,7 +1206,7 @@ fi
 # only in stderr nobody is reading.
 if [ -f "$pointer" ] && [ -r "$pointer" ]; then
     current=""
-    IFS= read -r current < "$pointer" || current=""
+    IFS= read -r current < "$pointer" || [ -n "$current" ] || current=""
     current=${current%$'\r'}
     meta=$(stat -c '%a %u' "$pointer" 2>/dev/null) || meta=""
     if [ "$current" = "$apps" ] && [ "$meta" = "644 0" ]; then

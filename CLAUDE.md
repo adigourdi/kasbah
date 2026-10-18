@@ -25,7 +25,8 @@ plan and the only progress tracker (the roadmap is scope, not status).
   `.git` points outside the mounted tree and the version stamp fails.
 - `dist/kasbah <cmd>` — run the CLI from the checkout (repo detection via the `install.sh` sibling; no install needed).
 - Versions: files kasbah writes record `VERSION`; `--version` prints the build
-  stamp (`KASBAH_BUILD`: `VERSION` + commit count, + build time when dirty).
+  stamp (`KASBAH_BUILD`: on a pre-release, `VERSION` + commit count + build time;
+  a release is `VERSION` alone).
 
 ## Hard conventions
 

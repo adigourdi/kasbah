@@ -517,4 +517,21 @@ assert '[ "$p_rc" = "1" ]' "and so is a directory where the marker belongs (rc $
 rmdir "$root/apps/.kasbah/server.json"
 mv "$tmpdir/keep.json" "$root/apps/.kasbah/server.json"
 
+# --- The remote step itself, on a pointer a hand edit left without a newline ----
+# Run locally: the payload is plain bash over two paths it is given. `read`
+# fails on a last line with no newline while still filling the variable, and
+# the pointer must name its path either way.
+sed -n "/<<'REMOTE'$/,/^REMOTE$/p" "$repo_dir/lib/marker.sh" | sed '1d;$d' > "$tmpdir/remote.sh"
+assert 'grep -qF "read -r pointed" "$tmpdir/remote.sh"' "the remote step was extracted from lib/marker.sh"
+mkdir -p "$tmpdir/etc-kasbah"
+for body in '/srv/apps' $'/srv/apps\n'; do
+    printf '%s' "$body" > "$tmpdir/etc-kasbah/apps-path"
+    out=$(bash "$tmpdir/remote.sh" "$tmpdir/no-apps" "$tmpdir/etc-kasbah/apps-path" 2>&1); rc=$?
+    assert '[ "$rc" = 3 ] && [ "$(head -n1 <<<"$out")" = "apps=/srv/apps" ]' \
+        "a pointer holding $(printf '%q' "$body") names /srv/apps (rc $rc: $out)"
+done
+: > "$tmpdir/etc-kasbah/apps-path"
+out=$(bash "$tmpdir/remote.sh" "$tmpdir/no-apps" "$tmpdir/etc-kasbah/apps-path" 2>&1); rc=$?
+assert '[ "$rc" = 5 ]' "an empty pointer still names nothing (rc $rc: $out)"
+
 exit "$fail"

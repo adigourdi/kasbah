@@ -7,10 +7,11 @@
 #                                   dist/server/kasbah-linux-arm64
 #   docker compose run --rm test    go vet, the gofmt check, go test
 #
-# All three binaries are static (CGO_ENABLED=0) and carry the build stamp from
-# `go run ./tools/stamp`: VERSION, plus the commit count on a pre-release,
-# plus the build time when the tree is dirty. Each is written beside its final
-# name and renamed into place, so a reader never sees a partial file.
+# All three binaries are static (CGO_ENABLED=0) and carry one build stamp from
+# `go run ./tools/stamp`: VERSION, plus the commit count and the build time on a
+# pre-release. A server binary ships only when its stamp is the workstation's.
+# Each is written beside its final name and renamed into place, so a reader
+# never sees a partial file.
 name: kasbah
 
 x-go: &go

@@ -1,6 +1,6 @@
-// Command stamp prints the build stamp baked into kasbah: VERSION plus the
-// commit count, plus the build time when the tree is dirty. Run from the
-// repository root, as the compose build service does.
+// Command stamp prints the build stamp baked into kasbah: VERSION, and on a
+// pre-release the commit count and the build time (internal/version.Stamp).
+// Run from the repository root, as the compose build service does.
 package main
 
 import (
@@ -25,10 +25,10 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	// Outside a git checkout (a tarball) there is no count to give, so the
-	// build is treated as dirty: the build time still orders it. Inside one,
-	// a git that fails is an error, not a missing count.
-	commits, dirty := 0, true
+	// Outside a git checkout (a tarball) the count is 0, so such a build ranks
+	// below every checkout build of the same VERSION. Inside one, a git that
+	// fails is an error, not a missing count.
+	commits := 0
 	if inCheckout(wd) {
 		out, err := git("rev-list", "--count", "HEAD")
 		if err != nil {
@@ -37,13 +37,8 @@ func main() {
 		if commits, err = strconv.Atoi(strings.TrimSpace(out)); err != nil {
 			fail(fmt.Errorf("git rev-list --count: %q is not a count", out))
 		}
-		status, err := git("status", "--porcelain")
-		if err != nil {
-			fail(err)
-		}
-		dirty = status != ""
 	}
-	fmt.Println(version.Stamp(string(base), commits, dirty, time.Now()))
+	fmt.Println(version.Stamp(string(base), commits, time.Now()))
 }
 
 // inCheckout reports whether dir or any parent holds a .git entry (a

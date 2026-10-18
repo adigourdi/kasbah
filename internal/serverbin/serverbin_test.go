@@ -1,0 +1,88 @@
+package serverbin
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestArch(t *testing.T) {
+	for in, want := range map[string]string{"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64", "x86_64\r\n": "amd64"} {
+		if got, err := Arch(in); err != nil || got != want {
+			t.Errorf("Arch(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"armv7l", "i686", "riscv64", ""} {
+		_, err := Arch(in)
+		if err == nil || !strings.Contains(err.Error(), "'"+in+"'") {
+			t.Errorf("Arch(%q) = %v, want a refusal naming the machine type", in, err)
+		}
+	}
+}
+
+func TestLocal(t *testing.T) {
+	root := t.TempDir()
+	co := filepath.Join(root, "dist", "server", "kasbah-linux-amd64")
+	inst := filepath.Join(root, "server", "kasbah-linux-arm64")
+	for _, f := range []string{co, inst} {
+		os.MkdirAll(filepath.Dir(f), 0o755)
+		os.WriteFile(f, nil, 0o755)
+	}
+	if got, err := Local(root, true, "amd64"); err != nil || got != co {
+		t.Errorf("checkout: %q, %v", got, err)
+	}
+	if got, err := Local(root, false, "arm64"); err != nil || got != inst {
+		t.Errorf("installed: %q, %v", got, err)
+	}
+	if _, err := Local(root, true, "arm64"); err == nil || !strings.Contains(err.Error(), "docker compose run --rm build") {
+		t.Errorf("a missing checkout binary: %v", err)
+	}
+	if _, err := Local(root, false, "amd64"); err == nil || !strings.Contains(err.Error(), "install.sh") {
+		t.Errorf("a missing installed binary: %v", err)
+	}
+}
+
+func TestNormPath(t *testing.T) {
+	for in, want := range map[string]string{
+		"/apps": "/apps", "/apps/": "/apps", "//apps": "/apps", "/apps/.": "/apps",
+		"/srv//x/./y/ \t": "/srv/x/y", "/": "/", "apps": "apps", "/apps\r": "/apps", "/a/../b": "/a/../b",
+	} {
+		if got := normPath(in); got != want {
+			t.Errorf("normPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestMount(t *testing.T) {
+	proc := []string{
+		"/dev/sda1 / ext4 rw,relatime 0 0",
+		"tmpfs /srv tmpfs rw,nosuid,noexec 0 0",
+		"tmpfs /srv/apps\\040x tmpfs rw,nosuid 0 0",
+		"tmpfs /srvx tmpfs rw,noexec 0 0",
+	}
+	tests := map[string]string{
+		"/srv/apps/.kasbah/bin/kasbah":   "/srv tmpfs rw,nosuid,noexec",
+		"/srv/apps x/.kasbah/bin/kasbah": "/srv/apps x tmpfs rw,nosuid",
+		"/apps/.kasbah/bin/kasbah":       "/ ext4 rw,relatime",
+	}
+	for file, want := range tests {
+		if got := mountOf(file, proc); got != want {
+			t.Errorf("mountOf(%q) = %q, want %q", file, got, want)
+		}
+	}
+	err := noexec("d@h", "/srv/apps/.kasbah/bin", "/srv/apps/.kasbah/bin/kasbah", proc)
+	if err == nil || !strings.Contains(err.Error(), "noexec") || !strings.Contains(err.Error(), "/srv ") || !strings.Contains(err.Error(), "from /srv/apps/.kasbah/bin ") {
+		t.Errorf("noexec over /proc/mounts = %v, want a refusal naming /srv", err)
+	}
+	if err := noexec("d@h", "/apps/.kasbah/bin", "/apps/.kasbah/bin/kasbah", proc); err != nil {
+		t.Errorf("an exec mount was blamed: %v", err)
+	}
+	err = noexec("d@h", "/x/bin", "/x/bin/kasbah", []string{"/x tmpfs rw,noexec"})
+	if err == nil || !strings.Contains(err.Error(), "/x is mounted noexec") {
+		t.Errorf("noexec over findmnt = %v", err)
+	}
+	if err := noexec("d@h", "/x/bin", "/x/bin/kasbah", nil); err != nil {
+		t.Errorf("no mount information blamed a mount: %v", err)
+	}
+}

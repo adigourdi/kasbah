@@ -155,10 +155,16 @@ fresh_version=$(env -u XDG_DATA_HOME KASBAH_LIB_DIR="$fresh/lib" "$fresh/bin/kas
 assert '[ "$fresh_version" = "$built_version" ]' \
     "an install under KASBAH_LIB_DIR runs from it (got '$fresh_version')"
 # Pointed nowhere, it says where it looked rather than running something else.
-nowhere_out=$(env -u XDG_DATA_HOME KASBAH_LIB_DIR="$tmpdir/nowhere" "$fresh/bin/kasbah" --version 2>&1)
+nowhere_out=$(env -u XDG_DATA_HOME KASBAH_LIB_DIR="$tmpdir/nowhere" "$fresh/bin/kasbah" --help 2>&1)
 nowhere_rc=$?
 assert '[ "$nowhere_rc" = "1" ] && grep -qF "$tmpdir/nowhere/libexec/kasbah-bash" <<<"$nowhere_out"' \
     "a library directory without the dispatcher is exit 1, naming the path (exit $nowhere_rc: $nowhere_out)"
+# --version is the one question a binary with no Bash beside it — a server's —
+# still answers, from its own stamp.
+nowhere_version=$(env -u XDG_DATA_HOME KASBAH_LIB_DIR="$tmpdir/nowhere" "$fresh/bin/kasbah" --version 2>&1)
+nowhere_rc=$?
+assert '[ "$nowhere_rc" = "0" ] && [ "$nowhere_version" = "$built_version" ]' \
+    "without a dispatcher, --version still answers with the build (exit $nowhere_rc: $nowhere_version)"
 
 # --- Case 4b: a dist/ install.sh cannot use, or a KASBAH_SKIP_BUILD it cannot read
 bogus_err=$(env -u XDG_DATA_HOME KASBAH_SKIP_BUILD=yes KASBAH_BIN_DIR="$tmpdir/bogus/bin" \

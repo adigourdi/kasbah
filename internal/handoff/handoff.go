@@ -14,38 +14,43 @@ import (
 // installed library directory.
 const Dispatcher = "libexec/kasbah-bash"
 
-// Locate finds the Bash dispatcher for the binary at exe. A checkout is
-// recognised the way the dispatcher recognises one — install.sh and VERSION
-// beside the binary's parent directory — and a checkout's binary runs that
-// checkout's dispatcher, whatever KASBAH_LIB_DIR says (the dispatcher still
-// honours it for the libraries). Otherwise the installed library directory is
-// used: KASBAH_LIB_DIR, else $XDG_DATA_HOME/kasbah, else ~/.local/share/kasbah.
+// Locate finds the Bash dispatcher for the binary at exe, under Home.
 func Locate(exe string, getenv func(string) string) (string, error) {
-	if real, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = real
+	home, _, err := Home(exe, getenv)
+	if err != nil {
+		return "", err
 	}
-	var path string
-	root := filepath.Dir(filepath.Dir(exe))
-	if isFile(filepath.Join(root, "install.sh")) && isFile(filepath.Join(root, "VERSION")) {
-		path = filepath.Join(root, Dispatcher)
-	} else {
-		lib := getenv("KASBAH_LIB_DIR")
-		if lib == "" {
-			switch {
-			case getenv("XDG_DATA_HOME") != "":
-				lib = filepath.Join(getenv("XDG_DATA_HOME"), "kasbah")
-			case getenv("HOME") != "":
-				lib = filepath.Join(getenv("HOME"), ".local", "share", "kasbah")
-			default:
-				return "", errors.New("neither KASBAH_LIB_DIR, XDG_DATA_HOME, nor HOME is set")
-			}
-		}
-		path = filepath.Join(lib, Dispatcher)
-	}
+	path := filepath.Join(home, Dispatcher)
 	if !isFile(path) {
 		return "", fmt.Errorf("cannot locate the Bash dispatcher (looked for %s)", path)
 	}
 	return path, nil
+}
+
+// Home is where the files that travel with the binary at exe live. A checkout
+// is recognised the way the dispatcher recognises one — install.sh and
+// VERSION beside the binary's parent directory — and a checkout's binary uses
+// that checkout, whatever KASBAH_LIB_DIR says. Otherwise it is the installed
+// library directory: KASBAH_LIB_DIR, else $XDG_DATA_HOME/kasbah, else
+// ~/.local/share/kasbah.
+func Home(exe string, getenv func(string) string) (dir string, checkout bool, err error) {
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = real
+	}
+	root := filepath.Dir(filepath.Dir(exe))
+	if isFile(filepath.Join(root, "install.sh")) && isFile(filepath.Join(root, "VERSION")) {
+		return root, true, nil
+	}
+	if lib := getenv("KASBAH_LIB_DIR"); lib != "" {
+		return lib, false, nil
+	}
+	switch {
+	case getenv("XDG_DATA_HOME") != "":
+		return filepath.Join(getenv("XDG_DATA_HOME"), "kasbah"), false, nil
+	case getenv("HOME") != "":
+		return filepath.Join(getenv("HOME"), ".local", "share", "kasbah"), false, nil
+	}
+	return "", false, errors.New("neither KASBAH_LIB_DIR, XDG_DATA_HOME, nor HOME is set")
 }
 
 // Env is the environment the dispatcher runs under: the caller's, unchanged,

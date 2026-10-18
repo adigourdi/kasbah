@@ -19,6 +19,6 @@ tests/rig/backup_env.sh*
 /.cache/
 
 # Claude Code's per-checkout settings. Also in many a global excludes file, but
-# the build container's git cannot see that one, and an untracked file would
-# stamp every build dirty.
+# the build container's git cannot see that one; ignoring it here keeps the
+# container's `git status` the same as the host's.
 **/.claude/settings.local.json

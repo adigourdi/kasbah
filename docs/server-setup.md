@@ -56,6 +56,8 @@ Default paths (override with `--apps-path`, `--data-path`):
 /apps/                               root owned by deploy user
 ├── .kasbah/
 │   ├── server.json                  server marker (version, paths, limits, backup)
+│   ├── bin/kasbah                   the kasbah binary — shipped by the workstation when absent
+│   │                                or older, kept when the same or newer (installed under bin/.lock)
 │   └── backup/                      only with --with-backup (see below)
 │       ├── compose.yml              the scheduler stack
 │       ├── backup.sh                the runner — POSIX sh, no bash on this path

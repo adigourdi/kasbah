@@ -1,18 +1,41 @@
-// Command kasbah is the kasbah CLI. Every command it does not own yet is
-// handed to the Bash dispatcher, which replaces this process.
+// Command kasbah is the kasbah CLI. The commands it owns run here; every
+// other one is handed to the Bash dispatcher, which replaces this process.
 package main
 
 import (
 	"fmt"
 	"os"
+	"strings"
 
+	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/handoff"
+	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/serverbin"
+	"github.com/adigourdi/kasbah/internal/ssh"
 )
 
 // build is stamped at build time: -ldflags "-X main.build=…".
 var build string
 
 func main() {
+	args := os.Args[1:]
+	if len(args) > 0 {
+		switch args[0] {
+		case "remote":
+			// The server has no Bash tree: `remote` is never handed off.
+			os.Exit(remoteCmd(args[1:]))
+		case "__ensure-server":
+			out := cli.Std()
+			atexit.HandleSignals()
+			code := out.Report(ensureServer(out, args[1:]))
+			if c := atexit.Interrupted(); c != 0 {
+				code = c
+			}
+			atexit.Exit(code)
+		}
+	}
+
 	exe, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "kasbah: cannot locate this binary: %v\n", err)
@@ -20,10 +43,89 @@ func main() {
 	}
 	dispatcher, err := handoff.Locate(exe, os.Getenv)
 	if err != nil {
+		// A server binary has no dispatcher, and --version is still a question
+		// it can answer.
+		if len(args) == 1 && (args[0] == "--version" || args[0] == "-v") {
+			fmt.Printf("kasbah %s\n", buildOrUnknown())
+			os.Exit(0)
+		}
 		fmt.Fprintf(os.Stderr, "kasbah: %v\n", err)
 		os.Exit(1)
 	}
-	err = handoff.Exec(dispatcher, os.Args[1:], handoff.Env(os.Environ(), build))
+	err = handoff.Exec(dispatcher, args, handoff.Env(os.Environ(), build))
 	fmt.Fprintf(os.Stderr, "kasbah: cannot run %s: %v\n", dispatcher, err)
 	os.Exit(126)
+}
+
+func buildOrUnknown() string {
+	if build == "" {
+		return "(unstamped build)"
+	}
+	return build
+}
+
+func remoteCmd(args []string) int {
+	out := cli.Std()
+	if len(args) == 1 && args[0] == "version" {
+		fmt.Fprintln(out.Stdout, remote.Self(build).Line())
+		return cli.ExitOK
+	}
+	if len(args) == 2 && args[0] == "install-self" {
+		exe, err := os.Executable()
+		if err != nil {
+			return out.Report(cli.Fail("cannot locate this binary: %v", err))
+		}
+		return out.Report(serverbin.InstallSelf(remote.Self(build), exe, args[1], out.Stdout))
+	}
+	sub := "(none)"
+	if len(args) > 0 {
+		sub = args[0]
+	}
+	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self", sub))
+}
+
+// ensureServer is `kasbah __ensure-server [--apps-path=<dir>] USER@HOST`: the
+// server binary's newer-wins rule on its own, for the rig suites. One result
+// line on stdout. --apps-path is the bootstrap mode: no discovery, no marker.
+func ensureServer(out *cli.Output, args []string) error {
+	var opt serverbin.Options
+	if len(args) == 2 && strings.HasPrefix(args[0], "--apps-path=") {
+		opt.Apps = strings.TrimPrefix(args[0], "--apps-path=")
+		if opt.Apps == "" {
+			return cli.Fail("--apps-path= must not be empty")
+		}
+		args = args[1:]
+	}
+	if len(args) != 1 {
+		return cli.Fail("usage: kasbah __ensure-server [--apps-path=<dir>] USER@HOST")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return cli.Fail("cannot locate this binary: %v", err)
+	}
+	home, checkout, err := handoff.Home(exe, os.Getenv)
+	if err != nil {
+		return cli.Fail("%v", err)
+	}
+	c, err := ssh.Connect(args[0])
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	res, err := serverbin.Ensure(c, remote.Self(build), func(arch string) (string, error) {
+		return serverbin.Local(home, checkout, arch)
+	}, opt)
+	if err != nil {
+		return err
+	}
+	if res.Action == remote.Keep {
+		fmt.Fprintf(out.Stdout, "kept=%s\n", res.Now)
+		return nil
+	}
+	old := res.Old
+	if old == "" {
+		old = "none"
+	}
+	fmt.Fprintf(out.Stdout, "shipped=%s->%s\n", old, res.Now)
+	return nil
 }
