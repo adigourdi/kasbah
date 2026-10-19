@@ -123,7 +123,7 @@ _BK_TMPDIR=""
 _BK_PROJECT_FALLBACKS=()
 # The names kasbah owns under <apps>, handed to the read payload as an argument
 # rather than written out inside it. Every neighbour that walks <apps> does the
-# same — prune.sh and drop.sh build this exact array, internal/probe the Go one — and
+# same — drop.sh builds this exact array, internal/probe and internal/prune the Go one — and
 # a payload on the far side of ssh can source nothing, so an argument is the only
 # way one list stays one list.
 _BK_RESERVED=(.kasbah "${KASBAH_RESERVED_NAMES[@]}")

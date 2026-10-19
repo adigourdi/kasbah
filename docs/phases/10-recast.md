@@ -536,9 +536,20 @@ an unreadable source falls back to the heuristic, never to neither.
 **Lighter spec — re-read before briefing.**
 
 **Deliverables**
-- [ ] `logs`, `exec` with TTY passthrough and their `last_server` rules
-- [ ] `server prune` (3 versions + 3 months), `upgrade-traefik` dry run then switch
-- [ ] `ops_test.sh`, `prune_test.sh`, `upgrade_traefik_test.sh` green
+- [x] `logs`, `exec` with TTY passthrough and their `last_server` rules —
+      `internal/ops`; a signal to kasbah mid-stream is forwarded to ssh
+      (`atexit.Hold`) and exits 128+N, documented in `cli.md`
+- [x] `server prune` (3 versions + 3 months), `upgrade-traefik` dry run then switch —
+      `internal/prune` (decisions on the workstation over `vlog.MonthIndex`; the plan
+      byte-identical to Bash's on the same rig state), `internal/upgrade`. **Found:**
+      the server-side start narrated its rollback before doing it, so a dropped
+      session killed it with every site down (inherited from Bash) — it now ignores
+      SIGHUP/SIGPIPE, restores first and narrates last, proven by mutation.
+      Recorded limit: the restore copies in place, so a disk filling mid-restore can
+      truncate a live file (the backup stays whole), as Bash's `cp -p` could
+- [x] `ops_test.sh`, `prune_test.sh`, `upgrade_traefik_test.sh` green — the
+      integration suites; the white-box unit suites retired into Go tests with
+      `lib/{ops,prune,upgrade_traefik}.sh`
 
 **Verify on:** rig.
 
@@ -667,8 +678,8 @@ Run approved 2026-10-18: whole phase, plan order, unit bar as in Rulings.
 - **A reset rig has an empty image store**, and suites that assert on stock
   images must pull them themselves — `integration/prune_test.sh` assumed two that
   only rig history had. Expect the same shape elsewhere after any `rig.sh reset`.
-- **The rotation month table lives once**, `internal/vlog/testdata/month-index.table`,
-  read by both `TestMonthIndexTable` and `tests/prune_test.sh`.
+- **The rotation month table lives once**, `internal/vlog/testdata/month-index.table`;
+  rotation and `server prune` both use `vlog.MonthIndex`, so one window serves both.
 - **Every Go-owned command calls `atexit.HandleSignals()` and leaves through
   `atexit.Exit`**, or its cleanups (ssh master, temp files, terminal echo) are
   skipped on a signal. `kasbah __ensure-server USER@HOST [--apps-path=]` is a

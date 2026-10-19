@@ -291,12 +291,8 @@ traefik_dashboard_apex() {
 # (`reg.example:5000/app`) puts one earlier, and stripping that would ship an
 # image nobody can name.
 #
-# Here rather than in one command's library because two of them reduce a compose
-# `image:` to the repository it names, from opposite ends of the same fact:
-# `build-push` to decide what to tag and save (`<base>:<version>`), and `server
-# prune` to decide which repositories on a server belong to a project at all. A
-# second copy of this rule is a second answer to "what is this image called",
-# and prune's answer decides a deletion.
+# `drop` reduces a compose `image:` to its repository with it; the Go commands
+# use internal/buildpush.Base, the same rule.
 image_base() {
     local _ib_ref="$1" _ib_out="$2" _ib_base="$1"
 

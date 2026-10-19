@@ -75,12 +75,40 @@ func HandleSignals() {
 		s := <-sigs
 		code := 128 + int(s.(syscall.Signal))
 		interrupted.Do(func() { sigCode = code; close(sigSeen) })
+		holdMu.Lock()
+		h := held
+		holdMu.Unlock()
+		if h != nil {
+			// The holder acts on the first; a second one is insistence.
+			h(s)
+			s = <-sigs
+			code = 128 + int(s.(syscall.Signal))
+		}
 		go func() {
 			s := <-sigs
 			os.Exit(128 + int(s.(syscall.Signal)))
 		}()
 		Exit(code)
 	}()
+}
+
+var (
+	holdMu sync.Mutex
+	held   func(os.Signal)
+)
+
+// Hold defers the exit while a child the run streams through is alive: the
+// first signal goes to fn (to forward it) and is left for the holder to read
+// through Interrupted; a second exits as usual. release ends the hold.
+func Hold(fn func(os.Signal)) (release func()) {
+	holdMu.Lock()
+	held = fn
+	holdMu.Unlock()
+	return func() {
+		holdMu.Lock()
+		held = nil
+		holdMu.Unlock()
+	}
 }
 
 // Interrupted reports the exit code of a signal HandleSignals has received,

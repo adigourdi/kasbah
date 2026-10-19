@@ -70,6 +70,10 @@ func stateOf(apps, dir, path string) string {
 	return "ok"
 }
 
+// ReadFile is a file under a project directory, judged as the record's
+// files are: its state, and its bytes in base64 when the state is ok.
+func ReadFile(apps, dir, path string) (state, b64 string) { return readFile(apps, dir, path) }
+
 func readFile(apps, dir, path string) (string, string) {
 	st := stateOf(apps, dir, path)
 	if st != "ok" {

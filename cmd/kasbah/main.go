@@ -22,13 +22,16 @@ import (
 	"github.com/adigourdi/kasbah/internal/initproject"
 	"github.com/adigourdi/kasbah/internal/mail"
 	"github.com/adigourdi/kasbah/internal/marker"
+	"github.com/adigourdi/kasbah/internal/ops"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/prune"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/serverinit"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/status"
 	"github.com/adigourdi/kasbah/internal/term"
+	"github.com/adigourdi/kasbah/internal/upgrade"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
@@ -65,6 +68,16 @@ func main() {
 			if len(args) > 1 && args[1] == "check" {
 				os.Exit(check.Remote(args[2:], os.Stdout, os.Stderr))
 			}
+			if len(args) > 1 && args[1] == "prune" {
+				os.Exit(prune.Remote(args[2:], os.Stdout, os.Stderr))
+			}
+			if len(args) > 1 && args[1] == "traefik" {
+				// dry-run: a signal, a dropped session's SIGHUP included, removes
+				// the throwaway on the way out. start ignores SIGHUP and SIGPIPE
+				// itself, so its rollback outlives the session.
+				atexit.HandleSignals()
+				atexit.Exit(upgrade.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
+			}
 			if len(args) > 1 && args[1] == "vlog" {
 				os.Exit(vlog.Remote(args[2:], os.Stdout, os.Stderr))
 			}
@@ -91,6 +104,10 @@ func main() {
 			o, err := history.Parse(args[0], args[1:])
 			atexit.HandleSignals()
 			atexit.Exit(historyCmd(o, err))
+		case "logs", "exec":
+			o, err := ops.Parse(args[0], args[1:])
+			atexit.HandleSignals()
+			atexit.Exit(opsCmd(o, err))
 		case "env":
 			o, err := env.Parse(args[1:])
 			atexit.HandleSignals()
@@ -115,6 +132,16 @@ func main() {
 				o, err := status.Parse(args[2:])
 				atexit.HandleSignals()
 				atexit.Exit(statusCmd(o, err))
+			}
+			if len(args) > 1 && args[1] == "prune" {
+				o, err := prune.Parse(args[2:])
+				atexit.HandleSignals()
+				atexit.Exit(pruneCmd(o, err))
+			}
+			if len(args) > 1 && args[1] == "upgrade-traefik" {
+				o, err := upgrade.Parse(args[2:])
+				atexit.HandleSignals()
+				atexit.Exit(upgradeCmd(o, err))
 			}
 			if len(args) > 1 && (args[1] == "add-mail-domain" || args[1] == "mail-setup-guide") {
 				o, err := mail.Parse(args[1], args[2:])
@@ -188,7 +215,7 @@ func remoteCmd(args []string) int {
 	if len(args) > 0 {
 		sub = args[0]
 	}
-	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, vlog, init, mail, status, check", sub))
+	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, vlog, init, mail, status, check, prune, traefik", sub))
 }
 
 // ensureServer is `kasbah __ensure-server [--apps-path=<dir>] USER@HOST`: the
@@ -636,6 +663,111 @@ func historyCmd(o history.Options, err error) int {
 		Out:     out,
 		Version: v,
 		Dial:    history.Dial(remote.Self(build), local),
+	}, o))
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
+}
+
+// localBinary is serverbin.Local for this installation.
+func localBinary() (func(arch string) (string, error), error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, cli.Fail("cannot locate this binary: %v", err)
+	}
+	home, checkout, err := handoff.Home(exe, os.Getenv)
+	if err != nil {
+		return nil, cli.Fail("%v", err)
+	}
+	return func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }, nil
+}
+
+// opsCmd is `logs` and `exec`: the exit status is the stream's.
+func opsCmd(o ops.Options, err error) int {
+	out := cli.Std()
+	if err == ops.ErrHelp {
+		fmt.Fprint(out.Stdout, ops.Usage(o.Cmd))
+		return cli.ExitOK
+	}
+	if err != nil {
+		return out.Report(err)
+	}
+	v, err := kasbahVersion()
+	if err != nil {
+		return out.Report(err)
+	}
+	local, err := localBinary()
+	if err != nil {
+		return out.Report(err)
+	}
+	fed := false
+	if fi, err := os.Stdin.Stat(); err == nil {
+		fed = fi.Mode()&os.ModeNamedPipe != 0 || fi.Mode().IsRegular()
+	}
+	code, err := ops.Run(ops.Ctx{
+		Out:     out,
+		Version: v,
+		TTY:     term.IsTerminal(0) && term.IsTerminal(1),
+		Fed:     fed,
+		Dial:    ops.Dial(remote.Self(build), local),
+	}, o)
+	if err != nil {
+		code = out.Report(err)
+		if c := atexit.Interrupted(); c != 0 {
+			code = c
+		}
+	}
+	return code
+}
+
+func pruneCmd(o prune.Options, err error) int {
+	out := cli.Std()
+	if err == prune.ErrHelp {
+		fmt.Fprint(out.Stdout, prune.Usage)
+		return cli.ExitOK
+	}
+	if err != nil {
+		return out.Report(err)
+	}
+	local, err := localBinary()
+	if err != nil {
+		return out.Report(err)
+	}
+	code := out.Report(prune.Run(prune.Ctx{
+		Out:      out,
+		Prompter: prompt.Std(out),
+		Dial:     prune.Dial(remote.Self(build), local),
+	}, o))
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
+}
+
+func upgradeCmd(o upgrade.Options, err error) int {
+	out := cli.Std()
+	if err == upgrade.ErrHelp {
+		fmt.Fprint(out.Stdout, upgrade.Usage)
+		return cli.ExitOK
+	}
+	if err != nil {
+		return out.Report(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+	}
+	home, checkout, err := handoff.Home(exe, os.Getenv)
+	if err != nil {
+		return out.Report(cli.Fail("%v", err))
+	}
+	local := func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }
+	code := out.Report(upgrade.Run(upgrade.Ctx{
+		Out:       out,
+		Templates: templatesDir(home),
+		Dial:      upgrade.Dial(remote.Self(build), local),
+		Now:       time.Now,
 	}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c

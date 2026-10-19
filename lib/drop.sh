@@ -10,11 +10,8 @@ _KASBAH_DROP_LOADED=1
 . "$KASBAH_LIB_DIR/ssh.sh"
 . "$KASBAH_LIB_DIR/marker.sh"
 . "$KASBAH_LIB_DIR/prompt.sh"
-# For _prune_project_repos alone: "which image repositories does this project
-# build?" is `server prune`'s question over every project on a server, and this
-# command's over one. Two implementations of it are two answers to the question
-# that decides a deletion (docs/phases/07-operate.md → the phase close).
-. "$KASBAH_LIB_DIR/prune.sh"
+# For _vlog_b64_decode: the copy that keeps a payload's trailing newline.
+. "$KASBAH_LIB_DIR/versions_log.sh"
 # lib/server_mail.sh is **not** sourced here: it pulls in lib/server_init.sh for
 # the registry template, which is two thousand lines a drop of a project with no
 # mail claim never touches. _drop_mail_plan sources it at the one moment it is
@@ -40,7 +37,7 @@ _KASBAH_DROP_LOADED=1
 # **What it will not remove is the point.** A repository a second project also
 # declares, and every repository on a server where some project's declared
 # images cannot be read at all, are left alone — the ownership rule
-# `lib/prune.sh` establishes, applied to one project. And `--prune` refuses
+# `server prune` establishes (internal/prune), applied to one project. And `--prune` refuses
 # outright when that leaves the image set unknown, because it is about to delete
 # the compose.yml that is the only record of what this project built: after it,
 # nobody can ever answer the question again.
@@ -92,7 +89,7 @@ _DROP_REPOS_OK=no
 _DROP_COMPOSE_STATE=absent
 # The projects claiming each repository, and the ones whose declared images
 # kasbah could not enumerate. While there is one of the latter, no repository on
-# the server is provably single-owner and nothing is removed — lib/prune.sh's
+# the server is provably single-owner and nothing is removed — `server prune`'s
 # rule, and its reasoning.
 declare -A _DROP_REPO_OWNER=()
 _DROP_UNKNOWN_OWNER=()
@@ -220,6 +217,36 @@ _drop_resolve_target() {
     fi
     _DROP_TARGET="$stored"
     _DROP_TARGET_SOURCE=state
+    return 0
+}
+
+# The image repositories a project builds, out of its compose.yml: every service
+# with a `build:` key, and the `image:` it names with its tag stripped — the rule
+# `server prune` applies in Go (internal/prune.Repos). Returns 1 when the file
+# does not parse, which is unknown and not empty.
+_drop_project_repos() {
+    local _pr_content="$1" _pr_out="$2" _pr_val="" _pr_rc=0 _pr_image _pr_base
+    local _pr_acc=" "
+
+    printf -v "$_pr_out" '%s' " "
+    [ -n "$_pr_content" ] || return 1
+    yaml_get "$_pr_content" \
+        '[ (.services // {}) | to_entries[]
+           | select(.value | type == "object")
+           | select(.value | has("build"))
+           | (.value.image // "") ]
+         | map(select(. != "" and . != null)) | .[]' _pr_val || _pr_rc=$?
+    [ "$_pr_rc" -eq 0 ] || return 1
+
+    while IFS= read -r _pr_image; do
+        _pr_image="${_pr_image%$'\r'}"
+        [ -n "$_pr_image" ] || continue
+        image_base "$_pr_image" _pr_base
+        case $_pr_acc in *" $_pr_base "*) continue ;; esac
+        _pr_acc="$_pr_acc$_pr_base "
+    done <<<"$_pr_val"
+
+    printf -v "$_pr_out" '%s' "$_pr_acc"
     return 0
 }
 
@@ -600,7 +627,7 @@ _drop_ownership() {
 
         [ "$name" != "$MANIFEST_NAME" ] || _DROP_COMPOSE_STATE="$cstate"
         repos=" "
-        if [ "$cstate" = ok ] && _prune_project_repos "$compose" repos; then
+        if [ "$cstate" = ok ] && _drop_project_repos "$compose" repos; then
             [ "$name" != "$MANIFEST_NAME" ] || { _DROP_REPOS="$repos"; _DROP_REPOS_OK=yes; }
         else
             repos=" "

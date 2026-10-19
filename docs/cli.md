@@ -274,10 +274,12 @@ The bind-mount root is not a project: `--data-path` can put it under the
 apps path with any name, so prune reads `data_path` out of the server
 marker and drops that row, exactly as `server status` does.
 
-Two round trips: one batched read of the whole server, and — only if
-there is something to remove and the operator said yes — one
-`docker image rm`. Exits 4 on a host with no server marker: prune does
-not delete images on a machine it cannot tell is a kasbah server.
+Three round trips: the bootstrap probe (which brings kasbah's own binary up to
+date), one batched read of the whole server (`kasbah remote prune scan`), and —
+only if there is something to remove and the operator said yes — one removal
+(`kasbah remote prune rm`). Every decision is made on the workstation. Exits 4
+on a host with no server marker, 1 on one whose marker cannot be read: prune
+does not delete images on a machine it cannot tell is a kasbah server.
 
 ### `kasbah server upgrade-traefik USER@HOST --version=<tag>`
 
@@ -1007,6 +1009,10 @@ Two statuses are neither, and kasbah says nothing about either:
   The closed-pipe path is silent because OpenSSH's fatal exit writes nothing.
 - `130` — interrupted.
 
+`129` or `143` mean kasbah itself was sent `SIGHUP` or `SIGTERM` while the log
+streamed: it forwards the signal to ssh, says so in one line naming the
+signal, and writes no `last_server`, since the read did not finish.
+
 Both are passed through rather than flattened to `0`, so a caller under
 `set -o pipefail` is not told the whole log arrived when it did not; `git log |
 head` does the same with its own number.
@@ -1056,7 +1062,10 @@ command is not something this command does.
 below. `last_server` is written whichever it is: kasbah's own work (resolve the
 server, find the stack, run what was asked) succeeded the moment the command
 ran, and `kasbah exec web -- test -f /srv/x` answering 1 is a fact about the
-container rather than a failed run.
+container rather than a failed run. Two exceptions: when ssh could not even
+be started (exit 1, nothing written), and when kasbah itself is sent
+`SIGHUP`/`SIGTERM` mid-command — it forwards the signal, warns in one line,
+exits `129`/`143` and still writes `last_server`, since the command ran.
 
 ## Deferred commands
 

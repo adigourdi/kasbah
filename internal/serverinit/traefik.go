@@ -59,6 +59,15 @@ func field(path ...any) func(jv.Value) (jv.Value, bool) {
 	}
 }
 
+// Unparsed is whether err is a file that does not parse as YAML.
+func Unparsed(err error) bool { _, ok := err.(errUnparsed); return ok }
+
+// StaticField is `.certificatesResolvers.letsencrypt.acme.<key> // ""` of a
+// traefik.yml.
+func StaticField(static, key string) (string, error) {
+	return yamlGet(static, field("certificatesResolvers", "letsencrypt", "acme", key))
+}
+
 var reDashboard = regexp.MustCompile("^Host\\(`traefik\\.([^`]+)`\\)$")
 
 // DashboardApex is traefik_dashboard_apex: the apex the dashboard router hangs

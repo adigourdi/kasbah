@@ -112,10 +112,6 @@ dispatch_server() {
             . "$KASBAH_LIB_DIR/server_init.sh"
             cmd_server_init "$@"
             ;;
-        prune)
-            . "$KASBAH_LIB_DIR/prune.sh"
-            cmd_server_prune "$@"
-            ;;
         backup-prune)
             . "$KASBAH_LIB_DIR/backup.sh"
             cmd_server_backup_prune "$@"
@@ -123,10 +119,6 @@ dispatch_server() {
         destroy)
             . "$KASBAH_LIB_DIR/server_destroy.sh"
             cmd_server_destroy "$@"
-            ;;
-        upgrade-traefik)
-            . "$KASBAH_LIB_DIR/upgrade_traefik.sh"
-            cmd_server_upgrade_traefik "$@"
             ;;
         -h|--help)
             cat <<EOF
@@ -176,10 +168,6 @@ dispatch() {
         drop)
             . "$KASBAH_LIB_DIR/drop.sh"
             cmd_drop "$@"
-            ;;
-        logs|exec)
-            . "$KASBAH_LIB_DIR/ops.sh"
-            "cmd_$cmd" "$@"
             ;;
         server)
             dispatch_server "$@"
