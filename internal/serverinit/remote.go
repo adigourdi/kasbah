@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"strconv"
@@ -141,31 +140,12 @@ func remoteLayout(apps, data string, stdout io.Writer) error {
 	return nil
 }
 
-// install writes body beside path and renames it over, mode set first: a
-// reader — Traefik's file watcher above all — sees the old file or the new.
-func install(path string, body []byte, mode fs.FileMode) error {
-	tmp := fmt.Sprintf("%s.tmp.%d", path, os.Getpid())
-	if err := os.WriteFile(tmp, body, mode); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("could not write %s", tmp)
-	}
-	if err := os.Chmod(tmp, mode); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("could not set mode %o on %s", mode, tmp)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("could not install %s", path)
-	}
-	return nil
-}
-
 func remoteWrite(path, size, sum string, stdin io.Reader, stdout io.Writer) error {
 	body, err := remote.Payload(stdin, size, sum)
 	if err != nil {
 		return fmt.Errorf("%s: %v", path, err)
 	}
-	if err := install(path, body, 0o644); err != nil {
+	if err := remote.Install(path, body, 0o644); err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, "written=yes")
@@ -227,7 +207,7 @@ func remoteMarker(apps, size, sum string, stdin io.Reader, stdout io.Writer) err
 			return nil
 		}
 	}
-	if err := install(marker, body, 0o644); err != nil {
+	if err := remote.Install(marker, body, 0o644); err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, "marker=written")

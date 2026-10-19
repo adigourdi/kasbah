@@ -30,7 +30,9 @@ type Ctx struct {
 	Self      remote.Info
 	Local     func(arch string) (string, error)
 	Hash      Hasher
-	Now       func() time.Time
+	// Crypt hashes the postmaster password; nil is Crypt.
+	Crypt Crypter
+	Now   func() time.Time
 }
 
 // Features asks the two questions before anything is opened, mail first, as
@@ -62,7 +64,12 @@ func (s *session) script(body string, args ...string) (string, int) {
 
 // call is `kasbah remote init ARGS…` on the server, bounded unless long.
 func (s *session) call(stdin []byte, bounded bool, args ...string) (string, int) {
-	words := append([]string{s.bin, "remote", "init"}, args...)
+	return s.remote(stdin, bounded, append([]string{"init"}, args...)...)
+}
+
+// remote is `kasbah remote ARGS…` on the server, bounded unless long.
+func (s *session) remote(stdin []byte, bounded bool, args ...string) (string, int) {
+	words := append([]string{s.bin, "remote"}, args...)
 	if bounded {
 		words = append([]string{"timeout", "-k", "5", strconv.Itoa(serverbin.RunTimeout)}, words...)
 	}
@@ -273,6 +280,26 @@ func Run(c Ctx, o Options) (err error) {
 		}
 	}
 
+	// The mail stack is read like Traefik's: on a bare host there is none.
+	mailOn := o.Mail == prompt.Yes
+	mr := freshMail
+	var mcur map[string]string
+	if mailOn {
+		if !elevate {
+			body, rc := s.remote(nil, true, "mail", "read", o.Apps, o.Data)
+			if rc != 0 {
+				return cli.Fail("could not read the mail stack on %s (the remote step exited %d, see above)", target, rc)
+			}
+			if json.Unmarshal([]byte(body), &mr) != nil {
+				return cli.Fail("the mail stack read on %s reported nothing kasbah can use", target).Cont(
+					"the step was truncated, or the server's kasbah rejected it — raw output:", "| "+strings.TrimSpace(body))
+			}
+		}
+		if mcur, err = MailCurrent(&mr, target); err != nil {
+			return err
+		}
+	}
+
 	var existingMap *jv.Map
 	if present {
 		warns, err := marker.Compat(existing, c.Version, markerPath, target)
@@ -298,9 +325,25 @@ func Run(c Ctx, o Options) (err error) {
 	if err != nil {
 		return err
 	}
+	var mv MailValues
+	var mrendered map[string]string
+	if mailOn {
+		crypt := c.Crypt
+		if crypt == nil {
+			crypt = Crypt
+		}
+		if mv, err = MailResolve(out, c.Prompter, o, &mr, mcur["kasbah.yml"], v.Domain, crypt); err != nil {
+			return err
+		}
+	}
 	rendered, err := Render(c.Templates, o, v)
 	if err != nil {
 		return err
+	}
+	if mailOn {
+		if mrendered, err = MailRender(c.Templates, o, mv); err != nil {
+			return err
+		}
 	}
 	m, err := marker.Build(marker.Fields{KasbahVersion: c.Version, AppsPath: o.Apps, DataPath: o.Data, CPULimit: cpu, MemLimit: mem}, existingMap, nil)
 	if err != nil {
@@ -356,6 +399,19 @@ func Run(c Ctx, o Options) (err error) {
 		restart = restart || rel == "traefik.yml"
 	}
 
+	// Before Traefik starts, so it requests both certificates at
+	// configuration load; the seeds before DMS's first start.
+	var mlay, mst Facts
+	var mchanged []string
+	if mailOn {
+		if mlay, err = s.mailLayout(o, mrendered, mv); err != nil {
+			return err
+		}
+		if mchanged, err = s.mailSync(o, mrendered, mcur); err != nil {
+			return err
+		}
+	}
+
 	reset := Facts{"acme_reset": "skipped", "acme_archive": ""}
 	if v.Acme.Reset {
 		if !restart {
@@ -390,6 +446,14 @@ func Run(c Ctx, o Options) (err error) {
 		"traefik_action", "traefik_health", "traefik_started_at", "traefik_image", "traefik_container")
 	if err != nil {
 		return err
+	}
+
+	// After Traefik is healthy: DMS reads mail.<primary>'s certificate out of
+	// acme.json, and kasbah-net is Traefik's to create.
+	if mailOn {
+		if mst, err = s.mailStart(o); err != nil {
+			return err
+		}
 	}
 
 	res, rc = s.send(marker.Render(m), "marker", o.Apps)
@@ -448,6 +512,9 @@ func Run(c Ctx, o Options) (err error) {
 		out.Info("        acme.json kept and NOT reset — nothing records which CA issued what is in it")
 	}
 	out.Info("  dashboard: https://traefik.%s (basic auth, credentials %s)", v.Domain, v.AuthOrigin)
+	if mailOn {
+		reportMail(out, o, mv, &mr, mchanged, mlay, mst)
+	}
 	out.Info("  marker: %s (%s)", markerPath, mk["marker"])
 	out.Info("  pointer: %s -> %s (%s)", Pointer, o.Apps, pt["pointer"])
 	return nil

@@ -503,18 +503,16 @@ and a re-run.
 
 DMS's Dovecot panics within 120 s if `postfix-accounts.cf` holds no account,
 so init seeds one. It **prompts on the workstation** for the password
-(`--postmaster-password=` for a script), hashes it locally with
-`openssl passwd -6`, and ships only the hash — hashed where it was typed and
-never sent in any other form, which is the rule the dashboard's bcrypt hash
-follows too. The two do not travel the same way: the bcrypt entry is rendered
-into `_shared.yml` and rsynced, while this hash is an argument to the remote
-seed step and so sits in that step's argv on the server for as long as it
-runs. What is exposed there is a hash.
+(`--postmaster-password=` for a script), hashes it locally (SHA512-crypt), and
+ships only the hash — hashed where it was typed and never sent in any other
+form, which is the rule the dashboard's bcrypt hash follows too. It travels on
+the server binary's stdin with its size and sha256, never in argv. It is seeded
+whenever `postfix-accounts.cf` holds no account line, comments-only included.
 
 A trailing carriage return in the value is stripped, not refused — the flag
 exists to be scripted, and a fleet script may have been saved on Windows. A
-password with a *newline* in it is refused outright, because
-`openssl passwd -6 -stdin` reads one line and would hash the part before it.
+password with a *newline* in it is refused outright: a password field in DMS's
+account file cannot hold one.
 
 It is asked **once**. A server that already has an account is neither asked
 about nor written to: that file holds every mailbox on the host, and a re-run

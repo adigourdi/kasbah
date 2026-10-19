@@ -74,12 +74,12 @@ func TestParse(t *testing.T) {
 }
 
 func TestHandoff(t *testing.T) {
-	for _, a := range []string{"--with-mail", "--with-backup", "--help", "-h", "--postmaster-password=x", "--backup-at=03:00", "--backup-repo-base=s3:x/", "--no-backup-env", "--backup-at"} {
+	for _, a := range []string{"--with-backup", "--help", "-h", "--backup-at=03:00", "--backup-repo-base=s3:x/", "--no-backup-env", "--backup-at"} {
 		if !Handoff([]string{"a@b", a}) {
 			t.Errorf("%s stays in Go", a)
 		}
 	}
-	for _, a := range []string{"--no-mail", "--no-backup", "--keep-acme", "--apps-path=/x", "--yes"} {
+	for _, a := range []string{"--no-mail", "--with-mail", "--postmaster-password=x", "--no-backup", "--keep-acme", "--apps-path=/x", "--yes"} {
 		if Handoff([]string{"a@b", a}) {
 			t.Errorf("%s goes to Bash", a)
 		}
@@ -87,6 +87,22 @@ func TestHandoff(t *testing.T) {
 	got := strings.Join(ForBash([]string{"a@b", "--no-mail"}, false, true), " ")
 	if got != "server init a@b --no-mail --no-mail --with-backup" {
 		t.Errorf("ForBash: %q", got)
+	}
+}
+
+func TestParseMail(t *testing.T) {
+	o, err := Parse([]string{"a@b", "--with-mail", "--postmaster-password=pw:x\r"})
+	if err != nil || o.Mail != prompt.Yes || o.Postmaster != "pw:x" {
+		t.Fatalf("%+v %v", o, err)
+	}
+	for _, c := range []struct{ args, want string }{
+		{"a@b|--with-mail|--no-mail", "--with-mail and --no-mail cannot both be given"},
+		{"a@b|--postmaster-password=", "--postmaster-password= must not be empty"},
+		{"a@b|--postmaster-password=a\nb", "must not contain a newline"},
+	} {
+		if _, err := Parse(strings.Split(c.args, "|")); !strings.Contains(errText(err), c.want) {
+			t.Errorf("%q: %v", c.args, err)
+		}
 	}
 }
 

@@ -1,5 +1,5 @@
-// Package serverinit is `kasbah server init` without mail or backups
-// (docs/server-setup.md); a run that wants either is the Bash tool's, whole.
+// Package serverinit is `kasbah server init` without backups
+// (docs/server-setup.md); a run that wants them is the Bash tool's, whole.
 package serverinit
 
 import (
@@ -33,17 +33,17 @@ type Options struct {
 	Staging    bool
 	AcmeChoice prompt.Given
 	Yes        bool
+	// Postmaster is --postmaster-password=, \r stripped. A secret: never echoed.
+	Postmaster string
 }
 
-// Handoff: --help, --with-mail/--with-backup, or a flag only mail or backups
-// read sends the whole command line to Bash, which validates it as before.
+// Handoff: --help, --with-backup, or a flag only backups read sends the
+// whole command line to Bash, which validates it as before.
 func Handoff(args []string) bool {
 	for _, a := range args {
-		name, _, _ := strings.Cut(a, "=")
 		switch {
-		case a == "-h", a == "--help", a == "--with-mail", a == "--with-backup",
-			a == "--no-backup-env", name == "--postmaster-password",
-			strings.HasPrefix(a, "--backup-"):
+		case a == "-h", a == "--help", a == "--with-backup",
+			a == "--no-backup-env", strings.HasPrefix(a, "--backup-"):
 			return true
 		}
 	}
@@ -84,6 +84,11 @@ func Parse(args []string) (Options, error) {
 			err = o.AcmeChoice.Set(prompt.No, acme, "server init")
 		case a == "--yes":
 			o.Yes = true
+		case a == "--with-mail":
+			err = o.Mail.Set(prompt.Yes, prompt.Feature("mail"), "server init")
+		case hasVal && name == "--postmaster-password":
+			o.Postmaster = strings.TrimSuffix(val, "\r")
+			err = CheckPostmaster(o.Postmaster)
 		case a == "--no-mail":
 			err = o.Mail.Set(prompt.No, prompt.Feature("mail"), "server init")
 		case a == "--no-backup":
@@ -121,8 +126,8 @@ func Parse(args []string) (Options, error) {
 	return o, nil
 }
 
-// ForBash is the command line handed to the Bash tool once the two feature
-// questions are answered here, so it asks neither again.
+// ForBash is the command line handed to the Bash tool, when backups are
+// wanted, once both feature questions are answered here: it asks neither again.
 func ForBash(args []string, mail, backup bool) []string {
 	out := append([]string{"server", "init"}, args...)
 	if mail {

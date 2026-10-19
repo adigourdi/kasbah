@@ -12,6 +12,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/tmpl"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
 
@@ -452,31 +453,6 @@ func Bcrypt(user, pass string) (string, error) {
 	return line, nil
 }
 
-var reToken = regexp.MustCompile(`__[A-Z0-9_]+__`)
-
-// renderOne substitutes __NAME__ tokens in one left-to-right pass; a token
-// with no value is a hard failure, looked for in the template only.
-func renderOne(tpl, label string, subst map[string]string) (string, error) {
-	var b strings.Builder
-	rest := tpl
-	for {
-		loc := reToken.FindStringIndex(rest)
-		if loc == nil {
-			break
-		}
-		tok := rest[loc[0]:loc[1]]
-		val, ok := subst[strings.Trim(tok, "_")]
-		if !ok {
-			return "", cli.Fail("internal: the %s template uses %s, which the renderer has no value for — templates and renderer are out of step", label, tok)
-		}
-		b.WriteString(rest[:loc[0]])
-		b.WriteString(val)
-		rest = rest[loc[1]:]
-	}
-	b.WriteString(rest)
-	return b.String(), nil
-}
-
 // Render renders the three templates under dir/traefik and parses each one:
 // nothing unparseable reaches the server.
 func Render(dir string, o Options, v Values) (map[string]string, error) {
@@ -503,15 +479,11 @@ func Render(dir string, o Options, v Values) (map[string]string, error) {
 			}
 			return nil, cli.Fail("could not read %s", src)
 		}
-		s, err := renderOne(string(tpl), rel, subst)
+		s, err := tmpl.Render(string(tpl), rel, subst)
 		if err != nil {
 			return nil, err
 		}
-		docs, perr := yamlx.Load([]byte(s))
-		if perr == nil && (len(docs) == 0 || !jv.Truthy(docs[len(docs)-1])) {
-			perr = fmt.Errorf("the document is empty, null or false")
-		}
-		if perr != nil {
+		if perr := tmpl.CheckYAML(s); perr != nil {
 			user, _, _ := strings.Cut(v.AuthEntry, ":")
 			return nil, cli.Fail("the rendered Traefik %s is not valid YAML — refusing to ship it", rel).Cont(
 				perr.Error(),

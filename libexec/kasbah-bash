@@ -132,14 +132,6 @@ dispatch_server() {
             . "$KASBAH_LIB_DIR/upgrade_traefik.sh"
             cmd_server_upgrade_traefik "$@"
             ;;
-        add-mail-domain)
-            . "$KASBAH_LIB_DIR/server_mail.sh"
-            cmd_server_add_mail_domain "$@"
-            ;;
-        mail-setup-guide)
-            . "$KASBAH_LIB_DIR/server_mail.sh"
-            cmd_server_mail_setup_guide "$@"
-            ;;
         -h|--help)
             cat <<EOF
 Usage: kasbah server <subcommand> USER@HOST [args...]

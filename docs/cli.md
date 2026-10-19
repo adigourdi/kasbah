@@ -33,8 +33,8 @@ Flags:
   removes it. See `mail.md` and `server-setup.md` → With mail.
 - `--postmaster-password=<pw>` — the password for `postmaster@<mail domain>`,
   which DMS is seeded with before its first start because Dovecot panics
-  without an account. Hashed on the workstation with `openssl passwd -6`;
-  only the hash crosses the wire. Asked for interactively when the flag is
+  without an account. Hashed on the workstation (SHA512-crypt);
+  only the hash crosses the wire, on stdin. Asked for interactively when the flag is
   absent, and **not asked at all** when the server already has an account —
   init never rewrites that file. A trailing carriage return is stripped, like
   `--domain`'s and `--email`'s; a newline is refused, because only the first
@@ -817,12 +817,12 @@ is operator property (see `backup.md`). It also **releases the project's claim o
 the shared mail stack**: the domain leaves `<apps>/mail/kasbah.yml`, read and
 re-rendered through `_sm_read_registry`, which folds `primary_domain` into the
 served list the way the writers do. **Five commands ask "does this stack serve
-X" and they share the rule, not yet one reader** — `drop` and `add-mail-domain`
-call that function; `deploy` calls the Go reader (`internal/mailreg`), which
-refuses the same way; `check --server` and `server status` each still carry
-their own copy, which on a **hand-edited** registry with no `primary_domain`
-falls back to an empty primary and continues. Phase 10 converges the last two
-on `internal/mailreg` (10.10), which refuses (decision D4). Two deliberate exclusions — a project claiming the
+X"** — `deploy`, `server init` and `add-mail-domain` read through the Go reader
+(`internal/mailreg`); `drop` through `_sm_read_registry`, which refuses the same
+registries; `check --server` and `server status` each still carry their own
+copy, which on a **hand-edited** registry with no `primary_domain`, a non-domain
+entry or a non-list `domains:` carries on. Phase 10 moves those three onto
+`internal/mailreg` (10.10, 10.12), which refuses (decision D4). Two deliberate exclusions — a project claiming the
 registry's `primary_domain` is refused (releasing it would unmake the stack for
 every other project), and docker-mailserver's own `postfix-virtual.cf` alias is
 left alone, with the `setup alias del` line printed instead. The reversal is

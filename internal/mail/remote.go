@@ -1,0 +1,426 @@
+package mail
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/adigourdi/kasbah/internal/remote"
+)
+
+// Remote is `kasbah remote mail <step> …`, run by the server binary: read
+// answers in one JSON object, the others in key=value lines; failures are
+// `remote: …` on stderr, exit 1.
+func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	fail := func(format string, a ...any) int {
+		fmt.Fprintf(stderr, "remote: "+format+"\n", a...)
+		return 1
+	}
+	usage := func() int {
+		return fail("usage: kasbah remote mail read APPS DATA | write APPS DATA SIZE SHA256 | layout APPS DATA SIZE SHA256 | start APPS TIMEOUT")
+	}
+	if len(args) == 0 {
+		return usage()
+	}
+	var err error
+	switch {
+	case args[0] == "read" && len(args) == 3:
+		err = json.NewEncoder(stdout).Encode(read(args[1], args[2]))
+	case args[0] == "write" && len(args) == 5:
+		err = remoteWrite(args[1], args[2], args[3], args[4], stdin, stdout)
+	case args[0] == "layout" && len(args) == 5:
+		err = remoteLayout(args[1], args[2], args[3], args[4], stdin, stdout)
+	case args[0] == "start" && len(args) == 3:
+		t, perr := strconv.Atoi(args[2])
+		if perr != nil {
+			return usage()
+		}
+		err = remoteStart(args[1], time.Duration(t)*time.Second, stdout, stderr)
+	default:
+		return usage()
+	}
+	if err == errSaid {
+		return 1
+	}
+	if err != nil {
+		return fail("%v", err)
+	}
+	return 0
+}
+
+// errSaid is a failure already explained on stderr.
+var errSaid = errors.New("")
+
+// ReadReport is everything any mail command reads off a server, in one round
+// trip, with nothing written. File bodies are base64, "" for a file that is
+// absent, not regular or not readable.
+type ReadReport struct {
+	// Dir is <apps>/mail: absent, dir or notdir.
+	Dir string `json:"dir"`
+	// Env is whether <apps>/mail/.env is a regular file.
+	Env bool `json:"env"`
+	// Accounts is postfix-accounts.cf: absent, empty (readable, no account
+	// line) or present — unreadable counts as present, since layout keeps it.
+	Accounts string `json:"accounts"`
+	Compose  string `json:"compose_b64"`
+	Registry string `json:"registry_b64"`
+	Fragment string `json:"fragment_b64"`
+	Aliases  string `json:"aliases_b64"`
+	// HostAddr is the local end of this ssh connection, "" when unknown.
+	HostAddr string `json:"host_addr"`
+}
+
+func b64(path string) string {
+	fi, err := os.Stat(path)
+	if err != nil || !fi.Mode().IsRegular() {
+		return ""
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// isFile is `[ -f ]`, symlinks followed.
+func isFile(p string) (exists, regular bool) {
+	fi, err := os.Stat(p)
+	if err != nil {
+		_, lerr := os.Lstat(p)
+		return lerr == nil, false
+	}
+	return true, fi.Mode().IsRegular()
+}
+
+// hasAccount is whether an account file holds a line that is neither blank
+// nor a comment; ok is false when it cannot be read.
+func hasAccount(path string) (has, ok bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false, false
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		l = strings.TrimSuffix(l, "\r")
+		if l != "" && !strings.HasPrefix(l, "#") {
+			return true, true
+		}
+	}
+	return false, true
+}
+
+func accountsPath(data string) string { return data + "/mail/dms/config/postfix-accounts.cf" }
+
+func read(apps, data string) ReadReport {
+	dir := apps + "/mail"
+	r := ReadReport{Dir: "absent", Accounts: "absent"}
+	if exists, _ := isFile(dir); exists {
+		r.Dir = "notdir"
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			r.Dir = "dir"
+		}
+	}
+	_, r.Env = isFile(dir + "/.env")
+	if _, regular := isFile(accountsPath(data)); regular {
+		r.Accounts = "empty"
+		if has, ok := hasAccount(accountsPath(data)); has || !ok {
+			r.Accounts = "present"
+		}
+	}
+	r.Compose = b64(dir + "/compose.yml")
+	r.Registry = b64(dir + "/kasbah.yml")
+	r.Fragment = b64(apps + "/traefik/dynamic/_mail.yml")
+	r.Aliases = b64(data + "/mail/dms/config/postfix-virtual.cf")
+	if f := strings.Fields(os.Getenv("SSH_CONNECTION")); len(f) >= 3 {
+		r.HostAddr = f[2]
+	}
+	return r
+}
+
+// WriteBody is add-mail-domain's payload: the whole re-rendered registry,
+// and the alias line to append ("" for none).
+type WriteBody struct {
+	Registry string `json:"registry"`
+	Alias    string `json:"alias"`
+}
+
+// remoteWrite replaces the registry whole and appends the alias to
+// docker-mailserver's postfix-virtual.cf — only ever appended, and the
+// failure to is reported rather than elevated past.
+func remoteWrite(apps, data, size, sum string, stdin io.Reader, stdout io.Writer) error {
+	reg := apps + "/mail/kasbah.yml"
+	raw, err := remote.Payload(stdin, size, sum)
+	if err != nil {
+		return fmt.Errorf("%s: %v", reg, err)
+	}
+	var b WriteBody
+	if err := json.Unmarshal(raw, &b); err != nil || b.Registry == "" {
+		return fmt.Errorf("%s: the payload is not a mail write", reg)
+	}
+	if err := remote.Install(reg, []byte(b.Registry), 0o644); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, "registry=written")
+
+	cfg := data + "/mail/dms/config"
+	aliases := cfg + "/postfix-virtual.cf"
+	state := "skipped"
+	if b.Alias != "" {
+		state = "failed"
+		exists, regular := isFile(aliases)
+		if fi, err := os.Stat(cfg); err != nil || !fi.IsDir() {
+			state = "noconfig"
+		} else if exists && !regular {
+			state = "notfile"
+		} else if appendLine(aliases, b.Alias) == nil {
+			state = "added"
+		}
+	}
+	fmt.Fprintf(stdout, "alias=%s\n", state)
+	return nil
+}
+
+// appendLine adds line, first ending a last line that has no newline.
+func appendLine(path, line string) error {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o666)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	lead := ""
+	if fi, err := f.Stat(); err == nil && fi.Size() > 0 {
+		last := make([]byte, 1)
+		if _, err := f.ReadAt(last, fi.Size()-1); err != nil {
+			return err
+		}
+		if last[0] != '\n' {
+			lead = "\n"
+		}
+	}
+	_, err = f.WriteString(lead + line + "\n")
+	return err
+}
+
+// LayoutBody is init's payload to the layout step: the rendered .env and
+// Rspamd override, and the postmaster account line ("" when the server
+// already has one). The account is a hash, and travels here rather than argv.
+type LayoutBody struct {
+	Env     string `json:"env"`
+	DKIM    string `json:"dkim"`
+	Account string `json:"account"`
+}
+
+// envKeys are the .env keys kasbah owns; every other line is the operator's.
+var envKeys = []string{"MAIL_HOSTNAME", "DOMAIN", "DATA_PATH"}
+
+func ownedKey(line string) string {
+	for _, k := range envKeys {
+		if strings.HasPrefix(line, k+"=") {
+			return k
+		}
+	}
+	return ""
+}
+
+// MergeEnv rewrites kasbah's three keys in current by name, from the
+// rendered default, copies every other line through untouched, and appends
+// an owned key current lacks.
+func MergeEnv(current, rendered string) string {
+	want := map[string]string{}
+	for _, l := range strings.Split(rendered, "\n") {
+		l = strings.TrimSuffix(l, "\r")
+		if k := ownedKey(l); k != "" {
+			want[k] = l[len(k)+1:]
+		}
+	}
+	var b strings.Builder
+	seen := map[string]bool{}
+	lines := strings.Split(current, "\n")
+	if strings.HasSuffix(current, "\n") || current == "" {
+		lines = lines[:len(lines)-1]
+	}
+	for _, l := range lines {
+		if k := ownedKey(strings.TrimSuffix(l, "\r")); k != "" {
+			l = k + "=" + want[k]
+			seen[k] = true
+		}
+		b.WriteString(l + "\n")
+	}
+	for _, k := range envKeys {
+		if !seen[k] {
+			b.WriteString(k + "=" + want[k] + "\n")
+		}
+	}
+	return b.String()
+}
+
+// remoteLayout is the mail tree, the .env, and the two seeds, before DMS can
+// ever have run: .env merged by key, the DKIM override written only where
+// absent, the account seed replacing only a file with no account line.
+func remoteLayout(apps, data, size, sum string, stdin io.Reader, stdout io.Writer) error {
+	dir := apps + "/mail"
+	raw, err := remote.Payload(stdin, size, sum)
+	if err != nil {
+		return fmt.Errorf("%s: %v", dir, err)
+	}
+	var b LayoutBody
+	if err := json.Unmarshal(raw, &b); err != nil || b.Env == "" || b.DKIM == "" {
+		return fmt.Errorf("%s: the payload is not a mail layout", dir)
+	}
+	mdata := data + "/mail"
+	// Bind-mount sources, which Docker would make root's. snappymail/ alone:
+	// SnappyMail takes its tree over at 750 and builds domains/ itself.
+	for _, d := range []string{dir, mdata + "/dms/mail-data", mdata + "/dms/mail-state", mdata + "/dms/mail-logs",
+		mdata + "/dms/config/rspamd/override.d", mdata + "/snappymail"} {
+		if err := os.MkdirAll(d, 0o777); err != nil {
+			return fmt.Errorf("could not create %s", d)
+		}
+	}
+
+	env := dir + "/.env"
+	exists, regular := isFile(env)
+	switch {
+	case exists && !regular:
+		return fmt.Errorf("%s exists and is not a regular file", env)
+	case !exists:
+		if err := remote.Install(env, []byte(b.Env), 0o600); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, "mail_env=created")
+	default:
+		cur, err := os.ReadFile(env)
+		if err != nil {
+			return fmt.Errorf("could not read %s", env)
+		}
+		merged := MergeEnv(string(cur), b.Env)
+		if merged == string(cur) {
+			fmt.Fprintln(stdout, "mail_env=unchanged")
+		} else {
+			if err := remote.Install(env, []byte(merged), 0o600); err != nil {
+				return err
+			}
+			fmt.Fprintln(stdout, "mail_env=rewritten")
+		}
+	}
+	// Every run: the mode is a fact about the file, not about this run.
+	if err := os.Chmod(env, 0o600); err != nil {
+		return fmt.Errorf("could not set mode 600 on %s", env)
+	}
+
+	accounts := accountsPath(data)
+	exists, regular = isFile(accounts)
+	if exists && !regular {
+		return fmt.Errorf("%s exists and is not a regular file", accounts)
+	}
+	has, readable := hasAccount(accounts)
+	if b.Account == "" || (exists && (has || !readable)) {
+		fmt.Fprintln(stdout, "mail_account=kept")
+	} else {
+		if err := remote.Install(accounts, []byte(b.Account+"\n"), 0o600); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, "mail_account=seeded")
+	}
+
+	dkim := mdata + "/dms/config/rspamd/override.d/dkim_signing.conf"
+	exists, regular = isFile(dkim)
+	switch {
+	case exists && !regular:
+		return fmt.Errorf("%s exists and is not a regular file", dkim)
+	case regular:
+		fmt.Fprintln(stdout, "mail_dkim_seed=kept")
+	default:
+		if err := remote.Install(dkim, []byte(b.DKIM), 0o644); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, "mail_dkim_seed=seeded")
+	}
+	fmt.Fprintln(stdout, "mail_layout=done")
+	return nil
+}
+
+func inspect(id, format string) (string, error) {
+	out, err := exec.Command("docker", "inspect", "-f", format, id).Output()
+	return strings.TrimRight(string(out), "\n"), err
+}
+
+// remoteStart is `compose up -d` and a wait for SnappyMail alone. DMS is
+// reported, never waited for: without its certificate it crashloops, forever
+// where mail.<primary> does not resolve publicly.
+func remoteStart(apps string, timeout time.Duration, stdout, stderr io.Writer) error {
+	dir := apps + "/mail"
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return fmt.Errorf("could not enter %s", dir)
+	}
+	dc := func(args ...string) error {
+		cmd := exec.Command("docker", append([]string{"compose", "-p", Project}, args...)...)
+		cmd.Dir = dir
+		cmd.Stdout, cmd.Stderr = stderr, stderr
+		return cmd.Run()
+	}
+	cid := func(svc string) string {
+		cmd := exec.Command("docker", "compose", "-p", Project, "ps", "-a", "-q", svc)
+		cmd.Dir = dir
+		out, _ := cmd.Output()
+		return strings.TrimSpace(string(out))
+	}
+	if err := dc("up", "-d"); err != nil {
+		return fmt.Errorf("docker compose -p %s up -d failed in %s", Project, dir)
+	}
+	sm := cid("mail-snappymail")
+	if sm == "" {
+		return errors.New("compose reported no mail-snappymail container after up -d")
+	}
+	dms := cid("mail-dms")
+	if dms == "" {
+		return errors.New("compose reported no mail-dms container after up -d")
+	}
+	health := func(id string) string {
+		h, err := inspect(id, "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}")
+		if err != nil {
+			return "gone"
+		}
+		return h
+	}
+	diagnose := func(msg string, logs bool) error {
+		fmt.Fprintf(stderr, "remote: %s\n", msg)
+		dc("ps", "-a")
+		if logs {
+			dc("logs", "--no-color", "--tail", "60", "mail-snappymail")
+		}
+		return errSaid
+	}
+	deadline := time.Now().Add(timeout)
+	h := ""
+	for {
+		h = health(sm)
+		if h == "healthy" {
+			break
+		}
+		if h == "none" {
+			return diagnose("the mail-snappymail container declares no healthcheck — compose.yml lost it", false)
+		}
+		if running, err := inspect(sm, "{{.State.Running}}"); err != nil || running != "true" {
+			return diagnose(fmt.Sprintf("mail-snappymail is not running (health %s) — it exited instead of coming up", h), true)
+		}
+		if !time.Now().Before(deadline) {
+			return diagnose(fmt.Sprintf("mail-snappymail did not report healthy within %ds (last health: %s)", int(timeout/time.Second), h), true)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	state, _ := inspect(dms, "{{.State.Status}}")
+	restarts, _ := inspect(dms, "{{.RestartCount}}")
+	image, _ := inspect(dms, "{{.Config.Image}}")
+	var out bytes.Buffer
+	fmt.Fprintf(&out, "mail_snappymail_health=%s\nmail_dms_state=%s\nmail_dms_health=%s\nmail_dms_restarts=%s\nmail_dms_image=%s\n",
+		h, state, health(dms), restarts, image)
+	_, err := stdout.Write(out.Bytes())
+	return err
+}

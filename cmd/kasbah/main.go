@@ -18,6 +18,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/handoff"
 	"github.com/adigourdi/kasbah/internal/history"
 	"github.com/adigourdi/kasbah/internal/initproject"
+	"github.com/adigourdi/kasbah/internal/mail"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
@@ -51,6 +52,9 @@ func main() {
 			}
 			if len(args) > 1 && args[1] == "init" {
 				os.Exit(serverinit.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
+			}
+			if len(args) > 1 && args[1] == "mail" {
+				os.Exit(mail.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
 			}
 			if len(args) > 1 && args[1] == "vlog" {
 				os.Exit(vlog.Remote(args[2:], os.Stdout, os.Stderr))
@@ -91,10 +95,15 @@ func main() {
 			}
 			atexit.Exit(code)
 		case "server":
-			// `server init` without mail or backups; a run that wants either,
-			// once asked, goes to the Bash tool with both answers spelled out.
+			// `server init` without backups; a run that wants them, once
+			// asked, goes to the Bash tool with both answers spelled out.
 			if len(args) > 1 && args[1] == "init" && !serverinit.Handoff(args[2:]) {
 				args = serverInitCmd(args[2:])
+			}
+			if len(args) > 1 && (args[1] == "add-mail-domain" || args[1] == "mail-setup-guide") {
+				o, err := mail.Parse(args[1], args[2:])
+				atexit.HandleSignals()
+				atexit.Exit(mailCmd(o, err))
 			}
 		case "check":
 			// Plain `check` and --fix [--yes]; anything with --server, --help
@@ -166,7 +175,7 @@ func remoteCmd(args []string) int {
 	if len(args) > 0 {
 		sub = args[0]
 	}
-	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, vlog, init", sub))
+	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, vlog, init, mail", sub))
 }
 
 // ensureServer is `kasbah __ensure-server [--apps-path=<dir>] USER@HOST`: the
@@ -229,8 +238,12 @@ func serverInitCmd(args []string) []string {
 	if err != nil {
 		atexit.Exit(out.Report(err))
 	}
-	if mail || backup {
+	if backup {
 		return serverinit.ForBash(args, mail, backup)
+	}
+	o.Mail = prompt.No
+	if mail {
+		o.Mail = prompt.Yes
 	}
 	code := out.Report(serverInit(out, p, o))
 	if c := atexit.Interrupted(); c != 0 {
@@ -253,25 +266,63 @@ func serverInit(out *cli.Output, p *prompt.Prompter, o serverinit.Options) error
 	if err != nil {
 		return cli.Fail("%v", err)
 	}
-	// The dispatcher's rule: templates travel with the library directory.
-	tpl := os.Getenv("KASBAH_TEMPLATE_DIR")
-	if tpl == "" {
-		lib := os.Getenv("KASBAH_LIB_DIR")
-		if lib == "" {
-			lib = home
-		}
-		tpl = filepath.Join(lib, "templates")
-	}
 	return serverinit.Run(serverinit.Ctx{
 		Out:       out,
 		Prompter:  p,
 		Version:   v,
-		Templates: tpl,
+		Templates: templatesDir(home),
 		Self:      remote.Self(build),
 		Local:     func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) },
 		Hash:      serverinit.Bcrypt,
 		Now:       time.Now,
 	}, o)
+}
+
+// templatesDir is the dispatcher's rule: templates travel with the library
+// directory.
+func templatesDir(home string) string {
+	if tpl := os.Getenv("KASBAH_TEMPLATE_DIR"); tpl != "" {
+		return tpl
+	}
+	lib := os.Getenv("KASBAH_LIB_DIR")
+	if lib == "" {
+		lib = home
+	}
+	return filepath.Join(lib, "templates")
+}
+
+// mailCmd is `server add-mail-domain` and `server mail-setup-guide`.
+func mailCmd(o mail.Options, err error) int {
+	out := cli.Std()
+	if err == mail.ErrHelp {
+		if o.Cmd == "add-mail-domain" {
+			fmt.Fprint(out.Stdout, mail.AddUsage)
+		} else {
+			fmt.Fprint(out.Stdout, mail.GuideUsage)
+		}
+		return cli.ExitOK
+	}
+	if err != nil {
+		return out.Report(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+	}
+	home, checkout, err := handoff.Home(exe, os.Getenv)
+	if err != nil {
+		return out.Report(cli.Fail("%v", err))
+	}
+	local := func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }
+	code := out.Report(mail.Run(mail.Ctx{
+		Out:       out,
+		Templates: templatesDir(home),
+		Dial:      mail.DialSSH(remote.Self(build), local),
+	}, o))
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
 }
 
 // kasbahVersion is VERSION as the Bash dispatcher reads it: from

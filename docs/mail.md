@@ -106,9 +106,11 @@ Both values are read back off the server on every run rather than
 regenerated, so a hand edit to `primary_domain` survives and is how the MX
 hostname is moved. On a first run it defaults to `--domain`'s apex.
 
-Reading it from the workstation means base64-ing the file back over SSH and
-parsing it with the local `yq`: the VPS has no `yq`, `jq` or `python3`, and
-keeping it that way is deliberate.
+It is read by the kasbah binary — on the server (`kasbah remote mail read`) or
+on the workstation from the bytes that binary returns — and parsed by
+`internal/mailreg`, the one reader every command uses: a registry with no
+`primary_domain`, an entry that is not a domain, or a `domains:` that is not a
+list is refused by name. The VPS needs no `yq`, `jq` or `python3`.
 
 For each additional domain:
 - DNS needs MX → `mail.<primary>` (apps don't need their own MX record).
@@ -198,8 +200,8 @@ What kasbah does with it:
 All three are implemented, and **none of them can stop a deploy**: every
 outcome here is a warning, because an unmet claim costs mail and not the site.
 
-Step 2 reads the registry the only way anything reads it — base64 back over ssh,
-parsed with the workstation's yq — and names
+Step 2 reads the registry the way every command reads it — through the kasbah
+binary and `internal/mailreg` — and names
 `kasbah server add-mail-domain` when the answer is no.
 
 **Step 3 is conditioned on step 2, and that is the whole of the condition.** A
@@ -260,7 +262,7 @@ the whole of what makes them work, and is asserted rather than assumed.
   would break signing.
 - **Postmaster account** — DMS's Dovecot panics within 120s if no account
   exists in `postfix-accounts.cf`. `kasbah server init --with-mail` prompts
-  for the postmaster password, hashes it locally (`openssl passwd -6`), and
+  for the postmaster password, hashes it locally (SHA512-crypt, in Go), and
   seeds `postmaster@<primary>|{SHA512-CRYPT}$6$…` before starting DMS — the
   exact line DMS's own file provisioner writes. Only the hash crosses the
   wire. **Written only onto a file with no account in it**: that file holds
@@ -337,12 +339,10 @@ and came up healthy with **0 restarts**. The original project's stack, which han
 router on a container, cannot do that and records the 30–90 s crashloop as
 normal. It is still normal here; it is just no longer necessary.
 
-The ordering that buys this is asserted in `lib/server_init.sh` and pinned in
+The ordering that buys this is in `internal/serverinit` and pinned in
 `tests/integration/server_init_mail_test.sh`, which compares the moment
 `_mail.yml` landed on the server against Traefik's own `StartedAt` — the
-fragment's *ctime*, because `rsync -pt` preserves the mtime it was rendered
-with on the workstation and that is earlier than the Traefik start whichever
-order the two steps run in.
+fragment's *ctime*, which is when it landed whatever its mtime says.
 
 Init reports DMS's state and **does not wait for it**, deliberately. If
 `mail.<domain>` does not resolve to the host from the public internet the

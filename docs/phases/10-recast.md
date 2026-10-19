@@ -474,13 +474,27 @@ overwrites `caServer`.
 registry. **Lighter spec — re-read `docs/mail.md` and Phase 7 findings first.**
 
 **Deliverables**
-- [ ] The mail half of `server init` in Go; the init seam shrinks to backup only
-- [ ] `add-mail-domain`, `mail-setup-guide` in Go
-- [ ] One mail-registry reader for every command (settles D4) — `internal/mailreg`,
-      already used by `deploy`
-- [ ] `server_init_mail_test.sh`, `server_mail_test.sh` green
+- [x] The mail half of `server init` in Go; the init seam shrinks to backup only —
+      a Bash-vs-Go snapshot of a `--with-mail` init matches but for the binary;
+      the postmaster hash is SHA512-crypt in Go (90/90 against `openssl passwd -6`),
+      sent on stdin, never in argv; seeded whenever the accounts file holds no
+      account line (Bash kept a comments-only file and left DMS accountless)
+- [x] `add-mail-domain`, `mail-setup-guide` in Go — the guide byte-identical to
+      Bash's; the stack's primary given as a claim is a no-op
+- [x] One mail-registry reader for every command (settles D4) — `internal/mailreg`,
+      already used by `deploy` — now init, `add-mail-domain` and `deploy`; `drop`
+      (Bash `_sm_read_registry`, refusing alike) until 10.12, `check --server` and
+      `server status` (own copies, lenient) until 10.10. **Deliberate:** the primary
+      is always listed first, reordering a hand-edited registry once
+- [x] `server_init_mail_test.sh`, `server_mail_test.sh` green
 
-**Verify on:** rig; `vps` per the ruling below.
+**Verify on:** rig; `vps` per the ruling below. **Observed 2026-10-19:** the old
+untracked stack taken down (`docker compose -p mail down`, data kept — the accounts
+file and `acme.json` byte-identical before and after); Go `server init --with-mail
+--no-backup` on `vps` rc 0 in 13.8 s, registry written with the apex as primary,
+"postmaster kept"; DMS healthy at the first check with 0 restarts, a local test
+message delivered; webmail and gallery 200 on the kept certificates. `vps` has no
+DKIM keys yet (the guide's manual step 2), so its outbound mail is unsigned.
 
 **Ruling (2026-10-19), `vps` mail:** take the old mail stack down there
 (`docker compose down` in `/apps/mail`, data kept), and re-init a fresh one with
