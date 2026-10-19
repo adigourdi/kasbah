@@ -291,13 +291,13 @@ assert '[ ! -f "$projdir/.kasbah/state.json" ]' \
     "and writes no project state (docs/project-manifest.md: only on success)"
 
 # What it *did* ship first, and the reason the order is that way round: the
-# generator the message recommends is on the server, executable, and it is
-# lib/env.sh byte for byte rather than a second copy that agrees today.
-helper="$apps/$project/scripts/setup-env.sh"
-assert '[ "$(rig_ssh "stat -c %a $helper" 2>/dev/null)" = "755" ]' \
-    "the env helper landed executable (got '$(rig_ssh "stat -c %a $helper" 2>/dev/null)')"
-assert '[ "$(rig_ssh "sha256sum $helper | cut -d\" \" -f1" 2>/dev/null)" = "$(sha256sum "$repo_dir/lib/env.sh" | cut -d" " -f1)" ]' \
-    "and it is lib/env.sh itself — the same bytes \`kasbah check\` sources locally"
+# generator the message recommends is the server's own kasbah binary, which this
+# run ensured, and no shell helper is shipped beside the project any more.
+srvbin="$apps/.kasbah/bin/kasbah"
+assert '[ "$(rig_ssh "stat -c %a $srvbin" 2>/dev/null)" = "755" ]' \
+    "the server binary that renders .env is there and executable (got '$(rig_ssh "stat -c %a $srvbin" 2>/dev/null)')"
+assert '[ "$(rig_ssh "[ -e $apps/$project/scripts ] && echo present || echo absent" 2>/dev/null)" = "absent" ]' \
+    "and no scripts/ directory was shipped — the server's binary runs the deploy"
 assert '[ "$(rig_ssh "[ -e $apps/$project/.env.prod.example ] && echo present || echo absent" 2>/dev/null)" = "present" ]' \
     "with the template beside it, which is what the setup prompts from"
 
@@ -355,10 +355,10 @@ fi
 # writes only what the project's own template declares, and injection is what
 # has to produce the rest. A .env with them already in it would make the
 # assertions below pass against a kasbah that injected nothing at all.
-setup_out=$(rig_ssh "cd $apps/$project && ./scripts/setup-env.sh $apps/$project" </dev/null 2>&1); setup_rc=$?
+setup_out=$(rig_setup_env "$apps/$project" </dev/null 2>&1); setup_rc=$?
 rendered=$(rig_ssh "cat $apps/$project/.env" 2>/dev/null)
 if [ "$setup_rc" -ne 0 ] || ! grep -qF "DEMO_GREETING=hello from the demo fixture" <<<"$rendered"; then
-    echo "error: the shipped setup-env.sh did not render $apps/$project/.env (rc $setup_rc)" >&2
+    echo "error: the server's env setup did not render $apps/$project/.env (rc $setup_rc)" >&2
     sed 's/^/       | /' <<<"$setup_out" >&2
     sed 's/^/       > /' <<<"$rendered" >&2
     exit 2
@@ -520,7 +520,7 @@ if [ "${#missing[@]}" -gt 0 ]; then
 fi
 
 assert '[ "${got[d_project]}" = "yes" ]'  "$apps/$project is a directory (got '${got[d_project]}')"
-assert '[ "${got[d_scripts]}" = "yes" ]'  "$apps/$project/scripts is a directory (got '${got[d_scripts]}')"
+assert '[ "${got[d_scripts]}" = "no" ]'  "no $apps/$project/scripts: nothing is shipped into it (got '${got[d_scripts]}')"
 assert '[ "${got[d_backups]}" = "yes" ]'  "$apps/$project/backups is a directory (got '${got[d_backups]}')"
 assert '[ "${got[d_data]}" = "yes" ]'     "$data/$project is a directory (got '${got[d_data]}')"
 assert '[ "${got[f_compose]}" = "yes" ]' \
@@ -530,12 +530,8 @@ assert '[ "${got[f_unrenamed]}" = "no" ]' \
 assert '[ "${got[f_envexample]}" = "yes" ]' "the plain sync entry landed (got '${got[f_envexample]}')"
 assert '[ "${got[f_page]}" = "yes" ]' \
     "and the trailing-slash entry recursed: site/index.html is there (got '${got[f_page]}')"
-assert '[ "${got[f_helper]}" = "yes" ]'   "remote-deploy.sh was shipped (got '${got[f_helper]}')"
-assert '[ "${got[helper_mode]}" = "755" ]' \
-    "and landed executable — kasbah runs it over ssh (got '${got[helper_mode]}')"
-assert '[ "${got[f_envhelper]}" = "yes" ]'    "setup-env.sh was shipped too (got '${got[f_envhelper]}')"
-assert '[ "${got[envhelper_mode]}" = "755" ]' \
-    "and it is executable as well (got '${got[envhelper_mode]}')"
+assert '[ "${got[f_helper]}" = "no" ]'   "no remote-deploy.sh was rendered — the engine is \`kasbah remote deploy\` (got '${got[f_helper]}')"
+assert '[ "${got[f_envhelper]}" = "no" ]'    "and no setup-env.sh shipped (got '${got[f_envhelper]}')"
 
 # --- The KASBAH_* managed block, written from the marker -----------------------------
 # The seam this phase replaces. Until now the two limits were seeded into .env by
@@ -630,7 +626,7 @@ if rig_ssh "cp ~/.bashrc ~/.bashrc.kasbah-unit-d && printf 'export COMPOSE_PROJE
     bashrc_planted=yes
     planted=$(rig_ssh "bash -s" <<<'echo "${COMPOSE_PROJECT_NAME:-unset}"' 2>/dev/null)
     assert '[ "$planted" = "kasbah-not-demo" ]' \
-        "COMPOSE_PROJECT_NAME reaches the shell remote-deploy.sh runs in (got '$planted') — else this case proves nothing"
+        "COMPOSE_PROJECT_NAME reaches the shell the server binary runs in (got '$planted') — else this case proves nothing"
 
     deploy; rc=$?
     # This exit status is the assertion that catches a missing -p: without it

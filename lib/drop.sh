@@ -358,7 +358,8 @@ kv backups_count "$count"
 kv fragment_state "$(state_of "$apps/traefik/dynamic/$name.yml")"
 
 # Whether a deploy of this project is running right now. `.deploy.lock` is
-# created by templates/remote-deploy.sh and by nothing else, so a file that is
+# created by a deploy or rollback (`kasbah remote deploy`, or
+# templates/remote-deploy.sh) and by nothing else, so a file that is
 # not there is a project nothing holds — probed rather than created, because a
 # read step must not write into the tree it is reading.
 lock="$dir/.deploy.lock"

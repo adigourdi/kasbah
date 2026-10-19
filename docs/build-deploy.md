@@ -161,16 +161,14 @@ below). The only differences:
 
 ```
 1. Open SSH ControlMaster (see "SSH multiplexing" below).
-2. Check SSH reachability (fail fast).
+2. Check SSH reachability (fail fast), and ship the kasbah binary to
+   <apps>/.kasbah/bin/kasbah if the server's is absent or older.
 3. Resolve version = HEAD's v-tag. Fail if HEAD isn't tagged.
-4. Ensure remote dirs exist:
-     /apps/<name>/, scripts/, backups/, /apps/data/<name>/
-5. Rsync from working tree:
-     - every path in manifest's `sync:` list → /apps/<name>/
-     - setup-env.sh and remote-deploy.sh (kasbah-owned helpers, overwritten
-       on every deploy to match installed kasbah version) → /apps/<name>/scripts/
-   The Traefik fragment is deliberately **not** shipped here — see step 8h.
-6. Env drift check (via setup-env.sh on VPS):
+4. Ensure remote dirs exist (`kasbah remote deploy prepare`):
+     /apps/<name>/, backups/, /apps/data/<name>/
+5. Rsync from working tree: every path in manifest's `sync:` list → /apps/<name>/.
+   The Traefik fragment is deliberately **not** shipped here — see step 9.
+6. Env drift check (`kasbah remote setup-env` on the VPS):
      MISSING .env         → run interactive setup
      DRIFT from template  → prompt: re-run setup / continue / abort
      OK                   → continue
@@ -181,7 +179,8 @@ below). The only differences:
      look for a mail stack on the server   # today: warn and continue when absent
      verify claimed domain is listed in /apps/mail/kasbah.yml   # warns, never stops
      copy snappymail_domain pre-seed if file missing on VPS   # only when the claim was met
-8. SSH into VPS and run scripts/remote-deploy.sh deploy <version>:
+8. Run `kasbah remote deploy run` on the VPS, the manifest's hooks, backup,
+   health and built-image list passed as JSON on stdin:
      a. If manifest has `backup:` AND `backup.check` exits 0 → run backup
         against currently-running (previous version) containers. Rotate.
      b. Run pre-deploy hooks against currently-running containers.
@@ -193,8 +192,8 @@ below). The only differences:
         below).
      h. Print the run's report on stdout — see "The remote report" below.
 9. Rsync traefik-dynamic.yml → /apps/traefik/dynamic/<name>.yml. Done by the
-   *local* side once remote-deploy.sh has returned 0 — the file is on the
-   workstation, and the ordering is the point (see below).
+   *local* side once the engine has returned 0 with a valid report — the file
+   is on the workstation, and the ordering is the point (see below).
 10. Compute changelog (git log <prev-deploy>..<new>) and print it locally.
 ```
 
@@ -293,15 +292,15 @@ codebase invokes `ssh`, `rsync` or `scp` directly.
 Append-only, space-delimited. Lives at `/apps/<name>/versions.log` on the VPS:
 
 ```
-<iso-timestamp> <action> <version> <backup-path-or-"no-backup"> kasbah=<version> digest=<image@sha256,…|->
+<iso-timestamp> <action> <version> <backup-path-or-"no-backup"> kasbah=<version> digest=<sha256:…,…|->
 ```
 
 Example:
 
 ```
-2026-04-12T01:00:00+00:00 deploy 1.2.0 no-backup kasbah=0.1.0 digest=shop-php@sha256:9f2a…
-2026-04-15T14:30:00+00:00 deploy 1.3.0 backups/pre-deploy-20260415-143000.sql.gz kasbah=0.1.0 digest=shop-php@sha256:c81b…
-2026-04-17T09:15:00+00:00 rollback 1.2.0 no-backup kasbah=0.1.0 digest=shop-php@sha256:9f2a…
+2026-04-12T01:00:00+00:00 deploy 1.2.0 no-backup kasbah=0.1.0 digest=sha256:9f2a…
+2026-04-15T14:30:00+00:00 deploy 1.3.0 backups/pre-deploy-20260415-143000.sql.gz kasbah=0.1.0 digest=sha256:c81b…
+2026-04-17T09:15:00+00:00 rollback 1.2.0 no-backup kasbah=0.1.0 digest=sha256:9f2a…
 ```
 
 Fields:
@@ -309,9 +308,13 @@ Fields:
 - `version` — the semver that ran.
 - `backup` — relative path to backup file, or `no-backup`.
 - `kasbah=...` — version of kasbah that wrote the entry.
-- `digest=...` — content digest of each built image that went live
-  (comma-joined), or `-` for stock-only projects. Provenance: answers
-  "which image actually ran" even after a rebuild of the same tag.
+- `digest=...` — the image id the server's docker reports
+  (`docker image inspect {{.Id}}`) for each built image that went live,
+  comma-joined, or `-` for stock-only projects. Provenance: answers "which
+  image actually ran" even after a rebuild of the same tag. What the id
+  hashes depends on the server's image store — the config under overlay2,
+  the manifest under the containerd store (the real host runs the latter) —
+  so compare it only with ids from the same server. No registry is involved.
 
 The four positional fields are **frozen forever** — never reordered, never
 removed. New data lands as `key=value` pairs appended at the end.
@@ -530,12 +533,16 @@ Does NOT restore:
   use `pre-rollback` hooks.
 - Anything externally provisioned (DNS, API keys, mailbox contents).
 
-## Helper scripts on the VPS
+## The engine on the VPS
 
-`kasbah deploy` and `kasbah rollback` sync two scripts per project:
+`kasbah deploy` runs the VPS side in the kasbah binary itself —
+`kasbah remote deploy run`, the manifest's data passed as JSON on stdin — and
+ships no script. `kasbah rollback` and `kasbah deploy X.Y.Z` still sync two
+scripts per project until they are Go (Phase 10, 10.8):
 
 - `setup-env.sh` — rich env template renderer (see `env-template.md`).
-- `remote-deploy.sh` — orchestrates the VPS-side flow. Modes:
+- `remote-deploy.sh` — orchestrates the VPS-side flow. Modes (the Go engine
+  has the same two):
   - `deploy <version>`  — backup → pre-deploy → retag :current → up → health → post-deploy.
   - `rollback <version>` — pre-rollback → retag :current → up → health → post-rollback.
 
@@ -545,17 +552,14 @@ Does NOT restore:
 
 ### The remote report
 
-`remote-deploy.sh` writes nothing to stdout for a human. Its progress, its
-warnings and every command it runs narrate on **stderr**, and stdout carries
-exactly one thing: a `key=value` report, one pair per line, printed as the
-run's last act — *after* the `versions.log` entry is appended.
+The engine writes nothing to stdout for a human. Its progress, its warnings
+and every command it runs narrate on **stderr**, and stdout carries exactly
+one thing: the report, printed as the run's last act — *after* the
+`versions.log` entry is appended. The Go engine prints it as one JSON line;
+`remote-deploy.sh` as `key=value` pairs, one per line.
 
 ```
-version=1.3.0
-prev_version=1.2.0
-deployed_before=yes
-backup=backups/pre-deploy-20260419-101500.sql.gz
-digest=sha256:9f2a…,sha256:c81b…
+{"version":"1.3.0","prev_version":"1.2.0","deployed_before":true,"backup":"backups/pre-deploy-20260419-101500.sql.gz","digest":"sha256:9f2a…,sha256:c81b…"}
 ```
 
 That placement makes it two things at once. It is how the local side learns
@@ -622,13 +626,14 @@ attempted.
   `<project>/.deploy.lock`, held on its own file descriptor — flocking the
   directory path itself is not portable.
 
-These two scripts are the only kasbah-owned **scripts** in a project directory
-on the VPS (every file kasbah writes there is listed in `files.md`), and they are overwritten on every deploy / rollback so they match
-the kasbah version driving the operation. `remote-deploy.sh` is rendered per
-deploy rather than copied: the manifest never reaches the server, so the data
-it carries — hooks, backup, health, the built-image list — is pre-rendered into
-a marked block inside it. `.deploy.lock` is kasbah's too, but it is created
-rather than shipped, and its contents are never read.
+Those two scripts are the only kasbah-owned **scripts** in a project directory
+on the VPS (every file kasbah writes there is listed in `files.md`), written by
+rollback and versioned deploys, overwritten each time to match the kasbah
+driving them. The manifest never reaches the server: the Go engine receives its
+data on stdin, and `remote-deploy.sh` has it pre-rendered into a marked block.
+`.deploy.lock` is kasbah's too — created, never shipped, its contents never
+read — and both engines `flock(2)` the same file, so a Bash rollback and a Go
+deploy exclude each other.
 
 ## What this intentionally skips
 

@@ -60,6 +60,12 @@ func (s *SSH) Marker() (*marker.Marker, error) {
 	return marker.Validate(body, path, s.target(), init)
 }
 
+// Bin is the server binary's path, known once Marker has run.
+func (s *SSH) Bin() string { return s.bin }
+
+// Bounded is bounded, for the other commands riding this session.
+func (s *SSH) Bounded(args ...string) []string { return s.bounded(args...) }
+
 // bounded is `kasbah remote ARGS…` on the server under a time limit, as every
 // non-interactive run of the server binary is.
 func (s *SSH) bounded(args ...string) []string {

@@ -7,11 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/buildpush"
 	"github.com/adigourdi/kasbah/internal/check"
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/handoff"
 	"github.com/adigourdi/kasbah/internal/initproject"
@@ -44,11 +46,24 @@ func main() {
 				atexit.HandleSignals()
 				atexit.Exit(env.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
 			}
+			if len(args) > 1 && args[1] == "deploy" {
+				// The lock is the kernel's and goes with the process; the
+				// handlers run a backup's partial-file cleanup.
+				atexit.HandleSignals()
+				atexit.Exit(deploy.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
+			}
 			os.Exit(remoteCmd(args[1:]))
 		case "build-push":
 			o, err := buildpush.Parse(args[1:])
 			atexit.HandleSignals()
 			atexit.Exit(buildPushCmd(o, err))
+		case "deploy":
+			// `deploy VERSION` is the tagged path, still the Bash tool's.
+			if !deploy.Tagged(args[1:]) {
+				o, err := deploy.Parse(args[1:])
+				atexit.HandleSignals()
+				atexit.Exit(deployCmd(o, err))
+			}
 		case "env":
 			o, err := env.Parse(args[1:])
 			atexit.HandleSignals()
@@ -131,7 +146,7 @@ func remoteCmd(args []string) int {
 	if len(args) > 0 {
 		sub = args[0]
 	}
-	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load", sub))
+	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy", sub))
 }
 
 // ensureServer is `kasbah __ensure-server [--apps-path=<dir>] USER@HOST`: the
@@ -285,6 +300,49 @@ func buildPushCmd(o buildpush.Options, err error) int {
 		Version: v,
 		Self:    remote.Self(build),
 		Local:   func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) },
+	}, o))
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
+}
+
+func deployCmd(o deploy.Options, err error) int {
+	out := cli.Std()
+	if err == deploy.ErrHelp {
+		fmt.Fprint(out.Stdout, deploy.Usage())
+		return cli.ExitOK
+	}
+	if err != nil {
+		return out.Report(err)
+	}
+	v, err := kasbahVersion()
+	if err != nil {
+		return out.Report(err)
+	}
+	pwd, err := os.Getwd()
+	if err != nil {
+		return out.Report(cli.Fail("cannot read the current directory: %v", err))
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+	}
+	home, checkout, err := handoff.Home(exe, os.Getenv)
+	if err != nil {
+		return out.Report(cli.Fail("%v", err))
+	}
+	local := func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }
+	code := out.Report(deploy.Run(deploy.Ctx{
+		Out:      out,
+		Prompter: prompt.Std(out),
+		PWD:      pwd,
+		Version:  v,
+		TTYIn:    term.IsTerminal(0),
+		TTYOut:   term.IsTerminal(1),
+		Color:    term.IsTerminal(1) && os.Getenv("NO_COLOR") == "",
+		Dial:     deploy.DialSSH(remote.Self(build), local),
+		Now:      time.Now,
 	}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c

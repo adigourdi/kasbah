@@ -348,15 +348,32 @@ The first deploy driven by Go on both ends. It runs through every unknown at
 once: shipping the binary, the protocol, the remote lock, prompts over SSH.
 
 **Deliverables**
-- [ ] `deploy` and `kasbah remote deploy`: backup → pre-deploy hooks → retag
+- [x] `deploy` and `kasbah remote deploy`: backup → pre-deploy hooks → retag
       `:current` → `compose up -d --remove-orphans` → health wait → post-deploy
-      hooks → one `versions.log` line, rotated — in that order
-- [ ] `versions.log` and rotation as one Go package used by both sides
-- [ ] `tests/integration/deploy_ship_test.sh`, `ship_test.sh`, `spine_test.sh` green
+      hooks → one `versions.log` line, rotated — in that order — `internal/deploy`;
+      every failure path checked against `templates/remote-deploy.sh`; the report
+      is one JSON line, and no report means no fragment. Working-tree deploys only
+      — `deploy X.Y.Z` stays Bash until 10.8. First deploy 3.5 s vs 4.6 s,
+      redeploy 1.0 s vs 2.0 s on the rig
+- [x] `versions.log` and rotation as one Go package used by both sides —
+      `internal/vlog`; 11 synthetic logs rotate byte-identically to the Bash
+      functions; the workstation readers move to it in 10.8
+- [x] `tests/integration/deploy_ship_test.sh`, `ship_test.sh`, `spine_test.sh` green
+      — full `KASBAH_RIG_TESTS=1 ./test.sh` 54 PASS, 0 FAIL in 35m; a Bash-vs-Go
+      file snapshot of one deploy differs only by the `scripts/` Go no longer ships.
+      **Deliberate:** a mail registry with no `primary_domain`, a non-domain entry or
+      a non-list `domains:` refuses the deploy (D4, one reader: `internal/mailreg`);
+      a failing SnappyMail seed is a warning
 
 **Verify on:** rig; then gallery-website on `vps` once (server prepared by the
 Bash `server init` until 10.9) — including 10.4's deferred first shipping of the
-binary over the real uplink and `~/.ssh/config` (a non-standard port).
+binary over the real uplink and `~/.ssh/config` (a non-standard port). **Observed
+2026-10-19:** Bash `server init --keep-acme --no-mail --no-backup` re-branded `vps`
+(4.0 s, credentials and certificate store reused); Go `build-push --no-git-push`
+26.4 s (cold `npm` build, 62 MB image, the binary's first shipping over the real
+uplink); Go `deploy` 9.7 s first, 4.0 s redeploy (~0.85 s per handshake, 44 ms
+RTT; one master carried 11 ssh calls and 3 rsyncs); `https://gallery.example.com/`
+200 on the kept production certificate; no `scripts/` on the server.
 
 **Watch out for:**
 - Deploy's env step becomes `env.Step` (`internal/env`) with `always=false`, and
@@ -393,7 +410,14 @@ Shares 10.7's engine; lands while that engine is fresh.
 
 **Verify on:** rig (`rollback_test.sh`, `history_test.sh`).
 
-**Watch out for:** the archive is never fatal on the workstation; the active log
+**Watch out for:** the Go engine already has `Mode: "rollback"` and the four hook
+lists — only the workstation side needs writing. `vlog.Decode` keeps the whole
+lines of a truncated gzip member: check that against what the Bash readers
+showed. Once rollback leaves Bash, `scripts/` and both helper rows in `files.md`
+go and the `.env` mode cell becomes a single `600` (destroy's helper list stays,
+for older servers). Interrupting a hook leaves the server engine running until
+its next stderr write, which can land after `:current` moved — Bash's exposure
+too. The archive is never fatal on the workstation; the active log
 always is. Anything concluding from the **absence** of a record consults archive
 state first — `rollback` once told an operator a version was never deployed on
 evidence it did not have. Rotation's month index is the deliberate exception to
@@ -461,7 +485,10 @@ version `:current` points at as the first.
 
 **Verify on:** rig; `vps` once — destroy with gallery-website serving throughout.
 
-**Watch out for:** the Bash rewrite of `mail/.env` renames its temp file over
+**Watch out for:** `tests/integration/server_destroy_test.sh` currently accepts
+`<apps>/.kasbah/bin/` surviving a destroy and removes it by hand — restore the
+original "nothing left" assertion once destroy removes the binary. The Bash
+rewrite of `mail/.env` renames its temp file over
 the real one without checking the write finished (`lib/server_destroy.sh:1148-1168`)
 — a full disk truncates the operator's relay block; Go checks before renaming.
 `docs/server-setup.md:681-700` says every container keeps running, but destroy
@@ -512,7 +539,13 @@ things share an implementation, not merely a rule.
 
 **Verify on:** `vps`.
 
-**Watch out for:** DNS and open ports were unprobed preconditions in Phase 6.
+**Watch out for:** `vps` still runs a mail stack (`mail-dms`, `mail-snappymail`,
+`/apps/mail`, `dynamic/_mail.yml`) that survived Phase 8's destroy, but its
+marker records no mail since the 10.7b re-init used `--no-mail` — adopt it with
+`--with-mail` (re-entering the registry) or drop it; decide before this walk.
+The gallery certificate expires 2026-11-20, so its renewal window opens around
+2026-10-21 — expect Traefik to renew during the phase. A UDP relay on
+the host is not kasbah's. DNS and open ports were unprobed preconditions in Phase 6.
 Leave `vps` as a kasbah server at the end — Phase 9 starts from it.
 
 ## Open decisions

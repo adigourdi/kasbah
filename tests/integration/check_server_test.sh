@@ -188,9 +188,9 @@ fi
 # is what the operator then runs by hand — the same two-step every rig suite
 # uses, with this suite playing the person at the terminal.
 deploy "$RIG_TARGET" >/dev/null 2>&1
-setup_out=$(rig_ssh "cd $apps/$project && ./scripts/setup-env.sh $apps/$project" </dev/null 2>&1); setup_rc=$?
+setup_out=$(rig_setup_env "$apps/$project" </dev/null 2>&1); setup_rc=$?
 if [ "$setup_rc" -ne 0 ]; then
-    echo "error: the shipped setup-env.sh did not render $apps/$project/.env (rc $setup_rc)" >&2
+    echo "error: the server's env setup did not render $apps/$project/.env (rc $setup_rc)" >&2
     sed 's/^/       | /' <<<"$setup_out" >&2
     exit 2
 fi

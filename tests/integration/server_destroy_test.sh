@@ -212,7 +212,7 @@ if ! fixture_repo_make "$projdir" "$repo_dir/tests/fixtures/$project" "v$version
     exit 2
 fi
 deploy "$RIG_TARGET" >/dev/null 2>&1
-rig_ssh "cd $projdir_remote && ./scripts/setup-env.sh $projdir_remote" </dev/null >/dev/null 2>&1
+rig_setup_env "$projdir_remote" </dev/null >/dev/null 2>&1
 deploy "$RIG_TARGET"; rc=$?
 if [ "$rc" != "0" ]; then
     echo "error: the $project deploy failed (exit $rc) — there is nothing to de-brand" >&2
@@ -254,8 +254,7 @@ rig_ssh "printf '%s\n%s\n%s\n' 'DEFAULT_RELAY_HOST=[smtp-relay.example.com]:587'
 # read off the rig, not believed from kasbah's own summary.
 for path in "$marker" "$bdir/env" "$bdir/compose.yml" "$bdir/backup.sh" \
             "$bdir/repos/mail.pass" "$apps/mail/kasbah.yml" \
-            "$projdir_remote/versions.log" "$projdir_remote/scripts/remote-deploy.sh" \
-            "$projdir_remote/scripts/setup-env.sh" "$projdir_remote/.kasbah-client" \
+            "$projdir_remote/versions.log" "$projdir_remote/.kasbah-client" \
             "$planted_remote/versions.log.gz" "$planted_remote/.deploy.lock"; do
     assert '[ "$(remote_exists "$path")" = yes ]' "before the destroy, $path is on the server"
 done
@@ -369,7 +368,7 @@ assert '[ "$web_before" = "$(stamp $project-web)" ]' \
         after:  $(stamp $project-web)"
 
 # --- Everything on the list is gone ------------------------------------------------------
-for path in "$marker" "$apps/.kasbah" "$bdir" "$apps/mail/kasbah.yml" \
+for path in "$marker" "$bdir" "$apps/mail/kasbah.yml" \
             "$projdir_remote/versions.log" "$projdir_remote/versions.log.gz" \
             "$projdir_remote/scripts" "$projdir_remote/.deploy.lock" \
             "$projdir_remote/.kasbah-client" \
@@ -482,6 +481,14 @@ assert '[ "$broken_rc" != 0 ]' \
         $(nocr "$broken_out")"
 rig_ssh "printf 'KASBAH_CPU_LIMIT=0\nKASBAH_MEM_LIMIT=0\n' >> $projdir_remote/.env
          cd $projdir_remote && docker compose -p $project up -d" >/dev/null 2>&1
+
+# Every deploy ensures the server binary at <apps>/.kasbah/bin, and the Bash
+# destroy does not remove it yet (docs/files.md; 10.12 adds it) — so .kasbah
+# survives holding that and nothing else. Removed by hand here so the second
+# run below still meets a server with nothing of kasbah's on it.
+left=$(rig_ssh "ls -A $apps/.kasbah 2>/dev/null | tr '\n' ' '" 2>/dev/null | tr -d '\r')
+assert '[ "$left" = "bin " ]' "after the destroy, $apps/.kasbah holds only the server binary's bin/ (got '$left')"
+rig_ssh "rm -rf $apps/.kasbah" >/dev/null 2>&1
 
 # --- A second run ------------------------------------------------------------------------------
 destroy "$RIG_TARGET" --yes; rc=$?

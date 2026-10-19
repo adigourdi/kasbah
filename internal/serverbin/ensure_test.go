@@ -122,8 +122,8 @@ func TestProbe(t *testing.T) {
 		rc, out := s.probe("")
 		_, err := judge("d@h", rc, out)
 		var e *cli.Error
-		if !errors.As(err, &e) || e.Code != cli.ExitNoRemoteState || !strings.Contains(err.Error(), "`kasbah server init d@h`") {
-			t.Fatalf("got %v; want exit 4 naming a bare kasbah server init", err)
+		if !errors.As(err, &e) || e.Code != cli.ExitNoRemoteState || !strings.Contains(err.Error(), "`kasbah server init`") || strings.Contains(err.Error(), "init d@h") {
+			t.Fatalf("got %v; want exit 4 naming kasbah server init, and no runnable bare init", err)
 		}
 	})
 	t.Run("default, marker, no binary", func(t *testing.T) {

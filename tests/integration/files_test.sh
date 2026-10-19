@@ -301,8 +301,8 @@ rig_files_local -r "$projdir" '<project-dir>' > "$before/project" ||
     { echo "error: could not snapshot the project tree" >&2; exit 2; }
 RUN_DIR=$projdir
 step "build-push $v1" run build-push "$RIG_TARGET"
-# The first deploy stops for an .env it has no terminal to set up; the shipped
-# setup-env.sh renders it, as the operator would.
+# The first deploy stops for an .env it has no terminal to set up; the server's
+# own kasbah renders it, as the operator would.
 first_rc=0
 run deploy "$RIG_TARGET" || first_rc=$?
 if [ "$first_rc" = 0 ] || ! grep -qF ".env does not exist yet" "$tmpdir/err"; then
@@ -310,7 +310,7 @@ if [ "$first_rc" = 0 ] || ! grep -qF ".env does not exist yet" "$tmpdir/err"; th
     sed 's/^/       | /' "$tmpdir/err" >&2
     exit 2
 fi
-step "rendering the .env" rig_ssh "cd $apps/$project && ./scripts/setup-env.sh $apps/$project" </dev/null >/dev/null
+step "rendering the .env" rig_setup_env "$apps/$project" </dev/null >/dev/null
 step "deploy $v1" run deploy "$RIG_TARGET"
 # The suite's own edit, not kasbah's: an existing path, so never a new entry.
 sed -i "s|served-by-built-app-from-an-image-shipped-over-ssh|served-by-built-app-edition-two|" "$projdir/Dockerfile"

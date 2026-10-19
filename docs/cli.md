@@ -673,17 +673,18 @@ Two modes:
 
 Flow (no-args / working-tree path):
 1. Open SSH ControlMaster for the whole deploy (reused by every ssh and rsync).
-2. Verify SSH reachability.
+2. Verify SSH reachability; ship the kasbah binary if the server's is absent or older.
 3. Resolve version = HEAD's `v-tag` (fail if not tagged).
-4. Ensure remote dirs exist (`/apps/<name>/`, `scripts/`, `backups/`, `/apps/data/<name>/`).
-5. Rsync manifest's `sync:` list + helper scripts (`setup-env.sh`, `remote-deploy.sh`).
+4. Ensure remote dirs exist (`/apps/<name>/`, `backups/`, `/apps/data/<name>/`).
+5. Rsync manifest's `sync:` list.
    The Traefik fragment is not shipped here — it goes last, after the stack is
    up, so a failed deploy cannot leave a live route to nothing (`build-deploy.md`).
-6. Env drift check on VPS — run setup-env if missing, prompt on drift.
+6. Env drift check on VPS (`kasbah remote setup-env`) — run the setup if missing, prompt on drift.
    Then refresh the kasbah-managed `KASBAH_*` keys in `.env` (resource
    limits from the server marker) — reserved prefix, exempt from drift.
 7. Mail claim check (if manifest has `mail:`).
-8. SSH into VPS, run `remote-deploy.sh deploy <version>`:
+8. Run the engine on the VPS, `kasbah remote deploy run` (a versioned deploy
+   still runs `remote-deploy.sh deploy <version>` until 10.8):
    - If `backup:` configured and its `check` exits 0 → run backup (against
      previous version's still-running containers), rotate.
    - Run `pre-deploy` hooks against previous version's containers.
@@ -816,13 +817,12 @@ is operator property (see `backup.md`). It also **releases the project's claim o
 the shared mail stack**: the domain leaves `<apps>/mail/kasbah.yml`, read and
 re-rendered through `_sm_read_registry`, which folds `primary_domain` into the
 served list the way the writers do. **Five commands ask "does this stack serve
-X" and they share the rule, not the reader** — `drop` and `add-mail-domain` call
-that function; `deploy`, `check --server` and `server status` each carry their
-own copy of the same normalisation. On a registry kasbah wrote they agree; on a
-**hand-edited** one with no `primary_domain` they do not, because the shared
-reader refuses where the three copies fall back to an empty primary and
-continue. Converging them belongs to Phase 9, where the live mail cutovers make
-a hand-edited registry the ordinary case. Two deliberate exclusions — a project claiming the
+X" and they share the rule, not yet one reader** — `drop` and `add-mail-domain`
+call that function; `deploy` calls the Go reader (`internal/mailreg`), which
+refuses the same way; `check --server` and `server status` each still carry
+their own copy, which on a **hand-edited** registry with no `primary_domain`
+falls back to an empty primary and continues. Phase 10 converges the last two
+on `internal/mailreg` (10.10), which refuses (decision D4). Two deliberate exclusions — a project claiming the
 registry's `primary_domain` is refused (releasing it would unmake the stack for
 every other project), and docker-mailserver's own `postfix-virtual.cf` alias is
 left alone, with the `setup alias del` line printed instead. The reversal is

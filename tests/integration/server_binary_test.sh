@@ -148,7 +148,9 @@ major_sha=$(sha "$variants/kasbah-$next_major")
 # --- Case 0: a server init never prepared -------------------------------------
 ensure; rc=$?
 assert '[ "$rc" = 4 ]' "an unprepared server is exit 4 (exit $rc: $(err))"
-assert 'grep -qF "kasbah server init $RIG_TARGET" <<<"$(err)"' "and the refusal names kasbah server init (said '$(err)')"
+assert 'grep -qF "kasbah server init" <<<"$(err)"' "and the refusal names kasbah server init (said '$(err)')"
+assert '! grep -qF "kasbah server init $RIG_TARGET" <<<"$(err)"' \
+    "but no runnable bare init, which a lost pointer would turn on the running proxy (said '$(err)')"
 assert '[ "$(rig_ssh "[ -e $apps ] && echo present || echo absent" 2>/dev/null | tr -d "\r")" = absent ]' \
     "nothing was created on the unprepared server"
 

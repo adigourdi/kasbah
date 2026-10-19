@@ -332,16 +332,6 @@ func normPath(p string) string {
 	return out
 }
 
-// initCmd is the init command spelled for this server: bare, at a server
-// prepared elsewhere, it would render a second Traefik stack.
-func initCmd(target string, p *Probe) string {
-	c := "kasbah server init " + target
-	if p.Source == "pointer" {
-		c += " --apps-path=" + p.Apps
-	}
-	return c
-}
-
 // judge turns the probe's exit status and output into the apps path's
 // refusals (lib/marker.sh's, the same exit codes). An explicit apps path
 // needs the directory, not a marker: server init ships before it writes one.
@@ -390,11 +380,16 @@ func judge(target string, rc int, out []byte) (*Probe, error) {
 				probePointer+" says this server was prepared at "+p.Apps+", and there is no marker there;",
 				"kasbah does not fall back to "+probeDefault+". Look at both before doing anything else.")
 		}
+		// No runnable init line: a lost pointer looks exactly like this, and a
+		// bare init there takes the running proxy down.
 		return nil, cli.Failf(cli.ExitNoRemoteState, "%s has no server marker at %s", target, mk).Cont(
-			"kasbah puts its binary only on a server `kasbah server init` has prepared.",
-			"If it never was, run `"+initCmd(target, p)+"`. If it was prepared at another apps",
-			"path and the pointer is lost, re-run init with --apps-path=<dir> set to that tree —",
-			"do not guess it: init at the wrong path takes the running Traefik down.")
+			"kasbah puts its binary only on a server `kasbah server init` has prepared,",
+			"and this is one of two situations, with different answers:",
+			"  * the server has never been prepared, and initialising it is the answer.",
+			"  * it was prepared at another apps path and the pointer has been lost. Find",
+			"    that tree (its marker is at <dir>/.kasbah/server.json), then re-run init",
+			"    with --apps-path=<dir> set to it — that restores the pointer.",
+			"Do not guess the path: init at the wrong one takes the running Traefik down.")
 	}
 	return p, nil
 }

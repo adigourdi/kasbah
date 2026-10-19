@@ -169,9 +169,9 @@ fi
 # suite's precondition.
 deploy "$RIG_TARGET" >/dev/null 2>&1
 setup_rc=0
-rig_ssh "cd $projdir_remote && ./scripts/setup-env.sh $projdir_remote" </dev/null >/dev/null 2>&1 || setup_rc=$?
+rig_setup_env "$projdir_remote" </dev/null >/dev/null 2>&1 || setup_rc=$?
 if [ "$setup_rc" -ne 0 ]; then
-    echo "error: the shipped setup-env.sh did not render an .env (exit $setup_rc)" >&2
+    echo "error: the server's env setup did not render an .env (exit $setup_rc)" >&2
     exit 2
 fi
 

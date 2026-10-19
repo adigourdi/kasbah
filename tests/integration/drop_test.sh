@@ -163,7 +163,7 @@ if ! fixture_repo_make "$neighbourdir" "$repo_dir/tests/fixtures/$neighbour" "v$
     exit 2
 fi
 KASBAH_CWD="$neighbourdir" deploy "$RIG_TARGET" >/dev/null 2>&1
-rig_ssh "cd $apps/$neighbour && ./scripts/setup-env.sh $apps/$neighbour" </dev/null >/dev/null 2>&1
+rig_setup_env "$apps/$neighbour" </dev/null >/dev/null 2>&1
 KASBAH_CWD="$neighbourdir" deploy "$RIG_TARGET"; rc=$?
 if [ "$rc" != "0" ]; then
     echo "error: the $neighbour deploy failed (exit $rc) — there is no neighbour to survive the drop" >&2
@@ -185,7 +185,7 @@ if [ "$rc" != "0" ]; then
     exit 2
 fi
 deploy "$RIG_TARGET" >/dev/null 2>&1
-rig_ssh "cd $projdir_remote && ./scripts/setup-env.sh $projdir_remote" </dev/null >/dev/null 2>&1
+rig_setup_env "$projdir_remote" </dev/null >/dev/null 2>&1
 deploy "$RIG_TARGET"; rc=$?
 if [ "$rc" != "0" ]; then
     echo "error: the $version deploy failed (exit $rc) — there is nothing to drop" >&2

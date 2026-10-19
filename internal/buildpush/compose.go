@@ -74,10 +74,11 @@ func Built(doc jv.Value, project, version string) ([]Image, error) {
 	return out, nil
 }
 
-// readCompose loads the compose file in the current directory.
-func readCompose(pwd string) (jv.Value, error) {
+// ReadCompose loads the compose file in the current directory; why says, on
+// a missing file, what the caller needed it for.
+func ReadCompose(pwd, why string) (jv.Value, error) {
 	if fi, err := os.Stat(Compose); err != nil || !fi.Mode().IsRegular() {
-		return nil, cli.Fail("%s: not found (cwd=%s) — build-push derives the images to ship from it", Compose, pwd)
+		return nil, cli.Fail("%s: not found (cwd=%s) — %s", Compose, pwd, why)
 	}
 	docs, err := yamlx.LoadFile(Compose)
 	if err != nil {

@@ -192,15 +192,15 @@ assert '[ "$rc" = "5" ]' \
     "and stops at the env step, not at exit 4 — the server was found (exit $rc: $(cli_err))"
 assert 'grep -qF "$alt_apps/$project/.env" "$tmpdir/err"' \
     "naming the .env under the tree the pointer names (said '$(cli_err)')"
-assert '[ "$(exists $alt_apps/$project/scripts/setup-env.sh)" = "present" ]' \
-    "and the helper it shipped landed there too"
+assert '[ "$(exists $alt_apps/$project/.env.prod.example)" = "present" ]' \
+    "and the template it shipped landed there too"
 assert '[ "$(exists /apps)" = "absent" ]' "with nothing created at the default path"
 
-# The operator renders .env with the script kasbah shipped — this suite playing
+# The operator renders .env with the server's own kasbah — this suite playing
 # the person at the terminal, as spine_test.sh does.
-setup_out=$(rig_ssh "cd $alt_apps/$project && ./scripts/setup-env.sh $alt_apps/$project" </dev/null 2>&1); setup_rc=$?
+setup_out=$(rig_setup_env "$alt_apps/$project" </dev/null 2>&1); setup_rc=$?
 if [ "$setup_rc" -ne 0 ] || [ "$(exists $alt_apps/$project/.env)" != "present" ]; then
-    echo "error: the shipped setup-env.sh did not render $alt_apps/$project/.env (rc $setup_rc)" >&2
+    echo "error: the server's env setup did not render $alt_apps/$project/.env (rc $setup_rc)" >&2
     sed 's/^/       | /' <<<"$setup_out" >&2
     exit 2
 fi
@@ -250,19 +250,19 @@ assert 'grep -qF "served-by-demo-web-through-the-file-provider" <<<"$page"' \
     "and the site is served through the proxy that tree rendered (got '$(head -c 200 <<<"$page")')"
 
 # --- env, told nothing but the target ---------------------------------------------
-# The helper is removed first, so its reappearance is this command's doing and
+# The template is removed first, so its reappearance is this command's doing and
 # not the deploy's. `kasbah env` runs the interactive generator every time, so
 # with no terminal it stops at exit 5 — after it has shipped to the right tree,
 # which is what is under test here.
-rig_ssh "rm -f $alt_apps/$project/scripts/setup-env.sh" >/dev/null 2>&1
-assert '[ "$(exists $alt_apps/$project/scripts/setup-env.sh)" = "absent" ]' \
-    "the helper is gone before kasbah env runs — else its presence proves nothing"
+rig_ssh "rm -f $alt_apps/$project/.env.prod.example" >/dev/null 2>&1
+assert '[ "$(exists $alt_apps/$project/.env.prod.example)" = "absent" ]' \
+    "the template is gone before kasbah env runs — else its presence proves nothing"
 run_bounded env "$RIG_TARGET"; rc=$?
 assert '[ "$rc" != "124" ]' "kasbah env returns rather than waiting on a prompt"
 assert '[ "$rc" = "5" ]' \
     "and stops for the missing terminal, not at exit 4 (exit $rc: $(cli_err))"
-assert '[ "$(exists $alt_apps/$project/scripts/setup-env.sh)" = "present" ]' \
-    "having shipped its helper to the tree the pointer names"
+assert '[ "$(exists $alt_apps/$project/.env.prod.example)" = "present" ]' \
+    "having shipped its template to the tree the pointer names"
 assert 'grep -qF "$alt_apps/$project" "$tmpdir/err"' \
     "and its message names that tree (said '$(cli_err)')"
 assert '[ "$(exists /apps)" = "absent" ]' "still nothing at the default path"

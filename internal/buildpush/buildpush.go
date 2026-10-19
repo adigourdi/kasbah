@@ -109,7 +109,7 @@ func Run(c Ctx, o Options) error {
 	if err != nil {
 		return err
 	}
-	doc, err := readCompose(c.PWD)
+	doc, err := ReadCompose(c.PWD, "build-push derives the images to ship from it")
 	if err != nil {
 		return err
 	}

@@ -189,6 +189,14 @@ rig_ssh() {
     fi
 }
 
+# The env setup an operator would run on the server by hand, answered by EOF so
+# every default is taken: the server binary's own `remote setup-env setup`,
+# found from the project directory, which is always <apps>/<project>.
+rig_setup_env() {
+    local dir="$1"
+    rig_ssh "${dir%/*}/.kasbah/bin/kasbah remote setup-env setup $dir" </dev/null
+}
+
 # -n rather than the redirect above: a probe has no payload to protect, and
 # ssh's own flag says so at the point of use.
 rig_reachable() {
