@@ -115,7 +115,7 @@ _acme_cert_facts() {
 # time — never as one `join`ed string split back on spaces.
 #
 # This is the rule the certificate list itself is walked under (below), and the
-# registry readers in lib/server_mail.sh and lib/deploy.sh are written under, and
+# registry readers in lib/server_mail.sh and internal/mailreg are written under, and
 # it is not stylistic. A SAN holding a space — in a store some other Traefik
 # wrote, in one that has been tampered with — turns a joined string into two
 # tokens, and `certificate valid for N days` would then be reported for a

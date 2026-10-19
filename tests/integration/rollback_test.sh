@@ -373,6 +373,25 @@ assert '[[ "$(sed -n 3p <<<"$log_before")" == *" rollback $v1 "* ]]' \
     "$v1's most recent mention in the record is a rollback entry, and it still counts as proof
         it ran here (line: $(sed -n 3p <<<"$log_before"))"
 
+# ==================================================================================
+# `deploy X.Y.Z` — the same path, forward
+# ==================================================================================
+# Back to $v2 by naming it: a `deploy` entry this time, from v$v2's own tree, onto
+# images that are still on the server.
+log_before="$(versions_log)"
+deploy "$RIG_TARGET" "$v2"; rc=$?
+assert '[ "$rc" = "0" ]' "a deploy of a named version succeeds (exit $rc: $(cli_err))"
+log="$(versions_log)"
+read -r _ t_action t_version _ <<<"$(tail -n 1 <<<"$log")"
+assert '[ "$(wc -l <<<"$log")" = "$(( $(wc -l <<<"$log_before") + 1 ))" ] && [ "$t_action" = deploy ] && [ "$t_version" = "$v2" ]' \
+    "it appends one \`deploy $v2\` entry (log: $log)"
+assert '[ "$(image_id "$image_web:current")" = "$(image_id "$image_web:$v2")" ]' \
+    "and :current is $v2's image again"
+assert '[ "$(remote_sha "$frag_remote")" = "$(ref_sha "v$v2:traefik-dynamic.yml")" ]' \
+    "and the route is v$v2's own fragment, shipped out of the tag"
+assert 'grep -qF "Deployed $project $v2 to $RIG_TARGET" "$tmpdir/err"' \
+    "and says what it did (said '$(cli_err)')"
+
 # --- Leave the rig as it was found, but only on success ---------------------------------
 if [ "$fail" -eq 0 ]; then
     rig_ssh "docker image rm -f $image_web:$v1 $image_worker:$v1 $image_web:$v2 $image_worker:$v2 $image_web:current $image_worker:current" >/dev/null 2>&1

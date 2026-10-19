@@ -765,7 +765,7 @@ _bk_render() {
     # is where `_si_render_template` lives. This file deliberately does not
     # source those ~2000 lines: `server backup-prune`, `server status` and
     # `check --server` all load it on its own and none of them renders anything
-    # (the argument lib/drop.sh makes about declining to source lib/deploy.sh).
+    # (the argument lib/drop.sh makes about lib/server_mail.sh).
     # So the dependency is stated where it is real, and a fourth caller that
     # forgets it is told which file it is missing rather than
     # `_si_render_template: command not found` halfway through a render.

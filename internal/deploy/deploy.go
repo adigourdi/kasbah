@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,15 +21,16 @@ import (
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/release"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
 // ErrHelp is --help: the usage on stdout, exit 0.
 var ErrHelp = errors.New("help")
 
-// Options are the working-tree deploy's arguments. A VERSION argument is the
-// tagged path, which is not this package's.
+// Options are a deploy's or a rollback's arguments. A Version is the tagged
+// path (tagged.go).
 type Options struct {
-	Target, OnDrift                       string
+	Target, Version, OnDrift              string
 	SkipHooks, NoHealthWait, AllowStopped bool
 }
 
@@ -78,19 +80,43 @@ See docs/build-deploy.md and docs/env-template.md.
 // Usage is `kasbah deploy --help`.
 func Usage() string { return usage }
 
-// Tagged reports whether args name a VERSION — the tagged path, still the
-// Bash tool's: any argument that is neither a flag nor a server.
-func Tagged(args []string) bool {
-	for _, a := range args {
-		if !strings.HasPrefix(a, "-") && !strings.Contains(a, "@") {
-			return true
+var (
+	reVTag   = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+`)
+	reSemver = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$`)
+)
+
+// Classify files one positional argument: '@' makes it the server, anything
+// else the version — bare semver, as versions.log carries it.
+func Classify(cmd, arg string, target, version *string) error {
+	arg = strings.TrimSuffix(arg, "\r")
+	if strings.Contains(arg, "@") {
+		if *target != "" {
+			return cli.Fail("%s: two servers given ('%s' and '%s') — one run goes to one server", cmd, *target, arg)
 		}
+		*target = arg
+		return nil
 	}
-	return false
+	if *version != "" {
+		return cli.Fail("%s: two versions given ('%s' and '%s') — kasbah will not choose between them", cmd, *version, arg)
+	}
+	if reVTag.MatchString(arg) {
+		v := arg[1:]
+		return cli.Fail("%s: write the version without the 'v' — `kasbah %s %s` (the tag is v%s, the version is %s)", cmd, cmd, v, v, v)
+	}
+	if !reSemver.MatchString(arg) {
+		return cli.Fail("%s: '%s' is not a version kasbah can use — expected <major>.<minor>.<patch> (docs/build-deploy.md → versioning contract)", cmd, arg)
+	}
+	*version = arg
+	return nil
 }
 
-// Parse reads the working-tree deploy's arguments.
-func Parse(args []string) (Options, error) {
+// Parse reads deploy's arguments.
+func Parse(args []string) (Options, error) { return parse("deploy", args) }
+
+// ParseRollback reads rollback's, which are deploy's.
+func ParseRollback(args []string) (Options, error) { return parse("rollback", args) }
+
+func parse(cmd string, args []string) (Options, error) {
 	var o Options
 	for _, a := range args {
 		switch {
@@ -104,21 +130,21 @@ func Parse(args []string) (Options, error) {
 			o.AllowStopped = true
 		case strings.HasPrefix(a, "--skip-hooks=") || strings.HasPrefix(a, "--no-health-wait=") || strings.HasPrefix(a, "--allow-stopped="):
 			name, _, _ := strings.Cut(a, "=")
-			return o, cli.Fail("deploy: %s takes no value — pass it on its own (`kasbah deploy USER@HOST %s`)", name, name)
+			return o, cli.Fail("%s: %s takes no value — pass it on its own (`kasbah %s USER@HOST %s`)", cmd, name, cmd, name)
 		case strings.HasPrefix(a, "--on-drift="):
 			o.OnDrift = strings.TrimSuffix(strings.TrimPrefix(a, "--on-drift="), "\r")
-			if err := env.CheckOnDrift("deploy", o.OnDrift); err != nil {
+			if err := env.CheckOnDrift(cmd, o.OnDrift); err != nil {
 				return o, err
 			}
 		case a == "--on-drift":
-			return o, cli.Fail("deploy: --on-drift takes its value with '=' — --on-drift=setup, --on-drift=continue or --on-drift=abort")
+			return o, cli.Fail("%s: --on-drift takes its value with '=' — --on-drift=setup, --on-drift=continue or --on-drift=abort", cmd)
 		case strings.HasPrefix(a, "-"):
 			name, _, _ := strings.Cut(a, "=")
-			return o, cli.Fail("deploy: unknown flag '%s' (deploy takes USER@HOST, VERSION, --on-drift=, --skip-hooks, --no-health-wait and --allow-stopped)", name)
-		case o.Target != "":
-			return o, cli.Fail("deploy: two servers given ('%s' and '%s') — one run goes to one server", o.Target, strings.TrimSuffix(a, "\r"))
+			return o, cli.Fail("%s: unknown flag '%s' (%s takes USER@HOST, VERSION, --on-drift=, --skip-hooks, --no-health-wait and --allow-stopped)", cmd, name, cmd)
 		default:
-			o.Target = strings.TrimSuffix(a, "\r")
+			if err := Classify(cmd, a, &o.Target, &o.Version); err != nil {
+				return o, err
+			}
 		}
 	}
 	return o, nil
@@ -134,6 +160,10 @@ type Server interface {
 	Seed(target string, data []byte) (string, error)
 	Run(dir string, sp Spec) (stdout string, rc int)
 	Fragment(local, dest string) error
+	// Images and Record are the tagged path's: which :<version> images are
+	// gone, and the deploy record.
+	Images(version string, images []string) (checked int, missing []string, err error)
+	Record(apps, name string) (*vlog.Record, error)
 }
 
 // Ctx is what a run needs from its process.
@@ -161,6 +191,11 @@ type run struct {
 	target  string
 	version string
 	dir     string
+	// mode is the engine's and the log's: deploy or rollback. tagged runs
+	// ship v<version> out of git rather than the working tree.
+	mode   string
+	tagged bool
+	frag   string
 }
 
 // Run is the command.
@@ -169,7 +204,7 @@ func Run(c Ctx, o Options) error {
 	if err != nil {
 		return err
 	}
-	r := &run{c: c, o: o, m: m, target: o.Target}
+	r := &run{c: c, o: o, m: m, target: o.Target, mode: "deploy", frag: Fragment}
 	if r.target == "" {
 		stored, err := state.Get(state.File, "last_server")
 		if err != nil {
@@ -235,12 +270,17 @@ func Run(c Ctx, o Options) error {
 		"last_version", r.version); err != nil {
 		return err
 	}
-	r.banner(rep, clientState, shipped)
+	r.banner("Deployed "+m.Name+" "+r.version+" to "+r.target, rep, clientState, shipped)
 	r.changelog(rep)
 	return nil
 }
 
-func (r *run) rerun() string { return "kasbah deploy " + r.target }
+func (r *run) rerun() string {
+	if r.tagged {
+		return "kasbah " + r.mode + " " + r.target + " " + r.version
+	}
+	return "kasbah deploy " + r.target
+}
 
 // remote runs the engine and reads its report, which is the completion
 // marker: no report means the run did not reach its end, and nothing after
@@ -248,25 +288,28 @@ func (r *run) rerun() string { return "kasbah deploy " + r.target }
 func (r *run) remote() (*Report, error) {
 	b := r.p
 	sp := Spec{
-		Mode: "deploy", Version: r.version, Kasbah: r.c.Version,
+		Mode: r.mode, Version: r.version, Kasbah: r.c.Version,
 		SkipHooks: r.o.SkipHooks, NoHealthWait: r.o.NoHealthWait, AllowStopped: r.o.AllowStopped,
-		Images: b.Images, Pre: b.Hooks["pre-deploy"], Post: b.Hooks["post-deploy"],
+		Images: b.Images, Pre: b.Hooks["pre-"+r.mode], Post: b.Hooks["post-"+r.mode],
 		Health: b.Health, Backup: b.Backup,
 	}
 	out, rc := r.s.Run(r.dir, sp)
 	if rc == 255 || rc == -1 {
 		// ssh's own failure: the engine may have run to its end regardless.
-		return nil, cli.Fail("the connection to %s was lost during the deploy (ssh exited %d)", r.target, rc).Cont(
+		return nil, cli.Fail("the connection to %s was lost during the %s (ssh exited %d)", r.target, r.mode, rc).Cont(
 			"the server may have finished it — check `kasbah history "+r.target+"` for a "+r.version+" entry.",
 			"The Traefik fragment was not shipped. Re-running `"+r.rerun()+"` is safe.")
 	}
 	if rc != 0 {
-		return nil, cli.Fail("the deploy failed on %s (the server's kasbah exited %d, see above)", r.target, rc).Cont(
+		e := cli.Fail("the %s failed on %s (the server's kasbah exited %d, see above)", r.mode, r.target, rc).Cont(
 			"the files are already there — fix what it reported and re-run `"+r.rerun()+"`.",
 			r.m.Name+"'s images on "+r.target+" may already carry :current for",
 			r.version+" even though its containers did not start — the retag runs",
-			"before `compose up`, and nothing on the server records that it moved.",
-			"`kasbah rollback "+r.target+"` is what puts it back.")
+			"before `compose up`, and nothing on the server records that it moved.")
+		if r.mode == "deploy" {
+			e.Cont("`kasbah rollback " + r.target + "` is what puts it back.")
+		}
+		return nil, e
 	}
 	rep, missing, found := ParseReport(out)
 	if rep == nil {
@@ -274,7 +317,7 @@ func (r *run) remote() (*Report, error) {
 		if found {
 			what = "no " + strings.Join(missing, " ")
 		}
-		e := cli.Fail("the deploy step on %s reported %s", r.target, what).Cont(
+		e := cli.Fail("the %s step on %s reported %s", r.mode, r.target, what).Cont(
 			"the step was truncated, or the server's kasbah rejected it — raw output:")
 		for _, l := range strings.Split(strings.TrimRight(strings.ReplaceAll(out, "\r", ""), "\n"), "\n") {
 			e.Cont("| " + l)
@@ -288,7 +331,7 @@ func (r *run) remote() (*Report, error) {
 			"re-run `"+r.rerun()+"` — it is safe to run again.")
 	}
 	if rep.Version != r.version {
-		return nil, cli.Fail("the deploy step on %s reported version '%s', not the %s it was asked for", r.target, rep.Version, r.version)
+		return nil, cli.Fail("the %s step on %s reported version '%s', not the %s it was asked for", r.mode, r.target, rep.Version, r.version)
 	}
 	return rep, nil
 }
@@ -296,24 +339,30 @@ func (r *run) remote() (*Report, error) {
 // fragment ships the route last; a project without one deploys anyway.
 func (r *run) fragment() (bool, error) {
 	dest := r.mk.AppsPath + "/traefik/dynamic/" + r.m.Name + ".yml"
-	if fi, err := os.Stat(Fragment); err != nil || !fi.Mode().IsRegular() {
+	if fi, err := os.Stat(r.frag); err != nil || !fi.Mode().IsRegular() {
 		r.c.Out.Warn("no %s in %s — nothing was written to %s", Fragment, r.c.PWD, dest)
 		r.c.Out.Warn("this project routes through Traefik only if that file exists (docs/traefik.md)")
 		return false, nil
 	}
-	if err := r.s.Fragment(Fragment, dest); err != nil {
-		return false, cli.Fail("could not ship %s to %s:%s", Fragment, r.target, dest).Cont(
-			"the deploy itself succeeded — the new containers are up and versions.log",
-			"already records "+r.version+". Only the Traefik route is missing, so this",
-			"host serves whatever it served before (404 if it is a first deploy).",
-			"re-run `"+r.rerun()+"` once the server is reachable again.")
+	if err := r.s.Fragment(r.frag, dest); err != nil {
+		e := cli.Fail("could not ship %s to %s:%s", Fragment, r.target, dest).Cont(
+			"the "+r.mode+" itself succeeded — the new containers are up and versions.log",
+			"already records "+r.version+". Only the Traefik route is missing, so this")
+		// A rollback cannot be a first deploy: its target was in the record.
+		if r.mode == "rollback" {
+			e.Cont("host still serves the route the run before this one left, which points at the",
+				"containers this rollback replaced, so it 502s for any of them v"+r.version+" renamed.")
+		} else {
+			e.Cont("host serves whatever it served before (404 if it is a first deploy).")
+		}
+		return false, e.Cont("re-run `" + r.rerun() + "` once the server is reachable again.")
 	}
 	return true, nil
 }
 
-func (r *run) banner(rep *Report, client string, shipped bool) {
+func (r *run) banner(headline string, rep *Report, client string, shipped bool) {
 	o, apps, name := r.c.Out, r.mk.AppsPath, r.m.Name
-	o.Info("Deployed %s %s to %s", name, r.version, r.target)
+	o.Info("%s", headline)
 	o.Info("  project: %s/%s   data: %s/%s", apps, name, r.mk.DataPath, name)
 	o.Info("  limits:  KASBAH_CPU_LIMIT=%s KASBAH_MEM_LIMIT=%s (from the server marker)", r.mk.CPULimit, r.mk.MemLimit)
 	if shipped {
@@ -336,6 +385,13 @@ func (r *run) banner(rep *Report, client string, shipped bool) {
 func (r *run) changelog(rep *Report) {
 	o, prev, v := r.c.Out, rep.PrevVersion, r.version
 	if prev == "" {
+		if rep.ArchiveOnly {
+			o.Warn("%s has deployed %s before, but %s/versions.log held no entry — only", r.target, r.m.Name, r.dir)
+			o.Warn("versions.log.gz does, so the active log was lost or replaced and there is no")
+			o.Warn("previous version to compare against and no changelog. The %s itself is done.", r.mode)
+			o.Warn("look at %s/versions.log.gz, then `git log v<prev>..v%s`", r.dir, v)
+			return
+		}
 		if rep.DeployedBefore {
 			o.Warn("%s has deployed %s before, but the last line of its", r.target, r.m.Name)
 			o.Warn("versions.log is not one a version can be read out of — so there is no range to")

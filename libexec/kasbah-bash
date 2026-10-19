@@ -189,29 +189,9 @@ dispatch() {
             . "$KASBAH_LIB_DIR/check.sh"
             cmd_check "$@"
             ;;
-        build-push)
-            . "$KASBAH_LIB_DIR/build_push.sh"
-            cmd_build_push "$@"
-            ;;
-        deploy)
-            . "$KASBAH_LIB_DIR/deploy.sh"
-            cmd_deploy "$@"
-            ;;
-        rollback)
-            . "$KASBAH_LIB_DIR/rollback.sh"
-            cmd_rollback "$@"
-            ;;
         drop)
             . "$KASBAH_LIB_DIR/drop.sh"
             cmd_drop "$@"
-            ;;
-        history|pending|changelog)
-            . "$KASBAH_LIB_DIR/history.sh"
-            "cmd_$cmd" "$@"
-            ;;
-        env)
-            . "$KASBAH_LIB_DIR/env_cmd.sh"
-            cmd_env "$@"
             ;;
         logs|exec)
             . "$KASBAH_LIB_DIR/ops.sh"

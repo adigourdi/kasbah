@@ -25,7 +25,7 @@ _KASBAH_VERSIONS_LOG_LOADED=1
 #
 # Nothing is deduplicated between the two files. A rotation whose archive append
 # succeeded and whose rewrite of the active log failed leaves the same entries
-# in both, and remote-deploy.sh warns loudly about exactly that; a reader that
+# in both, and the engine warns loudly about exactly that; a reader that
 # quietly folded them together would hide the state the warning exists to
 # expose. What the files hold is what comes back.
 

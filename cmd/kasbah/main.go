@@ -16,6 +16,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/handoff"
+	"github.com/adigourdi/kasbah/internal/history"
 	"github.com/adigourdi/kasbah/internal/initproject"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
@@ -23,6 +24,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/term"
+	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
 // build is stamped at build time: -ldflags "-X main.build=…".
@@ -46,6 +48,9 @@ func main() {
 				atexit.HandleSignals()
 				atexit.Exit(env.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
 			}
+			if len(args) > 1 && args[1] == "vlog" {
+				os.Exit(vlog.Remote(args[2:], os.Stdout, os.Stderr))
+			}
 			if len(args) > 1 && args[1] == "deploy" {
 				// The lock is the kernel's and goes with the process; the
 				// handlers run a backup's partial-file cleanup.
@@ -58,12 +63,17 @@ func main() {
 			atexit.HandleSignals()
 			atexit.Exit(buildPushCmd(o, err))
 		case "deploy":
-			// `deploy VERSION` is the tagged path, still the Bash tool's.
-			if !deploy.Tagged(args[1:]) {
-				o, err := deploy.Parse(args[1:])
-				atexit.HandleSignals()
-				atexit.Exit(deployCmd(o, err))
-			}
+			o, err := deploy.Parse(args[1:])
+			atexit.HandleSignals()
+			atexit.Exit(deployCmd("deploy", o, err))
+		case "rollback":
+			o, err := deploy.ParseRollback(args[1:])
+			atexit.HandleSignals()
+			atexit.Exit(deployCmd("rollback", o, err))
+		case "history", "pending", "changelog":
+			o, err := history.Parse(args[0], args[1:])
+			atexit.HandleSignals()
+			atexit.Exit(historyCmd(o, err))
 		case "env":
 			o, err := env.Parse(args[1:])
 			atexit.HandleSignals()
@@ -146,7 +156,7 @@ func remoteCmd(args []string) int {
 	if len(args) > 0 {
 		sub = args[0]
 	}
-	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy", sub))
+	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, vlog", sub))
 }
 
 // ensureServer is `kasbah __ensure-server [--apps-path=<dir>] USER@HOST`: the
@@ -307,10 +317,14 @@ func buildPushCmd(o buildpush.Options, err error) int {
 	return code
 }
 
-func deployCmd(o deploy.Options, err error) int {
+func deployCmd(cmd string, o deploy.Options, err error) int {
 	out := cli.Std()
 	if err == deploy.ErrHelp {
-		fmt.Fprint(out.Stdout, deploy.Usage())
+		if cmd == "rollback" {
+			fmt.Fprint(out.Stdout, deploy.RollbackUsage())
+		} else {
+			fmt.Fprint(out.Stdout, deploy.Usage())
+		}
 		return cli.ExitOK
 	}
 	if err != nil {
@@ -333,7 +347,7 @@ func deployCmd(o deploy.Options, err error) int {
 		return out.Report(cli.Fail("%v", err))
 	}
 	local := func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }
-	code := out.Report(deploy.Run(deploy.Ctx{
+	c := deploy.Ctx{
 		Out:      out,
 		Prompter: prompt.Std(out),
 		PWD:      pwd,
@@ -343,7 +357,17 @@ func deployCmd(o deploy.Options, err error) int {
 		Color:    term.IsTerminal(1) && os.Getenv("NO_COLOR") == "",
 		Dial:     deploy.DialSSH(remote.Self(build), local),
 		Now:      time.Now,
-	}, o))
+	}
+	var rerr error
+	switch {
+	case cmd == "rollback":
+		rerr = deploy.RunTagged(c, o, "rollback")
+	case o.Version != "":
+		rerr = deploy.RunTagged(c, o, "deploy")
+	default:
+		rerr = deploy.Run(c, o)
+	}
+	code := out.Report(rerr)
 	if c := atexit.Interrupted(); c != 0 {
 		code = c
 	}
@@ -385,6 +409,39 @@ func envCmd(o env.Options, err error) int {
 		TTYOut:   term.IsTerminal(1),
 		Color:    term.IsTerminal(1) && os.Getenv("NO_COLOR") == "",
 		Dial:     env.DialSSH(remote.Self(build), local),
+	}, o))
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
+}
+
+func historyCmd(o history.Options, err error) int {
+	out := cli.Std()
+	if err == history.ErrHelp {
+		fmt.Fprint(out.Stdout, history.Usage(o.Cmd))
+		return cli.ExitOK
+	}
+	if err != nil {
+		return out.Report(err)
+	}
+	v, err := kasbahVersion()
+	if err != nil {
+		return out.Report(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+	}
+	home, checkout, err := handoff.Home(exe, os.Getenv)
+	if err != nil {
+		return out.Report(cli.Fail("%v", err))
+	}
+	local := func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }
+	code := out.Report(history.Run(history.Ctx{
+		Out:     out,
+		Version: v,
+		Dial:    history.Dial(remote.Self(build), local),
 	}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c

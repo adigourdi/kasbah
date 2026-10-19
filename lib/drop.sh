@@ -17,8 +17,8 @@ _KASBAH_DROP_LOADED=1
 . "$KASBAH_LIB_DIR/prune.sh"
 # lib/server_mail.sh is **not** sourced here: it pulls in lib/server_init.sh for
 # the registry template, which is two thousand lines a drop of a project with no
-# mail claim never touches — the same reason lib/deploy.sh is not sourced for
-# _deploy_read_mail. _drop_mail_plan sources it at the one moment it is needed.
+# mail claim never touches. _drop_mail_plan sources it at the one moment it is
+# needed.
 
 # `kasbah drop [USER@HOST] [--prune]` takes one project off a server
 # (docs/cli.md → kasbah drop). Plain drop is the reversible verb: the route
@@ -358,8 +358,8 @@ kv backups_count "$count"
 kv fragment_state "$(state_of "$apps/traefik/dynamic/$name.yml")"
 
 # Whether a deploy of this project is running right now. `.deploy.lock` is
-# created by a deploy or rollback (`kasbah remote deploy`, or
-# templates/remote-deploy.sh) and by nothing else, so a file that is
+# created by a deploy or rollback (`kasbah remote deploy`; before 10.8 the
+# shipped remote-deploy.sh) and by nothing else, so a file that is
 # not there is a project nothing holds — probed rather than created, because a
 # read step must not write into the tree it is reading.
 lock="$dir/.deploy.lock"
@@ -983,7 +983,7 @@ case $prune in yes|no) ;; *) fail "refusing to act: prune='$prune' is neither ye
 
 dir="$apps/$name"
 
-# The same lock templates/remote-deploy.sh holds for the whole of a deploy, and
+# The same lock `kasbah remote deploy` holds for the whole of a deploy, and
 # taken for the same reason: a drop interleaved with one tears containers down
 # under its hooks and removes the images it is retagging. `-n` so a second run
 # fails fast and legibly instead of looking hung — and whether flock exists at
@@ -1271,7 +1271,7 @@ _drop_report_act() {
             _drop_say "  kasbah build-push $_DROP_TARGET   # if this project's images are not on the server"
         fi
         # versions.log survived, so the far side knows this project has deployed
-        # here — and templates/remote-deploy.sh refuses to deploy over a stack
+        # here — and `kasbah remote deploy` refuses to deploy over a stack
         # with history whose pre-deploy-hook or backup containers do not exist,
         # which is exactly the state this drop leaves. --allow-stopped is how
         # the operator says they are meant to be gone, and whether they will
@@ -1455,14 +1455,12 @@ _drop_anything_to_do() {
     return 1
 }
 
-# The manifest's mail claim, read the way lib/deploy.sh reads it — one field of
-# one block, and the whole of what a claim says (docs/project-manifest.md →
-# mail). Sourcing lib/deploy.sh for _deploy_read_mail would drag the whole
-# build/ship/rollback surface into a command that removes things, so the two
-# fields are read here and validated the same way.
+# The manifest's mail claim, read the way deploy reads it (internal/deploy) —
+# one field of one block, and the whole of what a claim says
+# (docs/project-manifest.md → mail) — and validated the same way.
 # Whether the manifest names a container the outgoing steps of a deploy would
 # need: `backup:`'s container, or the first word of a pre-deploy hook. Those are
-# the containers templates/remote-deploy.sh's rd_outgoing_preflight looks for,
+# the containers the deploy engine's outgoing preflight (internal/deploy) looks for,
 # and a drop removes every one of them.
 _drop_read_return_needs() {
     local raw

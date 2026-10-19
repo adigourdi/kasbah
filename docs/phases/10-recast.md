@@ -352,8 +352,8 @@ once: shipping the binary, the protocol, the remote lock, prompts over SSH.
       `:current` → `compose up -d --remove-orphans` → health wait → post-deploy
       hooks → one `versions.log` line, rotated — in that order — `internal/deploy`;
       every failure path checked against `templates/remote-deploy.sh`; the report
-      is one JSON line, and no report means no fragment. Working-tree deploys only
-      — `deploy X.Y.Z` stays Bash until 10.8. First deploy 3.5 s vs 4.6 s,
+      is one JSON line, and no report means no fragment. Working-tree deploys;
+      `deploy X.Y.Z` followed in 10.8. First deploy 3.5 s vs 4.6 s,
       redeploy 1.0 s vs 2.0 s on the rig
 - [x] `versions.log` and rotation as one Go package used by both sides —
       `internal/vlog`; 11 synthetic logs rotate byte-identically to the Bash
@@ -404,9 +404,18 @@ RTT; one master carried 11 ssh calls and 3 rsyncs); `https://gallery.example.com
 Shares 10.7's engine; lands while that engine is fresh.
 
 **Deliverables**
-- [ ] `rollback [VERSION]`, `deploy X.Y.Z` from `git archive v<X.Y.Z>`
-- [ ] `history [--all]`, `pending`, `changelog`, reading `versions.log.gz`
-- [ ] One entry predicate for every reader (the three Bash readers converge)
+- [x] `rollback [VERSION]`, `deploy X.Y.Z` from `git archive v<X.Y.Z>` —
+      `internal/deploy/tagged.go`: one path for both, the tag's tree extracted
+      in-process (mtimes kept, `../` refused, cleaned on a signal), the engine in
+      rollback or deploy mode; an archive-only record is not a first deploy
+- [x] `history [--all]`, `pending`, `changelog`, reading `versions.log.gz` —
+      `internal/history` over `kasbah remote vlog`; output matches `docs/cli.md`
+- [x] One entry predicate for every reader (the three Bash readers converge) —
+      every Go reader uses `internal/vlog`; `prune`, `drop`, `server status` and
+      `destroy` still read through `lib/versions_log.sh` until they are ported.
+      Retired: `lib/{rollback,history,deploy,build_push,remote_deploy,env_cmd}.sh`,
+      `templates/remote-deploy.sh` and four unit suites (−9k lines); nothing ships
+      `scripts/` any more. Kept: `lib/env.sh` (`check --server`, `destroy`)
 
 **Verify on:** rig (`rollback_test.sh`, `history_test.sh`).
 
@@ -435,6 +444,10 @@ the entry predicate (tightening it stopped rotation: 67 failures).
 - [ ] `server_init_test.sh`, `server_init_mail_test.sh`, `apps_path_test.sh` green
 
 **Verify on:** rig; `vps` for real sudo and `--acme-staging`.
+
+**Ruling (2026-10-19), `vps` mail:** take the old mail stack down there
+(`docker compose down` in `/apps/mail`, data kept), and re-init a fresh one with
+`--with-mail` when a test needs it — 10.9's `vps` check is that test.
 
 **Watch out for:** init ships the binary into the `<apps>` it has just created,
 before the marker exists — `serverbin.Ensure` with `Options{Apps}`; that mode
@@ -596,6 +609,8 @@ Run approved 2026-10-18: whole phase, plan order, unit bar as in Rulings.
 - **A reset rig has an empty image store**, and suites that assert on stock
   images must pull them themselves — `integration/prune_test.sh` assumed two that
   only rig history had. Expect the same shape elsewhere after any `rig.sh reset`.
+- **The rotation month table lives once**, `internal/vlog/testdata/month-index.table`,
+  read by both `TestMonthIndexTable` and `tests/prune_test.sh`.
 - **Every Go-owned command calls `atexit.HandleSignals()` and leaves through
   `atexit.Exit`**, or its cleanups (ssh master, temp files, terminal echo) are
   skipped on a signal. `kasbah __ensure-server USER@HOST [--apps-path=]` is a

@@ -317,3 +317,23 @@ func TestRemoteModes(t *testing.T) {
 		}
 	}
 }
+
+// A terminal on stdin with stdout on a file cannot show the setup's prompts
+// either: the run stops with exit 5, as a headless one does.
+func TestStdoutRedirected(t *testing.T) {
+	project(t, true)
+	srv := inSync()
+	var stderr bytes.Buffer
+	out := &cli.Output{Stdout: &bytes.Buffer{}, Stderr: &stderr}
+	o, _ := Parse([]string{"deploy@vps"})
+	pwd, _ := os.Getwd()
+	err := Run(Ctx{
+		Out:      out,
+		Prompter: &prompt.Prompter{In: strings.NewReader(""), Out: out, TTY: true},
+		PWD:      pwd, Version: "0.1.0", TTYIn: true, TTYOut: false,
+		Dial: func(string) (Session, error) { return srv, nil },
+	}, o)
+	code := out.Report(err)
+	expect(t, code == cli.ExitEnvSetup && strings.Contains(stderr.String(), "no terminal"), "stdout redirected: %d %q", code, stderr.String())
+	expect(t, srv.called("setup") < 0 && srv.called("inject") < 0, "runs nothing: %v", srv.calls)
+}

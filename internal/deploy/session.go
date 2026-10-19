@@ -6,12 +6,14 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
 // SSH is the Server a real run uses: env's session, one master, and the
@@ -143,4 +145,39 @@ func (s *SSH) Fragment(local, dest string) error {
 	cmd := s.Conn.Rsync("-pt", "--chmod=F644", "-s", local, s.target()+":"+dest)
 	cmd.Stdout, cmd.Stderr = io.Discard, os.Stderr
 	return cmd.Run()
+}
+
+func (s *SSH) Images(version string, images []string) (int, []string, error) {
+	out, err := s.Conn.Run(s.Bounded(append([]string{"deploy", "images", version}, images...)...)...)
+	if err != nil {
+		return 0, nil, cli.Fail("could not look for the %s images on %s (the remote step exited %d, see above)", version, s.target(), ssh.ExitCode(err))
+	}
+	kv := lines(out)
+	c, ok := kv["checked"]
+	if _, has := kv["missing"]; !ok || !has {
+		return 0, nil, rawOutput(cli.Fail("the image check on %s reported no checked or missing", s.target()).Cont(
+			"the step was truncated, or the server's kasbah rejected it — raw output:"), out)
+	}
+	n, err := strconv.Atoi(c)
+	if err != nil {
+		n = -1
+	}
+	var missing []string
+	if kv["missing"] != "" {
+		missing = strings.Split(kv["missing"], ",")
+	}
+	return n, missing, nil
+}
+
+func (s *SSH) Record(apps, name string) (*vlog.Record, error) { return FetchRecord(s.SSH, apps, name) }
+
+// FetchRecord is `kasbah remote vlog`: both halves of the deploy record in
+// one round trip, judged by vlog.ReadProbe.
+func FetchRecord(s *env.SSH, apps, name string) (*vlog.Record, error) {
+	path := apps + "/" + name + "/" + vlog.Log
+	out, err := s.Conn.Run(s.Bounded("vlog", apps, name)...)
+	if err != nil {
+		return nil, cli.Fail("could not read %s on %s (the remote step exited %d, see above)", path, s.Conn.Target.String(), ssh.ExitCode(err))
+	}
+	return vlog.ReadProbe(out, s.Conn.Target.String(), path)
 }

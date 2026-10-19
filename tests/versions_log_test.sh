@@ -215,7 +215,7 @@ done
 # docs/phases/05-undo.md: the archive holds the older entries, so it comes
 # first; and nothing is deduplicated against the active log, because a rotation
 # whose archive append landed and whose rewrite did not leaves the same entries
-# in both — the state remote-deploy.sh warns about, which a quiet dedup would
+# in both — the state the deploy engine warns about, which a quiet dedup would
 # hide.
 e() { printf '%s %s %s %s kasbah=0.1.0 digest=-\n' "$1" "$2" "$3" "${4:-no-backup}"; }
 

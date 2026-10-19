@@ -78,8 +78,8 @@ _SD_BACKUP_CONTAINER=kasbah-backup
 _SD_BACKUP_VOLUME=kasbah-backup-cache
 _SD_BACKUP_NETWORK=kasbah-backup_default
 
-# The two helpers `kasbah deploy` installs in <apps>/<project>/scripts/
-# (lib/deploy.sh → _deploy_sync_helper). Named rather than the directory
+# The two helpers a deploy installed in <apps>/<project>/scripts/ before
+# Phase 10.8, which servers deployed then still carry. Named rather than the directory
 # removed whole: the directory is kasbah's by convention, but a file in it that
 # kasbah did not put there belongs to whoever did, and this command has no way
 # to tell them apart except by name. The directory itself goes when those two

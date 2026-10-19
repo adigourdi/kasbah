@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -77,6 +78,25 @@ func TestAppendRepairsATruncatedLine(t *testing.T) {
 	}
 	if l, err := LastLine(t.TempDir()); l != "" || err != nil {
 		t.Fatalf("LastLine of nothing = %q, %v", l, err)
+	}
+}
+
+// TestMonthIndexTable reads tests/prune_test.sh's table: retention and
+// rotation are one window.
+func TestMonthIndexTable(t *testing.T) {
+	b, err := os.ReadFile("testdata/month-index.table")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+		ts, want, _ := strings.Cut(l, "|")
+		got := "refused"
+		if i, ok := MonthIndex(ts); ok {
+			got = strconv.Itoa(i)
+		}
+		if got != want {
+			t.Errorf("MonthIndex(%q) = %s, want %s", ts, got, want)
+		}
 	}
 }
 
@@ -176,6 +196,19 @@ func TestDecode(t *testing.T) {
 	}
 	if _, why := Decode(z.Bytes()[:z.Len()-4]); why == "" {
 		t.Fatal("a truncated member read as whole")
+	}
+	// zcat's bytes: a cut member's partial last line is kept, for the entry
+	// predicate to judge.
+	var w bytes.Buffer
+	zw := gzip.NewWriter(&w)
+	zw.Write([]byte("2026-04-01T00:00:00+00:00 deploy 4.0.0 no-backup kasbah=0.1.0\n2026-05-01T00:00:00+00:00 deploy 5.0.0 no-backup kasbah=0.1.0\n"))
+	zw.Close()
+	text, why := Decode(w.Bytes()[:w.Len()-12])
+	if why != "ends in a truncated gzip member" || !strings.HasPrefix(text, "2026-04-01") || strings.HasSuffix(text, "\n") {
+		t.Fatalf("cut member: %q %q", text, why)
+	}
+	if text, why := Decode(w.Bytes()[:12]); text != "" || why != "is not gzip" {
+		t.Fatalf("nothing decoded: %q %q", text, why)
 	}
 	if _, why := Decode([]byte("plain text")); why != "is not gzip" {
 		t.Fatalf("plain text: %q", why)

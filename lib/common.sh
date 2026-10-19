@@ -45,7 +45,7 @@ KASBAH_EXIT_SSH_UNREACHABLE=3  # the target host did not answer ssh
 KASBAH_EXIT_NO_REMOTE_STATE=4
 # The env setup did not leave a .env kasbah will deploy against, for any
 # reason: drift the user declined to fix, a .env that is not there with no
-# terminal to render one on, or setup-env.sh not finishing on the far side —
+# terminal to render one on, or the server's setup not finishing on the far side —
 # including when it could not be run at all. One code, because it is one
 # sentence from the operator's side and nothing was deployed. Injection is a
 # different step and fails with 1 (docs/cli.md, docs/phases/03-env.md).

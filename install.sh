@@ -91,7 +91,7 @@ done
 # nothing to render onto a server. The whole tree is replaced rather than
 # merged, for the same reason the *.sh copy is — a template deleted upstream
 # must not survive an upgrade. Modes come from the repo, so a template that has
-# to be runnable on the far side (scripts/remote-deploy.sh) lands executable.
+# to be runnable on the far side (the backup stack's backup.sh) lands executable.
 rm -rf "${lib_dir:?}/templates"
 # Created whether or not there is anything to put in it: KASBAH_TEMPLATE_DIR
 # resolves to this path on an installed kasbah, and a resolved path that does

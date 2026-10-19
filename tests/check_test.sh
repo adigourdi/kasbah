@@ -1037,7 +1037,7 @@ export API_TOKEN=short
 ENV
 out="$(cd "$proj28b" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                     "an exported or indented template line is not an E01 failure (got $rc)"
-assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'            "E01 accepts what setup-env.sh accepts (said '$out')"
+assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'            "E01 accepts what the env setup accepts (said '$out')"
 assert 'grep -qF "✓ .env has no missing keys vs .env.prod.example" <<<"$out"' "E02 reads the key behind an export/indent in .env"
 assert 'grep -qF "✓ .env has no extra keys vs .env.prod.example" <<<"$out"'   "and E03 reads it in the template too"
 assert 'grep -qF "⚠ .env.prod.example defines reserved KASBAH_* keys (kasbah injects these): KASBAH_CPU_LIMIT" <<<"$out"' \

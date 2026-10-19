@@ -23,8 +23,10 @@ type Entry struct {
 // Plan is everything a deploy decides from the checkout before it reaches a
 // server.
 type Plan struct {
-	Sync       []Entry
-	Client     string
+	Sync   []Entry
+	Client string
+	// ClientNote is why a tag's unusable client: was replaced by the name.
+	ClientNote string
 	MailDomain string
 	MailSnappy string
 	// Hooks holds all four lists; the engine is sent its mode's pair.
@@ -176,7 +178,7 @@ func readMail(m *manifest.Manifest, p *Plan) error {
 	return nil
 }
 
-func readClient(m *manifest.Manifest, p *Plan) error {
+func readClient(m *manifest.Manifest, p *Plan, historical bool) error {
 	v, _ := m.Get("client")
 	raw := strings.TrimSuffix(jv.ToString(jv.Alt(v, "")), "\r")
 	if raw == "null" {
@@ -187,6 +189,12 @@ func readClient(m *manifest.Manifest, p *Plan) error {
 		return nil
 	}
 	if why, ok := manifest.ClientCheck(raw); !ok {
+		// A tag's bytes cannot be edited: a version cut before the check
+		// existed still has to roll back, on client:'s documented default.
+		if historical {
+			p.Client, p.ClientNote = m.Name, why
+			return nil
+		}
 		return cli.Fail("kasbah.yml: %s", why)
 	}
 	p.Client = raw
@@ -328,16 +336,21 @@ func readImages(pwd, name, version string, p *Plan) error {
 
 // ReadPlan reads and judges everything the deploy needs from the checkout.
 func ReadPlan(m *manifest.Manifest, pwd, version string) (*Plan, error) {
-	p := &Plan{}
+	return readPlan(m, pwd, version, false)
+}
+
+// readSync is the sync: list, which must land a compose.yml.
+func readSync(m *manifest.Manifest) ([]Entry, error) {
 	lines, err := syncLines(m)
 	if err != nil {
 		return nil, err
 	}
-	if p.Sync, err = ParseSync(lines); err != nil {
+	sync, err := ParseSync(lines)
+	if err != nil {
 		return nil, err
 	}
 	hasCompose := false
-	for _, e := range p.Sync {
+	for _, e := range sync {
 		hasCompose = hasCompose || e.Dst == "compose.yml"
 	}
 	if !hasCompose {
@@ -345,10 +358,30 @@ func ReadPlan(m *manifest.Manifest, pwd, version string) (*Plan, error) {
 			"the server runs `docker compose` on "+m.Name+"/compose.yml, so the list has to",
 			"put the project's compose file there:  compose.prod.yml -> compose.yml")
 	}
-	if err := checkSources(p.Sync); err != nil {
+	return sync, nil
+}
+
+// readPlan reads from the current directory; historical is a tag's manifest.
+func readPlan(m *manifest.Manifest, pwd, version string, historical bool) (*Plan, error) {
+	p := &Plan{}
+	var err error
+	if p.Sync, err = readSync(m); err != nil {
 		return nil, err
 	}
-	for _, f := range []func(*manifest.Manifest, *Plan) error{readMail, readClient, readHooks, readHealth, readBackup} {
+	// A tag's tree is checked against the ref instead (tagged.go), where a
+	// symlink rsync -l ships — dangling or not — is a source like any other.
+	if !historical {
+		if err := checkSources(p.Sync); err != nil {
+			return nil, err
+		}
+	}
+	if err := readMail(m, p); err != nil {
+		return nil, err
+	}
+	if err := readClient(m, p, historical); err != nil {
+		return nil, err
+	}
+	for _, f := range []func(*manifest.Manifest, *Plan) error{readHooks, readHealth, readBackup} {
 		if err := f(m, p); err != nil {
 			return nil, err
 		}

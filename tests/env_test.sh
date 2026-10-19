@@ -559,7 +559,7 @@ assert 'grep -qF "caller-alive" <<<"$out"'        "a sourced failure does not ex
 assert 'grep -qF "have-env_main" <<<"$out"'       "sourcing defines env_main (said '$out')"
 
 # lib/prompt.sh owns `prompt_value`; lib/env.sh must not redefine it, or
-# whichever loads second in lib/deploy.sh silently loses its helper.
+# whichever loads second in lib/server_destroy.sh (which sources both) silently loses its helper.
 out=$(KASBAH_LIB_DIR="$repo_dir/lib" bash -c '
     set -euo pipefail
     . "$KASBAH_LIB_DIR/common.sh"

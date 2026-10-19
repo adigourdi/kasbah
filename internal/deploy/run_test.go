@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
 // fake is a server: what each call returns, and what reached it.
@@ -28,6 +30,10 @@ type fake struct {
 	out         *string
 	rc          int
 	fragErr     error
+	record      *vlog.Record
+	missing     []string
+	// mtimes, when set, records each sync source's mtime (a symlink's own).
+	mtimes map[string]time.Time
 
 	calls   []string
 	client  string
@@ -46,7 +52,13 @@ func (f *fake) Prepare(string) error              { return nil }
 func (f *fake) ShipTemplate(string, string) error { return nil }
 func (f *fake) Setup(string, bool) int            { return 0 }
 func (f *fake) Close()                            {}
-func (f *fake) Sync(e Entry, base string) error   { f.log("sync " + e.Src); return nil }
+func (f *fake) Sync(e Entry, base string) error {
+	f.log("sync " + e.Src)
+	if fi, err := os.Lstat(e.Src); err == nil && f.mtimes != nil {
+		f.mtimes[filepath.Base(e.Src)] = fi.ModTime()
+	}
+	return nil
+}
 func (f *fake) Fragment(local, dest string) error { f.log("fragment " + dest); return f.fragErr }
 func (f *fake) Inject(dir string, pairs []string) int {
 	f.log("inject")
@@ -82,6 +94,18 @@ func (f *fake) Run(dir string, sp Spec) (string, int) {
 	}
 	b, _ := json.Marshal(Report{Version: sp.Version, Backup: "no-backup", Digest: "-"})
 	return "{\"" + ReportKey + "\":1," + string(b[1:]) + "\n", f.rc
+}
+
+func (f *fake) Images(version string, images []string) (int, []string, error) {
+	f.log("images " + version + " " + strings.Join(images, ","))
+	return len(images), f.missing, nil
+}
+func (f *fake) Record(apps, name string) (*vlog.Record, error) {
+	f.log("record")
+	if f.record == nil {
+		return &vlog.Record{ActivePath: apps + "/" + name + "/versions.log", ArchivePath: apps + "/" + name + "/versions.log.gz", ActiveState: "missing", ArchiveState: "missing"}, nil
+	}
+	return f.record, nil
 }
 
 func (f *fake) called(prefix string) bool {

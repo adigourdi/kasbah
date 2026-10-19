@@ -994,7 +994,7 @@ _check_env_section() {
 # E01: every line is empty, a comment (`#…`), or an assignment in the shape
 # lib/env.sh reads (ENV_ASSIGN_RE — Compose's, so `export FOO=1` and a leading
 # blank both count). Anything else (e.g. `FOO BAR=baz`, `=value`, `1FOO=bar`)
-# setup-env.sh preserves verbatim instead of prompting for, so the key the
+# the env setup preserves verbatim instead of prompting for, so the key the
 # author meant never reaches .env.
 _check_e01_syntax() {
     local f=.env.prod.example bad=() lineno=0 line
@@ -1182,7 +1182,7 @@ _check_mail_section() {
     # Shape before contents. `.mail.domain` against a `mail: example.com` is a
     # jq type error, and what reaches the operator would then be kasbah's
     # internal filter rather than the mistake in their manifest — the same order
-    # lib/deploy.sh reads the block in.
+    # deploy (internal/deploy) reads the block in.
     local kind
     kind="$(yaml_query "$KASBAH_MANIFEST_FILE" '.mail | type' 2>/dev/null || true)"
     kind="${kind%$'\r'}"

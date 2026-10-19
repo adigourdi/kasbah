@@ -50,8 +50,13 @@ func TestSeconds(t *testing.T) {
 }
 
 func TestArgs(t *testing.T) {
-	if Tagged([]string{"d@h", "--skip-hooks"}) || !Tagged([]string{"1.0.0", "d@h"}) {
-		t.Fatal("Tagged")
+	if o, err := Parse([]string{"1.0.0", "d@h"}); err != nil || o.Version != "1.0.0" || o.Target != "d@h" {
+		t.Fatalf("a version and a server: %+v %v", o, err)
+	}
+	for _, bad := range [][]string{{"v1.0.0"}, {"1.0"}, {"1.0.0", "2.0.0"}} {
+		if _, err := ParseRollback(bad); err == nil || !strings.HasPrefix(err.Error(), "rollback: ") {
+			t.Errorf("ParseRollback(%q) = %v", bad, err)
+		}
 	}
 	o, err := Parse([]string{"--allow-stopped", "d@h", "--on-drift=continue", "--no-health-wait", "--skip-hooks"})
 	if err != nil || o.Target != "d@h" || o.OnDrift != "continue" || !o.SkipHooks || !o.NoHealthWait || !o.AllowStopped {

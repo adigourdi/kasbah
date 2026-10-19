@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Test: lib/history.sh — `kasbah history`, `kasbah pending`, `kasbah changelog`.
+# Test: `kasbah history`, `kasbah pending`, `kasbah changelog` (internal/history,
+# reading the record through internal/vlog on both ends).
 #
-# Two layers, because the file has two:
-#   * the rendering and the two changelogs, driven straight through
-#     `vlog_load` with planted records — no server, no base64, just the two
-#     blobs a fetch would have produced. stdout and stderr are captured apart,
-#     because which of the two a line lands on is part of the contract
-#     (docs/cli.md: a report is stdout, everything else is stderr).
-#   * the commands end to end through the CLI, against a stub `ssh` that
-#     answers as a prepared server does — the argument rules, the state file's
-#     write rule, exit 3 for a server that does not answer, and the fact that
-#     nothing these three do reaches the server as a write.
+# Two layers, one driver: planted versions.log / versions.log.gz files in a
+# scratch apps tree, read by the binary under test through a stub `ssh` that runs
+# the server's half here.
+#   * the rendering and the two changelogs, case by case. stdout and stderr are
+#     captured apart, because which of the two a line lands on is part of the
+#     contract (docs/cli.md: a report is stdout, everything else is stderr).
+#   * the commands' edges — the argument rules, the state file's write rule,
+#     exit 3 for a server that does not answer, and the fact that nothing these
+#     three do reaches the server as a write.
 #
 # `git` is real throughout: `pending` and `changelog` are git ranges, and the
 # fixture repository carries the tags they name.
@@ -65,66 +65,97 @@ printf '%s\n' 'name: demo' > "$project/compose.prod.yml"
 assert '[ "$(cd "$project" && git rev-parse v3.0.0)" = "$(cd "$project" && git rev-parse HEAD)" ]' \
     "the fixture's HEAD is v3.0.0, which is what pending compares against"
 
-# --- The driver -------------------------------------------------------------------
-# The library's own functions, entered where a command enters them: the record is
-# already loaded, so what is under test is the query and the rendering and
-# nothing else.
-driver="$tmpdir/driver.sh"
-cat > "$driver" <<'DRV'
+# --- The server -------------------------------------------------------------------
+# A scratch apps tree whose kasbah is the binary under test, and a stub ssh that
+# runs each remote command here — so the record is read by the real
+# `kasbah remote vlog` out of files planted for each case. The marker says /apps
+# and the stub hands the scratch tree over for that argument, so every path a
+# report prints is the one a real server's would.
+FAKE_APPS="$tmpdir/srv/apps"
+mkdir -p "$FAKE_APPS/.kasbah/bin" "$FAKE_APPS/demo"
+printf '%s\n' '{"kasbah_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"2.0","mem_limit":"4g"}' \
+    > "$FAKE_APPS/.kasbah/server.json"
+cp "$KASBAH_BIN" "$FAKE_APPS/.kasbah/bin/kasbah"
+
+stub_dir="$tmpdir/stub"
+mkdir -p "$stub_dir" "$tmpdir/home" "$tmpdir/runtmp"
+call_log="$tmpdir/calls.log"
+cat > "$stub_dir/ssh" <<'STUB'
 #!/usr/bin/env bash
-# `set -e` like the dispatcher: a predicate called bare under errexit dies before
-# its own message runs, and this driver has to be able to reproduce that.
-set -euo pipefail
-. "$KASBAH_LIB_DIR/common.sh"
-. "$KASBAH_LIB_DIR/history.sh"
-
-# `$(cat f)` strips trailing newlines, which would hand vlog_load the same blob
-# for a file that ends in one and a file that does not.
-readraw() {
-    local _v=""
-    _v="$( { [ -f "$2" ] && cat "$2"; printf x; } )"
-    printf -v "$1" '%s' "${_v%x}"
-}
-
-mode="$1" arch_file="$2" act_file="$3"; shift 3
-
-MANIFEST_NAME=demo
-_DEPLOY_TARGET=deploy@vps
-VLOG_ACTIVE_PATH=/apps/demo/versions.log
-VLOG_ARCHIVE_PATH=/apps/demo/versions.log.gz
-VLOG_ACTIVE_STATE="$HT_ACT"
-VLOG_ARCHIVE_STATE="$HT_ARC"
-VLOG_ARCHIVE_DAMAGED="$HT_DMG"
-# The reason is set where the decode failed (lib/versions_log.sh →
-# _vlog_decode_archive) and carried, not re-derived: a caller counting decoded
-# entries cannot tell a truncated member from a payload that is not gzip from a
-# workstation with no zcat.
-VLOG_ARCHIVE_REASON="$HT_RSN"
-
-readraw ARCH "$arch_file"
-readraw ACT "$act_file"
-vlog_load "$ARCH" "$ACT"
-
-case "$mode" in
-    history)   _HIST_ALL="${1:-no}";        _history_render ;;
-    pending)   _DEPLOY_VERSION_ARG="${1:-}"; _history_pending_report ;;
-    changelog) _history_changelog_report ;;
-    *) echo "unknown driver mode: $mode" >&2; exit 99 ;;
-esac
-DRV
+{ printf 'ssh'; for a in "$@"; do printf '|%s' "$a"; done; printf '\n'; } >> "$CALL_LOG"
+for a; do [ "$a" = -O ] && exit 0; done
+for a; do [ "$a" = -n ] && exec </dev/null; done
+last="${!#}"
+if [ "$last" = true ]; then
+    if [ -n "${FAKE_UNREACHABLE:-}" ]; then
+        printf 'ssh: connect to host vps port 22: Connection refused\n' >&2
+        exit 255
+    fi
+    exit 0
+fi
+eval "set -- $last"
+if [ "$1 $2" = "sh -s" ]; then
+    exec sh -s -- "$FAKE_APPS" "$FAKE_APPS/no-pointer" "$6" "$7"
+fi
+args=()
+for a; do [ "$a" = /apps ] && a="$FAKE_APPS"; args+=("$a"); done
+exec "${args[@]}"
+STUB
+chmod 0755 "$stub_dir/ssh"
 
 arch="$tmpdir/arch.log"
 act="$tmpdir/act.log"
+rsn_cut='ends in a truncated gzip member: whatever is inside it could not be decoded'
+rsn_notgz='is not gzip: no archived entry could be decoded'
+
+# The two files, in the states H_ACT and H_ARC name. A cut archive is the
+# whole record followed by a member that stops after its header, so what
+# decodes is exactly $arch. noaccess is a directory's state and would take the
+# active log with it; for the archive alone it is planted as unreadable.
+plant() {
+    local d="$FAKE_APPS/demo"
+    chmod -R u+rwX "$d" 2>/dev/null
+    rm -rf "$d"
+    mkdir -p "$d"
+    case "$H_ACT" in
+        ok)    cp "$act" "$d/versions.log" ;;
+        empty) : > "$d/versions.log" ;;
+    esac
+    # An archive with entries in it is planted whole unless the case says
+    # otherwise: the default state is "no damage", not "no archive".
+    [ "$H_ARC" != missing ] || [ ! -s "$arch" ] || H_ARC=ok
+    case "$H_ARC/$H_DMG" in
+        ok/no) gzip -c < "$arch" > "$d/versions.log.gz" ;;
+        ok/yes)
+            if [ "$H_RSN" = "$rsn_notgz" ]; then
+                printf 'not gzip\n' > "$d/versions.log.gz"
+            else
+                { gzip -c < "$arch"; printf 'x\n' | gzip -c | head -c 10; } > "$d/versions.log.gz"
+            fi ;;
+        unreadable/*|noaccess/*)
+            gzip -c < "$arch" > "$d/versions.log.gz"
+            chmod 000 "$d/versions.log.gz" ;;
+    esac
+    return 0
+}
 
 H_ACT=ok; H_ARC=missing; H_DMG=no; H_RSN=""
 DRIVE_DIR=""
 DRC=0; OUT=""; ERR=""
 drive() {
-    local rc=0 dir="${DRIVE_DIR:-$project}"
-    ( cd "$dir" && env KASBAH_LIB_DIR="$repo_dir/lib" KASBAH_VERSION="$kver" \
-          HT_ACT="$H_ACT" HT_ARC="$H_ARC" HT_DMG="$H_DMG" HT_RSN="$H_RSN" \
-          bash "$driver" "$1" "$arch" "$act" "${@:2}" ) \
-        >"$tmpdir/o" 2>"$tmpdir/e" || rc=$?
+    local mode="$1" rc=0 dir="${DRIVE_DIR:-$project}" args=()
+    shift
+    case "$mode" in
+        history)   args=(history deploy@vps); [ "${1:-no}" = yes ] && args+=(--all) ;;
+        pending)   args=(pending deploy@vps ${1:+"$1"}) ;;
+        changelog) args=(changelog deploy@vps) ;;
+    esac
+    plant
+    : > "$call_log"
+    ( cd "$dir" && env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
+          HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$tmpdir/runtmp" \
+          CALL_LOG="$call_log" FAKE_APPS="$FAKE_APPS" FAKE_UNREACHABLE="${FAKE_UNREACHABLE:-}" \
+          "$KASBAH_BIN" "${args[@]}" ) >"$tmpdir/o" 2>"$tmpdir/e" </dev/null || rc=$?
     DRC=$rc
     OUT="$(cat "$tmpdir/o")"
     ERR="$(cat "$tmpdir/e")"
@@ -132,6 +163,8 @@ drive() {
     DRIVE_DIR=""
     return 0
 }
+# What reached stderr that is not a warning about the record itself.
+not_warned() { grep -v '^warning: ' <<<"$ERR" || true; }
 
 # ==================================================================================
 # history — the table
@@ -267,7 +300,7 @@ assert 'grep -qF "lost or replaced" <<<"$OUT"' \
     "and does not call it a project that never deployed (got '$OUT')"
 
 # --- An archive that could not be read -----------------------------------------------
-# vlog_fetch has already warned on stderr with the diagnosis. What must also be
+# The reader has already warned on stderr with the diagnosis. What must also be
 # true is that the *report* does not read as the whole record — a run redirected
 # to a file is the case this is about.
 : > "$arch"
@@ -283,11 +316,7 @@ assert 'grep -qF "not the whole record" <<<"$OUT"' \
 
 # Damaged, in its two shapes — which differ by whether anything was decoded, and
 # the operator's next move differs with them. The clause comes with the record
-# from lib/versions_log.sh, which is where the decode knows which shape it hit;
-# these are its own two spellings, and a reader that re-derived the shape from
-# what it can see is exactly what they replaced.
-rsn_cut='ends in a truncated gzip member: whatever is inside it could not be decoded'
-rsn_notgz='is not gzip: no archived entry could be decoded'
+# from internal/vlog, which is where the decode knows which shape it hit.
 { printf '%s deploy 0.9.0 no-backup kasbah=0.1.0 digest=-\n' 2026-01-04T10:00:00+00:00; } > "$arch"
 H_ARC=ok; H_DMG=yes; H_RSN="$rsn_cut"; drive history yes
 assert 'grep -qF "ends in a truncated gzip member" <<<"$OUT"' \
@@ -400,7 +429,7 @@ assert '! grep -qF "neither does its archive" <<<"$OUT"' \
     "least of all by asserting the archive is empty (got '$OUT')"
 assert 'grep -qF "whether its archive holds one cannot be told" <<<"$OUT"' \
     "it says what is true instead (got '$OUT')"
-assert 'grep -qF "could not be read (the probe called it '"'"'noaccess'"'"')" <<<"$OUT"' \
+assert 'grep -qF "could not be read (the probe called it '"'"'unreadable'"'"')" <<<"$OUT"' \
     "with the note naming the state the probe reported (got '$OUT')"
 
 # The active log empty while the archive is a truncated gzip that gave up part
@@ -434,7 +463,7 @@ assert 'grep -qF "2026-08-02T00:00:00+00:00 deploy 1.1" <<<"$OUT"' \
 assert '! grep -qF "commits" <<<"$OUT"' "and comparing against nothing (got '$OUT')"
 
 # A tag this checkout has never fetched: a fact about the checkout, so a warning
-# on stderr and not a failure — the same answer lib/deploy.sh gives.
+# on stderr and not a failure — the same answer deploy's changelog gives.
 { printf '%s deploy 9.9.9 no-backup kasbah=0.1.0 digest=-\n' 2026-08-01T00:00:00+00:00; } > "$act"
 drive pending
 assert '[ "$DRC" = 0 ]' "a missing tag does not fail the command (rc $DRC)"
@@ -462,6 +491,7 @@ mkdir -p "$orphan"
     git tag v1.0.0
     git checkout -q --orphan fresh
 ) >/dev/null 2>&1
+cp "$project/kasbah.yml" "$orphan/"
 assert '( cd "$orphan" && git rev-parse -q --verify "refs/tags/v1.0.0^{commit}" >/dev/null )' \
     "the orphan fixture still resolves v1.0.0"
 assert '! ( cd "$orphan" && git rev-parse -q --verify "HEAD^{commit}" >/dev/null 2>&1 )' \
@@ -542,7 +572,7 @@ assert 'grep -qF "ends in a truncated gzip member" <<<"$OUT"' \
 assert 'grep -qF "not the whole record" <<<"$OUT"' "in the same words (got '$OUT')"
 assert 'grep -qxF "v1.0.0..v3.0.0 — 2 commits" <<<"$OUT"' \
     "while still giving the range it could build, which is the useful half (got '$OUT')"
-assert '[ -z "$ERR" ]' "all of it on stdout, because all of it is the answer (stderr: '$ERR')"
+assert '[ -z "$(not_warned)" ]' "all of it on stdout, because all of it is the answer (stderr: '$ERR')"
 
 # The control: the same pair over an archive that is whole says none of it.
 H_ARC=ok; drive changelog
@@ -599,54 +629,20 @@ assert 'grep -qF "has never deployed demo" <<<"$OUT"' "and says there is no rang
 # ==================================================================================
 # The commands, end to end
 # ==================================================================================
-# A stub ssh that answers as a prepared server does. The two payloads are told
-# apart by their arguments, exactly as the real ones are.
-stub_dir="$tmpdir/stub"
-mkdir -p "$stub_dir" "$tmpdir/home" "$tmpdir/runtmp"
-cat > "$stub_dir/ssh" <<'STUB'
-#!/usr/bin/env bash
-{ printf 'ssh'; for a in "$@"; do printf '|%s' "$a"; done; printf '\n'; } >> "$CALL_LOG"
-last="${!#}"
-for a in "$@"; do [ "$a" = "-n" ] || continue; exec </dev/null; break; done
-case "$*" in
-    *"-O exit"*) exit 0 ;;
-esac
-case "$last" in
-    true)
-        if [ -n "${FAKE_UNREACHABLE:-}" ]; then
-            printf 'ssh: connect to host vps port 22: Connection refused\n' >&2
-            exit 255
-        fi
-        exit 0 ;;
-    "'bash' '-s'"*) cat >/dev/null ;;
-esac
-case "$last" in
-    "'bash' '-s' '--' '/apps' '/etc/kasbah/apps-path'")
-        printf 'apps=/apps\nsource=default\n'
-        printf '%s\n' '{"kasbah_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"2.0","mem_limit":"4g"}' ;;
-    "'bash' '-s' '--' '/apps' 'demo'")
-        printf 'active_state=%s\n' "${FAKE_ACTIVE_STATE:-ok}"
-        printf 'active_b64=%s\n' "$(printf '%s' "${FAKE_ACTIVE:-}" | base64 -w0)"
-        printf 'archive_state=%s\n' "${FAKE_ARCHIVE_STATE:-missing}"
-        printf 'archive_b64=%s\n' "${FAKE_ARCHIVE_B64:-}" ;;
-    *)
-        printf 'stub: no answer for remote step %s\n' "$last" >&2
-        exit 9 ;;
-esac
-exit 0
-STUB
-chmod 0755 "$stub_dir/ssh"
-
-call_log="$tmpdir/calls.log"
+# The same stub and scratch tree; here the planted record is fixed and what is
+# asserted is the command around it.
 cli_log=$'2026-08-01T00:00:00+00:00 deploy 1.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-02T00:00:00+00:00 deploy 3.0.0 no-backup kasbah=0.1.0 digest=-\n'
 CRC=0; COUT=""; CERR=""
 kasbah() {
     local rc=0
+    printf '%s' "$cli_log" > "$act"
+    printf '%s' "${CLI_ARCH:-}" > "$arch"
+    H_ACT=ok; H_ARC="${CLI_ARCH:+ok}"; H_ARC="${H_ARC:-missing}"; plant
+    H_ARC=missing; H_DMG=no; H_RSN=""
     : > "$call_log"
     ( cd "$project" && env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
           HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$tmpdir/runtmp" \
-          CALL_LOG="$call_log" FAKE_ACTIVE="${FAKE_ACTIVE-$cli_log}" \
-          FAKE_ACTIVE_STATE="${FAKE_ACTIVE_STATE:-ok}" FAKE_UNREACHABLE="${FAKE_UNREACHABLE:-}" \
+          CALL_LOG="$call_log" FAKE_APPS="$FAKE_APPS" FAKE_UNREACHABLE="${FAKE_UNREACHABLE:-}" \
           "$KASBAH_BIN" "$@" ) >"$tmpdir/o" 2>"$tmpdir/e" </dev/null || rc=$?
     CRC=$rc; COUT="$(cat "$tmpdir/o")"; CERR="$(cat "$tmpdir/e")"
     return 0
@@ -664,13 +660,13 @@ assert '[ "$(state_of last_server)" = "deploy@vps" ]' \
 assert '[ "$(state_of last_version)" = "" ]' \
     "and touches nothing else — reading a record deploys nothing (state: $(cat "$project/.kasbah/state.json" 2>/dev/null | tr -d '\n'))"
 
-# Read-only, and cheap: the probe, the marker, the record, the teardown. Any
-# fifth call is a step this command should not be making.
-assert '[ "$(grep -c "^ssh|" <<<"$calls")" = "4" ]' \
-    "history opens one connection and asks two questions down it (calls: $calls)"
-assert '! grep -qE "mkdir|rm |touch|tee|> " <<<"$calls"' \
-    "and none of them writes to the server (calls: $calls)"
-assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "nothing is shipped (calls: $calls)"
+# Read-only: the bootstrap probe, the marker, the record — and nothing that
+# writes, ships or runs a deploy step.
+assert '[ "$(grep -c "vlog" <<<"$calls")" = "1" ] && [ "$(grep -c "marker" <<<"$calls")" = "1" ]' \
+    "history reads the marker and the record once each (calls: $calls)"
+assert '! grep -qE "'"'"'(setup-env|deploy|load|install-self)'"'"'|mkdir|rm |touch|tee|> " <<<"$calls"' \
+    "and none of its calls writes to the server (calls: $calls)"
+assert '! grep -qE "scp|rsync" <<<"$calls"' "nothing is shipped (calls: $calls)"
 
 # The server is remembered, so the next run needs no argument.
 kasbah history
@@ -715,13 +711,14 @@ assert 'grep -qF "never deployed to one" <<<"$CERR"' "saying to pass it once (go
 assert '[ ! -f "$project/.kasbah/state.json" ]' "and writes no state file"
 
 # --all belongs to history alone, and the archive really does arrive only with it.
-arch_b64="$(printf '%s\n' '2026-01-04T10:00:00+00:00 deploy 0.9.0 no-backup kasbah=0.1.0 digest=-' | gzip -c | base64 -w0)"
-FAKE_ARCHIVE_STATE=ok FAKE_ARCHIVE_B64="$arch_b64" kasbah history deploy@vps --all
+CLI_ARCH=$'2026-01-04T10:00:00+00:00 deploy 0.9.0 no-backup kasbah=0.1.0 digest=-\n'
+kasbah history deploy@vps --all
 assert '[ "$CRC" = 0 ]' "history --all runs against a real gzip archive (rc $CRC: $CERR)"
 assert 'grep -qF "0.9.0" <<<"$COUT"' "and the archived entry is in the table (got '$COUT')"
-FAKE_ARCHIVE_STATE=ok FAKE_ARCHIVE_B64="$arch_b64" kasbah history deploy@vps
+kasbah history deploy@vps
 assert '! grep -qF "0.9.0" <<<"$COUT"' "while plain history leaves it out (got '$COUT')"
 assert 'grep -qF "1 more entry archived" <<<"$COUT"' "and says it is there (got '$COUT')"
+CLI_ARCH=""
 
 kasbah pending deploy@vps --all
 assert '[ "$CRC" != "0" ]' "pending has no --all (rc $CRC)"
@@ -736,7 +733,7 @@ assert '[ "$CRC" != "0" ]' "changelog refuses a version (rc $CRC)"
 assert 'grep -qF "takes no version" <<<"$CERR"' "pointing at the command that takes one (got '$CERR')"
 kasbah pending deploy@vps deploy@other
 assert '[ "$CRC" != "0" ]' "and two servers is one run too many (rc $CRC)"
-assert 'grep -qF "two servers given" <<<"$CERR"' "which is _deploy_classify_arg's own refusal (got '$CERR')"
+assert 'grep -qF "two servers given" <<<"$CERR"' "the same refusal deploy and rollback make (got '$CERR')"
 kasbah pending deploy@vps 2.0.0
 assert '[ "$CRC" = "0" ]' "while a server and a version together are the ordinary call (rc $CRC: $CERR)"
 assert 'grep -qF "v3.0.0..v2.0.0" <<<"$COUT"' "and the version ends the range (got '$COUT')"

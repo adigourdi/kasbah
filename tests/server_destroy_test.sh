@@ -147,13 +147,13 @@ assert '[ "$got_reserved" = ".kasbah $lib_reserved" ]' \
 
 got_helpers=$(sed -n 's/^helpers=//p' <<<"$out")
 assert '[ "$got_helpers" = "remote-deploy.sh setup-env.sh" ]' \
-    "the helper list is the two files a deploy installs (got '$got_helpers')"
-# Each one is really shipped by a deploy, in the file that ships it —
-# remote-deploy.sh by lib/deploy.sh, setup-env.sh by lib/env_cmd.sh's
-# env_ship_helper. Two files, one list.
+    "the helper list is the two files a pre-10.8 deploy installed (got '$got_helpers')"
+# Nothing ships either one any more — the engine and the env setup run in the
+# server binary — so the list is what servers deployed before Phase 10.8 still
+# carry, and it is pinned to docs/files.md's two rows for them.
 for h in $got_helpers; do
-    assert 'grep -rqF "scripts/$h" "$repo_dir/lib/deploy.sh" "$repo_dir/lib/env_cmd.sh"' \
-        "and a deploy really ships scripts/$h"
+    assert 'grep -qF "scripts/$h" "$repo_dir/docs/files.md"' \
+        "and docs/files.md still names scripts/$h for destroy to remove"
 done
 
 # The keys of <apps>/mail/.env kasbah owns, pinned as a **set** against

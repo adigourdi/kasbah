@@ -890,7 +890,7 @@ assert '! grep -qF "refused before changing anything" <<<"$out"' \
 
 # --- The return trip, and whether it needs --allow-stopped ----------------------------------
 #
-# templates/remote-deploy.sh refuses to deploy over a project with history whose
+# `kasbah remote deploy` refuses to deploy over a project with history whose
 # backup: / pre-deploy-hook containers do not exist, which is exactly what a
 # plain drop leaves. Whether that applies is a property of the manifest, so drop
 # reads it rather than telling the operator to.

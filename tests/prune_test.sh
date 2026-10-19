@@ -5,10 +5,10 @@
 # Four layers, because the command has four:
 #   * the pure parts (flag parsing, the month reckoning, the compose read, the
 #     last-3-deployed walk), driven straight through the library;
-#   * the month reckoning again, side by side with rotation's own
-#     `_rd_month_index` out of templates/remote-deploy.sh — the retention window
-#     and the rotation window are one window, and two implementations of "older
-#     than three months" is the drift the whole policy hangs on;
+#   * the month reckoning again, against the table rotation's own MonthIndex
+#     (internal/vlog) is pinned to — the retention window and the rotation
+#     window are one window, and two implementations of "older than three
+#     months" is the drift the whole policy hangs on;
 #   * the remote read step, extracted from its heredoc and run against a fake
 #     apps tree with a stub docker;
 #   * the command itself, through the CLI with a stub ssh that hands back a
@@ -115,30 +115,16 @@ assert 'grep -qF "USER@HOST is required" <<<"$out"' "and says so (got '$out')"
 out=$(drive parse deploy@vps --force)
 assert 'grep -qF "unknown flag" <<<"$out"' "an unknown flag is refused rather than ignored (got '$out')"
 
-# --- The month, against rotation's own copy ---------------------------------------------
+# --- The month, against rotation's ----------------------------------------------------
 #
-# The two implementations are asked the same table. A divergence here is the
-# retention window and the rotation window disagreeing about what "three months"
-# means, which no behavioural test of either one alone can see.
-rd_runner="$tmpdir/rd.sh"
-sed -n '/^_rd_month_index() {/,/^}/p' "$repo_dir/templates/remote-deploy.sh" > "$tmpdir/rd_month.sh"
-assert '[ -s "$tmpdir/rd_month.sh" ]' "rotation's _rd_month_index was extracted from the template"
-assert '[ "$(grep -c "^_rd_month_index() {" "$repo_dir/templates/remote-deploy.sh")" = 1 ]' \
-    "and there is exactly one of it, so the extraction is unambiguous"
-cat > "$rd_runner" <<'RUN'
-#!/usr/bin/env bash
-set -uo pipefail
-. "$1"
-if out=$(_rd_month_index "$2"); then printf '%s\n' "$out"; else printf 'refused\n'; fi
-RUN
-
-for ts in 2026-08-01 2026-08-13T22:30:37+00:00 2026-01-31T00:00:00Z 2027-12-01 \
-          1999-01-01T00:00:00Z 2026-8-01 not-a-date "" 2026-04-30T23:00:00.5Z; do
+# Rotation runs in the server binary (internal/vlog → MonthIndex), and its
+# TestMonthIndexTable reads this same table: change one side and the other fails.
+while IFS='|' read -r ts theirs; do
     ours=$(drive month "$ts" | sed -n 's/^idx=//p')
-    theirs=$(bash "$rd_runner" "$tmpdir/rd_month.sh" "$ts")
+    [ -n "$ours" ] || ours=refused
     assert '[ "$ours" = "$theirs" ]' \
         "prune and rotation read the month of '$ts' the same way (prune '$ours', rotation '$theirs')"
-done
+done < "$repo_dir/internal/vlog/testdata/month-index.table"
 # The cutoff itself, as docs/build-deploy.md states it: writing in August prunes
 # April and earlier. Three months back from 2026-08 is 2026-05, and the
 # comparison is strictly less than.
@@ -766,8 +752,7 @@ write_payload
 # duplicate, so a byte-identical copy can sit in a file with every suite green
 # (docs/phases/07-operate.md → 7.1b). Heredoc-aware: the remote payload is a
 # different shell program with a namespace of its own.
-for f in lib/prune.sh lib/versions_log.sh lib/common.sh lib/build_push.sh \
-         lib/remote_deploy.sh libexec/kasbah-bash; do
+for f in lib/prune.sh lib/versions_log.sh lib/common.sh libexec/kasbah-bash; do
     dups=$(awk '/<<.REMOTE./{r=1} /^REMOTE$/{r=0} r==0 && /^[a-z_]+\(\)/{print $1}' \
                "$repo_dir/$f" | LC_ALL=C sort | uniq -d)
     assert '[ -z "$dups" ]' "$f defines each function once (duplicates: $dups)"

@@ -473,7 +473,7 @@ small without sacrificing history.
    step 8, so this is the step that notices a template whose keys have
    changed since. --on-drift= answers it without a terminal; exit 5 when
    there is no answer to be had.
-10. SSH into VPS and run scripts/remote-deploy.sh rollback <target>:
+10. Run the engine on the VPS in rollback mode (`kasbah remote deploy run`):
      a. Run pre-rollback hooks against currently-running containers.
      b. Retag :<target> as :current for each v<target>-era built image.
      c. docker compose up -d --remove-orphans.
@@ -521,9 +521,8 @@ Restores:
   .env.prod.example, init SQL, etc.
 - v<target>'s `traefik-dynamic.yml` → /apps/traefik/dynamic/<name>.yml,
   rsynced out-of-band (same path as deploy).
-- Kasbah helper scripts (`setup-env.sh`, `remote-deploy.sh`) — from the
-  **current** kasbah install, not from git. Helpers belong to kasbah,
-  not to the project's version history.
+- The engine is the **current** kasbah binary on the server, not anything
+  from git: tooling belongs to kasbah, not to the project's version history.
 
 Does NOT restore:
 - `.env` secret values. These aren't in git; only `.env.prod.example` is.
@@ -535,14 +534,12 @@ Does NOT restore:
 
 ## The engine on the VPS
 
-`kasbah deploy` runs the VPS side in the kasbah binary itself —
-`kasbah remote deploy run`, the manifest's data passed as JSON on stdin — and
-ships no script. `kasbah rollback` and `kasbah deploy X.Y.Z` still sync two
-scripts per project until they are Go (Phase 10, 10.8):
-
-- `setup-env.sh` — rich env template renderer (see `env-template.md`).
-- `remote-deploy.sh` — orchestrates the VPS-side flow. Modes (the Go engine
-  has the same two):
+`kasbah deploy` and `kasbah rollback` run the VPS side in the kasbah binary
+itself — `kasbah remote deploy run`, the manifest's data (from the working tree,
+or from the `v<target>` tag) passed as JSON on stdin — and ship no script.
+Servers deployed before Phase 10 may still hold `scripts/setup-env.sh` and
+`scripts/remote-deploy.sh`; nothing runs them, and `server destroy` removes them.
+The engine has two modes:
   - `deploy <version>`  — backup → pre-deploy → retag :current → up → health → post-deploy.
   - `rollback <version>` — pre-rollback → retag :current → up → health → post-rollback.
 
@@ -555,8 +552,7 @@ scripts per project until they are Go (Phase 10, 10.8):
 The engine writes nothing to stdout for a human. Its progress, its warnings
 and every command it runs narrate on **stderr**, and stdout carries exactly
 one thing: the report, printed as the run's last act — *after* the
-`versions.log` entry is appended. The Go engine prints it as one JSON line;
-`remote-deploy.sh` as `key=value` pairs, one per line.
+`versions.log` entry is appended, as one JSON line.
 
 ```
 {"version":"1.3.0","prev_version":"1.2.0","deployed_before":true,"backup":"backups/pre-deploy-20260419-101500.sql.gz","digest":"sha256:9f2a…,sha256:c81b…"}
@@ -626,14 +622,11 @@ attempted.
   `<project>/.deploy.lock`, held on its own file descriptor — flocking the
   directory path itself is not portable.
 
-Those two scripts are the only kasbah-owned **scripts** in a project directory
-on the VPS (every file kasbah writes there is listed in `files.md`), written by
-rollback and versioned deploys, overwritten each time to match the kasbah
-driving them. The manifest never reaches the server: the Go engine receives its
-data on stdin, and `remote-deploy.sh` has it pre-rendered into a marked block.
-`.deploy.lock` is kasbah's too — created, never shipped, its contents never
-read — and both engines `flock(2)` the same file, so a Bash rollback and a Go
-deploy exclude each other.
+The manifest never reaches the server: the engine receives its data on stdin.
+`.deploy.lock` is kasbah's — created, never shipped, its contents never read —
+and the engine `flock(2)`s it, as `kasbah drop` does through util-linux
+`flock`, so the two exclude each other (every file kasbah writes in a project
+directory is listed in `files.md`).
 
 ## What this intentionally skips
 

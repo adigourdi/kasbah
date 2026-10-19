@@ -627,9 +627,9 @@ else
 fi
 kv compose_version "$(docker compose version --short 2>/dev/null | flat)"
 
-# flock is here for the same reason the others are: scripts/remote-deploy.sh
-# holds the deploy lock with it and refuses to run without one, and a
-# prerequisite discovered mid-deploy arrives after the rsync and the .env render.
+# flock is here for the same reason the others are: `kasbah drop` holds the
+# deploy lock with it and refuses to run without one (the deploy engine takes
+# the same lock through flock(2) and needs no command).
 for c in rsync openssl gzip flock; do
     if command -v "$c" >/dev/null 2>&1; then kv "have_$c" yes; else kv "have_$c" no; fi
 done
@@ -927,7 +927,7 @@ _server_init_preflight() {
     # it in rd_lock, mid-deploy, after the files are already on the server.
     if [ "${_SI_FACT[have_flock]}" != yes ]; then
         rows+=("flock (util-linux) on the remote — it is missing."
-               "  scripts/remote-deploy.sh takes the deploy lock with it and will not run"
+               "  \`kasbah drop\` takes the deploy lock with it and will not run"
                "  without one; install util-linux with the distro's package manager.")
     fi
 

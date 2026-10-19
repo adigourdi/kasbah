@@ -20,17 +20,17 @@
 # KASBAH_* managed-block writer, so the VPS copy answers "has this .env
 # drifted" with the same code the workstation runs.
 #
-# Dual-mode. Sourced as a library locally; the same bytes are rsynced to the
-# VPS as scripts/setup-env.sh and executed there, where no other kasbah file
-# exists — so nothing here may source common.sh, read KASBAH_LIB_DIR, or call
+# Dual-mode. Sourced as a library locally; executed whole by internal/env's
+# parity test (and, before 10.8, shipped to the VPS as scripts/setup-env.sh,
+# where no other kasbah file exists) — so nothing here may source common.sh, read KASBAH_LIB_DIR, or call
 # info/warn/err/die. Tool budget: coreutils and bash builtins, never a
 # separately-packaged one (awk, bc, jq).
 #
 # Usage (executed):
-#   ./scripts/setup-env.sh                          # interactive
-#   ./scripts/setup-env.sh /path/to/dir             # custom directory
-#   ./scripts/setup-env.sh --drift  /path/to/dir    # key=value drift report
-#   ./scripts/setup-env.sh --inject /path/to/dir KASBAH_X=y ...
+#   bash env.sh                          # interactive
+#   bash env.sh /path/to/dir             # custom directory
+#   bash env.sh --drift  /path/to/dir    # key=value drift report
+#   bash env.sh --inject /path/to/dir KASBAH_X=y ...
 # =============================================================================
 
 # Never exported, so the executed case reaches the guard with it unset and the
@@ -665,7 +665,7 @@ _env_report() {
 }
 
 # Entry point for the executed case. With no mode word the arguments pass
-# straight through to the interactive setup, so the shipped scripts/setup-env.sh
+# straight through to the interactive setup, so the executed file
 # keeps the original's `[target_dir]` calling convention and its exit codes —
 # a mode is a leading `--word`, which a target directory is not.
 #

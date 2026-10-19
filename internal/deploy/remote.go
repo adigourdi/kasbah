@@ -14,7 +14,7 @@ import (
 )
 
 // RemoteUsage names `kasbah remote deploy`'s modes.
-const RemoteUsage = "usage: kasbah remote deploy prepare APPS DATA NAME CLIENT [DIR…] | run DIR (spec on stdin) | mail APPS | seed CONTAINER PATH (file on stdin)"
+const RemoteUsage = "usage: kasbah remote deploy prepare APPS DATA NAME CLIENT [DIR…] | run DIR (spec on stdin) | mail APPS | seed CONTAINER PATH (file on stdin) | images VERSION IMAGE…"
 
 // Remote is `kasbah remote deploy …` on a server. stdout is a protocol in
 // every mode; narration and docker's output go to stderr.
@@ -32,6 +32,8 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return mailFacts(args[1], stdout)
 	case args[0] == "seed" && len(args) == 3:
 		return seed(args[1], args[2], stdin, stdout)
+	case args[0] == "images" && len(args) >= 2:
+		return images(args[1], args[2:], stdout)
 	}
 	fmt.Fprintln(stderr, RemoteUsage)
 	return 1
@@ -151,5 +153,19 @@ func seed(container, target string, stdin io.Reader, stdout io.Writer) int {
 		}
 	}
 	fmt.Fprintf(stdout, "mail_seed=%s\n", state)
+	return 0
+}
+
+// images reports which <image>:<version> are no longer on the server. The
+// count says the check ran over the whole set: a missing= computed over fewer
+// images is an empty answer that looks like a pass.
+func images(version string, list []string, stdout io.Writer) int {
+	var missing []string
+	for _, img := range list {
+		if exec.Command("docker", "image", "inspect", img+":"+version).Run() != nil {
+			missing = append(missing, img)
+		}
+	}
+	fmt.Fprintf(stdout, "checked=%d\nmissing=%s\n", len(list), strings.Join(missing, ","))
 	return 0
 }

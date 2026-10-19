@@ -177,18 +177,18 @@ _server_prune_parse_args() {
 # The month a timestamp falls in, as `year * 12 + month`, which is what makes
 # `now - 3` cross a year boundary by arithmetic rather than by string surgery.
 #
-# **This is deliberately the same reckoning as `_rd_month_index` in
-# templates/remote-deploy.sh**, down to the loose leading-`YYYY-MM-` test: the
+# **This is deliberately the same reckoning as rotation's `MonthIndex` in
+# internal/vlog**, down to the loose leading-`YYYY-MM-` test: the
 # retention window and the rotation window are one window (docs/build-deploy.md
 # → Retention), and two implementations of "older than three months" is the
 # drift this repository keeps writing findings about. Phase 5 measured that
 # tightening the predicate there stops rotation entirely; tightening it here
-# would stop prune. tests/prune_test.sh drives one table through both copies.
+# would stop prune. One table (internal/vlog/testdata) pins both copies.
 #
 # The month is read off the timestamp's own leading `YYYY-MM`, offset and all —
 # a `docker load`ed image keeps the offset of the machine that built it, and the
 # rig has produced `2026-08-23T01:00:06+01:00`. The parallel with rotation stops
-# at the reckoning: `templates/remote-deploy.sh` writes `date -u -Iseconds`, so
+# at the reckoning: versions.log's timestamps are written in UTC (`+00:00`), so
 # rotation's inputs are always `+00:00` and it never meets a real offset, while
 # `.Created` may. The exposure that leaves, stated plainly: an image built under
 # a negative offset within hours of a month boundary reads as one month early,
@@ -340,7 +340,7 @@ kv apps_path "$apps"
 kv apps_source "$apps_source"
 
 # The month, from the server's clock and in UTC, exactly as rotation asks it
-# (templates/remote-deploy.sh → rd_rotate_log). One clock decides both windows.
+# (internal/vlog → Rotate). One clock decides both windows.
 kv now_month "$(date -u +%Y-%m)"
 
 if command -v docker >/dev/null 2>&1; then kv have_docker yes; else kv have_docker no; fi

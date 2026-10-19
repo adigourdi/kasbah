@@ -4,7 +4,6 @@
 package vlog
 
 import (
-	"bufio"
 	"bytes"
 	"compress/gzip"
 	"errors"
@@ -275,28 +274,34 @@ func Rotate(dir string, now time.Time) (moved, cut int, err error) {
 	return moved, cut, nil
 }
 
-// Decode reads an archive on the workstation, where nothing about it is fatal:
-// every complete member and the whole lines of a cut one, and why names what
-// stopped the read ("" when it read whole).
+// Decode reads an archive as zcat does — every decoded byte, a cut member's
+// partial line included, trailing zero padding ignored; why names what
+// stopped the read ("" when whole). Nothing decoded is "is not gzip".
 func Decode(data []byte) (text, why string) {
 	if len(data) == 0 {
 		return "", ""
 	}
-	zr, err := gzip.NewReader(bytes.NewReader(data))
+	br := bytes.NewReader(data)
+	zr, err := gzip.NewReader(br)
 	if err != nil {
 		return "", "is not gzip"
 	}
 	var out bytes.Buffer
-	_, err = io.Copy(&out, bufio.NewReader(zr))
-	if err != nil {
-		// Only whole lines of a member cut short are history.
-		t := out.String()
-		if i := strings.LastIndex(t, "\n"); i >= 0 {
-			t = t[:i+1]
-		} else {
-			t = ""
+	for {
+		zr.Multistream(false)
+		if _, err = io.Copy(&out, zr); err != nil {
+			break
 		}
-		return t, "ends in a truncated gzip member"
+		rest := data[len(data)-br.Len():]
+		if len(bytes.Trim(rest, "\x00")) == 0 {
+			return out.String(), ""
+		}
+		if err = zr.Reset(br); err != nil {
+			break
+		}
 	}
-	return out.String(), ""
+	if out.Len() == 0 {
+		return "", "is not gzip"
+	}
+	return out.String(), "ends in a truncated gzip member"
 }

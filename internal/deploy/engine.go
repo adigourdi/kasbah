@@ -58,6 +58,9 @@ type Report struct {
 	DeployedBefore bool   `json:"deployed_before"`
 	Backup         string `json:"backup"`
 	Digest         string `json:"digest"`
+	// ArchiveOnly: the history behind DeployedBefore is versions.log.gz's
+	// alone. Optional, so an older workstation reads the report unchanged.
+	ArchiveOnly bool `json:"archive_only,omitempty"`
 }
 
 // ReportKey marks the protocol line on stdout.
@@ -71,6 +74,7 @@ func (f fatal) Error() string { return f.msg }
 func failf(format string, a ...any) error { return fatal{fmt.Sprintf(format, a...)} }
 
 type engine struct {
+	archiveOnly  bool
 	dir, project string
 	sp           Spec
 	stderr       io.Writer
@@ -168,7 +172,14 @@ func (e *engine) run() (*Report, error) {
 	if en := vlog.Parse(last); last != "" && en.OK {
 		prev = en.Version
 	}
-	before := last != ""
+	// An absent active log is not a first deploy while the archive holds
+	// entries: rotation never empties the log, so it was lost or replaced.
+	if last == "" {
+		if fi, err := os.Stat(filepath.Join(e.dir, vlog.Archive)); err == nil && fi.Size() > 0 {
+			e.archiveOnly = true
+		}
+	}
+	before := last != "" || e.archiveOnly
 	if err := e.outgoing(prev, before); err != nil {
 		return nil, err
 	}
@@ -228,11 +239,11 @@ func (e *engine) run() (*Report, error) {
 	case moved > 0:
 		e.note("versions.log: %d entries older than %s moved to versions.log.gz", moved, vlog.MonthName(cut))
 	}
-	return &Report{Version: sp.Version, PrevVersion: prev, DeployedBefore: before, Backup: backup, Digest: digest}, nil
+	return &Report{Version: sp.Version, PrevVersion: prev, DeployedBefore: before, Backup: backup, Digest: digest, ArchiveOnly: e.archiveOnly}, nil
 }
 
 // lock is flock(2) on .deploy.lock, held until the process exits — the lock
-// util-linux's flock takes, so `drop` and a Bash rollback see the same one.
+// util-linux's flock takes, so `drop` sees the same one.
 func (e *engine) lock() error {
 	path := filepath.Join(e.dir, ".deploy.lock")
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o666)
@@ -358,6 +369,9 @@ func (e *engine) outgoing(prev string, before bool) error {
 		return nil
 	}
 	recorded := "versions.log has entries for it, though its last line is not one a version can be read out of"
+	if e.archiveOnly {
+		recorded = "versions.log holds no entry, and versions.log.gz holds archived ones"
+	}
 	if prev != "" {
 		recorded = "versions.log records " + prev
 	}

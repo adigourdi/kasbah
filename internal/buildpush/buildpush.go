@@ -58,7 +58,7 @@ See docs/build-deploy.md and docs/cli.md.
 // Usage is `kasbah build-push --help`.
 func Usage() string { return usage }
 
-// Parse reads build-push's arguments, in order, as lib/build_push.sh does.
+// Parse reads build-push's arguments, in order, as lib/build_push.sh did.
 func Parse(args []string) (Options, error) {
 	var o Options
 	for _, a := range args {

@@ -423,7 +423,7 @@ for bad in Alpha 1alpha -alpha "al pha" "al/pha" "" traefik data backups; do
 done
 # The exception, and the one that matters: `mail` is a repository — kasbah's own
 # (D7) — so an operator has to be able to name it. It is refused as a project's
-# `client:`, which is a different question asked in lib/deploy.sh.
+# `client:`, which is a different question deploy asks (internal/manifest).
 assert '[ "$(drive check repo-name mail)" = "ok" ]' \
     "mail is a repository name: it is the one kasbah keeps the VPS's mailboxes in"
 drive check password "$(printf 'a\nb')" >/dev/null; rc=$?

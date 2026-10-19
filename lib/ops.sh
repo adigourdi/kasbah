@@ -24,7 +24,7 @@ _KASBAH_OPS_LOADED=1
 #     states the rule for `exec` — an argument carrying an `@` is the server —
 #     and `logs` has the identical problem, so the rule is written once here
 #     (_ops_classify_arg) and both commands call it. It is the same rule
-#     lib/deploy.sh's _deploy_classify_arg applies to its server/version pair.
+#     internal/deploy's Classify applies to its server/version pair.
 #   * where the stack is. The apps path comes from the server's own marker
 #     (lib/marker.sh), never from a flag. `server init` takes `--apps-path`
 #     because it is the command that *establishes* the path and writes the
@@ -34,7 +34,7 @@ _KASBAH_OPS_LOADED=1
 #     discovers it, because a value repeated on every invocation is a belief
 #     each caller holds separately (docs/cli.md).
 #   * how compose is named. `-p <manifest name>`, exactly as
-#     templates/remote-deploy.sh's `dc()` does it, because `name:` in the
+#     the deploy engine's compose call (internal/deploy) does it, because `name:` in the
 #     compose file is the weakest source of the project name and
 #     COMPOSE_PROJECT_NAME in the server's login shell outranks it.
 
@@ -251,10 +251,8 @@ _ops_require_exec_args() {
 # --- The server -------------------------------------------------------------------
 
 # The positional, else the server this project last talked to. With neither
-# there is nothing to guess at (docs/project-manifest.md). lib/env_cmd.sh keeps
-# its own copy of this for the same reason this one does: sourcing lib/deploy.sh
-# to reach _deploy_resolve_target would drag the whole build/ship/rollback
-# surface into a command that reads logs.
+# there is nothing to guess at (docs/project-manifest.md) — the rule
+# internal/deploy applies to deploy and rollback.
 _ops_resolve_target() {
     local _rt_cmd="$1" _rt_stored=""
 
@@ -278,8 +276,8 @@ _ops_resolve_target() {
 # so there is no shell on the far side to `cd` in — and there does not need to
 # be one, because compose takes the *project directory* from the base compose
 # file's own directory, which is what makes `<dir>/.env` load exactly as it does
-# for templates/remote-deploy.sh's `dc()`. The file is at that path by contract:
-# lib/deploy.sh refuses a manifest whose sync: list does not land on
+# for the deploy engine's (internal/deploy). The file is at that path by contract:
+# deploy refuses a manifest whose sync: list does not land on
 # `compose.yml`, because the server runs compose on that and nothing else.
 _ops_compose_cmd() {
     local _cc_cmd="$1" _cc_dir
@@ -300,7 +298,7 @@ _ops_compose_cmd() {
 # No pty, ever — the opposite answer from `exec` below, and for a reason that
 # does not depend on who is watching. `ssh -t` cooks the far side's output
 # through a terminal line discipline, so every `\n` arrives as `\r\n`; that is
-# the trap templates/remote-deploy.sh names for its hooks, and a log is data.
+# the trap the deploy engine's hook runner avoids, and a log is data.
 # There is no input to carry either, `-f` included: following a log needs no
 # keystroke, only an interrupt, and SIGINT reaches ssh through the terminal's
 # foreground process group without a pty being involved.
@@ -395,8 +393,8 @@ cmd_logs() {
 # right for different uses of the same verb: a shell wants a pty and a dump
 # redirected into a file must not have one.
 #
-# Both `-t 0` and `-t 1` are required, the same pair lib/env_cmd.sh's
-# _env_run_setup checks. stdin alone is not enough: run from a terminal with
+# Both `-t 0` and `-t 1` are required, the same pair the env setup
+# (internal/env) checks. stdin alone is not enough: run from a terminal with
 # stdout redirected — `kasbah exec db -- pg_dump … > dump.sql` — a pty would put
 # a CR before every LF in the file. So the pty is asked for only when there is
 # nothing downstream to corrupt.
@@ -404,7 +402,7 @@ cmd_logs() {
 # Neither branch refuses: unlike the .env generator, `docker compose exec` has
 # no prompt that would hang unanswered. Without a terminal it runs under `-T`,
 # which is compose's own spelling of "no tty" (and is not a `docker exec` flag
-# at all — see templates/remote-deploy.sh's hook runner, which uses the other
+# at all — see the deploy engine's hook runner (internal/deploy), which uses the other
 # one). ssh_run closes stdin with `-n` there, so a command that reads stdin sees
 # EOF rather than swallowing the caller's; docs/cli.md promises no stdin path
 # and this is why.

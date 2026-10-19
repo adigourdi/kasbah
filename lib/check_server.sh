@@ -692,9 +692,9 @@ _cs_project_dir() {
 # `.env.prod.example` — the current one, which is the whole point of asking the
 # server rather than trusting the copy that was shipped with the last deploy.
 #
-# `env_drift` is the same function in the same bytes that runs on the VPS as
-# scripts/setup-env.sh, so the local check and the remote one cannot drift apart
-# by agreeing to differ (docs/compliance.md → Env). It takes paths, and the
+# `env_drift` is the drift rule internal/env's parity test holds the server's
+# `kasbah remote setup-env drift` to, so the local check and the remote one cannot
+# drift apart by agreeing to differ (docs/compliance.md → Env). It takes paths, and the
 # server's `.env` is deliberately not written to one: it holds the project's
 # secrets, so it is handed over as a process substitution and read out of the
 # pipe. Only key *names* are ever printed.

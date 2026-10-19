@@ -376,7 +376,6 @@ require vps "$snap_dir/vps" \
     '<apps>/backups' \
     '<apps>/<project>' '<apps>/<project>/compose.yml' '<apps>/<project>/.env' \
     '<apps>/<project>/.env.prod.example' '<apps>/<project>/versions.log' \
-    '<apps>/<project>/scripts/remote-deploy.sh' '<apps>/<project>/scripts/setup-env.sh' \
     '<apps>/<project>/.kasbah-client' '<apps>/<project>/backups/pre-deploy-*' '<data>/<project>'
 require ws "$snap_dir/ws.project" '<project-dir>/.kasbah' '<project-dir>/.kasbah/state.json'
 

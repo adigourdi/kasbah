@@ -683,8 +683,7 @@ Flow (no-args / working-tree path):
    Then refresh the kasbah-managed `KASBAH_*` keys in `.env` (resource
    limits from the server marker) — reserved prefix, exempt from drift.
 7. Mail claim check (if manifest has `mail:`).
-8. Run the engine on the VPS, `kasbah remote deploy run` (a versioned deploy
-   still runs `remote-deploy.sh deploy <version>` until 10.8):
+8. Run the engine on the VPS, `kasbah remote deploy run`:
    - If `backup:` configured and its `check` exits 0 → run backup (against
      previous version's still-running containers), rotate.
    - Run `pre-deploy` hooks against previous version's containers.
@@ -741,7 +740,7 @@ Flow (see `build-deploy.md` for full detail):
 7. Env drift check, exactly as `deploy` runs it — v<target>'s
    `.env.prod.example` has just landed, and its keys may differ from the ones
    the server was last set up against. `--on-drift=` answers it headlessly.
-8. On VPS: run `remote-deploy.sh rollback <target>`:
+8. On VPS: run the engine in rollback mode, `kasbah remote deploy run`:
    - Run `pre-rollback` hooks against currently-running containers.
    - Retag `:<target>` as `:current` for each built image.
    - `docker compose up -d --remove-orphans`.
@@ -861,7 +860,7 @@ Either decline exits 1 having changed nothing. `--yes` skips both, for scripts;
 without a terminal an unanswered prompt is a hard fail naming `--yes`.
 
 Takes `<project>/.deploy.lock` **in the act**, the same exclusive lock
-`remote-deploy.sh` holds, so nothing is removed while a deploy is running. The
+the deploy engine holds, so nothing is removed while a deploy is running. The
 batched read, the plan and both confirmations run **unlocked** — a read step
 never writes into the tree it is reading — so a deploy starting while you answer
 the second prompt makes the act refuse. That refusal reads as one: a run stopped
@@ -1091,7 +1090,7 @@ Referenced elsewhere in the docs but not yet in v0.1:
   the project's `.env` on the server is not in a state kasbah will deploy
   against, and nothing was deployed: drift the user declined to fix
   (`--on-drift=abort`, or an aborted setup), a `.env` that is missing or
-  unrenderable with no terminal to render it on, **and** `setup-env.sh` not
+  unrenderable with no terminal to render it on, **and** the setup not
   finishing on the far side — including when it could not be run at all. One
   code rather than several, because the operator's next move is the same in
   every case: run `kasbah env` from a terminal, or pass `--on-drift=`.
