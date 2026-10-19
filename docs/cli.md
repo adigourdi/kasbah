@@ -626,6 +626,9 @@ invent a command.
 ### `kasbah build-push [USER@HOST]`
 
 1. Resolve version from git tag on HEAD (exactly one `vX.Y.Z`). Fail otherwise.
+   Then reach the server and ship the kasbah binary if its own is absent or
+   older — before any build, so an unreachable server (exit 3) or one `server
+   init` never prepared (exit 4) is known in seconds.
 2. Parse `compose.prod.yml` for services with a `build:` key. If zero, exit 0
    (stock-only project — nothing to ship; `compose up -d` will pull stock images at deploy time).
 3. `docker compose -p <name> -f compose.prod.yml build`, under
@@ -633,10 +636,10 @@ invent a command.
    interpolate without them and a build has no server to read them from
    (`build-deploy.md`).
 4. Tag each built image: `<image>:<version>`.
-5. `docker save ... | gzip > ${TMPDIR:-/tmp}/<name>-<version>.tar.gz`.
-6. `rsync` to VPS `/tmp`, `docker load` there.
-7. Clean up tarball on both ends — by a trap, so a failed transfer leaks nothing.
-8. `git push origin v<version>` if the tag isn't yet on origin. A repository
+5. One `docker save` of every built image, gzipped and streamed over ssh into
+   the server's `kasbah remote load`, which feeds `docker load` and confirms each
+   image. Nothing is written to disk on either end; a stream cut short is refused.
+6. `git push origin v<version>` if the tag isn't yet on origin. A repository
    with no `origin` remote at all warns and exits 0: the image has already
    shipped by then, and a local-only project is a real shape.
 

@@ -327,13 +327,27 @@ the Go mode deliberately and record it in `files.md`. In `lib/env.sh`, EOF at th
 behaviour and must become an explicit abort. `export FOO=x` is rewritten as
 `FOO=x`. The env step sits after the project rsync and before the remote deploy.
 
-### 10.7 — Ship: `build-push` and `deploy` (L) — the milestone
+### 10.7 — Ship: `build-push` (M)
+Split on contact (2026-10-19): `build-push` first, `deploy` as **10.7b** — each
+is a review of its own.
+
+**Deliverables**
+- [x] `build-push`: `docker compose build` → `docker save | gzip` streamed →
+      rsync → `docker load`, digests recorded — streamed over ssh into the
+      server's `kasbah remote load` with no tarball on either end (2.7 s vs Bash's
+      6.2 s on the rig, two images, 28.7 MB); `digest=` is deploy's (10.7b). The
+      server is reached and its binary ensured **before** the build, so exit 3/4
+      come first; a server `server init` never prepared is refused (exit 4)
+- [x] `tests/integration/ship_test.sh` green, and `deploy_ship_test.sh` with Go
+      `build-push` feeding Bash `deploy`
+
+**Verify on:** rig.
+
+### 10.7b — Ship: `deploy` (L) — the milestone
 The first deploy driven by Go on both ends. It runs through every unknown at
 once: shipping the binary, the protocol, the remote lock, prompts over SSH.
 
 **Deliverables**
-- [ ] `build-push`: `docker compose build` → `docker save | gzip` streamed →
-      rsync → `docker load`, digests recorded
 - [ ] `deploy` and `kasbah remote deploy`: backup → pre-deploy hooks → retag
       `:current` → `compose up -d --remove-orphans` → health wait → post-deploy
       hooks → one `versions.log` line, rotated — in that order
@@ -360,9 +374,14 @@ binary over the real uplink and `~/.ssh/config` (a non-standard port).
   the run's completion marker; no report → refuse **before shipping the Traefik
   fragment**. The fragment ships last, always.
 - Hook and `backup.check` output must stay off the protocol channel.
-- Stream the image; never hold a `docker save` in memory.
 - The VPS needed only docker, flock and gzip; it must now need only docker and
   the binary. Lock with the kernel's flock, not the util-linux command.
+- Retag exactly what `build-push` tagged: use `buildpush.Built` (Bash deploy
+  sourced `build_push.sh` for the same reason, `lib/remote_deploy.sh:9-14`); the
+  version rule is `internal/release`.
+- `rollback` still renders `templates/remote-deploy.sh` in its rollback mode until
+  10.8 — leave the template working.
+- A long server-side run cannot sit under the 30 s `RunTimeout`; say what bounds it.
 
 ### 10.8 — Undo: `rollback`, `deploy X.Y.Z`, `history`, `pending`, `changelog` (M)
 Shares 10.7's engine; lands while that engine is fresh.

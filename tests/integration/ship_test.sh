@@ -2,9 +2,10 @@
 # Integration test: `kasbah build-push` — an image built on this workstation
 # reaches the rig's own daemon without a registry.
 #
-# The one thing a hermetic suite cannot check: that `docker save | gzip | rsync
-# | docker load` really moves an image between two daemons, and that what
-# arrives is the image that was built rather than a name that happens to match.
+# The one thing a hermetic suite cannot check: that `docker save | gzip`,
+# streamed over ssh into `kasbah remote load`, really moves an image between two
+# daemons, and that what arrives is the image that was built rather than a name
+# that happens to match.
 # So every assertion is read back off the rig, and the strongest of them opens
 # the arrived image and looks at the file the Dockerfile wrote into it.
 #
@@ -24,9 +25,9 @@ repo_dir="$(cd "$(dirname "$0")/../.." && pwd)"
 
 project=built-app
 project_version=1.5.0
-# Both of the fixture's built services. Two, because one cannot tell a tarball
-# that carried every image from a tarball that carried an image, and because
-# the far side's loaded= count is right by accident with one.
+# Both of the fixture's built services. Two, because one cannot tell a stream
+# that carried every image from one that carried an image, and because the far
+# side's loaded= count is right by accident with one.
 image_web=built-app-web
 image_worker=built-app-worker
 web="$image_web:$project_version"
@@ -38,10 +39,6 @@ worker_marker=built-app-worker-payload-shipped-over-ssh
 
 stock=demo
 stock_version=2.0.0
-
-# Where build-push writes the tarball on this side. The remote half is always
-# /tmp: the far side has no TMPDIR of kasbah's choosing.
-local_tmp="${TMPDIR:-/tmp}"
 
 fail=0
 assert() {
@@ -55,15 +52,9 @@ tmpdir="$(mktemp -d)"
 # Both daemons keep the images this suite loads: rig_clean leaves images alone
 # by design, and the workstation's docker is not this suite's to sweep. Removed
 # by exact name, here and on the rig, whatever happens.
-#
-# The tarballs go with them, and rig_clean does not touch /tmp either. Without
-# this the suite poisons itself: the run that leaks one is the failing run this
-# suite exists to catch, and every run after it would fail on the leftover while
-# blaming itself.
 cleanup() {
-    rig_ssh "docker image rm -f $web $worker $image_web:current $image_worker:current; rm -f /tmp/$project-*.tar.gz /tmp/$stock-*.tar.gz" >/dev/null 2>&1
+    rig_ssh "docker image rm -f $web $worker $image_web:current $image_worker:current" >/dev/null 2>&1
     docker image rm -f "$web" "$worker" "$image_web:current" "$image_worker:current" >/dev/null 2>&1
-    rm -f "$local_tmp/$project-"*.tar.gz "$local_tmp/$stock-"*.tar.gz
     rm -rf "$tmpdir"
 }
 trap cleanup EXIT
@@ -89,6 +80,16 @@ if ! rig_env_init "$tmpdir"; then
 fi
 if ! rig_clean; then
     echo "error: rig_clean could not put the rig into a known state" >&2
+    exit 2
+fi
+# The load runs in the server's own kasbah binary, which lives under <apps>: a
+# server init has never prepared is refused (exit 4) before anything is built.
+rig_domain=rig.test
+if ! kasbah_cli server init "$RIG_TARGET" --no-mail --no-backup --domain="$rig_domain" \
+        --email="ops@$rig_domain" --traefik-auth="dashadmin:rig-dashboard-pw" \
+        >"$tmpdir/init.out" 2>"$tmpdir/init.err" </dev/null; then
+    echo "error: server init failed on a cleaned rig — build-push has no server binary to load with" >&2
+    sed 's/^/       | /' "$tmpdir/init.err" >&2
     exit 2
 fi
 
@@ -202,7 +203,6 @@ report worker "$worker"
 # containers started from the images that arrived.
 kv web_page "$(docker run --rm --entrypoint cat "$web" /usr/share/nginx/html/index.html 2>/dev/null | tr -d '\n')"
 kv worker_page "$(docker run --rm --entrypoint cat "$worker" /etc/built-app-worker.marker 2>/dev/null | tr -d '\n')"
-kv tarballs "$(ls /tmp/$project-*.tar.gz 2>/dev/null | wc -l)"
 exit 0
 REMOTE
 ); read_rc=$?
@@ -219,7 +219,7 @@ done <<<"$read_out"
 missing=()
 for key in web_id web_current web_latest web_tags web_health web_page \
            worker_id worker_current worker_latest worker_tags worker_health worker_page \
-           tarballs containers; do
+           containers; do
     [ -n "${got[$key]+set}" ] || missing+=("$key")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
@@ -259,13 +259,6 @@ assert '[ "${got[containers]}" = "0" ]' \
 local_id=$(docker image inspect -f '{{.Id}}' "$web" 2>/dev/null)
 assert '[ -n "$local_id" ]' "the build left $web on this workstation too (got '$local_id')"
 
-# --- The tarball is on neither end -----------------------------------------------------
-assert '[ "${got[tarballs]}" = "0" ]' \
-    "no tarball is left in the rig's /tmp (found ${got[tarballs]})"
-leftovers=$(find "$local_tmp" -maxdepth 1 -name "$project-*.tar.gz" 2>/dev/null | tr '\n' ' ')
-assert '[ -z "$leftovers" ]' \
-    "nor in $local_tmp on this side (found '$leftovers')"
-
 # --- A stock-only project ships nothing --------------------------------------------------
 # The other half of the deliverable, and the reason it is measured rather than
 # read off stdout: "nothing was shipped" is a claim about two /tmp directories
@@ -279,10 +272,6 @@ assert '[ "$(rig_image_ids)" = "$ids_before" ]' \
     "loading no image at all
         before: $ids_before
         after:  $(rig_image_ids)"
-assert '[ "$(rig_ssh "ls /tmp/$stock-*.tar.gz 2>/dev/null | wc -l" 2>/dev/null | tr -d " \r")" = "0" ]' \
-    "and writing no tarball on the rig"
-leftovers=$(find "$local_tmp" -maxdepth 1 -name "$stock-*.tar.gz" 2>/dev/null | tr '\n' ' ')
-assert '[ -z "$leftovers" ]' "nor here (found '$leftovers')"
 assert '[ ! -e "$stockdir/.kasbah/state.json" ]' \
     "and recording no server, because it talked to none"
 

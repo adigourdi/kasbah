@@ -89,13 +89,10 @@ from compose itself.
      run with KASBAH_CPU_LIMIT=0 KASBAH_MEM_LIMIT=0 in the environment
 4. Tag each built image:
      <image>:<version>
-5. docker save <all built images> | gzip > $TMPDIR/<name>-<version>.tar.gz
-6. rsync tarball to VPS:/tmp, over the same ssh master
-7. ssh VPS:
-     docker load < tarball
-     rm tarball
-8. rm local tarball
-9. git push origin v<version>   # if tag not on origin yet; a repo with no
+5. docker save <all built images> | gzip, streamed over the ssh master into
+     <apps>/.kasbah/bin/kasbah remote load <images>   # gunzip → docker load,
+                                                      # then inspect each image
+6. git push origin v<version>   # if tag not on origin yet; a repo with no
                                 # 'origin' warns and continues, tag stays local
 ```
 
@@ -113,22 +110,24 @@ error while interpolating services.web.cpus: failed to cast to expected type:
 ```
 
 `build-push` therefore builds under `KASBAH_CPU_LIMIT=0 KASBAH_MEM_LIMIT=0`.
-Both are runtime keys — nothing reaches the image, the tarball or the server,
+Both are runtime keys — nothing reaches the image, the stream or the server,
 and `0` is Docker's "no limit" in the event anything ever consumed them. The
 guarantee that keeps it inert is that no `build.args` references a `KASBAH_*`
 key; nothing enforces that today.
 
 **One `docker save` invocation carries every built image.** Saving them
-separately throws away the layer dedup a single tarball gives you across
+separately throws away the layer dedup a single stream gives you across
 images that share a base.
 
-**The tarball moves by `rsync`, not `scp`.** Everything remote goes through
-`lib/ssh.sh`, which has no scp helper and gains none: rsync is already a
-documented remote prerequisite and already rides the deploy's ControlMaster.
-The local side writes into `${TMPDIR:-/tmp}` rather than a hardcoded `/tmp`,
-following the same rule as the ssh control socket; the remote side is
-literally `/tmp`. Both ends are removed by a trap rather than a final line —
-a failed transfer must not leave gigabytes behind on either machine.
+**The images stream; no tarball touches disk.** The workstation gzips `docker
+save` into the ssh master's stdin and the server's kasbah binary gunzips into
+`docker load`, so a failed transfer leaves nothing behind on either machine.
+The gzip trailer is written only after `docker save` exits 0, so a failed save
+arrives as a short stream and is refused. A partial image is never tagged:
+`docker save` writes every layer before `manifest.json`, and docker refuses
+short input. A broken transfer restarts from zero, as the rsync of a tarball
+did. Measured on the rig: 2.7 s for two images (28.7 MB gzipped) against 6.2 s
+for the tarball path.
 
 **A deploy that fails at `compose up` has already moved `:current`.** The
 order is retag → up, so the tag then points at a version whose containers

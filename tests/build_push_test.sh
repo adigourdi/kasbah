@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Test: lib/build_push.sh — everything about `kasbah build-push` that does not
-# need a server, a registry or a Docker daemon.
+# Test: `kasbah build-push` (internal/buildpush) — everything that does not need
+# a real server, a registry or a Docker daemon.
 #
-# Hermetic. `docker`, `ssh` and `rsync` are stubs on PATH that record every
-# invocation and answer as told, so what a case asserts is what kasbah asked
-# for. git is real, against throwaway repositories under a temp directory —
-# including the `origin` the push cases use, which is a bare repo two
-# directories away and never a network.
+# Hermetic. `docker` and `ssh` are stubs on PATH that record every invocation.
+# The ssh stub plays the server by running the remote command here: the
+# bootstrap probe against a scratch apps tree whose kasbah binary is a copy of
+# the one under test, and `kasbah remote load` for real, against the same docker
+# stub — so what a case asserts is what crossed the wire and what the far side
+# did with it. git is real, against throwaway repositories under a temp
+# directory — including the `origin` the push cases use, which is a bare repo
+# two directories away and never a network.
 #
 # The stub logs are read both ways: a case asserts what was asked for, and the
 # cases about refusals assert the logs are *empty*, which is only evidence when
@@ -42,49 +45,67 @@ DOCKER_LOG="$tmpdir/docker.log"
 SSH_LOG="$tmpdir/ssh.log"
 SSH_STDIN_LOG="$tmpdir/ssh-stdin.log"
 RSYNC_LOG="$tmpdir/rsync.log"
+LOADED="$tmpdir/loaded"
+
+# The server: an apps tree with a marker, and this build's binary at the
+# shared path, so the newer-wins rule keeps it and nothing is uploaded.
+FAKE_APPS="$tmpdir/srv/apps"
+mkdir -p "$FAKE_APPS/.kasbah/bin"
+printf '{"kasbah_version":"0.1.0","apps_path":"%s","data_path":"%s/data","cpu_limit":"1","mem_limit":"1g"}\n' \
+    "$FAKE_APPS" "$FAKE_APPS" > "$FAKE_APPS/.kasbah/server.json"
+cp "$KASBAH_BIN" "$FAKE_APPS/.kasbah/bin/kasbah"
 
 cat > "$stub_dir/docker" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOCKER_LOG"
-# `save` writes the image stream to stdout; something has to come out of it or
-# the tarball the caller gzips into is empty, which is not what a real save does.
 case "${1:-}" in
-    save) printf 'fake-image-stream\n' ;;
+    # Something has to come out of save, or the stream is empty, which is not
+    # what a real save does.
+    save)
+        # More than the sender's 1 MiB buffer, so a failing save has really
+        # sent part of a stream when it fails.
+        if [ -n "${DOCKER_SAVE_RC:-}" ]; then head -c 3000000 /dev/urandom; exit "$DOCKER_SAVE_RC"; fi
+        printf 'fake-image-stream\n' ;;
+    load) cat > "$LOADED"; exit "${DOCKER_LOAD_RC:-0}" ;;
 esac
 exit "${DOCKER_RC:-0}"
 STUB
 
-# Only the script form is fed anything: `ssh -n` (the probe, ssh_run) closes
-# stdin, and draining it unconditionally would hang the suite when stdin is a
-# terminal (tests/integration/rig_env.sh records the same hazard from the other
-# side).
+# The last argument is the remote command, quoted word by word.
 cat > "$stub_dir/ssh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$SSH_LOG"
-# ssh_run/ssh_script quote every word, so the script form arrives as 'bash' '-s'.
-if [[ "$*" == *"'bash' '-s'"* ]]; then
-    cat >> "$SSH_STDIN_LOG"
-    # The payload reports how many images it was handed, so this answers the
-    # same way: re-split the quoted command the way the remote login shell
-    # would, drop `bash -s -- <tarball>`, and count what is left. A constant
-    # here would be right by accident for a one-image project.
-    cmd="${!#}"
-    eval "set -- $cmd"
-    shift 4 2>/dev/null || set --
-    printf '%s\n' "${SSH_SCRIPT_OUT-loaded=$#}"
-    exit "${SSH_SCRIPT_RC:-0}"
+for a; do [ "$a" = -O ] && exit 0; done
+for a; do [ "$a" = -n ] && exec </dev/null; done
+[ "${SSH_RC:-0}" = 0 ] || exit "$SSH_RC"
+last="${!#}"
+[ "$last" = true ] && exit 0
+eval "set -- $last"
+if [ "$1 $2" = "sh -s" ]; then
+    # The bootstrap probe: answered from the scratch tree, with no pointer.
+    [ -n "${FAKE_NO_MARKER:-}" ] && rm -f "$FAKE_APPS/.kasbah/server.json"
+    exec sh -s -- "$FAKE_APPS" "$FAKE_APPS/no-pointer" "$6" "$7"
 fi
-exit "${SSH_RC:-0}"
+if [ "${2:-} ${3:-}" = "remote load" ]; then
+    if [ -n "${SSH_LOAD_OUT+set}" ]; then
+        cat > "$SSH_STDIN_LOG"
+        [ -z "$SSH_LOAD_OUT" ] || printf '%s\n' "$SSH_LOAD_OUT"
+        exit 0
+    fi
+    # A connection that drops mid-stream: the far side gets the first bytes only.
+    if [ -n "${SSH_TRUNCATE:-}" ]; then
+        exec "$@" < <(head -c "$SSH_TRUNCATE" | tee "$SSH_STDIN_LOG")
+    fi
+    exec "$@" < <(tee "$SSH_STDIN_LOG")
+fi
+exec "$@"
 STUB
 
-# The source is rsync's second-to-last argument. Kept, because the tarball is
-# removed from both ends by the time the command returns and the only way to look
-# inside what travelled is to catch it in flight.
+# Nothing travels by rsync any more; the stub is there to prove it.
 cat > "$stub_dir/rsync" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$RSYNC_LOG"
-[ -z "${RSYNC_COPY:-}" ] || cp "${@:$#-1:1}" "$RSYNC_COPY"
-exit "${RSYNC_RC:-0}"
+exit 1
 STUB
 
 chmod 0755 "$stub_dir/docker" "$stub_dir/ssh" "$stub_dir/rsync"
@@ -105,17 +126,19 @@ reset_logs() {
     : > "$SSH_LOG"
     : > "$SSH_STDIN_LOG"
     : > "$RSYNC_LOG"
+    rm -f "$LOADED"
     rm -rf "$scratch"
     mkdir -p "$scratch"
+    printf '{"kasbah_version":"0.1.0","apps_path":"%s"}\n' "$FAKE_APPS" > "$FAKE_APPS/.kasbah/server.json"
 }
 
-# TMPDIR is the suite's own, so "did it leave a tarball behind" is a question
+# TMPDIR is the suite's own, so "did it leave anything behind" is a question
 # about a directory nothing else writes to.
 bp() (
     cd "$projdir" || exit 2
     env PATH="$stub_dir:$PATH" HOME="$fakehome" TMPDIR="$scratch" \
         DOCKER_LOG="$DOCKER_LOG" SSH_LOG="$SSH_LOG" SSH_STDIN_LOG="$SSH_STDIN_LOG" \
-        RSYNC_LOG="$RSYNC_LOG" RSYNC_COPY="$tmpdir/travelled" \
+        RSYNC_LOG="$RSYNC_LOG" LOADED="$LOADED" FAKE_APPS="$FAKE_APPS" \
         "$KASBAH_BIN" build-push "$@" </dev/null
 )
 
@@ -125,8 +148,6 @@ run() {
     err="$(cat "$tmpdir/err")"
     return "$rc"
 }
-
-tarballs() { find "$scratch" -name '*.tar.gz' 2>/dev/null; }
 
 # Lines of the docker log that are compose invocations, one per line.
 compose_calls() { grep '^compose ' "$DOCKER_LOG" 2>/dev/null; return 0; }
@@ -185,14 +206,12 @@ assert 'grep -qF "no version tag" <<<"$err"' \
 
 # --- A project that builds nothing --------------------------------------------------
 # The stock-image case: exit 0 having done nothing at all. Asserted on the
-# filesystem and on the stub logs rather than on what it printed — "no tarball
-# was created" is a fact about a directory.
+# stub logs and the state file rather than on what it printed.
 
 projdir="$stock"
 run "user@somewhere"; rc=$?
 assert '[ "$rc" = "0" ]' "a stock-only project exits 0 (exit $rc: $err)"
 assert 'grep -qF "builds nothing" <<<"$out$err"' "saying so (said '$out$err')"
-assert '[ -z "$(tarballs)" ]' "and creates no tarball (found: $(tarballs))"
 assert '[ ! -s "$DOCKER_LOG" ]' "runs no docker at all (log: $(cat "$DOCKER_LOG"))"
 assert '[ ! -s "$SSH_LOG" ]' "and never opens a connection (ssh log: $(cat "$SSH_LOG"))"
 assert '[ ! -e "$stock/.kasbah/state.json" ]' \
@@ -267,7 +286,6 @@ sed -i 's/\r$//' "$projdir/compose.prod.yml"
 
 assert '[ "$(grep -c "^save " "$DOCKER_LOG")" = "0" ]' \
     "--build-only saves nothing (log: $(cat "$DOCKER_LOG"))"
-assert '[ -z "$(tarballs)" ]' "writes no tarball (found: $(tarballs))"
 assert '[ ! -s "$SSH_LOG" ]' "opens no connection (ssh log: $(cat "$SSH_LOG"))"
 assert '[ ! -s "$RSYNC_LOG" ]' "transfers nothing (rsync log: $(cat "$RSYNC_LOG"))"
 assert 'grep -qF "nothing was shipped" <<<"$out$err"' "and says so (said '$out$err')"
@@ -294,7 +312,7 @@ done <<<"$calls"
 assert '[ -z "$bad" ]' "every compose call names the project with -p (offenders: $bad)"
 
 # --- One docker save, carrying every image ------------------------------------------------
-# Per-image tarballs throw away the layer dedup save gives you inside one.
+# A save per image throws away the layer dedup one stream gives you.
 
 projdir="$(make ship built-app v1.4.2)"
 cat > "$projdir/compose.prod.yml" <<'COMPOSE'
@@ -326,43 +344,29 @@ assert '! grep -qF ":current" <<<"$saveline"' \
 
 # --- What travels, and what is left behind ------------------------------------------------
 
-rsyncline="$(cat "$RSYNC_LOG")"
-assert '[ "$(wc -l < "$RSYNC_LOG")" = "1" ]' "one transfer, not one per image (rsync log: '$rsyncline')"
-assert 'grep -qF "deploy@vps:/tmp/built-app-1.4.2.tar.gz" <<<"$rsyncline"' \
-    "the tarball goes to the server's /tmp under project and version (rsync: '$rsyncline')"
-assert 'grep -qF "$scratch/built-app-1.4.2.tar.gz" <<<"$rsyncline"' \
-    "from the same name locally (rsync: '$rsyncline')"
-# -s, so the far side never re-splits the path it is given: without it rsync
-# hands the destination to a remote shell, which reads a space as an argument
-# boundary.
-assert 'grep -qF -- " -s " <<<"$rsyncline "' \
-    "with the remote path protected from a second round of word splitting (rsync: '$rsyncline')"
-assert 'gzip -t "$tmpdir/travelled" 2>/dev/null' \
-    "and what travels is a gzip stream, not a bare tar ($(file -b "$tmpdir/travelled" 2>/dev/null))"
-assert '[ -z "$(tarballs)" ]' "and is gone from here when the run ends (found: $(tarballs))"
-
-# The shape of the payload, and only its shape: the ssh stub records the script
-# it was fed and never runs it, so a line that is present but disabled reads the
-# same here. That these three steps actually happen is proved on the rig, by
-# tests/integration/ship_test.sh — the image is inspected there, and the rig's
-# own /tmp is checked for what the load step was supposed to remove.
-payload="$(cat "$SSH_STDIN_LOG")"
-assert 'grep -qF "docker load" <<<"$payload"' "the remote step is written to load the tarball"
-assert 'grep -qF "rm -f" <<<"$payload"' "and to remove it there itself"
-assert 'grep -qF "docker image inspect" <<<"$payload"' \
-    "and to ask the daemon the images are really there"
+load_calls="$(grep -F "'remote' 'load'" "$SSH_LOG")"
+assert '[ "$(grep -c . <<<"$load_calls")" = "1" ]' \
+    "one stream into one remote load, not one per image (ssh log: $(cat "$SSH_LOG"))"
+assert 'grep -qF "'"'"'$FAKE_APPS/.kasbah/bin/kasbah'"'"' '"'"'remote'"'"' '"'"'load'"'"' '"'"'built-app-web:1.4.2'"'"' '"'"'built-app-worker:1.4.2'"'"'" <<<"$load_calls"' \
+    "run by the server's own binary at the shared path, naming both images (call: '$load_calls')"
+assert 'grep -qF "deploy@vps" <<<"$load_calls"' "on the server it was told (call: '$load_calls')"
+assert 'gzip -t "$SSH_STDIN_LOG" 2>/dev/null' \
+    "what travels is a complete gzip stream, not a bare tar ($(file -b "$SSH_STDIN_LOG" 2>/dev/null))"
+assert '[ "$(gzip -dc "$SSH_STDIN_LOG" 2>/dev/null)" = "fake-image-stream" ]' \
+    "carrying docker save's output ($(gzip -dc "$SSH_STDIN_LOG" 2>/dev/null | head -c 80))"
+assert '[ "$(cat "$LOADED" 2>/dev/null)" = "fake-image-stream" ]' \
+    "and the far side's docker load read it decompressed (load read: '$(cat "$LOADED" 2>/dev/null)')"
+assert 'grep -qxF "image inspect built-app-web:1.4.2" "$DOCKER_LOG" && grep -qxF "image inspect built-app-worker:1.4.2" "$DOCKER_LOG"' \
+    "and asked the daemon each image is really there (log: $(cat "$DOCKER_LOG"))"
+assert '[ ! -s "$RSYNC_LOG" ]' "nothing goes by rsync (rsync log: $(cat "$RSYNC_LOG"))"
+assert '[ -z "$(find "$scratch" -mindepth 1 -maxdepth 1 ! -name "kasbah-ssh.*")" ]' \
+    "no tarball or other file is written here (found: $(find "$scratch" -mindepth 1 -maxdepth 1))"
 assert '[ "$(jq -r .last_server "$projdir/.kasbah/state.json" 2>/dev/null)" = "deploy@vps" ]' \
     "a successful ship records last_server (state: $(cat "$projdir/.kasbah/state.json" 2>/dev/null))"
-# lib/ssh.sh chains its teardown onto the EXIT trap that is already installed,
-# and `trap … EXIT` is last-writer-wins — so a command that installs its own
-# trap *after* connecting silently drops the master teardown and leaves its
-# private socket directory behind. That directory is under this suite's TMPDIR.
 assert '[ -z "$(find "$scratch" -maxdepth 1 -name "kasbah-ssh.*" 2>/dev/null)" ]' \
-    "the ssh master's private directory is gone, so this command's cleanup did not
-     replace lib/ssh.sh's (found: $(find "$scratch" -maxdepth 1 -name "kasbah-ssh.*" 2>/dev/null))"
+    "the ssh master's private directory is gone (found: $(find "$scratch" -maxdepth 1 -name "kasbah-ssh.*" 2>/dev/null))"
 assert '! grep -qF "'"'"'rm'"'"'" "$SSH_LOG"' \
-    "and the cleanup never has to reach for the server, because the load step
-     removed the tarball itself (ssh log: $(cat "$SSH_LOG"))"
+    "and nothing is left on the server to remove (ssh log: $(cat "$SSH_LOG"))"
 
 # Nothing below this line ships successfully, so the state file the run above
 # wrote is cleared: what the failure cases assert is that none of them writes one.
@@ -370,41 +374,52 @@ rm -rf "$projdir/.kasbah"
 
 # The load report is a protocol, not a courtesy: a step that answered nothing
 # must not read as a successful load.
-SSH_SCRIPT_OUT="" run --no-git-push "deploy@vps"; rc=$?
+SSH_LOAD_OUT="" run --no-git-push "deploy@vps"; rc=$?
 assert '[ "$rc" != "0" ]' "a remote step that reports no loaded= count is a failure (exit $rc)"
 assert 'grep -qF "loaded=2" <<<"$err"' "naming what it wanted (said '$err')"
 
-SSH_SCRIPT_OUT="loaded=1" run --no-git-push "deploy@vps"; rc=$?
+SSH_LOAD_OUT="loaded=1" run --no-git-push "deploy@vps"; rc=$?
 assert '[ "$rc" != "0" ]' \
     "and a count that does not match the images sent is a failure too (exit $rc)"
 
-# --- The tarball is cleaned up on both ends when the transfer fails ---------------------------
+# --- A stream that breaks, from either end ---------------------------------------------------
 
-RSYNC_RC=1 run --no-git-push "deploy@vps"; rc=$?
-assert '[ "$rc" != "0" ]' "a failed transfer fails the run (exit $rc)"
-assert 'grep -qF "could not send" <<<"$err"' "saying what failed (said '$err')"
-assert '[ "$(grep -c "^save " "$DOCKER_LOG")" = "1" ]' \
-    "the tarball had been written — else the next assertion proves nothing"
-assert '[ -z "$(tarballs)" ]' \
-    "and it does not survive the failure locally (found: $(tarballs))"
-assert 'grep -qF "'"'"'rm'"'"' '"'"'-f'"'"' '"'"'/tmp/built-app-1.4.2.tar.gz'"'"'" "$SSH_LOG"' \
-    "nor on the server, where a half-sent one would be (ssh log: $(cat "$SSH_LOG"))"
+DOCKER_LOAD_RC=1 run --no-git-push "deploy@vps"; rc=$?
+assert '[ "$rc" = "1" ]' "a docker load the server refuses fails the run (exit $rc)"
+assert 'grep -qF "docker load exited 1" <<<"$err"' "the far side saying why (said '$err')"
+assert 'grep -qF "could not load the images onto deploy@vps" <<<"$err"' "and this side which step (said '$err')"
 assert '[ ! -e "$projdir/.kasbah/state.json" ]' \
     "and a run that failed records no server (docs/project-manifest.md: only on success)"
 
-# The same from the other side: a load that fails leaves nothing behind either.
-SSH_SCRIPT_RC=1 run --no-git-push "deploy@vps"; rc=$?
-assert '[ "$rc" != "0" ]' "a remote step that exits non-zero fails the run (exit $rc)"
-assert '[ -z "$(tarballs)" ]' "with no local tarball left (found: $(tarballs))"
+# A save that fails after writing part of its stream must not reach the server
+# as a short but valid one: the gzip trailer is never written.
+DOCKER_SAVE_RC=1 run --no-git-push "deploy@vps"; rc=$?
+assert '[ "$rc" = "1" ]' "a docker save that fails fails the run (exit $rc)"
+assert 'grep -qF "docker save" <<<"$err" && grep -qF "failed" <<<"$err"' "naming docker save (said '$err')"
+assert 'grep -qF "cut short" <<<"$err"' "while the far side abandoned the load (said '$err')"
+assert '[ "$(stat -c %s "$SSH_STDIN_LOG")" -gt 1048576 ]' \
+    "after part of the stream had really crossed (sent $(stat -c %s "$SSH_STDIN_LOG") bytes)"
+assert '! gzip -t "$SSH_STDIN_LOG" 2>/dev/null' "because what it was sent is not a complete gzip stream"
+assert '! grep -qxF "image inspect built-app-web:1.4.2" "$DOCKER_LOG"' \
+    "and it got no further than the load (log: $(cat "$DOCKER_LOG"))"
+assert '[ ! -e "$projdir/.kasbah/state.json" ]' "recording no server"
 
-# --- An unreachable server -------------------------------------------------------------------
+SSH_TRUNCATE=12 run --no-git-push "deploy@vps"; rc=$?
+assert '[ "$rc" = "1" ]' "a connection that drops mid-stream fails the run (exit $rc)"
+assert 'grep -qF "cut short" <<<"$err"' "the far side refusing the partial stream (said '$err')"
+assert '[ ! -e "$projdir/.kasbah/state.json" ]' "recording no server"
+
+# --- A server kasbah cannot reach, or never prepared ------------------------------------------
 
 SSH_RC=255 run --no-git-push "deploy@vps"; rc=$?
 assert '[ "$rc" = "3" ]' "an unreachable server is exit 3, as docs/cli.md has it (exit $rc: $err)"
-assert '[ -z "$(tarballs)" ]' \
-    "and nothing was saved before the connection was proved (found: $(tarballs))"
-assert '[ "$(grep -c "^save " "$DOCKER_LOG")" = "0" ]' \
-    "not even asked for (log: $(cat "$DOCKER_LOG"))"
+assert '[ ! -s "$DOCKER_LOG" ]' \
+    "and nothing was built or saved before the connection was proved (log: $(cat "$DOCKER_LOG"))"
+
+FAKE_NO_MARKER=1 run --no-git-push "deploy@vps"; rc=$?
+assert '[ "$rc" = "4" ]' "a server with no marker is exit 4 — the load runs in a binary under <apps> (exit $rc: $err)"
+assert 'grep -qF "server.json" <<<"$err"' "naming the marker it looked for (said '$err')"
+assert '[ ! -s "$DOCKER_LOG" ]' "before anything was built or saved (log: $(cat "$DOCKER_LOG"))"
 
 # --- The git tag ------------------------------------------------------------------------------
 # A bare repository two directories away plays origin. Nothing here can reach a
@@ -472,8 +487,8 @@ assert '[ "$(grep -c "^save " "$DOCKER_LOG")" = "1" ]' \
 # push is the last step rather than an early one.
 git --git-dir="$origin" tag -d v3.1.0 >/dev/null 2>&1
 assert '[ "$(origin_tags)" = "" ]' "origin is back to no tags — else the case below proves nothing"
-RSYNC_RC=1 run "deploy@vps"; rc=$?
-assert '[ "$rc" != "0" ]' "a ship whose transfer fails is a failed run (exit $rc)"
+DOCKER_LOAD_RC=1 run "deploy@vps"; rc=$?
+assert '[ "$rc" != "0" ]' "a ship whose load fails is a failed run (exit $rc)"
 assert '[ "$(origin_tags)" = "" ]' \
     "and pushed no tag — the tag follows the images (origin has: '$(origin_tags)')"
 
@@ -556,8 +571,8 @@ mkdir -p "$projdir/.kasbah"
 printf '{"last_server":"stored@vps"}\n' > "$projdir/.kasbah/state.json"
 run --no-git-push; rc=$?
 assert '[ "$rc" = "0" ]' "a project with a last_server ships without being told (exit $rc: $err)"
-assert 'grep -qF "stored@vps:/tmp/built-app-1.4.2.tar.gz" "$RSYNC_LOG"' \
-    "to that server (rsync log: $(cat "$RSYNC_LOG"))"
+assert 'grep -qF "stored@vps" <<<"$(grep -F "'"'"'remote'"'"' '"'"'load'"'"'" "$SSH_LOG")"' \
+    "to that server (ssh log: $(cat "$SSH_LOG"))"
 
 # --- A build that fails ---------------------------------------------------------------------------
 

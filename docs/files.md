@@ -63,18 +63,21 @@ commands not named as writers below write nothing — `check` (but see `--fix`),
 
 | Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |
 |---|---|---|---|---|---|---|---|
-| `~/.docker/**` | docker's buildx, during `build-push`'s `docker compose build` — not kasbah's code | docker | buildx state | docker's | `deploy` | docker's; never removed by kasbah | `lib/build_push.sh:204` |
+| `~/.docker/**` | docker's buildx, during `build-push`'s `docker compose build` — not kasbah's code | docker | buildx state | docker's | `deploy` | docker's; never removed by kasbah | `internal/buildpush/buildpush.go:199` |
 
 ssh may add to `~/.ssh/known_hosts` as the user's own ssh config says; kasbah
 writes nothing under `~/.ssh`.
 
 ### Temporary files
 
+`build-push` writes no image tarball on either end: `docker save`'s gzipped
+stream goes over the ssh master straight into `docker load` under `kasbah remote
+load` on the server (`internal/buildpush/ship.go`, `load.go`).
+
 | Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |
 |---|---|---|---|---|---|---|---|
-| `<tmp>/kasbah-ssh.*` | every command that reaches a server, Bash or Go (`__ensure-server`) | ssh, rsync (`ControlPath`) | directory → `build-deploy.md` (SSH multiplexing) | `700` | `deploy` | *transient*: removed on every exit path by the EXIT trap (Go: the `internal/atexit` stack, SIGINT/SIGTERM/SIGHUP included); SIGKILL leaves it and a master living `ControlPersist` | `lib/ssh.sh:130`, chmod `:134`, cleanup `:61`; `internal/ssh/ssh.go:116`, cleanup `:260` |
+| `<tmp>/kasbah-ssh.*` | every command that reaches a server, Bash or Go | ssh, rsync (`ControlPath`) | directory → `build-deploy.md` (SSH multiplexing) | `700` | `deploy` | *transient*: removed on every exit path by the EXIT trap (Go: the `internal/atexit` stack, SIGINT/SIGTERM/SIGHUP included); SIGKILL leaves it and a master living `ControlPersist` | `lib/ssh.sh:130`, chmod `:134`, cleanup `:61`; `internal/ssh/ssh.go:116`, cleanup `:260` |
 | `<tmp>/kasbah-ssh.*/m*` | ssh's ControlMaster | ssh, rsync | Unix socket | ssh's | `deploy` | *transient*, with its directory | `lib/ssh.sh:145`, `internal/ssh/ssh.go:94` |
-| `<tmp>/<project>-<version>.tar.gz` | `build-push` (`docker save` piped to `gzip`; a fixed name, not mktemp) | `ssh_rsync` | gzip'd docker image tar → `build-deploy.md` (build-push) | umask | `deploy` | *transient*: EXIT trap; SIGKILL leaves it; not made with `--build-only` | `lib/build_push.sh:229`, trap `:309` |
 | `<tmp>/kasbah-remote-deploy.*` | `deploy`, `rollback`, `deploy X.Y.Z`: the rendered `remote-deploy.sh` | `ssh_rsync` | bash → `build-deploy.md` (Helper scripts) | `600` | `deploy` | *transient*: EXIT trap | `lib/deploy.sh:758`, `lib/remote_deploy.sh:313`, trap `lib/deploy.sh:772` |
 | `<tmp>/kasbah-rollback.*/**` | `rollback`: the tag's tree from `git archive` | manifest and compose readers, the project sync | git tree export | dir `700`; files umask or tar's | `deploy` | *transient*: EXIT trap | `lib/rollback.sh:412`, trap `:480` |
 | `<tmp>/kasbah-deploy.*/**` | `deploy X.Y.Z`: as above | as above | git tree export | dir `700`; files umask or tar's | `deploy` | *transient*: EXIT trap | `lib/rollback.sh:412` |
@@ -203,7 +206,6 @@ neither.
 
 | Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |
 |---|---|---|---|---|---|---|---|
-| `/tmp/<project>-<version>.tar.gz` | `build-push` (rsync of the workstation's tarball) | `docker load` | as on the workstation → `build-deploy.md` (build-push) | the workstation file's | `deploy` | *transient*: removed after the load, or by the workstation's EXIT trap; a dropped connection leaves it | `lib/build_push.sh:254`, removal `:273,318` |
 | `/tmp/kasbah-apps-path.<pid>` | `server init`: the pointer's unprivileged stage | `sudo cp` | one path | umask | `deploy` | *transient*: removed after the copy | `lib/server_init.sh:1232` |
 | `/tmp/kasbah-dry-run.*/**` | `server upgrade-traefik`: the candidate config for the dry-run container | the dry-run container | YAML | dir `700`; files `644` | `deploy` | *transient*: its own EXIT/HUP/INT/TERM trap | `lib/upgrade_traefik.sh:643` |
 | `/tmp/tmp.*/**` | `deploy` of a mail claim: the SnappyMail domain seed, before `docker cp` (bare `mktemp -d`) | `docker cp` | JSON → `mail.md` (Per-app mail claims) | dir `700` | `deploy` | *transient*: removed after the copy; a kill leaves it | `lib/deploy.sh:1050` |

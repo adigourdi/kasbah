@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/buildpush"
 	"github.com/adigourdi/kasbah/internal/check"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/env"
@@ -31,6 +32,12 @@ func main() {
 		switch args[0] {
 		case "remote":
 			// The server has no Bash tree: `remote` is never handed off.
+			if len(args) > 1 && args[1] == "load" {
+				// A signal abandons the docker load rather than let it finish
+				// on a stream that was cut short.
+				atexit.HandleSignals()
+				atexit.Exit(buildpush.Load(args[2:], os.Stdin, os.Stdout, os.Stderr))
+			}
 			if len(args) > 1 && args[1] == "setup-env" {
 				// Interactive over ssh -t: a signal restores the terminal and
 				// removes any staging file on the way out.
@@ -38,6 +45,10 @@ func main() {
 				atexit.Exit(env.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
 			}
 			os.Exit(remoteCmd(args[1:]))
+		case "build-push":
+			o, err := buildpush.Parse(args[1:])
+			atexit.HandleSignals()
+			atexit.Exit(buildPushCmd(o, err))
 		case "env":
 			o, err := env.Parse(args[1:])
 			atexit.HandleSignals()
@@ -120,7 +131,7 @@ func remoteCmd(args []string) int {
 	if len(args) > 0 {
 		sub = args[0]
 	}
-	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env", sub))
+	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load", sub))
 }
 
 // ensureServer is `kasbah __ensure-server [--apps-path=<dir>] USER@HOST`: the
@@ -237,6 +248,44 @@ func initProjectCmd(o initproject.Options, err error) int {
 		return out.Report(cli.Fail("cannot read the current directory: %v", err))
 	}
 	code := out.Report(initproject.Run(out, o, pwd, v))
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
+}
+
+func buildPushCmd(o buildpush.Options, err error) int {
+	out := cli.Std()
+	if err == buildpush.ErrHelp {
+		fmt.Fprint(out.Stdout, buildpush.Usage())
+		return cli.ExitOK
+	}
+	if err != nil {
+		return out.Report(err)
+	}
+	v, err := kasbahVersion()
+	if err != nil {
+		return out.Report(err)
+	}
+	pwd, err := os.Getwd()
+	if err != nil {
+		return out.Report(cli.Fail("cannot read the current directory: %v", err))
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+	}
+	home, checkout, err := handoff.Home(exe, os.Getenv)
+	if err != nil {
+		return out.Report(cli.Fail("%v", err))
+	}
+	code := out.Report(buildpush.Run(buildpush.Ctx{
+		Out:     out,
+		PWD:     pwd,
+		Version: v,
+		Self:    remote.Self(build),
+		Local:   func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) },
+	}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c
 	}
