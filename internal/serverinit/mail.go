@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"io/fs"
 	"regexp"
 	"strconv"
 	"strings"
@@ -160,11 +159,7 @@ func MailResolve(out *cli.Output, p *prompt.Prompter, o Options, r *mail.ReadRep
 
 // MailRender renders the three shipped files (each parsed: _mail.yml lands
 // where Traefik watches) and the two seeds, "env" and "dkim".
-func MailRender(dir string, o Options, v MailValues) (map[string]string, error) {
-	mdir := filepath.Join(dir, "mail")
-	if fi, err := os.Stat(mdir); err != nil || !fi.IsDir() {
-		return nil, cli.Fail("the mail templates are missing (looked in %s) — this kasbah installation is incomplete", mdir)
-	}
+func MailRender(fsys fs.FS, o Options, v MailValues) (map[string]string, error) {
 	subst := map[string]string{
 		"APPS_PATH":           o.Apps,
 		"DATA_PATH":           o.Data,
@@ -175,10 +170,9 @@ func MailRender(dir string, o Options, v MailValues) (map[string]string, error) 
 	out := map[string]string{}
 	for _, f := range [][2]string{{"compose.yml", "compose.yml"}, {"kasbah.yml", "kasbah.yml"}, {"_mail.yml", "_mail.yml"},
 		{"env", "env"}, {"rspamd-dkim-signing.conf", "dkim"}} {
-		src := filepath.Join(mdir, f[0])
-		b, err := os.ReadFile(src)
+		b, err := fs.ReadFile(fsys, "mail/"+f[0])
 		if err != nil {
-			return nil, cli.Fail("the mail %s template %s is missing", f[0], src)
+			return nil, cli.Fail("internal: this kasbah build carries no mail/%s template", f[0])
 		}
 		s, err := tmpl.Render(string(b), "mail "+f[0], subst)
 		if err != nil {

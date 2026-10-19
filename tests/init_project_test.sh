@@ -217,8 +217,25 @@ rm -f .kasbah
 
 # --- Case 10: regression — --version and --help still work -------------------
 cd "$tmpdir"
-assert '"$kasbah" --version | grep -qF "$version"' "--version prints version"
+out="$("$kasbah" --version)"
+assert '[ "$out" = "kasbah $(kasbah_bin_version) (schema 1)" ] && [[ "$out" == "kasbah $version"* ]]' \
+    "--version prints the build and the schema (got '$out')"
 assert '"$kasbah" --help    | grep -qF "init-project"' "--help lists init-project"
 assert '"$kasbah"            | grep -qF "init-project"' "no-args prints help"
+out="$("$kasbah" init-project --help)"; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "Usage: kasbah init-project [--name=<name>] [--domain=<fqdn>]" <<<"$out"' \
+    "init-project --help prints its usage (exit $rc)"
+
+# --- Case 11: what init-project writes, the manifest reader accepts ------------
+# With and without --domain: check's first rule is the manifest's own validation.
+for args in "--name=integration --domain=i.example.com" "--name=nodomain"; do
+    p="$tmpdir/accept-${args%% *}"; p="${p//[=-]/}"
+    mkdir -p "$p"
+    # shellcheck disable=SC2086
+    (cd "$p" && "$kasbah" init-project $args >/dev/null 2>&1)
+    out="$(cd "$p" && "$kasbah" check 2>&1)"
+    assert 'grep -qF "kasbah.yml exists (schema 1)" <<<"$out"' \
+        "init-project $args writes a manifest the reader accepts (got: $(head -5 <<<"$out"))"
+done
 
 exit "$fail"

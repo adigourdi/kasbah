@@ -52,8 +52,8 @@ the same battle-tested workflow without copying scripts between repos.
 
 | Decision | Choice |
 |---|---|
-| Language | Bash (v1). Project state file tracks version so future Go binary can migrate. |
-| Distribution | Global install on dev machine. VPS receives only the scripts a deploy needs. No `git clone` on the VPS. |
+| Language | Go — one statically linked binary, built in a pinned `golang` container (`compose.yml`), no Go on the host. Every file kasbah writes records its version, so a later major can migrate older projects. (Bash through 0.x; ported in Phase 10.) |
+| Distribution | Global install on the dev machine (`install.sh`: the workstation binary plus linux/amd64 and linux/arm64 server binaries). The VPS receives only the kasbah binary itself, at `<apps>/.kasbah/bin/kasbah` — shipped when absent or older, kept when the same or newer. No `git clone` on the VPS, no scripts shipped, nothing else installed. |
 | Project boundary | Each project is an independent directory under `/apps/<name>/` with its own compose.yml and .env. They only share the Traefik network. |
 | Project shape | Derived from compose: services with a `build:` key are built+shipped locally; services with only `image:` are pulled on the VPS. No `type` field in the manifest — the compose file is the source of truth. |
 | Compose files | User authors `compose.prod.yml` for prod; the manifest's `sync` rule renames it to `compose.yml` on the VPS. Kasbah does not generate compose files. `compose.yml` in the working tree is for local dev and is never synced to the VPS. |
@@ -71,7 +71,7 @@ the same battle-tested workflow without copying scripts between repos.
 | Rollback | `git archive v<target>` for config + retag `:<target>` as `:current` + `compose up -d`. Target image must still be on the VPS — outside the retention window, rollback fails with roll-forward/rebuild guidance. Does not restore data bind mounts — schema rollback is hook-driven. |
 | Project detection | CLI runs from project root. Reads `./kasbah.yml`. Errors if not a kasbah project. |
 | Interactivity | Commands never assume on an unspecified choice: an unset flag means *prompt*, not *no* — with one deliberate exception, `--acme-staging`, where the default is production because that is also the status quo, and asking every `server init` which certificate authority it wants would make the common path worse. Every prompt has an explicit flag for scripted use: a pair when both answers are real outcomes — spelled `--with-x` / `--no-x` for a feature, or after what it decides where that reads better (`--reset-acme` / `--keep-acme`) — and a single `--yes` only where the prompt guards a destructive act and declining just aborts. Without a TTY, an unanswered prompt is a hard fail that names its own flags. |
-| Version compatibility | Same-major tool ↔ state interop is guaranteed; crossing a major requires `kasbah migrate`. An older tool refuses newer state. `/apps/.kasbah/server.json` records what manages the VPS. |
+| Version compatibility | Same-major tool ↔ state interop is guaranteed; crossing a major requires `kasbah migrate` (not yet written — nothing older than 1.0 exists to migrate). An older tool refuses newer state, and an older workstation refuses a server binary of a newer major. `/apps/.kasbah/server.json` records what manages the VPS. |
 | Off-VPS backup | Optional. Each VPS pushes restic snapshots (data bind mounts, hook backups, `.env`) to S3-compatible storage using append-only credentials. One repo per client (`client:` manifest field, defaults to project name). Pruning runs from an operator machine with full credentials. |
 | Removal | `kasbah drop` removes containers, fragment, and images but keeps config/data/backups (redeployable). `drop --prune` deletes those too. `kasbah server destroy` de-brands the whole VPS for handover — containers keep running. |
 
@@ -143,6 +143,7 @@ Chosen defaults (overridable via `kasbah server init --apps-path=...`):
 - **No project lock-in** — a project checked out without `kasbah` installed
   must still run via `docker compose up -d` locally.
 - **No script leak into projects** — projects hold `kasbah.yml` only. They
-  do not vendor `deploy.sh` or any kasbah bash.
-- **Bash first, Go-ready** — every file kasbah writes (on dev and VPS)
-  is versioned so a future Go binary can migrate older projects in place.
+  vendor no kasbah code, and servers run none but the kasbah binary.
+- **Versioned state** — every file kasbah writes (on dev and VPS) records its
+  version, and from 1.0.0 the schema is frozen: a change goes through an
+  explicit `kasbah migrate`.

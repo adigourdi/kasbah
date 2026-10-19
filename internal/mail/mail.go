@@ -6,8 +6,7 @@ package mail
 import (
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
+	"io/fs"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
@@ -29,11 +28,10 @@ func DomainsBlock(domains []string) string {
 
 // RenderRegistry renders templates/mail/kasbah.yml, the registry's one shape,
 // for every writer of it.
-func RenderRegistry(templates, primary string, domains []string) (string, error) {
-	src := filepath.Join(templates, "mail", "kasbah.yml")
-	b, err := os.ReadFile(src)
+func RenderRegistry(templates fs.FS, primary string, domains []string) (string, error) {
+	b, err := fs.ReadFile(templates, "mail/kasbah.yml")
 	if err != nil {
-		return "", cli.Fail("the mail templates are missing (looked in %s) — this kasbah installation is incomplete", filepath.Dir(src))
+		return "", cli.Fail("internal: this kasbah build carries no mail/kasbah.yml template")
 	}
 	s, err := tmpl.Render(string(b), "mail kasbah.yml", map[string]string{
 		"MAIL_PRIMARY_DOMAIN": primary,

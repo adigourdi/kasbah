@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"regexp"
 	"strconv"
@@ -177,7 +178,7 @@ func (s *SSH) Call(stdin []byte, bounded bool, args ...string) ([]byte, int) {
 // Ctx is what a run needs from its process.
 type Ctx struct {
 	Out       *cli.Output
-	Templates string
+	Templates fs.FS
 	Dial      func(target string) (Session, error)
 	Now       func() time.Time
 }

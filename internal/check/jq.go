@@ -11,14 +11,14 @@ import (
 	"github.com/adigourdi/kasbah/internal/jv"
 )
 
-// The Bash rules asked their questions as jq filters over each document of a
-// file, and what a rule decided depended on jq's exact answer: its errors, its
+// Every rule asks its question as a jq filter over each document of a
+// file, and what a rule decides depends on jq's exact answer: its errors, its
 // output across several documents, its fallbacks. These are the operations
-// those filters used, with jq 1.7's semantics and messages.
+// those filters use, with jq 1.7's semantics.
 
-// result is one `yaml_query FILE FILTER`: stdout as jq -r wrote it, and the
-// exit status — 0, 2 (the file did not load), 3 (the filter did not compile)
-// or 5 (it failed at runtime on some document).
+// result is one question asked of a file: what jq -r would print, and a
+// status — 0, 2 (the file did not load), 3 (the filter would not compile) or 5
+// (it failed on some document) — which rules read as their fallbacks.
 type result struct {
 	out string
 	rc  int
@@ -39,7 +39,7 @@ func run(docs []jv.Value, f gen) result {
 		})
 		if err != nil {
 			r.rc = 5
-			r.msg = fmt.Sprintf("jq: error (at <stdin>:%d): %v", i+1, err)
+			r.msg = fmt.Sprintf("document %d: %v", i+1, err)
 		}
 	}
 	r.out = b.String()

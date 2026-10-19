@@ -14,8 +14,8 @@ assumes.
 | Docker Compose v2 **or newer** | Manifest uses `include:` and modern syntax. The check is on the major version, not the string: a live host ran Compose **v5.2.0** and passed | Hard fail |
 | The SSH user can run `docker` without sudo | Avoids mixed sudo/non-sudo ownership in `/apps/data/` | Hard fail, suggest `usermod -aG docker` |
 | `rsync`, `openssl`, `gzip` available on remote | Used by deploy and env setup | Hard fail |
-| `bash` on the remote | The commands not yet ported to Go run their remote steps as scripts on `bash -s` over the SSH master; Go commands run the kasbah binary there, shipped to `<apps>/.kasbah/bin/kasbah` | Hard fail |
-| A POSIX userland — `tr`, `cat`, `stat`, `nproc`, `date`, `find`, `sort`, `comm`, `readlink` | The remaining shell steps (the bootstrap probe, and the commands still in Bash) assume these rather than check them, because a box without them cannot run `bash -s` usefully in the first place. The rule kasbah's remote shell follows is **coreutils and bash builtins, nothing separately packaged**; the deploy engine and the env setup are the kasbah binary and need none of it | Not checked; failure surfaces as the step's own error |
+| `bash` on the remote | The bootstrap probe and the `sudo` steps of `server init` and `server destroy` run on `bash -s` over the SSH master; everything else runs the kasbah binary there, shipped to `<apps>/.kasbah/bin/kasbah` | Hard fail |
+| A POSIX userland — `tr`, `cat`, `stat`, `nproc`, `date`, `find`, `sort`, `comm`, `readlink` | The remaining shell steps (the bootstrap probe and the `sudo` steps) assume these rather than check them, because a box without them cannot run `bash -s` usefully in the first place. The rule kasbah's remote shell follows is **coreutils and bash builtins, nothing separately packaged**; the deploy engine and the env setup are the kasbah binary and need none of it | Not checked; failure surfaces as the step's own error |
 | **`:80` and `:443` free, and reachable from the internet** | Traefik binds both, and ACME's HTTP-01 challenge is answered on `:80` from outside. **Not probed** — init does not look at what is listening or at any firewall, so a port already held, or a `ufw` rule, surfaces as Traefik failing to start or as a challenge that never validates | Not checked |
 | **DNS in place before the first certificate** — `traefik.<apex>`, plus every project domain | A challenge for a name that does not resolve to this host fails, and **failed challenges count against Let's Encrypt's rate limits**. Rehearse with `--acme-staging` until DNS is right. **Not probed** — kasbah never resolves a name for you | Not checked |
 | Passwordless `sudo` — when the apps path does not exist yet, **and** to write the discovery pointer | `/apps` lives outside the deploy user's home, so nobody but root can create it; `/etc/kasbah/apps-path` is root-owned for the same reason it is machine-wide. Once both exist, init elevates again only to repair `/etc/kasbah` if its mode has drifted from `755` — re-runs otherwise only read the pointer | Apps path: hard fail naming the two commands to run by hand. Pointer: hard fail at a non-default apps path (the server would be undiscoverable), a warning at `/apps` (the fallback covers it) |
@@ -38,8 +38,8 @@ clear, and the hashing runs in a throwaway `httpd:2-alpine` container unless
 `htpasswd` happens to be on `PATH` — it ships in `apache2-utils` /
 `httpd-tools`, which few workstations install. A machine with neither hashes
 nothing and init exits naming both ways out. `rsync`, `ssh`, `gzip`,
-`openssl`, `git`, `jq` and `yq` (the kislyuk wrapper, jq dialect) are the
-rest. "Docker" here means the daemon **and the compose plugin** — `build-push`
+`openssl` and `git` are the rest — the kasbah binary parses YAML and JSON
+itself. "Docker" here means the daemon **and the compose plugin** — `build-push`
 runs `docker compose -f compose.prod.yml build` locally, so a workstation with
 `docker` but no `compose` gets through init and fails at the first build.
 
@@ -610,8 +610,8 @@ reporting them identically would make the line decoration. `check --server`
 answers the same question as a rule (B01) through the same parser.
 
 **The per-project domain comes from `<apps>/traefik/dynamic/<name>.yml`**,
-fetched base64 in the same round trip and parsed with the *workstation's* `yq`.
-`yq` stays off the VPS, as `jq` and `python3` do. Every `Host()` in the
+returned by the server binary in the same round trip and parsed by kasbah on the
+workstation. The VPS needs no `yq`, `jq` or `python3`. Every `Host()` in the
 fragment's rules is listed, once, in the order they appear.
 
 **Certificate expiry comes from `<data>/traefik/letsencrypt/acme.json`**,

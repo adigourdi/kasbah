@@ -121,7 +121,7 @@ func TestScan(t *testing.T) {
 	os.WriteFile(filepath.Join(apps, ".kasbah", "stray"), nil, 0o644)
 	s := scan(apps, filepath.Join(apps, "nope", "apps-path"))
 	if s.MarkerState != "ok" || s.BinState != "ok" || s.BackupDir != "dir" || s.BackupContainer != "running" ||
-		s.MailEnvExtra != 1 || s.RegistryState != "ok" || s.PointerState != "missing" || s.Sudo != "no" {
+		s.MailEnvExtra != 1 || s.RegistryState != "ok" || s.PointerState != "missing" || s.Sudo != "no" || !s.BinLock {
 		t.Fatalf("%+v", s)
 	}
 	if strings.Join(s.KasbahExtra, " ") != "stray" || strings.Join(s.Skipped, " ") != "README.md" {
@@ -306,6 +306,9 @@ func TestRun(t *testing.T) {
 	so, se, code := run(t, f, Options{Target: "deploy@vps.example"}, false, "")
 	if code != 1 || !strings.Contains(se, "--yes") || strings.Contains(strings.Join(f.calls, " "), "act") {
 		t.Fatalf("no tty: %d %s %v", code, se, f.calls)
+	}
+	if !strings.Contains(so, "\n              /apps/.kasbah/bin/ and /apps/.kasbah/, which hold nothing else\n") {
+		t.Errorf("a plan with no lock names one:\n%s", so)
 	}
 	if !strings.Contains(so, "    demo  versions.log, .deploy.lock, .env: 2 managed-block sentinel comment(s), values kept\n") ||
 		strings.Contains(so, "    data ") || !strings.Contains(so, "  binary      /apps/.kasbah/bin/kasbah (ok)") ||

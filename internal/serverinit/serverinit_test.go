@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/templates"
 )
 
 func errText(err error) string {
@@ -357,13 +360,9 @@ func TestResolveReuses(t *testing.T) {
 	}
 }
 
-func repoTemplates(t *testing.T) string {
+func repoTemplates(t *testing.T) fs.FS {
 	t.Helper()
-	dir, err := filepath.Abs("../../templates")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return dir
+	return templates.FS
 }
 
 func TestRender(t *testing.T) {
@@ -400,17 +399,17 @@ func TestRender(t *testing.T) {
 	for _, rel := range Files {
 		os.WriteFile(filepath.Join(dir, "traefik", rel), []byte("a: __NOPE__\n"), 0o644)
 	}
-	if _, err := Render(dir, o, v); !strings.Contains(errText(err), "__NOPE__") {
+	if _, err := Render(os.DirFS(dir), o, v); !strings.Contains(errText(err), "__NOPE__") {
 		t.Errorf("an unknown token: %v", err)
 	}
 	for _, rel := range Files {
 		os.WriteFile(filepath.Join(dir, "traefik", rel), []byte("a: \"__ACME_EMAIL__\"\n"), 0o644)
 	}
 	v.Email = `x"y: [`
-	if _, err := Render(dir, o, v); !strings.Contains(errText(err), "not valid YAML") {
+	if _, err := Render(os.DirFS(dir), o, v); !strings.Contains(errText(err), "not valid YAML") {
 		t.Errorf("unparseable render ships: %v", err)
 	}
-	if _, err := Render(t.TempDir(), o, v); !strings.Contains(errText(err), "templates are missing") {
+	if _, err := Render(fstest.MapFS{}, o, v); !strings.Contains(errText(err), "carries no traefik/") {
 		t.Errorf("missing templates: %v", err)
 	}
 }

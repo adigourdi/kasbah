@@ -19,10 +19,12 @@ if [ ! -x "$KASBAH_BIN" ]; then
     exit 2
 fi
 
-# kasbah_bin_version — what the binary under test reports for --version: its
-# build stamp. Files kasbah writes record VERSION, not this.
+# kasbah_bin_version — the build stamp of the binary under test, from its
+# `kasbah <build> (schema N)` --version line. Files kasbah writes record
+# VERSION, not this.
 kasbah_bin_version() {
     local out
     out="$("$KASBAH_BIN" --version)" || return 1
-    printf '%s\n' "${out#kasbah }"
+    out="${out#kasbah }"
+    printf '%s\n' "${out%% *}"
 }

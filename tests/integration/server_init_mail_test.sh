@@ -307,7 +307,7 @@ assert '[ "${fact[t_dkim]}" -lt "${fact[t_dms_created]}" ]' \
 # owner, below.
 
 # --- The fragment was in the watch directory before Traefik started -----------
-# lib/server_init.sh puts _server_init_mail_sync *above* the Traefik start on
+# server init syncs the mail fragment *above* the Traefik start on
 # purpose, and docs/cli.md, docs/server-setup.md and docs/mail.md all sell that
 # ordering: a Traefik that boots with _mail.yml already in dynamic/ asks for
 # mail.<domain> and webmail.<domain> at configuration load, so the certificate

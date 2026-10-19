@@ -45,7 +45,7 @@ chmod 0755 "$si_stub_dir/ssh"
 
 run() {
     : > "$si_ssh_log"
-    env -u KASBAH_LIB_DIR -u KASBAH_VERSION \
+    env -u KASBAH_LIB_DIR \
         PATH="$si_stub_dir:$PATH" SSH_LOG="$si_ssh_log" \
         "$kasbah" "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
 }

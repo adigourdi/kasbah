@@ -157,3 +157,29 @@ func Compare(a, b Version) int {
 	}
 	return cmpU(uint64(len(a.Pre)), uint64(len(b.Pre)))
 }
+
+// Base is the VERSION a stamp was made from — what files kasbah writes record:
+// a pre-release loses the commit count and build time Stamp added.
+func Base(stamp string) (string, error) {
+	v, err := Parse(stamp)
+	if err != nil {
+		return "", err
+	}
+	if len(v.Pre) == 0 {
+		return stamp, nil
+	}
+	n := len(v.Pre)
+	if n < 3 {
+		return "", fmt.Errorf("%q is not a build stamp: a pre-release stamp ends in .<commits>.<build time>", stamp)
+	}
+	for _, id := range v.Pre[n-2:] {
+		if _, ok := numeric(id); !ok {
+			return "", fmt.Errorf("%q is not a build stamp: a pre-release stamp ends in .<commits>.<build time>", stamp)
+		}
+	}
+	s := fmt.Sprintf("%d.%d.%d-%s", v.Major, v.Minor, v.Patch, strings.Join(v.Pre[:n-2], "."))
+	if v.Meta != "" {
+		s += "+" + v.Meta
+	}
+	return s, nil
+}

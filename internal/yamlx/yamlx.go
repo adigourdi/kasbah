@@ -15,7 +15,7 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// Error is a document yq would not convert. The Bash loader drops the whole
+// Error is a document yq would not convert. The loader drops the whole
 // file on any such failure, including a later document of a stream whose
 // earlier ones converted.
 type Error struct {
@@ -278,7 +278,7 @@ func (c *Cache) Get(path string) *File {
 }
 
 // Reread is the documents as jq reads them back from yq's output, which is
-// what the Bash tool's cache held: there an infinity is the literal yq printed
+// what a yq | jq reader holds: there an infinity is the literal yq printed
 // for it, and jq spells a literal the decNumber way.
 func Reread(docs []jv.Value) []jv.Value {
 	for i, d := range docs {

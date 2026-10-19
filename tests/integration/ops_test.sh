@@ -337,6 +337,30 @@ assert '[ "$(cli_out)" = "" ]' \
 assert 'grep -qF "stdin is not forwarded" "$tmpdir/err"' \
     "which is warned about rather than left to look like success (stderr: $(cli_err))"
 
+# --- two runs against one server do not touch each other's ssh master -------------------
+# Each run has its own control master; a second run's teardown must not cut a
+# session the first is still in.
+( cd "$projdir" && timeout 120 env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
+    "$KASBAH_BIN" exec "$c_web" -- sh -c 'echo started; sleep 6; echo survived' ) \
+    >"$tmpdir/holder.out" 2>"$tmpdir/holder.err" </dev/null &
+holder_pid=$!
+started=no
+for _ in $(seq 1 100); do
+    if grep -qF started "$tmpdir/holder.out" 2>/dev/null; then started=yes; break; fi
+    sleep 0.1
+done
+timeout 120 env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" "$KASBAH_BIN" server status "$RIG_TARGET" \
+    >"$tmpdir/visitor.out" 2>"$tmpdir/visitor.err" </dev/null; visitor_rc=$?
+if kill -0 "$holder_pid" 2>/dev/null; then holder_alive=yes; else holder_alive=no; fi
+if grep -qF survived "$tmpdir/holder.out" 2>/dev/null; then early=yes; else early=no; fi
+wait "$holder_pid"; holder_rc=$?
+assert '[ "$started" = yes ]' "the first run was mid-command within 10 s (got: $(cat "$tmpdir/holder.out" "$tmpdir/holder.err"))"
+assert '[ "$holder_alive" = yes ] && [ "$early" = no ]' \
+    "and still mid-command when the second run finished (alive: $holder_alive, survived already: $early)"
+assert '[ "$visitor_rc" = "0" ]' "a second run works meanwhile (exit $visitor_rc: $(cat "$tmpdir/visitor.err"))"
+assert '[ "$holder_rc" = "0" ] && grep -qxF survived "$tmpdir/holder.out"' \
+    "and the first run's session survived its teardown (exit $holder_rc: $(cat "$tmpdir/holder.out" "$tmpdir/holder.err"))"
+
 # --- the status, and what is recorded with it -----------------------------------------
 rm -f "$projdir/.kasbah/state.json"
 kexec "$RIG_TARGET" "$c_web" -- sh -c 'exit 7'; rc=$?

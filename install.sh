@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Install kasbah. Override targets via KASBAH_BIN_DIR and KASBAH_LIB_DIR.
-# KASBAH_LIB_DIR is the same variable kasbah reads at runtime, so a
-# non-default install location stays consistent across install and run.
+# Install kasbah: the binary, and beside it the two linux server binaries it
+# ships to a VPS. Override targets via KASBAH_BIN_DIR and KASBAH_LIB_DIR.
+# KASBAH_LIB_DIR is the same variable kasbah reads at runtime to find the
+# server binaries, so a non-default location stays consistent across install
+# and run.
 #
 # Builds first, through the toolchain container (docker compose run --rm
 # build). KASBAH_SKIP_BUILD=1 installs the dist/ already there instead.
@@ -31,16 +33,23 @@ fi
 bin_dir="${KASBAH_BIN_DIR:-${HOME}/.local/bin}"
 lib_dir="${KASBAH_LIB_DIR:-${XDG_DATA_HOME:-${HOME}/.local/share}/kasbah}"
 
-# Installing deletes things inside $lib_dir — the stale *.sh sweep and the
-# whole templates tree — and $lib_dir comes from the environment. A typo
-# (KASBAH_LIB_DIR=$HOME, KASBAH_LIB_DIR=/usr/local/lib) would aim a recursive
-# delete at a directory full of somebody else's files, so a non-empty target
-# has to look like a kasbah library directory before anything is removed. A
-# fresh or absent one is the ordinary case and passes untouched.
+# Installing deletes inside $lib_dir, which comes from the environment, so a
+# non-empty one must be kasbah's: an install (server/kasbah-linux-*) or a
+# pre-1.0 one (VERSION with common.sh or libexec/kasbah-bash).
+has_server_binaries() {
+    local f
+    for f in "$1"/server/kasbah-linux-*; do
+        [ -f "$f" ] && return 0
+    done
+    return 1
+}
+is_legacy() {
+    [ -f "$1/VERSION" ] && { [ -f "$1/common.sh" ] || [ -f "$1/libexec/kasbah-bash" ]; }
+}
 if [ -d "$lib_dir" ] && [ -n "$(ls -A "$lib_dir" 2>/dev/null)" ] \
-   && [ ! -f "$lib_dir/VERSION" ] && [ ! -f "$lib_dir/common.sh" ]; then
-    echo "install: $lib_dir is not empty and is not a kasbah library directory" >&2
-    echo "         (no VERSION, no common.sh) — refusing to remove anything there" >&2
+   && ! has_server_binaries "$lib_dir" && ! is_legacy "$lib_dir"; then
+    echo "install: $lib_dir is not empty and is not a kasbah library directory — refusing to remove anything there" >&2
+    echo "         kasbah's holds server/kasbah-linux-*, or (before 1.0) VERSION with common.sh or libexec/kasbah-bash" >&2
     echo "         set KASBAH_LIB_DIR to an empty or previously installed path" >&2
     exit 1
 fi
@@ -66,52 +75,40 @@ for f in kasbah server/kasbah-linux-amd64 server/kasbah-linux-arm64; do
     fi
 done
 
-install -d "$bin_dir" "$lib_dir"
-install -m 0755 "$dist/kasbah"      "$bin_dir/kasbah"
-install -m 0644 "$repo_dir/VERSION" "$lib_dir/VERSION"
-
-# The Bash dispatcher the binary hands unported commands to, and the server
-# binaries kasbah ships to a VPS. Replaced whole, like the templates below.
-rm -rf "${lib_dir:?}/libexec" "${lib_dir:?}/server"
-install -d "$lib_dir/libexec" "$lib_dir/server"
-install -m 0755 "$repo_dir/libexec/kasbah-bash" "$lib_dir/libexec/kasbah-bash"
-for arch in amd64 arm64; do
-    install -m 0755 "$dist/server/kasbah-linux-$arch" "$lib_dir/server/kasbah-linux-$arch"
-done
-
-# Remove stale *.sh so a rename/deletion upstream doesn't leave orphans behind.
-shopt -s nullglob
-rm -f "$lib_dir"/*.sh
-for f in "$repo_dir"/lib/*.sh; do
-    install -m 0644 "$f" "$lib_dir/$(basename "$f")"
-done
-
-# Templates ship beside the libraries: kasbah looks for them there when it
-# is not running from a checkout, so without this an installed kasbah has
-# nothing to render onto a server. The whole tree is replaced rather than
-# merged, for the same reason the *.sh copy is — a template deleted upstream
-# must not survive an upgrade. Modes come from the repo, so a template that has
-# to be runnable on the far side (the backup stack's backup.sh) lands executable.
-rm -rf "${lib_dir:?}/templates"
-# Created whether or not there is anything to put in it: KASBAH_TEMPLATE_DIR
-# resolves to this path on an installed kasbah, and a resolved path that does
-# not exist is a worse error message than an empty directory.
-install -d "$lib_dir/templates"
-if [ -d "$repo_dir/templates" ]; then
-    while IFS= read -r -d '' f; do
-        rel="${f#"$repo_dir"/templates/}"
-        install -d "$lib_dir/templates/$(dirname "$rel")"
-        if [ -x "$f" ]; then
-            install -m 0755 "$f" "$lib_dir/templates/$rel"
-        else
-            install -m 0644 "$f" "$lib_dir/templates/$rel"
-        fi
-    done < <(find "$repo_dir/templates" -type f -print0)
+# Installing from dist/ into dist/ would copy each server binary onto itself.
+if [ -d "$lib_dir/server" ] && [ "$(cd -P "$lib_dir/server" && pwd)" = "$(cd -P "$dist/server" && pwd)" ]; then
+    echo "install: $lib_dir/server is this build's own $dist/server — refusing to install over it" >&2
+    echo "         set KASBAH_LIB_DIR to a directory outside $dist" >&2
+    exit 1
 fi
 
-# Asked of the installed copy, so a layout it cannot run from fails here.
-installed="$(KASBAH_LIB_DIR="$lib_dir" "$bin_dir/kasbah" --version)"
-echo "installed $installed"
+# Asked before anything is replaced: a binary that cannot run here fails the
+# install and leaves the old one in place.
+if ! built="$("$dist/kasbah" --version)"; then
+    echo "install: $dist/kasbah does not run here — nothing was installed" >&2
+    exit 1
+fi
+
+legacy=0
+if is_legacy "$lib_dir"; then legacy=1; fi
+install -d "$bin_dir" "$lib_dir"
+install -m 0755 "$dist/kasbah" "$bin_dir/kasbah"
+
+# Only kasbah's two files in server/, each renamed into place; anything else
+# there is left alone.
+install -d "$lib_dir/server"
+for arch in amd64 arm64; do
+    install -m 0755 "$dist/server/kasbah-linux-$arch" "$lib_dir/server/.kasbah-linux-$arch.new"
+    mv -f "$lib_dir/server/.kasbah-linux-$arch.new" "$lib_dir/server/kasbah-linux-$arch"
+done
+# What a pre-1.0 install put beside it, which nothing reads any more.
+if [ "$legacy" = 1 ]; then
+    rm -rf "${lib_dir:?}/libexec" "${lib_dir:?}/templates" "${lib_dir:?}/VERSION"
+    shopt -s nullglob
+    rm -f "$lib_dir"/*.sh
+fi
+
+echo "installed $built"
 echo "  bin: $bin_dir/kasbah"
 echo "  lib: $lib_dir"
 

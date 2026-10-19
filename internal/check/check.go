@@ -3,12 +3,10 @@
 //
 // Each rule answers its question as a jq filter would under LC_ALL=C.UTF-8 —
 // per document, with jq's errors, fallbacks and exit statuses — because that
-// answer is the rule's verdict on an odd file (the parity kept from the Bash
-// tool). A failed filter ends the run with the report cut short and jq's
-// status as the exit code: 5 for a runtime
-// error (a scalar where an object belongs), 3 for a name that does not compile
-// into the filter; 1 for a template that cannot be read. Reported, these
-// collide with docs/cli.md's codes of the same numbers.
+// answer is the rule's verdict on an odd file. A question that cannot be
+// answered at all (a scalar where an object belongs, a name that cannot be
+// spliced into a filter, a template that cannot be read) ends the run with the
+// report cut short and exit 1.
 package check
 
 import (
@@ -73,8 +71,8 @@ type checker struct {
 }
 
 // Run checks the project in the current directory and returns the exit code:
-// 0; 6 on any failure; the manifest's own refusal (2 or 1); or, for a run cut
-// short as the package comment says, 5, 3 or 1.
+// 0; 6 on any failure; the manifest's own refusal (2 or 1); or 1 for a run
+// cut short as the package comment says.
 func Run(e Env) (code int) {
 	c := &checker{out: e.Out, w: e.Out.Stdout}
 	defer func() {
@@ -240,29 +238,31 @@ func gitignoreHas(pattern string) bool {
 
 // q asks a project file; the manifest is answered from the validated document.
 func (c *checker) q(file string, f gen) result {
+	var r result
 	if file == manifest.File {
-		return run([]jv.Value{c.m.Doc}, f)
-	}
-	fl := c.cache.Get(file)
-	if fl.Err != nil {
+		r = run([]jv.Value{c.m.Doc}, f)
+	} else if fl := c.cache.Get(file); fl.Err != nil {
 		return result{rc: 2}
+	} else {
+		r = run(fl.Docs, f)
 	}
-	return run(fl.Docs, f)
+	if r.msg != "" {
+		r.msg = "error: cannot check " + file + ", " + r.msg
+	}
+	return r
 }
 
-// must is an errexit site: a failed query ends the run with its status, its
-// diagnostic on stderr unless the site silenced it.
-func (c *checker) must(r result, quiet bool) string {
+// must is a question the run cannot go on without: a failed query ends it
+// with exit 1 and its diagnostic on stderr.
+func (c *checker) must(r result) string {
 	if r.rc != 0 {
-		if !quiet && r.msg != "" {
+		if r.msg != "" {
 			fmt.Fprintln(c.out.Stderr, r.msg)
 		}
-		panic(abort{r.rc})
+		panic(abort{cli.ExitFailure})
 	}
 	return r.sub()
 }
-
-var compileError = result{rc: 3, msg: "jq: error: syntax error, unexpected INVALID_CHARACTER"}
 
 // at asks `.[a][b]… // def` of a file.
 func (c *checker) at(file string, def jv.Value, p ...string) result {
@@ -273,7 +273,13 @@ func (c *checker) at(file string, def jv.Value, p ...string) result {
 func (c *checker) then(file string, f func(v jv.Value) (jv.Value, error), p ...string) result {
 	g, ok := pathThen(f, p...)
 	if !ok {
-		return compileError
+		name := ""
+		for _, k := range p {
+			if _, lit := literal(k); !lit {
+				name = k
+			}
+		}
+		return result{rc: 3, msg: fmt.Sprintf("error: cannot check %s, the name '%s' holds a character kasbah's rules cannot quote", file, name)}
 	}
 	return c.q(file, g)
 }
@@ -383,7 +389,7 @@ func (c *checker) composeSection(services string) {
 }
 
 func (c *checker) c05() {
-	if c.must(c.at(composeFile, "", "version"), false) != "" {
+	if c.must(c.at(composeFile, "", "version")) != "" {
 		c.warnf("compose.prod.yml uses deprecated 'version:' field")
 	} else {
 		c.passf("No deprecated 'version:' field")
@@ -428,9 +434,9 @@ func (c *checker) c08(services string) {
 // networks is C03, C04 and C07; it returns the services on kasbah-net and
 // whether the banned default-alias shape put them there, for C09.
 func (c *checker) networks(services string) (onHN string, defaultAliases bool) {
-	defaultName := c.must(c.at(composeFile, "", "networks", "default", "name"), false)
-	defaultExt := c.must(c.at(composeFile, false, "networks", "default", "external"), false)
-	hnExt := c.must(c.at(composeFile, false, "networks", "kasbah-net", "external"), false)
+	defaultName := c.must(c.at(composeFile, "", "networks", "default", "name"))
+	defaultExt := c.must(c.at(composeFile, false, "networks", "default", "external"))
+	hnExt := c.must(c.at(composeFile, false, "networks", "kasbah-net", "external"))
 	defaultAliases = defaultName == "kasbah-net"
 
 	routed := strings.Join(envtpl.SortUniq(c.routedHosts()), "\n")
@@ -459,7 +465,7 @@ func (c *checker) networks(services string) (onHN string, defaultAliases bool) {
 				joined = true
 			}
 		}
-		cn := c.must(c.at(composeFile, "", "services", svc, "container_name"), true)
+		cn := c.must(c.at(composeFile, "", "services", svc, "container_name"))
 		if cn != "" && cn != "null" && routed != "" && grepX(routed, cn) {
 			isRouted, anyRouted = true, true
 		}
@@ -612,7 +618,7 @@ func (c *checker) traefikSection(services string) {
 }
 
 func (c *checker) rule(r string) string {
-	return c.must(c.at(traefikFile, "", "http", "routers", r, "rule"), false)
+	return c.must(c.at(traefikFile, "", "http", "routers", r, "rule"))
 }
 
 func (c *checker) t02(routers, domain string) {
@@ -638,7 +644,7 @@ func (c *checker) t03(routers string) {
 		}
 		n := c.must(c.then(traefikFile, func(v jv.Value) (jv.Value, error) {
 			return length(jv.Alt(v, []jv.Value{}))
-		}, "http", "routers", r, "entryPoints"), false)
+		}, "http", "routers", r, "entryPoints"))
 		if n == "0" {
 			bad = append(bad, r)
 		}
@@ -656,10 +662,10 @@ func (c *checker) t04(routers string) {
 		if r == "" {
 			continue
 		}
-		if c.must(c.then(traefikFile, anyOf("websecure"), "http", "routers", r, "entryPoints"), false) != "true" {
+		if c.must(c.then(traefikFile, anyOf("websecure"), "http", "routers", r, "entryPoints")) != "true" {
 			continue
 		}
-		if c.must(c.at(traefikFile, "", "http", "routers", r, "tls", "certResolver"), false) != "letsencrypt" {
+		if c.must(c.at(traefikFile, "", "http", "routers", r, "tls", "certResolver")) != "letsencrypt" {
 			bad = append(bad, r)
 		}
 	}
@@ -676,7 +682,7 @@ func (c *checker) t08(routers, domain string) {
 		if r == "" || !strings.Contains(c.rule(r), domain) {
 			continue
 		}
-		if c.must(c.then(traefikFile, anyOf("web"), "http", "routers", r, "entryPoints"), false) == "true" {
+		if c.must(c.then(traefikFile, anyOf("web"), "http", "routers", r, "entryPoints")) == "true" {
 			found = true
 			break
 		}
@@ -802,7 +808,7 @@ var (
 )
 
 // routedHosts is every loadBalancer server URL's host, one per line as the
-// sed and awk of the Bash pipeline left them, before sorting.
+// `sed`/`awk` pipeline would leave them, before sorting.
 func (c *checker) routedHosts() []string {
 	if !isFile(traefikFile) {
 		return nil
@@ -889,7 +895,7 @@ func (c *checker) healthSection(services string) {
 			if svc == "" || !c.built(svc) {
 				continue
 			}
-			if c.must(c.at(composeFile, nil, "services", svc, "healthcheck"), true) == "null" {
+			if c.must(c.at(composeFile, nil, "services", svc, "healthcheck")) == "null" {
 				bad = append(bad, svc)
 			}
 		}
@@ -900,7 +906,7 @@ func (c *checker) healthSection(services string) {
 		}
 	}
 	if health {
-		ctr := c.must(c.at(manifest.File, "", "health", "container"), false)
+		ctr := c.must(c.at(manifest.File, "", "health", "container"))
 		switch {
 		case ctr == "" || ctr == "null":
 			c.passf("manifest health: names no container — the deploy waits on every container with a healthcheck")
@@ -1022,7 +1028,7 @@ func (c *checker) hooksSection(services string) {
 				}
 			}
 			return nil
-		}), true)
+		}))
 		if hs == "" {
 			c.passf("Hooks block is empty")
 		} else {
@@ -1050,7 +1056,7 @@ func (c *checker) hooksSection(services string) {
 	if backup {
 		var missing []string
 		for _, f := range []string{"check", "command", "extension"} {
-			v := c.must(c.at(manifest.File, "", "backup", f), false)
+			v := c.must(c.at(manifest.File, "", "backup", f))
 			if v == "" || v == "null" {
 				missing = append(missing, f)
 			}
@@ -1061,7 +1067,7 @@ func (c *checker) hooksSection(services string) {
 			c.failf("Backup hook missing required field(s): %s", strings.Join(missing, " "))
 		}
 
-		ctr := c.must(c.at(manifest.File, "", "backup", "container"), false)
+		ctr := c.must(c.at(manifest.File, "", "backup", "container"))
 		switch {
 		case ctr == "" || ctr == "null":
 			c.failf("Backup hook missing 'container' field")

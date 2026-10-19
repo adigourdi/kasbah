@@ -284,8 +284,8 @@ Four details in that command are load-bearing:
 kasbah takes no ssh-options flag. It runs plain `ssh user@host` and
 inherits the user's own `ssh_config`, the same way git does over SSH:
 jump hosts, non-standard ports and key selection are already that file's
-job. Everything remote goes through `lib/ssh.sh`; nothing else in the
-codebase invokes `ssh`, `rsync` or `scp` directly.
+job. Everything remote goes through `internal/ssh`; nothing else in the
+codebase invokes `ssh` or `rsync` directly.
 
 ## `versions.log` format
 

@@ -6,6 +6,11 @@ Two levels of commands:
 - **`kasbah …`** (everything else) — act on a project. Run from the project
   root. Read `./kasbah.yml`. Error if missing.
 
+`kasbah`, `kasbah -h` and `kasbah --help` print the command list and exit 0;
+`kasbah --version` (`-v`) prints the tool and the manifest schema it writes —
+`kasbah 1.0.0 (schema 1)`. An unknown command, or `kasbah server` with a missing
+or unknown subcommand, names itself and exits 1.
+
 ```
 $ cd ~/some/random/path
 $ kasbah deploy you@vps
@@ -488,7 +493,7 @@ pointer).
 in `<apps>/traefik/dynamic/<name>.yml`, so printing it costs either a YAML parse
 on a server where `yq` is not a prerequisite or a Traefik API call with the
 dashboard credentials. kasbah **fetches the fragment base64 in the same round
-trip and parses it with the workstation's `yq`**. The credentials route would
+trip and parses it on the workstation**. The credentials route would
 yield certificates and router health in one call, but `status` holds only the
 bcrypt hash from `_shared.yml` — never the password — so it would need a new
 flag or prompt plus reachability to `traefik.<apex>`. The VPS has no `yq`, `jq`
@@ -594,7 +599,9 @@ Flags:
 ### `kasbah check [--server [USER@HOST]] [--fix [--yes]]`
 
 Run the compliance check on the current project. See `compliance.md` for
-the full rule set. Exit code 0 on pass, 6 on any failure (see "Exit codes" below).
+the full rule set. Exit code 0 on pass, 6 on any failure (see "Exit codes" below),
+and 1 — naming the file and the reason — when a file is shaped so badly that a
+rule cannot be evaluated at all (`services: {web: nginx}`).
 
 `--server USER@HOST` also asks that VPS: whether the project is deployed there,
 whether its `.env` still matches this checkout's `.env.prod.example`, whether
@@ -623,7 +630,7 @@ comment sitting immediately *above* a removed key is **left**, because it cannot
 be told from a file header, and a compose file that opens with prose and then
 `version:` is the ordinary shape.
 
-`yq` decides what is true; the text scanner only finds where it is written. When
+The parsed document decides what is true; the text scanner only finds where it is written. When
 the scanner cannot take a shape apart — a quoted key, a flow mapping, an
 inline value — the fix is **refused and named**, never guessed. So is a
 `compose.prod.yml` that does not parse. Two rules are also refused case by case,
@@ -1080,10 +1087,10 @@ exits `129`/`143` and still writes `last_server`, since the command ran.
 
 ## Deferred commands
 
-Referenced elsewhere in the docs but not yet in v0.1:
+Referenced elsewhere in the docs but not yet built:
 
 - `kasbah migrate` — migrate a project's source-tree files to a newer
-  kasbah schema. (roadmap v1.0.)
+  kasbah schema, when the first format change meets users (roadmap Phase 5).
 
 ## Exit codes
 

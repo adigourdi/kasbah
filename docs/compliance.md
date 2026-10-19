@@ -57,7 +57,7 @@ Exit code 0 if no failures (warnings are informational).
 
 The verdicts do not depend on the locale: names and URL schemes are ASCII
 everywhere, values are measured in UTF-8 characters, and lists (missing keys,
-hosts) are in byte order — what the Bash tool printed under `LC_ALL=C.UTF-8`.
+hosts) are in byte order.
 
 ## Rule catalog
 
@@ -170,7 +170,7 @@ ever printed.
 | ID | Rule | Level |
 |---|---|---|
 | M01 | `domain` set | fail |
-| M02 | `snappymail_domain` file exists (if set) and is valid JSON. Checked with `jq`, not `yq`: JSON is a subset of YAML, so `{host: mail.example.com}` parses as YAML, is not JSON, and SnappyMail rejects it. It fails rather than warns because the deploy-time copy is **copy-if-missing** — a broken pre-seed that lands is the one SnappyMail keeps | fail |
+| M02 | `snappymail_domain` file exists (if set) and is valid JSON — parsed as JSON, not YAML: JSON is a subset of YAML, so `{host: mail.example.com}` parses as YAML, is not JSON, and SnappyMail rejects it. It fails rather than warns because the deploy-time copy is **copy-if-missing** — a broken pre-seed that lands is the one SnappyMail keeps | fail |
 | M03 | (with `--server` flag) Mail stack on VPS knows this domain | fail |
 
 ### Backup (only with `--server`, and only on a server that has backups)
@@ -201,7 +201,7 @@ Unfixable (must be done by hand):
 
 ### How it edits
 
-**Targeted text edits, never a YAML round-trip.** `yq` reorders keys and drops
+**Targeted text edits, never a YAML round-trip.** A round-trip reorders keys and drops
 comments, and compose files carry load-bearing ones — this repo's own do. So
 everything not being changed comes back byte for byte: comments, blank lines,
 key order, quoting, hand-spacing, CRLF line endings, and a missing final

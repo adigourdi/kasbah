@@ -17,7 +17,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/term"
 )
 
-// Exit statuses of the setup: lib/env.sh's, where EOF at a menu was errexit.
+// Exit statuses of the setup; EOF at a menu aborts with SetupFail.
 const (
 	SetupOK   = 0
 	SetupFail = 1
@@ -134,9 +134,9 @@ func utf8Len(lead byte) int {
 	return 1
 }
 
-// generate is lib/env.sh's `VALUE=$(eval "$CMD" || echo "")`: no rc file,
+// generate is `VALUE=$(eval "$CMD" || echo "")` in sh: no rc file,
 // KEY/TARGET_DIR/EXAMPLE/OUTPUT exported (its functions are not available).
-// A command that ends the shell ends the setup with its status, as errexit did.
+// A command that ends the shell ends the setup with its status.
 func (s *Setup) generate(key, cmd string) (string, int) {
 	script := "kasbah_value=$(eval '" + strings.ReplaceAll(cmd, "'", `'\''`) + `' || echo "") || exit; printf '%s' "$kasbah_value"`
 	sh, args := "bash", []string{"--norc", "--noprofile", "-u", "-o", "pipefail", "-c", script, "setup-env.sh", s.Dir}
@@ -418,8 +418,7 @@ func (s *Setup) answer(masked bool, typed *string) string {
 	return v
 }
 
-// menuEOF is the abort lib/env.sh reached through errexit: exit 1, .env
-// untouched.
+// menuEOF is EOF at a menu: exit 1, .env untouched.
 func (s *Setup) menuEOF() int {
 	fmt.Fprint(s.Err, "\n")
 	fmt.Fprintln(s.Err, "ERROR: no answer at the menu (end of input) — .env left untouched")

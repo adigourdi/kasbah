@@ -48,7 +48,7 @@ restart. What leaves is kasbah's management layer, its backup scheduler first:
             .kasbah-client, and the .env managed-block sentinel comments
   mail      the operator's relay block in <apps>/mail/.env — every line that is
             not MAIL_HOSTNAME, DOMAIN or DATA_PATH — and <apps>/mail/kasbah.yml
-  kept      every other container, every compose.yml, every .env **value**, the
+  kept      every other container, every compose.yml, every .env value, the
             Traefik stack and its fragments, <data>/, <apps>/<project>/backups/,
             named volumes, images, the postmaster account, and the off-VPS
             restic repositories (operator property — docs/backup.md)
@@ -488,7 +488,11 @@ func (p *Plan) Report(w io.Writer) {
 	if len(s.KasbahExtra) > 0 {
 		fmt.Fprintf(w, "              %s/.kasbah/ itself stays — it also holds %s\n", p.Apps, strings.Join(s.KasbahExtra, " "))
 	} else {
-		fmt.Fprintf(w, "              and %s/.kasbah/ itself, which holds nothing else\n", p.Apps)
+		lock := ""
+		if s.BinLock {
+			lock = "with its lock, then "
+		}
+		fmt.Fprintf(w, "              %s%s/.kasbah/bin/ and %s/.kasbah/, which hold nothing else\n", lock, p.Apps, p.Apps)
 	}
 
 	fmt.Fprintf(w, "\nleft alone\n")
@@ -496,7 +500,7 @@ func (p *Plan) Report(w io.Writer) {
 		fmt.Fprintf(w, "  %s under %s — not a project name, so not kasbah's to touch\n", strings.Join(s.Skipped, " "), p.Apps)
 	}
 	fmt.Fprintf(w, "  every container but the backup scheduler's, projects and Traefik alike — the sites stay up\n")
-	fmt.Fprintf(w, "  every compose.yml, .env **value**, and Traefik fragment\n")
+	fmt.Fprintf(w, "  every compose.yml, .env value, and Traefik fragment\n")
 	fmt.Fprintf(w, "  %s/, %s/<project>/backups/, named volumes and images\n", p.Data, p.Apps)
 	if s.MailDir == "dir" {
 		fmt.Fprintf(w, "  the postmaster account in %s/mail/dms/config/postfix-accounts.cf\n", p.Data)

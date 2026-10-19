@@ -57,8 +57,8 @@ Traefik image tag.
 The image tag is the newest of the four and is there for one reason:
 `kasbah server upgrade-traefik` changes it, and an init that re-rendered
 kasbah's own pin over the top would revert a managed upgrade silently, on
-a re-run nobody thought was risky. So the pin in `lib/common.sh`
-(`KASBAH_TRAEFIK_IMAGE`) is what a *first* init renders, and every later
+a re-run nobody thought was risky. So the pin in `internal/serverinit/args.go`
+(`TraefikImage`) is what a *first* init renders, and every later
 one reproduces whatever the server's own `compose.yml` already names. Only
 the official repository with a Docker tag on it is reproduced — a mirror,
 a digest pin or anything else falls back to kasbah's pin with a warning,

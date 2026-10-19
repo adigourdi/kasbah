@@ -11,8 +11,7 @@ import (
 	"testing"
 )
 
-// The case table lib/env.sh and this engine were held equal on until the
-// Bash tool retired (10.12); its outputs are frozen in testdata/frozen.json.
+// The engine's case table; its outputs are frozen in testdata/frozen.json.
 // -update rewrites the file from this engine.
 
 var update = flag.Bool("update", false, "rewrite testdata/frozen.json")

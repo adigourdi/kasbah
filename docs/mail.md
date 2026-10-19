@@ -312,7 +312,7 @@ because nobody has run `add-mail-domain` yet is the worse of the two failures.
 The same holds for every other state the claim can be in — a half-made stack, a
 registry that does not list the domain, a stopped DMS, a pre-seed that could not
 be copied. `docs/project-manifest.md` → `mail` says the same, and
-`lib/deploy.sh` is where it is true.
+`internal/deploy` is where it is true.
 
 ## First run, and what "not healthy" means
 

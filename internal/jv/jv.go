@@ -1,5 +1,5 @@
 // Package jv holds JSON values as jq holds them — ordered objects, numbers in
-// jq's spelling — which is how the Bash kasbah sees every file through yq/jq.
+// jq's spelling — which is how kasbah's rules see every file, as yq/jq would.
 package jv
 
 import (

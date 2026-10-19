@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
@@ -109,7 +110,7 @@ type Session interface {
 // Ctx is what a run needs from its process.
 type Ctx struct {
 	Out       *cli.Output
-	Templates string
+	Templates fs.FS
 	Dial      func(target string) (Session, error)
 }
 

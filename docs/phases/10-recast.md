@@ -633,19 +633,30 @@ backup record survives container restarts (commit `12e543a`).
 
 ### 10.14 — Cutover (M)
 **Deliverables**
-- [ ] Delete `lib/`, the Bash dispatcher, the shim, the shipped templates the
-      binary replaced, the retired white-box suites and `tests/norm_path_test.sh`
-- [ ] Docs: `overview.md` (Language, Distribution, "Bash first, Go-ready"),
+- [x] Delete `lib/`, the Bash dispatcher, the shim, the shipped templates the
+      binary replaced, the retired white-box suites and `tests/norm_path_test.sh` —
+      no Bash left in kasbah; the CLI surface (usage, `--version`, help, unknown
+      commands) is `cmd/kasbah/usage.go`; templates are embedded in the binary; the
+      two path normalisers that remain (the bootstrap probe's sh, Go) are held to one
+      table. `install.sh` installs the binary and its two server builds, sweeping a
+      pre-1.0 install only when its full fingerprint is there
+- [x] Docs: `overview.md` (Language, Distribution, "Bash first, Go-ready"),
       `roadmap.md` 4–5 rewritten, `build-deploy.md` helper-scripts sections,
       `cli.md`, `CLAUDE.md` (Bash rules → Go rules; frozen contracts, interactivity,
       CRLF and compose rules kept)
-- [ ] `VERSION` → `1.0.0`; schema frozen (`docs/project-manifest.md`); `--version`
-      per D3
+- [x] `VERSION` → `1.0.0`; schema frozen (`docs/project-manifest.md`); `--version`
+      per D3 — `kasbah 1.0.0 (schema 1)`, one constant (`manifest.Schema`). D6: `check`
+      exits 1, naming the file and the reason, where it exited jq's 3/5
 
 **Verify on:** full real path; nothing else writing.
 
 **Watch out for:** a doc claiming one reader where two remain — check that
 things share an implementation, not merely a rule.
+
+**Found:** a release stamp carries no build counter, so once a server holds
+1.0.0 a later 1.0.0 build with different code is "the same" and is not shipped.
+`main` goes to `1.0.1-dev` after the phase closes, so the counter applies
+between releases again.
 
 ### 10.15 — Proof on `vps` (M)
 **Deliverables**

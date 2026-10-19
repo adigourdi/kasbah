@@ -14,7 +14,7 @@ import (
 const (
 	DefaultApps = "/apps"
 	Pointer     = "/etc/kasbah/apps-path"
-	// TraefikImage is lib/common.sh's KASBAH_TRAEFIK_IMAGE.
+	// TraefikImage is the Traefik a fresh server init runs.
 	TraefikImage = "traefik:v3.7.10"
 	CAProduction = "https://acme-v02.api.letsencrypt.org/directory"
 	CAStaging    = "https://acme-staging-v02.api.letsencrypt.org/directory"

@@ -151,7 +151,7 @@ func field(m *jv.Map, k string) string {
 	return strings.TrimRight(jv.ToString(jv.Alt(v, "")), "\n")
 }
 
-// Validate is lib/marker.sh's judgement of a marker's content, read from path
+// Validate judges a marker's content, read from path
 // on target. initCmd is the init command spelled for this server, which every
 // refusal names as the remedy.
 func Validate(body []byte, path, target, initCmd string) (*Marker, error) {

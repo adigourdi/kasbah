@@ -166,7 +166,7 @@ type Probe struct {
 
 // probeScript resolves the apps path ($3 when given, else the pointer $2, else
 // $1) and reports the marker, `uname -m` and the existing binary, run for at
-// most $4 s. POSIX sh; exit 5/6/7 are lib/marker.sh's pointer refusals.
+// most $4 s. POSIX sh; exit 5/6/7 are the pointer refusals.
 const probeScript = `set -u
 export LC_ALL=C
 apps=$1
@@ -351,7 +351,8 @@ func ParseProbe(out []byte) (*Probe, error) {
 	return p, nil
 }
 
-// normPath is lib/common.sh's kasbah_norm_path.
+// normPath reduces an apps path as the pointer is read: CR and trailing blanks
+// off, `.` segments and repeated or trailing slashes dropped.
 func normPath(p string) string {
 	p = strings.TrimRight(strings.TrimSuffix(p, "\r"), " \t")
 	if !strings.HasPrefix(p, "/") {
@@ -370,7 +371,7 @@ func normPath(p string) string {
 }
 
 // judge turns the probe's exit status and output into the apps path's
-// refusals (lib/marker.sh's, the same exit codes). An explicit apps path
+// refusals. An explicit apps path
 // needs the directory, not a marker: server init ships before it writes one.
 func judge(target string, rc int, out []byte, opt Options) (*Probe, error) {
 	p, err := judgeLayout(target, rc, out, opt.Prepared != nil)

@@ -83,7 +83,7 @@ plant() {
 run() {
     plant
     : > "$call_log"
-    env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
+    env -u KASBAH_LIB_DIR \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$tmpdir/run" NO_COLOR=1 \
         CALL_LOG="$call_log" FAKE_APPS="$FAKE_APPS" \
         "$kasbah" "$@" </dev/null 2>&1
@@ -171,7 +171,7 @@ if [ "$(id -u)" != 0 ]; then
     # Re-run against the same tree with the alias file read-only.
     chmod 444 "$aliases"
     : > "$call_log"
-    out="$( env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
+    out="$( env -u KASBAH_LIB_DIR \
             HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$tmpdir/run" NO_COLOR=1 \
             CALL_LOG="$call_log" FAKE_APPS="$FAKE_APPS" \
             "$kasbah" server add-mail-domain deploy@vps other.test </dev/null 2>&1 )"; rc=$?

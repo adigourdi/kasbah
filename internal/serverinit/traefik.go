@@ -3,9 +3,9 @@ package serverinit
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -26,7 +26,7 @@ type errUnparsed struct{}
 
 func (errUnparsed) Error() string { return "unparsed" }
 
-// yamlGet is lib/common.sh's yaml_get: `$(yq -r …)` of a query over content —
+// yamlGet is `$(yq -r …)` of a query over content —
 // trailing newlines off, "" for empty content or a null answer, one CR off.
 func yamlGet(content string, q func(jv.Value) (jv.Value, bool)) (string, error) {
 	if content == "" {
@@ -462,13 +462,9 @@ func Bcrypt(user, pass string) (string, error) {
 	return line, nil
 }
 
-// Render renders the three templates under dir/traefik and parses each one:
-// nothing unparseable reaches the server.
-func Render(dir string, o Options, v Values) (map[string]string, error) {
-	tdir := filepath.Join(dir, "traefik")
-	if fi, err := os.Stat(tdir); err != nil || !fi.IsDir() {
-		return nil, cli.Fail("the Traefik templates are missing (looked in %s) — this kasbah installation is incomplete", tdir)
-	}
+// Render renders the three templates under traefik/ in fsys and parses each
+// one: nothing unparseable reaches the server.
+func Render(fsys fs.FS, o Options, v Values) (map[string]string, error) {
 	subst := map[string]string{
 		"APPS_PATH":        o.Apps,
 		"DATA_PATH":        o.Data,
@@ -480,13 +476,9 @@ func Render(dir string, o Options, v Values) (map[string]string, error) {
 	}
 	out := map[string]string{}
 	for _, rel := range Files {
-		src := filepath.Join(tdir, rel)
-		tpl, err := os.ReadFile(src)
+		tpl, err := fs.ReadFile(fsys, "traefik/"+rel)
 		if err != nil {
-			if os.IsNotExist(err) {
-				return nil, cli.Fail("the %s template %s is missing", rel, src)
-			}
-			return nil, cli.Fail("could not read %s", src)
+			return nil, cli.Fail("internal: this kasbah build carries no traefik/%s template", rel)
 		}
 		s, err := tmpl.Render(string(tpl), rel, subst)
 		if err != nil {

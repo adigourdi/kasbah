@@ -2,6 +2,7 @@ package serverbin
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -84,5 +85,38 @@ func TestMount(t *testing.T) {
 	}
 	if err := noexec("d@h", "/x/bin", "/x/bin/kasbah", nil); err != nil {
 		t.Errorf("no mount information blamed a mount: %v", err)
+	}
+}
+
+// One table through both normalisers: the probe's POSIX-sh norm_path, reading
+// the pointer file as the probe does, and normPath on the same first line.
+func TestNormPathShAndGoAgree(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	start := strings.Index(probeScript, "norm_path() {")
+	end := strings.Index(probeScript[start:], "\n}\n") + start + 3
+	fn := "cr=$(printf '\\r')\n" + probeScript[start:end]
+	driver := fn + `IFS= read -r pointed < "$1" || [ -n "$pointed" ] || pointed=""
+norm_path "$pointed"`
+	dir := t.TempDir()
+	for _, in := range []string{
+		"/apps\n", "/apps", "/apps/\n", "//apps//x//\n", "/srv/./x/.\n", "/apps \t \n", "/apps\r\n", "/apps\r",
+		"/apps \r\n", "/*\n", "/a*/[b]?/x\n", "/\n", "//\n", "apps/x\n", "/a/../b\n", "\n", "", "/apps\n/other\n",
+		"/sp ace/x\n",
+	} {
+		f := filepath.Join(dir, "pointer")
+		if err := os.WriteFile(f, []byte(in), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out, err := exec.Command(sh, "-c", driver, "sh", f).Output()
+		if err != nil {
+			t.Fatalf("%q: sh: %v", in, err)
+		}
+		line, _, _ := strings.Cut(in, "\n")
+		if got := normPath(line); got != string(out) {
+			t.Errorf("%q: Go %q, sh %q", in, got, out)
+		}
 	}
 }

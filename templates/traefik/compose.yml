@@ -14,8 +14,8 @@ name: traefik
 
 services:
   traefik:
-    # Substituted on the workstation. The tag kasbah pins lives in
-    # lib/common.sh as KASBAH_TRAEFIK_IMAGE, because two commands decide it: a
+    # Substituted on the workstation. The tag kasbah pins is built into the
+    # kasbah binary, because two commands decide it: a
     # first `server init` renders that pin, and `server upgrade-traefik` renders
     # whatever --version says. Every later init reads the tag back out of the
     # copy on the server and reproduces it (docs/traefik.md -> Ownership), so a

@@ -119,11 +119,11 @@ traefik_boot_count() {
 }
 
 # The pin kasbah renders with, so a version bump does not silently turn a case
-# that needs a real image into `assert false`. It comes from lib/common.sh, not
+# that needs a real image into `assert false`. It comes from the Go source, not
 # from the template: the template carries the `__TRAEFIK_IMAGE__` placeholder
 # because `upgrade-traefik` recovers the tag off the server, and reading the
 # placeholder here would hand `docker create` a name no registry has.
-traefik_image=$(sed -n 's/^KASBAH_TRAEFIK_IMAGE=//p' "$repo_dir/lib/common.sh" | tr -d '"'"'"'"')
+traefik_image=$(sed -n 's/^[[:space:]]*TraefikImage = "\(.*\)"$/\1/p' "$repo_dir/internal/serverinit/args.go")
 
 # Curl from inside the rig, so the suite never depends on a host port being
 # free. --resolve rather than -H Host: the TLS handshake has to carry the real

@@ -298,7 +298,7 @@ assert 'grep -qF "kasbah deploy $RIG_TARGET --allow-stopped" "$tmpdir/out"' \
 build_push "$RIG_TARGET"; rc=$?
 assert '[ "$rc" = 0 ]' "the images ship again (exit $rc: $(cli_err))"
 # --allow-stopped, because versions.log survived the drop and the containers its
-# pre-deploy hooks and backup would run against did not: templates/remote-deploy.sh
+# pre-deploy hooks and backup would run against did not: the deploy engine
 # refuses to deploy over a stack with history and no containers unless told they
 # are meant to be down. It is the command drop printed, asserted above.
 deploy "$RIG_TARGET" --allow-stopped; rc=$?

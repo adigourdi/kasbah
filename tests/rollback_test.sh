@@ -20,10 +20,6 @@ set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 . "$repo_dir/tests/cli.sh"
-export KASBAH_LIB_DIR="$repo_dir/lib"
-export KASBAH_TEMPLATE_DIR="$repo_dir/templates"
-KASBAH_VERSION="$(cat "$repo_dir/VERSION")"
-export KASBAH_VERSION
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -302,7 +298,7 @@ log_two=$'2026-08-01T00:00:00+00:00 deploy 1.0.0 no-backup kasbah=0.1.0 digest=-
 kasbah_run() {
     : > "$ssh_log"; : > "$call_log"
     rm -f "$spec_copy" "$seed_copy" "$frag_copy" "$compose_copy"
-    env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
+    env -u KASBAH_LIB_DIR \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$run_tmp" \
         SSH_LOG="$ssh_log" CALL_LOG="$call_log" FAKE_APPS="$FAKE_APPS" \
         SPEC_COPY="$spec_copy" SEED_COPY="$seed_copy" RSYNC_FRAG_COPY="$frag_copy" \

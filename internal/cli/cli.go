@@ -52,7 +52,7 @@ type Output struct {
 	Color bool
 }
 
-// Std is the process's own streams, coloured as lib/common.sh colours them:
+// Std is the process's own streams, coloured
 // when stderr is a terminal and NO_COLOR is empty.
 func Std() *Output {
 	return &Output{
@@ -93,9 +93,8 @@ func (o *Output) ErrCont(format string, args ...any) {
 	fmt.Fprintf(o.Stderr, "%s%s\n", contIndent, fmt.Sprintf(format, args...))
 }
 
-// Error is a failure on its way to the exit: what `die`, or `err` + `err_cont`
-// + `exit N`, says in the Bash tool. Lines[0] is the error: line, the rest
-// its continuation lines.
+// Error is a failure on its way to the exit. Lines[0] is the error: line, the
+// rest its continuation lines.
 type Error struct {
 	Code  int
 	Lines []string
@@ -103,7 +102,7 @@ type Error struct {
 
 func (e *Error) Error() string { return strings.Join(e.Lines, "\n") }
 
-// Fail is an exit-1 error of one line, the Go spelling of `die`.
+// Fail is an exit-1 error of one line.
 func Fail(format string, args ...any) *Error {
 	return &Error{Code: ExitFailure, Lines: []string{fmt.Sprintf(format, args...)}}
 }
@@ -119,7 +118,7 @@ func (e *Error) Cont(lines ...string) *Error {
 	return e
 }
 
-// Report prints err the way the Bash tool would have and returns the exit
+// Report prints err and returns the exit
 // code to leave with: an *Error with its own lines and code, anything else as
 // one error: line and exit 1. A nil err is exit 0, silently.
 func (o *Output) Report(err error) int {

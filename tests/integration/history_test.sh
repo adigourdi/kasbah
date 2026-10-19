@@ -9,7 +9,7 @@
 #   * **`--all` spanning a real rotation point.** Entries old enough to be
 #     pruned are planted in the active log, and the next deploy's own rotation
 #     is what moves them into versions.log.gz. Nothing here compresses anything:
-#     the archive is the one templates/remote-deploy.sh wrote, read back through
+#     the archive is the one the deploy engine wrote, read back through
 #     zcat on the workstation.
 #   * `changelog` over a rollback the rig actually performed, where the version
 #     running is the rollback's target and the range therefore runs backwards.

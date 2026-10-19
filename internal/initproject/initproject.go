@@ -18,6 +18,18 @@ import (
 	"github.com/adigourdi/kasbah/internal/state"
 )
 
+// Usage is `init-project --help`.
+const Usage = `Usage: kasbah init-project [--name=<name>] [--domain=<fqdn>]
+
+Scaffolds kasbah metadata in the current directory:
+  - kasbah.yml           (manifest)
+  - .env.prod.example     (env template skeleton)
+  - .kasbah/state.json   (project state)
+  - .gitignore entries for .env and .kasbah/
+
+Does not create compose.prod.yml — that is user-authored.
+`
+
 // ErrHelp is the --help request, which the caller answers.
 var ErrHelp = errors.New("help requested")
 
@@ -28,9 +40,9 @@ const Template = "# ============================================================
 	"# =============================================================================\n" +
 	"#\n" +
 	"# One KEY=value per line; the first deploy prompts for each and writes the\n" +
-	"# answers to .env on the server (docs/env-template.md for hints, defaults and\n" +
-	"# ! generators). Leave this file as it is if the project configures nothing —\n" +
-	"# the file is required, the keys are not. KASBAH_* names belong to kasbah.\n"
+	"# answers to .env on the server (docs/env-template.md in the kasbah repository\n" +
+	"# for hints, defaults and ! generators). Leave this file as it is if the\n" +
+	"# project configures nothing — the file is required, the keys are not. KASBAH_* names belong to kasbah.\n"
 
 var (
 	reName = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
@@ -48,7 +60,7 @@ type Options struct {
 	NameGiven, DomainGiven bool
 }
 
-// Parse reads the flags in order, as the Bash loop did: the first unknown one
+// Parse reads the flags in order: the first unknown one
 // is refused, and --help wins over anything after it.
 func Parse(args []string) (Options, error) {
 	var o Options
@@ -218,13 +230,13 @@ const snippet = "Next step: author compose.prod.yml. Starter snippet:\n" +
 	"  Only Traefik-routed containers join kasbah-net — one service needs nothing\n" +
 	"  else. Add a second, project-internal network the moment there is a service\n" +
 	"  nothing routes to, and keep that service off the shared one (see\n" +
-	"  docs/traefik.md). Compose publishes the service *name* as a DNS alias on\n" +
+	"  docs/traefik.md in the kasbah repository). Compose publishes the service *name* as a DNS alias on\n" +
 	"  every network it joins, so name it for the project: a bare `web` on\n" +
 	"  kasbah-net collides with every other project that has one. The KASBAH_*\n" +
 	"  limits are injected into .env at deploy.\n" +
 	"\n" +
 	"Routing is declared in traefik-dynamic.yml at the project root (see\n" +
-	"docs/traefik.md). Starter:\n" +
+	"docs/traefik.md in the kasbah repository). Starter:\n" +
 	"\n" +
 	"  http:\n" +
 	"    routers:\n" +

@@ -1,11 +1,10 @@
-// Command kasbah is the kasbah CLI. The commands it owns run here; every
-// other one is handed to the Bash dispatcher, which replaces this process.
+// Command kasbah is the kasbah CLI, on the workstation and, under the hidden
+// `kasbah remote …` subcommands, on every server it manages.
 package main
 
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,7 +17,6 @@ import (
 	"github.com/adigourdi/kasbah/internal/destroy"
 	"github.com/adigourdi/kasbah/internal/drop"
 	"github.com/adigourdi/kasbah/internal/env"
-	"github.com/adigourdi/kasbah/internal/handoff"
 	"github.com/adigourdi/kasbah/internal/history"
 	"github.com/adigourdi/kasbah/internal/initproject"
 	"github.com/adigourdi/kasbah/internal/mail"
@@ -33,7 +31,9 @@ import (
 	"github.com/adigourdi/kasbah/internal/status"
 	"github.com/adigourdi/kasbah/internal/term"
 	"github.com/adigourdi/kasbah/internal/upgrade"
+	"github.com/adigourdi/kasbah/internal/version"
 	"github.com/adigourdi/kasbah/internal/vlog"
+	"github.com/adigourdi/kasbah/templates"
 )
 
 // build is stamped at build time: -ldflags "-X main.build=…".
@@ -44,7 +44,6 @@ func main() {
 	if len(args) > 0 {
 		switch args[0] {
 		case "remote":
-			// The server has no Bash tree: `remote` is never handed off.
 			if len(args) > 1 && args[1] == "load" {
 				// A signal abandons the docker load rather than let it finish
 				// on a stream that was cut short.
@@ -180,40 +179,13 @@ func main() {
 			atexit.HandleSignals()
 			atexit.Exit(checkCmd(o, err))
 		case "init-project":
-			// --help falls through: the usage text is still the Bash tool's.
-			if o, err := initproject.Parse(args[1:]); err != initproject.ErrHelp {
-				atexit.HandleSignals()
-				atexit.Exit(initProjectCmd(o, err))
-			}
+			o, err := initproject.Parse(args[1:])
+			atexit.HandleSignals()
+			atexit.Exit(initProjectCmd(o, err))
 		}
 	}
 
-	exe, err := os.Executable()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "kasbah: cannot locate this binary: %v\n", err)
-		os.Exit(1)
-	}
-	dispatcher, err := handoff.Locate(exe, os.Getenv)
-	if err != nil {
-		// A server binary has no dispatcher, and --version is still a question
-		// it can answer.
-		if len(args) == 1 && (args[0] == "--version" || args[0] == "-v") {
-			fmt.Printf("kasbah %s\n", buildOrUnknown())
-			os.Exit(0)
-		}
-		fmt.Fprintf(os.Stderr, "kasbah: %v\n", err)
-		os.Exit(1)
-	}
-	err = handoff.Exec(dispatcher, args, handoff.Env(os.Environ(), build))
-	fmt.Fprintf(os.Stderr, "kasbah: cannot run %s: %v\n", dispatcher, err)
-	os.Exit(126)
-}
-
-func buildOrUnknown() string {
-	if build == "" {
-		return "(unstamped build)"
-	}
-	return build
+	os.Exit(topLevel(cli.Std(), build, args))
 }
 
 func remoteCmd(args []string) int {
@@ -260,22 +232,16 @@ func ensureServer(out *cli.Output, args []string) error {
 	if len(args) != 1 {
 		return cli.Fail("usage: kasbah __ensure-server [--apps-path=<dir>] USER@HOST")
 	}
-	exe, err := os.Executable()
+	local, err := localBinary()
 	if err != nil {
-		return cli.Fail("cannot locate this binary: %v", err)
-	}
-	home, checkout, err := handoff.Home(exe, os.Getenv)
-	if err != nil {
-		return cli.Fail("%v", err)
+		return err
 	}
 	c, err := ssh.Connect(args[0])
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-	res, err := serverbin.Ensure(c, remote.Self(build), func(arch string) (string, error) {
-		return serverbin.Local(home, checkout, arch)
-	}, opt)
+	res, err := serverbin.Ensure(c, remote.Self(build), local, opt)
 	if err != nil {
 		return err
 	}
@@ -335,20 +301,14 @@ func backupPruneCmd(o backup.PruneOptions, err error) int {
 		fmt.Fprint(out.Stdout, backup.PruneUsage)
 		return cli.ExitOK
 	}
-	exe, err := os.Executable()
+	local, err := localBinary()
 	if err != nil {
-		return out.Report(cli.Fail("cannot locate this binary: %v", err))
-	}
-	home, checkout, err := handoff.Home(exe, os.Getenv)
-	if err != nil {
-		return out.Report(cli.Fail("%v", err))
+		return out.Report(err)
 	}
 	code := out.Report(backup.Prune(backup.PruneCtx{
 		Out:      out,
 		Prompter: prompt.Std(out),
-		Dial: backup.DialPrune(remote.Self(build), func(arch string) (string, error) {
-			return serverbin.Local(home, checkout, arch)
-		}),
+		Dial:     backup.DialPrune(remote.Self(build), local),
 	}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c
@@ -357,41 +317,24 @@ func backupPruneCmd(o backup.PruneOptions, err error) int {
 }
 
 func serverInit(out *cli.Output, p *prompt.Prompter, o serverinit.Options) error {
-	v, err := kasbahVersion()
+	v, err := kasbahVersion(true)
 	if err != nil {
 		return err
 	}
-	exe, err := os.Executable()
+	local, err := localBinary()
 	if err != nil {
-		return cli.Fail("cannot locate this binary: %v", err)
-	}
-	home, checkout, err := handoff.Home(exe, os.Getenv)
-	if err != nil {
-		return cli.Fail("%v", err)
+		return err
 	}
 	return serverinit.Run(serverinit.Ctx{
 		Out:       out,
 		Prompter:  p,
 		Version:   v,
-		Templates: templatesDir(home),
+		Templates: templates.FS,
 		Self:      remote.Self(build),
-		Local:     func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) },
+		Local:     local,
 		Hash:      serverinit.Bcrypt,
 		Now:       time.Now,
 	}, o)
-}
-
-// templatesDir is the dispatcher's rule: templates travel with the library
-// directory.
-func templatesDir(home string) string {
-	if tpl := os.Getenv("KASBAH_TEMPLATE_DIR"); tpl != "" {
-		return tpl
-	}
-	lib := os.Getenv("KASBAH_LIB_DIR")
-	if lib == "" {
-		lib = home
-	}
-	return filepath.Join(lib, "templates")
 }
 
 // mailCmd is `server add-mail-domain` and `server mail-setup-guide`.
@@ -408,18 +351,13 @@ func mailCmd(o mail.Options, err error) int {
 	if err != nil {
 		return out.Report(err)
 	}
-	exe, err := os.Executable()
+	local, err := localBinary()
 	if err != nil {
-		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+		return out.Report(err)
 	}
-	home, checkout, err := handoff.Home(exe, os.Getenv)
-	if err != nil {
-		return out.Report(cli.Fail("%v", err))
-	}
-	local := func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }
 	code := out.Report(mail.Run(mail.Ctx{
 		Out:       out,
-		Templates: templatesDir(home),
+		Templates: templates.FS,
 		Dial:      mail.DialSSH(remote.Self(build), local),
 	}, o))
 	if c := atexit.Interrupted(); c != 0 {
@@ -428,25 +366,22 @@ func mailCmd(o mail.Options, err error) int {
 	return code
 }
 
-// kasbahVersion is VERSION as the Bash dispatcher reads it: from
-// KASBAH_LIB_DIR when set, else from where this binary's files live. It is
-// what files kasbah writes record, never the build stamp.
-func kasbahVersion() (string, error) {
-	dir := os.Getenv("KASBAH_LIB_DIR")
-	if dir == "" {
-		exe, err := os.Executable()
-		if err != nil {
-			return "", fmt.Errorf("cannot locate this binary: %v", err)
+// kasbahVersion is the VERSION this binary was built from: what files kasbah
+// writes record, never the build stamp. An unstamped build has none, so only
+// a command that writes no file of its own runs on one.
+func kasbahVersion(writes bool) (string, error) {
+	if build == "" {
+		if !writes {
+			return "unstamped", nil
 		}
-		if dir, _, err = handoff.Home(exe, os.Getenv); err != nil {
-			return "", err
-		}
+		return "", cli.Fail("this kasbah carries no build stamp, so it cannot record which version wrote its files").Cont(
+			"build it with `docker compose run --rm build`, which stamps it")
 	}
-	b, err := os.ReadFile(filepath.Join(dir, "VERSION"))
+	v, err := version.Base(build)
 	if err != nil {
-		return "", fmt.Errorf("cannot read VERSION: %v", err)
+		return "", cli.Fail("%v", err)
 	}
-	return strings.TrimRight(string(b), "\n"), nil
+	return v, nil
 }
 
 func checkCmd(o check.Options, err error) int {
@@ -458,7 +393,7 @@ func checkCmd(o check.Options, err error) int {
 	if err != nil {
 		return out.Report(err)
 	}
-	v, err := kasbahVersion()
+	v, err := kasbahVersion(o.Fix)
 	if err != nil {
 		return out.Report(err)
 	}
@@ -472,15 +407,11 @@ func checkCmd(o check.Options, err error) int {
 	}
 	e := check.Env{Out: out, PWD: pwd, Version: v, Fix: o.Fix, Yes: o.Yes, Server: target}
 	if target != "" {
-		exe, err := os.Executable()
+		local, err := localBinary()
 		if err != nil {
-			return out.Report(cli.Fail("cannot locate this binary: %v", err))
+			return out.Report(err)
 		}
-		home, checkout, err := handoff.Home(exe, os.Getenv)
-		if err != nil {
-			return out.Report(cli.Fail("%v", err))
-		}
-		e.Dial = check.Dial(remote.Self(build), func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) })
+		e.Dial = check.Dial(remote.Self(build), local)
 	}
 	code := check.Run(e)
 	if c := atexit.Interrupted(); c != 0 {
@@ -498,19 +429,14 @@ func statusCmd(o status.Options, err error) int {
 	if err != nil {
 		return out.Report(err)
 	}
-	v, err := kasbahVersion()
+	v, err := kasbahVersion(false)
 	if err != nil {
 		return out.Report(err)
 	}
-	exe, err := os.Executable()
+	local, err := localBinary()
 	if err != nil {
-		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+		return out.Report(err)
 	}
-	home, checkout, err := handoff.Home(exe, os.Getenv)
-	if err != nil {
-		return out.Report(cli.Fail("%v", err))
-	}
-	local := func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }
 	code := out.Report(status.Run(status.Ctx{Out: out, Version: v, Dial: status.Dial(remote.Self(build), local)}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c
@@ -520,10 +446,14 @@ func statusCmd(o status.Options, err error) int {
 
 func initProjectCmd(o initproject.Options, err error) int {
 	out := cli.Std()
+	if err == initproject.ErrHelp {
+		fmt.Fprint(out.Stdout, initproject.Usage)
+		return cli.ExitOK
+	}
 	if err != nil {
 		return out.Report(err)
 	}
-	v, err := kasbahVersion()
+	v, err := kasbahVersion(true)
 	if err != nil {
 		return out.Report(err)
 	}
@@ -547,7 +477,7 @@ func buildPushCmd(o buildpush.Options, err error) int {
 	if err != nil {
 		return out.Report(err)
 	}
-	v, err := kasbahVersion()
+	v, err := kasbahVersion(true)
 	if err != nil {
 		return out.Report(err)
 	}
@@ -555,20 +485,16 @@ func buildPushCmd(o buildpush.Options, err error) int {
 	if err != nil {
 		return out.Report(cli.Fail("cannot read the current directory: %v", err))
 	}
-	exe, err := os.Executable()
+	local, err := localBinary()
 	if err != nil {
-		return out.Report(cli.Fail("cannot locate this binary: %v", err))
-	}
-	home, checkout, err := handoff.Home(exe, os.Getenv)
-	if err != nil {
-		return out.Report(cli.Fail("%v", err))
+		return out.Report(err)
 	}
 	code := out.Report(buildpush.Run(buildpush.Ctx{
 		Out:     out,
 		PWD:     pwd,
 		Version: v,
 		Self:    remote.Self(build),
-		Local:   func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) },
+		Local:   local,
 	}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c
@@ -589,7 +515,7 @@ func deployCmd(cmd string, o deploy.Options, err error) int {
 	if err != nil {
 		return out.Report(err)
 	}
-	v, err := kasbahVersion()
+	v, err := kasbahVersion(true)
 	if err != nil {
 		return out.Report(err)
 	}
@@ -597,15 +523,10 @@ func deployCmd(cmd string, o deploy.Options, err error) int {
 	if err != nil {
 		return out.Report(cli.Fail("cannot read the current directory: %v", err))
 	}
-	exe, err := os.Executable()
+	local, err := localBinary()
 	if err != nil {
-		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+		return out.Report(err)
 	}
-	home, checkout, err := handoff.Home(exe, os.Getenv)
-	if err != nil {
-		return out.Report(cli.Fail("%v", err))
-	}
-	local := func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }
 	c := deploy.Ctx{
 		Out:      out,
 		Prompter: prompt.Std(out),
@@ -642,7 +563,7 @@ func envCmd(o env.Options, err error) int {
 	if err != nil {
 		return out.Report(err)
 	}
-	v, err := kasbahVersion()
+	v, err := kasbahVersion(true)
 	if err != nil {
 		return out.Report(err)
 	}
@@ -650,15 +571,10 @@ func envCmd(o env.Options, err error) int {
 	if err != nil {
 		return out.Report(cli.Fail("cannot read the current directory: %v", err))
 	}
-	exe, err := os.Executable()
+	local, err := localBinary()
 	if err != nil {
-		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+		return out.Report(err)
 	}
-	home, checkout, err := handoff.Home(exe, os.Getenv)
-	if err != nil {
-		return out.Report(cli.Fail("%v", err))
-	}
-	local := func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }
 	code := out.Report(env.Run(env.Ctx{
 		Out:      out,
 		Prompter: prompt.Std(out),
@@ -684,19 +600,14 @@ func historyCmd(o history.Options, err error) int {
 	if err != nil {
 		return out.Report(err)
 	}
-	v, err := kasbahVersion()
+	v, err := kasbahVersion(false)
 	if err != nil {
 		return out.Report(err)
 	}
-	exe, err := os.Executable()
+	local, err := localBinary()
 	if err != nil {
-		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+		return out.Report(err)
 	}
-	home, checkout, err := handoff.Home(exe, os.Getenv)
-	if err != nil {
-		return out.Report(cli.Fail("%v", err))
-	}
-	local := func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }
 	code := out.Report(history.Run(history.Ctx{
 		Out:     out,
 		Version: v,
@@ -714,11 +625,11 @@ func localBinary() (func(arch string) (string, error), error) {
 	if err != nil {
 		return nil, cli.Fail("cannot locate this binary: %v", err)
 	}
-	home, checkout, err := handoff.Home(exe, os.Getenv)
+	local, err := serverbin.LocalFor(exe, os.Getenv)
 	if err != nil {
 		return nil, cli.Fail("%v", err)
 	}
-	return func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }, nil
+	return local, nil
 }
 
 // opsCmd is `logs` and `exec`: the exit status is the stream's.
@@ -731,7 +642,7 @@ func opsCmd(o ops.Options, err error) int {
 	if err != nil {
 		return out.Report(err)
 	}
-	v, err := kasbahVersion()
+	v, err := kasbahVersion(false)
 	if err != nil {
 		return out.Report(err)
 	}
@@ -792,18 +703,13 @@ func upgradeCmd(o upgrade.Options, err error) int {
 	if err != nil {
 		return out.Report(err)
 	}
-	exe, err := os.Executable()
+	local, err := localBinary()
 	if err != nil {
-		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+		return out.Report(err)
 	}
-	home, checkout, err := handoff.Home(exe, os.Getenv)
-	if err != nil {
-		return out.Report(cli.Fail("%v", err))
-	}
-	local := func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }
 	code := out.Report(upgrade.Run(upgrade.Ctx{
 		Out:       out,
-		Templates: templatesDir(home),
+		Templates: templates.FS,
 		Dial:      upgrade.Dial(remote.Self(build), local),
 		Now:       time.Now,
 	}, o))
@@ -822,24 +728,19 @@ func dropCmd(o drop.Options, err error) int {
 	if err != nil {
 		return out.Report(err)
 	}
-	v, err := kasbahVersion()
+	v, err := kasbahVersion(true)
 	if err != nil {
 		return out.Report(err)
 	}
-	exe, err := os.Executable()
+	local, err := localBinary()
 	if err != nil {
-		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+		return out.Report(err)
 	}
-	home, checkout, err := handoff.Home(exe, os.Getenv)
-	if err != nil {
-		return out.Report(cli.Fail("%v", err))
-	}
-	local := func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }
 	code := out.Report(drop.Run(drop.Ctx{
 		Out:       out,
 		Prompter:  prompt.Std(out),
 		Version:   v,
-		Templates: templatesDir(home),
+		Templates: templates.FS,
 		Dial:      drop.Dial(remote.Self(build), local),
 	}, o))
 	if c := atexit.Interrupted(); c != 0 {

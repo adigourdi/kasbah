@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/templates"
 )
 
 func TestParse(t *testing.T) {
@@ -41,10 +43,9 @@ func TestParse(t *testing.T) {
 	}
 }
 
-var templates, bashRegistry = func() (string, string) {
-	t, _ := filepath.Abs("../../templates")
+var tplFS, bashRegistry = func() (fs.FS, string) {
 	b, _ := os.ReadFile("testdata/registry-bash.yml")
-	return t, string(b)
+	return templates.FS, string(b)
 }()
 
 func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
@@ -75,7 +76,7 @@ func plan(s *Scan, prune bool) *Plan {
 
 func TestDecideRemovesEveryTagOfOwnRepos(t *testing.T) {
 	p := plan(fixture(), false)
-	if err := Decide(p, templates); err != nil {
+	if err := Decide(p, tplFS); err != nil {
 		t.Fatal(err)
 	}
 	want := "built-app-web:3.4.0 built-app-web:current built-app-worker:3.4.0 built-app-worker:current"
@@ -114,7 +115,7 @@ func TestDecideSharedAndUnknownOwners(t *testing.T) {
 	s.Projects = append(s.Projects, Project{"twin", "dir", "ok", b64("services:\n  w:\n    build: x\n    image: built-app-web\n")})
 	s.Count++
 	p := plan(s, false)
-	Decide(p, "")
+	Decide(p, nil)
 	if strings.Join(p.Remove, " ") != "built-app-worker:3.4.0 built-app-worker:current" {
 		t.Fatalf("a repository two projects declare is kept: %v", p.Remove)
 	}
@@ -127,7 +128,7 @@ func TestDecideSharedAndUnknownOwners(t *testing.T) {
 	s = fixture()
 	s.Projects[2].ComposeState = "unreadable"
 	p = plan(s, false)
-	Decide(p, "")
+	Decide(p, nil)
 	if len(p.Remove) != 0 || strings.Join(p.UnknownOthers, " ") != "demo" {
 		t.Fatalf("one unreadable compose anywhere removes nothing: %v %v", p.Remove, p.UnknownOthers)
 	}
@@ -153,7 +154,7 @@ func TestPruneCliffOwnCompose(t *testing.T) {
 			s.Projects[0].ComposeB64 = ""
 		}
 		p := plan(s, true)
-		Decide(p, "")
+		Decide(p, nil)
 		var buf bytes.Buffer
 		err := p.pruneCliff(&cli.Output{Stdout: &buf, Stderr: &buf})
 		if refused != (err != nil) {
@@ -179,7 +180,7 @@ func TestMailRelease(t *testing.T) {
 	reg := strings.Replace(string(want), "  - other.example.org\n", "  - other.example.org\n  - built-app.test\n", 1)
 	p := plan(registryScan(reg), true)
 	p.MailDomain = "built-app.test"
-	if err := Decide(p, templates); err != nil {
+	if err := Decide(p, tplFS); err != nil {
 		t.Fatal(err)
 	}
 	if p.MailRendered != string(want) {
@@ -197,13 +198,13 @@ func TestMailRelease(t *testing.T) {
 	} {
 		p := plan(registryScan(c.reg), true)
 		p.MailDomain = c.domain
-		if err := Decide(p, templates); err != nil || !strings.HasPrefix(p.MailVerdict, c.verdict) || p.MailRendered != "" {
+		if err := Decide(p, tplFS); err != nil || !strings.HasPrefix(p.MailVerdict, c.verdict) || p.MailRendered != "" {
 			t.Errorf("%s: %q %v", c.domain, p.MailVerdict, err)
 		}
 	}
 	p = plan(registryScan(reg), false)
 	p.MailDomain = "built-app.test"
-	Decide(p, templates)
+	Decide(p, tplFS)
 	if !strings.HasPrefix(p.MailVerdict, "kept: plain drop leaves the claim") || p.MailRendered != "" {
 		t.Errorf("plain drop keeps the claim: %q", p.MailVerdict)
 	}
@@ -247,7 +248,7 @@ func run(t *testing.T, f *fake, o Options, tty bool, answers string) (stdout, st
 	var so, se bytes.Buffer
 	out := &cli.Output{Stdout: &so, Stderr: &se}
 	p := &prompt.Prompter{In: strings.NewReader(answers), Out: out, TTY: tty}
-	code = out.Report(Run(Ctx{Out: out, Prompter: p, Version: "0.1.0", Templates: templates,
+	code = out.Report(Run(Ctx{Out: out, Prompter: p, Version: "0.1.0", Templates: tplFS,
 		Dial: func(string) (Session, error) { return f, nil }}, o))
 	return so.String(), se.String(), code
 }
@@ -437,7 +438,7 @@ func TestMailReleaseLastDomain(t *testing.T) {
 	reg := strings.Replace(string(want), "  - mail.example.com\n", "  - mail.example.com\n  - built-app.test\n", 1)
 	p := plan(registryScan(reg), true)
 	p.MailDomain = "built-app.test"
-	if err := Decide(p, templates); err != nil {
+	if err := Decide(p, tplFS); err != nil {
 		t.Fatal(err)
 	}
 	if p.MailRendered != string(want) {
@@ -451,7 +452,7 @@ func TestRunTruncatedProbe(t *testing.T) {
 	var so, se bytes.Buffer
 	out := &cli.Output{Stdout: &so, Stderr: &se}
 	s := &truncated{f}
-	code := out.Report(Run(Ctx{Out: out, Prompter: &prompt.Prompter{Out: out}, Version: "0.1.0", Templates: templates,
+	code := out.Report(Run(Ctx{Out: out, Prompter: &prompt.Prompter{Out: out}, Version: "0.1.0", Templates: tplFS,
 		Dial: func(string) (Session, error) { return s, nil }}, Options{Target: "deploy@vps", Yes: true}))
 	if code != 1 || !strings.Contains(se.String(), "the drop probe on deploy@vps reported no") || len(f.acted) != 0 || so.Len() != 0 {
 		t.Fatalf("%d %s", code, se.String())

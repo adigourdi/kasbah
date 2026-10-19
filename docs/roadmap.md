@@ -78,58 +78,28 @@ successfully.
 - Off-VPS backups: `server init --with-backup` — restic → any restic backend,
   append-only creds, per-client repos (see `backup.md`) ✅
 
-## Phase 4 — v1.0 (Go rewrite preparation)
+## Phase 4 — v1.0 (Go) ✅
 
-> **Superseded by build-plan Phase 10 (`docs/phases/10-recast.md`), ruled
-> 2026-10-18; this section and the next are rewritten at its cutover (10.14).**
-> The file inventory lands first (10.2), the schema freezes at the Go cutover
-> (v1.0.0), and `kasbah migrate` waits for the first format change that has
-> users. The Go binary also runs on the VPS, and is built locally — no GitHub
-> releases until publishing is decided.
+Built as build-plan Phase 10 (`docs/phases/10-recast.md`).
 
-Where the `kasbah_version` field starts earning its keep.
+- Go re-implementation of the whole CLI, on the workstation **and** the VPS: the
+  server side is the same binary, shipped to `<apps>/.kasbah/bin/kasbah` when the
+  server's is absent or older ✅
+- Single statically linked binary per platform, built locally by `install.sh`
+  (workstation, linux/amd64, linux/arm64) ✅
+- Every file kasbah writes documented (`files.md`) and held to that list by a rig
+  suite ✅
+- Manifest schema frozen at 1.0.0; `kasbah --version` reports tool and schema ✅
 
-- Define the migration story: v0.x → v1.0 may rename/move files in the
-  project source tree. Tool: `kasbah migrate` (still bash).
-- Freeze the manifest schema — after v1.0, changes go through an
-  explicit migration.
-- Document every file kasbah writes (project + VPS) so a Go rewrite
-  knows what's under management.
+## Phase 5 — v1.x
 
-## Phase 5 — v1.x (Go binary)
-
-- Go re-implementation of the CLI
-- Single statically-linked binary distributed via GitHub releases
-- Same manifest schema
-- `kasbah --version` reports both tool version and schema version
-- Auto-detect older projects (`kasbah_version < installed_version`)
-  and offer to migrate:
-
-  ```
-  $ kasbah deploy user@vps
-  Warning: project was last touched by kasbah 0.3.0; you have 1.0.0.
-           Run `kasbah migrate` to update project files.
-  ```
-
-- Migration of VPS state is opt-in and reversible (because the VPS
-  might still be talked to by another dev on an older version).
-
-### Go vs Bash — what each is good at
-
-Bash wins:
-- Always available on every VPS.
-- Env template parsing is inherently line-oriented.
-- Short scripts are easier to audit than a compiled binary.
-
-Go wins:
-- Structured error handling.
-- YAML/JSON parsing without `yq`/`jq`.
-- Concurrency for multi-VPS operations (roadmap: deploy to N servers).
-- Static binary → no runtime surprises on developer laptops.
-
-The cutover point is when `kasbah` does enough (multi-VPS, more hooks,
-templates) that bash maintainability starts to hurt. Current estimate:
-around Phase 3.
+- `kasbah migrate` — written when the first format change meets users: detect
+  older projects (`kasbah_version < installed_version`) and offer to migrate.
+  Migration of VPS state stays opt-in and reversible, because a VPS may still be
+  driven by another developer on an older kasbah.
+- Release distribution (GitHub releases) — decided together with publishing
+  (`research/landscape.md`).
+- Concurrency for multi-VPS operations (deploy to N servers).
 
 ## Backlog (unphased, low priority)
 

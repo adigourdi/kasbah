@@ -163,14 +163,14 @@ assert 'grep -qF "✓ .gitignore excludes .env" <<<"$out"'              "S05 sti
 assert 'grep -qF "⚠ .gitignore does not exclude .kasbah/" <<<"$out"' "S06 warns"
 assert 'grep -qF "1 warning, 0 failed" <<<"$out"'                     "summary reports 1 warning"
 
-# --- Case 6: no kasbah.yml — exit 2 (manifest_require contract) -------------
+# --- Case 6: no kasbah.yml — exit 2 (the manifest reader's contract) -------------
 proj6="$tmpdir/no-manifest"
 mkdir -p "$proj6"
 out="$(cd "$proj6" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "2" ]'                          "no manifest exits 2 (got $rc)"
 assert 'grep -qF "No kasbah.yml" <<<"$out"'      "no-manifest message"
 
-# --- Case 7: future schema — exit 1 (manifest_require contract) --------------
+# --- Case 7: future schema — exit 1 (the manifest reader's contract) --------------
 proj7="$tmpdir/future-schema"
 mkdir -p "$proj7"
 cat > "$proj7/kasbah.yml" <<EOF
@@ -208,7 +208,7 @@ assert '! grep -qF "Summary:" <<<"$out"' \
 # (08-keep.md D12). `deploy` and `rollback` both refuse a value that is not a
 # repository name, so a project whose only fault is this one was reported fully
 # compliant at exit 0 and then died at the deploy — which is the inversion
-# lib/manifest.sh's own note about `name` exists to prevent.
+# the manifest's own check of `name` exists to prevent.
 proj9b="$tmpdir/bad-client"
 make_project "$proj9b"
 printf 'client: Acme Corp\n' >> "$proj9b/kasbah.yml"
@@ -257,7 +257,7 @@ assert 'grep -qF "Summary:" <<<"$out"'         "Summary line is on stdout"
 
 # --- Case 12: CRLF .gitignore — S05/S06 still pass ---------------------------
 # Windows-authored .gitignore with CRLF endings should not false-warn — same
-# CR-stripping parity that lib/manifest.sh enforces for kasbah.yml.
+# CR stripping the manifest reader applies to kasbah.yml.
 proj12="$tmpdir/crlf-gitignore"
 make_project "$proj12"
 printf '.env\r\n.kasbah/\r\n' > "$proj12/.gitignore"
@@ -1488,7 +1488,7 @@ assert 'grep -qF "✗ Fragment targets unknown container_names: demo-web" <<<"$o
 # --- Case 42: a name kasbah owns on the server -------------------------------
 # The project should learn this from `check`, not from the deploy that rsyncs
 # over the shared Traefik stack and then removes it as an orphan. It is a
-# manifest rule, so it arrives the same way a bad schema does: manifest_require
+# manifest rule, so it arrives the same way a bad schema does: the manifest reader
 # refuses and the report short-circuits.
 for reserved in traefik mail data backups; do
     proj42="$tmpdir/reserved-$reserved"
@@ -2875,5 +2875,22 @@ assert '! grep -qF "Fragment targets unknown container_names" <<<"$out"' \
     "F21: and does not fail on it either (said '$out')"
 assert '! grep -q "demo-web" <<<"$out"' \
     "F21: no rule reports on a service from the half that parsed (said '$out')"
+
+
+# --- A question check cannot answer ends the run with exit 1, said why -------
+# A string where a service's mapping belongs: the report stops there.
+projq="$tmpdir/unanswerable"
+make_project "$projq"
+printf 'services:\n  web: nginx\n' > "$projq/compose.prod.yml"
+out="$(cd "$projq" && "$kasbah" check 2>"$tmpdir/q.err")"; rc=$?
+assert '[ "$rc" = "1" ]' "an unanswerable question is exit 1 (got $rc)"
+assert 'grep -qF "cannot check compose.prod.yml" "$tmpdir/q.err"' \
+    "naming the file it could not check (said '$(cat "$tmpdir/q.err")')"
+assert '! grep -qF "Summary:" <<<"$out"' "and the report is cut short, with no summary"
+# A service name a rule cannot quote: exit 1, naming the file and the name.
+printf '%s\n' 'services:' "  'we\"b': {image: nginx}" > "$projq/compose.prod.yml"
+(cd "$projq" && "$kasbah" check >/dev/null 2>"$tmpdir/q.err"); rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "cannot check compose.prod.yml, the name '\''we\"b'\''" "$tmpdir/q.err"' \
+    "an unquotable name is exit 1, naming the file and the name (exit $rc: $(cat "$tmpdir/q.err"))"
 
 exit "$fail"

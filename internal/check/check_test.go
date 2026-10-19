@@ -119,9 +119,9 @@ func TestVerdicts(t *testing.T) {
 		{"multi-document compose answers per document",
 			map[string]string{"compose.prod.yml": goodCompose + "---\n" + goodCompose}, 6,
 			[]string{"  ✗ Routed services not on kasbah-net: demo-web demo-web"}},
-		// `.services.web.container_name` of a string ran under errexit: jq's 5.
-		{"a jq error where Bash had errexit ends the run",
-			map[string]string{"compose.prod.yml": "services:\n  web: nginx\n"}, 5,
+		// `.services.web.container_name` of a string cannot be answered: exit 1.
+		{"an unanswerable question ends the run",
+			map[string]string{"compose.prod.yml": "services:\n  web: nginx\n"}, 1,
 			[]string{"  ✗ Services missing restart policy: web"}},
 		{"local T05 is the first-label heuristic",
 			map[string]string{"traefik-dynamic.yml": "http:\n  routers:\n    a: {rule: \"Host(`mail.x.io`) || Host(`mailhog.x.io`)\", entryPoints: [web]}\n"}, 6,

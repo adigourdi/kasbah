@@ -299,7 +299,7 @@ assert '[ "$rc" != "0" ]' \
 assert 'grep -qF "kasbah owns" "$tmpdir/err"' "as a key kasbah owns (said '$(cli_err)')"
 
 # The same key already in the operator's half of the env file — written by hand,
-# or by a kasbah too old to refuse the flag. `_bk_merge_env` copies that half
+# or by a kasbah too old to refuse the flag. The env merge copies that half
 # through untouched, so nothing else would have caught it.
 rig_ssh "printf 'RESTIC_REPOSITORY=%s\n' '${admin_base}bypass.probe' >> $bdir/env" >/dev/null 2>&1
 init "${traefik_flags[@]}" --no-mail --with-backup --backup-repo-base="$vps_base"; rc=$?

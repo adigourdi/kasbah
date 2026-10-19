@@ -83,7 +83,7 @@ ours=$(kasbah_bin_version) || { echo "error: $KASBAH_BIN --version failed" >&2; 
 major=${ours%%.*}
 
 # The server binary the workstation under test ships: its own build's, found
-# the way the binary finds it (internal/handoff.Home).
+# the way the binary finds it (internal/serverbin.Home).
 ws_root=$(cd "$(dirname "$(readlink -f "$KASBAH_BIN")")/.." && pwd)
 if [ -f "$ws_root/install.sh" ] && [ -f "$ws_root/VERSION" ]; then
     ours_server="$ws_root/dist/server/kasbah-linux-$arch"
@@ -177,8 +177,9 @@ assert '[ "$modes" = "755 $RIG_SSH_USER $RIG_SSH_USER
 755 $RIG_SSH_USER $RIG_SSH_USER
 644 $RIG_SSH_USER $RIG_SSH_USER" ]' "the directory and the binary are 755, the lock 644, all the deploy user's (got '$modes')"
 direct=$(rig_ssh "$bin remote version; $bin --version" 2>&1 | tr -d '\r')
+ours_line=$("$KASBAH_BIN" --version)
 assert '[ "$direct" = "build=$ours protocol=1 min_protocol=1
-kasbah $ours" ]' "the server binary answers remote version and --version with no Bash anywhere (got '$direct')"
+$ours_line" ]' "the server binary answers remote version and --version (got '$direct')"
 
 # --- Case 2: older → replaced -------------------------------------------------
 plant "$variants/kasbah-$older"

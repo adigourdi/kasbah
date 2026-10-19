@@ -15,7 +15,7 @@
 #
 #   * A scratch HOME to hold the config the wrapper below names, and to keep
 #     `known_hosts` and anything else ssh writes out of the owner's. The control
-#     socket is not among them: lib/ssh.sh puts that in a private directory
+#     socket is not among them: kasbah puts that in a private directory
 #     under TMPDIR that it removes on exit, so that no two kasbah processes can
 #     compute the same path and tear down each other's master.
 #   * A one-line `ssh` wrapper first on PATH, adding `-F "$HOME/.ssh/config"`.
@@ -159,21 +159,6 @@ kasbah_cli() {
 # Redirected here rather than at every call site: a caller that really does
 # feed the far side feeds it from a heredoc, a pipe or a file, never from a
 # tty, so the guard cannot take a payload away from one.
-
-# The same environment for a script that drives the libraries directly — the
-# only way to exercise lib/ssh.sh until a command uses it. Bounded, because a
-# driver that hangs would hang the suite.
-rig_env_bash() {
-    if [ -t 0 ]; then
-        timeout "$RIG_WORK_TIMEOUT" \
-            env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-                KASBAH_LIB_DIR="$RIG_REPO_DIR/lib" bash "$@" </dev/null
-    else
-        timeout "$RIG_WORK_TIMEOUT" \
-            env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
-                KASBAH_LIB_DIR="$RIG_REPO_DIR/lib" bash "$@"
-    fi
-}
 
 # Suite-side access to the rig, straight down the rig's own contract: what a
 # test asserts about the rig must not depend on the wrapper it is testing.

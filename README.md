@@ -2,14 +2,14 @@
 
 A CLI that turns a plain VPS into a multi-project Docker host — shared
 Traefik with file-provider routing, image shipping over SSH
-(`docker save | scp | docker load`, no registry), per-project env
-management, hooks, and rollback. Think "cPanel for Docker Compose",
-except it's auditable bash and nothing but Docker runs on the server.
+(`docker save` streamed into `docker load`, no registry), per-project env
+management, hooks, and rollback. Think "cPanel for Docker Compose", in
+one Go binary — nothing but Docker and that binary runs on the server.
 
 ## Install
 
 ```sh
-./install.sh    # builds through Docker; kasbah to ~/.local/bin, the rest to ~/.local/share/kasbah
+./install.sh    # builds through Docker; kasbah to ~/.local/bin, its server builds to ~/.local/share/kasbah
 ```
 
 ## Quick start

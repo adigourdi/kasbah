@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Integration test: lib/ssh.sh against the live rig, and the connection model
-# every later rig-driven suite inherits from tests/integration/rig_env.sh.
+# Integration test: kasbah's ssh transport against the live rig, and the
+# connection model every rig-driven suite inherits from
+# tests/integration/rig_env.sh.
 #
 # The rig is treated as given: this suite never starts, resets or stops it. It
 # does call rig_clean, which is establishing a known starting state rather than
@@ -10,10 +11,6 @@
 #
 # Exit status follows test.sh's contract: 0 pass, 1 an assertion failed, 2 the
 # suite could not run at all (no rig).
-#
-# No kasbah command uses lib/ssh.sh yet — `server init` and `deploy` are the
-# next units — so the transport is driven directly, under exactly the HOME and
-# PATH that rig_env.sh will hand those commands.
 
 set -uo pipefail
 
@@ -55,13 +52,11 @@ if ! rig_env_init "$tmpdir"; then
     exit 2
 fi
 
-# --- The invoker the later units will use -------------------------------------
-# No kasbah command reaches the rig yet, so what is asserted here is the
-# invoker itself: the checkout's CLI runs under the scratch HOME and the ssh
-# wrapper, which is the environment Units B-E will get.
+# --- The invoker every rig suite uses -----------------------------------------
+# The checkout's CLI runs under the scratch HOME and the ssh wrapper.
 cli_out=$(kasbah_cli --version 2>&1); cli_rc=$?
 assert '[ "$cli_rc" = "0" ]' "kasbah_cli runs the checkout's CLI (exit $cli_rc: $cli_out)"
-assert '[ "$cli_out" = "kasbah $(kasbah_bin_version)" ]' \
+assert '[[ "$cli_out" == "kasbah $(kasbah_bin_version) (schema "* ]]' \
     "kasbah_cli runs this checkout, not an installed copy (got '$cli_out')"
 
 # --- The cleanup payload cannot run locally -----------------------------------
@@ -201,195 +196,24 @@ assert 'grep -qE "^images=.*kasbah-clean-probe:test," <<<"$after_out"' \
     "clean keeps the image cache — that is the whole reason it exists (got '$(grep "^images=" <<<"$after_out")')"
 
 # --- The transport, against the live rig --------------------------------------
-cat > "$tmpdir/transport.sh" <<'DRIVER'
-set -uo pipefail
-. "$KASBAH_LIB_DIR/common.sh"
-. "$KASBAH_LIB_DIR/ssh.sh"
-
-kv() { printf '%s=%s\n' "$1" "$2"; }
-
-ssh_connect "$1"
-kv target "$SSH_TARGET"
-kv parsed_user "$SSH_USER"
-kv parsed_host "$SSH_HOST"
-
-remote_user=$(ssh_run id -un); kv remote_user "$remote_user"
-
-shopt -s nullglob
-kv ctl_dir "$_SSH_CTL_DIR"
-socks=("$_SSH_CTL_DIR"/*)
-kv sockets_open "${#socks[@]}"
-kv socket_path "${socks[0]:-none}"
-if [ "${#socks[@]}" -gt 0 ] && [ -S "${socks[0]}" ]; then kv socket_is_socket yes; else kv socket_is_socket no; fi
-# Nothing of kasbah's goes in the user's ~/.ssh any more.
-home_socks=("$HOME"/.ssh/cm-*)
-kv home_sockets "${#home_socks[@]}"
-
-# Quotes, backticks, $, a percent, an embedded newline and a nested quoted
-# heredoc — the shapes a remote deploy script is actually made of.
-payload_out=$(ssh_script one 'two three' <<'REMOTE'
-set -euo pipefail
-name='it'"'"'s "quoted"'
-back=`echo backticked`
-cost='$100 & 50%'
-multi="one
-two"
-cat <<'INNER' >/dev/null
-$HOME `date` "untouched"
-INNER
-printf 'payload=%s|%s|%s|%s|%s|%s|%s\n' \
-    "$name" "$back" "$cost" "${multi//$'\n'/+}" "$1" "$2" "$HOME"
-REMOTE
-)
-kv payload "${payload_out#payload=}"
-
-src="$HOME/rsync-src"
-mkdir -p "$src"
-printf 'rsynced through the master\n' > "$src/hello.txt"
-ssh_rsync -a "$src/" "$SSH_TARGET:/tmp/kasbah-rsync-probe/" >/dev/null 2>&1
-kv rsync_rc "$?"
-kv rsync_readback "$(ssh_run cat /tmp/kasbah-rsync-probe/hello.txt)"
-ssh_run rm -rf /tmp/kasbah-rsync-probe
-
-ssh_disconnect
-socks_after=("$_SSH_CTL_DIR"/*)
-kv sockets_after "${#socks_after[@]}"
-exit 0
-DRIVER
-
-transport_err="$tmpdir/transport.err"
-transport_out=$(rig_env_bash "$tmpdir/transport.sh" "$RIG_TARGET" 2>"$transport_err")
+# One CLI run that connects, works and leaves: under a TMPDIR of its own, so
+# what the run leaves behind is all that is in it. Quoting, rsync and the
+# payloads are every other rig suite's business; this is the connection.
+run_tmp="$tmpdir/run-tmp"
+mkdir -p "$run_tmp"
+# The rig is clean here, so `server status` connects, finds no marker and
+# exits 4 — an answer only the server can give.
+timeout "$RIG_WORK_TIMEOUT" env TMPDIR="$run_tmp" HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
+    "$KASBAH_BIN" server status "$RIG_TARGET" >/dev/null 2>"$tmpdir/transport.err" </dev/null
 transport_rc=$?
-if [ "$transport_rc" -ne 0 ]; then
-    echo "error: the transport driver did not finish (exit $transport_rc)" >&2
-    sed 's/^/       | /' "$transport_err" >&2
-    exit 2
-fi
-
-# The driver's output is a protocol: parsed once and checked complete before
-# anything reads it, so a fact that went missing cannot be absorbed into a
-# passing assertion (docs/phases/01-rig.md, from 1.3).
-declare -A fact=()
-while IFS= read -r line; do
-    case $line in *=*) fact[${line%%=*}]=${line#*=} ;; esac
-done <<<"$transport_out"
-missing=()
-for key in target parsed_user parsed_host remote_user ctl_dir sockets_open socket_path \
-           socket_is_socket home_sockets payload rsync_rc rsync_readback sockets_after; do
-    [ -n "${fact[$key]+set}" ] || missing+=("$key")
-done
-if [ "${#missing[@]}" -gt 0 ]; then
-    echo "error: the transport driver reported no ${missing[*]}" >&2
-    sed 's/^/       | /' <<<"$transport_out" >&2
-    sed 's/^/       | /' "$transport_err" >&2
-    exit 2
-fi
-
-assert '[ "${fact[parsed_user]}" = "stevedore" ]'  "the target's user is parsed out (got '${fact[parsed_user]}')"
-assert '[ "${fact[parsed_host]}" = "rig" ]'        "the target's host is parsed out (got '${fact[parsed_host]}')"
-assert '[ "${fact[remote_user]}" = "stevedore" ]'  "the session lands as stevedore (got '${fact[remote_user]}')"
-
-assert '[ "${fact[sockets_open]}" = "1" ]'         "one control socket exists while connected (got '${fact[sockets_open]}')"
-assert '[ "${fact[socket_is_socket]}" = "yes" ]'   "the control path is a socket, not a stray file"
-assert '[[ "${fact[socket_path]}" == "${fact[ctl_dir]}/"* ]]' \
-    "the control socket lives in the directory the run made for it (got '${fact[socket_path]}')"
-assert '[[ "${fact[ctl_dir]}" == "${TMPDIR:-/tmp}/kasbah-ssh."* ]]' \
-    "and that directory is a private one under TMPDIR (got '${fact[ctl_dir]}')"
-assert '[ "${fact[home_sockets]}" = "0" ]' \
-    "no control socket is left in the user's ~/.ssh (found ${fact[home_sockets]})"
-# 90, not 104: the master listens on `<path>.<16 random chars>` and renames it
-# into place, so sun_path's 108 bytes are spent before the path is.
-assert '[ "${#fact[socket_path]}" -le 90 ]' \
-    "the control path fits what a master can bind (${#fact[socket_path]} chars: ${fact[socket_path]})"
-assert '[ "${fact[sockets_after]}" = "0" ]'        "an explicit disconnect removes the master (got '${fact[sockets_after]}')"
-assert '[ ! -e "${fact[ctl_dir]}" ]' \
-    "and the directory goes with the process (still there: ${fact[ctl_dir]})"
-
-expected_payload='it'"'"'s "quoted"|backticked|$100 & 50%|one+two|one|two three|/home/stevedore'
-assert '[ "${fact[payload]}" = "$expected_payload" ]' \
-    "a multi-line script with awkward quoting round-trips intact
-        wanted: $expected_payload
-        got:    ${fact[payload]}"
-
-assert '[ "${fact[rsync_rc]}" = "0" ]'                              "rsync over the shared master succeeds (exit ${fact[rsync_rc]})"
-assert '[ "${fact[rsync_readback]}" = "rsynced through the master" ]' "the rsynced file is on the rig (got '${fact[rsync_readback]}')"
-
-# --- Two runs against one server do not touch each other ----------------------
-# The defect this pins: `ssh -O exit` closes a master **and every session
-# multiplexed over it**, and kasbah used to name its socket `~/.ssh/cm-%C` —
-# user, host and port, nothing about the process. So any second kasbah command
-# against the same server shared the first one's master, and tore it down on its
-# way out. Measured before the fix: a read-only `server status` that exited 4 and
-# changed nothing, fired six seconds into a `server init`, killed the init's
-# remote step (255), which then reported "could not start Traefik" about a
-# Traefik that was `Up 21 seconds (healthy)` and left the server with no marker.
-#
-# Two library-level runs, exactly that shape: the holder is mid-command when the
-# visitor connects, works and tears its own master down.
-cat > "$tmpdir/holder.sh" <<'DRIVER'
-set -uo pipefail
-. "$KASBAH_LIB_DIR/common.sh"
-. "$KASBAH_LIB_DIR/ssh.sh"
-
-ssh_connect "$1"
-printf 'holder_ctl=%s\n' "$_SSH_CTL_DIR"
-printf 'holder_ready=yes\n'
-# Long enough that the visitor's whole run — connect, remote step, teardown —
-# happens inside it. The output is what proves the session was not cut: a killed
-# master takes the session with it, and ssh exits 255 having printed nothing.
-out=$(ssh_script <<'REMOTE'
-sleep 8
-printf 'survived\n'
-REMOTE
-); rc=$?
-printf 'holder_rc=%s\n' "$rc"
-printf 'holder_out=%s\n' "$out"
-DRIVER
-
-cat > "$tmpdir/visitor.sh" <<'DRIVER'
-set -uo pipefail
-. "$KASBAH_LIB_DIR/common.sh"
-. "$KASBAH_LIB_DIR/ssh.sh"
-
-ssh_connect "$1"
-printf 'visitor_ctl=%s\n' "$_SSH_CTL_DIR"
-printf 'visitor_user=%s\n' "$(ssh_run id -un)"
-# Not called explicitly: the EXIT trap is what every command relies on, and the
-# trap is what fired in the case above.
-DRIVER
-
-rig_env_bash "$tmpdir/holder.sh" "$RIG_TARGET" >"$tmpdir/holder.out" 2>"$tmpdir/holder.err" &
-holder_pid=$!
-# Wait for the holder's remote command to be under way rather than sleeping a
-# guessed interval: the visitor has to arrive while there is something to kill.
-for _ in $(seq 1 100); do
-    grep -qF holder_ready "$tmpdir/holder.out" 2>/dev/null && break
-    sleep 0.1
-done
-sleep 1
-
-visitor_out=$(rig_env_bash "$tmpdir/visitor.sh" "$RIG_TARGET" 2>"$tmpdir/visitor.err")
-visitor_rc=$?
-wait "$holder_pid"; holder_rc=$?
-holder_out=$(<"$tmpdir/holder.out")
-
-assert '[ "$visitor_rc" = "0" ]' \
-    "the second run works while the first is mid-command (exit $visitor_rc: $(cat "$tmpdir/visitor.err"))"
-assert 'grep -qxF "visitor_user=stevedore" <<<"$visitor_out"' \
-    "and really did reach the server (got '$visitor_out')"
-
-holder_ctl=$(sed -n 's/^holder_ctl=//p' <<<"$holder_out")
-visitor_ctl=$(sed -n 's/^visitor_ctl=//p' <<<"$visitor_out")
-assert '[ -n "$holder_ctl" ] && [ "$holder_ctl" != "$visitor_ctl" ]' \
-    "the two runs used different control directories ('$holder_ctl' and '$visitor_ctl')"
-
-assert '[ "$holder_rc" = "0" ]' "the first run finished (exit $holder_rc: $(cat "$tmpdir/holder.err"))"
-assert 'grep -qxF "holder_rc=0" <<<"$holder_out"' \
-    "its remote command was not killed by the second run's teardown (got '$(grep -F holder_rc= <<<"$holder_out")')"
-assert 'grep -qxF "holder_out=survived" <<<"$holder_out"' \
-    "and returned its output whole (got '$(grep -F holder_out= <<<"$holder_out")')"
-assert '[ ! -e "$holder_ctl" ] && [ ! -e "$visitor_ctl" ]' \
-    "both control directories are gone afterwards ($holder_ctl, $visitor_ctl)"
+assert '[ "$transport_rc" = "4" ] && grep -qF "$RIG_TARGET has no server marker" "$tmpdir/transport.err"' \
+    "a CLI run reaches the rig through the harness and reads it (exit $transport_rc: $(cat "$tmpdir/transport.err"))"
+shopt -s nullglob
+left=("$run_tmp"/kasbah-ssh.*)
+home_socks=("$RIG_HOME"/.ssh/cm-*)
+shopt -u nullglob
+assert '[ "${#left[@]}" = "0" ]' "the run's control directory goes with it (left: ${left[*]:-})"
+assert '[ "${#home_socks[@]}" = "0" ]' "no control socket is left in the user's ~/.ssh (found ${#home_socks[@]})"
 
 # --- The real ~/.ssh/config is out of reach -----------------------------------
 # Proven from ssh's own account of which files it read, not from this file's
@@ -421,17 +245,9 @@ assert 'grep -qxF "port 22" <<<"$stray_cfg"' \
     "an unknown alias keeps the default port under the harness (got '$(grep "^port " <<<"$stray_cfg")')"
 
 # --- An unreachable host fails fast, with exit 3 ------------------------------
-cat > "$tmpdir/unreachable.sh" <<'DRIVER'
-set -uo pipefail
-. "$KASBAH_LIB_DIR/common.sh"
-. "$KASBAH_LIB_DIR/ssh.sh"
-ssh_connect "$1"
-echo "connected=yes"
-DRIVER
-
 started=$SECONDS
-unreachable_out=$(rig_env_bash "$tmpdir/unreachable.sh" \
-    deploy@kasbah-unreachable.invalid 2>"$tmpdir/unreachable.err")
+unreachable_out=$(timeout "$RIG_WORK_TIMEOUT" env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" "$KASBAH_BIN" server status \
+    deploy@kasbah-unreachable.invalid 2>"$tmpdir/unreachable.err" </dev/null)
 unreachable_rc=$?
 elapsed=$((SECONDS - started))
 unreachable_err=$(<"$tmpdir/unreachable.err")

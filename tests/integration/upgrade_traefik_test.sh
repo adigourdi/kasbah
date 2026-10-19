@@ -35,7 +35,7 @@ rig_domain=rig.test
 dash_user=admin
 dash_pass=hunter2hunter2
 # Two tags that both exist and are genuinely different builds, neither of them
-# the pin in lib/common.sh — so "the version moved" cannot be satisfied by the
+# the pin in internal/serverinit/args.go — so "the version moved" cannot be satisfied by the
 # template's own default.
 target_a=v3.6.7
 target_b=v3.5.3
@@ -136,7 +136,7 @@ acme_digest() { rig_ssh "openssl dgst -sha256 -r < $apps/data/traefik/letsencryp
 dry_leftovers() { rig_ssh "docker ps -aq --filter label=kasbah.role=traefik-dry-run | wc -l" 2>/dev/null; }
 backup_count() { rig_ssh "ls -1 $apps/traefik/backups 2>/dev/null | wc -l" 2>/dev/null; }
 
-pinned=$(sed -n 's/^KASBAH_TRAEFIK_IMAGE=//p' "$repo_dir/lib/common.sh")
+pinned=$(sed -n 's/^[[:space:]]*TraefikImage = "\(.*\)"$/\1/p' "$repo_dir/internal/serverinit/args.go")
 before_image=$(inspected_image)
 before_version=$(served_version)
 before_acme=$(acme_digest)

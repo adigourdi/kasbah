@@ -4,19 +4,19 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/templates"
 )
 
-func repoTemplates(t *testing.T) string {
-	_, file, _, _ := runtime.Caller(0)
-	return filepath.Join(filepath.Dir(file), "..", "..", "templates")
+func repoTemplates(t *testing.T) fs.FS {
+	return templates.FS
 }
 
 func errText(err error) string {

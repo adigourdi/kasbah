@@ -129,7 +129,7 @@ func (s *SSH) Seed(target string, data []byte) (string, error) {
 
 // Run is the engine, unbounded by the 30 s limit: the health wait is bounded
 // by health.timeout on the server, a dead link by ssh's keepalives, and hooks,
-// backups and `compose up` by nothing kasbah sets — as on the Bash tool.
+// backups and `compose up` by nothing kasbah sets.
 func (s *SSH) Run(dir string, sp Spec) (string, int) {
 	spec, _ := json.Marshal(sp)
 	cmd := s.Conn.Command(s.Bin(), "remote", "deploy", "run", dir)

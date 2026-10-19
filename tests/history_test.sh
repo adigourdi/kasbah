@@ -152,7 +152,7 @@ drive() {
     esac
     plant
     : > "$call_log"
-    ( cd "$dir" && env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
+    ( cd "$dir" && env -u KASBAH_LIB_DIR \
           HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$tmpdir/runtmp" \
           CALL_LOG="$call_log" FAKE_APPS="$FAKE_APPS" FAKE_UNREACHABLE="${FAKE_UNREACHABLE:-}" \
           "$KASBAH_BIN" "${args[@]}" ) >"$tmpdir/o" 2>"$tmpdir/e" </dev/null || rc=$?
@@ -640,7 +640,7 @@ kasbah() {
     H_ACT=ok; H_ARC="${CLI_ARCH:+ok}"; H_ARC="${H_ARC:-missing}"; plant
     H_ARC=missing; H_DMG=no; H_RSN=""
     : > "$call_log"
-    ( cd "$project" && env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
+    ( cd "$project" && env -u KASBAH_LIB_DIR \
           HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$tmpdir/runtmp" \
           CALL_LOG="$call_log" FAKE_APPS="$FAKE_APPS" FAKE_UNREACHABLE="${FAKE_UNREACHABLE:-}" \
           "$KASBAH_BIN" "$@" ) >"$tmpdir/o" 2>"$tmpdir/e" </dev/null || rc=$?

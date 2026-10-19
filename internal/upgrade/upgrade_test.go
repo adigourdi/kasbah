@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/serverinit"
 	"github.com/adigourdi/kasbah/internal/yamlx"
+	"github.com/adigourdi/kasbah/templates"
 )
 
 func TestParse(t *testing.T) {
@@ -246,7 +246,7 @@ func (f *fake) Call(stdin []byte, bounded bool, args ...string) ([]byte, int) {
 func enc(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 
 func newFake(t *testing.T, image string) *fake {
-	tpl, _ := filepath.Abs("../../templates")
+	tpl := templates.FS
 	o := serverinit.Options{Apps: "/apps", Data: "/apps/data", Target: "deploy@vps"}
 	v := serverinit.Values{Image: image, Domain: "example.com", Email: "ops@example.com",
 		AuthEntry: "admin:$2y$05$abcdefghijklmnopqrstuuOKS6tiVYGv2Cm5Q4PJBTzH9xvOGHT6e"}
@@ -267,7 +267,7 @@ func newFake(t *testing.T, image string) *fake {
 
 func runUp(t *testing.T, f *fake, version string) (string, int) {
 	t.Helper()
-	tpl, _ := filepath.Abs("../../templates")
+	tpl := templates.FS
 	var se bytes.Buffer
 	out := &cli.Output{Stdout: &bytes.Buffer{}, Stderr: &se}
 	err := Run(Ctx{Out: out, Templates: tpl, Dial: func(string) (Session, error) { return f, nil },

@@ -75,6 +75,7 @@ type Scan struct {
 	MarkerState     string   `json:"marker_state"`
 	KasbahDir       string   `json:"kasbah_dir"`
 	KasbahExtra     []string `json:"kasbah_extra"`
+	BinLock         bool     `json:"bin_lock"`
 	BinState        string   `json:"bin_state"`
 	BackupDir       string   `json:"backup_dir"`
 	BackupContainer string   `json:"backup_container"`
@@ -251,6 +252,9 @@ func scan(apps, pointer string) Scan {
 		case "server.json", "backup":
 		case "bin":
 			for _, b := range entries(filepath.Join(k, "bin")) {
+				if b == serverbin.LockName {
+					s.BinLock = true
+				}
 				if !binOwn(b) {
 					s.KasbahExtra = append(s.KasbahExtra, "bin/"+b)
 				}

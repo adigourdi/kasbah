@@ -1,5 +1,5 @@
 // Package state reads and merges a project's .kasbah/state.json
-// (docs/project-manifest.md → State file), as lib/state.sh does: rendered the
+// (docs/project-manifest.md → State file): rendered the
 // way jq renders it, merged rather than rewritten, renamed into place.
 package state
 
@@ -38,7 +38,7 @@ func render(vs ...jv.Value) []byte {
 	return []byte(b.String())
 }
 
-// Init writes a fresh state file (state_init), creating its directory. The
+// Init writes a fresh state file, creating its directory. The
 // mode is the umask's (docs/files.md).
 func Init(path, version string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o777); err != nil {
@@ -84,12 +84,12 @@ func Get(path, key string) (string, error) {
 
 var reKey = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
-// Record is state_record: defaults, then the file's own fields, then these,
+// Record merges: defaults, then the file's own fields, then these,
 // rendered to <path>.tmp.<pid> and renamed. A file of anything but JSON
 // objects is refused untouched. Call it only after kasbah's work succeeded.
 func Record(path, version string, kv ...string) error {
 	if len(kv)%2 != 0 {
-		return cli.Fail("internal: state_record got an odd number of arguments (key '%s' has no value)", kv[len(kv)-1])
+		return cli.Fail("internal: state.Record got an odd number of arguments (key '%s' has no value)", kv[len(kv)-1])
 	}
 	for i := 0; i < len(kv); i += 2 {
 		if !reKey.MatchString(kv[i]) {

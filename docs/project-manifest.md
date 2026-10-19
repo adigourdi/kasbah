@@ -111,7 +111,9 @@ Integer. The manifest schema version. Bumps when the format changes in a
 breaking way. `kasbah` refuses to operate on a manifest whose schema is newer
 than the installed binary. In the other direction, every kasbah version
 reads all older schemas of its own major; crossing a major boundary requires
-`kasbah migrate` (see the compatibility policy in `overview.md`).
+`kasbah migrate` (see the compatibility policy in `overview.md`). Schema 1 is
+**frozen as of kasbah 1.0.0**: any change to the format is a new schema number
+and goes through an explicit migration. `kasbah --version` prints it.
 
 ### `kasbah_version` *(required, auto-written)*
 
@@ -375,5 +377,7 @@ for defaults, not a source of truth for what's actually running.
 ### Purpose
 
 - Default `USER@HOST` so users don't repeat it every command in the same project.
-- Anchor the source-tree schema migration story for the bash→Go transition.
-- Let `kasbah check` diff the deployed version against local HEAD.
+- Anchor the source-tree schema migration story: `kasbah_version` says which
+  kasbah last wrote the project's files, for a future `kasbah migrate`.
+- Record the last deploy, for a future deployed-vs-local diff (nothing reads it
+  yet).

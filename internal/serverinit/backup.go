@@ -4,8 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
+	"io/fs"
 	"strconv"
 	"strings"
 
@@ -243,15 +242,11 @@ func BackupResolve(out *cli.Output, p *prompt.Prompter, o Options, r *backup.Rea
 
 // BackupRender renders the compose file and the env file's first-run
 // default, refusing an env file that already sets a key kasbah owns.
-func BackupRender(dir string, o Options, v *BackupValues, r *backup.ReadReport) (compose, envDefault string, err error) {
-	bdir := filepath.Join(dir, "backup")
-	if fi, err := os.Stat(bdir); err != nil || !fi.IsDir() {
-		return "", "", cli.Fail("the backup templates are missing (looked in %s) — this kasbah installation is incomplete", bdir)
-	}
+func BackupRender(fsys fs.FS, o Options, v *BackupValues, r *backup.ReadReport) (compose, envDefault string, err error) {
 	read := func(name string) (string, error) {
-		b, err := os.ReadFile(filepath.Join(bdir, name))
+		b, err := fs.ReadFile(fsys, "backup/"+name)
 		if err != nil {
-			return "", cli.Fail("the backup %s template %s is missing", name, filepath.Join(bdir, name))
+			return "", cli.Fail("internal: this kasbah build carries no backup/%s template", name)
 		}
 		return string(b), nil
 	}

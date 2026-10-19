@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"strconv"
 	"strings"
 	"time"
@@ -27,7 +28,7 @@ type Ctx struct {
 	Out       *cli.Output
 	Prompter  *prompt.Prompter
 	Version   string
-	Templates string
+	Templates fs.FS
 	Self      remote.Info
 	Local     func(arch string) (string, error)
 	Hash      Hasher
@@ -36,8 +37,8 @@ type Ctx struct {
 	Now   func() time.Time
 }
 
-// Features asks the two questions before anything is opened, mail first, as
-// the Bash tool did: a run nobody can answer costs no connection.
+// Features asks the two questions before anything is opened, mail first: a
+// run nobody can answer costs no connection.
 func Features(p *prompt.Prompter, o Options) (mail, backup bool, err error) {
 	if mail, err = p.Bool("mail", fmt.Sprintf("Scaffold the mail stack (DMS + SnappyMail) on %s?", o.Target), o.Mail); err != nil {
 		return

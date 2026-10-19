@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"sort"
 	"strings"
 
@@ -144,7 +145,7 @@ type Ctx struct {
 	Out       *cli.Output
 	Prompter  *prompt.Prompter
 	Version   string
-	Templates string
+	Templates fs.FS
 	Dial      func(target string) (Session, error)
 }
 
@@ -197,7 +198,7 @@ func dataDir(apps, data string) string {
 
 // Decide builds the plan from the scan: ownership, the removal set, the
 // orphans and the mail release.
-func Decide(p *Plan, templates string) error {
+func Decide(p *Plan, templates fs.FS) error {
 	s := p.Scan
 	for _, c := range s.Containers {
 		if p.Containers != "" {
@@ -315,7 +316,7 @@ func Decide(p *Plan, templates string) error {
 
 // mailPlan releases the claim under --prune only, through internal/mailreg and
 // the registry's one template; no shape of the mail stack stops a drop.
-func (p *Plan) mailPlan(templates string) error {
+func (p *Plan) mailPlan(templates fs.FS) error {
 	if p.MailDomain == "" {
 		return nil
 	}

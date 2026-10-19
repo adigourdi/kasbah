@@ -1,5 +1,5 @@
 // Package manifest reads and writes a project's kasbah.yml
-// (docs/project-manifest.md), with lib/manifest.sh's validation.
+// (docs/project-manifest.md), and validates it.
 package manifest
 
 import (
@@ -18,7 +18,8 @@ import (
 // command runs from.
 const File = "kasbah.yml"
 
-// Schema is the highest manifest schema this kasbah reads.
+// Schema is the manifest schema this kasbah writes, the highest it reads, and
+// what --version reports.
 const Schema = 1
 
 // Reserved are the directory names kasbah owns under <apps>, which a project
@@ -67,7 +68,7 @@ type Manifest struct {
 // Get answers a path into the document as jq's `.a.b[0]` would.
 func (m *Manifest) Get(path ...any) (jv.Value, bool) { return jv.Get(m.Doc, path...) }
 
-// Require reads and validates the manifest at path (manifest_require). A
+// Require reads and validates the manifest at path. A
 // missing manifest is exit 2; anything else wrong is exit 1. version is this
 // kasbah's, for the newer-schema refusal.
 func Require(path, version string) (*Manifest, error) {
@@ -80,8 +81,8 @@ func Require(path, version string) (*Manifest, error) {
 		return nil, cli.Fail("%s: could not parse YAML", path).Cont(err.Error())
 	}
 
-	// Bash reads `.schema, .kasbah_version, .name, .domain // "", "__EOM__"` as
-	// `yq -r` lines and wants exactly five, a multi-line field included.
+	// The four fields read as `yq -r` lines of `.schema, .kasbah_version,
+	// .name, .domain // "", "__EOM__"`: exactly five, a multi-line field included.
 	var lines []string
 	for _, d := range docs {
 		switch d.(type) {
@@ -131,7 +132,7 @@ func Require(path, version string) (*Manifest, error) {
 // Render is the manifest init-project scaffolds. The domain is written inside
 // double quotes as given: callers pass a validated hostname or nothing.
 func Render(name, domain, version string) []byte {
-	return []byte("schema: 1\n" +
+	return []byte("schema: " + strconv.Itoa(Schema) + "\n" +
 		"kasbah_version: " + version + "\n" +
 		"\n" +
 		"name: " + name + "\n" +

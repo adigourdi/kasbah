@@ -111,6 +111,23 @@ func TestDecide(t *testing.T) {
 			}
 		})
 	}
+	// A release workstation against what pre-release builds and later releases left.
+	for _, tt := range []struct {
+		srv    string
+		want   Action
+		refuse bool
+	}{
+		{"0.1.0-dev.66.1792355995", Ship, false},
+		{"1.0.0-dev.300.1792355995", Ship, false},
+		{"1.0.0", Keep, false},
+		{"1.2.0", Keep, false},
+		{"2.0.0", 0, true},
+	} {
+		got, err := Decide(Self("1.0.0"), info(tt.srv))
+		if (err != nil) != tt.refuse || got != tt.want {
+			t.Errorf("1.0.0 against %s: got %v, %v", tt.srv, got, err)
+		}
+	}
 	for _, bad := range []string{"", "0.1.0-dev"[:3]} {
 		if _, err := Decide(Self(bad), nil); err == nil {
 			t.Errorf("an unorderable workstation build %q was allowed to ship", bad)

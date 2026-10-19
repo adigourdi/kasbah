@@ -133,3 +133,28 @@ func TestParse(t *testing.T) {
 		}
 	}
 }
+
+func TestBase(t *testing.T) {
+	at := time.Unix(1760790000, 0)
+	for _, base := range []string{"1.0.0", "0.1.0-dev", "1.1.0-rc.1", "1.0.0+exp-sha.5114f85", "0.1.0-dev+meta"} {
+		got, err := Base(Stamp(base, 142, at))
+		if err != nil || got != base {
+			t.Errorf("Base(Stamp(%q)) = %q, %v", base, got, err)
+		}
+	}
+	for _, bad := range []string{"", "devel", "0.1.0-dev", "0.1.0-dev.x.1"} {
+		if got, err := Base(bad); err == nil {
+			t.Errorf("Base(%q) = %q, want an error", bad, got)
+		}
+	}
+}
+
+// A release workstation meets servers left by pre-release builds.
+func TestReleaseOrdering(t *testing.T) {
+	rel, _ := Parse(Stamp("1.0.0", 300, time.Unix(1760790000, 0)))
+	dev, _ := Parse("0.1.0-dev.66.1792355995")
+	pre, _ := Parse("1.0.0-dev.299.1792355995")
+	if Compare(dev, rel) >= 0 || Compare(pre, rel) >= 0 {
+		t.Errorf("a pre-release build does not rank below 1.0.0")
+	}
+}

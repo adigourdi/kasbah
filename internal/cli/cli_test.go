@@ -23,7 +23,7 @@ func TestExitCodes(t *testing.T) {
 	}
 }
 
-// The formats lib/common.sh prints, byte for byte, and nothing on stdout.
+// The message formats, byte for byte, and nothing on stdout.
 func TestFormats(t *testing.T) {
 	o, out, errb := capture(false)
 	o.Info("Initialized kasbah project '%s'", "demo")

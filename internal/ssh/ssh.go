@@ -1,6 +1,6 @@
 // Package ssh is the transport: one multiplexed master per Conn — a command
 // opens one Conn per run — over the system's own ssh and rsync, so the user's
-// config, agent and jump hosts apply as they do to `ssh USER@HOST` (lib/ssh.sh).
+// config, agent and jump hosts apply as they do to `ssh USER@HOST`.
 package ssh
 
 import (
