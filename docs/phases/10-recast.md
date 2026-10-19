@@ -81,23 +81,36 @@ predicate ×3, path normalisation ×4)
 - **Off limits:** the original project's live VPS and the lab RPi — those are Phase 9's.
 
 ## Exit criteria
-- [ ] No kasbah Bash on either side: `lib/`, the Bash dispatcher, the handoff
+- [x] No kasbah Bash on either side: `lib/`, the Bash dispatcher, the handoff
       shim and every shipped script are gone; what still crosses SSH as shell
       is the bootstrap only (pointer read, `uname -m`, the `sudo mkdir` server
-      init already needs) — exception per open decision D2
-- [ ] `./test.sh` and `KASBAH_RIG_TESTS=1 ./test.sh` green against the Go binary,
-      no skips, nothing else writing
-- [ ] Newer-binary-wins observed both ways on the rig: a newer workstation
+      init already needs) — exception per open decision D2 — no exception was
+      needed: D2 made the backup runner the mounted binary. The shell that remains
+      is the bootstrap probe and the `sudo` steps of init (apps path, pointer) and
+      destroy (pointer, binary removal last)
+- [x] `./test.sh` and `KASBAH_RIG_TESTS=1 ./test.sh` green against the Go binary,
+      no skips, nothing else writing — 2026-10-19 on `69aff70`, a reset rig, the
+      real build path: 32 PASS (10 unit, 22 integration), 0 FAIL, 0 SKIP, 24m45s
+- [x] Newer-binary-wins observed both ways on the rig: a newer workstation
       replaces an older server binary; an older workstation runs against a newer
-      one; an older workstation meeting a newer **major** refuses, naming it
-- [ ] `docs/files.md` lists every file kasbah writes, and a rig test asserts
-      the Go binary writes exactly those (paths, modes, owners)
-- [ ] On `vps`, from bare: `server init` → deploy gallery-website → change
+      one; an older workstation meeting a newer **major** refuses, naming it —
+      `tests/integration/server_binary_test.sh` (absent, older, same, newer, newer
+      major, a racing pair), in the final run; on `vps`, 1.0.1 replaced 1.0.0
+- [x] `docs/files.md` lists every file kasbah writes, and a rig test asserts
+      the Go binary writes exactly those (paths, modes, owners) —
+      `tests/integration/files_test.sh`, in the final run
+- [x] On `vps`, from bare: `server init` → deploy gallery-website → change
       deploy → rollback → `server status` clean, Go binary only, HTTPS with a real
       certificate; timings recorded against Phase 6's (init 20.4 s, deploy
-      11.4 s, rollback 11.3 s)
-- [ ] Docs reconciled: `overview.md`, `roadmap.md`, `CLAUDE.md`, and every spec
-      a task changed; `VERSION` is `1.0.0` and the schema is frozen
+      11.4 s, rollback 11.3 s) — 10.15 with 1.0.0 from a de-branded host (its
+      `/apps` and containers kept, so the sudo creation of a missing apps path ran
+      on the rig only): init 17.3 s with a staging rehearsal, deploy 3.5–9.8 s,
+      rollback 10.6 s, real Let's Encrypt certificates both ways; re-checked with
+      1.0.1 (status, init re-run, `check --server` clean, HTTPS 200)
+- [x] Docs reconciled: `overview.md`, `roadmap.md`, `CLAUDE.md`, and every spec
+      a task changed; `VERSION` is `1.0.0` and the schema is frozen — the release is
+      **1.0.1** (1.0.0 plus the close fixes; 1.0.0 was never published), schema 1
+      frozen
 - [ ] **Cannot be observed here:** the `linux/arm64` server binary is built and
       unit-tested but first runs on the lab RPi (Phase 9, 9.5) — leave unticked
       until then: arm64 binary observed on real hardware
@@ -763,23 +776,29 @@ server was restarted onto the live store during 10.15).
 
 ## Findings
 
-Run approved 2026-10-18: whole phase, plan order, unit bar as in Rulings.
+kasbah is Go on both ends, released as **1.0.1** (Phase 10 closed 2026-10-19).
+What the next phase should know:
 
-- **A reset rig has an empty image store**, and suites that assert on stock
-  images must pull them themselves — `integration/prune_test.sh` assumed two that
-  only rig history had. Expect the same shape elsewhere after any `rig.sh reset`.
-- **The rotation month table lives once**, `internal/vlog/testdata/month-index.table`;
-  rotation and `server prune` both use `vlog.MonthIndex`, so one window serves both.
-- **Every Go-owned command calls `atexit.HandleSignals()` and leaves through
-  `atexit.Exit`**, or its cleanups (ssh master, temp files, terminal echo) are
-  skipped on a signal. `kasbah __ensure-server USER@HOST [--apps-path=]` is a
-  hidden driver for the rig suites, absent from usage and `cli.md`.
-- **Bash ran EXIT traps around its secret prompts** (`lib/backup.sh` trap at
-  1603 around the prompt at 1647, `lib/server_init.sh` trap at 2942); in Go a
-  signal at `prompt.Secret` runs the `atexit` stack, so 10.9 and 10.13 push their
-  cleanups there.
-- **The Bash tool's YAML reading depends on the installed yq's version** — 3.1.0
-  reads YAML 1.2 scalars; older wrappers may not. The Go binary fixes the 3.1.0
-  reading for good.
-- **The unit half is now ~9m40s** (Go checks + a build + 29 suites), up from
-  ~7 min; the full rig run 31m10s.
+- **The rig cannot run ACME, and that hid a real defect.** Only the real-host walk
+  showed that a certificate-store reset left the mail server on the archived file
+  (it mounts `acme.json` as a single file). Anything touching `acme.json` or the
+  mail/Traefik mounts needs a real-host check, not just the rig.
+- **A release stamp carries no build counter.** Between releases `VERSION` must be
+  a pre-release (`1.0.2-dev`), or a server already holding the release keeps it
+  and new server-side code never ships (10.14's Found). A change to a
+  `kasbah remote` subcommand's arguments also needs the old arm kept for older
+  workstations, whose newer server binary is kept.
+- **Every state-changing remote step outlives a dropped session** (`remote.Outlive`
+  or `signal.Ignore` with captured output); a new remote step that changes state
+  must do the same, and every command judges the marker before shipping
+  (`serverbin.EnsurePrepared`).
+- **A reset rig has an empty image store**: suites pull the images they assert on
+  (DMS, SnappyMail, alpine, restic); expect it after any `rig.sh reset`.
+- **Parallel units grow parallel helpers.** The phase review found copies of the
+  report decoder, the marker read, the bounded remote call, the default-server
+  read and a temp+rename writer — each converged in 10.16. Grep for an existing
+  helper before writing one.
+- **Real-host numbers (1.0.0/1.0.1 on `vps`):** init 12.8–17.3 s on a prepared
+  host, deploy 3.5–9.8 s, rollback 10.6 s, ~0.85 s per ssh handshake at 44 ms
+  RTT; build-push 2.3× faster than Bash on the rig (streamed, no tarball).
+- **Suite times:** `./test.sh` ~3 min warm; the full rig run ~26 min.

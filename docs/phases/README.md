@@ -19,7 +19,7 @@ during execution.
 | 6 | [Proof](06-proof.md) | **Done.** A real project on a bare VPS: HTTPS with a real ACME cert, change deploy, rollback — kasbah only |
 | 7 | [Operate](07-operate.md) | **Done.** Mail stack (`--with-mail`, `add-mail-domain`, claim reconciliation, setup guide), `logs`/`exec`, `check --server` + R04, full `server status`, `server prune`, `upgrade-traefik` |
 | 8 | [Keep](08-keep.md) | **Done.** `drop [--prune]`, `server destroy`, `--with-backup` (restic push, append-only, proved), `check --fix`, and backups visible to `server status` / `check --server` |
-| 10 | [Recast](10-recast.md) | kasbah is a Go binary on the workstation and on every VPS; no kasbah Bash left on either side; every file, format, exit code and prompt contract unchanged. **Runs before Phase 9** |
+| 10 | [Recast](10-recast.md) | **Done (1.0.1).** kasbah is one Go binary on the workstation and on every VPS (shipped to `<apps>/.kasbah/bin/kasbah`, newer wins); no Bash left on either side; every feature kept, proven on the rig and on `vps`. Ran before Phase 9 |
 | 9 | [Adopt](09-adopt.md) | Both existing consumers migrated: the original project (scripts/ deleted, mail included, live cutover) and lab (RPi stacks as kasbah projects) |
 
 ## The real milestone
@@ -85,22 +85,24 @@ will keep. Ids are addresses and do not move; Phase 9 now depends on Phase 10.
 8. **VPS-side helpers are kasbah-owned** and overwritten on every deploy;
    projects never vendor kasbah bash.
 
-## Before starting Phase 10
+## Before starting Phase 9 (after Phase 10)
 
-Phase 8's baselines below are Phase 10's starting line: **48 PASS, 0 FAIL, 0 SKIP
-in 32m22s.** Read the `## Rulings` and `## Verification` sections of
-`10-recast.md` first — the strangler, the containerised toolchain (root
-`compose.yml`; no Go on the host), newer-binary-wins, and `vps` as the disposable
-real target are settled there. Phase 8's four carried notes below still apply,
-and the first of them — five readers of the mail registry — is now settled
-inside the port (10.9, open decision D4) rather than in Phase 9.
+Phase 10 closed with `KASBAH_RIG_TESTS=1 ./test.sh` green on a reset rig, and
+`vps` a kasbah **1.0.1** server again: marker and pointer written, the binary at
+`/apps/.kasbah/bin/kasbah`, mail adopted (`--with-mail`, primary `example.com`,
+postmaster kept — DKIM keys not yet generated), gallery-website on 0.1.1, production
+certificates to 2027-01-17. The Phase 8 notes below about re-running `server init`
+there describe the state *entering* Phase 10 and no longer hold.
 
-## Before starting Phase 9
+Three things Phase 10 leaves for this phase. **The arm64 server binary has never
+run** — 9.5 on the lab RPi is its first execution (Phase 10's last exit criterion
+waits on it). **A hand-edited mail registry with no `primary_domain`, a non-domain
+entry or a non-list `domains:` is now refused by every command** (D4) — check
+the original project's before its cutover. **Between releases `VERSION` is a pre-release**
+(`1.0.2-dev`), or a server already holding the release keeps it and new
+server-side code never ships.
 
-**Read this after Phase 10 closes.** Phase 10.15 leaves `vps` a kasbah server
-again, run by the Go binary, so the paragraph below about re-running
-`server init` there describes the state *entering* Phase 10, not Phase 9.
-
+## Before Phase 10 (history)
 
 Phase 8 is committed and all four exit criteria were walked — two of them **against the
 real host**, not the rig. Baselines, after the two post-close follow-ups recorded at the
