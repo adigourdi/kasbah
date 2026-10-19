@@ -23,3 +23,20 @@ func setState(fd uintptr, st *syscall.Termios) error {
 	}
 	return nil
 }
+
+// CharMode is `read -n 1`'s terminal: canonical input off, so one keypress is
+// returned without Enter; echo and signals unchanged.
+func CharMode(fd uintptr) (restore func() error, err error) {
+	st, err := getState(fd)
+	if err != nil {
+		return nil, err
+	}
+	raw := *st
+	raw.Lflag &^= syscall.ICANON
+	raw.Cc[syscall.VMIN] = 1
+	raw.Cc[syscall.VTIME] = 0
+	if err := setState(fd, &raw); err != nil {
+		return nil, err
+	}
+	return func() error { return setState(fd, st) }, nil
+}

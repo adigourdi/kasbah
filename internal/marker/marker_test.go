@@ -158,3 +158,19 @@ func TestCompat(t *testing.T) {
 		t.Errorf("20-digit major: %v %v", w, err)
 	}
 }
+
+func TestReadLocal(t *testing.T) {
+	apps := t.TempDir()
+	if _, err := ReadLocal(apps); err == nil {
+		t.Error("no marker read as one")
+	}
+	os.MkdirAll(apps+"/.kasbah/server.json", 0o755)
+	if _, err := ReadLocal(apps); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("a directory: %v", err)
+	}
+	os.Remove(apps + "/.kasbah/server.json")
+	os.WriteFile(apps+"/.kasbah/server.json", []byte("{}\n"), 0o644)
+	if b, err := ReadLocal(apps); err != nil || string(b) != "{}\n" {
+		t.Errorf("got %q %v", b, err)
+	}
+}

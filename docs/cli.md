@@ -921,9 +921,9 @@ same words `deploy` uses for it.
 
 ### `kasbah env [USER@HOST] [--on-drift=setup|continue|abort]`
 
-Drift-aware env setup. Rsyncs `.env.prod.example` and kasbah's own
-`setup-env.sh` to `<apps>/<name>/`, runs the interactive setup there over
-`ssh -t`, then refreshes the kasbah-managed `KASBAH_*` block in `.env` from
+Drift-aware env setup. Ships the kasbah binary if the server's is absent or
+older, rsyncs `.env.prod.example` to `<apps>/<name>/`, runs the interactive setup
+there over `ssh -t` (`kasbah remote setup-env`), then refreshes the kasbah-managed `KASBAH_*` block in `.env` from
 the server marker's resource limits. See `env-template.md` for the template
 conventions and the managed block.
 

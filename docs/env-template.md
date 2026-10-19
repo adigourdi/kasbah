@@ -13,8 +13,10 @@ Per project:
 `kasbah env` syncs `.env.prod.example` to the VPS itself. `kasbah deploy`
 does not: the template reaches the server through the manifest's `sync:` list
 like any other project file, which is why the deploy path has a branch telling
-the operator to add it there. Either way `setup-env.sh` runs on the server when
-`.env` is missing or drifts from the template.
+the operator to add it there. Either way the setup runs on the server when
+`.env` is missing or drifts from the template — `kasbah remote setup-env` in the
+kasbah binary for `kasbah env`, and the shipped `setup-env.sh` for `deploy` until
+deploy is Go (Phase 10, 10.7).
 
 ## Template conventions
 
@@ -31,7 +33,11 @@ Any line in `.env.prod.example` is one of:
 | `# free-form comment` | Preserved in output | shown dimly during prompt |
 
 Values are escaped on the way out: `$` becomes `$$` so docker-compose
-doesn't interpret it.
+doesn't interpret it — a typed, default or generated value, once. A kept value
+(Enter at its prompt, or untouched by an update) is written as it stands, since
+it was escaped when it was first written. A trailing CR in a typed answer is dropped.
+A `! command` generator runs in `bash --norc --noprofile` and sees `KEY`,
+`TARGET_DIR`, `EXAMPLE` and `OUTPUT`, not the setup's functions.
 
 Sensitive vars (`KEY`, `PASSWORD`, `SECRET` in the name) are masked during
 input (`****` display, `read -rs`).
@@ -106,11 +112,11 @@ Outcomes:
 - Any drift → warn, prompt: *"re-run setup" / "continue with current .env" /
   "abort"* — scriptable as `--on-drift=setup|continue|abort`.
 
-One implementation serves both readers. `kasbah check` (E02/E03) sources
-`lib/env.sh`; `kasbah deploy` runs the *same bytes* on the VPS, where they
-have been rsynced as `scripts/setup-env.sh`. That is why nothing in that file
-may reach for `common.sh`, `jq`, `awk` or `bc`: coreutils and bash builtins
-only, since the prerequisites table promises nothing else.
+One implementation serves `kasbah check` (E02/E03) and `kasbah env`: the Go
+engine, on the workstation and as `kasbah remote setup-env` on the server.
+`deploy` still runs `lib/env.sh` on the VPS as `scripts/setup-env.sh` until it
+is Go, so that file keeps to coreutils and bash builtins — no `common.sh`, `jq`,
+`awk` or `bc` — and the shared case table holds it to the Go engine.
 
 Keys prefixed `KASBAH_` are reserved: kasbah injects and refreshes them
 at deploy (resource limits — see `server-setup.md`). They are excluded from
@@ -208,8 +214,9 @@ Coverage (preserved from the original project):
 - Structure preserved (comments, sections, blank lines)
 - Hint / Comment / Empty types
 
-## Why this stays in bash
+## Where it runs
 
-The template parser is 200 lines of bash and already battle-tested. Porting
-it to Go would cost more than it buys — the interactivity is the value, not
-the parsing.
+The setup, the drift report and the managed block are Go, in the kasbah binary:
+on the workstation for `kasbah check`, on the server as `kasbah remote setup-env`.
+`lib/env.sh` remains only as `deploy`'s shipped `setup-env.sh` until deploy is Go,
+held to the Go engine by one shared case table (`internal/env/parity_test.go`).

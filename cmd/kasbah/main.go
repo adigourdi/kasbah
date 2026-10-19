@@ -11,11 +11,15 @@ import (
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/check"
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/handoff"
 	"github.com/adigourdi/kasbah/internal/initproject"
+	"github.com/adigourdi/kasbah/internal/marker"
+	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/term"
 )
 
 // build is stamped at build time: -ldflags "-X main.build=…".
@@ -27,7 +31,17 @@ func main() {
 		switch args[0] {
 		case "remote":
 			// The server has no Bash tree: `remote` is never handed off.
+			if len(args) > 1 && args[1] == "setup-env" {
+				// Interactive over ssh -t: a signal restores the terminal and
+				// removes any staging file on the way out.
+				atexit.HandleSignals()
+				atexit.Exit(env.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
+			}
 			os.Exit(remoteCmd(args[1:]))
+		case "env":
+			o, err := env.Parse(args[1:])
+			atexit.HandleSignals()
+			atexit.Exit(envCmd(o, err))
 		case "__ensure-server":
 			out := cli.Std()
 			atexit.HandleSignals()
@@ -86,6 +100,15 @@ func remoteCmd(args []string) int {
 		fmt.Fprintln(out.Stdout, remote.Self(build).Line())
 		return cli.ExitOK
 	}
+	if len(args) == 2 && args[0] == "marker" {
+		body, err := marker.ReadLocal(args[1])
+		if err != nil {
+			fmt.Fprintf(out.Stderr, "remote: %v\n", err)
+			return cli.ExitFailure
+		}
+		out.Stdout.Write(body)
+		return cli.ExitOK
+	}
 	if len(args) == 2 && args[0] == "install-self" {
 		exe, err := os.Executable()
 		if err != nil {
@@ -97,7 +120,7 @@ func remoteCmd(args []string) int {
 	if len(args) > 0 {
 		sub = args[0]
 	}
-	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self", sub))
+	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env", sub))
 }
 
 // ensureServer is `kasbah __ensure-server [--apps-path=<dir>] USER@HOST`: the
@@ -214,6 +237,48 @@ func initProjectCmd(o initproject.Options, err error) int {
 		return out.Report(cli.Fail("cannot read the current directory: %v", err))
 	}
 	code := out.Report(initproject.Run(out, o, pwd, v))
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
+}
+
+func envCmd(o env.Options, err error) int {
+	out := cli.Std()
+	if err == env.ErrHelp {
+		fmt.Fprint(out.Stdout, env.Usage())
+		return cli.ExitOK
+	}
+	if err != nil {
+		return out.Report(err)
+	}
+	v, err := kasbahVersion()
+	if err != nil {
+		return out.Report(err)
+	}
+	pwd, err := os.Getwd()
+	if err != nil {
+		return out.Report(cli.Fail("cannot read the current directory: %v", err))
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+	}
+	home, checkout, err := handoff.Home(exe, os.Getenv)
+	if err != nil {
+		return out.Report(cli.Fail("%v", err))
+	}
+	local := func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }
+	code := out.Report(env.Run(env.Ctx{
+		Out:      out,
+		Prompter: prompt.Std(out),
+		PWD:      pwd,
+		Version:  v,
+		TTYIn:    term.IsTerminal(0),
+		TTYOut:   term.IsTerminal(1),
+		Color:    term.IsTerminal(1) && os.Getenv("NO_COLOR") == "",
+		Dial:     env.DialSSH(remote.Self(build), local),
+	}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c
 	}

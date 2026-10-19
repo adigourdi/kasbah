@@ -93,6 +93,8 @@ _env_prompt_value() {
     else
         read -r VALUE || true
     fi
+    # A CR typed into the answer is the terminal's, never the value's.
+    VALUE="${VALUE%$'\r'}"
 }
 
 # env_setup_run [target_dir]
@@ -296,6 +298,9 @@ env_setup_run() {
                 continue
             fi
 
+            # A kept live value is already escaped; KEEP_RAW stops a second $$.
+            KEEP_RAW=false
+
             # Determine prompt type from the first two characters of the value.
             if [[ "${RAW_VALUE:0:2}" == "! " ]]; then
                 # Type 4: command generator
@@ -314,6 +319,7 @@ env_setup_run() {
                 if [[ -z "$VALUE" ]]; then
                     if [[ "$HAS_EXISTING" == true ]]; then
                         VALUE="$DEFAULT"
+                        KEEP_RAW=true
                     else
                         VALUE=$(eval "$CMD" || echo "")
                         echo -e "    ${GREEN}→ generated${RESET}"
@@ -334,6 +340,7 @@ env_setup_run() {
 
                 if [[ -z "$VALUE" && "$HAS_EXISTING" == true ]]; then
                     VALUE="$EXISTING_VALUE"
+                    KEEP_RAW=true
                 fi
 
             elif [[ "$RAW_VALUE" == *" # "* ]]; then
@@ -356,6 +363,7 @@ env_setup_run() {
 
                 if [[ -z "$VALUE" ]]; then
                     VALUE="$DEFAULT"
+                    if [[ "$HAS_EXISTING" == true ]]; then KEEP_RAW=true; fi
                 fi
 
             elif [[ -z "$RAW_VALUE" ]]; then
@@ -370,6 +378,7 @@ env_setup_run() {
 
                 if [[ -z "$VALUE" && "$HAS_EXISTING" == true ]]; then
                     VALUE="$EXISTING_VALUE"
+                    KEEP_RAW=true
                 fi
 
             else
@@ -392,12 +401,17 @@ env_setup_run() {
 
                 if [[ -z "$VALUE" ]]; then
                     VALUE="$DEFAULT"
+                    if [[ "$HAS_EXISTING" == true ]]; then KEEP_RAW=true; fi
                 fi
             fi
 
             # Escape $ as $$ for Docker Compose compatibility
-            ESCAPED_VALUE="${VALUE//\$/\$\$}"
-            OUTPUT_LINES+=("${KEY}=${ESCAPED_VALUE}")
+            if [[ "$KEEP_RAW" == true ]]; then
+                OUTPUT_LINES+=("${KEY}=${VALUE}")
+            else
+                ESCAPED_VALUE="${VALUE//\$/\$\$}"
+                OUTPUT_LINES+=("${KEY}=${ESCAPED_VALUE}")
+            fi
         else
             # Unknown line format — preserve as-is
             OUTPUT_LINES+=("$line")

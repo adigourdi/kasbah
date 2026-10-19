@@ -2,6 +2,10 @@
 # Test: lib/env_cmd.sh — `kasbah env`, and the tri-state the deploy path shares
 # with it.
 #
+# The Go binary owns `kasbah env` (internal/env, whose cmd_test.go carries these
+# cases); this suite drives the Bash dispatcher directly, because Bash deploy
+# still runs this file's env_step_run until 10.7 retires it.
+#
 # A unit suite: recording stubs for `ssh` and `rsync` go first on PATH, so
 # nothing here opens a socket and the suite passes on a machine with no rig.
 # What the stubs record is the contract — which calls the command makes, in
@@ -17,6 +21,7 @@ set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 . "$repo_dir/tests/cli.sh"
+env_bash="$repo_dir/libexec/kasbah-bash"
 
 if ! command -v script >/dev/null 2>&1; then
     echo "script(1) is required to prove the drift prompt only fires on a terminal" >&2
@@ -106,7 +111,7 @@ env_cli() {
     : > "$call_log"
     env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" CALL_LOG="$call_log" \
-        "$KASBAH_BIN" env "$@" </dev/null 2>&1
+        "$env_bash" env "$@" </dev/null 2>&1
 }
 
 # The same command behind a pty, with the answers on its stdin. script(1) merges
@@ -137,7 +142,7 @@ env_cli_tty() {
     cmd+="$(printf '%q ' env -u KASBAH_LIB_DIR -u KASBAH_TEMPLATE_DIR -u KASBAH_VERSION \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" CALL_LOG="$call_log" NO_COLOR=1 \
         "${TTY_ENV[@]+"${TTY_ENV[@]}"}" \
-        "$KASBAH_BIN" env "$@")$redirect"
+        "$env_bash" env "$@")$redirect"
     timeout 60 script -qfec "$cmd" "$tmpdir/tty-out" < "$tmpdir/tty-in" >/dev/null 2>&1
     tty_rc=$?
     tty_out=$(<"$tmpdir/tty-out")

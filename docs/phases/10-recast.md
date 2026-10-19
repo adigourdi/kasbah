@@ -304,10 +304,20 @@ candidate whose parsed tree is not the original plus exactly the planned edits.
 `kasbah remote setup-env` instead of a shipped `setup-env.sh`.
 
 **Deliverables**
-- [ ] `kasbah env [--on-drift=setup|continue|abort]`, the interactive setup over
-      `ssh -t`, the `KASBAH_*` managed block, drift exempting `KASBAH_`
-- [ ] Bash deploy keeps working while Go owns env (the strangler seam)
-- [ ] `tests/env_test.sh` / `env_cmd_test.sh` cases ported to Go; integration green
+- [x] `kasbah env [--on-drift=setup|continue|abort]`, the interactive setup over
+      `ssh -t`, the `KASBAH_*` managed block, drift exempting `KASBAH_` —
+      `internal/env`; server side `kasbah remote setup-env prepare|drift|setup|inject`
+      and `kasbah remote marker`; a created `.env` is `600`, staged and renamed over
+- [x] Bash deploy keeps working while Go owns env (the strangler seam) — one
+      case table (`internal/env/parity_test.go`) holds `lib/env.sh` to the Go engine
+- [x] `tests/env_test.sh` / `env_cmd_test.sh` cases ported to Go; integration green —
+      `tests/integration/env_test.sh` (headless, interactive, decline, drift matrix,
+      Ctrl-C at a server prompt, an unreadable `.env`), piped and under a pty.
+      **Fixed in both engines:** "reconfigure all" doubled every `$` in kept values
+      on each run; a typed CR landed in `.env`; an unreadable `.env` read as absent
+      (Go only) would have overwritten live secrets. Kept as Bash had them: two
+      concurrent runs — the last rename wins; a one-key read leaves the rest of the
+      line; a `! command` that exits the shell aborts the setup
 
 **Verify on:** rig, under a real terminal and piped.
 
@@ -335,6 +345,14 @@ Bash `server init` until 10.9) — including 10.4's deferred first shipping of t
 binary over the real uplink and `~/.ssh/config` (a non-standard port).
 
 **Watch out for:**
+- Deploy's env step becomes `env.Step` (`internal/env`) with `always=false`, and
+  `lib/env.sh`, `lib/env_cmd.sh`, both Bash env suites and the Bash half of
+  `internal/env/parity_test.go` retire with it. Ten integration suites run
+  `./scripts/setup-env.sh` by hand (apps_path, rollback, check_server, drop,
+  deploy_ship, files, server_destroy, ops, history, spine) — switch them to
+  `kasbah remote setup-env setup` or `kasbah env` under `script`. Then the
+  `files.md` `.env` mode cell becomes a single `600`, and the `scripts/setup-env.sh`
+  row goes.
 - `docs/build-deploy.md:303-305` calls `digest=` an `image@sha256` content
   digest; the code writes the image id (`templates/remote-deploy.sh:787`) — keep
   the bytes, fix the doc.

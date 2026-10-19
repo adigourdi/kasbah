@@ -92,3 +92,25 @@ func TestNoEcho(t *testing.T) {
 		t.Error("NoEcho on a bad descriptor succeeds")
 	}
 }
+
+func TestCharMode(t *testing.T) {
+	_, slave := openPTY(t)
+	restore, err := CharMode(slave.Fd())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _ := getState(slave.Fd())
+	if st.Lflag&syscall.ICANON != 0 || st.Cc[syscall.VMIN] != 1 {
+		t.Error("canonical input still on after CharMode")
+	}
+	if st.Lflag&echoFlag == 0 {
+		t.Error("CharMode turned echo off")
+	}
+	if err := restore(); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = getState(slave.Fd())
+	if st.Lflag&syscall.ICANON == 0 {
+		t.Error("canonical input not restored")
+	}
+}

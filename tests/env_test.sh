@@ -685,7 +685,7 @@ leaked=$(env -i PATH="$PATH" LC_ALL=C bash -c '
 ' _ "$env_sh" "$d" < "$tmpdir/stdin")
 expected='BASH_REMATCH BOLD CHOICE CMD COMMENT CYAN DEFAULT DIM DISPLAY DISPLAY_CURRENT '
 expected+='ENV_ASSIGN_RE ENV_MANAGED_BEGIN ENV_MANAGED_END ENV_RESERVED_PREFIX '
-expected+='ESCAPED_VALUE EXAMPLE EXISTING_VALUE GREEN HAS_EXISTING HINT KEPT_COUNT KEY OUTPUT '
+expected+='ESCAPED_VALUE EXAMPLE EXISTING_VALUE GREEN HAS_EXISTING HINT KEEP_RAW KEPT_COUNT KEY OUTPUT '
 expected+='RAW_VALUE RED RESET SUPPRESS_HEADERS TARGET_DIR UPDATE_ONLY VALUE YELLOW '
 expected+='_KASBAH_ENV_LOADED dkey ekey line nkey tkey tline '
 assert '[ "$leaked" = "$expected" ]' "env_setup_run leaks exactly the known globals (got '$leaked')"

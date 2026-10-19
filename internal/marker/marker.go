@@ -5,6 +5,7 @@ package marker
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -115,6 +116,20 @@ func Build(f Fields, existing *jv.Map, backup *Backup) (*jv.Map, error) {
 	ret.Set("retention", jv.Add(oldRet, backup.Retention.object()))
 	out.Set("backup", jv.Add(merged, ret))
 	return out, nil
+}
+
+// ReadLocal is the marker under apps on this machine, as `kasbah remote
+// marker` prints it to a workstation.
+func ReadLocal(apps string) ([]byte, error) {
+	p := Path(apps)
+	fi, err := os.Stat(p)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s exists and is not a regular file", p)
+	}
+	return os.ReadFile(p)
 }
 
 // Render is the marker's bytes: jq's pretty print and one newline.
