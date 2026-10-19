@@ -14,8 +14,8 @@ func capture(color bool) (*Output, *bytes.Buffer, *bytes.Buffer) {
 
 // The codes are a contract (docs/cli.md); a renumbering is a break.
 func TestExitCodes(t *testing.T) {
-	got := []int{ExitOK, ExitFailure, ExitNoProject, ExitSSHUnreachable, ExitNoRemoteState, ExitEnvSetup, ExitComplianceFail, ExitInterrupted}
-	want := []int{0, 1, 2, 3, 4, 5, 6, 130}
+	got := []int{ExitOK, ExitFailure, ExitNoProject, ExitSSHUnreachable, ExitNoRemoteState, ExitEnvSetup, ExitComplianceFail}
+	want := []int{0, 1, 2, 3, 4, 5, 6}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("code %d is %d, want %d", i, got[i], want[i])

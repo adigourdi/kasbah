@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/remote"
@@ -24,21 +23,22 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, RemoteUsage)
 		return 1
 	}
+	// The modes that change state finish whether or not anyone still reads.
 	switch {
 	case args[0] == "run" && len(args) == 2:
-		return Engine(args[1], stdin, stdout, stderr)
+		w, done := remote.Outlive(stderr)
+		defer done()
+		return Engine(args[1], stdin, stdout, w)
 	case args[0] == "prepare" && len(args) >= 5:
-		return prepare(args[1], args[2], args[3], args[4], args[5:], stdout, stderr)
+		w, done := remote.Outlive(stderr)
+		defer done()
+		return prepare(args[1], args[2], args[3], args[4], args[5:], stdout, w)
 	case args[0] == "mail" && len(args) == 2:
 		return mailFacts(args[1], stdout)
-	case args[0] == "seed" && (len(args) == 3 || len(args) == 5):
-		// The 3-argument form is an older workstation's: unverified, so it
-		// is held to non-empty only.
-		size, sum := "", ""
-		if len(args) == 5 {
-			size, sum = args[3], args[4]
-		}
-		return seed(args[1], args[2], size, sum, stdin, stdout, stderr)
+	case args[0] == "seed" && len(args) == 5:
+		w, done := remote.Outlive(stderr)
+		defer done()
+		return seed(args[1], args[2], args[3], args[4], stdin, stdout, w)
 	case args[0] == "images" && len(args) >= 2:
 		return images(args[1], args[2:], stdout)
 	}
@@ -76,16 +76,8 @@ func prepare(apps, data, name, client string, parents []string, stdout, stderr i
 		}
 	}
 	if state == "written" {
-		tmp := record + ".tmp." + strconv.Itoa(os.Getpid())
-		if os.WriteFile(tmp, []byte(client+"\n"), 0o666) != nil {
-			os.Remove(tmp)
-			return fail("could not write %s", tmp)
-		}
-		if os.Chmod(tmp, 0o644) != nil {
-			return fail("could not set mode 644 on %s", tmp)
-		}
-		if os.Rename(tmp, record) != nil {
-			return fail("could not install %s", record)
+		if err := remote.Install(record, []byte(client+"\n"), 0o644); err != nil {
+			return fail("%v", err)
 		}
 	}
 	fmt.Fprintf(stdout, "client=%s\nprepared=yes\n", state)
@@ -139,15 +131,7 @@ func mailFacts(apps string, stdout io.Writer) int {
 // already there. Through docker cp, because SnappyMail owns its data tree at
 // 750 under its own uid, and docker cp works on a stopped container too.
 func seed(container, target, size, sum string, stdin io.Reader, stdout, stderr io.Writer) int {
-	var body []byte
-	var err error
-	if size != "" {
-		body, err = remote.Payload(stdin, size, sum)
-	} else if body, err = io.ReadAll(stdin); err == nil && !json.Valid(body) {
-		// Unverified: a stream cut mid-object must not be seeded, since a
-		// seed is never rewritten.
-		err = fmt.Errorf("the payload is empty or not JSON — nothing was installed")
-	}
+	body, err := remote.Payload(stdin, size, sum)
 	if err != nil {
 		fmt.Fprintf(stderr, "remote: seed %s: %v\n", target, err)
 		fmt.Fprintln(stdout, "mail_seed=failed")

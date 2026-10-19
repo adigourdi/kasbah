@@ -26,15 +26,6 @@ const (
 	No
 )
 
-// Or is the answer to a flag that never prompts — unset is def. Only
-// `--acme-staging` is such a flag; anything else unset is asked.
-func (g Given) Or(def bool) bool {
-	if g == Unset {
-		return def
-	}
-	return g == Yes
-}
-
 // Pair is a choice's two flags, spelled without the leading dashes.
 type Pair struct{ Yes, No string }
 

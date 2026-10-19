@@ -425,7 +425,7 @@ func TestRunRefusals(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(".kasbah", "x"), nil, 0o644)
 	f := &fake{scan: fixture()}
-	if _, se, code := run(t, f, Options{}, false, ""); code != 1 || !strings.Contains(se, "has never deployed to one") {
+	if _, se, code := run(t, f, Options{}, false, ""); code != 1 || !strings.Contains(se, "has never talked to one") {
 		t.Errorf("no target: %d %s", code, se)
 	}
 }

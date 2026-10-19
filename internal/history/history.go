@@ -171,17 +171,8 @@ func Run(c Ctx, o Options) error {
 		return err
 	}
 	x := &run{c: c, o: o, name: m.Name, target: o.Target}
-	if x.target == "" {
-		stored, err := state.Get(state.File, "last_server")
-		if err != nil {
-			return err
-		}
-		if stored == "" || stored == "null" {
-			return cli.Fail("%s: no server given, and this project has never deployed to one", o.Cmd).Cont(
-				"pass it once — `kasbah "+o.Cmd+" user@vps` — and it is remembered in",
-				state.File+" as last_server")
-		}
-		x.target = stored
+	if x.target, _, err = state.Server(o.Target, o.Cmd, "kasbah "+o.Cmd+" user@vps"); err != nil {
+		return err
 	}
 	if x.r, err = x.read(); err != nil {
 		return err

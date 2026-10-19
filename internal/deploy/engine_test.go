@@ -3,8 +3,10 @@ package deploy
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -37,7 +39,7 @@ cp)
     case "$2" in *:*) f="$SEEDS/${2##*/}"; [ -f "$f" ] && cp "$f" "$3"; exit $? ;; esac
     [ -z "$CP_FAIL" ] || exit 1
     cp "$2" "$SEEDS/${3##*/}"; exit $? ;;
-compose) case "$*" in *" up "*) exit "${UP_RC:-0}" ;; *" ps "*) echo cid; exit 0 ;; esac ;;
+compose) case "$*" in *" up "*) [ -z "$HUP_PARENT" ] || { kill -HUP "$PPID"; sleep 0.2; echo "Container demo-web Started" >&2; }; exit "${UP_RC:-0}" ;; *" ps "*) echo cid; exit 0 ;; esac ;;
 exec)
     if [ "$2" = -e ]; then exit "${EXEC_RC:-0}"; fi
     shift 2; exec "$@" ;;
@@ -276,9 +278,11 @@ func TestSeed(t *testing.T) {
 	t.Setenv("SEEDS", seeds)
 	t.Setenv("CP_FAIL", "")
 	target := "/var/lib/snappymail/_data_/_default_/domains/demo.test.json"
+	body := "{\"seed\":1}\n"
+	size, sum := remote.Digest([]byte(body))
 	run := func() string {
 		var out, errb bytes.Buffer
-		if rc := Remote([]string{"seed", "mail-snappymail", target}, strings.NewReader("{\"seed\":1}\n"), &out, &errb); rc != 0 {
+		if rc := Remote([]string{"seed", "mail-snappymail", target, size, sum}, strings.NewReader(body), &out, &errb); rc != 0 {
 			t.Fatalf("seed rc %d: %s", rc, errb.String())
 		}
 		return strings.TrimSpace(out.String())
@@ -287,8 +291,6 @@ func TestSeed(t *testing.T) {
 		t.Fatalf("no container: %q", got)
 	}
 	// A cut, empty or mismatched payload is never copied in.
-	body := "{\"seed\":1}\n"
-	size, sum := remote.Digest([]byte(body))
 	for _, c := range []struct {
 		args []string
 		in   string
@@ -296,8 +298,6 @@ func TestSeed(t *testing.T) {
 		{[]string{"seed", "mail-snappymail", target, size, sum}, body[:5]},
 		{[]string{"seed", "mail-snappymail", target, size, sum}, ""},
 		{[]string{"seed", "mail-snappymail", target, size, strings.Repeat("0", 64)}, body},
-		{[]string{"seed", "mail-snappymail", target}, ""},
-		{[]string{"seed", "mail-snappymail", target}, body[:5]},
 	} {
 		var out, errb bytes.Buffer
 		Remote(c.args, strings.NewReader(c.in), &out, &errb)
@@ -305,13 +305,9 @@ func TestSeed(t *testing.T) {
 			t.Errorf("%d args, %q: %q %q", len(c.args), c.in, out.String(), errb.String())
 		}
 	}
-	var oout, oerr bytes.Buffer
-	if Remote([]string{"seed", "mail-snappymail", target}, strings.NewReader(body), &oout, &oerr); strings.TrimSpace(oout.String()) != "mail_seed=nocontainer" {
-		t.Errorf("an old workstation's whole JSON: %q %q", oout.String(), oerr.String())
-	}
-	var vout, verr bytes.Buffer
-	if Remote([]string{"seed", "mail-snappymail", target, size, sum}, strings.NewReader(body), &vout, &verr); strings.TrimSpace(vout.String()) != "mail_seed=nocontainer" {
-		t.Errorf("a verified payload: %q %q", vout.String(), verr.String())
+	var uout, uerr bytes.Buffer
+	if rc := Remote([]string{"seed", "mail-snappymail", target}, strings.NewReader(body), &uout, &uerr); rc != 1 || !strings.Contains(uerr.String(), "usage:") {
+		t.Errorf("an unverified seed: %d %q", rc, uerr.String())
 	}
 	r.running("mail-snappymail=exited")
 	t.Setenv("CP_FAIL", "1")
@@ -331,6 +327,44 @@ func TestSeed(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(seeds, "demo.test.json")); string(b) != "operator's\n" {
 		t.Fatalf("an existing config was overwritten: %q", b)
+	}
+}
+
+// TestRunHelper is `kasbah remote deploy run` in a child whose session
+// vanishes: stdout and stderr are a pipe nobody reads, and `compose up`
+// delivers SIGHUP to it, as a dropped ssh session does.
+func TestRunHelper(t *testing.T) {
+	dir := os.Getenv("KASBAH_RUN_DIR")
+	if dir == "" {
+		t.Skip("helper")
+	}
+	atexit.HandleSignals()
+	spec, _ := os.Open(os.Getenv("KASBAH_RUN_SPEC"))
+	atexit.Exit(Remote([]string{"run", dir}, spec, os.Stdout, os.Stderr))
+}
+
+func TestRunOutlivesSession(t *testing.T) {
+	r := newRig(t)
+	r.running("demo-web=running", "demo-db=running")
+	b, _ := json.Marshal(r.spec())
+	specFile := filepath.Join(t.TempDir(), "spec")
+	os.WriteFile(specFile, b, 0o644)
+	pr, pw, _ := os.Pipe()
+	pr.Close()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRunHelper$")
+	cmd.Env = append(os.Environ(), "KASBAH_RUN_DIR="+r.dir, "KASBAH_RUN_SPEC="+specFile, "HUP_PARENT=1")
+	cmd.Stdout, cmd.Stderr = pw, pw
+	cmd.Run()
+	pw.Close()
+	log, _ := os.ReadFile(filepath.Join(r.dir, "versions.log"))
+	if code := cmd.ProcessState.ExitCode(); code != 0 || !strings.Contains(string(log), " deploy 1.0.0 backups/pre-deploy-") {
+		t.Fatalf("exit %d (%v), versions.log %q", code, cmd.ProcessState, log)
+	}
+	if c := r.calls(); !strings.Contains(c[len(c)-1], "sh -c echo post") {
+		t.Errorf("the run stopped before its post-deploy hook: %q", c[len(c)-1])
+	}
+	if left, _ := filepath.Glob(filepath.Join(r.dir, "backups", "*.partial")); len(left) != 0 {
+		t.Errorf("a partial backup left: %v", left)
 	}
 }
 

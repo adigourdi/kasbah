@@ -79,6 +79,9 @@ func TestAppendRepairsATruncatedLine(t *testing.T) {
 	if l, err := LastLine(t.TempDir()); l != "" || err != nil {
 		t.Fatalf("LastLine of nothing = %q, %v", l, err)
 	}
+	if l := Last([]byte("one\r\ntwo\r\n \t\r\n\n")); l != "two" {
+		t.Fatalf("Last skips blank lines: %q", l)
+	}
 }
 
 // TestMonthIndexTable reads tests/prune_test.sh's table: retention and

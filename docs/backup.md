@@ -175,7 +175,7 @@ handover.
 **The manifest is never synced to a server**, so the VPS cannot read
 `client:` — `kasbah deploy` *renders* it instead, writing the effective
 value to `<apps>/<name>/.kasbah-client` on every deploy. This is the same
-rule `remote-deploy.sh` follows for hooks, backup and health: manifest data
+rule the deploy engine follows for hooks, backup and health: manifest data
 reaches a server rendered, never copied. A project deployed **before**
 backups were enabled has no such record and falls back to its directory
 name — which is `client`'s documented default, so the fallback is correct
@@ -217,8 +217,9 @@ one is supplied. The run says so rather than skipping quietly.
 ## Cadence and retention (defaults, tunable)
 
 - Daily snapshot at 02:00, with per-VPS jitter to avoid herding. The jitter
-  is derived from the server's own identity, so it is stable across re-runs
-  and the rendered file stays byte-identical on an unchanged host.
+  is derived from the target as typed (`USER@HOST`, cksum'd), so it is stable
+  across re-runs from the same workstation and the rendered file stays
+  byte-identical on an unchanged host.
 - Retention, applied by operator-side prune: 7 daily, 4 weekly, 3 monthly.
 
 Both recorded in the server marker (`/apps/.kasbah/server.json`), whose

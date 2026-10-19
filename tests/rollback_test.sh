@@ -213,15 +213,13 @@ for a; do [ "$a" = -n ] && exec </dev/null; done
 last="${!#}"
 [ "$last" = true ] && exit 0
 eval "set -- $last"
-# The bootstrap probe and the marker read run for real.
+# The bootstrap probe, which reads the marker, runs for real.
 if [ "$1 $2" = "sh -s" ]; then
-    exec sh -s -- "$FAKE_APPS" "$FAKE_APPS/no-pointer" "$6" "$7"
+    exec sh -s -- "$FAKE_APPS" "$FAKE_APPS/no-pointer" "$6" "$7" "${8:-}"
 fi
-orig=("$@")
 while [ $# -gt 0 ] && [ "$1" != remote ]; do shift; done
 [ $# -gt 0 ] && shift
 case "${1:-} ${2:-}" in
-    "marker "*) exec "${orig[@]}" ;;
     # The deploy record: two files' states and bytes, one JSON line.
     "vlog "*)
         printf '{"active_state":"%s","active_b64":"%s","archive_state":"%s","archive_b64":"%s"}\n' \

@@ -150,27 +150,27 @@ assert '[ "$(apps_state)" = "absent" ]'                    "an unanswered prompt
 # not fail: the layout is idempotent, so re-running it changes no checksum, and
 # "no remote step ran" cannot be read off a step that ran and succeeded.
 #
-# gzip is moved aside rather than uninstalled, and put back by the EXIT trap
-# whatever happens. It is the one required binary nothing else in the rig suites
-# uses, so the window cannot flake a neighbour.
-hidden_bin=/usr/bin/gzip
+# rsync is moved aside rather than uninstalled, and put back by the EXIT trap
+# whatever happens: the one binary preflight requires that a host can lack.
+# Suites run one at a time, so the window cannot flake a neighbour.
+hidden_bin=/usr/bin/rsync
 if rig_ssh "sudo mv $hidden_bin $hidden_bin.hidden" >/dev/null 2>&1; then
     init --no-mail --no-backup; rc=$?
     rig_ssh "sudo mv -f $hidden_bin.hidden $hidden_bin" >/dev/null 2>&1 && hidden_bin=""
 
-    assert '[ "$rc" != "0" ]' "a host missing gzip fails preflight (exit $rc)"
-    assert 'grep -qF "gzip is missing" "$tmpdir/err"' \
+    assert '[ "$rc" != "0" ]' "a host missing rsync fails preflight (exit $rc)"
+    assert 'grep -qF "rsync on the remote — it is missing" "$tmpdir/err"' \
         "the failure names the row and the binary (said '$(init_err)')"
     assert 'grep -qF "prerequisites" "$tmpdir/err"' \
         "the failure says it is a prerequisite, not a bug in kasbah"
     assert '[ "$(apps_state)" = "absent" ]' \
         "preflight fails before anything is created — the apps path is still not there"
-    assert '[ -z "$hidden_bin" ]' "gzip was put back on the rig"
-    assert '[ "$(rig_ssh "command -v gzip" 2>/dev/null)" = "/usr/bin/gzip" ]' \
-        "gzip is where the rig found it"
+    assert '[ -z "$hidden_bin" ]' "rsync was put back on the rig"
+    assert '[ "$(rig_ssh "command -v rsync" 2>/dev/null)" = "/usr/bin/rsync" ]' \
+        "rsync is where the rig found it"
 else
     hidden_bin=""
-    assert 'false' "could not move /usr/bin/gzip aside to exercise the preflight"
+    assert 'false' "could not move /usr/bin/rsync aside to exercise the preflight"
 fi
 
 # --- The golden path ----------------------------------------------------------

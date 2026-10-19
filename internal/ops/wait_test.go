@@ -27,6 +27,10 @@ func TestWaitHelper(t *testing.T) {
 		"released": `echo ready`,
 		"killed":   `echo ready; kill -9 $$`,
 	}
+	// A signal before the hold is in place exits as any other would; the test
+	// is about the hold, so it signals only once Wait holds.
+	holding := make(chan struct{})
+	held = func() { close(holding) }
 	r, w, _ := os.Pipe()
 	cmd := exec.Command("sh", "-c", scripts[c])
 	cmd.Stdout = w
@@ -35,6 +39,7 @@ func TestWaitHelper(t *testing.T) {
 		for sc.Scan() {
 			fmt.Println("child:", sc.Text())
 			if sc.Text() == "ready" && (c == "forward" || c == "second") {
+				<-holding
 				syscall.Kill(os.Getpid(), syscall.SIGTERM)
 				if c == "second" {
 					time.Sleep(300 * time.Millisecond)

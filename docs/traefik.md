@@ -169,7 +169,7 @@ by `server init --with-mail`. Don't author your own `_`-prefixed files.
 Each project ships `traefik-dynamic.yml` at its repo root. `kasbah deploy`
 rsyncs it directly to `/apps/traefik/dynamic/<manifest.name>.yml` — no
 intermediate copy, no entry in the manifest's `sync:` list. Kasbah
-handles it out-of-band, same as `setup-env.sh` and `remote-deploy.sh`.
+handles it out-of-band.
 Traefik picks up the change on the next watch tick.
 
 The filename `traefik-dynamic.yml` mirrors Traefik's own terminology
@@ -301,9 +301,11 @@ HTTP-01 5 s, certificate 3 s). Two consequences: the rate-limit budget is
 spent at restart, so a hostname whose DNS is wrong burns it with nobody
 visiting; and a switch is verifiable about fifteen seconds later rather than
 whenever traffic happens to arrive. The reset runs
-after the new `traefik.yml` is in place and before the restart: `acme.json` is
-bind-mounted as a file, so a running Traefik holds the old inode until it is
-restarted.
+inside the restart, after the old container has stopped and before the new one
+starts: Traefik saves its whole store into `acme.json` in place, so a reset made
+while the old Traefik still runs could be refilled with the old CA's certificates.
+The store is emptied in place rather than replaced, because Traefik and the mail
+server both mount it as a single file and a new inode would leave them on the old one.
 
 **Whether it happens turns on the store, not on the config.** An empty or
 absent `acme.json` is never reset and never asked about — nothing is at risk,

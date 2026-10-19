@@ -16,9 +16,9 @@ FROM debian:bookworm-slim
 # inherited COMPOSE_PROJECT_NAME aims the command at another stack.
 ARG DOCKER_APT_VERSION=
 
-# rsync/openssl/gzip are not incidental: they are three rows of the
-# prerequisites table in docs/server-setup.md, which the rig must satisfy for
-# the integration suite to be a real check of it.
+# rsync is not incidental: it is a row of the prerequisites table in
+# docs/server-setup.md, which the rig must satisfy for the integration suite to
+# be a real check of it. openssl and gzip serve the suites themselves.
 #
 # openssh-server's postinst generates host keys; they are deleted again so the
 # image ships no private key at all. The entrypoint regenerates them per

@@ -164,32 +164,17 @@ func DialPrune(self remote.Info, local func(arch string) (string, error)) func(s
 	}
 }
 
-func (s *SSHPrune) bounded(args ...string) []string {
-	return append([]string{"timeout", "-k", "5", strconv.Itoa(serverbin.RunTimeout), s.bin, "remote"}, args...)
-}
-
 func (s *SSHPrune) Marker() (*marker.Marker, string, error) {
-	target := s.Conn.Target.String()
-	res, err := serverbin.Ensure(s.Conn, s.Self, s.Local, serverbin.Options{})
+	res, m, err := serverbin.EnsurePrepared(s.Conn, s.Self, s.Local)
 	if err != nil {
 		return nil, "", err
 	}
 	s.bin = serverbin.Path(res.Apps)
-	path := marker.Path(res.Apps)
-	body, err := s.Conn.Run(s.bounded("marker", res.Apps)...)
-	if err != nil {
-		return nil, "", cli.Fail("could not read the server marker %s on %s (the remote step exited %d, see above)", path, target, ssh.ExitCode(err))
-	}
-	init := "kasbah server init " + target
-	if res.Apps != serverbin.DefaultApps {
-		init += " --apps-path=" + res.Apps
-	}
-	m, err := marker.Validate(body, path, target, init)
-	return m, path, err
+	return m, marker.Path(res.Apps), nil
 }
 
 func (s *SSHPrune) Repos(apps string) ([]byte, int) {
-	out, err := s.Conn.Run(s.bounded("backup-init", "repos", apps)...)
+	out, err := s.Conn.Run(serverbin.Bounded(s.bin, serverbin.RunTimeout, "backup-init", "repos", apps)...)
 	return out, ssh.ExitCode(err)
 }
 
@@ -316,7 +301,7 @@ func Prune(c PruneCtx, o PruneOptions) error {
 
 	raw, rc := s.Repos(apps)
 	if rc != 0 {
-		return cli.Fail("could not read %s/.kasbah/backup/repos on %s (the remote step exited %d, see above)", apps, o.Target, rc)
+		return cli.Fail("could not read %s/.kasbah/backup/repos on %s (%s, see above)", apps, o.Target, serverbin.ExitText(rc, serverbin.RunTimeout))
 	}
 	var rep ReposReport
 	if json.Unmarshal(bytes.TrimSpace(raw), &rep) != nil || rep.Repos == nil {

@@ -111,16 +111,8 @@ func Target(o Options) (string, error) {
 	if !o.ServerGiven || o.Server != "" {
 		return o.Server, nil
 	}
-	stored, err := state.Get(state.File, "last_server")
-	if err != nil {
-		return "", err
-	}
-	if stored == "" || stored == "null" {
-		return "", cli.Fail("check: --server was given no server, and this project has never talked to one").Cont(
-			"pass it once — `kasbah check --server user@vps` — and it is remembered in",
-			state.File+" as last_server")
-	}
-	return stored, nil
+	target, _, err := state.Server("", "check --server", "kasbah check --server user@vps")
+	return target, err
 }
 
 // ServerReport is everything `check --server` reads, in one `kasbah remote
@@ -234,26 +226,12 @@ func Dial(self remote.Info, local func(arch string) (string, error)) func(string
 // marker is refused — then reads the report.
 func (s *SSH) Read(name, health string) (*ServerRead, error) {
 	target := s.Conn.Target.String()
-	validate := func(body []byte, apps string) (*marker.Marker, error) {
-		init := "kasbah server init " + target
-		if apps != serverbin.DefaultApps {
-			init += " --apps-path=" + apps
-		}
-		return marker.Validate(body, marker.Path(apps), target, init)
-	}
-	res, err := serverbin.Ensure(s.Conn, s.Self, s.Local, serverbin.Options{Prepared: func(body []byte, apps string) error {
-		_, err := validate(body, apps)
-		return err
-	}})
+	res, mk, err := serverbin.EnsurePrepared(s.Conn, s.Self, s.Local)
 	if err != nil {
 		return nil, err
 	}
-	mk, err := validate(res.Marker, res.Apps)
-	if err != nil {
-		return nil, err
-	}
-	out, err := s.Conn.Run("timeout", "-k", "5", strconv.Itoa(serverbin.RunTimeout), serverbin.Path(res.Apps),
-		"remote", "check", mk.AppsPath, mk.DataPath, name, health)
+	out, err := s.Conn.Run(serverbin.Bounded(serverbin.Path(res.Apps), serverbin.RunTimeout,
+		"check", mk.AppsPath, mk.DataPath, name, health)...)
 	if err != nil {
 		return nil, cli.Fail("could not read %s on %s (%s, see above)", mk.AppsPath, target, serverbin.ExitText(ssh.ExitCode(err), serverbin.RunTimeout))
 	}

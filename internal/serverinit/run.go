@@ -73,7 +73,7 @@ func (s *session) call(stdin []byte, bounded bool, args ...string) (string, int)
 func (s *session) remote(stdin []byte, bounded bool, args ...string) (string, int) {
 	words := append([]string{s.bin, "remote"}, args...)
 	if bounded {
-		words = append([]string{"timeout", "-k", "5", strconv.Itoa(serverbin.RunTimeout)}, words...)
+		words = serverbin.Bounded(s.bin, serverbin.RunTimeout, args...)
 	}
 	cmd := s.conn.Command(words...)
 	if stdin != nil {
@@ -442,31 +442,33 @@ func Run(c Ctx, o Options) (err error) {
 		}
 	}
 
-	reset := Facts{"acme_reset": "skipped", "acme_archive": ""}
-	if v.Acme.Reset {
-		if err := resetNeedsRestart(restart); err != nil {
-			return err
-		}
-		stamp := c.Now().UTC().Format("20060102T150405Z")
-		res, rc := s.call(nil, true, "acme-reset", o.Data+"/traefik/letsencrypt/acme.json", stamp)
-		if rc != 0 {
-			return stepFailed("reset acme.json", target, rc)
-		}
-		if reset, err = checked("the acme.json reset", target, res, "acme_reset", "acme_archive"); err != nil {
-			return err
-		}
-	}
-
 	// Unbounded by RunTimeout: a first start pulls the image, and the health
-	// wait is bounded on the server by TraefikTimeout.
+	// wait is bounded on the server by TraefikTimeout. A reset happens inside
+	// it, between stopping the running Traefik and starting the new one.
 	yn := "no"
 	if restart {
 		yn = "yes"
 	}
+	args := []string{"start", o.Apps, yn, strconv.Itoa(TraefikTimeout)}
+	if v.Acme.Reset {
+		if err := resetNeedsRestart(restart); err != nil {
+			return err
+		}
+		args = append(args, o.Data+"/traefik/letsencrypt/acme.json", c.Now().UTC().Format("20060102T150405Z"))
+	}
 	started = true
-	res, rc = s.call(nil, false, "start", o.Apps, yn, strconv.Itoa(TraefikTimeout))
+	res, rc = s.call(nil, false, args...)
+	reset := Facts{"acme_reset": "skipped", "acme_archive": ""}
+	for k, val := range remote.KV([]byte(res)) {
+		if k == "acme_reset" || k == "acme_archive" {
+			reset[k] = val
+		}
+	}
 	if rc != 0 {
 		return traefikStartFailed(target, rc, reset)
+	}
+	if v.Acme.Reset && reset["acme_reset"] != "done" {
+		return cli.Fail("the Traefik start on %s reported no acme_reset — the store may not have been reset", target)
 	}
 	tfk, err := checked("the Traefik start", target, res,
 		"traefik_action", "traefik_health", "traefik_started_at", "traefik_image", "traefik_container")

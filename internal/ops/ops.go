@@ -263,6 +263,7 @@ func Wait(cmd *exec.Cmd) (int, error) {
 		return 0, cli.Fail("could not run ssh: %v", err)
 	}
 	release := atexit.Hold(func(sig os.Signal) { cmd.Process.Signal(sig) })
+	held()
 	err := cmd.Wait()
 	release()
 	if c := atexit.Interrupted(); c != 0 {
@@ -280,6 +281,9 @@ func Wait(cmd *exec.Cmd) (int, error) {
 	}
 	return 0, nil
 }
+
+// held runs once Wait's hold is in place; a test's signal waits for it.
+var held = func() {}
 
 // signalled is the line kasbah adds when the status is its own signal's.
 func signalled(cmd string, rc int) string {
@@ -308,18 +312,9 @@ func Run(c Ctx, o Options) (int, error) {
 	if c.Interrupted == nil {
 		c.Interrupted = atexit.Interrupted
 	}
-	target := o.Target
-	if target == "" {
-		stored, err := state.Get(state.File, "last_server")
-		if err != nil {
-			return 0, err
-		}
-		if stored == "" || stored == "null" {
-			return 0, cli.Fail("%s: no server given, and this project has never deployed to one", o.Cmd).Cont(
-				"pass it once — `kasbah "+o.Cmd+" user@vps …` — and it is remembered in",
-				state.File+" as last_server")
-		}
-		target = stored
+	target, _, err := state.Server(o.Target, o.Cmd, "kasbah "+o.Cmd+" user@vps …")
+	if err != nil {
+		return 0, err
 	}
 	s, err := c.Dial(target)
 	if err != nil {

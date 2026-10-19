@@ -150,7 +150,7 @@ func (s *SSH) Read(apps string) (*Report, string, string, error) {
 	if err != nil {
 		return nil, "", "", err
 	}
-	out, err := s.Conn.Run("timeout", "-k", "5", strconv.Itoa(ReadTimeout), serverbin.Path(res.Apps), "remote", "status", res.Apps)
+	out, err := s.Conn.Run(serverbin.Bounded(serverbin.Path(res.Apps), ReadTimeout, "status", res.Apps)...)
 	if err != nil {
 		return nil, "", "", cli.Fail("could not read the state of %s (%s, see above)", target, serverbin.ExitText(ssh.ExitCode(err), ReadTimeout))
 	}

@@ -675,9 +675,8 @@ func ship(c *ssh.Conn, self remote.Info, file, bin string) (*remote.Info, error)
 		return nil, cli.Fail("could not upload kasbah to %s on %s (exit %d, see above)", tmp, target, ssh.ExitCode(err))
 	}
 
-	timeout := []string{"timeout", "-k", "5", strconv.Itoa(RunTimeout)}
 	var vout, verr bytes.Buffer
-	run := c.Command(append(timeout, tmp, "remote", "version")...)
+	run := c.Command(Bounded(tmp, RunTimeout, "version")...)
 	run.Stdout, run.Stderr = &vout, &verr
 	switch rc := ssh.ExitCode(run.Run()); rc {
 	case 0:
@@ -704,7 +703,7 @@ func ship(c *ssh.Conn, self remote.Info, file, bin string) (*remote.Info, error)
 	}
 
 	var iout bytes.Buffer
-	inst := c.Command("timeout", "-k", "5", strconv.Itoa(2*RunTimeout+LockWait), tmp, "remote", "install-self", bin)
+	inst := c.Command(Bounded(tmp, 2*RunTimeout+LockWait, "install-self", bin)...)
 	inst.Stdout = &iout
 	if err := inst.Run(); err != nil {
 		return nil, cli.Fail("installing kasbah at %s on %s failed (exit %d, see above)", bin, target, ssh.ExitCode(err))

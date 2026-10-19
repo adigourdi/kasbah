@@ -117,8 +117,8 @@ func TestLimits(t *testing.T) {
 
 func goodFacts() Facts {
 	return Facts{"user": "deploy", "group": "deploy", "have_docker": "yes", "docker_server": "27.1.0",
-		"docker_error": "", "compose_version": "v2.29.7", "have_rsync": "yes", "have_openssl": "yes",
-		"have_gzip": "yes", "sudo_nopasswd": "yes", "pointer_state": "absent",
+		"docker_error": "", "compose_version": "v2.29.7", "have_rsync": "yes",
+		"sudo_nopasswd": "yes", "pointer_state": "absent",
 		"pointer_value": "", "apps_state": "absent", "apps_owned": "no", "apps_writable": "no",
 		"apps_owner": "", "apps_write_error": "", "apps_root_state": "absent", "apps_root_owner": "",
 		"apps_base": "/", "apps_base_owner": "root:root", "apps_base_mode": "755", "data_state": "absent",
@@ -140,7 +140,7 @@ func TestPreflight(t *testing.T) {
 		{Facts{"compose_version": ""}, "produced nothing"},
 		{Facts{"compose_version": "1.29.2"}, "the plugin reports 1.29.2"},
 		{Facts{"compose_version": "5.2.0"}, ""},
-		{Facts{"have_gzip": "no"}, "gzip is missing"},
+		{Facts{"have_rsync": "no"}, "rsync on the remote — it is missing"},
 		{Facts{"sudo_nopasswd": "no"}, "sudo mkdir -p /apps && sudo chown deploy:deploy /apps"},
 		{Facts{"apps_state": "dangling"}, "symlink to nothing"},
 		{Facts{"apps_state": "unreachable", "apps_root_state": "exists", "apps_root_owner": "root:root"}, "cannot see it"},
@@ -495,8 +495,10 @@ func TestRemoteSteps(t *testing.T) {
 		t.Errorf("temp left: %v", left)
 	}
 
-	// acme-reset: archived, never deleted, never overwritten.
+	// acme-reset: archived, never deleted, never overwritten; emptied in
+	// place, so a file bind mount (DMS's) follows it.
 	os.WriteFile(acme, []byte("{certs}"), 0o600)
+	before, _ := os.Stat(acme)
 	out, _, rc = remoteRun(t, "", "acme-reset", acme, "20261019T000000Z")
 	if rc != 0 || !strings.Contains(out, "acme_reset=done") || !strings.Contains(out, "acme_archive="+acme+".20261019T000000Z") {
 		t.Fatalf("reset: %q %d", out, rc)
@@ -504,12 +506,18 @@ func TestRemoteSteps(t *testing.T) {
 	if b, _ := os.ReadFile(acme + ".20261019T000000Z"); string(b) != "{certs}" {
 		t.Errorf("archive: %q", b)
 	}
-	if fi, _ := os.Stat(acme); fi.Size() != 0 || mode(t, acme) != 0o600 {
-		t.Errorf("fresh store: %d %o", fi.Size(), mode(t, acme))
+	if fi, _ := os.Stat(acme); fi.Size() != 0 || mode(t, acme) != 0o600 || !os.SameFile(before, fi) {
+		t.Errorf("fresh store: %d %o, same inode %v", fi.Size(), mode(t, acme), os.SameFile(before, fi))
+	}
+	if mode(t, acme+".20261019T000000Z") != 0o600 {
+		t.Errorf("archive mode %o", mode(t, acme+".20261019T000000Z"))
 	}
 	os.WriteFile(acme, []byte("{more}"), 0o600)
 	if _, e, rc := remoteRun(t, "", "acme-reset", acme, "20261019T000000Z"); rc == 0 || !strings.Contains(e, "will not write over") {
 		t.Errorf("archive overwritten: %q %d", e, rc)
+	}
+	if b, _ := os.ReadFile(acme); string(b) != "{more}" {
+		t.Errorf("the refused reset touched the store: %q", b)
 	}
 
 	// A directory where acme.json belongs is refused, not worked around.
@@ -520,5 +528,90 @@ func TestRemoteSteps(t *testing.T) {
 	}
 	if _, e, rc := remoteRun(t, "", "bogus"); rc != 1 || !strings.Contains(e, "usage") {
 		t.Errorf("bogus: %q %d", e, rc)
+	}
+}
+
+// The reset happens with the old Traefik stopped: one still running would save
+// its in-memory store back into the emptied file.
+func TestRemoteStartResetsBetweenStopAndUp(t *testing.T) {
+	root := t.TempDir()
+	apps, bin := filepath.Join(root, "apps"), filepath.Join(root, "bin")
+	os.MkdirAll(filepath.Join(apps, "traefik"), 0o755)
+	os.MkdirAll(bin, 0o755)
+	acme := filepath.Join(root, "acme.json")
+	os.WriteFile(acme, []byte(`{"letsencrypt":{}}`), 0o600)
+	log := filepath.Join(root, "log")
+	os.WriteFile(filepath.Join(bin, "docker"), []byte(`#!/bin/sh
+printf '%s size=%s\n' "$*" "$(wc -c < "$ACME")" >> "$LOG"
+case "$*" in
+*"ps -a -q traefik"*) echo cid ;;
+*StartedAt*) cat "$STARTED" 2>/dev/null || echo t0 ;;
+*"up -d"*) echo t1 > "$STARTED" ;;
+*" stop "*) exit "${STOP_RC:-0}" ;;
+*Health*) echo healthy ;;
+*Running*) echo true ;;
+*Name*) echo /traefik ;;
+*Config.Image*) echo traefik:v3 ;;
+esac
+exit 0
+`), 0o755)
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	t.Setenv("ACME", acme)
+	t.Setenv("LOG", log)
+	t.Setenv("STARTED", filepath.Join(root, "started"))
+
+	out, e, rc := remoteRun(t, "", "start", apps, "yes", "5", acme, "20261019T000000Z")
+	if rc != 0 || !strings.Contains(out, "acme_reset=done") || !strings.Contains(out, "traefik_action=restarted") {
+		t.Fatalf("rc %d: %q %q", rc, out, e)
+	}
+	b, _ := os.ReadFile(log)
+	calls := string(b)
+	stop, up := strings.Index(calls, "compose -p traefik stop traefik size=18"), strings.Index(calls, "compose -p traefik up -d size=0")
+	if stop < 0 || up < 0 || stop > up {
+		t.Fatalf("not stop (store whole) then up (store empty):\n%s", calls)
+	}
+	if strings.Contains(calls, "restart") {
+		t.Errorf("restarted on top of the stop:\n%s", calls)
+	}
+	if a, _ := os.ReadFile(acme + ".20261019T000000Z"); string(a) != `{"letsencrypt":{}}` {
+		t.Errorf("archive %q", a)
+	}
+
+	// A failed stop or a failed truncate still brings Traefik up, and says how
+	// to reset by hand: a re-run of init would not redo it.
+	for _, c := range []struct{ name, stopRC string }{{"stop fails", "1"}, {"truncate fails", ""}} {
+		os.WriteFile(log, nil, 0o644)
+		os.Remove(acme)
+		os.WriteFile(acme, []byte(`{"letsencrypt":{}}`), 0o600)
+		stamp := "20261019T00000" + map[string]string{"1": "1Z", "": "2Z"}[c.stopRC]
+		t.Setenv("STOP_RC", c.stopRC)
+		if c.stopRC == "" {
+			os.Chmod(acme, 0o400)
+		}
+		_, e, rc := remoteRun(t, "", "start", apps, "yes", "5", acme, stamp)
+		os.Chmod(acme, 0o600)
+		b, _ := os.ReadFile(log)
+		if rc != 1 || !strings.Contains(string(b), "compose -p traefik up -d") {
+			t.Errorf("%s: rc %d, Traefik not brought up:\n%s", c.name, rc, b)
+		}
+		for _, want := range []string{"will not redo the reset", "cd " + apps + "/traefik && docker compose -p traefik stop traefik",
+			"cp -p " + acme + " " + acme + "." + stamp, ": > " + acme + "\n", "docker compose -p traefik up -d", "Traefik is up on the store as it was"} {
+			if !strings.Contains(e, want) {
+				t.Errorf("%s: no %q in %q", c.name, want, e)
+			}
+		}
+		if got, _ := os.ReadFile(acme); string(got) != `{"letsencrypt":{}}` {
+			t.Errorf("%s: the store changed: %q", c.name, got)
+		}
+	}
+	t.Setenv("STOP_RC", "")
+
+	// Without a reset nothing is stopped.
+	os.WriteFile(log, nil, 0o644)
+	if _, e, rc := remoteRun(t, "", "start", apps, "no", "5"); rc != 0 {
+		t.Fatalf("rc %d: %s", rc, e)
+	}
+	if b, _ := os.ReadFile(log); strings.Contains(string(b), " stop ") {
+		t.Errorf("stopped without a reset:\n%s", b)
 	}
 }

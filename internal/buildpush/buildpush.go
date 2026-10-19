@@ -132,19 +132,10 @@ func Run(c Ctx, o Options) error {
 		return nil
 	}
 
-	target := o.Target
-	if target == "" {
-		stored, err := state.Get(state.File, "last_server")
-		if err != nil {
-			return err
-		}
-		if stored == "" || stored == "null" {
-			return cli.Fail("build-push: no server given, and this project has never shipped to one").Cont(
-				"pass it once — `kasbah build-push user@vps` — and it is remembered in",
-				state.File+" as last_server",
-				"to build and tag here without shipping anything, use --build-only")
-		}
-		target = stored
+	target, _, err := state.Server(o.Target, "build-push", "kasbah build-push user@vps",
+		"to build and tag here without shipping anything, use --build-only")
+	if err != nil {
+		return err
 	}
 	// The server is proved reachable and prepared before the build: the end of
 	// one is the worst time to learn it is neither.
@@ -153,7 +144,7 @@ func Run(c Ctx, o Options) error {
 		return err
 	}
 	defer conn.Close()
-	res, err := serverbin.Ensure(conn, c.Self, c.Local, serverbin.Options{})
+	res, _, err := serverbin.EnsurePrepared(conn, c.Self, c.Local)
 	if err != nil {
 		return err
 	}

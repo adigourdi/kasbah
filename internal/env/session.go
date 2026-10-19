@@ -4,7 +4,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
@@ -40,24 +39,15 @@ func DialSSH(self remote.Info, local func(arch string) (string, error)) func(str
 
 func (s *SSH) target() string { return s.Conn.Target.String() }
 
-// Marker ships the binary when the server's is absent or older, then has it
-// read the marker it found (serverbin refuses a server with none, exit 4).
+// Marker is the server's validated marker, judged before the binary ships
+// (serverbin.EnsurePrepared; a server with none is refused, exit 4).
 func (s *SSH) Marker() (*marker.Marker, error) {
-	res, err := serverbin.Ensure(s.Conn, s.Self, s.Local, serverbin.Options{})
+	res, mk, err := serverbin.EnsurePrepared(s.Conn, s.Self, s.Local)
 	if err != nil {
 		return nil, err
 	}
 	s.bin = serverbin.Path(res.Apps)
-	path := marker.Path(res.Apps)
-	body, err := s.Conn.Run(s.bounded("marker", res.Apps)...)
-	if err != nil {
-		return nil, cli.Fail("could not read the server marker %s on %s (%s, see above)", path, s.target(), exitText(ssh.ExitCode(err)))
-	}
-	init := "kasbah server init " + s.target()
-	if res.Apps != serverbin.DefaultApps {
-		init += " --apps-path=" + res.Apps
-	}
-	return marker.Validate(body, path, s.target(), init)
+	return mk, nil
 }
 
 // Bin is the server binary's path, known once Marker has run.
@@ -66,10 +56,8 @@ func (s *SSH) Bin() string { return s.bin }
 // Bounded is bounded, for the other commands riding this session.
 func (s *SSH) Bounded(args ...string) []string { return s.bounded(args...) }
 
-// bounded is `kasbah remote ARGS…` on the server under a time limit, as every
-// non-interactive run of the server binary is.
 func (s *SSH) bounded(args ...string) []string {
-	return append([]string{"timeout", "-k", "5", strconv.Itoa(serverbin.RunTimeout), s.bin, "remote"}, args...)
+	return serverbin.Bounded(s.bin, serverbin.RunTimeout, args...)
 }
 
 // Prepare creates the project directory, so rsync has somewhere to land.

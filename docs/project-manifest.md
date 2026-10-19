@@ -94,7 +94,7 @@ backup:
 # Mail claim — tells kasbah this project expects `mail.<domain>` (and SMTP)
 # to be available. The deploy checks the stack is there and that its registry
 # serves the domain, and warns without stopping when either is not so. Account
-# management is NOT done here — use `docker exec mail-dms setup.sh email add
+# management is NOT done here — use `docker exec mail-dms setup email add
 # foo@domain` on the VPS directly.
 mail:
   domain: shop.example.com
@@ -158,7 +158,7 @@ as `name`. See `backup.md`.
 `name` when absent) to `<apps>/<name>/.kasbah-client` on the server. The
 manifest itself is never synced, so that record is how the VPS-side backup run
 learns which repository a project belongs to — the same "render, never copy"
-rule `remote-deploy.sh` follows for hooks, backup and health. The value must
+rule the deploy engine follows for hooks, backup and health. The value must
 match `^[a-z][a-z0-9-]*$` and may not be one of the reserved names kasbah owns
 under `<apps>/` (`traefik`, `mail`, `data`, `backups`): a project claiming
 `mail` would put every mailbox on the host into one client's handover. A

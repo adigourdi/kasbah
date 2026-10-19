@@ -290,6 +290,22 @@ assert 'grep -qxF "v$v1..HEAD — 1 commit" <<<"$out"' \
     "and the commit the rollback left behind is pending again (got '$out')"
 assert 'grep -qF "$v2_subject" <<<"$out"' "named (got '$out')"
 
+# With VERSION the range ends at that tag, not HEAD: what deploying it would add.
+pending "$RIG_TARGET" "$v2"; rc=$?
+out="$(cli_out)"
+assert '[ "$rc" = "0" ]' "kasbah pending VERSION runs (exit $rc: $(cli_err))"
+assert 'grep -qxF "v$v1..v$v2 — 1 commit" <<<"$out"' \
+    "the range ends at v$v2 rather than HEAD (got '$out')"
+assert 'grep -qF "$v2_subject" <<<"$out"' "with the commit v$v2 tagged in it (got '$out')"
+pending "$RIG_TARGET" "$v1"; rc=$?
+out="$(cli_out)"
+assert 'grep -qF "v$v1..v$v1 — nothing pending: v$v1 is the commit $RIG_TARGET is already running" <<<"$out"' \
+    "the running version itself has nothing pending (got '$out')"
+pending "$RIG_TARGET" 9.9.9; rc=$?
+assert '[ "$rc" = "0" ]' "a VERSION with no tag is a warning, not a failure (exit $rc: $(cli_err))"
+assert 'grep -qF "v9.9.9 is not a tag in this checkout" <<<"$(cli_err)"' \
+    "saying the tag is missing here (got '$(cli_err)')"
+
 # ==================================================================================
 # A real rotation point
 # ==================================================================================

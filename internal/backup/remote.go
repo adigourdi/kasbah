@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,9 +24,10 @@ import (
 // RemoteInit is `kasbah remote backup-init <step> …`: init's backup half and
 // backup-prune's discovery. Reports on stdout, failures as `remote: …`, exit 1.
 func RemoteInit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	// A dropped session must not skip a step's cleanup; a report nobody reads
-	// is a write error, not a death.
-	signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
+	// A dropped session must not skip a step's cleanup, nor stop the docker
+	// it runs; a report nobody reads is a write error, not a death.
+	stderr, done := remote.Outlive(stderr)
+	defer done()
 	fail := func(format string, a ...any) int {
 		fmt.Fprintf(stderr, "remote: "+format+"\n", a...)
 		return 1

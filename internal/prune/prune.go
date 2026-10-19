@@ -4,7 +4,6 @@
 package prune
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -404,7 +403,7 @@ func (s *SSH) Ensure() (string, string, error) {
 }
 
 func (s *SSH) Scan(apps string) ([]byte, int) {
-	out, err := s.Conn.Run("timeout", "-k", "5", fmt.Sprint(serverbin.RunTimeout), s.bin, "remote", "prune", "scan", apps)
+	out, err := s.Conn.Run(serverbin.Bounded(s.bin, serverbin.RunTimeout, "prune", "scan", apps)...)
 	return out, ssh.ExitCode(err)
 }
 
@@ -425,35 +424,10 @@ type Ctx struct {
 
 // readScan checks the report's keys as a protocol before any value is used.
 func readScan(out []byte, target string) (*Scan, error) {
-	out = bytes.TrimSpace(bytes.ReplaceAll(out, []byte("\r"), nil))
-	var m map[string]json.RawMessage
 	var s Scan
-	bad := json.Unmarshal(out, &m) != nil
-	var missing []string
-	for _, k := range []string{"now_month", "docker_error", "images", "containers", "projects", "project_count"} {
-		if m[k] == nil {
-			missing = append(missing, k)
-		}
-	}
-	if bad || len(missing) > 0 || json.Unmarshal(out, &s) != nil {
-		what := strings.Join(missing, " ")
-		if what == "" {
-			what = "now_month docker_error images containers projects project_count"
-		}
-		e := cli.Fail("the prune probe on %s reported no %s", target, what).Cont(
-			"the step was truncated, or the server's kasbah rejected it — raw output:")
-		ls := strings.Split(string(out), "\n")
-		for i, l := range ls {
-			if i == 20 {
-				e.Cont("| … and more, not shown")
-				break
-			}
-			if len(l) > 120 {
-				l = fmt.Sprintf("%s… (%d bytes in all)", l[:120], len(l))
-			}
-			e.Cont("| " + l)
-		}
-		return nil, e
+	if err := remote.Decode(out, &s, []string{"now_month", "docker_error", "images", "containers", "projects", "project_count"},
+		"the prune probe", target); err != nil {
+		return nil, err
 	}
 	if s.Count != len(s.Projects) {
 		return nil, cli.Fail("the prune probe on %s counted %d projects and described %d", target, s.Count, len(s.Projects)).Cont(

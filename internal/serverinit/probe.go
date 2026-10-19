@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/remote"
 )
 
 // probeScript is the bootstrap read: every fact the verdicts need, before
@@ -39,9 +40,7 @@ else
 fi
 kv compose_version "$(docker compose version --short 2>/dev/null | flat)"
 
-for c in rsync openssl gzip; do
-    if command -v "$c" >/dev/null 2>&1; then kv "have_$c" yes; else kv "have_$c" no; fi
-done
+if command -v rsync >/dev/null 2>&1; then kv have_rsync yes; else kv have_rsync no; fi
 
 if sudo -n true >/dev/null 2>&1; then sudo_ok=yes; else sudo_ok=no; fi
 kv sudo_nopasswd "$sudo_ok"
@@ -196,7 +195,7 @@ exit 0
 `
 
 var probeKeys = []string{"user", "group", "have_docker", "docker_server", "docker_error",
-	"compose_version", "have_rsync", "have_openssl", "have_gzip", "sudo_nopasswd",
+	"compose_version", "have_rsync", "sudo_nopasswd",
 	"pointer_state", "pointer_value",
 	"apps_state", "apps_owned", "apps_writable", "apps_owner", "apps_write_error",
 	"apps_root_state", "apps_root_owner", "apps_base", "apps_base_owner", "apps_base_mode",
@@ -208,11 +207,8 @@ type Facts map[string]string
 
 // absorb reads key=value lines, CR stripped; lines without `=` are not facts.
 func absorb(f Facts, out string) {
-	for _, l := range strings.Split(out, "\n") {
-		l = strings.TrimSuffix(l, "\r")
-		if k, v, ok := strings.Cut(l, "="); ok {
-			f[k] = v
-		}
+	for k, v := range remote.KV([]byte(out)) {
+		f[k] = v
 	}
 }
 
@@ -304,11 +300,9 @@ func Preflight(f Facts, target, apps, data string) error {
 			"  kasbah's compose files need include: and v2 syntax.")
 	}
 
-	for _, c := range []string{"rsync", "openssl", "gzip"} {
-		if f["have_"+c] != "yes" {
-			add(fmt.Sprintf("rsync, openssl, gzip on the remote — %s is missing.", c),
-				"  deploy and env setup both need it; install it with the distro's package manager.")
-		}
+	if f["have_rsync"] != "yes" {
+		add("rsync on the remote — it is missing.",
+			"  deploy and env setup both need it; install it with the distro's package manager.")
 	}
 
 	switch f["apps_state"] {

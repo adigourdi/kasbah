@@ -30,6 +30,11 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		return usage()
 	}
+	if args[0] != "read" {
+		w, done := remote.Outlive(stderr)
+		defer done()
+		stderr = w
+	}
 	var err error
 	switch {
 	case args[0] == "read" && len(args) == 3:

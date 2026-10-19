@@ -52,9 +52,9 @@ services:
       - ${DATA_PATH}/mail/dms/mail-state:/var/mail-state
       - ${DATA_PATH}/mail/dms/mail-logs:/var/log/mail
       - ${DATA_PATH}/mail/dms/config:/tmp/docker-mailserver
-      # Read-only, and a *file*: Docker materialises a missing bind-mount source
-      # as a directory, which breaks Traefik and DMS alike. `server init`
-      # touches it before anything can mount it (docs/server-setup.md).
+      # A read-only *file* (init touches it first; DMS writes /etc/letsencrypt/live/
+      # itself, so not the directory). It follows one inode: Traefik and init's
+      # ACME reset only ever rewrite it in place.
       - ${DATA_PATH}/traefik/letsencrypt/acme.json:/etc/letsencrypt/acme.json:ro
       - /etc/localtime:/etc/localtime:ro
     environment:

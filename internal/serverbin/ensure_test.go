@@ -632,3 +632,50 @@ func TestBigMarker(t *testing.T) {
 		}
 	}
 }
+
+// A marker EnsurePrepared would refuse ships nothing; a valid one comes back
+// validated, with the binary shipped.
+func TestEnsurePrepared(t *testing.T) {
+	const ours = "0.1.0-dev.142.1760790000"
+	RunTimeout = 2
+	t.Cleanup(func() { RunTimeout = 30 })
+	for _, c := range []struct{ name, body, refuse string }{
+		{"not JSON", "nope\n", "is not a JSON object — re-run `kasbah server init d@h --apps-path="},
+		{"no limits", `{"apps_path":"/apps","data_path":"/apps/data"}`, "records cpu_limit=''"},
+		{"valid", `{"apps_path":"/srv/apps","data_path":"/srv/data","cpu_limit":"1","mem_limit":"1g"}`, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			stubSSH(t)
+			s := newScratch(t)
+			os.MkdirAll(filepath.Join(s.apps, ".kasbah"), 0o755)
+			os.WriteFile(filepath.Join(s.apps, ".kasbah", "server.json"), []byte(c.body), 0o644)
+			local := filepath.Join(s.root, "local", "kasbah-linux")
+			fake(t, local, ours, "", 0o755)
+			conn, err := ssh.Connect("d@h")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			res, mk, err := EnsurePrepared(conn, remote.Self(ours), func(string) (string, error) { return local, nil })
+			_, statErr := os.Stat(Path(s.apps))
+			if c.refuse != "" {
+				if err == nil || !strings.Contains(err.Error(), c.refuse) || statErr == nil {
+					t.Fatalf("got %v (binary shipped: %v); want a refusal saying %q, nothing shipped", err, statErr == nil, c.refuse)
+				}
+				return
+			}
+			if err != nil || mk.DataPath != "/srv/data" || res.Apps != s.apps || statErr != nil {
+				t.Fatalf("got %+v %+v %v", res, mk, err)
+			}
+		})
+	}
+}
+
+func TestBounded(t *testing.T) {
+	if got := strings.Join(Bounded("/a/kasbah", 30, "status", "/a"), " "); got != "timeout -k 5 30 /a/kasbah remote status /a" {
+		t.Errorf("%q", got)
+	}
+	if InitCmd("d@h", DefaultApps) != "kasbah server init d@h" || InitCmd("d@h", "/srv") != "kasbah server init d@h --apps-path=/srv" {
+		t.Error("InitCmd")
+	}
+}

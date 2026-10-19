@@ -262,17 +262,7 @@ type Plan struct {
 	Projects           []Row
 }
 
-func kv(out []byte) map[string]string {
-	m := map[string]string{}
-	sc := bufio.NewScanner(bytes.NewReader(out))
-	for sc.Scan() {
-		l := strings.TrimSuffix(sc.Text(), "\r")
-		if k, v, ok := strings.Cut(l, "="); ok {
-			m[k] = v
-		}
-	}
-	return m
-}
+func kv(out []byte) map[string]string { return remote.KV(out) }
 
 // Run is the command.
 func Run(c Ctx, o Options) error {

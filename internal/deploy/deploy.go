@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/mailreg"
@@ -176,6 +177,8 @@ type Ctx struct {
 	Color         bool
 	Dial          func(target string) (Server, error)
 	Now           func() time.Time
+	// Interrupted is atexit.Interrupted when nil.
+	Interrupted func() int
 }
 
 // Fragment is the project's Traefik file; kasbah owns where it lands.
@@ -205,17 +208,8 @@ func Run(c Ctx, o Options) error {
 		return err
 	}
 	r := &run{c: c, o: o, m: m, target: o.Target, mode: "deploy", frag: Fragment}
-	if r.target == "" {
-		stored, err := state.Get(state.File, "last_server")
-		if err != nil {
-			return err
-		}
-		if stored == "" || stored == "null" {
-			return cli.Fail("deploy: no server given, and this project has never deployed to one").Cont(
-				"pass it once — `kasbah deploy user@vps` — and it is remembered in",
-				state.File+" as last_server")
-		}
-		r.target = stored
+	if r.target, _, err = state.Server(o.Target, "deploy", "kasbah deploy user@vps"); err != nil {
+		return err
 	}
 	if r.version, err = release.Resolve(c.PWD); err != nil {
 		return err
@@ -293,7 +287,21 @@ func (r *run) remote() (*Report, error) {
 		Images: b.Images, Pre: b.Hooks["pre-"+r.mode], Post: b.Hooks["post-"+r.mode],
 		Health: b.Health, Backup: b.Backup,
 	}
+	// Held: the engine finishes on the server whatever happens to this end,
+	// so a signal waits for ssh rather than tearing the master down under it.
+	release := atexit.Hold(func(os.Signal) {})
 	out, rc := r.s.Run(r.dir, sp)
+	release()
+	interrupted := r.c.Interrupted
+	if interrupted == nil {
+		interrupted = atexit.Interrupted
+	}
+	if c := interrupted(); c != 0 && rc != 0 {
+		return nil, cli.Failf(c, "interrupted during the %s on %s", r.mode, r.target).Cont(
+			"the server carries on without this end: it finishes the "+r.mode+" and records it",
+			"in versions.log. `kasbah history "+r.target+"` shows where it ended.",
+			"The Traefik fragment was not shipped. Re-running `"+r.rerun()+"` is safe.")
+	}
 	if rc == 255 || rc == -1 {
 		// ssh's own failure: the engine may have run to its end regardless.
 		return nil, cli.Fail("the connection to %s was lost during the %s (ssh exited %d)", r.target, r.mode, rc).Cont(

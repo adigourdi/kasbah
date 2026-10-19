@@ -98,17 +98,8 @@ func RunTagged(c Ctx, o Options, mode string) error {
 		return cli.Fail("%s is not a git repository — the version to %s comes from a git tag", c.PWD, mode)
 	}
 	r := &run{c: c, o: o, m: m, target: o.Target, version: o.Version, mode: mode, tagged: true}
-	if r.target == "" {
-		stored, err := state.Get(state.File, "last_server")
-		if err != nil {
-			return err
-		}
-		if stored == "" || stored == "null" {
-			return cli.Fail("%s: no server given, and this project has never deployed to one", mode).Cont(
-				"pass it once — `kasbah "+mode+" user@vps` — and it is remembered in",
-				state.File+" as last_server")
-		}
-		r.target = stored
+	if r.target, _, err = state.Server(o.Target, mode, "kasbah "+mode+" user@vps"); err != nil {
+		return err
 	}
 	t := &tagged{}
 	defer t.cleanup()

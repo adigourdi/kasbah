@@ -262,8 +262,4 @@ func TestGiven(t *testing.T) {
 	if err == nil || err.Error() != "server init: --with-mail and --no-mail cannot both be given" {
 		t.Errorf("conflict: %v", err)
 	}
-	// --acme-staging: unset is the default and nothing is asked.
-	if Unset.Or(false) || !Yes.Or(false) || No.Or(true) {
-		t.Error("Or")
-	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
@@ -36,15 +37,7 @@ func DialSSH(self remote.Info, local func(arch string) (string, error)) func(str
 
 func (s *SSH) target() string { return s.Conn.Target.String() }
 
-func lines(out []byte) map[string]string {
-	kv := map[string]string{}
-	for _, l := range strings.Split(strings.ReplaceAll(string(out), "\r", ""), "\n") {
-		if k, v, ok := strings.Cut(l, "="); ok {
-			kv[k] = v
-		}
-	}
-	return kv
-}
+func lines(out []byte) map[string]string { return remote.KV(out) }
 
 func rawOutput(e *cli.Error, out []byte) *cli.Error {
 	for _, l := range strings.Split(strings.TrimRight(strings.ReplaceAll(string(out), "\r", ""), "\n"), "\n") {
@@ -57,7 +50,7 @@ func (s *SSH) PrepareProject(apps, data, name, client string, parents []string) 
 	args := append([]string{"deploy", "prepare", apps, data, name, client}, parents...)
 	out, err := s.Conn.Run(s.Bounded(args...)...)
 	if err != nil {
-		return "", cli.Fail("could not prepare %s/%s on %s (the remote step exited %d, see above)", apps, name, s.target(), ssh.ExitCode(err))
+		return "", cli.Fail("could not prepare %s/%s on %s (%s, see above)", apps, name, s.target(), serverbin.ExitText(ssh.ExitCode(err), serverbin.RunTimeout))
 	}
 	return parsePrepare(out, s.target())
 }
@@ -95,7 +88,7 @@ func (s *SSH) Mail(apps string) (*MailFacts, error) {
 	dir := apps + "/mail"
 	out, err := s.Conn.Run(s.Bounded("deploy", "mail", apps)...)
 	if err != nil {
-		return nil, cli.Fail("could not look for the mail stack at %s on %s (the remote step exited %d, see above)", dir, s.target(), ssh.ExitCode(err))
+		return nil, cli.Fail("could not look for the mail stack at %s on %s (%s, see above)", dir, s.target(), serverbin.ExitText(ssh.ExitCode(err), serverbin.RunTimeout))
 	}
 	return parseMailFacts(out, s.target())
 }
@@ -103,14 +96,9 @@ func (s *SSH) Mail(apps string) (*MailFacts, error) {
 // parseMailFacts requires every key: a missing one must not read as "no".
 func parseMailFacts(out []byte, target string) (*MailFacts, error) {
 	var f MailFacts
-	var m map[string]json.RawMessage
-	bad := json.Unmarshal(bytes.TrimSpace(out), &m) != nil
-	for _, k := range []string{"stack", "env", "registry", "registry_b64", "dms", "snappymail"} {
-		bad = bad || m[k] == nil
-	}
-	if bad || json.Unmarshal(bytes.TrimSpace(out), &f) != nil {
-		return nil, rawOutput(cli.Fail("the mail claim step on %s reported no mail facts", target).Cont(
-			"the step was truncated, or the server's kasbah rejected it — raw output:"), out)
+	if err := remote.Decode(out, &f, []string{"stack", "env", "registry", "registry_b64", "dms", "snappymail"},
+		"the mail claim step", target); err != nil {
+		return nil, err
 	}
 	return &f, nil
 }
@@ -151,7 +139,7 @@ func (s *SSH) Fragment(local, dest string) error {
 func (s *SSH) Images(version string, images []string) (int, []string, error) {
 	out, err := s.Conn.Run(s.Bounded(append([]string{"deploy", "images", version}, images...)...)...)
 	if err != nil {
-		return 0, nil, cli.Fail("could not look for the %s images on %s (the remote step exited %d, see above)", version, s.target(), ssh.ExitCode(err))
+		return 0, nil, cli.Fail("could not look for the %s images on %s (%s, see above)", version, s.target(), serverbin.ExitText(ssh.ExitCode(err), serverbin.RunTimeout))
 	}
 	kv := lines(out)
 	c, ok := kv["checked"]
@@ -178,7 +166,7 @@ func FetchRecord(s *env.SSH, apps, name string) (*vlog.Record, error) {
 	path := apps + "/" + name + "/" + vlog.Log
 	out, err := s.Conn.Run(s.Bounded("vlog", apps, name)...)
 	if err != nil {
-		return nil, cli.Fail("could not read %s on %s (the remote step exited %d, see above)", path, s.Conn.Target.String(), ssh.ExitCode(err))
+		return nil, cli.Fail("could not read %s on %s (%s, see above)", path, s.Conn.Target.String(), serverbin.ExitText(ssh.ExitCode(err), serverbin.RunTimeout))
 	}
 	return vlog.ReadProbe(out, s.Conn.Target.String(), path)
 }

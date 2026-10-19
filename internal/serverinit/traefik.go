@@ -259,7 +259,8 @@ func confirmSwitch(out *cli.Output, p *prompt.Prompter, o Options, a Acme) (Acme
 		stay = "leave the endpoint as it is — no kasbah flag reproduces it"
 	}
 	out.Warn("no certificate in acme.json survives the switch: the store is archived beside")
-	out.Warn("itself, re-created empty, and re-issued from scratch on the next request.")
+	out.Warn("itself and emptied in place, and Traefik issues every certificate afresh as it")
+	out.Warn("loads the new configuration.")
 	ok, err := p.Confirm("yes", fmt.Sprintf("Switch %s to the Let's Encrypt %s CA and reset acme.json?", o.Target, to), o.Yes)
 	if err != nil {
 		return a, err

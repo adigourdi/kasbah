@@ -1,8 +1,8 @@
 # .env Template System
 
-Ported verbatim from the original project's `scripts/setup-env.sh`. It works well, has
-tests, and is the single biggest friction-reducer on a first deploy. The only
-change is packaging: kasbah owns the script, projects own the template.
+Descended from the original project's `scripts/setup-env.sh`, and the single biggest
+friction-reducer on a first deploy. Kasbah owns the engine (`internal/env`, run on
+the server as `kasbah remote setup-env`); projects own the template.
 
 ## Files
 
@@ -14,9 +14,8 @@ Per project:
 does not: the template reaches the server through the manifest's `sync:` list
 like any other project file, which is why the deploy path has a branch telling
 the operator to add it there. Either way the setup runs on the server when
-`.env` is missing or drifts from the template — `kasbah remote setup-env` in the
-kasbah binary for `kasbah env`, and the shipped `setup-env.sh` for `deploy` until
-deploy is Go (Phase 10, 10.7).
+`.env` is missing or drifts from the template — `kasbah remote setup-env`, in the
+kasbah binary, for both.
 
 ## Template conventions
 
@@ -87,9 +86,8 @@ the output `.env`.
 Run on every `kasbah deploy` by the env engine's drift report (`internal/env`,
 `kasbah remote setup-env drift` on the server), which works like this:
 
-```bash
-env_drift .env.prod.example .env   # sets ENV_DRIFT_MISSING / ENV_DRIFT_EXTRA
-```
+It reports two key lists: the keys the template has and `.env` lacks (missing),
+and the keys `.env` has and the template lacks (extra).
 
 A line counts as setting a key if Compose would read it as one: optional
 leading blanks and an optional `export ` prefix, which `docker compose config`
@@ -100,11 +98,7 @@ template wholesale. A reader that only matched column 0 would report a live
 `export APP_KEY=…` as *missing*, and the setup would then overwrite it with the
 template default.
 
-Both are space-separated key lists, empty when in sync. **`env_drift` always
-returns 0** and never signals through its exit status — a function that
-returned 1 for "drift found" would force every caller to write
-`env_drift … ||`, and that switches errexit off for the whole calling
-function body. Test the variables, never the call.
+Both lists are empty when in sync.
 
 Outcomes:
 - both empty → in sync, continue silently.
@@ -196,10 +190,11 @@ developer's laptop by design (`overview.md` → No CI).
 
 ## Testing
 
-The port keeps `test-setup-env.sh` from the original project. It builds fixtures,
-pipes stdin, and asserts the resulting `.env`. Runs in CI (or `./test.sh`).
+`internal/env`'s tests drive the engine with fixtures and piped answers and
+assert the resulting `.env`; `internal/env/testdata/frozen.json` pins 78 cases
+carried over from the original suite.
 
-Coverage (preserved from the original project):
+Coverage:
 - First run — accept defaults
 - First run — custom values
 - Update only — new var accepts default / custom value

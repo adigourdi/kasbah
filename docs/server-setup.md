@@ -13,8 +13,8 @@ assumes.
 | Docker ≥ 24 | `docker compose` v2 plugin required | Hard fail, link to docker docs |
 | Docker Compose v2 **or newer** | Manifest uses `include:` and modern syntax. The check is on the major version, not the string: a live host ran Compose **v5.2.0** and passed | Hard fail |
 | The SSH user can run `docker` without sudo | Avoids mixed sudo/non-sudo ownership in `/apps/data/` | Hard fail, suggest `usermod -aG docker` |
-| `rsync`, `openssl`, `gzip` available on remote | Used by deploy and env setup | Hard fail |
-| `bash` on the remote | The bootstrap probe and the `sudo` steps of `server init` and `server destroy` run on `bash -s` over the SSH master; everything else runs the kasbah binary there, shipped to `<apps>/.kasbah/bin/kasbah` | Hard fail |
+| `rsync` available on remote | The project's `sync:` files and the Traefik fragment are rsynced | Hard fail |
+| A POSIX shell (`sh`, and `bash` for init) on the remote | The bootstrap probe and the `sudo` steps of `server init` and `server destroy` run as shell scripts over the SSH master; everything else runs the kasbah binary there, shipped to `<apps>/.kasbah/bin/kasbah` | Hard fail |
 | A POSIX userland — `tr`, `cat`, `stat`, `nproc`, `date`, `find`, `sort`, `comm`, `readlink` | The remaining shell steps (the bootstrap probe and the `sudo` steps) assume these rather than check them, because a box without them cannot run `bash -s` usefully in the first place. The rule kasbah's remote shell follows is **coreutils and bash builtins, nothing separately packaged**; the deploy engine and the env setup are the kasbah binary and need none of it | Not checked; failure surfaces as the step's own error |
 | **`:80` and `:443` free, and reachable from the internet** | Traefik binds both, and ACME's HTTP-01 challenge is answered on `:80` from outside. **Not probed** — init does not look at what is listening or at any firewall, so a port already held, or a `ufw` rule, surfaces as Traefik failing to start or as a challenge that never validates | Not checked |
 | **DNS in place before the first certificate** — `traefik.<apex>`, plus every project domain | A challenge for a name that does not resolve to this host fails, and **failed challenges count against Let's Encrypt's rate limits**. Rehearse with `--acme-staging` until DNS is right. **Not probed** — kasbah never resolves a name for you | Not checked |
@@ -37,8 +37,8 @@ dashboard password is bcrypt-hashed locally so it never crosses the wire in
 clear, and the hashing runs in a throwaway `httpd:2-alpine` container unless
 `htpasswd` happens to be on `PATH` — it ships in `apache2-utils` /
 `httpd-tools`, which few workstations install. A machine with neither hashes
-nothing and init exits naming both ways out. `rsync`, `ssh`, `gzip`,
-`openssl` and `git` are the rest — the kasbah binary parses YAML and JSON
+nothing and init exits naming both ways out. `rsync`, `ssh` and `git` are the
+rest — the kasbah binary parses YAML and JSON
 itself. "Docker" here means the daemon **and the compose plugin** — `build-push`
 runs `docker compose -f compose.prod.yml build` locally, so a workstation with
 `docker` but no `compose` gets through init and fails at the first build.
@@ -120,9 +120,17 @@ The reset exists because Traefik files certificates by resolver rather than by
 endpoint: entries the old CA issued stay in `acme.json` and stay in service, so
 a switch that leaves them there serves a staging certificate to the public, or
 keeps a production one an operator believes they have moved off. Resetting
-means `acme.json` is renamed to `acme.json.<UTC timestamp>` (mode 600, kept —
-the certificates in it may be real), a fresh empty `acme.json` mode 600 takes
-its place, and Traefik restarts and re-issues.
+means — inside the Traefik restart, once the running Traefik has stopped —
+`acme.json` is copied to `acme.json.<UTC timestamp>` (mode 600, kept — the
+certificates in it may be real; the copy is compared with the store before
+anything is emptied) and emptied **in place**, and the new Traefik issues every
+certificate afresh as it loads its configuration. A reset that fails brings
+Traefik back on the store as it was, and init fails saying so — and, since a
+re-run sees `traefik.yml` already naming the new CA and would not redo it, prints
+the four commands that reset the store by hand. In
+place, because the mail server mounts `acme.json` as a single file: a rename
+would leave it on the archived copy, serving the old certificate and never
+seeing a renewal (found on the real host).
 
 **The question is about the store, not about the config.** Two facts decide it,
 and only their pairing — what `acme.json` holds, and whether anything records
@@ -639,11 +647,8 @@ is an ordinary state, not a fault.
 **All of it is one SSH round trip.** Each of those reads performed on its own is
 what turns `status` into several sessions; the rig's `maxstartups 10` is what
 that costs. The one value the far side has to work out for itself is the data
-path, since the certificate store and the data disk figure hang off it and there
-is no `jq` there to read the marker properly: the probe scrapes it out of the
-marker's bytes and reports the scrape, and the workstation compares it with what
-`jq` read out of the same bytes. A disagreement makes both of those reads
-unreportable rather than wrong.
+path, since the certificate store and the data disk figure hang off it: the
+server binary reads it out of the marker.
 
 ## Idempotency rules
 

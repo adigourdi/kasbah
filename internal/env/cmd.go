@@ -2,7 +2,6 @@ package env
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"strings"
 
@@ -116,18 +115,9 @@ func Run(c Ctx, o Options) error {
 		return err
 	}
 	statePath := state.File
-	target := o.Target
-	if target == "" {
-		stored, err := state.Get(statePath, "last_server")
-		if err != nil {
-			return err
-		}
-		if stored == "" || stored == "null" {
-			return cli.Fail("env: no server given, and this project has never deployed to one").Cont(
-				"pass it once — `kasbah env user@vps` — and it is remembered in",
-				state.File+" as last_server")
-		}
-		target = stored
+	target, _, err := state.Server(o.Target, "env", "kasbah env user@vps")
+	if err != nil {
+		return err
 	}
 	tmpl := ".env.prod.example"
 	if fi, err := os.Stat(tmpl); err != nil || !fi.Mode().IsRegular() {
@@ -175,16 +165,8 @@ type Step struct {
 	Color         bool
 }
 
-// exitText says how a server call ended, from ssh.ExitCode's status.
-func exitText(rc int) string {
-	switch rc {
-	case -1:
-		return "ssh could not run, or was killed by a signal"
-	case 124, 137:
-		return fmt.Sprintf("it did not finish within %d s", serverbin.RunTimeout)
-	}
-	return fmt.Sprintf("it exited %d", rc)
-}
+// exitText says how a bounded server call ended, from ssh.ExitCode's status.
+func exitText(rc int) string { return serverbin.ExitText(rc, serverbin.RunTimeout) }
 
 func (st *Step) probe(dir string) (State, error) {
 	out, rc := st.S.Drift(dir)

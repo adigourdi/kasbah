@@ -47,7 +47,7 @@ else
 fi
 eval "set -- $last"
 if [ "$1 $2" = "sh -s" ]; then
-    exec sh -s -- "$FAKE_APPS" "$FAKE_APPS/no-pointer" "$6" "$7"
+    exec sh -s -- "$FAKE_APPS" "$FAKE_APPS/no-pointer" "$6" "$7" "${8:-}"
 fi
 args=()
 for a; do case $a in /apps|/apps/*) a="$FAKE_APPS${a#/apps}" ;; esac; args+=("$a"); done

@@ -655,15 +655,27 @@ things share an implementation, not merely a rule.
 
 **Found:** a release stamp carries no build counter, so once a server holds
 1.0.0 a later 1.0.0 build with different code is "the same" and is not shipped.
-`main` goes to `1.0.1-dev` after the phase closes, so the counter applies
-between releases again.
+It bit at once: 10.16 changed `remote init start`'s arguments, and the 1.0.0 binary
+this run had already put on `vps` would have been kept. The release is therefore
+**1.0.1** (1.0.0 was never published); `main` goes to `1.0.2-dev` after the
+close, so the counter applies between releases again.
 
 ### 10.15 — Proof on `vps` (M)
 **Deliverables**
-- [ ] Bare `vps` (destroy, then reset containers as needed) → `server init` →
+- [x] Bare `vps` (destroy, then reset containers as needed) → `server init` →
       gallery-website deploy → change deploy → rollback → `server status`, Go
-      binary only; staging certificate rehearsal first
-- [ ] Timings and anything the rig hid, in Findings
+      binary only; staging certificate rehearsal first — 2026-10-19, the installed
+      1.0.0 only, on `vps` as 10.12's destroy left it (de-branded; containers and
+      `/apps` kept, so the `sudo mkdir` of a missing apps path was not exercised —
+      the sudo pointer write was). Init `--with-mail --acme-staging --yes` 17.3 s
+      (staging certificates for gallery/traefik/mail/webmail 13–18 s after the
+      restart), back to production 12.8 s (issued 18–20 s after it); build-push
+      14.6 s; deploy 3.5 s; change deploy (local tag v0.1.2) 9.8 s; rollback
+      10.6 s; `server status` and `check --server` clean (34 passed, 1 project
+      warning). Left on 0.1.1 with mail, production certificates to 2027-01-17
+- [x] Timings and anything the rig hid, in Findings — the rig cannot run ACME,
+      and the walk found the mail server kept serving the archived certificate
+      after a store reset (fixed in 10.16)
 
 **Verify on:** `vps`.
 
@@ -675,6 +687,33 @@ The gallery certificate expires 2026-11-20, so its renewal window opens around
 2026-10-21 — expect Traefik to renew during the phase. A UDP relay on
 the host is not kasbah's. DNS and open ports were unprobed preconditions in Phase 6.
 Leave `vps` as a kasbah server at the end — Phase 9 starts from it.
+
+### 10.16 — Close fixes (M)
+Inserted at the close (2026-10-19) for what the real-host walk and the phase
+group review found across units.
+
+**Deliverables**
+- [x] The ACME reset empties `acme.json` in place (archive by copy), so the mail
+      server's single-file mount follows resets and renewals; the switch warning
+      says Traefik issues at configuration load — a read-only directory mount was
+      rejected (DMS 15.1 writes under `/etc/letsencrypt`); the reset runs inside the
+      Traefik restart, between stop and start, so the old Traefik — which saves its
+      whole store in place — cannot refill it; the copy is compared before emptying
+- [x] Every state-changing remote step outlives a dropped session — the deploy
+      engine joins drop, destroy, the Traefik start and backup init
+      (`remote.Outlive`); the workstation says the server carries on — init and
+      mail steps, setup-env prepare/inject and prune `rm` too; read-only steps, the
+      interactive setup, the throwaway dry run and `load` are deliberately not
+- [x] `server init` no longer requires `openssl`/`gzip` on the server
+- [x] Every server-reaching command judges the marker before shipping the binary
+      (`serverbin.EnsurePrepared`)
+- [x] Parallel helpers converged (report decoding, bounded remote calls, exit
+      text, the default server, key=value parsing, `remote.Install` everywhere);
+      dead code removed — `build_push_test.sh` no longer skips without `yq`;
+      `pending VERSION` gained rig cases. `VERSION` → **1.0.1** (see 10.14's Found)
+
+**Verify on:** rig; `vps` already carries the mount fix's precondition (its mail
+server was restarted onto the live store during 10.15).
 
 ## Open decisions
 

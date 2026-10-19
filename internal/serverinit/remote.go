@@ -25,10 +25,15 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	usage := func() int {
-		return fail("usage: kasbah remote init read APPS | layout APPS DATA | write PATH SIZE SHA256 | acme-reset ACME STAMP | start APPS RESTART TIMEOUT | marker APPS SIZE SHA256")
+		return fail("usage: kasbah remote init read APPS | layout APPS DATA | write PATH SIZE SHA256 | acme-reset ACME STAMP | start APPS RESTART TIMEOUT [ACME STAMP] | marker APPS SIZE SHA256")
 	}
 	if len(args) == 0 {
 		return usage()
+	}
+	if args[0] != "read" {
+		w, done := remote.Outlive(stderr)
+		defer done()
+		stderr = w
 	}
 	var err error
 	switch {
@@ -39,13 +44,18 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case args[0] == "write" && len(args) == 4:
 		err = remoteWrite(args[1], args[2], args[3], stdin, stdout)
 	case args[0] == "acme-reset" && len(args) == 3:
+		// Kept for 1.0.0 workstations, which reset before `start`.
 		err = remoteAcmeReset(args[1], args[2], stdout)
-	case args[0] == "start" && len(args) == 4:
+	case args[0] == "start" && (len(args) == 4 || len(args) == 6):
 		t, perr := strconv.Atoi(args[3])
 		if perr != nil {
 			return usage()
 		}
-		err = remoteStart(args[1], args[2] == "yes", time.Duration(t)*time.Second, stdout, stderr)
+		var acme, stamp string
+		if len(args) == 6 {
+			acme, stamp = args[4], args[5]
+		}
+		err = remoteStart(args[1], args[2] == "yes", time.Duration(t)*time.Second, acme, stamp, stdout, stderr)
 	case args[0] == "marker" && len(args) == 4:
 		err = remoteMarker(args[1], args[2], args[3], stdin, stdout)
 	default:
@@ -152,8 +162,9 @@ func remoteWrite(path, size, sum string, stdin io.Reader, stdout io.Writer) erro
 	return nil
 }
 
-// remoteAcmeReset archives the store beside itself — never deletes it, the
-// certificates may be real — and leaves an empty one at mode 600.
+// remoteAcmeReset copies the store beside itself — never deletes it, the
+// certificates may be real — then empties it in place at mode 600: the same
+// inode, so DMS's file bind mount sees the reset and every later renewal.
 func remoteAcmeReset(acme, stamp string, stdout io.Writer) error {
 	exists, regular := isFile(acme)
 	if exists && !regular {
@@ -162,26 +173,64 @@ func remoteAcmeReset(acme, stamp string, stdout io.Writer) error {
 	archive := ""
 	if regular {
 		archive = acme + "." + stamp
-		if _, err := os.Lstat(archive); err == nil {
-			return fmt.Errorf("%s is already there — kasbah will not write over an archived certificate store", archive)
-		}
-		if err := os.Rename(acme, archive); err != nil {
-			return fmt.Errorf("could not archive %s as %s", acme, archive)
-		}
-		if err := os.Chmod(archive, 0o600); err != nil {
-			return fmt.Errorf("could not set mode 600 on %s", archive)
+		if err := archiveCopy(acme, archive); err != nil {
+			return err
 		}
 	}
 	fmt.Fprintf(stdout, "acme_archive=%s\n", archive)
 	f, err := os.OpenFile(acme, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
-		return fmt.Errorf("could not create %s", acme)
+		return fmt.Errorf("could not empty %s in place: %v", acme, err)
 	}
 	f.Close()
 	if err := os.Chmod(acme, 0o600); err != nil {
 		return fmt.Errorf("could not set mode 600 on %s", acme)
 	}
 	fmt.Fprintln(stdout, "acme_reset=done")
+	return nil
+}
+
+// archiveCopy writes src's bytes to a new dst at mode 600, synced, and proves
+// the copy is all of src; one that is not is removed and src left as it was.
+func archiveCopy(src, dst string) error {
+	if _, err := os.Lstat(dst); err == nil {
+		return fmt.Errorf("%s is already there — kasbah will not write over an archived certificate store", dst)
+	}
+	fail := fmt.Errorf("could not archive %s as %s", src, dst)
+	in, err := os.Open(src)
+	if err != nil {
+		return fail
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fail
+	}
+	n, cerr := io.Copy(out, in)
+	if fi, err := in.Stat(); cerr == nil && (err != nil || fi.Size() != n) {
+		cerr = fmt.Errorf("the source changed size during the copy")
+	}
+	if serr := out.Sync(); cerr == nil {
+		cerr = serr
+	}
+	if xerr := out.Close(); cerr == nil {
+		cerr = xerr
+	}
+	if cerr == nil {
+		cerr = os.Chmod(dst, 0o600)
+	}
+	// Read back whole and compared: the store need not be JSON to be reset.
+	if cerr == nil {
+		got, err1 := os.ReadFile(dst)
+		want, err2 := os.ReadFile(src)
+		if err1 != nil || err2 != nil || !bytes.Equal(got, want) {
+			cerr = fmt.Errorf("the archived copy does not read back as the store")
+		}
+	}
+	if cerr != nil {
+		os.Remove(dst)
+		return fmt.Errorf("%v (%v) — acme.json was not emptied", fail, cerr)
+	}
 	return nil
 }
 
@@ -227,10 +276,10 @@ func inspect(id, format string) (string, error) {
 	return strings.TrimRight(string(out), "\n"), err
 }
 
-// remoteStart is `compose up -d`, a restart only when the static config
-// changed and up did not just (re)create the container, then the health wait.
-// Always -p: COMPOSE_PROJECT_NAME in a login shell outranks `name:`.
-func remoteStart(apps string, restart bool, timeout time.Duration, stdout, stderr io.Writer) error {
+// remoteStart is `compose -p traefik up -d` (a restart only when the static config
+// changed and up did not), then the health wait. A reset runs between a stop and
+// the up: a running Traefik would save its in-memory store back into the file.
+func remoteStart(apps string, restart bool, timeout time.Duration, acme, stamp string, stdout, stderr io.Writer) error {
 	dir := apps + "/traefik"
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return fmt.Errorf("could not enter %s", dir)
@@ -251,7 +300,24 @@ func remoteStart(apps string, restart bool, timeout time.Duration, stdout, stder
 	if id := cid(); id != "" {
 		before = startedAt(id)
 	}
-	if err := dc("up", "-d"); err != nil {
+	var resetErr error
+	if acme != "" {
+		if err := dc("stop", "traefik"); err != nil {
+			resetErr = fmt.Errorf("docker compose -p %s stop traefik failed, so acme.json was not reset", project)
+		} else {
+			resetErr = remoteAcmeReset(acme, stamp, stdout)
+		}
+	}
+	// Up whatever the reset did: Traefik is never left down.
+	upErr := dc("up", "-d")
+	if resetErr != nil {
+		state := "Traefik is up on the store as it was"
+		if upErr != nil {
+			state = "and starting Traefik again failed too — see docker's error above"
+		}
+		return resetByHand(resetErr, state, dir, acme, stamp)
+	}
+	if upErr != nil {
 		return fmt.Errorf("docker compose -p %s up -d failed in %s", project, dir)
 	}
 	id := cid()
@@ -306,6 +372,18 @@ func remoteStart(apps string, restart bool, timeout time.Duration, stdout, stder
 	fmt.Fprintf(stdout, "traefik_action=%s\ntraefik_health=%s\ntraefik_started_at=%s\ntraefik_image=%s\ntraefik_container=%s\n",
 		action, health, after, image, strings.TrimPrefix(name, "/"))
 	return nil
+}
+
+// resetByHand is a failed reset's refusal: traefik.yml already names the new CA,
+// so a re-run of init sees nothing to switch, and the reset is done by hand.
+func resetByHand(err error, state, dir, acme, stamp string) error {
+	return fmt.Errorf("%v; %s.\n"+
+		"A re-run of init will not redo the reset: traefik.yml already names the new CA.\n"+
+		"Reset the store by hand (: > keeps the inode DMS's mount follows):\n"+
+		"  cd %s && docker compose -p traefik stop traefik\n"+
+		"  cp -p %s %s.%s\n"+
+		"  : > %s\n"+
+		"  docker compose -p traefik up -d", err, state, dir, acme, acme, stamp, acme)
 }
 
 // errSaid is a failure already explained on stderr.

@@ -117,7 +117,7 @@ func TestLogs(t *testing.T) {
 	project(t)
 	f := &fake{}
 	se, code := run(t, f, Ctx{}, "logs")
-	if code != 1 || !strings.Contains(se, "no server given, and this project has never deployed to one") {
+	if code != 1 || !strings.Contains(se, "no server given, and this project has never talked to one") {
 		t.Fatalf("no server: %d %s", code, se)
 	}
 	_, code = run(t, f, Ctx{}, "logs", "deploy@vps")

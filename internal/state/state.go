@@ -139,3 +139,22 @@ func Record(path, version string, kv ...string) error {
 	}
 	return nil
 }
+
+// Server is the server a command talks to: given when set, else the project's
+// last_server (stored says so). example spells the command with a server, for
+// the refusal when there is neither; more lines follow it.
+func Server(given, cmd, example string, more ...string) (target string, stored bool, err error) {
+	if given != "" {
+		return given, false, nil
+	}
+	last, err := Get(File, "last_server")
+	if err != nil {
+		return "", false, err
+	}
+	if last == "" || last == "null" {
+		return "", false, cli.Fail("%s: no server given, and this project has never talked to one", cmd).Cont(
+			"pass it once — `"+example+"` — and it is remembered in",
+			File+" as last_server").Cont(more...)
+	}
+	return last, true, nil
+}

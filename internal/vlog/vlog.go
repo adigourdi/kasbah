@@ -122,8 +122,7 @@ func Append(dir, line string) (repaired bool, err error) {
 	return repaired, nil
 }
 
-// LastLine is the log's last non-empty line, CR stripped; "" when the file is
-// absent or holds none.
+// LastLine is Last of the log under dir; "" when the file is absent.
 func LastLine(dir string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(dir, Log))
 	if errors.Is(err, os.ErrNotExist) {
@@ -132,13 +131,18 @@ func LastLine(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return Last(data), nil
+}
+
+// Last is a log's last line that is not blank, CR stripped; "" when it holds none.
+func Last(data []byte) string {
 	last := ""
 	for _, l := range strings.Split(string(data), "\n") {
-		if l = strings.TrimSuffix(l, "\r"); l != "" {
+		if l = strings.TrimSuffix(l, "\r"); strings.Trim(l, " \t\n\v\f\r") != "" {
 			last = l
 		}
 	}
-	return last, nil
+	return last
 }
 
 // MonthIndex is year*12+month for a timestamp beginning YYYY-MM-. Rotation's

@@ -430,6 +430,7 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		emit(d)
 		return 0
 	case len(args) == 5 && args[0] == "backup":
+		signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
 		dest, err := backup(args[1], args[2], args[3], args[4])
 		if err != nil {
 			return fail("%v", err)
@@ -444,10 +445,10 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if fi, err := os.Stat(args[1] + "/traefik"); err != nil || !fi.IsDir() {
 			return fail("could not enter %s/traefik", args[1])
 		}
-		// The rollback must outlive the session: a hangup, or a write into
-		// the pipe ssh left behind, is not a reason to stop half-switched.
-		signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
-		u := start(args[1], args[2], args[3], time.Duration(t)*time.Second, stderr)
+		// The rollback must outlive the session.
+		w, done := remote.Outlive(stderr)
+		defer done()
+		u := start(args[1], args[2], args[3], time.Duration(t)*time.Second, w)
 		emit(u)
 		if u.RolledBack != "no" {
 			return 3

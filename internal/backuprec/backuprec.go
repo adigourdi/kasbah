@@ -44,15 +44,6 @@ type Record struct {
 	Clock string
 }
 
-// Judged is whether the verdict is one of the four read off a record.
-func (r *Record) Judged() bool {
-	switch r.Verdict {
-	case Never, Failed, Overdue, OK:
-		return true
-	}
-	return false
-}
-
 // Epoch admits a unix time arithmetic can be done on: digits, no leading zero
 // (`0` itself excepted), at most eighteen of them.
 func Epoch(v string) (int64, bool) {

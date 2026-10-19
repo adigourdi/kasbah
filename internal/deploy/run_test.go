@@ -191,6 +191,34 @@ func TestRunFailuresLeaveNoState(t *testing.T) {
 	}
 }
 
+func TestRunInterruptedLeavesTheServerToFinish(t *testing.T) {
+	project(t, "")
+	none := "hook chatter\n"
+	f := &fake{rc: 255, out: &none}
+	var errb bytes.Buffer
+	out := &cli.Output{Stdout: &errb, Stderr: &errb}
+	pwd, _ := os.Getwd()
+	err := Run(Ctx{
+		Out: out, Prompter: &prompt.Prompter{In: strings.NewReader(""), Out: out},
+		PWD: pwd, Version: "0.1.0",
+		Dial:        func(string) (Server, error) { return f, nil },
+		Now:         func() time.Time { return time.Unix(0, 0) },
+		Interrupted: func() int { return 130 },
+	}, Options{Target: "d@h"})
+	var ce *cli.Error
+	if !errors.As(err, &ce) || ce.Code != 130 {
+		t.Fatalf("not an interrupt: %#v", err)
+	}
+	out.Report(err)
+	if s := errb.String(); !strings.Contains(s, "the server carries on") || !strings.Contains(s, "kasbah history d@h") {
+		t.Errorf("%s", s)
+	}
+	if f.called("fragment") {
+		t.Error("the fragment was shipped")
+	}
+	noState(t, "interrupted")
+}
+
 func TestRunSuccess(t *testing.T) {
 	project(t, "client: acme\n")
 	os.Remove(Fragment)
@@ -291,7 +319,7 @@ func TestProtocolParsers(t *testing.T) {
 		t.Errorf("parseMailFacts = %+v %v", f, err)
 	}
 	for _, bad := range []string{"", "mail_stack=yes", `{"stack":true,"dms":"running"}`, `{"stack":"yes","env":false,"registry_b64":"","dms":"x","snappymail":"x","registry":false}`} {
-		if _, err := parseMailFacts([]byte(bad), "d@h"); err == nil || !strings.Contains(err.Error(), "reported no mail facts") {
+		if _, err := parseMailFacts([]byte(bad), "d@h"); err == nil || !strings.Contains(err.Error(), "the mail claim step on d@h reported no ") {
 			t.Errorf("parseMailFacts(%q) = %v", bad, err)
 		}
 	}

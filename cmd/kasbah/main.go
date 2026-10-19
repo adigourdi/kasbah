@@ -98,8 +98,9 @@ func main() {
 				os.Exit(vlog.Remote(args[2:], os.Stdout, os.Stderr))
 			}
 			if len(args) > 1 && args[1] == "deploy" {
-				// The lock is the kernel's and goes with the process; the
-				// handlers run a backup's partial-file cleanup.
+				// run, prepare and seed outlive a dropped session (SIGHUP and
+				// SIGPIPE ignored, remote.Outlive); SIGINT and SIGTERM still
+				// remove a partial backup. The lock goes with the process.
 				atexit.HandleSignals()
 				atexit.Exit(deploy.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
 			}
@@ -194,6 +195,8 @@ func remoteCmd(args []string) int {
 		fmt.Fprintln(out.Stdout, remote.Self(build).Line())
 		return cli.ExitOK
 	}
+	// Kept for 1.0.0 workstations, which read the marker this way and are
+	// served by a newer server binary kept under newer-wins.
 	if len(args) == 2 && args[0] == "marker" {
 		body, err := marker.ReadLocal(args[1])
 		if err != nil {

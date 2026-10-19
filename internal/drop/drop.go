@@ -538,17 +538,8 @@ func Run(c Ctx, o Options) error {
 		return err
 	}
 	p := &Plan{Name: m.Name, Prune: o.Prune, MailDomain: md, NeedsAllowStopped: needsAllowStopped(m), Target: o.Target}
-	if p.Target == "" {
-		stored, err := state.Get(state.File, "last_server")
-		if err != nil {
-			return err
-		}
-		if stored == "" || stored == "null" {
-			return cli.Fail("drop: no server given, and this project has never deployed to one").Cont(
-				"pass it once — `kasbah drop user@vps` — and it is remembered in",
-				state.File+" as last_server")
-		}
-		p.Target, p.FromState = stored, true
+	if p.Target, p.FromState, err = state.Server(o.Target, "drop", "kasbah drop user@vps"); err != nil {
+		return err
 	}
 	record := func() error { return state.Record(state.File, c.Version, "last_server", p.Target) }
 

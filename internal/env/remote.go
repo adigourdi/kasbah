@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/term"
 )
 
@@ -23,6 +24,12 @@ func Remote(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	mode, dir := args[0], strings.TrimSuffix(args[1], "/")
 	if dir == "" {
 		dir = "/"
+	}
+	// setup is interactive: a hangup abandons it, its staging removed.
+	if mode == "prepare" || mode == "inject" {
+		w, done := remote.Outlive(stderr)
+		defer done()
+		stderr = w
 	}
 	switch {
 	case mode == "prepare" && len(args) == 2:

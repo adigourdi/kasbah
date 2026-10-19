@@ -136,8 +136,8 @@ What it does:
    server stays silent. A store with content takes one of two paths:
    - **The recorded CA differs from this run's.** Init asks once, archives the
      store to a timestamped sibling — never deletes it, since a production
-     `acme.json` is real certificates — recreates an empty one at mode 600, and
-     lets the restart below re-issue. Declining aborts with nothing created
+     `acme.json` is real certificates — empties it in place (mode 600), and lets
+     the restart below re-issue. Declining aborts with nothing created
      or restarted — on a re-run the kasbah binary may already have been brought
      up to date (`--yes` to confirm without asking).
    - **Nothing records which CA issued it** — a server that predates
@@ -491,20 +491,16 @@ pointer).
 
 **The project's domain was the one open decision, and it is settled.** It lives
 in `<apps>/traefik/dynamic/<name>.yml`, so printing it costs either a YAML parse
-on a server where `yq` is not a prerequisite or a Traefik API call with the
-dashboard credentials. kasbah **fetches the fragment base64 in the same round
-trip and parses it on the workstation**. The credentials route would
+or a Traefik API call with the dashboard credentials. kasbah **fetches the
+fragment in the same round trip and parses it on the workstation**. The credentials route would
 yield certificates and router health in one call, but `status` holds only the
 bcrypt hash from `_shared.yml` — never the password — so it would need a new
 flag or prompt plus reachability to `traefik.<apex>`. The VPS has no `yq`, `jq`
 or `python3` and keeps needing none.
 
-One value does cross that line and is checked rather than trusted: the **data
-path**, which the certificate store and the data disk figure both hang off. The
-probe scrapes it out of the marker's bytes without a JSON parser, and the
-workstation compares the scrape with what `jq` read out of the same bytes. They
-disagree only on a marker kasbah did not write; when they do, both reads are
-reported as unread rather than as facts about some other tree.
+One value the server has to work out for itself is the **data path**, which the
+certificate store and the data disk figure both hang off: the server binary reads
+it out of the server's marker.
 
 ## Project commands
 
@@ -895,7 +891,7 @@ binary is needed on the server.
 Given without a `USER@HOST` it asks the server this project last talked to, and
 `last_server` is recorded by a run that **acts** — the nothing-to-do path and a
 completed act — not by one that reaches the server and then declines, meets a
-held lock, finds no `flock`, or has `--prune` refused
+held lock, or has `--prune` refused
 (`project-manifest.md`).
 
 Exits 4 on a host with no server marker; 1 on a decline, a held lock, or a
@@ -1126,6 +1122,9 @@ Referenced elsewhere in the docs but not yet built:
   code rather than several, because the operator's next move is the same in
   every case: run `kasbah env` from a terminal, or pass `--on-drift=`.
 - `6` compliance check failed
+- `128+N` kasbah was stopped by signal N — `130` for Ctrl-C, `143` for
+  `SIGTERM`, `129` for `SIGHUP`. Its own temp files and ssh connection are
+  cleaned up first; a step already running on the server finishes there.
 
 `kasbah exec` departs from this list furthest: it exits with **the status of
 the command it was asked to run**, whatever that is, because a wrapper that

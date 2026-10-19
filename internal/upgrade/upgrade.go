@@ -270,33 +270,6 @@ func Run(c Ctx, o Options) error {
 	return nil
 }
 
-// decodeReport checks a step's JSON report for every key before any value is
-// used; a redacted key's value is never echoed back.
-func decodeReport(what, target string, out []byte, into any, keys []string, secret ...string) error {
-	out = bytes.TrimSpace(bytes.ReplaceAll(out, []byte("\r"), nil))
-	var m map[string]json.RawMessage
-	bad := json.Unmarshal(out, &m) != nil
-	var missing []string
-	for _, k := range keys {
-		if m[k] == nil {
-			missing = append(missing, k)
-		}
-	}
-	if !bad && len(missing) == 0 && json.Unmarshal(out, into) == nil {
-		return nil
-	}
-	if len(missing) == 0 {
-		missing = keys
-	}
-	e := cli.Fail("%s on %s reported no %s", what, target, strings.Join(missing, " ")).Cont(
-		"the step was truncated, or the server's kasbah rejected it — raw output:")
-	shown := string(out)
-	if len(secret) > 0 || len(shown) > 120 {
-		shown = fmt.Sprintf("<%d bytes, not shown>", len(out))
-	}
-	return e.Cont("| " + shown)
-}
-
 func (x *run) noStack(rel string) error {
 	return cli.Fail("%s/traefik/%s is missing or unreadable on %s", x.apps, rel, x.o.Target).Cont(
 		"upgrade-traefik re-renders the three kasbah-owned files and needs the ones",
@@ -310,9 +283,9 @@ func (x *run) readStack() error {
 	if rc != 0 {
 		return cli.Fail("could not read the Traefik stack on %s (the remote step exited %d, see above)", x.o.Target, rc)
 	}
-	if err := decodeReport("the Traefik stack read", x.o.Target, out, &x.stack,
+	if err := remote.DecodeHidden(out, &x.stack,
 		[]string{"compose_b64", "static_b64", "shared_b64", "fragments", "acme_state", "acme_digest", "docker",
-			"traefik_state", "traefik_health", "traefik_running_image"}, "shared_b64"); err != nil {
+			"traefik_state", "traefik_health", "traefik_running_image"}, "the Traefik stack read", x.o.Target); err != nil {
 		return err
 	}
 	if !x.stack.Docker {
@@ -460,8 +433,8 @@ func (x *run) dryRun() error {
 		return cli.Fail("the dry run of %s on %s could not be carried out (the remote step exited %d, see above) — nothing was changed", x.imageNew, t, rc)
 	}
 	var d Dry
-	if err := decodeReport("the dry run", t, out, &d,
-		[]string{"dry_swept", "dry_verdict", "dry_exitcode", "dry_errors", "dry_warns", "dry_routers", "dry_log"}); err != nil {
+	if err := remote.Decode(out, &d,
+		[]string{"dry_swept", "dry_verdict", "dry_exitcode", "dry_errors", "dry_warns", "dry_routers", "dry_log"}, "the dry run", t); err != nil {
 		return err
 	}
 	if d.Swept != 0 {
@@ -562,7 +535,7 @@ func (x *run) backup() error {
 	var b struct {
 		Dir string `json:"backup_dir"`
 	}
-	if err := decodeReport("the backup", x.o.Target, out, &b, []string{"backup_dir"}); err != nil {
+	if err := remote.Decode(out, &b, []string{"backup_dir"}, "the backup", x.o.Target); err != nil {
 		return err
 	}
 	x.backupDir = b.Dir
@@ -619,8 +592,8 @@ func (x *run) start() (Up, error) {
 			"  cp -p "+x.backupDir+"/_shared.yml "+x.apps+"/traefik/dynamic/_shared.yml",
 			"  cd "+x.apps+"/traefik && docker compose -p "+Project+" up -d")
 	}
-	if err := decodeReport("the Traefik start", t, out, &up,
-		[]string{"up_rolled_back", "up_health", "up_state", "up_image", "up_started_at", "up_acme_digest"}); err != nil {
+	if err := remote.Decode(out, &up,
+		[]string{"up_rolled_back", "up_health", "up_state", "up_image", "up_started_at", "up_acme_digest"}, "the Traefik start", t); err != nil {
 		return up, err
 	}
 	switch up.RolledBack {

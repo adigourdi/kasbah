@@ -119,7 +119,7 @@ func Build(f Fields, existing *jv.Map, backup *Backup) (*jv.Map, error) {
 }
 
 // ReadLocal is the marker under apps on this machine, as `kasbah remote
-// marker` prints it to a workstation.
+// marker` prints it — kept for 1.0.0 workstations; later ones read the probe's copy.
 func ReadLocal(apps string) ([]byte, error) {
 	p := Path(apps)
 	fi, err := os.Stat(p)

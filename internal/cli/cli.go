@@ -29,8 +29,6 @@ const (
 	ExitEnvSetup = 5
 	// ExitComplianceFail: `kasbah check` recorded a failure.
 	ExitComplianceFail = 6
-	// ExitInterrupted: the run was interrupted (SIGINT).
-	ExitInterrupted = 130
 )
 
 // contIndent aligns a continuation line under the text of an `error: ` line.

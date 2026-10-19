@@ -377,11 +377,9 @@ never fails the run — the deploy is already recorded, and a log compaction
 must not cost the project its Traefik route.
 
 **On the workstation, nothing about the archive is ever fatal.** It cannot
-be decoded, cannot be read, is not gzip, ends in a truncated member, or the
-workstation has no `gzip` at all: each is a warning naming which, and the
-active log — which is authoritative for what is deployed — is read either
-way. The prerequisite table in `server-setup.md` covers the *server*; a
-workstation missing `gzip` loses the archived history and no more. The
+be decoded, cannot be read, is not gzip, or ends in a truncated member: each
+is a warning naming which, and the active log — which is authoritative for what
+is deployed — is read either way. The
 asymmetry is deliberate: an unreadable **active** log stops the run, because
 no command can answer honestly without it.
 
@@ -547,6 +545,17 @@ The engine has two modes:
   dry-run-ish deploy must not also discard the data safety net),
   `--no-health-wait`, and `--allow-stopped`.
 
+### A dropped session
+
+The engine ignores `SIGHUP` and `SIGPIPE` and keeps draining its own output, so a
+session that drops — a closed laptop, Ctrl-C at the workstation — never leaves a
+deploy or rollback half-done: it runs to its `versions.log` line on the server.
+The workstation says it was interrupted, that the server carries on, and to look
+at `kasbah history USER@HOST`; the Traefik fragment, which ships only after a
+report, has not moved, so the next deploy ships it. A `SIGTERM` sent to kasbah
+alone, with the session still up, waits for the run instead: a run that then
+succeeds ships the fragment and exits 0 like any other.
+
 ### The remote report
 
 The engine writes nothing to stdout for a human. Its progress, its warnings
@@ -624,8 +633,8 @@ attempted.
 
 The manifest never reaches the server: the engine receives its data on stdin.
 `.deploy.lock` is kasbah's — created, never shipped, its contents never read —
-and the engine `flock(2)`s it, as `kasbah drop` does through util-linux
-`flock`, so the two exclude each other (every file kasbah writes in a project
+and the engine `flock(2)`s it, as `kasbah drop` does, so the two exclude each
+other (every file kasbah writes in a project
 directory is listed in `files.md`).
 
 ## What this intentionally skips

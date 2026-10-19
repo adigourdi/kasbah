@@ -115,16 +115,7 @@ type Ctx struct {
 }
 
 // Facts is a step's key=value report, \r stripped.
-func Facts(out string) map[string]string {
-	f := map[string]string{}
-	for _, l := range strings.Split(out, "\n") {
-		l = strings.TrimSuffix(l, "\r")
-		if k, v, ok := strings.Cut(l, "="); ok {
-			f[k] = v
-		}
-	}
-	return f
-}
+func Facts(out string) map[string]string { return remote.KV([]byte(out)) }
 
 // Read is the shared read, one round trip, nothing written.
 func Read(s Session, target, apps, data string) (*ReadReport, error) {

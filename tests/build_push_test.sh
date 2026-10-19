@@ -84,7 +84,7 @@ eval "set -- $last"
 if [ "$1 $2" = "sh -s" ]; then
     # The bootstrap probe: answered from the scratch tree, with no pointer.
     [ -n "${FAKE_NO_MARKER:-}" ] && rm -f "$FAKE_APPS/.kasbah/server.json"
-    exec sh -s -- "$FAKE_APPS" "$FAKE_APPS/no-pointer" "$6" "$7"
+    exec sh -s -- "$FAKE_APPS" "$FAKE_APPS/no-pointer" "$6" "$7" "${8:-}"
 fi
 if [ "${2:-} ${3:-}" = "remote load" ]; then
     if [ -n "${SSH_LOAD_OUT+set}" ]; then
@@ -129,7 +129,8 @@ reset_logs() {
     rm -f "$LOADED"
     rm -rf "$scratch"
     mkdir -p "$scratch"
-    printf '{"kasbah_version":"0.1.0","apps_path":"%s"}\n' "$FAKE_APPS" > "$FAKE_APPS/.kasbah/server.json"
+    printf '{"kasbah_version":"0.1.0","apps_path":"%s","data_path":"%s/data","cpu_limit":"1","mem_limit":"1g"}\n' \
+        "$FAKE_APPS" "$FAKE_APPS" > "$FAKE_APPS/.kasbah/server.json"
 }
 
 # TMPDIR is the suite's own, so "did it leave anything behind" is a question
@@ -165,8 +166,8 @@ make() {
     printf '%s' "$dir"
 }
 
-if ! command -v git >/dev/null || ! command -v yq >/dev/null || ! command -v jq >/dev/null; then
-    echo "error: this suite needs git, yq and jq on PATH" >&2
+if ! command -v git >/dev/null || ! command -v jq >/dev/null; then
+    echo "error: this suite needs git and jq on PATH" >&2
     exit 2
 fi
 
@@ -559,7 +560,7 @@ assert 'grep -qF "compose.prod.yml: not found" <<<"$err"' \
 projdir="$(make noserver built-app v1.4.2)"
 run; rc=$?
 assert '[ "$rc" = "1" ]' "a project that has never shipped and names no server fails (exit $rc)"
-assert 'grep -qF "never shipped" <<<"$err"' "saying so (said '$err')"
+assert 'grep -qF "never talked to one" <<<"$err"' "saying so (said '$err')"
 assert 'grep -qF -- "--build-only" <<<"$err"' \
     "and naming the mode that needs no server (said '$err')"
 assert '[ ! -s "$DOCKER_LOG" ]' \

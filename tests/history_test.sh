@@ -95,7 +95,7 @@ if [ "$last" = true ]; then
 fi
 eval "set -- $last"
 if [ "$1 $2" = "sh -s" ]; then
-    exec sh -s -- "$FAKE_APPS" "$FAKE_APPS/no-pointer" "$6" "$7"
+    exec sh -s -- "$FAKE_APPS" "$FAKE_APPS/no-pointer" "$6" "$7" "${8:-}"
 fi
 args=()
 for a; do [ "$a" = /apps ] && a="$FAKE_APPS"; args+=("$a"); done
@@ -660,9 +660,9 @@ assert '[ "$(state_of last_server)" = "deploy@vps" ]' \
 assert '[ "$(state_of last_version)" = "" ]' \
     "and touches nothing else — reading a record deploys nothing (state: $(cat "$project/.kasbah/state.json" 2>/dev/null | tr -d '\n'))"
 
-# Read-only: the bootstrap probe, the marker, the record — and nothing that
-# writes, ships or runs a deploy step.
-assert '[ "$(grep -c "vlog" <<<"$calls")" = "1" ] && [ "$(grep -c "marker" <<<"$calls")" = "1" ]' \
+# Read-only: the bootstrap probe (which brings the marker back), the record —
+# and nothing that writes, ships or runs a deploy step.
+assert '[ "$(grep -c "vlog" <<<"$calls")" = "1" ] && [ "$(grep -cF "'"'"'sh'"'"' '"'"'-s'"'"'" <<<"$calls")" = "1" ]' \
     "history reads the marker and the record once each (calls: $calls)"
 assert '! grep -qE "'"'"'(setup-env|deploy|load|install-self)'"'"'|mkdir|rm |touch|tee|> " <<<"$calls"' \
     "and none of its calls writes to the server (calls: $calls)"
@@ -707,7 +707,7 @@ assert '[ "$CRC" = "3" ]' "and so does changelog (rc $CRC: $CERR)"
 rm -rf "$project/.kasbah"
 kasbah pending
 assert '[ "$CRC" != "0" ]' "pending with no server and no memory of one stops (rc $CRC)"
-assert 'grep -qF "never deployed to one" <<<"$CERR"' "saying to pass it once (got '$CERR')"
+assert 'grep -qF "never talked to one" <<<"$CERR"' "saying to pass it once (got '$CERR')"
 assert '[ ! -f "$project/.kasbah/state.json" ]' "and writes no state file"
 
 # --all belongs to history alone, and the archive really does arrive only with it.

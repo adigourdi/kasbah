@@ -13,6 +13,16 @@ import (
 // first: a truncated step must not be absorbed into a plan that ends in a
 // deletion. step names it in the refusal ("the drop probe").
 func Decode(out []byte, v any, keys []string, step, target string) error {
+	return decode(out, v, keys, step, target, true)
+}
+
+// DecodeHidden is Decode for a report that may carry secrets: a bad one is
+// described by its size, never shown.
+func DecodeHidden(out []byte, v any, keys []string, step, target string) error {
+	return decode(out, v, keys, step, target, false)
+}
+
+func decode(out []byte, v any, keys []string, step, target string, show bool) error {
 	out = bytes.TrimSpace(bytes.ReplaceAll(out, []byte("\r"), nil))
 	var m map[string]json.RawMessage
 	bad := json.Unmarshal(out, &m) != nil
@@ -31,6 +41,9 @@ func Decode(out []byte, v any, keys []string, step, target string) error {
 	}
 	e := cli.Fail("%s on %s reported no %s", step, target, what).Cont(
 		"the step was truncated, or the server's kasbah rejected it — raw output:")
+	if !show {
+		return e.Cont(fmt.Sprintf("| <%d bytes, not shown>", len(out)))
+	}
 	for i, l := range strings.Split(string(out), "\n") {
 		if i == 20 {
 			e.Cont("| … and more, not shown")
@@ -42,4 +55,16 @@ func Decode(out []byte, v any, keys []string, step, target string) error {
 		e.Cont("| " + l)
 	}
 	return e
+}
+
+// KV reads a step's key=value lines, a trailing CR stripped; a line without
+// `=` is not a fact, and a later key wins.
+func KV(out []byte) map[string]string {
+	m := map[string]string{}
+	for _, l := range strings.Split(string(out), "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSuffix(l, "\r"), "="); ok {
+			m[k] = v
+		}
+	}
+	return m
 }

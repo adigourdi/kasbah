@@ -11,6 +11,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/probe"
+	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
 // Stack is one container of a compose stack: State is absent, nodocker,
@@ -333,13 +334,7 @@ func projects(apps string, docker bool) []Project {
 				p.LogState = "unreadable"
 				break
 			}
-			for _, l := range strings.Split(string(b), "\n") {
-				l = strings.TrimSuffix(l, "\r")
-				if strings.Trim(l, " \t\n\v\f\r") != "" {
-					p.Log = l
-				}
-			}
-			if p.Log != "" {
+			if p.Log = vlog.Last(b); p.Log != "" {
 				p.LogState = "ok"
 			} else {
 				p.LogState = "empty"

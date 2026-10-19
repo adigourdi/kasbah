@@ -7,9 +7,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/manifest"
@@ -159,6 +161,8 @@ func Remote(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s\n", b)
 		return 0
 	case len(args) >= 2 && args[0] == "rm":
+		// A dropped session does not stop the removals half way.
+		signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
 		enc := json.NewEncoder(stdout)
 		for _, ref := range args[1:] {
 			if _, err := runDocker("image", "rm", ref); err != nil {
