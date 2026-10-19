@@ -2,58 +2,54 @@ package env
 
 import (
 	"bytes"
+	"encoding/json"
+	"flag"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 )
 
-// The shared case table: every case runs against this engine and against
-// lib/env.sh (Bash deploy's scripts/setup-env.sh until 10.7): exit status,
-// .env bytes and stdout must agree.
+// The case table lib/env.sh and this engine were held equal on until the
+// Bash tool retired (10.12); its outputs are frozen in testdata/frozen.json.
+// -update rewrites the file from this engine.
 
-func envSh(t *testing.T) string {
+var update = flag.Bool("update", false, "rewrite testdata/frozen.json")
+
+func frozen(t *testing.T, got map[string]string) {
 	t.Helper()
-	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("bash is not installed")
+	p := filepath.Join("testdata", "frozen.json")
+	if *update {
+		old := map[string]string{}
+		if b, err := os.ReadFile(p); err == nil {
+			json.Unmarshal(b, &old)
+		}
+		for k, v := range got {
+			old[k] = v
+		}
+		b, _ := json.MarshalIndent(old, "", "  ")
+		os.MkdirAll("testdata", 0o755)
+		if err := os.WriteFile(p, append(b, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
 	}
-	p, err := filepath.Abs("../../lib/env.sh")
+	b, err := os.ReadFile(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(p); err != nil {
-		t.Skip("lib/env.sh is gone")
-	}
-	return p
-}
-
-// bashEnv runs lib/env.sh as the VPS runs it, under C.UTF-8 (R1).
-func bashEnv(t *testing.T, stdin string, args ...string) (stdout string, rc int) {
-	t.Helper()
-	cmd := exec.Command("bash", append([]string{envSh(t)}, args...)...)
-	cmd.Env = append(os.Environ(), "LC_ALL=C.UTF-8", "NO_COLOR=1")
-	f, err := os.Open(stdin)
-	if err != nil {
+	want := map[string]string{}
+	if err := json.Unmarshal(b, &want); err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
-	var out bytes.Buffer
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = f, &out, &bytes.Buffer{}
-	err = cmd.Run()
-	if ee, ok := err.(*exec.ExitError); ok {
-		return out.String(), ee.ExitCode()
-	} else if err != nil {
-		t.Fatal(err)
-	}
-	return out.String(), 0
-}
-
-func write(t *testing.T, p, s string) {
-	t.Helper()
-	if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
-		t.Fatal(err)
+	for k, v := range got {
+		w, ok := want[k]
+		if !ok {
+			t.Errorf("%s: no frozen output", k)
+		} else if v != w {
+			t.Errorf("%s:\ngot  %q\nwant %q", k, v, w)
+		}
 	}
 }
 
@@ -174,75 +170,49 @@ var setupCases = []setupCase{
 	{name: "the last assignment wins", tmpl: str("A=1\nB=\n"), env: str("A=one\nexport A=two\n"), in: "\n\n"},
 }
 
-func TestSetupParity(t *testing.T) {
-	envSh(t)
+func TestSetupFrozen(t *testing.T) {
+	got := map[string]string{}
 	for _, tc := range setupCases {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			in := filepath.Join(root, "stdin")
+			dir := filepath.Join(t.TempDir(), "go")
+			os.Mkdir(dir, 0o755)
+			if tc.tmpl != nil {
+				write(t, dir+"/.env.prod.example", *tc.tmpl)
+			}
+			if tc.env != nil {
+				write(t, dir+"/.env", *tc.env)
+				if tc.envMode != 0 {
+					os.Chmod(dir+"/.env", tc.envMode)
+				}
+			}
+			in := filepath.Join(t.TempDir(), "stdin")
 			write(t, in, tc.in)
-			results := map[string]struct {
-				out, env string
-				rc       int
-				has      bool
-			}{}
-			for _, side := range []string{"go", "bash"} {
-				dir := filepath.Join(root, side)
-				os.Mkdir(dir, 0o755)
-				if tc.tmpl != nil {
-					write(t, dir+"/.env.prod.example", *tc.tmpl)
-				}
-				if tc.env != nil {
-					write(t, dir+"/.env", *tc.env)
-					if tc.envMode != 0 {
-						os.Chmod(dir+"/.env", tc.envMode)
-						t.Cleanup(func() { os.Chmod(dir+"/.env", 0o600) })
-					}
-				}
-				var out string
-				var rc int
-				if side == "go" {
-					f, err := os.Open(in)
-					if err != nil {
-						t.Fatal(err)
-					}
-					var o bytes.Buffer
-					rc = (&Setup{Dir: dir, In: f, Out: &o, Err: &bytes.Buffer{}}).Run()
-					f.Close()
-					out = o.String()
-				} else {
-					out, rc = bashEnv(t, in, dir)
-				}
-				os.Chmod(dir+"/.env", 0o600)
-				data, err := os.ReadFile(dir + "/.env")
-				results[side] = struct {
-					out, env string
-					rc       int
-					has      bool
-				}{normOut(out, dir), string(data), rc, err == nil}
+			f, err := os.Open(in)
+			if err != nil {
+				t.Fatal(err)
 			}
-			g, b := results["go"], results["bash"]
-			if g.rc != b.rc || g.rc != tc.rc {
-				t.Errorf("exit: go %d, bash %d, want %d", g.rc, b.rc, tc.rc)
+			var o bytes.Buffer
+			rc := (&Setup{Dir: dir, In: f, Out: &o, Err: &bytes.Buffer{}}).Run()
+			f.Close()
+			os.Chmod(dir+"/.env", 0o600)
+			data, err := os.ReadFile(dir + "/.env")
+			if rc != tc.rc {
+				t.Errorf("exit %d, want %d", rc, tc.rc)
 			}
-			if g.has != b.has || g.env != b.env {
-				t.Errorf(".env differs:\ngo   (%v) %q\nbash (%v) %q", g.has, g.env, b.has, b.env)
+			if tc.absent && err == nil {
+				t.Errorf(".env written: %q", data)
 			}
-			if g.out != b.out {
-				t.Errorf("stdout differs:\ngo:\n%s\nbash:\n%s", g.out, b.out)
+			if tc.want != nil && string(data) != *tc.want {
+				t.Errorf(".env = %q, want %q", data, *tc.want)
 			}
-			if tc.absent && g.has {
-				t.Errorf(".env written: %q", g.env)
-			}
-			if tc.want != nil && g.env != *tc.want {
-				t.Errorf(".env = %q, want %q", g.env, *tc.want)
-			}
+			b, _ := json.Marshal([]any{rc, err == nil, string(data), normOut(o.String(), dir)})
+			got["setup/"+tc.name] = string(b)
 		})
 	}
+	frozen(t, got)
 }
 
-func TestDriftParity(t *testing.T) {
-	envSh(t)
+func TestDriftFrozen(t *testing.T) {
 	cases := []struct {
 		name      string
 		tmpl, env *string
@@ -258,35 +228,26 @@ func TestDriftParity(t *testing.T) {
 		{name: ".env is a directory", tmpl: str("A=1\n"), envDir: true},
 		{name: "unicode spaces (R1)", tmpl: str(" A=1\n B=2\nb=1\nB=1\n"), env: str("")},
 	}
+	got := map[string]string{}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			if tc.tmpl != nil {
-				write(t, dir+"/.env.prod.example", *tc.tmpl)
-			}
-			if tc.env != nil {
-				write(t, dir+"/.env", *tc.env)
-			}
-			if tc.envDir {
-				os.Mkdir(dir+"/.env", 0o755)
-			}
-			null := filepath.Join(dir, "null")
-			write(t, null, "")
-			bout, brc := bashEnv(t, null, "--drift", dir)
-			gout, err := Report(dir)
-			grc := 0
-			if err != nil {
-				grc = 1
-			}
-			if grc != brc || gout != bout {
-				t.Errorf("go (%d) %q\nbash (%d) %q", grc, gout, brc, bout)
-			}
-		})
+		dir := t.TempDir()
+		if tc.tmpl != nil {
+			write(t, dir+"/.env.prod.example", *tc.tmpl)
+		}
+		if tc.env != nil {
+			write(t, dir+"/.env", *tc.env)
+		}
+		if tc.envDir {
+			os.Mkdir(dir+"/.env", 0o755)
+		}
+		out, err := Report(dir)
+		b, _ := json.Marshal([]any{err == nil, strings.ReplaceAll(out, dir, "<dir>")})
+		got["drift/"+tc.name] = string(b)
 	}
+	frozen(t, got)
 }
 
-func TestInjectParity(t *testing.T) {
-	envSh(t)
+func TestInjectFrozen(t *testing.T) {
 	pairs := []string{"KASBAH_CPU_LIMIT=14.4", "KASBAH_MEM_LIMIT=54g"}
 	block := ManagedBegin + "\nKASBAH_CPU_LIMIT=1\n" + ManagedEnd + "\n"
 	cases := []struct {
@@ -311,50 +272,38 @@ func TestInjectParity(t *testing.T) {
 		{name: "no pairs", env: str("A=1\n"), pairs: []string{}},
 		{name: "a value with spaces and $", env: str(""), pairs: []string{"KASBAH_A=a b$c"}},
 	}
+	got := map[string]string{}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			p := pairs
-			if tc.pairs != nil {
-				p = tc.pairs
+		p := pairs
+		if tc.pairs != nil {
+			p = tc.pairs
+		}
+		dir := filepath.Join(t.TempDir(), "p")
+		os.Mkdir(dir, 0o755)
+		file := dir + "/.env"
+		if tc.symlink {
+			os.Mkdir(dir+"/real", 0o755)
+			os.Symlink("real/env", file)
+			file = dir + "/real/env"
+		}
+		if tc.env != nil {
+			write(t, file, *tc.env)
+			if tc.mode != 0 {
+				os.Chmod(file, tc.mode)
 			}
-			got := map[string]string{}
-			for _, side := range []string{"go", "bash"} {
-				dir := filepath.Join(t.TempDir(), "p")
-				os.Mkdir(dir, 0o755)
-				file := dir + "/.env"
-				if tc.symlink {
-					os.Mkdir(dir+"/real", 0o755)
-					os.Symlink("real/env", file)
-					file = dir + "/real/env"
-				}
-				if tc.env != nil {
-					write(t, file, *tc.env)
-					if tc.mode != 0 {
-						os.Chmod(file, tc.mode)
-					}
-				}
-				var rc int
-				if side == "go" {
-					rc = Inject(dir+"/.env", p, &bytes.Buffer{})
-				} else {
-					null := filepath.Join(t.TempDir(), "null")
-					write(t, null, "")
-					_, rc = bashEnv(t, null, append([]string{"--inject", dir}, p...)...)
-				}
-				data, _ := os.ReadFile(file)
-				mode := "absent"
-				if fi, err := os.Stat(file); err == nil {
-					mode = fi.Mode().String()
-				}
-				if fi, err := os.Lstat(dir + "/.env"); tc.symlink && (err != nil || fi.Mode()&os.ModeSymlink == 0) {
-					t.Errorf("%s: the symlink was replaced", side)
-				}
-				left, _ := filepath.Glob(dir + "/*kasbah-inject*")
-				got[side] = string(data) + "|" + mode + "|" + string(rune('0'+rc)) + "|" + strings.Join(left, ",")
-			}
-			if got["go"] != got["bash"] {
-				t.Errorf("go   %q\nbash %q", got["go"], got["bash"])
-			}
-		})
+		}
+		rc := Inject(dir+"/.env", p, &bytes.Buffer{})
+		data, _ := os.ReadFile(file)
+		mode := "absent"
+		if fi, err := os.Stat(file); err == nil {
+			mode = fi.Mode().String()
+		}
+		if fi, err := os.Lstat(dir + "/.env"); tc.symlink && (err != nil || fi.Mode()&os.ModeSymlink == 0) {
+			t.Errorf("%s: the symlink was replaced", tc.name)
+		}
+		left, _ := filepath.Glob(dir + "/*kasbah-inject*")
+		b, _ := json.Marshal([]any{rc, mode, string(data), len(left)})
+		got["inject/"+tc.name] = string(b)
 	}
+	frozen(t, got)
 }

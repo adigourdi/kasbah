@@ -334,13 +334,16 @@ marker.
 
 ### `kasbah server destroy USER@HOST [--yes]`
 
-De-brand the VPS for handover. **Every container keeps running throughout** —
-projects *and* Traefik, the sites stay up, and a project still `compose up`s
+De-brand the VPS for handover. **Every project container keeps running
+throughout** — projects, Traefik and mail; the sites stay up — except kasbah's
+own backup scheduler (`kasbah-backup`, removed with its volume and network), and a project still `compose up`s
 afterwards from the server's own files. Removes kasbah's management layer, and
 above all every agency-owned secret.
 
 Server-wide:
-- `<apps>/.kasbah/server.json`, and `<apps>/.kasbah/` once empty
+- `<apps>/.kasbah/server.json`, then — as the run's last act, once every step
+  before it succeeded — kasbah's own binary `<apps>/.kasbah/bin/kasbah` and
+  `<apps>/.kasbah/` once empty
 - `/etc/kasbah/apps-path`, and `/etc/kasbah/` once it is empty — root-owned, so this needs
   passwordless `sudo`. Without it the run **warns and continues**, exits 0, and
   prints the exact command to finish by hand. A server left in that state has no
@@ -391,13 +394,17 @@ record of `primary_domain` and the domain list. A later re-branding
 re-entered.
 
 **Double confirmation:** a yes/no question, then the **hostname** typed back.
-Either decline exits 1 having changed nothing. `--yes` skips both.
+Either decline exits 1 having changed nothing but, possibly, kasbah's own binary
+(brought up to date before the plan is read). `--yes` skips both.
 
 A run that cannot finish **holds back the marker and the pointer**, so the
 server is still discoverable and the command can be re-run. It exits 1 and says
 which step failed. A second run on a fully de-branded server reports that the
 server carries nothing of kasbah's and exits 0 — it does not exit 4, because a
-completed destroy removes its own marker by design. But a server with **no
+completed destroy removes its own marker by design. When the marker is gone but
+only kasbah's own last step is left — the pointer and the kasbah binary, a run
+whose session dropped before it got there — the re-run finishes that step and
+says so. But a server with **no
 marker and a surviving `<apps>/.kasbah/backup/`** exits **1**: that directory is
 the repository URL and one password per repository at mode 600, and without a
 marker destroy cannot enumerate the rest to remove them. The contrast with the
@@ -795,7 +802,7 @@ Keeps:
   this project's, and unpicking that is `kasbah server prune`'s job
 
 **Which images are the project's, exactly.** The rule is `server prune`'s, in
-the same code (`_prune_project_repos`), narrowed to one project — and then
+the same code (`prune.Repos`), narrowed to one project — and then
 widened in one direction: drop takes *every* tag of a repository it owns, with
 no age window and no last-three floor, because after a drop there is no version
 to roll back to. A repository **any other project on the server also declares**
@@ -820,11 +827,12 @@ project's on-VPS backups (`/apps/<name>/backups/` — **not** the server's
 top-level `/apps/backups/`) — everything except the off-VPS restic repo, which
 is operator property (see `backup.md`). It also **releases the project's claim on
 the shared mail stack**: the domain leaves `<apps>/mail/kasbah.yml`, read and
-re-rendered through `_sm_read_registry`, which folds `primary_domain` into the
-served list the way the writers do. **Five commands ask "does this stack serve
-X"** — `deploy`, `server init`, `add-mail-domain`, `check --server` and `server
-status` read through the Go reader (`internal/mailreg`); `drop` through
-`_sm_read_registry`, which refuses the same registries, until it is Go (10.12). A
+re-rendered through `internal/mailreg`, which folds `primary_domain` into the
+served list the way the writers do; a registry that changed between drop's read
+and its write is left alone and the run fails naming it. **Every command that
+asks "does this stack serve X"** — `deploy`, `drop`, `server init`,
+`add-mail-domain`, `check --server`, `server status` — reads through that one
+reader. A
 **hand-edited** registry with no `primary_domain`, a non-domain entry or a
 non-list `domains:` is refused by name (decision D4): `check --server` reports it
 as M03's failure, `server status` as a line. Two deliberate exclusions — a project claiming the
@@ -862,7 +870,8 @@ operator's one-off container survives it — the outcome names it rather than
 claiming the project came down.
 
 **Double confirmation:** a yes/no question, then the project name typed back.
-Either decline exits 1 having changed nothing. `--yes` skips both, for scripts;
+Either decline exits 1 having changed nothing but, possibly, kasbah's own binary.
+`--yes` skips both, for scripts;
 without a terminal an unanswered prompt is a hard fail naming `--yes`.
 
 Takes `<project>/.deploy.lock` **in the act**, the same exclusive lock
@@ -871,8 +880,9 @@ batched read, the plan and both confirmations run **unlocked** — a read step
 never writes into the tree it is reading — so a deploy starting while you answer
 the second prompt makes the act refuse. That refusal reads as one: a run stopped
 at a guard says it changed nothing, and only a run that got past them says some
-of it may have run. A held lock and a missing `flock` are reported as
-themselves, never as each other.
+of it may have run. The lock is the kernel's `flock(2)` on
+`<project>/.deploy.lock`, the same one the deploy engine takes; no `flock`
+binary is needed on the server.
 
 Given without a `USER@HOST` it asks the server this project last talked to, and
 `last_server` is recorded by a run that **acts** — the nothing-to-do path and a
@@ -880,8 +890,8 @@ completed act — not by one that reaches the server and then declines, meets a
 held lock, finds no `flock`, or has `--prune` refused
 (`project-manifest.md`).
 
-Exits 4 on a host with no server marker; 1 on a decline, a held lock, a missing
-`flock`, or a refused `--prune`.
+Exits 4 on a host with no server marker; 1 on a decline, a held lock, or a
+refused `--prune`.
 
 ### `kasbah history [USER@HOST] [--all]`
 

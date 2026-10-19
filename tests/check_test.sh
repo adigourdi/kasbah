@@ -1014,7 +1014,7 @@ assert '[ "$rc" = "6" ]'                                                        
 assert 'grep -qF "✗ .env.prod.example has invalid lines" <<<"$out"'                 "E01 fail line"
 
 # --- Case 28b: the four env rules read a line the way Compose does -----------
-# lib/env.sh sees leading blanks and an `export ` prefix as an assignment
+# internal/env sees leading blanks and an `export ` prefix as an assignment
 # (ENV_ASSIGN_RE), and every rule here shares that reader: E01 must not call
 # valid lines invalid, and E02–E05 must see the keys behind the prefix. All
 # four in one run, so a rule that quietly fell back to the anchored shape shows

@@ -123,7 +123,7 @@ _BK_TMPDIR=""
 _BK_PROJECT_FALLBACKS=()
 # The names kasbah owns under <apps>, handed to the read payload as an argument
 # rather than written out inside it. Every neighbour that walks <apps> does the
-# same — drop.sh builds this exact array, internal/probe and internal/prune the Go one — and
+# same — internal/probe, internal/prune, internal/drop and internal/destroy in Go — and
 # a payload on the far side of ssh can source nothing, so an argument is the only
 # way one list stays one list.
 _BK_RESERVED=(.kasbah "${KASBAH_RESERVED_NAMES[@]}")
@@ -764,8 +764,7 @@ _bk_render() {
     # `server init` is the only caller of this function, and lib/server_init.sh
     # is where `_si_render_template` lives. This file deliberately does not
     # source those ~2000 lines: `server backup-prune`, `server status` and
-    # `check --server` all load it on its own and none of them renders anything
-    # (the argument lib/drop.sh makes about lib/server_mail.sh).
+    # `check --server` all load it on its own and none of them renders anything.
     # So the dependency is stated where it is real, and a fourth caller that
     # forgets it is told which file it is missing rather than
     # `_si_render_template: command not found` halfway through a render.
@@ -1586,7 +1585,7 @@ _bp_restic() {
 # it is the one that permanently deletes backup history, so `kasbah server
 # backup-prune … > prune.log` must capture what was planned *and* what happened
 # (docs/cli.md: only `warning:` and `error:` lines go to stderr). The same shape
-# and the same reason as `drop`'s _drop_say and `server destroy`'s _sd_say.
+# and the same reason as `drop` and `server destroy` print their outcome there.
 _bp_say() {
     printf '%s\n' "$*"
     return 0

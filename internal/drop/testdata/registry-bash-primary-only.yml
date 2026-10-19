@@ -1,0 +1,22 @@
+# The mail stack's registry — kasbah-owned, installed at <apps>/mail/kasbah.yml
+# by `kasbah server init --with-mail`.
+#
+# This file is the single answer to "does this VPS's mail stack serve X?".
+# Nothing else is asked that question: the `.env` beside it carries what compose
+# and docker-mailserver interpolate, and its kasbah-owned values are *derived
+# from here* and rewritten by every mail command — one writer per fact, so the
+# two cannot drift.
+#
+# `name: mail` matches the compose project and the directory, which is why
+# `mail` is a reserved project name (docs/project-manifest.md).
+#
+# `primary_domain` is the MX target and the reverse-DNS name: mail.<primary>
+# is the hostname DMS presents and the one both certificates are issued for.
+# Every domain under `domains:` is served by this one stack and needs its own
+# MX pointing at mail.<primary>, plus its own SPF, DKIM and DMARC records.
+# A re-run of init reads both values back out of this file rather than
+# regenerating them, so a hand edit here survives.
+name: mail
+primary_domain: mail.example.com
+domains:
+  - mail.example.com

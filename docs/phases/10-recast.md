@@ -561,11 +561,33 @@ version `:current` points at as the first.
 **Lighter spec — re-read before briefing.**
 
 **Deliverables**
-- [ ] `drop [--prune] [--yes]`, `server destroy [--yes]`, `<apps>/.kasbah/bin`
-      included in what destroy removes
-- [ ] `drop_test.sh`, `server_destroy_test.sh` green
+- [x] `drop [--prune] [--yes]`, `server destroy [--yes]`, `<apps>/.kasbah/bin`
+      included in what destroy removes — `internal/drop`, `internal/destroy`; on the
+      same rig state Bash and Go removed the same files and docker objects, Go also
+      the binary (last, by a shell step after the binary's own work, only once the
+      marker went); the mail registry re-render byte-identical. **Fixed:** the mail
+      `.env` rewrite checks its write before renaming; a dangling `.env` link no
+      longer holds destroy forever; a re-run finishes a tail a dropped session
+      skipped; drop refuses overlapping apps/data paths and init refuses a data path
+      above the apps path (a project named `apps` could otherwise have wiped the
+      tree). **Deliberate:** no `flock` binary needed anywhere (`flock(2)`); a lock
+      taken during confirmation records no `last_server` (cli.md over the Bash); a
+      registry changed between read and write is left alone and the run fails
+- [x] `drop_test.sh`, `server_destroy_test.sh` green — the integration suites, the
+      "nothing left" assertion restored. Retired: `lib/{drop,server_destroy,
+      versions_log,env}.sh` and their white-box suites (env's 78 table cases frozen as
+      Go expectations, `internal/env/testdata/frozen.json`)
 
 **Verify on:** rig; `vps` once — destroy with gallery-website serving throughout.
+**Observed 2026-10-19:** Go `server destroy --yes` on `vps` rc 0 in 2.25 s, every
+HTTP sample 200 (six inside the window, the nearest 179 ms before and 301 ms
+after), every container running with its uptime intact, `.kasbah/` (binary
+included), the pointer, the project records, the `.env` sentinels and the mail
+registry gone, the `KASBAH_*` values kept, `docker compose up -d` a no-op; a second
+run "carries nothing". The no-TTY refusal still updated the binary first (now in
+`cli.md`). Cosmetic, for 10.14: the plan prints `**value**` with its asterisks,
+and says `.kasbah/` "holds nothing else" beside a `bin/.lock`. The mail relay
+strip met no relay block there — rig-proven only. `vps` is left de-branded.
 
 **Watch out for:** `tests/integration/server_destroy_test.sh` currently accepts
 `<apps>/.kasbah/bin/` surviving a destroy and removes it by hand — restore the

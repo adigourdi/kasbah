@@ -204,7 +204,7 @@ case "$mode" in
             [user]=deploy [group]=deploy
             [have_docker]=yes [docker_server]=27.3.1 [docker_error]=""
             [compose_version]=2.29.7
-            [have_rsync]=yes [have_openssl]=yes [have_gzip]=yes [have_flock]=yes
+            [have_rsync]=yes [have_openssl]=yes [have_gzip]=yes
             [sudo_nopasswd]=yes
             [apps_state]=absent [apps_owned]=no [apps_writable]=no [apps_owner]=""
             [apps_write_error]="" [apps_root_state]=absent [apps_root_owner]=""
@@ -569,11 +569,6 @@ row "a compose version that is not a number" "Docker Compose v2" compose_version
 row "no rsync"                "rsync is missing"       have_rsync=no
 row "no openssl"              "openssl is missing"     have_openssl=no
 row "no gzip"                 "gzip is missing"        have_gzip=no
-# Its own row, and its own sentence: flock is the one tool the shipped scripts
-# need that is not coreutils, and the alternative to catching it here is
-# catching it in rd_lock — mid-deploy, after the rsync, where `flock -n 9`
-# exiting 127 reads as a concurrent operator who does not exist.
-row "no flock"                "flock (util-linux)"     have_flock=no
 row "an unreadable core count" "nproc="                nproc=
 row "an unreadable MemTotal"   "MemTotal="             memtotal_kb=
 
@@ -1875,15 +1870,6 @@ run_probe
 assert '[ "$(pfact pointer_state)" = "absent" ]' \
     "no pointer is reported as absent (got '$(pfact pointer_state)')"
 assert '[ "$(pfact pointer_value)" = "" ]' "with no value (got '$(pfact pointer_value)')"
-# flock, probed here with the other prerequisites rather than discovered by
-# rd_lock mid-deploy. This workstation has it, so the probe answering `yes` is
-# what says the row exists at all; the `no` verdict is driven above.
-assert '[ "$(pfact have_flock)" = "yes" ]' \
-    "flock is probed alongside rsync, openssl and gzip (got '$(pfact have_flock)')"
-# And the fact is required, not merely emitted: a key nothing checks is one that
-# can quietly stop arriving, and the preflight would then read an unset value.
-assert 'grep -qF "have_gzip have_flock" "$repo_dir/lib/server_init.sh"' \
-    "and _server_init_probe's protocol check names it with the others"
 assert '[ "$(pfact sudo_nopasswd)" = "yes" ]' \
     "and the sudo row is asked with -n (got '$(pfact sudo_nopasswd)', sudo log: $(tr '\n' ' ' < "$sudo_log"))"
 assert '! grep -qv "^sudo|-n|" "$sudo_log"' \

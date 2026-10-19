@@ -15,7 +15,6 @@ assumes.
 | The SSH user can run `docker` without sudo | Avoids mixed sudo/non-sudo ownership in `/apps/data/` | Hard fail, suggest `usermod -aG docker` |
 | `rsync`, `openssl`, `gzip` available on remote | Used by deploy and env setup | Hard fail |
 | `bash` on the remote | The commands not yet ported to Go run their remote steps as scripts on `bash -s` over the SSH master; Go commands run the kasbah binary there, shipped to `<apps>/.kasbah/bin/kasbah` | Hard fail |
-| `flock` (util-linux) | The deploy engine holds an exclusive `flock(2)` on `<project>/.deploy.lock` for the whole of a deploy, and `kasbah drop` takes the same lock through this tool for the whole of a removal, so a second concurrent operation fails fast instead of interleaving hooks, retags and teardown. The one tool kasbah's remaining shell steps use that is **not** coreutils, which is why it gets its own row | Probed at `server init`, so it fails there rather than mid-deploy. If it goes missing afterwards the deploy refuses naming **flock**, not a concurrent operator — `flock -n \|\| fail` would otherwise turn "not installed" into "someone else is deploying" |
 | A POSIX userland — `tr`, `cat`, `stat`, `nproc`, `date`, `find`, `sort`, `comm`, `readlink` | The remaining shell steps (the bootstrap probe, and the commands still in Bash) assume these rather than check them, because a box without them cannot run `bash -s` usefully in the first place. The rule kasbah's remote shell follows is **coreutils and bash builtins, nothing separately packaged**; the deploy engine and the env setup are the kasbah binary and need none of it | Not checked; failure surfaces as the step's own error |
 | **`:80` and `:443` free, and reachable from the internet** | Traefik binds both, and ACME's HTTP-01 challenge is answered on `:80` from outside. **Not probed** — init does not look at what is listening or at any firewall, so a port already held, or a `ufw` rule, surfaces as Traefik failing to start or as a challenge that never validates | Not checked |
 | **DNS in place before the first certificate** — `traefik.<apex>`, plus every project domain | A challenge for a name that does not resolve to this host fails, and **failed challenges count against Let's Encrypt's rate limits**. Rehearse with `--acme-staging` until DNS is right. **Not probed** — kasbah never resolves a name for you | Not checked |
@@ -681,12 +680,14 @@ unreportable rather than wrong.
 ## Handover / teardown
 
 `kasbah server destroy` de-brands a VPS for handover — when the
-server passes to a client or another operator. Every container keeps
-running, projects **and** Traefik: the sites stay up. What's removed is
+server passes to a client or another operator. Every project container keeps
+running, and Traefik and mail with them: the sites stay up. Only kasbah's own
+backup scheduler (`kasbah-backup`) is stopped and removed. What's removed is
 kasbah's management layer:
 
-- `/apps/.kasbah/` (server marker, and the backup scheduler stack with its
-  credentials — agency-owned secrets never transfer). The repositories
+- `/apps/.kasbah/` (server marker, the backup scheduler stack with its
+  credentials — agency-owned secrets never transfer — and, last, kasbah's own
+  binary), and the discovery pointer `/etc/kasbah/apps-path`. The repositories
   themselves are **not** removed: they are operator property, and an
   append-only credential could not delete them in any case
 - per project: `versions.log(.gz)`, the `scripts/` helpers by name,

@@ -116,10 +116,6 @@ dispatch_server() {
             . "$KASBAH_LIB_DIR/backup.sh"
             cmd_server_backup_prune "$@"
             ;;
-        destroy)
-            . "$KASBAH_LIB_DIR/server_destroy.sh"
-            cmd_server_destroy "$@"
-            ;;
         -h|--help)
             cat <<EOF
 Usage: kasbah server <subcommand> USER@HOST [args...]
@@ -164,10 +160,6 @@ dispatch() {
         init-project)
             . "$KASBAH_LIB_DIR/init_project.sh"
             cmd_init_project "$@"
-            ;;
-        drop)
-            . "$KASBAH_LIB_DIR/drop.sh"
-            cmd_drop "$@"
             ;;
         server)
             dispatch_server "$@"

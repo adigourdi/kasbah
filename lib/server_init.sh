@@ -627,10 +627,7 @@ else
 fi
 kv compose_version "$(docker compose version --short 2>/dev/null | flat)"
 
-# flock is here for the same reason the others are: `kasbah drop` holds the
-# deploy lock with it and refuses to run without one (the deploy engine takes
-# the same lock through flock(2) and needs no command).
-for c in rsync openssl gzip flock; do
+for c in rsync openssl gzip; do
     if command -v "$c" >/dev/null 2>&1; then kv "have_$c" yes; else kv "have_$c" no; fi
 done
 
@@ -830,7 +827,7 @@ REMOTE
     # The key set is validated as a protocol before any verdict reads a value: a
     # fact that never arrived must not be absorbed into a passing check.
     for key in user group have_docker docker_server docker_error \
-               compose_version have_rsync have_openssl have_gzip have_flock sudo_nopasswd \
+               compose_version have_rsync have_openssl have_gzip sudo_nopasswd \
                pointer_state pointer_value \
                apps_state apps_owned apps_writable apps_owner apps_write_error \
                apps_root_state apps_root_owner apps_base apps_base_owner apps_base_mode \
@@ -921,15 +918,6 @@ _server_init_preflight() {
                    "  deploy and env setup both need it; install it with the distro's package manager.")
         fi
     done
-
-    # Its own row, because it is the one tool the shipped scripts use that is
-    # not coreutils, and because the alternative to catching it here is catching
-    # it in rd_lock, mid-deploy, after the files are already on the server.
-    if [ "${_SI_FACT[have_flock]}" != yes ]; then
-        rows+=("flock (util-linux) on the remote — it is missing."
-               "  \`kasbah drop\` takes the deploy lock with it and will not run"
-               "  without one; install util-linux with the distro's package manager.")
-    fi
 
     # The apps path, in the four states it can be in. Only the first is
     # elevated over; the rest are the operator's to resolve, because kasbah
@@ -2903,10 +2891,6 @@ _server_init_report_mail() {
 # `absent` there is exactly "this run is the one that made it" — and a re-run
 # gets the one-line pointer above instead, because an operator re-running init
 # is not looking for a 150-line guide.
-#
-# server_mail.sh is sourced here rather than at the top of this file: it sources
-# *this* one for the template renderer, and a load guard only makes that safe
-# once every function in here is defined.
 _server_init_mail_guide() {
     [ "${_SI_FACT[mail_dir]:-}" = absent ] || return 0
 

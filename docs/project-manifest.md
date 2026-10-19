@@ -171,10 +171,9 @@ after a rule tightens.
 
 Rsync list applied on every deploy. Each entry is either `src` or `src -> dst`
 (relative to project root on dev; `/apps/<name>/` on VPS). Trailing `/` means
-"recurse". Kasbah always syncs the minimal helper scripts — you don't list those.
-Today that is `remote-deploy.sh` and `setup-env.sh` — the latter is
-`lib/env.sh` itself, shipped verbatim so the drift check running on the server
-is the same bytes `kasbah check` runs here. The manifest itself is **not**
+"recurse". Kasbah ships no scripts: its server side is the kasbah binary itself
+(`<apps>/.kasbah/bin/kasbah`), so the drift check on the server is the same code
+`kasbah check` runs here. The manifest itself is **not**
 shipped: nothing on the server reads it yet, and `kasbah.yml` in a
 project's sync list would be a second copy to drift.
 

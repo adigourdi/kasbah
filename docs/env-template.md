@@ -84,8 +84,8 @@ the output `.env`.
 
 ## Drift detection
 
-Run on every `kasbah deploy` by `env_drift` in
-`lib/env.sh`:
+Run on every `kasbah deploy` by the env engine's drift report (`internal/env`,
+`kasbah remote setup-env drift` on the server), which works like this:
 
 ```bash
 env_drift .env.prod.example .env   # sets ENV_DRIFT_MISSING / ENV_DRIFT_EXTRA
@@ -112,11 +112,8 @@ Outcomes:
 - Any drift → warn, prompt: *"re-run setup" / "continue with current .env" /
   "abort"* — scriptable as `--on-drift=setup|continue|abort`.
 
-One implementation serves `kasbah check` (E02/E03) and `kasbah env`: the Go
-engine, on the workstation and as `kasbah remote setup-env` on the server.
-`deploy` still runs `lib/env.sh` on the VPS as `scripts/setup-env.sh` until it
-is Go, so that file keeps to coreutils and bash builtins — no `common.sh`, `jq`,
-`awk` or `bc` — and the shared case table holds it to the Go engine.
+One implementation serves `kasbah check` (E02/E03), `kasbah env` and `deploy`:
+the Go engine, on the workstation and as `kasbah remote setup-env` on the server.
 
 Keys prefixed `KASBAH_` are reserved: kasbah injects and refreshes them
 at deploy (resource limits — see `server-setup.md`). They are excluded from
@@ -218,5 +215,3 @@ Coverage (preserved from the original project):
 
 The setup, the drift report and the managed block are Go, in the kasbah binary:
 on the workstation for `kasbah check`, on the server as `kasbah remote setup-env`.
-`lib/env.sh` remains only as `deploy`'s shipped `setup-env.sh` until deploy is Go,
-held to the Go engine by one shared case table (`internal/env/parity_test.go`).

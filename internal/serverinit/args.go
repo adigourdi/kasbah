@@ -123,6 +123,11 @@ func Parse(args []string) (Options, error) {
 	if o.Data, err = CheckPath("data-path", data); err != nil {
 		return o, err
 	}
+	// `drop --prune` removes <data>/<project>: a data path above the apps
+	// path would put the apps tree under a project's name.
+	if strings.HasPrefix(o.Apps, o.Data+"/") {
+		return o, cli.Fail("server init: --data-path=%s must not be a directory above the apps path %s", o.Data, o.Apps)
+	}
 	return o, nil
 }
 

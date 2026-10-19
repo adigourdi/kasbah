@@ -16,6 +16,8 @@ import (
 	"github.com/adigourdi/kasbah/internal/check"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/deploy"
+	"github.com/adigourdi/kasbah/internal/destroy"
+	"github.com/adigourdi/kasbah/internal/drop"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/handoff"
 	"github.com/adigourdi/kasbah/internal/history"
@@ -78,6 +80,12 @@ func main() {
 				atexit.HandleSignals()
 				atexit.Exit(upgrade.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
 			}
+			if len(args) > 1 && args[1] == "drop" {
+				os.Exit(drop.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
+			}
+			if len(args) > 1 && args[1] == "destroy" {
+				os.Exit(destroy.Remote(args[2:], os.Stdout, os.Stderr))
+			}
 			if len(args) > 1 && args[1] == "vlog" {
 				os.Exit(vlog.Remote(args[2:], os.Stdout, os.Stderr))
 			}
@@ -108,6 +116,10 @@ func main() {
 			o, err := ops.Parse(args[0], args[1:])
 			atexit.HandleSignals()
 			atexit.Exit(opsCmd(o, err))
+		case "drop":
+			o, err := drop.Parse(args[1:])
+			atexit.HandleSignals()
+			atexit.Exit(dropCmd(o, err))
 		case "env":
 			o, err := env.Parse(args[1:])
 			atexit.HandleSignals()
@@ -137,6 +149,11 @@ func main() {
 				o, err := prune.Parse(args[2:])
 				atexit.HandleSignals()
 				atexit.Exit(pruneCmd(o, err))
+			}
+			if len(args) > 1 && args[1] == "destroy" {
+				o, err := destroy.Parse(args[2:])
+				atexit.HandleSignals()
+				atexit.Exit(destroyCmd(o, err))
 			}
 			if len(args) > 1 && args[1] == "upgrade-traefik" {
 				o, err := upgrade.Parse(args[2:])
@@ -215,7 +232,7 @@ func remoteCmd(args []string) int {
 	if len(args) > 0 {
 		sub = args[0]
 	}
-	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, vlog, init, mail, status, check, prune, traefik", sub))
+	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, vlog, init, mail, status, check, prune, traefik, drop, destroy", sub))
 }
 
 // ensureServer is `kasbah __ensure-server [--apps-path=<dir>] USER@HOST`: the
@@ -768,6 +785,65 @@ func upgradeCmd(o upgrade.Options, err error) int {
 		Templates: templatesDir(home),
 		Dial:      upgrade.Dial(remote.Self(build), local),
 		Now:       time.Now,
+	}, o))
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
+}
+
+func dropCmd(o drop.Options, err error) int {
+	out := cli.Std()
+	if err == drop.ErrHelp {
+		fmt.Fprint(out.Stdout, drop.Usage)
+		return cli.ExitOK
+	}
+	if err != nil {
+		return out.Report(err)
+	}
+	v, err := kasbahVersion()
+	if err != nil {
+		return out.Report(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+	}
+	home, checkout, err := handoff.Home(exe, os.Getenv)
+	if err != nil {
+		return out.Report(cli.Fail("%v", err))
+	}
+	local := func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }
+	code := out.Report(drop.Run(drop.Ctx{
+		Out:       out,
+		Prompter:  prompt.Std(out),
+		Version:   v,
+		Templates: templatesDir(home),
+		Dial:      drop.Dial(remote.Self(build), local),
+	}, o))
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
+}
+
+func destroyCmd(o destroy.Options, err error) int {
+	out := cli.Std()
+	if err == destroy.ErrHelp {
+		fmt.Fprint(out.Stdout, destroy.Usage)
+		return cli.ExitOK
+	}
+	if err != nil {
+		return out.Report(err)
+	}
+	local, err := localBinary()
+	if err != nil {
+		return out.Report(err)
+	}
+	code := out.Report(destroy.Run(destroy.Ctx{
+		Out:      out,
+		Prompter: prompt.Std(out),
+		Dial:     destroy.Dial(remote.Self(build), local),
 	}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c

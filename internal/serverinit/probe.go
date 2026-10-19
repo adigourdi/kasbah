@@ -39,7 +39,7 @@ else
 fi
 kv compose_version "$(docker compose version --short 2>/dev/null | flat)"
 
-for c in rsync openssl gzip flock; do
+for c in rsync openssl gzip; do
     if command -v "$c" >/dev/null 2>&1; then kv "have_$c" yes; else kv "have_$c" no; fi
 done
 
@@ -196,7 +196,7 @@ exit 0
 `
 
 var probeKeys = []string{"user", "group", "have_docker", "docker_server", "docker_error",
-	"compose_version", "have_rsync", "have_openssl", "have_gzip", "have_flock", "sudo_nopasswd",
+	"compose_version", "have_rsync", "have_openssl", "have_gzip", "sudo_nopasswd",
 	"pointer_state", "pointer_value",
 	"apps_state", "apps_owned", "apps_writable", "apps_owner", "apps_write_error",
 	"apps_root_state", "apps_root_owner", "apps_base", "apps_base_owner", "apps_base_mode",
@@ -309,11 +309,6 @@ func Preflight(f Facts, target, apps, data string) error {
 			add(fmt.Sprintf("rsync, openssl, gzip on the remote — %s is missing.", c),
 				"  deploy and env setup both need it; install it with the distro's package manager.")
 		}
-	}
-	if f["have_flock"] != "yes" {
-		add("flock (util-linux) on the remote — it is missing.",
-			"  `kasbah drop` takes the deploy lock with it and will not run",
-			"  without one; install util-linux with the distro's package manager.")
 	}
 
 	switch f["apps_state"] {

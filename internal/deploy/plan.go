@@ -162,18 +162,29 @@ func RemoteParents(base string, entries []Entry) []string {
 	return out
 }
 
-func readMail(m *manifest.Manifest, p *Plan) error {
+// MailDomain is the manifest's claim on the server's mail stack, "" for
+// none; a mail: block that is not one, or has no domain:, is refused.
+func MailDomain(m *manifest.Manifest) (string, error) {
 	v, _ := m.Get("mail")
 	if v == nil || v == false {
-		return nil
+		return "", nil
 	}
 	if _, ok := v.(*jv.Map); !ok {
-		return cli.Fail("kasbah.yml: mail: has type '%s' — it has to be a block with a domain: under it (docs/project-manifest.md → mail)", jv.Type(v))
+		return "", cli.Fail("kasbah.yml: mail: has type '%s' — it has to be a block with a domain: under it (docs/project-manifest.md → mail)", jv.Type(v))
 	}
-	p.MailDomain = str(m, "mail", "domain")
-	if p.MailDomain == "" {
-		return cli.Fail("kasbah.yml: mail: has no domain: — the claim is that the VPS mail stack handles that domain, and there is nothing else in the block for kasbah to check (docs/project-manifest.md)")
+	d := str(m, "mail", "domain")
+	if d == "" {
+		return "", cli.Fail("kasbah.yml: mail: has no domain: — the claim is that the VPS mail stack handles that domain, and there is nothing else in the block for kasbah to check (docs/project-manifest.md)")
 	}
+	return d, nil
+}
+
+func readMail(m *manifest.Manifest, p *Plan) error {
+	d, err := MailDomain(m)
+	if err != nil || d == "" {
+		return err
+	}
+	p.MailDomain = d
 	p.MailSnappy = str(m, "mail", "snappymail_domain")
 	return nil
 }

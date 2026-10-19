@@ -148,9 +148,9 @@ at deploy (resource limits) and exempt from E02/E03 and drift detection.
 The bare name `KASBAH_` counts as reserved: Compose reads `KASBAH_=x` as
 setting a variable, so it is inside the namespace the frozen contract claims.
 
-E02/E03 are not implemented here. They call `env_drift` in `lib/env.sh` —
-the same function, in the same bytes, that runs on the VPS as
-`scripts/setup-env.sh` during a deploy, so the local check and the remote
+E02/E03 are not implemented here. They call the env engine's drift report
+(`internal/env`) — the same code that runs on the VPS as
+`kasbah remote setup-env drift` during a deploy, so the local check and the remote
 one cannot drift apart by agreeing to differ. `--server` runs that same
 function over the VPS's own `.env`, which comes back as bytes and is handed
 to it through a process substitution: the file holds the project's secrets,

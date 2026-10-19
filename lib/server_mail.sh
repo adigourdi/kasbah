@@ -1,26 +1,17 @@
-# kasbah — the mail registry's Bash reader and renderer, and the setup guide
-# Sourced by lib/drop.sh and lib/server_init.sh. Do not execute directly.
+# kasbah — the mail setup guide the Bash `server init` prints
+# Sourced by lib/server_init.sh. Do not execute directly.
 
 [ -n "${_KASBAH_SERVER_MAIL_LOADED:-}" ] && return 0
 _KASBAH_SERVER_MAIL_LOADED=1
 
 . "$KASBAH_LIB_DIR/common.sh"
-# For _si_render_template and the mail templates it renders: <apps>/mail/kasbah.yml
-# has exactly one shape, templates/mail/kasbah.yml, and `drop --prune`
-# rewriting it by hand would be a second one — the drift docs/mail.md's "this
-# file is the registry, and nothing else is" exists to prevent. Sourcing
-# server_init.sh is how this file gets it; the load guard makes it free when
-# init is the caller.
-. "$KASBAH_LIB_DIR/server_init.sh"
 
-# The Bash registry reader and renderer `drop --prune` uses, and the setup
-# guide the Bash `server init` prints (a run that wants backups).
+# The setup guide the Bash `server init` prints (a run that wants backups).
 
 _SM_TARGET=""
 _SM_APPS_PATH=""
 _SM_DATA_PATH=""
 
-_SM_REGISTRY=""
 _SM_PRIMARY=""
 _SM_DOMAINS=()
 # The address this ssh session reached the server on. Best effort: it is what
@@ -28,88 +19,6 @@ _SM_DOMAINS=()
 # a VPS reached over the internet and something else entirely behind NAT — so
 # every place it is printed says where it came from.
 _SM_HOST_ADDR=""
-
-# The registry, read one key at a time. Not as one combined parse: a newline
-# inside a domain value cannot then smuggle an extra list entry past the
-# per-entry check below, which is the rule `server init` reads it under.
-_sm_read_registry() {
-    local rc=0 count="" d="" i=0
-
-    [ -n "$_SM_REGISTRY" ] || {
-        err "$_SM_APPS_PATH/mail/kasbah.yml on $_SM_TARGET is missing or empty"
-        err_cont "that file is the mail stack's registry — the one thing that says which"
-        err_cont "domains this server's mail handles. Re-run:"
-        err_cont "  kasbah server init $_SM_TARGET --with-mail"
-        exit 1
-    }
-
-    yaml_get "$_SM_REGISTRY" '.primary_domain // ""' _SM_PRIMARY || rc=$?
-    if [ "$rc" -ne 0 ]; then
-        err "$_SM_APPS_PATH/mail/kasbah.yml on $_SM_TARGET could not be read as YAML"
-        err_cont "kasbah reproduces what is in that file rather than regenerating it, so a"
-        err_cont "file it cannot parse is one it will not rewrite. Fix it and re-run."
-        exit 1
-    fi
-    [ -n "$_SM_PRIMARY" ] \
-        || die "$_SM_APPS_PATH/mail/kasbah.yml on $_SM_TARGET has no primary_domain: — it is the MX target and the name both certificates are issued for, and nothing here can invent it"
-    _is_fqdn "$_SM_PRIMARY" \
-        || die "$_SM_APPS_PATH/mail/kasbah.yml on $_SM_TARGET has primary_domain: '$_SM_PRIMARY', which is not a domain name"
-
-    _SM_DOMAINS=()
-    yaml_get "$_SM_REGISTRY" '(.domains // []) | length' count || rc=$?
-    [ "$rc" -eq 0 ] || die "internal: the mail registry parsed once and not twice"
-    case $count in ''|*[!0-9]*) count=0 ;; esac
-    while [ "$i" -lt "$count" ]; do
-        yaml_get "$_SM_REGISTRY" "(.domains // [])[$i] // \"\"" d || rc=$?
-        [ "$rc" -eq 0 ] || die "internal: the mail registry parsed once and not twice"
-        i=$((i + 1))
-        [ -n "$d" ] || continue
-        _is_fqdn "$d" \
-            || die "$_SM_APPS_PATH/mail/kasbah.yml on $_SM_TARGET lists '$d' under domains:, which is not a domain name"
-        _SM_DOMAINS+=("$d")
-    done
-
-    # The primary is served by the stack it is the MX for whether or not anyone
-    # wrote it there, and it leads the list — the same rule `server init`
-    # renders the file under.
-    local found=no
-    for d in ${_SM_DOMAINS[@]+"${_SM_DOMAINS[@]}"}; do
-        [ "$d" != "$_SM_PRIMARY" ] || { found=yes; break; }
-    done
-    [ "$found" = yes ] \
-        || _SM_DOMAINS=("$_SM_PRIMARY" ${_SM_DOMAINS[@]+"${_SM_DOMAINS[@]}"})
-    return 0
-}
-
-# The registry, re-rendered from its own template with the new list. Rendering
-# rather than appending is what keeps one writer for the file's shape: a run of
-# `server init` renders it the same way from the same template, so the two
-# cannot produce different files for the same list.
-_sm_render_registry() {
-    local out="$1" d domains="" tpl="${KASBAH_TEMPLATE_DIR:-}" yq_err
-
-    [ -n "$tpl" ] || die "internal: KASBAH_TEMPLATE_DIR is not set"
-    command -v yq >/dev/null \
-        || die "yq is required to render the mail registry (install yq and retry)"
-
-    for d in "${_SM_DOMAINS[@]}"; do
-        domains+="${domains:+$'\n'}  - $d"
-    done
-
-    _SI_SUBST=(
-        [MAIL_PRIMARY_DOMAIN]="$_SM_PRIMARY"
-        [MAIL_DOMAINS]="$domains"
-    )
-    _si_render_template "$tpl/mail/kasbah.yml" "$out" "mail kasbah.yml"
-
-    if ! yq_err="$(yq -e . "$out" 2>&1 >/dev/null)"; then
-        err "the rendered mail registry is not valid YAML — refusing to ship it"
-        err_cont "${yq_err:-yq rejected the file and said nothing}"
-        err_cont "rendered with primary $_SM_PRIMARY, domains ${_SM_DOMAINS[*]}"
-        exit 1
-    fi
-    return 0
-}
 
 # The zone records, rendered for the registry rather than shown as an example.
 # The primary carries the stack's own names — the two A records, the hostname's

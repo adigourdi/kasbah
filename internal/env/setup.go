@@ -1,6 +1,5 @@
 // Package env is `kasbah env`: the setup, drift report and managed block the
 // server runs under `kasbah remote setup-env`, and the workstation's driver.
-// lib/env.sh is the same engine for Bash deploy; parity_test.go pins the two.
 package env
 
 import (

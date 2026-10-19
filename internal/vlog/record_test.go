@@ -126,3 +126,27 @@ func TestQueries(t *testing.T) {
 		t.Errorf("LastActive %d", i)
 	}
 }
+
+// The cases the retired Bash suite held: an active log that is not base64,
+// a last line with no newline, a zero-byte log this user cannot read.
+func TestReadProbeEdges(t *testing.T) {
+	b, _ := json.Marshal(Probe{"ok", "%%%", "missing", ""})
+	if _, err := ReadProbe(b, "d@h", "/a/demo/versions.log"); err == nil ||
+		!strings.Contains(err.Error(), "sent /a/demo/versions.log back as something that is not base64") {
+		t.Errorf("active not base64: %v", err)
+	}
+	r, err := ReadProbe(encode("2026-08-01T00:00:00+00:00 deploy 1.0.0 no-backup\n2026-08-02T00:00:00+00:00 deploy 1.1.0 no-backup", "ok", "missing", nil), "d@h", "/a/demo/versions.log")
+	if err != nil || len(r.Items) != 2 || r.Items[1].Version != "1.1.0" || !r.Items[1].OK {
+		t.Errorf("a final line without a newline: %+v %v", r, err)
+	}
+
+	apps := t.TempDir()
+	dir := filepath.Join(apps, "demo")
+	os.Mkdir(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, Log), nil, 0)
+	if os.Geteuid() != 0 {
+		if p := probe(t, apps, "demo"); p.ActiveState != "unreadable" {
+			t.Errorf("an unreadable zero-byte log reads %s, not unreadable", p.ActiveState)
+		}
+	}
+}
