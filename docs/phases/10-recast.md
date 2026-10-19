@@ -432,22 +432,31 @@ state first — `rollback` once told an operator a version was never deployed on
 evidence it did not have. Rotation's month index is the deliberate exception to
 the entry predicate (tightening it stopped rotation: 67 failures).
 
-### 10.9 — Server init and mail (L)
-`server init` (3,074 Bash lines), `add-mail-domain`, `mail-setup-guide`, ACME.
-**Lighter spec — re-read `docs/server-setup.md`, `docs/mail.md`,
-`docs/traefik.md` and Phase 6–7 findings before briefing.**
+### 10.9 — Server init (L)
+Split on contact (2026-10-19): the core of `server init` here, mail as **10.9b**,
+backup init with **10.13**. Until those land, an init that wants mail or backup —
+by flag, or by its answer at the prompt — is handed to the Bash init whole, with
+both answers made explicit so nothing is asked twice.
 
 **Deliverables**
-- [ ] `server init` with every flag pair, sudo only where `docs/server-setup.md`
-      says, the discovery pointer, the ACME store reconciliation
-- [ ] One mail-registry reader for every command (settles D4)
-- [ ] `server_init_test.sh`, `server_init_mail_test.sh`, `apps_path_test.sh` green
+- [x] `server init` with every flag pair, sudo only where `docs/server-setup.md`
+      says, the discovery pointer, the ACME store reconciliation — `internal/serverinit`
+      for the no-mail/no-backup case; a Bash-vs-Go snapshot of one plain init
+      differs only by the shipped binary; first init 7.5 s vs 7.9 s, re-run 0.65 s
+      vs 1.50 s. Payloads crossing to `kasbah remote init write|marker` (and the
+      mail seed) carry their size and sha256, so a cut stream installs nothing.
+      **Deliberate:** init ships the binary (a `noexec` apps path refused at init);
+      on a re-run it may update the binary before a question is answered;
+      `/etc/kasbah` drifted from `755` is repaired when sudo allows and warned
+      about when not; a dangling-symlink `acme.json` is refused
+- [x] `server_init_test.sh`, `apps_path_test.sh` green; `server_init_mail_test.sh`
+      and `files_test.sh` green through the seam
 
-**Verify on:** rig; `vps` for real sudo and `--acme-staging`.
-
-**Ruling (2026-10-19), `vps` mail:** take the old mail stack down there
-(`docker compose down` in `/apps/mail`, data kept), and re-init a fresh one with
-`--with-mail` when a test needs it — 10.9's `vps` check is that test.
+**Verify on:** rig; `vps` for real sudo and `--acme-staging`. **Observed
+2026-10-19:** Go `server init --no-mail --no-backup` re-run on `vps` — rc 0 in
+6.4 s, binary shipped over the real uplink, Traefik "nothing re-rendered", marker
+and pointer unchanged, gallery still 200. The sudo path (a bare host) and the
+`--acme-staging` rehearsal are 10.15's walk from bare.
 
 **Watch out for:** init ships the binary into the `<apps>` it has just created,
 before the marker exists — `serverbin.Ensure` with `Options{Apps}`; that mode
@@ -459,6 +468,28 @@ every run. `--keep-acme --yes` once destroyed a store because one code
 path out of three read the choice — test the run that **never consults** a flag.
 `--yes` does not answer the unknown-store question, deliberately. kasbah always
 overwrites `caServer`.
+
+### 10.9b — Mail (L)
+`server init --with-mail`, `add-mail-domain`, `mail-setup-guide`, and the mail
+registry. **Lighter spec — re-read `docs/mail.md` and Phase 7 findings first.**
+
+**Deliverables**
+- [ ] The mail half of `server init` in Go; the init seam shrinks to backup only
+- [ ] `add-mail-domain`, `mail-setup-guide` in Go
+- [ ] One mail-registry reader for every command (settles D4) — `internal/mailreg`,
+      already used by `deploy`
+- [ ] `server_init_mail_test.sh`, `server_mail_test.sh` green
+
+**Verify on:** rig; `vps` per the ruling below.
+
+**Ruling (2026-10-19), `vps` mail:** take the old mail stack down there
+(`docker compose down` in `/apps/mail`, data kept), and re-init a fresh one with
+`--with-mail` when a test needs it — 10.9's `vps` check is that test.
+
+**Watch out for:** the prompt order is mail, then backup; `_mail.yml` must land
+before Traefik starts (init requests both certificates at configuration load); DMS
+reads `mail.<domain>`'s certificate out of `acme.json`, so the mail containers start
+after Traefik is healthy. The mail `.env` is `600` on every run.
 
 ### 10.10 — Observe: `server status`, `check --server` (L)
 **Lighter spec — re-read before briefing.**

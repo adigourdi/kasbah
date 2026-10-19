@@ -1,7 +1,6 @@
 package deploy
 
 import (
-	"bufio"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -11,10 +10,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/adigourdi/kasbah/internal/remote"
 )
 
 // RemoteUsage names `kasbah remote deploy`'s modes.
-const RemoteUsage = "usage: kasbah remote deploy prepare APPS DATA NAME CLIENT [DIR…] | run DIR (spec on stdin) | mail APPS | seed CONTAINER PATH (file on stdin) | images VERSION IMAGE…"
+const RemoteUsage = "usage: kasbah remote deploy prepare APPS DATA NAME CLIENT [DIR…] | run DIR (spec on stdin) | mail APPS | seed CONTAINER PATH SIZE SHA256 (file on stdin) | images VERSION IMAGE…"
 
 // Remote is `kasbah remote deploy …` on a server. stdout is a protocol in
 // every mode; narration and docker's output go to stderr.
@@ -30,8 +31,14 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return prepare(args[1], args[2], args[3], args[4], args[5:], stdout, stderr)
 	case args[0] == "mail" && len(args) == 2:
 		return mailFacts(args[1], stdout)
-	case args[0] == "seed" && len(args) == 3:
-		return seed(args[1], args[2], stdin, stdout)
+	case args[0] == "seed" && (len(args) == 3 || len(args) == 5):
+		// The 3-argument form is an older workstation's: unverified, so it
+		// is held to non-empty only.
+		size, sum := "", ""
+		if len(args) == 5 {
+			size, sum = args[3], args[4]
+		}
+		return seed(args[1], args[2], size, sum, stdin, stdout, stderr)
 	case args[0] == "images" && len(args) >= 2:
 		return images(args[1], args[2:], stdout)
 	}
@@ -131,7 +138,21 @@ func mailFacts(apps string, stdout io.Writer) int {
 // seed copies a SnappyMail domain config into the container when it is not
 // already there. Through docker cp, because SnappyMail owns its data tree at
 // 750 under its own uid, and docker cp works on a stopped container too.
-func seed(container, target string, stdin io.Reader, stdout io.Writer) int {
+func seed(container, target, size, sum string, stdin io.Reader, stdout, stderr io.Writer) int {
+	var body []byte
+	var err error
+	if size != "" {
+		body, err = remote.Payload(stdin, size, sum)
+	} else if body, err = io.ReadAll(stdin); err == nil && !json.Valid(body) {
+		// Unverified: a stream cut mid-object must not be seeded, since a
+		// seed is never rewritten.
+		err = fmt.Errorf("the payload is empty or not JSON — nothing was installed")
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "remote: seed %s: %v\n", target, err)
+		fmt.Fprintln(stdout, "mail_seed=failed")
+		return 0
+	}
 	state := "nocontainer"
 	if exec.Command("docker", "inspect", container).Run() == nil {
 		state = "failed"
@@ -140,13 +161,9 @@ func seed(container, target string, stdin io.Reader, stdout io.Writer) int {
 			case exec.Command("docker", "cp", container+":"+target, filepath.Join(tmp, "probe")).Run() == nil:
 				state = "present"
 			default:
-				f, err := os.Create(filepath.Join(tmp, "domain.json"))
-				if err == nil {
-					_, cerr := io.Copy(f, bufio.NewReader(stdin))
-					if f.Close() == nil && cerr == nil &&
-						exec.Command("docker", "cp", filepath.Join(tmp, "domain.json"), container+":"+target).Run() == nil {
-						state = "copied"
-					}
+				if os.WriteFile(filepath.Join(tmp, "domain.json"), body, 0o644) == nil &&
+					exec.Command("docker", "cp", filepath.Join(tmp, "domain.json"), container+":"+target).Run() == nil {
+					state = "copied"
 				}
 			}
 			os.RemoveAll(tmp)

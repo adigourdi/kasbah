@@ -132,8 +132,9 @@ What it does:
    - **The recorded CA differs from this run's.** Init asks once, archives the
      store to a timestamped sibling — never deletes it, since a production
      `acme.json` is real certificates — recreates an empty one at mode 600, and
-     lets the restart below re-issue. Declining aborts with nothing created,
-     shipped or restarted (`--yes` to confirm without asking).
+     lets the restart below re-issue. Declining aborts with nothing created
+     or restarted — on a re-run the kasbah binary may already have been brought
+     up to date (`--yes` to confirm without asking).
    - **Nothing records which CA issued it** — a server that predates
      `caServer`, or a `traefik.yml` kasbah cannot read. Init cannot tell, so it
      asks which it should be (`--reset-acme` / `--keep-acme`). Keeping is not a

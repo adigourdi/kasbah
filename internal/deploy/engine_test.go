@@ -3,6 +3,7 @@ package deploy
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/adigourdi/kasbah/internal/remote"
 	"os"
 	"path/filepath"
 	"strings"
@@ -284,6 +285,33 @@ func TestSeed(t *testing.T) {
 	}
 	if got := run(); got != "mail_seed=nocontainer" {
 		t.Fatalf("no container: %q", got)
+	}
+	// A cut, empty or mismatched payload is never copied in.
+	body := "{\"seed\":1}\n"
+	size, sum := remote.Digest([]byte(body))
+	for _, c := range []struct {
+		args []string
+		in   string
+	}{
+		{[]string{"seed", "mail-snappymail", target, size, sum}, body[:5]},
+		{[]string{"seed", "mail-snappymail", target, size, sum}, ""},
+		{[]string{"seed", "mail-snappymail", target, size, strings.Repeat("0", 64)}, body},
+		{[]string{"seed", "mail-snappymail", target}, ""},
+		{[]string{"seed", "mail-snappymail", target}, body[:5]},
+	} {
+		var out, errb bytes.Buffer
+		Remote(c.args, strings.NewReader(c.in), &out, &errb)
+		if strings.TrimSpace(out.String()) != "mail_seed=failed" || !strings.Contains(errb.String(), "nothing was installed") {
+			t.Errorf("%d args, %q: %q %q", len(c.args), c.in, out.String(), errb.String())
+		}
+	}
+	var oout, oerr bytes.Buffer
+	if Remote([]string{"seed", "mail-snappymail", target}, strings.NewReader(body), &oout, &oerr); strings.TrimSpace(oout.String()) != "mail_seed=nocontainer" {
+		t.Errorf("an old workstation's whole JSON: %q %q", oout.String(), oerr.String())
+	}
+	var vout, verr bytes.Buffer
+	if Remote([]string{"seed", "mail-snappymail", target, size, sum}, strings.NewReader(body), &vout, &verr); strings.TrimSpace(vout.String()) != "mail_seed=nocontainer" {
+		t.Errorf("a verified payload: %q %q", vout.String(), verr.String())
 	}
 	r.running("mail-snappymail=exited")
 	t.Setenv("CP_FAIL", "1")

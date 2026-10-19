@@ -22,6 +22,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
+	"github.com/adigourdi/kasbah/internal/serverinit"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/term"
 	"github.com/adigourdi/kasbah/internal/vlog"
@@ -47,6 +48,9 @@ func main() {
 				// removes any staging file on the way out.
 				atexit.HandleSignals()
 				atexit.Exit(env.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
+			}
+			if len(args) > 1 && args[1] == "init" {
+				os.Exit(serverinit.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
 			}
 			if len(args) > 1 && args[1] == "vlog" {
 				os.Exit(vlog.Remote(args[2:], os.Stdout, os.Stderr))
@@ -86,6 +90,12 @@ func main() {
 				code = c
 			}
 			atexit.Exit(code)
+		case "server":
+			// `server init` without mail or backups; a run that wants either,
+			// once asked, goes to the Bash tool with both answers spelled out.
+			if len(args) > 1 && args[1] == "init" && !serverinit.Handoff(args[2:]) {
+				args = serverInitCmd(args[2:])
+			}
 		case "check":
 			// Plain `check` and --fix [--yes]; anything with --server, --help
 			// or an argument check does not take is still the Bash tool's.
@@ -156,7 +166,7 @@ func remoteCmd(args []string) int {
 	if len(args) > 0 {
 		sub = args[0]
 	}
-	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, vlog", sub))
+	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, vlog, init", sub))
 }
 
 // ensureServer is `kasbah __ensure-server [--apps-path=<dir>] USER@HOST`: the
@@ -203,6 +213,65 @@ func ensureServer(out *cli.Output, args []string) error {
 	}
 	fmt.Fprintf(out.Stdout, "shipped=%s->%s\n", old, res.Now)
 	return nil
+}
+
+// serverInitCmd runs `server init` to its exit, or returns the command line
+// to hand the Bash tool when the answers want mail or backups.
+func serverInitCmd(args []string) []string {
+	out := cli.Std()
+	atexit.HandleSignals()
+	o, err := serverinit.Parse(args)
+	if err != nil {
+		atexit.Exit(out.Report(err))
+	}
+	p := prompt.Std(out)
+	mail, backup, err := serverinit.Features(p, o)
+	if err != nil {
+		atexit.Exit(out.Report(err))
+	}
+	if mail || backup {
+		return serverinit.ForBash(args, mail, backup)
+	}
+	code := out.Report(serverInit(out, p, o))
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	atexit.Exit(code)
+	return nil
+}
+
+func serverInit(out *cli.Output, p *prompt.Prompter, o serverinit.Options) error {
+	v, err := kasbahVersion()
+	if err != nil {
+		return err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return cli.Fail("cannot locate this binary: %v", err)
+	}
+	home, checkout, err := handoff.Home(exe, os.Getenv)
+	if err != nil {
+		return cli.Fail("%v", err)
+	}
+	// The dispatcher's rule: templates travel with the library directory.
+	tpl := os.Getenv("KASBAH_TEMPLATE_DIR")
+	if tpl == "" {
+		lib := os.Getenv("KASBAH_LIB_DIR")
+		if lib == "" {
+			lib = home
+		}
+		tpl = filepath.Join(lib, "templates")
+	}
+	return serverinit.Run(serverinit.Ctx{
+		Out:       out,
+		Prompter:  p,
+		Version:   v,
+		Templates: tpl,
+		Self:      remote.Self(build),
+		Local:     func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) },
+		Hash:      serverinit.Bcrypt,
+		Now:       time.Now,
+	}, o)
 }
 
 // kasbahVersion is VERSION as the Bash dispatcher reads it: from

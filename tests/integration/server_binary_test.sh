@@ -160,6 +160,10 @@ if ! kasbah_cli server init "$RIG_TARGET" --no-mail --no-backup "${traefik_flags
     cat "$tmpdir/init.err" >&2
     exit 2
 fi
+# Init ships the binary into the apps path it has just created (bootstrap
+# mode); taken away again so the cases below start from none.
+assert '[ "$(server_sha)" = "$ours_sha" ]' "server init left the workstation's build at $bin ($(server_sha))"
+rig_ssh "rm -rf $bin_dir" >/dev/null 2>&1
 
 # --- Case 1: absent → shipped -------------------------------------------------
 ensure; rc=$?

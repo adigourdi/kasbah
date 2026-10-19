@@ -116,7 +116,8 @@ func parseMailFacts(out []byte, target string) (*MailFacts, error) {
 }
 
 func (s *SSH) Seed(target string, data []byte) (string, error) {
-	cmd := s.Conn.Command(s.Bounded("deploy", "seed", "mail-snappymail", target)...)
+	size, sum := remote.Digest(data)
+	cmd := s.Conn.Command(s.Bounded("deploy", "seed", "mail-snappymail", target, size, sum)...)
 	cmd.Stdin = bytes.NewReader(data)
 	var out bytes.Buffer
 	cmd.Stdout = &out
