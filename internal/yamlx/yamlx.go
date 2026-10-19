@@ -269,12 +269,44 @@ func (c *Cache) Get(path string) *File {
 		c.files = map[string]*File{}
 	}
 	docs, err := LoadFile(path)
-	f := &File{Path: path, Docs: docs, Err: err}
+	f := &File{Path: path, Docs: Reread(docs), Err: err}
 	if err != nil {
 		f.Docs = nil
 	}
 	c.files[path] = f
 	return f
+}
+
+// Reread is the documents as jq reads them back from yq's output, which is
+// what the Bash tool's cache held: there an infinity is the literal yq printed
+// for it, and jq spells a literal the decNumber way.
+func Reread(docs []jv.Value) []jv.Value {
+	for i, d := range docs {
+		docs[i] = reread(d)
+	}
+	return docs
+}
+
+func reread(v jv.Value) jv.Value {
+	switch c := v.(type) {
+	case jv.Number:
+		switch c {
+		case "1.7976931348623157e+308":
+			return jv.Number("1.7976931348623157E+308")
+		case "-1.7976931348623157e+308":
+			return jv.Number("-1.7976931348623157E+308")
+		}
+	case []jv.Value:
+		for i, x := range c {
+			c[i] = reread(x)
+		}
+	case *jv.Map:
+		for _, k := range c.Keys() {
+			x, _ := c.Get(k)
+			c.Set(k, reread(x))
+		}
+	}
+	return v
 }
 
 // Forget drops a path, so the next Get reads it again.

@@ -1,5 +1,5 @@
-// Package check is `kasbah check` without --server or --fix: the local rules
-// of docs/compliance.md, judged from the project directory alone.
+// Package check is `kasbah check` without --server: the local rules of
+// docs/compliance.md, judged from the project directory alone, and --fix.
 //
 // Each rule answers its question the way lib/check.sh's jq filter did under
 // LC_ALL=C.UTF-8 — per document, with jq's errors, fallbacks and exit
@@ -22,6 +22,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/envtpl"
 	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/manifest"
+	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
 
@@ -37,8 +38,20 @@ type Env struct {
 	Out *cli.Output
 	// PWD is the directory the report names; the run reads the current one.
 	PWD string
-	// Version is this kasbah's, for the manifest's newer-schema refusal.
+	// Version is this kasbah's, for the manifest's newer-schema refusal and
+	// the kasbah_version --fix backfills.
 	Version string
+	// Fix runs --fix before the report; Yes answers its one question.
+	Fix, Yes bool
+	// Prompt asks that question; nil is the process's own stdin.
+	Prompt *prompt.Prompter
+}
+
+func (e Env) prompter() *prompt.Prompter {
+	if e.Prompt != nil {
+		return e.Prompt
+	}
+	return prompt.Std(e.Out)
 }
 
 type abort struct{ code int }
@@ -66,6 +79,14 @@ func Run(e Env) (code int) {
 		}
 	}()
 	fmt.Fprintf(c.w, "Checking %s\n\n", e.PWD)
+	if e.Fix {
+		if _, err := manifest.Require(manifest.File, e.Version); err != nil {
+			return c.out.Report(err)
+		}
+		if err := c.fix(e); err != nil {
+			return c.out.Report(err)
+		}
+	}
 	fmt.Fprintln(c.w, "Structure:")
 
 	m, err := manifest.Require(manifest.File, e.Version)
@@ -212,37 +233,32 @@ func (c *checker) must(r result, quiet bool) string {
 
 var compileError = result{rc: 3, msg: "jq: error: syntax error, unexpected INVALID_CHARACTER"}
 
-// at asks `.[a][b]… // def` of a file. Names spliced into the filter (a
-// service or router) are decoded as the filter's string literal.
+// at asks `.[a][b]… // def` of a file.
 func (c *checker) at(file string, def jv.Value, p ...string) result {
-	for i, k := range p {
-		d, ok := literal(k)
-		if !ok {
-			return compileError
-		}
-		p[i] = d
-	}
-	return c.q(file, func(d jv.Value, emit func(jv.Value)) error {
-		v, err := path(d, p...)
-		if err != nil {
-			return err
-		}
-		emit(jv.Alt(v, def))
-		return nil
-	})
+	return c.then(file, func(v jv.Value) (jv.Value, error) { return jv.Alt(v, def), nil }, p...)
 }
 
 // then asks `.[a][b]… | f`.
 func (c *checker) then(file string, f func(v jv.Value) (jv.Value, error), p ...string) result {
-	for i, k := range p {
-		d, ok := literal(k)
-		if !ok {
-			return compileError
-		}
-		p[i] = d
+	g, ok := pathThen(f, p...)
+	if !ok {
+		return compileError
 	}
-	return c.q(file, func(d jv.Value, emit func(jv.Value)) error {
-		v, err := path(d, p...)
+	return c.q(file, g)
+}
+
+// pathThen is the filter `.[a][b]… | f`; ok is false where it would not
+// compile. Names spliced into the filter (a service or router) are decoded as
+// the filter's string literal.
+func pathThen(f func(v jv.Value) (jv.Value, error), p ...string) (g gen, ok bool) {
+	keys := make([]string, len(p))
+	for i, k := range p {
+		if keys[i], ok = literal(k); !ok {
+			return nil, false
+		}
+	}
+	return func(d jv.Value, emit func(jv.Value)) error {
+		v, err := path(d, keys...)
 		if err != nil {
 			return err
 		}
@@ -252,7 +268,7 @@ func (c *checker) then(file string, f func(v jv.Value) (jv.Value, error), p ...s
 		}
 		emit(x)
 		return nil
-	})
+	}, true
 }
 
 func hasKey(k string) func(jv.Value) (jv.Value, error) {

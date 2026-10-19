@@ -37,10 +37,11 @@ func main() {
 			}
 			atexit.Exit(code)
 		case "check":
-			// Plain `check` only: --fix and --server are still the Bash tool's.
-			if len(args) == 1 {
+			// Plain `check` and --fix [--yes]; anything with --server, --help
+			// or an argument check does not take is still the Bash tool's.
+			if fix, yes, ok := checkArgs(args[1:]); ok {
 				atexit.HandleSignals()
-				atexit.Exit(checkCmd())
+				atexit.Exit(checkCmd(fix, yes))
 			}
 		case "init-project":
 			// --help falls through: the usage text is still the Bash tool's.
@@ -166,7 +167,23 @@ func kasbahVersion() (string, error) {
 	return strings.TrimRight(string(b), "\n"), nil
 }
 
-func checkCmd() int {
+// checkArgs accepts what lib/check.sh's loop does without --server: --fix and
+// --yes in any order and number, --yes only with --fix.
+func checkArgs(args []string) (fix, yes, ok bool) {
+	for _, a := range args {
+		switch a {
+		case "--fix":
+			fix = true
+		case "--yes":
+			yes = true
+		default:
+			return false, false, false
+		}
+	}
+	return fix, yes, fix || !yes
+}
+
+func checkCmd(fix, yes bool) int {
 	out := cli.Std()
 	v, err := kasbahVersion()
 	if err != nil {
@@ -176,7 +193,7 @@ func checkCmd() int {
 	if err != nil {
 		return out.Report(cli.Fail("cannot read the current directory: %v", err))
 	}
-	code := check.Run(check.Env{Out: out, PWD: pwd, Version: v})
+	code := check.Run(check.Env{Out: out, PWD: pwd, Version: v, Fix: fix, Yes: yes})
 	if c := atexit.Interrupted(); c != 0 {
 		code = c
 	}

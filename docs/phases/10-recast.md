@@ -278,19 +278,26 @@ Split from 10.5 on contact: `lib/check_fix.sh` is 1,320 lines of targeted text
 edits Phase 8 hardened, and deserves its own review.
 
 **Deliverables**
-- [ ] `check --fix [--yes]` in Go: C01–C05, C08, R01–R03 and the `kasbah_version`
+- [x] `check --fix [--yes]` in Go: C01–C05, C08, R01–R03 and the `kasbah_version`
       backfill, diff shown first, nothing else touched; plain-check verdicts come
-      from the same `internal/check` queries
-- [ ] `tests/check_test.sh` F-cases green against Go; the parity harness extended to
-      `--fix` (resulting files byte-identical to Bash's, under `C.UTF-8`)
+      from the same `internal/check` queries — `internal/check/{fix,scan,guard}.go`
+- [x] `tests/check_test.sh` F-cases green against Go; the parity harness extended to
+      `--fix` (resulting files byte-identical to Bash's, under `C.UTF-8`) — 701
+      `--fix` projects (137 rewritten) and 750 plain, 0 differing; resulting trees
+      also compared parsed, so a value lost where both tools wrote the same bytes fails
 
 **Verify on:** tests + build.
 
 **Watch out for:** Phase 8's design — *yq decides what is true; the line scanner
 only finds where it is written* — a key the scanner cannot locate is refused and
 named, never guessed; never a YAML round-trip (comments are load-bearing). Block
-scalars (`|`, `>`) ending in comments broke `_cf_block_end` once. Bash `--fix`
-still sorts with the user's locale until this lands.
+scalars (`|`, `>`) ending in comments broke `_cf_block_end` once.
+
+**Found here, fixed in Go and Bash:** a block-scalar header after `- `, or behind
+an anchor or tag (`- |`, `&ep |`, `!!str >-`), was not recognised — `--fix` spliced
+its insertion into the script and the scalar lost its last lines, a silent
+corruption since Phase 8. Both now recognise those headers, and both refuse any
+candidate whose parsed tree is not the original plus exactly the planned edits.
 
 ### 10.6 — Env on both sides (M)
 `kasbah env` and the deploy's env step, with the VPS side running

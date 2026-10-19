@@ -186,7 +186,8 @@ hook commands. Only edits `compose.prod.yml` and `kasbah.yml` (with a
 diff shown before writing).
 
 Fixable today:
-- C01, C02, C03, C04, C05, C08 (compose hygiene — C08 is a mechanical tag rewrite)
+- C01, C02, C03, C04, C05, C08 (compose hygiene — C08 is a mechanical tag
+  rewrite, refused for an image pinned by digest, which has no tag to move)
 - R01, R02, R03 (insert/replace limits with the `KASBAH_*` var references)
 - Adding `kasbah_version` to manifest if missing
 
@@ -206,8 +207,9 @@ everything not being changed comes back byte for byte: comments, blank lines,
 key order, quoting, hand-spacing, CRLF line endings, and a missing final
 newline.
 
-**`yq` decides what is true; the line scanner only finds where it is written.**
-Every verdict and every insert-versus-replace decision comes from `yq`. If the
+**The parsed document decides what is true; the line scanner only finds where
+it is written.** Every verdict and every insert-versus-replace decision comes
+from the parsed tree (the one `yq -c .` prints). If the
 scanner then cannot locate that key in the text — a quoted key, a flow mapping,
 an inline value — the fix is **refused and named**, never guessed. That split is
 what keeps a pattern-matcher from deciding semantics.
@@ -219,7 +221,10 @@ scalar is the exception, and it has to be**: inside one, `#` lines and blank
 lines are the *value*, not commentary. The scanner skips such a region whole —
 it runs from the header to the first non-blank line at or above the key's own
 indent, which is YAML's rule — so an insertion cannot be spliced into the middle
-of somebody's shell script. Under `|+`/`>+` the trailing blank lines are kept by
+of somebody's shell script. A header is any line whose value ends in a `|` or
+`>` indicator — after `key:`, after one or more `- ` sequence dashes, and behind
+anchors and tags (`- |`, `entrypoint: &ep |`, `test: !!str >-`); the region is
+measured from the key's column or the last dash's. Under `|+`/`>+` the trailing blank lines are kept by
 the scalar and belong to the region; under the default chomping YAML discards
 them, so they stay outside it and the insertion goes above. The indent comes from
 the block's own first child, and a deeper level uses the file's own step — a
@@ -230,8 +235,11 @@ service's last line is also its last sub-block's last line) they are emitted
 
 Before anything is written, the staged candidate must parse, must declare the
 same services and the same top-level keys (only `version:` may leave, only
-`networks:` may appear), and must **re-plan to an empty plan** — idempotency
-proved at runtime rather than assumed. Any failure removes the candidate and
+`networks:` may appear), must **parse to exactly the original tree with the
+planned edits applied** — so an insertion that landed inside a value, or moved
+one, is caught whatever the scanner believed — and must **re-plan to an empty
+plan** — idempotency proved at runtime rather than assumed. An edit that would
+go through an alias, or touch one document of a multi-document file, is refused. Any failure removes the candidate and
 writes nothing.
 
 **A comment immediately above a removed key is left.** It cannot be told from a

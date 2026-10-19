@@ -3717,18 +3717,20 @@ assert '[ "$out" = "ok" ]' \
     "F19b: _gitignore_has finds .env at the top of a large .gitignore every time (said '$out')"
 
 # --- Case F20: one yq fork per file, never one per rule ----------------------
-# The linter converts each document once and answers every rule from that, so
-# the only `yq` a run may fork is a whole-file read: `-c .` per file, plus
-# manifest_require's own sentinel read, which stays as it is because it is where
-# a YAML parse error reaches the operator. A rule that goes back to forking per
-# service still produces the right report — it just takes ~180 ms per question —
-# so nothing else in this suite would notice. This is the pin that does.
+# Plain check and --fix are the Go binary's, which reads each YAML file once
+# itself (internal/yamlx.Cache) and so forks no yq at all. The Bash tool still
+# serves `check --fix --server` until 10.10, and there the only `yq` a run may
+# fork is a whole-file read: `-c .` per file, plus manifest_require's own
+# sentinel read, which stays because it is where a YAML parse error reaches the
+# operator. A rule that goes back to forking per service still produces the
+# right report — it just takes ~180 ms per question — so nothing else in this
+# suite would notice. These are the pins that do.
 #
 # The shape is asserted, not a ceiling: which file was read, by which kind of
 # read, how many times. A bound would pass by luck on a fixture that never
-# reaches the code that regressed, and the `--fix` half in particular has to run
-# against a project that really gets fixed — a compliant one never stages a
-# candidate and so never exercises the staging or the re-plan.
+# reaches the code that regressed, and the `--fix` runs in particular have to
+# run against a project that really gets fixed — a compliant one never stages a
+# candidate and so never exercises the staging, the guard or the re-plan.
 #
 # A shim on PATH records every call and execs the real thing, so the run under
 # test is the real run.
@@ -3759,8 +3761,8 @@ fork_shape() {
         | sort | uniq -c | awk '{ print $2, $3, $1 }' | sort
 }
 
-# Plain check is the Go binary's, which reads YAML itself (once per file,
-# internal/yamlx.Cache): it forks no yq at all.
+# Plain check and --fix are the Go binary's, which reads YAML itself (once per
+# file, internal/yamlx.Cache): neither forks yq at all.
 f20="$tmpdir/forks-plain"
 make_project "$f20"
 fork_run "$f20" check
@@ -3795,17 +3797,9 @@ networks:
 YAML
 fork_run "$f20b" check --fix --yes
 got="$(fork_shape)"
-# Twice each for the project's own files: the fix reads them, then the report
-# re-reads what the fix wrote (lib/check.sh — the loads sit after check_fix_run
-# deliberately). The candidate is converted once, which is both its parse check
-# and what the verifier and the re-plan then query.
-want="convert compose.prod.yml 2
-convert compose.prod.yml.kasbah-fix.PID 1
-convert kasbah.yml 2
-convert traefik-dynamic.yml 2
-sentinel kasbah.yml 2"
+want=""
 assert '[ "$got" = "$want" ]' \
-    "F20: --fix reads each file once per phase, and the candidate once
+    "F20: --fix forks no yq either
 $(diff -u <(printf '%s\n' "$want") <(printf '%s\n' "$got") 2>&1 || true)
         raw:
 $(sed 's/^/        /' < "$tmpdir/forks.log")"
@@ -3813,6 +3807,29 @@ $(sed 's/^/        /' < "$tmpdir/forks.log")"
 # went all the way through staging rather than one that found nothing to do.
 assert 'grep -qF "restart: unless-stopped" "$f20b/compose.prod.yml"' \
     "F20: and the --fix fixture really was rewritten"
+
+# The Bash path, driven directly: the fix reads the project's files, then the
+# report re-reads what the fix wrote (lib/check.sh — the loads sit after
+# check_fix_run deliberately). The candidate is converted once, which is its
+# parse check and what the verifier, the guard and the re-plan then query.
+f20c="$tmpdir/forks-fix-bash"
+mkdir -p "$f20c"
+cp -a "$f20b/." "$f20c/"
+sed -i '/restart: unless-stopped/d' "$f20c/compose.prod.yml"
+kasbah="$repo_dir/libexec/kasbah-bash" fork_run "$f20c" check --fix --yes
+got="$(fork_shape)"
+want="convert compose.prod.yml 2
+convert compose.prod.yml.kasbah-fix.PID 1
+convert kasbah.yml 2
+convert traefik-dynamic.yml 2
+sentinel kasbah.yml 2"
+assert '[ "$got" = "$want" ]' \
+    "F20: Bash --fix reads each file once per phase, and the candidate once
+$(diff -u <(printf '%s\n' "$want") <(printf '%s\n' "$got") 2>&1 || true)
+        raw:
+$(sed 's/^/        /' < "$tmpdir/forks.log")"
+assert 'grep -qF "restart: unless-stopped" "$f20c/compose.prod.yml"' \
+    "F20: and the Bash --fix fixture really was rewritten"
 
 # --- Case F21: a document that does not parse yields no services at all ------
 # `yq -c .` will write the documents it managed to read *and* exit non-zero, so

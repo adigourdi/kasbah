@@ -84,6 +84,18 @@ _CF_PLAN_TEXT=""
 _CF_TEMPS=()
 
 _cf_plan() { _CF_PLAN+=("$1"); }
+
+# What the plan does to the parsed tree, as jq: _CF_OPS sets, deletes and
+# appends; _CF_MASK drops a rewritten scalar on both sides, its new value being
+# the re-plan's to prove. _cf_guard holds the candidate to it.
+_CF_OPS=""
+_CF_MASK=""
+_CF_P=""
+_cf_op_path() { local p="" k; for k in "$@"; do p+="${p:+,}\"$k\""; done; _CF_P="[$p]"; }
+_cf_set()  { local v="$1"; shift; _cf_op_path "$@"; _CF_OPS+=" | setpath($_CF_P; $v)"; }
+_cf_del()  { _cf_op_path "$@"; _CF_OPS+=" | delpaths([$_CF_P])"; }
+_cf_app()  { local v="$1"; shift; _cf_op_path "$@"; _CF_OPS+=" | setpath($_CF_P; (getpath($_CF_P) | if . == null then [] else . end) + [$v])"; }
+_cf_mask() { _cf_op_path "$@"; _CF_MASK+=" | delpaths([$_CF_P])"; }
 _cf_left() { [ "$_CF_COLLECT" = 1 ] && _CF_LEFT+=("$1"); return 0; }
 
 # ----------------------------------------------------------------------------
@@ -114,6 +126,7 @@ _cf_reset_edits() {
     local i n=${#_CF_LINES[@]}
     _CF_DEL=(); _CF_REP=(); _CF_HASREP=(); _CF_PLAN=()
     _CF_INS_AT=(); _CF_INS_IND=(); _CF_INS_TXT=()
+    _CF_OPS=""; _CF_MASK=""
     for ((i = 0; i < n; i++)); do
         _CF_DEL+=(0); _CF_REP+=(""); _CF_HASREP+=(0)
     done
@@ -125,7 +138,7 @@ _cf_reset_edits() {
 # deepest indentation outwards, and in the order they were planned within one
 # indentation: deterministic, which is what makes a second run a no-op.
 _cf_render() {
-    local i k n=${#_CF_LINES[@]} l last lvl m=${#_CF_INS_AT[@]}
+    local i k n=${#_CF_LINES[@]} l last lvl m=${#_CF_INS_AT[@]} want entry
     local -a out=() anchored=()
     # Which lines carry an insertion at all, so the indentation sweep below runs
     # on the handful of lines that need it rather than on every line of the file.
@@ -140,11 +153,19 @@ _cf_render() {
             fi
         fi
         [ "${anchored[i]}" = 1 ] || continue
+        # Within one indentation, sequence entries first: they continue a flush
+        # list that ends on this line, which a key emitted first would cut.
         for ((lvl = _CF_MAX_INDENT; lvl >= 0; lvl--)); do
-            for ((k = 0; k < m; k++)); do
-                [ "${_CF_INS_AT[k]}" = "$i" ] || continue
-                [ "${_CF_INS_IND[k]}" = "$lvl" ] || continue
-                while IFS= read -r l; do out+=("$l"); done <<<"${_CF_INS_TXT[k]}"
+            for want in 1 0; do
+                for ((k = 0; k < m; k++)); do
+                    [ "${_CF_INS_AT[k]}" = "$i" ] || continue
+                    [ "${_CF_INS_IND[k]}" = "$lvl" ] || continue
+                    l="${_CF_INS_TXT[k]%%$'\n'*}"
+                    l="${l%$'\r'}"
+                    if _cf_is_entry "${l:lvl}"; then entry=1; else entry=0; fi
+                    [ "$entry" = "$want" ] || continue
+                    while IFS= read -r l; do out+=("$l"); done <<<"${_CF_INS_TXT[k]}"
+                done
             done
         done
     done
@@ -202,42 +223,74 @@ _cf_indent() {
 _cf_is_blank()   { [[ "${1%$'\r'}" =~ ^[[:space:]]*$ ]]; }
 _cf_is_comment() { [[ "${1%$'\r'}" =~ ^[[:space:]]*# ]]; }
 
-# _cf_opens_scalar IDX — true when the key at IDX is a `|` or `>` block-scalar
-# header (any of YAML's chomping and indentation indicators allowed after it,
-# and a comment allowed after that). What follows such a header is text, not
-# structure.
-_cf_opens_scalar() {
-    _cf_raw_value "$1"
-    case "$_CF_RAW" in
-        '|'|'>') return 0 ;;
-        '|'*|'>'*)
-            case "${_CF_RAW:1}" in
-                *[!-+0-9]*) return 1 ;;
-            esac
-            return 0
-            ;;
+# _cf_scalar_header IDX — true when the line at IDX is a `|` or `>` block-scalar
+# header, its chomping and indentation indicators allowed and a comment after
+# them. The indicator may follow `- ` entries (`- |`, `- - >-`), a `key:`, and
+# anchors and tags (`entrypoint: &ep |`, `test: !!str >-`). Sets _CF_SIND, the
+# column the content is deeper than — the key's, or the last entry's dash — and
+# _CF_SKEEP, 1 under `+`. What follows such a header is text, not structure.
+_CF_SIND=0
+_CF_SKEEP=0
+_cf_scalar_header() {
+    local s="${_CF_LINES[$1]%$'\r'}" v col n
+    _cf_indent "$s"; col=$_CF_IND
+    v="${s:col}"
+    _CF_SIND=$col
+    _CF_SKEEP=0
+    while _cf_is_entry "$v"; do
+        _CF_SIND=$col
+        n="${v#-}"
+        n="${n#"${n%%[! $'\t']*}"}"
+        col=$((col + ${#v} - ${#n}))
+        v="$n"
+    done
+    [ -n "$v" ] || return 1
+    case "$v" in
+        '|'*|'>'*|'&'*|'!'*) ;;
+        *:*) _CF_SIND=$col; v="${v#*:}" ;;
+        *) return 1 ;;
     esac
+    while :; do
+        v="${v#"${v%%[! $'\t']*}"}"
+        case "$v" in
+            '&'*|'!'*)
+                case "$v" in *[' '$'\t']*) ;; *) return 1 ;; esac
+                v="${v#*[' '$'\t']}"
+                ;;
+            *) break ;;
+        esac
+    done
+    _cf_split_value "$v" || return 1
+    case "$_CF_VAL" in
+        '|'*|'>'*) ;;
+        *) return 1 ;;
+    esac
+    case "${_CF_VAL:1}" in *[!-+0-9]*) return 1 ;; esac
+    case "$_CF_VAL" in *'+'*) _CF_SKEEP=1 ;; esac
+    return 0
+}
+
+# True when TEXT, its indentation removed, is a sequence entry.
+_cf_is_entry() {
+    case "${1%$'\r'}" in '-'|'- '*|'-'$'\t'*) return 0 ;; esac
     return 1
 }
 
 # _cf_scalar_end IDX → _CF_SEND, the last line of the block scalar opened at
-# IDX. Its content is every following line that is blank or indented deeper than
-# the key; the first non-blank line at or above the key's indentation ends it.
-# That is YAML's own rule, and it is why a `#` line *inside* the region is text
-# rather than a comment — which is the whole reason this function exists.
+# IDX (after _cf_scalar_header IDX). Its content is every following line that is
+# blank or deeper than _CF_SIND; the first non-blank line at or above it ends
+# it. That is YAML's own rule, and it is why a `#` line *inside* the region is
+# text rather than a comment — which is the whole reason this function exists.
 #
 # Trailing blank lines are part of the region only when the header keeps them
 # (`|+`, `>+`), because those newlines are the value. Under clip or strip YAML
 # discards them, so they are left outside and an insertion lands above rather
 # than below them.
 _cf_scalar_end() {
-    local idx="$1" ind i n=${#_CF_LINES[@]} keep=0
+    local idx="$1" ind="$_CF_SIND" keep="$_CF_SKEEP" i n=${#_CF_LINES[@]}
     # Separate statements: `local a=$1 b=$a` declares every name before it
     # assigns any, so `b` would read an unset `a` and die under set -u.
     local last=$idx lastnb=$idx
-    _cf_raw_value "$idx"
-    case "$_CF_RAW" in *'+'*) keep=1 ;; esac
-    _cf_indent "${_CF_LINES[idx]}"; ind=$_CF_IND
     for ((i = idx + 1; i < n; i++)); do
         if _cf_is_blank "${_CF_LINES[i]}"; then last=$i; continue; fi
         _cf_indent "${_CF_LINES[i]}"
@@ -249,29 +302,65 @@ _cf_scalar_end() {
     return 0
 }
 
+# _cf_first_child START → _CF_FC, the first content line after START, or -1.
+_cf_first_child() {
+    local i n=${#_CF_LINES[@]}
+    _CF_FC=-1
+    for ((i = $1 + 1; i < n; i++)); do
+        if _cf_is_blank "${_CF_LINES[i]}"; then continue; fi
+        if _cf_is_comment "${_CF_LINES[i]}"; then continue; fi
+        _CF_FC=$i
+        return 0
+    done
+    return 0
+}
+_CF_FC=-1
+
+# _cf_flush_seq START — true when the key at START holds a sequence written at
+# its own indentation (`key:` then `- a` under it, unindented), which YAML
+# allows; its entries are then its children.
+_cf_flush_seq() {
+    local start="$1" ind s
+    _cf_indent "${_CF_LINES[start]}"; ind=$_CF_IND
+    _cf_raw_value "$start"
+    [ -z "$_CF_RAW" ] || return 1
+    s="${_CF_LINES[start]%$'\r'}"
+    ! _cf_is_entry "${s:ind}" || return 1
+    _cf_first_child "$start"
+    [ "$_CF_FC" -ge 0 ] || return 1
+    _cf_indent "${_CF_LINES[_CF_FC]}"
+    [ "$_CF_IND" = "$ind" ] || return 1
+    s="${_CF_LINES[_CF_FC]%$'\r'}"
+    _cf_is_entry "${s:ind}"
+}
+
 # _cf_block_end START → _CF_END: the last *content* line belonging to the block
 # opened at START, or -1 when it has no children. Blank lines and comments are
 # stepped over rather than counted, so a comment between two keys does not end
 # the block and a trailing comment is not mistaken for its last line — which is
 # what keeps an insertion above someone's `# TODO` instead of below it.
 #
-# A `|`/`>` header is the exception, and it has to be: the lines under one are a
-# string's contents, so a `#` there is text and a blank line there may be part of
-# the value. Stepping over them as if they were comments would leave the block's
-# last line in the middle of the scalar, and an insertion would then be spliced
-# into a shell script — valid YAML, silently truncated value, every guard
-# downstream satisfied. The whole region is skipped instead.
+# A block-scalar header is the exception, and it has to be: the lines under one
+# are a string's contents, so a `#` there is text and a blank line there may be
+# part of the value. Stepping over them as if they were comments would leave the
+# block's last line in the middle of the scalar, and an insertion would then be
+# spliced into a shell script. The whole region is skipped instead.
 _cf_block_end() {
-    local start="$1" ind i n=${#_CF_LINES[@]}
+    local start="$1" ind i n=${#_CF_LINES[@]} flush=0 s
+    _cf_flush_seq "$start" && flush=1
     _cf_indent "${_CF_LINES[start]}"; ind=$_CF_IND
     _CF_END=-1
     for ((i = start + 1; i < n; i++)); do
         if _cf_is_blank "${_CF_LINES[i]}"; then continue; fi
         if _cf_is_comment "${_CF_LINES[i]}"; then continue; fi
         _cf_indent "${_CF_LINES[i]}"
-        if [ "$_CF_IND" -le "$ind" ]; then break; fi
+        if [ "$_CF_IND" -lt "$ind" ]; then break; fi
+        if [ "$_CF_IND" -eq "$ind" ]; then
+            s="${_CF_LINES[i]%$'\r'}"
+            [ "$flush" = 1 ] && _cf_is_entry "${s:ind}" || break
+        fi
         _CF_END=$i
-        if _cf_opens_scalar "$i"; then
+        if _cf_scalar_header "$i"; then
             _cf_scalar_end "$i"
             _CF_END=$_CF_SEND
             i=$_CF_SEND
@@ -285,28 +374,27 @@ _cf_block_end() {
 # than the block itself. Anything inserted *under* a child is indented by the
 # file's own step rather than by two, so a 4-space compose file gets 4-space
 # nesting back. A block with no children yet gets its parent's indent plus two,
-# which is what every file kasbah renders uses.
+# which is what every file kasbah renders uses; a flush sequence its own.
 #
-# Unlike _cf_block_end this needs no block-scalar rule, and the reason is that it
-# stops at the *first* child. A scalar's content is by definition indented deeper
-# than its own header, and the header is itself a child line, so the header is
-# always reached first and the walk ends there — no scan ever enters a scalar
-# region. tests/check_test.sh case F16 pins that with a service whose first key
-# is a `|` scalar.
+# Unlike _cf_block_end this needs no block-scalar rule: it stops at the *first*
+# child, and a scalar's header is itself a child line, reached before any of its
+# content. tests/check_test.sh case F16 pins that.
 _cf_child_indent() {
-    local start="$1" ind i n=${#_CF_LINES[@]}
+    local start="$1" ind
     _cf_indent "${_CF_LINES[start]}"; ind=$_CF_IND
     _CF_CI=$((ind + 2))
     _CF_STEP=2
-    for ((i = start + 1; i < n; i++)); do
-        if _cf_is_blank "${_CF_LINES[i]}"; then continue; fi
-        if _cf_is_comment "${_CF_LINES[i]}"; then continue; fi
-        _cf_indent "${_CF_LINES[i]}"
-        if [ "$_CF_IND" -le "$ind" ]; then break; fi
+    if _cf_flush_seq "$start"; then
+        _CF_CI=$ind; _CF_STEP=0
+        return 0
+    fi
+    _cf_first_child "$start"
+    [ "$_CF_FC" -ge 0 ] || return 0
+    _cf_indent "${_CF_LINES[_CF_FC]}"
+    if [ "$_CF_IND" -gt "$ind" ]; then
         _CF_CI=$_CF_IND
         _CF_STEP=$((_CF_CI - ind))
-        break
-    done
+    fi
     return 0
 }
 
@@ -364,7 +452,9 @@ _cf_locate_top() {
 _CF_VAL=""
 _CF_CMT=""
 _cf_split_value() {
-    local s="$1" n=${#s} i j k c q lead tail tt
+    # Two statements: in one, `${#s}` would read the caller's `s`.
+    local s="$1"
+    local n=${#s} i j k c q lead tail tt
     _CF_VAL=""
     _CF_CMT=""
     lead=0
@@ -615,10 +705,12 @@ _cf_c01() {
             _cf_left "C01 $svc — its restart: is written in a shape --fix cannot rewrite"
             return 0
         fi
+        _cf_mask services "$svc" restart
         _cf_plan "C01 $svc — restart: ${r:-(empty)} → unless-stopped"
         return 0
     fi
     _cf_insert_after "$s_at" "${pre}restart: unless-stopped"
+    _cf_set '"unless-stopped"' services "$svc" restart
     _cf_plan "C01 $svc — add restart: unless-stopped"
     return 0
 }
@@ -642,6 +734,7 @@ ${p2}driver: json-file
 ${p2}options:
 ${p4}max-size: \"10m\"
 ${p4}max-file: \"3\""
+        _cf_set '{"driver":"json-file","options":{"max-size":"10m","max-file":"3"}}' services "$svc" logging
         _cf_plan "C02 $svc — add json-file logging with max-size 10m, max-file 3"
         return 0
     fi
@@ -666,9 +759,11 @@ ${p4}max-file: \"3\""
                 _cf_left "C02 $svc — its logging.driver is written in a shape --fix cannot rewrite"
                 return 0
             fi
+            _cf_mask services "$svc" logging driver
             _cf_plan "C02 $svc — logging.driver: ${drv:-(empty)} → json-file"
         else
             _cf_insert_after "$l_at" "${lpre}driver: json-file"
+            _cf_set '"json-file"' services "$svc" logging driver
             _cf_plan "C02 $svc — add logging.driver: json-file"
         fi
     fi
@@ -681,6 +776,7 @@ ${p4}max-file: \"3\""
         _cf_insert_after "$l_at" "${lpre}options:
 ${o2}max-size: \"10m\"
 ${o2}max-file: \"3\""
+        _cf_set '{"max-size":"10m","max-file":"3"}' services "$svc" logging options
         _cf_plan "C02 $svc — add logging.options max-size 10m, max-file 3"
         return 0
     fi
@@ -708,13 +804,16 @@ ${o2}max-file: \"3\""
                 _cf_left "C02 $svc — its logging.options.$k is written in a shape --fix cannot rewrite"
                 continue
             fi
+            _cf_mask services "$svc" logging options "$k"
             _cf_plan "C02 $svc — logging.options.$k → ${nv//\"/}"
         else
             if [ "$k" = max-size ]; then
                 _cf_insert_after "$o_at" "${opre}max-size: \"10m\""
+                _cf_set '"10m"' services "$svc" logging options max-size
                 _cf_plan "C02 $svc — add logging.options.max-size: \"10m\""
             else
                 _cf_insert_after "$o_at" "${opre}max-file: \"3\""
+                _cf_set '"3"' services "$svc" logging options max-file
                 _cf_plan "C02 $svc — add logging.options.max-file: \"3\""
             fi
         fi
@@ -737,6 +836,8 @@ _cf_c03() {
         _cf_insert_after "$s_at" "${pre}networks:
 ${p2}- default
 ${p2}- kasbah-net"
+        _cf_app '"default"' services "$svc" networks
+        _cf_app '"kasbah-net"' services "$svc" networks
         _cf_plan "C03 $svc — add networks: [default, kasbah-net] (default spelled out so the service keeps the network it had implicitly)"
         return 0
     fi
@@ -767,6 +868,7 @@ ${p2}- kasbah-net"
                 [[ "$body" =~ ^[[:space:]]*$ ]] && sep=""
                 _CF_REP[n_idx]="${lhead}${body}${sep}kasbah-net${ltail}$cr"
                 _CF_HASREP[n_idx]=1
+                _cf_app '"kasbah-net"' services "$svc" networks
                 _cf_plan "C03 $svc — add kasbah-net to its networks list"
                 return 0
                 ;;
@@ -783,6 +885,8 @@ ${p2}- kasbah-net"
         # `networks:` with nothing under it — same reasoning as the absent key.
         _cf_insert_after "$n_idx" "${p2}- default
 ${p2}- kasbah-net"
+        _cf_app '"default"' services "$svc" networks
+        _cf_app '"kasbah-net"' services "$svc" networks
         _cf_plan "C03 $svc — fill its empty networks: with default and kasbah-net"
         return 0
     fi
@@ -792,9 +896,11 @@ ${p2}- kasbah-net"
     kind="$(_cf_yq "$f" ".services[\"$svc\"].networks | type")"
     if [ "$kind" = "object" ]; then
         _cf_insert_after "$n_end" "${npre}kasbah-net:"
+        _cf_set null services "$svc" networks kasbah-net
         _cf_plan "C03 $svc — add kasbah-net to its networks mapping"
     else
         _cf_insert_after "$n_end" "${npre}- kasbah-net"
+        _cf_app '"kasbah-net"' services "$svc" networks
         _cf_plan "C03 $svc — add kasbah-net to its networks list"
     fi
     return 0
@@ -838,6 +944,7 @@ _cf_c04() {
 networks:
 ${a1}kasbah-net:
 ${a2}external: true"
+        _cf_set '{"external":true}' networks kasbah-net
         _cf_plan "C04 — add a top-level networks: with kasbah-net external: true"
         return 0
     fi
@@ -856,6 +963,7 @@ ${a2}external: true"
         printf -v t2 '%*s' $((t_ci + t_step)) ''
         _cf_insert_after "$at" "${tpre}kasbah-net:
 ${t2}external: true"
+        _cf_set '{"external":true}' networks kasbah-net
         _cf_plan "C04 — declare kasbah-net external: true"
         return 0
     fi
@@ -868,6 +976,7 @@ ${t2}external: true"
     if _cf_key_inline "$k_idx"; then
         if [ "$_CF_RAW" = "{}" ]; then
             if _cf_set_value "$k_idx" "{external: true}"; then
+                _cf_set '{"external":true}' networks kasbah-net
                 _cf_plan "C04 — kasbah-net: {} → {external: true}"
                 return 0
             fi
@@ -883,6 +992,7 @@ ${t2}external: true"
             _cf_left "C04 — kasbah-net's external: is written in a shape --fix cannot rewrite"
             return 0
         fi
+        _cf_mask networks kasbah-net external
         _cf_plan "C04 — kasbah-net external: $ext → true"
         return 0
     fi
@@ -891,6 +1001,7 @@ ${t2}external: true"
     local kpre
     printf -v kpre '%*s' "$k_ci" ''
     _cf_insert_after "$at" "${kpre}external: true"
+    _cf_set true networks kasbah-net external
     _cf_plan "C04 — add external: true to kasbah-net"
     return 0
 }
@@ -907,6 +1018,7 @@ _cf_c05() {
         return 0
     fi
     _cf_delete_key "$_CF_IDX"
+    _cf_del version
     _cf_plan "C05 — remove the deprecated top-level version: $v"
     return 0
 }
@@ -925,12 +1037,18 @@ _cf_c08() {
         return 0
     fi
     case "$img" in *:current) return 0 ;; esac
+    case "$img" in *@*)
+        _cf_left "C08 $svc — its image: is pinned by digest ($img); retag it <name>:current by hand"
+        return 0
+        ;;
+    esac
     image_base "$img" base
     _cf_locate_child image "$s_idx" "$s_end" "$s_ci"
     if [ "$_CF_IDX" -lt 0 ] || ! _cf_set_value "$_CF_IDX" "$base:current"; then
         _cf_left "C08 $svc — its image: is written in a shape --fix cannot rewrite"
         return 0
     fi
+    _cf_mask services "$svc" image
     _cf_plan "C08 $svc — image: $img → $base:current"
     return 0
 }
@@ -951,9 +1069,11 @@ _cf_r01_r02() {
                 _cf_left "$rule $svc — its $key: is written in a shape --fix cannot rewrite"
                 continue
             fi
+            _cf_mask services "$svc" "$key"
             _cf_plan "$rule $svc — $key: ${cur:-(empty)} → $want"
         else
             _cf_insert_after "$s_at" "${pre}$key: $want"
+            _cf_set "\"$want\"" services "$svc" "$key"
             _cf_plan "$rule $svc — add $key: $want"
         fi
     done
@@ -975,6 +1095,7 @@ _cf_r03() {
             _cf_left "R03 $svc — cannot find its mem_reservation: in the file's text"
         else
             _cf_delete_key "$_CF_IDX"
+            _cf_del services "$svc" mem_reservation
             _cf_plan "R03 $svc — remove mem_reservation"
         fi
     fi
@@ -1011,12 +1132,15 @@ _cf_r03() {
     dep_keys="$(_cf_yq "$f" ".services[\"$svc\"].deploy | keys | length")"
     if [ "$res_keys" = "1" ] && [ "$dep_keys" = "1" ]; then
         _cf_delete_key "$d_idx"
+        _cf_del services "$svc" deploy
         target="deploy (it held nothing else)"
     elif [ "$res_keys" = "1" ]; then
         _cf_delete_key "$rs_idx"
+        _cf_del services "$svc" deploy resources
         target="deploy.resources (it held nothing else)"
     else
         _cf_delete_key "$rv_idx"
+        _cf_del services "$svc" deploy resources reservations
     fi
     _cf_plan "R03 $svc — remove $target"
     return 0
@@ -1038,6 +1162,7 @@ _cf_plan_manifest() {
         return 0
     fi
     _cf_insert_after "$_CF_IDX" "kasbah_version: $KASBAH_VERSION"
+    _cf_mask kasbah_version
     _cf_plan "kasbah.yml — add kasbah_version: $KASBAH_VERSION"
     return 0
 }
@@ -1086,6 +1211,17 @@ _cf_verify_manifest() {
     return 0
 }
 
+# _cf_guard ORIG NEW — each document of NEW is ORIG's with exactly the planned
+# edits applied, masked paths aside on both: a text edit that landed where the
+# scanner misread the file changes some other value, and is refused. One jq
+# over the two cached conversions; on stdin, which has no argument-size limit.
+_cf_guard() {
+    local a="${_KASBAH_YAML_JSON[$1]-}" b="${_KASBAH_YAML_JSON[$2]-}"
+    printf '[%s]\n[%s]\n' "${a//$'\n'/,}" "${b//$'\n'/,}" \
+        | jq -e -n "input as \$a | input as \$b
+            | (\$a | map(. $_CF_OPS $_CF_MASK)) == (\$b | map(. $_CF_MASK))" >/dev/null 2>&1
+}
+
 # _cf_stage FILE PLANNER VERIFIER
 #   0 — edits staged, _CF_TMP holds the candidate and _CF_PLAN_TEXT the lines
 #       to show for it
@@ -1116,7 +1252,17 @@ _cf_stage() {
     # Beside the file, so the rename below is atomic. This lives in the tree
     # `deploy` rsyncs, so every path out of here removes it; a killed run can
     # leave one `.kasbah-fix.<pid>` behind, the same caveat lib/env.sh carries.
-    local tmp="$f.kasbah-fix.$$"
+    # Beside what FILE resolves to, so the rename that commits it is atomic
+    # even through a symlink.
+    local base="$f"
+    if [ -L "$f" ]; then
+        base="$(readlink -f -- "$f")" || {
+            err "check --fix: cannot resolve the symlink $f — it was left alone"
+            _cf_left "$f — its symlink could not be resolved; it was left exactly as it was"
+            return 2
+        }
+    fi
+    local tmp="$base.kasbah-fix.$$"
     rm -f "$tmp" 2>/dev/null || true
     _CF_TEMPS+=("$tmp")
     if ! (umask 077; : > "$tmp") 2>/dev/null; then
@@ -1148,6 +1294,13 @@ _cf_stage() {
         rm -f "$tmp"; yaml_forget "$tmp"
         err "check --fix: the edited $f no longer declares the same keys — nothing was written"
         _cf_left "$f — the edited file no longer declared the same keys; it was left exactly as it was"
+        return 2
+    fi
+
+    if ! _cf_guard "$f" "$tmp"; then
+        rm -f "$tmp"; yaml_forget "$tmp"
+        err "check --fix: the edited $f would change values the fix did not plan to — nothing was written"
+        _cf_left "$f — the edit would have changed more than the fix planned; it was left exactly as it was"
         return 2
     fi
 
