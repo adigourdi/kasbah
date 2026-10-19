@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/backup"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/marker"
@@ -300,6 +301,20 @@ func Run(c Ctx, o Options) (err error) {
 		}
 	}
 
+	backupOn := o.Backup == prompt.Yes
+	var br *backup.ReadReport
+	if backupOn {
+		fresh := backup.Fresh
+		br = &fresh
+		if !elevate {
+			if br, err = s.backupRead(o); err != nil {
+				return err
+			}
+		}
+		// This run's mail stack is backed up from its first run on.
+		br.Mail = br.Mail || mailOn
+	}
+
 	var existingMap *jv.Map
 	if present {
 		warns, err := marker.Compat(existing, c.Version, markerPath, target)
@@ -314,10 +329,10 @@ func Run(c Ctx, o Options) (err error) {
 		if existingMap == nil {
 			return cli.Fail("internal: %s on %s passed the compatibility check and is not an object", markerPath, target)
 		}
-		if b, _ := jv.Get(existingMap, "backup", "enabled"); jv.ToString(jv.Alt(b, false)) == "true" {
+		if b, _ := jv.Get(existingMap, "backup", "enabled"); !backupOn && jv.ToString(jv.Alt(b, false)) == "true" {
 			out.Warn("%s already has a backup stack at %s/.kasbah/backup and this run is not", target, o.Apps)
 			out.Warn("touching it: init scaffolds backups, it never removes them. To take it down:")
-			out.Warn("  ssh %s 'cd %s/.kasbah/backup && docker compose -p %s down'", target, o.Apps, BackupProject)
+			out.Warn("  ssh %s 'cd %s/.kasbah/backup && docker compose -p %s down'", target, o.Apps, backup.Project)
 		}
 	}
 
@@ -336,6 +351,12 @@ func Run(c Ctx, o Options) (err error) {
 			return err
 		}
 	}
+	var bv *BackupValues
+	if backupOn {
+		if bv, err = BackupResolve(out, c.Prompter, o, br, existingMap); err != nil {
+			return err
+		}
+	}
 	rendered, err := Render(c.Templates, o, v)
 	if err != nil {
 		return err
@@ -345,7 +366,15 @@ func Run(c Ctx, o Options) (err error) {
 			return err
 		}
 	}
-	m, err := marker.Build(marker.Fields{KasbahVersion: c.Version, AppsPath: o.Apps, DataPath: o.Data, CPULimit: cpu, MemLimit: mem}, existingMap, nil)
+	var bcompose, benv string
+	var mb *marker.Backup
+	if backupOn {
+		if bcompose, benv, err = BackupRender(c.Templates, o, bv, br); err != nil {
+			return err
+		}
+		mb = bv.Marker()
+	}
+	m, err := marker.Build(marker.Fields{KasbahVersion: c.Version, AppsPath: o.Apps, DataPath: o.Data, CPULimit: cpu, MemLimit: mem}, existingMap, mb)
 	if err != nil {
 		return cli.Fail("internal: could not build the server marker: %v", err)
 	}
@@ -414,8 +443,8 @@ func Run(c Ctx, o Options) (err error) {
 
 	reset := Facts{"acme_reset": "skipped", "acme_archive": ""}
 	if v.Acme.Reset {
-		if !restart {
-			return cli.Fail("internal: the ACME endpoint changed but traefik.yml did not — the reset would outlive nothing")
+		if err := resetNeedsRestart(restart); err != nil {
+			return err
 		}
 		stamp := c.Now().UTC().Format("20060102T150405Z")
 		res, rc := s.call(nil, true, "acme-reset", o.Data+"/traefik/letsencrypt/acme.json", stamp)
@@ -436,11 +465,7 @@ func Run(c Ctx, o Options) (err error) {
 	started = true
 	res, rc = s.call(nil, false, "start", o.Apps, yn, strconv.Itoa(TraefikTimeout))
 	if rc != 0 {
-		e := cli.Fail("could not start Traefik on %s (the remote step exited %d, see above)", target, rc)
-		if reset["acme_reset"] == "done" {
-			e.Cont("acme.json was reset before this — the previous store is at " + reset["acme_archive"])
-		}
-		return e
+		return traefikStartFailed(target, rc, reset)
 	}
 	tfk, err := checked("the Traefik start", target, res,
 		"traefik_action", "traefik_health", "traefik_started_at", "traefik_image", "traefik_container")
@@ -452,6 +477,15 @@ func Run(c Ctx, o Options) (err error) {
 	// acme.json, and kasbah-net is Traefik's to create.
 	if mailOn {
 		if mst, err = s.mailStart(o); err != nil {
+			return err
+		}
+	}
+
+	// Last of the stacks: a refusal leaves the credentials for the next run
+	// and no marker, which is still the last thing init writes.
+	var brep bkReport
+	if backupOn {
+		if brep, err = s.backupInstall(o, bv, br, bcompose, benv, ensured.Action != remote.Keep); err != nil {
 			return err
 		}
 	}
@@ -515,7 +549,28 @@ func Run(c Ctx, o Options) (err error) {
 	if mailOn {
 		reportMail(out, o, mv, &mr, mchanged, mlay, mst)
 	}
+	if backupOn {
+		reportBackup(out, o, bv, brep)
+	}
 	out.Info("  marker: %s (%s)", markerPath, mk["marker"])
 	out.Info("  pointer: %s -> %s (%s)", Pointer, o.Apps, pt["pointer"])
 	return nil
+}
+
+// resetNeedsRestart: an archived store is only worth it when the new
+// endpoint is loaded, which takes a traefik.yml change and its restart.
+func resetNeedsRestart(restart bool) error {
+	if !restart {
+		return cli.Fail("internal: the ACME endpoint changed but traefik.yml did not — the reset would outlive nothing")
+	}
+	return nil
+}
+
+// traefikStartFailed names the archived store when this run reset it.
+func traefikStartFailed(target string, rc int, reset Facts) error {
+	e := cli.Fail("could not start Traefik on %s (the remote step exited %d, see above)", target, rc)
+	if reset["acme_reset"] == "done" {
+		e.Cont("acme.json was reset before this — the previous store is at " + reset["acme_archive"])
+	}
+	return e
 }

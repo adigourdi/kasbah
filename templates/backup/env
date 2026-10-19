@@ -1,5 +1,6 @@
-# <apps>/.kasbah/backup/env — read by <apps>/.kasbah/backup/backup.sh, by the
-# credential probe `kasbah server init --with-backup` runs, and by nothing else.
+# <apps>/.kasbah/backup/env — read by the kasbah-backup container's runner, by
+# the credential probe `kasbah server init --with-backup` runs, and by nothing
+# else.
 # Mode 600: on an S3-compatible target this file holds the VPS's append-only
 # key pair.
 #

@@ -1,8 +1,7 @@
-// Package backuprec is the one workstation reader of the backup scheduler's
-// last-run record, <apps>/.kasbah/backup/state/status (docs/backup.md), used by
-// `server status` and B01 alike, and the server-side facts both ask for. The
-// runner's healthcheck is the other reader; tests/backup_test.sh pins its
-// is_epoch against Epoch.
+// Package backuprec is the one reader of the backup scheduler's last-run
+// record, <apps>/.kasbah/backup/state/status (docs/backup.md), and the
+// server-side facts about it: `server status`, B01 and the runner itself
+// (internal/backup — its healthcheck and the history it carries) share Epoch.
 package backuprec
 
 import (
@@ -298,32 +297,49 @@ func Collect(apps, data string) Facts {
 		RecordB64: probe.B64(rec),
 		Container: container(),
 		Mail:      probe.DirState(apps+"/mail") == "dir",
-		HasPass:   []string{},
-		Projects:  []Project{},
-	}
-	if ents, err := os.ReadDir(bdir + "/repos"); err == nil {
-		for _, e := range ents {
-			n := e.Name()
-			if strings.HasPrefix(n, ".") || !strings.HasSuffix(n, ".pass") {
-				continue
-			}
-			if fi, err := os.Stat(bdir + "/repos/" + n); err == nil && fi.Mode().IsRegular() {
-				f.HasPass = append(f.HasPass, strings.TrimSuffix(n, ".pass"))
-			}
-		}
-	}
-	if ents, err := os.ReadDir(apps); err == nil {
-		for _, e := range ents {
-			n := e.Name()
-			d := apps + "/" + n
-			if strings.HasPrefix(n, ".") || probe.DirState(d) != "dir" || d == data || probe.IsReserved(n) {
-				continue
-			}
-			f.Projects = append(f.Projects, Project{Name: n, Client: client(d + "/.kasbah-client")})
-		}
+		HasPass:   HasPass(bdir + "/repos"),
+		Projects:  Projects(apps, data),
 	}
 	f.Now = strconv.FormatInt(time.Now().Unix(), 10)
 	return f
+}
+
+// HasPass is the repositories with a `<repo>.pass` regular file in dir.
+func HasPass(dir string) []string {
+	have := []string{}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return have
+	}
+	for _, e := range ents {
+		n := e.Name()
+		if strings.HasPrefix(n, ".") || !strings.HasSuffix(n, ".pass") {
+			continue
+		}
+		if fi, err := os.Stat(dir + "/" + n); err == nil && fi.Mode().IsRegular() {
+			have = append(have, strings.TrimSuffix(n, ".pass"))
+		}
+	}
+	return have
+}
+
+// Projects is every directory under apps that is not kasbah's own nor the
+// data path, in name order, with the client it files under.
+func Projects(apps, data string) []Project {
+	ps := []Project{}
+	ents, err := os.ReadDir(apps)
+	if err != nil {
+		return ps
+	}
+	for _, e := range ents {
+		n := e.Name()
+		d := apps + "/" + n
+		if strings.HasPrefix(n, ".") || probe.DirState(d) != "dir" || d == data || probe.IsReserved(n) {
+			continue
+		}
+		ps = append(ps, Project{Name: n, Client: client(d + "/.kasbah-client")})
+	}
+	return ps
 }
 
 // client is the runner's reading of .kasbah-client: the first line, and only

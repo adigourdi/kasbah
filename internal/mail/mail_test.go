@@ -369,3 +369,24 @@ func TestGuide(t *testing.T) {
 		t.Error("no placeholder")
 	}
 }
+
+// The account ladder: blank and comment lines, CR-stripped, are no account;
+// one line without its final newline is.
+func TestAccountLadder(t *testing.T) {
+	root := t.TempDir()
+	apps, data := root+"/apps", root+"/apps/data"
+	acc := data + "/mail/dms/config/postfix-accounts.cf"
+	os.MkdirAll(filepath.Dir(acc), 0o755)
+	for body, want := range map[string]string{
+		"":                                 "empty",
+		"# only a comment\n":               "empty",
+		"\r\n# c\r\n\r\n":                  "empty",
+		"postmaster@a.com|{SHA512-CRYPT}x": "present",
+		"# c\r\npostmaster@a.com|x\r\n":    "present",
+	} {
+		os.WriteFile(acc, []byte(body), 0o600)
+		if r := readOf(t, apps, data); r.Accounts != want {
+			t.Errorf("%q: %s, want %s", body, r.Accounts, want)
+		}
+	}
+}

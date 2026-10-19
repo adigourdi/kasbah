@@ -23,7 +23,7 @@ func Path(apps string) string { return apps + "/.kasbah/server.json" }
 // Retention is the backup object's retention counts.
 type Retention struct{ Daily, Weekly, Monthly int }
 
-// Backup is what `--with-backup` decided (lib/backup.sh's _bk_marker_json).
+// Backup is what `--with-backup` decided.
 type Backup struct {
 	RepoBase  string
 	At        string

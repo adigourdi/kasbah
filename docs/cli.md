@@ -352,7 +352,8 @@ Server-wide:
 - the **backup stack**, stopped rather than merely unlinked: `docker compose -p
   kasbah-backup down`, then the container, the `kasbah-backup-cache` volume, the
   `kasbah-backup_default` network, then `<apps>/.kasbah/backup/` entire —
-  `compose.yml`, `backup.sh`, `env`, `repos/*.pass`, `state/`. A schedule left
+  `compose.yml`, `env`, `repos/*.pass`, `state/` (and a `backup.sh` left by a
+  kasbah from before Phase 10). A schedule left
   running would go on pushing the new owner's data into the departing agency's
   storage. **The restic repositories are never touched**: operator property, and
   an append-only credential could not delete them anyway.
@@ -383,7 +384,7 @@ Mail, if the stack is there:
   containers running that nobody can authenticate to.
 
 Kept: every container and image, Traefik and its fragments, `data/`,
-`<apps>/backups/`, named volumes, and the projects' compose files and `.env`
+`<apps>/backups/` and every `<apps>/<project>/backups/`, named volumes, and the projects' compose files and `.env`
 values. There is no `kasbah.yml` to remove — the manifest is never synced to a
 server.
 

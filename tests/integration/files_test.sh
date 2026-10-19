@@ -364,7 +364,7 @@ assert '[ ! -s "$snap_dir/ws.tmp" ]' \
 require vps "$snap_dir/vps" \
     /etc/kasbah /etc/kasbah/apps-path \
     '<apps>' '<apps>/.kasbah' '<apps>/.kasbah/server.json' \
-    '<apps>/.kasbah/backup' '<apps>/.kasbah/backup/compose.yml' '<apps>/.kasbah/backup/backup.sh' \
+    '<apps>/.kasbah/backup' '<apps>/.kasbah/backup/compose.yml' \
     '<apps>/.kasbah/backup/env' '<apps>/.kasbah/backup/repos' '<apps>/.kasbah/backup/repos/<repo>.pass' \
     '<apps>/traefik' '<apps>/traefik/compose.yml' '<apps>/traefik/traefik.yml' \
     '<apps>/traefik/dynamic' '<apps>/traefik/dynamic/_shared.yml' '<apps>/traefik/dynamic/_mail.yml' \

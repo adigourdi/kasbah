@@ -252,7 +252,7 @@ rig_ssh "printf '%s\n%s\n%s\n' 'DEFAULT_RELAY_HOST=[smtp-relay.example.com]:587'
 #
 # Every "X is gone" below is worth nothing without its "X was here". These are
 # read off the rig, not believed from kasbah's own summary.
-for path in "$marker" "$bdir/env" "$bdir/compose.yml" "$bdir/backup.sh" \
+for path in "$marker" "$bdir/env" "$bdir/compose.yml" \
             "$bdir/repos/mail.pass" "$apps/mail/kasbah.yml" \
             "$projdir_remote/versions.log" "$projdir_remote/.kasbah-client" \
             "$planted_remote/versions.log.gz" "$planted_remote/.deploy.lock"; do
@@ -282,7 +282,7 @@ assert '[ "$(net_state $backup_network)" = present ]' "and its network"
 # A real snapshot in a real repository, so "the repositories are not touched"
 # below is a statement about something. The scheduled path, run on demand — the
 # documented `back up now` command.
-rig_ssh "docker exec $backup_container sh $bdir/backup.sh once" >/dev/null 2>&1
+rig_ssh "docker exec $backup_container $apps/.kasbah/bin/kasbah remote backup once" >/dev/null 2>&1
 snaps_before=$(RIG_RESTIC_PASSWORD="$mail_pass" rig_restic "${vps_base}mail/" snapshots --json 2>/dev/null \
                | jq -r '.[].short_id' 2>/dev/null | wc -l)
 assert '[ "$snaps_before" -ge 1 ]' \

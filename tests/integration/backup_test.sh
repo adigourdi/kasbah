@@ -174,7 +174,7 @@ backup_flags=(--with-backup --no-backup-env
 # loop calls, in the same container, with the same environment. It is a
 # documented operator command (`back up now`), not a hook this suite invented.
 backup_now() {
-    rig_ssh "docker exec $backup_container sh $bdir/backup.sh once" 2>&1
+    rig_ssh "docker exec $backup_container $apps/.kasbah/bin/kasbah remote backup once" 2>&1
 }
 
 # Snapshot ids in one repository, read with the repository's own password.
@@ -259,7 +259,7 @@ listing=$(rig_ssh "find $bdir -printf '%m %y %p\n' | sort" 2>/dev/null)
 assert 'grep -qF "700 d $bdir" <<<"$listing"'        "the backup directory is 700 (got '$listing')"
 assert 'grep -qF "700 d $bdir/repos" <<<"$listing"'  "and so is the password directory"
 assert 'grep -qF "644 f $bdir/compose.yml" <<<"$listing"' "the compose file is 644 and carries no secret"
-assert 'grep -qF "755 f $bdir/backup.sh" <<<"$listing"'   "the runner is executable"
+assert '! grep -qF "$bdir/backup.sh" <<<"$listing"'      "the runner is kasbah's own binary, not a script beside the stack (D2)"
 assert 'grep -qF "600 f $bdir/env" <<<"$listing"'         "the env file is 600 — it holds the repository URL"
 assert 'grep -qF "600 f $bdir/repos/$client.pass" <<<"$listing"' "each password file is 600"
 assert 'grep -qF "600 f $bdir/repos/mail.pass" <<<"$listing"'    "mail included"

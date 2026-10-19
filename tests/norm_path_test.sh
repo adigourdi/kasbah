@@ -1,19 +1,11 @@
 #!/usr/bin/env bash
 # Test: the one path-normalising rule, in the Bash places it is implemented.
 #
-# `/etc/kasbah/apps-path` is read by two Bash remote steps — lib/marker.sh and
-# the `server init` probe — and a payload on the far side of ssh can source
-# nothing, so each carries its own `norm_path`. The third implementation is
-# `kasbah_norm_path` in lib/common.sh, which reduces what comes back over the
-# wire on this side.
-#
-# Three copies of one rule is a drift seam, and drift here is silent: a copy that
-# stops stripping trailing blanks, or that lets the shell glob a path segment,
-# still returns something path-shaped, and every suite that goes through one of
-# the *other* copies keeps passing. So this suite does the two things no
-# behavioural test of a single command can: it asserts the two payload copies
-# are byte-identical, and it drives one table through a payload copy and through
-# lib/common.sh's function, so a divergence in either fails here.
+# `/etc/kasbah/apps-path` is read by one Bash remote step — lib/marker.sh's —
+# and a payload on the far side of ssh can source nothing, so it carries its
+# own `norm_path`. The other implementation is `kasbah_norm_path` in
+# lib/common.sh, which reduces what comes back over the wire on this side.
+# One table, driven through both, fails on any divergence between them.
 
 set -uo pipefail
 
@@ -32,28 +24,16 @@ assert() {
     fi
 }
 
-# --- The two payload copies -------------------------------------------------------
-# Extracted from their heredocs the way the other suites extract a whole step.
-copies=(marker.sh server_init.sh)
-for lib in "${copies[@]}"; do
-    sed -n '/^norm_path() {/,/^}/p' "$repo_dir/lib/$lib" > "$tmpdir/$lib.norm"
-    assert '[ -s "$tmpdir/$lib.norm" ]' "lib/$lib carries a norm_path to compare"
-    assert '[ "$(grep -c "^norm_path() {" "$repo_dir/lib/$lib")" = "1" ]' \
-        "and exactly one of them, so the extraction is unambiguous"
-done
-
-# Byte-identical, not merely equivalent: two copies that have started to
-# differ are two answers to one question, and which one a server gets then
-# depends on which command reached it.
+# --- The payload copy -------------------------------------------------------------
+# Extracted from its heredoc the way the other suites extract a whole step.
 base="$tmpdir/marker.sh.norm"
-for lib in server_init.sh; do
-    assert 'cmp -s "$base" "$tmpdir/$lib.norm"' \
-        "lib/$lib's norm_path is byte-identical to lib/marker.sh's
-$(diff "$base" "$tmpdir/$lib.norm" 2>&1 | sed 's/^/        /')"
-done
+sed -n '/^norm_path() {/,/^}/p' "$repo_dir/lib/marker.sh" > "$base"
+assert '[ -s "$base" ]' "lib/marker.sh carries a norm_path to drive"
+assert '[ "$(grep -c "^norm_path() {" "$repo_dir/lib/marker.sh")" = "1" ]' \
+    "and exactly one of them, so the extraction is unambiguous"
 
 # --- The table ---------------------------------------------------------------------
-# One case list, run through a payload copy and through lib/common.sh's
+# One case list, run through the payload copy and through lib/common.sh's
 # function. Anything either of them does differently is a failure here, whether
 # or not any command notices today.
 #
@@ -112,8 +92,8 @@ check "and so does a root with dots"      "/./"              "/"
 # two spellings compare *equal* and skip the refusal.
 check "'..' is kept, never resolved"      "/srv/x/../apps"   "/srv/x/../apps"
 check "a trailing '..' as well"           "/srv/apps/.."     "/srv/apps/.."
-# A trailing blank is not part of a path. This is the case the payload copies
-# strip before anything else, so a header value carrying one never reaches
+# A trailing blank is not part of a path. This is the case the payload copy
+# strips before anything else, so a header value carrying one never reaches
 # kasbah_norm_path from a live run — which is exactly why it is asserted here.
 check "a trailing space goes"             "/srv/apps "       "/srv/apps"
 check "a trailing tab goes"               "/srv/apps	"      "/srv/apps"

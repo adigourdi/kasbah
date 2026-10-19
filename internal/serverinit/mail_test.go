@@ -80,3 +80,17 @@ func TestMailRender(t *testing.T) {
 		t.Error("two registry shapes")
 	}
 }
+
+// An accounts file with no account line (DMS would boot accountless) is
+// seeded, never reused.
+func TestMailResolveEmptyAccounts(t *testing.T) {
+	o := Options{Target: "deploy@vps", Apps: "/apps", Data: "/apps/data", Mail: prompt.Yes, Postmaster: "pw"}
+	out, _ := newOut()
+	r := mail.ReadReport{Dir: "dir", Accounts: "empty"}
+	v, err := MailResolve(out, &prompt.Prompter{In: strings.NewReader(""), Out: out}, o, &r,
+		"primary_domain: a.com\ndomains:\n  - a.com\n", "example.com",
+		func(string) (string, error) { return "$6$salt$HASH", nil })
+	if err != nil || v.Account != "postmaster@a.com|{SHA512-CRYPT}$6$salt$HASH" {
+		t.Errorf("%+v %v", v, err)
+	}
+}

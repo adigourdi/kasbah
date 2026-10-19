@@ -1,5 +1,6 @@
-Expected markers, rendered by the real jq program: lib/server_init.sh's
-_server_marker_json, called as
+Expected markers, rendered by the Bash tool's jq program (lib/server_init.sh's
+_server_marker_json, retired at 10.13; marker.Build is now the only writer and
+these files its frozen expectations), called as
 
   _server_marker_json 1.0.0 /apps /data 2 1g "" ""                         fresh.json
   _server_marker_json 1.0.0 /srv/apps /srv/data 14.4 54g "$E" ""            existing.json

@@ -606,9 +606,22 @@ removal mid-step — order the last remote call accordingly.
 **Lighter spec — re-read `docs/backup.md` and Phase 8 findings before briefing.**
 
 **Deliverables**
-- [ ] `--with-backup` (append-only credential proved at init), `backup-prune`
-      run locally, the backup record, the container runner per D2
-- [ ] `backup_test.sh`, `backup_harness_test.sh` green
+- [x] `--with-backup` (append-only credential proved at init), `backup-prune`
+      run locally, the backup record, the container runner per D2 — `internal/backup`;
+      every `server init` is Go now (the Bash seam is gone). The runner is the mounted
+      binary (`kasbah remote backup …`) and its record is byte-compatible with
+      `internal/backuprec`, the one parser, which the healthcheck now uses too. A
+      Bash-vs-Go `--with-mail --with-backup` init matched (stdout, marker, docker
+      objects, password files, record). **Made true:** the backup credentials never
+      leave the server (the env merge runs in the server binary from a checked
+      payload). **Fixed:** a mail repository installed in the same run is backed up
+      from the first run; the probe's credential scratch is removed on a signal.
+      Recorded: a binary updated by another command reaches the backup container's
+      main process at its next restart (D2)
+- [x] `backup_test.sh`, `backup_harness_test.sh` green — the integration suites
+      (the append-only refusal proved against the rig's full-access rest-server;
+      `s3:` traced). Retired: `lib/{backup,server_init,server_mail}.sh`,
+      `templates/backup/backup.sh` and their white-box suites
 
 **Verify on:** rig (`rest:`); `s3:` stays traced.
 
@@ -686,6 +699,11 @@ Leave `vps` as a kasbah server at the end — Phase 9 starts from it.
   jq's status under errexit in the Bash tool, kept for parity — and those collide
   with `docs/cli.md`'s 5 (env setup) and 3 (ssh unreachable). Options: map every
   such abort to 1 at cutover, when the parity harness retires; or keep.
+  **Settled 2026-10-19: map to 1**, and more widely: "there was no release or
+  testing done before worth keeping, come up with what you want, as long as the
+  feature list is there" — from 1.0.0 the features are the contract, not the Bash
+  tool's quirks (jq's error statuses, its output spellings where no doc quotes
+  them). 10.14 may simplify code that exists only to reproduce a quirk.
 - **D5 — the checkout entry point (settle at 10.1).** `bin/kasbah` is the
   documented way to run from a checkout. Options: (a) the built binary at a
   fixed path (e.g. `dist/kasbah`) becomes it and `bin/` goes at cutover

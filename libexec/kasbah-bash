@@ -108,14 +108,6 @@ dispatch_server() {
     local sub="${1:-}"
     [ $# -eq 0 ] || shift
     case "$sub" in
-        init)
-            . "$KASBAH_LIB_DIR/server_init.sh"
-            cmd_server_init "$@"
-            ;;
-        backup-prune)
-            . "$KASBAH_LIB_DIR/backup.sh"
-            cmd_server_backup_prune "$@"
-            ;;
         -h|--help)
             cat <<EOF
 Usage: kasbah server <subcommand> USER@HOST [args...]

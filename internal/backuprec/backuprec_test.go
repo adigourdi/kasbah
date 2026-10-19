@@ -2,10 +2,8 @@ package backuprec
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -18,43 +16,6 @@ func TestEpoch(t *testing.T) {
 	} {
 		if _, ok := Epoch(v); ok != want {
 			t.Errorf("Epoch(%q) = %v, want %v", v, ok, want)
-		}
-	}
-}
-
-// The runner's is_epoch is the other implementation of the rule; the two
-// must agree value for value.
-func TestEpochMatchesRunner(t *testing.T) {
-	src, err := os.ReadFile("../../templates/backup/backup.sh")
-	if err != nil {
-		t.Skip("no runner template")
-	}
-	var fn []string
-	in := false
-	for _, l := range strings.Split(string(src), "\n") {
-		if l == "is_epoch() {" {
-			in = true
-		}
-		if in {
-			fn = append(fn, l)
-			if l == "}" {
-				break
-			}
-		}
-	}
-	if len(fn) < 4 {
-		t.Fatal("is_epoch not found in the runner")
-	}
-	script := strings.Join(fn, "\n") + "\nif is_epoch \"$1\"; then echo yes; else echo no; fi\n"
-	for _, v := range []string{"0", "1", "1787000000", "999999999999999999", "01700000000", "01999000009",
-		"1000000000000000000", "999999999999999999999999", "", "abc", "12a", "-1", "+1", " 1", "1 ", "007"} {
-		out, err := exec.Command("sh", "-c", script, "sh", v).Output()
-		if err != nil {
-			t.Fatalf("runner on %q: %v", v, err)
-		}
-		_, ok := Epoch(v)
-		if (strings.TrimSpace(string(out)) == "yes") != ok {
-			t.Errorf("%q: runner says %s, Epoch says %v", v, out, ok)
 		}
 	}
 }

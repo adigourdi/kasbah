@@ -10,7 +10,7 @@
 # What only the rig can show, and what the hermetic halves in
 # tests/server_status_test.sh and tests/check_test.sh therefore cannot:
 #
-#   * the record read back is one a real `templates/backup/backup.sh` wrote,
+#   * the record read back is one the real runner (`kasbah remote backup`) wrote,
 #     with the fields it really writes rather than the fields this suite thinks
 #     it writes — the two hermetic suites craft their own bytes, and a writer
 #     that changed would leave them both green;
@@ -124,7 +124,7 @@ check() (
 # The scheduled path, run on demand: the same function the sleep-until-02:00
 # loop calls, in the same container, with the same environment. A documented
 # operator command, not a hook this suite invented.
-backup_now() { rig_ssh "docker exec $backup_container sh $bdir/backup.sh once" 2>&1; }
+backup_now() { rig_ssh "docker exec $backup_container $apps/.kasbah/bin/kasbah remote backup once" 2>&1; }
 
 # Type, mode, owner, mtime and content of the apps and data trees. Two files are
 # left out for the reason tests/integration/check_server_test.sh leaves acme.json
@@ -212,7 +212,7 @@ assert '! grep -qF "no password" <<<"$out"' \
 assert '! grep -qF "$RIG_BACKUP_PASSWORD" <<<"$out"' \
     "no credential in the repository base reaches the report (said '$out')"
 assert 'grep -qF "$RIG_BACKUP_USER:***@" <<<"$out"' \
-    "which is still named, redacted the way lib/backup.sh redacts it (said '$out')"
+    "which is still named, redacted the way server init redacts it (said '$out')"
 
 check; rc=$?
 out="$(cli_out)"

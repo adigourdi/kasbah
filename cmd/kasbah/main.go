@@ -4,14 +4,13 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
-	"github.com/adigourdi/kasbah/internal/backuprec"
+	"github.com/adigourdi/kasbah/internal/backup"
 	"github.com/adigourdi/kasbah/internal/buildpush"
 	"github.com/adigourdi/kasbah/internal/check"
 	"github.com/adigourdi/kasbah/internal/cli"
@@ -63,6 +62,16 @@ func main() {
 			}
 			if len(args) > 1 && args[1] == "mail" {
 				os.Exit(mail.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
+			}
+			if len(args) > 1 && args[1] == "backup" {
+				// The kasbah-backup container's process (D2): restic's image,
+				// this binary mounted from the apps path.
+				os.Exit(backup.NewRunner(os.Stdout, os.Stderr).Run(args[2:]))
+			}
+			if len(args) > 1 && args[1] == "backup-init" {
+				// A signal removes the probe's credential scratch on the way out.
+				atexit.HandleSignals()
+				atexit.Exit(backup.RemoteInit(args[2:], os.Stdin, os.Stdout, os.Stderr))
 			}
 			if len(args) > 1 && args[1] == "status" {
 				os.Exit(status.Remote(args[2:], os.Stdout, os.Stderr))
@@ -124,8 +133,6 @@ func main() {
 			o, err := env.Parse(args[1:])
 			atexit.HandleSignals()
 			atexit.Exit(envCmd(o, err))
-		case "__backup-record":
-			os.Exit(backupRecordCmd(args[1:]))
 		case "__ensure-server":
 			out := cli.Std()
 			atexit.HandleSignals()
@@ -135,10 +142,13 @@ func main() {
 			}
 			atexit.Exit(code)
 		case "server":
-			// `server init` without backups; a run that wants them, once
-			// asked, goes to the Bash tool with both answers spelled out.
-			if len(args) > 1 && args[1] == "init" && !serverinit.Handoff(args[2:]) {
-				args = serverInitCmd(args[2:])
+			if len(args) > 1 && args[1] == "init" {
+				serverInitCmd(args[2:])
+			}
+			if len(args) > 1 && args[1] == "backup-prune" {
+				o, err := backup.ParsePrune(args[2:])
+				atexit.HandleSignals()
+				atexit.Exit(backupPruneCmd(o, err))
 			}
 			if len(args) > 1 && args[1] == "status" {
 				o, err := status.Parse(args[2:])
@@ -232,7 +242,7 @@ func remoteCmd(args []string) int {
 	if len(args) > 0 {
 		sub = args[0]
 	}
-	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, vlog, init, mail, status, check, prune, traefik, drop, destroy", sub))
+	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, vlog, init, mail, backup, backup-init, status, check, prune, traefik, drop, destroy", sub))
 }
 
 // ensureServer is `kasbah __ensure-server [--apps-path=<dir>] USER@HOST`: the
@@ -281,33 +291,69 @@ func ensureServer(out *cli.Output, args []string) error {
 	return nil
 }
 
-// serverInitCmd runs `server init` to its exit, or returns the command line
-// to hand the Bash tool when the answers want mail or backups.
-func serverInitCmd(args []string) []string {
+// serverInitCmd runs `server init` to its exit.
+func serverInitCmd(args []string) {
 	out := cli.Std()
 	atexit.HandleSignals()
 	o, err := serverinit.Parse(args)
 	if err != nil {
 		atexit.Exit(out.Report(err))
 	}
+	if o.Help {
+		fmt.Fprint(out.Stdout, serverinit.Usage)
+		atexit.Exit(cli.ExitOK)
+	}
 	p := prompt.Std(out)
-	mail, backup, err := serverinit.Features(p, o)
+	mail, bk, err := serverinit.Features(p, o)
 	if err != nil {
 		atexit.Exit(out.Report(err))
 	}
-	if backup {
-		return serverinit.ForBash(args, mail, backup)
-	}
-	o.Mail = prompt.No
+	o.Mail, o.Backup = prompt.No, prompt.No
 	if mail {
 		o.Mail = prompt.Yes
+	}
+	if bk {
+		o.Backup = prompt.Yes
+	} else {
+		serverinit.FlagsUnused(out, o)
 	}
 	code := out.Report(serverInit(out, p, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c
 	}
 	atexit.Exit(code)
-	return nil
+}
+
+// backupPruneCmd is `server backup-prune`: restic runs here, never on the
+// server — the full-access credential stays on this machine.
+func backupPruneCmd(o backup.PruneOptions, err error) int {
+	out := cli.Std()
+	if err != nil {
+		return out.Report(err)
+	}
+	if o.Help {
+		fmt.Fprint(out.Stdout, backup.PruneUsage)
+		return cli.ExitOK
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+	}
+	home, checkout, err := handoff.Home(exe, os.Getenv)
+	if err != nil {
+		return out.Report(cli.Fail("%v", err))
+	}
+	code := out.Report(backup.Prune(backup.PruneCtx{
+		Out:      out,
+		Prompter: prompt.Std(out),
+		Dial: backup.DialPrune(remote.Self(build), func(arch string) (string, error) {
+			return serverbin.Local(home, checkout, arch)
+		}),
+	}, o))
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
 }
 
 func serverInit(out *cli.Output, p *prompt.Prompter, o serverinit.Options) error {
@@ -470,31 +516,6 @@ func statusCmd(o status.Options, err error) int {
 		code = c
 	}
 	return code
-}
-
-// backupRecordCmd is `kasbah __backup-record epoch V` (yes/no) and
-// `kasbah __backup-record read NOW` (a record on stdin; "verdict|status"): the
-// workstation reader, for tests/backup_test.sh to hold against the runner's.
-func backupRecordCmd(args []string) int {
-	switch {
-	case len(args) == 2 && args[0] == "epoch":
-		if _, ok := backuprec.Epoch(args[1]); ok {
-			fmt.Println("yes")
-		} else {
-			fmt.Println("no")
-		}
-		return 0
-	case len(args) == 2 && args[0] == "read":
-		b, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return 1
-		}
-		r := backuprec.Read("dir", "file", string(b), args[1])
-		fmt.Printf("%s|%s\n", r.Verdict, r.Status)
-		return 0
-	}
-	fmt.Fprintln(os.Stderr, "usage: kasbah __backup-record epoch VALUE | read NOW < record")
-	return 1
 }
 
 func initProjectCmd(o initproject.Options, err error) int {

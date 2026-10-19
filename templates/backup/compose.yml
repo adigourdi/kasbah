@@ -6,6 +6,9 @@
 # on the prerequisites table (docs/server-setup.md) and kasbah installs no
 # packages: restic itself runs as a container, so the thing that invokes it may
 # as well be the same container (docs/backup.md, docs/phases/08-keep.md D1/D3).
+# The scheduler is kasbah's own static binary, <apps>/.kasbah/bin/kasbah, run
+# from the read-only apps mount (docs/phases/10-recast.md D2): a newer binary
+# reaches the container at its next restart.
 #
 # The apps and data paths below are substituted on the workstation before this
 # file is shipped, and they are mounted at their own names — a snapshot's paths
@@ -16,7 +19,7 @@
 #
 # No `.env`, deliberately, and no `env_file:`. The repository base and the
 # operator's credentials live in <apps>/.kasbah/backup/env at mode 600, which
-# backup.sh reads itself — so nothing secret is in this file, in the service's
+# the runner reads itself — so nothing secret is in this file, in the service's
 # environment, or in `docker inspect`.
 #
 # Run by hand as: docker compose -p kasbah-backup up -d
@@ -26,9 +29,9 @@ name: kasbah-backup
 
 services:
   backup:
-    # Substituted on the workstation from KASBAH_RESTIC_IMAGE (lib/common.sh),
-    # so one constant answers "which restic does kasbah run" for the scheduled
-    # backup, the credential probe and `server backup-prune` alike.
+    # Substituted on the workstation from backup.ResticImage, so one constant
+    # answers "which restic does kasbah run" for the scheduled backup, the
+    # credential probe and `server backup-prune` alike.
     image: __RESTIC_IMAGE__
     container_name: kasbah-backup
     # Fixed rather than derived from the VPS: it is what restic records as a
@@ -36,9 +39,9 @@ services:
     # this file whenever an operator reached the server by another name.
     hostname: kasbah-backup
     restart: unless-stopped
-    # The restic image's entrypoint is restic itself; the runner replaces it.
-    # /bin/sh there is busybox ash — see backup.sh's header.
-    entrypoint: ["/bin/sh", "__APPS_PATH__/.kasbah/backup/backup.sh"]
+    # The restic image's entrypoint is restic itself; the runner replaces it
+    # and runs restic from the image's PATH.
+    entrypoint: ["__APPS_PATH__/.kasbah/bin/kasbah", "remote", "backup"]
     environment:
       KASBAH_BACKUP_APPS: __APPS_PATH__
       KASBAH_BACKUP_DATA: __DATA_PATH__
@@ -50,7 +53,7 @@ services:
       # The one writable window in an otherwise read-only tree, and it is
       # narrower than the directory above it: Docker orders bind mounts by
       # target depth, so this rw mount wins for this path and the ro one still
-      # covers everything else. backup.sh writes its status here, which is what
+      # covers everything else. The runner writes its status here, which is what
       # the healthcheck below reads and what anything other than `docker logs`
       # has to go on.
       - "__APPS_PATH__/.kasbah/backup/state:__APPS_PATH__/.kasbah/backup/state"
@@ -63,11 +66,11 @@ __BACKUP_DATA_MOUNT__
       - "cache:/root/.cache/restic"
     # Without one, a scheduler wedged inside restic is a container `docker ps`
     # calls "running" for ever and `restart: unless-stopped` never acts on —
-    # measured against a black-holed endpoint. The check asks backup.sh whether
+    # measured against a black-holed endpoint. The check asks the runner whether
     # the state it last recorded has outlived its own deadline, so a run that
     # never returned and a sleep that never woke both show up.
     healthcheck:
-      test: ["CMD", "/bin/sh", "__APPS_PATH__/.kasbah/backup/backup.sh", "health"]
+      test: ["CMD", "__APPS_PATH__/.kasbah/bin/kasbah", "remote", "backup", "health"]
       interval: 60s
       timeout: 10s
       retries: 3

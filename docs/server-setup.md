@@ -58,8 +58,7 @@ Default paths (override with `--apps-path`, `--data-path`):
 │   ├── bin/kasbah                   the kasbah binary — shipped by the workstation when absent
 │   │                                or older, kept when the same or newer (installed under bin/.lock)
 │   └── backup/                      only with --with-backup (see below)
-│       ├── compose.yml              the scheduler stack
-│       ├── backup.sh                the runner — POSIX sh, no bash on this path
+│       ├── compose.yml              the scheduler stack — its runner is the mounted kasbah binary
 │       ├── env                      mode 600 — kasbah's repo_base, the operator's credentials
 │       └── repos/<repo>.pass        mode 600 — one encryption password per repository
 ├── data/                            bind-mount root for all projects
@@ -440,7 +439,6 @@ What lands under the apps path:
 |---|---|---|---|
 | `.kasbah/backup/` | 700 | kasbah | — |
 | `.kasbah/backup/compose.yml` | 644 | kasbah | Re-shipped whenever its bytes differ, like Traefik's three |
-| `.kasbah/backup/backup.sh` | 755 | kasbah | Re-shipped on difference; a change restarts the container |
 | `.kasbah/backup/env` | 600 | **split** | `KASBAH_BACKUP_REPO_BASE` is kasbah's and rewritten by name; every other line is the operator's and copied through untouched — the same split `mail/.env` has |
 | `.kasbah/backup/repos/` | 700 | kasbah | — |
 | `.kasbah/backup/repos/<repo>.pass` | 600 | operator | **Written once, never rewritten.** A password kasbah could overwrite is a repository kasbah could orphan |

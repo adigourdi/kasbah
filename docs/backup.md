@@ -56,18 +56,16 @@ see what `docker logs` alone would hide. Each run writes a record to
 `<apps>/.kasbah/backup/state/status` — when it started and finished, how it
 went, which repositories it touched.
 
-**Three readers, one rule, two implementations.** `kasbah server status` prints the
+**Three readers, one rule, one implementation.** `kasbah server status` prints the
 record — the schedule, the container's state and health, when the last run was
 and how it went, which repositories exist and which lack a password — and
 `kasbah check --server` asks the same question as a rule (**B01**,
 `compliance.md`), failing a stack whose last run failed or whose state has
 outlived its own deadline. They share one parser, `internal/backuprec`. The **third** reader is the container's own
-healthcheck, which runs inside the stack and so cannot source a workstation
-library — it carries its own copy of the same rule, in POSIX `sh`, and the two
-are pinned against each other by a test driving the identical values through
-both. That pin is what makes "they cannot disagree" true rather than hoped for:
-a deadline one accepts and the other refuses is exactly how a report and a
-healthcheck come to describe one file three different ways. Timestamps are judged against the **server's** clock, read in the same
+healthcheck, which runs the same kasbah binary (mounted from
+`<apps>/.kasbah/bin/kasbah`) and so the same parser — a deadline one accepts and
+another refuses is how a report and a healthcheck come to describe one file
+three different ways, and one implementation is what rules that out. Timestamps are judged against the **server's** clock, read in the same
 round trip: a verdict computed against the workstation's would be a function of
 clock skew.
 
@@ -97,10 +95,10 @@ The runner takes three verbs, and they are the operator's interface to it
 rather than a test hook:
 
 ```
-docker exec kasbah-backup sh <apps>/.kasbah/backup/backup.sh once
-docker exec kasbah-backup sh <apps>/.kasbah/backup/backup.sh plan
-docker exec kasbah-backup sh <apps>/.kasbah/backup/backup.sh next
-docker exec kasbah-backup sh <apps>/.kasbah/backup/backup.sh health
+docker exec kasbah-backup <apps>/.kasbah/bin/kasbah remote backup once
+docker exec kasbah-backup <apps>/.kasbah/bin/kasbah remote backup plan
+docker exec kasbah-backup <apps>/.kasbah/bin/kasbah remote backup next
+docker exec kasbah-backup <apps>/.kasbah/bin/kasbah remote backup health
 ```
 
 `once` backs up now, `plan` prints what would be included without writing,

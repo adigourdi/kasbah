@@ -1,11 +1,12 @@
-// Package serverinit is `kasbah server init` without backups
-// (docs/server-setup.md); a run that wants them is the Bash tool's, whole.
+// Package serverinit is `kasbah server init` (docs/server-setup.md): the
+// Traefik core, the mail half and the backup half.
 package serverinit
 
 import (
 	"regexp"
 	"strings"
 
+	"github.com/adigourdi/kasbah/internal/backup"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/prompt"
 )
@@ -17,8 +18,6 @@ const (
 	TraefikImage = "traefik:v3.7.10"
 	CAProduction = "https://acme-v02.api.letsencrypt.org/directory"
 	CAStaging    = "https://acme-staging-v02.api.letsencrypt.org/directory"
-	// BackupProject is lib/backup.sh's KASBAH_BACKUP_PROJECT.
-	BackupProject = "kasbah-backup"
 )
 
 // Options is the parsed command line.
@@ -35,24 +34,25 @@ type Options struct {
 	Yes        bool
 	// Postmaster is --postmaster-password=, \r stripped. A secret: never echoed.
 	Postmaster string
+	Bk         BackupFlags
+	// Help is --help: the usage, and nothing else.
+	Help bool
 }
 
-// Handoff: --help, --with-backup, or a flag only backups read sends the
-// whole command line to Bash, which validates it as before.
-func Handoff(args []string) bool {
-	for _, a := range args {
-		switch {
-		case a == "-h", a == "--help", a == "--with-backup",
-			a == "--no-backup-env", strings.HasPrefix(a, "--backup-"):
-			return true
-		}
-	}
-	return false
+// BackupFlags are the --backup-* flags as given, each checked at parse.
+type BackupFlags struct {
+	RepoBase               string
+	At, Jitter, Timeout    string
+	Daily, Weekly, Monthly string
+	Env                    []string
+	NoEnv                  bool
+	// Pass is each --backup-password=<repo>=<password>, whole. Secrets.
+	Pass []string
 }
 
 const unknownFlags = "--apps-path=, --data-path=, --domain=, --email=, --traefik-auth=, --acme-staging, --reset-acme/--keep-acme, --with-mail/--no-mail, --postmaster-password=, --with-backup/--no-backup, --backup-repo-base=, --backup-env=/--no-backup-env, --backup-password=, --backup-at=, --backup-jitter=, --backup-keep-daily=/-weekly=/-monthly=, --backup-timeout=, --yes"
 
-// Parse is _server_init_parse_args for the flags Handoff leaves here.
+// Parse is the command line, every value checked before anything is opened.
 func Parse(args []string) (Options, error) {
 	var o Options
 	var apps, data string
@@ -91,8 +91,46 @@ func Parse(args []string) (Options, error) {
 			err = CheckPostmaster(o.Postmaster)
 		case a == "--no-mail":
 			err = o.Mail.Set(prompt.No, prompt.Feature("mail"), "server init")
+		case a == "--with-backup":
+			err = o.Backup.Set(prompt.Yes, prompt.Feature("backup"), "server init")
 		case a == "--no-backup":
 			err = o.Backup.Set(prompt.No, prompt.Feature("backup"), "server init")
+		// The base is named in every report, redacted; the env and password
+		// values are never echoed at all.
+		case hasVal && name == "--backup-repo-base":
+			o.Bk.RepoBase = strings.TrimSuffix(val, "\r")
+			err = backup.CheckRepoBase("server init", "--backup-repo-base=", o.Bk.RepoBase)
+		case hasVal && name == "--backup-env":
+			if err = backup.CheckEnvEntry("server init", "--backup-env=", val); err == nil {
+				o.Bk.Env = append(o.Bk.Env, val)
+			}
+		case a == "--no-backup-env":
+			o.Bk.NoEnv = true
+		case hasVal && name == "--backup-password":
+			if _, _, err = backup.SplitPassword("server init", val); err == nil {
+				o.Bk.Pass = append(o.Bk.Pass, val)
+			}
+		case hasVal && name == "--backup-at":
+			o.Bk.At = strings.TrimSuffix(val, "\r")
+			err = backup.CheckAt("server init", o.Bk.At)
+		case hasVal && name == "--backup-jitter":
+			o.Bk.Jitter = strings.TrimSuffix(val, "\r")
+			_, err = backup.CheckJitter("server init", o.Bk.Jitter)
+		case hasVal && name == "--backup-keep-daily":
+			o.Bk.Daily = val
+			_, err = backup.CheckKeep("server init", "--backup-keep-daily=", val)
+		case hasVal && name == "--backup-keep-weekly":
+			o.Bk.Weekly = val
+			_, err = backup.CheckKeep("server init", "--backup-keep-weekly=", val)
+		case hasVal && name == "--backup-keep-monthly":
+			o.Bk.Monthly = val
+			_, err = backup.CheckKeep("server init", "--backup-keep-monthly=", val)
+		case hasVal && name == "--backup-timeout":
+			o.Bk.Timeout = strings.TrimSuffix(val, "\r")
+			_, err = backup.CheckTimeout("server init", o.Bk.Timeout)
+		case a == "-h", a == "--help":
+			o.Help = true
+			return o, nil
 		case strings.HasPrefix(a, "-"):
 			// Only the name: a mistyped --traefik-auths=admin:pw must not
 			// print the password.
@@ -129,23 +167,6 @@ func Parse(args []string) (Options, error) {
 		return o, cli.Fail("server init: --data-path=%s must not be a directory above the apps path %s", o.Data, o.Apps)
 	}
 	return o, nil
-}
-
-// ForBash is the command line handed to the Bash tool, when backups are
-// wanted, once both feature questions are answered here: it asks neither again.
-func ForBash(args []string, mail, backup bool) []string {
-	out := append([]string{"server", "init"}, args...)
-	if mail {
-		out = append(out, "--with-mail")
-	} else {
-		out = append(out, "--no-mail")
-	}
-	if backup {
-		out = append(out, "--with-backup")
-	} else {
-		out = append(out, "--no-backup")
-	}
-	return out
 }
 
 // isCntrl is `[[:cntrl:]]` under C.UTF-8.

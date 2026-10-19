@@ -436,7 +436,7 @@ func (p *Plan) Report(w io.Writer) {
 	} else {
 		fmt.Fprintf(w, "  backups     stop and remove the %s stack: container %s (%s),\n", BackupProject, BackupContainer, s.BackupContainer)
 		fmt.Fprintf(w, "              volume %s (%s), network %s (%s),\n", BackupVolume, s.BackupVolume, BackupNetwork, s.BackupNetwork)
-		fmt.Fprintf(w, "              and %s/.kasbah/backup/ (%s) — compose.yml, backup.sh, the\n", p.Apps, s.BackupDir)
+		fmt.Fprintf(w, "              and %s/.kasbah/backup/ (%s) — compose.yml, the run record, the\n", p.Apps, s.BackupDir)
 		fmt.Fprintf(w, "              credentials in env, and every repository password\n")
 	}
 	if len(p.Projects) == 0 {

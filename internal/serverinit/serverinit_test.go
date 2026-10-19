@@ -77,23 +77,6 @@ func TestParse(t *testing.T) {
 	}
 }
 
-func TestHandoff(t *testing.T) {
-	for _, a := range []string{"--with-backup", "--help", "-h", "--backup-at=03:00", "--backup-repo-base=s3:x/", "--no-backup-env", "--backup-at"} {
-		if !Handoff([]string{"a@b", a}) {
-			t.Errorf("%s stays in Go", a)
-		}
-	}
-	for _, a := range []string{"--no-mail", "--with-mail", "--postmaster-password=x", "--no-backup", "--keep-acme", "--apps-path=/x", "--yes"} {
-		if Handoff([]string{"a@b", a}) {
-			t.Errorf("%s goes to Bash", a)
-		}
-	}
-	got := strings.Join(ForBash([]string{"a@b", "--no-mail"}, false, true), " ")
-	if got != "server init a@b --no-mail --no-mail --with-backup" {
-		t.Errorf("ForBash: %q", got)
-	}
-}
-
 func TestParseMail(t *testing.T) {
 	o, err := Parse([]string{"a@b", "--with-mail", "--postmaster-password=pw:x\r"})
 	if err != nil || o.Mail != prompt.Yes || o.Postmaster != "pw:x" {
