@@ -1308,10 +1308,10 @@ printf 'state=running\ndeadline=999999999999999999\n' > "$run_state_dir/status"
 out=$(run_runner_all health); rc=$?
 assert '[ "$rc" = "0" ]' "an 18-digit deadline is compared, not refused (exit $rc: $out)"
 
-# One rule, two implementations. lib/backup_record.sh's `_bkr_epoch` is bash on a
-# workstation; the runner's `is_epoch` is POSIX sh inside a container that can
-# source nothing, so the code cannot be shared and the *answers* are pinned
-# instead. This is the drift that shipped: the runner went on admitting any digit
+# One rule, two implementations. internal/backuprec's Epoch is the
+# workstation's, reached through the hidden `kasbah __backup-record`; the
+# runner's `is_epoch` is POSIX sh inside a container that can source nothing,
+# so the code cannot be shared and the *answers* are pinned instead. This is the drift that shipped: the runner went on admitting any digit
 # string long after the reader stopped.
 epoch_fn="$tmpdir/is_epoch.sh"
 {
@@ -1323,10 +1323,9 @@ assert '[ "$(grep -c "" "$epoch_fn")" -gt 4 ]' \
 for v in 0 1 1787000000 999999999999999999 01700000000 01999000009 \
          1000000000000000000 999999999999999999999999 "" abc 12a -1 "+1" " 1" "1 " 007; do
     runner_says=$($runner_sh "$epoch_fn" "$v")
-    lib_says=$(bash -c '. "$KASBAH_LIB_DIR/common.sh"; . "$KASBAH_LIB_DIR/backup_record.sh"
-        if _bkr_epoch "$1" v; then echo yes; else echo no; fi' _ "$v")
+    lib_says=$("$kasbah" __backup-record epoch "$v")
     assert '[ "$runner_says" = "$lib_says" ]' \
-        "is_epoch and _bkr_epoch agree on '$v' (runner said '$runner_says', lib said '$lib_says')"
+        "is_epoch and backuprec.Epoch agree on '$v' (runner said '$runner_says', kasbah said '$lib_says')"
 done
 
 # A real run leaves the record behind: what ran, when it finished, and how it
@@ -1440,7 +1439,7 @@ llr_case() {
 # The gate is all-or-nothing, so this is the whole assertion every time: a
 # record short of four good fields yields the four a fresh runner yields, and
 # not a mixture of its own good fields and this script's placeholders — that
-# mixture is a pair of values no run ever wrote, and lib/check_server.sh reads
+# mixture is a pair of values no run ever wrote, and check --server (B01) reads
 # `ok` beside a repos field of `-` as a backup that succeeded.
 llr_none() {
     assert 'grep -qxF "last_run_started=0" <<<"$2"'  "$1: no start is carried (record: $2)"
@@ -1471,14 +1470,12 @@ seed_record 'state=sleeping' "deadline=$(( $(date +%s) + 600 ))" "next_run=$(( $
             'last_run_status=ok'
 rec=$(sched_record)
 llr_none "a record truncated mid-write, after last_run_status" "$rec"
-# And judged by the reader that would have to live with it: lib/backup_record.sh
+# And judged by the reader that would have to live with it: internal/backuprec
 # is the workstation half of this file, and `never` is the verdict that keeps
 # B01 out of its ✓ arm. Asserted against the real function rather than reasoned
 # about, because the flip this case exists for happens in the reader.
 record_verdict() {
-    bash -c '. "$KASBAH_LIB_DIR/common.sh"; . "$KASBAH_LIB_DIR/backup_record.sh"
-        backup_record_read dir file "$1" "$(date +%s)" >/dev/null 2>&1 || true
-        printf "%s|%s" "$BKR_VERDICT" "$BKR_STATUS"' _ "$1"
+    printf '%s' "$1" | "$kasbah" __backup-record read "$(date +%s)" | tr -d '\n'
 }
 verdict=$(record_verdict "$rec")
 assert '[ "$verdict" = "never|-" ]' \

@@ -42,8 +42,8 @@ commands not named as writers below write nothing — `check` (but see `--fix`),
 
 | Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |
 |---|---|---|---|---|---|---|---|
-| `<project-dir>/kasbah.yml` | `init-project`; `check --fix` (temp + rename) | every project command | YAML → `project-manifest.md` | umask on create; `--fix` keeps the original's (`chmod --reference`) | `deploy` | never removed by kasbah | `internal/initproject/initproject.go:137`, `internal/check/fix.go:703` (Bash: `lib/check_fix.sh`, for `--fix --server`) |
-| `<project-dir>/compose.prod.yml` | `check --fix` (edits, never creates) | `build-push`, `deploy`, `check` | YAML → `compliance.md` (`--fix`) | the original's | `deploy` | never removed | `internal/check/fix.go:703` (Bash: `lib/check_fix.sh`, for `--fix --server`) |
+| `<project-dir>/kasbah.yml` | `init-project`; `check --fix` (temp + rename) | every project command | YAML → `project-manifest.md` | umask on create; `--fix` keeps the original's (`chmod --reference`) | `deploy` | never removed by kasbah | `internal/initproject/initproject.go:137`, `internal/check/fix.go:703` |
+| `<project-dir>/compose.prod.yml` | `check --fix` (edits, never creates) | `build-push`, `deploy`, `check` | YAML → `compliance.md` (`--fix`) | the original's | `deploy` | never removed | `internal/check/fix.go:703` |
 | `<project-dir>/*.kasbah-fix.<pid>` | `check --fix` staging, one per file fixed, beside what the file resolves to (a symlink's target), so the commit is a plain rename | `diff`, the guard, the re-plan | YAML candidate | `600`, then the original's | `deploy` | *transient*: renamed, or removed by the `atexit` stack (Bash: the EXIT trap); SIGKILL leaves it | `internal/check/fix.go:703`, cleanup `:788` |
 | `<project-dir>/.env.prod.example` | `init-project` | `env`, `check`, the deploy sync | text → `env-template.md` | umask | `deploy` | created once, never rewritten | `internal/initproject/initproject.go:140` |
 | `<project-dir>/.gitignore` | `init-project` appends `.env` and `.kasbah/` | `check` S05/S06 | text | umask if created | `deploy` | never removed | `internal/initproject/initproject.go:178` |

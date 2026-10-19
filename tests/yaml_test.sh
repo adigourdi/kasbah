@@ -12,8 +12,8 @@
 # cell asserting that yaml_query prints what `yq -r` prints and exits the way it
 # exits. The documents are the ones that break readers — empty, comments-only,
 # CRLF, multi-document, unparseable — and the filters include one that fails at
-# runtime, because the fallbacks throughout lib/check.sh (`|| true`, `|| echo
-# false`) are contracts about a non-zero exit.
+# runtime, because the Bash readers' fallbacks (`|| true`, `|| echo false`)
+# are contracts about a non-zero exit.
 #
 # Around it, the four facts the cache adds that no filter can show: a reload
 # replaces, a forget drops, a query after the file changed answers from the
@@ -82,16 +82,15 @@ printf 'a: 1\n\tb: 2\n' > "$tmpdir/broken.yml"
 docs=(compose.yml empty.yml comments.yml crlf.yml multidoc.yml broken.yml)
 
 # --- The filters ---------------------------------------------------------------
-# `.` is the parse probe two sections of lib/check.sh use. The rest are the
-# shapes the rules ask in: a keys listing, a `// ""` default, a `has()` presence
+# `.` is the parse probe. The rest are the shapes the readers ask in: a keys listing, a `// ""` default, a `has()` presence
 # test, an indexed scalar, a list splat.
 #
 # The last one is the cell that matters most: `has()` against the *scalar*
 # multidoc.yml puts at `.a` is a jq runtime error, exit 5 — which is the status
-# `_cf_has` turns into a false and the reason yaml_query hands jq's own status
+# a caller's `|| echo false` turns into a false and the reason yaml_query hands jq's own status
 # back rather than flattening it. `has()` on a null is not that case (jq answers
 # false, exit 0), so a filter that only ever reaches a null would leave the
-# fallbacks in lib/check.sh untested; the counter below refuses to let that
+# fallbacks untested; the counter below refuses to let that
 # happen again silently.
 filters=(
     '.'
@@ -110,7 +109,7 @@ filters=(
 runtime_errors=0
 for d in "${docs[@]}"; do
     f="$tmpdir/$d"
-    # Loaded up front, the way cmd_check loads the files it is about to
+    # Loaded up front, the way a reader loads the files it is about to
     # interrogate; the miss path gets its own case below.
     yaml_load "$f" >/dev/null 2>&1
     for filt in "${filters[@]}"; do

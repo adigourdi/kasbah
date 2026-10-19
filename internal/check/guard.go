@@ -7,9 +7,9 @@ import (
 // The guard: a candidate is written only when its parsed tree is the
 // original's with exactly the planned edits applied. A text edit that lands
 // where the scanner misread the file — inside a block scalar, under an alias —
-// changes some other value, and that is refused rather than shipped. lib/
-// check_fix.sh asks jq the same question, with the same setpath / delpaths
-// semantics, over every document of the file.
+// changes some other value, and that is refused rather than shipped. The
+// comparison has jq's setpath / delpaths semantics, over every document of the
+// file.
 
 // edit is one planned change to the tree: set a value, delete a key, append to
 // a sequence (null is an empty one), or mask — a rewritten scalar, whose new

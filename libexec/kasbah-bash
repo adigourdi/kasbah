@@ -112,10 +112,6 @@ dispatch_server() {
             . "$KASBAH_LIB_DIR/server_init.sh"
             cmd_server_init "$@"
             ;;
-        status)
-            . "$KASBAH_LIB_DIR/server_status.sh"
-            cmd_server_status "$@"
-            ;;
         prune)
             . "$KASBAH_LIB_DIR/prune.sh"
             cmd_server_prune "$@"
@@ -176,10 +172,6 @@ dispatch() {
         init-project)
             . "$KASBAH_LIB_DIR/init_project.sh"
             cmd_init_project "$@"
-            ;;
-        check)
-            . "$KASBAH_LIB_DIR/check.sh"
-            cmd_check "$@"
             ;;
         drop)
             . "$KASBAH_LIB_DIR/drop.sh"

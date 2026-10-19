@@ -135,8 +135,8 @@ assert 'grep -qxF "apps=/srv/apps data=/srv/store cpu=1.0 mem=2g" <<<"$out"' \
 # read a *different* server's marker and deploy against it, so kasbah does not —
 # and says so. The code is 4, the same one every "no marker where the apps path
 # says one should be" carries (docs/cli.md → exit codes): it is one server
-# state, and `kasbah server status` reaches it through _ss_no_marker and answers
-# 4 as well. What is particular to this case is the message, not the number.
+# state, and `kasbah server status` reaches it through the same probe and
+# answers 4 as well. What is particular to this case is the message, not the number.
 run_marker POINTER=/srv/apps MARKER_RC=3
 assert '[ "$rc" = "4" ]' \
     "a pointer naming a tree with no marker exits 4, like every other missing marker (rc $rc: $out)"

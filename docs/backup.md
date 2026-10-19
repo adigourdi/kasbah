@@ -61,7 +61,7 @@ record — the schedule, the container's state and health, when the last run was
 and how it went, which repositories exist and which lack a password — and
 `kasbah check --server` asks the same question as a rule (**B01**,
 `compliance.md`), failing a stack whose last run failed or whose state has
-outlived its own deadline. They share `lib/backup_record.sh`. The **third** reader is the container's own
+outlived its own deadline. They share one parser, `internal/backuprec`. The **third** reader is the container's own
 healthcheck, which runs inside the stack and so cannot source a workstation
 library — it carries its own copy of the same rule, in POSIX `sh`, and the two
 are pinned against each other by a test driving the identical values through

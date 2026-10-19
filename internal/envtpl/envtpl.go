@@ -71,6 +71,11 @@ func Keys(path string) []string {
 	if err != nil {
 		return nil
 	}
+	return KeysOf(data)
+}
+
+// KeysOf is Keys over a file's bytes.
+func KeysOf(data []byte) []string {
 	var keys []string
 	for _, l := range Lines(data) {
 		if k, _, ok := Assign(l); ok {
@@ -80,19 +85,24 @@ func Keys(path string) []string {
 	return keys
 }
 
-func driftKeys(path string) []string {
-	var keys []string
-	for _, k := range Keys(path) {
+func driftKeys(keys []string) []string {
+	var out []string
+	for _, k := range keys {
 		if !strings.HasPrefix(k, ReservedPrefix) {
-			keys = append(keys, k)
+			out = append(out, k)
 		}
 	}
-	return SortUniq(keys)
+	return SortUniq(out)
 }
 
 // Drift is what the template has and the .env lacks (missing), and the
 // reverse (extra), each in byte order. Values are never compared.
 func Drift(template, env string) (missing, extra []string) {
+	return DriftKeys(Keys(template), Keys(env))
+}
+
+// DriftKeys is Drift over the two files' keys, as Keys or KeysOf read them.
+func DriftKeys(template, env []string) (missing, extra []string) {
 	t, e := driftKeys(template), driftKeys(env)
 	in := func(ss []string) map[string]bool {
 		m := map[string]bool{}

@@ -20,7 +20,7 @@ import (
 // R01–R03 and the kasbah_version backfill, in compose.prod.yml and kasbah.yml
 // only, as targeted edits over the existing bytes — never a YAML round trip,
 // which would drop the comments compose files carry. Every verdict comes from
-// the parsed documents, asked the way lib/check_fix.sh asked jq; the line
+// the parsed documents, asked with jq's semantics; the line
 // scanner only finds where a key is written. A staged candidate must parse,
 // keep its keys and re-plan to nothing before it is shown.
 

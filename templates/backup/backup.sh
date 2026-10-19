@@ -416,11 +416,11 @@ write_sleeping() {
 }
 
 # One epoch field of the status file, admitted only when this shell can do
-# arithmetic on it. **This is lib/backup_record.sh's `_bkr_epoch` rule, written
-# out a second time**, because there is one rule and there have to be two
-# implementations: that one is bash on a workstation, this one is POSIX sh
-# inside the restic image, and a script in a container can source nothing. The
-# workstation copy carries the same note.
+# arithmetic on it. **This is internal/backuprec's Epoch rule, written out a
+# second time**, because there is one rule and there have to be two
+# implementations: that one is the Go binary on a workstation, this one is POSIX
+# sh inside the restic image, and a script in a container can source nothing.
+# tests/backup_test.sh and backuprec's own tests pin the two together.
 #
 # A digits-only gate is not a type check, and it fails at three points. A
 # leading zero makes `01999000009` an invalid octal literal — a fatal error on
@@ -472,7 +472,7 @@ status_field() {
 # record is a file and a file can be truncated mid-write: one cut after
 # `last_run_status=ok` would otherwise be carried on as `ok` beside the
 # no-history placeholder for the repository list, which is a pair no run ever
-# writes and which lib/check_server.sh reads as a backup that succeeded. Short
+# writes and which check --server's B01 reads as a backup that succeeded. Short
 # of four good fields, this process starts where a runner with no history does.
 #
 # No CR stripping, and the gate is why none is needed. This is a

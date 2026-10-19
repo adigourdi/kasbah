@@ -433,7 +433,7 @@ assert '! grep -qF "is exited, so nothing is being shipped off-box" <<<"$out"' \
 assert '[ "$rc" = "6" ]' "and what is left is the run the record carried across the restart (exit $rc)
 $out
 $(cli_err)"
-# `[0-9]+[smh]` and not `[0-9]+s`: backup_record_ago switches to minutes at 60
+# `[0-9]+[smh]` and not `[0-9]+s`: backuprec.Ago switches to minutes at 60
 # seconds, and the gap between State 3's run and this read is about half of that
 # on a rig that is a container on this machine. A suite that goes red on a slow
 # day pins the day, not the behaviour.

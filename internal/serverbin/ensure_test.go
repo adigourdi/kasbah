@@ -104,8 +104,13 @@ func (s *scratch) point(body string) {
 	os.WriteFile(s.pointer, []byte(body), 0o644)
 }
 
-func (s *scratch) probe(explicit string) (int, []byte) {
-	cmd := exec.Command("sh", "-s", "--", s.apps, s.pointer, explicit, "2")
+func (s *scratch) probe(explicit string) (int, []byte) { return s.run(explicit, "") }
+
+// probeP is the probe as a Prepared run sends it, the marker included.
+func (s *scratch) probeP(explicit string) (int, []byte) { return s.run(explicit, "yes") }
+
+func (s *scratch) run(explicit, prepared string) (int, []byte) {
+	cmd := exec.Command("sh", "-s", "--", s.apps, s.pointer, explicit, "2", prepared)
 	cmd.Stdin = strings.NewReader(probeScript)
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -120,7 +125,7 @@ func TestProbe(t *testing.T) {
 	t.Run("nothing prepared", func(t *testing.T) {
 		s := newScratch(t)
 		rc, out := s.probe("")
-		_, err := judge("d@h", rc, out)
+		_, err := judge("d@h", rc, out, Options{})
 		var e *cli.Error
 		if !errors.As(err, &e) || e.Code != cli.ExitNoRemoteState || !strings.Contains(err.Error(), "`kasbah server init`") || strings.Contains(err.Error(), "init d@h") {
 			t.Fatalf("got %v; want exit 4 naming kasbah server init, and no runnable bare init", err)
@@ -130,7 +135,7 @@ func TestProbe(t *testing.T) {
 		s := newScratch(t)
 		s.marker(s.apps)
 		rc, out := s.probe("")
-		p, err := judge("d@h", rc, out)
+		p, err := judge("d@h", rc, out, Options{})
 		if err != nil || p.Apps != s.apps || p.Source != "default" || p.Bin.Present || p.Machine == "" {
 			t.Errorf("got %+v, %v", p, err)
 		}
@@ -142,7 +147,7 @@ func TestProbe(t *testing.T) {
 		s.point(other + "/./\r\n")
 		fake(t, Path(other), "0.1.0-dev.1.1", "warn", 0o755)
 		rc, out := s.probe("")
-		p, err := judge("d@h", rc, out)
+		p, err := judge("d@h", rc, out, Options{})
 		if err != nil || p.Apps != other || p.Source != "pointer" || !p.Bin.Present || p.Bin.RC != 0 ||
 			p.Bin.Stdout != "build=0.1.0-dev.1.1 protocol=1 min_protocol=1" || !runnableHere(p.Bin.Head, runtime.GOARCH) {
 			t.Errorf("got %+v, %v", p, err)
@@ -154,7 +159,7 @@ func TestProbe(t *testing.T) {
 		s.marker(other)
 		s.point(other)
 		rc, out := s.probe("")
-		p, err := judge("d@h", rc, out)
+		p, err := judge("d@h", rc, out, Options{})
 		if err != nil || p.Apps != other {
 			t.Errorf("got %+v, %v; want the pointer's path", p, err)
 		}
@@ -164,7 +169,7 @@ func TestProbe(t *testing.T) {
 		s.marker(s.apps)
 		s.point(filepath.Join(s.root, "gone") + "\n")
 		rc, out := s.probe("")
-		_, err := judge("d@h", rc, out)
+		_, err := judge("d@h", rc, out, Options{})
 		var e *cli.Error
 		if !errors.As(err, &e) || e.Code != cli.ExitNoRemoteState || !strings.Contains(err.Error(), "does not fall back") {
 			t.Errorf("got %v; want exit 4 refusing the fallback", err)
@@ -176,12 +181,12 @@ func TestProbe(t *testing.T) {
 		os.MkdirAll(dir, 0o755)
 		s.point("/elsewhere\n")
 		rc, out := s.probe(dir + "/")
-		p, err := judge("d@h", rc, out)
+		p, err := judge("d@h", rc, out, Options{})
 		if err != nil || p.Apps != dir || p.Source != "explicit" || p.Marker {
 			t.Errorf("got %+v, %v", p, err)
 		}
 		rc, out = s.probe(filepath.Join(s.root, "missing"))
-		if _, err := judge("d@h", rc, out); err == nil || !strings.Contains(err.Error(), "no directory") {
+		if _, err := judge("d@h", rc, out, Options{}); err == nil || !strings.Contains(err.Error(), "no directory") {
 			t.Errorf("an explicit path that does not exist: %v", err)
 		}
 	})
@@ -190,7 +195,7 @@ func TestProbe(t *testing.T) {
 		s.marker(s.apps)
 		fake(t, Path(s.apps), "9.0.0", "", 0o644)
 		rc, out := s.probe("")
-		p, err := judge("d@h", rc, out)
+		p, err := judge("d@h", rc, out, Options{})
 		if err != nil || !p.Bin.Present || !p.Bin.Regular || p.Bin.Executable || p.Bin.RC != -1 {
 			t.Errorf("got %+v, %v; want a present, unexecuted binary", p, err)
 		}
@@ -200,7 +205,7 @@ func TestProbe(t *testing.T) {
 		s.marker(s.apps)
 		fake(t, Path(s.apps), "9.0.0", "exit3", 0o755)
 		rc, out := s.probe("")
-		p, err := judge("d@h", rc, out)
+		p, err := judge("d@h", rc, out, Options{})
 		if err != nil || p.Bin.RC != 3 || p.Bin.Stdout != "" || p.Bin.Stderr != "boom: out of memory" {
 			t.Errorf("got %+v, %v; want rc 3 with its stderr kept apart", p.Bin, err)
 		}
@@ -225,7 +230,7 @@ func TestProbe(t *testing.T) {
 			s.marker(s.apps)
 			tt.setup(s)
 			rc, out := s.probe("")
-			_, err := judge("d@h", rc, out)
+			_, err := judge("d@h", rc, out, Options{})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("rc %d, %v; want a refusal saying %q (output %q)", rc, err, tt.want, out)
 			}
@@ -235,11 +240,11 @@ func TestProbe(t *testing.T) {
 
 func TestParseProbeTruncated(t *testing.T) {
 	for _, out := range []string{"", "apps=/apps\n", "source=default\napps=/apps\n", "garbage\n"} {
-		if _, err := judge("d@h", 0, []byte(out)); err == nil {
+		if _, err := judge("d@h", 0, []byte(out), Options{}); err == nil {
 			t.Errorf("a truncated probe %q was absorbed", out)
 		}
 	}
-	if _, err := judge("d@h", 1, []byte("apps=/apps\nsource=default\n")); err == nil {
+	if _, err := judge("d@h", 1, []byte("apps=/apps\nsource=default\n"), Options{}); err == nil {
 		t.Error("an unexpected probe status was absorbed")
 	}
 }
@@ -489,5 +494,141 @@ func TestInstallSelf(t *testing.T) {
 	os.Mkdir(dest, 0o755)
 	if out, err := exec.Command(self, "remote", "install-self", dest).CombinedOutput(); err == nil || !strings.Contains(string(out), "not a regular file") {
 		t.Errorf("over a directory: %q, %v", out, err)
+	}
+}
+
+var prepared = Options{Prepared: func(body []byte, apps string) error {
+	if !bytes.HasPrefix(bytes.TrimSpace(body), []byte("{")) {
+		return cli.Fail("marker under %s refused", apps)
+	}
+	return nil
+}}
+
+func TestProbePrepared(t *testing.T) {
+	code := func(err error) int {
+		var e *cli.Error
+		if !errors.As(err, &e) {
+			return 0
+		}
+		return e.Code
+	}
+	t.Run("explicit, no marker: exit 4, nothing to ship to", func(t *testing.T) {
+		s := newScratch(t)
+		os.MkdirAll(s.apps, 0o755)
+		rc, out := s.probeP(s.apps)
+		if _, err := judge("d@h", rc, out, prepared); code(err) != cli.ExitNoRemoteState || !strings.Contains(err.Error(), "--apps-path") {
+			t.Fatalf("got %v; want exit 4 naming --apps-path", err)
+		}
+		if p, err := judge("d@h", rc, out, Options{}); err != nil || p.Apps != s.apps {
+			t.Fatalf("init's mode needs no marker: got %+v, %v", p, err)
+		}
+	})
+	t.Run("explicit, absent: exit 4", func(t *testing.T) {
+		s := newScratch(t)
+		rc, out := s.probeP(filepath.Join(s.root, "nowhere"))
+		if _, err := judge("d@h", rc, out, prepared); code(err) != cli.ExitNoRemoteState {
+			t.Fatalf("got %v; want exit 4", err)
+		}
+	})
+	t.Run("not a directory: exit 1, in either mode", func(t *testing.T) {
+		s := newScratch(t)
+		os.MkdirAll(filepath.Dir(s.apps), 0o755)
+		os.WriteFile(s.apps, []byte("x"), 0o644)
+		for _, explicit := range []string{"", s.apps} {
+			rc, out := s.probeP(explicit)
+			if _, err := judge("d@h", rc, out, prepared); code(err) != cli.ExitFailure || !strings.Contains(err.Error(), "not a directory") {
+				t.Fatalf("explicit=%q: got %v; want exit 1, not a directory", explicit, err)
+			}
+		}
+	})
+	t.Run("explicit, prepared", func(t *testing.T) {
+		s := newScratch(t)
+		s.marker(s.apps)
+		rc, out := s.probeP(s.apps)
+		if p, err := judge("d@h", rc, out, prepared); err != nil || p.Source != "explicit" {
+			t.Fatalf("got %+v, %v", p, err)
+		}
+	})
+	t.Run("a broken marker is judged before anything ships", func(t *testing.T) {
+		for _, body := range []string{"", "not json", "{\"apps_path\":\"/apps\"}"} {
+			s := newScratch(t)
+			s.marker(s.apps)
+			os.WriteFile(filepath.Join(s.apps, ".kasbah", "server.json"), []byte(body), 0o644)
+			rc, out := s.probeP("")
+			_, err := judge("d@h", rc, out, prepared)
+			if ok := strings.HasPrefix(body, "{"); (err == nil) != ok {
+				t.Errorf("marker %q: %v", body, err)
+			}
+			if _, err := judge("d@h", rc, out, Options{}); err != nil {
+				t.Errorf("init's mode does not judge the marker: %v", err)
+			}
+		}
+	})
+	t.Run("an unreadable marker is refused", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("root reads every mode")
+		}
+		s := newScratch(t)
+		s.marker(s.apps)
+		mk := filepath.Join(s.apps, ".kasbah", "server.json")
+		os.Chmod(mk, 0)
+		t.Cleanup(func() { os.Chmod(mk, 0o644) })
+		rc, out := s.probeP("")
+		if _, err := judge("d@h", rc, out, prepared); err == nil || !strings.Contains(err.Error(), "could not be read") {
+			t.Errorf("got %v", err)
+		}
+	})
+}
+
+func TestExitText(t *testing.T) {
+	for rc, want := range map[int]string{124: "it did not finish within 120 s", 137: "it did not finish within 120 s", -1: "ssh could not run, or was killed by a signal", 3: "it exited 3"} {
+		if got := ExitText(rc, 120); got != want {
+			t.Errorf("ExitText(%d) = %q, want %q", rc, got, want)
+		}
+	}
+}
+
+// A marker far past bufio's default 64 KiB line: every line after it still
+// reads, and a line past the bound is a refusal, never a short read.
+func TestBigMarker(t *testing.T) {
+	big := []byte(`{"apps_path":"/apps","pad":"` + strings.Repeat("x", 40*1024) + `"}`)
+	out := "apps=/apps\nsource=default\napps_dir=yes\nmarker=yes\nmarker_hex=" + fmt.Sprintf("%x", big) + "\nmachine=x86_64\nbin=absent\n"
+	p, err := ParseProbe([]byte(out))
+	if err != nil || !bytes.Equal(p.MarkerBody, big) || p.Machine != "x86_64" {
+		t.Fatalf("got %v, body %d bytes, machine %q", err, len(p.MarkerBody), p.Machine)
+	}
+	huge := "apps=/apps\nsource=default\nmarker_hex=" + strings.Repeat("ab", 1<<20) + "\nmachine=x86_64\n"
+	if _, err := ParseProbe([]byte(huge)); err == nil || !strings.Contains(err.Error(), "too long") {
+		t.Errorf("an over-long line: %v", err)
+	}
+	if _, err := judge("d@h", 0, []byte(huge), Options{}); err == nil || len(err.Error()) > 2000 {
+		t.Errorf("the refusal quotes the probe clipped: %d bytes", len(err.Error()))
+	}
+
+	const ours = "0.1.0-dev.142.1760790000"
+	for _, prep := range []bool{false, true} {
+		stubSSH(t)
+		s := newScratch(t)
+		s.marker(s.apps)
+		os.WriteFile(filepath.Join(s.apps, ".kasbah", "server.json"), big, 0o644)
+		local := filepath.Join(s.root, "local", "kasbah-linux")
+		fake(t, local, ours, "", 0o755)
+		c, err := ssh.Connect("d@h")
+		if err != nil {
+			t.Fatal(err)
+		}
+		opt := Options{}
+		var seen []byte
+		if prep {
+			opt.Prepared = func(body []byte, apps string) error { seen = body; return nil }
+		}
+		res, err := Ensure(c, remote.Self(ours), func(string) (string, error) { return local, nil }, opt)
+		c.Close()
+		if err != nil || res.Action != remote.Ship {
+			t.Fatalf("prepared=%v: %+v, %v", prep, res, err)
+		}
+		if prep != bytes.Equal(seen, big) || prep != bytes.Equal(res.Marker, big) {
+			t.Errorf("prepared=%v: the marker was judged on %d bytes, carried %d", prep, len(seen), len(res.Marker))
+		}
 	}
 }

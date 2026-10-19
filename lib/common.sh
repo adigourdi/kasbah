@@ -83,7 +83,7 @@ KASBAH_APPS_POINTER=/etc/kasbah/apps-path
 # kasbah_norm_path OUTVAR VALUE — a path reduced to the one spelling kasbah
 # compares: CR and trailing blanks off, empty and `.` segments dropped, no
 # trailing slash. `/apps/`, `//apps` and `/apps/.` all name `/apps`, and every
-# path flag is stored this way (`_server_init_path`, `_ss_apps_path`), so a
+# path flag is stored this way (`_server_init_path`, status's Go parse), so a
 # value read back off a server has to be reduced the same way before it can be
 # compared with one. `..` is kept as a segment: the flags reject one outright,
 # so a value carrying it compares unequal, which is the safe direction.
@@ -142,8 +142,8 @@ kasbah_norm_path() {
 # **A subshell cannot fill this cache.** Nearly every reader is written
 # `x="$(yaml_query …)"`, and a command substitution is a subshell: whatever it
 # converts dies with it. So the conversion has to be started from the shell the
-# rules run in — manifest_require loads kasbah.yml and cmd_check the two project
-# files, and the substitutions below them inherit the variables. yaml_query
+# reader runs in — e.g. manifest_require loads kasbah.yml — and the
+# substitutions below it inherit the variables. yaml_query
 # still converts on a miss, so a caller nobody preloaded for gets a correct
 # answer rather than an empty one; it just pays the fork.
 #
@@ -163,8 +163,8 @@ kasbah_norm_path() {
 # document *and* exit non-zero, which is what a multi-document file with one
 # broken document does; the JSON from a failed conversion is dropped rather than
 # half-kept, so every rule downstream sees "this file did not parse" instead of
-# the half of it that happened to survive. That is what cmd_check's own comment
-# has always claimed — one parse error short-circuits the compose rules cleanly.
+# the half of it that happened to survive — one parse error is one unreadable
+# file.
 #
 # A parse error is the one diagnostic a user needs (line and column), and it is
 # produced once while many rules go on to ask — so a failed conversion is asked
@@ -213,7 +213,7 @@ yaml_load() {
 # yaml_query FILE FILTER — print the filter's answer. Exit 2 when the document
 # does not parse (with yq's diagnostic on stderr), or jq's own status when the
 # filter fails at runtime — the same non-zero the `|| true` and `|| echo false`
-# fallbacks throughout lib/check.sh are written for.
+# fallbacks of the Bash readers are written for.
 yaml_query() {
     local _yq_f="$1" _yq_filter="$2"
     if [ -z "${_KASBAH_YAML_RC[$_yq_f]+set}" ]; then

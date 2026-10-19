@@ -646,7 +646,7 @@ assert '! grep -qE "(^|[;&|(\`[:space:]])(info|warn|err|err_cont|die)[[:space:]]
 # --- Case 24: every global a sourced lib/env.sh plus one env_setup_run adds ---
 # `before` is taken ahead of the `.`, so the pinned set is the file's source-time
 # globals *and* env_setup_run's — which is the set that matters, because
-# lib/check.sh sources this file into a live command. The verbatim port uses no
+# lib/server_destroy.sh sources this file into a live command. The verbatim port uses no
 # `local`, so every scalar the run touches lands in the caller's shell; adding
 # one is seen here rather than discovered inside kasbah deploy. `env -i` keeps
 # the ambient environment (DISPLAY, notably) out of the comparison.
@@ -697,7 +697,7 @@ assert '! grep -qE "\b(EXISTING|TEMPLATE_KEYS|TEMPLATE_KEY_SET|NEW_KEYS|DROPPED_
 
 # --- Case 25: the library half — lib_run sources and evaluates ---------------
 # The drift and injection helpers are never executed as a script; they are
-# called by lib/check.sh here and by the deploy path on the VPS. Positional
+# sourced by lib/server_destroy.sh, and pinned here as a library. Positional
 # arguments after the snippet arrive as "$1", "$2", …
 lib_run() {
     local snippet="$1"; shift
@@ -721,7 +721,7 @@ assert 'grep -qF "alive-missing" <<<"$out"'       "a missing file returns 0 (sai
 assert '[ "$(grep -c . <<<"$out")" = "2" ]'       "and neither prints anything (said '$out')"
 
 # --- Case 26: a final line with no newline is data ----------------------------
-# lib/check.sh's E01/E04 readers, grep, awk and docker compose all see it, so
+# kasbah's Go readers, grep, awk and docker compose all see it, so
 # every reader in lib/env.sh does too. The value at stake is a live one:
 # without it, reconfigure regenerates the last key from the template default.
 d=$(newdir t26)
@@ -1192,7 +1192,7 @@ assert '[ "$out" = "missing=[MY_KASBAH_URL] extra=[]" ]' \
        "an exported key that merely contains KASBAH_ is still the user's (got '$out')"
 
 # --- Case 30: what the drift and injection helpers leak -----------------------
-# Same pin as case 24, for the half lib/check.sh and the deploy path call.
+# Same pin as case 24, for the library half.
 d=$(newdir t30)
 printf 'A=1\n' > "$d/.env.prod.example"
 printf 'B=1\n' > "$d/.env"
@@ -1337,7 +1337,7 @@ assert 'grep -qF "unknown mode" <<<"$out"' "by name (said '$out')"
 assert 'grep -qF -- "--drift" <<<"$out"'   "and the message lists the modes there are (said '$out')"
 
 # Sourced, env_main is still the only entry point and the modes reach the same
-# functions — lib/check.sh sources this file and must not gain a dispatch.
+# functions — lib/server_destroy.sh sources this file and must not gain a dispatch.
 out=$(bash -c '
     set -euo pipefail
     . "$1"

@@ -550,7 +550,7 @@ is also why this is not something init can wait on.
 
 ## `kasbah server status`
 
-Read-only — it never creates, modifies or removes anything. Walks the apps
+It changes nothing but kasbah's own binary, brought up to date first. Walks the apps
 path, asks docker for every container's state and health, reads `versions.log`
 and the Traefik fragment for each project, asks `df` about the apps and data
 paths, reads Traefik's certificate store, and reads the backup stack's last-run
@@ -618,7 +618,7 @@ fetched base64 in the same round trip and parsed with the *workstation's* `yq`.
 fragment's rules is listed, once, in the order they appear.
 
 **Certificate expiry comes from `<data>/traefik/letsencrypt/acme.json`**,
-Traefik's own store, read by the same `lib/acme.sh` that answers
+Traefik's own store, read by the same `internal/acme` that answers
 `check --server`. The store holds the ACME account key and every certificate's
 private key: it is never written to disk, echoed, or quoted in a message, and
 the diagnostic that echoes a truncated probe back reports that one line by name

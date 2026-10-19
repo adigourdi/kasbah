@@ -261,7 +261,8 @@ ready-made parity suite.
       `lib/env.sh`; its VPS half moves in 10.6) — `internal/envtpl`
 - [x] `tests/check_test.sh` and `tests/init_project_test.sh` green against Go;
       plain `check` output rule-for-rule equal to Bash over the 13 projects —
-      `tests/check_parity_test.sh`: 672 projects (fixtures, the captured documents,
+      a parity harness (`tests/check_parity_test.sh`, retired in 10.10 with the Bash
+      it compared against): 672 projects (fixtures, the captured documents,
       ~300 edge cases, 79 checks lifted from `check_test.sh`), stdout and exit code
       equal with Bash under `C.UTF-8` and Go under five locales; also clean on
       `../gallery-website` and 40 sibling compose files. `check_test.sh` 2m18s, was ~4 min
@@ -509,9 +510,21 @@ after Traefik is healthy. The mail `.env` is `600` on every run.
 **Lighter spec — re-read before briefing.**
 
 **Deliverables**
-- [ ] `server status` (backup record included), `check --server` with R04 and T05
-- [ ] `server_status_test.sh` cases ported; `check_server_test.sh`,
-      `backup_status_test.sh` green
+- [x] `server status` (backup record included), `check --server` with R04 and T05 —
+      `internal/status`, `internal/check/server*.go`, one backup-record parser
+      (`internal/backuprec`), `internal/acme`; every form of `check` is Go. Over 22
+      runs on the same rig state the Bash and Go outputs matched exit code for exit
+      code and byte for byte, but for timing jitter and the deliberate registry
+      wording. **Deliberate:** both may update kasbah's own binary on the server
+      (never on an unprepared one, nor on a broken marker); a registry `mailreg`
+      refuses is M03's ✗ and a status line; a certificate expired within the day is
+      EXPIRED (Bash said "expires in 0 days"); issuer names pinned to OpenSSL 3.0's
+      oneline format; a backup record with NUL bytes reads as unparsed
+- [x] `server_status_test.sh` cases ported; `check_server_test.sh`,
+      `backup_status_test.sh` green — full `KASBAH_RIG_TESTS=1 ./test.sh` 48 PASS
+      (prune_test re-run after a Docker Hub DNS failure in the rig). Retired:
+      `lib/{check,check_fix,check_server,server_status,backup_record,acme}.sh`
+      (−10k lines with their suites)
 
 **Verify on:** rig; `vps` once for a real certificate.
 

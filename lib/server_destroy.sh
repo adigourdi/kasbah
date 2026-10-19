@@ -17,8 +17,7 @@ _KASBAH_SERVER_DESTROY_LOADED=1
 # payloads as arguments rather than copied into their heredocs: the sentinels
 # are frozen strings an older kasbah's block must still be recognised by
 # (lib/env.sh), and a copy on the far side of ssh is a copy no suite can see
-# drift in. lib/check.sh sources this file into kasbah's own shell for the same
-# reason — one definition of what a managed block looks like.
+# drift in — one definition of what a managed block looks like.
 . "$KASBAH_LIB_DIR/env.sh"
 
 # `kasbah server destroy USER@HOST` — the handover verb (docs/cli.md → server

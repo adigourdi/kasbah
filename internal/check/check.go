@@ -1,11 +1,11 @@
-// Package check is `kasbah check` without --server: the local rules of
-// docs/compliance.md, judged from the project directory alone, and --fix.
+// Package check is `kasbah check`: the local rules of docs/compliance.md,
+// judged from the project directory alone, --fix, and --server's rules.
 //
-// Each rule answers its question the way lib/check.sh's jq filter did under
-// LC_ALL=C.UTF-8 — per document, with jq's errors, fallbacks and exit
-// statuses — because a rule's verdict on an odd file was whatever that answer
-// was. Where the Bash asked under errexit, a failed filter ends the run with
-// the report cut short and jq's status as the exit code: 5 for a runtime
+// Each rule answers its question as a jq filter would under LC_ALL=C.UTF-8 —
+// per document, with jq's errors, fallbacks and exit statuses — because that
+// answer is the rule's verdict on an odd file (the parity kept from the Bash
+// tool). A failed filter ends the run with the report cut short and jq's
+// status as the exit code: 5 for a runtime
 // error (a scalar where an object belongs), 3 for a name that does not compile
 // into the filter; 1 for a template that cannot be read. Reported, these
 // collide with docs/cli.md's codes of the same numbers.
@@ -17,12 +17,14 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/envtpl"
 	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/state"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
 
@@ -45,6 +47,11 @@ type Env struct {
 	Fix, Yes bool
 	// Prompt asks that question; nil is the process's own stdin.
 	Prompt *prompt.Prompter
+	// Server is the target --server asks, "" for a local run; Dial reaches
+	// it, and Now is the clock certificates are judged by.
+	Server string
+	Dial   func(target string) (ServerSession, error)
+	Now    func() time.Time
 }
 
 func (e Env) prompter() *prompt.Prompter {
@@ -62,6 +69,7 @@ type checker struct {
 	cache            yamlx.Cache
 	m                *manifest.Manifest
 	pass, warn, fail int
+	srv              *server
 }
 
 // Run checks the project in the current directory and returns the exit code:
@@ -95,6 +103,26 @@ func Run(e Env) (code int) {
 	}
 	c.m = m
 	c.passf("kasbah.yml exists (schema %s)", m.Schema)
+
+	// Asked before the local rules: T05's verdict depends on the answer.
+	if e.Server != "" {
+		sess, err := e.Dial(e.Server)
+		if err != nil {
+			return c.out.Report(err)
+		}
+		sr, err := sess.Read(m.Name, healthOf(m.Doc))
+		if err != nil {
+			return c.out.Report(err)
+		}
+		now := time.Now
+		if e.Now != nil {
+			now = e.Now
+		}
+		c.srv = newServer(sr, now())
+		if err := state.Record(state.File, e.Version, "last_server", sr.Target); err != nil {
+			return c.out.Report(err)
+		}
+	}
 
 	if isFile(composeFile) {
 		c.passf("compose.prod.yml exists")
@@ -140,6 +168,9 @@ func Run(e Env) (code int) {
 	c.envSection()
 	c.hooksSection(services)
 	c.mailSection()
+	if c.srv != nil {
+		c.serverSection()
+	}
 
 	fmt.Fprintf(c.w, "\nSummary: %d passed, %d warning, %d failed\n", c.pass, c.warn, c.fail)
 	if c.fail > 0 {
@@ -662,6 +693,10 @@ var hostRule = regexp.MustCompile("Host\\(`([^`]+)`\\)")
 // t05 is the local form: a Host() whose first DNS label is one kasbah's own
 // subdomains use. The exact match against a server's hostnames is --server's.
 func (c *checker) t05(routers string) {
+	if c.srv != nil {
+		c.t05Server(routers)
+		return
+	}
 	var bad []string
 	for _, r := range lines(routers) {
 		if r == "" {

@@ -50,7 +50,7 @@ set -euo pipefail
 ENV_RESERVED_PREFIX=KASBAH_
 
 # One definition of "a line that assigns a variable", shared by every reader of
-# a user-authored .env or template here and by lib/check.sh's E01/E04: Compose
+# a user-authored .env or template here (internal/envtpl is the Go one): Compose
 # trims leading blanks, honours an `export ` prefix, and lets the last
 # assignment win, so kasbah has to see the same lines it does. Group 2 is the
 # bare key, group 3 the value — the `export ` is group 1 and belongs to neither.
@@ -84,7 +84,7 @@ fi
 # Reads KEY and writes VALUE in the caller's scope by dynamic scoping: neither
 # may be made local here. Named `_env_prompt_value` rather than `prompt_value`
 # because lib/prompt.sh owns that name with an unrelated signature, and this
-# file is sourced into kasbah's own shell by lib/check.sh.
+# file is sourced into kasbah's own shell by lib/server_destroy.sh.
 _env_prompt_value() {
     VALUE=""
     if [[ "$KEY" =~ PASSWORD|SECRET|KEY ]]; then
@@ -128,8 +128,8 @@ env_setup_run() {
     declare -A EXISTING=()
     if [[ -f "$OUTPUT" ]]; then
         # `|| [[ -n "$line" ]]`, here and in every other reader in this file: a
-        # final line with no newline is data. docker compose and lib/check.sh's
-        # readers see it, and dropping it loses a live value on reconfigure.
+        # final line with no newline is data. docker compose and kasbah's
+        # other readers see it, and dropping it loses a live value on reconfigure.
         while IFS= read -r line || [[ -n "$line" ]]; do
             line="${line%$'\r'}"
             [[ "$line" =~ ^[[:space:]]*# ]] && continue

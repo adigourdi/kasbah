@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Test: the one path-normalising rule, in the four places it is implemented.
+# Test: the one path-normalising rule, in the Bash places it is implemented.
 #
-# `/etc/kasbah/apps-path` is read by four remote steps — lib/marker.sh, the
-# `server init` probe, the `server status` probe and the `server prune` probe —
+# `/etc/kasbah/apps-path` is read by three Bash remote steps — lib/marker.sh,
+# the `server init` probe and the `server prune` probe —
 # and a payload on the far side of ssh can source nothing, so each carries its
-# own `norm_path`. The fifth implementation is `kasbah_norm_path` in
+# own `norm_path`. The fourth implementation is `kasbah_norm_path` in
 # lib/common.sh, which reduces what comes back over the wire on this side.
 #
-# Five copies of one rule is a drift seam, and drift here is silent: a copy that
+# Four copies of one rule is a drift seam, and drift here is silent: a copy that
 # stops stripping trailing blanks, or that lets the shell glob a path segment,
 # still returns something path-shaped, and every suite that goes through one of
 # the *other* copies keeps passing. So this suite does the two things no
-# behavioural test of a single command can: it asserts the four payload copies
+# behavioural test of a single command can: it asserts the three payload copies
 # are byte-identical, and it drives one table through a payload copy and through
 # lib/common.sh's function, so a divergence in either fails here.
 
@@ -32,9 +32,9 @@ assert() {
     fi
 }
 
-# --- The four payload copies -----------------------------------------------------
+# --- The three payload copies -----------------------------------------------------
 # Extracted from their heredocs the way the other suites extract a whole step.
-copies=(marker.sh server_init.sh server_status.sh prune.sh)
+copies=(marker.sh server_init.sh prune.sh)
 for lib in "${copies[@]}"; do
     sed -n '/^norm_path() {/,/^}/p' "$repo_dir/lib/$lib" > "$tmpdir/$lib.norm"
     assert '[ -s "$tmpdir/$lib.norm" ]' "lib/$lib carries a norm_path to compare"
@@ -46,7 +46,7 @@ done
 # differ are three answers to one question, and which one a server gets then
 # depends on which command reached it.
 base="$tmpdir/marker.sh.norm"
-for lib in server_init.sh server_status.sh prune.sh; do
+for lib in server_init.sh prune.sh; do
     assert 'cmp -s "$base" "$tmpdir/$lib.norm"' \
         "lib/$lib's norm_path is byte-identical to lib/marker.sh's
 $(diff "$base" "$tmpdir/$lib.norm" 2>&1 | sed 's/^/        /')"

@@ -128,6 +128,16 @@ func Classify(f Facts, file, goarch string, noexec func() error) (*remote.Info, 
 		nonEmpty(strings.Split(strings.TrimRight(f.Stderr, "\n"), "\n"))...)
 }
 
+// clip shortens each line to 120 bytes, saying how long it was.
+func clip(lines []string) []string {
+	for i, l := range lines {
+		if len(l) > 120 {
+			lines[i] = fmt.Sprintf("%s… (%d bytes in all)", l[:120], len(l))
+		}
+	}
+	return lines
+}
+
 func nonEmpty(lines []string) []string {
 	var out []string
 	for _, l := range lines {
@@ -143,10 +153,15 @@ func nonEmpty(lines []string) []string {
 type Probe struct {
 	Apps, Source string
 	AppsDir      bool
+	AppsNotDir   bool
 	Marker       bool
-	Machine      string
-	Bin          Facts
-	Mount        []string
+	// MarkerBody is the marker's first 256 KiB, read only for a Prepared
+	// run; MarkerUnreadable says this user could not read them.
+	MarkerBody       []byte
+	MarkerUnreadable bool
+	Machine          string
+	Bin              Facts
+	Mount            []string
 }
 
 // probeScript resolves the apps path ($3 when given, else the pointer $2, else
@@ -158,6 +173,7 @@ apps=$1
 pointer=$2
 explicit=$3
 limit=$4
+prepared=${5:-}
 dir=${pointer%/*}
 source=default
 pointed=""
@@ -225,13 +241,24 @@ if [ "$source" != default ]; then
     esac
 fi
 
-if [ -d "$apps" ]; then echo apps_dir=yes; else echo apps_dir=no; fi
+if [ -d "$apps" ]; then echo apps_dir=yes; elif [ -e "$apps" ]; then echo apps_dir=notdir; else echo apps_dir=no; fi
 marker="$apps/.kasbah/server.json"
 if [ -e "$marker" ] && [ ! -f "$marker" ]; then
     printf 'remote: %s exists and is not a regular file\n' "$marker" >&2
     exit 1
 fi
-if [ -f "$marker" ]; then echo marker=yes; else echo marker=no; fi
+if [ -f "$marker" ]; then
+    echo marker=yes
+    if [ "$prepared" != yes ]; then
+        :
+    elif [ -r "$marker" ]; then
+        printf 'marker_hex=%s\n' "$(od -An -tx1 -v -N 262144 "$marker" 2>/dev/null | tr -d ' \n')"
+    else
+        echo marker_readable=no
+    fi
+else
+    echo marker=no
+fi
 printf 'machine=%s\n' "$(uname -m)"
 
 bin="$apps/.kasbah/bin/kasbah"
@@ -262,6 +289,8 @@ func ParseProbe(out []byte) (*Probe, error) {
 	p := &Probe{Bin: Facts{RC: -1}}
 	var vlines, elines []string
 	sc := bufio.NewScanner(bytes.NewReader(out))
+	// marker_hex carries up to 256 KiB as 512 KiB of hex on one line.
+	sc.Buffer(make([]byte, 64*1024), 1<<20)
 	n := 0
 	for sc.Scan() {
 		line := strings.TrimSuffix(sc.Text(), "\r")
@@ -284,8 +313,13 @@ func ParseProbe(out []byte) (*Probe, error) {
 			p.Source = v
 		case "apps_dir":
 			p.AppsDir = v == "yes"
+			p.AppsNotDir = v == "notdir"
 		case "marker":
 			p.Marker = v == "yes"
+		case "marker_hex":
+			p.MarkerBody, _ = hex.DecodeString(v)
+		case "marker_readable":
+			p.MarkerUnreadable = v == "no"
 		case "machine":
 			p.Machine = v
 		case "bin":
@@ -305,6 +339,9 @@ func ParseProbe(out []byte) (*Probe, error) {
 		case "mount":
 			p.Mount = append(p.Mount, v)
 		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("a line could not be read: %v", err)
 	}
 	if n < 2 {
 		return nil, fmt.Errorf("no apps= and source= headers")
@@ -335,7 +372,22 @@ func normPath(p string) string {
 // judge turns the probe's exit status and output into the apps path's
 // refusals (lib/marker.sh's, the same exit codes). An explicit apps path
 // needs the directory, not a marker: server init ships before it writes one.
-func judge(target string, rc int, out []byte) (*Probe, error) {
+func judge(target string, rc int, out []byte, opt Options) (*Probe, error) {
+	p, err := judgeLayout(target, rc, out, opt.Prepared != nil)
+	if err != nil || opt.Prepared == nil {
+		return p, err
+	}
+	// A reader ships nothing to a server whose marker it would refuse.
+	if p.MarkerUnreadable {
+		return nil, cli.Fail("%s on %s could not be read", marker.Path(p.Apps), target)
+	}
+	if err := opt.Prepared(p.MarkerBody, p.Apps); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func judgeLayout(target string, rc int, out []byte, prepared bool) (*Probe, error) {
 	switch rc {
 	case 0, 5, 6, 7:
 	default:
@@ -344,7 +396,7 @@ func judge(target string, rc int, out []byte) (*Probe, error) {
 	p, err := ParseProbe(out)
 	if err != nil {
 		return nil, cli.Fail("the server probe on %s did not report where it looked (%v) — raw output:", target, err).Cont(
-			nonEmpty(strings.Split(string(out), "\n"))...)
+			clip(nonEmpty(strings.Split(string(out), "\n")))...)
 	}
 	switch rc {
 	case 7:
@@ -366,6 +418,19 @@ func judge(target string, rc int, out []byte) (*Probe, error) {
 	}
 	if !strings.HasPrefix(p.Apps, "/") || p.Apps == "/" {
 		return nil, cli.Fail("the server probe on %s named '%s' as the apps path, which is not an absolute path", target, p.Apps)
+	}
+	if prepared && p.AppsNotDir {
+		return nil, cli.Fail("%s on %s exists and is not a directory — point kasbah elsewhere with --apps-path=<dir>", p.Apps, target)
+	}
+	if prepared && p.Source == "explicit" && !p.Marker {
+		return nil, cli.Failf(cli.ExitNoRemoteState, "%s has no server marker at %s", target, marker.Path(p.Apps)).Cont(
+			"That path is the one --apps-path named, and nothing else was looked at.",
+			"So this is one of two situations, and they have different answers:",
+			"  * the server has never been prepared, and initialising it is the answer.",
+			"  * it is prepared somewhere else: name that tree with --apps-path=<dir>.",
+			"Do not re-run init until you know which: at the wrong apps path it renders a",
+			"second Traefik stack under the frozen 'traefik' compose project, which",
+			"recreates the running proxy against it and takes every site down.")
 	}
 	if p.Source == "explicit" {
 		if !p.AppsDir {
@@ -459,21 +524,46 @@ type Result struct {
 	Action   remote.Action
 	Old, Now string
 	Apps     string
+	// Source is how the apps path was found: explicit, pointer or default.
+	Source string
+	// Marker is the marker's bytes as the probe read them.
+	Marker []byte
+}
+
+// ExitText is a bounded remote step's exit status in words; limit is its
+// bound in seconds.
+func ExitText(rc, limit int) string {
+	switch rc {
+	case -1:
+		return "ssh could not run, or was killed by a signal"
+	case 124, 137:
+		return fmt.Sprintf("it did not finish within %d s", limit)
+	}
+	return fmt.Sprintf("it exited %d", rc)
 }
 
 // Options for Ensure. Apps, when set, is used as the apps path instead of
-// discovery, and needs no marker — the bootstrap `server init` runs.
-type Options struct{ Apps string }
+// discovery, and needs no marker — the bootstrap `server init` runs — unless
+// Prepared is set: then every apps path needs a marker, and Prepared judges
+// its bytes before anything is shipped.
+type Options struct {
+	Apps     string
+	Prepared func(marker []byte, apps string) error
+}
 
 // Ensure leaves at Path(apps) this build's binary when the server's is absent,
 // not runnable or older, and keeps the server's when it is the same or newer
 // of our major. local finds this build's server binary for a GOARCH.
 func Ensure(c *ssh.Conn, self remote.Info, local func(arch string) (string, error), opt Options) (*Result, error) {
 	target := c.Target.String()
-	cmd := c.Script(probeScript, probeDefault, probePointer, opt.Apps, strconv.Itoa(RunTimeout))
+	prepared := ""
+	if opt.Prepared != nil {
+		prepared = "yes"
+	}
+	cmd := c.Script(probeScript, probeDefault, probePointer, opt.Apps, strconv.Itoa(RunTimeout), prepared)
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	p, err := judge(target, ssh.ExitCode(cmd.Run()), out.Bytes())
+	p, err := judge(target, ssh.ExitCode(cmd.Run()), out.Bytes(), opt)
 	if err != nil {
 		return nil, err
 	}
@@ -488,7 +578,7 @@ func Ensure(c *ssh.Conn, self remote.Info, local func(arch string) (string, erro
 	if err != nil {
 		return nil, err
 	}
-	res := &Result{Action: action, Apps: p.Apps}
+	res := &Result{Action: action, Apps: p.Apps, Source: p.Source, Marker: p.MarkerBody}
 	switch {
 	case srv != nil:
 		res.Old = srv.Build

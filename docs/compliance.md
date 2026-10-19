@@ -294,12 +294,11 @@ than literals. The ceiling is the server marker's, which `server init` computed
 as 90% of the host. Sizes are compared in bytes, so `55296m` and `54g` are the
 same limit.
 
-**`--server` writes nothing.** It is a linter, and the remote step is `[ -f ]`,
-`openssl base64 -A -in` and `docker inspect` — no mkdir, no touch, no
-redirection onto the server's filesystem. Two round trips: the server marker,
-then one batched read. The far side never needs `jq`, `yq` or `python3`; files
-come back base64'd and are parsed on the workstation, which is the same rule the
-mail registry and the marker are read under.
+**`--server` writes nothing but kasbah's own binary**, which it brings up to date
+first. It is a linter: the server binary reads the files and asks docker, and
+everything is judged on the workstation. Two round trips: the bootstrap probe, which carries
+the server marker back, then one batched read. The far side never needs `jq`, `yq`,
+`python3` or `openssl`.
 
 `acme.json` holds private key material — the resolver's account key and every
 certificate's private key — so nothing that reads it writes it to a temp file,

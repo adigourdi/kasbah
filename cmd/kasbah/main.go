@@ -4,12 +4,14 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/buildpush"
 	"github.com/adigourdi/kasbah/internal/check"
 	"github.com/adigourdi/kasbah/internal/cli"
@@ -25,6 +27,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/serverinit"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/status"
 	"github.com/adigourdi/kasbah/internal/term"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
@@ -56,6 +59,12 @@ func main() {
 			if len(args) > 1 && args[1] == "mail" {
 				os.Exit(mail.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
 			}
+			if len(args) > 1 && args[1] == "status" {
+				os.Exit(status.Remote(args[2:], os.Stdout, os.Stderr))
+			}
+			if len(args) > 1 && args[1] == "check" {
+				os.Exit(check.Remote(args[2:], os.Stdout, os.Stderr))
+			}
 			if len(args) > 1 && args[1] == "vlog" {
 				os.Exit(vlog.Remote(args[2:], os.Stdout, os.Stderr))
 			}
@@ -86,6 +95,8 @@ func main() {
 			o, err := env.Parse(args[1:])
 			atexit.HandleSignals()
 			atexit.Exit(envCmd(o, err))
+		case "__backup-record":
+			os.Exit(backupRecordCmd(args[1:]))
 		case "__ensure-server":
 			out := cli.Std()
 			atexit.HandleSignals()
@@ -100,18 +111,20 @@ func main() {
 			if len(args) > 1 && args[1] == "init" && !serverinit.Handoff(args[2:]) {
 				args = serverInitCmd(args[2:])
 			}
+			if len(args) > 1 && args[1] == "status" {
+				o, err := status.Parse(args[2:])
+				atexit.HandleSignals()
+				atexit.Exit(statusCmd(o, err))
+			}
 			if len(args) > 1 && (args[1] == "add-mail-domain" || args[1] == "mail-setup-guide") {
 				o, err := mail.Parse(args[1], args[2:])
 				atexit.HandleSignals()
 				atexit.Exit(mailCmd(o, err))
 			}
 		case "check":
-			// Plain `check` and --fix [--yes]; anything with --server, --help
-			// or an argument check does not take is still the Bash tool's.
-			if fix, yes, ok := checkArgs(args[1:]); ok {
-				atexit.HandleSignals()
-				atexit.Exit(checkCmd(fix, yes))
-			}
+			o, err := check.Parse(args[1:])
+			atexit.HandleSignals()
+			atexit.Exit(checkCmd(o, err))
 		case "init-project":
 			// --help falls through: the usage text is still the Bash tool's.
 			if o, err := initproject.Parse(args[1:]); err != initproject.ErrHelp {
@@ -175,7 +188,7 @@ func remoteCmd(args []string) int {
 	if len(args) > 0 {
 		sub = args[0]
 	}
-	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, vlog, init, mail", sub))
+	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, vlog, init, mail, status, check", sub))
 }
 
 // ensureServer is `kasbah __ensure-server [--apps-path=<dir>] USER@HOST`: the
@@ -346,24 +359,15 @@ func kasbahVersion() (string, error) {
 	return strings.TrimRight(string(b), "\n"), nil
 }
 
-// checkArgs accepts what lib/check.sh's loop does without --server: --fix and
-// --yes in any order and number, --yes only with --fix.
-func checkArgs(args []string) (fix, yes, ok bool) {
-	for _, a := range args {
-		switch a {
-		case "--fix":
-			fix = true
-		case "--yes":
-			yes = true
-		default:
-			return false, false, false
-		}
-	}
-	return fix, yes, fix || !yes
-}
-
-func checkCmd(fix, yes bool) int {
+func checkCmd(o check.Options, err error) int {
 	out := cli.Std()
+	if err == check.ErrHelp {
+		fmt.Fprint(out.Stdout, check.Usage())
+		return cli.ExitOK
+	}
+	if err != nil {
+		return out.Report(err)
+	}
 	v, err := kasbahVersion()
 	if err != nil {
 		return out.Report(err)
@@ -372,11 +376,81 @@ func checkCmd(fix, yes bool) int {
 	if err != nil {
 		return out.Report(cli.Fail("cannot read the current directory: %v", err))
 	}
-	code := check.Run(check.Env{Out: out, PWD: pwd, Version: v, Fix: fix, Yes: yes})
+	target, err := check.Target(o)
+	if err != nil {
+		return out.Report(err)
+	}
+	e := check.Env{Out: out, PWD: pwd, Version: v, Fix: o.Fix, Yes: o.Yes, Server: target}
+	if target != "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return out.Report(cli.Fail("cannot locate this binary: %v", err))
+		}
+		home, checkout, err := handoff.Home(exe, os.Getenv)
+		if err != nil {
+			return out.Report(cli.Fail("%v", err))
+		}
+		e.Dial = check.Dial(remote.Self(build), func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) })
+	}
+	code := check.Run(e)
 	if c := atexit.Interrupted(); c != 0 {
 		code = c
 	}
 	return code
+}
+
+func statusCmd(o status.Options, err error) int {
+	out := cli.Std()
+	if err == status.ErrHelp {
+		fmt.Fprint(out.Stdout, status.Usage())
+		return cli.ExitOK
+	}
+	if err != nil {
+		return out.Report(err)
+	}
+	v, err := kasbahVersion()
+	if err != nil {
+		return out.Report(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+	}
+	home, checkout, err := handoff.Home(exe, os.Getenv)
+	if err != nil {
+		return out.Report(cli.Fail("%v", err))
+	}
+	local := func(arch string) (string, error) { return serverbin.Local(home, checkout, arch) }
+	code := out.Report(status.Run(status.Ctx{Out: out, Version: v, Dial: status.Dial(remote.Self(build), local)}, o))
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
+}
+
+// backupRecordCmd is `kasbah __backup-record epoch V` (yes/no) and
+// `kasbah __backup-record read NOW` (a record on stdin; "verdict|status"): the
+// workstation reader, for tests/backup_test.sh to hold against the runner's.
+func backupRecordCmd(args []string) int {
+	switch {
+	case len(args) == 2 && args[0] == "epoch":
+		if _, ok := backuprec.Epoch(args[1]); ok {
+			fmt.Println("yes")
+		} else {
+			fmt.Println("no")
+		}
+		return 0
+	case len(args) == 2 && args[0] == "read":
+		b, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return 1
+		}
+		r := backuprec.Read("dir", "file", string(b), args[1])
+		fmt.Printf("%s|%s\n", r.Verdict, r.Status)
+		return 0
+	}
+	fmt.Fprintln(os.Stderr, "usage: kasbah __backup-record epoch VALUE | read NOW < record")
+	return 1
 }
 
 func initProjectCmd(o initproject.Options, err error) int {

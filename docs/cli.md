@@ -405,7 +405,9 @@ take away.
 
 ### `kasbah server status USER@HOST [--apps-path=<dir>]`
 
-Read-only — it never creates, modifies or removes anything on the server.
+It changes nothing on the server but kasbah's own binary, which it brings up to
+date first (`<apps>/.kasbah/bin/kasbah`, newer wins) — and never on a server
+`server init` has not prepared.
 
 Prints:
 - Docker + Compose versions
@@ -450,7 +452,7 @@ Prints:
   cannot show.
 
 **Certificate expiry comes from Traefik's own `acme.json`**, read by the same
-`lib/acme.sh` that answers `check --server` — one store, one reader. The file
+`internal/acme` that answers `check --server` — one store, one reader. The file
 holds the ACME account key and every certificate's private key, so it is never
 written to a temp file, echoed, or quoted in a message: the diagnostic that
 echoes a truncated probe back reports that line by name and length only.
@@ -590,7 +592,8 @@ the mail stack knows the claimed domain (M03), whether `health.container` is
 healthy, what Traefik's `acme.json` holds for the project's domain, and whether
 the effective resource limits are within the host's ceiling (R04). It also
 tightens T05 from a first-label heuristic to the hostnames that server really
-owns. Read-only: it changes nothing on the server. Given without a `USER@HOST`
+owns. It changes nothing on the server but kasbah's own binary, brought up to
+date first. Given without a `USER@HOST`
 it asks `last_server`, and a run that reaches the server records it — the same
 rule every other server-targeting command follows (`project-manifest.md`).
 
@@ -817,12 +820,12 @@ is operator property (see `backup.md`). It also **releases the project's claim o
 the shared mail stack**: the domain leaves `<apps>/mail/kasbah.yml`, read and
 re-rendered through `_sm_read_registry`, which folds `primary_domain` into the
 served list the way the writers do. **Five commands ask "does this stack serve
-X"** — `deploy`, `server init` and `add-mail-domain` read through the Go reader
-(`internal/mailreg`); `drop` through `_sm_read_registry`, which refuses the same
-registries; `check --server` and `server status` each still carry their own
-copy, which on a **hand-edited** registry with no `primary_domain`, a non-domain
-entry or a non-list `domains:` carries on. Phase 10 moves those three onto
-`internal/mailreg` (10.10, 10.12), which refuses (decision D4). Two deliberate exclusions — a project claiming the
+X"** — `deploy`, `server init`, `add-mail-domain`, `check --server` and `server
+status` read through the Go reader (`internal/mailreg`); `drop` through
+`_sm_read_registry`, which refuses the same registries, until it is Go (10.12). A
+**hand-edited** registry with no `primary_domain`, a non-domain entry or a
+non-list `domains:` is refused by name (decision D4): `check --server` reports it
+as M03's failure, `server status` as a line. Two deliberate exclusions — a project claiming the
 registry's `primary_domain` is refused (releasing it would unmake the stack for
 every other project), and docker-mailserver's own `postfix-virtual.cf` alias is
 left alone, with the `setup alias del` line printed instead. The reversal is
