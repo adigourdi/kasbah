@@ -1,18 +1,16 @@
 package check
 
 import (
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
-	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/envtpl"
 	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/manifest"
+	"github.com/adigourdi/kasbah/internal/udiff"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
 
@@ -667,6 +665,7 @@ type fixRun struct {
 
 type staged struct {
 	file, target, tmp, plan string
+	before, after           []byte
 }
 
 // stage plans FILE and writes the candidate beside it, proven to parse, keep
@@ -742,7 +741,7 @@ func (r *fixRun) stage(file string, docs []jv.Value, planner func(*fixer), verif
 		r.leftf("%s — the fix did not settle, so a second run would change it again; it was left exactly as it was", file)
 		return nil
 	}
-	return &staged{file: file, target: target, tmp: tmp, plan: plan}
+	return &staged{file: file, target: target, tmp: tmp, plan: plan, before: data, after: out}
 }
 
 func (r *fixRun) leftf(format string, a ...any) { r.left = append(r.left, fmt.Sprintf(format, a...)) }
@@ -781,9 +780,6 @@ func writeNew(file string, data []byte) error {
 // fix is the whole of --fix, before the report, so the report describes the
 // project as it now is. The diff is a decision: unless --yes, it is asked.
 func (c *checker) fix(e Env) error {
-	if _, err := exec.LookPath("diff"); err != nil {
-		return cli.Fail("check --fix: diff is required (install diffutils and retry)")
-	}
 	r := &fixRun{c: c}
 	pop := atexit.Push(r.cleanup)
 	defer func() { r.cleanup(); pop() }()
@@ -823,7 +819,7 @@ func (c *checker) fix(e Env) error {
 		return nil
 	}
 	for _, s := range files {
-		c.showDiff(s.file, s.tmp)
+		w.Write(udiff.Unified("a/"+s.file, "b/"+s.file, s.before, s.after))
 	}
 	fmt.Fprintln(w)
 
@@ -843,28 +839,6 @@ func (c *checker) fix(e Env) error {
 	}
 	fmt.Fprintln(w)
 	return nil
-}
-
-// showDiff prints a unified diff with the real path on both sides, under the C
-// locale so its own lines do not vary with the operator's.
-func (c *checker) showDiff(file, tmp string) {
-	run := func(args ...string) int {
-		cmd := exec.Command("diff", args...)
-		cmd.Stdout, cmd.Stderr = c.w, c.out.Stderr
-		cmd.Env = append(os.Environ(), "LC_ALL=C")
-		err := cmd.Run()
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			return ee.ExitCode()
-		}
-		if err != nil {
-			return 2
-		}
-		return 0
-	}
-	if run("-u", "--label", "a/"+file, "--label", "b/"+file, "--", file, tmp) > 1 {
-		run("-u", "--", file, tmp)
-	}
 }
 
 // commit renames the candidate over what the file resolves to, from beside

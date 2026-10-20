@@ -8,16 +8,41 @@ import (
 	"testing"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/udiff"
+	"github.com/adigourdi/kasbah/internal/udiff/udifftest"
 )
 
-// fix runs `check --fix`, answered by yes; no terminal is attached.
+// fix runs `check --fix`, answered by yes; no terminal is attached. A file it
+// wrote was shown as its diff, and that diff, through GNU patch, is the file.
 func fix(t *testing.T, yes bool) (string, string, int) {
 	t.Helper()
+	files := []string{composeFile, manifest.File}
+	before := map[string][]byte{}
+	for _, f := range files {
+		before[f], _ = os.ReadFile(f)
+	}
 	var o, e bytes.Buffer
 	out := &cli.Output{Stdout: &o, Stderr: &e}
 	code := Run(Env{Out: out, PWD: "/p", Version: "1", Fix: true, Yes: yes,
 		Prompt: &prompt.Prompter{In: strings.NewReader(""), Out: out}})
+	for _, f := range files {
+		after, err := os.ReadFile(f)
+		if err != nil || bytes.Equal(after, before[f]) {
+			continue
+		}
+		d := udiff.Unified("a/"+f, "b/"+f, before[f], after)
+		if !strings.Contains(o.String(), string(d)) {
+			t.Fatalf("%s was written but its diff was not shown:\n%s\nstdout:\n%s", f, d, o.String())
+		}
+		if udifftest.GNU(t) {
+			if got := udifftest.Patch(t, before[f], d); !bytes.Equal(got, after) {
+				t.Fatalf("%s: the shown diff patches to\n%q\nnot\n%q", f, got, after)
+			}
+			t.Logf("patch round trip: %s", f)
+		}
+	}
 	return o.String(), e.String(), code
 }
 

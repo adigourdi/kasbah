@@ -1634,7 +1634,47 @@ fx_project() {
     cat > "$dir/compose.prod.yml"
 }
 
-fx_run() { (cd "$1" && "$kasbah" check --fix --yes 2>&1); }
+# fx_run DIR — `check --fix --yes` in DIR. Each file it wrote must be what its
+# shown diff makes of the file before, through GNU patch: a miss is recorded in
+# fx_trips.fail, a success counted in fx_trips.ok, and both judged at the end.
+fx_run() {
+    local dir="$1" snap rc out f
+    snap="$(mktemp -d "$tmpdir/fx-before.XXXXXX")"
+    for f in compose.prod.yml kasbah.yml; do
+        [ ! -e "$dir/$f" ] || cp "$dir/$f" "$snap/$f"
+    done
+    out="$(cd "$dir" && "$kasbah" check --fix --yes 2>&1)"; rc=$?
+    fx_roundtrip "$dir" "$snap" "$out"
+    printf '%s\n' "$out"
+    return "$rc"
+}
+
+# The diffs are printed back to back from the first `--- a/` and end at the
+# first empty line, which no diff line can be.
+gnu_patch() {
+    local v
+    v="$(patch --version 2>/dev/null)" || return 1
+    grep -q GNU <<<"${v%%$'\n'*}"
+}
+
+fx_roundtrip() {
+    local dir="$1" snap="$2" out="$3" diffs msg f
+    diffs="$(awk '/^--- a\// { on = 1 } on && /^$/ { exit } on { print }' <<<"$out")"
+    [ -n "$diffs" ] || return 0
+    gnu_patch || return 0
+    msg="$(cd "$snap" && printf '%s\n' "$diffs" | patch --binary --force --fuzz=0 \
+        --no-backup-if-mismatch -p1 2>&1)" ||
+        { printf '%s: patch failed: %s\n' "$dir" "$msg" >> "$tmpdir/fx_trips.fail"; return 0; }
+    if grep -q Hunk <<<"$msg"; then
+        printf '%s: not clean: %s\n' "$dir" "$msg" >> "$tmpdir/fx_trips.fail"
+    fi
+    for f in compose.prod.yml kasbah.yml; do
+        [ -e "$snap/$f" ] || continue
+        cmp -s "$snap/$f" "$dir/$f" ||
+            printf '%s: %s through patch is not the file written\n' "$dir" "$f" >> "$tmpdir/fx_trips.fail"
+    done
+    echo "$dir" >> "$tmpdir/fx_trips.ok"
+}
 
 # --- Case F1: C01 into a service written around comments and blank lines -----
 f1="$tmpdir/fix-c01"
@@ -2892,5 +2932,15 @@ printf '%s\n' 'services:' "  'we\"b': {image: nginx}" > "$projq/compose.prod.yml
 (cd "$projq" && "$kasbah" check >/dev/null 2>"$tmpdir/q.err"); rc=$?
 assert '[ "$rc" = "1" ] && grep -qF "cannot check compose.prod.yml, the name '\''we\"b'\''" "$tmpdir/q.err"' \
     "an unquotable name is exit 1, naming the file and the name (exit $rc: $(cat "$tmpdir/q.err"))"
+
+# --- The --fix diffs, through GNU patch (fx_run) -----------------------------
+if ! gnu_patch; then
+    echo "GNU patch is needed: every --fix diff shown here is applied with it" >&2
+    [ "$fail" -ne 0 ] || exit 2
+fi
+trips="$(cat "$tmpdir/fx_trips.ok" 2>/dev/null | wc -l)"
+assert '[ ! -s "$tmpdir/fx_trips.fail" ]' "the --fix diffs apply exactly with GNU patch:
+$(cat "$tmpdir/fx_trips.fail" 2>/dev/null)"
+assert '[ "$trips" -ge 10 ]' "at least 10 --fix diffs went through GNU patch (got $trips)"
 
 exit "$fail"

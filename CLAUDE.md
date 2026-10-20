@@ -10,7 +10,8 @@ plan and the only progress tracker (the roadmap is scope, not status).
 ## Commands
 
 - `./test.sh` — Go checks, a build of `dist/`, then the black-box suites
-  (~3 min, needs Docker, no server). Must pass before any commit.
+  (~3 min, no server). Must pass before any commit. Needs Docker, and GNU `diff`
+  and `patch` on the host (the diff suite proves kasbah's diffs against them).
   `KASBAH_BIN=<path>` tests that binary instead and skips the build.
 - `KASBAH_RIG_TESTS=1 ./test.sh` — adds integration tests against the
   fake-VPS rig (~35 min: run it in the background). Run `tests/rig/rig.sh up`
