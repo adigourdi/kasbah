@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +13,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/shtest"
 )
 
 const (
@@ -379,7 +379,17 @@ func TestRunNothingLeft(t *testing.T) {
 	}
 }
 
+func TestScriptsParse(t *testing.T) {
+	shtest.Check(t, "destroy", map[string]string{"tail": tailScript, "leftover": leftoverScript})
+}
+
 func TestTailScript(t *testing.T) {
+	for _, sh := range shtest.Shells(t) {
+		t.Run(sh.Name, func(t *testing.T) { testTailScript(t, sh) })
+	}
+}
+
+func testTailScript(t *testing.T, sh shtest.Shell) {
 	apps := tree(t)
 	etc := filepath.Join(t.TempDir(), "etc", "kasbah")
 	os.MkdirAll(etc, 0o755)
@@ -392,7 +402,7 @@ func TestTailScript(t *testing.T) {
 		bin := t.TempDir()
 		os.WriteFile(filepath.Join(bin, "sudo"), []byte(sudo), 0o755)
 		os.WriteFile(filepath.Join(bin, "id"), []byte("#!/bin/sh\necho 1000\n"), 0o755)
-		cmd := exec.Command("sh", "-c", tailScript, "sh", apps, filepath.Join(etc, "apps-path"), ".kasbah.", ".lock")
+		cmd := sh.C(tailScript, apps, filepath.Join(etc, "apps-path"), ".kasbah.", ".lock")
 		cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
 		out, err := cmd.Output()
 		if err != nil {
@@ -430,7 +440,7 @@ func TestTailScript(t *testing.T) {
 		t.Errorf("%v", got)
 	}
 	for _, bad := range []string{"apps", apps + "/"} {
-		if err := exec.Command("sh", "-c", tailScript, "sh", bad, "/etc/kasbah/apps-path", ".kasbah.", ".lock").Run(); err == nil {
+		if err := sh.C(tailScript, bad, "/etc/kasbah/apps-path", ".kasbah.", ".lock").Run(); err == nil {
 			t.Errorf("%q was accepted", bad)
 		}
 	}
@@ -443,13 +453,15 @@ func TestLeftoverScript(t *testing.T) {
 	os.MkdirAll(filepath.Join(def, ".kasbah"), 0o755)
 	ptr := filepath.Join(root, "apps-path")
 	os.WriteFile(ptr, []byte(other+"\r\n"), 0o644)
-	out, err := exec.Command("sh", "-c", leftoverScript, "sh", ptr, def).Output()
-	if err != nil {
-		t.Fatal(err)
-	}
 	want := "pointer=yes\nkasbah=" + def + "/.kasbah\nkasbah=" + other + "/.kasbah\ncreds=" + other + "/.kasbah/backup\nitem=" + other + "/.kasbah/backup\n"
-	if string(out) != want {
-		t.Errorf("got %q", out)
+	for _, sh := range shtest.Shells(t) {
+		out, err := sh.C(leftoverScript, ptr, def).Output()
+		if err != nil {
+			t.Fatalf("%s: %v", sh.Name, err)
+		}
+		if string(out) != want {
+			t.Errorf("%s: got %q", sh.Name, out)
+		}
 	}
 }
 
@@ -603,6 +615,15 @@ func TestStripEnvFile(t *testing.T) {
 // A symlinked .kasbah or bin/ is never descended: what it points at is not
 // kasbah's, neither for the probe nor for the tail.
 func TestLinksAreNotKasbahs(t *testing.T) {
+	for _, sh := range shtest.Shells(t) {
+		t.Run(sh.Name, func(t *testing.T) { testLinksAreNotKasbahs(t, sh) })
+	}
+	if ownOnly([]string{"kasbah\nitem=zzz"}) || ownOnly([]string{""}) {
+		t.Errorf("an item with no / is not kasbah's own")
+	}
+}
+
+func testLinksAreNotKasbahs(t *testing.T, sh shtest.Shell) {
 	for _, linked := range []string{".kasbah", ".kasbah/bin"} {
 		root := t.TempDir()
 		apps, outside := filepath.Join(root, "apps"), filepath.Join(root, "outside")
@@ -610,7 +631,7 @@ func TestLinksAreNotKasbahs(t *testing.T) {
 		os.WriteFile(filepath.Join(outside, "kasbah"), []byte("theirs"), 0o644)
 		os.MkdirAll(filepath.Join(apps, filepath.Dir(linked)), 0o755)
 		os.Symlink(outside, filepath.Join(apps, linked))
-		out, err := exec.Command("sh", "-c", leftoverScript, "sh", filepath.Join(root, "no-pointer"), apps).Output()
+		out, err := sh.C(leftoverScript, filepath.Join(root, "no-pointer"), apps).Output()
 		if err != nil || !strings.Contains(string(out), "foreign="+filepath.Join(apps, linked)) {
 			t.Errorf("%s: probe %q %v", linked, out, err)
 		}
@@ -618,15 +639,12 @@ func TestLinksAreNotKasbahs(t *testing.T) {
 		if so, _, _ := run(t, f, Options{Target: "deploy@vps"}, false, ""); strings.Contains(strings.Join(f.calls, " "), "tail") {
 			t.Errorf("%s: the tail ran over a link:\n%s", linked, so)
 		}
-		tout, _ := exec.Command("sh", "-c", tailScript, "sh", apps, filepath.Join(root, "etc", "apps-path"), ".kasbah.", ".lock").Output()
+		tout, _ := sh.C(tailScript, apps, filepath.Join(root, "etc", "apps-path"), ".kasbah.", ".lock").Output()
 		if got := kv(tout); got["binary"] != "link" {
 			t.Errorf("%s: tail %v", linked, got)
 		}
 		if b, err := os.ReadFile(filepath.Join(outside, "kasbah")); err != nil || string(b) != "theirs" {
 			t.Errorf("%s: the file behind the link was touched", linked)
 		}
-	}
-	if ownOnly([]string{"kasbah\nitem=zzz"}) || ownOnly([]string{""}) {
-		t.Errorf("an item with no / is not kasbah's own")
 	}
 }

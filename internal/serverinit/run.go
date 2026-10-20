@@ -54,10 +54,9 @@ type session struct {
 	bin    string
 }
 
-// script runs a bootstrap step under bash with its args as $1….
+// script runs a bootstrap step under the server's sh with its args as $1….
 func (s *session) script(body string, args ...string) (string, int) {
-	cmd := s.conn.Command(append([]string{"bash", "-s", "--"}, args...)...)
-	cmd.Stdin = strings.NewReader(body)
+	cmd := s.conn.Script(body, args...)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	err := cmd.Run()
@@ -103,7 +102,7 @@ func (s *session) ensure(c Ctx, apps string) (*serverbin.Result, error) {
 
 // elevateScript creates the apps path as root and hands it over — asking
 // root once more first, because the chown is the irreversible half.
-const elevateScript = `set -uo pipefail
+const elevateScript = `set -u
 export LC_ALL=C
 apps=$1
 owner=$2
@@ -123,8 +122,9 @@ printf 'elevated=yes\n'
 // renamed. A right pointer is left alone, so a re-run needs no sudo; a
 // drifted directory mode is repaired when sudo allows, else reported. $3 is
 // root's uid, overridden only by tests.
-const pointerScript = `set -uo pipefail
+const pointerScript = `set -u
 export LC_ALL=C
+cr=$(printf '\r')
 apps=$1
 pointer=$2
 root_uid=${3:-0}
@@ -139,7 +139,7 @@ fi
 if [ -f "$pointer" ] && [ -r "$pointer" ]; then
     current=""
     IFS= read -r current < "$pointer" || [ -n "$current" ] || current=""
-    current=${current%$'\r'}
+    current=${current%"$cr"}
     meta=$(stat -c '%a %u' "$pointer" 2>/dev/null) || meta=""
     dmeta=$(stat -c '%a' "$dir" 2>/dev/null) || dmeta=""
     if [ "$current" = "$apps" ] && [ "$meta" = "644 $root_uid" ]; then

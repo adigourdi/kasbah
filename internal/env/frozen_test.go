@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -78,6 +79,7 @@ type setupCase struct {
 	env     *string
 	in      string
 	rc      int
+	rcSh    int     // rc without bash: dash and busybox end on -u with 2, bash with 1
 	want    *string // the .env expected; nil checks only parity
 	absent  bool
 	envMode os.FileMode
@@ -135,7 +137,7 @@ var setupCases = []setupCase{
 	{name: "generator typed over", tmpl: str("TOKEN=! echo gen\n"), in: "mine\n", want: str("TOKEN=mine\n")},
 	{name: "generator keeps a live value", tmpl: str("TOKEN=! echo gen\nN=\n"), env: str("TOKEN=live\n"), in: "a\n\n\n"},
 	{name: "generator that fails", tmpl: str("X=! echo part; false\nY=! false | true\n"), in: "\n\n"},
-	{name: "generator that ends the shell", tmpl: str("X=! echo $UNSET_VAR_FOR_TEST\nY=\n"), env: str("Y=1\n"), in: "\n\n", rc: 1,
+	{name: "generator that ends the shell", tmpl: str("X=! echo $UNSET_VAR_FOR_TEST\nY=\n"), env: str("Y=1\n"), in: "\n\n", rc: 1, rcSh: 2,
 		want: str("Y=1\n")},
 	{name: "generator that exits 3", tmpl: str("A=1\nX=! echo out; exit 3\n"), in: "\n\n", rc: 3, absent: true},
 	{name: "generator sees the setup's $1", tmpl: str("X=! echo \"${1:+set}\"\n"), in: "\n"},
@@ -195,9 +197,14 @@ func TestSetupFrozen(t *testing.T) {
 			f.Close()
 			os.Chmod(dir+"/.env", 0o600)
 			data, err := os.ReadFile(dir + "/.env")
-			if rc != tc.rc {
-				t.Errorf("exit %d, want %d", rc, tc.rc)
+			want := tc.rc
+			if _, err := exec.LookPath("bash"); err != nil && tc.rcSh != 0 {
+				want = tc.rcSh
 			}
+			if rc != want {
+				t.Errorf("exit %d, want %d", rc, want)
+			}
+			rc = tc.rc + rc - want
 			if tc.absent && err == nil {
 				t.Errorf(".env written: %q", data)
 			}

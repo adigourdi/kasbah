@@ -3,6 +3,7 @@ package env
 import (
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
@@ -168,6 +169,14 @@ type Step struct {
 // exitText says how a bounded server call ended, from ssh.ExitCode's status.
 func exitText(rc int) string { return serverbin.ExitText(rc, serverbin.RunTimeout) }
 
+// setupText is exitText for the unbounded Setup: none of its statuses is a timeout.
+func setupText(rc int) string {
+	if rc == -1 {
+		return exitText(rc)
+	}
+	return "it exited " + strconv.Itoa(rc)
+}
+
 func (st *Step) probe(dir string) (State, error) {
 	out, rc := st.S.Drift(dir)
 	if rc != 0 {
@@ -228,7 +237,7 @@ func (st *Step) setup(dir, why, reason string) error {
 	}
 	st.Out.Info("%s — running the interactive env setup on %s", why, st.Target)
 	if rc := st.S.Setup(dir, st.Color); rc != 0 {
-		return cli.Failf(cli.ExitEnvSetup, "the env setup on %s did not finish (%s, see above)", st.Target, exitText(rc)).Cont(
+		return cli.Failf(cli.ExitEnvSetup, "the env setup on %s did not finish (%s, see above)", st.Target, setupText(rc)).Cont(
 			"it was aborted, answered with nothing, or could not run at all — all three",
 			"leave the .env unwritten, which is what exit 5 says. Nothing was deployed.",
 			"Re-run and answer it through, or:").Cont(st.remedies(reason, dir)...)

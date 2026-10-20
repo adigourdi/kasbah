@@ -2,11 +2,66 @@ package serverbin
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/adigourdi/kasbah/internal/shtest"
 )
+
+func TestScriptsParse(t *testing.T) {
+	shtest.Check(t, "serverbin", map[string]string{"probe": probeScript, "upload": uploadScript})
+}
+
+// The upload never overwrites, keeps nothing short, and sweeps what a killed
+// run left an hour ago.
+func TestUploadScript(t *testing.T) {
+	for _, sh := range shtest.Shells(t) {
+		dir := filepath.Join(t.TempDir(), "b in")
+		up := func(name, body, size string) (string, int) {
+			cmd := sh.C(uploadScript, dir, name, size)
+			cmd.Stdin = strings.NewReader(body)
+			var e strings.Builder
+			cmd.Stderr = &e
+			err := cmd.Run()
+			if err != nil {
+				return e.String(), 1
+			}
+			return e.String(), 0
+		}
+		if e, rc := up(TempPrefix+"a", "hello", "5"); rc != 0 {
+			t.Fatalf("%s: %q", sh.Name, e)
+		}
+		f := filepath.Join(dir, TempPrefix+"a")
+		if b, _ := os.ReadFile(f); string(b) != "hello" {
+			t.Errorf("%s: %q", sh.Name, b)
+		}
+		if fi, err := os.Stat(f); err != nil || fi.Mode().Perm() != 0o755 {
+			t.Errorf("%s: mode %v", sh.Name, fi)
+		}
+		if _, rc := up(TempPrefix+"a", "other", "5"); rc == 0 {
+			t.Errorf("%s: an existing upload was overwritten", sh.Name)
+		}
+		if b, _ := os.ReadFile(f); string(b) != "hello" {
+			t.Errorf("%s: an existing upload changed: %q", sh.Name, b)
+		}
+		if e, rc := up(TempPrefix+"b", "abc", "10"); rc == 0 || !strings.Contains(e, "cut short") {
+			t.Errorf("%s: a short upload: %q", sh.Name, e)
+		}
+		if _, err := os.Stat(filepath.Join(dir, TempPrefix+"b")); err == nil {
+			t.Errorf("%s: a short upload was kept", sh.Name)
+		}
+		old := time.Now().Add(-2 * time.Hour)
+		os.Chtimes(f, old, old)
+		if _, rc := up(TempPrefix+"c", "x", "1"); rc != 0 {
+			t.Errorf("%s: a third upload failed", sh.Name)
+		}
+		if _, err := os.Stat(f); err == nil {
+			t.Errorf("%s: a stale upload was not swept", sh.Name)
+		}
+	}
+}
 
 func TestArch(t *testing.T) {
 	for in, want := range map[string]string{"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64", "x86_64\r\n": "amd64"} {
@@ -91,10 +146,6 @@ func TestMount(t *testing.T) {
 // One table through both normalisers: the probe's POSIX-sh norm_path, reading
 // the pointer file as the probe does, and normPath on the same first line.
 func TestNormPathShAndGoAgree(t *testing.T) {
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Skip("no sh")
-	}
 	start := strings.Index(probeScript, "norm_path() {")
 	end := strings.Index(probeScript[start:], "\n}\n") + start + 3
 	fn := "cr=$(printf '\\r')\n" + probeScript[start:end]
@@ -110,13 +161,15 @@ norm_path "$pointed"`
 		if err := os.WriteFile(f, []byte(in), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		out, err := exec.Command(sh, "-c", driver, "sh", f).Output()
-		if err != nil {
-			t.Fatalf("%q: sh: %v", in, err)
-		}
 		line, _, _ := strings.Cut(in, "\n")
-		if got := normPath(line); got != string(out) {
-			t.Errorf("%q: Go %q, sh %q", in, got, out)
+		for _, sh := range shtest.Shells(t) {
+			out, err := sh.C(driver, f).Output()
+			if err != nil {
+				t.Fatalf("%q: %s: %v", in, sh.Name, err)
+			}
+			if got := normPath(line); got != string(out) {
+				t.Errorf("%q: Go %q, %s %q", in, got, sh.Name, out)
+			}
 		}
 	}
 }

@@ -73,7 +73,7 @@ type Facts struct {
 	Present, Regular, Executable bool
 	// Head is the file's first 20 bytes: enough for the ELF class and machine.
 	Head []byte
-	// RC is `remote version`'s status: 124/137 timed out, -1 not run.
+	// RC is `remote version`'s status: TimedOut, or -1 not run.
 	RC             int
 	Stdout, Stderr string
 }
@@ -102,8 +102,8 @@ func Classify(f Facts, file, goarch string, noexec func() error) (*remote.Info, 
 	case !f.Executable, !runnableHere(f.Head, goarch):
 		return nil, nil
 	}
-	switch f.RC {
-	case 0:
+	switch rc := f.RC; {
+	case rc == 0:
 		lines := strings.Split(strings.TrimRight(strings.ReplaceAll(f.Stdout, "\r", ""), "\n"), "\n")
 		if len(lines) == 1 {
 			if i, err := remote.ParseInfo(lines[0]); err == nil {
@@ -111,17 +111,17 @@ func Classify(f Facts, file, goarch string, noexec func() error) (*remote.Info, 
 			}
 		}
 		return nil, cli.Fail("%s answered `remote version` with %q, not a version line — kasbah will not replace what it cannot order", file, f.Stdout)
-	case 124, 137:
+	case TimedOut(rc):
 		return nil, cli.Fail("%s did not answer `remote version` within %d s, or was killed (exit %d)", file, RunTimeout, f.RC).Cont(
 			"kasbah does not replace a binary it cannot account for; look at it on the server")
-	case 126:
+	case rc == 126:
 		if noexec != nil {
 			if err := noexec(); err != nil {
 				return nil, err
 			}
 		}
 		return nil, nil
-	case 127:
+	case rc == 127:
 		return nil, nil
 	}
 	return nil, cli.Fail("%s exited %d on `remote version` — kasbah will not replace a binary it cannot account for", file, f.RC).Cont(
@@ -276,7 +276,7 @@ rc=$?
 printf 'version_rc=%s\n' "$rc"
 [ -z "$v" ] || printf '%s\n' "$v" | sed 's/^/version=/'
 case $rc in
-    0|124|127|137) ;;
+    0|124|127|137|143) ;;
     126) { findmnt -n -o TARGET,FSTYPE,OPTIONS -T "$bin" 2>/dev/null || cat /proc/mounts; } | sed 's/^/mount=/' ;;
     *) timeout -k 5 "$limit" "$bin" remote version 2>&1 >/dev/null </dev/null | head -n 5 | sed 's/^/stderr=/' ;;
 esac
@@ -531,13 +531,17 @@ type Result struct {
 	Marker []byte
 }
 
+// TimedOut is a status `timeout` gives a run it ended: GNU's 124 (137 after
+// -k), busybox's 143 (its TERM).
+func TimedOut(rc int) bool { return rc == 124 || rc == 137 || rc == 143 }
+
 // ExitText is a bounded remote step's exit status in words; limit is its
 // bound in seconds.
 func ExitText(rc, limit int) string {
-	switch rc {
-	case -1:
+	switch {
+	case rc == -1:
 		return "ssh could not run, or was killed by a signal"
-	case 124, 137:
+	case TimedOut(rc):
 		return fmt.Sprintf("it did not finish within %d s", limit)
 	}
 	return fmt.Sprintf("it exited %d", rc)
@@ -678,11 +682,11 @@ func ship(c *ssh.Conn, self remote.Info, file, bin string) (*remote.Info, error)
 	var vout, verr bytes.Buffer
 	run := c.Command(Bounded(tmp, RunTimeout, "version")...)
 	run.Stdout, run.Stderr = &vout, &verr
-	switch rc := ssh.ExitCode(run.Run()); rc {
-	case 0:
-	case 124, 137:
+	switch rc := ssh.ExitCode(run.Run()); {
+	case rc == 0:
+	case TimedOut(rc):
 		return nil, cli.Fail("the kasbah binary uploaded to %s on %s did not answer within %d s", dir, target, RunTimeout)
-	case 126:
+	case rc == 126:
 		m := c.Command("sh", "-c", `findmnt -n -o TARGET,FSTYPE,OPTIONS -T "$1" 2>/dev/null || cat /proc/mounts`, "sh", dir)
 		mo, _ := m.Output()
 		mount := strings.Split(strings.TrimRight(strings.ReplaceAll(string(mo), "\r", ""), "\n"), "\n")

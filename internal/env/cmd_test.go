@@ -2,6 +2,7 @@ package env
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -230,7 +231,7 @@ func TestOnATerminal(t *testing.T) {
 	expect(t, 0 <= s && s < i, "setup runs, then injection: %v", srv.calls)
 	os.RemoveAll(".kasbah")
 
-	for _, rc := range []int{-1, 1, 124, 126, 127, 130, 255} {
+	for _, rc := range []int{-1, 1, 124, 126, 127, 130, 137, 143, 255} {
 		srv = inSync()
 		srv.setupRC = rc
 		r = runEnv(t, srv, true, "", "deploy@vps")
@@ -238,6 +239,9 @@ func TestOnATerminal(t *testing.T) {
 			"setup exit %d: %d %q", rc, r.code, r.stderr)
 		expect(t, rc != -1 || strings.Contains(r.stderr, "ssh could not run, or was killed by a signal") && !strings.Contains(r.stderr, "-1"),
 			"exit -1 is said as ssh's failure: %q", r.stderr)
+		// Setup has no time limit: no status of it is a timeout.
+		expect(t, rc == -1 || strings.Contains(r.stderr, fmt.Sprintf("it exited %d", rc)) && !strings.Contains(r.stderr, "within"),
+			"setup exit %d is said as its status: %q", rc, r.stderr)
 	}
 
 	srv = &fakeServer{reports: []string{report("yes", "yes", "", ""), report("yes", "no", "", "")}}

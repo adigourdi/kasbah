@@ -16,6 +16,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/shtest"
 	"github.com/adigourdi/kasbah/internal/ssh"
 )
 
@@ -83,11 +84,14 @@ func fake(t *testing.T, path, build, mode string, perm os.FileMode) {
 
 // scratch is a fake server root: the pointer and the default apps path live
 // under it, and the probe reads them instead of the real ones.
-type scratch struct{ root, pointer, apps string }
+type scratch struct {
+	t                   *testing.T
+	root, pointer, apps string
+}
 
 func newScratch(t *testing.T) *scratch {
 	root := t.TempDir()
-	s := &scratch{root: root, pointer: filepath.Join(root, "etc", "kasbah", "apps-path"), apps: filepath.Join(root, "apps")}
+	s := &scratch{t: t, root: root, pointer: filepath.Join(root, "etc", "kasbah", "apps-path"), apps: filepath.Join(root, "apps")}
 	t.Cleanup(func() { os.Chmod(filepath.Dir(s.pointer), 0o755); os.Chmod(s.pointer, 0o644) })
 	probeDefault, probePointer = s.apps, s.pointer
 	t.Cleanup(func() { probeDefault, probePointer = DefaultApps, Pointer })
@@ -109,13 +113,21 @@ func (s *scratch) probe(explicit string) (int, []byte) { return s.run(explicit, 
 // probeP is the probe as a Prepared run sends it, the marker included.
 func (s *scratch) probeP(explicit string) (int, []byte) { return s.run(explicit, "yes") }
 
+// run is the probe under every shell; they must agree, and the first answers.
 func (s *scratch) run(explicit, prepared string) (int, []byte) {
-	cmd := exec.Command("sh", "-s", "--", s.apps, s.pointer, explicit, "2", prepared)
-	cmd.Stdin = strings.NewReader(probeScript)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	err := cmd.Run()
-	return ssh.ExitCode(err), out.Bytes()
+	rc, out := -1, []byte(nil)
+	for i, sh := range shtest.Shells(s.t) {
+		cmd := sh.Stdin(probeScript, s.apps, s.pointer, explicit, "2", prepared)
+		var b bytes.Buffer
+		cmd.Stdout = &b
+		r := ssh.ExitCode(cmd.Run())
+		if i == 0 {
+			rc, out = r, b.Bytes()
+		} else if r != rc || !bytes.Equal(b.Bytes(), out) {
+			s.t.Errorf("%s disagrees: %d %q, against %d %q", sh.Name, r, b.Bytes(), rc, out)
+		}
+	}
+	return rc, out
 }
 
 func TestProbe(t *testing.T) {
@@ -210,6 +222,28 @@ func TestProbe(t *testing.T) {
 			t.Errorf("got %+v, %v; want rc 3 with its stderr kept apart", p.Bin, err)
 		}
 	})
+	// busybox's timeout ends a run with 143, not 124: still a timeout, and the
+	// binary is not run a second time for its stderr.
+	t.Run("busybox timeout", func(t *testing.T) {
+		s := newScratch(t)
+		s.marker(s.apps)
+		fake(t, Path(s.apps), "9.0.0", "", 0o755)
+		stub := t.TempDir()
+		calls := filepath.Join(stub, "calls")
+		os.WriteFile(filepath.Join(stub, "timeout"), []byte("#!/bin/sh\necho x >> '"+calls+"'\nexit 143\n"), 0o755)
+		t.Setenv("PATH", stub+":"+os.Getenv("PATH"))
+		rc, out := s.probe("")
+		p, err := judge("d@h", rc, out, Options{})
+		if err != nil || p.Bin.RC != 143 || p.Bin.Stderr != "" {
+			t.Fatalf("got %+v, %v", p.Bin, err)
+		}
+		if b, _ := os.ReadFile(calls); len(shtest.Shells(t))*len("x\n") != len(b) {
+			t.Errorf("timeout ran %q, one call per shell wanted", b)
+		}
+		if _, err := Classify(p.Bin, Path(s.apps), runtime.GOARCH, nil); err == nil || !strings.Contains(err.Error(), "within") {
+			t.Errorf("not a timeout: %v", err)
+		}
+	})
 	refusals := []struct {
 		name  string
 		setup func(s *scratch)
@@ -277,6 +311,7 @@ func TestClassify(t *testing.T) {
 		{"answers twice", ok(0, good+"\n"+good, ""), nil, false, "not a version line"},
 		{"times out", ok(124, "", ""), nil, false, "within"},
 		{"killed", ok(137, "", ""), nil, false, "killed"},
+		{"busybox's timeout", ok(143, "", ""), nil, false, "within"},
 		{"exits 3", ok(3, "", "boom: out of memory"), nil, false, "boom: out of memory"},
 		{"126 off a noexec mount", ok(126, "", ""), errNoexec, false, "mounted noexec"},
 		{"126 otherwise", ok(126, "", ""), nil, false, ""},
@@ -581,7 +616,7 @@ func TestProbePrepared(t *testing.T) {
 }
 
 func TestExitText(t *testing.T) {
-	for rc, want := range map[int]string{124: "it did not finish within 120 s", 137: "it did not finish within 120 s", -1: "ssh could not run, or was killed by a signal", 3: "it exited 3"} {
+	for rc, want := range map[int]string{124: "it did not finish within 120 s", 137: "it did not finish within 120 s", 143: "it did not finish within 120 s", -1: "ssh could not run, or was killed by a signal", 3: "it exited 3"} {
 		if got := ExitText(rc, 120); got != want {
 			t.Errorf("ExitText(%d) = %q, want %q", rc, got, want)
 		}

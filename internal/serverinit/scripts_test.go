@@ -11,6 +11,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/shtest"
 )
 
 // stubs puts a fake sudo, ssh and docker, and the tools the probe looks for,
@@ -27,9 +28,9 @@ shift
 [ "$1" = chown ] && exit 0
 exec "$@"`,
 		"ssh": `for a in "$@"; do [ "$a" = -O ] && exit 0; done
-last=${@: -1}
+for last in "$@"; do :; done
 printf '%s\n' "$last" >> "$SSH_LOG"
-exec bash -c "$last"`,
+exec sh -c "$last"`,
 		"docker": `case "$1 $2" in
 "version --format") echo 27.1.0 ;;
 "compose version") echo 2.29.7 ;;
@@ -38,7 +39,7 @@ esac`,
 		"rsync": "exit 0",
 	}
 	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/bash\n"+body+"\n"), 0o755); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -47,10 +48,9 @@ esac`,
 	return dir, sshLog
 }
 
-func runScript(t *testing.T, script string, env []string, args ...string) (string, string, int) {
+func runScript(t *testing.T, sh shtest.Shell, script string, env []string, args ...string) (string, string, int) {
 	t.Helper()
-	cmd := exec.Command("bash", append([]string{"-s", "--"}, args...)...)
-	cmd.Stdin = strings.NewReader(script)
+	cmd := sh.Stdin(script, args...)
 	cmd.Env = append(os.Environ(), env...)
 	var o, e bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &o, &e
@@ -65,20 +65,23 @@ func runScript(t *testing.T, script string, env []string, args ...string) (strin
 }
 
 func TestScriptsParse(t *testing.T) {
-	for name, s := range map[string]string{"probe": probeScript, "elevate": elevateScript, "pointer": pointerScript} {
-		cmd := exec.Command("bash", "-n")
-		cmd.Stdin = strings.NewReader(s)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Errorf("%s: %v %s", name, err, out)
-		}
+	shtest.Check(t, "serverinit", map[string]string{"probe": probeScript, "elevate": elevateScript, "pointer": pointerScript})
+}
+
+// eachShell runs f once per POSIX sh the scripts are held to.
+func eachShell(t *testing.T, f func(*testing.T, shtest.Shell)) {
+	for _, sh := range shtest.Shells(t) {
+		t.Run(sh.Name, func(t *testing.T) { f(t, sh) })
 	}
 }
 
-func TestProbeScript(t *testing.T) {
+func TestProbeScript(t *testing.T) { eachShell(t, testProbeScript) }
+
+func testProbeScript(t *testing.T, sh shtest.Shell) {
 	stubs(t)
 	root := t.TempDir()
-	apps, data, ptr := root+"/apps", root+"/apps/data", root+"/etc/kasbah/apps-path"
-	out, e, rc := runScript(t, probeScript, nil, apps, data, ptr)
+	apps, data, ptr := root+"/my apps", root+"/my apps/data", root+"/etc/kasbah/apps-path"
+	out, e, rc := runScript(t, sh, probeScript, nil, apps, data, ptr)
 	f, err := ParseProbe("d@h", out)
 	if rc != 0 || err != nil {
 		t.Fatalf("probe: %d %v %s", rc, err, e)
@@ -91,7 +94,7 @@ func TestProbeScript(t *testing.T) {
 	os.WriteFile(data+"/traefik/letsencrypt/acme.json", []byte("{}"), 0o600)
 	os.MkdirAll(filepath.Dir(ptr), 0o755)
 	os.WriteFile(ptr, []byte("/srv//apps/ \n"), 0o644)
-	out, _, _ = runScript(t, probeScript, []string{"STUB_SUDO=no"}, apps, data, ptr)
+	out, _, _ = runScript(t, sh, probeScript, []string{"STUB_SUDO=no"}, apps, data, ptr)
 	f, _ = ParseProbe("d@h", out)
 	if f["apps_state"] != "dir" || f["apps_owned"] != "yes" || f["acme_store"] != "nonempty" ||
 		f["pointer_state"] != "present" || f["pointer_value"] != "/srv/apps" || f["sudo_nopasswd"] != "no" {
@@ -100,27 +103,42 @@ func TestProbeScript(t *testing.T) {
 	if err := Preflight(f, "d@h", apps, data); err != nil {
 		t.Errorf("a stubbed host fails preflight: %v", err)
 	}
+	// Owned but stripped of its write bit: the errno is what tells it from a
+	// read-only mount.
+	os.WriteFile(ptr, []byte("/sp ace//x/\t\r\n"), 0o644)
+	os.Chmod(apps, 0o555)
+	defer os.Chmod(apps, 0o755)
+	out, _, _ = runScript(t, sh, probeScript, []string{"STUB_SUDO=no"}, apps, data, ptr)
+	f, _ = ParseProbe("d@h", out)
+	if f["pointer_value"] != "/sp ace/x" || f["apps_owned"] != "yes" || f["apps_writable"] != "no" ||
+		!strings.Contains(f["apps_write_error"], "Permission denied") {
+		t.Errorf("stripped apps path: %v", f)
+	}
 }
 
-func TestElevateScript(t *testing.T) {
+func TestElevateScript(t *testing.T) { eachShell(t, testElevateScript) }
+
+func testElevateScript(t *testing.T, sh shtest.Shell) {
 	stubs(t)
-	apps := t.TempDir() + "/a/apps"
-	out, e, rc := runScript(t, elevateScript, nil, apps, "u:g")
+	apps := t.TempDir() + "/a b/apps"
+	out, e, rc := runScript(t, sh, elevateScript, nil, apps, "u:g")
 	if fi, err := os.Stat(apps); rc != 0 || out != "elevated=yes\n" || err != nil || !fi.IsDir() {
 		t.Fatalf("elevate: %q %q %d", out, e, rc)
 	}
-	if _, e, rc := runScript(t, elevateScript, nil, apps, "u:g"); rc != 1 || !strings.Contains(e, "exists after all") {
+	if _, e, rc := runScript(t, sh, elevateScript, nil, apps, "u:g"); rc != 1 || !strings.Contains(e, "exists after all") {
 		t.Errorf("an existing path is not adopted: %q %d", e, rc)
 	}
 }
 
-func TestPointerScript(t *testing.T) {
+func TestPointerScript(t *testing.T) { eachShell(t, testPointerScript) }
+
+func testPointerScript(t *testing.T, sh shtest.Shell) {
 	stubs(t)
 	ptr := t.TempDir() + "/etc/kasbah/apps-path"
 	dir := filepath.Dir(ptr)
 	uid := strconv.Itoa(os.Getuid())
 	run := func(env ...string) (Facts, string, int) {
-		out, e, rc := runScript(t, pointerScript, env, "/srv/apps", ptr, uid)
+		out, e, rc := runScript(t, sh, pointerScript, env, "/srv/apps", ptr, uid)
 		f := Facts{}
 		absorb(f, out)
 		return f, e, rc
@@ -141,6 +159,10 @@ func TestPointerScript(t *testing.T) {
 	}
 	if f, _, _ := run(); f["pointer"] != "written" || mode(t, dir) != 0o755 {
 		t.Errorf("drift with sudo: %v %o", f, mode(t, dir))
+	}
+	os.WriteFile(ptr, []byte("/srv/apps\r\n"), 0o644)
+	if f, _, _ := run("STUB_SUDO=no"); f["pointer"] != "unchanged" {
+		t.Errorf("a CRLF pointer: %v", f)
 	}
 	os.WriteFile(ptr, []byte("/apps\n"), 0o644)
 	if f, _, _ := run("STUB_SUDO=no"); f["pointer"] != "nosudo" {

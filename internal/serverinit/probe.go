@@ -11,18 +11,27 @@ import (
 )
 
 // probeScript is the bootstrap read: every fact the verdicts need, before
-// the apps path — and so the server binary — may exist. bash, read-only,
+// the apps path — and so the server binary — may exist. POSIX sh, read-only,
 // always exit 0; the verdicts are the workstation's.
-const probeScript = `set -uo pipefail
+const probeScript = `set -u
 export LC_ALL=C
 apps=$1
 data=$2
 pointer=$3
+cr=$(printf '\r')
+nl='
+'
+uid=$(id -u)
 
 kv() {
-    local v="$2"
-    while [ "${v: -1}" = " " ]; do v="${v% }"; done
-    printf '%s=%s\n' "$1" "$v"
+    kv_v=$2
+    while :; do
+        case $kv_v in
+            *' ') kv_v=${kv_v% } ;;
+            *) break ;;
+        esac
+    done
+    printf '%s=%s\n' "$1" "$kv_v"
 }
 flat() { tr -d '\r' | tr '\n' ' '; }
 
@@ -45,13 +54,12 @@ if command -v rsync >/dev/null 2>&1; then kv have_rsync yes; else kv have_rsync 
 if sudo -n true >/dev/null 2>&1; then sudo_ok=yes; else sudo_ok=no; fi
 kv sudo_nopasswd "$sudo_ok"
 
+# Always called in $(…): its variables, IFS and set -f end with the subshell.
 norm_path() {
-    local p="$1" out="" seg IFS=/
-    set -f
-    p=${p%$'\r'}
-    while [ -n "$p" ]; do
-        case ${p: -1} in
-            ' '|$'\t') p=${p%?} ;;
+    p=${1%"$cr"}
+    while :; do
+        case $p in
+            *' '|*'	') p=${p%?} ;;
             *) break ;;
         esac
     done
@@ -59,6 +67,9 @@ norm_path() {
         /*) ;;
         *) printf '%s' "$p"; return 0 ;;
     esac
+    out=""
+    IFS=/
+    set -f
     for seg in $p; do
         [ -n "$seg" ] && [ "$seg" != . ] || continue
         out="$out/$seg"
@@ -80,7 +91,7 @@ elif [ -f "$pointer" ]; then
         IFS= read -r pointer_value < "$pointer" || [ -n "$pointer_value" ] || pointer_value=""
     elif [ "$sudo_ok" = yes ]; then
         pointer_value=$(sudo -n cat "$pointer" 2>/dev/null) || pointer_value=""
-        pointer_value=${pointer_value%%$'\n'*}
+        pointer_value=${pointer_value%%"$nl"*}
         [ -n "$pointer_value" ] || pointer_state=unreadable
     else
         pointer_state=unreadable
@@ -90,7 +101,7 @@ elif [ -d "$pointer_dir" ] && [ ! -x "$pointer_dir" ]; then
         if sudo -n test -f "$pointer" 2>/dev/null; then
             pointer_state=present
             pointer_value=$(sudo -n cat "$pointer" 2>/dev/null) || pointer_value=""
-            pointer_value=${pointer_value%%$'\n'*}
+            pointer_value=${pointer_value%%"$nl"*}
             [ -n "$pointer_value" ] || pointer_state=unreadable
         else
             pointer_state=notfile
@@ -112,7 +123,7 @@ path_state() {
 }
 
 nearest_visible() {
-    local p="$1"
+    p=$1
     while [ ! -e "$p" ] && [ "$p" != / ]; do
         p=${p%/*}
         [ -n "$p" ] || p=/
@@ -150,14 +161,14 @@ kv apps_base "$apps_base"
 kv apps_base_owner "$(stat -c '%U:%G' "$apps_base" 2>/dev/null | flat)"
 kv apps_base_mode "$(stat -c '%a' "$apps_base" 2>/dev/null | flat)"
 
-if [ -O "$apps" ]; then kv apps_owned yes; else kv apps_owned no; fi
+if [ "$(stat -L -c '%u' "$apps" 2>/dev/null)" = "$uid" ]; then kv apps_owned yes; else kv apps_owned no; fi
 if [ -w "$apps" ] && [ -x "$apps" ]; then kv apps_writable yes; else kv apps_writable no; fi
 kv apps_owner "$(stat -c '%U:%G' "$apps" 2>/dev/null | flat)"
 
 # A read-only mount and a stripped mode are the same -w and want opposite
 # advice; only the errno tells them apart.
 apps_write_error=""
-if [ "$apps_state" = dir ] && [ -O "$apps" ] && [ ! -w "$apps" ]; then
+if [ "$apps_state" = dir ] && [ "$(stat -L -c '%u' "$apps" 2>/dev/null)" = "$uid" ] && [ ! -w "$apps" ]; then
     apps_write_error=$(touch "$apps/.kasbah-write-probe" 2>&1 | flat)
     rm -f "$apps/.kasbah-write-probe" 2>/dev/null
 fi
