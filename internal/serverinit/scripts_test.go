@@ -36,7 +36,6 @@ exec sh -c "$last"`,
 "compose version") echo 2.29.7 ;;
 *) exit 1 ;;
 esac`,
-		"rsync": "exit 0",
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {

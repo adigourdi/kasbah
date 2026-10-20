@@ -144,27 +144,23 @@ assert 'grep -qF -- "--with-mail or --no-mail" "$tmpdir/err"' \
     "the no-TTY failure names the flag that would answer it (said '$(init_err)')"
 assert '[ "$(apps_state)" = "absent" ]'                    "an unanswered prompt created nothing on the rig"
 
-# --- A reachable target that is short a prerequisite --------------------------
-# Still on a rig with no /apps, so "nothing was created" is the same checkable
-# fact as above. A version of this case that ran after the layout existed could
-# not fail: the layout is idempotent, so re-running it changes no checksum, and
-# "no remote step ran" cannot be read off a step that ran and succeeded.
-#
-# rsync is moved aside rather than uninstalled, and put back by the EXIT trap
-# whatever happens: the one binary preflight requires that a host can lack.
-# Suites run one at a time, so the window cannot flake a neighbour.
+# --- rsync is not a prerequisite -------------------------------------------
+# Files travel through the kasbah binary, so a host without rsync passes
+# preflight. rsync is moved aside rather than uninstalled, and put back by the
+# EXIT trap whatever happens (the parity suite needs it as its reference).
+# Without the Traefik flags and a terminal, the run stops at their prompt,
+# past preflight and before anything is created.
 hidden_bin=/usr/bin/rsync
 if rig_ssh "sudo mv $hidden_bin $hidden_bin.hidden" >/dev/null 2>&1; then
     init --no-mail --no-backup; rc=$?
     rig_ssh "sudo mv -f $hidden_bin.hidden $hidden_bin" >/dev/null 2>&1 && hidden_bin=""
 
-    assert '[ "$rc" != "0" ]' "a host missing rsync fails preflight (exit $rc)"
-    assert 'grep -qF "rsync on the remote — it is missing" "$tmpdir/err"' \
-        "the failure names the row and the binary (said '$(init_err)')"
-    assert 'grep -qF "prerequisites" "$tmpdir/err"' \
-        "the failure says it is a prerequisite, not a bug in kasbah"
+    assert '! grep -qi "rsync" "$tmpdir/err" && ! grep -qF "prerequisites" "$tmpdir/err"' \
+        "a host missing rsync is not refused by preflight (said '$(init_err)')"
+    assert '[ "$rc" != "0" ] && grep -qF -- "--domain=<value>" "$tmpdir/err"' \
+        "the run got past preflight to the Traefik prompt, which names its flag (exit $rc, said '$(init_err)')"
     assert '[ "$(apps_state)" = "absent" ]' \
-        "preflight fails before anything is created — the apps path is still not there"
+        "and the run stopped at the Traefik prompt — the apps path is still not there (exit $rc)"
     assert '[ -z "$hidden_bin" ]' "rsync was put back on the rig"
     assert '[ "$(rig_ssh "command -v rsync" 2>/dev/null)" = "/usr/bin/rsync" ]' \
         "rsync is where the rig found it"

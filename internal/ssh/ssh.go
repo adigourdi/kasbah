@@ -1,6 +1,6 @@
 // Package ssh is the transport: one multiplexed master per Conn — a command
-// opens one Conn per run — over the system's own ssh and rsync, so the user's
-// config, agent and jump hosts apply as they do to `ssh USER@HOST`.
+// opens one Conn per run — over the system's own ssh, so the user's config,
+// agent and jump hosts apply as they do to `ssh USER@HOST`.
 package ssh
 
 import (
@@ -68,8 +68,8 @@ func Quote(words ...string) string {
 }
 
 // tmpBase is the directory the control directory goes under: TMPDIR, else
-// /tmp. A space is refused because rsync splits -e on spaces, a `%` because
-// ssh reads it in a ControlPath as a token.
+// /tmp. A space is refused because ssh splits a ControlPath option on spaces,
+// a `%` because ssh reads it in a ControlPath as a token.
 func tmpBase(getenv func(string) string) (string, error) {
 	tmp := getenv("TMPDIR")
 	if tmp != "/" {
@@ -79,7 +79,7 @@ func tmpBase(getenv func(string) string) (string, error) {
 		tmp = "/tmp"
 	}
 	if strings.ContainsAny(tmp, " \t\n\v\f\r") {
-		return "", cli.Fail("TMPDIR ('%s') contains whitespace, and the ssh control socket goes there — rsync's -e option is split on spaces (set TMPDIR to a path without any)", tmp)
+		return "", cli.Fail("TMPDIR ('%s') contains whitespace, and the ssh control socket goes there — ssh splits a ControlPath option on spaces (set TMPDIR to a path without any)", tmp)
 	}
 	if strings.Contains(tmp, "%") {
 		return "", cli.Fail("TMPDIR ('%s') contains a '%%', and the ssh control socket goes there — ssh reads '%%' in a ControlPath as a token (set TMPDIR to a path without one)", tmp)
@@ -239,13 +239,6 @@ func (c *Conn) TTY(words ...string) *exec.Cmd {
 	cmd := exec.Command("ssh", append(a, c.Target.String(), Quote(words...))...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd
-}
-
-// Rsync is rsync over the same master. rsync splits -e on spaces and quotes
-// nothing, which is why the control directory refuses a TMPDIR with one.
-func (c *Conn) Rsync(args ...string) *exec.Cmd {
-	e := "ssh " + strings.Join(c.opts, " ")
-	return exec.Command("rsync", append([]string{"-e", e}, args...)...)
 }
 
 // Close tears the master down and removes its directory; idempotent. `-O

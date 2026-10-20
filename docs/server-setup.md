@@ -13,7 +13,6 @@ assumes.
 | Docker ≥ 24 | `docker compose` v2 plugin required | Hard fail, link to docker docs |
 | Docker Compose v2 **or newer** | Manifest uses `include:` and modern syntax. The check is on the major version, not the string: a live host ran Compose **v5.2.0** and passed | Hard fail |
 | The SSH user can run `docker` without sudo | Avoids mixed sudo/non-sudo ownership in `/apps/data/` | Hard fail, suggest `usermod -aG docker` |
-| `rsync` available on remote | The project's `sync:` files and the Traefik fragment are rsynced | Hard fail |
 | A POSIX `sh` on the remote — no `bash` | The bootstrap probe and the `sudo` steps of `server init` and `server destroy` run as POSIX shell scripts over the SSH master (tested under dash and busybox ash, linted with shellcheck); everything else runs the kasbah binary there, shipped to `<apps>/.kasbah/bin/kasbah` | Hard fail |
 | A POSIX userland — `uname`, `id`, `stat`, `od`, `timeout`, `sed`, `head`, `tr`, `wc`, `find`, `cat`, `mkdir`, `mv`, `rm`, `nproc`, `df` | The remaining shell steps (the bootstrap probe and the `sudo` steps) assume these rather than check them, because a box without them cannot run a shell step usefully in the first place. The rule kasbah's remote shell follows is **POSIX `sh` builtins and the coreutils that busybox also provides, nothing separately packaged** (GNU coreutils and busybox are both exercised); the deploy engine and the env setup are the kasbah binary and need none of it | Not checked; failure surfaces as the step's own error |
 | **`:80` and `:443` free, and reachable from the internet** | Traefik binds both, and ACME's HTTP-01 challenge is answered on `:80` from outside. **Not probed** — init does not look at what is listening or at any firewall, so a port already held, or a `ufw` rule, surfaces as Traefik failing to start or as a challenge that never validates | Not checked |
@@ -37,7 +36,7 @@ dashboard password is bcrypt-hashed locally so it never crosses the wire in
 clear, and the hashing runs in a throwaway `httpd:2-alpine` container unless
 `htpasswd` happens to be on `PATH` — it ships in `apache2-utils` /
 `httpd-tools`, which few workstations install. A machine with neither hashes
-nothing and init exits naming both ways out. `rsync`, `ssh` and `git` are the
+nothing and init exits naming both ways out. `ssh` and `git` are the
 rest — the kasbah binary parses YAML and JSON
 itself. "Docker" here means the daemon **and the compose plugin** — `build-push`
 runs `docker compose -f compose.prod.yml build` locally, so a workstation with
@@ -284,7 +283,7 @@ Ships baseline middlewares that any project fragment can reference via `@file`:
 - `api-rate-limit` (50 avg / 100 burst) — opt-in from a project fragment.
 
 Projects add their own middlewares in their own `traefik-dynamic.yml`
-(rsynced into the same `dynamic/` directory as `<manifest.name>.yml`).
+(synced into the same `dynamic/` directory as `<manifest.name>.yml`).
 The `_` prefix on shared files keeps them sorted at the top and distinct
 from project fragments.
 

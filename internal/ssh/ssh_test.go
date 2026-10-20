@@ -87,7 +87,7 @@ func TestTmpBase(t *testing.T) {
 		{"", "/tmp", ""},
 		{dir, dir, ""},
 		{dir + "/", dir, ""},
-		{spaced, "", "rsync"},
+		{spaced, "", "splits a ControlPath"},
 		{pct, "", "token"},
 		{filepath.Join(dir, "missing"), "", "not a directory"},
 	}
@@ -249,14 +249,6 @@ func TestConnectRunClose(t *testing.T) {
 	}
 	if ents, _ := os.ReadDir(tmp); len(ents) != 0 {
 		t.Errorf("TMPDIR is not left empty after Close: %v", ents)
-	}
-}
-
-func TestRsyncOptions(t *testing.T) {
-	c := &Conn{Target: Target{"d", "h"}, opts: Options("/tmp/kasbah-ssh.abcdef/m1")}
-	cmd := c.Rsync("-a", "src/", "d@h:/apps/x/")
-	if cmd.Args[1] != "-e" || cmd.Args[2] != "ssh "+strings.Join(c.opts, " ") {
-		t.Errorf("rsync -e is %q", cmd.Args[1:3])
 	}
 }
 

@@ -21,7 +21,7 @@ import (
 )
 
 // The tagged path ships everything from the v<target> ref, never HEAD, through
-// a deploy's own rsync: `git archive | tar -x` cannot honour sync renames.
+// a deploy's own sync: `git archive | tar -x` cannot honour sync renames.
 
 const rollbackUsage = `Usage: kasbah rollback [USER@HOST] [VERSION] [--on-drift=setup|continue|abort]
                        [--skip-hooks] [--no-health-wait] [--allow-stopped]
@@ -514,7 +514,7 @@ func archive(ref string, paths []string, dir string) error {
 	return nil
 }
 
-// untar keeps each entry's mtime, as tar -x did: rsync -t carries it on.
+// untar keeps each entry's mtime, as tar -x did: the sync carries it on.
 // Directories are stamped last, after their contents stop changing them.
 func untar(rd io.Reader, dir string) error {
 	tr := tar.NewReader(rd)

@@ -156,7 +156,8 @@ assert '[[ "$compose_major" =~ ^[0-9]+$ ]] && [ "$compose_major" -ge 2 ]' \
 assert '[ -n "$docker_server" ]' \
     "$remote_user reaches the docker daemon without sudo (no daemon version came back)"
 
-# --- Row: rsync, openssl, gzip available on remote ----------------------------
+# --- The suites' own tools on the remote: rsync (the sync parity reference),
+# openssl, gzip --------------------------------------------------------------
 for cmd in rsync openssl gzip; do
     have="${fact[have_$cmd]}"
     assert '[ "$have" = "yes" ]' "$cmd is present on the remote (command -v reported '$have')"

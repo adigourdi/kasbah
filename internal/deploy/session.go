@@ -3,9 +3,7 @@ package deploy
 import (
 	"bytes"
 	"encoding/json"
-	"io"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 
@@ -14,6 +12,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/treesync"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
@@ -24,9 +23,6 @@ type SSH struct{ *env.SSH }
 // DialSSH connects; the binary is ensured by Marker.
 func DialSSH(self remote.Info, local func(arch string) (string, error)) func(string) (Server, error) {
 	return func(target string) (Server, error) {
-		if _, err := exec.LookPath("rsync"); err != nil {
-			return nil, cli.Fail("rsync is required (install rsync and retry)")
-		}
 		c, err := ssh.Connect(target)
 		if err != nil {
 			return nil, err
@@ -66,20 +62,22 @@ func parsePrepare(out []byte, target string) (string, error) {
 	return kv["client"], nil
 }
 
-// Sync is one sync: entry; -s so the far side never re-splits a path.
+// Sync is one sync: entry, as `rsync -rlpt src/ dst/` or `rsync -lpt src dst`
+// shipped it (internal/treesync).
 func (s *SSH) Sync(e Entry, base string) error {
-	var cmd *exec.Cmd
+	src, from, to := (*treesync.Source)(nil), e.Src, base+"/"+e.Dst
+	var err error
 	if e.Recurse {
-		cmd = s.Conn.Rsync("-rlpt", "-s", e.Src+"/", s.target()+":"+base+"/"+e.Dst+"/")
+		from, to = from+"/", to+"/"
+		src, err = treesync.Dir(e.Src, os.Stderr)
 	} else {
-		cmd = s.Conn.Rsync("-lpt", "-s", e.Src, s.target()+":"+base+"/"+e.Dst)
+		src, err = treesync.File(e.Src, os.Stderr)
 	}
-	cmd.Stdout, cmd.Stderr = io.Discard, os.Stderr
-	if cmd.Run() != nil {
-		if e.Recurse {
-			return cli.Fail("could not sync %s/ to %s:%s/%s/", e.Src, s.target(), base, e.Dst)
-		}
-		return cli.Fail("could not sync %s to %s:%s/%s", e.Src, s.target(), base, e.Dst)
+	if err == nil {
+		err = treesync.Push(s.Conn, s.Bin(), src, base+"/"+e.Dst)
+	}
+	if err != nil {
+		return cli.Fail("could not sync %s to %s:%s", from, s.target(), to).Cont(err.Error())
 	}
 	return nil
 }
@@ -128,12 +126,14 @@ func (s *SSH) Run(dir string, sp Spec) (string, int) {
 	return out.String(), ssh.ExitCode(err)
 }
 
-// Fragment is rsync's temp-then-rename, never --inplace: Traefik's watcher
-// must see one atomic replace.
+// Fragment is a temp file renamed over dest, never written in place: Traefik's
+// watcher must see one atomic replace. Mode 644 whatever the source's.
 func (s *SSH) Fragment(local, dest string) error {
-	cmd := s.Conn.Rsync("-pt", "--chmod=F644", "-s", local, s.target()+":"+dest)
-	cmd.Stdout, cmd.Stderr = io.Discard, os.Stderr
-	return cmd.Run()
+	src, err := treesync.Fixed(local, 0o644)
+	if err != nil {
+		return err
+	}
+	return treesync.Push(s.Conn, s.Bin(), src, dest)
 }
 
 func (s *SSH) Images(version string, images []string) (int, []string, error) {

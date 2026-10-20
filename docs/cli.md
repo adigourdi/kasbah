@@ -689,11 +689,11 @@ Two modes:
   what this mode is for.
 
 Flow (no-args / working-tree path):
-1. Open SSH ControlMaster for the whole deploy (reused by every ssh and rsync).
+1. Open SSH ControlMaster for the whole deploy (reused by every ssh session and file transfer).
 2. Verify SSH reachability; ship the kasbah binary if the server's is absent or older.
 3. Resolve version = HEAD's `v-tag` (fail if not tagged).
 4. Ensure remote dirs exist (`/apps/<name>/`, `backups/`, `/apps/data/<name>/`).
-5. Rsync manifest's `sync:` list.
+5. Sync the manifest's `sync:` list (`kasbah remote sync`: only changed files travel).
    The Traefik fragment is not shipped here — it goes last, after the stack is
    up, so a failed deploy cannot leave a live route to nothing (`build-deploy.md`).
 6. Env drift check on VPS (`kasbah remote setup-env`) — run the setup if missing, prompt on drift.
@@ -709,7 +709,7 @@ Flow (no-args / working-tree path):
    - Wait for `health.container` to be healthy.
    - Run `post-deploy` hooks against new containers.
    - Append to `versions.log`, then rotate it (`build-deploy.md` → Rotation).
-9. Rsync `traefik-dynamic.yml` to `/apps/traefik/dynamic/<name>.yml` — locally
+9. Sync `traefik-dynamic.yml` to `/apps/traefik/dynamic/<name>.yml` — locally
    driven, after the stack is up, so a failed deploy leaves no live route.
 10. Print local changelog (`git log <prev>..<new>`).
 
@@ -748,7 +748,7 @@ Flow (see `build-deploy.md` for full detail):
    rebuild-from-tag guidance. The extraction comes first because the check
    reads the ref's compose out of it; what matters is that **nothing
    reaches the server** before the check passes.
-6. Rsync the extracted sync list into
+6. Sync the extracted sync list into
    `/apps/<name>/` — not `git archive | tar -x`, which cannot honour the
    `src -> dst` renames every sync list has (`build-deploy.md` → rollback flow).
    The extracted tree is then checked to hold every source the list names:
@@ -764,7 +764,7 @@ Flow (see `build-deploy.md` for full detail):
    - Wait for health.
    - Run `post-rollback` hooks against rolled-back containers.
    - Append rollback entry to `versions.log`, rotate.
-9. Rsync v<target>'s `traefik-dynamic.yml` to
+9. Sync v<target>'s `traefik-dynamic.yml` to
    `/apps/traefik/dynamic/<name>.yml` — **last**, once the remote step has
    returned 0, for the same reason `deploy` ships it last. A version carrying
    no fragment is rolled back anyway and warned about; the fragment already
@@ -862,7 +862,7 @@ three have different reasons:
   images, says so, and names the orphan tags it leaves behind (repositories
   carrying a `:current` that no readable project claims — `:current` is written
   by `deploy` and nothing else, so stock images never appear in that list). A
-  deploy that died between `mkdir` and the compose rsync leaves exactly this
+  deploy that died between `mkdir` and the compose sync leaves exactly this
   state, and refusing it would leave a hand-run `rm -rf` on the server as the
   only way out.
 
@@ -944,7 +944,7 @@ same words `deploy` uses for it.
 ### `kasbah env [USER@HOST] [--on-drift=setup|continue|abort]`
 
 Drift-aware env setup. Ships the kasbah binary if the server's is absent or
-older, rsyncs `.env.prod.example` to `<apps>/<name>/`, runs the interactive setup
+older, syncs `.env.prod.example` to `<apps>/<name>/`, runs the interactive setup
 there over `ssh -t` (`kasbah remote setup-env`), then refreshes the kasbah-managed `KASBAH_*` block in `.env` from
 the server marker's resource limits. See `env-template.md` for the template
 conventions and the managed block.

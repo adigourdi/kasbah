@@ -48,14 +48,14 @@ allowed to be the first time that version reaches this server.
 An argument containing '@' is the server, anything else is the version.
 
 What it does:
-  * rsyncs every path in the manifest's sync: list to <apps>/<name>/
+  * ships every path in the manifest's sync: list to <apps>/<name>/
   * renders <apps>/<name>/.env when it is missing, checks it for drift against
     .env.prod.example otherwise, and refreshes the KASBAH_* block in it from
     the server marker's resource limits
   * runs ` + "`kasbah remote deploy`" + ` on the server: backup, pre-deploy hooks,
     retag <image>:current, docker compose -p <name> up -d --remove-orphans,
     health wait, post-deploy hooks, one versions.log entry
-  * rsyncs traefik-dynamic.yml to <apps>/traefik/dynamic/<name>.yml, last
+  * ships traefik-dynamic.yml to <apps>/traefik/dynamic/<name>.yml, last
   * prints the commits between the version the server was running and this one
 
 Flags:
@@ -240,7 +240,7 @@ func Run(c Ctx, o Options) error {
 			return err
 		}
 	}
-	// After the rsync (the setup prompts from the template it shipped) and
+	// After the sync (the setup prompts from the template it shipped) and
 	// before the engine (compose reads what it writes).
 	st := &env.Step{Out: c.Out, Prompter: c.Prompter, S: r.s, Target: r.target, TTYIn: c.TTYIn, TTYOut: c.TTYOut, Color: c.Color}
 	if err := st.Run(r.dir, r.mk.CPULimit, r.mk.MemLimit, o.OnDrift, false); err != nil {

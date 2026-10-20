@@ -1486,7 +1486,7 @@ assert '[ "$rc" = "6" ]'                                                       "
 assert 'grep -qF "✗ Fragment targets unknown container_names: demo-web" <<<"$out"' "T07 fail line"
 
 # --- Case 42: a name kasbah owns on the server -------------------------------
-# The project should learn this from `check`, not from the deploy that rsyncs
+# The project should learn this from `check`, not from the deploy that syncs
 # over the shared Traefik stack and then removes it as an orphan. It is a
 # manifest rule, so it arrives the same way a bad schema does: the manifest reader
 # refuses and the report short-circuits.

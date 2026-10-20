@@ -34,7 +34,7 @@ name: shop
 domain: shop.example.com
 client: shop                    # backup repo grouping — defaults to name
 
-# Files/dirs to rsync from project root to /apps/shop/ on each deploy.
+# Files/dirs to sync from project root to /apps/shop/ on each deploy.
 # "a -> b" renames on arrival. No arrow = same path. Trailing / recurses.
 sync:
   - compose.prod.yml -> compose.yml
@@ -129,7 +129,7 @@ Must match `^[a-z][a-z0-9-]*$`.
 
 **Reserved: `traefik`, `mail`, `data`, `backups`.** Those directories under
 `/apps/` belong to kasbah, and a project claiming one is not a naming collision
-but a live hazard: a project named `traefik` would rsync its compose file over
+but a live hazard: a project named `traefik` would sync its compose file over
 the shared stack's, then run `docker compose -p traefik up -d
 --remove-orphans` in that directory — and since Traefik is not a service in
 the project's file, `--remove-orphans` removes the reverse proxy every site
@@ -171,7 +171,7 @@ after a rule tightens.
 
 ### `sync` *(required, list)*
 
-Rsync list applied on every deploy. Each entry is either `src` or `src -> dst`
+Sync list applied on every deploy (only changed files travel). Each entry is either `src` or `src -> dst`
 (relative to project root on dev; `/apps/<name>/` on VPS). Trailing `/` means
 "recurse". Kasbah ships no scripts: its server side is the kasbah binary itself
 (`<apps>/.kasbah/bin/kasbah`), so the drift check on the server is the same code
@@ -180,9 +180,8 @@ shipped: nothing on the server reads it yet, and `kasbah.yml` in a
 project's sync list would be a second copy to drift.
 
 The Traefik dynamic config (`traefik-dynamic.yml` at project root) is
-**not** listed here. Kasbah rsyncs it directly to
-`/apps/traefik/dynamic/<name>.yml` out-of-band, the same way it handles
-its own helper scripts. See `traefik.md` for the fragment shape.
+**not** listed here. Kasbah syncs it directly to
+`/apps/traefik/dynamic/<name>.yml` out-of-band. See `traefik.md` for the fragment shape.
 
 `.env.prod.example` is required (check S04) whether or not the project has
 anything to configure: a project with nothing to declare ships a comment-only

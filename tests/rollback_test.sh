@@ -3,7 +3,7 @@
 # a different log entry and hook pair (internal/deploy, tagged.go; the record is
 # read through internal/vlog).
 #
-# Hermetic. `ssh` and `rsync` are stubs on PATH that record every call and answer
+# Hermetic. `ssh` is a stub on PATH that records every call and answers
 # as a prepared server's kasbah does — the bootstrap and the marker for real,
 # against a scratch apps tree holding the binary under test, every other
 # `kasbah remote` step canned, the engine's spec kept; `git` is real, because the whole subject is what a
@@ -13,8 +13,9 @@
 # tree instead of the ref produces visibly different calls rather than the same
 # ones by luck.
 #
-# The stub rsync copies what it was handed, which is the only way to see files
-# that exist in a temp directory the run deletes on its way out.
+# The sync runs for real, into a scratch root standing in for the server's /,
+# which is the only way to see files that exist in a temp directory the run
+# deletes on its way out.
 
 set -uo pipefail
 
@@ -191,8 +192,9 @@ ssh_log="$tmpdir/ssh.log"
 call_log="$tmpdir/calls.log"
 spec_copy="$tmpdir/shipped-spec.json"
 seed_copy="$tmpdir/shipped-seed.json"
-frag_copy="$tmpdir/shipped-fragment.yml"
-compose_copy="$tmpdir/shipped-compose.yml"
+sync_root="$tmpdir/synced"
+frag_copy="$sync_root/apps/traefik/dynamic/demo.yml"
+compose_copy="$sync_root/apps/demo/compose.yml"
 run_tmp="$tmpdir/runtmp"
 mkdir -p "$tmpdir/home" "$run_tmp"
 
@@ -262,6 +264,14 @@ case "${1:-} ${2:-}" in
         printf 'extra=%s\n' "${ENV_EXTRA:-}" ;;
     "setup-env inject") exit 0 ;;
     "setup-env prepare") printf 'prepared=yes\n' ;;
+    # The sync, received by the binary under test under a scratch root; the
+    # call log keeps where it was aimed.
+    "sync "*)
+        case "$3" in
+            *"/dynamic/demo.yml") [ -z "${SYNC_FAIL_FRAGMENT:-}" ] || exit 12 ;;
+        esac
+        mkdir -p "$SYNC_ROOT$(dirname "$3")"
+        exec "$FAKE_APPS/.kasbah/bin/kasbah" remote sync "$2" "$SYNC_ROOT$3" ;;
     *)
         printf 'stub: no answer for remote step %s\n' "$last" >&2
         exit 9 ;;
@@ -269,22 +279,7 @@ esac
 exit 0
 STUB
 
-# Sources are inside the extraction, which the run deletes: matched by where
-# they land, and copied so a case can read what arrived.
-cat > "$stub_dir/rsync" <<'STUB'
-#!/usr/bin/env bash
-{ printf 'rsync'; for a in "$@"; do printf '|%s' "$a"; done; printf '\n'; } >> "$CALL_LOG"
-src="${@:$#-1:1}"
-case "${!#}" in
-    *"/dynamic/demo.yml") [ -z "${RSYNC_FAIL_FRAGMENT:-}" ] || exit 12 ;;
-esac
-case "${!#}" in
-    *"/dynamic/demo.yml")         cp "$src" "$RSYNC_FRAG_COPY" ;;
-    *"/demo/compose.yml")         cp "$src" "$RSYNC_COMPOSE_COPY" ;;
-esac
-exit 0
-STUB
-chmod 0755 "$stub_dir/ssh" "$stub_dir/rsync"
+chmod 0755 "$stub_dir/ssh"
 
 # What the engine was asked to run, as "<mode> <version>"; empty when it never ran.
 ran() { [ -s "$spec_copy" ] && jq -r '.mode + " " + .version' "$spec_copy"; }
@@ -295,12 +290,12 @@ log_two=$'2026-08-01T00:00:00+00:00 deploy 1.0.0 no-backup kasbah=0.1.0 digest=-
 
 kasbah_run() {
     : > "$ssh_log"; : > "$call_log"
-    rm -f "$spec_copy" "$seed_copy" "$frag_copy" "$compose_copy"
+    rm -f "$spec_copy" "$seed_copy"
+    rm -rf "$sync_root"
     env -u KASBAH_LIB_DIR \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$run_tmp" \
         SSH_LOG="$ssh_log" CALL_LOG="$call_log" FAKE_APPS="$FAKE_APPS" \
-        SPEC_COPY="$spec_copy" SEED_COPY="$seed_copy" RSYNC_FRAG_COPY="$frag_copy" \
-        RSYNC_COMPOSE_COPY="$compose_copy" \
+        SPEC_COPY="$spec_copy" SEED_COPY="$seed_copy" SYNC_ROOT="$sync_root" \
         FAKE_ACTIVE="${FAKE_ACTIVE-$log_two}" \
         "$KASBAH_BIN" "$@" </dev/null 2>&1
 }
@@ -318,10 +313,10 @@ assert '[ "$(ran)" = "rollback 1.0.0" ]' \
 # **The invariant.** Every one of these four is a fact about v1.0.0 that HEAD
 # contradicts, so each of them fails against a run that read the working tree.
 assert '! grep -qF "extra.txt" <<<"$calls"' \
-    "the sync: list is v1.0.0's — HEAD's extra.txt is not shipped ($(grep -F "rsync|" <<<"$calls"))"
-assert '! grep -qE "\|site/\|" <<<"$calls"' \
+    "the sync: list is v1.0.0's — HEAD's extra.txt is not shipped ($(grep -F "'sync'" <<<"$calls"))"
+assert '! grep -qF "/apps/demo/site" <<<"$calls"' \
     "nor HEAD's site/ directory ($(grep -F "site" <<<"$calls"))"
-assert 'grep -qE "\|-lpt\|-s\|[^|]*/compose\.prod\.yml\|deploy@vps:/apps/demo/compose\.yml\$" <<<"$calls"' \
+assert 'grep -qF "'"'remote' 'sync' 'file' '/apps/demo/compose.yml'"'" <<<"$calls"' \
     "and the rename in it still lands on compose.yml — which \`git archive | tar -x\` could not do
         calls: $(grep -F "compose" <<<"$calls")"
 assert 'grep -qF "demo-web" <<<"$calls" && grep -qF "demo-cache" <<<"$calls" &&
@@ -363,7 +358,7 @@ assert '[ "$(cd "$project" && git rev-parse HEAD)" = "$(cd "$project" && git rev
 n_of() { grep -n -m1 -F -- "$1" <<<"$calls" | cut -d: -f1; }
 n_vlog=$(n_of "'vlog' '/apps' 'demo'")
 n_images=$(n_of "'demo-web'")
-n_sync=$(n_of "/compose.prod.yml|")
+n_sync=$(n_of "'sync' 'file' '/apps/demo/compose.yml'")
 n_drift=$(n_of "'setup-env' 'drift'")
 n_remote=$(n_of "'deploy' 'run'")
 n_frag=$(n_of "/dynamic/demo.yml")
@@ -426,7 +421,7 @@ assert 'grep -qF "no earlier deploy" <<<"$out"' "and says so (said '$out')"
 assert 'grep -qF "kasbah rollback deploy@vps <X.Y.Z>" <<<"$out"' \
     "pointing at the argument that would answer it (said '$out')"
 assert '[ -z "$(ran)" ]' "no implicit target: nothing ran on the server"
-assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "no implicit target: nothing was shipped"
+assert '[ "$(grep -c "'"'sync'"'" <<<"$calls")" = "0" ]' "no implicit target: nothing was shipped"
 
 # An empty log is a different sentence: nothing was ever deployed here.
 out="$( FAKE_ACTIVE= FAKE_ACTIVE_STATE=missing rollback deploy@vps )"; rc=$?
@@ -690,7 +685,7 @@ assert 'grep -qF "NOT byte-identical to the original" <<<"$out"' \
 assert 'grep -qF "git checkout v1.0.0 && kasbah build-push deploy@vps" <<<"$out"' \
     "with the escape hatch (said '$out')"
 assert 'grep -qF "kasbah rollback deploy@vps 1.0.0" <<<"$out"' "and the retry (said '$out')"
-assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
+assert '[ "$(grep -c "'"'sync'"'" <<<"$calls")" = "0" ]' "and nothing was shipped"
 assert '[ -z "$(ran)" ]' "and nothing ran on the server"
 assert '! grep -qF "never built" <<<"$out"' \
     "and it does not hedge: a rollback has already proved the version is in the record, so an
@@ -718,7 +713,7 @@ assert 'grep -qF "kasbah history deploy@vps --all" <<<"$out"' \
     "pointing at the command that would answer it (said '$out')"
 assert 'grep -qF "git checkout v1.0.0 && kasbah build-push deploy@vps" <<<"$out"' \
     "with the advice that fits either state (said '$out')"
-assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
+assert '[ "$(grep -c "'"'sync'"'" <<<"$calls")" = "0" ]' "and nothing was shipped"
 
 # A tag this checkout does not have. `git fetch --tags` is spent on it once,
 # unprompted, and the repository has no remote — so the retry finds nothing.
@@ -730,7 +725,7 @@ assert 'grep -qF "this checkout has no tag v7.0.0" <<<"$out"' "saying which tag 
 assert 'grep -qF "fetching tags from the remote" <<<"$out"' \
     "having tried a fetch first, out loud (said '$out')"
 assert 'grep -qF "is not a tag in this repository" <<<"$out"' "and then giving up (said '$out')"
-assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
+assert '[ "$(grep -c "'"'sync'"'" <<<"$calls")" = "0" ]' "and nothing was shipped"
 
 # A version that is in neither the record nor this checkout's tags. Both
 # refusals fit, and the record's is the one that comes out: it is step 3 of the
@@ -757,7 +752,7 @@ assert 'grep -qF "ghost.txt — no such path at v3.0.0" <<<"$out"' \
 assert '! grep -qF "did not match any files" <<<"$out"' \
     "before \`git archive\` was asked for it — that is git's message, and it means the check
         never ran (said '$out')"
-assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
+assert '[ "$(grep -c "'"'sync'"'" <<<"$calls")" = "0" ]' "and nothing was shipped"
 
 # A tag from before the project was renamed. Whichever name is right, kasbah
 # cannot know which of the two directories on the server this run is about.
@@ -767,7 +762,7 @@ calls="$(<"$call_log")"
 assert '[ "$rc" != "0" ]' "a target tagged under another project name is refused (rc $rc: $out)"
 assert 'grep -qF "called demo today and was called renamed at v4.0.0" <<<"$out"' \
     "naming both (said '$out')"
-assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
+assert '[ "$(grep -c "'"'sync'"'" <<<"$calls")" = "0" ]' "and nothing was shipped"
 
 # --- What `git archive` actually produced -----------------------------------------
 # `git ls-tree` says what is in the tree and `git archive` says what gets
@@ -783,7 +778,7 @@ assert 'grep -qF ".env.prod.example — in the tag'\''s tree, not in the archive
 assert 'grep -qF "site/index.html — in the tag'\''s tree, not in the archive" <<<"$out"' \
     "and the file inside a directory entry that survived without it (said '$out')"
 assert 'grep -qF "export-ignore" <<<"$out"' "with the mechanism that does it (said '$out')"
-assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
+assert '[ "$(grep -c "'"'sync'"'" <<<"$calls")" = "0" ]' "and nothing was shipped"
 
 # --- Sync entries that are the other kind of thing at the ref ------------------------
 out="$( FAKE_ACTIVE=$'2026-08-02T00:00:00+00:00 deploy 9.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-03T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n' \
@@ -796,7 +791,7 @@ assert 'grep -qF "extra.txt — is a directory at v9.0.0" <<<"$out"' \
     "and the other direction in the same run (said '$out')"
 assert '! grep -qF "did not match any files" <<<"$out"' \
     "before \`git archive\` was asked for either (said '$out')"
-assert '[ "$(grep -c "^rsync|" <<<"$calls")" = "0" ]' "and nothing was shipped"
+assert '[ "$(grep -c "'"'sync'"'" <<<"$calls")" = "0" ]' "and nothing was shipped"
 
 # --- A tag whose `client:` this kasbah refuses -----------------------------------------
 # `deploy` and `kasbah check` (S08) both refuse such a value, and they are right
@@ -892,7 +887,7 @@ assert '[ ! -s "$ssh_log" ]' "also before any connection (ssh saw: $(cat "$ssh_l
 # The two late failures are where an operator reads most carefully, and `kasbah
 # deploy` is a runnable instruction that ships the working tree — undoing the
 # rollback that just succeeded.
-out="$( RSYNC_FAIL_FRAGMENT=1 rollback deploy@vps 1.0.0 )"; rc=$?
+out="$( SYNC_FAIL_FRAGMENT=1 rollback deploy@vps 1.0.0 )"; rc=$?
 assert '[ "$rc" != "0" ]' "a fragment that will not ship fails the run (rc $rc: $out)"
 assert 'grep -qF "the rollback itself succeeded" <<<"$out"' \
     "saying which run succeeded (said '$out')"
@@ -914,7 +909,7 @@ assert 'grep -qF "the rollback step on deploy@vps reported no digest" <<<"$out"'
 assert 'grep -qF "re-run \`kasbah rollback deploy@vps 1.0.0\` — it is safe to run again" <<<"$out"' \
     "and the command to repeat, not one that would deploy HEAD over it (said '$out')"
 
-out="$( RSYNC_FAIL_FRAGMENT=1 FAKE_ACTIVE= FAKE_ACTIVE_STATE=missing deploy deploy@vps 1.0.0 )"; rc=$?
+out="$( SYNC_FAIL_FRAGMENT=1 FAKE_ACTIVE= FAKE_ACTIVE_STATE=missing deploy deploy@vps 1.0.0 )"; rc=$?
 assert '[ "$rc" != "0" ]' "the same failure in tagged-deploy mode fails too (rc $rc: $out)"
 assert 'grep -qF "re-run \`kasbah deploy deploy@vps 1.0.0\`" <<<"$out"' \
     "and names the version there too — \`kasbah deploy\` alone is a different command (said '$out')"

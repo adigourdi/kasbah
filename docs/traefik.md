@@ -167,7 +167,7 @@ by `server init --with-mail`. Don't author your own `_`-prefixed files.
 ## Project fragment
 
 Each project ships `traefik-dynamic.yml` at its repo root. `kasbah deploy`
-rsyncs it directly to `/apps/traefik/dynamic/<manifest.name>.yml` — no
+syncs it directly to `/apps/traefik/dynamic/<manifest.name>.yml` — no
 intermediate copy, no entry in the manifest's `sync:` list. Kasbah
 handles it out-of-band.
 Traefik picks up the change on the next watch tick.
@@ -371,11 +371,11 @@ server status` surfaces it.
 
 ## Lifecycle on deploy / rollback / drop
 
-- **Deploy** — kasbah rsyncs `traefik-dynamic.yml` directly to
-  `/apps/traefik/dynamic/<manifest.name>.yml`. Rsync writes temp + rename,
+- **Deploy** — kasbah syncs `traefik-dynamic.yml` directly to
+  `/apps/traefik/dynamic/<manifest.name>.yml`. The sync writes temp + rename,
   so Traefik sees a single atomic replace event and reloads.
 - **Rollback** — kasbah reads `traefik-dynamic.yml` from
-  `git archive v<target>` and rsyncs it to the same destination.
+  `git archive v<target>` and syncs it to the same destination.
 - **Drop** — `rm /apps/traefik/dynamic/<manifest.name>.yml` before
   `docker compose down`. That order is the point: the route goes first, so a
   run that dies between the two leaves a stopped project nothing is routing to,

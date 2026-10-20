@@ -117,7 +117,7 @@ func TestLimits(t *testing.T) {
 
 func goodFacts() Facts {
 	return Facts{"user": "deploy", "group": "deploy", "have_docker": "yes", "docker_server": "27.1.0",
-		"docker_error": "", "compose_version": "v2.29.7", "have_rsync": "yes",
+		"docker_error": "", "compose_version": "v2.29.7",
 		"sudo_nopasswd": "yes", "pointer_state": "absent",
 		"pointer_value": "", "apps_state": "absent", "apps_owned": "no", "apps_writable": "no",
 		"apps_owner": "", "apps_write_error": "", "apps_root_state": "absent", "apps_root_owner": "",
@@ -140,7 +140,6 @@ func TestPreflight(t *testing.T) {
 		{Facts{"compose_version": ""}, "produced nothing"},
 		{Facts{"compose_version": "1.29.2"}, "the plugin reports 1.29.2"},
 		{Facts{"compose_version": "5.2.0"}, ""},
-		{Facts{"have_rsync": "no"}, "rsync on the remote — it is missing"},
 		{Facts{"sudo_nopasswd": "no"}, "sudo mkdir -p /apps && sudo chown deploy:deploy /apps"},
 		{Facts{"apps_state": "dangling"}, "symlink to nothing"},
 		{Facts{"apps_state": "unreachable", "apps_root_state": "exists", "apps_root_owner": "root:root"}, "cannot see it"},

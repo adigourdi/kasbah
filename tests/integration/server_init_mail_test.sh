@@ -178,15 +178,15 @@ kv t_dms_created "$(date -d "$(docker inspect -f '{{.Created}}' mail-dms 2>/dev/
 # be in Traefik's watch directory *before* Traefik starts, so both certificates
 # are requested at configuration load instead of a reload later.
 #
-# **ctime, not mtime.** The fragment is shipped with `rsync -pt`, which
+# **ctime, not mtime.** The fragment is shipped with its mtime kept, which
 # *preserves* the mtime it was rendered with on the workstation — and the render
 # happens before the Traefik start whichever order the two steps run in, so an
 # mtime comparison here is green for both orders and measures nothing. ctime is
-# the inode's own change time on the server, which rsync cannot preserve: it is
+# the inode's own change time on the server, which no copy can preserve: it is
 # the moment the file landed, which is the fact under test. Nothing touches
 # _mail.yml afterwards, so it stays that moment.
 #
-# Nanoseconds, because these two events are one rsync and one ssh round trip
+# Nanoseconds, because these two events are one sync and one ssh round trip
 # apart and a whole-second clock reports them as simultaneous about as often as
 # not.
 frag_ns=$(stat -c '%.9Z' "$frag" 2>/dev/null)

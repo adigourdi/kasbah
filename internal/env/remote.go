@@ -34,7 +34,7 @@ func Remote(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	switch {
 	case mode == "prepare" && len(args) == 2:
 		// The project directory under an apps path that must already exist,
-		// so rsync has somewhere to land.
+		// so the template has somewhere to land.
 		if fi, err := os.Stat(parent(dir)); err != nil || !fi.IsDir() {
 			fmt.Fprintf(stderr, "remote: %s is not a directory\n", parent(dir))
 			return 1

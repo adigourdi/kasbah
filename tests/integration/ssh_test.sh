@@ -197,7 +197,7 @@ assert 'grep -qE "^images=.*kasbah-clean-probe:test," <<<"$after_out"' \
 
 # --- The transport, against the live rig --------------------------------------
 # One CLI run that connects, works and leaves: under a TMPDIR of its own, so
-# what the run leaves behind is all that is in it. Quoting, rsync and the
+# what the run leaves behind is all that is in it. Quoting, the sync and the
 # payloads are every other rig suite's business; this is the connection.
 run_tmp="$tmpdir/run-tmp"
 mkdir -p "$run_tmp"

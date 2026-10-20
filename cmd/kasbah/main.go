@@ -30,6 +30,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/status"
 	"github.com/adigourdi/kasbah/internal/term"
+	"github.com/adigourdi/kasbah/internal/treesync"
 	"github.com/adigourdi/kasbah/internal/upgrade"
 	"github.com/adigourdi/kasbah/internal/version"
 	"github.com/adigourdi/kasbah/internal/vlog"
@@ -94,6 +95,13 @@ func main() {
 			if len(args) > 1 && args[1] == "destroy" {
 				os.Exit(destroy.Remote(args[2:], os.Stdout, os.Stderr))
 			}
+			if len(args) > 1 && args[1] == "sync" {
+				// A dropped session ends the stream and SIGHUP/SIGPIPE are
+				// ignored, so the file in flight is removed, never installed;
+				// SIGINT and SIGTERM remove it through atexit.
+				atexit.HandleSignals()
+				atexit.Exit(treesync.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
+			}
 			if len(args) > 1 && args[1] == "vlog" {
 				os.Exit(vlog.Remote(args[2:], os.Stdout, os.Stderr))
 			}
@@ -133,6 +141,10 @@ func main() {
 			o, err := env.Parse(args[1:])
 			atexit.HandleSignals()
 			atexit.Exit(envCmd(o, err))
+		case "__sync":
+			out := cli.Std()
+			atexit.HandleSignals()
+			atexit.Exit(out.Report(syncCmd(args[1:])))
 		case "__ensure-server":
 			out := cli.Std()
 			atexit.HandleSignals()
@@ -217,7 +229,7 @@ func remoteCmd(args []string) int {
 	if len(args) > 0 {
 		sub = args[0]
 	}
-	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, vlog, init, mail, backup, backup-init, status, check, prune, traefik, drop, destroy", sub))
+	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, sync, vlog, init, mail, backup, backup-init, status, check, prune, traefik, drop, destroy", sub))
 }
 
 // ensureServer is `kasbah __ensure-server [--apps-path=<dir>] USER@HOST`: the
@@ -257,6 +269,47 @@ func ensureServer(out *cli.Output, args []string) error {
 		old = "none"
 	}
 	fmt.Fprintf(out.Stdout, "shipped=%s->%s\n", old, res.Now)
+	return nil
+}
+
+// syncCmd is the hidden `kasbah __sync USER@HOST dir|file|fragment SRC DEST`:
+// one sync exactly as deploy ships a sync: entry or the fragment, for the
+// rig's parity suite against rsync.
+func syncCmd(args []string) error {
+	if len(args) != 4 {
+		return cli.Fail("usage: kasbah __sync USER@HOST dir|file|fragment SRC DEST")
+	}
+	var src *treesync.Source
+	var err error
+	switch args[1] {
+	case "dir":
+		src, err = treesync.Dir(args[2], os.Stderr)
+	case "file":
+		src, err = treesync.File(args[2], os.Stderr)
+	case "fragment":
+		src, err = treesync.Fixed(args[2], 0o644)
+	default:
+		return cli.Fail("usage: kasbah __sync USER@HOST dir|file|fragment SRC DEST")
+	}
+	if err != nil {
+		return cli.Fail("%v", err)
+	}
+	local, err := localBinary()
+	if err != nil {
+		return err
+	}
+	c, err := ssh.Connect(args[0])
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	res, err := serverbin.Ensure(c, remote.Self(build), local, serverbin.Options{})
+	if err != nil {
+		return err
+	}
+	if err := treesync.Push(c, serverbin.Path(res.Apps), src, args[3]); err != nil {
+		return cli.Fail("could not sync %s to %s:%s", args[2], args[0], args[3]).Cont(err.Error())
+	}
 	return nil
 }
 

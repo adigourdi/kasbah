@@ -119,7 +119,7 @@ deploy() (
 )
 
 # The hooks' breadcrumb file, which survives every deploy: _deploy_sync_project
-# rsyncs without --delete, so a file a hook appends to inside a bind mount
+# syncs without --delete, so a file a hook appends to inside a bind mount
 # outlives the run that made it. Every assertion below therefore truncates first
 # rather than assuming a fresh file — otherwise the suite's second run reads the
 # first run's order (docs/phases/04-ship.md → carried into 4.2).
@@ -511,7 +511,7 @@ assert '[ "$(sed -n "1,2p" <<<"$log2")" = "$log" ]' \
 # --- Two concurrent runs of the engine, one flock ------------------------------------
 # Driven by running the server binary's engine itself over ssh, with the spec a
 # deploy would send, rather than by racing two `kasbah deploy` invocations: the
-# workstation half of the second would spend the window on rsync and the env step.
+# workstation half of the second would spend the window on the sync and the env step.
 pre_hook=$(sed -n "s/^    - '\(built-app-web echo \"pre-deploy.*\)'\$/\1/p" "$projdir/kasbah.yml")
 spec=$(jq -cn --arg v "$project_version" --arg k "$kasbah_version" --arg pre "$pre_hook" \
     --arg sleep "built-app-web sleep $hook_sleep" --arg web "$image_web" --arg worker "$image_worker" \

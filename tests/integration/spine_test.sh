@@ -8,7 +8,7 @@
 # kasbah's own summary is never the evidence.
 #
 # Anything downstream of a fragment write is polled, never asserted straight
-# after the rsync returns: Traefik's providersThrottleDuration puts a ~2 s floor
+# after the sync returns: Traefik's providersThrottleDuration puts a ~2 s floor
 # under every reload (docs/phases/02-spine.md → Findings).
 #
 # The rig is treated as given: this suite never starts, resets or stops it. It

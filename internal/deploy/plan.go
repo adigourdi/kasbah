@@ -55,9 +55,9 @@ func checkSyncPath(p, side, entry string) error {
 	case strings.HasPrefix(p, "/"):
 		return cli.Fail("kasbah.yml: sync entry '%s' names an absolute %s ('%s') — entries are relative to the project root", entry, side, p)
 	case strings.HasPrefix(p, "-"):
-		return cli.Fail("kasbah.yml: sync entry '%s' has a %s starting with '-' ('%s'), which rsync would read as an option", entry, side, p)
+		return cli.Fail("kasbah.yml: sync entry '%s' has a %s starting with '-' ('%s'), which kasbah 1.0.1 and older hand to rsync as an option", entry, side, p)
 	case strings.Contains(p, ":"):
-		return cli.Fail("kasbah.yml: sync entry '%s' has a ':' in its %s ('%s') — rsync splits host from path on it", entry, side, p)
+		return cli.Fail("kasbah.yml: sync entry '%s' has a ':' in its %s ('%s') — kasbah 1.0.1 and older hand it to rsync, which splits host from path on it", entry, side, p)
 	case strings.IndexFunc(p, unicode.IsControl) >= 0:
 		return cli.Fail("kasbah.yml: sync entry '%s' has a control character in its %s", entry, side)
 	}
@@ -140,7 +140,7 @@ func checkSources(entries []Entry) error {
 		"every sync: entry is shipped on every deploy — fix the list or the tree")
 }
 
-// RemoteParents are the directories above each destination that rsync will
+// RemoteParents are the directories above each destination that the sync will
 // not create, deduplicated, never the project root.
 func RemoteParents(base string, entries []Entry) []string {
 	var out []string
@@ -380,7 +380,7 @@ func readPlan(m *manifest.Manifest, pwd, version string, historical bool) (*Plan
 		return nil, err
 	}
 	// A tag's tree is checked against the ref instead (tagged.go), where a
-	// symlink rsync -l ships — dangling or not — is a source like any other.
+	// symlink the sync ships as a link — dangling or not — is a source like any other.
 	if !historical {
 		if err := checkSources(p.Sync); err != nil {
 			return nil, err

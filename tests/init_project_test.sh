@@ -132,7 +132,7 @@ if "$kasbah" init-project --name=BadName >/dev/null 2>&1; then
 fi
 
 # --- Case 4b: the names kasbah owns on a server are refused ------------------
-# `traefik` is the one with teeth: deploy would rsync the project over the
+# `traefik` is the one with teeth: deploy would sync the project over the
 # shared proxy's own stack and then `compose -p traefik up -d --remove-orphans`
 # in that directory, removing the proxy. Refused at the moment the name is
 # chosen, and again wherever a manifest is read (tests/manifest_test.sh).

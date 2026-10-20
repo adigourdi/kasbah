@@ -49,8 +49,6 @@ else
 fi
 kv compose_version "$(docker compose version --short 2>/dev/null | flat)"
 
-if command -v rsync >/dev/null 2>&1; then kv have_rsync yes; else kv have_rsync no; fi
-
 if sudo -n true >/dev/null 2>&1; then sudo_ok=yes; else sudo_ok=no; fi
 kv sudo_nopasswd "$sudo_ok"
 
@@ -206,7 +204,7 @@ exit 0
 `
 
 var probeKeys = []string{"user", "group", "have_docker", "docker_server", "docker_error",
-	"compose_version", "have_rsync", "sudo_nopasswd",
+	"compose_version", "sudo_nopasswd",
 	"pointer_state", "pointer_value",
 	"apps_state", "apps_owned", "apps_writable", "apps_owner", "apps_write_error",
 	"apps_root_state", "apps_root_owner", "apps_base", "apps_base_owner", "apps_base_mode",
@@ -309,11 +307,6 @@ func Preflight(f Facts, target, apps, data string) error {
 	case below(major(cv), 2):
 		add(fmt.Sprintf("Docker Compose v2 — the plugin reports %s.", cv),
 			"  kasbah's compose files need include: and v2 syntax.")
-	}
-
-	if f["have_rsync"] != "yes" {
-		add("rsync on the remote — it is missing.",
-			"  deploy and env setup both need it; install it with the distro's package manager.")
 	}
 
 	switch f["apps_state"] {

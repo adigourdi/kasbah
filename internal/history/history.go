@@ -130,7 +130,7 @@ type Session interface {
 	Close()
 }
 
-// SSH is the real Session: no rsync needed.
+// SSH is the real Session.
 type SSH struct{ *env.SSH }
 
 // Dial connects; Marker ensures the server's binary.

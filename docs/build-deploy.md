@@ -9,7 +9,7 @@ Versions come from git tags on the project repo, formatted `vX.Y.Z` (semver).
 
 - `build-push` requires HEAD to have exactly one `v<semver>` tag.
 - `kasbah deploy` (no args) labels the **working tree** with HEAD's tag
-  and rsyncs it as-is. Lets you iterate on compose / env template between
+  and ships it as-is. Lets you iterate on compose / env template between
   tagged releases without forcing a commit for every tweak.
 - `kasbah deploy X.Y.Z` and `kasbah rollback X.Y.Z` target a specific
   tagged version. Files come from `git archive v<X.Y.Z>` — no checkout,
@@ -125,8 +125,7 @@ save` into the ssh master's stdin and the server's kasbah binary gunzips into
 The gzip trailer is written only after `docker save` exits 0, so a failed save
 arrives as a short stream and is refused. A partial image is never tagged:
 `docker save` writes every layer before `manifest.json`, and docker refuses
-short input. A broken transfer restarts from zero, as the rsync of a tarball
-did. Measured on the rig: 2.7 s for two images (28.7 MB gzipped) against 6.2 s
+short input. A broken transfer restarts from zero. Measured on the rig: 2.7 s for two images (28.7 MB gzipped) against 6.2 s
 for the tarball path.
 
 **A deploy that fails at `compose up` has already moved `:current`.** The
@@ -166,7 +165,7 @@ below). The only differences:
 3. Resolve version = HEAD's v-tag. Fail if HEAD isn't tagged.
 4. Ensure remote dirs exist (`kasbah remote deploy prepare`):
      /apps/<name>/, backups/, /apps/data/<name>/
-5. Rsync from working tree: every path in manifest's `sync:` list → /apps/<name>/.
+5. Sync from the working tree: every path in manifest's `sync:` list → /apps/<name>/.
    The Traefik fragment is deliberately **not** shipped here — see step 9.
 6. Env drift check (`kasbah remote setup-env` on the VPS):
      MISSING .env         → run interactive setup
@@ -191,7 +190,8 @@ below). The only differences:
      g. Append deploy entry to versions.log, then rotate it (see Rotation
         below).
      h. Print the run's report on stdout — see "The remote report" below.
-9. Rsync traefik-dynamic.yml → /apps/traefik/dynamic/<name>.yml. Done by the
+9. Sync traefik-dynamic.yml → /apps/traefik/dynamic/<name>.yml (its content —
+   a symlinked fragment ships what it points to, mode 644). Done by the
    *local* side once the engine has returned 0 with a valid report — the file
    is on the workstation, and the ordering is the point (see below).
 10. Compute changelog (git log <prev-deploy>..<new>) and print it locally.
@@ -209,7 +209,7 @@ previously an honest 404.
 
 Shipping last trades that for a much smaller window: the container is up
 but unrouted for as long as the fragment write takes to be noticed. A
-single filesystem event on an idle Traefik is ~44 ms; a rsync temp-then-
+single filesystem event on an idle Traefik is ~44 ms; a temp-then-
 rename is two events and opens the file provider's ~2 s throttle window.
 Either is a rounding error against "broken until a human intervenes".
 
@@ -231,8 +231,8 @@ irrelevant (and untouched).
 ## SSH multiplexing
 
 `kasbah deploy` and `kasbah rollback` open an SSH ControlMaster before
-any remote operation and reuse it for every subsequent `ssh` and `rsync`
-in the same run:
+any remote operation and reuse it for every subsequent `ssh` session in the same run — the file
+transfers included:
 
 ```bash
 ctl="$(mktemp -d "${TMPDIR:-/tmp}/kasbah-ssh.XXXXXX")"   # 0700, one per process
@@ -245,7 +245,7 @@ ssh -o ControlMaster=auto \
 ```
 
 Turns ~5× TCP+TLS handshake overhead per deploy (reachability check,
-mkdir, rsync, env check, mail claim, remote-deploy) into one.
+mkdir, sync, env check, mail claim, the engine) into one.
 
 Four details in that command are load-bearing:
 
@@ -276,7 +276,7 @@ Four details in that command are load-bearing:
   which per-user `ssh_config` is read, which is why the integration suite
   reaches the rig with `ssh -F` rather than by pointing `HOME` elsewhere.)
   A `TMPDIR` containing whitespace or a `%` is refused rather than
-  escaped: rsync splits `-e` on spaces, and ssh reads `%` as a token.
+  escaped: ssh splits a `ControlPath` option on spaces, and reads `%` as a token.
 - **`ConnectTimeout` bounds setup only** — including the banner exchange,
   but not an established session. A remote command that wedges after
   connecting is unbounded without `ServerAlive*`.
@@ -285,7 +285,20 @@ kasbah takes no ssh-options flag. It runs plain `ssh user@host` and
 inherits the user's own `ssh_config`, the same way git does over SSH:
 jump hosts, non-standard ports and key selection are already that file's
 job. Everything remote goes through `internal/ssh`; nothing else in the
-codebase invokes `ssh` or `rsync` directly.
+codebase invokes `ssh` directly.
+
+**Files travel through the kasbah binary, not `rsync`.** The workstation sends
+`kasbah remote sync` a list of what it has (path, type, mode, size, mtime); the
+server answers which files it lacks — a file whose size and whole-second mtime
+already match is skipped, as rsync's quick check does — and only those are
+streamed, in one session. Each arrives with its size and sha256, lands in a temp
+file beside its target and is renamed into place only once both check, so a
+reader never sees half a file and an interrupted transfer leaves the old one.
+Modes, mtimes and symlinks are kept, nothing extra is deleted, special files are
+skipped with a message, and every write on the server stays inside the
+destination (`os.Root`). Held to rsync's own results by
+`tests/integration/sync_parity_test.sh`; a changed file is sent whole, where
+rsync sent only its changed blocks.
 
 ## `versions.log` format
 
@@ -446,7 +459,7 @@ small without sacrificing history.
         Then retry:
           kasbah rollback <user@host> <target>"
 7. Parse v<target>'s manifest for its `sync:` list.
-8. Extract v<target> into a temp directory, then rsync it entry by entry
+8. Extract v<target> into a temp directory, then sync it entry by entry
    into /apps/<name>/, exactly as a deploy ships the working tree.
    (Overwrites whatever the last deploy's sync produced.)
 
@@ -479,7 +492,7 @@ small without sacrificing history.
      e. Run post-rollback hooks against rolled-back containers.
      f. Append rollback entry to versions.log, rotate.
 11. Restore v<target>'s Traefik fragment: <apps>/traefik/dynamic/<name>.yml,
-    rsynced from the same extraction. **Last**, once the remote step has
+    synced from the same extraction. **Last**, once the remote step has
     returned 0 — the same ordering, and the same reason, as a deploy's
     (see "Why the fragment ships last"). A rollback that dies at
     `compose up` must not have already pointed the live route at
@@ -518,7 +531,7 @@ Restores:
 - Everything in v<target>'s `sync:` list: compose.prod.yml → compose.yml,
   .env.prod.example, init SQL, etc.
 - v<target>'s `traefik-dynamic.yml` → /apps/traefik/dynamic/<name>.yml,
-  rsynced out-of-band (same path as deploy).
+  synced out-of-band (same path as deploy).
 - The engine is the **current** kasbah binary on the server, not anything
   from git: tooling belongs to kasbah, not to the project's version history.
 

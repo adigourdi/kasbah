@@ -282,7 +282,7 @@ func TestRollbackMailClaimIsTheTags(t *testing.T) {
 }
 
 // A symlink the tag carries ships as one, dangling or not, and the extraction
-// keeps the tag's mtimes for rsync -t.
+// keeps the tag's mtimes for the sync to carry on.
 func TestRollbackShipsSymlinksAndMtimes(t *testing.T) {
 	history(t, "")
 	git(t, "checkout", "-q", "v1.0.0")

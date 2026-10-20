@@ -1,4 +1,4 @@
-# Rsynced to <apps>/traefik/dynamic/built-app.yml by `kasbah deploy` — out of
+# Shipped to <apps>/traefik/dynamic/built-app.yml by `kasbah deploy` — out of
 # band, never through the manifest's sync: list. Traefik's file provider picks
 # the change up within a couple of seconds, with no restart and no compose
 # action.

@@ -16,9 +16,9 @@ FROM debian:bookworm-slim
 # inherited COMPOSE_PROJECT_NAME aims the command at another stack.
 ARG DOCKER_APT_VERSION=
 
-# rsync is not incidental: it is a row of the prerequisites table in
-# docs/server-setup.md, which the rig must satisfy for the integration suite to
-# be a real check of it. openssl and gzip serve the suites themselves.
+# rsync, openssl and gzip serve the suites themselves — kasbah needs none of
+# them: rsync is the reference sync_parity_test.sh compares kasbah's own sync
+# against, and server_init_test.sh hides it to prove init does not ask for it.
 #
 # openssh-server's postinst generates host keys; they are deleted again so the
 # image ships no private key at all. The entrypoint regenerates them per

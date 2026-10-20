@@ -666,7 +666,8 @@ assert '[ "$(grep -c "vlog" <<<"$calls")" = "1" ] && [ "$(grep -cF "'"'"'sh'"'"'
     "history reads the marker and the record once each (calls: $calls)"
 assert '! grep -qE "'"'"'(setup-env|deploy|load|install-self)'"'"'|mkdir|rm |touch|tee|> " <<<"$calls"' \
     "and none of its calls writes to the server (calls: $calls)"
-assert '! grep -qE "scp|rsync" <<<"$calls"' "nothing is shipped (calls: $calls)"
+assert '[ "$(grep -c "'"'sync'"'" <<<"$calls")" = "0" ] && ! grep -qE "scp|rsync" <<<"$calls"' \
+    "nothing is shipped (calls: $calls)"
 
 # The server is remembered, so the next run needs no argument.
 kasbah history

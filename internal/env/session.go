@@ -1,9 +1,7 @@
 package env
 
 import (
-	"io"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
@@ -11,6 +9,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/treesync"
 )
 
 // SSH is the Session a real run uses: one ssh master, and the server's own
@@ -26,9 +25,6 @@ type SSH struct {
 // DialSSH connects; the binary is ensured by Marker.
 func DialSSH(self remote.Info, local func(arch string) (string, error)) func(string) (Session, error) {
 	return func(target string) (Session, error) {
-		if _, err := exec.LookPath("rsync"); err != nil {
-			return nil, cli.Fail("rsync is required (install rsync and retry)")
-		}
 		c, err := ssh.Connect(target)
 		if err != nil {
 			return nil, err
@@ -60,7 +56,7 @@ func (s *SSH) bounded(args ...string) []string {
 	return serverbin.Bounded(s.bin, serverbin.RunTimeout, args...)
 }
 
-// Prepare creates the project directory, so rsync has somewhere to land.
+// Prepare creates the project directory, so the template has somewhere to land.
 func (s *SSH) Prepare(dir string) error {
 	out, err := s.Conn.Run(s.bounded("setup-env", "prepare", dir)...)
 	if err != nil {
@@ -72,13 +68,15 @@ func (s *SSH) Prepare(dir string) error {
 	return nil
 }
 
-// ShipTemplate rsyncs the template beside where .env goes: links as links,
-// mode and mtime kept.
+// ShipTemplate ships the template beside where .env goes: links as links,
+// mode and mtime kept (`rsync -lpt`).
 func (s *SSH) ShipTemplate(local, dir string) error {
-	cmd := s.Conn.Rsync("-lpt", "-s", local, s.target()+":"+dir+"/.env.prod.example")
-	cmd.Stdout, cmd.Stderr = io.Discard, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return cli.Fail("could not ship .env.prod.example to %s:%s/", s.target(), dir)
+	src, err := treesync.File(local, os.Stderr)
+	if err == nil {
+		err = treesync.Push(s.Conn, s.bin, src, dir+"/.env.prod.example")
+	}
+	if err != nil {
+		return cli.Fail("could not ship .env.prod.example to %s:%s/", s.target(), dir).Cont(err.Error())
 	}
 	return nil
 }
