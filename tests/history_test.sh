@@ -73,7 +73,7 @@ assert '[ "$(cd "$project" && git rev-parse v3.0.0)" = "$(cd "$project" && git r
 # report prints is the one a real server's would.
 FAKE_APPS="$tmpdir/srv/apps"
 mkdir -p "$FAKE_APPS/.kasbah/bin" "$FAKE_APPS/demo"
-printf '%s\n' '{"kasbah_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"2.0","mem_limit":"4g"}' \
+printf '%s\n' '{"kasbah_version":"1.0.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"2.0","mem_limit":"4g"}' \
     > "$FAKE_APPS/.kasbah/server.json"
 cp "$KASBAH_BIN" "$FAKE_APPS/.kasbah/bin/kasbah"
 

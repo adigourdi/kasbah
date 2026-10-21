@@ -158,7 +158,7 @@ docker run -d --name kasbah-prune-held held-web:0.1.0 sleep 3600 >/dev/null || e
 sudo rm -rf /apps
 sudo mkdir -p /apps/.kasbah || exit 1
 sudo chown -R "$(id -u):$(id -g)" /apps || exit 1
-printf '{"kasbah_version":"0.1.0-test","apps_path":"/apps","data_path":"/apps/data"}\n' \
+printf '{"kasbah_version":"1.0.0-test","apps_path":"/apps","data_path":"/apps/data"}\n' \
     > /apps/.kasbah/server.json || exit 1
 
 project() {  # project <name>

@@ -196,9 +196,47 @@ func Major(version string) string {
 
 var reDigits = regexp.MustCompile(`^[0-9]+$`)
 
-// Compat is `server init`'s check of an existing marker: a newer major is
-// refused, versions that cannot be compared are warned about. An older major
-// passes until `kasbah migrate` exists (docs/server-setup.md).
+// MigrateCmd is `kasbah migrate server` spelled for this server: the remedy
+// an older-major refusal names.
+func MigrateCmd(target string) string { return "kasbah migrate server " + target }
+
+// Check judges a marker's major against ours, before anything ships: an older
+// major is refused until MigrateCmd has run, a newer one until kasbah is
+// upgraded; migrating admits the older one. A marker that is not an object,
+// or a version that cannot be compared, passes — the caller's own reading
+// judges those.
+func Check(body []byte, ours, path, target string, migrating bool) error {
+	v, perr := jv.ParseOne(body)
+	m, ok := v.(*jv.Map)
+	if perr != nil || !ok {
+		return nil
+	}
+	version := field(m, "kasbah_version")
+	major, ourMajor := Major(version), Major(ours)
+	// test(1)'s -gt: a major too large for it is an error there, and the
+	// refusal is skipped.
+	m64, err1 := strconv.ParseInt(major, 10, 64)
+	o64, err2 := strconv.ParseInt(ourMajor, 10, 64)
+	if !reDigits.MatchString(major) || !reDigits.MatchString(ourMajor) || err1 != nil || err2 != nil {
+		return nil
+	}
+	switch {
+	case m64 > o64:
+		return cli.Fail("%s on %s was written by kasbah %s, and this is kasbah %s", path, target, version, ours).Cont(
+			"a newer major on the server means fields this binary does not know about",
+			"upgrade kasbah locally, or point at a server this version manages")
+	case m64 < o64 && !migrating:
+		return cli.Fail("%s on %s was written by kasbah %s, and this is kasbah %s", path, target, version, ours).Cont(
+			"a server stays on its major until it is migrated, and nothing was shipped to it:",
+			"run `"+MigrateCmd(target)+"` to move it — every kasbah workstation older",
+			fmt.Sprintf("than %s.x will be refused by this server afterwards", ourMajor))
+	}
+	return nil
+}
+
+// Compat is `server init`'s check of an existing marker: Check, after the
+// marker is known to be an object; versions that cannot be compared are
+// warned about.
 func Compat(existing []byte, ours, path, target string) (warnings []string, err error) {
 	v, perr := jv.ParseOne(existing)
 	m, ok := v.(*jv.Map)
@@ -215,14 +253,5 @@ func Compat(existing []byte, ours, path, target string) (warnings []string, err 
 			"the two cannot be compared, so no compatibility check was made",
 		}, nil
 	}
-	// test(1)'s -gt: a major too large for it is an error there, and the
-	// refusal is skipped.
-	m64, err1 := strconv.ParseInt(major, 10, 64)
-	o64, err2 := strconv.ParseInt(ourMajor, 10, 64)
-	if err1 == nil && err2 == nil && m64 > o64 {
-		return nil, cli.Fail("%s was written by kasbah %s, and this is kasbah %s", path, version, ours).Cont(
-			"a newer major on the server means fields this binary does not know about",
-			"upgrade kasbah locally, or point at a server this version manages")
-	}
-	return nil, nil
+	return nil, Check(existing, ours, path, target, false)
 }

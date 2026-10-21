@@ -202,7 +202,7 @@ mkdir -p "$tmpdir/home" "$run_tmp"
 # under a scratch tree the bootstrap probe is pointed at.
 FAKE_APPS="$tmpdir/srv/apps"
 mkdir -p "$FAKE_APPS/.kasbah/bin"
-printf '%s\n' '{"kasbah_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"2.0","mem_limit":"4g"}' \
+printf '%s\n' '{"kasbah_version":"1.0.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"2.0","mem_limit":"4g"}' \
     > "$FAKE_APPS/.kasbah/server.json"
 cp "$KASBAH_BIN" "$FAKE_APPS/.kasbah/bin/kasbah"
 

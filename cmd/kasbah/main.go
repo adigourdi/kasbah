@@ -21,6 +21,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/initproject"
 	"github.com/adigourdi/kasbah/internal/mail"
 	"github.com/adigourdi/kasbah/internal/marker"
+	"github.com/adigourdi/kasbah/internal/migrate"
 	"github.com/adigourdi/kasbah/internal/ops"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/prune"
@@ -104,6 +105,11 @@ func main() {
 			}
 			if len(args) > 1 && args[1] == "vlog" {
 				os.Exit(vlog.Remote(args[2:], os.Stdout, os.Stderr))
+			}
+			if len(args) > 1 && args[1] == "migrate" {
+				// Snapshot, rewrites and the marker outlive a dropped session
+				// (remote.Outlive); the locks go with the process.
+				os.Exit(migrate.Remote(args[2:], os.Stdout, os.Stderr))
 			}
 			if len(args) > 1 && args[1] == "deploy" {
 				// run, prepare and seed outlive a dropped session (SIGHUP and
@@ -191,6 +197,10 @@ func main() {
 				atexit.HandleSignals()
 				atexit.Exit(mailCmd(o, err))
 			}
+		case "migrate":
+			o, err := migrate.Parse(args[1:])
+			atexit.HandleSignals()
+			atexit.Exit(migrateCmd(o, err))
 		case "check":
 			o, err := check.Parse(args[1:])
 			atexit.HandleSignals()
@@ -232,7 +242,7 @@ func remoteCmd(args []string) int {
 	if len(args) > 0 {
 		sub = args[0]
 	}
-	return report(out, cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, sync, vlog, init, mail, backup, backup-init, status, check, prune, traefik, drop, destroy", sub))
+	return report(out, cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, sync, vlog, init, mail, backup, backup-init, status, check, prune, traefik, drop, destroy, migrate", sub))
 }
 
 // ensureServer is `kasbah __ensure-server [--apps-path=<dir>] USER@HOST`: the
@@ -798,6 +808,44 @@ func dropCmd(o drop.Options, err error) int {
 		Version:   v,
 		Templates: templates.FS,
 		Dial:      drop.Dial(remote.Self(build), local),
+	}, o))
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
+}
+
+// migrateCmd is `kasbah migrate` in a project and `kasbah migrate server`.
+func migrateCmd(o migrate.Options, err error) int {
+	out := cli.Std()
+	if err == migrate.ErrHelp {
+		fmt.Fprint(out.Stdout, migrate.Usage)
+		return cli.ExitOK
+	}
+	if err != nil {
+		return report(out, err)
+	}
+	v, err := kasbahVersion(true)
+	if err != nil {
+		return report(out, err)
+	}
+	if !o.Server {
+		pwd, err := os.Getwd()
+		if err != nil {
+			return report(out, cli.Fail("cannot read the current directory: %v", err))
+		}
+		return report(out, migrate.RunProject(out.Stdout, pwd, v, migrate.Project))
+	}
+	local, err := localBinary()
+	if err != nil {
+		return report(out, err)
+	}
+	code := report(out, migrate.RunServer(migrate.Ctx{
+		Out:      out,
+		Prompter: prompt.Std(out),
+		Version:  v,
+		Dial:     migrate.Dial(remote.Self(build), local),
+		Now:      time.Now,
 	}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c

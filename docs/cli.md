@@ -1104,12 +1104,57 @@ never hands off; it says so and names the version to build. The library root
 is the running binary's own parent directory when it sits in a version
 directory, else `KASBAH_LIB_DIR`, `$XDG_DATA_HOME/kasbah`, `~/.local/share/kasbah`.
 
+### `kasbah migrate server USER@HOST [--yes] [--undo]`
+
+Moves a server's kasbah-owned files from the major its marker records to this
+kasbah's. It is the one command that ships its binary onto a server whose
+marker is an older major (every other command refuses that server and names
+this one); the same-build rule still applies, so a newer server build is
+refused or handed off as elsewhere. It prints the plan — the steps from the
+marker's major up to ours, the files each rewrites, the snapshot path, the
+locks — and asks *Migrate? Every kasbah workstation older than N.x will be
+refused by this server afterwards.* (`--yes`; without a TTY the unanswered
+prompt is a hard fail naming the flag). A server already at this major does
+nothing and exits 0.
+
+On the server (`kasbah remote migrate`, outliving a dropped session): the
+migration lock `<apps>/.kasbah/migrate.lock` and every project's
+`.deploy.lock` are taken without waiting (a held one refuses, naming the
+project); every file the steps declare, plus the marker, is written into
+`<apps>/.kasbah/migrate/<from>-to-<to>-<stamp>.tar` before anything is
+rewritten — unless one for this step already exists while the marker still
+says `<from>`: that one holds the originals (a run that died halfway, or an
+undone run), so it is kept and reused — a step that rewrites files under
+`traefik/` or `mail/` must therefore compare the tree to the tarball before
+reusing it, which none does yet; files are rewritten one by one, temp + rename, each skipped when
+its own stamp already says `<to>`, so a run that died halfway finishes on the
+next; the marker moves last (merged — keys it does not own survive). Steps are
+compiled into the binary, one per major, and the newest binary carries them
+all. Today the chain holds one, `0→1`, which rewrites nothing: 0.x server
+state is 1.x state.
+
+`--undo` restores the newest snapshot that ends at the marker's current major — files and marker, the marker as it was
+snapshotted, so a key written after the migration (a later `server init
+--with-backup`) is lost with it — after the same prompt, and refuses when any
+project's `versions.log` has an entry newer than the snapshot: the server has
+moved on, and the tarball is the manual path. An entry in the same second as
+the snapshot does not count as newer.
+
+Exit codes: 3 unreachable, 4 no marker, 1 refused.
+
+### `kasbah migrate`
+
+In a project: moves `kasbah.yml` and the tree files kasbah writes from their
+schema to this kasbah's, bumps `kasbah_version`, and appends `<from>-><to>`
+to `.kasbah/state.json`'s `schema_migrations_applied`. Schema 1 is the first,
+so today there is no step and a schema-1 project answers *nothing to migrate*
+(exit 0). A manifest of a newer major hands off to that kasbah when it is
+installed (Hand-off, above). Project and server migrations are independent and
+run in either order; `deploy` needs both at this kasbah's schema.
+
 ## Deferred commands
 
-Referenced elsewhere in the docs but not yet built:
-
-- `kasbah migrate` — migrate a project's source-tree files to a newer
-  kasbah schema, when the first format change meets users (roadmap Phase 5).
+Nothing — every command the docs name exists.
 
 ## Exit codes
 

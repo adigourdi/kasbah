@@ -51,7 +51,7 @@ LOADED="$tmpdir/loaded"
 # shared path, so the same-build rule keeps it and nothing is uploaded.
 FAKE_APPS="$tmpdir/srv/apps"
 mkdir -p "$FAKE_APPS/.kasbah/bin"
-printf '{"kasbah_version":"0.1.0","apps_path":"%s","data_path":"%s/data","cpu_limit":"1","mem_limit":"1g"}\n' \
+printf '{"kasbah_version":"1.0.0","apps_path":"%s","data_path":"%s/data","cpu_limit":"1","mem_limit":"1g"}\n' \
     "$FAKE_APPS" "$FAKE_APPS" > "$FAKE_APPS/.kasbah/server.json"
 cp "$KASBAH_BIN" "$FAKE_APPS/.kasbah/bin/kasbah"
 
@@ -129,7 +129,7 @@ reset_logs() {
     rm -f "$LOADED"
     rm -rf "$scratch"
     mkdir -p "$scratch"
-    printf '{"kasbah_version":"0.1.0","apps_path":"%s","data_path":"%s/data","cpu_limit":"1","mem_limit":"1g"}\n' \
+    printf '{"kasbah_version":"1.0.0","apps_path":"%s","data_path":"%s/data","cpu_limit":"1","mem_limit":"1g"}\n' \
         "$FAKE_APPS" "$FAKE_APPS" > "$FAKE_APPS/.kasbah/server.json"
 }
 

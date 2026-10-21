@@ -96,6 +96,37 @@ func Record(path, version string, kv ...string) error {
 			return cli.Fail("internal: '%s' is not a state field name", kv[i])
 		}
 	}
+	return update(path, version, func(m *jv.Map) {
+		for i := 0; i < len(kv); i += 2 {
+			m.Set(kv[i], kv[i+1])
+		}
+	})
+}
+
+// Append is Record for a list field: value joins the end of key's array
+// unless it is already in it (one that is not an array is replaced by a
+// one-element one).
+func Append(path, version, key, value string) error {
+	if !reKey.MatchString(key) {
+		return cli.Fail("internal: '%s' is not a state field name", key)
+	}
+	return update(path, version, func(m *jv.Map) {
+		var list []jv.Value
+		if v, _ := m.Get(key); v != nil {
+			if l, ok := v.([]jv.Value); ok {
+				list = l
+			}
+		}
+		for _, x := range list {
+			if x == value {
+				return
+			}
+		}
+		m.Set(key, append(list, value))
+	})
+}
+
+func update(path, version string, apply func(m *jv.Map)) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o777); err != nil {
 		return cli.Fail("could not create %s", dir)
@@ -122,10 +153,7 @@ func Record(path, version string, kv ...string) error {
 		}
 	}
 	for _, v := range current {
-		m := v.(*jv.Map)
-		for i := 0; i < len(kv); i += 2 {
-			m.Set(kv[i], kv[i+1])
-		}
+		apply(v.(*jv.Map))
 	}
 
 	tmp := path + ".tmp." + strconv.Itoa(os.Getpid())

@@ -135,11 +135,23 @@ func TestCompat(t *testing.T) {
 	if w, err := Compat([]byte(`{"kasbah_version":"1.4.0"}`), "1.0.0", path, target); w != nil || err != nil {
 		t.Errorf("same major: %v %v", w, err)
 	}
-	if w, err := Compat([]byte(`{"kasbah_version":"0.9.0"}`), "1.0.0", path, target); w != nil || err != nil {
-		t.Errorf("older major passes until migrate exists: %v %v", w, err)
+	_, err := Compat([]byte(`{"kasbah_version":"0.9.0"}`), "1.0.0", path, target)
+	if err == nil || !strings.Contains(err.Error(), "written by kasbah 0.9.0, and this is kasbah 1.0.0") || !strings.Contains(err.Error(), "`kasbah migrate server "+target+"`") {
+		t.Errorf("older major is refused naming migrate server: %v", err)
 	}
-	_, err := Compat([]byte(`{"kasbah_version":"v2.0.0"}`), "1.0.0", path, target)
-	if err == nil || !strings.Contains(err.Error(), "was written by kasbah v2.0.0, and this is kasbah 1.0.0") {
+	if err := Check([]byte(`{"kasbah_version":"0.9.0"}`), "1.0.0", path, target, true); err != nil {
+		t.Errorf("migrating admits an older major: %v", err)
+	}
+	if err := Check([]byte(`{"kasbah_version":"2.0.0"}`), "1.0.0", path, target, true); err == nil {
+		t.Error("migrating still refuses a newer major")
+	}
+	for _, body := range []string{`{}`, `nope`, `[]`, `{"kasbah_version":"1.4.0"}`, `{"kasbah_version":"99999999999999999999.0.0"}`} {
+		if err := Check([]byte(body), "1.0.0", path, target, false); err != nil {
+			t.Errorf("Check(%s) = %v; want nil", body, err)
+		}
+	}
+	_, err = Compat([]byte(`{"kasbah_version":"v2.0.0"}`), "1.0.0", path, target)
+	if err == nil || !strings.Contains(err.Error(), "on "+target+" was written by kasbah v2.0.0, and this is kasbah 1.0.0") {
 		t.Errorf("newer major: %v", err)
 	}
 	if w, err := Compat([]byte(`{}`), "1.0.0", path, target); err != nil || len(w) != 2 ||

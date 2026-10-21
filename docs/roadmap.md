@@ -93,10 +93,8 @@ Built as build-plan Phase 10 (`docs/phases/10-recast.md`).
 
 ## Phase 5 — v1.x
 
-- `kasbah migrate` — written when the first format change meets users: detect
-  older projects (`kasbah_version < installed_version`) and offer to migrate.
-  Migration of VPS state stays opt-in and reversible, because a VPS may still be
-  driven by another developer on an older kasbah.
+- `kasbah migrate` and `kasbah migrate server` exist (`cli.md`); the real
+  steps are written with the first schema change.
 - Release distribution: GitHub Releases, cut by `release.sh` (`overview.md`
   → Distribution). Done.
 - Concurrency for multi-VPS operations (deploy to N servers).

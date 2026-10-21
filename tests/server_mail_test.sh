@@ -68,7 +68,7 @@ plant() {
     chmod -R u+rwX "$tmpdir/srv" 2>/dev/null
     rm -rf "$tmpdir/srv"
     mkdir -p "$FAKE_APPS/.kasbah/bin" "$FAKE_APPS/traefik/dynamic"
-    printf '%s\n' '{"kasbah_version":"0.1.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"2.0","mem_limit":"4g"}' \
+    printf '%s\n' '{"kasbah_version":"1.0.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"2.0","mem_limit":"4g"}' \
         > "$FAKE_APPS/.kasbah/server.json"
     cp "$KASBAH_BIN" "$FAKE_APPS/.kasbah/bin/kasbah"
     printf 'http: {}\n' > "$frag"

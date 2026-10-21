@@ -118,9 +118,9 @@ and goes through an explicit migration. `kasbah --version` prints it.
 ### `kasbah_version` *(required, auto-written)*
 
 The version of `kasbah` that last wrote this file. Kasbah writes this on
-`init-project`, `check --fix`, and when running a schema migration. Projects
-shouldn't edit it manually. Used by future Go binary to know whether to
-migrate files in the source tree.
+`init-project`, `check --fix`, and `kasbah migrate`. Projects shouldn't edit
+it manually. `kasbah migrate` reads it to know which files in the source tree
+still need moving.
 
 ### `name` *(required)*
 
@@ -343,7 +343,7 @@ to the VPS. Tracks:
 
 | Field | Written by | Read by |
 |---|---|---|
-| `kasbah_version` | `init-project` (set once, when the file is created) | future `kasbah migrate` |
+| `kasbah_version` | `init-project` (set once, when the file is created) | `kasbah migrate` |
 | `last_server` | every project command that targets a server, once kasbah's own work on it succeeded (see Write rules) | every project command — used as default when `USER@HOST` is omitted |
 | `last_deploy` | `deploy`, `rollback` on success | nothing yet — recorded for a future deployed-vs-local diff |
 | `last_version` | `deploy`, `rollback` on success | nothing yet |

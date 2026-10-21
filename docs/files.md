@@ -42,7 +42,7 @@ commands not named as writers below write nothing — `check` (but see `--fix`),
 
 | Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |
 |---|---|---|---|---|---|---|---|
-| `<project-dir>/kasbah.yml` | `init-project`; `check --fix` (temp + rename) | every project command | YAML → `project-manifest.md` | umask on create; `--fix` keeps the original's (`chmod --reference`) | `deploy` | never removed by kasbah | `internal/initproject/initproject.go:137`, `internal/check/fix.go:702` |
+| `<project-dir>/kasbah.yml` | `init-project`; `check --fix` (temp + rename); `migrate` (temp + rename, `kasbah_version` stamped) | every project command | YAML → `project-manifest.md` | umask on create; `--fix` keeps the original's (`chmod --reference`) | `deploy` | never removed by kasbah | `internal/initproject/initproject.go:137`, `internal/check/fix.go:702` |
 | `<project-dir>/compose.prod.yml` | `check --fix` (edits, never creates) | `build-push`, `deploy`, `check` | YAML → `compliance.md` (`--fix`) | the original's | `deploy` | never removed | `internal/check/fix.go:702` |
 | `<project-dir>/*.kasbah-fix.<pid>` | `check --fix` staging, one per file fixed, beside what the file resolves to (a symlink's target), so the commit is a plain rename | the rename (the diff, the guard and the re-plan work from memory) | YAML candidate | `600`, then the original's | `deploy` | *transient*: renamed, or removed by the `atexit` stack; SIGKILL leaves it | `internal/check/fix.go:702`, cleanup `:749` |
 | `<project-dir>/.env.prod.example` | `init-project` | `env`, `check`, the deploy sync | text → `env-template.md` | umask | `deploy` | created once, never rewritten | `internal/initproject/initproject.go:140` |
@@ -76,7 +76,7 @@ Developer tooling, not the CLI: `release.sh keygen` writes the minisign pair
 | Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |
 |---|---|---|---|---|---|---|---|
 | `<project-dir>/.kasbah` | `init-project`; `mkdir -p` by every state write | — | directory | umask | `deploy` | never removed (`drop --prune` and `server destroy` included) | `internal/initproject/initproject.go:144`, `internal/state/state.go:44,100` |
-| `<project-dir>/.kasbah/state.json` | created by `init-project`; merged by `build-push`, `deploy`, `rollback`, `env`, `history`, `pending`, `changelog`, `logs`, `exec`, `check --server`, `drop` | every server-targeting command (`last_server`) | JSON → `project-manifest.md` (State file) | umask — each merge re-creates the file | `deploy` | rewritten on success only; never removed | `internal/state/state.go:43,90` |
+| `<project-dir>/.kasbah/state.json` | created by `init-project`; merged by `build-push`, `deploy`, `rollback`, `env`, `history`, `pending`, `changelog`, `logs`, `exec`, `check --server`, `drop`, `migrate` (`schema_migrations_applied`) | every server-targeting command (`last_server`) | JSON → `project-manifest.md` (State file) | umask — each merge re-creates the file | `deploy` | rewritten on success only; never removed | `internal/state/state.go:43,90` |
 | `<project-dir>/.kasbah/state.json.tmp.<pid>` | the merge's staging | — | JSON | umask | `deploy` | *transient*: renamed into place; a kill between render and the rename leaves it | `internal/state/state.go:131`, rename `:136` |
 
 ### The invoking user's home
@@ -121,6 +121,8 @@ neither.
 | Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |
 |---|---|---|---|---|---|---|---|
 | `<apps>` | `server init` (`sudo mkdir`, `chown` to the deploy user) when absent | everything | directory → `server-setup.md` (Who creates the apps path) | root's umask, never chmodded | `deploy` | never removed | `internal/serverinit/run.go:101` |
+| `<apps>/.kasbah/migrate.lock` | `kasbah remote migrate` (`flock(2)`, taken without waiting) | — | empty | umask `022` | `deploy` | created on the first migration, never removed by it | `internal/migrate/server.go:104` |
+| `<apps>/.kasbah/migrate/<from>-to-<to>-<stamp>.tar` | `kasbah remote migrate`, before any rewrite: every file the steps declare, the marker last (`archive/tar`, written beside its name and renamed) | `--undo` (the newest) | tar → `cli.md` (`migrate server`) | `644` | `deploy` | kept; the manual undo path when `versions.log` has moved on | `internal/migrate/server.go:54` |
 | `<apps>/.kasbah-write-probe` | `server init` preflight, when `<apps>` is the user's but not writable | — | empty | — | `deploy` | *transient*: `rm -f` straight after | `internal/serverinit/probe.go:162` |
 | `<apps>/.kasbah` | `server init` | — | directory → `server-setup.md` (What init creates) | umask | `deploy` | `rmdir` by `server destroy`, last of all, so any stray file keeps it | `internal/serverinit/remote.go:126`, `internal/destroy/destroy.go:202` |
 | `<apps>/.kasbah/server.json` | `server init`, every run that changes its bytes (merge, never replace) | every server-targeting command, `server status`, `server prune`, `check --server` | JSON → `server-setup.md` (Server marker) | `644` | `deploy` | not touched by `upgrade-traefik`; removed by `server destroy`, only when every step before it succeeded | `internal/serverinit/remote.go:239`, `internal/destroy/remote.go:545` |

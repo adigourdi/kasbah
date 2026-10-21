@@ -55,7 +55,7 @@ plan and the only progress tracker (the roadmap is scope, not status).
 - **Signals:** every command calls `atexit.HandleSignals()` and leaves through
   `atexit.Exit`, so temp files, the ssh master and terminal echo are cleaned on
   Ctrl-C; every server-side step that changes state (deploy and rollback,
-  `drop`, `destroy`, a Traefik start and its rollback, backup init) ignores
+  `drop`, `destroy`, a Traefik start and its rollback, backup init, migrate) ignores
   SIGHUP/SIGPIPE, so a dropped session never leaves it half-done.
 - **CRLF tolerance:** strip `\r` before matching any user-authored file.
 - **Interactive, never assume:** an unset flag means *prompt*, not *no*.

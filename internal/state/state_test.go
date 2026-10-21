@@ -161,3 +161,28 @@ func TestBOM(t *testing.T) {
 		t.Errorf("record over a BOM'd file wrote\n%s", got)
 	}
 }
+
+func TestAppend(t *testing.T) {
+	p := path(t)
+	if err := Append(p, version, "schema_migrations_applied", "1->2"); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"2->3", "1->2"} {
+		if err := Append(p, version, "schema_migrations_applied", v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := read(t, p); !strings.Contains(got, "\"schema_migrations_applied\": [\n    \"1->2\",\n    \"2->3\"\n  ]") {
+		t.Errorf("appended once each:\n%s", got)
+	}
+	os.WriteFile(p, []byte(`{"schema_migrations_applied":"odd","future_key":7}`), 0o644)
+	if err := Append(p, version, "schema_migrations_applied", "1->2"); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, p); !strings.Contains(got, "\"schema_migrations_applied\": [\n    \"1->2\"\n  ]") || !strings.Contains(got, `"future_key": 7`) {
+		t.Errorf("a non-list is replaced, other keys kept:\n%s", got)
+	}
+	if err := Append(p, version, "Bad-Key", "x"); err == nil {
+		t.Error("a bad key is refused")
+	}
+}

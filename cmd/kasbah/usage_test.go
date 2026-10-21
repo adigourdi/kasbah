@@ -42,7 +42,7 @@ func TestTopLevel(t *testing.T) {
 // subcommand in both lists.
 func TestUsageListsEveryCommand(t *testing.T) {
 	u := usage("1.0.0")
-	for _, c := range []string{"init-project", "check", "build-push", "deploy", "rollback", "drop", "history", "pending", "changelog", "env", "logs", "exec"} {
+	for _, c := range []string{"init-project", "check", "build-push", "deploy", "rollback", "drop", "history", "pending", "changelog", "env", "logs", "exec", "migrate"} {
 		if !strings.Contains(u, "\n  "+c+" ") {
 			t.Errorf("usage does not list %s", c)
 		}

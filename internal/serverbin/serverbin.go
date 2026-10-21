@@ -155,8 +155,8 @@ type Probe struct {
 	AppsDir      bool
 	AppsNotDir   bool
 	Marker       bool
-	// MarkerBody is the marker's first 256 KiB, read only for a Prepared
-	// run; MarkerUnreadable says this user could not read them.
+	// MarkerBody is the marker's first 256 KiB; MarkerUnreadable says this
+	// user could not read them.
 	MarkerBody       []byte
 	MarkerUnreadable bool
 	Machine          string
@@ -165,15 +165,14 @@ type Probe struct {
 }
 
 // probeScript resolves the apps path ($3 when given, else the pointer $2, else
-// $1) and reports the marker, `uname -m` and the existing binary, run for at
-// most $4 s. POSIX sh; exit 5/6/7 are the pointer refusals.
+// $1) and reports the marker and its bytes, `uname -m` and the existing
+// binary, run for at most $4 s. POSIX sh; exit 5/6/7 are the pointer refusals.
 const probeScript = `set -u
 export LC_ALL=C
 apps=$1
 pointer=$2
 explicit=$3
 limit=$4
-prepared=${5:-}
 dir=${pointer%/*}
 source=default
 pointed=""
@@ -249,9 +248,7 @@ if [ -e "$marker" ] && [ ! -f "$marker" ]; then
 fi
 if [ -f "$marker" ]; then
     echo marker=yes
-    if [ "$prepared" != yes ]; then
-        :
-    elif [ -r "$marker" ]; then
+    if [ -r "$marker" ]; then
         printf 'marker_hex=%s\n' "$(od -An -tx1 -v -N 262144 "$marker" 2>/dev/null | tr -d ' \n')"
     else
         echo marker_readable=no
@@ -554,24 +551,31 @@ func ExitText(rc, limit int) string {
 type Options struct {
 	Apps     string
 	Prepared func(marker []byte, apps string) error
+	// Migrating admits a marker of an older major: `kasbah migrate server` is
+	// the one command that ships a new major to a server still on the old one.
+	Migrating bool
 }
 
 // Ensure leaves at Path(apps) this build's binary when the server's is absent,
 // not runnable or older, and keeps the server's when it is the same build; a
-// newer one is refused before anything is uploaded. local finds this build's
+// newer one is refused before anything is uploaded, as is a marker of another
+// major (marker.Check). local finds this build's
 // server binary for a GOARCH.
 func Ensure(c *ssh.Conn, self remote.Info, local func(arch string) (string, error), opt Options) (*Result, error) {
 	target := c.Target.String()
-	prepared := ""
-	if opt.Prepared != nil {
-		prepared = "yes"
-	}
-	cmd := c.Script(probeScript, probeDefault, probePointer, opt.Apps, strconv.Itoa(RunTimeout), prepared)
+	cmd := c.Script(probeScript, probeDefault, probePointer, opt.Apps, strconv.Itoa(RunTimeout))
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	p, err := judge(target, ssh.ExitCode(cmd.Run()), out.Bytes(), opt)
 	if err != nil {
 		return nil, err
+	}
+	// The marker's major is judged before anything ships: a binary landing on
+	// a server of another major would lock that major's workstations out.
+	if p.Marker && !p.MarkerUnreadable {
+		if err := marker.Check(p.MarkerBody, self.Build, marker.Path(p.Apps), target, opt.Migrating); err != nil {
+			return nil, err
+		}
 	}
 	bin := Path(p.Apps)
 	arch, archErr := Arch(p.Machine)

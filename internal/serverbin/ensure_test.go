@@ -108,16 +108,11 @@ func (s *scratch) point(body string) {
 	os.WriteFile(s.pointer, []byte(body), 0o644)
 }
 
-func (s *scratch) probe(explicit string) (int, []byte) { return s.run(explicit, "") }
-
-// probeP is the probe as a Prepared run sends it, the marker included.
-func (s *scratch) probeP(explicit string) (int, []byte) { return s.run(explicit, "yes") }
-
-// run is the probe under every shell; they must agree, and the first answers.
-func (s *scratch) run(explicit, prepared string) (int, []byte) {
+// probe runs the probe under every shell; they must agree, and the first answers.
+func (s *scratch) probe(explicit string) (int, []byte) {
 	rc, out := -1, []byte(nil)
 	for i, sh := range shtest.Shells(s.t) {
-		cmd := sh.Stdin(probeScript, s.apps, s.pointer, explicit, "2", prepared)
+		cmd := sh.Stdin(probeScript, s.apps, s.pointer, explicit, "2")
 		var b bytes.Buffer
 		cmd.Stdout = &b
 		r := ssh.ExitCode(cmd.Run())
@@ -550,7 +545,7 @@ func TestProbePrepared(t *testing.T) {
 	t.Run("explicit, no marker: exit 4, nothing to ship to", func(t *testing.T) {
 		s := newScratch(t)
 		os.MkdirAll(s.apps, 0o755)
-		rc, out := s.probeP(s.apps)
+		rc, out := s.probe(s.apps)
 		if _, err := judge("d@h", rc, out, prepared); code(err) != cli.ExitNoRemoteState || !strings.Contains(err.Error(), "--apps-path") {
 			t.Fatalf("got %v; want exit 4 naming --apps-path", err)
 		}
@@ -560,7 +555,7 @@ func TestProbePrepared(t *testing.T) {
 	})
 	t.Run("explicit, absent: exit 4", func(t *testing.T) {
 		s := newScratch(t)
-		rc, out := s.probeP(filepath.Join(s.root, "nowhere"))
+		rc, out := s.probe(filepath.Join(s.root, "nowhere"))
 		if _, err := judge("d@h", rc, out, prepared); code(err) != cli.ExitNoRemoteState {
 			t.Fatalf("got %v; want exit 4", err)
 		}
@@ -570,7 +565,7 @@ func TestProbePrepared(t *testing.T) {
 		os.MkdirAll(filepath.Dir(s.apps), 0o755)
 		os.WriteFile(s.apps, []byte("x"), 0o644)
 		for _, explicit := range []string{"", s.apps} {
-			rc, out := s.probeP(explicit)
+			rc, out := s.probe(explicit)
 			if _, err := judge("d@h", rc, out, prepared); code(err) != cli.ExitFailure || !strings.Contains(err.Error(), "not a directory") {
 				t.Fatalf("explicit=%q: got %v; want exit 1, not a directory", explicit, err)
 			}
@@ -579,7 +574,7 @@ func TestProbePrepared(t *testing.T) {
 	t.Run("explicit, prepared", func(t *testing.T) {
 		s := newScratch(t)
 		s.marker(s.apps)
-		rc, out := s.probeP(s.apps)
+		rc, out := s.probe(s.apps)
 		if p, err := judge("d@h", rc, out, prepared); err != nil || p.Source != "explicit" {
 			t.Fatalf("got %+v, %v", p, err)
 		}
@@ -589,7 +584,7 @@ func TestProbePrepared(t *testing.T) {
 			s := newScratch(t)
 			s.marker(s.apps)
 			os.WriteFile(filepath.Join(s.apps, ".kasbah", "server.json"), []byte(body), 0o644)
-			rc, out := s.probeP("")
+			rc, out := s.probe("")
 			_, err := judge("d@h", rc, out, prepared)
 			if ok := strings.HasPrefix(body, "{"); (err == nil) != ok {
 				t.Errorf("marker %q: %v", body, err)
@@ -608,7 +603,7 @@ func TestProbePrepared(t *testing.T) {
 		mk := filepath.Join(s.apps, ".kasbah", "server.json")
 		os.Chmod(mk, 0)
 		t.Cleanup(func() { os.Chmod(mk, 0o644) })
-		rc, out := s.probeP("")
+		rc, out := s.probe("")
 		if _, err := judge("d@h", rc, out, prepared); err == nil || !strings.Contains(err.Error(), "could not be read") {
 			t.Errorf("got %v", err)
 		}
@@ -662,7 +657,7 @@ func TestBigMarker(t *testing.T) {
 		if err != nil || res.Action != remote.Ship {
 			t.Fatalf("prepared=%v: %+v, %v", prep, res, err)
 		}
-		if prep != bytes.Equal(seen, big) || prep != bytes.Equal(res.Marker, big) {
+		if prep != bytes.Equal(seen, big) || !bytes.Equal(res.Marker, big) {
 			t.Errorf("prepared=%v: the marker was judged on %d bytes, carried %d", prep, len(seen), len(res.Marker))
 		}
 	}
@@ -701,6 +696,58 @@ func TestEnsurePrepared(t *testing.T) {
 			}
 			if err != nil || mk.DataPath != "/srv/data" || res.Apps != s.apps || statErr != nil {
 				t.Fatalf("got %+v %+v %v", res, mk, err)
+			}
+		})
+	}
+}
+
+// A marker of another major is refused before anything ships, in every mode
+// but Migrating's, which admits the older one.
+func TestEnsureMajor(t *testing.T) {
+	const ours = "1.0.2-dev.142.1760790000"
+	RunTimeout = 2
+	t.Cleanup(func() { RunTimeout = 30 })
+	body := func(v string) string {
+		return `{"kasbah_version":"` + v + `","apps_path":"/srv/apps","data_path":"/srv/data","cpu_limit":"1","mem_limit":"1g"}`
+	}
+	for _, c := range []struct {
+		name, version string
+		opt           Options
+		refuse        string
+	}{
+		{"older, prepared", "0.9.0", prepared, "`kasbah migrate server d@h`"},
+		{"older, bootstrap", "0.9.0", Options{}, "`kasbah migrate server d@h`"},
+		{"older, migrating", "0.9.0", Options{Prepared: prepared.Prepared, Migrating: true}, ""},
+		{"newer, prepared", "99.0.0", prepared, "written by kasbah 99.0.0"},
+		{"newer, migrating", "99.0.0", Options{Prepared: prepared.Prepared, Migrating: true}, "written by kasbah 99.0.0"},
+		{"same", "1.4.0", prepared, ""},
+		{"incomparable", "", prepared, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			stubSSH(t)
+			s := newScratch(t)
+			os.MkdirAll(filepath.Join(s.apps, ".kasbah"), 0o755)
+			os.WriteFile(filepath.Join(s.apps, ".kasbah", "server.json"), []byte(body(c.version)), 0o644)
+			local := filepath.Join(s.root, "local", "kasbah-linux")
+			fake(t, local, ours, "", 0o755)
+			conn, err := ssh.Connect("d@h")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			res, err := Ensure(conn, remote.Self(ours), func(string) (string, error) { return local, nil }, c.opt)
+			_, statErr := os.Stat(Path(s.apps))
+			if c.refuse != "" {
+				if err == nil || !strings.Contains(err.Error(), c.refuse) || statErr == nil {
+					t.Fatalf("got %v (binary shipped: %v); want a refusal saying %q, nothing shipped", err, statErr == nil, c.refuse)
+				}
+				if strings.Contains(c.name, "older") && !strings.Contains(err.Error(), "0.9.0") {
+					t.Errorf("the refusal does not name the server's version: %v", err)
+				}
+				return
+			}
+			if err != nil || res.Action != remote.Ship || statErr != nil {
+				t.Fatalf("got %+v %v (shipped: %v)", res, err, statErr == nil)
 			}
 		})
 	}

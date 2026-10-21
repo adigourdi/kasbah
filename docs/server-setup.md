@@ -54,6 +54,8 @@ Default paths (override with `--apps-path`, `--data-path`):
 /apps/                               root owned by deploy user
 ├── .kasbah/
 │   ├── server.json                  server marker (version, paths, limits, backup)
+│   ├── migrate.lock                 held by `kasbah migrate server` while it runs
+│   ├── migrate/<from>-to-<to>-<stamp>.tar   snapshot of what a migration rewrote (its --undo)
 │   ├── bin/kasbah                   the kasbah binary — shipped by the workstation when absent
 │   │                                or older, kept when the same build, refused when newer (installed under bin/.lock)
 │   └── backup/                      only with --with-backup (see below)
@@ -384,10 +386,13 @@ server's is newer, naming both builds and handing off to the newer version
 when it is installed on the workstation (`cli.md` → Hand-off). The server
 never serves a workstation of another build.
 
-Only the first direction is implemented. Refusing an *older* marker would
-be a dead end today: the remedy it names, `kasbah migrate`, does not exist
-until roadmap v1.0, so the refusal would strand a server with no way
-forward. It lands with that command.
+Both directions are judged from the probe's copy of the marker, before any
+binary ships: an older major is refused by every command — `server init`
+included — naming `kasbah migrate server USER@HOST` (`cli.md`), which is the
+one command allowed to put a newer major on that server. A marker that is
+not an object, or whose `kasbah_version` cannot be compared, passes this check
+and is judged by the command's own reading of the marker (`init` warns, the
+others refuse what `Validate` refuses).
 
 Marker writes **merge, they never replace.** A command computes the fields it
 owns and overlays them onto whatever is already there, so a key written by a

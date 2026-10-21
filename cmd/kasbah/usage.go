@@ -34,6 +34,8 @@ Commands:
   env [USER@HOST]                            Render the project's .env on the server.
   logs [USER@HOST] [SERVICE] [-f] [--tail=N] Show this project's container logs on a server.
   exec [USER@HOST] SERVICE -- CMD...         Run a command in one of this project's containers.
+  migrate                                    Move this project's files to this kasbah's schema.
+  migrate server USER@HOST [--yes] [--undo]  Move a server to this kasbah's major, or undo the last move.
   server init USER@HOST [flags]              Prepare a VPS to host projects.
   server status USER@HOST                    Report what a prepared VPS is running.
   server prune USER@HOST [--yes]             Remove image tags outside the retention window.
