@@ -65,6 +65,12 @@ commands not named as writers below write nothing — `check` (but see `--fix`),
 A pre-launcher install (`<lib>/server/kasbah-linux-*` at the top level, and the
 pre-1.0 `libexec/`, `templates/`, `VERSION`, `*.sh`) is swept by the next install.
 
+Developer tooling, not the CLI: `release.sh keygen` writes the minisign pair
+`${KASBAH_RELEASE_KEY:-~/.config/kasbah/release.key}` (`600`, its directory
+`700`) and `<repo>/release.pub` (committed, embedded in the binary);
+`release.sh vX.Y.Z` writes the next `-dev` into `<repo>/VERSION`
+(`release.sh:46`, `:133`).
+
 ### `.kasbah/`
 
 | Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |

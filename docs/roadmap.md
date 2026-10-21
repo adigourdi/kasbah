@@ -97,8 +97,8 @@ Built as build-plan Phase 10 (`docs/phases/10-recast.md`).
   older projects (`kasbah_version < installed_version`) and offer to migrate.
   Migration of VPS state stays opt-in and reversible, because a VPS may still be
   driven by another developer on an older kasbah.
-- Release distribution (GitHub releases) — decided together with publishing
-  (`research/landscape.md`).
+- Release distribution: GitHub Releases, cut by `release.sh` (`overview.md`
+  → Distribution). Done.
 - Concurrency for multi-VPS operations (deploy to N servers).
 
 ## Backlog (unphased, low priority)

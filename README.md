@@ -12,6 +12,13 @@ one Go binary — nothing but Docker and that binary runs on the server.
 ./install.sh    # builds through Docker; installs under ~/.local/share/kasbah/<version>/ and links ~/.local/bin/kasbah to the newest
 ```
 
+## Release
+
+```sh
+./release.sh keygen      # once: the minisign key pair; commit release.pub
+./release.sh v1.2.3      # VERSION must say 1.2.3; tests, reproducible build, signed checksums, GitHub Release
+```
+
 ## Quick start
 
 ```sh

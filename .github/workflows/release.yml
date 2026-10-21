@@ -1,0 +1,80 @@
+# Publish a release from a tag: the same double build, checksums and minisign
+# signature as release.sh, with the secret key in the MINISIGN_KEY secret.
+# Disabled until the signing key moves to a repository secret: dispatch only,
+# the tag trigger stays commented.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: release tag (vX.Y.Z or vX.Y.Z-rc.N)
+        required: true
+  # push:
+  #   tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Build twice and compare
+        run: |
+          set -euo pipefail
+          build() { env UID="$(id -u)" GID="$(id -g)" docker compose -p kasbah run --rm -T build </dev/null; }
+          files="dist/kasbah dist/server/kasbah-linux-amd64 dist/server/kasbah-linux-arm64"
+          build; first="$(sha256sum $files)"
+          build; second="$(sha256sum $files)"
+          if [ "$first" != "$second" ]; then
+            echo "the two builds differ:"; echo "$first"; echo "$second"; exit 1
+          fi
+
+      - name: Stage assets and checksums
+        run: |
+          set -euo pipefail
+          ver="${TAG#v}"
+          mkdir -p release
+          cp dist/server/kasbah-linux-amd64 "release/kasbah_${ver}_linux_amd64"
+          cp dist/server/kasbah-linux-arm64 "release/kasbah_${ver}_linux_arm64"
+          (cd release && sha256sum "kasbah_${ver}_linux_amd64" "kasbah_${ver}_linux_arm64" | LC_ALL=C sort -k2) > release/checksums.txt
+        env:
+          TAG: ${{ inputs.tag }}
+
+      - name: Sign checksums.txt
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p keys
+          printf '%s\n' "$MINISIGN_KEY" > keys/release.key
+          printf '%s\n' "$MINISIGN_PASSWORD" | docker run --rm -i --user "$(id -u):$(id -g)" \
+            -v "$PWD/keys:/keys:ro" -v "$PWD/release:/work" -w /work jedisct1/minisign \
+            -S -s /keys/release.key -t "kasbah ${TAG#v}" -m checksums.txt
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/release:/work" -v "$PWD/release.pub:/work/release.pub:ro" \
+            -w /work jedisct1/minisign -V -p release.pub -m checksums.txt
+          rm -rf keys
+        env:
+          TAG: ${{ inputs.tag }}
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+
+      - name: Create the GitHub release
+        run: |
+          set -euo pipefail
+          ver="${TAG#v}"
+          prev="$(git describe --tags --abbrev=0 --match 'v*' --exclude "$TAG" HEAD 2>/dev/null || true)"
+          git log --format='- %s' "${prev:+$prev..}HEAD" > notes.md
+          pre=()
+          case "$ver" in *-*) pre=(--prerelease) ;; esac
+          gh release create "$TAG" --title "kasbah $ver" --notes-file notes.md "${pre[@]}" \
+            "release/kasbah_${ver}_linux_amd64" "release/kasbah_${ver}_linux_arm64" \
+            release/checksums.txt release/checksums.txt.minisig
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}

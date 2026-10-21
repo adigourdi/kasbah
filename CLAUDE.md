@@ -24,6 +24,12 @@ plan and the only progress tracker (the roadmap is scope, not status).
   lives in `compose.yml` alone. Build from the main checkout — a git worktree's
   `.git` points outside the mounted tree and the version stamp fails.
 - `dist/kasbah <cmd>` — run the CLI from the checkout; no install needed.
+- `./release.sh vX.Y.Z` — a release: `VERSION` must equal it, HEAD pushed and
+  clean; `./test.sh`, two builds that must hash identically, `checksums.txt`
+  signed with minisign (its container; the key at `~/.config/kasbah/release.key`,
+  made once by `./release.sh keygen`, whose public half is committed as
+  `release.pub`), the tag pushed, `gh release create`. Needs `gh` authenticated
+  and a terminal for the key's password. `-rc.N` tags are prereleases.
 - Versions: files kasbah writes record `VERSION`; `--version` prints the build
   stamp and the schema (`kasbah 1.0.0 (schema 1)`; a pre-release stamp adds the
   commit count and build time, so a later build always outranks an earlier one).
@@ -69,7 +75,9 @@ plan and the only progress tracker (the roadmap is scope, not status).
 the `_shared.yml` middleware names; `versions.log`'s four positional
 fields (new data = appended `key=value` pairs); the `KASBAH_` env-var
 prefix (reserved, injected at deploy, exempt from drift); the manifest schema
-(1, frozen at 1.0.0 — a change goes through `kasbah migrate`).
+(1, frozen at 1.0.0 — a change goes through `kasbah migrate`); release tags
+`vMAJOR.MINOR.PATCH` and assets `kasbah_<ver>_linux_<arch>`, `checksums.txt`,
+`checksums.txt.minisig`.
 
 ## Layout
 

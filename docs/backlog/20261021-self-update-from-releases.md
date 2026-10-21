@@ -11,6 +11,35 @@ priority: normal
 after: "[[release-sh-and-signing]] and at least one published release to fetch"
 ---
 
+## Rulings (run of 2026-10-21 — settled, do not re-propose)
+
+- **Repo stays private.** `self-update` authenticates with `GITHUB_TOKEN`;
+  when unset and `gh` is on PATH it runs `gh auth token`; neither → a failure
+  naming both. Downloads go through the API asset endpoint
+  (`/repos/adigourdi/kasbah/releases/tags/<tag>` → `assets[].url`,
+  `Accept: application/octet-stream`). Versions are resolved with
+  `git ls-remote --tags --refs git@github.com:adigourdi/kasbah.git 'vN.*'`
+  (ssh, the user's own git), highest by `internal/version`; pre-release tags
+  (`-rc.N`, `-dev`) are skipped unless `--pre`.
+- **Verification before anything is written into the versions dir:** the
+  minisign-signed `checksums.txt` is checked against the public key embedded
+  in the binary (`release.pub`, committed by [[release-sh-and-signing]]), then
+  each asset's sha256 against the file. The verifier is Go: `crypto/ed25519`
+  with minisign's prehashed (Blake2b-512) format — `aead.dev/minisign` is
+  acceptable if its only transitive dependency is `golang.org/x/crypto`,
+  otherwise hand-rolled on `x/crypto/blake2b`.
+- **Lazy server builds:** `serverbin.Local` on an installed kasbah, missing
+  `server/kasbah-linux-<arch>` for its own version, fetches and verifies that
+  one asset into place (temp + rename) before shipping; a checkout never
+  fetches (build it). The server never downloads.
+- **Install path:** `kasbah self-update [vN | vN.M.P]` installs into
+  `<lib>/<ver>/` the same layout `install.sh` writes (the linux asset for this
+  machine's arch is both the workstation binary and that arch's server build;
+  the other arch's server build is fetched lazily), runs `--version` on it,
+  then repoints `<bin>/kasbah` the way `install.sh` does — prompting first
+  when the symlink would move to a different major (`--yes`).
+- The frozen asset/tag names are the release item's contract.
+
 ## Prompted by
 
 *"it might be useful to pull arm64 from there and push the link to the server

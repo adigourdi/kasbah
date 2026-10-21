@@ -7,7 +7,7 @@ description: >
   idempotent, marker last, the fleet's point of no return) and `kasbah migrate`
   in a project; open on undo and how far back — `internal/marker`,
   `internal/manifest`, `internal/serverbin/prepared.go`.
-state: needs-decision
+state: ready
 priority: low
 ---
 
@@ -38,16 +38,25 @@ we have migrations on `1.2 > 1.1` as well"*. Rulings from that discussion:
 - Every file kasbah writes records its version (`docs/files.md`) — what makes a
   per-file idempotent migration possible.
 
-## To decide
+## Rulings (run of 2026-10-21 — settled, do not re-propose)
 
-1. **Automatic undo** — (a) snapshot only (`<apps>/.kasbah/migrate/<from>-to-<to>-<ts>.tar`),
-   restore by hand plus reinstalling the old major; (b) `migrate server --undo`,
-   allowed only while no `versions.log` line is newer than the snapshot.
-2. **How far back** — (a) the newest binary carries every step (`1→2`, `2→3`, …)
-   and chains them; (b) only from the previous major, older servers go through
-   an intermediate release.
-3. **Order of project vs server migration** — proposed: independent, either
-   order, `deploy` needs both at the new schema; confirm.
+- **Undo:** `kasbah migrate server USER@HOST --undo` restores the latest
+  snapshot and marker, allowed only while no `versions.log` line in any
+  project is newer than the snapshot; otherwise it refuses and names the
+  manual path (the snapshot tarball). A snapshot is always written.
+- **Chain:** the newest binary carries every step (`1→2`, `2→3`, …) and runs
+  them in sequence; a step is a Go value registered in `internal/migrate`,
+  idempotent per file from each file's own version stamp.
+- **Order:** project and server migrations are independent and run in either
+  order; a newer-major binary refuses a schema-1 manifest (`kasbah migrate`
+  in the project) or a schema-1 server (`kasbah migrate server`) until each
+  is migrated; `deploy` needs both.
+- **Proof without a real step:** the step registry is empty for schema 1; a
+  test-only step (Go unit tests over the engine; a rig case that plants a
+  `0.9.0` marker and runs the real binary) proves lock, snapshot, per-file
+  rewrite, marker-last, `--undo` and its refusal. The older-major refusal in
+  `serverbin.EnsurePrepared` lands with this (`server-setup.md` says it waits
+  for the remedy to exist).
 
 ## Work
 
