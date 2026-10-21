@@ -1,5 +1,5 @@
 // Package version computes the build stamp kasbah reports as its version, and
-// orders two stamps the way the server binary's newer-wins rule needs.
+// orders two stamps the way the server binary's same-build rule needs.
 package version
 
 import (

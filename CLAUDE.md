@@ -34,9 +34,12 @@ plan and the only progress tracker (the roadmap is scope, not status).
   subcommand, never a shell script; shell crosses ssh only for the bootstrap
   probe and the `sudo` steps init and destroy need. Anything a remote step
   installs from stdin carries its size and sha256 (`internal/remote`).
-- **Newer wins on the server.** The workstation ships its build when the
-  server's binary is absent or older and keeps it when the same or newer; an
-  older workstation refuses a newer major.
+- **Same build on both ends.** The workstation ships its build when the
+  server's binary is absent or older, keeps it when the same, and refuses when
+  the server's is newer — then hands off to that version if it is installed
+  under `~/.local/share/kasbah/<version>/` (`internal/launcher`). No protocol
+  negotiation exists: a `kasbah remote` arm may change in any release.
+  `remote version` prints `build=<stamp>` and readers ignore unknown keys.
 - **YAML reads as kislyuk `yq` 3.1.0 printed it** — plain scalars per YAML 1.2
   (`yes`/`on` are strings) but `0755` octal, numbers in jq 1.7's spelling.
   `internal/yamlx` + `internal/jv` reproduce it (goldens from the real yq);

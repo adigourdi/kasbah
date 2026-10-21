@@ -51,6 +51,20 @@ commands not named as writers below write nothing — `check` (but see `--fix`),
 
 `deploy` in this table is the invoking user.
 
+### The install (`install.sh`)
+
+`<lib>` is `KASBAH_LIB_DIR`, else `$XDG_DATA_HOME/kasbah`, else
+`~/.local/share/kasbah`; `<bin>` is `KASBAH_BIN_DIR`, else `~/.local/bin`.
+
+| Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |
+|---|---|---|---|---|---|---|---|
+| `<lib>/<version>/kasbah` | `install.sh` (`.kasbah.new`, then rename), `<version>` being the build stamp | the symlink; a hand-off (`cli.md` → Hand-off) | static ELF for this machine | `755` | the installing user | a re-install of the same stamp replaces it; never removed by kasbah | `install.sh:111` |
+| `<lib>/<version>/server/kasbah-linux-<arch>` | `install.sh` (same way), amd64 and arm64 | `serverbin.Local` — what that version ships to a server | static linux ELF | `755` | the installing user | as above | `install.sh:114`, `internal/serverbin/serverbin.go:56` |
+| `<bin>/kasbah` | `install.sh`: `ln -sfn` to `<lib>/<newest>/kasbah`, newest by `internal/version` over the version directories whose binary runs (`kasbah __newest`) | the shell | symlink | — | the installing user | repointed by every install; a regular file there (the pre-launcher install) is replaced, a directory refused | `install.sh:143` |
+
+A pre-launcher install (`<lib>/server/kasbah-linux-*` at the top level, and the
+pre-1.0 `libexec/`, `templates/`, `VERSION`, `*.sh`) is swept by the next install.
+
 ### `.kasbah/`
 
 | Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |
@@ -106,7 +120,7 @@ neither.
 | `<apps>/.kasbah/server.json` | `server init`, every run that changes its bytes (merge, never replace) | every server-targeting command, `server status`, `server prune`, `check --server` | JSON → `server-setup.md` (Server marker) | `644` | `deploy` | not touched by `upgrade-traefik`; removed by `server destroy`, only when every step before it succeeded | `internal/serverinit/remote.go:239`, `internal/destroy/remote.go:545` |
 | `<apps>/.kasbah/server.json.tmp.<pid>` | `server init` staging (the pid is the server binary's) | — | JSON | `644` | `deploy` | *transient*: renamed; a failed rename is removed, a hard kill leaves it | `internal/remote/install.go:13` |
 | `<apps>/.kasbah/bin` | the Go binary's server step — `__ensure-server` now, every Go command that reaches a server from 10.6 on — in the upload (`mkdir -p` at umask `022`); `server init` ships it (`Options{Apps}`, the bootstrap) into the apps path it has just created or found, before any marker exists | — | directory → `phases/10-recast.md` (Rulings: one shared binary path) | `755` | `deploy` | never rewritten; `rmdir` by `server destroy` after the binary, `.lock` and any upload in it — a stray file keeps it | `internal/serverbin/serverbin.go:548`, `internal/destroy/destroy.go:195` |
-| `<apps>/.kasbah/bin/kasbah` | `kasbah remote install-self`, run by a verified upload under `.lock`: renamed over the binary only when that is still absent, not runnable (not executable, not an ELF for this machine, exit 126 off a noexec mount, 127) or older — never the same build or newer (newer-wins), so racing installs end on the newest | every `kasbah remote …` call; the `kasbah-backup` container, through its read-only `<apps>` mount (its entrypoint and healthcheck); the workstation's probe (`remote version`, bounded at 30 s) | static linux ELF, the workstation's own build for the server's `uname -m` | `755` | `deploy` | replaced by rename only, so a process running the old one keeps its inode; removed by `server destroy` — by a shell step once the binary's own step has exited, after the pointer | `internal/serverbin/install.go:72`, `internal/destroy/destroy.go:186` |
+| `<apps>/.kasbah/bin/kasbah` | `kasbah remote install-self`, run by a verified upload under `.lock`: renamed over the binary only when that is still absent, not runnable (not executable, not an ELF for this machine, exit 126 off a noexec mount, 127) or older — never the same build or newer (same-build rule: the workstation refuses a newer server build before uploading), so racing installs end on the newest | every `kasbah remote …` call; the `kasbah-backup` container, through its read-only `<apps>` mount (its entrypoint and healthcheck); the workstation's probe (`remote version`, bounded at 30 s) | static linux ELF, the workstation's own build for the server's `uname -m` | `755` | `deploy` | replaced by rename only, so a process running the old one keeps its inode; removed by `server destroy` — by a shell step once the binary's own step has exited, after the pointer | `internal/serverbin/install.go:72`, `internal/destroy/destroy.go:186` |
 | `<apps>/.kasbah/bin/.lock` | `kasbah remote install-self` (`flock`, held across the re-check and the rename) | every install | empty lock file | `644` | `deploy` | created once, never removed by a run; removed by `server destroy` | `internal/serverbin/install.go:37`, `internal/destroy/destroy.go:191` |
 | `<apps>/.kasbah/bin/.kasbah.*` | the upload (`set -C`, never over an existing file) | its own `remote version` check, then `install-self` | as `kasbah` | umask `022`, then `755` | `deploy` | *transient*: renamed over `kasbah` by `install-self`, else removed — by the run on any refusal or exit path (signals included), by the upload's own trap on SIGHUP/INT/TERM/PIPE or a short read; SIGKILL can leave it, and every later upload sweeps those older than 60 min; `server destroy` removes any left | `internal/serverbin/serverbin.go:546`, trap `:551`, sweep `:549`, destroy `internal/destroy/destroy.go:193` |
 | `<apps>/.kasbah/backup` | `server init --with-backup` (`chmod 700` every run) | — | directory → `server-setup.md` (With backup) | `700` | `deploy` | removed whole by `server destroy` | `internal/backup/remote.go:156`, `internal/destroy/remote.go:479` |

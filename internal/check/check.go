@@ -50,6 +50,17 @@ type Env struct {
 	Server string
 	Dial   func(target string) (ServerSession, error)
 	Now    func() time.Time
+	// Report prints a refusal that cuts the run short and gives its exit
+	// code; nil is Out.Report. The CLI's hands a refusal naming another
+	// version's work off to that version.
+	Report func(error) int
+}
+
+func (e Env) report(err error) int {
+	if e.Report != nil {
+		return e.Report(err)
+	}
+	return e.Out.Report(err)
 }
 
 func (e Env) prompter() *prompt.Prompter {
@@ -87,17 +98,17 @@ func Run(e Env) (code int) {
 	fmt.Fprintf(c.w, "Checking %s\n\n", e.PWD)
 	if e.Fix {
 		if _, err := manifest.Require(manifest.File, e.Version); err != nil {
-			return c.out.Report(err)
+			return e.report(err)
 		}
 		if err := c.fix(e); err != nil {
-			return c.out.Report(err)
+			return e.report(err)
 		}
 	}
 	fmt.Fprintln(c.w, "Structure:")
 
 	m, err := manifest.Require(manifest.File, e.Version)
 	if err != nil {
-		return c.out.Report(err)
+		return e.report(err)
 	}
 	c.m = m
 	c.passf("kasbah.yml exists (schema %s)", m.Schema)
@@ -106,11 +117,11 @@ func Run(e Env) (code int) {
 	if e.Server != "" {
 		sess, err := e.Dial(e.Server)
 		if err != nil {
-			return c.out.Report(err)
+			return e.report(err)
 		}
 		sr, err := sess.Read(m.Name, healthOf(m.Doc))
 		if err != nil {
-			return c.out.Report(err)
+			return e.report(err)
 		}
 		now := time.Now
 		if e.Now != nil {
@@ -118,7 +129,7 @@ func Run(e Env) (code int) {
 		}
 		c.srv = newServer(sr, now())
 		if err := state.Record(state.File, e.Version, "last_server", sr.Target); err != nil {
-			return c.out.Report(err)
+			return e.report(err)
 		}
 	}
 

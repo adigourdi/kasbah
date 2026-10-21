@@ -144,11 +144,15 @@ func main() {
 		case "__sync":
 			out := cli.Std()
 			atexit.HandleSignals()
-			atexit.Exit(out.Report(syncCmd(args[1:])))
+			atexit.Exit(report(out, syncCmd(args[1:])))
+		case "__newest":
+			out := cli.Std()
+			atexit.HandleSignals()
+			atexit.Exit(report(out, newestCmd(out, args[1:])))
 		case "__ensure-server":
 			out := cli.Std()
 			atexit.HandleSignals()
-			code := out.Report(ensureServer(out, args[1:]))
+			code := report(out, ensureServer(out, args[1:]))
 			if c := atexit.Interrupted(); c != 0 {
 				code = c
 			}
@@ -207,8 +211,7 @@ func remoteCmd(args []string) int {
 		fmt.Fprintln(out.Stdout, remote.Self(build).Line())
 		return cli.ExitOK
 	}
-	// Kept for 1.0.0 workstations, which read the marker this way and are
-	// served by a newer server binary kept under newer-wins.
+	// Kept for 1.0.0 workstations, which read the marker this way.
 	if len(args) == 2 && args[0] == "marker" {
 		body, err := marker.ReadLocal(args[1])
 		if err != nil {
@@ -221,19 +224,19 @@ func remoteCmd(args []string) int {
 	if len(args) == 2 && args[0] == "install-self" {
 		exe, err := os.Executable()
 		if err != nil {
-			return out.Report(cli.Fail("cannot locate this binary: %v", err))
+			return report(out, cli.Fail("cannot locate this binary: %v", err))
 		}
-		return out.Report(serverbin.InstallSelf(remote.Self(build), exe, args[1], out.Stdout))
+		return report(out, serverbin.InstallSelf(remote.Self(build), exe, args[1], out.Stdout))
 	}
 	sub := "(none)"
 	if len(args) > 0 {
 		sub = args[0]
 	}
-	return out.Report(cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, sync, vlog, init, mail, backup, backup-init, status, check, prune, traefik, drop, destroy", sub))
+	return report(out, cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, sync, vlog, init, mail, backup, backup-init, status, check, prune, traefik, drop, destroy", sub))
 }
 
 // ensureServer is `kasbah __ensure-server [--apps-path=<dir>] USER@HOST`: the
-// server binary's newer-wins rule on its own, for the rig suites. One result
+// server binary's same-build rule on its own, for the rig suites. One result
 // line on stdout. --apps-path is the bootstrap mode: no discovery, no marker.
 func ensureServer(out *cli.Output, args []string) error {
 	var opt serverbin.Options
@@ -319,7 +322,7 @@ func serverInitCmd(args []string) {
 	atexit.HandleSignals()
 	o, err := serverinit.Parse(args)
 	if err != nil {
-		atexit.Exit(out.Report(err))
+		atexit.Exit(report(out, err))
 	}
 	if o.Help {
 		fmt.Fprint(out.Stdout, serverinit.Usage)
@@ -328,7 +331,7 @@ func serverInitCmd(args []string) {
 	p := prompt.Std(out)
 	mail, bk, err := serverinit.Features(p, o)
 	if err != nil {
-		atexit.Exit(out.Report(err))
+		atexit.Exit(report(out, err))
 	}
 	o.Mail, o.Backup = prompt.No, prompt.No
 	if mail {
@@ -339,7 +342,7 @@ func serverInitCmd(args []string) {
 	} else {
 		serverinit.FlagsUnused(out, o)
 	}
-	code := out.Report(serverInit(out, p, o))
+	code := report(out, serverInit(out, p, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c
 	}
@@ -351,7 +354,7 @@ func serverInitCmd(args []string) {
 func backupPruneCmd(o backup.PruneOptions, err error) int {
 	out := cli.Std()
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	if o.Help {
 		fmt.Fprint(out.Stdout, backup.PruneUsage)
@@ -359,9 +362,9 @@ func backupPruneCmd(o backup.PruneOptions, err error) int {
 	}
 	local, err := localBinary()
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
-	code := out.Report(backup.Prune(backup.PruneCtx{
+	code := report(out, backup.Prune(backup.PruneCtx{
 		Out:      out,
 		Prompter: prompt.Std(out),
 		Dial:     backup.DialPrune(remote.Self(build), local),
@@ -405,13 +408,13 @@ func mailCmd(o mail.Options, err error) int {
 		return cli.ExitOK
 	}
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	local, err := localBinary()
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
-	code := out.Report(mail.Run(mail.Ctx{
+	code := report(out, mail.Run(mail.Ctx{
 		Out:       out,
 		Templates: templates.FS,
 		Dial:      mail.DialSSH(remote.Self(build), local),
@@ -447,25 +450,26 @@ func checkCmd(o check.Options, err error) int {
 		return cli.ExitOK
 	}
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	v, err := kasbahVersion(o.Fix)
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	pwd, err := os.Getwd()
 	if err != nil {
-		return out.Report(cli.Fail("cannot read the current directory: %v", err))
+		return report(out, cli.Fail("cannot read the current directory: %v", err))
 	}
 	target, err := check.Target(o)
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
-	e := check.Env{Out: out, PWD: pwd, Version: v, Fix: o.Fix, Yes: o.Yes, Server: target}
+	e := check.Env{Out: out, PWD: pwd, Version: v, Fix: o.Fix, Yes: o.Yes, Server: target,
+		Report: func(err error) int { return report(out, err) }}
 	if target != "" {
 		local, err := localBinary()
 		if err != nil {
-			return out.Report(err)
+			return report(out, err)
 		}
 		e.Dial = check.Dial(remote.Self(build), local)
 	}
@@ -483,17 +487,17 @@ func statusCmd(o status.Options, err error) int {
 		return cli.ExitOK
 	}
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	v, err := kasbahVersion(false)
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	local, err := localBinary()
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
-	code := out.Report(status.Run(status.Ctx{Out: out, Version: v, Dial: status.Dial(remote.Self(build), local)}, o))
+	code := report(out, status.Run(status.Ctx{Out: out, Version: v, Dial: status.Dial(remote.Self(build), local)}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c
 	}
@@ -507,17 +511,17 @@ func initProjectCmd(o initproject.Options, err error) int {
 		return cli.ExitOK
 	}
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	v, err := kasbahVersion(true)
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	pwd, err := os.Getwd()
 	if err != nil {
-		return out.Report(cli.Fail("cannot read the current directory: %v", err))
+		return report(out, cli.Fail("cannot read the current directory: %v", err))
 	}
-	code := out.Report(initproject.Run(out, o, pwd, v))
+	code := report(out, initproject.Run(out, o, pwd, v))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c
 	}
@@ -531,21 +535,21 @@ func buildPushCmd(o buildpush.Options, err error) int {
 		return cli.ExitOK
 	}
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	v, err := kasbahVersion(true)
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	pwd, err := os.Getwd()
 	if err != nil {
-		return out.Report(cli.Fail("cannot read the current directory: %v", err))
+		return report(out, cli.Fail("cannot read the current directory: %v", err))
 	}
 	local, err := localBinary()
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
-	code := out.Report(buildpush.Run(buildpush.Ctx{
+	code := report(out, buildpush.Run(buildpush.Ctx{
 		Out:     out,
 		PWD:     pwd,
 		Version: v,
@@ -569,19 +573,19 @@ func deployCmd(cmd string, o deploy.Options, err error) int {
 		return cli.ExitOK
 	}
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	v, err := kasbahVersion(true)
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	pwd, err := os.Getwd()
 	if err != nil {
-		return out.Report(cli.Fail("cannot read the current directory: %v", err))
+		return report(out, cli.Fail("cannot read the current directory: %v", err))
 	}
 	local, err := localBinary()
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	c := deploy.Ctx{
 		Out:      out,
@@ -603,7 +607,7 @@ func deployCmd(cmd string, o deploy.Options, err error) int {
 	default:
 		rerr = deploy.Run(c, o)
 	}
-	code := out.Report(rerr)
+	code := report(out, rerr)
 	if c := atexit.Interrupted(); c != 0 {
 		code = c
 	}
@@ -617,21 +621,21 @@ func envCmd(o env.Options, err error) int {
 		return cli.ExitOK
 	}
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	v, err := kasbahVersion(true)
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	pwd, err := os.Getwd()
 	if err != nil {
-		return out.Report(cli.Fail("cannot read the current directory: %v", err))
+		return report(out, cli.Fail("cannot read the current directory: %v", err))
 	}
 	local, err := localBinary()
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
-	code := out.Report(env.Run(env.Ctx{
+	code := report(out, env.Run(env.Ctx{
 		Out:      out,
 		Prompter: prompt.Std(out),
 		PWD:      pwd,
@@ -654,17 +658,17 @@ func historyCmd(o history.Options, err error) int {
 		return cli.ExitOK
 	}
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	v, err := kasbahVersion(false)
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	local, err := localBinary()
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
-	code := out.Report(history.Run(history.Ctx{
+	code := report(out, history.Run(history.Ctx{
 		Out:     out,
 		Version: v,
 		Dial:    history.Dial(remote.Self(build), local),
@@ -681,11 +685,7 @@ func localBinary() (func(arch string) (string, error), error) {
 	if err != nil {
 		return nil, cli.Fail("cannot locate this binary: %v", err)
 	}
-	local, err := serverbin.LocalFor(exe, os.Getenv)
-	if err != nil {
-		return nil, cli.Fail("%v", err)
-	}
-	return local, nil
+	return serverbin.LocalFor(exe), nil
 }
 
 // opsCmd is `logs` and `exec`: the exit status is the stream's.
@@ -696,15 +696,15 @@ func opsCmd(o ops.Options, err error) int {
 		return cli.ExitOK
 	}
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	v, err := kasbahVersion(false)
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	local, err := localBinary()
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	fed := false
 	if fi, err := os.Stdin.Stat(); err == nil {
@@ -718,7 +718,7 @@ func opsCmd(o ops.Options, err error) int {
 		Dial:    ops.Dial(remote.Self(build), local),
 	}, o)
 	if err != nil {
-		code = out.Report(err)
+		code = report(out, err)
 		if c := atexit.Interrupted(); c != 0 {
 			code = c
 		}
@@ -733,13 +733,13 @@ func pruneCmd(o prune.Options, err error) int {
 		return cli.ExitOK
 	}
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	local, err := localBinary()
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
-	code := out.Report(prune.Run(prune.Ctx{
+	code := report(out, prune.Run(prune.Ctx{
 		Out:      out,
 		Prompter: prompt.Std(out),
 		Dial:     prune.Dial(remote.Self(build), local),
@@ -757,13 +757,13 @@ func upgradeCmd(o upgrade.Options, err error) int {
 		return cli.ExitOK
 	}
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	local, err := localBinary()
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
-	code := out.Report(upgrade.Run(upgrade.Ctx{
+	code := report(out, upgrade.Run(upgrade.Ctx{
 		Out:       out,
 		Templates: templates.FS,
 		Dial:      upgrade.Dial(remote.Self(build), local),
@@ -782,17 +782,17 @@ func dropCmd(o drop.Options, err error) int {
 		return cli.ExitOK
 	}
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	v, err := kasbahVersion(true)
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	local, err := localBinary()
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
-	code := out.Report(drop.Run(drop.Ctx{
+	code := report(out, drop.Run(drop.Ctx{
 		Out:       out,
 		Prompter:  prompt.Std(out),
 		Version:   v,
@@ -812,13 +812,13 @@ func destroyCmd(o destroy.Options, err error) int {
 		return cli.ExitOK
 	}
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
 	local, err := localBinary()
 	if err != nil {
-		return out.Report(err)
+		return report(out, err)
 	}
-	code := out.Report(destroy.Run(destroy.Ctx{
+	code := report(out, destroy.Run(destroy.Ctx{
 		Out:      out,
 		Prompter: prompt.Std(out),
 		Dial:     destroy.Dial(remote.Self(build), local),

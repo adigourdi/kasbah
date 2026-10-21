@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Integration test: the server binary's newer-wins rule (docs/phases/10-recast.md,
-# 10.4), driven through the hidden `kasbah __ensure-server USER@HOST`.
+# Integration test: the server binary's same-build rule (docs/server-setup.md,
+# version compatibility), driven through the hidden `kasbah __ensure-server
+# USER@HOST`.
 #
 # The workstation is the binary under test. The server's binary is planted
 # from variant builds stamped older, newer of the same major and newer of the
 # next major, built through the compose toolchain into a scratch directory
 # under .cache/ — never over dist/. After each case the bytes at
 # <apps>/.kasbah/bin/kasbah are checked against the build that should be there.
+# A newer same-major build is refused, and the workstation hands the command
+# off to that build when it is installed under KASBAH_LIB_DIR.
 #
 # Also: an unprepared server refuses with exit 4; a server binary from another
 # build is refused before it replaces anything; two workstations racing end on
@@ -88,7 +91,7 @@ ws_root=$(cd "$(dirname "$(readlink -f "$KASBAH_BIN")")/.." && pwd)
 if [ -f "$ws_root/install.sh" ] && [ -f "$ws_root/VERSION" ]; then
     ours_server="$ws_root/dist/server/kasbah-linux-$arch"
 else
-    ours_server="${KASBAH_LIB_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/kasbah}/server/kasbah-linux-$arch"
+    ours_server="$(dirname "$(readlink -f "$KASBAH_BIN")")/server/kasbah-linux-$arch"
 fi
 if [ ! -f "$ours_server" ]; then
     echo "error: no server binary beside $KASBAH_BIN (looked for $ours_server)" >&2
@@ -178,7 +181,7 @@ assert '[ "$modes" = "755 $RIG_SSH_USER $RIG_SSH_USER
 644 $RIG_SSH_USER $RIG_SSH_USER" ]' "the directory and the binary are 755, the lock 644, all the deploy user's (got '$modes')"
 direct=$(rig_ssh "$bin remote version; $bin --version" 2>&1 | tr -d '\r')
 ours_line=$("$KASBAH_BIN" --version)
-assert '[ "$direct" = "build=$ours protocol=1 min_protocol=1
+assert '[ "$direct" = "build=$ours
 $ours_line" ]' "the server binary answers remote version and --version (got '$direct')"
 
 # --- Case 2: older → replaced -------------------------------------------------
@@ -199,12 +202,44 @@ assert '[ "$(out)" = "kept=$ours" ]' "same: kept (said '$(out)')"
 assert '[ "$inode_before" = "$inode_after" ] && [ "$(server_sha)" = "$ours_sha" ]' \
     "same: the file was not rewritten (inode $inode_before → $inode_after)"
 
-# --- Case 4: newer of the same major → kept, and the older workstation works --
+# --- Case 4: newer of the same major → refused, or handed off to that build ---
 plant "$variants/kasbah-$newer"
 ensure; rc=$?
-assert '[ "$rc" = 0 ]' "newer: the older workstation completes remote version against it (exit $rc: $(err))"
-assert '[ "$(out)" = "kept=$newer" ]' "newer: the server's newer build is kept (said '$(out)')"
-assert '[ "$(server_sha)" = "$newer_sha" ]' "newer: the server still holds the newer build"
+assert '[ "$rc" = 1 ]' "newer: refused with exit 1 (exit $rc: $(err))"
+assert 'grep -qF "$newer" <<<"$(err)" && grep -qF "$ours" <<<"$(err)"' \
+    "newer: the refusal names both builds (said '$(err)')"
+assert 'grep -qF "checkout" <<<"$(err)"' "newer: a checkout says it cannot hand off (said '$(err)')"
+assert '[ -z "$(out)" ]' "newer: no result line (got '$(out)')"
+assert '[ "$(server_sha)" = "$newer_sha" ] && [ -z "$(uploads_left)" ]' \
+    "newer: nothing was replaced and no upload left ($(bin_dir_list | tr '\n' ' '))"
+
+# An installed workstation of our build, with the newer build installed beside
+# it, hands the command off to it: the newer build then keeps the server's.
+if [ "$(uname -m)" = "$machine" ]; then
+    lib="$tmpdir/lib"
+    mkdir -p "$lib/$ours/server" "$lib/$newer"
+    cp "$KASBAH_BIN" "$lib/$ours/kasbah"
+    cp "$ours_server" "$lib/$ours/server/kasbah-linux-$arch"
+    cp "$variants/kasbah-$newer" "$lib/$newer/kasbah"
+    installed_ensure() {
+        env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" KASBAH_LIB_DIR="$lib" "$@" \
+            "$lib/$ours/kasbah" __ensure-server "$RIG_TARGET" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
+    }
+    installed_ensure env; rc=$?
+    assert '[ "$rc" = 0 ] && [ "$(out)" = "kept=$newer" ]' \
+        "hand-off: the newer build runs the command and keeps its own (exit $rc: $(out) $(err))"
+    assert '[ "$(server_sha)" = "$newer_sha" ] && [ -z "$(uploads_left)" ]' "hand-off: nothing was replaced"
+    installed_ensure env KASBAH_HANDOFF="$older"; rc=$?
+    assert '[ "$rc" = 1 ] && grep -qF "already handed off from kasbah $older" <<<"$(err)"' \
+        "hand-off: a second hop is refused, naming the first (exit $rc: $(err))"
+    rm -rf "$lib/$newer"
+    installed_ensure env; rc=$?
+    assert '[ "$rc" = 1 ] && grep -qF "kasbah self-update $newer" <<<"$(err)" && grep -qF "install.sh" <<<"$(err)"' \
+        "hand-off: a build not installed is named with both remedies (exit $rc: $(err))"
+    assert '[ "$(server_sha)" = "$newer_sha" ] && [ -z "$(uploads_left)" ]' "hand-off refusals: nothing was replaced"
+else
+    assert 'false' "hand-off: the rig ($machine) is not this machine's architecture ($(uname -m)); the newer build cannot run here"
+fi
 
 # --- Case 5: newer major → refusal, nothing replaced --------------------------
 plant "$variants/kasbah-$next_major"
@@ -217,13 +252,13 @@ assert '[ "$(server_sha)" = "$major_sha" ]' "newer major: nothing was replaced"
 
 # --- Case 6: a server build from another build is never shipped ---------------
 # The workstation binary, installed-style, beside an older server binary.
-ws="$tmpdir/ws"
-mkdir -p "$ws/bin" "$ws/lib/server"
-cp "$KASBAH_BIN" "$ws/bin/kasbah"
-cp "$variants/kasbah-$older" "$ws/lib/server/kasbah-linux-$arch"
+ws="$tmpdir/ws/$ours"
+mkdir -p "$ws/server"
+cp "$KASBAH_BIN" "$ws/kasbah"
+cp "$variants/kasbah-$older" "$ws/server/kasbah-linux-$arch"
 rig_ssh "rm -f $bin" >/dev/null 2>&1
-env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" KASBAH_LIB_DIR="$ws/lib" \
-    "$ws/bin/kasbah" __ensure-server "$RIG_TARGET" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; rc=$?
+env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" KASBAH_LIB_DIR="$tmpdir/ws" \
+    "$ws/kasbah" __ensure-server "$RIG_TARGET" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; rc=$?
 assert '[ "$rc" = 1 ]' "mismatch: refused (exit $rc: $(err))"
 assert 'grep -qF "another build" <<<"$(err)"' "mismatch: says why (said '$(err)')"
 assert '[ "$(server_sha)" = absent ] && [ -z "$(uploads_left)" ]' \
@@ -240,24 +275,27 @@ rig_ssh "rm -f $bin_dir/.kasbah.fresh0" >/dev/null 2>&1
 
 # --- Case 8: two workstations racing end on the newer build -------------------
 # The older variant runs here as a workstation too (the rig is this machine's
-# architecture), beside its own server build.
+# architecture), beside its own server build and with our build installed
+# beside it: when the newer build lands first, the older run hands off to it.
 if [ "$(uname -m)" = "$machine" ]; then
     old_ws="$tmpdir/oldws"
-    mkdir -p "$old_ws/bin" "$old_ws/lib/server"
-    cp "$variants/kasbah-$older" "$old_ws/bin/kasbah"
-    cp "$variants/kasbah-$older" "$old_ws/lib/server/kasbah-linux-$arch"
+    mkdir -p "$old_ws/$older/server" "$old_ws/$ours/server"
+    cp "$variants/kasbah-$older" "$old_ws/$older/kasbah"
+    cp "$variants/kasbah-$older" "$old_ws/$older/server/kasbah-linux-$arch"
+    cp "$KASBAH_BIN" "$old_ws/$ours/kasbah"
+    cp "$ours_server" "$old_ws/$ours/server/kasbah-linux-$arch"
     for round in 1 2 3; do
         if [ "$round" = 2 ]; then plant "$variants/kasbah-$older"; else rig_ssh "rm -f $bin" >/dev/null 2>&1; fi
-        env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" KASBAH_LIB_DIR="$old_ws/lib" \
-            "$old_ws/bin/kasbah" __ensure-server "$RIG_TARGET" >"$tmpdir/race_b" 2>&1 </dev/null &
+        env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" KASBAH_LIB_DIR="$old_ws" \
+            "$old_ws/$older/kasbah" __ensure-server "$RIG_TARGET" >"$tmpdir/race_b" 2>&1 </dev/null &
         pid_b=$!
         kasbah_cli __ensure-server "$RIG_TARGET" >"$tmpdir/race_a" 2>&1 </dev/null; rc_a=$?
         wait "$pid_b"; rc_b=$?
         a=$(tr -d '\r' <"$tmpdir/race_a"); b=$(tr -d '\r' <"$tmpdir/race_b")
         assert '[ "$rc_a" = 0 ] && [ "$rc_b" = 0 ]' "race $round: both runs succeed ($rc_a: $a / $rc_b: $b)"
         assert '[ "$(server_sha)" = "$ours_sha" ]' "race $round: the server ends on the newer build (A: $a, B: $b)"
-        assert 'case $b in "shipped="*"->$older"|"kept=$ours"|"kept=$older") true ;; *) false ;; esac' \
-            "race $round: the older run reports what it did truthfully (said '$b')"
+        assert 'case $b in "shipped="*"->$older"|"shipped="*"->$ours"|"kept=$ours"|"kept=$older") true ;; *) false ;; esac' \
+            "race $round: the older run reports what it did truthfully, handed off or not (said '$b')"
         assert '[ -z "$(uploads_left)" ]' "race $round: no upload left ($(uploads_left))"
     done
 else
@@ -365,5 +403,5 @@ else
     assert 'false' "could not mount a noexec tmpfs on the rig to exercise the row"
 fi
 
-[ "$fail" = 0 ] && echo "server_binary_test: newer-wins holds in every direction"
+[ "$fail" = 0 ] && echo "server_binary_test: the same-build rule holds in every direction"
 exit "$fail"

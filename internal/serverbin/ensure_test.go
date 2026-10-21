@@ -161,7 +161,7 @@ func TestProbe(t *testing.T) {
 		rc, out := s.probe("")
 		p, err := judge("d@h", rc, out, Options{})
 		if err != nil || p.Apps != other || p.Source != "pointer" || !p.Bin.Present || p.Bin.RC != 0 ||
-			p.Bin.Stdout != "build=0.1.0-dev.1.1 protocol=1 min_protocol=1" || !runnableHere(p.Bin.Head, runtime.GOARCH) {
+			p.Bin.Stdout != "build=0.1.0-dev.1.1" || !runnableHere(p.Bin.Head, runtime.GOARCH) {
 			t.Errorf("got %+v, %v", p, err)
 		}
 	})
@@ -289,7 +289,7 @@ func TestClassify(t *testing.T) {
 	elf[18] = 62
 	arm := append([]byte{}, elf...)
 	arm[18] = 183
-	good := "build=1.0.0 protocol=1 min_protocol=1"
+	good := "build=1.0.0"
 	ok := func(rc int, out, errOut string) Facts {
 		return Facts{Present: true, Regular: true, Executable: true, Head: elf, RC: rc, Stdout: out, Stderr: errOut}
 	}
@@ -360,7 +360,7 @@ func sum(t *testing.T, p string) [32]byte {
 	return sha256.Sum256(b)
 }
 
-// The newer-wins rule end to end, over an ssh that runs everything locally.
+// The same-build rule end to end, over an ssh that runs everything locally.
 func TestEnsure(t *testing.T) {
 	const ours = "0.1.0-dev.142.1760790000"
 	RunTimeout = 2
@@ -382,7 +382,7 @@ func TestEnsure(t *testing.T) {
 		{"absent", nil, ours, false, remote.Ship, "", ours, ""},
 		{"older", &srv{build: "0.1.0-dev.141.1760790000", perm: 0o755}, ours, false, remote.Ship, "0.1.0-dev.141.1760790000", ours, ""},
 		{"same", &srv{build: ours, perm: 0o755}, ours, false, remote.Keep, ours, ours, ""},
-		{"newer, same major", &srv{build: "0.9.0", perm: 0o755}, ours, false, remote.Keep, "0.9.0", "0.9.0", ""},
+		{"newer, same major", &srv{build: "0.9.0", perm: 0o755}, ours, false, 0, "", "", "newer than this kasbah"},
 		{"newer major", &srv{build: "1.0.0", perm: 0o755}, ours, false, 0, "", "", "a newer major"},
 		{"not executable", &srv{build: "1.0.0", perm: 0o644}, ours, false, remote.Ship, "unknown", ours, ""},
 		{"not an executable format", &srv{script: true, perm: 0o755}, ours, false, remote.Ship, "unknown", ours, ""},
@@ -409,7 +409,7 @@ func TestEnsure(t *testing.T) {
 					os.MkdirAll(bin, 0o755)
 				case v.script:
 					os.MkdirAll(filepath.Dir(bin), 0o755)
-					os.WriteFile(bin, []byte("#!/bin/sh\necho build=9.0.0 protocol=1 min_protocol=1\n"), v.perm)
+					os.WriteFile(bin, []byte("#!/bin/sh\necho build=9.0.0\n"), v.perm)
 				default:
 					fake(t, bin, v.build, v.mode, v.perm)
 				}
@@ -519,7 +519,7 @@ func TestInstallSelf(t *testing.T) {
 	}
 	fake(t, self, "0.1.0-dev.4.1", "", 0o755)
 	out, err = exec.Command(self, "remote", "install-self", dest).Output()
-	if err != nil || string(out) != "kept build=0.1.0-dev.5.1 protocol=1 min_protocol=1\n" {
+	if err != nil || string(out) != "kept build=0.1.0-dev.5.1\n" {
 		t.Errorf("over a newer one: %q, %v", out, err)
 	}
 	if _, err := os.Stat(self); err != nil {

@@ -55,7 +55,7 @@ Default paths (override with `--apps-path`, `--data-path`):
 ├── .kasbah/
 │   ├── server.json                  server marker (version, paths, limits, backup)
 │   ├── bin/kasbah                   the kasbah binary — shipped by the workstation when absent
-│   │                                or older, kept when the same or newer (installed under bin/.lock)
+│   │                                or older, kept when the same build, refused when newer (installed under bin/.lock)
 │   └── backup/                      only with --with-backup (see below)
 │       ├── compose.yml              the scheduler stack — its runner is the mounted kasbah binary
 │       ├── env                      mode 600 — kasbah's repo_base, the operator's credentials
@@ -377,7 +377,12 @@ hosts with different umasks and a reader never sees a half-written marker.
 Compatibility rule: a kasbah binary operates on a VPS whose marker shares
 its **major** version. Older tool + newer marker → refuse. Newer tool +
 older-major marker → refuse until `kasbah migrate` is run. Within the
-same major, everything interoperates (see `overview.md`).
+same major, state interoperates (see `overview.md`) — but the *binary* on
+the server is held to the same-build rule: the workstation ships its build
+when the server's is older, keeps it when the same, and refuses when the
+server's is newer, naming both builds and handing off to the newer version
+when it is installed on the workstation (`cli.md` → Hand-off). The server
+never serves a workstation of another build.
 
 Only the first direction is implemented. Refusing an *older* marker would
 be a dead end today: the remedy it names, `kasbah migrate`, does not exist

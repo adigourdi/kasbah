@@ -421,7 +421,7 @@ take away.
 ### `kasbah server status USER@HOST [--apps-path=<dir>]`
 
 It changes nothing on the server but kasbah's own binary, which it brings up to
-date first (`<apps>/.kasbah/bin/kasbah`, newer wins) — and never on a server
+date first (`<apps>/.kasbah/bin/kasbah`, same-build rule) — and never on a server
 `server init` has not prepared.
 
 Prints:
@@ -1080,6 +1080,29 @@ container rather than a failed run. Two exceptions: when ssh could not even
 be started (exit 1, nothing written), and when kasbah itself is sent
 `SIGHUP`/`SIGTERM` mid-command — it forwards the signal, warns in one line,
 exits `129`/`143` and still writes `last_server`, since the command ran.
+
+## Hand-off between installed versions
+
+`install.sh` keeps every version it installs, under
+`~/.local/share/kasbah/<version>/` (the binary and its two linux server builds),
+and `~/.local/bin/kasbah` is a symlink to the newest installed version that
+runs. A running kasbah hands off to a sibling version — re-executing
+`<lib>/<version>/kasbah` with the same arguments and environment, before any
+side effect — in two cases:
+
+- **A server holds a newer build** of its major. The same-build rule refuses
+  to talk to it; when that build is installed, the refusal becomes a hand-off
+  to it. The message names both builds; when the version is not installed it
+  names the remedies (`./install.sh` from that tag's checkout; later,
+  `kasbah self-update <version>`).
+- **A manifest's `schema` belongs to a newer major**: the newest installed
+  kasbah of that major runs the command.
+
+One hop only: the exec'd binary carries `KASBAH_HANDOFF=<build it came from>`,
+and a second refusal is final. A kasbah run from a checkout (`dist/kasbah`)
+never hands off; it says so and names the version to build. The library root
+is the running binary's own parent directory when it sits in a version
+directory, else `KASBAH_LIB_DIR`, `$XDG_DATA_HOME/kasbah`, `~/.local/share/kasbah`.
 
 ## Deferred commands
 

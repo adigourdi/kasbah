@@ -1,7 +1,7 @@
 // Package serverbin puts kasbah's own binary on a server, at the one shared
-// path <apps>/.kasbah/bin/kasbah, under the newer-wins rule
-// (docs/phases/10-recast.md, Rulings): absent or older is replaced by this
-// build's, the same or newer is kept, a newer major refuses.
+// path <apps>/.kasbah/bin/kasbah, under the same-build rule: absent or older
+// is replaced by this build's, the same is kept, a newer one refuses — the
+// workstation then runs the server's build (remote.Newer).
 package serverbin
 
 import (
@@ -52,7 +52,7 @@ func Arch(machine string) (string, error) {
 }
 
 // Local is this build's server binary for arch: dist/server/ in a checkout,
-// server/ in an installed library directory (install.sh).
+// server/ beside the binary in an installed version directory (install.sh).
 func Local(home string, checkout bool, arch string) (string, error) {
 	name := "kasbah-linux-" + arch
 	p := filepath.Join(home, "server", name)
@@ -557,8 +557,9 @@ type Options struct {
 }
 
 // Ensure leaves at Path(apps) this build's binary when the server's is absent,
-// not runnable or older, and keeps the server's when it is the same or newer
-// of our major. local finds this build's server binary for a GOARCH.
+// not runnable or older, and keeps the server's when it is the same build; a
+// newer one is refused before anything is uploaded. local finds this build's
+// server binary for a GOARCH.
 func Ensure(c *ssh.Conn, self remote.Info, local func(arch string) (string, error), opt Options) (*Result, error) {
 	target := c.Target.String()
 	prepared := ""

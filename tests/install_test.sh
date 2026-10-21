@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Test: install.sh ships the binary and the two server binaries, and nothing
-# else — the binary carries its templates, so an installed kasbah runs with
-# nothing beside it but what it ships to servers.
+# Test: install.sh puts the binary and the two server binaries into the
+# build's own version directory, links <bin>/kasbah to the newest installed
+# version, and removes nothing but the layouts before the launcher — the binary
+# carries its templates, so an installed kasbah runs with nothing beside it
+# but what it ships to servers.
 #
 # Installing is the case nobody exercises by hand — the repo is always run from
 # a checkout — so it is the one that silently rots.
@@ -36,6 +38,8 @@ for f in kasbah server/kasbah-linux-amd64 server/kasbah-linux-arm64; do
 done
 # What the checkout's build reports; the installed copy must report the same.
 built_version="$("$repo_dir/dist/kasbah" --version)"
+stamp=${built_version#kasbah }
+stamp=${stamp%% (schema*}
 
 repo="$tmpdir/repo"
 mkdir -p "$repo"
@@ -52,20 +56,27 @@ install_it() {
         "$repo/install.sh" >"$tmpdir/install.out" 2>"$tmpdir/install.err"
 }
 
-# --- Case 1: the binary and the server binaries, nothing else ------------------
+# --- Case 1: the version directory, and the symlink to it -----------------------
+# A 1.0.x install left a regular file at <bin>/kasbah; the symlink replaces it.
+mkdir -p "$bin_dir"
+printf '#!/bin/sh\nexit 0\n' > "$bin_dir/kasbah"
+chmod 0755 "$bin_dir/kasbah"
 install_it
 rc=$?
+ver_dir="$lib_dir/$stamp"
 assert '[ "$rc" = "0" ]' "install.sh succeeds (exit $rc: $(cat "$tmpdir/install.err"))"
-assert 'cmp -s "$repo/dist/kasbah" "$bin_dir/kasbah" && [ -x "$bin_dir/kasbah" ]' \
+assert '[ -L "$bin_dir/kasbah" ] && [ "$(readlink "$bin_dir/kasbah")" = "$ver_dir/kasbah" ]' \
+    "<bin>/kasbah is a symlink to this build's version directory (got '$(readlink "$bin_dir/kasbah" || echo "a $(stat -c %F "$bin_dir/kasbah")")')"
+assert 'cmp -s "$repo/dist/kasbah" "$ver_dir/kasbah" && [ -x "$ver_dir/kasbah" ]' \
     "the CLI installed is the built binary, executable"
 for arch in amd64 arm64; do
-    assert 'cmp -s "$repo/dist/server/kasbah-linux-$arch" "$lib_dir/server/kasbah-linux-$arch" &&
-            [ -x "$lib_dir/server/kasbah-linux-$arch" ]' \
+    assert 'cmp -s "$repo/dist/server/kasbah-linux-$arch" "$ver_dir/server/kasbah-linux-$arch" &&
+            [ -x "$ver_dir/server/kasbah-linux-$arch" ]' \
         "the linux/$arch server binary is installed, executable"
 done
 listing="$(cd "$lib_dir" && find . -mindepth 1 | sort | tr '\n' ' ')"
-assert '[ "$listing" = "./server ./server/kasbah-linux-amd64 ./server/kasbah-linux-arm64 " ]' \
-    "the library directory holds the server binaries only (got: $listing)"
+assert '[ "$listing" = "./$stamp ./$stamp/kasbah ./$stamp/server ./$stamp/server/kasbah-linux-amd64 ./$stamp/server/kasbah-linux-arm64 " ]' \
+    "the library directory holds the version directory only (got: $listing)"
 
 installed_version="$(env -u KASBAH_LIB_DIR XDG_DATA_HOME="$prefix/share" "$bin_dir/kasbah" --version 2>&1)"
 assert '[ "$installed_version" = "$built_version" ]' \
@@ -89,24 +100,49 @@ out="$(alone check 2>&1)"; rc=$?
 assert '{ [ "$rc" = "0" ] || [ "$rc" = "6" ]; } && grep -qF "Summary:" <<<"$out"' \
     "check runs to its summary in a project, alone (exit $rc)"
 
-# --- Case 3: an upgrade leaves nothing stale --------------------------------------
-# The two server binaries are replaced in place, anything else in server/ stays,
-# and what a pre-1.0 install put beside it — the Bash tree, the templates,
-# VERSION — goes.
-mkdir -p "$lib_dir/libexec" "$lib_dir/templates/traefik"
+# --- Case 3: other versions stay; the layouts before the launcher go ---------------
+# Version directories planted by hand stand in for other builds: an older one,
+# a newer one, and a newer one whose kasbah does not run, which the symlink
+# skips. A re-install replaces this build's files in place.
+older_dir="$lib_dir/0.0.1"
+newer_dir="$lib_dir/${stamp%%.*}.999.0"
+broken_dir="$lib_dir/99.0.0"
+for d in "$older_dir" "$newer_dir" "$broken_dir"; do
+    mkdir -p "$d/server"
+    cp "$repo/dist/kasbah" "$d/kasbah"
+done
+printf '#!/bin/sh\nexit 3\n' > "$broken_dir/kasbah"
+rm -f "$ver_dir/kasbah"
+printf 'stale\n' > "$ver_dir/kasbah"
+install_it; rc=$?
+assert '[ "$rc" = "0" ] && cmp -s "$repo/dist/kasbah" "$ver_dir/kasbah"' \
+    "a re-install replaces this build's own binary (exit $rc: $(cat "$tmpdir/install.err"))"
+assert '[ -x "$older_dir/kasbah" ] && [ -x "$newer_dir/kasbah" ] && [ -x "$broken_dir/kasbah" ]' \
+    "and deletes no other version directory"
+assert '[ "$(readlink "$bin_dir/kasbah")" = "$newer_dir/kasbah" ]' \
+    "<bin>/kasbah points at the newest version that runs (got '$(readlink "$bin_dir/kasbah")')"
+assert 'grep -qF "bin: $bin_dir/kasbah -> $newer_dir/kasbah" "$tmpdir/install.out"' \
+    "and install.sh says so (got '$(cat "$tmpdir/install.out")')"
+rm -rf "$older_dir" "$newer_dir" "$broken_dir"
+
+# The 1.0.x layout — server binaries at the top of the library — and what a
+# pre-1.0 install put beside it — the Bash tree, the templates, VERSION — go;
+# a file of somebody else's in server/ stays.
+mkdir -p "$lib_dir/libexec" "$lib_dir/templates/traefik" "$lib_dir/server"
 printf 'old\n' > "$lib_dir/libexec/kasbah-bash"
 printf 'old\n' > "$lib_dir/templates/traefik/traefik.yml"
 printf 'old\n' > "$lib_dir/common.sh"
 printf 'old\n' > "$lib_dir/VERSION"
 printf 'old\n' > "$lib_dir/server/kasbah-linux-amd64"
+printf 'old\n' > "$lib_dir/server/kasbah-linux-arm64"
 printf 'mine\n' > "$lib_dir/server/app.go"
 install_it; rc=$?
 listing="$(cd "$lib_dir" && find . -mindepth 1 | sort | tr '\n' ' ')"
-assert '[ "$rc" = "0" ] && [ "$listing" = "./server ./server/app.go ./server/kasbah-linux-amd64 ./server/kasbah-linux-arm64 " ]' \
-    "a re-install over an old layout leaves the server binaries and nothing of the old tree (exit $rc, got: $listing)"
-assert 'cmp -s "$repo/dist/server/kasbah-linux-amd64" "$lib_dir/server/kasbah-linux-amd64" && [ "$(cat "$lib_dir/server/app.go")" = mine ]' \
-    "a server binary is replaced, and a file of somebody else's in server/ is kept"
-rm -f "$lib_dir/server/app.go"
+assert '[ "$rc" = "0" ] && [ "$listing" = "./$stamp ./$stamp/kasbah ./$stamp/server ./$stamp/server/kasbah-linux-amd64 ./$stamp/server/kasbah-linux-arm64 ./server ./server/app.go " ]' \
+    "a re-install over an old layout leaves the version directory and nothing of the old tree (exit $rc, got: $listing)"
+assert '[ "$(cat "$lib_dir/server/app.go")" = mine ] && [ "$(readlink "$bin_dir/kasbah")" = "$ver_dir/kasbah" ]' \
+    "a file of somebody else's in server/ is kept, and the symlink points back at this build"
+rm -rf "$lib_dir/server"
 
 # Installing into the build's own dist/ would copy each binary onto itself.
 before="$(cd "$repo/dist" && find . -type f -exec sha256sum {} + | sort)"
@@ -124,7 +160,7 @@ printf 'old\n' > "$legacy/VERSION"
 printf 'old\n' > "$legacy/libexec/kasbah-bash"
 env -u XDG_DATA_HOME KASBAH_SKIP_BUILD=1 KASBAH_BIN_DIR="$tmpdir/legacy-bin" KASBAH_LIB_DIR="$legacy" \
     "$repo/install.sh" >/dev/null 2>&1; rc=$?
-assert '[ "$rc" = "0" ] && [ ! -e "$legacy/libexec" ] && [ ! -e "$legacy/VERSION" ] && [ -x "$legacy/server/kasbah-linux-amd64" ]' \
+assert '[ "$rc" = "0" ] && [ ! -e "$legacy/libexec" ] && [ ! -e "$legacy/VERSION" ] && [ -x "$legacy/$stamp/server/kasbah-linux-amd64" ]' \
     "a pre-1.0 library directory is upgraded in place (exit $rc)"
 
 # --- Case 4: a lib dir that is not kasbah's is not emptied --------------------
@@ -167,7 +203,7 @@ fresh="$tmpdir/fresh"
 env -u XDG_DATA_HOME KASBAH_SKIP_BUILD=1 KASBAH_BIN_DIR="$fresh/bin" KASBAH_LIB_DIR="$fresh/lib" \
     "$repo/install.sh" >/dev/null 2>&1
 fresh_rc=$?
-assert '[ "$fresh_rc" = "0" ] && [ -x "$fresh/lib/server/kasbah-linux-arm64" ]' \
+assert '[ "$fresh_rc" = "0" ] && [ -x "$fresh/lib/$stamp/server/kasbah-linux-arm64" ] && [ "$(readlink "$fresh/bin/kasbah")" = "$fresh/lib/$stamp/kasbah" ]' \
     "a first install into an absent directory succeeds (exit $fresh_rc)"
 
 # --- Case 5: a dist/ install.sh cannot use, or a KASBAH_SKIP_BUILD it cannot read
@@ -199,7 +235,7 @@ broken_rc=$?
 cp "$tmpdir/kasbah.aside" "$repo/dist/kasbah"
 assert '[ "$broken_rc" != "0" ]' "a binary that cannot run fails the install (exit $broken_rc)"
 assert '! grep -q "^installed" <<<"$broken_out"' "and it does not claim success (got '$broken_out')"
-assert 'cmp -s "$repo/dist/kasbah" "$bin_dir/kasbah" && "$bin_dir/kasbah" --version >/dev/null' \
-    "and the installed kasbah is the previous one, still running"
+assert 'cmp -s "$repo/dist/kasbah" "$bin_dir/kasbah" && [ "$(readlink "$bin_dir/kasbah")" = "$ver_dir/kasbah" ] && "$bin_dir/kasbah" --version >/dev/null' \
+    "and the installed kasbah is the previous one, still linked and running"
 
 exit "$fail"

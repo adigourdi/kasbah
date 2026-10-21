@@ -52,6 +52,16 @@ func ClientCheck(raw string) (reason string, ok bool) {
 	return "", true
 }
 
+// NewerSchema is the refusal of a manifest whose schema is above Schema: a
+// kasbah of that major reads it.
+type NewerSchema struct {
+	Schema uint64
+	err    *cli.Error
+}
+
+func (n *NewerSchema) Error() string { return n.err.Error() }
+func (n *NewerSchema) Unwrap() error { return n.err }
+
 // Manifest is a validated kasbah.yml.
 type Manifest struct {
 	Path          string
@@ -114,8 +124,8 @@ func Require(path, version string) (*Manifest, error) {
 	}
 	// `[ "$schema" -gt 1 ]`: a value too large for test(1) is an error there,
 	// and the check is then skipped rather than failed.
-	if n, err := strconv.ParseInt(schema, 10, 64); err == nil && n > Schema {
-		return nil, cli.Fail("%s: schema %s is newer than this kasbah (%s supports schema %d). Upgrade kasbah.", path, schema, version, Schema)
+	if n, err := strconv.ParseUint(schema, 10, 64); err == nil && n > Schema {
+		return nil, &NewerSchema{Schema: n, err: cli.Fail("%s: schema %s is newer than this kasbah (%s supports schema %d). Upgrade kasbah.", path, schema, version, Schema)}
 	}
 	if name == "" || name == "null" {
 		return nil, cli.Fail("%s: missing required field 'name'", path)

@@ -3,7 +3,6 @@ package serverbin
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -30,47 +29,47 @@ func TestHome(t *testing.T) {
 	if err := os.Symlink(filepath.Join(checkout, "dist", "kasbah"), linked); err != nil {
 		t.Fatal(err)
 	}
+	// The installed layout: <lib>/<ver>/kasbah, linked from a bin directory.
+	lib := filepath.Join(tmp, "home", ".local", "share", "kasbah")
+	verdir := filepath.Join(lib, "1.0.2-dev.86.1792460280")
+	touch(t, filepath.Join(verdir, "kasbah"))
 	installed := filepath.Join(tmp, "home", ".local", "bin", "kasbah")
-	touch(t, installed)
-	home, xdg, override := filepath.Join(tmp, "home"), filepath.Join(tmp, "xdg"), filepath.Join(tmp, "override")
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(verdir, "kasbah"), installed); err != nil {
+		t.Fatal(err)
+	}
+	// A 1.0.x install: a regular file in the bin directory is its own version dir.
+	plain := filepath.Join(tmp, "plain", "bin", "kasbah")
+	touch(t, plain)
 
 	tests := []struct {
 		name     string
 		exe      string
-		env      map[string]string
 		want     string
 		checkout bool
-		wantErr  string
 	}{
-		{"checkout", filepath.Join(checkout, "dist", "kasbah"), map[string]string{"HOME": home}, checkout, true, ""},
-		{"checkout beats KASBAH_LIB_DIR", filepath.Join(checkout, "dist", "kasbah"), map[string]string{"KASBAH_LIB_DIR": override}, checkout, true, ""},
-		{"symlink to a checkout binary", linked, map[string]string{"HOME": home}, checkout, true, ""},
-		{"installed, HOME", installed, map[string]string{"HOME": home}, filepath.Join(home, ".local", "share", "kasbah"), false, ""},
-		{"installed, XDG_DATA_HOME beats HOME", installed, map[string]string{"HOME": home, "XDG_DATA_HOME": xdg}, filepath.Join(xdg, "kasbah"), false, ""},
-		{"installed, KASBAH_LIB_DIR beats both", installed, map[string]string{"HOME": home, "XDG_DATA_HOME": xdg, "KASBAH_LIB_DIR": override}, override, false, ""},
-		{"installed, nothing to go on", installed, map[string]string{}, "", false, "neither KASBAH_LIB_DIR, XDG_DATA_HOME, nor HOME is set"},
+		{"checkout", filepath.Join(checkout, "dist", "kasbah"), checkout, true},
+		{"symlink to a checkout binary", linked, checkout, true},
+		{"installed, through the symlink", installed, verdir, false},
+		{"installed, the version dir itself", filepath.Join(verdir, "kasbah"), verdir, false},
+		{"a regular file in a bin directory", plain, filepath.Dir(plain), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, co, err := Home(tt.exe, func(k string) string { return tt.env[k] })
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("Home() error = %v, want %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil || got != tt.want || co != tt.checkout {
-				t.Errorf("Home() = %q, %v, %v; want %q, %v", got, co, err, tt.want, tt.checkout)
+			got, co := Home(tt.exe)
+			if got != tt.want || co != tt.checkout {
+				t.Errorf("Home() = %q, %v; want %q, %v", got, co, tt.want, tt.checkout)
 			}
 		})
 	}
 
-	touch(t, filepath.Join(override, "server", "kasbah-linux-arm64"))
-	local, err := LocalFor(installed, func(k string) string { return map[string]string{"KASBAH_LIB_DIR": override}[k] })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p, err := local("arm64"); err != nil || p != filepath.Join(override, "server", "kasbah-linux-arm64") {
+	touch(t, filepath.Join(verdir, "server", "kasbah-linux-arm64"))
+	if p, err := LocalFor(installed)("arm64"); err != nil || p != filepath.Join(verdir, "server", "kasbah-linux-arm64") {
 		t.Errorf("LocalFor: %q, %v", p, err)
+	}
+	if _, err := LocalFor(installed)("amd64"); err == nil {
+		t.Error("LocalFor found a server binary that is not there")
 	}
 }

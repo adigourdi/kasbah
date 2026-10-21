@@ -48,7 +48,7 @@ RSYNC_LOG="$tmpdir/rsync.log"
 LOADED="$tmpdir/loaded"
 
 # The server: an apps tree with a marker, and this build's binary at the
-# shared path, so the newer-wins rule keeps it and nothing is uploaded.
+# shared path, so the same-build rule keeps it and nothing is uploaded.
 FAKE_APPS="$tmpdir/srv/apps"
 mkdir -p "$FAKE_APPS/.kasbah/bin"
 printf '{"kasbah_version":"0.1.0","apps_path":"%s","data_path":"%s/data","cpu_limit":"1","mem_limit":"1g"}\n' \

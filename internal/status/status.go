@@ -2,7 +2,7 @@
 // what a prepared server is running, read in one `kasbah remote status`
 // round trip after the server binary is ensured. It reports; `check
 // --server` judges. Nothing on the server is written but kasbah's own binary,
-// under the newer-wins rule.
+// under the same-build rule.
 package status
 
 import (

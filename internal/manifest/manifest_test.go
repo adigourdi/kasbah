@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,8 +25,8 @@ func write(t *testing.T, content string) string {
 func refused(t *testing.T, path string, code int, want string) {
 	t.Helper()
 	_, err := Require(path, version)
-	e, ok := err.(*cli.Error)
-	if !ok {
+	var e *cli.Error
+	if !errors.As(err, &e) {
 		t.Fatalf("want a refusal containing %q, got %v", want, err)
 	}
 	if e.Code != code || !strings.Contains(e.Error(), want) {
@@ -63,6 +64,15 @@ func TestValid(t *testing.T) {
 
 func TestRefusals(t *testing.T) {
 	refused(t, write(t, "schema: 2\nkasbah_version: x\nname: demo\ndomain: \"\"\n"), 1, "schema 2 is newer than this kasbah (0.9.0-dev supports schema 1). Upgrade kasbah.")
+	// A newer schema names its major, for the hand-off to a kasbah of it.
+	_, err := Require(write(t, "schema: 7\nname: demo\n"), version)
+	var ns *NewerSchema
+	if !errors.As(err, &ns) || ns.Schema != 7 {
+		t.Errorf("a newer schema is not a *NewerSchema naming it: %#v", err)
+	}
+	if _, err := Require(write(t, "schema: 0\nname: demo\n"), version); errors.As(err, &ns) {
+		t.Errorf("an older schema is a *NewerSchema: %v", err)
+	}
 	refused(t, write(t, "kasbah_version: x\nname: demo\n"), 1, "missing required field 'schema'")
 	refused(t, write(t, "schema: 1.0\nname: demo\n"), 1, "schema must be an integer (got '1.0')")
 	refused(t, write(t, "schema: 1\nname: Demo_App\n"), 1, "invalid name 'Demo_App'")
