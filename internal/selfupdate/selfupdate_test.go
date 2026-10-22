@@ -453,6 +453,31 @@ func TestRun(t *testing.T) {
 	if target() != filepath.Join(root, "1.2.0", "kasbah") {
 		t.Errorf("after v1: symlink -> %s", target())
 	}
+	// Named exactly and already installed: nothing downloaded, and the symlink
+	// still moves to it — that is what was asked for.
+	buf.Reset()
+	before = len(g.cdnAuth)
+	if err := Run(ctx(""), Options{Version: "v1.1.0"}); err != nil {
+		t.Fatalf("v1.1.0 again: %v\n%s", err, buf)
+	}
+	if len(g.cdnAuth) != before {
+		t.Error("a named, installed version was downloaded again")
+	}
+	if target() != filepath.Join(root, "1.1.0", "kasbah") {
+		t.Errorf("v1.1.0 again: symlink -> %s", target())
+	}
+	for _, want := range []string{"already installed", "bin: " + link + " -> " + filepath.Join(root, "1.1.0", "kasbah")} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, buf)
+		}
+	}
+	// Back to the newest, by name, for what follows.
+	if err := Run(ctx(""), Options{Version: "v1.2.0"}); err != nil {
+		t.Fatalf("v1.2.0 again: %v\n%s", err, buf)
+	}
+	if target() != filepath.Join(root, "1.2.0", "kasbah") {
+		t.Errorf("v1.2.0 again: symlink -> %s", target())
+	}
 
 	// A new major: the symlink would move majors — asked; no TTY fails naming --yes.
 	buf.Reset()

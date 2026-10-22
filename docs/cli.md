@@ -1110,7 +1110,9 @@ the version named on the command line, or to the newest installed that runs
 when none was — through `<bin>/.kasbah.new` and a rename;
 when that is a different major from the one it points at now the command asks
 first (`--yes`; no TTY → hard fail naming the flag). A version already
-installed and answering for itself is refused as such. A checkout
+installed and answering for itself downloads nothing: named on the command
+line it still gets the symlink; asked for by major or by nothing, it is
+reported as already installed. A checkout
 (`dist/kasbah`) refuses: build it.
 
 The other architecture's server build is not installed up front. An installed

@@ -118,31 +118,37 @@ func Run(c Ctx, o Options) error {
 	fmt.Fprintf(c.Out.Stdout, "resolved %s (%s)\n", ver, how)
 	dir := filepath.Join(c.Root, ver)
 	bin := filepath.Join(dir, "kasbah")
-	if Reports(bin, ver, c.RunTimeout) {
-		return cli.Fail("kasbah %s is already installed at %s", ver, dir).Cont(
-			"it runs and reports its version; nothing was downloaded")
-	}
-	rel, err := c.Client.Release(ver)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(c.Out.Stdout, "verified checksums.txt: key %s, trusted comment \"%s\"\n", rel.KeyID, rel.Comment)
-	name := AssetName(ver, c.Arch)
-	if err := c.Client.Download(rel, name, bin); err != nil {
-		return err
-	}
-	server := filepath.Join(dir, "server", "kasbah-linux-"+c.Arch)
-	if err := copyBeside(bin, server); err != nil {
-		return err
-	}
-	if !Reports(bin, ver, c.RunTimeout) {
-		return cli.Fail("%s does not run here, or does not report kasbah %s — %s/kasbah was not repointed", bin, ver, c.BinDir).Cont(
-			"the files stay under " + dir + " for a look")
-	}
-	fmt.Fprintf(c.Out.Stdout, "installed kasbah %s\n  lib: %s\n", ver, dir)
+	// A version named exactly is the one to run: installed already, it is
+	// still what the symlink moves to.
 	pin := ""
 	if strings.Contains(o.Version, ".") {
 		pin = ver
+	}
+	if Reports(bin, ver, c.RunTimeout) {
+		if pin == "" {
+			return cli.Fail("kasbah %s is already installed at %s", ver, dir).Cont(
+				"it runs and reports its version; nothing was downloaded")
+		}
+		fmt.Fprintf(c.Out.Stdout, "kasbah %s is already installed, nothing downloaded\n  lib: %s\n", ver, dir)
+	} else {
+		rel, err := c.Client.Release(ver)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(c.Out.Stdout, "verified checksums.txt: key %s, trusted comment \"%s\"\n", rel.KeyID, rel.Comment)
+		name := AssetName(ver, c.Arch)
+		if err := c.Client.Download(rel, name, bin); err != nil {
+			return err
+		}
+		server := filepath.Join(dir, "server", "kasbah-linux-"+c.Arch)
+		if err := copyBeside(bin, server); err != nil {
+			return err
+		}
+		if !Reports(bin, ver, c.RunTimeout) {
+			return cli.Fail("%s does not run here, or does not report kasbah %s — %s/kasbah was not repointed", bin, ver, c.BinDir).Cont(
+				"the files stay under " + dir + " for a look")
+		}
+		fmt.Fprintf(c.Out.Stdout, "installed kasbah %s\n  lib: %s\n", ver, dir)
 	}
 	target, err := Repoint(c.Root, c.BinDir, pin, c.Prompter, o.Yes, c.RunTimeout)
 	if err != nil {
