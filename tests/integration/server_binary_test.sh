@@ -234,7 +234,7 @@ if [ "$(uname -m)" = "$machine" ]; then
         "hand-off: a second hop is refused, naming the first (exit $rc: $(err))"
     rm -rf "$lib/$newer"
     installed_ensure env; rc=$?
-    assert '[ "$rc" = 1 ] && grep -qF "kasbah self-update $newer" <<<"$(err)" && grep -qF "install.sh" <<<"$(err)"' \
+    assert '[ "$rc" = 1 ] && grep -qF "kasbah self-update v$newer" <<<"$(err)" && grep -qF "install.sh" <<<"$(err)"' \
         "hand-off: a build not installed is named with both remedies (exit $rc: $(err))"
     assert '[ "$(server_sha)" = "$newer_sha" ] && [ -z "$(uploads_left)" ]' "hand-off refusals: nothing was replaced"
 else
