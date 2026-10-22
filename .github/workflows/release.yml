@@ -28,7 +28,7 @@ jobs:
       - name: Build twice and compare
         run: |
           set -euo pipefail
-          build() { env UID="$(id -u)" GID="$(id -g)" docker compose -p kasbah run --rm -T build </dev/null; }
+          build() { env KASBAH_STAMP_EXACT=1 UID="$(id -u)" GID="$(id -g)" docker compose -p kasbah run --rm -T build </dev/null; }
           files="dist/kasbah dist/server/kasbah-linux-amd64 dist/server/kasbah-linux-arm64"
           build; first="$(sha256sum $files)"
           build; second="$(sha256sum $files)"

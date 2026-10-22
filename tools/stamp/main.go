@@ -1,6 +1,9 @@
 // Command stamp prints the build stamp baked into kasbah: VERSION, and on a
 // pre-release the commit count and the build time (internal/version.Stamp).
-// Run from the repository root, as the compose build service does.
+// With KASBAH_STAMP_EXACT=1 in the environment it prints VERSION as written,
+// whatever it is: a release build — an rc included — carries its tag exactly,
+// so two builds of one tree are identical. Run from the repository root, as
+// the compose build service does.
 package main
 
 import (
@@ -21,6 +24,15 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
+	fmt.Println(stamp(string(base), os.Getenv("KASBAH_STAMP_EXACT") == "1", time.Now()))
+}
+
+// stamp is the build stamp for base: base itself when exact, else
+// version.Stamp's with the commit count of the checkout the process runs in.
+func stamp(base string, exact bool, now time.Time) string {
+	if exact {
+		return strings.TrimSpace(base)
+	}
 	wd, err := os.Getwd()
 	if err != nil {
 		fail(err)
@@ -38,7 +50,7 @@ func main() {
 			fail(fmt.Errorf("git rev-list --count: %q is not a count", out))
 		}
 	}
-	fmt.Println(version.Stamp(string(base), commits, time.Now()))
+	return version.Stamp(base, commits, now)
 }
 
 // inCheckout reports whether dir or any parent holds a .git entry (a

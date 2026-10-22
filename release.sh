@@ -12,6 +12,10 @@
 # Assets (frozen): kasbah_<ver>_linux_amd64, kasbah_<ver>_linux_arm64,
 # checksums.txt (sha256sum format), checksums.txt.minisig.
 #
+# A release build — an rc included — carries the tag exactly (KASBAH_STAMP_EXACT=1
+# to tools/stamp: no commit count, no build time), so the two builds match
+# byte for byte and the installed binary reports `kasbah <ver>`.
+#
 # minisign runs in its container and asks for the key's password itself, so a
 # release needs a terminal on stdin (there is no environment variable for it).
 # Needs gh (authenticated), docker, git and sha256sum on PATH.
@@ -86,8 +90,8 @@ release() {
 
     ./test.sh || die "test.sh failed — nothing released"
 
-    # Release stamps carry no time, so two builds of the same tree are
-    # byte-identical; anything else means the build is not reproducible.
+    # An exact stamp carries no count and no time, so two builds of the same
+    # tree are byte-identical; anything else means the build is not reproducible.
     local first second
     build
     first="$(hashes)"
@@ -148,7 +152,7 @@ release() {
 }
 
 build() {
-    env UID="$(id -u)" GID="$(id -g)" \
+    env KASBAH_STAMP_EXACT=1 UID="$(id -u)" GID="$(id -g)" \
         docker compose -p kasbah -f "$repo_dir/compose.yml" run --rm -T build >&2 </dev/null \
         || die "the build failed"
 }

@@ -4,7 +4,9 @@
 #
 # Hermetic. `docker` and `gh` are stubs on PATH that record every invocation:
 # the docker stub plays the compose build (fixed bytes into dist/, or bytes
-# that drift on the second build when asked) and the minisign container; the gh
+# that drift on the second build when asked; it fails unless KASBAH_STAMP_EXACT=1
+# reaches it, the variable that makes a release stamp exact) and the minisign
+# container; the gh
 # stub records the release and keeps copies of what it was handed. git is real,
 # against a throwaway repository whose origin is a bare repo beside it, so a
 # pushed tag is a fact in that bare repo and never a network.
@@ -59,6 +61,10 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 done
 case " $* " in
     *" run --rm -T build "*)
+        if [ "${KASBAH_STAMP_EXACT:-}" != 1 ]; then
+            echo "docker stub: the build ran without KASBAH_STAMP_EXACT=1 — the stamp would carry a count and a time" >&2
+            exit 9
+        fi
         n=$(( $(cat "$BUILD_COUNT" 2>/dev/null || echo 0) + 1 ))
         echo "$n" > "$BUILD_COUNT"
         salt=
@@ -230,6 +236,7 @@ create="$(grep "^release create" "$GH_LOG")"
 assert 'grep -q -- " --prerelease " <<<"$create"' "as a prerelease (got: $create)"
 assert 'grep -q "/kasbah_1.3.0-rc.1_linux_amd64" <<<"$create"' "with the version in the asset name (got: $create)"
 assert '[ "$(cat "$repo/VERSION")" = 1.3.0-rc.1 ]' "VERSION is not bumped after an rc (got $(cat "$repo/VERSION"))"
+assert '[ "$(cat "$BUILD_COUNT")" = 2 ]' "an rc builds twice with the exact stamp, and the builds match"
 assert '[ "$(origin_tags)" = v1.3.0-rc.1 ]' "the rc tag was pushed"
 
 # --- Refusals, each before anything is built ------------------------------------

@@ -31,8 +31,10 @@ plan and the only progress tracker (the roadmap is scope, not status).
   `release.pub`), the tag pushed, `gh release create`. Needs `gh` authenticated
   and a terminal for the key's password. `-rc.N` tags are prereleases.
 - Versions: files kasbah writes record `VERSION`; `--version` prints the build
-  stamp and the schema (`kasbah 1.0.0 (schema 1)`; a pre-release stamp adds the
-  commit count and build time, so a later build always outranks an earlier one).
+  stamp and the schema (`kasbah 1.0.0 (schema 1)`; a pre-release `VERSION` is
+  stamped with the commit count and build time, so a later build always
+  outranks an earlier one — except under `KASBAH_STAMP_EXACT=1`, which
+  `release.sh` sets so a release build, `-rc.N` included, is its tag exactly).
 
 ## Hard conventions
 

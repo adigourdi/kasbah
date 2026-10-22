@@ -4,7 +4,28 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+// Exact mode prints VERSION as written, pre-release or not; stamped mode adds
+// the count and the time to a pre-release. Run from this package's directory,
+// inside the checkout, so the count is a real one.
+func TestStampExact(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	for _, base := range []string{"1.0.0-rc.1\n", "1.0.0\n", "1.0.2-dev\n"} {
+		want := base[:len(base)-1]
+		if got := stamp(base, true, now); got != want {
+			t.Errorf("stamp(%q, exact) = %q, want %q", base, got, want)
+		}
+	}
+	if got := stamp("1.0.0\n", false, now); got != "1.0.0" {
+		t.Errorf("stamp(1.0.0, stamped) = %q, want 1.0.0", got)
+	}
+	got := stamp("1.0.0-rc.1\n", false, now)
+	if len(got) <= len("1.0.0-rc.1.") || got[:len("1.0.0-rc.1.")] != "1.0.0-rc.1." || got[len(got)-len(".1700000000"):] != ".1700000000" {
+		t.Errorf("stamp(1.0.0-rc.1, stamped) = %q, want 1.0.0-rc.1.<commits>.1700000000", got)
+	}
+}
 
 func TestInCheckout(t *testing.T) {
 	tmp := t.TempDir()
