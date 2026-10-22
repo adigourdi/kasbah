@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -135,28 +134,24 @@ func (g *github) release(s *signer, ver string, sign bool) {
 	g.releases["v"+ver] = assets
 }
 
-// repo is a git repository with the given tags, for ls-remote.
-func repo(t *testing.T, tags ...string) string {
-	t.Helper()
-	dir := t.TempDir()
-	run := func(args ...string) {
-		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
+// tags is an in-memory ListTags: every tag given, as ls-remote prints them,
+// filtered by a `vN.*` or exact pattern.
+func tags(names ...string) ListTags {
+	return func(remote, pattern string) ([]string, error) {
+		var out []string
+		for _, n := range names {
+			if ok, _ := filepath.Match(pattern, n); ok {
+				out = append(out, "0123456789abcdef0123456789abcdef01234567\trefs/tags/"+n)
+			}
 		}
+		return out, nil
 	}
-	run("init", "-q")
-	run("commit", "-q", "--allow-empty", "-m", "x")
-	for _, tag := range tags {
-		run("tag", tag)
-	}
-	return dir
 }
 
-func client(t *testing.T, g *github, s *signer, remote string) (*Client, *bytes.Buffer) {
+func client(t *testing.T, g *github, s *signer, list ListTags) (*Client, *bytes.Buffer) {
 	var buf bytes.Buffer
 	out := &cli.Output{Stdout: &buf, Stderr: &buf}
-	c := &Client{API: g.api.URL, Remote: remote, Token: secret, Key: s.pub, HTTP: NewHTTP(), Out: out}
+	c := &Client{API: g.api.URL, Remote: "git@example:kasbah.git", ListTags: list, Token: secret, Key: s.pub, HTTP: NewHTTP(), Out: out}
 	return c, &buf
 }
 
@@ -200,7 +195,7 @@ func TestToken(t *testing.T) {
 func TestResolve(t *testing.T) {
 	g := newGithub(t)
 	s := newSigner(t)
-	c, _ := client(t, g, s, repo(t, "v1.0.0", "v1.2.0", "v1.3.0-rc.1", "v2.0.0", "v2.1.0-dev.3.5", "vjunk", "other"))
+	c, _ := client(t, g, s, tags("v1.0.0", "v1.2.0", "v1.3.0-rc.1", "v2.0.0", "v2.1.0-dev.3.5", "vjunk", "other"))
 	cases := []struct {
 		arg       string
 		major     uint64
@@ -230,7 +225,9 @@ func TestResolve(t *testing.T) {
 	if _, _, err := c.Resolve("v3", 1, false); err == nil || !strings.Contains(err.Error(), "no release of v3.*") {
 		t.Errorf("v3: %v", err)
 	}
-	c.Remote = filepath.Join(t.TempDir(), "nowhere")
+	c.ListTags = func(remote, pattern string) ([]string, error) {
+		return nil, cli.Fail("could not list the release tags on %s", remote)
+	}
 	_, _, err := c.Resolve("", 1, false)
 	if noToken(t, err) == nil || !strings.Contains(err.Error(), "could not list the release tags") {
 		t.Errorf("no remote: %v", err)
@@ -242,7 +239,7 @@ func TestReleaseVerifies(t *testing.T) {
 	g := newGithub(t)
 	s := newSigner(t)
 	g.release(s, "1.2.0", true)
-	c, _ := client(t, g, s, "")
+	c, _ := client(t, g, s, tags())
 	rel, err := c.Release("1.2.0")
 	if err != nil {
 		t.Fatal(err)
@@ -298,7 +295,7 @@ func TestDownload(t *testing.T) {
 	g := newGithub(t)
 	s := newSigner(t)
 	g.release(s, "1.2.0", true)
-	c, _ := client(t, g, s, "")
+	c, _ := client(t, g, s, tags())
 	rel, err := c.Release("1.2.0")
 	if err != nil {
 		t.Fatal(err)
@@ -387,8 +384,7 @@ func TestRun(t *testing.T) {
 	for _, v := range []string{"1.1.0", "1.2.0", "2.0.0"} {
 		g.release(s, v, true)
 	}
-	remote := repo(t, "v1.1.0", "v1.2.0", "v2.0.0")
-	c, buf := client(t, g, s, remote)
+	c, buf := client(t, g, s, tags("v1.1.0", "v1.2.0", "v2.0.0"))
 	root, binDir := t.TempDir(), filepath.Join(t.TempDir(), "bin")
 	ctx := func(answer string) Ctx {
 		return Ctx{Client: c, Out: c.Out, Prompter: fakeTTY(answer, c.Out), Root: root, BinDir: binDir, Arch: "amd64", Self: "1.0.0", RunTimeout: 5 * time.Second}

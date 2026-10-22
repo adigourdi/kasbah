@@ -47,6 +47,8 @@ type Client struct {
 	API string
 	// Remote is what `git ls-remote` lists tags from (KASBAH_RELEASES_REMOTE).
 	Remote string
+	// ListTags lists Remote's tags; nil is git ls-remote.
+	ListTags ListTags
 	// Token authenticates the API: the repository is private.
 	Token string
 	// Key verifies checksums.txt; release.pub unless a test says otherwise.
@@ -111,23 +113,40 @@ func Token(getenv func(string) string, lookPath func(string) (string, error), ru
 	return "", fail.Cont("(`gh auth token` printed no token)")
 }
 
-// Tags lists the release tags on Remote matching pattern (`v1.*`,
-// `v1.2.3`), as versions, highest first. Anything not `v<semver>` is ignored.
-func (c *Client) Tags(pattern string) ([]version.Version, error) {
-	cmd := exec.Command("git", "ls-remote", "--tags", "--refs", c.Remote, pattern)
+// ListTags lists refs on remote matching pattern, as `git ls-remote --tags
+// --refs` prints them (`<sha>\trefs/tags/<tag>` lines); gitLsRemote unless a
+// test feeds lines.
+type ListTags func(remote, pattern string) ([]string, error)
+
+func gitLsRemote(remote, pattern string) ([]string, error) {
+	cmd := exec.Command("git", "ls-remote", "--tags", "--refs", remote, pattern)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	cmd.Stdin = os.Stdin
 	if err := cmd.Run(); err != nil {
-		f := cli.Fail("could not list the release tags on %s: %v", c.Remote, err)
+		f := cli.Fail("could not list the release tags on %s: %v", remote, err)
 		if msg := strings.TrimRight(strings.ReplaceAll(stderr.String(), "\r", ""), "\n"); msg != "" {
 			f.Cont(strings.Split(msg, "\n")...)
 		}
 		return nil, f
 	}
+	return strings.Split(stdout.String(), "\n"), nil
+}
+
+// Tags lists the release tags on Remote matching pattern (`v1.*`,
+// `v1.2.3`), as versions, highest first. Anything not `v<semver>` is ignored.
+func (c *Client) Tags(pattern string) ([]version.Version, error) {
+	list := c.ListTags
+	if list == nil {
+		list = gitLsRemote
+	}
+	lines, err := list(c.Remote, pattern)
+	if err != nil {
+		return nil, err
+	}
 	var out []version.Version
-	for _, l := range strings.Split(strings.ReplaceAll(stdout.String(), "\r", ""), "\n") {
-		_, ref, ok := strings.Cut(l, "\t")
+	for _, l := range lines {
+		_, ref, ok := strings.Cut(strings.TrimRight(l, "\r"), "\t")
 		if !ok {
 			continue
 		}
