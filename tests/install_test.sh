@@ -81,8 +81,15 @@ assert '[ "$listing" = "./$stamp ./$stamp/kasbah ./$stamp/server ./$stamp/server
 installed_version="$(env -u KASBAH_LIB_DIR XDG_DATA_HOME="$prefix/share" "$bin_dir/kasbah" --version 2>&1)"
 assert '[ "$installed_version" = "$built_version" ]' \
     "the installed binary runs (got '$installed_version', built '$built_version')"
-assert '[[ "$installed_version" == "kasbah $version"*" (schema "[0-9]*")" ]]' \
-    "and reports the VERSION it was built from and the schema (got '$installed_version')"
+# The stamp is VERSION exactly (a tagged, clean tree) or a pre-release of
+# VERSION or of the patch after it (tools/stamp), with the schema after it.
+core=${version%%-*}
+next_patch="${core%.*}.$(( ${core##*.} + 1 ))"
+stamp_core=${stamp%%-*}; stamp_core=${stamp_core%%+*}
+assert '[[ "$installed_version" =~ ^kasbah\ [0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?\ \(schema\ [0-9]+\)$ ]]' \
+    "and reports a version stamp and the schema (got '$installed_version')"
+assert '[ "$stamp_core" = "$core" ] || [ "$stamp_core" = "$next_patch" ]' \
+    "the stamp is on VERSION's line ($version) or the patch after it (got '$stamp')"
 assert '[ "$(head -1 "$tmpdir/install.out")" = "installed $built_version" ]' \
     "install.sh reports the version it installed (got '$(head -1 "$tmpdir/install.out")')"
 

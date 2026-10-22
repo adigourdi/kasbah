@@ -136,24 +136,58 @@ func TestParse(t *testing.T) {
 
 func TestBase(t *testing.T) {
 	at := time.Unix(1760790000, 0)
-	for _, base := range []string{"1.0.0", "0.1.0-dev", "1.1.0-rc.1", "1.0.0+exp-sha.5114f85", "0.1.0-dev+meta"} {
+	for _, base := range []string{"1.0.0", "0.1.0-dev", "1.1.0-rc.1"} {
 		got, err := Base(Stamp(base, 142, at))
 		if err != nil || got != base {
 			t.Errorf("Base(Stamp(%q)) = %q, %v", base, got, err)
 		}
 	}
-	// Exact stamps (KASBAH_STAMP_EXACT): a release build of a pre-release tag is
-	// its own base.
+	// Exact stamps: a release build of a pre-release tag is its own base.
 	for _, exact := range []string{"1.0.0-rc.1", "0.1.0-dev", "0.1.0-dev.x.1"} {
 		got, err := Base(exact)
 		if err != nil || got != exact {
 			t.Errorf("Base(%q) = %q, %v; want itself", exact, got, err)
 		}
 	}
+	// Build metadata — tools/stamp's +g<sha>[.dirty] — is dropped, stamped or not.
+	for stamp, want := range map[string]string{
+		Stamp("1.0.1-dev+g1a2b3c4.dirty", 142, at): "1.0.1-dev",
+		Stamp("1.1.0-rc.1+g1a2b3c4", 142, at):      "1.1.0-rc.1",
+		"1.0.0+exp-sha.5114f85":                    "1.0.0",
+		"1.0.0-rc.1+g1a2b3c4":                      "1.0.0-rc.1",
+	} {
+		got, err := Base(stamp)
+		if err != nil || got != want {
+			t.Errorf("Base(%q) = %q, %v; want %q", stamp, got, err, want)
+		}
+	}
 	for _, bad := range []string{"", "devel"} {
 		if got, err := Base(bad); err == nil {
 			t.Errorf("Base(%q) = %q, want an error", bad, got)
 		}
+	}
+}
+
+// tools/stamp's dev stamps: +g<sha>[.dirty] is printed, parsed, and ignored by
+// Compare, so a dirty rebuild of the same commit orders by its time alone.
+func TestStampMetadata(t *testing.T) {
+	t0 := time.Unix(1760790000, 0)
+	clean := Stamp("1.0.1-dev+g1a2b3c4", 5, t0)
+	dirty := Stamp("1.0.1-dev+g1a2b3c4.dirty", 5, t0)
+	if clean != "1.0.1-dev.5.1760790000+g1a2b3c4" || dirty != "1.0.1-dev.5.1760790000+g1a2b3c4.dirty" {
+		t.Errorf("Stamp = %q, %q", clean, dirty)
+	}
+	c, d := mustParse(t, clean), mustParse(t, dirty)
+	if c.Meta != "g1a2b3c4" || d.Meta != "g1a2b3c4.dirty" || d.String() != dirty {
+		t.Errorf("Parse keeps the metadata: %+v, %+v", c, d)
+	}
+	if Compare(c, d) != 0 {
+		t.Errorf("Compare(%s, %s) = %d, want 0", clean, dirty, Compare(c, d))
+	}
+	later := mustParse(t, Stamp("1.0.1-dev+gdeadbee", 5, t0.Add(time.Second)))
+	rel := mustParse(t, "1.0.1")
+	if Compare(d, later) != -1 || Compare(later, rel) != -1 {
+		t.Errorf("%s < %s < 1.0.1 does not hold", dirty, later)
 	}
 }
 

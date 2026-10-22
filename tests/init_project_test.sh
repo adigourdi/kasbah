@@ -6,7 +6,7 @@ set -uo pipefail
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 . "$repo_dir/tests/cli.sh"
 kasbah="$KASBAH_BIN"
-version="$(cat "$repo_dir/VERSION")"
+version="$(kasbah_base_version)"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT

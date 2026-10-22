@@ -32,7 +32,7 @@ repo_dir="$(cd "$(dirname "$0")/../.." && pwd)"
 
 apps=/apps
 marker="$apps/.kasbah/server.json"
-kasbah_version="$(cat "$repo_dir/VERSION")"
+kasbah_version="$(kasbah_base_version)"
 
 rig_domain=rig.test
 traefik_flags=(--domain="$rig_domain" --email="ops@$rig_domain"

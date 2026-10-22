@@ -34,12 +34,13 @@ const Usage = `Usage: kasbah self-update [vN | vN.M.P] [--pre] [--yes]
 Installs a released kasbah from GitHub Releases beside the installed
 versions (~/.local/share/kasbah/<version>/, the layout install.sh writes)
 and points ~/.local/bin/kasbah at the newest installed version that runs,
-as install.sh does. The repository is private: GITHUB_TOKEN, or gh's token
-(` + "`gh auth login`" + `), authenticates the download.
+as install.sh does — or at the version named exactly, when one is. The
+repository is private: GITHUB_TOKEN, or gh's token (` + "`gh auth login`" + `),
+authenticates the download.
 
   (no argument)   the newest release of this kasbah's major
   vN              the newest release of major N
-  vN.M.P          that release exactly
+  vN.M.P          that release exactly, and the symlink moves to it
 
 Before anything lands under the library: the release's checksums.txt must
 verify against the key in release.pub (minisign), and the asset's size and
@@ -139,7 +140,11 @@ func Run(c Ctx, o Options) error {
 			"the files stay under " + dir + " for a look")
 	}
 	fmt.Fprintf(c.Out.Stdout, "installed kasbah %s\n  lib: %s\n", ver, dir)
-	target, err := Repoint(c.Root, c.BinDir, c.Prompter, o.Yes, c.RunTimeout)
+	pin := ""
+	if strings.Contains(o.Version, ".") {
+		pin = ver
+	}
+	target, err := Repoint(c.Root, c.BinDir, pin, c.Prompter, o.Yes, c.RunTimeout)
 	if err != nil {
 		return err
 	}
@@ -189,13 +194,16 @@ func copyBeside(src, dst string) error {
 }
 
 // Repoint points <binDir>/kasbah at the newest installed version under root
-// whose kasbah runs, as install.sh does (`ln -sfn`), and returns the target.
-// Moving the link to another major than it points at now is asked first
-// (--yes). Something there that is neither a symlink nor a regular file is
-// refused.
-func Repoint(root, binDir string, p *prompt.Prompter, yes bool, limit time.Duration) (string, error) {
+// whose kasbah runs, as install.sh does (`ln -sfn`) — at version pin when it
+// is named and runs — and returns the target. Moving the link to another
+// major than it points at now is asked first (--yes). Something there that is
+// neither a symlink nor a regular file is refused.
+func Repoint(root, binDir, pin string, p *prompt.Prompter, yes bool, limit time.Duration) (string, error) {
 	var newest *launcher.Entry
 	for _, e := range launcher.Installed(root) {
+		if pin != "" && e.Version.String() != pin {
+			continue
+		}
 		if launcher.Runs(e.Bin, limit) {
 			e := e
 			newest = &e
@@ -203,6 +211,9 @@ func Repoint(root, binDir string, p *prompt.Prompter, yes bool, limit time.Durat
 		}
 	}
 	if newest == nil {
+		if pin != "" {
+			return "", cli.Fail("no kasbah %s runs under %s — %s/kasbah was not repointed", pin, root, binDir)
+		}
 		return "", cli.Fail("no installed kasbah runs under %s — %s/kasbah was not repointed", root, binDir)
 	}
 	link := filepath.Join(binDir, "kasbah")

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/version"
 )
 
 func TestInfoRoundTrip(t *testing.T) {
@@ -58,6 +59,8 @@ func TestDecide(t *testing.T) {
 		{"same but different metadata", info(ours + "+x"), Keep, false, false},
 		{"newer build", info("0.1.0-dev.142.1760790001"), 0, true, true},
 		{"newer release of our major", info("0.9.0"), 0, true, true},
+		{"newer pre-release of our major", info("0.2.0-dev.1.1"), 0, true, true},
+		{"same but for its metadata", info(ours + "+g1a2b3c4.dirty"), Keep, false, false},
 		{"newer major", info("1.0.0"), 0, true, false},
 		{"newer major pre-release", info("1.0.0-dev.1.1"), 0, true, false},
 	}
@@ -98,8 +101,15 @@ func TestDecide(t *testing.T) {
 		{"0.1.0-dev.66.1792355995", Ship, false},
 		{"1.0.0-dev.300.1792355995", Ship, false},
 		{"1.0.0", Keep, false},
+		{"1.0.0+g1a2b3c4", Keep, false},
 		{"1.2.0", 0, true},
 		{"2.0.0", 0, true},
+		// A pre-release of our major goes, however Compare ranks it: a dev build
+		// another checkout left there does not lock the release out.
+		{"1.0.1-dev.301.1792355995+g1a2b3c4.dirty", Ship, false},
+		{"1.999999.0-dev.1.1", Ship, false},
+		{"1.1.0-rc.1", Ship, false},
+		{"2.0.0-dev.1.1", 0, true},
 	} {
 		got, err := Decide(Self("1.0.0"), info(tt.srv))
 		if (err != nil) != tt.refuse || got != tt.want {
@@ -109,6 +119,41 @@ func TestDecide(t *testing.T) {
 	for _, bad := range []string{"", "0.1.0-dev"[:3]} {
 		if _, err := Decide(Self(bad), nil); err == nil {
 			t.Errorf("an unorderable workstation build %q was allowed to ship", bad)
+		}
+	}
+}
+
+func TestReplaces(t *testing.T) {
+	v := func(s string) version.Version {
+		p, err := version.Parse(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"1.0.1", "1.0.0", true},
+		{"1.0.0", "1.0.1", false},
+		{"1.0.0", "1.0.0", false},
+		{"1.0.0", "1.0.0+g1a2b3c4", false},
+		{"1.0.1-dev.6.2", "1.0.1-dev.5.1", true},
+		{"1.0.1-dev.5.1", "1.0.1-dev.6.2", false},
+		// A release over its major's pre-releases, ranked higher or not.
+		{"1.0.0", "1.0.0-rc.1", true},
+		{"1.0.0", "1.0.1-dev.5.1+g1a2b3c4.dirty", true},
+		{"1.0.0", "1.999999.0-dev.1.1", true},
+		{"1.0.0", "2.0.0-dev.1.1", false},
+		{"2.0.0", "1.999999.0-dev.1.1", true},
+		// A pre-release never goes over a release it ranks below.
+		{"1.0.1-dev.5.1", "1.0.1", false},
+		{"1.0.1-rc.1", "1.0.0", true},
+	}
+	for _, tt := range tests {
+		if got := Replaces(v(tt.a), v(tt.b)); got != tt.want {
+			t.Errorf("Replaces(%s, %s) = %v, want %v", tt.a, tt.b, got, tt.want)
 		}
 	}
 }

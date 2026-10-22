@@ -520,6 +520,29 @@ func TestInstallSelf(t *testing.T) {
 	if _, err := os.Stat(self); err != nil {
 		t.Error("a kept install moved itself anyway")
 	}
+	// A release goes over a pre-release of its major that outranks it; a
+	// pre-release never goes over the release it ranks below. Each fake is
+	// unlinked first: a binary just executed cannot be opened for writing.
+	refake := func(path, build string) {
+		os.Remove(path)
+		fake(t, path, build, "", 0o755)
+	}
+	refake(dest, "0.2.0-dev.1.1+g1a2b3c4.dirty")
+	refake(self, "0.1.0")
+	out, err = exec.Command(self, "remote", "install-self", dest).Output()
+	if err != nil || string(out) != "installed old=0.2.0-dev.1.1+g1a2b3c4.dirty\n" {
+		t.Errorf("a release over a higher pre-release: %q, %v", out, err)
+	}
+	refake(self, "0.1.0-dev.9.1")
+	out, err = exec.Command(self, "remote", "install-self", dest).Output()
+	if err != nil || string(out) != "kept build=0.1.0\n" {
+		t.Errorf("a pre-release over the release it ranks below: %q, %v", out, err)
+	}
+	refake(self, "0.1.0")
+	out, err = exec.Command(self, "remote", "install-self", dest).Output()
+	if err != nil || string(out) != "kept build=0.1.0\n" {
+		t.Errorf("the same release again: %q, %v", out, err)
+	}
 	os.Remove(dest)
 	os.Mkdir(dest, 0o755)
 	if out, err := exec.Command(self, "remote", "install-self", dest).CombinedOutput(); err == nil || !strings.Contains(string(out), "not a regular file") {

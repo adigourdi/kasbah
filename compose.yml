@@ -8,9 +8,10 @@
 #   docker compose run --rm test    go vet, the gofmt check, go test
 #
 # All three binaries are static (CGO_ENABLED=0) and carry one build stamp from
-# `go run ./tools/stamp`: VERSION, plus the commit count and the build time on a
-# pre-release — except under KASBAH_STAMP_EXACT=1, which release.sh sets: a
-# release build, an rc included, carries its tag exactly and is reproducible.
+# `go run ./tools/stamp`: VERSION exactly when HEAD is tagged v<VERSION> and the
+# tree is clean — a release build, an rc included, is reproducible — and
+# otherwise a pre-release of the line's next version with the commit count,
+# the build time and +g<sha>[.dirty] (1.0.1-dev.142.1760790000+g1a2b3c4).
 # A server binary ships only when its stamp is the workstation's.
 # Each is written beside its final name and renamed into place, so a reader
 # never sees a partial file.
@@ -30,7 +31,6 @@ x-go: &go
     # -modcacherw: the module cache is otherwise read-only, and `rm -rf .cache`
     # on the host would fail on it.
     GOFLAGS: -buildvcs=false -modcacherw
-    KASBAH_STAMP_EXACT: ${KASBAH_STAMP_EXACT:-}
     # The container user has no home of its own, and a named volume would be
     # created root-owned; the caches live in the tree instead (gitignored).
     HOME: /workspace/.cache/home
@@ -38,6 +38,7 @@ x-go: &go
     GOMODCACHE: /workspace/.cache/go-mod
     # Command-scope config, so it reaches no git config on the host: the tree's
     # owner differs from the container user whenever UID is not exported.
+    # tools/stamp reads the tag, the count and the tree's state through it.
     GIT_CONFIG_COUNT: "1"
     GIT_CONFIG_KEY_0: safe.directory
     GIT_CONFIG_VALUE_0: /workspace

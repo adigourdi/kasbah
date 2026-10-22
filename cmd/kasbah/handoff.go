@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
@@ -12,6 +13,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
+	"github.com/adigourdi/kasbah/internal/version"
 )
 
 // report is Output.Report behind the hand-off: a refusal naming another
@@ -39,11 +41,11 @@ func resolve(err error, getenv func(string) string) string {
 	case errors.As(err, &newer):
 		find = func(root string) string { return launcher.Find(root, newer.Server) }
 		wanted = "kasbah " + newer.Server
-		remedy = "kasbah self-update v" + newer.Server
+		remedy = installRemedy(newer.Server)
 	case errors.As(err, &schema):
 		find = func(root string) string { return launcher.Newest(root, schema.Schema) }
 		wanted = fmt.Sprintf("a kasbah of major %d", schema.Schema)
-		remedy = fmt.Sprintf("kasbah self-update v%d", schema.Schema)
+		remedy = fmt.Sprintf("install it: `kasbah self-update v%d`, or ./install.sh from that tag's checkout", schema.Schema)
 	default:
 		return ""
 	}
@@ -69,9 +71,27 @@ func resolve(err error, getenv func(string) string) string {
 	if bin := find(root); bin != "" {
 		return bin
 	}
-	cont(err, fmt.Sprintf("%s is not installed on this workstation (nothing under %s)", wanted, root),
-		"install it: `"+remedy+"`, or ./install.sh from that tag's checkout")
+	cont(err, fmt.Sprintf("%s is not installed on this workstation (nothing under %s)", wanted, root), remedy)
 	return ""
+}
+
+// installRemedy is how to get the server's build onto this workstation: a
+// release has a tag to self-update to; a pre-release is some checkout's dev
+// build, which only that checkout's commit (tools/stamp's +g<sha>) rebuilds.
+func installRemedy(build string) string {
+	v, err := version.Parse(build)
+	if err != nil || len(v.Pre) == 0 {
+		return "install it: `kasbah self-update v" + build + "`, or ./install.sh from that tag's checkout"
+	}
+	commit := "that commit"
+	if sha, ok := strings.CutPrefix(v.Meta, "g"); ok {
+		sha, dirty := strings.CutSuffix(sha, ".dirty")
+		commit = "commit " + sha
+		if dirty {
+			commit += " (built from a dirty tree, so its exact bytes may not come back)"
+		}
+	}
+	return fmt.Sprintf("the server runs a dev build from another checkout (%s): check out and build %s and install it (./install.sh), or ship a release, which replaces a dev build", build, commit)
 }
 
 func cont(err error, lines ...string) {

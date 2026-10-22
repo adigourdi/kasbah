@@ -25,16 +25,22 @@ plan and the only progress tracker (the roadmap is scope, not status).
   `.git` points outside the mounted tree and the version stamp fails.
 - `dist/kasbah <cmd>` — run the CLI from the checkout; no install needed.
 - `./release.sh vX.Y.Z` — a release: `VERSION` must equal it, HEAD pushed and
-  clean; `./test.sh`, two builds that must hash identically, `checksums.txt`
+  clean; the tag made first (the stamp reads it; removed again if the run
+  fails before the push), `./test.sh`, two builds that must hash identically, `checksums.txt`
   signed with minisign (its container; the key at `~/.config/kasbah/release.key`,
   made once by `./release.sh keygen`, whose public half is committed as
   `release.pub`), the tag pushed, `gh release create`. Needs `gh` authenticated
-  and a terminal for the key's password. `-rc.N` tags are prereleases.
-- Versions: files kasbah writes record `VERSION`; `--version` prints the build
-  stamp and the schema (`kasbah 1.0.0 (schema 1)`; a pre-release `VERSION` is
-  stamped with the commit count and build time, so a later build always
-  outranks an earlier one — except under `KASBAH_STAMP_EXACT=1`, which
-  `release.sh` sets so a release build, `-rc.N` included, is its tag exactly).
+  and a terminal for the key's password. `-rc.N` tags are prereleases. The
+  next release's number is set by editing `VERSION` in its release commit:
+  patch for fixes, minor for additive features, major for a schema change.
+- Versions: `VERSION` names the release a line is at or heading to; the stamp
+  comes from git. HEAD tagged `v<VERSION>` and clean → the stamp is `VERSION`
+  exactly (a release, `-rc.N` included; `--version` prints `kasbah 1.0.0
+  (schema 1)`). Anything else is a pre-release stamp: `1.0.1-dev.<commits>.
+  <time>+g<sha>[.dirty]` once `v1.0.0` exists, `1.1.0-dev…` while `VERSION`
+  says `1.1.0` and no such tag exists — so a later build always outranks an
+  earlier one, a release outranks every dev build of its line, and no build
+  can claim a release it is not. Nothing bumps `VERSION` after a release.
 
 ## Hard conventions
 

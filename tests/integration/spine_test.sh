@@ -569,7 +569,7 @@ assert '[ "$v_action" = "deploy" ]'   "field 2 is the action (got '$v_action')"
 assert '[ "$v_version" = "$project_version" ]' \
     "field 3 is the version off HEAD's tag (got '$v_version')"
 assert '[ "$v_backup" = "no-backup" ]' "field 4 is the backup path, absent here (got '$v_backup')"
-assert '[ "$v_kasbah" = "kasbah=$(cat "$repo_dir/VERSION")" ]' \
+assert '[ "$v_kasbah" = "kasbah=$(kasbah_base_version)" ]' \
     "then kasbah=<this checkout's version> (got '$v_kasbah')"
 assert '[ "$v_digest" = "digest=-" ]' \
     "and digest=- , because a stock-only project builds no image (got '$v_digest')"

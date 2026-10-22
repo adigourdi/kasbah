@@ -2068,7 +2068,7 @@ cp "$f7/kasbah.yml" "$f7/before"
 out="$(fx_run "$f7")"; rc=$?
 assert '[ "$rc" = "0" ]' "F7: the backfilled project passes (rc $rc)
 $out"
-assert 'grep -qxF "kasbah_version: $(cat "$repo_dir/VERSION")" "$f7/kasbah.yml"' \
+assert 'grep -qxF "kasbah_version: $(kasbah_base_version)" "$f7/kasbah.yml"' \
     "F7: the manifest now names this kasbah ($(cat "$f7/kasbah.yml"))"
 assert '[ "$(grep -c "^schema: 1$" "$f7/kasbah.yml")" = 1 ]' \
     "F7: written after schema:, which is still there exactly once"

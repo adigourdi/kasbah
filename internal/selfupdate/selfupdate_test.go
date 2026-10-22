@@ -423,13 +423,35 @@ func TestRun(t *testing.T) {
 		t.Error("a second run downloaded")
 	}
 
-	// An older exact version installs but the symlink stays on the newest.
+	// An older version named exactly installs and the symlink moves to it:
+	// the one asked for is the one to run.
 	buf.Reset()
 	if err := Run(ctx(""), Options{Version: "v1.1.0"}); err != nil {
 		t.Fatalf("v1.1.0: %v\n%s", err, buf)
 	}
+	if target() != filepath.Join(root, "1.1.0", "kasbah") {
+		t.Errorf("after v1.1.0: symlink -> %s", target())
+	}
+	if !strings.Contains(buf.String(), "bin: "+link+" -> "+filepath.Join(root, "1.1.0", "kasbah")) {
+		t.Errorf("the report does not name the repoint:\n%s", buf)
+	}
+	// A bare run: already installed, and the symlink is not touched.
+	buf.Reset()
+	if err := noToken(t, Run(ctx(""), Options{})); err == nil || !strings.Contains(err.Error(), "already installed") {
+		t.Errorf("bare run after v1.1.0: %v", err)
+	}
+	if target() != filepath.Join(root, "1.1.0", "kasbah") {
+		t.Errorf("a refused bare run moved the symlink -> %s", target())
+	}
+	// A major named bare: the newest of it, and the link follows the install
+	// (asked below; here 1.2.0 is the same major, so no question).
+	os.RemoveAll(filepath.Join(root, "1.2.0"))
+	buf.Reset()
+	if err := Run(ctx(""), Options{Version: "v1"}); err != nil {
+		t.Fatalf("v1: %v\n%s", err, buf)
+	}
 	if target() != filepath.Join(root, "1.2.0", "kasbah") {
-		t.Errorf("after 1.1.0: symlink -> %s", target())
+		t.Errorf("after v1: symlink -> %s", target())
 	}
 
 	// A new major: the symlink would move majors — asked; no TTY fails naming --yes.
@@ -510,10 +532,10 @@ func TestRepoint(t *testing.T) {
 	link := filepath.Join(binDir, "kasbah")
 	// A 1.0.x regular file there: replaced, its version read by running it.
 	os.WriteFile(link, []byte("#!/bin/sh\necho kasbah 0.9.0\n"), 0o755)
-	if _, err := Repoint(root, binDir, fakeTTY("", out), false, 5*time.Second); err == nil || !strings.Contains(err.Error(), "--yes") {
+	if _, err := Repoint(root, binDir, "", fakeTTY("", out), false, 5*time.Second); err == nil || !strings.Contains(err.Error(), "--yes") {
 		t.Errorf("regular file of another major without a tty: %v", err)
 	}
-	got, err := Repoint(root, binDir, fakeTTY("y\n", out), false, 5*time.Second)
+	got, err := Repoint(root, binDir, "", fakeTTY("y\n", out), false, 5*time.Second)
 	if err != nil || got != filepath.Join(root, "1.2.0", "kasbah") {
 		t.Fatalf("repoint: %s, %v", got, err)
 	}
@@ -522,17 +544,30 @@ func TestRepoint(t *testing.T) {
 	}
 	// Same major: no question even without a tty.
 	plant("1.4.0", "#!/bin/sh\necho kasbah 1.4.0\n")
-	if got, err := Repoint(root, binDir, fakeTTY("", out), false, 5*time.Second); err != nil || !strings.HasSuffix(got, "/1.4.0/kasbah") {
+	if got, err := Repoint(root, binDir, "", fakeTTY("", out), false, 5*time.Second); err != nil || !strings.HasSuffix(got, "/1.4.0/kasbah") {
 		t.Errorf("same major: %s, %v", got, err)
+	}
+	// A version named: that one, even with a newer installed; one that does not
+	// run, or is not there, is refused by name.
+	if got, err := Repoint(root, binDir, "1.2.0", fakeTTY("", out), false, 5*time.Second); err != nil || !strings.HasSuffix(got, "/1.2.0/kasbah") {
+		t.Errorf("pinned to 1.2.0: %s, %v", got, err)
+	}
+	if target, _ := os.Readlink(link); !strings.HasSuffix(target, "/1.2.0/kasbah") {
+		t.Errorf("pinned: symlink -> %s", target)
+	}
+	for _, pin := range []string{"1.3.0", "1.5.0"} {
+		if _, err := Repoint(root, binDir, pin, fakeTTY("", out), false, 5*time.Second); err == nil || !strings.Contains(err.Error(), "no kasbah "+pin+" runs") {
+			t.Errorf("pinned to %s: %v", pin, err)
+		}
 	}
 	// Something else there is refused.
 	os.Remove(link)
 	os.Mkdir(link, 0o755)
-	if _, err := Repoint(root, binDir, fakeTTY("", out), true, 5*time.Second); err == nil || !strings.Contains(err.Error(), "refusing to replace") {
+	if _, err := Repoint(root, binDir, "", fakeTTY("", out), true, 5*time.Second); err == nil || !strings.Contains(err.Error(), "refusing to replace") {
 		t.Errorf("a directory: %v", err)
 	}
 	// Nothing runs.
-	if _, err := Repoint(t.TempDir(), t.TempDir(), fakeTTY("", out), true, 5*time.Second); err == nil || !strings.Contains(err.Error(), "no installed kasbah runs") {
+	if _, err := Repoint(t.TempDir(), t.TempDir(), "", fakeTTY("", out), true, 5*time.Second); err == nil || !strings.Contains(err.Error(), "no installed kasbah runs") {
 		t.Errorf("empty: %v", err)
 	}
 }

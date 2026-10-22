@@ -28,3 +28,16 @@ kasbah_bin_version() {
     out="${out#kasbah }"
     printf '%s\n' "${out%% *}"
 }
+
+# kasbah_base_version — the version files written by the binary under test
+# record (internal/version.Base): its stamp without the build metadata and,
+# on a stamped pre-release, without the commit count and build time.
+kasbah_base_version() {
+    local s
+    s="$(kasbah_bin_version)" || return 1
+    s=${s%%+*}
+    if [[ $s =~ ^(.*-.+)\.[0-9]+\.[0-9]+$ ]]; then
+        s=${BASH_REMATCH[1]}
+    fi
+    printf '%s\n' "$s"
+}

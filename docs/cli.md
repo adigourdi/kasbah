@@ -1105,8 +1105,9 @@ for this machine (`kasbah_<ver>_linux_<arch>`) is streamed to
 `<lib>/<ver>/.kasbah.part`, its size and sha256 compared to the verified
 entry, then renamed to `<lib>/<ver>/kasbah` and copied beside as
 `server/kasbah-linux-<arch>` (the same bytes serve both roles); the new binary
-must answer `--version` with its own version. The symlink then moves to the
-newest installed version that runs, through `<bin>/.kasbah.new` and a rename;
+must answer `--version` with its own version. The symlink then moves — to
+the version named on the command line, or to the newest installed that runs
+when none was — through `<bin>/.kasbah.new` and a rename;
 when that is a different major from the one it points at now the command asks
 first (`--yes`; no TTY → hard fail naming the flag). A version already
 installed and answering for itself is refused as such. A checkout
@@ -1129,8 +1130,9 @@ side effect — in two cases:
 - **A server holds a newer build** of its major. The same-build rule refuses
   to talk to it; when that build is installed, the refusal becomes a hand-off
   to it. The message names both builds; when the version is not installed it
-  names the remedies (`kasbah self-update vN.M.P`, or `./install.sh` from that
-  tag's checkout).
+  names the remedy: `kasbah self-update vN.M.P` when the wanted build is a
+  release; when it is a dev build from another checkout, the commit to build
+  (`+g<sha>`) — or ship a release, which replaces any dev build of its major.
 - **A manifest's `schema` belongs to a newer major**: the newest installed
   kasbah of that major runs the command.
 

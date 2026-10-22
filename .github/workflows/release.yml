@@ -1,5 +1,7 @@
 # Publish a release from a tag: the same double build, checksums and minisign
 # signature as release.sh, with the secret key in the MINISIGN_KEY secret.
+# The checkout sits on the tag with a clean tree, so tools/stamp stamps the
+# build as the tag exactly.
 # Disabled until the signing key moves to a repository secret: dispatch only,
 # the tag trigger stays commented.
 name: release
@@ -28,7 +30,7 @@ jobs:
       - name: Build twice and compare
         run: |
           set -euo pipefail
-          build() { env KASBAH_STAMP_EXACT=1 UID="$(id -u)" GID="$(id -g)" docker compose -p kasbah run --rm -T build </dev/null; }
+          build() { env UID="$(id -u)" GID="$(id -g)" docker compose -p kasbah run --rm -T build </dev/null; }
           files="dist/kasbah dist/server/kasbah-linux-amd64 dist/server/kasbah-linux-arm64"
           build; first="$(sha256sum $files)"
           build; second="$(sha256sum $files)"

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Test: release.sh — the refusals, the double build, the asset names, the
-# checksums file, the signature, the tag, the GitHub release, the VERSION bump.
+# checksums file, the stamp check, the signature, the tag, the GitHub
+# release; VERSION is left alone.
 #
 # Hermetic. `docker` and `gh` are stubs on PATH that record every invocation:
 # the docker stub plays the compose build (fixed bytes into dist/, or bytes
-# that drift on the second build when asked; it fails unless KASBAH_STAMP_EXACT=1
-# reaches it, the variable that makes a release stamp exact) and the minisign
-# container; the gh
+# that drift on the second build when asked; it fails unless HEAD carries the
+# tag v<VERSION> on a clean tree, what makes tools/stamp's stamp exact) and
+# the minisign container; the gh
 # stub records the release and keeps copies of what it was handed. git is real,
 # against a throwaway repository whose origin is a bare repo beside it, so a
 # pushed tag is a fact in that bare repo and never a network.
@@ -61,8 +62,13 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 done
 case " $* " in
     *" run --rm -T build "*)
-        if [ "${KASBAH_STAMP_EXACT:-}" != 1 ]; then
-            echo "docker stub: the build ran without KASBAH_STAMP_EXACT=1 — the stamp would carry a count and a time" >&2
+        on_head="$(git tag --points-at HEAD)"
+        if ! grep -qx "v$(tr -d '\r\n' <VERSION)" <<<"$on_head"; then
+            echo "docker stub: the build ran with HEAD untagged — the stamp would carry a count and a time" >&2
+            exit 9
+        fi
+        if [ -n "$(git status --porcelain)" ]; then
+            echo "docker stub: the build ran on a dirty tree — the stamp would carry .dirty" >&2
             exit 9
         fi
         n=$(( $(cat "$BUILD_COUNT" 2>/dev/null || echo 0) + 1 ))
@@ -70,7 +76,10 @@ case " $* " in
         salt=
         [ -n "${BUILD_DRIFT:-}" ] && [ "$n" -ge 2 ] && salt="-$n"
         mkdir -p dist/server
-        printf 'fake kasbah%s\n' "$salt" > dist/kasbah
+        # dist/kasbah answers --version as the real build would: the tag's
+        # version exactly, or what STUB_STAMP says instead.
+        printf '#!/bin/sh\necho "kasbah %s (schema 1)"\n# fake kasbah%s\n' "${STUB_STAMP:-$(tr -d '\r\n' <VERSION)}" "$salt" > dist/kasbah
+        chmod 0755 dist/kasbah
         printf 'fake kasbah linux/amd64%s\n' "$salt" > dist/server/kasbah-linux-amd64
         printf 'fake kasbah linux/arm64%s\n' "$salt" > dist/server/kasbah-linux-arm64
         echo "built kasbah (stub $n)" ;;
@@ -206,14 +215,15 @@ assert '[ "$(cat "$GH_KEEP/checksums.txt.minisig")" = "fake signature" ]' "the m
 notes="$(sed -n 's/.*--notes-file \([^ ]*\).*/\1/p' <<<"$create")"
 assert '[ "$(cat "$GH_KEEP/$(basename "$notes")")" = "$(printf -- "- second commit\n- first commit")" ]' \
     "the notes are every commit subject when there is no previous tag (got: $(tr '\n' '|' <"$GH_KEEP/$(basename "$notes")"))"
-assert '[ "$(cat "$repo/VERSION")" = 1.2.4-dev ]' "VERSION was bumped to 1.2.4-dev (got $(cat "$repo/VERSION"))"
+assert '[ "$(cat "$repo/VERSION")" = 1.2.3 ]' "VERSION is left as it was (got $(cat "$repo/VERSION"))"
+assert '[ -z "$(git -C "$repo" status --porcelain)" ]' "and the tree is clean after the release ($(git -C "$repo" status --porcelain | tr '\n' ' '))"
 assert 'grep -q "^released v1.2.3" <<<"$out" && grep -q "https://github.example/releases/tag/v1.2.3" <<<"$out"' \
     "the summary names the tag and the release URL (got: $out)"
 assert '[ ! -f "$fakehome/.config/kasbah/release.key" ]' "nothing was written under HOME"
 
 # --- Case 2: notes since the previous tag; an existing tag on HEAD is reused ----
 
-git -C "$repo" commit -q -m "open 1.2.4-dev" VERSION
+git -C "$repo" commit -q --allow-empty -m "a fix"
 printf '1.2.4\n' > "$repo/VERSION"
 git -C "$repo" commit -q -m "close 1.2.4" VERSION
 git -C "$repo" tag -a v1.2.4 -m "kasbah 1.2.4"
@@ -224,7 +234,7 @@ assert '[ "$rc" = 0 ]' "v1.2.4 releases with the tag already on HEAD (exit $rc: 
 assert '[ "$(origin_tags | tr "\n" " ")" = "v1.2.3 v1.2.4 " ]' "and it was pushed (origin has '$(origin_tags | tr '\n' ' ')')"
 create="$(grep "^release create" "$GH_LOG")"
 notes="$(sed -n 's/.*--notes-file \([^ ]*\).*/\1/p' <<<"$create")"
-assert '[ "$(cat "$GH_KEEP/$(basename "$notes")")" = "$(printf -- "- close 1.2.4\n- open 1.2.4-dev")" ]' \
+assert '[ "$(cat "$GH_KEEP/$(basename "$notes")")" = "$(printf -- "- close 1.2.4\n- a fix")" ]' \
     "the notes are the subjects since v1.2.3 (got: $(tr '\n' '|' <"$GH_KEEP/$(basename "$notes")"))"
 
 # --- Case 3: a release candidate ------------------------------------------------
@@ -235,8 +245,8 @@ assert '[ "$rc" = 0 ]' "v1.3.0-rc.1 releases (exit $rc: $err)"
 create="$(grep "^release create" "$GH_LOG")"
 assert 'grep -q -- " --prerelease " <<<"$create"' "as a prerelease (got: $create)"
 assert 'grep -q "/kasbah_1.3.0-rc.1_linux_amd64" <<<"$create"' "with the version in the asset name (got: $create)"
-assert '[ "$(cat "$repo/VERSION")" = 1.3.0-rc.1 ]' "VERSION is not bumped after an rc (got $(cat "$repo/VERSION"))"
-assert '[ "$(cat "$BUILD_COUNT")" = 2 ]' "an rc builds twice with the exact stamp, and the builds match"
+assert '[ "$(cat "$repo/VERSION")" = 1.3.0-rc.1 ]' "VERSION is left as it was after an rc (got $(cat "$repo/VERSION"))"
+assert '[ "$(cat "$BUILD_COUNT")" = 2 ]' "an rc builds twice on its tag, and the builds match"
 assert '[ "$(origin_tags)" = v1.3.0-rc.1 ]' "the rc tag was pushed"
 
 # --- Refusals, each before anything is built ------------------------------------
@@ -322,9 +332,39 @@ unset BUILD_DRIFT
 assert_nothing_released "two builds that differ"
 assert '[ "$(cat "$BUILD_COUNT")" = 2 ]' "two builds that differ: both ran"
 assert '! grep -q minisign "$DOCKER_LOG"' "two builds that differ: nothing signed"
+assert '[ -z "$(local_tags)" ]' "two builds that differ: the tag made for the build is taken away (tags: $(local_tags | tr '\n' ' '))"
 assert 'grep -q "not reproducible" <<<"$err" && grep -q "^first:" <<<"$err" && grep -q "^second:" <<<"$err"' \
     "two builds that differ: both hash sets printed (got: $err)"
 assert '[ "$(grep -c "dist/server/kasbah-linux-arm64" <<<"$err")" = 2 ]' "two builds that differ: every file in both sets"
+
+fresh 1.2.3
+git -C "$repo" tag -a v1.2.3 -m "kasbah 1.2.3"
+export BUILD_DRIFT=1
+release v1.2.3
+unset BUILD_DRIFT
+assert '[ "$rc" = 1 ]' "two builds that differ on a pre-existing tag: refused (exit $rc)"
+assert '[ "$(local_tags)" = v1.2.3 ]' "two builds that differ on a pre-existing tag: the tag was not this run's to take away (tags: $(local_tags | tr '\n' ' '))"
+assert '[ -z "$(origin_tags)" ]' "two builds that differ on a pre-existing tag: nothing pushed"
+
+# A build whose stamp is not the tag — what another tag on HEAD or a dirty
+# tree would give — is refused after the first build, before anything is signed.
+fresh 1.2.3
+export STUB_STAMP=1.2.4-dev.3.1700000000+gabc1234.dirty
+release v1.2.3
+unset STUB_STAMP
+assert_nothing_released "a build stamped as a pre-release"
+assert '[ "$(cat "$BUILD_COUNT")" = 1 ]' "a build stamped as a pre-release: refused after the first build (built $(cat "$BUILD_COUNT") times)"
+assert '! grep -q minisign "$DOCKER_LOG"' "a build stamped as a pre-release: nothing signed"
+assert 'grep -q "1.2.4-dev.3.1700000000+gabc1234.dirty" <<<"$err" && grep -q "kasbah 1.2.3 (schema N)" <<<"$err"' \
+    "a build stamped as a pre-release: names the stamp it got and the one wanted (got: $err)"
+assert 'grep -q "untracked" <<<"$err"' "a build stamped as a pre-release: names the likely causes (got: $err)"
+fresh 1.2.3
+git -C "$repo" tag -a v1.2.3 -m "kasbah 1.2.3"
+export STUB_STAMP=1.2.4-dev.3.1700000000+gabc1234
+release v1.2.3
+unset STUB_STAMP
+assert '[ "$rc" = 1 ] && [ "$(local_tags)" = v1.2.3 ] && [ -z "$(origin_tags)" ]' \
+    "a build stamped as a pre-release on a pre-existing tag: refused, the tag kept, nothing pushed (exit $rc, tags: $(local_tags | tr '\n' ' '))"
 
 # --- Refusals after signing: the pair, the push, the release --------------------
 
@@ -366,7 +406,7 @@ for a in kasbah_1.2.3_linux_amd64 kasbah_1.2.3_linux_arm64 checksums.txt checksu
     assert 'grep -q "/$a\( \|$\)" <<<"$upload"' "the rerun uploads $a (got: $upload)"
 done
 assert '! grep -q "^release create" "$GH_LOG"' "and does not create the release again"
-assert '[ "$(cat "$repo/VERSION")" = 1.2.4-dev ]' "and VERSION then bumps (got $(cat "$repo/VERSION"))"
+assert '[ "$(cat "$repo/VERSION")" = 1.2.3 ]' "and VERSION is still as it was (got $(cat "$repo/VERSION"))"
 assert 'grep -q "https://github.example/releases/tag/v1.2.3" <<<"$out"' "the summary still names the release URL (got: $out)"
 
 # --- keygen ---------------------------------------------------------------------

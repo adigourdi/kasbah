@@ -9,7 +9,9 @@
 # under .cache/ — never over dist/. After each case the bytes at
 # <apps>/.kasbah/bin/kasbah are checked against the build that should be there.
 # A newer same-major build is refused, and the workstation hands the command
-# off to that build when it is installed under KASBAH_LIB_DIR.
+# off to that build when it is installed under KASBAH_LIB_DIR. A release
+# build replaces a dev build of its major however the two order, and a dev
+# build never replaces the release it ranks below.
 #
 # Also: an unprepared server refuses with exit 4; a server binary from another
 # build is refused before it replaces anything; two workstations racing end on
@@ -102,6 +104,10 @@ fi
 older="$major.0.0-0"
 newer="$major.999999.0"
 next_major="$((major + 1)).0.0"
+# A release of our major, and a dev build above it by order (another
+# checkout's, as tools/stamp marks them).
+release="$major.0.1"
+dev_above="$major.999999.0-dev.1.1+gabc1234.dirty"
 
 mkdir -p "$repo_dir/.cache"
 variants=$(mktemp -d "$repo_dir/.cache/server-binary-test.XXXXXX")
@@ -114,7 +120,7 @@ if ! docker compose -f "$repo_dir/compose.yml" run --rm -T --entrypoint sh build
                 -o "'"$rel"'/kasbah-$v" ./cmd/kasbah
         done
         GOOS=linux GOARCH='"$arch"' go build -o "'"$rel"'/hang" "'"$rel"'/hang.go"' \
-        sh "$older" "$newer" "$next_major" >"$tmpdir/build.log" 2>&1 </dev/null; then
+        sh "$older" "$newer" "$next_major" "$release" "$dev_above" >"$tmpdir/build.log" 2>&1 </dev/null; then
     echo "error: could not build the variant server binaries:" >&2
     cat "$tmpdir/build.log" >&2
     exit 2
@@ -147,6 +153,8 @@ ours_sha=$(sha "$ours_server")
 older_sha=$(sha "$variants/kasbah-$older")
 newer_sha=$(sha "$variants/kasbah-$newer")
 major_sha=$(sha "$variants/kasbah-$next_major")
+release_sha=$(sha "$variants/kasbah-$release")
+dev_above_sha=$(sha "$variants/kasbah-$dev_above")
 
 # --- Case 0: a server init never prepared -------------------------------------
 ensure; rc=$?
@@ -239,6 +247,32 @@ if [ "$(uname -m)" = "$machine" ]; then
     assert '[ "$(server_sha)" = "$newer_sha" ] && [ -z "$(uploads_left)" ]' "hand-off refusals: nothing was replaced"
 else
     assert 'false' "hand-off: the rig ($machine) is not this machine's architecture ($(uname -m)); the newer build cannot run here"
+fi
+
+# --- Case 4b: a release replaces a dev build of its major that outranks it ----
+# The release variant runs here as an installed workstation beside its own
+# server build (the rig is this machine's architecture).
+plant "$variants/kasbah-$dev_above"
+assert '[ "$(server_sha)" = "$dev_above_sha" ]' "release over dev: the dev build is planted"
+if [ "$(uname -m)" = "$machine" ]; then
+    rel_ws="$tmpdir/relws"
+    mkdir -p "$rel_ws/$release/server"
+    cp "$variants/kasbah-$release" "$rel_ws/$release/kasbah"
+    cp "$variants/kasbah-$release" "$rel_ws/$release/server/kasbah-linux-$arch"
+    env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" KASBAH_LIB_DIR="$rel_ws" \
+        "$rel_ws/$release/kasbah" __ensure-server "$RIG_TARGET" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; rc=$?
+    assert '[ "$rc" = 0 ]' "release over dev: ensure succeeds (exit $rc: $(err))"
+    assert '[ "$(out)" = "shipped=$dev_above->$release" ]' "release over dev: replaced, naming both builds (said '$(out)')"
+    assert '[ "$(server_sha)" = "$release_sha" ] && [ -z "$(uploads_left)" ]' \
+        "release over dev: the server holds the release, no upload left ($(bin_dir_list | tr '\n' ' '))"
+    # The dev build under test ranks below that release: refused, and the
+    # remedy is the release's tag.
+    ensure; rc=$?
+    assert '[ "$rc" = 1 ] && grep -qF "$release" <<<"$(err)" && grep -qF "$ours" <<<"$(err)"' \
+        "dev under a release: refused, naming both builds (exit $rc: $(err))"
+    assert '[ "$(server_sha)" = "$release_sha" ] && [ -z "$(uploads_left)" ]' "dev under a release: nothing was replaced"
+else
+    assert 'false' "release over dev: the rig ($machine) is not this machine's architecture ($(uname -m)); the release build cannot run here"
 fi
 
 # --- Case 5: newer major → refusal, nothing replaced --------------------------

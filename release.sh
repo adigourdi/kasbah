@@ -3,8 +3,7 @@
 #
 #   ./release.sh vX.Y.Z[-rc.N]   tag, build twice (the builds must match),
 #                                checksum, sign, push the tag, create the
-#                                GitHub release; then bump VERSION to the next
-#                                patch -dev (an rc bumps nothing)
+#                                GitHub release
 #   ./release.sh keygen          create the minisign key pair: the secret key
 #                                at $KASBAH_RELEASE_KEY, the public key at
 #                                release.pub in the repo
@@ -12,9 +11,14 @@
 # Assets (frozen): kasbah_<ver>_linux_amd64, kasbah_<ver>_linux_arm64,
 # checksums.txt (sha256sum format), checksums.txt.minisig.
 #
-# A release build — an rc included — carries the tag exactly (KASBAH_STAMP_EXACT=1
-# to tools/stamp: no commit count, no build time), so the two builds match
-# byte for byte and the installed binary reports `kasbah <ver>`.
+# A release build — an rc included — carries the tag exactly: tools/stamp
+# finds HEAD tagged v<ver> on a clean tree (no commit count, no build time),
+# so the two builds match byte for byte and the installed binary reports
+# `kasbah <ver>`. That is why the tag is made before the builds; a release
+# that fails before the push takes the tag it made away again. VERSION is
+# not touched: after v1.0.0 the checkout's builds stamp themselves
+# 1.0.1-dev…; setting VERSION to the next minor or major is the release
+# line's own commit.
 #
 # minisign runs in its container and asks for the key's password itself, so a
 # release needs a terminal on stdin (there is no environment variable for it).
@@ -33,7 +37,13 @@ minisign_image="jedisct1/minisign"
 die() { echo "release: $*" >&2; exit 1; }
 
 scratch=
-trap '[ -n "$scratch" ] && rm -rf "$scratch"' EXIT
+made_tag=
+cleanup() {
+    [ -n "$scratch" ] && rm -rf "$scratch"
+    [ -n "$made_tag" ] && git tag -d "$made_tag" >/dev/null 2>&1
+    return 0
+}
+trap cleanup EXIT
 
 # minisign in its container, as this user so what it writes is ours; a terminal
 # on stdin is passed through for the password prompt.
@@ -90,10 +100,25 @@ release() {
 
     ./test.sh || die "test.sh failed — nothing released"
 
+    # The tag first: tools/stamp reads it. Until the push it is this run's to
+    # take away (cleanup), as it was never anyone else's.
+    if [ "$have_tag" != 1 ]; then
+        git tag -a "$tag" -m "kasbah $ver" || die "could not tag $tag"
+        made_tag=$tag
+    fi
+
     # An exact stamp carries no count and no time, so two builds of the same
     # tree are byte-identical; anything else means the build is not reproducible.
     local first second
     build
+    local reported
+    reported="$(./dist/kasbah --version 2>&1)" || die "dist/kasbah --version failed: $reported"
+    [[ $reported =~ ^kasbah\ $(printf '%s' "$ver" | sed 's/[.]/[.]/g')\ \(schema\ [0-9]+\)$ ]] || {
+        echo "release: the build reports '$reported', not 'kasbah $ver (schema N)' — the stamp is not the tag, nothing released" >&2
+        echo "  tools/stamp stamps a build as the tag only when HEAD carries $tag (another tag on HEAD is fine)" >&2
+        echo "  and the tree is clean as the build container sees it — untracked files count" >&2
+        exit 1
+    }
     first="$(hashes)"
     build
     second="$(hashes)"
@@ -125,7 +150,8 @@ release() {
         git log --format='- %s' HEAD >"$notes"
     fi
 
-    [ "$have_tag" = 1 ] || git tag -a "$tag" -m "kasbah $ver"
+    # From here the tag stays whatever happens: a rerun reuses it.
+    made_tag=
     git push origin "$tag" || die "pushing $tag failed — nothing released; the local tag stays"
     # A release that exists already is one a failed upload left behind: its
     # assets are replaced, the release is not made again.
@@ -144,15 +170,10 @@ release() {
     echo "released $tag"
     echo "  assets: kasbah_${ver}_linux_amd64 kasbah_${ver}_linux_arm64 checksums.txt checksums.txt.minisig"
     echo "  $url"
-    if [ ${#prerelease[@]} -eq 0 ]; then
-        local next="${ver%.*}.$(( ${ver##*.} + 1 ))-dev"
-        printf '%s\n' "$next" >VERSION
-        echo "  VERSION is now $next — commit it:  git commit -m 'open $next' VERSION"
-    fi
 }
 
 build() {
-    env KASBAH_STAMP_EXACT=1 UID="$(id -u)" GID="$(id -g)" \
+    env UID="$(id -u)" GID="$(id -g)" \
         docker compose -p kasbah -f "$repo_dir/compose.yml" run --rm -T build >&2 </dev/null \
         || die "the build failed"
 }

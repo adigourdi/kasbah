@@ -37,10 +37,11 @@ func TestResolve(t *testing.T) {
 		return func(k string) string { return m[k] }
 	}
 	lib := map[string]string{"KASBAH_LIB_DIR": root}
-	newer := func(srv string) error {
-		_, err := remote.Decide(remote.Self("1.0.0"), &remote.Info{Build: srv})
+	newerThan := func(ours, srv string) error {
+		_, err := remote.Decide(remote.Self(ours), &remote.Info{Build: srv})
 		return err
 	}
+	newer := func(srv string) error { return newerThan("1.0.0", srv) }
 	schema := func(body string) error {
 		p := filepath.Join(t.TempDir(), "kasbah.yml")
 		os.WriteFile(p, []byte(body), 0o644)
@@ -58,7 +59,11 @@ func TestResolve(t *testing.T) {
 		{"nil", nil, lib, "", ""},
 		{"the server's build", newer("1.1.0"), lib, v110, ""},
 		{"the server's other build", newer("1.2.0"), lib, v120, ""},
-		{"the server's build is not installed", newer("1.3.0"), lib, "", "kasbah self-update v1.3.0"},
+		{"the server's build is not installed", newer("1.3.0"), lib, "", "install it: `kasbah self-update v1.3.0`, or ./install.sh"},
+		{"the server's dev build is not installed", newerThan("1.0.1-dev.5.1+gabc1234", "1.0.1-dev.9.1+g1a2b3c4"), lib, "",
+			"a dev build from another checkout (1.0.1-dev.9.1+g1a2b3c4): check out and build commit 1a2b3c4 and install it"},
+		{"the server's dirty dev build is not installed", newerThan("1.0.1-dev.5.1", "1.0.1-dev.9.1+g1a2b3c4.dirty"), lib, "", "commit 1a2b3c4 (built from a dirty tree"},
+		{"the server's unmarked dev build is not installed", newerThan("1.0.1-dev.5.1", "1.0.1-dev.9.1"), lib, "", "build that commit and install it"},
 		{"a newer major is no hand-off", newer("2.0.1"), lib, "", ""},
 		{"the manifest's major, newest installed", schema("schema: 2\nname: demo\n"), lib, v201, ""},
 		{"the manifest's major is not installed", schema("schema: 3\nname: demo\n"), lib, "", "kasbah self-update v3"},
@@ -73,6 +78,9 @@ func TestResolve(t *testing.T) {
 			}
 			if tt.said != "" && (tt.err == nil || !strings.Contains(tt.err.Error(), tt.said)) {
 				t.Errorf("the refusal does not say %q: %v", tt.said, tt.err)
+			}
+			if strings.Contains(tt.name, "dev build") && strings.Contains(tt.err.Error(), "self-update") {
+				t.Errorf("a dev build has no tag to self-update to: %v", tt.err)
 			}
 			if tt.err != nil {
 				var e *cli.Error

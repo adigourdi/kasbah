@@ -131,7 +131,7 @@ Bash. After this task, nothing changes for a user and every later task is just
       `run --rm test` and `build` both rc=0
 - [x] `go.mod` (`github.com/adigourdi/kasbah`), `cmd/kasbah`, version stamped
       from `VERSION` at build time, `kasbah --version` unchanged in content —
-      the stamp travels as `KASBAH_BUILD` and only `--version`/usage print it;
+      the stamp travels as `-X main.build` and only `--version`/usage print it;
       every file kasbah writes still records plain `VERSION`
 - [x] The handoff: an unowned command is replaced by the Bash dispatcher
       in-process (`exec`, not a child), argv/env/TTY/exit code intact — review
@@ -236,7 +236,7 @@ command ported after this rides.
       racing workstations leave the newer; every server-binary run is bounded at 30 s
 - [x] A versioned workstation↔server protocol under `kasbah remote …`; a newer
       major on the server makes an older workstation refuse, naming both versions
-      — `remote version` prints `build=… protocol=1 min_protocol=1`, a line meant
+      — `remote version` prints `build=…` (the `protocol=`/`min_protocol=` keys it also carried were dropped with the same-build rule, which needs no negotiation), a line meant
       never to change across majors
 - [x] Unit tests for version ordering and protocol negotiation; rig cases for
       all three newer-wins outcomes
@@ -671,7 +671,11 @@ things share an implementation, not merely a rule.
 It bit at once: 10.16 changed `remote init start`'s arguments, and the 1.0.0 binary
 this run had already put on `vps` would have been kept. The release is therefore
 **1.0.1** (1.0.0 was never published); `main` goes to `1.0.2-dev` after the
-close, so the counter applies between releases again.
+close, so the counter applies between releases again. (Neither 1.0.1 nor 1.0.2
+was ever published: the first published release is `v1.0.0`, cut after this
+phase once releases existed, and the stamp now comes from git — a clean tree at
+the tag is the release, anything else a dev stamp above the last tag — so
+`VERSION` no longer moves after a release.)
 
 ### 10.15 — Proof on `vps` (M)
 **Deliverables**
@@ -783,11 +787,11 @@ What the next phase should know:
   showed that a certificate-store reset left the mail server on the archived file
   (it mounts `acme.json` as a single file). Anything touching `acme.json` or the
   mail/Traefik mounts needs a real-host check, not just the rig.
-- **A release stamp carries no build counter.** Between releases `VERSION` must be
-  a pre-release (`1.0.2-dev`), or a server already holding the release keeps it
-  and new server-side code never ships (10.14's Found). A change to a
-  `kasbah remote` subcommand's arguments also needs the old arm kept for older
-  workstations, whose newer server binary is kept.
+- **A release stamp carries no build counter.** This bit at 10.14 and was later
+  settled at the root: the stamp comes from git (a clean tree at the tag is the
+  release; anything else is `<next>-dev.<commits>.<time>+g<sha>`), and a
+  release always replaces a dev build on a server. Both ends run one build, so
+  a `kasbah remote` arm may change in any release — no old arms are kept.
 - **Every state-changing remote step outlives a dropped session** (`remote.Outlive`
   or `signal.Ignore` with captured output); a new remote step that changes state
   must do the same, and every command judges the marker before shipping

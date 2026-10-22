@@ -87,12 +87,23 @@ func Decide(ours Info, srv *Info) (Action, error) {
 			"a newer major on the server speaks a protocol this binary does not know",
 			"upgrade kasbah on this workstation, or point at a server this version manages")
 	}
-	switch c := version.Compare(sv, ov); {
-	case c < 0:
+	switch {
+	case version.Compare(sv, ov) == 0:
+		return Keep, nil
+	case Replaces(ov, sv):
 		return Ship, nil
-	case c > 0:
-		return 0, &Newer{Server: srv.Build, Ours: ours.Build, err: cli.Fail(
-			"the server runs kasbah %s, newer than this kasbah %s — both ends run the server's build", srv.Build, ours.Build)}
 	}
-	return Keep, nil
+	return 0, &Newer{Server: srv.Build, Ours: ours.Build, err: cli.Fail(
+		"the server runs kasbah %s, newer than this kasbah %s — both ends run the server's build", srv.Build, ours.Build)}
+}
+
+// Replaces is whether build a goes over build b on a server: a is the higher,
+// or a is a release and b a pre-release of the same major whatever their
+// order — a dev build some checkout left on the server never locks the
+// line's release out.
+func Replaces(a, b version.Version) bool {
+	if version.Compare(a, b) > 0 {
+		return true
+	}
+	return a.Major == b.Major && len(a.Pre) == 0 && len(b.Pre) > 0
 }

@@ -174,20 +174,21 @@ func Compare(a, b Version) int {
 }
 
 // Base is the VERSION a stamp was made from — what files kasbah writes record:
-// a stamped pre-release loses the commit count and build time Stamp added; an
-// exact one (a release build of an -rc.N tag, KASBAH_STAMP_EXACT) is itself.
+// a stamped pre-release loses the commit count and build time Stamp added, an
+// exact one (a release build of an -rc.N tag) is itself, and build metadata
+// (`+g<sha>[.dirty]`) is dropped either way.
 func Base(stamp string) (string, error) {
 	v, err := Parse(stamp)
 	if err != nil {
 		return "", err
 	}
-	n := len(v.Pre)
-	if n == 0 || !stamped(v.Pre) {
-		return stamp, nil
+	pre := v.Pre
+	if stamped(pre) {
+		pre = pre[:len(pre)-2]
 	}
-	s := fmt.Sprintf("%d.%d.%d-%s", v.Major, v.Minor, v.Patch, strings.Join(v.Pre[:n-2], "."))
-	if v.Meta != "" {
-		s += "+" + v.Meta
+	s := fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
+	if len(pre) > 0 {
+		s += "-" + strings.Join(pre, ".")
 	}
 	return s, nil
 }

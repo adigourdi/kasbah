@@ -28,7 +28,8 @@ const (
 
 // InstallSelf is `kasbah remote install-self DEST`, run by a verified upload:
 // under the directory's lock it renames selfPath over DEST only if DEST is
-// still replaceable or older, so racing installs end on the newest.
+// still replaceable, older, or a pre-release this release goes over
+// (remote.Replaces), so racing installs end on the newest.
 func InstallSelf(self remote.Info, selfPath, dest string, out io.Writer) error {
 	ours, err := version.Parse(self.Build)
 	if err != nil {
@@ -61,7 +62,7 @@ func InstallSelf(self remote.Info, selfPath, dest string, out io.Writer) error {
 		if err != nil {
 			return cli.Fail("%s reports build '%s', which is not a version", dest, srv.Build)
 		}
-		if version.Compare(sv, ours) >= 0 {
+		if !remote.Replaces(ours, sv) {
 			fmt.Fprintf(out, "kept %s\n", srv.Line())
 			return nil
 		}

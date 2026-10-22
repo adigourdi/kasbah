@@ -303,7 +303,7 @@ if jq -e . >/dev/null 2>&1 <<<"$marker_json"; then
         assert 'jq -e --arg k "$key" "has(\$k)" >/dev/null <<<"$marker_json"' \
             "the marker carries $key (got '$marker_json')"
     done
-    version="$(cat "$repo_dir/VERSION")"
+    version="$(kasbah_base_version)"
     assert '[ "$(jq -r .kasbah_version <<<"$marker_json")" = "$version" ]' \
         "the marker records this checkout's version (wanted $version, got '$(jq -r .kasbah_version <<<"$marker_json")')"
     assert '[ "$(jq -r .apps_path <<<"$marker_json")" = "$apps" ]'  "the marker records the apps path"

@@ -383,7 +383,12 @@ same major, state interoperates (see `overview.md`) — but the *binary* on
 the server is held to the same-build rule: the workstation ships its build
 when the server's is older, keeps it when the same, and refuses when the
 server's is newer, naming both builds and handing off to the newer version
-when it is installed on the workstation (`cli.md` → Hand-off). The server
+when it is installed on the workstation (`cli.md` → Hand-off). One exception:
+a release build replaces a dev build of its major whatever their order, so a
+server that got a `1.0.2-dev…` build never locks a `1.0.0` workstation out.
+An `-rc.N` build counts as a pre-release here, so a higher dev build does
+replace it, and a dev workstation and a release workstation sharing a server
+re-ship the binary on every alternation — scaffolding, by design. The server
 never serves a workstation of another build.
 
 Both directions are judged from the probe's copy of the marker, before any
