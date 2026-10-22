@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Run the Go checks, then every tests/*_test.sh against the binary under test.
 # Each test is a standalone bash script; exit 0 = pass.
+#
+# One line per check: each one's output goes to .cache/test-logs/<name>.log and
+# is printed only when it fails or cannot run. KASBAH_TEST_VERBOSE=1 streams
+# everything instead.
 
 set -uo pipefail
 
@@ -40,7 +44,7 @@ fi
 # the background would stop on SIGTTIN.
 go_compose() {
     env UID="$(id -u)" GID="$(id -g)" \
-        docker compose -p kasbah -f "$repo_dir/compose.yml" run --rm -T "$@" </dev/null
+        docker compose --progress quiet -p kasbah -f "$repo_dir/compose.yml" run --rm -T "$@" </dev/null
 }
 # No usable Docker is a fact about this machine, not the code: exit 2, like a
 # rig that is down. A missing binary, a missing compose plugin and a daemon
@@ -53,14 +57,38 @@ if ! command -v docker >/dev/null 2>&1 \
     exit 2
 fi
 
+case "${KASBAH_TEST_VERBOSE:-}" in
+    ''|0) verbose=0 ;;
+    1)    verbose=1 ;;
+    *)    echo "KASBAH_TEST_VERBOSE='$KASBAH_TEST_VERBOSE' is not a valid value (1, or 0/empty)" >&2
+          exit 2 ;;
+esac
+logs="$repo_dir/.cache/test-logs"
+rm -rf "$logs"
+mkdir -p "$logs"
+
+# capture <log> <cmd…> — the command's stdout and stderr into <log>, or to the
+# terminal when verbose; its exit status either way.
+capture() {
+    local log=$1; shift
+    if [ "$verbose" = 1 ]; then
+        "$@"
+    else
+        mkdir -p "$(dirname "$log")"
+        "$@" >"$log" 2>&1
+    fi
+}
+dump() { [ "$verbose" = 1 ] || sed 's/^/  /' "$1" >&2; }
+
 failed=0
 unrunnable=0
 
-go_compose test; rc=$?
+capture "$logs/go.log" go_compose test; rc=$?
 if [ "$rc" -eq 0 ]; then
     echo "PASS go (docker compose run --rm test)"
 else
     echo "FAIL go (docker compose run --rm test)" >&2
+    dump "$logs/go.log"
     failed=$((failed + 1))
 fi
 
@@ -85,16 +113,18 @@ for t in "${tests[@]}"; do
     # integration suite for the same library share a name (ssh_test.sh), and
     # "FAIL ssh_test.sh" would not say which one.
     name="${t#"$tests_dir"/}"
-    bash "$t"; rc=$?
+    capture "$logs/$name.log" bash "$t"; rc=$?
     # A suite's own exit 2 carries this runner's meaning of 2: it could not run
     # (no rig, for the integration suite), which is a fact about the environment
     # and not about the code. Counting it as a failure was the whole confusion —
     # "1 test(s) failed" sent readers looking for a defect that was not there.
     case $rc in
         0) echo "PASS $name" ;;
-        2) echo "SKIP $name — preconditions not met (see above)" >&2
+        2) echo "SKIP $name — preconditions not met:" >&2
+           dump "$logs/$name.log"
            unrunnable=$((unrunnable + 1)) ;;
         *) echo "FAIL $name" >&2
+           dump "$logs/$name.log"
            failed=$((failed + 1)) ;;
     esac
 done

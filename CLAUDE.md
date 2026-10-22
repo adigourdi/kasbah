@@ -12,7 +12,9 @@ plan and the only progress tracker (the roadmap is scope, not status).
 - `./test.sh` — Go checks, a build of `dist/`, then the black-box suites
   (~3 min, no server). Must pass before any commit. Needs Docker, and GNU `diff`
   and `patch` on the host (the diff suite proves kasbah's diffs against them).
-  `KASBAH_BIN=<path>` tests that binary instead and skips the build.
+  `KASBAH_BIN=<path>` tests that binary instead and skips the build. One line
+  per suite; each suite's full output is in `.cache/test-logs/<suite>.log`,
+  dumped after a FAIL; `KASBAH_TEST_VERBOSE=1` streams everything.
 - `KASBAH_RIG_TESTS=1 ./test.sh` — adds integration tests against the
   fake-VPS rig (~35 min: run it in the background). Run `tests/rig/rig.sh up`
   first; see `tests/rig/README.md` for what the rig can and cannot prove.

@@ -174,7 +174,7 @@ release() {
 
 build() {
     env UID="$(id -u)" GID="$(id -g)" \
-        docker compose -p kasbah -f "$repo_dir/compose.yml" run --rm -T build >&2 </dev/null \
+        docker compose --progress quiet -p kasbah -f "$repo_dir/compose.yml" run --rm -T build >&2 </dev/null \
         || die "the build failed"
 }
 
