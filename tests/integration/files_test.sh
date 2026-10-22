@@ -329,7 +329,9 @@ rig_files_snapshot \
     { echo "error: could not snapshot the server roots" >&2; exit 2; }
 rig_files_snapshot -r "${shared_roots[@]}" > "$tmpdir/shared.after" ||
     { echo "error: could not snapshot the rig's /tmp and home" >&2; exit 2; }
-rig_files_new "$before/shared" "$tmpdir/shared.after" > "$snap_dir/vps.shared"
+# runc parks /tmp/runc-process* (root's) for the length of a docker exec; one
+# caught mid-flight is the runtime's, not a file kasbah left.
+rig_files_new "$before/shared" "$tmpdir/shared.after" | grep -v '^/tmp/runc-process' > "$snap_dir/vps.shared" || :
 rig_files_local -r "$projdir" '<project-dir>' > "$tmpdir/project.after" &&
     rig_files_local -r "$RIG_HOME" '~' > "$tmpdir/home.after" &&
     rig_files_local "$work_tmp" '<tmp>' > "$tmpdir/tmp.after" ||
