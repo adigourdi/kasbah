@@ -142,7 +142,15 @@ func TestBase(t *testing.T) {
 			t.Errorf("Base(Stamp(%q)) = %q, %v", base, got, err)
 		}
 	}
-	for _, bad := range []string{"", "devel", "0.1.0-dev", "0.1.0-dev.x.1"} {
+	// Exact stamps (KASBAH_STAMP_EXACT): a release build of a pre-release tag is
+	// its own base.
+	for _, exact := range []string{"1.0.0-rc.1", "0.1.0-dev", "0.1.0-dev.x.1"} {
+		got, err := Base(exact)
+		if err != nil || got != exact {
+			t.Errorf("Base(%q) = %q, %v; want itself", exact, got, err)
+		}
+	}
+	for _, bad := range []string{"", "devel"} {
 		if got, err := Base(bad); err == nil {
 			t.Errorf("Base(%q) = %q, want an error", bad, got)
 		}

@@ -106,6 +106,21 @@ func idents(s string, pre bool) bool {
 	return true
 }
 
+// stamped is whether pre ends in Stamp's .<commits>.<build time>: at least one
+// identifier before two numeric ones.
+func stamped(pre []string) bool {
+	n := len(pre)
+	if n < 3 {
+		return false
+	}
+	for _, id := range pre[n-2:] {
+		if _, ok := numeric(id); !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func cmpU(a, b uint64) int {
 	switch {
 	case a < b:
@@ -159,23 +174,16 @@ func Compare(a, b Version) int {
 }
 
 // Base is the VERSION a stamp was made from — what files kasbah writes record:
-// a pre-release loses the commit count and build time Stamp added.
+// a stamped pre-release loses the commit count and build time Stamp added; an
+// exact one (a release build of an -rc.N tag, KASBAH_STAMP_EXACT) is itself.
 func Base(stamp string) (string, error) {
 	v, err := Parse(stamp)
 	if err != nil {
 		return "", err
 	}
-	if len(v.Pre) == 0 {
-		return stamp, nil
-	}
 	n := len(v.Pre)
-	if n < 3 {
-		return "", fmt.Errorf("%q is not a build stamp: a pre-release stamp ends in .<commits>.<build time>", stamp)
-	}
-	for _, id := range v.Pre[n-2:] {
-		if _, ok := numeric(id); !ok {
-			return "", fmt.Errorf("%q is not a build stamp: a pre-release stamp ends in .<commits>.<build time>", stamp)
-		}
+	if n == 0 || !stamped(v.Pre) {
+		return stamp, nil
 	}
 	s := fmt.Sprintf("%d.%d.%d-%s", v.Major, v.Minor, v.Patch, strings.Join(v.Pre[:n-2], "."))
 	if v.Meta != "" {
