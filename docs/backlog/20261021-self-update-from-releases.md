@@ -6,9 +6,9 @@ description: >
   assets from the GitHub Release, verifies the signed `checksums.txt` against
   the embedded key and installs into the versioned dir; server-arch builds are
   fetched lazily the first time a server of that arch is met — in the launcher.
-state: blocked
+state: ready
 priority: normal
-after: "[[release-sh-and-signing]] and at least one published release to fetch"
+after: "at least one published release to fetch (the user cuts it with `./release.sh`, which needs the key password)"
 ---
 
 ## Rulings (run of 2026-10-21 — settled, do not re-propose)
@@ -23,7 +23,9 @@ after: "[[release-sh-and-signing]] and at least one published release to fetch"
   (`-rc.N`, `-dev`) are skipped unless `--pre`.
 - **Verification before anything is written into the versions dir:** the
   minisign-signed `checksums.txt` is checked against the public key embedded
-  in the binary (`release.pub`, committed by [[release-sh-and-signing]]), then
+  in the binary (`release.pub` at the repo root, minisign format: key id
+  `FC8BCEC04912A5B7`; signatures are minisign's prehashed form — alg `ED`,
+  Blake2b-512 of the file, then ed25519 — as `release.sh` produces them), then
   each asset's sha256 against the file. The verifier is Go: `crypto/ed25519`
   with minisign's prehashed (Blake2b-512) format — `aead.dev/minisign` is
   acceptable if its only transitive dependency is `golang.org/x/crypto`,
