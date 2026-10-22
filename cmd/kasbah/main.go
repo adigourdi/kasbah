@@ -26,6 +26,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/prune"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/selfupdate"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/serverinit"
 	"github.com/adigourdi/kasbah/internal/ssh"
@@ -201,6 +202,10 @@ func main() {
 			o, err := migrate.Parse(args[1:])
 			atexit.HandleSignals()
 			atexit.Exit(migrateCmd(o, err))
+		case "self-update":
+			o, err := selfupdate.Parse(args[1:])
+			atexit.HandleSignals()
+			atexit.Exit(selfUpdateCmd(o, err))
 		case "check":
 			o, err := check.Parse(args[1:])
 			atexit.HandleSignals()

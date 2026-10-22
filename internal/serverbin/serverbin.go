@@ -21,7 +21,9 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/selfupdate"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/version"
 )
 
 // Pointer and DefaultApps are where a server's apps path is discovered
@@ -51,8 +53,17 @@ func Arch(machine string) (string, error) {
 	return "", cli.Fail("the server's machine type is '%s', and kasbah builds server binaries for x86_64 and aarch64 only", strings.TrimSpace(machine))
 }
 
+// fetchRelease is the lazy fetch (selfupdate.FetchServerBuild), a variable
+// so a test can stand in for the network.
+var fetchRelease = func(home, ver, arch string) error {
+	return selfupdate.FetchServerBuild(cli.Std(), home, ver, arch)
+}
+
 // Local is this build's server binary for arch: dist/server/ in a checkout,
 // server/ beside the binary in an installed version directory (install.sh).
+// An installed release version (its directory a version with no pre-release
+// part) missing the build fetches it from the release, verified, into place;
+// a dev build and a checkout never fetch.
 func Local(home string, checkout bool, arch string) (string, error) {
 	name := "kasbah-linux-" + arch
 	p := filepath.Join(home, "server", name)
@@ -61,11 +72,22 @@ func Local(home string, checkout bool, arch string) (string, error) {
 		p = filepath.Join(home, "dist", "server", name)
 		remedy = "build it: docker compose run --rm build"
 	}
-	fi, err := os.Stat(p)
-	if err != nil || !fi.Mode().IsRegular() {
-		return "", cli.Fail("there is no linux/%s server binary at %s", arch, p).Cont(remedy)
+	if isFile(p) {
+		return p, nil
 	}
-	return p, nil
+	if !checkout {
+		if v, err := version.Parse(filepath.Base(home)); err == nil && len(v.Pre) == 0 {
+			if err := fetchRelease(home, v.String(), arch); err != nil {
+				return "", cli.Fail("there is no linux/%s server binary at %s, and fetching it from release v%s failed", arch, p, v).Cont(
+					strings.Split(err.Error(), "\n")...).Cont(
+					"or reinstall kasbah (install.sh), which installs both server binaries")
+			}
+			if isFile(p) {
+				return p, nil
+			}
+		}
+	}
+	return "", cli.Fail("there is no linux/%s server binary at %s", arch, p).Cont(remedy)
 }
 
 // Facts are what is known about an existing server binary before judging it.

@@ -1,6 +1,7 @@
 package serverbin
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -96,6 +97,51 @@ func TestLocal(t *testing.T) {
 	}
 	if _, err := Local(root, false, "amd64"); err == nil || !strings.Contains(err.Error(), "install.sh") {
 		t.Errorf("a missing installed binary: %v", err)
+	}
+}
+
+func TestLocalFetchesRelease(t *testing.T) {
+	lib := t.TempDir()
+	var fetched []string
+	fetchRelease = func(home, ver, arch string) error {
+		fetched = append(fetched, ver+" "+arch)
+		p := filepath.Join(home, "server", "kasbah-linux-"+arch)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		return os.WriteFile(p, nil, 0o755)
+	}
+	t.Cleanup(func() { fetchRelease = func(string, string, string) error { return errors.New("no network in tests") } })
+	// A release version fetches the missing build, once.
+	home := filepath.Join(lib, "1.2.0")
+	os.MkdirAll(home, 0o755)
+	want := filepath.Join(home, "server", "kasbah-linux-arm64")
+	if got, err := Local(home, false, "arm64"); err != nil || got != want {
+		t.Errorf("release: %q, %v", got, err)
+	}
+	if got, err := Local(home, false, "arm64"); err != nil || got != want {
+		t.Errorf("release, second time: %q, %v", got, err)
+	}
+	if len(fetched) != 1 || fetched[0] != "1.2.0 arm64" {
+		t.Errorf("fetched %v", fetched)
+	}
+	// A dev stamp and a checkout never fetch.
+	dev := filepath.Join(lib, "1.2.1-dev.88.1700000000")
+	os.MkdirAll(dev, 0o755)
+	if _, err := Local(dev, false, "arm64"); err == nil || !strings.Contains(err.Error(), "install.sh") {
+		t.Errorf("dev stamp: %v", err)
+	}
+	if _, err := Local(t.TempDir(), true, "arm64"); err == nil || !strings.Contains(err.Error(), "docker compose run --rm build") {
+		t.Errorf("checkout: %v", err)
+	}
+	if len(fetched) != 1 {
+		t.Errorf("a dev stamp or a checkout fetched: %v", fetched)
+	}
+	// A fetch that fails names the release and the remedy; nothing is returned.
+	fetchRelease = func(string, string, string) error { return errors.New("no GitHub token: x\nset GITHUB_TOKEN") }
+	other := filepath.Join(lib, "1.3.0")
+	os.MkdirAll(other, 0o755)
+	_, err := Local(other, false, "amd64")
+	if err == nil || !strings.Contains(err.Error(), "release v1.3.0 failed") || !strings.Contains(err.Error(), "set GITHUB_TOKEN") || !strings.Contains(err.Error(), "install.sh") {
+		t.Errorf("failed fetch: %v", err)
 	}
 }
 

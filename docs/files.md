@@ -58,9 +58,9 @@ commands not named as writers below write nothing — `check` (but see `--fix`),
 
 | Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |
 |---|---|---|---|---|---|---|---|
-| `<lib>/<version>/kasbah` | `install.sh` (`.kasbah.new`, then rename), `<version>` being the build stamp | the symlink; a hand-off (`cli.md` → Hand-off) | static ELF for this machine | `755` | the installing user | a re-install of the same stamp replaces it; never removed by kasbah | `install.sh:111` |
-| `<lib>/<version>/server/kasbah-linux-<arch>` | `install.sh` (same way), amd64 and arm64 | `serverbin.Local` — what that version ships to a server | static linux ELF | `755` | the installing user | as above | `install.sh:114`, `internal/serverbin/serverbin.go:56` |
-| `<bin>/kasbah` | `install.sh`: `ln -sfn` to `<lib>/<newest>/kasbah`, newest by `internal/version` over the version directories whose binary runs (`kasbah __newest`) | the shell | symlink | — | the installing user | repointed by every install; a regular file there (the pre-launcher install) is replaced, a directory refused | `install.sh:143` |
+| `<lib>/<version>/kasbah` | `install.sh` (`.kasbah.new`, then rename), `<version>` being the build stamp; `self-update` (`.kasbah.part` streamed, size + sha256 checked against the signed `checksums.txt`, then rename) | the symlink; a hand-off (`cli.md` → Hand-off) | static ELF for this machine | `755` | the installing user | a re-install of the same stamp replaces it; never removed by kasbah | `install.sh:111` |
+| `<lib>/<version>/server/kasbah-linux-<arch>` | `install.sh` (same way), amd64 and arm64; `self-update` (this machine's arch, a copy of its own binary); `serverbin.Local` fetching the missing arch of an installed release the same verified way | `serverbin.Local` — what that version ships to a server | static linux ELF | `755` | the installing user | as above | `install.sh:114`, `internal/serverbin/serverbin.go:56` |
+| `<bin>/kasbah` | `install.sh`: `ln -sfn` to `<lib>/<newest>/kasbah`, newest by `internal/version` over the version directories whose binary runs (`kasbah __newest`); `self-update` the same, through `<bin>/.kasbah.new` and a rename | the shell | symlink | — | the installing user | repointed by every install; a regular file there (the pre-launcher install) is replaced, a directory refused | `install.sh:143` |
 
 A pre-launcher install (`<lib>/server/kasbah-linux-*` at the top level, and the
 pre-1.0 `libexec/`, `templates/`, `VERSION`, `*.sh`) is swept by the next install.

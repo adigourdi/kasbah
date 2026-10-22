@@ -58,10 +58,10 @@ func TestResolve(t *testing.T) {
 		{"nil", nil, lib, "", ""},
 		{"the server's build", newer("1.1.0"), lib, v110, ""},
 		{"the server's other build", newer("1.2.0"), lib, v120, ""},
-		{"the server's build is not installed", newer("1.3.0"), lib, "", "kasbah self-update 1.3.0"},
+		{"the server's build is not installed", newer("1.3.0"), lib, "", "kasbah self-update v1.3.0"},
 		{"a newer major is no hand-off", newer("2.0.1"), lib, "", ""},
 		{"the manifest's major, newest installed", schema("schema: 2\nname: demo\n"), lib, v201, ""},
-		{"the manifest's major is not installed", schema("schema: 3\nname: demo\n"), lib, "", "kasbah self-update <3.x.y>"},
+		{"the manifest's major is not installed", schema("schema: 3\nname: demo\n"), lib, "", "kasbah self-update v3"},
 		{"already handed off", newer("1.1.0"), map[string]string{"KASBAH_LIB_DIR": root, "KASBAH_HANDOFF": "1.0.0"}, "", "already handed off from kasbah 1.0.0"},
 		{"no library root", newer("1.1.0"), map[string]string{}, "", "nor HOME"},
 	}

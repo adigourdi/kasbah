@@ -39,11 +39,11 @@ func resolve(err error, getenv func(string) string) string {
 	case errors.As(err, &newer):
 		find = func(root string) string { return launcher.Find(root, newer.Server) }
 		wanted = "kasbah " + newer.Server
-		remedy = "kasbah self-update " + newer.Server
+		remedy = "kasbah self-update v" + newer.Server
 	case errors.As(err, &schema):
 		find = func(root string) string { return launcher.Newest(root, schema.Schema) }
 		wanted = fmt.Sprintf("a kasbah of major %d", schema.Schema)
-		remedy = fmt.Sprintf("kasbah self-update <%d.x.y>", schema.Schema)
+		remedy = fmt.Sprintf("kasbah self-update v%d", schema.Schema)
 	default:
 		return ""
 	}

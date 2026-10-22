@@ -10,6 +10,7 @@ one Go binary — nothing but Docker and that binary runs on the server.
 
 ```sh
 ./install.sh    # builds through Docker; installs under ~/.local/share/kasbah/<version>/ and links ~/.local/bin/kasbah to the newest
+kasbah self-update   # later: the newest release of this major, verified against release.pub (needs GITHUB_TOKEN or gh)
 ```
 
 ## Release

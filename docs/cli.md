@@ -1081,6 +1081,42 @@ be started (exit 1, nothing written), and when kasbah itself is sent
 `SIGHUP`/`SIGTERM` mid-command — it forwards the signal, warns in one line,
 exits `129`/`143` and still writes `last_server`, since the command ran.
 
+### `kasbah self-update [vN | vN.M.P] [--pre] [--yes]`
+
+Installs a released kasbah beside this one and repoints `~/.local/bin/kasbah`
+(`KASBAH_BIN_DIR`) to the newest installed version that runs. No argument
+means the newest release of this kasbah's major; `vN` the newest of that
+major; `vN.M.P` exactly that one. Pre-release tags (`-rc.N`) are skipped
+unless `--pre`.
+
+The repo is private, so it authenticates: `GITHUB_TOKEN`, else `gh auth token`
+when `gh` is on PATH, else a failure naming both. Tags come from
+`git ls-remote --tags --refs git@github.com:adigourdi/kasbah.git`
+(`KASBAH_RELEASES_REMOTE`); the release's assets from the GitHub API
+(`KASBAH_RELEASES_API`), the token sent to the API host only — never on the
+redirect to the storage host.
+
+Trust runs in this order, and nothing lands under `~/.local/share/kasbah`
+before it holds: `checksums.txt` and `checksums.txt.minisig` are fetched and
+the signature verified against the key compiled into the binary
+(`release.pub`, minisign's prehashed form: Blake2b-512, then ed25519, key id
+and trusted comment checked) before a single checksum line is read; the asset
+for this machine (`kasbah_<ver>_linux_<arch>`) is streamed to
+`<lib>/<ver>/.kasbah.part`, its size and sha256 compared to the verified
+entry, then renamed to `<lib>/<ver>/kasbah` and copied beside as
+`server/kasbah-linux-<arch>` (the same bytes serve both roles); the new binary
+must answer `--version` with its own version. The symlink then moves to the
+newest installed version that runs, through `<bin>/.kasbah.new` and a rename;
+when that is a different major from the one it points at now the command asks
+first (`--yes`; no TTY → hard fail naming the flag). A version already
+installed and answering for itself is refused as such. A checkout
+(`dist/kasbah`) refuses: build it.
+
+The other architecture's server build is not installed up front. An installed
+*release* kasbah that meets a server of an arch it holds no build for fetches
+exactly that asset the same verified way, into `<lib>/<ver>/server/`, before
+shipping it; a dev build or a checkout never fetches.
+
 ## Hand-off between installed versions
 
 `install.sh` keeps every version it installs, under
@@ -1093,8 +1129,8 @@ side effect — in two cases:
 - **A server holds a newer build** of its major. The same-build rule refuses
   to talk to it; when that build is installed, the refusal becomes a hand-off
   to it. The message names both builds; when the version is not installed it
-  names the remedies (`./install.sh` from that tag's checkout; later,
-  `kasbah self-update <version>`).
+  names the remedies (`kasbah self-update vN.M.P`, or `./install.sh` from that
+  tag's checkout).
 - **A manifest's `schema` belongs to a newer major**: the newest installed
   kasbah of that major runs the command.
 
