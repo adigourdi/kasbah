@@ -7,9 +7,17 @@
 #   ./release.sh keygen          create the minisign key pair: the secret key
 #                                at $KASBAH_RELEASE_KEY, the public key at
 #                                release.pub in the repo
+#   ./release.sh stage vX.Y.Z[-rc.N] DIR
+#                                write the assets except the signature into DIR,
+#                                from the build in dist/
+#   ./release.sh flags vX.Y.Z[-rc.N]
+#                                print the gh release create flags: --latest
+#                                only for the highest final version at origin
 #
 # Assets (frozen): kasbah_<ver>_linux_amd64, kasbah_<ver>_linux_arm64,
-# checksums.txt (sha256sum format), checksums.txt.minisig.
+# get.sh (its stamped='' line set to the version), checksums.txt (sha256sum
+# format, over the three), checksums.txt.minisig. The workflow stages and
+# flags through this script too.
 #
 # A release build — an rc included — carries the tag exactly: tools/stamp
 # finds HEAD tagged v<ver> on a clean tree (no commit count, no build time),
@@ -26,6 +34,7 @@
 
 set -euo pipefail
 
+caller_dir="$PWD"
 repo_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$repo_dir"
 
@@ -69,12 +78,64 @@ keygen() {
     echo "public key: $repo_dir/release.pub — commit it"
 }
 
-release() {
-    local tag=$1 ver prerelease=()
+check_tag() {
+    [[ ${1#v} =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.(0|[1-9][0-9]*))?$ && $1 == v* ]] \
+        || die "'$1' is not a release tag: vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N"
+}
+
+# stamp_get <ver> <out> — get.sh with its one stamped='' line set to ver.
+stamp_get() {
+    local ver=$1 out=$2 src="$repo_dir/get.sh" n
+    [ -f "$src" ] || die "no $src"
+    n="$(grep -cx "stamped=''" "$src" || true)"
+    [ "$n" = 1 ] || die "get.sh holds the line stamped='' $n times, not once — nothing to stamp"
+    sed "s/^stamped=''\$/stamped='$ver'/" "$src" >"$out" || die "could not write $out"
+    ! grep -qF "stamped=''" "$out" || die "get.sh still holds stamped='' once stamped — it must be one top-level line"
+    n="$(grep -cxF "stamped='$ver'" "$out" || true)"
+    [ "$n" = 1 ] || die "get.sh holds stamped='$ver' $n times once stamped, not once"
+}
+
+# stage <tag> <dir> — the two binaries from dist/server, the stamped get.sh and
+# checksums.txt over the three in name order, into dir (made if missing).
+stage() {
+    local tag=$1 dir=$2 ver
+    check_tag "$tag"
     ver=${tag#v}
-    [[ $ver =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] \
-        || die "'$tag' is not a release tag: vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N"
-    [[ $ver == *-* ]] && prerelease=(--prerelease)
+    need sha256sum
+    local arch
+    for arch in amd64 arm64; do
+        [ -f "dist/server/kasbah-linux-$arch" ] || die "no dist/server/kasbah-linux-$arch — build first"
+    done
+    mkdir -p "$dir" || die "could not make $dir"
+    stamp_get "$ver" "$dir/get.sh"
+    cp dist/server/kasbah-linux-amd64 "$dir/kasbah_${ver}_linux_amd64"
+    cp dist/server/kasbah-linux-arm64 "$dir/kasbah_${ver}_linux_arm64"
+    (cd "$dir" && sha256sum get.sh "kasbah_${ver}_linux_amd64" "kasbah_${ver}_linux_arm64") \
+        >"$dir/checksums.txt" || die "could not write $dir/checksums.txt"
+}
+
+# flags <tag> — an rc is a prerelease, never latest; a final is latest only
+# when no final tag at origin is higher. Origin's tags, not the local ones: a
+# local tag nobody pushed is no release, and a stale clone may lack newer ones.
+flags() {
+    local tag=$1 refs finals highest
+    check_tag "$tag"
+    if [[ $tag == *-* ]]; then
+        echo "--prerelease --latest=false"
+        return
+    fi
+    need git
+    refs="$(git ls-remote --tags --refs origin)" || die "could not list origin's tags"
+    finals="$(sed -n 's|^[0-9a-f]*\trefs/tags/||p' <<<"$refs")"
+    finals="$(printf '%s\n%s\n' "$finals" "$tag" | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')"
+    highest="$(sort -V <<<"$finals" | tail -n 1)"
+    if [ "$highest" = "$tag" ]; then echo "--latest"; else echo "--latest=false"; fi
+}
+
+release() {
+    local tag=$1 ver
+    check_tag "$tag"
+    ver=${tag#v}
 
     need gh docker git sha256sum
     gh auth status >/dev/null 2>&1 || die "gh is not authenticated (gh auth login)"
@@ -97,6 +158,12 @@ release() {
     grep -q '^ *origin/' <<<"$remote" || die "HEAD is not on any pushed origin branch — push it first"
     [ -f "$key" ] || die "no signing key at $key — ./release.sh keygen makes one (or set KASBAH_RELEASE_KEY)"
     [ -f "$repo_dir/release.pub" ] || die "no $repo_dir/release.pub — ./release.sh keygen makes the pair"
+    # get.sh's stamp line and origin's tags are checked before anything is built.
+    scratch="$(mktemp -d)"
+    stamp_get "$ver" "$scratch/get.sh"
+    local flag_words gh_flags
+    flag_words="$(flags "$tag")" || exit 1
+    read -ra gh_flags <<<"$flag_words"
 
     ./test.sh || die "test.sh failed — nothing released"
 
@@ -129,11 +196,7 @@ release() {
         exit 1
     fi
 
-    scratch="$(mktemp -d)"
-    cp dist/server/kasbah-linux-amd64 "$scratch/kasbah_${ver}_linux_amd64"
-    cp dist/server/kasbah-linux-arm64 "$scratch/kasbah_${ver}_linux_arm64"
-    (cd "$scratch" && sha256sum "kasbah_${ver}_linux_amd64" "kasbah_${ver}_linux_arm64" | LC_ALL=C sort -k2) \
-        >"$scratch/checksums.txt"
+    stage "$tag" "$scratch"
     cp "$repo_dir/release.pub" "$scratch/release.pub"
     minisign -v "$key_dir:/keys:ro" -v "$scratch:/work" -w /work "$minisign_image" \
         -S -s "/keys/$key_name" -t "kasbah $ver" -m checksums.txt
@@ -155,7 +218,7 @@ release() {
     git push origin "$tag" || die "pushing $tag failed — nothing released; the local tag stays"
     # A release that exists already is one a failed upload left behind: its
     # assets are replaced, the release is not made again.
-    local assets=("$scratch/kasbah_${ver}_linux_amd64" "$scratch/kasbah_${ver}_linux_arm64"
+    local assets=("$scratch/kasbah_${ver}_linux_amd64" "$scratch/kasbah_${ver}_linux_arm64" "$scratch/get.sh"
                   "$scratch/checksums.txt" "$scratch/checksums.txt.minisig")
     local url
     if gh release view "$tag" >/dev/null 2>&1; then
@@ -163,12 +226,12 @@ release() {
             || die "uploading the assets to the existing release $tag failed — retry, or start over: gh release delete $tag --cleanup-tag"
         url="$(gh release view "$tag" --json url --jq .url)" || url=
     else
-        url="$(gh release create "$tag" --title "kasbah $ver" --notes-file "$notes" "${prerelease[@]}" "${assets[@]}")" \
+        url="$(gh release create "$tag" --title "kasbah $ver" --notes-file "$notes" "${gh_flags[@]}" "${assets[@]}")" \
             || die "creating the release $tag failed — retry (an existing release gets its assets replaced), or start over: gh release delete $tag --cleanup-tag"
     fi
 
     echo "released $tag"
-    echo "  assets: kasbah_${ver}_linux_amd64 kasbah_${ver}_linux_arm64 checksums.txt checksums.txt.minisig"
+    echo "  assets: kasbah_${ver}_linux_amd64 kasbah_${ver}_linux_arm64 get.sh checksums.txt checksums.txt.minisig"
     echo "  $url"
 }
 
@@ -182,8 +245,13 @@ hashes() {
     sha256sum dist/kasbah dist/server/kasbah-linux-amd64 dist/server/kasbah-linux-arm64
 }
 
+usage="usage: ./release.sh vX.Y.Z[-rc.N] | keygen | stage vX.Y.Z[-rc.N] DIR | flags vX.Y.Z[-rc.N]"
 case "${1:-}" in
     keygen) [ $# -eq 1 ] || die "keygen takes no argument"; keygen ;;
-    v*)     [ $# -eq 1 ] || die "usage: ./release.sh vX.Y.Z[-rc.N] | keygen"; release "$1" ;;
-    *)      echo "usage: ./release.sh vX.Y.Z[-rc.N] | keygen" >&2; exit 1 ;;
+    stage)  [ $# -eq 3 ] || die "$usage"
+            dir=$3; [[ $dir == /* ]] || dir="$caller_dir/$dir"
+            stage "$2" "$dir" ;;
+    flags)  [ $# -eq 2 ] || die "$usage"; flags "$2" ;;
+    v*)     [ $# -eq 1 ] || die "$usage"; release "$1" ;;
+    *)      echo "$usage" >&2; exit 1 ;;
 esac

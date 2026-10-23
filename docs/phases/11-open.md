@@ -185,13 +185,18 @@ rewrites it to `stamped='<ver>'` (no v) — `sed "s/^stamped=''\$/stamped='<ver>
 as `tests/get_test.sh` does.
 
 **Deliverables**
-- [ ] `get.sh` with its version stamped in is an asset, listed in `checksums.txt`
-- [ ] A release is marked latest only when it is the highest final version
-- [ ] `.github/workflows/release.yml` stages the same assets
-- [ ] CLAUDE.md's frozen contracts name the `get.sh` asset and URL
+- [x] `get.sh` with its version stamped in is an asset, listed in `checksums.txt`
+- [x] A release is marked latest only when it is the highest final version
+- [x] `.github/workflows/release.yml` stages the same assets
+- [x] CLAUDE.md's frozen contracts name the `get.sh` asset and URL
 
 **Verify on:** the staging and "latest" logic tested as functions; the real proof
 is 11.8.
+*Done:* `release.sh stage` / `release.sh flags` are the one implementation, the
+workflow calls both and `tests/release_test.sh` pins its upload list to what `stage`
+writes. "Latest" reads origin's tags, so a tag left without a release counts — the
+pre-public cleanup deletes tags with their releases ([[go-public]]). The workflow
+still lacks release.sh's stamp check and re-upload path; it stays dispatch-only.
 
 ### 11.7 — `docs/install.md` (S) — the orchestrator's, after 11.6
 

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Test: release.sh — the refusals, the double build, the asset names, the
-# checksums file, the stamp check, the signature, the tag, the GitHub
-# release; VERSION is left alone.
+# Test: release.sh — the refusals, the double build, the asset names, get.sh
+# stamped with the version, the checksums file, the stamp check, the
+# signature, the tag, the GitHub release and which one is latest; the stage
+# and flags subcommands, and that the workflow runs them and uploads what stage
+# writes; VERSION is left alone.
 #
 # Hermetic. `docker` and `gh` are stubs on PATH that record every invocation:
 # the docker stub plays the compose build (fixed bytes into dist/, or bytes
@@ -134,7 +136,7 @@ export KASBAH_RELEASE_KEY="$key_dir/release.key"
 fresh() {
     rm -rf "$repo" "$origin" "$key_dir" "$DOCKER_LOG" "$GH_LOG" "$GH_KEEP" "$TEST_SH_LOG" "$BUILD_COUNT" "$VERIFY_SAW_PUB"
     mkdir -p "$repo" "$key_dir"
-    cp "$repo_dir/release.sh" "$repo/"
+    cp "$repo_dir/release.sh" "$repo_dir/get.sh" "$repo/"
     printf '%s\n' "$1" > "$repo/VERSION"
     printf 'fake public key\n' > "$repo/release.pub"
     printf 'fake secret key\n' > "$key_dir/release.key"
@@ -200,17 +202,22 @@ assert '! grep -q "^release upload" "$GH_LOG"' "and not uploaded to, since it di
 create="$(grep "^release create" "$GH_LOG")"
 assert '[ -n "$create" ]' "gh release create was called"
 assert 'grep -q "^release create v1.2.3 --title kasbah 1.2.3 --notes-file " <<<"$create"' "with the tag and the title (got: $create)"
-for a in kasbah_1.2.3_linux_amd64 kasbah_1.2.3_linux_arm64 checksums.txt checksums.txt.minisig; do
+for a in kasbah_1.2.3_linux_amd64 kasbah_1.2.3_linux_arm64 get.sh checksums.txt checksums.txt.minisig; do
     assert 'grep -q "/$a\( \|$\)" <<<"$create"' "with asset $a (got: $create)"
     assert '[ -f "$GH_KEEP/$a" ]' "and $a existed when gh was called"
 done
 assert '! grep -q -- "--prerelease" <<<"$create"' "not a prerelease"
+assert 'grep -q -- " --latest " <<<"$create"' "marked latest, the only final (got: $create)"
+assert '[ "$(grep -cx "stamped='"'"'1.2.3'"'"'" "$GH_KEEP/get.sh")" = 1 ] && ! grep -qF "stamped='"''"'" "$GH_KEEP/get.sh"' \
+    "get.sh carries stamped='1.2.3' once and stamped='' nowhere"
+assert '[ "$(sed "s/^stamped='"'"'1.2.3'"'"'\$/stamped='"''"'/" "$GH_KEEP/get.sh")" = "$(cat "$repo_dir/get.sh")" ]' \
+    "and is the repo's get.sh otherwise"
 assert 'cmp -s "$GH_KEEP/kasbah_1.2.3_linux_amd64" "$repo/dist/server/kasbah-linux-amd64"' "the amd64 asset is the linux/amd64 build"
 assert 'cmp -s "$GH_KEEP/kasbah_1.2.3_linux_arm64" "$repo/dist/server/kasbah-linux-arm64"' "the arm64 asset is the linux/arm64 build"
-expected="$(cd "$GH_KEEP" && sha256sum kasbah_1.2.3_linux_amd64 kasbah_1.2.3_linux_arm64 | LC_ALL=C sort -k2)"
+expected="$(cd "$GH_KEEP" && sha256sum get.sh kasbah_1.2.3_linux_amd64 kasbah_1.2.3_linux_arm64)"
 assert '[ "$(cat "$GH_KEEP/checksums.txt")" = "$expected" ]' \
-    "checksums.txt is sha256sum's format over the two assets by name (got: $(tr '\n' '|' <"$GH_KEEP/checksums.txt"))"
-assert '[ "$(wc -l <"$GH_KEEP/checksums.txt")" = 2 ]' "and nothing else"
+    "checksums.txt is sha256sum's format over the three assets (got: $(tr '\n' '|' <"$GH_KEEP/checksums.txt"))"
+assert '[ "$(wc -l <"$GH_KEEP/checksums.txt")" = 3 ]' "and nothing else"
 assert '[ "$(cat "$GH_KEEP/checksums.txt.minisig")" = "fake signature" ]' "the minisig is what minisign wrote"
 notes="$(sed -n 's/.*--notes-file \([^ ]*\).*/\1/p' <<<"$create")"
 assert '[ "$(cat "$GH_KEEP/$(basename "$notes")")" = "$(printf -- "- second commit\n- first commit")" ]' \
@@ -219,6 +226,8 @@ assert '[ "$(cat "$repo/VERSION")" = 1.2.3 ]' "VERSION is left as it was (got $(
 assert '[ -z "$(git -C "$repo" status --porcelain)" ]' "and the tree is clean after the release ($(git -C "$repo" status --porcelain | tr '\n' ' '))"
 assert 'grep -q "^released v1.2.3" <<<"$out" && grep -q "https://github.example/releases/tag/v1.2.3" <<<"$out"' \
     "the summary names the tag and the release URL (got: $out)"
+assert 'grep -q "assets: kasbah_1.2.3_linux_amd64 kasbah_1.2.3_linux_arm64 get.sh checksums.txt checksums.txt.minisig$" <<<"$out"' \
+    "the summary lists the five assets (got: $out)"
 assert '[ ! -f "$fakehome/.config/kasbah/release.key" ]' "nothing was written under HOME"
 
 # --- Case 2: notes since the previous tag; an existing tag on HEAD is reused ----
@@ -236,6 +245,7 @@ create="$(grep "^release create" "$GH_LOG")"
 notes="$(sed -n 's/.*--notes-file \([^ ]*\).*/\1/p' <<<"$create")"
 assert '[ "$(cat "$GH_KEEP/$(basename "$notes")")" = "$(printf -- "- close 1.2.4\n- a fix")" ]' \
     "the notes are the subjects since v1.2.3 (got: $(tr '\n' '|' <"$GH_KEEP/$(basename "$notes")"))"
+assert 'grep -q -- " --latest " <<<"$create"' "v1.2.4 after v1.2.3 is latest (got: $create)"
 
 # --- Case 3: a release candidate ------------------------------------------------
 
@@ -243,11 +253,117 @@ fresh 1.3.0-rc.1
 release v1.3.0-rc.1
 assert '[ "$rc" = 0 ]' "v1.3.0-rc.1 releases (exit $rc: $err)"
 create="$(grep "^release create" "$GH_LOG")"
-assert 'grep -q -- " --prerelease " <<<"$create"' "as a prerelease (got: $create)"
+assert 'grep -q -- " --prerelease --latest=false " <<<"$create"' "as a prerelease, never latest (got: $create)"
+assert 'grep -q "^stamped='"'"'1.3.0-rc.1'"'"'$" "$GH_KEEP/get.sh"' "get.sh carries the rc's version"
 assert 'grep -q "/kasbah_1.3.0-rc.1_linux_amd64" <<<"$create"' "with the version in the asset name (got: $create)"
 assert '[ "$(cat "$repo/VERSION")" = 1.3.0-rc.1 ]' "VERSION is left as it was after an rc (got $(cat "$repo/VERSION"))"
 assert '[ "$(cat "$BUILD_COUNT")" = 2 ]' "an rc builds twice on its tag, and the builds match"
 assert '[ "$(origin_tags)" = v1.3.0-rc.1 ]' "the rc tag was pushed"
+
+# --- Latest: only the highest final version at origin -------------------------
+
+# A final below one already at origin is released but not latest. The higher
+# tag is only at origin: origin's tags count, not the clone's.
+fresh 1.0.1
+git -C "$repo" tag -a v2.0.0 -m "kasbah 2.0.0"
+git -C "$repo" push -q origin v2.0.0
+git -C "$repo" tag -d v2.0.0 >/dev/null
+git -C "$repo" commit -q --allow-empty -m "a fix for 1.0"
+git -C "$repo" push -q origin main
+release v1.0.1
+assert '[ "$rc" = 0 ]' "v1.0.1 releases after v2.0.0 (exit $rc: $err)"
+create="$(grep "^release create" "$GH_LOG")"
+assert 'grep -q -- " --latest=false " <<<"$create" && ! grep -q -- " --latest " <<<"$create"' \
+    "and is not latest (got: $create)"
+assert '! grep -q -- "--prerelease" <<<"$create"' "and is no prerelease either"
+
+# flags <tag>, as the workflow runs it, against tags pushed to origin and
+# then dropped from the clone.
+flags_of() { (cd "$repo" && ./release.sh flags "$1" 2>"$tmpdir/err"); }
+origin_has() {
+    local t
+    for t; do git -C "$repo" tag "$t"; done
+    git -C "$repo" push -q origin "$@"
+    git -C "$repo" tag -d "$@" >/dev/null
+}
+fresh 1.0.0
+origin_has v1.9.0 v1.10.0
+assert '[ "$(flags_of v1.10.0)" = --latest ]' "v1.10.0 above v1.9.0 is latest — versions, not strings ($(flags_of v1.10.0))"
+assert '[ "$(flags_of v1.11.0)" = --latest ]' "a final above every tag is latest"
+assert '[ "$(flags_of v1.9.1)" = --latest=false ]' "v1.9.1 below v1.10.0 is not ($(flags_of v1.9.1))"
+assert '[ "$(flags_of v1.10.1-rc.1)" = "--prerelease --latest=false" ]' "an rc is a prerelease, never latest ($(flags_of v1.10.1-rc.1))"
+origin_has v2.0.0-rc.1 v9.9.9-beta v10.0 v3.0.0.1 v4.0.0x release-99.0.0 v05.0.0
+assert '[ "$(flags_of v1.10.0)" = --latest ]' "rc and junk tags above it do not count ($(flags_of v1.10.0))"
+git -C "$repo" tag v7.0.0
+assert '[ "$(flags_of v1.10.0)" = --latest ]' "nor a local tag nobody pushed ($(flags_of v1.10.0))"
+git -C "$repo" tag -d v7.0.0 >/dev/null
+flags_of v1.10 >/dev/null; rc=$?
+assert '[ "$rc" = 1 ]' "flags refuses a tag that is not vX.Y.Z (exit $rc)"
+git -C "$repo" remote set-url origin "$tmpdir/nowhere.git"
+flags_of v1.10.0 >/dev/null; rc=$?
+assert '[ "$rc" = 1 ] && grep -q "could not list origin" "$tmpdir/err"' "flags fails when origin cannot be read (exit $rc: $(cat "$tmpdir/err"))"
+release v1.0.0
+assert '[ "$rc" = 1 ] && grep -q "could not list origin" <<<"$err"' "a release refuses when origin's tags cannot be read (exit $rc: $err)"
+assert '[ -z "$(local_tags)" ] && ! [ -f "$TEST_SH_LOG" ]' "an origin whose tags cannot be read: no tag, test.sh did not run"
+assert '! grep -q "^release create" "$GH_LOG" 2>/dev/null' "an origin whose tags cannot be read: no release"
+
+# --- stage <tag> <dir>, as the workflow runs it --------------------------------
+
+fresh 1.2.3
+mkdir -p "$repo/dist/server"
+printf 'amd64 bytes\n' > "$repo/dist/server/kasbah-linux-amd64"
+printf 'arm64 bytes\n' > "$repo/dist/server/kasbah-linux-arm64"
+stage_in() { (cd "$tmpdir" && "$repo/release.sh" stage "$@" >"$tmpdir/out" 2>"$tmpdir/err"); }
+stage_in v1.4.0-rc.2 staged; rc=$?
+st="$tmpdir/staged"
+assert '[ "$rc" = 0 ]' "stage succeeds (exit $rc: $(cat "$tmpdir/err"))"
+assert '[ "$(ls "$st" | tr "\n" " ")" = "checksums.txt get.sh kasbah_1.4.0-rc.2_linux_amd64 kasbah_1.4.0-rc.2_linux_arm64 " ]' \
+    "a relative DIR is the caller's, holding the four files (got: $(ls "$st" 2>&1 | tr '\n' ' '))"
+assert 'cmp -s "$st/kasbah_1.4.0-rc.2_linux_amd64" "$repo/dist/server/kasbah-linux-amd64" && cmp -s "$st/kasbah_1.4.0-rc.2_linux_arm64" "$repo/dist/server/kasbah-linux-arm64"' \
+    "the binaries are dist/server's"
+assert '[ "$(grep -cx "stamped='"'"'1.4.0-rc.2'"'"'" "$st/get.sh")" = 1 ] && ! grep -qF "stamped='"''"'" "$st/get.sh"' \
+    "get.sh is stamped with the version, no v (got: $(grep '^stamped=' "$st/get.sh"))"
+assert 'sh -n "$st/get.sh"' "and still parses"
+assert '(cd "$st" && sha256sum --quiet -c checksums.txt)' "checksums.txt checks out"
+assert '[ "$(cut -d" " -f3 "$st/checksums.txt" | tr "\n" " ")" = "get.sh kasbah_1.4.0-rc.2_linux_amd64 kasbah_1.4.0-rc.2_linux_arm64 " ]' \
+    "over the three, in name order (got: $(tr '\n' '|' <"$st/checksums.txt"))"
+assert '! [ -f "$DOCKER_LOG" ] && ! [ -f "$GH_LOG" ]' "stage neither builds, signs nor releases"
+
+# The workflow stages and flags through release.sh and uploads what stage
+# wrote plus the signature — no more, no less.
+wf="$repo_dir/.github/workflows/release.yml"
+wf_run() { yq -r --arg n "$1" '.jobs.release.steps[] | select(.name == $n) | .run' "$wf"; }
+assert '[ "$(wf_run "Stage assets and checksums")" = "./release.sh stage \"\$TAG\" release" ]' \
+    "the workflow stages with ./release.sh stage (got: $(wf_run "Stage assets and checksums"))"
+wf_create="$(wf_run "Create the GitHub release")"
+assert 'grep -qF "\$(./release.sh flags \"\$TAG\")" <<<"$wf_create" && grep -qF "gh release create \"\$TAG\" --title \"kasbah \$ver\" --notes-file notes.md \"\${flags[@]}\"" <<<"$wf_create"' \
+    "the workflow's release takes its flags from ./release.sh flags (got: $wf_create)"
+wf_assets="$(sed -n '/gh release create/,$p' <<<"$wf_create" | grep -o 'release/[^" \\]*' | sed 's|^release/||' | LC_ALL=C sort)"
+st_assets="$( (ls "$st"; echo checksums.txt.minisig) | sed 's/1\.4\.0-rc\.2/${ver}/' | LC_ALL=C sort)"
+assert '[ "$wf_assets" = "$st_assets" ]' \
+    "the workflow uploads exactly what stage writes plus the signature (got: $(tr '\n' ' ' <<<"$wf_assets"); want: $(tr '\n' ' ' <<<"$st_assets"))"
+
+rm -rf "$st"
+stage_in v1.4 staged; rc=$?
+assert '[ "$rc" = 1 ] && ! [ -e "$st" ]' "stage refuses a tag that is not vX.Y.Z (exit $rc)"
+stage_in v1.4.0; rc=$?
+assert '[ "$rc" = 1 ]' "stage refuses without a DIR (exit $rc)"
+printf 'stamped='"''"'\n' >> "$repo/get.sh"
+stage_in v1.4.0 staged; rc=$?
+assert '[ "$rc" = 1 ] && grep -q "2 times, not once" "$tmpdir/err"' "stage refuses get.sh with the stamp line twice (exit $rc: $(cat "$tmpdir/err"))"
+cp "$repo_dir/get.sh" "$repo/get.sh"
+printf '  stamped='"''"'\n' >> "$repo/get.sh"
+stage_in v1.4.0 staged; rc=$?
+assert '[ "$rc" = 1 ] && grep -q "still holds" "$tmpdir/err"' "stage refuses get.sh that keeps a stamped='' it cannot rewrite (exit $rc: $(cat "$tmpdir/err"))"
+sed -i "/^stamped=''\$/d" "$repo/get.sh"
+rm -rf "$st"
+stage_in v1.4.0 staged; rc=$?
+assert '[ "$rc" = 1 ] && grep -q "0 times, not once" "$tmpdir/err" && ! [ -e "$st/checksums.txt" ]' \
+    "stage refuses get.sh without the stamp line, and writes no checksums.txt (exit $rc: $(cat "$tmpdir/err"))"
+cp "$repo_dir/get.sh" "$repo/get.sh"
+rm -rf "$repo/dist" "$st"
+stage_in v1.4.0 staged; rc=$?
+assert '[ "$rc" = 1 ] && grep -q "build first" "$tmpdir/err" && ! [ -e "$st" ]' "stage refuses without a build (exit $rc: $(cat "$tmpdir/err"))"
 
 # --- Refusals, each before anything is built ------------------------------------
 
@@ -313,6 +429,20 @@ release v1.2.3
 unset GH_AUTH_RC
 assert_nothing_released "gh not authenticated"
 assert '! [ -f "$DOCKER_LOG" ]' "gh not authenticated: nothing built"
+
+fresh 1.2.3
+sed -i "/^stamped=''\$/d" "$repo/get.sh"
+git -C "$repo" commit -q -am "get.sh unstampable" && git -C "$repo" push -q origin main
+release v1.2.3
+assert_nothing_released "get.sh without its stamp line"
+assert 'grep -q "stamped=" <<<"$err"' "get.sh without its stamp line: says so (got: $err)"
+assert '! [ -f "$TEST_SH_LOG" ]' "get.sh without its stamp line: refused before test.sh"
+
+fresh 1.2.3
+printf 'stamped='"''"'\n' >> "$repo/get.sh"
+git -C "$repo" commit -q -am "get.sh stamped twice" && git -C "$repo" push -q origin main
+release v1.2.3
+assert_nothing_released "get.sh with its stamp line twice"
 
 assert '! [ -f "$DOCKER_LOG" ] && ! [ -f "$TEST_SH_LOG" ]' "no refusal above reached test.sh or the build"
 
@@ -402,9 +532,11 @@ assert '[ "$rc" = 0 ]' "the rerun succeeds against the half-made release (exit $
 upload="$(grep "^release upload" "$GH_LOG")"
 assert 'grep -q "^release upload v1.2.3 .*/checksums.txt.minisig --clobber$" <<<"$upload"' "the rerun replaces the assets (got: $upload)"
 assert '[ "$(grep -c "^release upload" "$GH_LOG")" = 1 ]' "once"
-for a in kasbah_1.2.3_linux_amd64 kasbah_1.2.3_linux_arm64 checksums.txt checksums.txt.minisig; do
+for a in kasbah_1.2.3_linux_amd64 kasbah_1.2.3_linux_arm64 get.sh checksums.txt checksums.txt.minisig; do
     assert 'grep -q "/$a\( \|$\)" <<<"$upload"' "the rerun uploads $a (got: $upload)"
 done
+assert '! grep -q -- "--latest\|--prerelease" <<<"$upload"' "and leaves latest and prerelease as they are (got: $upload)"
+assert '[ "$(grep -c "^stamped='"'"'1.2.3'"'"'$" "$GH_KEEP/get.sh")" = 1 ]' "the re-uploaded get.sh is stamped"
 assert '! grep -q "^release create" "$GH_LOG"' "and does not create the release again"
 assert '[ "$(cat "$repo/VERSION")" = 1.2.3 ]' "and VERSION is still as it was (got $(cat "$repo/VERSION"))"
 assert 'grep -q "https://github.example/releases/tag/v1.2.3" <<<"$out"' "the summary still names the release URL (got: $out)"

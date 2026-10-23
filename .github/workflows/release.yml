@@ -1,7 +1,7 @@
-# Publish a release from a tag: the same double build, checksums and minisign
-# signature as release.sh, with the secret key in the MINISIGN_KEY secret.
-# The checkout sits on the tag with a clean tree, so tools/stamp stamps the
-# build as the tag exactly.
+# Publish a release from a tag: the same double build and minisign signature
+# as release.sh, with the secret key in the MINISIGN_KEY secret; the assets and
+# the latest flag come from release.sh itself (stage, flags). The checkout sits
+# on the tag with a clean tree, so tools/stamp stamps the build as the tag exactly.
 # Disabled until the signing key moves to a repository secret: dispatch only,
 # the tag trigger stays commented.
 name: release
@@ -39,13 +39,7 @@ jobs:
           fi
 
       - name: Stage assets and checksums
-        run: |
-          set -euo pipefail
-          ver="${TAG#v}"
-          mkdir -p release
-          cp dist/server/kasbah-linux-amd64 "release/kasbah_${ver}_linux_amd64"
-          cp dist/server/kasbah-linux-arm64 "release/kasbah_${ver}_linux_arm64"
-          (cd release && sha256sum "kasbah_${ver}_linux_amd64" "kasbah_${ver}_linux_arm64" | LC_ALL=C sort -k2) > release/checksums.txt
+        run: ./release.sh stage "$TAG" release
         env:
           TAG: ${{ inputs.tag }}
 
@@ -72,10 +66,10 @@ jobs:
           ver="${TAG#v}"
           prev="$(git describe --tags --abbrev=0 --match 'v*' --exclude "$TAG" HEAD 2>/dev/null || true)"
           git log --format='- %s' "${prev:+$prev..}HEAD" > notes.md
-          pre=()
-          case "$ver" in *-*) pre=(--prerelease) ;; esac
-          gh release create "$TAG" --title "kasbah $ver" --notes-file notes.md "${pre[@]}" \
-            "release/kasbah_${ver}_linux_amd64" "release/kasbah_${ver}_linux_arm64" \
+          words="$(./release.sh flags "$TAG")"
+          read -ra flags <<<"$words"
+          gh release create "$TAG" --title "kasbah $ver" --notes-file notes.md "${flags[@]}" \
+            "release/kasbah_${ver}_linux_amd64" "release/kasbah_${ver}_linux_arm64" release/get.sh \
             release/checksums.txt release/checksums.txt.minisig
         env:
           TAG: ${{ inputs.tag }}

@@ -41,6 +41,10 @@ plan and the only progress tracker (the roadmap is scope, not status).
   made once by `./release.sh keygen`, whose public half is committed as
   `release.pub`), the tag pushed, `gh release create`. Needs `gh` authenticated
   and a terminal for the key's password. `-rc.N` tags are prereleases. The
+  assets come from `./release.sh stage vX.Y.Z DIR` (the binaries, `get.sh` with
+  its `stamped=''` line set to the version, `checksums.txt`) and the flags from
+  `./release.sh flags vX.Y.Z` — "Latest" only for the highest final `vN.N.N` tag
+  on origin; the dispatch-only workflow runs the same two. The
   next release's number is set by editing `VERSION` in its release commit:
   patch for fixes, minor for additive features, major for a schema change.
 - Versions: `VERSION` names the release a line is at or heading to; the stamp
@@ -96,8 +100,9 @@ the `_shared.yml` middleware names; `versions.log`'s four positional
 fields (new data = appended `key=value` pairs); the `KASBAH_` env-var
 prefix (reserved, injected at deploy, exempt from drift); the manifest schema
 (1, frozen at 1.0.0 — a change goes through `kasbah migrate`); release tags
-`vMAJOR.MINOR.PATCH` and assets `kasbah_<ver>_linux_<arch>`, `checksums.txt`,
-`checksums.txt.minisig`.
+`vMAJOR.MINOR.PATCH` and assets `kasbah_<ver>_linux_<arch>`, `get.sh`,
+`checksums.txt`, `checksums.txt.minisig`; the installer URL
+`https://github.com/adigourdi/kasbah/releases/latest/download/get.sh`.
 
 ## Layout
 
