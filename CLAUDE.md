@@ -11,7 +11,9 @@ plan and the only progress tracker (the roadmap is scope, not status).
 
 - `./test.sh` — Go checks, a build of `dist/`, then the black-box suites
   (~3 min, no server). Must pass before any commit. Needs Docker, and GNU `diff`
-  and `patch` on the host (the diff suite proves kasbah's diffs against them).
+  and `patch` on the host (the diff suite proves kasbah's diffs against them);
+  the `get.sh` suite also needs `python3`, `openssl`, `dash`, `curl`, `wget`,
+  `shasum` (perl) and util-linux's `script`/`setsid` (its fake release host).
   `KASBAH_BIN=<path>` tests that binary instead and skips the build. One line
   per suite; each suite's full output is in `.cache/test-logs/<suite>.log`,
   dumped after a FAIL; `KASBAH_TEST_VERBOSE=1` streams everything.
@@ -81,6 +83,8 @@ plan and the only progress tracker (the roadmap is scope, not status).
   `version:` attribute.
 - **Shell scripts** (`test.sh`, `install-dev.sh`, `release.sh`, `tests/`): `set -euo pipefail`;
   under pipefail never pipe a producer into `grep -q` — capture, then `grep -q <<<`.
+  `get.sh` is the exception: POSIX `sh` run as `curl | sh` (dash, busybox ash,
+  posh), so `set -eu`, no pipefail, and the token never on any command's argv.
 - **Tests land with the code they test, in the same change.**
 - **Docs are the spec:** when implementation contradicts a doc, fix the
   doc in the same change — never let them drift.

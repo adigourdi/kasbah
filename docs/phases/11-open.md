@@ -152,20 +152,25 @@ only until a release carries this code (11.8). "Already installed" exits 0 and r
 ### 11.5 — `get.sh` (L)
 
 **Deliverables**
-- [ ] POSIX `sh`, the whole body in a function called on the last line; `set -eu`,
+- [x] POSIX `sh`, the whole body in a function called on the last line; `set -eu`,
       no pipelines whose failure matters
-- [ ] Linux on x86_64/amd64 or aarch64/arm64 only, anything else refused by name
-- [ ] Downloads the stamped version's asset and `checksums.txt` through the
+- [x] Linux on x86_64/amd64 or aarch64/arm64 only, anything else refused by name
+- [x] Downloads the stamped version's asset and `checksums.txt` through the
       ladder in ruling 5; sha256 checked (`sha256sum` or `shasum -a 256`); the
       minisign signature checked too when `minisign` is on PATH
-- [ ] Hands off to `<binary> self-update [args]`, stdin from `/dev/tty` when it
+- [x] Hands off to `<binary> self-update [args]`, stdin from `/dev/tty` when it
       opens, else `/dev/null`; `--pre` and `--yes` pass through
-- [ ] `KASBAH_GET_BASE` points it at another release host (tests);
+- [x] `KASBAH_GET_BASE` points it at another release host (tests);
       `KASBAH_BIN_DIR` / `KASBAH_LIB_DIR` honoured as everywhere
-- [ ] `tests/get_test.sh` under `dash` and `busybox sh`, against a local fake
+- [x] `tests/get_test.sh` under `dash` and `busybox sh`, against a local fake
       release server, with a stub binary that records its arguments
 
 **Verify on:** `tests/get_test.sh`.
+*Done:* the suite under dash and busybox 1.37 (+ shellcheck), each token guard proven
+by breaking `get.sh` and watching it fail; posh checked by hand. Beyond the brief:
+the binary must answer `--version` before the hand-off (a noexec `$TMPDIR` is named);
+busybox wget that cannot check TLS refuses over https unless minisign verifies;
+the API redirect is followed by hand, so the token never leaves the API host.
 
 **Watch out for:** download the asset into a directory that is not named as a
 version (`mktemp -d`): `launcher.Root` takes any `<dir>/<semver>/kasbah` as a
@@ -174,6 +179,10 @@ reads stdin eats the rest of the script. `| sh` is dash on Debian/Ubuntu: no
 `pipefail`, no `[[`, no arrays, no `local` guarantees.
 
 ### 11.6 — `release.sh` and the workflow ship `get.sh` (S)
+
+The stamp: `get.sh` holds exactly one line `stamped=''` at top level; the release
+rewrites it to `stamped='<ver>'` (no v) — `sed "s/^stamped=''\$/stamped='<ver>'/"`,
+as `tests/get_test.sh` does.
 
 **Deliverables**
 - [ ] `get.sh` with its version stamped in is an asset, listed in `checksums.txt`

@@ -68,6 +68,11 @@ A library is refused unless it is empty or holds a directory named as a version,
 so a library from before 1.0.0 (`<lib>/server/kasbah-linux-*` at the top, or
 `libexec/`, `VERSION`, `*.sh`) is refused rather than adopted: remove it by hand.
 
+`get.sh` writes only a `mktemp -d` directory under `$TMPDIR` — the release
+asset, `checksums.txt` (and `.minisig`), and, for the token rung, a `600` header
+file removed as soon as that rung returns — removed on every exit; it then hands
+off to the downloaded binary's `self-update`, which writes the rows above.
+
 Developer tooling, not the CLI: `release.sh keygen` writes the minisign pair
 `${KASBAH_RELEASE_KEY:-~/.config/kasbah/release.key}` (`600`, its directory
 `700`) and `<repo>/release.pub` (committed, embedded in the binary);
