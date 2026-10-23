@@ -1509,23 +1509,18 @@ EOF
     assert 'grep -qF "$reserved" <<<"$out"'   "naming it"
 done
 
-# --- Mail (M01, M02) -------------------------------------------------------------
+# --- Mail (M01) --------------------------------------------------------------
 # Local rules, and only when the manifest has a `mail:` block. M03 — "the stack
 # on the VPS knows this domain" — is a --server rule and is not here; deploy
 # asks the registry that question and warns.
 projm="$tmpdir/mail-ok"
 make_project "$projm" mailer mailer.example.com
-mkdir -p "$projm/mail"
-printf '{"name":"mailer.example.com","imap":{"host":"mail.example.com","port":993}}\n' \
-    > "$projm/mail/snappymail-domain.json"
-printf 'mail:\n  domain: mailer.example.com\n  snappymail_domain: ./mail/snappymail-domain.json\n' \
-    >> "$projm/kasbah.yml"
+printf 'mail:\n  domain: mailer.example.com\n' >> "$projm/kasbah.yml"
 out="$(cd "$projm" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "a complete mail: block passes (rc $rc)
         $out"
 assert 'grep -qF "Mail claim names domain '\''mailer.example.com'\''" <<<"$out"' \
     "M01 names the claimed domain (said '$out')"
-assert 'grep -qF "exists and parses" <<<"$out"' "M02 passes on a JSON pre-seed (said '$out')"
 
 # The control that makes the section conditional mean something: no mail: block,
 # no Mail section at all. Without it, every assertion above is satisfied by a
@@ -1537,7 +1532,7 @@ assert '! grep -qF "Mail:" <<<"$out"' \
 # M01: a block with no domain.
 projm2="$tmpdir/mail-nodomain"
 make_project "$projm2" mailer2 mailer2.example.com
-printf 'mail:\n  snappymail_domain: ./nope.json\n' >> "$projm2/kasbah.yml"
+printf 'mail: {}\n' >> "$projm2/kasbah.yml"
 out="$(cd "$projm2" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "M01 fails a mail: block with no domain: (rc $rc)"
 assert 'grep -qF "mail: has no domain:" <<<"$out"' "saying which field (said '$out')"
@@ -1550,42 +1545,6 @@ out="$(cd "$projm3" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "a scalar mail: fails (rc $rc)"
 assert 'grep -qF "mail: has type '\''string'\''" <<<"$out"' "naming what it found (said '$out')"
 assert '! grep -qF "Cannot index" <<<"$out"' "and not jq'\''s own error (said '$out')"
-
-# M02: the pre-seed is named and is not there. Deploy copies that file
-# **if the target is missing** and never overwrites, so a bad one is the version
-# SnappyMail keeps — which is why this fails rather than warns.
-projm4="$tmpdir/mail-noseed"
-make_project "$projm4" mailer4 mailer4.example.com
-printf 'mail:\n  domain: mailer4.example.com\n  snappymail_domain: ./mail/gone.json\n' \
-    >> "$projm4/kasbah.yml"
-out="$(cd "$projm4" && "$kasbah" check 2>&1)"; rc=$?
-assert '[ "$rc" = "6" ]' "M02 fails a snappymail_domain naming no file (rc $rc)"
-assert 'grep -qF "is not a file in this project" <<<"$out"' "saying so (said '$out')"
-assert 'grep -qF "Mail claim names domain" <<<"$out"' \
-    "while M01 still passes — two rules, two verdicts (said '$out')"
-
-# M02: present and not JSON. `{host: mail.example.com}` is valid YAML and is not
-# JSON, which is the case a yq-based check would pass and SnappyMail would
-# reject.
-projm5="$tmpdir/mail-badjson"
-make_project "$projm5" mailer5 mailer5.example.com
-mkdir -p "$projm5/mail"
-printf '{host: mail.example.com}\n' > "$projm5/mail/seed.json"
-printf 'mail:\n  domain: mailer5.example.com\n  snappymail_domain: ./mail/seed.json\n' \
-    >> "$projm5/kasbah.yml"
-out="$(cd "$projm5" && "$kasbah" check 2>&1)"; rc=$?
-assert '[ "$rc" = "6" ]' "M02 fails a pre-seed that is not JSON (rc $rc)"
-assert 'grep -qF "is not valid JSON" <<<"$out"' "saying so (said '$out')"
-
-# And with no pre-seed named at all, M02 says nothing: it is optional.
-projm6="$tmpdir/mail-noseedfield"
-make_project "$projm6" mailer6 mailer6.example.com
-printf 'mail:\n  domain: mailer6.example.com\n' >> "$projm6/kasbah.yml"
-out="$(cd "$projm6" && "$kasbah" check 2>&1)"; rc=$?
-assert '[ "$rc" = "0" ]' "a mail: block with only a domain passes (rc $rc)
-        $out"
-assert '! grep -qF "snappymail_domain" <<<"$out"' \
-    "and nothing is said about a pre-seed nobody named (said '$out')"
 
 
 # =============================================================================

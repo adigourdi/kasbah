@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"github.com/adigourdi/kasbah/internal/atexit"
-	"github.com/adigourdi/kasbah/internal/remote"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,10 +34,6 @@ inspect)
     *Name*) echo "/$last" ;;
     esac
     exit 0 ;;
-cp)
-    case "$2" in *:*) f="$SEEDS/${2##*/}"; [ -f "$f" ] && cp "$f" "$3"; exit $? ;; esac
-    [ -z "$CP_FAIL" ] || exit 1
-    cp "$2" "$SEEDS/${3##*/}"; exit $? ;;
 compose) case "$*" in *" up "*) [ -z "$HUP_PARENT" ] || { kill -HUP "$PPID"; sleep 0.2; echo "Container demo-web Started" >&2; }; exit "${UP_RC:-0}" ;; *" ps "*) echo cid; exit 0 ;; esac ;;
 exec)
     if [ "$2" = -e ]; then exit "${EXEC_RC:-0}"; fi
@@ -269,64 +264,6 @@ func TestParseReport(t *testing.T) {
 	real := `{"kasbah_deploy_report":1,"version":"1","prev_version":"0","deployed_before":true,"backup":"no-backup","digest":"-"}`
 	if r, _, _ := ParseReport(stray + "\r\n" + real + "\r\n"); r == nil || r.Version != "1" || !r.DeployedBefore {
 		t.Fatalf("last report wins: %+v", r)
-	}
-}
-
-func TestSeed(t *testing.T) {
-	r := newRig(t)
-	seeds := t.TempDir()
-	t.Setenv("SEEDS", seeds)
-	t.Setenv("CP_FAIL", "")
-	target := "/var/lib/snappymail/_data_/_default_/domains/demo.test.json"
-	body := "{\"seed\":1}\n"
-	size, sum := remote.Digest([]byte(body))
-	run := func() string {
-		var out, errb bytes.Buffer
-		if rc := Remote([]string{"seed", "mail-snappymail", target, size, sum}, strings.NewReader(body), &out, &errb); rc != 0 {
-			t.Fatalf("seed rc %d: %s", rc, errb.String())
-		}
-		return strings.TrimSpace(out.String())
-	}
-	if got := run(); got != "mail_seed=nocontainer" {
-		t.Fatalf("no container: %q", got)
-	}
-	// A cut, empty or mismatched payload is never copied in.
-	for _, c := range []struct {
-		args []string
-		in   string
-	}{
-		{[]string{"seed", "mail-snappymail", target, size, sum}, body[:5]},
-		{[]string{"seed", "mail-snappymail", target, size, sum}, ""},
-		{[]string{"seed", "mail-snappymail", target, size, strings.Repeat("0", 64)}, body},
-	} {
-		var out, errb bytes.Buffer
-		Remote(c.args, strings.NewReader(c.in), &out, &errb)
-		if strings.TrimSpace(out.String()) != "mail_seed=failed" || !strings.Contains(errb.String(), "nothing was installed") {
-			t.Errorf("%d args, %q: %q %q", len(c.args), c.in, out.String(), errb.String())
-		}
-	}
-	var uout, uerr bytes.Buffer
-	if rc := Remote([]string{"seed", "mail-snappymail", target}, strings.NewReader(body), &uout, &uerr); rc != 1 || !strings.Contains(uerr.String(), "usage:") {
-		t.Errorf("an unverified seed: %d %q", rc, uerr.String())
-	}
-	r.running("mail-snappymail=exited")
-	t.Setenv("CP_FAIL", "1")
-	if got := run(); got != "mail_seed=failed" {
-		t.Fatalf("cp fails: %q", got)
-	}
-	t.Setenv("CP_FAIL", "")
-	if got := run(); got != "mail_seed=copied" {
-		t.Fatalf("absent: %q", got)
-	}
-	if b, _ := os.ReadFile(filepath.Join(seeds, "demo.test.json")); string(b) != "{\"seed\":1}\n" {
-		t.Fatalf("seeded bytes %q", b)
-	}
-	os.WriteFile(filepath.Join(seeds, "demo.test.json"), []byte("operator's\n"), 0o644)
-	if got := run(); got != "mail_seed=present" {
-		t.Fatalf("present: %q", got)
-	}
-	if b, _ := os.ReadFile(filepath.Join(seeds, "demo.test.json")); string(b) != "operator's\n" {
-		t.Fatalf("an existing config was overwritten: %q", b)
 	}
 }
 

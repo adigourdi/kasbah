@@ -177,7 +177,6 @@ below). The only differences:
 7. Mail claim (if manifest has `mail:`):
      look for a mail stack on the server   # today: warn and continue when absent
      verify claimed domain is listed in /apps/mail/kasbah.yml   # warns, never stops
-     copy snappymail_domain pre-seed if file missing on VPS   # only when the claim was met
 8. Run `kasbah remote deploy run` on the VPS, the manifest's hooks, backup,
    health and built-image list passed as JSON on stdin:
      a. If manifest has `backup:` AND `backup.check` exits 0 → run backup

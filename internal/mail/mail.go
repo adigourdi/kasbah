@@ -200,16 +200,6 @@ views (Everything, Unread, Flagged…) span all of them. Cypht keeps a
 settings change only once it is saved with the login password, under
 Settings → Save ("Save" or "Save and Logout"); "Just Logout" discards it.
 
-A domain's IMAP/SMTP config can be pre-seeded from a project's manifest:
-
-    mail:
-      domain: <domain>
-      snappymail_domain: ./mail/snappymail-domain.json
-
-{BT}kasbah deploy{BT} copies that file in **if it is not already there**, and never
-over one SnappyMail has since edited. Its host must be mail.{P} — the
-certificate is issued for that name and SnappyMail verifies it.
-
 6. Outbound relay, if the IP is blocked or has poor reputation
 ---------------------------------------------------------------------------
 Fill these three in {A}/mail/.env — they are the operator's half of

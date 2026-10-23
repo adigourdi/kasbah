@@ -1090,7 +1090,7 @@ func (c *checker) hooksSection(services string) {
 	}
 }
 
-// --- Mail (M01, M02) --------------------------------------------------------
+// --- Mail (M01) -------------------------------------------------------------
 
 func (c *checker) mailSection() {
 	if !c.hasBlock("mail") {
@@ -1114,36 +1114,4 @@ func (c *checker) mailSection() {
 	} else {
 		c.passf("Mail claim names domain '%s'", d)
 	}
-
-	f := strings.TrimSuffix(c.at(manifest.File, "", "mail", "snappymail_domain").sub(), "\r")
-	if f == "" || f == "null" {
-		return
-	}
-	if !isFile(f) {
-		c.failf("mail: snappymail_domain '%s' is not a file in this project", f)
-		return
-	}
-	if !jqTrue(f) {
-		c.failf("mail: snappymail_domain '%s' is not valid JSON", f)
-		return
-	}
-	c.passf("Mail pre-seed '%s' exists and parses", f)
-}
-
-// jqTrue is `jq -e . FILE` succeeding: JSON throughout, and its last value
-// neither null nor false. A NaN is a number to jq, so truthy, though jv holds
-// it as null; the stream then ends in the literal.
-func jqTrue(f string) bool {
-	data, err := os.ReadFile(f)
-	if err != nil {
-		return false
-	}
-	vs, err := jv.Parse(data)
-	if err != nil || len(vs) == 0 {
-		return false
-	}
-	if last := vs[len(vs)-1]; last == nil {
-		return strings.HasSuffix(strings.ToLower(strings.TrimRight(string(data), " \t\r\n")), "nan")
-	}
-	return jv.Truthy(vs[len(vs)-1])
 }

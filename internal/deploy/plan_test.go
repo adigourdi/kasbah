@@ -91,7 +91,7 @@ func TestReadPlan(t *testing.T) {
   post-rollback: [demo-web echo]
 health: {timeout: 2m}
 backup: {container: demo-db, check: 'true', command: dump, extension: sql.gz}
-mail: {domain: demo.test, snappymail_domain: s.json}
+mail: {domain: demo.test}
 client: acme
 `)
 	if err != nil {
@@ -103,7 +103,7 @@ client: acme
 	if p.Hooks["pre-deploy"][0] != "demo-web  php artisan down" || len(p.Hooks["post-rollback"]) != 1 {
 		t.Fatalf("hooks %v", p.Hooks)
 	}
-	if p.Backup == nil || p.Backup.Retain != 10 || p.MailDomain != "demo.test" || p.MailSnappy != "s.json" || p.Client != "acme" {
+	if p.Backup == nil || p.Backup.Retain != 10 || p.MailDomain != "demo.test" || p.Client != "acme" {
 		t.Fatalf("plan %+v %+v", p, p.Backup)
 	}
 
@@ -118,7 +118,7 @@ client: acme
 		"backup: {container: c, check: c, command: c, extension: \"a\u00a0b\"}\n": "plain filename extension",
 		"backup: {container: c, check: c, command: c, extension: x, retain: 0}":   "retain is 0",
 		"mail: example.test\n":                                                    "mail: has type 'string'",
-		"mail: {snappymail_domain: x}\n":                                          "has no domain:",
+		"mail: {}\n":                                                              "has no domain:",
 	} {
 		if _, err := plan(t, yml); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: %v; want %q", yml, err, want)

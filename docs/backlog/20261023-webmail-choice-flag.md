@@ -4,10 +4,8 @@ description: >
   another. Let `server init` take the client as the flag's value, as in
   `--with-mail=roundcube`, with Cypht as the default, in internal/serverinit,
   templates/mail/ and the mail registry.
-state: blocked
+state: needs-decision
 priority: low
-after:
-  - webmail-cypht
 ---
 
 ## Prompted by
@@ -38,8 +36,10 @@ longer release record), so the user wants both on offer:
    running. Readers already ignore unknown keys, but the registry's format is kasbah's own.
 3. **Switching on an existing server.** A re-run of init with a different value:
    swap the client, or refuse and name the step that would do it.
-4. **Per-client manifest pre-seed.** Whatever [[webmail-cypht]] rules for
-   `snappymail_domain:` has to hold for every client.
+
+Settled: the manifest has no per-domain webmail key. Cypht needs none (every
+address signs in against the one DMS), so `snappymail_domain:` was removed from
+schema 1. A client that needs per-domain config brings its own mechanism.
 
 ## Work
 
@@ -54,4 +54,4 @@ longer release record), so the user wants both on offer:
 
 - `internal/prompt/prompt.go:137`, `internal/serverinit/run.go:43`
 - `docs/cli.md:28-36` (the `--with-mail` flags)
-- [[webmail-cypht]]
+- `docs/mail.md` → Webmail (the Cypht service this flag would choose against)

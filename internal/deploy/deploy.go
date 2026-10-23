@@ -158,7 +158,6 @@ type Server interface {
 	PrepareProject(apps, data, name, client string, parents []string) (string, error)
 	Sync(e Entry, base string) error
 	Mail(apps string) (*MailFacts, error)
-	Seed(target string, data []byte) (string, error)
 	Run(dir string, sp Spec) (stdout string, rc int)
 	Fragment(local, dest string) error
 	// Images and Record are the tagged path's: which :<version> images are
@@ -446,7 +445,6 @@ type claim struct {
 	reg *mailreg.Registry
 	// note is why the registry could not be judged, when it could not.
 	note string
-	seed []byte
 }
 
 // readClaim reads the server's mail facts up front, so a registry kasbah
@@ -456,18 +454,6 @@ func (r *run) readClaim() (*claim, error) {
 		return nil, nil
 	}
 	cl := &claim{}
-	if p := r.p.MailSnappy; p != "" {
-		if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
-			r.c.Out.Warn("kasbah.yml names snappymail_domain: %s, and there is no such file in this checkout", p)
-			r.c.Out.Warn("nothing is seeded — run kasbah check (M02); the deploy continues")
-			r.p.MailSnappy = ""
-		} else if b, err := os.ReadFile(p); err != nil || len(b) == 0 {
-			r.c.Out.Warn("could not read %s — nothing is seeded; the deploy continues", p)
-			r.p.MailSnappy = ""
-		} else {
-			cl.seed = b
-		}
-	}
 	f, err := r.s.Mail(r.mk.AppsPath)
 	if err != nil {
 		return nil, err
@@ -499,7 +485,6 @@ func (r *run) readClaim() (*claim, error) {
 func (r *run) mailClaim(cl *claim) {
 	o, d, t, name := r.c.Out, r.p.MailDomain, r.target, r.m.Name
 	dir := r.mk.AppsPath + "/mail"
-	met := false
 	switch {
 	case !cl.f.Stack:
 		o.Warn("%s claims the mail domain %s, and there is no mail stack at %s on %s", name, d, dir, t)
@@ -518,8 +503,7 @@ func (r *run) mailClaim(cl *claim) {
 			o.Warn("%s claims the mail domain %s, and %s/kasbah.yml on %s does not parse as YAML", name, d, dir, t)
 			o.Warn("the claim cannot be checked against a registry kasbah cannot read; the deploy continues")
 		case cl.reg.Serves(d):
-			met = true
-			o.Info("  mail: %s is served by the stack at %s (dms %s, snappymail %s)", d, dir, cl.f.DMS, cl.f.Snappymail)
+			o.Info("  mail: %s is served by the stack at %s (dms %s)", d, dir, cl.f.DMS)
 		default:
 			o.Warn("%s claims the mail domain %s, and the stack at %s does not serve it", name, d, dir)
 			o.Warn("%s/kasbah.yml lists: %s", dir, strings.Join(cl.reg.Domains, " "))
@@ -536,33 +520,5 @@ func (r *run) mailClaim(cl *claim) {
 			o.Warn("a restarting DMS is usually the certificate for mail.<primary> not being in acme.json yet")
 			o.Warn("  ssh %s 'docker logs --tail 40 mail-dms'", t)
 		}
-	}
-	if cl.seed == nil {
-		return
-	}
-	snappy := r.p.MailSnappy
-	if !met {
-		o.Warn("kasbah.yml names snappymail_domain: %s, and it was NOT copied", snappy)
-		o.Warn("the claim on %s is unmet (see above), and a SnappyMail domain", d)
-		o.Warn("config for a domain this stack does not serve is configuration written on a")
-		o.Warn("premise kasbah knows to be false — fix the claim and re-deploy")
-		return
-	}
-	res, err := r.s.Seed("/var/lib/snappymail/_data_/_default_/domains/"+d+".json", cl.seed)
-	if err != nil {
-		res = "failed"
-	}
-	switch res {
-	case "copied":
-		o.Info("  mail: seeded SnappyMail's %s.json from %s", d, snappy)
-	case "present":
-		o.Info("  mail: SnappyMail already has a config for %s — left as it is", d)
-	case "nocontainer":
-		o.Warn("kasbah.yml names snappymail_domain: %s, and there is no mail-snappymail container on %s", snappy, t)
-		o.Warn("nothing was seeded; the deploy continues")
-	default:
-		o.Warn("could not seed SnappyMail's config for %s from %s", d, snappy)
-		o.Warn("SnappyMail builds _data_/_default_/domains/ on its first boot; if the container has")
-		o.Warn("never come up, that directory is not there yet. The deploy continues.")
 	}
 }

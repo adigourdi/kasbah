@@ -113,7 +113,7 @@ func main() {
 				os.Exit(migrate.Remote(args[2:], os.Stdout, os.Stderr))
 			}
 			if len(args) > 1 && args[1] == "deploy" {
-				// run, prepare and seed outlive a dropped session (SIGHUP and
+				// run and prepare outlive a dropped session (SIGHUP and
 				// SIGPIPE ignored, remote.Outlive); SIGINT and SIGTERM still
 				// remove a partial backup. The lock goes with the process.
 				atexit.HandleSignals()

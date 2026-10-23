@@ -98,9 +98,6 @@ backup:
 # foo@domain` on the VPS directly.
 mail:
   domain: shop.example.com
-  # Optional pre-seed files copied to the mail stack's data dir on first
-  # deploy (safe to re-run — kasbah only copies if the target is missing).
-  snappymail_domain: ./mail/snappymail-domain.json
 ```
 
 ## Field reference
@@ -306,13 +303,7 @@ since a claim naming no domain claims nothing.
   claim costs mail, not the site. `kasbah server add-mail-domain USER@HOST
   <domain>` is what makes it met. `kasbah check`'s **M01** is the local half —
   a `mail:` block with no `domain` fails there and is refused at deploy.
-- `snappymail_domain` — optional JSON file to seed SnappyMail's domain config,
-  copied on deploy to
-  `<data>/mail/snappymail/_data_/_default_/domains/<domain>.json` **if the
-  domain check above passed and it is not already there** — copy-if-missing, never over one SnappyMail has since
-  edited, and through `docker cp`, because that directory belongs to the
-  container's uid at mode 750. `kasbah check`'s **M02** fails when the named
-  file is missing or is not valid JSON: what lands is what stays.
+  Webmail needs no per-domain configuration (`mail.md` → Webmail).
 
 No `accounts` field — mailboxes are created/removed out-of-band with:
 

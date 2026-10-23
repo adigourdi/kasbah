@@ -440,25 +440,6 @@ func (r *run) readRef(t *tagged) error {
 		r.c.Out.Warn("falling back to '%s', which is client:'s documented default — a", m.Name)
 		r.c.Out.Warn("version tagged before kasbah checked this field still has to roll back")
 	}
-	// Fetched from the ref by name, never the checkout's copy: a relative path
-	// would otherwise resolve against today's tree.
-	if p.MailSnappy != "" {
-		rel := strings.TrimPrefix(p.MailSnappy, "./")
-		ty, err := refType(ref, rel)
-		if err != nil {
-			return err
-		}
-		if ty != "blob" {
-			r.c.Out.Warn("%s's kasbah.yml names snappymail_domain: %s, and %s does not carry that file", ref, rel, ref)
-			r.c.Out.Warn("nothing is seeded — the checkout's copy is deliberately not used here; the %s continues", r.mode)
-			p.MailSnappy = ""
-		} else {
-			if err := showBlob(ref, rel, filepath.Join(tmp, rel)); err != nil {
-				return err
-			}
-			p.MailSnappy = filepath.Join(tmp, rel)
-		}
-	}
 	r.p = p
 	return nil
 }

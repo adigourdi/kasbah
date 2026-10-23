@@ -152,7 +152,8 @@ For each additional domain:
 - DNS needs MX → `mail.<primary>` (apps don't need their own MX record).
 - SPF + DKIM + DMARC must be published per domain.
 - DMS's `postfix-virtual.cf` routes `postmaster@<domain>` → the primary mailbox.
-- SnappyMail adds the domain via the pre-seeded JSON config.
+
+Webmail needs nothing per domain: every address signs in at `webmail.<primary>`.
 
 `kasbah server add-mail-domain USER@HOST <domain>` does the first and third of
 those: the domain joins `domains:` here, and the alias is appended to
@@ -223,43 +224,21 @@ A project manifest can declare:
 ```yaml
 mail:
   domain: shop.example.com
-  snappymail_domain: ./mail/snappymail-domain.json    # optional pre-seed
 ```
 
 What kasbah does with it:
 1. On deploy, verify the mail stack is up.
 2. Verify `shop.example.com` is in `/apps/mail/kasbah.yml`'s `domains` list.
-3. If `snappymail_domain` is set, **step 2 said yes**, and the target file is
-   missing on the VPS, copy it into
-   `/apps/data/mail/snappymail/_data_/_default_/domains/<domain>.json`.
 
-All three are implemented, and **none of them can stop a deploy**: every
-outcome here is a warning, because an unmet claim costs mail and not the site.
+Both are implemented, and **neither can stop a deploy**: every outcome here is
+a warning, because an unmet claim costs mail and not the site.
 
 Step 2 reads the registry the way every command reads it — through the kasbah
 binary and `internal/mailreg` — and names
 `kasbah server add-mail-domain` when the answer is no.
 
-**Step 3 is conditioned on step 2, and that is the whole of the condition.** A
-SnappyMail domain config for a domain the registry does not list is
-configuration written on a premise the same run has just reported false, and
-nothing in that directory afterwards tells it apart from one that was
-deliberate. So an unmet claim skips the copy and says both things — that the
-seed was not copied, and that the claim above is why. It is still a warning:
-the deploy continues.
-
-Step 3 goes through the container, and has to: SnappyMail chowns its whole data
-tree to the container's own uid at mode 750 on first boot, so that `domains/`
-directory is **not writable, or even traversable, by the deploy user**. kasbah
-uses `docker cp`, which works on a stopped container too — a `docker exec`
-writing the file would not. The file's bytes travel from the checkout as an
-argument, since the far side has no way to fetch them.
-
-`kasbah check`'s **M01** (a `mail:` block names a domain) and **M02** (the
-`snappymail_domain` file exists and is valid JSON) are the local half of the
-same claim. M02 is a failure rather than a warning precisely because the copy
-is copy-if-missing: a broken pre-seed that lands is the version SnappyMail
-keeps. **M03** — "the stack on the VPS knows this domain" — is a `--server`
+`kasbah check`'s **M01** (a `mail:` block names a domain) is the local half of
+the same claim. **M03** — "the stack on the VPS knows this domain" — is a `--server`
 rule and runs under `kasbah check --server`, which reads this file and fails a
 claim it does not carry; the deploy asks that question anyway, on every deploy,
 and only warns, because an unmet claim costs mail rather than the site.
@@ -304,9 +283,6 @@ the whole of what makes them work, and is asserted rather than assumed.
   wire. **Written only onto a file with no account in it**: that file holds
   every mailbox on the server, so a re-run neither asks for a password nor
   rewrites the account.
-- **SnappyMail domain config** — pre-seeded from the file referenced in a
-  project's manifest, keyed by the project's domain, by `kasbah deploy`
-  (copy-if-missing, through `docker cp` — see "Per-app mail claims" above).
 - **Webmail data** — `server init` creates `<data>/mail/cypht` as the
   bind-mount source and nothing inside it: the container's entrypoint builds
   `users/`, `attachments/` and `cypht.sqlite` (see Webmail above).
@@ -344,8 +320,8 @@ warning: enable it with: kasbah server init you@vps --with-mail — the deploy c
 stopping the deploy costs the site as well, and a site that will not go up
 because nobody has run `add-mail-domain` yet is the worse of the two failures.
 The same holds for every other state the claim can be in — a half-made stack, a
-registry that does not list the domain, a stopped DMS, a pre-seed that could not
-be copied. `docs/project-manifest.md` → `mail` says the same, and
+registry that does not list the domain, a stopped DMS.
+`docs/project-manifest.md` → `mail` says the same, and
 `internal/deploy` is where it is true.
 
 ## First run, and what "not healthy" means

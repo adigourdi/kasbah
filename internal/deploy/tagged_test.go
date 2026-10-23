@@ -48,7 +48,6 @@ func history(t *testing.T, v1extra string) {
 		".env.prod.example":   "A=1\n",
 		"conf/app.conf":       "v1\n",
 		"traefik-dynamic.yml": "# v1\n",
-		"seed.json":           "{\"v\":1}\n",
 	})
 	git(t, "init", "-q", ".")
 	git(t, "add", "-A")

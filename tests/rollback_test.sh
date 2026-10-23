@@ -191,7 +191,6 @@ mkdir -p "$stub_dir"
 ssh_log="$tmpdir/ssh.log"
 call_log="$tmpdir/calls.log"
 spec_copy="$tmpdir/shipped-spec.json"
-seed_copy="$tmpdir/shipped-seed.json"
 sync_root="$tmpdir/synced"
 frag_copy="$sync_root/apps/traefik/dynamic/demo.yml"
 compose_copy="$sync_root/apps/demo/compose.yml"
@@ -238,11 +237,8 @@ case "${1:-} ${2:-}" in
         reg=false; [ -n "${MAIL_REGISTRY_B64:-}" ] && reg=true
         st=false; [ "${MAIL_STACK:-no}" = yes ] && st=true
         en=false; [ "${MAIL_ENV:-no}" = yes ] && en=true
-        printf '{"stack":%s,"env":%s,"registry_b64":"%s","dms":"%s","snappymail":"running","registry":%s}\n' \
+        printf '{"stack":%s,"env":%s,"registry_b64":"%s","dms":"%s","registry":%s}\n' \
             "$st" "$en" "${MAIL_REGISTRY_B64:-}" "${MAIL_DMS:-running}" "$reg" ;;
-    "deploy seed")
-        cat > "$SEED_COPY"
-        printf 'mail_seed=%s\n' "${MAIL_SEED:-copied}" ;;
     # The engine: the spec it was sent is kept, and the report answers the
     # version it was actually asked for.
     "deploy run")
@@ -290,12 +286,12 @@ log_two=$'2026-08-01T00:00:00+00:00 deploy 1.0.0 no-backup kasbah=0.1.0 digest=-
 
 kasbah_run() {
     : > "$ssh_log"; : > "$call_log"
-    rm -f "$spec_copy" "$seed_copy"
+    rm -f "$spec_copy"
     rm -rf "$sync_root"
     env -u KASBAH_LIB_DIR \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$run_tmp" \
         SSH_LOG="$ssh_log" CALL_LOG="$call_log" FAKE_APPS="$FAKE_APPS" \
-        SPEC_COPY="$spec_copy" SEED_COPY="$seed_copy" SYNC_ROOT="$sync_root" \
+        SPEC_COPY="$spec_copy" SYNC_ROOT="$sync_root" \
         FAKE_ACTIVE="${FAKE_ACTIVE-$log_two}" \
         "$KASBAH_BIN" "$@" </dev/null 2>&1
 }
@@ -1096,85 +1092,6 @@ out="$( MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_without" \
         FAKE_ACTIVE="$log_mail" rollback deploy@vps 6.0.0 )"; rc=$?
 assert '[ "$rc" = "0" ]' "an unmet claim does not stop a rollback either (rc $rc: $out)"
 assert 'grep -qF "does not serve it" <<<"$out"' "and warns (said '$out')"
-rm -rf "$project/.kasbah"
-
-# --- The pre-seed comes out of the tag, not out of the working tree ------------------
-# Everything else a rollback reads is v<target>'s: the manifest, the compose
-# file, the sync list, the fragment. snappymail_domain: is the one path the
-# claim step opens as a *file*, relative to the project root — so without the
-# extraction this ships today's bytes for a version that declared different ones.
-(
-    cd "$project" || exit 1
-    write_v1
-    mkdir -p mail
-    printf 'FROM-THE-TAG\n' > mail/seed.json
-    cat >> kasbah.yml <<'YML'
-mail:
-  domain: shop.demo.test
-  snappymail_domain: ./mail/seed.json
-YML
-    git add -A >/dev/null
-    git commit -qm 'v11: a manifest that claims mail and names a pre-seed'
-    git tag v11.0.0
-    # The working tree moves on. Copy-if-missing means the wrong bytes here are
-    # the ones that would stay on the server.
-    printf 'FROM-THE-WORKING-TREE\n' > mail/seed.json
-) || { echo "  FAIL: could not tag v11.0.0" >&2; fail=1; }
-
-log_seed=$'2026-08-01T00:00:00+00:00 deploy 11.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-02T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n'
-
-out="$( MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_with" \
-        FAKE_ACTIVE="$log_seed" rollback deploy@vps 11.0.0 )"; rc=$?
-calls=$(<"$call_log")
-assert '[ "$rc" = "0" ]' "a rollback to a version naming a pre-seed succeeds (rc $rc: $out)"
-assert '[ "$(cat "$seed_copy" 2>/dev/null)" = "FROM-THE-TAG" ]' \
-    "and the bytes that travel are the tag's (sent: $(cat "$seed_copy" 2>/dev/null))"
-assert '! grep -qF "FROM-THE-WORKING-TREE" "$seed_copy" 2>/dev/null' \
-    "not the working tree's — which is what a rollback exists to avoid"
-assert '! grep -qF "there is no such file in this checkout" <<<"$out"' \
-    "and nothing is looked for in the checkout at all (said '$out')"
-rm -rf "$project/.kasbah"
-
-# The same rollback with the file gone from the working tree entirely. Before
-# the extraction this reported the version's own pre-seed as missing.
-mv "$project/mail/seed.json" "$tmpdir/seed.json.aside"
-out="$( MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_with" \
-        FAKE_ACTIVE="$log_seed" rollback deploy@vps 11.0.0 )"; rc=$?
-calls=$(<"$call_log")
-assert '[ "$rc" = "0" ]' "a working tree with no copy of the file rolls back fine (rc $rc: $out)"
-assert '[ "$(cat "$seed_copy" 2>/dev/null)" = "FROM-THE-TAG" ]' "the tag's bytes still travel"
-assert '! grep -qF "there is no such file in this checkout" <<<"$out"' \
-    "and no warning about a checkout this run never reads (said '$out')"
-mv "$tmpdir/seed.json.aside" "$project/mail/seed.json"
-rm -rf "$project/.kasbah"
-
-# A version that names a pre-seed it does not carry. A warning naming the ref —
-# never the checkout — and no seed step at all.
-(
-    cd "$project" || exit 1
-    write_v1
-    cat >> kasbah.yml <<'YML'
-mail:
-  domain: shop.demo.test
-  snappymail_domain: ./mail/never-committed.json
-YML
-    git add -A >/dev/null
-    git commit -qm 'v12: names a pre-seed the tag does not carry'
-    git tag v12.0.0
-) || { echo "  FAIL: could not tag v12.0.0" >&2; fail=1; }
-log_noseed=$'2026-08-01T00:00:00+00:00 deploy 12.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-02T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n'
-printf 'FROM-THE-WORKING-TREE\n' > "$project/mail/never-committed.json"
-out="$( MAIL_STACK=yes MAIL_ENV=yes MAIL_REGISTRY_B64="$registry_with" \
-        FAKE_ACTIVE="$log_noseed" rollback deploy@vps 12.0.0 )"; rc=$?
-calls=$(<"$call_log")
-assert '[ "$rc" = "0" ]' "a version naming a pre-seed it does not carry still rolls back (rc $rc: $out)"
-assert 'grep -qF "v12.0.0 does not carry that file" <<<"$out"' \
-    "saying so against the ref (said '$out')"
-assert '! grep -qF "'"'"'seed'"'"'" <<<"$calls"' \
-    "and no seed step runs ($(grep -F "seed" <<<"$calls"))"
-assert '[ ! -e "$seed_copy" ]' \
-    "least of all with the untracked file sitting right there in the tree"
-rm -f "$project/mail/never-committed.json"
 rm -rf "$project/.kasbah"
 
 # The control: v1.0.0's manifest has no mail: block, so rolling back to it looks

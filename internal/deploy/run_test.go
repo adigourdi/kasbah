@@ -25,8 +25,6 @@ type fake struct {
 	clientState string
 	mail        *MailFacts
 	mailErr     error
-	seedRes     string
-	seedErr     error
 	out         *string
 	rc          int
 	fragErr     error
@@ -38,7 +36,6 @@ type fake struct {
 	calls   []string
 	client  string
 	injects [][]string
-	seeds   [][]byte
 	spec    *Spec
 }
 
@@ -81,11 +78,6 @@ func (f *fake) PrepareProject(apps, data, name, client string, parents []string)
 	return f.clientState, nil
 }
 func (f *fake) Mail(string) (*MailFacts, error) { f.log("mail"); return f.mail, f.mailErr }
-func (f *fake) Seed(target string, data []byte) (string, error) {
-	f.log("seed " + target)
-	f.seeds = append(f.seeds, data)
-	return f.seedRes, f.seedErr
-}
 func (f *fake) Run(dir string, sp Spec) (string, int) {
 	f.log("run")
 	f.spec = &sp
@@ -126,7 +118,6 @@ func project(t *testing.T, extra string) {
 		"compose.prod.yml":    "services:\n  web:\n    image: nginx\n",
 		".env.prod.example":   "A=1\n",
 		"traefik-dynamic.yml": "http: {}\n",
-		"seed.json":           "{\"seed\":1}\n",
 	}
 	for n, b := range files {
 		os.WriteFile(n, []byte(b), 0o644)
@@ -249,7 +240,7 @@ func TestRunSuccess(t *testing.T) {
 }
 
 func facts(reg string, dms string) *MailFacts {
-	f := &MailFacts{Stack: true, Env: true, DMS: dms, Snappymail: "running"}
+	f := &MailFacts{Stack: true, Env: true, DMS: dms}
 	if reg != "-" {
 		f.HasRegistry, f.Registry = true, base64.StdEncoding.EncodeToString([]byte(reg))
 	}
@@ -262,25 +253,23 @@ func TestMailClaim(t *testing.T) {
 		name     string
 		f        *fake
 		want     []string
-		seeded   bool
 		fails    bool
 		prepared bool
 	}{
-		{"no stack", &fake{mail: &MailFacts{DMS: "running"}}, []string{"there is no mail stack at /apps/mail"}, false, false, true},
-		{"no .env", &fake{mail: &MailFacts{Stack: true, DMS: "running"}}, []string{"/apps/mail on d@h has no .env"}, false, false, true},
-		{"no registry", &fake{mail: facts("-", "running")}, []string{"/apps/mail/kasbah.yml on d@h is missing or unreadable"}, false, false, true},
-		{"blank registry", &fake{mail: facts("\n \n", "running")}, []string{"is missing or unreadable"}, false, false, true},
-		{"not YAML", &fake{mail: facts("a: [", "running")}, []string{"does not parse as YAML"}, false, false, true},
-		{"no primary", &fake{mail: facts("domains: [demo.test]\n", "running")}, []string{"/apps/mail/kasbah.yml on d@h has no primary_domain:"}, false, true, false},
-		{"dms absent", &fake{mail: facts(served, "absent"), seedRes: "copied"}, []string{"there is no mail-dms container", "seeded SnappyMail's demo.test.json"}, true, false, true},
-		{"dms restarting", &fake{mail: facts(served, "restarting"), seedRes: "present"}, []string{"is 'restarting', not running", "left as it is"}, true, false, true},
-		{"seed fails", &fake{mail: facts(served, "running"), seedErr: errors.New("x")}, []string{"is served by the stack", "could not seed SnappyMail's config"}, true, false, true},
-		{"no snappymail", &fake{mail: facts(served, "running"), seedRes: "nocontainer"}, []string{"no mail-snappymail container"}, true, false, true},
-		{"unmet", &fake{mail: facts("primary_domain: other.test\n", "running")}, []string{"lists: other.test", "it was NOT copied"}, false, false, true},
-		{"probe fails", &fake{mailErr: cli.Fail("could not look for the mail stack")}, []string{"could not look for the mail stack"}, false, true, false},
+		{"no stack", &fake{mail: &MailFacts{DMS: "running"}}, []string{"there is no mail stack at /apps/mail"}, false, true},
+		{"no .env", &fake{mail: &MailFacts{Stack: true, DMS: "running"}}, []string{"/apps/mail on d@h has no .env"}, false, true},
+		{"no registry", &fake{mail: facts("-", "running")}, []string{"/apps/mail/kasbah.yml on d@h is missing or unreadable"}, false, true},
+		{"blank registry", &fake{mail: facts("\n \n", "running")}, []string{"is missing or unreadable"}, false, true},
+		{"not YAML", &fake{mail: facts("a: [", "running")}, []string{"does not parse as YAML"}, false, true},
+		{"no primary", &fake{mail: facts("domains: [demo.test]\n", "running")}, []string{"/apps/mail/kasbah.yml on d@h has no primary_domain:"}, true, false},
+		{"met", &fake{mail: facts(served, "running")}, []string{"mail: demo.test is served by the stack at /apps/mail (dms running)"}, false, true},
+		{"dms absent", &fake{mail: facts(served, "absent")}, []string{"is served by the stack", "there is no mail-dms container"}, false, true},
+		{"dms restarting", &fake{mail: facts(served, "restarting")}, []string{"is 'restarting', not running"}, false, true},
+		{"unmet", &fake{mail: facts("primary_domain: other.test\n", "running")}, []string{"lists: other.test", "mail for demo.test is not accepted until then"}, false, true},
+		{"probe fails", &fake{mailErr: cli.Fail("could not look for the mail stack")}, []string{"could not look for the mail stack"}, true, false},
 	}
 	for _, c := range cases {
-		project(t, "mail:\n  domain: demo.test\n  snappymail_domain: seed.json\n")
+		project(t, "mail:\n  domain: demo.test\n")
 		err, out := deployWith(t, c.f, Options{Target: "d@h"})
 		if (err != nil) != c.fails {
 			t.Errorf("%s: err %v\n%s", c.name, err, out)
@@ -290,20 +279,24 @@ func TestMailClaim(t *testing.T) {
 				t.Errorf("%s: no %q in\n%s", c.name, w, out)
 			}
 		}
-		if c.f.called("seed") != c.seeded {
-			t.Errorf("%s: seed ran = %v", c.name, !c.seeded)
-		}
-		if c.seeded && (string(c.f.seeds[0]) != "{\"seed\":1}\n" || !c.f.called("seed /var/lib/snappymail/_data_/_default_/domains/demo.test.json")) {
-			t.Errorf("%s: seeded %q (%v)", c.name, c.f.seeds, c.f.calls)
-		}
 		if c.f.called("prepare") != c.prepared {
 			t.Errorf("%s: prepared = %v", c.name, !c.prepared)
 		}
 	}
-	project(t, "mail:\n  domain: demo.test\n  snappymail_domain: nope.json\n")
-	f := &fake{mail: facts(served, "running")}
-	if err, out := deployWith(t, f, Options{Target: "d@h"}); err != nil || f.called("seed") || !strings.Contains(out, "no such file in this checkout") {
-		t.Errorf("a seed file the checkout lacks: %v %v\n%s", err, f.calls, out)
+}
+
+// A mail: key kasbah does not know, naming a file that is not there, is not
+// read: a met claim deploys with no warning at all.
+func TestMailUnknownKeyIgnored(t *testing.T) {
+	project(t, "mail:\n  domain: demo.test\n  snappymail_domain: ./x.json\n")
+	f := &fake{mail: facts("primary_domain: demo.test\n", "running")}
+	err, out := deployWith(t, f, Options{Target: "d@h"})
+	if err != nil || !strings.Contains(out, "is served by the stack") || strings.Contains(out, "warning:") || strings.Contains(out, "x.json") {
+		t.Errorf("%v\n%s", err, out)
+	}
+	want := []string{"marker", "mail", "prepare", "sync compose.prod.yml", "sync .env.prod.example", "drift", "inject", "run", "fragment /apps/traefik/dynamic/demo.yml"}
+	if strings.Join(f.calls, ",") != strings.Join(want, ",") {
+		t.Errorf("calls %v", f.calls)
 	}
 }
 
@@ -314,11 +307,11 @@ func TestProtocolParsers(t *testing.T) {
 	if _, err := parsePrepare([]byte("prepared=yes\n"), "d@h"); err == nil || !strings.Contains(err.Error(), "reported no prepared or client") {
 		t.Errorf("no client=: %v", err)
 	}
-	good := `{"stack":true,"env":false,"registry_b64":"","dms":"absent","snappymail":"absent","registry":false}`
+	good := `{"stack":true,"env":false,"registry_b64":"","dms":"absent","registry":false}`
 	if f, err := parseMailFacts([]byte(good+"\n"), "d@h"); err != nil || !f.Stack || f.DMS != "absent" {
 		t.Errorf("parseMailFacts = %+v %v", f, err)
 	}
-	for _, bad := range []string{"", "mail_stack=yes", `{"stack":true,"dms":"running"}`, `{"stack":"yes","env":false,"registry_b64":"","dms":"x","snappymail":"x","registry":false}`} {
+	for _, bad := range []string{"", "mail_stack=yes", `{"stack":true,"dms":"running"}`, `{"stack":"yes","env":false,"registry_b64":"","dms":"x","registry":false}`} {
 		if _, err := parseMailFacts([]byte(bad), "d@h"); err == nil || !strings.Contains(err.Error(), "the mail claim step on d@h reported no ") {
 			t.Errorf("parseMailFacts(%q) = %v", bad, err)
 		}

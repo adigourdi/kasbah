@@ -137,10 +137,8 @@ func TestVerdicts(t *testing.T) {
 			[]string{"  ✗ Routers claim reserved hostnames: a→x\nmail"}},
 		{"a NUL ends a .gitignore line", map[string]string{".gitignore": "x\x00.env\x00.kasbah/"}, 0,
 			[]string{"  ✓ .gitignore excludes .env", "  ✓ .gitignore excludes .kasbah/"}},
-		{"jq -e takes nan for a number", map[string]string{"kasbah.yml": "schema: 1\nname: demo\ndomain: demo.example.com\nmail: {domain: x.io, snappymail_domain: sm.json}\n", "sm.json": "1 NaN \n"}, 0,
-			[]string{"  ✓ Mail pre-seed 'sm.json' exists and parses"}},
-		{"a pre-seed jq -e rejects", map[string]string{"kasbah.yml": "schema: 1\nname: demo\ndomain: demo.example.com\nmail: {domain: x.io, snappymail_domain: sm.json}\n", "sm.json": "null"}, 6,
-			[]string{"  ✗ mail: snappymail_domain 'sm.json' is not valid JSON"}},
+		{"a mail: key kasbah does not know is not read", map[string]string{"kasbah.yml": "schema: 1\nname: demo\ndomain: demo.example.com\nmail: {domain: x.io, snappymail_domain: ./x.json}\n"}, 0,
+			[]string{"  ✓ Mail claim names domain 'x.io'"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			project(t, tc.files)

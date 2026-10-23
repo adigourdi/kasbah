@@ -28,7 +28,6 @@ type Plan struct {
 	// ClientNote is why a tag's unusable client: was replaced by the name.
 	ClientNote string
 	MailDomain string
-	MailSnappy string
 	// Hooks holds all four lists; the engine is sent its mode's pair.
 	Hooks  map[string][]string
 	Images []string
@@ -185,7 +184,6 @@ func readMail(m *manifest.Manifest, p *Plan) error {
 		return err
 	}
 	p.MailDomain = d
-	p.MailSnappy = str(m, "mail", "snappymail_domain")
 	return nil
 }
 

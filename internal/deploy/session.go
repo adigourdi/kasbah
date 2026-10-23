@@ -94,23 +94,11 @@ func (s *SSH) Mail(apps string) (*MailFacts, error) {
 // parseMailFacts requires every key: a missing one must not read as "no".
 func parseMailFacts(out []byte, target string) (*MailFacts, error) {
 	var f MailFacts
-	if err := remote.Decode(out, &f, []string{"stack", "env", "registry", "registry_b64", "dms", "snappymail"},
+	if err := remote.Decode(out, &f, []string{"stack", "env", "registry", "registry_b64", "dms"},
 		"the mail claim step", target); err != nil {
 		return nil, err
 	}
 	return &f, nil
-}
-
-func (s *SSH) Seed(target string, data []byte) (string, error) {
-	size, sum := remote.Digest(data)
-	cmd := s.Conn.Command(s.Bounded("deploy", "seed", "mail-snappymail", target, size, sum)...)
-	cmd.Stdin = bytes.NewReader(data)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		return "", err
-	}
-	return lines(out.Bytes())["mail_seed"], nil
 }
 
 // Run is the engine, unbounded by the 30 s limit: the health wait is bounded

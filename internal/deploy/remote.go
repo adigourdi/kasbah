@@ -7,14 +7,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/remote"
 )
 
 // RemoteUsage names `kasbah remote deploy`'s modes.
-const RemoteUsage = "usage: kasbah remote deploy prepare APPS DATA NAME CLIENT [DIR…] | run DIR (spec on stdin) | mail APPS | seed CONTAINER PATH SIZE SHA256 (file on stdin) | images VERSION IMAGE…"
+const RemoteUsage = "usage: kasbah remote deploy prepare APPS DATA NAME CLIENT [DIR…] | run DIR (spec on stdin) | mail APPS | images VERSION IMAGE…"
 
 // Remote is `kasbah remote deploy …` on a server. stdout is a protocol in
 // every mode; narration and docker's output go to stderr.
@@ -35,10 +34,6 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return prepare(args[1], args[2], args[3], args[4], args[5:], stdout, w)
 	case args[0] == "mail" && len(args) == 2:
 		return mailFacts(args[1], stdout)
-	case args[0] == "seed" && len(args) == 5:
-		w, done := remote.Outlive(stderr)
-		defer done()
-		return seed(args[1], args[2], args[3], args[4], stdin, stdout, w)
 	case args[0] == "images" && len(args) >= 2:
 		return images(args[1], args[2:], stdout)
 	}
@@ -90,7 +85,6 @@ type MailFacts struct {
 	Env         bool   `json:"env"`
 	Registry    string `json:"registry_b64"`
 	DMS         string `json:"dms"`
-	Snappymail  string `json:"snappymail"`
 	HasRegistry bool   `json:"registry"`
 }
 
@@ -118,42 +112,12 @@ func mailFacts(apps string, stdout io.Writer) int {
 		}
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
-		f.DMS, f.Snappymail = "nodocker", "nodocker"
+		f.DMS = "nodocker"
 	} else {
-		f.DMS, f.Snappymail = containerState("mail-dms"), containerState("mail-snappymail")
+		f.DMS = containerState("mail-dms")
 	}
 	b, _ := json.Marshal(f)
 	fmt.Fprintf(stdout, "%s\n", b)
-	return 0
-}
-
-// seed copies a SnappyMail domain config into the container when it is not
-// already there. Through docker cp, because SnappyMail owns its data tree at
-// 750 under its own uid, and docker cp works on a stopped container too.
-func seed(container, target, size, sum string, stdin io.Reader, stdout, stderr io.Writer) int {
-	body, err := remote.Payload(stdin, size, sum)
-	if err != nil {
-		fmt.Fprintf(stderr, "remote: seed %s: %v\n", target, err)
-		fmt.Fprintln(stdout, "mail_seed=failed")
-		return 0
-	}
-	state := "nocontainer"
-	if exec.Command("docker", "inspect", container).Run() == nil {
-		state = "failed"
-		if tmp, err := os.MkdirTemp("", "tmp."); err == nil {
-			switch {
-			case exec.Command("docker", "cp", container+":"+target, filepath.Join(tmp, "probe")).Run() == nil:
-				state = "present"
-			default:
-				if os.WriteFile(filepath.Join(tmp, "domain.json"), body, 0o644) == nil &&
-					exec.Command("docker", "cp", filepath.Join(tmp, "domain.json"), container+":"+target).Run() == nil {
-					state = "copied"
-				}
-			}
-			os.RemoveAll(tmp)
-		}
-	}
-	fmt.Fprintf(stdout, "mail_seed=%s\n", state)
 	return 0
 }
 

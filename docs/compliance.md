@@ -47,10 +47,9 @@ Hooks:
 
 Mail (if manifest has `mail:`):
   ✓ Mail claim names domain 'shop.example.com'
-  ✓ Mail pre-seed './mail/snappymail-domain.json' exists and parses
     (M03 — the stack on the VPS knows this domain — only runs with --server)
 
-Summary: 22 passed, 1 warning, 0 failed
+Summary: 21 passed, 1 warning, 0 failed
 ```
 
 Exit code 0 if no failures (warnings are informational).
@@ -170,7 +169,7 @@ ever printed.
 | ID | Rule | Level |
 |---|---|---|
 | M01 | `domain` set | fail |
-| M02 | `snappymail_domain` file exists (if set) and is valid JSON — parsed as JSON, not YAML: JSON is a subset of YAML, so `{host: mail.example.com}` parses as YAML, is not JSON, and SnappyMail rejects it. It fails rather than warns because the deploy-time copy is **copy-if-missing** — a broken pre-seed that lands is the one SnappyMail keeps | fail |
+| M02 | *Retired, id not reused.* It validated `snappymail_domain`, a SnappyMail seed file that the manifest no longer has | — |
 | M03 | (with `--server` flag) Mail stack on VPS knows this domain | fail |
 
 ### Backup (only with `--server`, and only on a server that has backups)
