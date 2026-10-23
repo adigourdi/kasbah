@@ -43,25 +43,58 @@ domain on the server signs in the same way; webmail needs no per-domain config.
 - **Settings are kept only when saved.** A change, an added account included, is
   written only by Settings → Save, with the password ("Save" or "Save and
   Logout"). "Just Logout" discards it. The setup guide says so.
-- **Data:** `<data>/mail/cypht` is mounted at `/var/lib/hm3`. It holds `users/` (one
-  encrypted settings file per address, `www-data` 0644), `attachments/`, and
-  `cypht.sqlite`. The image's entrypoint exits after ten failed database probes,
-  so Cypht gets an SQLite file even though nothing in this configuration writes
-  to it: sessions are PHP's, settings are files, and sign-in is IMAP. The
-  entrypoint creates it root-owned 0644.
+- **Data:** `<data>/mail/cypht` is mounted at `/var/lib/hm3`, and the whole
+  tree is `www-data`'s (uid 33). It holds `users/` (one encrypted settings file per
+  address, 0644), `attachments/`, and `cypht.sqlite`. Sessions are PHP's, settings
+  are files, and sign-in is IMAP, so the database holds only `brute_force`'s
+  failed-login counts. The image's entrypoint exits after ten failed database
+  probes and creates the file as root, so compose wraps that entrypoint: it
+  creates the file and hands it and the directory to `www-data` (SQLite writes its
+  journal beside the file), then `exec`s the original.
 - **Modules** are listed explicitly in `CYPHT_MODULES`. `developer` is left out,
   because its server-information page shows the site config to every logged-in user.
-  `brute_force` is left out too: it locks out per client address, and behind
-  Traefik every client has Traefik's address (backlog: `webmail-login-throttle`).
   `XDEBUG_MODE=off`, because the image ships Xdebug at `mode=debug`.
+- **Failed logins are throttled by Cypht, never by DMS.**
+  - Every webmail login reaches IMAP from the `mail-cypht` container's address:
+    Docker's hairpin DNAT keeps the source address, and DMS logs `rip=<mail-cypht>`.
+    DMS's Fail2ban (`maxretry 6`, `findtime 1w`, `bantime 1w`) would therefore ban
+    webmail for every user over a few typos. This was proved on a real server.
+    kasbah ships `<data>/mail/dms/config/fail2ban-jail.cf` with
+    `ignoreip = 127.0.0.1/8 mail-cypht`. Fail2ban resolves the name through
+    Docker's DNS and re-resolves it every five minutes. Init rewrites the file
+    when it differs. DMS copies it into place only when its container is
+    created; a restart skips its setup. For an existing container the start step
+    copies it, inside a running DMS when it differs, or by `docker cp` into a
+    stopped one. It then runs `fail2ban-client reload` unless the live `ignoreip`
+    already lists `mail-cypht`, so there's no restart. Init reports `mail_jail` as
+    `atstart`, `unchanged`, `reloaded` or `failed`; a failure warns and names the
+    retry. The live check covers only that line, so if a future change to the jail
+    keeps `mail-cypht` and its reload fails, the next run reports `unchanged` with
+    the rest never loaded. Direct IMAP/SMTP clients are still banned as before.
+  - Cypht's `brute_force` does the throttling instead: 5 failed logins lock that
+    client address, and that username, out of webmail for 10 minutes
+    (`BRUTE_FORCE_MAX_ATTEMPTS`, `BRUTE_FORCE_LOCKOUT_DURATION`). The username lock
+    applies from any address, so anyone can keep a known address out of webmail
+    (not out of mail clients) for 10 minutes; this cost is accepted.
+  - The client address is real because `mail-cypht` mounts a kasbah-owned
+    `<apps>/mail/cypht-nginx.conf`: the image's own config plus `real_ip`,
+    trusting `X-Forwarded-For` from the private ranges. Traefik sets that header,
+    and `mail-cypht` publishes no port, so only kasbah-net containers could forge
+    it. When the shipped file differs
+    from the one the container is serving, the start step recreates `mail-cypht`,
+    because a renamed file does not reach a single-file bind mount.
+  - Proved locally against 2.13.0: 5 failures with `X-Forwarded-For: 203.0.113.9`
+    locked that address, and the same password from another address signed in.
+    Scripted logins need an `Origin:` header; without one, Cypht destroys the session.
 - **Health:** the healthcheck is an anonymous AJAX POST, which answers 303 with no
   body in ~5 ms. `GET /` renders the 677 KB login page. Cypht is healthy ~5 s
   after start. The login page needs no backend, so this holds while DMS is still
   waiting for its certificate.
-- **Known quirk:** after signing out and back in, the combined view can show stale
-  rows from the browser's local cache (one account's message twice, another's
-  missing). Reloading after clearing site data fixes it. Each account's own folder
-  is always right. Observed with Cypht 2.13.0.
+- **Known quirk:** after an account is added, or after signing out and back in,
+  the combined view can show stale rows from the browser's local cache (one
+  account's message twice, or a new account's missing). Reloading after clearing
+  site data fixes it. Each account's own folder is always right. Observed with
+  Cypht 2.13.0.
 
 ## TLS flow
 

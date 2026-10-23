@@ -79,6 +79,8 @@ type ReadReport struct {
 	Registry string `json:"registry_b64"`
 	Fragment string `json:"fragment_b64"`
 	Aliases  string `json:"aliases_b64"`
+	Nginx    string `json:"nginx_b64"`
+	Jail     string `json:"jail_b64"`
 	// HostAddr is the local end of this ssh connection, "" when unknown.
 	HostAddr string `json:"host_addr"`
 }
@@ -143,6 +145,8 @@ func read(apps, data string) ReadReport {
 	r.Registry = b64(dir + "/kasbah.yml")
 	r.Fragment = b64(apps + "/traefik/dynamic/_mail.yml")
 	r.Aliases = b64(data + "/mail/dms/config/postfix-virtual.cf")
+	r.Nginx = b64(dir + "/cypht-nginx.conf")
+	r.Jail = b64(data + "/mail/dms/config/fail2ban-jail.cf")
 	if f := strings.Fields(os.Getenv("SSH_CONNECTION")); len(f) >= 3 {
 		r.HostAddr = f[2]
 	}
@@ -280,19 +284,21 @@ func remoteLayout(apps, data, size, sum string, stdin io.Reader, stdout io.Write
 		return fmt.Errorf("%s: the payload is not a mail layout", dir)
 	}
 	mdata := data + "/mail"
-	// Bind-mount sources, which Docker would make root's. Cypht leaves cypht/
-	// its creator's and fills it as root: cypht.sqlite at 644, users/ and
-	// attachments/ handed to www-data (uid 33).
+	// Bind-mount sources, which Docker would make root's. Cypht's entrypoint
+	// hands cypht/ and everything in it to www-data (uid 33).
 	for _, d := range []string{dir, mdata + "/dms/mail-data", mdata + "/dms/mail-state", mdata + "/dms/mail-logs",
 		mdata + "/dms/config/rspamd/override.d", mdata + "/cypht"} {
 		if err := os.MkdirAll(d, 0o777); err != nil {
 			return fmt.Errorf("could not create %s", d)
 		}
 	}
-	// www-data must traverse into users/ whatever the deploy user's umask; at 700
-	// the healthcheck still passes and every settings save fails silently.
-	if err := os.Chmod(mdata+"/cypht", 0o755); err != nil {
-		return fmt.Errorf("could not set the mode of %s/cypht", mdata)
+	// Set before Cypht's first start, which makes the directory www-data's and
+	// any later chmod by the deploy user a failure: at 700 the healthcheck
+	// still passes and every settings save fails silently.
+	if fi, err := os.Stat(mdata + "/cypht"); err != nil || fi.Mode().Perm() != 0o755 {
+		if err := os.Chmod(mdata+"/cypht", 0o755); err != nil {
+			return fmt.Errorf("could not set the mode of %s/cypht to 755 (Cypht makes it www-data's); on the server: sudo chmod 755 %s/cypht", mdata, mdata)
+		}
 	}
 
 	env := dir + "/.env"
@@ -382,6 +388,7 @@ func remoteStart(apps string, timeout time.Duration, stdout, stderr io.Writer) e
 		out, _ := cmd.Output()
 		return strings.TrimSpace(string(out))
 	}
+	dmsBefore := cid("mail-dms")
 	// --remove-orphans: a service the template no longer names is removed.
 	if err := dc("up", "-d", "--remove-orphans"); err != nil {
 		return fmt.Errorf("docker compose -p %s up -d --remove-orphans failed in %s", Project, dir)
@@ -389,6 +396,23 @@ func remoteStart(apps string, timeout time.Duration, stdout, stderr io.Writer) e
 	web := cid("mail-cypht")
 	if web == "" {
 		return errors.New("compose reported no mail-cypht container after up -d")
+	}
+	// A file bind mount keeps the inode it was made with, and init replaces the
+	// file whole: a container showing other bytes is recreated onto the new one.
+	nginx := "unchecked"
+	want, rerr := os.ReadFile(dir + "/cypht-nginx.conf")
+	got, gerr := exec.Command("docker", "exec", web, "cat", "/etc/nginx/nginx.conf").Output()
+	if rerr == nil && gerr == nil {
+		nginx = "mounted"
+		if !bytes.Equal(got, want) {
+			if err := dc("up", "-d", "--no-deps", "--force-recreate", "mail-cypht"); err != nil {
+				return fmt.Errorf("docker compose -p %s up -d --force-recreate mail-cypht failed in %s", Project, dir)
+			}
+			nginx = "remounted"
+			if web = cid("mail-cypht"); web == "" {
+				return errors.New("compose reported no mail-cypht container after recreating it")
+			}
+		}
 	}
 	dms := cid("mail-dms")
 	if dms == "" {
@@ -427,12 +451,77 @@ func remoteStart(apps string, timeout time.Duration, stdout, stderr io.Writer) e
 		}
 		time.Sleep(2 * time.Second)
 	}
+	jail := applyJail(dmsBefore, dms, stderr)
 	state, _ := inspect(dms, "{{.State.Status}}")
 	restarts, _ := inspect(dms, "{{.RestartCount}}")
 	image, _ := inspect(dms, "{{.Config.Image}}")
 	var out bytes.Buffer
-	fmt.Fprintf(&out, "mail_cypht_health=%s\nmail_dms_state=%s\nmail_dms_health=%s\nmail_dms_restarts=%s\nmail_dms_image=%s\n",
-		h, state, health(dms), restarts, image)
+	fmt.Fprintf(&out, "mail_cypht_health=%s\nmail_cypht_nginx=%s\nmail_dms_state=%s\nmail_dms_health=%s\nmail_dms_restarts=%s\nmail_dms_image=%s\nmail_jail=%s\n",
+		h, nginx, state, health(dms), restarts, image, jail)
 	_, err := stdout.Write(out.Bytes())
 	return err
+}
+
+// Jail is the jail file in DMS's config mount, and Fail2ban's copy of it.
+const (
+	JailSource = "/tmp/docker-mailserver/fail2ban-jail.cf"
+	JailLive   = "/etc/fail2ban/jail.d/user-jail.local"
+)
+
+// applyJail brings DMS's Fail2ban to the jail file. DMS copies it only in the
+// setup of a new container, skipped when the same container starts again, so
+// anything else gets the copy here. A failure is a warning: mail flows either way.
+func applyJail(before, dms string, stderr io.Writer) string {
+	if before != dms {
+		return "atstart"
+	}
+	do := func(args ...string) ([]byte, error) {
+		return exec.Command("docker", args...).CombinedOutput()
+	}
+	failed := func(what string, out []byte) string {
+		fmt.Fprintf(stderr, "remote: %s on mail-dms failed: %s\n", what, strings.TrimSpace(string(out)))
+		return "failed"
+	}
+	if r, _ := inspect(dms, "{{.State.Running}}"); r != "true" {
+		// Stopped or between restarts: Fail2ban reads the copy when it starts.
+		src, _ := inspect(dms, `{{range .Mounts}}{{if eq .Destination "/tmp/docker-mailserver"}}{{.Source}}{{end}}{{end}}`)
+		if src == "" {
+			return failed("finding the config mount", []byte("no mount at /tmp/docker-mailserver"))
+		}
+		if out, err := do("cp", src+"/fail2ban-jail.cf", dms+":"+JailLive); err != nil {
+			return failed("docker cp of the jail", out)
+		}
+		return "atstart"
+	}
+	copied := false
+	if _, err := do("exec", dms, "cmp", "-s", JailSource, JailLive); err != nil {
+		if out, err := do("exec", dms, "cp", JailSource, JailLive); err != nil {
+			return failed("cp "+JailSource, out)
+		}
+		copied = true
+	}
+	if _, err := do("exec", dms, "fail2ban-client", "ping"); err != nil {
+		return "atstart"
+	}
+	if !copied {
+		if out, err := do("exec", dms, "fail2ban-client", "get", "dovecot", "ignoreip"); err == nil && ignoresCypht(string(out)) {
+			return "unchanged"
+		}
+	}
+	if out, err := do("exec", dms, "fail2ban-client", "reload"); err != nil {
+		return failed("fail2ban-client reload", out)
+	}
+	return "reloaded"
+}
+
+// ignoresCypht reads `fail2ban-client get <jail> ignoreip`: a header line,
+// then one entry per line after a `|- ` or "`- " branch.
+func ignoresCypht(out string) bool {
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSuffix(l, "\r")
+		if strings.HasSuffix(l, "- mail-cypht") {
+			return true
+		}
+	}
+	return false
 }

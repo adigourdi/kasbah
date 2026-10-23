@@ -95,6 +95,15 @@ func TestRemoteLayout(t *testing.T) {
 	if r := readOf(t, apps, data); r.Dir != "absent" || r.Accounts != "absent" || r.Env || r.HostAddr != "203.0.113.7" {
 		t.Fatalf("bare: %+v", r)
 	}
+	os.MkdirAll(apps+"/mail", 0o755)
+	os.MkdirAll(data+"/mail/dms/config", 0o755)
+	os.WriteFile(apps+"/mail/cypht-nginx.conf", []byte("nginx"), 0o644)
+	os.WriteFile(data+"/mail/dms/config/fail2ban-jail.cf", []byte("jail"), 0o644)
+	if r := readOf(t, apps, data); r.Nginx != enc("nginx") || r.Jail != enc("jail") {
+		t.Errorf("shipped files read as %q %q", r.Nginx, r.Jail)
+	}
+	os.RemoveAll(apps + "/mail")
+	os.RemoveAll(data)
 
 	env := "MAIL_HOSTNAME=mail.a.com\nDOMAIN=a.com\nDATA_PATH=" + data + "\nRELAY_USER=\n"
 	lb := func(account string) string {
@@ -394,5 +403,156 @@ func TestAccountLadder(t *testing.T) {
 		if r := readOf(t, apps, data); r.Accounts != want {
 			t.Errorf("%q: %s, want %s", body, r.Accounts, want)
 		}
+	}
+}
+
+// fakeDocker answers the start step from files in dir: dms_id is mail-dms's
+// container (absent: none until up), cypht_nginx what mail-cypht shows at
+// /etc/nginx/nginx.conf, f2b_live whether Fail2ban's ignoreip has mail-cypht;
+// the other flag files fail or change one step. Every call lands in dir/log.
+func fakeDocker(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := `#!/bin/sh
+s=` + dir + `
+printf '%s\n' "$*" >> "$s/log"
+case "$1" in
+compose)
+	case "$*" in
+	*" ps -a -q mail-dms") cat "$s/dms_id" 2>/dev/null ;;
+	*" ps -a -q mail-cypht") echo web1 ;;
+	*" up -d --remove-orphans")
+		if [ ! -f "$s/dms_id" ] || [ -f "$s/up_recreates" ]; then
+			n=$(( $(cat "$s/n" 2>/dev/null || echo 0) + 1 )); echo $n > "$s/n"; echo "dms$n" > "$s/dms_id"
+		fi ;;
+	esac ;;
+inspect)
+	case "$3" in
+	*Mounts*) echo /data/mail/dms/config ;;
+	*Health*) echo healthy ;;
+	*State.Running*) if [ "$4" = web1 ] || [ ! -f "$s/dms_stopped" ]; then echo true; else echo false; fi ;;
+	*State.Status*) echo running ;;
+	*RestartCount*) echo 0 ;;
+	*Config.Image*) echo img ;;
+	esac ;;
+cp) touch "$s/jail_live" ;;
+exec)
+	shift 2
+	case "$*" in
+	cat*) cat "$s/cypht_nginx" ;;
+	cmp*) [ -f "$s/jail_live" ] ;;
+	cp*) touch "$s/jail_live" ;;
+	"fail2ban-client ping") [ ! -f "$s/ping_fails" ] ;;
+	"fail2ban-client get dovecot ignoreip")
+		echo 'These IP addresses/networks are ignored:'
+		if [ -f "$s/f2b_live" ]; then printf '|- 127.0.0.0/8\n%s- mail-cypht\n' '` + "`" + `'; else echo '` + "`" + `- 127.0.0.0/8'; fi ;;
+	"fail2ban-client reload")
+		[ ! -f "$s/reload_fails" ] || { echo 'ERROR  NOK: (boom)'; exit 255; }
+		touch "$s/f2b_live" ;;
+	esac ;;
+esac
+`
+	if err := os.WriteFile(dir+"/docker", []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	return dir
+}
+
+// The start step brings Fail2ban to the jail in every container DMS's own
+// setup will not copy it into, judged by Fail2ban's live ignoreip; and it
+// recreates Cypht onto a replaced nginx.conf.
+func TestRemoteStartJailAndNginx(t *testing.T) {
+	apps := t.TempDir()
+	os.MkdirAll(apps+"/mail", 0o755)
+	os.WriteFile(apps+"/mail/cypht-nginx.conf", []byte("new\n"), 0o644)
+	d := fakeDocker(t)
+	os.WriteFile(d+"/cypht_nginx", []byte("new\n"), 0o644)
+	flag := func(name string, on bool) {
+		if on {
+			os.WriteFile(d+"/"+name, nil, 0o644)
+		} else {
+			os.Remove(d + "/" + name)
+		}
+	}
+	start := func(what, jail string, in, out []string) map[string]string {
+		t.Helper()
+		os.Remove(d + "/log")
+		o, e, rc := run(t, "", "start", apps, "5")
+		b, _ := os.ReadFile(d + "/log")
+		log, kv := string(b), remote.KV([]byte(o))
+		if rc != 0 || kv["mail_jail"] != jail {
+			t.Errorf("%s: rc %d, mail_jail=%s, want %s\n%s%s", what, rc, kv["mail_jail"], jail, e, log)
+		}
+		for _, w := range in {
+			if !strings.Contains(log, w) && !strings.Contains(e, w) {
+				t.Errorf("%s: no %q in\n%s%s", what, w, log, e)
+			}
+		}
+		for _, w := range out {
+			if strings.Contains(log, w) {
+				t.Errorf("%s: %q in\n%s", what, w, log)
+			}
+		}
+		return kv
+	}
+	cp := "exec dms1 cp " + JailSource + " " + JailLive + "\n"
+	reload := "exec dms1 fail2ban-client reload\n"
+
+	// A new container: DMS's own setup copies the jail.
+	kv := start("first start", "atstart", nil, []string{"exec dms", "cp /data"})
+	if kv["mail_cypht_nginx"] != "mounted" {
+		t.Errorf("first start: nginx %s", kv["mail_cypht_nginx"])
+	}
+	start("jail differs", "reloaded", []string{cp, reload}, nil)
+	start("jail live", "unchanged", nil, []string{"fail2ban-client reload", " cp "})
+
+	// A failed reload is reported, the step still succeeds, and the re-run
+	// reloads although the copy already matches.
+	flag("jail_live", false)
+	flag("f2b_live", false)
+	flag("reload_fails", true)
+	start("failed reload", "failed", []string{cp, "fail2ban-client reload on mail-dms failed: ERROR  NOK: (boom)"}, nil)
+	flag("reload_fails", false)
+	start("after a failed reload", "reloaded", []string{reload}, []string{cp})
+
+	// Fail2ban not up yet: the copy is made, and read when it starts.
+	flag("jail_live", false)
+	flag("ping_fails", true)
+	start("fail2ban down", "atstart", []string{cp}, []string{"fail2ban-client reload"})
+	flag("ping_fails", false)
+
+	// The same container stopped, or restarted by its policy: setup is
+	// skipped on its next start, so the jail is copied in from the mount.
+	flag("jail_live", false)
+	flag("dms_stopped", true)
+	start("same container stopped", "atstart", []string{"cp /data/mail/dms/config/fail2ban-jail.cf dms1:" + JailLive + "\n"}, []string{"exec dms1"})
+	flag("dms_stopped", false)
+
+	// Recreated by up: the new container's setup copies it.
+	flag("up_recreates", true)
+	start("recreated", "atstart", nil, []string{"exec dms", "cp /data"})
+	flag("up_recreates", false)
+
+	// Cypht showing other bytes than the file is recreated onto it; one whose
+	// file cannot be read is reported unchecked.
+	os.WriteFile(d+"/cypht_nginx", []byte("old\n"), 0o644)
+	if kv := start("nginx replaced", "unchanged", []string{"compose -p mail up -d --no-deps --force-recreate mail-cypht\n"}, nil); kv["mail_cypht_nginx"] != "remounted" {
+		t.Errorf("replaced nginx.conf: %s", kv["mail_cypht_nginx"])
+	}
+	os.Remove(d + "/cypht_nginx")
+	if kv := start("nginx unreadable", "unchanged", nil, []string{"force-recreate"}); kv["mail_cypht_nginx"] != "unchecked" {
+		t.Errorf("unreadable nginx.conf: %s", kv["mail_cypht_nginx"])
+	}
+}
+
+// The format fail2ban-client 1.1.0.1 prints in DMS 15.1.0.
+func TestIgnoresCypht(t *testing.T) {
+	live := "These IP addresses/networks are ignored:\n|- 127.0.0.0/8\n`- mail-cypht\n"
+	if !ignoresCypht(live) || !ignoresCypht(strings.ReplaceAll(live, "\n", "\r\n")) {
+		t.Error("mail-cypht not found")
+	}
+	if ignoresCypht("These IP addresses/networks are ignored:\n`- 127.0.0.0/8\n") || ignoresCypht("`- mail-cyphtx\n") {
+		t.Error("found where it is not")
 	}
 }

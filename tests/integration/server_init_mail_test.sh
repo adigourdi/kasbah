@@ -193,14 +193,22 @@ frag_ns=$(stat -c '%.9Z' "$frag" 2>/dev/null)
 kv t_frag_landed_ns "${frag_ns%.*}${frag_ns#*.}"
 kv t_traefik_started_ns "$(date -d "$(docker inspect -f '{{.State.StartedAt}}' traefik 2>/dev/null)" +%s%N 2>/dev/null)"
 
-# Cypht's tree inside the directory kasbah makes: the entrypoint creates the
-# SQLite database as root and hands users/ and attachments/ to www-data (33).
+# Cypht's tree inside the directory kasbah makes, all of it handed to www-data
+# (33): the database and the directory by compose's entrypoint override, so
+# brute_force can write them, users/ and attachments/ by the image's own.
 isdir "$mail_data/cypht" d_cy
-kv cy_owner    "$(sudo stat -c '%u:%g' "$mail_data/cypht" 2>/dev/null)"
+kv cy_owner    "$(sudo stat -c '%u:%g %a' "$mail_data/cypht" 2>/dev/null)"
 kv cy_db       "$(sudo stat -c '%u:%g %a' "$mail_data/cypht/cypht.sqlite" 2>/dev/null)"
 kv cy_users    "$(sudo stat -c '%u:%g' "$mail_data/cypht/users" 2>/dev/null)"
 kv cy_attach   "$(sudo stat -c '%u:%g' "$mail_data/cypht/attachments" 2>/dev/null)"
-kv me          "$(id -u):$(id -g)"
+
+# The two kasbah-owned files beside the stack, and the nginx.conf Cypht serves.
+jail=$mail_data/dms/config/fail2ban-jail.cf
+isfile "$mail_dir/cypht-nginx.conf" f_nginx
+isfile "$jail" f_jail
+kv nginx_realip "$(grep -c 'real_ip_header X-Forwarded-For;' "$mail_dir/cypht-nginx.conf" 2>/dev/null || true)"
+kv jail_ignore  "$(sed 's/\r$//' "$jail" 2>/dev/null | grep -cxF -e '[DEFAULT]' -e 'ignoreip = 127.0.0.1/8 mail-cypht' || true)"
+kv cy_realip    "$(docker exec mail-cypht grep -c 'real_ip_header X-Forwarded-For;' /etc/nginx/nginx.conf 2>/dev/null || true)"
 
 kv dms_state    "$(docker inspect -f '{{.State.Status}}' mail-dms 2>/dev/null)"
 kv dms_image    "$(docker inspect -f '{{.Config.Image}}' mail-dms 2>/dev/null)"
@@ -244,7 +252,8 @@ missing=()
 for key in d_mail f_compose f_env f_registry f_frag env_mode accounts_mode \
            f_accounts f_dkim accounts_line t_accounts t_dkim \
            t_dms_created t_frag_landed_ns t_traefik_started_ns \
-           d_cy cy_owner cy_db cy_users cy_attach me \
+           d_cy cy_owner cy_db cy_users cy_attach \
+           f_nginx f_jail nginx_realip jail_ignore cy_realip \
            dms_state dms_image dms_project dms_nets dms_mounts dms_ports \
            cy_health cy_image cy_nets cy_env dms_certmiss dms_welcome; do
     [ -n "${fact[$key]+set}" ] || missing+=("$key")
@@ -321,10 +330,10 @@ assert '[ "${fact[t_frag_landed_ns]}" -lt "${fact[t_traefik_started_ns]}" ]' \
 # kasbah makes the bind-mount source and Cypht fills it. The database is what
 # the image's entrypoint dies without, so its presence is the boot's evidence.
 assert '[ "${fact[d_cy]}" = "yes" ]' "$mail_data/cypht exists (got '${fact[d_cy]}')"
-assert '[ "${fact[cy_owner]}" = "${fact[me]}" ]' \
-    "owned by the deploy user, so kasbah made it and Docker did not (got '${fact[cy_owner]}', deploy user '${fact[me]}')"
-assert '[ "${fact[cy_db]}" = "0:0 644" ]' \
-    "Cypht created its SQLite database there, root's at 644 (got '${fact[cy_db]}')"
+assert '[ "${fact[cy_owner]}" = "33:33 755" ]' \
+    "handed to www-data at the 755 kasbah set, so brute_force can write its journal there (got '${fact[cy_owner]}')"
+assert '[ "${fact[cy_db]}" = "33:33 644" ]' \
+    "Cypht created its SQLite database there, www-data's at 644 (got '${fact[cy_db]}')"
 assert '[ "${fact[cy_users]}" = "33:33" ] && [ "${fact[cy_attach]}" = "33:33" ]' \
     "and handed users/ and attachments/ to www-data (got '${fact[cy_users]}', '${fact[cy_attach]}')"
 
@@ -420,9 +429,19 @@ assert '[ "${fact[cy_health]}" = "healthy" ]' \
 assert '[ "${fact[cy_image]}" = "$cy_image" ]' \
     "from the pinned image (got '${fact[cy_image]}')"
 # The login is checked against the public name, whose certificate DMS serves.
-for kvp in AUTH_TYPE=IMAP "IMAP_AUTH_SERVER=mail.$rig_domain" "DEFAULT_SMTP_SERVER=mail.$rig_domain" XDEBUG_MODE=off; do
+for kvp in AUTH_TYPE=IMAP "IMAP_AUTH_SERVER=mail.$rig_domain" "DEFAULT_SMTP_SERVER=mail.$rig_domain" XDEBUG_MODE=off \
+    BRUTE_FORCE_MAX_ATTEMPTS=5 BRUTE_FORCE_LOCKOUT_DURATION=600; do
     assert 'grep -qwF -- "$kvp" <<<"${fact[cy_env]}"' "Cypht runs with $kvp (env: ${fact[cy_env]})"
 done
+assert 'grep -qE "(^| )CYPHT_MODULES=([^ ]*,)?brute_force(,| |$)" <<<"${fact[cy_env]}"' \
+    "and with the brute_force module on (env: ${fact[cy_env]})"
+# Fail2ban itself is not proved here: DMS never boots on the rig.
+assert '[ "${fact[f_jail]}" = "yes" ] && [ "${fact[jail_ignore]}" = "2" ]' \
+    "fail2ban-jail.cf is in DMS's config directory, exempting mail-cypht in [DEFAULT] (file '${fact[f_jail]}', lines matched '${fact[jail_ignore]}')"
+assert '[ "${fact[f_nginx]}" = "yes" ] && [ "${fact[nginx_realip]}" = "1" ]' \
+    "cypht-nginx.conf is beside compose.yml, trusting X-Forwarded-For (file '${fact[f_nginx]}', matched '${fact[nginx_realip]}')"
+assert '[ "${fact[cy_realip]}" = "1" ]' \
+    "and is the nginx.conf mail-cypht serves (matched '${fact[cy_realip]}')"
 assert '[ "${fact[dms_image]}" = "$dms_image" ]' \
     "and DMS from its own (got '${fact[dms_image]}')"
 assert '[ "${fact[dms_project]}" = "mail" ]' \

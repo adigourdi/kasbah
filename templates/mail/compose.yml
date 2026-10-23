@@ -80,6 +80,8 @@ services:
       ENABLE_AMAVIS: 0
       ENABLE_SPAMASSASSIN: 0
 
+      # The jail file kasbah ships to config/fail2ban-jail.cf exempts mail-cypht:
+      # every webmail login reaches IMAP from its address, banned for all at once.
       ENABLE_FAIL2BAN: 1
       SPOOF_PROTECTION: 1
 
@@ -112,10 +114,16 @@ services:
     image: cypht/cypht:2.13.0
     container_name: mail-cypht
     restart: unless-stopped
+    # The image's entrypoint creates the SQLite file as root; brute_force writes
+    # to it (and its journal beside it) as www-data, so both are handed over first.
+    entrypoint: ["sh", "-c", "touch /var/lib/hm3/cypht.sqlite && chown www-data:www-data /var/lib/hm3 /var/lib/hm3/cypht.sqlite && exec docker-entrypoint.sh"]
     # The image's entrypoint exits after ten failed database probes, so it gets
     # an SQLite file here. Settings, attachments and the database all live in it.
+    # The nginx.conf is the image's own plus real_ip: X-Forwarded-For from
+    # Traefik is trusted, so brute_force sees each client's address.
     volumes:
       - ${DATA_PATH}/mail/cypht:/var/lib/hm3
+      - ./cypht-nginx.conf:/etc/nginx/nginx.conf:ro
     environment:
       # TLS to the public name: DMS's certificate is issued for it alone.
       AUTH_TYPE: IMAP
@@ -134,9 +142,11 @@ services:
       DB_NAME: /var/lib/hm3/cypht.sqlite
 
       # Not `developer`: its server-information page shows the site config to
-      # every logged-in user. Not `brute_force`: it locks out per client address,
-      # and behind Traefik every client has Traefik's, so five typos lock out all.
-      CYPHT_MODULES: core,imap,smtp,account,profiles,imap_folders,contacts,local_contacts,nux,idle_timer,themes,history,saved_searches,advanced_search,inline_message,keyboard_shortcuts,tags,highlights,recover_settings
+      # every logged-in user. `brute_force` locks a client address, and a
+      # username, after 5 failed logins for 10 minutes.
+      CYPHT_MODULES: core,imap,smtp,account,profiles,imap_folders,contacts,local_contacts,nux,idle_timer,themes,history,saved_searches,advanced_search,inline_message,keyboard_shortcuts,tags,highlights,recover_settings,brute_force
+      BRUTE_FORCE_MAX_ATTEMPTS: 5
+      BRUTE_FORCE_LOCKOUT_DURATION: 600
       # The image ships Xdebug at mode=debug.
       XDEBUG_MODE: "off"
     networks:

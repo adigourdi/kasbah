@@ -1,0 +1,5 @@
+# kasbah-owned, rewritten by `kasbah server init` and applied to mail-dms's Fail2ban.
+# Webmail logins reach IMAP from mail-cypht's address, so it is never banned;
+# Cypht's brute_force throttles each client. Fail2ban re-resolves the name every 5 min.
+[DEFAULT]
+ignoreip = 127.0.0.1/8 mail-cypht

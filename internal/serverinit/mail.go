@@ -19,17 +19,20 @@ import (
 	"github.com/adigourdi/kasbah/internal/tmpl"
 )
 
-// MailFiles are the three kasbah-owned mail files compared and shipped, in
-// order; MailDest is where each lands under <apps> — _mail.yml in Traefik's
-// watch directory.
-var (
-	MailFiles = []string{"compose.yml", "kasbah.yml", "_mail.yml"}
-	MailDest  = map[string]string{
-		"compose.yml": "mail/compose.yml",
-		"kasbah.yml":  "mail/kasbah.yml",
-		"_mail.yml":   "traefik/dynamic/_mail.yml",
+// MailFiles are the kasbah-owned mail files compared and shipped, in order.
+var MailFiles = []string{"compose.yml", "kasbah.yml", "_mail.yml", "cypht-nginx.conf", "fail2ban-jail.cf"}
+
+// MailDest is where a mail file lands: _mail.yml in Traefik's watch directory,
+// the jail in DMS's config mount, which DMS copies into Fail2ban at start.
+func MailDest(o Options, rel string) string {
+	switch rel {
+	case "_mail.yml":
+		return o.Apps + "/traefik/dynamic/_mail.yml"
+	case "fail2ban-jail.cf":
+		return o.Data + "/mail/dms/config/fail2ban-jail.cf"
 	}
-)
+	return o.Apps + "/mail/" + rel
+}
 
 var reCrypt = regexp.MustCompile(`^\$6\$[^$]+\$[./A-Za-z0-9]+$`)
 
@@ -73,10 +76,11 @@ func CheckPostmaster(p string) error {
 // freshMail is a server with nothing of mail on it: an apps path not yet made.
 var freshMail = mail.ReadReport{Dir: "absent", Accounts: "absent"}
 
-// MailCurrent is the three files' bytes off the read, by name.
+// MailCurrent is the shipped files' bytes off the read, by name.
 func MailCurrent(r *mail.ReadReport, target string) (map[string]string, error) {
 	cur := map[string]string{}
-	for rel, enc := range map[string]string{"compose.yml": r.Compose, "kasbah.yml": r.Registry, "_mail.yml": r.Fragment} {
+	for rel, enc := range map[string]string{"compose.yml": r.Compose, "kasbah.yml": r.Registry, "_mail.yml": r.Fragment,
+		"cypht-nginx.conf": r.Nginx, "fail2ban-jail.cf": r.Jail} {
 		b, err := base64.StdEncoding.DecodeString(enc)
 		if err != nil {
 			return nil, cli.Fail("the mail stack read on %s returned a %s that does not decode", target, rel)
@@ -158,7 +162,7 @@ func MailResolve(out *cli.Output, p *prompt.Prompter, o Options, r *mail.ReadRep
 	return v, nil
 }
 
-// MailRender renders the three shipped files (each parsed: _mail.yml lands
+// MailRender renders the shipped files (the YAML ones parsed: _mail.yml lands
 // where Traefik watches) and the two seeds, "env" and "dkim".
 func MailRender(fsys fs.FS, o Options, v MailValues) (map[string]string, error) {
 	subst := map[string]string{
@@ -170,6 +174,7 @@ func MailRender(fsys fs.FS, o Options, v MailValues) (map[string]string, error) 
 	}
 	out := map[string]string{}
 	for _, f := range [][2]string{{"compose.yml", "compose.yml"}, {"kasbah.yml", "kasbah.yml"}, {"_mail.yml", "_mail.yml"},
+		{"cypht-nginx.conf", "cypht-nginx.conf"}, {"fail2ban-jail.cf", "fail2ban-jail.cf"},
 		{"env", "env"}, {"rspamd-dkim-signing.conf", "dkim"}} {
 		b, err := fs.ReadFile(fsys, "mail/"+f[0])
 		if err != nil {
@@ -179,7 +184,7 @@ func MailRender(fsys fs.FS, o Options, v MailValues) (map[string]string, error) 
 		if err != nil {
 			return nil, err
 		}
-		if f[1] != "env" && f[1] != "dkim" {
+		if strings.HasSuffix(f[0], ".yml") {
 			if perr := tmpl.CheckYAML(s); perr != nil {
 				return nil, cli.Fail("the rendered mail %s is not valid YAML — refusing to ship it", f[0]).Cont(
 					perr.Error(),
@@ -210,18 +215,25 @@ func (s *session) mailLayout(o Options, rendered map[string]string, v MailValues
 	return checked("the mail layout step", s.target, res, "mail_layout", "mail_env", "mail_account", "mail_dkim_seed")
 }
 
-// mailSync ships the files whose bytes differ.
-func (s *session) mailSync(o Options, rendered, cur map[string]string) ([]string, error) {
+// MailChanged is the files whose rendered bytes differ from the server's.
+func MailChanged(rendered, cur map[string]string) []string {
 	var changed []string
 	for _, rel := range MailFiles {
-		if rendered[rel] == cur[rel] {
-			continue
+		if rendered[rel] != cur[rel] {
+			changed = append(changed, rel)
 		}
-		dest := o.Apps + "/" + MailDest[rel]
+	}
+	return changed
+}
+
+// mailSync ships the files whose bytes differ.
+func (s *session) mailSync(o Options, rendered, cur map[string]string) ([]string, error) {
+	changed := MailChanged(rendered, cur)
+	for _, rel := range changed {
+		dest := MailDest(o, rel)
 		if _, rc := s.send([]byte(rendered[rel]), "write", dest); rc != 0 {
 			return nil, cli.Fail("could not ship the mail %s to %s:%s", rel, s.target, dest)
 		}
-		changed = append(changed, rel)
 	}
 	return changed, nil
 }
@@ -233,9 +245,25 @@ func (s *session) mailStart(o Options) (Facts, error) {
 	if rc != 0 {
 		return nil, cli.Fail("could not start the mail stack on %s (the remote step exited %d, see above)", s.target, rc)
 	}
-	return checked("the mail start", s.target, res, "mail_cypht_health", "mail_dms_state",
-		"mail_dms_health", "mail_dms_restarts", "mail_dms_image")
+	return checked("the mail start", s.target, res, "mail_cypht_health", "mail_cypht_nginx", "mail_dms_state",
+		"mail_dms_health", "mail_dms_restarts", "mail_dms_image", "mail_jail")
 }
+
+// jailWords and nginxWords are the start step's mail_jail and
+// mail_cypht_nginx states, as the summary says them.
+var (
+	jailWords = map[string]string{
+		"unchanged": "fail2ban ignores mail-cypht",
+		"reloaded":  "fail2ban reloaded, ignores mail-cypht",
+		"atstart":   "fail2ban ignores mail-cypht once it starts",
+		"failed":    "fail2ban jail NOT applied, mail-cypht can be banned",
+	}
+	nginxWords = map[string]string{
+		"mounted":   "cypht nginx.conf live",
+		"remounted": "cypht recreated onto its new nginx.conf",
+		"unchecked": "cypht nginx.conf not checked (could not compare the shipped and served copies)",
+	}
+)
 
 // reportMail is the stack's summary and, when DMS is not healthy yet, what
 // that most likely means; the walkthrough follows on the run that made it.
@@ -250,7 +278,15 @@ func reportMail(out *cli.Output, o Options, v MailValues, r *mail.ReadReport, ch
 	out.Info("        routers: mail.%s (cert-trigger, no backend), https://webmail.%s", p, p)
 	out.Info("        .env %s, postmaster %s, dkim override %s", lay["mail_env"], lay["mail_account"], lay["mail_dkim_seed"])
 	out.Info("        cypht %s, dms %s (%s, %s restarts)", st["mail_cypht_health"], st["mail_dms_state"], st["mail_dms_health"], st["mail_dms_restarts"])
+	out.Info("        %s; %s", jailWords[st["mail_jail"]], nginxWords[st["mail_cypht_nginx"]])
 	out.Info("        setup guide: kasbah server mail-setup-guide %s", o.Target)
+	if st["mail_jail"] == "failed" {
+		// Mail still flows; only the webmail exemption is missing.
+		out.Warn("mail-dms's Fail2ban did not take the new jail (see above); until it does,")
+		out.Warn("a few wrong webmail passwords can ban mail-cypht and cut webmail off from IMAP.")
+		out.Warn("re-run init once mail-dms is running, or retry by hand:")
+		out.Warn("  ssh %s 'docker exec mail-dms cp %s %s && docker exec mail-dms fail2ban-client reload'", o.Target, mail.JailSource, mail.JailLive)
+	}
 	if st["mail_dms_health"] != "healthy" {
 		// Inside the 60 s start_period and crashlooping on a missing
 		// certificate look alike here; restarts tell them apart only later.

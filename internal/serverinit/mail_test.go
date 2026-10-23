@@ -1,6 +1,7 @@
 package serverinit
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -65,12 +66,16 @@ func TestMailRender(t *testing.T) {
 		t.Fatal(err)
 	}
 	for k, want := range map[string]string{
-		"kasbah.yml":  "primary_domain: example.com\ndomains:\n  - example.com\n  - shop.test\n",
-		"_mail.yml":   "Host(`webmail.example.com`)",
-		"compose.yml": "name: mail",
-		"env":         "MAIL_HOSTNAME=mail.example.com\nDOMAIN=example.com\nDATA_PATH=/srv/data\n",
-		"dkim":        "rsa-2048-mail-example.com.private.txt",
+		"kasbah.yml":       "primary_domain: example.com\ndomains:\n  - example.com\n  - shop.test\n",
+		"_mail.yml":        "Host(`webmail.example.com`)",
+		"compose.yml":      "name: mail",
+		"env":              "MAIL_HOSTNAME=mail.example.com\nDOMAIN=example.com\nDATA_PATH=/srv/data\n",
+		"dkim":             "rsa-2048-mail-example.com.private.txt",
+		"compose.yml#":     "./cypht-nginx.conf:/etc/nginx/nginx.conf:ro",
+		"cypht-nginx.conf": "\treal_ip_header X-Forwarded-For;\n\treal_ip_recursive on;\n",
+		"fail2ban-jail.cf": "[DEFAULT]\nignoreip = 127.0.0.1/8 mail-cypht\n",
 	} {
+		k, _, _ = strings.Cut(k, "#")
 		if !strings.Contains(r[k], want) {
 			t.Errorf("%s lacks %q", k, want)
 		}
@@ -92,5 +97,50 @@ func TestMailResolveEmptyAccounts(t *testing.T) {
 		func(string) (string, error) { return "$6$salt$HASH", nil })
 	if err != nil || v.Account != "postmaster@a.com|{SHA512-CRYPT}$6$salt$HASH" {
 		t.Errorf("%+v %v", v, err)
+	}
+}
+
+// Each file lands where its consumer reads it, and only a file whose bytes
+// differ from the server's is shipped again.
+func TestMailChanged(t *testing.T) {
+	o := Options{Apps: "/srv/apps", Data: "/srv/data"}
+	for rel, want := range map[string]string{
+		"compose.yml":      "/srv/apps/mail/compose.yml",
+		"kasbah.yml":       "/srv/apps/mail/kasbah.yml",
+		"_mail.yml":        "/srv/apps/traefik/dynamic/_mail.yml",
+		"cypht-nginx.conf": "/srv/apps/mail/cypht-nginx.conf",
+		"fail2ban-jail.cf": "/srv/data/mail/dms/config/fail2ban-jail.cf",
+	} {
+		if got := MailDest(o, rel); got != want {
+			t.Errorf("%s lands at %s", rel, got)
+		}
+	}
+	r, err := MailRender(repoTemplates(t), o, MailValues{Primary: "example.com", Domains: []string{"example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(MailChanged(r, map[string]string{}), " "); got != strings.Join(MailFiles, " ") {
+		t.Errorf("fresh server: %s", got)
+	}
+	// What the read returns is what the comparison sees.
+	rd := mail.ReadReport{}
+	for rel, f := range map[string]*string{"compose.yml": &rd.Compose, "kasbah.yml": &rd.Registry, "_mail.yml": &rd.Fragment,
+		"cypht-nginx.conf": &rd.Nginx, "fail2ban-jail.cf": &rd.Jail} {
+		*f = base64.StdEncoding.EncodeToString([]byte(r[rel]))
+	}
+	cur, err := MailCurrent(&rd, "deploy@vps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := MailChanged(r, cur); len(got) != 0 {
+		t.Errorf("current server: %v", got)
+	}
+	for _, rel := range []string{"fail2ban-jail.cf", "cypht-nginx.conf"} {
+		was := cur[rel]
+		cur[rel] = strings.Replace(was, "\n", "\r\n", 1)
+		if got := strings.Join(MailChanged(r, cur), " "); got != rel {
+			t.Errorf("%s edited on the server: %s", rel, got)
+		}
+		cur[rel] = was
 	}
 }

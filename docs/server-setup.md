@@ -80,8 +80,8 @@ Default paths (override with `--apps-path`, `--data-path`):
 ```
 
 With `--with-mail`, the data path gains `mail/dms/{mail-data,mail-state,mail-logs,config}`
-and `mail/cypht`. Only those; Cypht's entrypoint builds `users/`,
-`attachments/` and `cypht.sqlite` inside the last one (`mail.md` → Webmail). The postmaster account (`mail/dms/config/postfix-accounts.cf`,
+and `mail/cypht`. Only those; Cypht builds `users/`, `attachments/` and
+`cypht.sqlite` inside the last one and hands the tree to `www-data` (`mail.md` → Webmail). The postmaster account (`mail/dms/config/postfix-accounts.cf`,
 mode 600) and the Rspamd DKIM override
 (`mail/dms/config/rspamd/override.d/dkim_signing.conf`) are seeded there before
 DMS first starts, and never written over afterwards.
@@ -685,7 +685,14 @@ server binary reads it out of the marker.
   rewrites the Rspamd DKIM override**, which `setup config dkim` extends; and
   never touches mail data. It does not prompt for a password it will not use.
   The stack starts with `up -d --remove-orphans`, so a container the template
-  no longer names is removed (its data directory is not).
+  no longer names is removed (its data directory is not). Two kasbah-owned files
+  are rewritten when they differ and applied without a DMS restart:
+  `mail/cypht-nginx.conf` (the start step recreates `mail-cypht` when it serves an
+  older copy) and `<data>/mail/dms/config/fail2ban-jail.cf`. DMS copies the jail
+  file itself only when its container is created, so for an existing DMS the
+  start step does it: inside a running DMS when the copy differs, followed by
+  `fail2ban-client reload` unless the live `ignoreip` already has `mail-cypht`; by
+  `docker cp` into a stopped one. `mail.md` → Webmail has the states.
 - `mail/.env`'s mode is enforced as 600 on every run, exactly as `acme.json`'s
   is and for the same reason: the mode is a fact about the file, not about the
   run that happened to write it, so a file left 644 by a hand edit converges on
