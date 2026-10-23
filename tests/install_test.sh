@@ -245,4 +245,58 @@ assert '! grep -q "^installed" <<<"$broken_out"' "and it does not claim success 
 assert 'cmp -s "$repo/dist/kasbah" "$bin_dir/kasbah" && [ "$(readlink "$bin_dir/kasbah")" = "$ver_dir/kasbah" ] && "$bin_dir/kasbah" --version >/dev/null' \
     "and the installed kasbah is the previous one, still linked and running"
 
+
+# --- Case 6: __install DIR, and --pin ---------------------------------------------
+# install-dev.sh vN.M.P installs a tag's dist/ through the working tree's
+# `__install --pin DIR`: the symlink goes to that build even beside a newer one.
+pin_lib="$tmpdir/pin/lib" pin_bin="$tmpdir/pin/bin"
+pin_install() { # args… — sets p_rc, p_out
+    p_out=$(env -u XDG_DATA_HOME KASBAH_LIB_DIR="$pin_lib" KASBAH_BIN_DIR="$pin_bin" \
+                "$repo/dist/kasbah" __install "$@" 2>&1); p_rc=$?
+}
+mkdir -p "$pin_lib/$newer/server"
+printf '#!/bin/sh\necho "kasbah %s (schema 1)"\n' "$newer" > "$pin_lib/$newer/kasbah"
+chmod 0755 "$pin_lib/$newer/kasbah"
+pin_install "$repo/dist"
+assert '[ "$p_rc" = "0" ] && [ "$(readlink "$pin_bin/kasbah")" = "$pin_lib/$newer/kasbah" ]' \
+    "__install DIR points <bin>/kasbah at the newest installed (exit $p_rc: $p_out)"
+pin_install --pin "$repo/dist"
+assert '[ "$p_rc" = "0" ] && [ "$(readlink "$pin_bin/kasbah")" = "$pin_lib/$stamp/kasbah" ] && [ -x "$pin_lib/$newer/kasbah" ]' \
+    "__install --pin DIR points it at the build installed, the newer one kept (exit $p_rc: $p_out)"
+
+# --- Case 7: a version argument ----------------------------------------------------
+# Refused before anything is built or installed; resolution itself is
+# internal/version's (Pick) and cmd/kasbah's (__pick-tag) to test, and a real
+# tag build is install-dev.sh v1.0.0 run by hand (docs/phases/11-open.md).
+args_run() { # args… — sets a_rc, a_err
+    a_err=$(env -u XDG_DATA_HOME KASBAH_SKIP_BUILD=1 KASBAH_BIN_DIR="$tmpdir/args/bin" KASBAH_LIB_DIR="$tmpdir/args/lib" \
+                "$repo/install-dev.sh" "$@" 2>&1 >/dev/null); a_rc=$?
+}
+for a in "--pre" "bogus" "-x" "v1 v2" "v1 --yes"; do
+    # shellcheck disable=SC2086
+    args_run $a
+    assert '[ "$a_rc" = "2" ] && grep -qF "usage: install-dev.sh [vN | vN.M | vN.M.P] [--pre]" <<<"$a_err"' \
+        "'$a' is refused with the usage (exit $a_rc: $a_err)"
+done
+args_run --pre
+assert 'grep -qF -- "--pre needs a version" <<<"$a_err"' "--pre alone says it needs a version (got: $a_err)"
+args_run v1
+assert '[ "$a_rc" = "1" ] && grep -qF "a version needs a git checkout" <<<"$a_err"' \
+    "a version outside a git checkout is refused (exit $a_rc: $a_err)"
+
+# The copy becomes a checkout holding tags that do not match.
+git -C "$repo" init --quiet
+git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit --quiet --allow-empty -m fixture
+for t in v0.9.0 v1.0.0-rc.1 not-a-version; do git -C "$repo" tag "$t"; done
+args_run v1
+assert '[ "$a_rc" = "1" ] && grep -qF "no local tag matches v1" <<<"$a_err" && grep -qF "git fetch --tags" <<<"$a_err" && grep -qF "1 pre-release tag(s) were skipped" <<<"$a_err"' \
+    "no matching tag names git fetch --tags, and the skipped rc (exit $a_rc: $a_err)"
+args_run v1.0.1
+assert '[ "$a_rc" = "1" ] && grep -qF "no local tag matches v1.0.1" <<<"$a_err" && grep -qF "git fetch --tags" <<<"$a_err"' \
+    "an exact version not tagged here names git fetch --tags (exit $a_rc: $a_err)"
+args_run v1.x
+assert '[ "$a_rc" = "1" ] && grep -qF "'"'"'v1.x'"'"' is not a version" <<<"$a_err"' \
+    "a malformed version is refused (exit $a_rc: $a_err)"
+assert '[ ! -e "$tmpdir/args" ]' "and none of them installed anything"
+
 exit "$fail"

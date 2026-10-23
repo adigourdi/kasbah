@@ -1127,7 +1127,8 @@ shipping it; a dev build or a checkout never fetches.
 
 Every release installed stays, under `~/.local/share/kasbah/<version>/` (the
 binary and its two linux server builds), beside at most one dev build — each
-`install-dev.sh` from a checkout replaces the previous one — and
+`install-dev.sh` from a checkout replaces the previous one (`install-dev.sh
+vN.M.P` builds and installs a release tag instead) — and
 `~/.local/bin/kasbah` is a symlink to the newest installed version that runs. A running kasbah hands off to a sibling version — re-executing
 `<lib>/<version>/kasbah` with the same arguments and environment, before any
 side effect — in two cases:

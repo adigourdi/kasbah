@@ -156,6 +156,10 @@ func main() {
 			out := cli.Std()
 			atexit.HandleSignals()
 			atexit.Exit(report(out, installCmd(out, args[1:])))
+		case "__pick-tag":
+			out := cli.Std()
+			atexit.HandleSignals()
+			atexit.Exit(report(out, pickTagCmd(out, args[1:], os.Stdin)))
 		case "__ensure-server":
 			out := cli.Std()
 			atexit.HandleSignals()

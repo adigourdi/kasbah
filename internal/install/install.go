@@ -204,14 +204,24 @@ func put(dst string, src Source) error {
 
 // Reports is whether bin answers --version with `kasbah <ver>`.
 func Reports(bin, ver string, limit time.Duration) bool {
+	got, ok := Reported(bin, limit)
+	return ok && got == ver
+}
+
+// Reported is the version bin answers --version with (`kasbah <ver> …`);
+// false when it does not run or answers something else.
+func Reported(bin string, limit time.Duration) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, bin, "--version").Output()
 	if err != nil {
-		return false
+		return "", false
 	}
 	f := strings.Fields(string(out))
-	return len(f) >= 2 && f[0] == "kasbah" && f[1] == ver
+	if len(f) < 2 || f[0] != "kasbah" {
+		return "", false
+	}
+	return f[1], true
 }
 
 // CheckLib refuses a library directory that is neither absent, empty, nor

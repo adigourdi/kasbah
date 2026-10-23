@@ -29,6 +29,9 @@ plan and the only progress tracker (the roadmap is scope, not status).
 - `./install-dev.sh` — build this tree and install it as the one dev build
   under `~/.local/share/kasbah/<stamp>/`, linking `~/.local/bin/kasbah` to the
   newest installed version (`KASBAH_SKIP_BUILD=1` installs `dist/` as it is).
+  `./install-dev.sh vN[.M[.P]] [--pre]` builds that local tag in a temporary
+  clone with its own `compose.yml` (the working tree is built first: it does
+  the resolving and the installing) — a release tag reproduces the release.
 - `./release.sh vX.Y.Z` — a release: `VERSION` must equal it, HEAD pushed and
   clean; the tag made first (the stamp reads it; removed again if the run
   fails before the push), `./test.sh`, two builds that must hash identically, `checksums.txt`

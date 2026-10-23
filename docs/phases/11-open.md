@@ -100,16 +100,19 @@ hand-off target; removing it only costs a rebuild, which the refusal message nam
 ### 11.2 — `install-dev.sh vN[.M[.P]] [--pre]` (M)
 
 **Deliverables**
-- [ ] A version argument resolves among local tags (`vN` newest of N, `vN.M` newest
+- [x] A version argument resolves among local tags (`vN` newest of N, `vN.M` newest
       patch, `vN.M.P` exact; rcs only with `--pre` or named exactly); no match names
       `git fetch --tags`
-- [ ] The tag is built in a temporary clone (not a worktree — the stamp reads
+- [x] The tag is built in a temporary clone (not a worktree — the stamp reads
       `.git`) with its own `compose.yml`, sharing the module cache; the clone is
       removed on any exit
-- [ ] The installed build reports exactly the tag's version
+- [x] The installed build reports exactly the tag's version
 
 **Verify on:** `./install-dev.sh v1.0.0` into a temporary prefix, its three hashes
 compared against v1.0.0's published `checksums.txt`; suite cases for resolution.
+*Done:* `d1e8ed4f…127e6b` (binary and amd64 server) and `70121ca2…4859` (arm64),
+both equal to the published sums; interrupts at 0.8–1.4 s leave no clone,
+container or network (`down --remove-orphans`). An exact `vN.M.P` pins the symlink.
 
 **Watch out for:** the tag's `compose.yml` pins its own Go image; the build must
 not run the working tree's. A tag cut before 11.1 has no `__install`, so the tag's
@@ -126,6 +129,9 @@ by its own.
 - [ ] A token is optional: sent to the API host when present, never on the
       redirect; a rate-limit refusal names `GITHUB_TOKEN`
 - [ ] `KASBAH_RELEASES_REMOTE` and the `git` dependency are gone
+- [ ] Resolution through `version.Pick` (11.2), `self-update` passing `v<own major>`
+      for no argument; the symlink is pinned only by an exact `vN.M.P[-rc.K]`, as
+      `install-dev.sh` does — not by any argument with a dot
 
 11.4:
 
@@ -202,3 +208,6 @@ Approved scope (2026-10-23): the whole phase, 11.1–11.8, in plan order, one co
   `ln -sfn` did; `self-update` still asks.
 - On this kernel a binary just exec'd can report "text file busy" to an in-place
   write for a moment after it exits: replace binaries by rename, never rewrite them.
+- No suite builds a tag: `install-dev.sh vN` is proven by hand (11.2) and in 11.8 —
+  a suite case would tie `test.sh` to tags the pre-public cleanup deletes.
+  `docker compose down` leaves a `run` container behind; only `--remove-orphans` takes it.
