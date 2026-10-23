@@ -104,9 +104,15 @@ fi
 older="$major.0.0-0"
 newer="$major.999999.0"
 next_major="$((major + 1)).0.0"
-# A release of our major, and a dev build above it by order (another
-# checkout's, as tools/stamp marks them).
-release="$major.0.1"
+# A release of our major that outranks our build — our own base version when
+# ours is a pre-release, the next patch when it is a release — and a dev build
+# above it by order (another checkout's, as tools/stamp marks them).
+base=${ours%%[-+]*}
+if [ "$base" != "$ours" ]; then
+    release=$base
+else
+    release="${base%.*}.$(( ${base##*.} + 1 ))"
+fi
 dev_above="$major.999999.0-dev.1.1+gabc1234.dirty"
 
 mkdir -p "$repo_dir/.cache"
