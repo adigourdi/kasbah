@@ -70,24 +70,27 @@ at the close.
 The shared substrate: 11.2, 11.4 and `get.sh` all place a build the same way.
 
 **Deliverables**
-- [ ] One Go routine places a build in `<lib>/<ver>/` (binary written beside and
+- [x] One Go routine places a build in `<lib>/<ver>/` (binary written beside and
       renamed, `server/kasbah-linux-<arch>` beside it, the result must answer
       `--version`) and repoints `<bin>/kasbah`; `self-update` uses it
-- [ ] `kasbah __install` (hidden) installs `dist/kasbah` and `dist/server/*` under
+- [x] `kasbah __install` (hidden) installs `dist/kasbah` and `dist/server/*` under
       its own stamp — the refusals `install.sh` had (a non-kasbah library dir, a
       binary that does not run, installing over `dist/`, a non-symlink non-file at
       `<bin>/kasbah`) kept
-- [ ] Installing a dev build removes every other dev build; releases stay
-- [ ] `install-dev.sh` builds through compose (`KASBAH_SKIP_BUILD=1` skips it) and
+- [x] Installing a dev build removes every other dev build; releases stay
+- [x] `install-dev.sh` builds through compose (`KASBAH_SKIP_BUILD=1` skips it) and
       calls `dist/kasbah __install`; `install.sh` is gone
-- [ ] A checkout is recognised by `go.mod` + `cmd/kasbah`, not a script name —
+- [x] A checkout is recognised by `go.mod` + `cmd/kasbah`, not a script name —
       `internal/serverbin/home.go`, `tests/integration/server_binary_test.sh:93`
-- [ ] Every message, test and doc naming `install.sh` names `install-dev.sh`
+- [x] Every message, test and doc naming `install.sh` names `install-dev.sh`
       (`cmd/kasbah/handoff.go`, `cmd/kasbah/selfupdate.go`, `internal/selfupdate`)
-- [ ] `tests/install_test.sh` covers the new script and the one-dev-build rule
+- [x] `tests/install_test.sh` covers the new script and the one-dev-build rule
 
 **Verify on:** Go tests, `tests/install_test.sh`, the build; then
-`tests/integration/server_binary_test.sh` on the rig.
+`tests/integration/server_binary_test.sh` on the rig. *Done:* `./test.sh` green;
+the rig suite green against the new build; a failed repoint (read-only `<bin>`)
+reproduced by the reviewer and now refused before the library is touched —
+`internal/install` checks `<bin>`, places, repoints among the survivors, prunes last.
 
 **Watch out for:** `launcher.Root` finds the library from the running binary's own
 directory first — `dist/kasbah __install` must take its target from the
@@ -109,7 +112,9 @@ hand-off target; removing it only costs a rebuild, which the refusal message nam
 compared against v1.0.0's published `checksums.txt`; suite cases for resolution.
 
 **Watch out for:** the tag's `compose.yml` pins its own Go image; the build must
-not run the working tree's.
+not run the working tree's. A tag cut before 11.1 has no `__install`, so the tag's
+`dist/` is installed by the *working tree's* binary (a `__install DIR` form), not
+by its own.
 
 ### 11.3 + 11.4 — `self-update` for a public repo; a loose release binary installs itself (M)
 
@@ -189,3 +194,11 @@ None — the rulings above settle every deliverable.
 ## Findings
 
 Approved scope (2026-10-23): the whole phase, 11.1–11.8, in plan order, one commit per unit (11.3 + 11.4 are one).
+
+- A library is kasbah's when it is empty or holds any directory named as a version
+  (an interrupted first install included); a pre-1.0.0 library is refused, not swept.
+  `self-update` checks this before any network call.
+- `__install` moves the symlink across majors without asking, as `install.sh`'s
+  `ln -sfn` did; `self-update` still asks.
+- On this kernel a binary just exec'd can report "text file busy" to an in-place
+  write for a moment after it exits: replace binaries by rename, never rewrite them.

@@ -1,5 +1,5 @@
 // Package selfupdate installs a released kasbah from GitHub Releases into the
-// versioned library install.sh writes (<lib>/<ver>/kasbah beside
+// versioned library install-dev.sh writes (<lib>/<ver>/kasbah beside
 // <lib>/<ver>/server/), after verifying the release's minisign-signed
 // checksums.txt against the key in release.pub and each asset against it.
 // The server builds a version lacks are fetched the same way, on demand.

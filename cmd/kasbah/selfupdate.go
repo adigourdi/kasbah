@@ -3,11 +3,11 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"runtime"
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/install"
 	"github.com/adigourdi/kasbah/internal/launcher"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/selfupdate"
@@ -38,19 +38,15 @@ func selfUpdate(out *cli.Output, o selfupdate.Options) error {
 	home, checkout := serverbin.Home(exe)
 	if checkout {
 		return cli.Fail("this kasbah runs from the checkout at %s, which self-update does not touch", home).Cont(
-			"build it: docker compose run --rm build, then ./install.sh")
+			"build it: docker compose run --rm build, then ./install-dev.sh")
 	}
 	root, err := launcher.Root(exe, os.Getenv)
 	if err != nil {
 		return cli.Fail("the installed versions cannot be found: %v", err)
 	}
-	binDir := os.Getenv("KASBAH_BIN_DIR")
-	if binDir == "" {
-		if home := os.Getenv("HOME"); home != "" {
-			binDir = filepath.Join(home, ".local", "bin")
-		} else {
-			return cli.Fail("neither KASBAH_BIN_DIR nor HOME is set, so there is no symlink to repoint")
-		}
+	binDir, err := install.BinDir(os.Getenv)
+	if err != nil {
+		return err
 	}
 	c, err := selfupdate.New(out, os.Getenv)
 	if err != nil {

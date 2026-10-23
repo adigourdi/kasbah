@@ -51,19 +51,22 @@ commands not named as writers below write nothing — `check` (but see `--fix`),
 
 `deploy` in this table is the invoking user.
 
-### The install (`install.sh`)
+### The install (`install-dev.sh`, `self-update`)
 
 `<lib>` is `KASBAH_LIB_DIR`, else `$XDG_DATA_HOME/kasbah`, else
-`~/.local/share/kasbah`; `<bin>` is `KASBAH_BIN_DIR`, else `~/.local/bin`.
+`~/.local/share/kasbah`; `<bin>` is `KASBAH_BIN_DIR`, else `~/.local/bin`. Both
+writers place a build through `internal/install`: `<bin>` is checked writable
+first, then the build is placed, the symlink moved, and other dev builds removed last.
 
 | Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |
 |---|---|---|---|---|---|---|---|
-| `<lib>/<version>/kasbah` | `install.sh` (`.kasbah.new`, then rename), `<version>` being the build stamp; `self-update` (`.kasbah.part` streamed, size + sha256 checked against the signed `checksums.txt`, then rename) | the symlink; a hand-off (`cli.md` → Hand-off) | static ELF for this machine | `755` | the installing user | a re-install of the same stamp replaces it; never removed by kasbah | `install.sh:111` |
-| `<lib>/<version>/server/kasbah-linux-<arch>` | `install.sh` (same way), amd64 and arm64; `self-update` (this machine's arch, a copy of its own binary); `serverbin.Local` fetching the missing arch of an installed release the same verified way | `serverbin.Local` — what that version ships to a server | static linux ELF | `755` | the installing user | as above | `install.sh:114`, `internal/serverbin/serverbin.go:56` |
-| `<bin>/kasbah` | `install.sh`: `ln -sfn` to `<lib>/<newest>/kasbah`, newest by `internal/version` over the version directories whose binary runs (`kasbah __newest`); `self-update` the same, through `<bin>/.kasbah.new` and a rename | the shell | symlink | — | the installing user | repointed by every install; a regular file there (the pre-launcher install) is replaced, a directory refused | `install.sh:143` |
+| `<lib>/<version>/kasbah` | `kasbah __install` from `install-dev.sh` (`dist/kasbah`); `self-update` (streamed, size + sha256 checked against the signed `checksums.txt`) — each written beside as `.kasbah.new` and renamed, `<version>` being the build stamp | the symlink; a hand-off (`cli.md` → Hand-off) | static ELF for this machine | `755` | the installing user | a re-install of the same stamp replaces it; a dev build is removed by the next dev install, a release never | `internal/install/install.go:159` |
+| `<lib>/<version>/server/kasbah-linux-<arch>` | `__install` (amd64 and arm64 from `dist/server/`); `self-update` (this machine's arch, a copy of its own binary); `serverbin.Local` fetching the missing arch of an installed release the same verified way | `serverbin.Local` — what that version ships to a server | static linux ELF | `755` | the installing user | as above | `internal/install/install.go:185`, `internal/serverbin/serverbin.go:56` |
+| `<bin>/kasbah` | `__install` and `self-update`: a symlink to the newest installed version that runs and survives the prune (`self-update vN.M.P`: that version), through `<bin>/.kasbah.new` and a rename | the shell | symlink | — | the installing user | repointed by every install; a regular file there is replaced, a directory refused | `internal/install/install.go:290` |
 
-A pre-launcher install (`<lib>/server/kasbah-linux-*` at the top level, and the
-pre-1.0 `libexec/`, `templates/`, `VERSION`, `*.sh`) is swept by the next install.
+A library is refused unless it is empty or holds a directory named as a version,
+so a library from before 1.0.0 (`<lib>/server/kasbah-linux-*` at the top, or
+`libexec/`, `VERSION`, `*.sh`) is refused rather than adopted: remove it by hand.
 
 Developer tooling, not the CLI: `release.sh keygen` writes the minisign pair
 `${KASBAH_RELEASE_KEY:-~/.config/kasbah/release.key}` (`600`, its directory

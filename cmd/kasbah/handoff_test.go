@@ -59,7 +59,7 @@ func TestResolve(t *testing.T) {
 		{"nil", nil, lib, "", ""},
 		{"the server's build", newer("1.1.0"), lib, v110, ""},
 		{"the server's other build", newer("1.2.0"), lib, v120, ""},
-		{"the server's build is not installed", newer("1.3.0"), lib, "", "install it: `kasbah self-update v1.3.0`, or ./install.sh"},
+		{"the server's build is not installed", newer("1.3.0"), lib, "", "install it: `kasbah self-update v1.3.0`, or ./install-dev.sh"},
 		{"the server's dev build is not installed", newerThan("1.0.1-dev.5.1+gabc1234", "1.0.1-dev.9.1+g1a2b3c4"), lib, "",
 			"a dev build from another checkout (1.0.1-dev.9.1+g1a2b3c4): check out and build commit 1a2b3c4 and install it"},
 		{"the server's dirty dev build is not installed", newerThan("1.0.1-dev.5.1", "1.0.1-dev.9.1+g1a2b3c4.dirty"), lib, "", "commit 1a2b3c4 (built from a dirty tree"},

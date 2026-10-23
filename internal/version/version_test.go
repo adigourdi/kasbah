@@ -200,3 +200,21 @@ func TestReleaseOrdering(t *testing.T) {
 		t.Errorf("a pre-release build does not rank below 1.0.0")
 	}
 }
+
+func TestDev(t *testing.T) {
+	for stamp, want := range map[string]bool{
+		"1.0.0":                              false,
+		"1.1.0-rc.1":                         false,
+		"1.0.1-dev.86.1792460280+gabc1234":   true,
+		"1.0.1-dev.86.1792460280+gabc.dirty": true,
+		"1.1.0-dev.0.1792460280":             true,
+		"1.1.0-rc.1.5.1792460280+gabc1234":   true,
+		"1.1.0-dev":                          false,
+		"v1.0.0":                             false,
+		"":                                   false,
+	} {
+		if got := Dev(stamp); got != want {
+			t.Errorf("Dev(%q) = %v, want %v", stamp, got, want)
+		}
+	}
+}

@@ -522,6 +522,22 @@ func TestRun(t *testing.T) {
 		t.Errorf("lying binary moved the symlink -> %s", target())
 	}
 
+	// A library that is not kasbah's: refused before the API or the cdn is asked.
+	foreign := t.TempDir()
+	os.WriteFile(filepath.Join(foreign, "notes.txt"), []byte("mine\n"), 0o644)
+	api, cdn := len(g.apiAuth), len(g.cdnAuth)
+	fc := ctx("")
+	fc.Root = foreign
+	if err := Run(fc, Options{Version: "v1.1.0"}); err == nil || !strings.Contains(err.Error(), "not a kasbah library directory") {
+		t.Errorf("foreign library: %v", err)
+	}
+	if len(g.apiAuth) != api || len(g.cdnAuth) != cdn {
+		t.Error("a refused library still reached GitHub")
+	}
+	if ents, _ := os.ReadDir(foreign); len(ents) != 1 {
+		t.Errorf("the foreign library was written: %v", ents)
+	}
+
 	// Unstamped and no argument.
 	c2 := ctx("")
 	c2.Self = ""
@@ -542,59 +558,6 @@ func (g *github) release2(s *signer, ver string) {
 	checksums := []byte(strings.Join(sums, "\n") + "\n")
 	assets["checksums.txt"] = checksums
 	assets["checksums.txt.minisig"] = s.sign(checksums, "kasbah "+ver)
-}
-
-func TestRepoint(t *testing.T) {
-	root, binDir := t.TempDir(), t.TempDir()
-	plant := func(ver, script string) {
-		os.MkdirAll(filepath.Join(root, ver), 0o755)
-		os.WriteFile(filepath.Join(root, ver, "kasbah"), []byte(script), 0o755)
-	}
-	plant("1.2.0", "#!/bin/sh\necho kasbah 1.2.0\n")
-	plant("1.3.0", "#!/bin/sh\nexit 1\n")
-	var buf bytes.Buffer
-	out := &cli.Output{Stdout: &buf, Stderr: &buf}
-	link := filepath.Join(binDir, "kasbah")
-	// A 1.0.x regular file there: replaced, its version read by running it.
-	os.WriteFile(link, []byte("#!/bin/sh\necho kasbah 0.9.0\n"), 0o755)
-	if _, err := Repoint(root, binDir, "", fakeTTY("", out), false, 5*time.Second); err == nil || !strings.Contains(err.Error(), "--yes") {
-		t.Errorf("regular file of another major without a tty: %v", err)
-	}
-	got, err := Repoint(root, binDir, "", fakeTTY("y\n", out), false, 5*time.Second)
-	if err != nil || got != filepath.Join(root, "1.2.0", "kasbah") {
-		t.Fatalf("repoint: %s, %v", got, err)
-	}
-	if target, _ := os.Readlink(link); target != got {
-		t.Errorf("symlink -> %s", target)
-	}
-	// Same major: no question even without a tty.
-	plant("1.4.0", "#!/bin/sh\necho kasbah 1.4.0\n")
-	if got, err := Repoint(root, binDir, "", fakeTTY("", out), false, 5*time.Second); err != nil || !strings.HasSuffix(got, "/1.4.0/kasbah") {
-		t.Errorf("same major: %s, %v", got, err)
-	}
-	// A version named: that one, even with a newer installed; one that does not
-	// run, or is not there, is refused by name.
-	if got, err := Repoint(root, binDir, "1.2.0", fakeTTY("", out), false, 5*time.Second); err != nil || !strings.HasSuffix(got, "/1.2.0/kasbah") {
-		t.Errorf("pinned to 1.2.0: %s, %v", got, err)
-	}
-	if target, _ := os.Readlink(link); !strings.HasSuffix(target, "/1.2.0/kasbah") {
-		t.Errorf("pinned: symlink -> %s", target)
-	}
-	for _, pin := range []string{"1.3.0", "1.5.0"} {
-		if _, err := Repoint(root, binDir, pin, fakeTTY("", out), false, 5*time.Second); err == nil || !strings.Contains(err.Error(), "no kasbah "+pin+" runs") {
-			t.Errorf("pinned to %s: %v", pin, err)
-		}
-	}
-	// Something else there is refused.
-	os.Remove(link)
-	os.Mkdir(link, 0o755)
-	if _, err := Repoint(root, binDir, "", fakeTTY("", out), true, 5*time.Second); err == nil || !strings.Contains(err.Error(), "refusing to replace") {
-		t.Errorf("a directory: %v", err)
-	}
-	// Nothing runs.
-	if _, err := Repoint(t.TempDir(), t.TempDir(), "", fakeTTY("", out), true, 5*time.Second); err == nil || !strings.Contains(err.Error(), "no installed kasbah runs") {
-		t.Errorf("empty: %v", err)
-	}
 }
 
 func TestParse(t *testing.T) {

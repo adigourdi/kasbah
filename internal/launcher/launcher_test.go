@@ -33,6 +33,10 @@ func TestRoot(t *testing.T) {
 			t.Errorf("Root(%s) = %q, %v; want the running binary's root %q", exe, got, err, lib)
 		}
 	}
+	// EnvRoot never looks at the running binary: what an install from dist/ targets.
+	if got, err := EnvRoot(env); err != nil || got != "/env" {
+		t.Errorf("EnvRoot = %q, %v; want %q", got, err, "/env")
+	}
 	// Not in a version directory: a checkout's dist/, a 1.0.x bin/, a name
 	// that is not kasbah's — the environment decides.
 	for _, exe := range []string{"/repo/dist/kasbah", "/home/u/.local/bin/kasbah", filepath.Join(lib, "1.0.2-dev.86.1792460280", "other")} {

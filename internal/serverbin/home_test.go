@@ -19,8 +19,8 @@ func touch(t *testing.T, path string) {
 func TestHome(t *testing.T) {
 	tmp := t.TempDir()
 	checkout := filepath.Join(tmp, "repo")
-	touch(t, filepath.Join(checkout, "install.sh"))
-	touch(t, filepath.Join(checkout, "VERSION"))
+	touch(t, filepath.Join(checkout, "go.mod"))
+	touch(t, filepath.Join(checkout, "cmd", "kasbah", "main.go"))
 	touch(t, filepath.Join(checkout, "dist", "kasbah"))
 	linked := filepath.Join(tmp, "elsewhere", "bin", "kasbah")
 	if err := os.MkdirAll(filepath.Dir(linked), 0o755); err != nil {
@@ -40,6 +40,11 @@ func TestHome(t *testing.T) {
 	if err := os.Symlink(filepath.Join(verdir, "kasbah"), installed); err != nil {
 		t.Fatal(err)
 	}
+	// A Go module with a dist/kasbah of its own but no cmd/kasbah/ is not a checkout.
+	other := filepath.Join(tmp, "other")
+	touch(t, filepath.Join(other, "go.mod"))
+	touch(t, filepath.Join(other, "cmd", "kasbah"))
+	touch(t, filepath.Join(other, "dist", "kasbah"))
 	// A 1.0.x install: a regular file in the bin directory is its own version dir.
 	plain := filepath.Join(tmp, "plain", "bin", "kasbah")
 	touch(t, plain)
@@ -55,6 +60,7 @@ func TestHome(t *testing.T) {
 		{"installed, through the symlink", installed, verdir, false},
 		{"installed, the version dir itself", filepath.Join(verdir, "kasbah"), verdir, false},
 		{"a regular file in a bin directory", plain, filepath.Dir(plain), false},
+		{"go.mod, and cmd/kasbah a file", filepath.Join(other, "dist", "kasbah"), filepath.Join(other, "dist"), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

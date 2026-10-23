@@ -33,6 +33,12 @@ func Root(exe string, getenv func(string) string) (string, error) {
 			return filepath.Dir(dir), nil
 		}
 	}
+	return EnvRoot(getenv)
+}
+
+// EnvRoot is the library root the environment names: KASBAH_LIB_DIR, else
+// $XDG_DATA_HOME/kasbah, else ~/.local/share/kasbah.
+func EnvRoot(getenv func(string) string) (string, error) {
 	switch {
 	case getenv("KASBAH_LIB_DIR") != "":
 		return getenv("KASBAH_LIB_DIR"), nil

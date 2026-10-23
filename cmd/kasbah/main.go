@@ -152,10 +152,10 @@ func main() {
 			out := cli.Std()
 			atexit.HandleSignals()
 			atexit.Exit(report(out, syncCmd(args[1:])))
-		case "__newest":
+		case "__install":
 			out := cli.Std()
 			atexit.HandleSignals()
-			atexit.Exit(report(out, newestCmd(out, args[1:])))
+			atexit.Exit(report(out, installCmd(out, args[1:])))
 		case "__ensure-server":
 			out := cli.Std()
 			atexit.HandleSignals()

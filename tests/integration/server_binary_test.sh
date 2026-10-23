@@ -90,7 +90,7 @@ major=${ours%%.*}
 # The server binary the workstation under test ships: its own build's, found
 # the way the binary finds it (internal/serverbin.Home).
 ws_root=$(cd "$(dirname "$(readlink -f "$KASBAH_BIN")")/.." && pwd)
-if [ -f "$ws_root/install.sh" ] && [ -f "$ws_root/VERSION" ]; then
+if [ -f "$ws_root/go.mod" ] && [ -d "$ws_root/cmd/kasbah" ]; then
     ours_server="$ws_root/dist/server/kasbah-linux-$arch"
 else
     ours_server="$(dirname "$(readlink -f "$KASBAH_BIN")")/server/kasbah-linux-$arch"
@@ -242,7 +242,7 @@ if [ "$(uname -m)" = "$machine" ]; then
         "hand-off: a second hop is refused, naming the first (exit $rc: $(err))"
     rm -rf "$lib/$newer"
     installed_ensure env; rc=$?
-    assert '[ "$rc" = 1 ] && grep -qF "kasbah self-update v$newer" <<<"$(err)" && grep -qF "install.sh" <<<"$(err)"' \
+    assert '[ "$rc" = 1 ] && grep -qF "kasbah self-update v$newer" <<<"$(err)" && grep -qF "install-dev.sh" <<<"$(err)"' \
         "hand-off: a build not installed is named with both remedies (exit $rc: $(err))"
     assert '[ "$(server_sha)" = "$newer_sha" ] && [ -z "$(uploads_left)" ]' "hand-off refusals: nothing was replaced"
 else

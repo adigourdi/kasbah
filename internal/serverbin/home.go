@@ -6,7 +6,7 @@ import (
 )
 
 // Home is where the kasbah at exe finds its server binaries: a checkout (its
-// dist/kasbah, with install.sh and VERSION two levels up), else the exe's own
+// dist/kasbah, with go.mod and cmd/kasbah/ two levels up), else the exe's own
 // directory — one version directory of the installed library
 // (<lib>/<ver>/kasbah beside <lib>/<ver>/server/).
 func Home(exe string) (dir string, checkout bool) {
@@ -14,7 +14,7 @@ func Home(exe string) (dir string, checkout bool) {
 		exe = real
 	}
 	root := filepath.Dir(filepath.Dir(exe))
-	if isFile(filepath.Join(root, "install.sh")) && isFile(filepath.Join(root, "VERSION")) {
+	if fi, err := os.Stat(filepath.Join(root, "cmd", "kasbah")); err == nil && fi.IsDir() && isFile(filepath.Join(root, "go.mod")) {
 		return root, true
 	}
 	return filepath.Dir(exe), false

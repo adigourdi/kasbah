@@ -1113,7 +1113,10 @@ first (`--yes`; no TTY → hard fail naming the flag). A version already
 installed and answering for itself downloads nothing: named on the command
 line it still gets the symlink; asked for by major or by nothing, it is
 reported as already installed. A checkout
-(`dist/kasbah`) refuses: build it.
+(`dist/kasbah`, with `go.mod` and `cmd/kasbah/` two levels up) refuses: build
+it and run `./install-dev.sh`. A library directory that is not kasbah's (not
+empty, and no directory in it named as a version) is refused before anything
+is fetched.
 
 The other architecture's server build is not installed up front. An installed
 *release* kasbah that meets a server of an arch it holds no build for fetches
@@ -1122,10 +1125,10 @@ shipping it; a dev build or a checkout never fetches.
 
 ## Hand-off between installed versions
 
-`install.sh` keeps every version it installs, under
-`~/.local/share/kasbah/<version>/` (the binary and its two linux server builds),
-and `~/.local/bin/kasbah` is a symlink to the newest installed version that
-runs. A running kasbah hands off to a sibling version — re-executing
+Every release installed stays, under `~/.local/share/kasbah/<version>/` (the
+binary and its two linux server builds), beside at most one dev build — each
+`install-dev.sh` from a checkout replaces the previous one — and
+`~/.local/bin/kasbah` is a symlink to the newest installed version that runs. A running kasbah hands off to a sibling version — re-executing
 `<lib>/<version>/kasbah` with the same arguments and environment, before any
 side effect — in two cases:
 

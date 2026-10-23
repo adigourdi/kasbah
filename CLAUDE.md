@@ -26,6 +26,9 @@ plan and the only progress tracker (the roadmap is scope, not status).
   lives in `compose.yml` alone. Build from the main checkout — a git worktree's
   `.git` points outside the mounted tree and the version stamp fails.
 - `dist/kasbah <cmd>` — run the CLI from the checkout; no install needed.
+- `./install-dev.sh` — build this tree and install it as the one dev build
+  under `~/.local/share/kasbah/<stamp>/`, linking `~/.local/bin/kasbah` to the
+  newest installed version (`KASBAH_SKIP_BUILD=1` installs `dist/` as it is).
 - `./release.sh vX.Y.Z` — a release: `VERSION` must equal it, HEAD pushed and
   clean; the tag made first (the stamp reads it; removed again if the run
   fails before the push), `./test.sh`, two builds that must hash identically, `checksums.txt`
@@ -73,7 +76,7 @@ plan and the only progress tracker (the roadmap is scope, not status).
   an unanswered prompt is a hard fail naming the flag.
 - **Compose:** files are `compose.yml` (never docker-compose.yml), no
   `version:` attribute.
-- **Shell scripts** (`test.sh`, `install.sh`, `tests/`): `set -euo pipefail`;
+- **Shell scripts** (`test.sh`, `install-dev.sh`, `release.sh`, `tests/`): `set -euo pipefail`;
   under pipefail never pipe a producer into `grep -q` — capture, then `grep -q <<<`.
 - **Tests land with the code they test, in the same change.**
 - **Docs are the spec:** when implementation contradicts a doc, fix the

@@ -95,7 +95,7 @@ func TestLocal(t *testing.T) {
 	if _, err := Local(root, true, "arm64"); err == nil || !strings.Contains(err.Error(), "docker compose run --rm build") {
 		t.Errorf("a missing checkout binary: %v", err)
 	}
-	if _, err := Local(root, false, "amd64"); err == nil || !strings.Contains(err.Error(), "install.sh") {
+	if _, err := Local(root, false, "amd64"); err == nil || !strings.Contains(err.Error(), "install-dev.sh") {
 		t.Errorf("a missing installed binary: %v", err)
 	}
 }
@@ -126,7 +126,7 @@ func TestLocalFetchesRelease(t *testing.T) {
 	// A dev stamp and a checkout never fetch.
 	dev := filepath.Join(lib, "1.2.1-dev.88.1700000000")
 	os.MkdirAll(dev, 0o755)
-	if _, err := Local(dev, false, "arm64"); err == nil || !strings.Contains(err.Error(), "install.sh") {
+	if _, err := Local(dev, false, "arm64"); err == nil || !strings.Contains(err.Error(), "install-dev.sh") {
 		t.Errorf("dev stamp: %v", err)
 	}
 	if _, err := Local(t.TempDir(), true, "arm64"); err == nil || !strings.Contains(err.Error(), "docker compose run --rm build") {
@@ -140,7 +140,7 @@ func TestLocalFetchesRelease(t *testing.T) {
 	other := filepath.Join(lib, "1.3.0")
 	os.MkdirAll(other, 0o755)
 	_, err := Local(other, false, "amd64")
-	if err == nil || !strings.Contains(err.Error(), "release v1.3.0 failed") || !strings.Contains(err.Error(), "set GITHUB_TOKEN") || !strings.Contains(err.Error(), "install.sh") {
+	if err == nil || !strings.Contains(err.Error(), "release v1.3.0 failed") || !strings.Contains(err.Error(), "set GITHUB_TOKEN") || !strings.Contains(err.Error(), "install-dev.sh") {
 		t.Errorf("failed fetch: %v", err)
 	}
 }

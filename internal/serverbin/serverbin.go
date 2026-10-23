@@ -60,14 +60,14 @@ var fetchRelease = func(home, ver, arch string) error {
 }
 
 // Local is this build's server binary for arch: dist/server/ in a checkout,
-// server/ beside the binary in an installed version directory (install.sh).
+// server/ beside the binary in an installed version directory (install-dev.sh).
 // An installed release version (its directory a version with no pre-release
 // part) missing the build fetches it from the release, verified, into place;
 // a dev build and a checkout never fetch.
 func Local(home string, checkout bool, arch string) (string, error) {
 	name := "kasbah-linux-" + arch
 	p := filepath.Join(home, "server", name)
-	remedy := "reinstall kasbah (install.sh), which installs both server binaries"
+	remedy := "reinstall kasbah (install-dev.sh), which installs both server binaries"
 	if checkout {
 		p = filepath.Join(home, "dist", "server", name)
 		remedy = "build it: docker compose run --rm build"
@@ -80,7 +80,7 @@ func Local(home string, checkout bool, arch string) (string, error) {
 			if err := fetchRelease(home, v.String(), arch); err != nil {
 				return "", cli.Fail("there is no linux/%s server binary at %s, and fetching it from release v%s failed", arch, p, v).Cont(
 					strings.Split(err.Error(), "\n")...).Cont(
-					"or reinstall kasbah (install.sh), which installs both server binaries")
+					"or reinstall kasbah (install-dev.sh), which installs both server binaries")
 			}
 			if isFile(p) {
 				return p, nil
@@ -730,7 +730,7 @@ func ship(c *ssh.Conn, self remote.Info, file, bin string) (*remote.Info, error)
 		return nil, cli.Fail("%s is build %s, and this kasbah is %s — refusing to ship a server binary from another build",
 			file, strings.TrimSpace(vout.String()), self.Build).Cont(
 			"the workstation and server binaries come from one build: docker compose run --rm build",
-			"(or install.sh), then retry")
+			"(or ./install-dev.sh), then retry")
 	}
 
 	var iout bytes.Buffer

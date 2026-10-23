@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/cli"
@@ -45,7 +44,7 @@ func resolve(err error, getenv func(string) string) string {
 	case errors.As(err, &schema):
 		find = func(root string) string { return launcher.Newest(root, schema.Schema) }
 		wanted = fmt.Sprintf("a kasbah of major %d", schema.Schema)
-		remedy = fmt.Sprintf("install it: `kasbah self-update v%d`, or ./install.sh from that tag's checkout", schema.Schema)
+		remedy = fmt.Sprintf("install it: `kasbah self-update v%d`, or ./install-dev.sh from that tag's checkout", schema.Schema)
 	default:
 		return ""
 	}
@@ -81,7 +80,7 @@ func resolve(err error, getenv func(string) string) string {
 func installRemedy(build string) string {
 	v, err := version.Parse(build)
 	if err != nil || len(v.Pre) == 0 {
-		return "install it: `kasbah self-update v" + build + "`, or ./install.sh from that tag's checkout"
+		return "install it: `kasbah self-update v" + build + "`, or ./install-dev.sh from that tag's checkout"
 	}
 	commit := "that commit"
 	if sha, ok := strings.CutPrefix(v.Meta, "g"); ok {
@@ -91,7 +90,7 @@ func installRemedy(build string) string {
 			commit += " (built from a dirty tree, so its exact bytes may not come back)"
 		}
 	}
-	return fmt.Sprintf("the server runs a dev build from another checkout (%s): check out and build %s and install it (./install.sh), or ship a release, which replaces a dev build", build, commit)
+	return fmt.Sprintf("the server runs a dev build from another checkout (%s): check out and build %s and install it (./install-dev.sh), or ship a release, which replaces a dev build", build, commit)
 }
 
 func cont(err error, lines ...string) {
@@ -99,19 +98,4 @@ func cont(err error, lines ...string) {
 	if errors.As(err, &e) {
 		e.Cont(lines...)
 	}
-}
-
-// newestCmd is the hidden `kasbah __newest DIR`: the newest version directory
-// under DIR whose kasbah runs, as install.sh repoints the symlink.
-func newestCmd(out *cli.Output, args []string) error {
-	if len(args) != 1 {
-		return cli.Fail("usage: kasbah __newest DIR")
-	}
-	for _, e := range launcher.Installed(args[0]) {
-		if launcher.Runs(e.Bin, time.Duration(serverbin.RunTimeout)*time.Second) {
-			fmt.Fprintln(out.Stdout, e.Version)
-			return nil
-		}
-	}
-	return cli.Fail("no installed kasbah runs under %s", args[0])
 }

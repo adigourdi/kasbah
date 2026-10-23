@@ -106,6 +106,13 @@ func idents(s string, pre bool) bool {
 	return true
 }
 
+// Dev is whether stamp is a dev build's: a pre-release Stamp extended with the
+// commit count and build time. A release, an -rc.N included, is not.
+func Dev(stamp string) bool {
+	v, err := Parse(stamp)
+	return err == nil && stamped(v.Pre)
+}
+
 // stamped is whether pre ends in Stamp's .<commits>.<build time>: at least one
 // identifier before two numeric ones.
 func stamped(pre []string) bool {
