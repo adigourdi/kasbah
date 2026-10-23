@@ -144,3 +144,39 @@ func TestMailChanged(t *testing.T) {
 		cur[rel] = was
 	}
 }
+
+// A lifted ban is a warning, naming the addresses; none, or a Fail2ban not
+// yet answering, says nothing; a failure says which step failed and how to
+// do it by hand.
+func TestReportMailUnban(t *testing.T) {
+	o := Options{Target: "deploy@vps", Apps: "/apps", Data: "/apps/data"}
+	v := MailValues{Primary: "a.com", Origin: "reused", Domains: []string{"a.com"}}
+	both := "fd70::5 172.18.0.5"
+	for _, c := range []struct{ n, addr, want string }{
+		{"1", both, "lifted 1 Fail2ban ban(s) on mail-cypht (fd70::5 172.18.0.5)"},
+		{"0", both, ""},
+		{"skipped", "", ""},
+		{"failed", both, "could not unban mail-cypht (fd70::5 172.18.0.5)"},
+		{"failed", both, "docker exec mail-dms fail2ban-client unban fd70::5 172.18.0.5'"},
+		{"failed", "", "cannot resolve mail-cypht, so no Fail2ban ban on it was looked for"},
+		{"failed", "", "fail2ban-client unban <mail-cypht address>'"},
+	} {
+		// The start step's own lines, an empty address included, through checked().
+		res := "mail_cypht_health=healthy\nmail_cypht_nginx=mounted\nmail_dms_state=running\nmail_dms_health=healthy\n" +
+			"mail_dms_restarts=0\nmail_dms_image=img\nmail_jail=unchanged\nmail_cypht_unbanned=" + c.n + "\nmail_cypht_addr=" + c.addr + "\n"
+		st, err := checked("the mail start", "deploy@vps", res, "mail_cypht_health", "mail_cypht_nginx", "mail_dms_state",
+			"mail_dms_health", "mail_dms_restarts", "mail_dms_image", "mail_jail", "mail_cypht_unbanned", "mail_cypht_addr")
+		if err != nil || st["mail_cypht_addr"] != c.addr {
+			t.Fatalf("%s %q: %v %v", c.n, c.addr, st, err)
+		}
+		out, b := newOut()
+		reportMail(out, o, v, &mail.ReadReport{Dir: "dir"}, nil, Facts{}, st)
+		got := b.String()
+		if c.want != "" && !strings.Contains(got, c.want) {
+			t.Errorf("%s %q: no %q in\n%s", c.n, c.addr, c.want, got)
+		}
+		if c.want == "" && (strings.Contains(got, "mail-cypht (") || strings.Contains(got, "unban")) {
+			t.Errorf("%s %q: says something:\n%s", c.n, c.addr, got)
+		}
+	}
+}

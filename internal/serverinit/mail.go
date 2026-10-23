@@ -246,7 +246,7 @@ func (s *session) mailStart(o Options) (Facts, error) {
 		return nil, cli.Fail("could not start the mail stack on %s (the remote step exited %d, see above)", s.target, rc)
 	}
 	return checked("the mail start", s.target, res, "mail_cypht_health", "mail_cypht_nginx", "mail_dms_state",
-		"mail_dms_health", "mail_dms_restarts", "mail_dms_image", "mail_jail")
+		"mail_dms_health", "mail_dms_restarts", "mail_dms_image", "mail_jail", "mail_cypht_unbanned", "mail_cypht_addr")
 }
 
 // jailWords and nginxWords are the start step's mail_jail and
@@ -280,6 +280,19 @@ func reportMail(out *cli.Output, o Options, v MailValues, r *mail.ReadReport, ch
 	out.Info("        cypht %s, dms %s (%s, %s restarts)", st["mail_cypht_health"], st["mail_dms_state"], st["mail_dms_health"], st["mail_dms_restarts"])
 	out.Info("        %s; %s", jailWords[st["mail_jail"]], nginxWords[st["mail_cypht_nginx"]])
 	out.Info("        setup guide: kasbah server mail-setup-guide %s", o.Target)
+	switch n := st["mail_cypht_unbanned"]; n {
+	case "0", "skipped":
+	case "failed":
+		if addr := st["mail_cypht_addr"]; addr != "" {
+			out.Warn("mail-dms's Fail2ban could not unban mail-cypht (%s) (see above); if webmail cannot", addr)
+			out.Warn("reach IMAP: ssh %s 'docker exec mail-dms fail2ban-client unban %s'", o.Target, addr)
+		} else {
+			out.Warn("mail-dms cannot resolve mail-cypht, so no Fail2ban ban on it was looked for; if webmail")
+			out.Warn("cannot reach IMAP: ssh %s 'docker exec mail-dms fail2ban-client unban <mail-cypht address>'", o.Target)
+		}
+	default:
+		out.Warn("lifted %s Fail2ban ban(s) on mail-cypht (%s)", n, st["mail_cypht_addr"])
+	}
 	if st["mail_jail"] == "failed" {
 		// Mail still flows; only the webmail exemption is missing.
 		out.Warn("mail-dms's Fail2ban did not take the new jail (see above); until it does,")

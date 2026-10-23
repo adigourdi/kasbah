@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -452,12 +453,13 @@ func remoteStart(apps string, timeout time.Duration, stdout, stderr io.Writer) e
 		time.Sleep(2 * time.Second)
 	}
 	jail := applyJail(dmsBefore, dms, stderr)
+	unbanned, addr := unbanCypht(dms, stderr)
 	state, _ := inspect(dms, "{{.State.Status}}")
 	restarts, _ := inspect(dms, "{{.RestartCount}}")
 	image, _ := inspect(dms, "{{.Config.Image}}")
 	var out bytes.Buffer
-	fmt.Fprintf(&out, "mail_cypht_health=%s\nmail_cypht_nginx=%s\nmail_dms_state=%s\nmail_dms_health=%s\nmail_dms_restarts=%s\nmail_dms_image=%s\nmail_jail=%s\n",
-		h, nginx, state, health(dms), restarts, image, jail)
+	fmt.Fprintf(&out, "mail_cypht_health=%s\nmail_cypht_nginx=%s\nmail_dms_state=%s\nmail_dms_health=%s\nmail_dms_restarts=%s\nmail_dms_image=%s\nmail_jail=%s\nmail_cypht_unbanned=%s\nmail_cypht_addr=%s\n",
+		h, nginx, state, health(dms), restarts, image, jail, unbanned, addr)
 	_, err := stdout.Write(out.Bytes())
 	return err
 }
@@ -524,4 +526,34 @@ func ignoresCypht(out string) bool {
 		}
 	}
 	return false
+}
+
+// unbanCypht lifts any ban on mail-cypht's address in every jail: ignoreip
+// stops new bans, not ones made before it. The count is "skipped" while
+// Fail2ban is not answering; a starting jail drops restored bans it ignores.
+func unbanCypht(dms string, stderr io.Writer) (count, addr string) {
+	if exec.Command("docker", "exec", dms, "fail2ban-client", "ping").Run() != nil {
+		return "skipped", ""
+	}
+	// Every address, resolved inside DMS as Fail2ban resolves ignoreip: on a
+	// dual-stack network `getent hosts` gives only the IPv6 one.
+	out, err := exec.Command("docker", "exec", dms, "getent", "ahosts", "mail-cypht").Output()
+	var addrs []string
+	for _, l := range strings.Split(string(out), "\n") {
+		if f := strings.Fields(l); len(f) > 0 && !slices.Contains(addrs, f[0]) {
+			addrs = append(addrs, f[0])
+		}
+	}
+	if err != nil || len(addrs) == 0 {
+		fmt.Fprintln(stderr, "remote: mail-dms cannot resolve mail-cypht, so no ban on it was looked for")
+		return "failed", ""
+	}
+	addr = strings.Join(addrs, " ")
+	out, err = exec.Command("docker", append([]string{"exec", dms, "fail2ban-client", "unban"}, addrs...)...).CombinedOutput()
+	n := strings.TrimSpace(string(out))
+	if _, cerr := strconv.Atoi(n); err != nil || cerr != nil {
+		fmt.Fprintf(stderr, "remote: fail2ban-client unban %s on mail-dms failed: %s\n", addr, n)
+		return "failed", addr
+	}
+	return n, addr
 }

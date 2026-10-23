@@ -408,7 +408,8 @@ func TestAccountLadder(t *testing.T) {
 
 // fakeDocker answers the start step from files in dir: dms_id is mail-dms's
 // container (absent: none until up), cypht_nginx what mail-cypht shows at
-// /etc/nginx/nginx.conf, f2b_live whether Fail2ban's ignoreip has mail-cypht;
+// /etc/nginx/nginx.conf, f2b_live whether Fail2ban's ignoreip has mail-cypht,
+// banned whether mail-cypht's IPv4 address (172.18.0.5) is banned;
 // the other flag files fail or change one step. Every call lands in dir/log.
 func fakeDocker(t *testing.T) string {
 	t.Helper()
@@ -437,6 +438,7 @@ inspect)
 	esac ;;
 cp) touch "$s/jail_live" ;;
 exec)
+	[ "$2" = web1 ] || [ ! -f "$s/dms_stopped" ] || exit 1
 	shift 2
 	case "$*" in
 	cat*) cat "$s/cypht_nginx" ;;
@@ -446,6 +448,16 @@ exec)
 	"fail2ban-client get dovecot ignoreip")
 		echo 'These IP addresses/networks are ignored:'
 		if [ -f "$s/f2b_live" ]; then printf '|- 127.0.0.0/8\n%s- mail-cypht\n' '` + "`" + `'; else echo '` + "`" + `- 127.0.0.0/8'; fi ;;
+	"getent ahosts mail-cypht")
+		[ ! -f "$s/getent_fails" ] || exit 2
+		printf '%s\n' 'fd70::5         STREAM mail-cypht' 'fd70::5         DGRAM' 'fd70::5         RAW' \
+			'172.18.0.5      STREAM' '172.18.0.5      DGRAM' '172.18.0.5      RAW' ;;
+	"fail2ban-client unban "*)
+		[ ! -f "$s/unban_fails" ] || { echo 'ERROR  NOK: (boom)'; exit 255; }
+		case " $* " in
+		*" 172.18.0.5 "*) if [ -f "$s/banned" ]; then rm "$s/banned"; echo 1; else echo 0; fi ;;
+		*) echo 0 ;;
+		esac ;;
 	"fail2ban-client reload")
 		[ ! -f "$s/reload_fails" ] || { echo 'ERROR  NOK: (boom)'; exit 255; }
 		touch "$s/f2b_live" ;;
@@ -500,7 +512,7 @@ func TestRemoteStartJailAndNginx(t *testing.T) {
 	reload := "exec dms1 fail2ban-client reload\n"
 
 	// A new container: DMS's own setup copies the jail.
-	kv := start("first start", "atstart", nil, []string{"exec dms", "cp /data"})
+	kv := start("first start", "atstart", nil, []string{"cmp", "cp /data"})
 	if kv["mail_cypht_nginx"] != "mounted" {
 		t.Errorf("first start: nginx %s", kv["mail_cypht_nginx"])
 	}
@@ -526,13 +538,48 @@ func TestRemoteStartJailAndNginx(t *testing.T) {
 	// skipped on its next start, so the jail is copied in from the mount.
 	flag("jail_live", false)
 	flag("dms_stopped", true)
-	start("same container stopped", "atstart", []string{"cp /data/mail/dms/config/fail2ban-jail.cf dms1:" + JailLive + "\n"}, []string{"exec dms1"})
+	start("same container stopped", "atstart", []string{"cp /data/mail/dms/config/fail2ban-jail.cf dms1:" + JailLive + "\n"}, []string{"exec dms1 cp", "getent"})
 	flag("dms_stopped", false)
 
 	// Recreated by up: the new container's setup copies it.
 	flag("up_recreates", true)
-	start("recreated", "atstart", nil, []string{"exec dms", "cp /data"})
+	start("recreated", "atstart", nil, []string{"cmp", "cp /data"})
 	flag("up_recreates", false)
+
+	// A ban made before the exemption is lifted on any run that finds Fail2ban
+	// answering, and only reported when there was one.
+	both := "fd70::5 172.18.0.5"
+	unban := func(what, jail, want, addr string, in []string) string {
+		t.Helper()
+		kv := start(what, jail, in, nil)
+		if kv["mail_cypht_unbanned"] != want || kv["mail_cypht_addr"] != addr {
+			t.Errorf("%s: unbanned=%s addr=%q, want %s %q", what, kv["mail_cypht_unbanned"], kv["mail_cypht_addr"], want, addr)
+		}
+		b, _ := os.ReadFile(d + "/log")
+		return string(b)
+	}
+	// Every address of a dual-stack mail-cypht, in one call.
+	flag("banned", true)
+	unban("banned", "unchanged", "1", both, []string{"fail2ban-client unban " + both + "\n"})
+	unban("no ban", "unchanged", "0", both, nil)
+	flag("unban_fails", true)
+	unban("unban fails", "unchanged", "failed", both, []string{"fail2ban-client unban " + both + " on mail-dms failed: ERROR  NOK: (boom)"})
+	flag("unban_fails", false)
+	flag("getent_fails", true)
+	unban("unresolved", "unchanged", "failed", "", []string{"mail-dms cannot resolve mail-cypht"})
+	flag("getent_fails", false)
+	// The unban follows the reload, or the old jail could ban again.
+	flag("jail_live", false)
+	flag("f2b_live", false)
+	flag("banned", true)
+	if log := unban("reload and unban", "reloaded", "1", both, nil); !(strings.Index(log, "fail2ban-client reload") < strings.Index(log, "fail2ban-client unban")) {
+		t.Errorf("unban before reload:\n%s", log)
+	}
+	flag("jail_live", false)
+	flag("ping_fails", true)
+	unban("fail2ban down", "atstart", "skipped", "", nil)
+	flag("ping_fails", false)
+	unban("fail2ban back", "unchanged", "0", both, nil)
 
 	// Cypht showing other bytes than the file is recreated onto it; one whose
 	// file cannot be read is reported unchecked.

@@ -70,7 +70,15 @@ domain on the server signs in the same way; webmail needs no per-domain config.
     `atstart`, `unchanged`, `reloaded` or `failed`; a failure warns and names the
     retry. The live check covers only that line, so if a future change to the jail
     keeps `mail-cypht` and its reload fails, the next run reports `unchanged` with
-    the rest never loaded. Direct IMAP/SMTP clients are still banned as before.
+    the rest never loaded. Exempting an address doesn't lift a ban it already has,
+    so whenever Fail2ban answers, the start step also resolves every address of
+    `mail-cypht` inside DMS (`getent ahosts`: on a dual-stack network `getent hosts`
+    gives only the IPv6 one, and the ban is on the IPv4 one) and runs
+    `fail2ban-client unban <ip>…`. That covers every jail, and init warns when it
+    lifted a ban (`mail_cypht_unbanned`). A starting Fail2ban needs nothing: it restores no ban for an
+    address in `ignoreip`. On a real server, a webmail session left polling two
+    deleted mailboxes is what got `mail-cypht` banned. Direct IMAP/SMTP clients are
+    still banned as before.
   - Cypht's `brute_force` does the throttling instead: 5 failed logins lock that
     client address, and that username, out of webmail for 10 minutes
     (`BRUTE_FORCE_MAX_ATTEMPTS`, `BRUTE_FORCE_LOCKOUT_DURATION`). The username lock
