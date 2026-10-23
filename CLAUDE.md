@@ -113,6 +113,7 @@ prefix (reserved, injected at deploy, exempt from drift); the manifest schema
 - `tests/` — black-box `*_test.sh` suites (`tests/cli.sh` resolves `KASBAH_BIN`);
   `tests/rig/` fake VPS; `tests/integration/` rig-driven; `tests/fixtures/` sample projects.
 - `docs/` — the spec; start with `overview.md` (decisions table), `compliance.md`
-  (rule catalog) and `files.md` (every file kasbah writes).
+  (rule catalog) and `files.md` (every file kasbah writes); `install.md` owns
+  every install path (`get.sh`, by hand, `self-update`, `install-dev.sh`).
 - `docs/phases/` — build plan; phase Findings sections are the project's memory of traps. Read the relevant phase file before touching its area.
 - `docs/research/` — dated competitive/background notes. **Not spec, not normative**; acted on by lifting findings into a spec doc, the roadmap, or the backlog.

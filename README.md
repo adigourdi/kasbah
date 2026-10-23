@@ -8,11 +8,17 @@ one Go binary — nothing but Docker and that binary runs on the server.
 
 ## Install
 
+Linux, amd64 or arm64:
+
 ```sh
-./install-dev.sh    # builds this checkout through Docker (a dev build); installs under ~/.local/share/kasbah/<version>/ and links ~/.local/bin/kasbah to the newest
-./install-dev.sh v1  # or build a tag from source: the newest local v1.* tag, byte-identical to its release
-kasbah self-update   # later: the newest release of this major, verified against release.pub (GITHUB_TOKEN or gh while the repo is private)
+curl -fsSL https://github.com/adigourdi/kasbah/releases/latest/download/get.sh | sh
+curl -fsSL https://github.com/adigourdi/kasbah/releases/latest/download/get.sh | sh -s -- v1   # a version
+kasbah self-update      # later: the newest release of this major
+./install-dev.sh        # from a checkout: build this tree (a dev build); ./install-dev.sh v1 builds a tag
 ```
+
+Everything lands under `~/.local/share/kasbah/<version>/`, with `~/.local/bin/kasbah`
+linked to the newest. Verifying by hand, tokens, uninstalling: [docs/install.md](docs/install.md).
 
 ## Release
 

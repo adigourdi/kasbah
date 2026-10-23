@@ -201,10 +201,12 @@ still lacks release.sh's stamp check and re-upload path; it stays dispatch-only.
 ### 11.7 — `docs/install.md` (S) — the orchestrator's, after 11.6
 
 **Deliverables**
-- [ ] One page owning every path: `get.sh`, the manual verified install
+- [x] One page owning every path: `get.sh`, the manual verified install
       (`gh release download` + `minisign -V` against `release.pub`), `install-dev.sh`,
       `self-update`, uninstall, and what each step trusts
-- [ ] README, `overview.md` (Distribution) and CLAUDE.md point to it
+- [x] README, `overview.md` (Distribution) and CLAUDE.md point to it
+
+*Done:* `docs/install.md`; its by-hand and `get.sh` commands are run in 11.8.
 
 ### 11.8 — Proof (M)
 
