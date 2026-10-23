@@ -315,8 +315,8 @@ func TestResolve(t *testing.T) {
 
 func TestExact(t *testing.T) {
 	for arg, want := range map[string]bool{"v1.2.3": true, "1.2.3-rc.1": true, "v1.2.3\r": true, "v1.2": false, "v1": false, "": false} {
-		if Exact(arg) != want {
-			t.Errorf("Exact(%q) = %v", arg, !want)
+		if exact(arg) != want {
+			t.Errorf("exact(%q) = %v", arg, !want)
 		}
 	}
 }
@@ -703,14 +703,17 @@ func TestRun(t *testing.T) {
 	if target() != filepath.Join(root, "1.2.0", "kasbah") {
 		t.Errorf("v1.2.0 again: symlink -> %s", target())
 	}
-	// vN.M is not exact: installed already or afresh, the symlink goes to the
-	// newest, not to it.
+	// vN.M pins too: installed already or afresh, the symlink goes to what it
+	// resolved to; a bare run puts it back on the newest.
 	buf.Reset()
 	if err := Run(ctx(""), Options{Version: "v1.1"}); err != nil || !strings.Contains(buf.String(), "already installed") {
 		t.Errorf("v1.1 installed: %v\n%s", err, buf)
 	}
-	if target() != filepath.Join(root, "1.2.0", "kasbah") {
-		t.Errorf("v1.1 installed pinned the symlink -> %s", target())
+	if target() != filepath.Join(root, "1.1.0", "kasbah") {
+		t.Errorf("v1.1 installed: symlink -> %s", target())
+	}
+	if err := Run(ctx(""), Options{}); err != nil || target() != filepath.Join(root, "1.2.0", "kasbah") {
+		t.Errorf("bare run: %v, symlink -> %s", err, target())
 	}
 	os.RemoveAll(filepath.Join(root, "1.1.0"))
 	if err := Run(ctx(""), Options{Version: "v1.1"}); err != nil {
@@ -719,8 +722,11 @@ func TestRun(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "1.1.0", "kasbah")); err != nil {
 		t.Errorf("v1.1 did not install 1.1.0: %v", err)
 	}
-	if target() != filepath.Join(root, "1.2.0", "kasbah") {
-		t.Errorf("v1.1 pinned the symlink -> %s", target())
+	if target() != filepath.Join(root, "1.1.0", "kasbah") {
+		t.Errorf("v1.1 afresh: symlink -> %s", target())
+	}
+	if err := Run(ctx(""), Options{}); err != nil || target() != filepath.Join(root, "1.2.0", "kasbah") {
+		t.Errorf("bare run: %v, symlink -> %s", err, target())
 	}
 
 	// A new major: the symlink would move majors — asked; no TTY fails naming --yes.
@@ -749,6 +755,9 @@ func TestRun(t *testing.T) {
 	if target() != filepath.Join(root, "2.0.0", "kasbah") {
 		t.Errorf("--yes: symlink -> %s", target())
 	}
+	if strings.Contains(buf.String(), "different major") {
+		t.Error("--yes still asked")
+	}
 	// Already installed, named in another major: the same question, no download.
 	buf.Reset()
 	before = len(g.cdnAuth)
@@ -758,8 +767,19 @@ func TestRun(t *testing.T) {
 	if target() != filepath.Join(root, "2.0.0", "kasbah") || len(g.cdnAuth) != before {
 		t.Errorf("installed, other major, no tty: symlink -> %s, %d downloads", target(), len(g.cdnAuth)-before)
 	}
-	if strings.Contains(buf.String(), "different major") {
-		t.Error("--yes still asked")
+	// v1 beside an installed v2: the link goes to the v1.x it resolved to, not
+	// to the newest; a bare run (here of a 2.x build) puts it back.
+	buf.Reset()
+	if err := Run(ctx(""), Options{Version: "v1"}); err == nil || !strings.Contains(err.Error(), "--yes") || target() != filepath.Join(root, "2.0.0", "kasbah") {
+		t.Errorf("v1 beside v2, no tty: %v, symlink -> %s", err, target())
+	}
+	if err := Run(ctx(""), Options{Version: "v1", Yes: true}); err != nil || target() != filepath.Join(root, "1.2.0", "kasbah") {
+		t.Errorf("v1 beside v2: %v, symlink -> %s\n%s", err, target(), buf)
+	}
+	on2 := ctx("")
+	on2.Self = "2.0.0"
+	if err := Run(on2, Options{Yes: true}); err != nil || target() != filepath.Join(root, "2.0.0", "kasbah") {
+		t.Errorf("bare run on 2.x: %v, symlink -> %s\n%s", err, target(), buf)
 	}
 
 	// A binary that does not report its version is not repointed to.
@@ -870,6 +890,15 @@ func TestLoose(t *testing.T) {
 
 	if target() != filepath.Join(root, "1.2.0", "kasbah") {
 		t.Errorf("self-install: symlink -> %s", target())
+	}
+
+	// No argument beside a newer installed version: the link goes to the newest;
+	// `v1` (resolving to 1.2.0) pins it to 1.2.0 instead.
+	if root, err := run("1.2.0", self, true, Options{}, "1.9.0"); err != nil || target() != filepath.Join(root, "1.9.0", "kasbah") {
+		t.Errorf("self-install, no argument, 1.9.0 installed: %v, symlink -> %s\n%s", err, target(), buf)
+	}
+	if root, err := run("1.2.0", self, true, Options{Version: "v1"}, "1.9.0"); err != nil || target() != filepath.Join(root, "1.2.0", "kasbah") {
+		t.Errorf("self-install, v1, 1.9.0 installed: %v, symlink -> %s\n%s", err, target(), buf)
 	}
 
 	// Named exactly, same thing — and pinned, though a newer one is installed.

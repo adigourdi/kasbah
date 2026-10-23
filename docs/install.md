@@ -9,7 +9,7 @@ build. Every install path ends in the same place:
   version ships to a server. Every release installed stays; at most one dev
   build sits beside them.
 - `~/.local/bin/kasbah` (`KASBAH_BIN_DIR`) is a symlink to the newest installed
-  version that runs, or to the one named exactly (`vN.M.P`). A command handed a
+  version that runs, or to the one a version argument resolved to. A command handed a
   project or server that wants another installed version re-runs under it
   (`cli.md` → Hand-off between installed versions).
 
@@ -27,7 +27,10 @@ curl -fsSL https://github.com/adigourdi/kasbah/releases/latest/download/get.sh |
 |---|---|
 | none | the release `get.sh` came from (the newest), or the newest of its major |
 | `vN` / `vN.M` | the newest release of that major / minor |
-| `vN.M.P` | that release, and `~/.local/bin/kasbah` points at it |
+| `vN.M.P` | that release |
+
+With a version, `~/.local/bin/kasbah` points at the release it resolved to, even
+when a newer one is installed; without, at the newest installed.
 | `--pre` | lets `vN` / `vN.M` pick a pre-release (`-rc.N`) |
 | `--yes` | moves `~/.local/bin/kasbah` to another major without asking |
 
@@ -105,7 +108,7 @@ No argument builds the working tree and installs it as **the** dev build — the
 previous dev build is removed, releases stay. `vN | vN.M | vN.M.P [--pre]` picks
 a local tag (`git fetch --tags` first), clones it to a temporary directory and
 builds it with that tag's own toolchain: the result is byte-identical to the
-published release, and an exact `vN.M.P` points `~/.local/bin/kasbah` at it. The
+published release, and `~/.local/bin/kasbah` points at it. The
 working tree is built first either way — its binary resolves the tag and
 installs the result. `KASBAH_SKIP_BUILD=1` installs the `dist/` already built.
 
@@ -119,7 +122,7 @@ installs the result. `KASBAH_SKIP_BUILD=1` installs the `dist/` already built.
   That pinning is what the signature buys.
 - **The by-hand path** trusts only `release.pub`'s key, checked with your own
   `minisign` before anything runs.
-- **`install-dev.sh vN.M.P`** trusts the checkout's tag and the pinned toolchain
+- **`install-dev.sh vN | vN.M | vN.M.P`** trusts the checkout's tag and the pinned toolchain
   image; its hashes can be compared to the release's `checksums.txt`.
 
 ## Uninstalling

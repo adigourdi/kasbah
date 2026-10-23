@@ -145,9 +145,9 @@ func (c *Client) Releases() ([]version.Version, error) {
 	return out, nil
 }
 
-// Exact is whether arg names one version (`vN.M.P[-rc.K]`) rather than the
+// exact is whether arg names one version (`vN.M.P[-rc.K]`) rather than the
 // newest of a major or minor.
-func Exact(arg string) bool {
+func exact(arg string) bool {
 	return strings.Count(strings.TrimSpace(strings.TrimSuffix(arg, "\r")), ".") >= 2
 }
 
@@ -180,7 +180,7 @@ func (c *Client) Resolve(arg string, major uint64, pre bool) (v version.Version,
 	if err != nil {
 		return v, "", cli.Fail("%v", err)
 	}
-	if Exact(want) {
+	if exact(want) {
 		return v, "release " + name + " of " + Repo, nil
 	}
 	how = "newest " + name + ".* release of " + Repo

@@ -11,8 +11,9 @@
 #   install-dev.sh vN.M [--pre]      the newest patch of N.M
 #   install-dev.sh vN.M.P[-rc.K]     that tag exactly
 #
-# Pre-releases count for vN and vN.M only with --pre. A tag named exactly gets
-# <bin>/kasbah; vN and vN.M leave it at the newest installed, as self-update does.
+# Pre-releases count for vN and vN.M only with --pre. A version argument points
+# <bin>/kasbah at the tag it resolved to, as self-update does; the working tree
+# leaves it at the newest installed.
 #
 # A tag is built in a temporary clone (the stamp reads .git, so not a
 # worktree) with the tag's own compose.yml, sharing this checkout's Go caches,
@@ -133,6 +134,4 @@ if [ "${name:-}" != kasbah ] || [ "${ver:-}" != "${tag#v}" ]; then
     echo "install-dev: the build of $tag reports '$reported', not kasbah ${tag#v} — nothing was installed" >&2
     exit 1
 fi
-pin=""
-case "${want#v}" in *.*.*) pin=--pin ;; esac
-"$dist/kasbah" __install $pin "$work/src/dist"
+"$dist/kasbah" __install --pin "$work/src/dist"

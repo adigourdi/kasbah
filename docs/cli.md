@@ -1084,7 +1084,8 @@ exits `129`/`143` and still writes `last_server`, since the command ran.
 ### `kasbah self-update [vN | vN.M | vN.M.P] [--pre] [--yes]`
 
 Installs a released kasbah beside this one and repoints `~/.local/bin/kasbah`
-(`KASBAH_BIN_DIR`) to the newest installed version that runs. No argument
+(`KASBAH_BIN_DIR`): to the version the argument resolved to, or with no
+argument to the newest installed version that runs. No argument
 means the newest release of this kasbah's major; `vN` the newest of that
 major; `vN.M` the newest of N.M; `vN.M.P` exactly that one. Pre-release tags
 (`-rc.N`) are skipped unless `--pre` or named exactly. Versions resolve the way
@@ -1120,8 +1121,8 @@ downloaded, as `get.sh` runs it — asked for its own version installs itself:
 after the signature, its own bytes are read once, their size and sha256
 compared to the signed entry for `kasbah_<ver>_linux_<arch>`, and those same
 bytes installed; nothing is downloaded, and bytes that do not match are
-refused. The symlink then moves — to the version named exactly
-(`vN.M.P[-rc.K]`), else to the newest installed that runs — through
+refused. The symlink then moves — to the version resolved when one was
+named (`vN`, `vN.M` or `vN.M.P`), else to the newest installed that runs — through
 `<bin>/.kasbah.new` and a rename; when that is a different major from the one
 it points at now the command asks first (`--yes`; no TTY → hard fail naming the
 flag). A version already installed and answering for itself downloads nothing,

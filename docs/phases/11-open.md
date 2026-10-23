@@ -31,7 +31,8 @@ is already installed, so every fresh machine today runs a dev build of whatever
    (`GITHUB_TOKEN`, else `gh auth token`) through the API → `gh release download`.
 6. **One version grammar** everywhere: `vN | vN.M | vN.M.P`, `--pre` for rcs. No
    argument: `get.sh` the newest release, `self-update` the newest of its major,
-   `install-dev.sh` the working tree.
+   `install-dev.sh` the working tree. A version argument pins the symlink to what it
+   resolved to (11.9).
 7. **`self-update` resolves from the releases API**, a token optional (sent when
    present); `KASBAH_RELEASES_REMOTE` is retired.
 8. **"Latest" goes only to the highest final release.** The `get.sh` asset name and
@@ -207,6 +208,20 @@ still lacks release.sh's stamp check and re-upload path; it stays dispatch-only.
 - [x] README, `overview.md` (Distribution) and CLAUDE.md point to it
 
 *Done:* `docs/install.md`; its by-hand and `get.sh` commands are run in 11.8.
+
+### 11.9 — An explicit version pins the symlink (S) — before 11.8
+
+Ruled 2026-10-23, after 11.3's review: `self-update v1` left `~/.local/bin/kasbah`
+on an installed v2. Any version argument now pins what it resolved to.
+
+**Deliverables**
+- [x] `self-update` and `install-dev.sh`: any version argument (`vN | vN.M | vN.M.P`)
+      points `<bin>/kasbah` at the version it resolved to; no argument → the newest
+      installed that runs; the cross-major prompt (`--yes`) unchanged
+- [x] Usage texts, tests and `docs/cli.md` / `docs/install.md` say so
+
+**Verify on:** Go tests, `tests/install_test.sh`. *Done:* the old exact-only rule fails
+four assertions; `v1` beside an installed v2 asks before moving down a major.
 
 ### 11.8 — Proof (M)
 

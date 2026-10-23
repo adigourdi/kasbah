@@ -247,7 +247,7 @@ assert 'cmp -s "$repo/dist/kasbah" "$bin_dir/kasbah" && [ "$(readlink "$bin_dir/
 
 
 # --- Case 6: __install DIR, and --pin ---------------------------------------------
-# install-dev.sh vN.M.P installs a tag's dist/ through the working tree's
+# install-dev.sh with any version argument installs a tag's dist/ through the working tree's
 # `__install --pin DIR`: the symlink goes to that build even beside a newer one.
 pin_lib="$tmpdir/pin/lib" pin_bin="$tmpdir/pin/bin"
 pin_install() { # args… — sets p_rc, p_out

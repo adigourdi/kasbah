@@ -32,17 +32,17 @@ const Usage = `Usage: kasbah self-update [vN | vN.M | vN.M.P] [--pre] [--yes]
 Installs a released kasbah from GitHub Releases beside the installed
 versions (~/.local/share/kasbah/<version>/, the layout install-dev.sh writes)
 and points ~/.local/bin/kasbah at the newest installed version that runs,
-as install-dev.sh does — or at the version named exactly, when one is.
+as install-dev.sh does — or, when a version is named, at the one it resolves to.
 Versions come from the repository's published releases (drafts and bare tags
 do not count). A token is used when present: GITHUB_TOKEN, else gh's for
 github.com when gh is logged in. A private repository needs one; a public one
 only gets a higher rate limit from it. A version already installed and
-answering for itself is not downloaded again; the symlink is still repointed.
+answering for itself is not downloaded again; the symlink is still moved.
 
   (no argument)   the newest release of this kasbah's major
   vN              the newest release of major N
   vN.M            the newest release of N.M
-  vN.M.P          that release exactly, and the symlink moves to it
+  vN.M.P          that release exactly
 
 Before anything lands under the library: the release's checksums.txt must
 verify against the key in release.pub (minisign), and the asset's size and
@@ -134,10 +134,10 @@ func Run(c Ctx, o Options) error {
 	fmt.Fprintf(c.Out.Stdout, "resolved %s (%s)\n", ver, how)
 	dir := filepath.Join(c.Root, ver)
 	bin := filepath.Join(dir, "kasbah")
-	// A version named exactly is the one to run; installed already, it is
-	// still what the symlink moves to (else the newest installed that runs).
+	// A version named is the one to run, installed already or not; with none
+	// the symlink goes to the newest installed that runs.
 	pin := ""
-	if Exact(o.Version) {
+	if o.Version != "" {
 		pin = ver
 	}
 	if install.Reports(bin, ver, c.RunTimeout) {
