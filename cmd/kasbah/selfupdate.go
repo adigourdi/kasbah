@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/serverbin"
 )
 
-// selfUpdateCmd is `kasbah self-update [vN | vN.M.P] [--pre] [--yes]`.
+// selfUpdateCmd is `kasbah self-update [vN | vN.M | vN.M.P] [--pre] [--yes]`.
 func selfUpdateCmd(o selfupdate.Options, err error) int {
 	out := cli.Std()
 	if err == selfupdate.ErrHelp {
@@ -35,6 +36,7 @@ func selfUpdate(out *cli.Output, o selfupdate.Options) error {
 	if err != nil {
 		return cli.Fail("cannot locate this binary: %v", err)
 	}
+	exe, loose := locate(exe)
 	home, checkout := serverbin.Home(exe)
 	if checkout {
 		return cli.Fail("this kasbah runs from the checkout at %s, which self-update does not touch", home).Cont(
@@ -60,6 +62,18 @@ func selfUpdate(out *cli.Output, o selfupdate.Options) error {
 		BinDir:     binDir,
 		Arch:       runtime.GOARCH,
 		Self:       build,
+		Exe:        exe,
+		Loose:      loose,
 		RunTimeout: time.Duration(serverbin.RunTimeout) * time.Second,
 	}, o)
+}
+
+// locate is the binary at exe with its symlinks resolved, and whether it is
+// loose: in no version directory of a library (a checkout is refused before).
+func locate(exe string) (string, bool) {
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = real
+	}
+	_, inLib := launcher.VersionDir(exe)
+	return exe, !inLib
 }

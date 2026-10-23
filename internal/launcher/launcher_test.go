@@ -108,3 +108,31 @@ func TestInstalled(t *testing.T) {
 		t.Error("a binary failing --version runs")
 	}
 }
+
+func TestVersionDir(t *testing.T) {
+	tmp := t.TempDir()
+	lib := filepath.Join(tmp, "lib")
+	plant(t, lib, "1.2.0", 0o755)
+	in := filepath.Join(lib, "1.2.0", "kasbah")
+	link := filepath.Join(tmp, "kasbah")
+	os.Symlink(in, link)
+	for _, exe := range []string{in, link} {
+		if dir, ok := VersionDir(exe); !ok || dir != filepath.Join(lib, "1.2.0") {
+			t.Errorf("VersionDir(%s) = %q, %v", exe, dir, ok)
+		}
+	}
+	loose := filepath.Join(tmp, "kasbah_1.2.0_linux_amd64")
+	os.WriteFile(loose, []byte("x"), 0o755)
+	looseLink := filepath.Join(tmp, "dl", "1.2.0", "kasbah")
+	os.MkdirAll(filepath.Dir(looseLink), 0o755)
+	for _, exe := range []string{loose, filepath.Join(tmp, "dist", "kasbah"), filepath.Join(lib, "1.2.0", "other"), filepath.Join(tmp, "junk", "kasbah")} {
+		if dir, ok := VersionDir(exe); ok {
+			t.Errorf("VersionDir(%s) = %q, in a library", exe, dir)
+		}
+	}
+	// A symlink named like a library entry is judged by what it points at.
+	os.Symlink(loose, looseLink)
+	if dir, ok := VersionDir(looseLink); ok {
+		t.Errorf("VersionDir(%s) = %q, in a library", looseLink, dir)
+	}
+}

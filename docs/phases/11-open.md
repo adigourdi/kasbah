@@ -124,26 +124,30 @@ by its own.
 11.3:
 
 **Deliverables**
-- [ ] Versions resolve from the releases API (paged): drafts and tags without a
+- [x] Versions resolve from the releases API (paged): drafts and tags without a
       release are invisible; `vN.M` accepted; `--pre` as before
-- [ ] A token is optional: sent to the API host when present, never on the
+- [x] A token is optional: sent to the API host when present, never on the
       redirect; a rate-limit refusal names `GITHUB_TOKEN`
-- [ ] `KASBAH_RELEASES_REMOTE` and the `git` dependency are gone
-- [ ] Resolution through `version.Pick` (11.2), `self-update` passing `v<own major>`
+- [x] `KASBAH_RELEASES_REMOTE` and the `git` dependency are gone
+- [x] Resolution through `version.Pick` (11.2), `self-update` passing `v<own major>`
       for no argument; the symlink is pinned only by an exact `vN.M.P[-rc.K]`, as
       `install-dev.sh` does — not by any argument with a dot
 
 11.4:
 
 **Deliverables**
-- [ ] `self-update` run from a release binary outside any library and outside a
+- [x] `self-update` run from a release binary outside any library and outside a
       checkout, asked for its own version, verifies its own bytes against the
       signed `checksums.txt` and installs them — no download of the binary
-- [ ] Asked for another version, it installs that one as usual
+- [x] Asked for another version, it installs that one as usual
 
 **Verify on:** Go tests against the fake GitHub server; a real read-only run
 against the private repo with a gh token, into a temporary prefix — resolving
 `v1`, and a downloaded release binary installing itself.
+*Done:* a loose dev build resolved `v1` through the releases API with gh's token and
+installed 1.0.0 (`d1e8ed4f…`, the published sum); anonymous → the may-be-private
+refusal; a bogus `GITHUB_TOKEN` → 401 naming it. The self-install is proven by Go tests
+only until a release carries this code (11.8). "Already installed" exits 0 and repoints.
 
 ### 11.5 — `get.sh` (L)
 
@@ -163,7 +167,9 @@ against the private repo with a gh token, into a temporary prefix — resolving
 
 **Verify on:** `tests/get_test.sh`.
 
-**Watch out for:** under `curl | sh` the script's stdin is the pipe — a child that
+**Watch out for:** download the asset into a directory that is not named as a
+version (`mktemp -d`): `launcher.Root` takes any `<dir>/<semver>/kasbah` as a
+library, and the self-install would then see itself as installed. Under `curl | sh` the script's stdin is the pipe — a child that
 reads stdin eats the rest of the script. `| sh` is dash on Debian/Ubuntu: no
 `pipefail`, no `[[`, no arrays, no `local` guarantees.
 

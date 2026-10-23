@@ -6,7 +6,6 @@
 package selfupdate
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,28 +29,24 @@ import (
 	"github.com/adigourdi/kasbah/internal/version"
 )
 
-// The release contract (docs/overview.md → Distribution): where the tags and
-// assets live, and what the assets are called.
+// The release contract (docs/overview.md → Distribution): where the releases
+// live, and what their assets are called.
 const (
-	Repo          = "adigourdi/kasbah"
-	DefaultAPI    = "https://api.github.com"
-	DefaultRemote = "git@github.com:adigourdi/kasbah.git"
+	Repo       = "adigourdi/kasbah"
+	DefaultAPI = "https://api.github.com"
 )
 
 // AssetName is the one-file-per-arch release asset, the workstation binary
 // and that arch's server build alike.
 func AssetName(ver, arch string) string { return "kasbah_" + ver + "_linux_" + arch }
 
-// Client reaches one release source: tags over git, assets over the API.
+// Client reaches the releases of Repo through the GitHub API.
 type Client struct {
 	// API is the GitHub API base (KASBAH_RELEASES_API).
 	API string
-	// Remote is what `git ls-remote` lists tags from (KASBAH_RELEASES_REMOTE).
-	Remote string
-	// ListTags lists Remote's tags; nil is git ls-remote.
-	ListTags ListTags
-	// Token authenticates the API: the repository is private.
-	Token string
+	// Token authenticates the API when set; anonymous otherwise. TokenFrom
+	// names where it came from (GITHUB_TOKEN, gh), for a refusal.
+	Token, TokenFrom string
 	// Key verifies checksums.txt; release.pub unless a test says otherwise.
 	Key  minisign.PublicKey
 	HTTP *http.Client
@@ -63,19 +59,13 @@ func New(out *cli.Output, getenv func(string) string) (*Client, error) {
 	if err != nil {
 		return nil, cli.Fail("the embedded release.pub does not parse: %v", err)
 	}
-	tok, err := Token(getenv, exec.LookPath, func(name string, args ...string) ([]byte, error) {
-		return exec.Command(name, args...).Output()
-	})
-	if err != nil {
-		return nil, err
-	}
-	c := &Client{API: DefaultAPI, Remote: DefaultRemote, Token: tok, Key: key, Out: out}
+	c := &Client{API: DefaultAPI, Key: key, Out: out}
 	if v := getenv("KASBAH_RELEASES_API"); v != "" {
 		c.API = strings.TrimRight(v, "/")
 	}
-	if v := getenv("KASBAH_RELEASES_REMOTE"); v != "" {
-		c.Remote = v
-	}
+	c.Token, c.TokenFrom = Token(c.API, getenv, exec.LookPath, func(name string, args ...string) ([]byte, error) {
+		return exec.Command(name, args...).Output()
+	})
 	c.HTTP = NewHTTP()
 	return c, nil
 }
@@ -95,143 +85,119 @@ func NewHTTP() *http.Client {
 	}
 }
 
-// Token is the GitHub token: GITHUB_TOKEN, else what `gh auth token` prints
-// when gh is on PATH, else a failure naming both.
-func Token(getenv func(string) string, lookPath func(string) (string, error), run func(string, ...string) ([]byte, error)) (string, error) {
+// Token is the token for api and where it came from, "" for none:
+// GITHUB_TOKEN, else — when api is GitHub's own — what
+// `gh auth token --hostname github.com` prints when gh is on PATH. gh is not
+// asked for any other host.
+func Token(api string, getenv func(string) string, lookPath func(string) (string, error), run func(string, ...string) ([]byte, error)) (tok, from string) {
 	if t := strings.TrimSpace(getenv("GITHUB_TOKEN")); t != "" {
-		return t, nil
+		return t, "GITHUB_TOKEN"
 	}
-	fail := cli.Fail("no GitHub token: the kasbah repository is private, and fetching a release needs one").Cont(
-		"set GITHUB_TOKEN, or install gh and run `gh auth login` — kasbah then uses `gh auth token`")
+	if u, err := url.Parse(api); err != nil || u.Scheme != "https" || u.Host != "api.github.com" {
+		return "", ""
+	}
 	if _, err := lookPath("gh"); err != nil {
-		return "", fail
+		return "", ""
 	}
-	out, err := run("gh", "auth", "token")
+	out, err := run("gh", "auth", "token", "--hostname", "github.com")
 	if t := strings.TrimSpace(string(out)); err == nil && t != "" {
-		return t, nil
+		return t, "gh"
 	}
-	return "", fail.Cont("(`gh auth token` printed no token)")
+	return "", ""
 }
 
-// ListTags lists refs on remote matching pattern, as `git ls-remote --tags
-// --refs` prints them (`<sha>\trefs/tags/<tag>` lines); gitLsRemote unless a
-// test feeds lines.
-type ListTags func(remote, pattern string) ([]string, error)
+// perPage and maxPages bound the releases listing: 5000 releases at most.
+const (
+	perPage  = 100
+	maxPages = 50
+)
 
-func gitLsRemote(remote, pattern string) ([]string, error) {
-	cmd := exec.Command("git", "ls-remote", "--tags", "--refs", remote, pattern)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	cmd.Stdin = os.Stdin
-	if err := cmd.Run(); err != nil {
-		f := cli.Fail("could not list the release tags on %s: %v", remote, err)
-		if msg := strings.TrimRight(strings.ReplaceAll(stderr.String(), "\r", ""), "\n"); msg != "" {
-			f.Cont(strings.Split(msg, "\n")...)
-		}
-		return nil, f
-	}
-	return strings.Split(stdout.String(), "\n"), nil
-}
-
-// Tags lists the release tags on Remote matching pattern (`v1.*`,
-// `v1.2.3`), as versions, highest first. Anything not `v<semver>` is ignored.
-func (c *Client) Tags(pattern string) ([]version.Version, error) {
-	list := c.ListTags
-	if list == nil {
-		list = gitLsRemote
-	}
-	lines, err := list(c.Remote, pattern)
-	if err != nil {
-		return nil, err
-	}
+// Releases lists Repo's published releases as versions, highest first:
+// drafts, and tag names that are not v<semver>, left out.
+func (c *Client) Releases() ([]version.Version, error) {
 	var out []version.Version
-	for _, l := range lines {
-		_, ref, ok := strings.Cut(strings.TrimRight(l, "\r"), "\t")
-		if !ok {
-			continue
+	for page := 1; ; page++ {
+		if page > maxPages {
+			return nil, cli.Fail("the releases of %s run past %d pages of %d — stopped listing", Repo, maxPages, perPage)
 		}
-		tag, ok := strings.CutPrefix(strings.TrimSpace(ref), "refs/tags/v")
-		if !ok {
-			continue
-		}
-		v, err := version.Parse(tag)
+		url := fmt.Sprintf("%s/repos/%s/releases?per_page=%d&page=%d", c.API, Repo, perPage, page)
+		body, err := c.get(url, "application/vnd.github+json", 64<<20)
 		if err != nil {
-			continue
+			return nil, failed(err, "could not list the releases of %s", Repo)
 		}
-		out = append(out, v)
+		var list []struct {
+			Tag   string `json:"tag_name"`
+			Draft bool   `json:"draft"`
+		}
+		if err := json.Unmarshal(body, &list); err != nil {
+			return nil, cli.Fail("%s answered with something that is not a list of releases — nothing was installed", url)
+		}
+		for _, r := range list {
+			if !r.Draft {
+				out = append(out, version.Tags([]string{r.Tag})...)
+			}
+		}
+		if len(list) < perPage {
+			break
+		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return version.Compare(out[i], out[j]) > 0 })
 	return out, nil
 }
 
-// Resolve turns the command's argument into a released version: "" is the
-// newest release of major, `vN` the newest of N, `vN.M.P` that tag exactly;
-// pre-releases count only with pre, or when named exactly. how says what was
-// resolved, for the run's report.
+// Exact is whether arg names one version (`vN.M.P[-rc.K]`) rather than the
+// newest of a major or minor.
+func Exact(arg string) bool {
+	return strings.Count(strings.TrimSpace(strings.TrimSuffix(arg, "\r")), ".") >= 2
+}
+
+// Resolve turns the command's argument into a published release through
+// version.Pick: "" is the newest of major, `vN` the newest of N, `vN.M` the
+// newest of N.M, `vN.M.P` that one exactly; pre-releases count only with pre,
+// or when named exactly. how says what was resolved, for the run's report.
 func (c *Client) Resolve(arg string, major uint64, pre bool) (v version.Version, how string, err error) {
-	arg = strings.TrimPrefix(strings.TrimSuffix(arg, "\r"), "v")
-	if arg != "" && !strings.Contains(arg, ".") {
-		n, ok := parseMajor(arg)
-		if !ok {
-			return v, "", cli.Fail("'%s' is not a version: expected vN or vN.M.P", arg)
-		}
-		major = n
-		arg = ""
+	want := strings.TrimSpace(strings.TrimSuffix(arg, "\r"))
+	if want == "" {
+		want = fmt.Sprintf("v%d", major)
 	}
-	if arg != "" {
-		want, perr := version.Parse(arg)
-		if perr != nil {
-			return v, "", cli.Fail("'v%s' is not a version: expected vN or vN.M.P", arg)
-		}
-		tags, err := c.Tags("v" + arg)
-		if err != nil {
-			return v, "", err
-		}
-		for _, t := range tags {
-			if version.Compare(t, want) == 0 && t.String() == want.String() {
-				return t, "tag v" + t.String() + " on " + c.Remote, nil
-			}
-		}
-		return v, "", cli.Fail("there is no tag v%s on %s", arg, c.Remote)
+	var nm *version.NoMatch
+	if _, err := version.Pick(want, nil, pre); !errors.As(err, &nm) {
+		return v, "", cli.Fail("%v", err)
 	}
-	tags, err := c.Tags(fmt.Sprintf("v%d.*", major))
+	name := "v" + strings.TrimPrefix(want, "v")
+	rels, err := c.Releases()
 	if err != nil {
 		return v, "", err
 	}
-	var skipped int
-	for _, t := range tags {
-		if t.Major != major {
-			continue
+	v, err = version.Pick(want, rels, pre)
+	if errors.As(err, &nm) {
+		f := cli.Fail("no release of %s matches %s", Repo, name)
+		if nm.Skipped > 0 {
+			f.Cont(fmt.Sprintf("%d pre-release(s) were skipped — --pre takes them", nm.Skipped))
 		}
-		if len(t.Pre) > 0 && !pre {
-			skipped++
-			continue
+		return v, "", f.Cont("drafts, and tags without a published release, do not count")
+	}
+	if err != nil {
+		return v, "", cli.Fail("%v", err)
+	}
+	if Exact(want) {
+		return v, "release " + name + " of " + Repo, nil
+	}
+	how = "newest " + name + ".* release of " + Repo
+	if !pre {
+		skipped := 0
+		for _, r := range rels {
+			if len(r.Pre) > 0 && version.Compare(r, v) > 0 {
+				if _, err := version.Pick(want, []version.Version{r}, true); err == nil {
+					skipped++
+				}
+			}
 		}
-		how = fmt.Sprintf("newest v%d.* on %s", major, c.Remote)
 		if skipped > 0 {
-			how += fmt.Sprintf(" (%d pre-release tag(s) skipped — --pre takes them)", skipped)
+			how += fmt.Sprintf(" (%d newer pre-release(s) skipped — --pre takes them)", skipped)
 		}
-		return t, how, nil
 	}
-	f := cli.Fail("there is no release of v%d.* on %s", major, c.Remote)
-	if skipped > 0 {
-		f.Cont(fmt.Sprintf("%d pre-release tag(s) were skipped — --pre takes them", skipped))
-	}
-	return v, "", f
-}
-
-func parseMajor(s string) (uint64, bool) {
-	var n uint64
-	if s == "" || (len(s) > 1 && s[0] == '0') {
-		return 0, false
-	}
-	for _, ch := range s {
-		if ch < '0' || ch > '9' {
-			return 0, false
-		}
-		n = n*10 + uint64(ch-'0')
-	}
-	return n, true
+	return v, how, nil
 }
 
 // Asset is one file of a release as the API lists it.
@@ -258,7 +224,7 @@ func (c *Client) Release(ver string) (*Release, error) {
 	tag := "v" + ver
 	body, err := c.get(c.API+"/repos/"+Repo+"/releases/tags/"+tag, "application/vnd.github+json", -1)
 	if err != nil {
-		return nil, cli.Fail("could not read the release %s: %v", tag, err)
+		return nil, failed(err, "could not read the release %s", tag)
 	}
 	var rel struct {
 		Assets []Asset `json:"assets"`
@@ -305,7 +271,7 @@ func (c *Client) fetch(r *Release, name string) ([]byte, error) {
 	}
 	body, err := c.get(a.URL, "application/octet-stream", 1<<20)
 	if err != nil {
-		return nil, cli.Fail("could not download %s of %s: %v", name, r.Tag, err)
+		return nil, failed(err, "could not download %s of %s", name, r.Tag)
 	}
 	return body, nil
 }
@@ -320,7 +286,11 @@ func (c *Client) underAPI(a Asset) error {
 	if u, err := url.Parse(a.URL); err == nil && u.Host != "" {
 		host = u.Host
 	}
-	return cli.Fail("the release lists asset %s at %s, outside %s — not fetched, the token is not sent there", a.Name, host, c.API)
+	f := cli.Fail("the release lists asset %s at %s, outside %s — not fetched", a.Name, host, c.API)
+	if c.Token != "" {
+		f.Lines[0] += ", the token is not sent there"
+	}
+	return f
 }
 
 func (c *Client) request(url, accept string) (*http.Response, error) {
@@ -329,7 +299,9 @@ func (c *Client) request(url, accept string) (*http.Response, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", accept)
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -337,12 +309,68 @@ func (c *Client) request(url, accept string) (*http.Response, error) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
-		if resp.StatusCode == http.StatusNotFound {
-			return nil, fmt.Errorf("%s: 404 — no such release, or the token cannot see %s", url, Repo)
-		}
-		return nil, fmt.Errorf("%s: %s", url, resp.Status)
+		return nil, c.refusal(url, resp)
 	}
 	return resp, nil
+}
+
+// httpError is an API refusal; hint, when set, is the remedy line.
+type httpError struct{ msg, hint string }
+
+func (e *httpError) Error() string { return e.msg }
+
+// failed is a failure whose first line wraps err, its remedy on the next.
+func failed(err error, format string, args ...any) error {
+	f := cli.Fail(format+": %v", append(args, err)...)
+	var h *httpError
+	if errors.As(err, &h) && h.hint != "" {
+		f.Cont(h.hint)
+	}
+	return f
+}
+
+const tokenHint = "set GITHUB_TOKEN, or run `gh auth login` — kasbah then uses `gh auth token`"
+
+// refusal says why the API answered url with resp's non-200 status.
+func (c *Client) refusal(url string, resp *http.Response) error {
+	e := &httpError{msg: url + ": " + resp.Status}
+	code := resp.StatusCode
+	throttled := code == http.StatusForbidden || code == http.StatusTooManyRequests
+	switch {
+	case throttled && resp.Header.Get("Retry-After") != "":
+		e.msg += " — GitHub asks to wait " + resp.Header.Get("Retry-After") + " second(s) before retrying (a secondary rate limit)"
+		e.hint = "retry after that wait"
+		if c.Token == "" {
+			e.hint += "; a token gets higher limits: " + tokenHint
+		}
+	case throttled && resp.Header.Get("X-RateLimit-Remaining") == "0":
+		e.msg += " — GitHub's API rate limit is used up"
+		if n, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil {
+			e.msg += ", until " + time.Unix(n, 0).UTC().Format("2006-01-02 15:04:05 UTC")
+		}
+		e.hint = "anonymous requests get 60 an hour: " + tokenHint
+		if c.Token != "" {
+			e.hint = "the token's own limit is used up: wait, or set GITHUB_TOKEN to another token"
+		}
+	case code == http.StatusTooManyRequests:
+		e.msg += " — GitHub is throttling requests"
+		e.hint = "retry later"
+		if c.Token == "" {
+			e.hint += "; a token gets a higher limit: " + tokenHint
+		}
+	case code == http.StatusNotFound && c.Token == "":
+		e.msg += " — nothing there without a token; the repository " + Repo + " may be private"
+		e.hint = tokenHint
+	case code == http.StatusNotFound:
+		e.msg += " — no such release, or the token cannot see " + Repo
+	case code == http.StatusUnauthorized && c.TokenFrom == "gh":
+		e.msg += " — GitHub refused the token `gh auth token` printed"
+		e.hint = "run `gh auth login` again; a public repository needs no token"
+	case code == http.StatusUnauthorized:
+		e.msg += " — GitHub refused the token in GITHUB_TOKEN"
+		e.hint = "set GITHUB_TOKEN to a valid token, or unset it; a public repository needs no token"
+	}
+	return e
 }
 
 func (c *Client) get(url, accept string, limit int64) ([]byte, error) {
@@ -392,7 +420,7 @@ func (c *Client) Download(r *Release, name, dst string) error {
 	}
 	resp, err := c.request(a.URL, "application/octet-stream")
 	if err != nil {
-		return cli.Fail("could not download %s of %s: %v", name, r.Tag, err)
+		return failed(err, "could not download %s of %s", name, r.Tag)
 	}
 	defer resp.Body.Close()
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)

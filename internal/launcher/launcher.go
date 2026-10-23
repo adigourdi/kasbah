@@ -25,15 +25,24 @@ const Env = "KASBAH_HANDOFF"
 // (<root>/<ver>/kasbah, ver a version), else KASBAH_LIB_DIR, else
 // $XDG_DATA_HOME/kasbah, else ~/.local/share/kasbah.
 func Root(exe string, getenv func(string) string) (string, error) {
+	if dir, ok := VersionDir(exe); ok {
+		return filepath.Dir(dir), nil
+	}
+	return EnvRoot(getenv)
+}
+
+// VersionDir is the version directory the kasbah at exe (symlinks resolved)
+// sits in as <root>/<ver>/kasbah; false when it sits in none.
+func VersionDir(exe string) (string, bool) {
 	if real, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = real
 	}
 	if dir := filepath.Dir(exe); filepath.Base(exe) == "kasbah" {
 		if _, err := version.Parse(filepath.Base(dir)); err == nil {
-			return filepath.Dir(dir), nil
+			return dir, true
 		}
 	}
-	return EnvRoot(getenv)
+	return "", false
 }
 
 // EnvRoot is the library root the environment names: KASBAH_LIB_DIR, else

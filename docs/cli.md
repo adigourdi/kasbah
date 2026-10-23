@@ -1081,20 +1081,29 @@ be started (exit 1, nothing written), and when kasbah itself is sent
 `SIGHUP`/`SIGTERM` mid-command — it forwards the signal, warns in one line,
 exits `129`/`143` and still writes `last_server`, since the command ran.
 
-### `kasbah self-update [vN | vN.M.P] [--pre] [--yes]`
+### `kasbah self-update [vN | vN.M | vN.M.P] [--pre] [--yes]`
 
 Installs a released kasbah beside this one and repoints `~/.local/bin/kasbah`
 (`KASBAH_BIN_DIR`) to the newest installed version that runs. No argument
 means the newest release of this kasbah's major; `vN` the newest of that
-major; `vN.M.P` exactly that one. Pre-release tags (`-rc.N`) are skipped
-unless `--pre`.
+major; `vN.M` the newest of N.M; `vN.M.P` exactly that one. Pre-release tags
+(`-rc.N`) are skipped unless `--pre` or named exactly. Versions resolve the way
+`install-dev.sh` resolves local tags (`internal/version` `Pick`).
 
-The repo is private, so it authenticates: `GITHUB_TOKEN`, else `gh auth token`
-when `gh` is on PATH, else a failure naming both. Tags come from
-`git ls-remote --tags --refs git@github.com:adigourdi/kasbah.git`
-(`KASBAH_RELEASES_REMOTE`); the release's assets from the GitHub API
-(`KASBAH_RELEASES_API`), the token sent to the API host only — never on the
-redirect to the storage host.
+Versions come from the repository's published releases — `GET
+/repos/adigourdi/kasbah/releases`, 100 a page, at most 50 pages — so drafts and
+tags without a release do not count; a pre-release is a version with a
+pre-release part, whatever the API's flag says. The API base is
+`https://api.github.com` (`KASBAH_RELEASES_API`). A token is optional:
+`GITHUB_TOKEN`, else `gh auth token --hostname github.com` when gh is on PATH
+and the API is GitHub's, else none. A private repository needs one; a public
+one only gets a higher rate limit. The token goes to the API host only — never
+on the redirect to the storage host, never to an asset URL outside the API.
+Refusals name their way out, all exit 1: an anonymous 404 (the repository may
+be private: set `GITHUB_TOKEN` or `gh auth login`), a 404 with a token (no such
+release, or the token cannot see the repository), a 401 (naming the token's
+source; a public repository needs none), a used-up rate limit (until when), a
+`Retry-After` (the wait), a plain 429 (retry later).
 
 Trust runs in this order, and nothing lands under `~/.local/share/kasbah`
 before it holds: `checksums.txt` and `checksums.txt.minisig` are fetched and
@@ -1105,14 +1114,18 @@ for this machine (`kasbah_<ver>_linux_<arch>`) is streamed to
 `<lib>/<ver>/.kasbah.part`, its size and sha256 compared to the verified
 entry, then renamed to `<lib>/<ver>/kasbah` and copied beside as
 `server/kasbah-linux-<arch>` (the same bytes serve both roles); the new binary
-must answer `--version` with its own version. The symlink then moves — to
-the version named on the command line, or to the newest installed that runs
-when none was — through `<bin>/.kasbah.new` and a rename;
-when that is a different major from the one it points at now the command asks
-first (`--yes`; no TTY → hard fail naming the flag). A version already
-installed and answering for itself downloads nothing: named on the command
-line it still gets the symlink; asked for by major or by nothing, it is
-reported as already installed. A checkout
+must answer `--version` with its own version. A release binary run from
+outside any version directory and outside a checkout — an asset just
+downloaded, as `get.sh` runs it — asked for its own version installs itself:
+after the signature, its own bytes are read once, their size and sha256
+compared to the signed entry for `kasbah_<ver>_linux_<arch>`, and those same
+bytes installed; nothing is downloaded, and bytes that do not match are
+refused. The symlink then moves — to the version named exactly
+(`vN.M.P[-rc.K]`), else to the newest installed that runs — through
+`<bin>/.kasbah.new` and a rename; when that is a different major from the one
+it points at now the command asks first (`--yes`; no TTY → hard fail naming the
+flag). A version already installed and answering for itself downloads nothing,
+is reported as already installed, still gets the repoint, and exits 0. A checkout
 (`dist/kasbah`, with `go.mod` and `cmd/kasbah/` two levels up) refuses: build
 it and run `./install-dev.sh`. A library directory that is not kasbah's (not
 empty, and no directory in it named as a version) is refused before anything

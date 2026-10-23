@@ -36,7 +36,8 @@ Commands:
   exec [USER@HOST] SERVICE -- CMD...         Run a command in one of this project's containers.
   migrate                                    Move this project's files to this kasbah's schema.
   migrate server USER@HOST [--yes] [--undo]  Move a server to this kasbah's major, or undo the last move.
-  self-update [vN | vN.M.P] [--pre] [--yes]  Install a released kasbah beside this one and repoint the symlink.
+  self-update [vN | vN.M | vN.M.P] [--pre] [--yes]
+                                             Install a released kasbah beside this one and repoint the symlink.
   server init USER@HOST [flags]              Prepare a VPS to host projects.
   server status USER@HOST                    Report what a prepared VPS is running.
   server prune USER@HOST [--yes]             Remove image tags outside the retention window.
