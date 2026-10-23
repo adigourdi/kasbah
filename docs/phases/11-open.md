@@ -29,8 +29,9 @@ is already installed, so every fresh machine today runs a dev build of whatever
    and `sh -s -- v1` for a version. POSIX `sh`, no sudo, no shell-rc edits.
 5. **`get.sh` transport, in order**: curl (or wget) bare → curl with a token
    (`GITHUB_TOKEN`, else `gh auth token`) through the API → `gh release download`.
-6. **One version grammar** everywhere: `vN | vN.M | vN.M.P`, `--pre` for rcs. No
-   argument: `get.sh` the newest release, `self-update` the newest of its major,
+6. **One version grammar** everywhere: `vN | vN.M | vN.M.P` (the v optional,
+   `-rc.K` named exactly), `--pre` for rcs. No argument: `get.sh` its own release
+   (from `latest`, the newest), `self-update` the newest of its major,
    `install-dev.sh` the working tree. A version argument pins the symlink to what it
    resolved to (11.9).
 7. **`self-update` resolves from the releases API**, a token optional (sent when
@@ -113,7 +114,7 @@ hand-off target; removing it only costs a rebuild, which the refusal message nam
 compared against v1.0.0's published `checksums.txt`; suite cases for resolution.
 *Done:* `d1e8ed4f…127e6b` (binary and amd64 server) and `70121ca2…4859` (arm64),
 both equal to the published sums; interrupts at 0.8–1.4 s leave no clone,
-container or network (`down --remove-orphans`). An exact `vN.M.P` pins the symlink.
+container or network (`down --remove-orphans`). A version argument pins the symlink (11.9).
 
 **Watch out for:** the tag's `compose.yml` pins its own Go image; the build must
 not run the working tree's. A tag cut before 11.1 has no `__install`, so the tag's
@@ -131,8 +132,7 @@ by its own.
       redirect; a rate-limit refusal names `GITHUB_TOKEN`
 - [x] `KASBAH_RELEASES_REMOTE` and the `git` dependency are gone
 - [x] Resolution through `version.Pick` (11.2), `self-update` passing `v<own major>`
-      for no argument; the symlink is pinned only by an exact `vN.M.P[-rc.K]`, as
-      `install-dev.sh` does — not by any argument with a dot
+      for no argument (the pin rule became 11.9's: any version argument pins)
 
 11.4:
 
@@ -222,6 +222,29 @@ on an installed v2. Any version argument now pins what it resolved to.
 
 **Verify on:** Go tests, `tests/install_test.sh`. *Done:* the old exact-only rule fails
 four assertions; `v1` beside an installed v2 asks before moving down a major.
+
+### 11.10 — `get.sh` spends no API calls on its own release (M) — before 11.8
+
+Ruled 2026-10-23 after the phase review: each `get.sh` install made 4 anonymous
+GitHub API calls (60 an hour per IP), and a stale `GITHUB_TOKEN` failed it even
+on a public repository.
+
+**Deliverables**
+- [x] With no version argument `get.sh` installs the release it came from: it hands
+      the binary its own version and the directory holding the `checksums.txt` and
+      `checksums.txt.minisig` it fetched, and the binary verifies and installs from
+      them — zero API calls
+- [x] `self-update`: a token GitHub refuses (401) is dropped with one line naming
+      its source, and the request retried anonymously
+- [x] `get.sh` accepts `N.M.P` without the v and refuses a malformed version before
+      downloading anything (exit 2)
+- [x] `docs/install.md`, `docs/cli.md` say so
+
+**Verify on:** Go tests, `tests/get_test.sh` (request log: no API call on a bare run).
+*Done:* `self-update --from DIR` shares `verify()` with the API path; `Release()` now
+checks the trusted comment too (the spec claimed it, the code only printed it). A
+refused token is retried anonymously only when it was on the request; refusals and
+transport errors after the redirect drop the signed query.
 
 ### 11.8 — Proof (M)
 

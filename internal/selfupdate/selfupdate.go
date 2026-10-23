@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,7 +45,8 @@ type Client struct {
 	// API is the GitHub API base (KASBAH_RELEASES_API).
 	API string
 	// Token authenticates the API when set; anonymous otherwise. TokenFrom
-	// names where it came from (GITHUB_TOKEN, gh), for a refusal.
+	// names where it came from (GITHUB_TOKEN, gh). A token GitHub refuses (401)
+	// is dropped, with a warning naming its source.
 	Token, TokenFrom string
 	// Key verifies checksums.txt; release.pub unless a test says otherwise.
 	Key  minisign.PublicKey
@@ -93,7 +94,7 @@ func Token(api string, getenv func(string) string, lookPath func(string) (string
 	if t := strings.TrimSpace(getenv("GITHUB_TOKEN")); t != "" {
 		return t, "GITHUB_TOKEN"
 	}
-	if u, err := url.Parse(api); err != nil || u.Scheme != "https" || u.Host != "api.github.com" {
+	if u, err := neturl.Parse(api); err != nil || u.Scheme != "https" || u.Host != "api.github.com" {
 		return "", ""
 	}
 	if _, err := lookPath("gh"); err != nil {
@@ -232,24 +233,66 @@ func (c *Client) Release(ver string) (*Release, error) {
 	if err := json.Unmarshal(body, &rel); err != nil {
 		return nil, cli.Fail("the release %s did not answer with JSON: %v", tag, err)
 	}
-	r := &Release{Tag: tag, Assets: map[string]Asset{}, Sums: map[string]string{}}
+	listed := &Release{Tag: tag, Assets: map[string]Asset{}}
 	for _, a := range rel.Assets {
-		r.Assets[a.Name] = a
+		listed.Assets[a.Name] = a
 	}
-	sums, err := c.fetch(r, "checksums.txt")
+	sums, err := c.fetch(listed, "checksums.txt")
 	if err != nil {
 		return nil, err
 	}
-	sig, err := c.fetch(r, "checksums.txt.minisig")
+	sig, err := c.fetch(listed, "checksums.txt.minisig")
 	if err != nil {
 		return nil, err
 	}
+	r, err := c.verify(ver, sums, sig)
+	if err != nil {
+		return nil, err
+	}
+	r.Assets = listed.Assets
+	return r, nil
+}
+
+// Local is release ver from dir's checksums.txt and checksums.txt.minisig,
+// verified as Release verifies them; it lists no assets and asks no server.
+func (c *Client) Local(ver, dir string) (*Release, error) {
+	var files [2][]byte
+	for i, name := range []string{"checksums.txt", "checksums.txt.minisig"} {
+		p := filepath.Join(dir, name)
+		f, err := os.Open(p)
+		if err == nil {
+			files[i], err = io.ReadAll(io.LimitReader(f, 1<<20+1))
+			f.Close()
+		}
+		if err == nil && len(files[i]) > 1<<20 {
+			err = errors.New("longer than 1 MiB")
+		}
+		if err != nil {
+			return nil, cli.Fail("cannot read %s: %v", p, err).Cont("nothing was installed")
+		}
+	}
+	r, err := c.verify(ver, files[0], files[1])
+	if err != nil {
+		return nil, err
+	}
+	r.Assets = map[string]Asset{}
+	return r, nil
+}
+
+// verify checks checksums.txt's signature against the key and its trusted
+// comment against `kasbah <ver>`, then reads the sums it vouches for.
+func (c *Client) verify(ver string, sums, sig []byte) (*Release, error) {
+	tag := "v" + ver
 	comment, err := minisign.Verify(c.Key, sums, sig)
 	if err != nil {
 		return nil, cli.Fail("%s's checksums.txt does not verify against release.pub (key %s): %v", tag, c.Key.IDString(), err).Cont(
 			"nothing was installed — the release is not one kasbah's key signed")
 	}
-	r.Comment, r.KeyID = comment, c.Key.IDString()
+	if comment != "kasbah "+ver {
+		return nil, cli.Fail("%s's checksums.txt is signed as %q, not \"kasbah %s\"", tag, comment, ver).Cont(
+			"nothing was installed — the signature vouches for another release")
+	}
+	r := &Release{Tag: tag, Sums: map[string]string{}, Comment: comment, KeyID: c.Key.IDString()}
 	for _, l := range strings.Split(strings.ReplaceAll(string(sums), "\r", ""), "\n") {
 		f := strings.Fields(l)
 		if len(f) != 2 {
@@ -283,7 +326,7 @@ func (c *Client) underAPI(a Asset) error {
 		return nil
 	}
 	host := a.URL
-	if u, err := url.Parse(a.URL); err == nil && u.Host != "" {
+	if u, err := neturl.Parse(a.URL); err == nil && u.Host != "" {
 		host = u.Host
 	}
 	f := cli.Fail("the release lists asset %s at %s, outside %s — not fetched", a.Name, host, c.API)
@@ -294,6 +337,41 @@ func (c *Client) underAPI(a Asset) error {
 }
 
 func (c *Client) request(url, accept string) (*http.Response, error) {
+	resp, err := c.do(url, accept)
+	if err != nil {
+		return nil, err
+	}
+	// A refused token is dropped for the rest of the run and the request
+	// retried without it. The last hop carries the token only when it is the API.
+	if resp.StatusCode == http.StatusUnauthorized && resp.Request.Header.Get("Authorization") != "" {
+		resp.Body.Close()
+		c.dropToken()
+		if resp, err = c.do(url, accept); err != nil {
+			return nil, err
+		}
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, c.refusal(answered(url, resp), resp)
+	}
+	return resp, nil
+}
+
+// answered is the URL whose host gave resp: url itself, or the redirect's
+// target without its query — a signed storage URL's query is its credential.
+func answered(url string, resp *http.Response) string {
+	return bare(url, resp.Request.URL)
+}
+
+// bare is url when u is on its host, else u without query or credentials.
+func bare(url string, u *neturl.URL) string {
+	if orig, err := neturl.Parse(url); err == nil && orig.Host == u.Host {
+		return url
+	}
+	return u.Scheme + "://" + u.Host + u.Path
+}
+
+func (c *Client) do(url, accept string) (*http.Response, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -304,14 +382,29 @@ func (c *Client) request(url, accept string) (*http.Response, error) {
 	}
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
+	// A failure after a redirect names the target without its signed query.
+	var ue *neturl.Error
+	if errors.As(err, &ue) {
+		if u, perr := neturl.Parse(ue.URL); perr == nil {
+			ue.URL = bare(url, u)
+		}
 	}
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		return nil, c.refusal(url, resp)
+	return resp, err
+}
+
+// dropToken forgets the token after GitHub refused it, saying so once.
+func (c *Client) dropToken() {
+	from := "in GITHUB_TOKEN"
+	if c.TokenFrom == "gh" {
+		from = "`gh auth token` printed"
 	}
-	return resp, nil
+	msg := "GitHub refused the token " + from + " — continuing without it"
+	if c.Out != nil {
+		c.Out.Warn("%s", msg)
+	} else {
+		fmt.Fprintln(os.Stderr, "warning: "+msg)
+	}
+	c.Token, c.TokenFrom = "", ""
 }
 
 // httpError is an API refusal; hint, when set, is the remedy line.
@@ -363,12 +456,6 @@ func (c *Client) refusal(url string, resp *http.Response) error {
 		e.hint = tokenHint
 	case code == http.StatusNotFound:
 		e.msg += " — no such release, or the token cannot see " + Repo
-	case code == http.StatusUnauthorized && c.TokenFrom == "gh":
-		e.msg += " — GitHub refused the token `gh auth token` printed"
-		e.hint = "run `gh auth login` again; a public repository needs no token"
-	case code == http.StatusUnauthorized:
-		e.msg += " — GitHub refused the token in GITHUB_TOKEN"
-		e.hint = "set GITHUB_TOKEN to a valid token, or unset it; a public repository needs no token"
 	}
 	return e
 }

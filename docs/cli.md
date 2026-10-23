@@ -1081,7 +1081,7 @@ be started (exit 1, nothing written), and when kasbah itself is sent
 `SIGHUP`/`SIGTERM` mid-command — it forwards the signal, warns in one line,
 exits `129`/`143` and still writes `last_server`, since the command ran.
 
-### `kasbah self-update [vN | vN.M | vN.M.P] [--pre] [--yes]`
+### `kasbah self-update [vN | vN.M | vN.M.P] [--pre] [--yes] [--from DIR]`
 
 Installs a released kasbah beside this one and repoints `~/.local/bin/kasbah`
 (`KASBAH_BIN_DIR`): to the version the argument resolved to, or with no
@@ -1102,17 +1102,26 @@ one only gets a higher rate limit. The token goes to the API host only — never
 on the redirect to the storage host, never to an asset URL outside the API.
 Refusals name their way out, all exit 1: an anonymous 404 (the repository may
 be private: set `GITHUB_TOKEN` or `gh auth login`), a 404 with a token (no such
-release, or the token cannot see the repository), a 401 (naming the token's
-source; a public repository needs none), a used-up rate limit (until when), a
-`Retry-After` (the wait), a plain 429 (retry later).
+release, or the token cannot see the repository), a used-up rate limit (until
+when), a `Retry-After` (the wait), a plain 429 (retry later). A token the API
+answers 401 is dropped with one warning naming its source, and the request
+retried without it — a stale `GITHUB_TOKEN` never blocks a public repository.
+A refusal or network error after the redirect names the storage URL without
+its query: a signed URL's query is its credential.
+
+`--from DIR` verifies from local files instead of the API: DIR holds the
+release's `checksums.txt` and `checksums.txt.minisig` (what `get.sh` downloaded),
+the version is named exactly, and it is this binary's own release stamp, run
+from outside any library (the self-install below). Nothing is fetched; anything
+else is refused before a byte is read.
 
 Trust runs in this order, and nothing lands under `~/.local/share/kasbah`
-before it holds: `checksums.txt` and `checksums.txt.minisig` are fetched and
-the signature verified against the key compiled into the binary
+before it holds: `checksums.txt` and `checksums.txt.minisig` are fetched (or
+read from `--from`'s DIR) and the signature verified against the key compiled into the binary
 (`release.pub`, minisign's prehashed form: Blake2b-512, then ed25519, key id
 and trusted comment checked) before a single checksum line is read; the asset
 for this machine (`kasbah_<ver>_linux_<arch>`) is streamed to
-`<lib>/<ver>/.kasbah.part`, its size and sha256 compared to the verified
+`<lib>/<ver>/..kasbah.new.part`, its size and sha256 compared to the verified
 entry, then renamed to `<lib>/<ver>/kasbah` and copied beside as
 `server/kasbah-linux-<arch>` (the same bytes serve both roles); the new binary
 must answer `--version` with its own version. A release binary run from
@@ -1142,8 +1151,9 @@ shipping it; a dev build or a checkout never fetches.
 Every release installed stays, under `~/.local/share/kasbah/<version>/` (the
 binary and its two linux server builds), beside at most one dev build — each
 `install-dev.sh` from a checkout replaces the previous one (`install-dev.sh
-vN.M.P` builds and installs a release tag instead) — and
-`~/.local/bin/kasbah` is a symlink to the newest installed version that runs. A running kasbah hands off to a sibling version — re-executing
+vN[.M[.P]]` builds and installs a release tag instead) — and
+`~/.local/bin/kasbah` is a symlink to the newest installed version that runs, or
+to the one a version argument named. A running kasbah hands off to a sibling version — re-executing
 `<lib>/<version>/kasbah` with the same arguments and environment, before any
 side effect — in two cases:
 

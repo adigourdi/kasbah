@@ -4,7 +4,8 @@ kasbah runs on a **Linux** workstation, amd64 or arm64; the same binary is what
 it ships to every server (`overview.md` → Distribution). There is no macOS
 build. Every install path ends in the same place:
 
-- `~/.local/share/kasbah/<version>/` (`KASBAH_LIB_DIR`) holds each installed
+- `~/.local/share/kasbah/<version>/` (`KASBAH_LIB_DIR`, else
+  `$XDG_DATA_HOME/kasbah` when that is set) holds each installed
   version — the binary, and beside it `server/kasbah-linux-<arch>`, what that
   version ships to a server. Every release installed stays; at most one dev
   build sits beside them.
@@ -25,23 +26,25 @@ curl -fsSL https://github.com/adigourdi/kasbah/releases/latest/download/get.sh |
 
 | Argument | Installs |
 |---|---|
-| none | the release `get.sh` came from (the newest), or the newest of its major |
+| none | the release `get.sh` came from — from `latest`, the newest |
 | `vN` / `vN.M` | the newest release of that major / minor |
-| `vN.M.P` | that release |
-
-With a version, `~/.local/bin/kasbah` points at the release it resolved to, even
-when a newer one is installed; without, at the newest installed.
-| `--pre` | lets `vN` / `vN.M` pick a pre-release (`-rc.N`) |
+| `vN.M.P` | that release (the `v` is optional; `-rc.K` too) |
+| `--pre` | with `vN` / `vN.M`, lets a pre-release (`-rc.N`) be picked |
 | `--yes` | moves `~/.local/bin/kasbah` to another major without asking |
 
+`~/.local/bin/kasbah` then points at the release installed, even when a newer
+one is already there. A malformed version, or `--pre` without one, is a usage
+error before anything is downloaded.
+
 `get.sh` is a POSIX `sh` script (dash, busybox ash) carrying the version of the
-release it belongs to. It downloads that release's `kasbah_<ver>_linux_<arch>`
-and `checksums.txt`, checks the binary's sha256 — and the minisign signature when
-`minisign` is installed — checks the binary runs, then hands off to
-`kasbah self-update` *run from the download*, which resolves the argument,
-verifies the signature with the key built into it, and installs
-(`cli.md` → `kasbah self-update`). Asked for its own version, the downloaded
-binary installs its own verified bytes; asked for another, it downloads that one.
+release it belongs to. It downloads that release's `kasbah_<ver>_linux_<arch>`,
+`checksums.txt` and `checksums.txt.minisig`, checks the binary's sha256 — and
+the signature too when `minisign` is installed — checks the binary runs, then
+hands off to `kasbah self-update` *run from the download*. For its own release
+(no argument, or that version named) it passes `--from` the downloaded files:
+the binary verifies the signature with the key built into it and installs its
+own bytes, with no GitHub API call at all. For another version, `self-update`
+resolves it through the releases API and downloads it (`cli.md` → `kasbah self-update`).
 Prompts read the terminal (`/dev/tty`), never the piped script.
 
 Downloads try, in order, and a failure lists what each said:
@@ -111,6 +114,8 @@ builds it with that tag's own toolchain: the result is byte-identical to the
 published release, and `~/.local/bin/kasbah` points at it. The
 working tree is built first either way — its binary resolves the tag and
 installs the result. `KASBAH_SKIP_BUILD=1` installs the `dist/` already built.
+Unlike `self-update`, it moves `~/.local/bin/kasbah` across majors without asking:
+the install is the request.
 
 ## What each path trusts
 
@@ -131,5 +136,5 @@ installs the result. `KASBAH_SKIP_BUILD=1` installs the `dist/` already built.
 rm -rf ~/.local/share/kasbah ~/.local/bin/kasbah
 ```
 
-(or the `KASBAH_LIB_DIR` / `KASBAH_BIN_DIR` in use). Servers are separate:
+(or the `KASBAH_LIB_DIR` / `$XDG_DATA_HOME/kasbah` / `KASBAH_BIN_DIR` in use). Servers are separate:
 `kasbah server destroy` de-brands one (`cli.md`).

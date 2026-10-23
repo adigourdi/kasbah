@@ -1,10 +1,12 @@
 #!/bin/sh
-# Install kasbah on Linux: download this release's binary for the machine and
-# its checksums.txt, check the sha256 (and the signature when minisign is
-# here), then hand off to the binary's own `self-update`, which installs it.
+# Install kasbah on Linux: download this release's binary for the machine,
+# its checksums.txt and checksums.txt.minisig, check the sha256 (and the
+# signature when minisign is here), then hand off to the binary's own
+# `self-update`, which installs it. With no version that is this release,
+# verified from the files already here (`--from`): no API call at all.
 #
 #   curl -fsSL https://github.com/adigourdi/kasbah/releases/latest/download/get.sh | sh
-#   curl -fsSL …/get.sh | sh -s -- [vN | vN.M | vN.M.P] [--pre] [--yes]
+#   curl -fsSL …/get.sh | sh -s -- [vN | vN.M | vN.M.P[-rc.K]] [--pre] [--yes]
 #
 # Downloads try, in order: curl (or wget) from the release URL; curl with a
 # token (GITHUB_TOKEN, else gh's) through the releases API; gh release download.
@@ -36,10 +38,10 @@ die() {
 
 usage() {
     printf '%s\n' \
-        "usage: curl -fsSL https://github.com/adigourdi/kasbah/releases/latest/download/get.sh | sh -s -- [vN | vN.M | vN.M.P] [--pre] [--yes]" \
-        "  no version   this release, or the newest of its major" \
-        "  a version    that release, resolved by kasbah self-update" \
-        "  --pre        let vN / vN.M pick a pre-release (-rc.N)" \
+        "usage: curl -fsSL https://github.com/adigourdi/kasbah/releases/latest/download/get.sh | sh -s -- [vN | vN.M | vN.M.P[-rc.K]] [--pre] [--yes]" \
+        "  no version   this release" \
+        "  a version    that release, resolved by kasbah self-update (the v is optional)" \
+        "  --pre        let vN / vN.M pick a pre-release (-rc.N); needs a version" \
         "  --yes        move ~/.local/bin/kasbah across majors without asking"
 }
 
@@ -47,6 +49,36 @@ bad_usage() {
     printf 'get.sh: %s\n' "$1" >&2
     usage >&2
     exit 2
+}
+
+# num S — whether S is a version number: digits, no leading zero, under 20
+# digits (kasbah reads them as uint64).
+num() {
+    case $1 in
+        '' | *[!0-9]* | 0?*) return 1 ;;
+    esac
+    [ "${#1}" -lt 20 ]
+}
+
+# norm_version ARG — g_norm is ARG as vN, vN.M, vN.M.P or vN.M.P-rc.K (the v
+# optional in ARG); fails for anything else.
+norm_version() {
+    nv_s=${1#v} nv_rc='' nv_pre=''
+    case $nv_s in
+        *-rc.*) nv_pre=1 nv_rc=${nv_s#*-rc.} nv_s=${nv_s%%-rc.*} ;;
+    esac
+    nv_n=0 nv_rest=$nv_s.
+    while [ -n "$nv_rest" ]; do
+        num "${nv_rest%%.*}" || return 1
+        nv_rest=${nv_rest#*.} nv_n=$((nv_n + 1))
+    done
+    [ "$nv_n" -le 3 ] || return 1
+    if [ -n "$nv_pre" ]; then
+        [ "$nv_n" = 3 ] || return 1
+        num "$nv_rc" || return 1
+        nv_s=$nv_s-rc.$nv_rc
+    fi
+    g_norm=v$nv_s
 }
 
 # why FILE RC — the last line of a failed command's stderr, else its status.
@@ -234,19 +266,21 @@ fetch() {
 }
 
 get_main() {
-    g_want=''
+    g_want='' g_pre='' g_yes=''
     for g_a in ${1+"$@"}; do
         case $g_a in
             -h | --help) usage; exit 0 ;;
-            --pre | --yes) ;;
-            v[0-9]*)
-                case $g_a in *[!0-9A-Za-z.-]*) bad_usage "not a version: '$g_a'" ;; esac
+            --pre) g_pre=1 ;;
+            --yes) g_yes=1 ;;
+            v* | [0-9]*)
+                norm_version "$g_a" || bad_usage "not a version: '$g_a' (vN, vN.M, vN.M.P or vN.M.P-rc.K)"
                 [ -z "$g_want" ] || bad_usage "one version at a time ('$g_want', then '$g_a')"
-                g_want=$g_a
+                g_want=$g_norm
                 ;;
             *) bad_usage "unknown argument '$g_a'" ;;
         esac
     done
+    [ -z "$g_pre" ] || [ -n "$g_want" ] || bad_usage '--pre needs a version (vN or vN.M) — without one this release is installed'
 
     g_ver=${KASBAH_GET_VERSION:-$stamped}
     [ -n "$g_ver" ] || die 'this get.sh is not from a release: use https://github.com/adigourdi/kasbah/releases/latest/download/get.sh'
@@ -288,11 +322,11 @@ get_main() {
     trap 'exit 143' TERM
 
     g_asset=kasbah_${g_ver}_linux_$g_arch
-    g_files="$g_asset checksums.txt"
+    # The signature always: kasbah verifies this release from these files.
+    g_files="$g_asset checksums.txt checksums.txt.minisig"
     g_minisign=''
     if command -v minisign >/dev/null 2>&1; then
         g_minisign=minisign
-        g_files="$g_files checksums.txt.minisig"
     fi
     g_base=${KASBAH_GET_BASE:-https://github.com/$kasbah_repo/releases/download}
     g_api=${KASBAH_RELEASES_API:-https://api.github.com}
@@ -350,9 +384,17 @@ get_main() {
     esac
     # Never the pipe this script may arrive on: the terminal, else nothing.
     if (: </dev/tty) 2>/dev/null; then g_in=/dev/tty; else g_in=/dev/null; fi
-    say "running kasbah self-update${*:+ $*}"
+    # This release, named or not: from the files here. Another: through the API.
+    if [ -n "$g_want" ] && [ "$g_want" != "v$g_ver" ]; then
+        set -- "$g_want"
+    else
+        set -- "v$g_ver" --from "$g_tmp"
+    fi
+    [ -z "$g_pre" ] || set -- "$@" --pre
+    [ -z "$g_yes" ] || set -- "$@" --yes
+    say "running kasbah self-update $*"
     g_rc=0
-    "$g_tmp/kasbah" self-update ${1+"$@"} <"$g_in" || g_rc=$?
+    "$g_tmp/kasbah" self-update "$@" <"$g_in" || g_rc=$?
     exit "$g_rc"
 }
 

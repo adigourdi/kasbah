@@ -3,7 +3,8 @@
 # (pinned image, its wget instead of curl), against a fake release host
 # (tests/get_fake_release.py: bare downloads, a token-guarded API whose assets
 # redirect to a second host). The release's "binary" is a stub that records
-# its argv, its stdin and its environment, then exits with a chosen status.
+# its argv, the files in any directory it is handed, its stdin and its
+# environment, then exits with a chosen status.
 #
 # Each run gets a clean environment and a PATH of chosen tools only, so the
 # host's own gh, minisign or curl never answer; the temp dir get.sh makes must
@@ -57,6 +58,9 @@ cat >"$tmp/stub" <<'EOF'
     printf 'argv:'
     for a in "$@"; do printf ' [%s]' "$a"; done
     printf '\n'
+    for a in "$@"; do
+        [ ! -d "$a" ] || for f in "$a"/*; do printf 'has=%s\n' "$f"; done
+    done
     printf 'stdin=%s\n' "$(readlink /proc/self/fd/0)"
     printf 'self=%s\n' "$0"
     printf 'bin=%s lib=%s token=%s\n' "${KASBAH_BIN_DIR-unset}" "${KASBAH_LIB_DIR-unset}" "${GITHUB_TOKEN-unset}"
@@ -88,6 +92,9 @@ release 1.7.0
 mkdir -p "$tmp/ghrel"
 cp -R "$srv/releases/v1.7.0" "$tmp/ghrel/"
 rm "$srv/releases/v1.7.0/checksums.txt"
+# 1.8.0 has no signature.
+release 1.8.0
+rm "$srv/releases/v1.8.0/checksums.txt.minisig"
 # 1.6.0's checksums.txt is CRLF, in sha256sum's binary-mode form (*name).
 release 1.6.0
 sed -i 's/  / */; s/$/\r/' "$srv/releases/v1.6.0/checksums.txt"
@@ -211,10 +218,28 @@ for sh in dash busybox; do
     assert '[[ "$self" == "$scratch"/tmp.*/kasbah ]]' "bare: the binary ran from '$self', not <mktemp -d>/kasbah"
     assert 'grep -q "^host /download/v1.1.0/kasbah_1.1.0_linux_amd64 auth=-" "$log" && grep -q "^host /download/v1.1.0/checksums.txt auth=-" "$log"' \
         "bare: requests: $(cat "$log")"
-    assert '! grep -qE "/api/|minisig" "$log"' "bare: more than the two bare downloads: $(cat "$log")"
+    assert 'grep -q "^host /download/v1.1.0/checksums.txt.minisig auth=-" "$log" && [ "$(grep -c . "$log")" = 3 ]' \
+        "bare: not exactly the three bare downloads: $(cat "$log")"
     assert 'grep -q "no minisign here: kasbah checks the signature itself" "$tmp/stderr"' "bare: no word on the signature: $(cat "$tmp/stderr")"
     assert 'grep -q "sha256 of kasbah_1.1.0_linux_amd64 matches" "$tmp/stderr"' "bare: no word on the sha256"
     assert clean "bare: temp dir left: $(ls -A "$scratch")"
+
+    # --- No version: this release, verified from the files fetched, no API call ---
+    envs=()
+    run "$sh" file --yes
+    tmpd="$(sed -n 's/^self=\(.*\)\/kasbah$/\1/p' "$out/stub.log" 2>/dev/null)"
+    assert '[ "$rc" = 0 ] && [[ "$tmpd" == "$scratch"/tmp.* ]] && grep -qxF "argv: [self-update] [v1.1.0] [--from] [$tmpd] [--yes]" <<<"$(stub)"' \
+        "no version: exit $rc, stub: $(stub)"
+    assert 'grep -qxF "has=$tmpd/checksums.txt" <<<"$(stub)" && grep -qxF "has=$tmpd/checksums.txt.minisig" <<<"$(stub)"' \
+        "no version: the files were not beside the binary at the hand-off: $(stub)"
+    assert '! grep -q /api/ "$log" && [ "$(grep -c . "$log")" = 3 ]' "no version: requests beyond the three downloads: $(cat "$log")"
+    assert clean "no version: temp dir left"
+
+    # --- Its own version named: the same hand-off, no API call -----------------
+    run "$sh" file 1.1.0
+    tmpd="$(sed -n 's/^self=\(.*\)\/kasbah$/\1/p' "$out/stub.log" 2>/dev/null)"
+    assert '[ "$rc" = 0 ] && grep -qxF "argv: [self-update] [v1.1.0] [--from] [$tmpd]" <<<"$(stub)" && ! grep -q /api/ "$log"' \
+        "own version named: exit $rc, stub: $(stub)"
 
     # --- curl | sh -s -- v1: the stub's stdin is not the script's pipe ----------
     envs=()
@@ -254,10 +279,14 @@ for sh in dash busybox; do
     assert '[ "$rc" = 0 ] && grep -q "^host /download/v1.1.0/kasbah_1.1.0_linux_arm64 " "$log"' "aarch64: exit $rc: $(cat "$log")"
 
     # --- Arguments ---------------------------------------------------------------
-    for bad in --force "v1 v2" "1.1" "v1;x"; do
+    for bad in --force "v1 v2" "v1 1.2" "v1;x" v1.x 1..2 v01 v1.02 v 1.2.3.4 1.2.3-rc. v1.2-rc.1 v1.2.3-beta v99999999999999999999 1.2.3-rc.99999999999999999999 --pre "--pre --yes"; do
         # shellcheck disable=SC2086
         run "$sh" file $bad
         assert '[ "$rc" = 2 ] && grep -q "^usage: curl" "$tmp/stderr" && [ ! -e "$log" ]' "argument '$bad': exit $rc: $(cat "$tmp/stderr")"
+    done
+    for ok in "1.2.3 v1.2.3" "1.1 v1.1" "1.2.3-rc.4 v1.2.3-rc.4" "v0 v0" "v9999999999999999999 v9999999999999999999"; do
+        run "$sh" file "${ok% *}" --pre
+        assert '[ "$rc" = 0 ] && grep -qxF "argv: [self-update] [${ok#* }] [--pre]" <<<"$(stub)"' "argument '${ok% *}': exit $rc, stub: $(stub)"
     done
     run "$sh" file --help
     assert '[ "$rc" = 0 ] && grep -q "^usage: curl" "$tmp/stdout"' "--help: exit $rc"
@@ -267,7 +296,7 @@ for sh in dash busybox; do
     envs=() extra="$tmp/gh"
     run "$sh" file v1
     assert '[ "$rc" = 0 ] && grep -qxF "argv: [self-update] [v1]" <<<"$(stub)"' "gh rung: exit $rc: $(cat "$tmp/stderr")"
-    assert 'grep -qx "release download v1.1.0 --repo adigourdi/kasbah -p kasbah_1.1.0_linux_amd64 -p checksums.txt -D $scratch/tmp\.[^ ]* --clobber" "$out/gh.log"' \
+    assert 'grep -qx "release download v1.1.0 --repo adigourdi/kasbah -p kasbah_1.1.0_linux_amd64 -p checksums.txt -p checksums.txt.minisig -D $scratch/tmp\.[^ ]* --clobber" "$out/gh.log"' \
         "gh rung: gh argv: $(cat "$out/gh.log" 2>/dev/null)"
     assert '! grep -q "auth token" "$out/gh.log"' "gh rung: gh's token asked for an API that is not GitHub's"
     assert clean "gh rung: temp dir left"
@@ -308,7 +337,16 @@ for sh in dash busybox; do
         "checksums.txt without the asset: exit $rc: $(cat "$tmp/stderr")"
     envs=(KASBAH_GET_VERSION=1.6.0)
     run "$sh" file
-    assert '[ "$rc" = 0 ] && grep -q "^argv: \[self-update\]$" <<<"$(stub)"' "checksums.txt CRLF and *name: exit $rc: $(cat "$tmp/stderr")"
+    assert '[ "$rc" = 0 ] && grep -q "^argv: \[self-update\] \[v1.6.0\] \[--from\] " <<<"$(stub)"' "checksums.txt CRLF and *name: exit $rc: $(cat "$tmp/stderr")"
+
+    # --- A release without a signature: every rung fails naming it -------------
+    envs=(KASBAH_GET_VERSION=1.8.0) extra="$tmp/gh"
+    run "$sh" file
+    assert '[ "$rc" = 1 ] && [ ! -e "$out/stub.log" ] && grep -q "download: .* 404.* (checksums.txt.minisig)$" "$tmp/stderr" &&
+        grep -q "^  gh release download: .*checksums.txt.minisig" "$tmp/stderr" && ! grep -q "private repository" "$tmp/stderr"' \
+        "no signature: exit $rc: $(cat "$tmp/stderr")"
+    assert clean "no signature: temp dir left"
+    extra=''
 
     # --- The private-repository hint only after a 404 on the binary --------------
     envs=(KASBAH_GET_VERSION=1.4.0)
@@ -355,10 +393,10 @@ for style in compact pretty; do
     assert '[ "$rc" = 0 ] && grep -qxF "argv: [self-update] [v1]" <<<"$(stub)" && grep -q "token=sekret" <<<"$(stub)"' \
         "token $style: exit $rc: $(cat "$tmp/stderr")"
     assert 'grep -q "^host $api/tags/v1.1.0 auth=Bearer sekret accept=application/vnd.github+json$" "$log"' "token $style: no API call: $(cat "$log")"
-    assert '[ "$(grep -c "^host $api/assets/[0-9]* auth=Bearer sekret accept=application/octet-stream$" "$log")" = 2 ]' \
+    assert '[ "$(grep -c "^host $api/assets/[0-9]* auth=Bearer sekret accept=application/octet-stream$" "$log")" = 3 ]' \
         "token $style: asset requests: $(cat "$log")"
     # The redirect stays on the API's own host and port: only get.sh can keep the token off it.
-    assert '[ "$(grep -c "^host /blob/v1.1.0/\(kasbah_1.1.0_linux_amd64\|checksums.txt\) auth=- " "$log")" = 2 ] && ! grep -q "^host /blob/.*auth=[^-]" "$log"' \
+    assert '[ "$(grep -c "^host /blob/v1.1.0/\(kasbah_1.1.0_linux_amd64\|checksums.txt\|checksums.txt.minisig\) auth=- " "$log")" = 3 ] && ! grep -q "^host /blob/.*auth=[^-]" "$log"' \
         "token $style: redirected requests (the token must not reach them): $(cat "$log")"
     assert '! grep -q sekret "$out/curl.argv"' "token $style: the token on curl's command line"
     assert 'grep -q "fetched through the releases API" "$tmp/stderr"' "token $style: no word on the rung"
@@ -375,6 +413,10 @@ assert '[ "$rc" = 1 ] && grep -q "the token from GITHUB_TOKEN holds characters n
 envs=(GITHUB_TOKEN=sekret KASBAH_GET_VERSION=1.4.0)
 run dash file
 assert '[ "$rc" = 1 ] && grep -q "the release v1.4.0 lists no asset checksums.txt" "$tmp/stderr"' "asset not in the JSON: exit $rc: $(cat "$tmp/stderr")"
+envs=(GITHUB_TOKEN=sekret KASBAH_GET_VERSION=1.8.0)
+run dash file
+assert '[ "$rc" = 1 ] && grep -q "the release v1.8.0 lists no asset checksums.txt.minisig" "$tmp/stderr" && [ ! -e "$out/stub.log" ] && clean' \
+    "no signature, token: exit $rc: $(cat "$tmp/stderr")"
 touch "$srv/nolocation"
 envs=(GITHUB_TOKEN=sekret)
 run dash file

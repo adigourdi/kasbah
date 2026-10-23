@@ -64,6 +64,10 @@ first, then the build is placed, the symlink moved, and other dev builds removed
 | `<lib>/<version>/server/kasbah-linux-<arch>` | `__install` (amd64 and arm64 from the build's `server/`); `self-update` (this machine's arch, a copy of its own binary); `serverbin.Local` fetching the missing arch of an installed release the same verified way | `serverbin.Local` — what that version ships to a server | static linux ELF | `755` | the installing user | as above | `internal/install/install.go:185`, `internal/serverbin/serverbin.go:56` |
 | `<bin>/kasbah` | `__install` and `self-update`: a symlink to the newest installed version that runs and survives the prune (a version argument to `self-update` or `install-dev.sh`: the version it resolved to), through `<bin>/.kasbah.new` and a rename | the shell | symlink | — | the installing user | repointed by every install; a regular file there is replaced, a directory refused | `internal/install/install.go:300` |
 
+Each file is first written beside its name — `<lib>/<version>/.kasbah.new`,
+`server/.kasbah-linux-<arch>.new`, a download as `..kasbah.new.part` — and renamed;
+a Ctrl-C removes them, a hard kill can leave one, which the next install replaces.
+
 A library is refused unless it is empty or holds a directory named as a version,
 so a library from before 1.0.0 (`<lib>/server/kasbah-linux-*` at the top, or
 `libexec/`, `VERSION`, `*.sh`) is refused rather than adopted: remove it by hand.

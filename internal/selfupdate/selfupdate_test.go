@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -68,6 +69,9 @@ type github struct {
 	// hook, when set, answers an API request first; true when it did.
 	hook    func(w http.ResponseWriter, r *http.Request) bool
 	cdnAuth []string // Authorization headers the cdn saw
+	cdnCode int      // when set, the cdn answers every request with it
+	// storage, when set, replaces the cdn as the redirect target.
+	storage string
 	apiAuth []string
 	paths   []string // every request, "api <path?query>" or "cdn <path>"
 }
@@ -84,6 +88,10 @@ func newGithub(t *testing.T) *github {
 		g.cdnAuth = append(g.cdnAuth, r.Header.Get("Authorization"))
 		g.paths = append(g.paths, "cdn "+r.URL.Path)
 		g.mu.Unlock()
+		if g.cdnCode != 0 {
+			http.Error(w, "refused", g.cdnCode)
+			return
+		}
 		tag, name, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/blob/"), "/")
 		b, ok := g.releases[tag][name]
 		if !ok {
@@ -143,7 +151,12 @@ func newGithub(t *testing.T) *github {
 				http.Error(w, "octet-stream only", http.StatusBadRequest)
 				return
 			}
-			http.Redirect(w, r, g.cdn.URL+"/blob/"+strings.TrimPrefix(r.URL.Path, "/assets/"), http.StatusFound)
+			to := g.cdn.URL
+			if g.storage != "" {
+				to = g.storage
+			}
+			// Signed like GitHub's storage URLs: the query is a credential.
+			http.Redirect(w, r, to+"/blob/"+strings.TrimPrefix(r.URL.Path, "/assets/")+"?X-Amz-Signature="+signed, http.StatusFound)
 		default:
 			http.NotFound(w, r)
 		}
@@ -196,11 +209,17 @@ func client(t *testing.T, g *github, s *signer) (*Client, *bytes.Buffer) {
 // secret is the token the fake API accepts; a substring no message spells.
 const secret = "ghp_Q7xK2vLm9ZpR"
 
+// signed is the fake storage URLs' signature, which no message may spell either.
+const signed = "SIG4hV9wQ2"
+
 // noToken is every failure the suite sees: none may carry the token.
 func noToken(t *testing.T, err error) error {
 	t.Helper()
 	if err != nil && strings.Contains(err.Error(), secret) {
 		t.Errorf("the token leaked into an error: %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), signed) {
+		t.Errorf("a signed storage URL leaked into an error: %v", err)
 	}
 	return err
 }
@@ -397,10 +416,6 @@ func TestRefusals(t *testing.T) {
 			[]string{"wait 5 second(s)", "retry after that wait"}, []string{"GITHUB_TOKEN"}},
 		{"429, anonymous", "", "", refuse(429),
 			[]string{"429", "GitHub is throttling requests", "retry later; a token gets a higher limit: set GITHUB_TOKEN"}, nil},
-		{"401 from GITHUB_TOKEN", "nope", "GITHUB_TOKEN", nil,
-			[]string{"401", "refused the token in GITHUB_TOKEN", "unset it; a public repository needs no token"}, []string{"gh auth"}},
-		{"401 from gh", "nope", "gh", nil,
-			[]string{"401", "refused the token `gh auth token` printed", "`gh auth login` again; a public repository needs no token"}, nil},
 	}
 	for _, tt := range cases {
 		g.hook, c.Token, c.TokenFrom = tt.hook, tt.token, tt.from
@@ -501,10 +516,107 @@ func TestReleaseVerifies(t *testing.T) {
 	if _, err := c.Release("9.9.9"); noToken(t, err) == nil || !strings.Contains(err.Error(), "404") {
 		t.Errorf("missing release: %v", err)
 	}
-	// A bad token.
-	c.Token = "nope"
-	if _, err := c.Release("1.2.0"); noToken(t, err) == nil || !strings.Contains(err.Error(), "401") {
-		t.Errorf("bad token: %v", err)
+	// A signature of another release: refused, though the key is right.
+	g.release(s, "1.2.0", true)
+	g.releases["v1.2.0"]["checksums.txt.minisig"] = s.sign(g.releases["v1.2.0"]["checksums.txt"], "kasbah 1.1.0")
+	if _, err := c.Release("1.2.0"); noToken(t, err) == nil || !strings.Contains(err.Error(), `signed as "kasbah 1.1.0", not "kasbah 1.2.0"`) {
+		t.Errorf("another release's signature: %v", err)
+	}
+}
+
+// TestRefusedToken is a token GitHub answers 401: dropped with one warning
+// naming its source, the request retried, and every later one, anonymously.
+func TestRefusedToken(t *testing.T) {
+	g := newGithub(t)
+	s := newSigner(t)
+	catalogue(g, s)
+	c, buf := client(t, g, s)
+	for _, tt := range []struct{ from, says string }{
+		{"GITHUB_TOKEN", "warning: GitHub refused the token in GITHUB_TOKEN — continuing without it\n"},
+		{"gh", "warning: GitHub refused the token `gh auth token` printed — continuing without it\n"},
+	} {
+		buf.Reset()
+		g.mu.Lock()
+		g.apiAuth, g.cdnAuth = nil, nil
+		g.mu.Unlock()
+		c.Token, c.TokenFrom = "nope", tt.from
+		v, _, err := c.Resolve("v1", 1, false)
+		if err != nil || v.String() != "1.2.0" {
+			t.Fatalf("%s: resolve: %s, %v\n%s", tt.from, v, err, buf)
+		}
+		rel, err := c.Release("1.2.0")
+		if err == nil {
+			err = c.Download(rel, AssetName("1.2.0", "amd64"), filepath.Join(t.TempDir(), "kasbah"))
+		}
+		if err != nil {
+			t.Fatalf("%s: release: %v", tt.from, err)
+		}
+		if buf.String() != tt.says+"downloading "+AssetName("1.2.0", "amd64")+" ("+strconv.Itoa(len(g.releases["v1.2.0"][AssetName("1.2.0", "amd64")]))+" bytes)\n" {
+			t.Errorf("%s: output:\n%s", tt.from, buf)
+		}
+		if c.Token != "" || len(g.apiAuth) < 3 || g.apiAuth[0] != "Bearer nope" {
+			t.Errorf("%s: token %q, api saw %q", tt.from, c.Token, g.apiAuth)
+		}
+		for _, a := range append(append([]string{}, g.apiAuth[1:]...), g.cdnAuth...) {
+			if a != "" {
+				t.Errorf("%s: the refused token was sent again: %q", tt.from, a)
+			}
+		}
+	}
+
+	// Private: the anonymous retry's 404 is the refusal, after the warning.
+	g.private = true
+	buf.Reset()
+	c.Token, c.TokenFrom = "nope", "GITHUB_TOKEN"
+	_, err := c.Release("1.2.0")
+	if noToken(t, err) == nil || !strings.Contains(err.Error(), "404") || !strings.Contains(err.Error(), "may be private") ||
+		strings.Count(buf.String(), "refused the token") != 1 {
+		t.Errorf("private, refused token: %v\n%s", err, buf)
+	}
+
+	// The storage host's 401 is not the token's: kept, no warning, and the
+	// refusal names the host that answered, not the API asset URL.
+	g.private = false
+	g.cdnCode = http.StatusUnauthorized
+	buf.Reset()
+	c.Token, c.TokenFrom = secret, "GITHUB_TOKEN"
+	_, err = c.Release("1.2.0")
+	if noToken(t, err) == nil || !strings.Contains(err.Error(), g.cdn.URL+"/blob/v1.2.0/checksums.txt: 401") ||
+		strings.Contains(err.Error(), "/assets/") || strings.Contains(buf.String(), "refused the token") || c.Token != secret {
+		t.Errorf("storage 401: %v, token %q\n%s", err, c.Token, buf)
+	}
+	g.cdnCode = 0
+
+	// The storage host unreachable: the dial error names it, its query dropped.
+	l, lerr := net.Listen("tcp", "127.0.0.1:0")
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	g.storage = "http://" + l.Addr().String()
+	l.Close()
+	_, err = c.Release("1.2.0")
+	if noToken(t, err) == nil || !strings.Contains(err.Error(), g.storage+"/blob/v1.2.0/checksums.txt\"") {
+		t.Errorf("storage unreachable: %v", err)
+	}
+	g.storage = ""
+	g.mu.Lock()
+	g.apiAuth = nil
+	g.mu.Unlock()
+	if _, err := c.Release("1.2.0"); err != nil || len(g.apiAuth) != 3 {
+		t.Errorf("after a storage 401: %v, api saw %q", err, g.apiAuth)
+	}
+	for _, a := range g.apiAuth {
+		if a != "Bearer "+secret {
+			t.Errorf("after a storage 401 the API was sent %q", a)
+		}
+	}
+
+	// An anonymous 401 is reported as it is, no token blamed.
+	c.Token, c.TokenFrom = "", ""
+	g.hook = refuse(401)
+	buf.Reset()
+	if _, _, err := c.Resolve("v1", 1, false); err == nil || !strings.Contains(err.Error(), "401") || strings.Contains(err.Error()+buf.String(), "token") {
+		t.Errorf("anonymous 401: %v\n%s", err, buf)
 	}
 }
 
@@ -949,6 +1061,119 @@ func TestLoose(t *testing.T) {
 	}
 }
 
+// TestFrom is get.sh's hand-off: a loose release binary installs itself from
+// a checksums.txt and signature already on disk, asking no server anything.
+func TestFrom(t *testing.T) {
+	g := newGithub(t)
+	s := newSigner(t)
+	g.release(s, "1.2.0", true)
+	c, buf := client(t, g, s)
+	name := AssetName("1.2.0", "amd64")
+	published := g.releases["v1.2.0"][name]
+	// files is a --from directory: checksums.txt, and its signature unless sig is nil.
+	files := func(sums, sig []byte) string {
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "checksums.txt"), sums, 0o644)
+		if sig != nil {
+			os.WriteFile(filepath.Join(d, "checksums.txt.minisig"), sig, 0o644)
+		}
+		return d
+	}
+	sums := g.releases["v1.2.0"]["checksums.txt"]
+	good := files(sums, g.releases["v1.2.0"]["checksums.txt.minisig"])
+	exe := func(b []byte) string {
+		p := filepath.Join(t.TempDir(), name)
+		os.WriteFile(p, b, 0o755)
+		return p
+	}
+	self := exe(published)
+	var root, link string
+	run := func(stamp, exe string, loose bool, o Options, installed ...string) error {
+		root = filepath.Join(t.TempDir(), "lib")
+		for _, v := range installed {
+			os.MkdirAll(filepath.Join(root, v), 0o755)
+			os.WriteFile(filepath.Join(root, v, "kasbah"), []byte("#!/bin/sh\necho 'kasbah "+v+" (schema 1)'\n"), 0o755)
+		}
+		bin := filepath.Join(t.TempDir(), "bin")
+		link = filepath.Join(bin, "kasbah")
+		buf.Reset()
+		return Run(Ctx{Client: c, Out: c.Out, Prompter: fakeTTY("", c.Out), Root: root, BinDir: bin,
+			Arch: "amd64", Self: stamp, Exe: exe, Loose: loose, RunTimeout: 5 * time.Second}, o)
+	}
+	target := func() string { s, _ := os.Readlink(link); return s }
+	quiet := func(what string) {
+		t.Helper()
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if len(g.paths) != 0 {
+			t.Errorf("%s: requests made: %v", what, g.paths)
+		}
+		g.paths = nil
+	}
+
+	// Its own version, the files at hand: installed and pinned, beside a newer one.
+	if err := run("1.2.0", self, true, Options{Version: "v1.2.0", From: good}, "1.9.0"); err != nil {
+		t.Fatalf("--from: %v\n%s", err, buf)
+	}
+	for _, p := range []string{filepath.Join(root, "1.2.0", "kasbah"), filepath.Join(root, "1.2.0", "server", "kasbah-linux-amd64")} {
+		if !fileIs(p, published) {
+			t.Errorf("%s is not this binary's bytes", p)
+		}
+	}
+	if target() != filepath.Join(root, "1.2.0", "kasbah") {
+		t.Errorf("--from: symlink -> %s, not pinned", target())
+	}
+	for _, want := range []string{"resolved 1.2.0 (this binary's own release, checksums.txt from " + good + ")",
+		"verified checksums.txt: key " + s.pub.IDString() + ", trusted comment \"kasbah 1.2.0\"",
+		"this binary is the published " + name, "installed kasbah 1.2.0"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("--from: output lacks %q:\n%s", want, buf)
+		}
+	}
+	quiet("--from")
+
+	// Already installed: exit 0, the symlink pinned, still no request.
+	if err := run("1.2.0", self, true, Options{Version: "1.2.0", From: good}, "1.2.0", "1.9.0"); err != nil ||
+		!strings.Contains(buf.String(), "kasbah 1.2.0 is already installed") || target() != filepath.Join(root, "1.2.0", "kasbah") {
+		t.Errorf("--from, installed: %v, symlink -> %s\n%s", err, target(), buf)
+	}
+	quiet("--from, installed")
+
+	other := newSigner(t)
+	cases := []struct {
+		name, stamp, exe string
+		loose            bool
+		o                Options
+		want             string
+	}{
+		{"not loose", "1.2.0", self, false, Options{Version: "v1.2.0", From: good}, "is already in the library"},
+		{"another version", "1.2.0", self, true, Options{Version: "v1.1.0", From: good}, "it is kasbah 1.2.0, not 1.1.0"},
+		{"a dev build", "1.3.0-dev.3.5", self, true, Options{Version: "v1.3.0-dev.3.5", From: good}, "a dev build (1.3.0-dev.3.5), not a release"},
+		{"unstamped", "", self, true, Options{Version: "v1.2.0", From: good}, "carries no build stamp"},
+		{"oversized checksums.txt", "1.2.0", self, true, Options{Version: "v1.2.0", From: files(append(append([]byte{}, sums...), bytes.Repeat([]byte("#"), 1<<20)...), g.releases["v1.2.0"]["checksums.txt.minisig"])}, "checksums.txt: longer than 1 MiB"},
+		{"no signature", "1.2.0", self, true, Options{Version: "v1.2.0", From: files(sums, nil)}, "checksums.txt.minisig"},
+		{"no directory", "1.2.0", self, true, Options{Version: "v1.2.0", From: filepath.Join(good, "nope")}, "cannot read"},
+		{"garbled signature", "1.2.0", self, true, Options{Version: "v1.2.0", From: files(sums, []byte("junk\n"))}, "does not verify against release.pub"},
+		{"another key", "1.2.0", self, true, Options{Version: "v1.2.0", From: files(sums, other.sign(sums, "kasbah 1.2.0"))}, "does not verify against release.pub"},
+		{"tampered sums", "1.2.0", self, true, Options{Version: "v1.2.0", From: files(append([]byte("0000"), sums[4:]...), g.releases["v1.2.0"]["checksums.txt.minisig"])}, "does not verify against release.pub"},
+		{"another release's signature", "1.2.0", self, true, Options{Version: "v1.2.0", From: files(sums, s.sign(sums, "kasbah 1.1.0"))}, `signed as "kasbah 1.1.0"`},
+		{"other bytes", "1.2.0", exe(append(append([]byte{}, published...), "# patched\n"...)), true, Options{Version: "v1.2.0", From: good}, "is not the published " + name},
+	}
+	for _, tt := range cases {
+		err := run(tt.stamp, tt.exe, tt.loose, tt.o)
+		if err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), "nothing was installed") {
+			t.Errorf("%s: %v", tt.name, err)
+		}
+		if ents, _ := os.ReadDir(root); len(ents) != 0 {
+			t.Errorf("%s: the library holds %d entries", tt.name, len(ents))
+		}
+		if _, err := os.Lstat(link); err == nil {
+			t.Errorf("%s: the symlink was made", tt.name)
+		}
+		quiet(tt.name)
+	}
+}
+
 func fileIs(path string, want []byte) bool {
 	b, err := os.ReadFile(path)
 	return err == nil && bytes.Equal(b, want)
@@ -967,7 +1192,14 @@ func TestParse(t *testing.T) {
 			t.Errorf("%s: %+v, %v", ok, o, err)
 		}
 	}
-	for _, bad := range [][]string{{"--yes=1"}, {"--nope"}, {"v1", "v2"}, {"vx"}, {"v1.2.3.4"}} {
+	for _, args := range [][]string{{"v1.2.0", "--from", "/d\r"}, {"--from=/d", "v1.2.0"}, {"--from", "/d", "1.2.0-rc.1"}} {
+		if o, err := Parse(args); err != nil || o.From != "/d" || !exact(o.Version) {
+			t.Errorf("%v: %+v, %v", args, o, err)
+		}
+	}
+	for _, bad := range [][]string{{"--yes=1"}, {"--nope"}, {"v1", "v2"}, {"vx"}, {"v1.2.3.4"},
+		{"--from", "/d"}, {"v1", "--from", "/d"}, {"v1.2", "--from=/d"}, {"v1.2.0", "--from"}, {"v1.2.0", "--from="},
+		{"v1.2.0", "--from", "/d", "--from", "/e"}} {
 		if _, err := Parse(bad); err == nil {
 			t.Errorf("%v parsed", bad)
 		}

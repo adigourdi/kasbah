@@ -19,15 +19,18 @@ import (
 // ErrHelp is --help: the usage on stdout, exit 0.
 var ErrHelp = errors.New("help")
 
-// Options are `kasbah self-update [vN | vN.M | vN.M.P] [--pre] [--yes]`.
+// Options are `kasbah self-update [vN | vN.M | vN.M.P] [--pre] [--yes] [--from DIR]`.
 type Options struct {
 	Version string
 	Pre     bool
 	Yes     bool
+	// From is the directory holding the release's checksums.txt and its
+	// signature, read instead of fetched.
+	From string
 }
 
 // Usage is the command's --help.
-const Usage = `Usage: kasbah self-update [vN | vN.M | vN.M.P] [--pre] [--yes]
+const Usage = `Usage: kasbah self-update [vN | vN.M | vN.M.P] [--pre] [--yes] [--from DIR]
 
 Installs a released kasbah from GitHub Releases beside the installed
 versions (~/.local/share/kasbah/<version>/, the layout install-dev.sh writes)
@@ -36,8 +39,10 @@ as install-dev.sh does — or, when a version is named, at the one it resolves t
 Versions come from the repository's published releases (drafts and bare tags
 do not count). A token is used when present: GITHUB_TOKEN, else gh's for
 github.com when gh is logged in. A private repository needs one; a public one
-only gets a higher rate limit from it. A version already installed and
-answering for itself is not downloaded again; the symlink is still moved.
+only gets a higher rate limit from it. A token GitHub refuses (401) is dropped
+with a warning naming where it came from, and the request retried without it.
+A version already installed and answering for itself is not downloaded
+again; the symlink is still moved.
 
   (no argument)   the newest release of this kasbah's major
   vN              the newest release of major N
@@ -55,6 +60,12 @@ its own bytes must match the signed checksum, and nothing is downloaded.
   --yes     answer the confirmation asked when the symlink would move to a
             different major than it points at now. Without it and without a
             terminal, that question is a hard fail naming the flag.
+  --from DIR
+            read the release's checksums.txt and checksums.txt.minisig from
+            DIR instead of GitHub: nothing is fetched, no API call is made.
+            Only for a downloaded release binary installing itself, its own
+            version named exactly (vN.M.P) — what get.sh hands off with. The
+            same checks apply: signature, trusted comment, this binary's bytes.
 
 A kasbah run from a checkout does not self-update: build and install it.
 `
@@ -62,8 +73,8 @@ A kasbah run from a checkout does not self-update: build and install it.
 // Parse reads the command line.
 func Parse(args []string) (Options, error) {
 	var o Options
-	for _, raw := range args {
-		a := strings.TrimSuffix(raw, "\r")
+	for i := 0; i < len(args); i++ {
+		a := strings.TrimSuffix(args[i], "\r")
 		switch {
 		case a == "-h" || a == "--help":
 			return o, ErrHelp
@@ -71,12 +82,26 @@ func Parse(args []string) (Options, error) {
 			o.Pre = true
 		case a == "--yes":
 			o.Yes = true
+		case a == "--from" || strings.HasPrefix(a, "--from="):
+			if o.From != "" {
+				return o, cli.Fail("self-update: --from given twice")
+			}
+			if a == "--from" {
+				if i+1 >= len(args) {
+					return o, cli.Fail("self-update: --from takes a directory (--from DIR)")
+				}
+				i++
+				a = "--from=" + strings.TrimSuffix(args[i], "\r")
+			}
+			if o.From = strings.TrimPrefix(a, "--from="); o.From == "" {
+				return o, cli.Fail("self-update: --from takes a directory (--from DIR)")
+			}
 		case strings.HasPrefix(a, "--pre=") || strings.HasPrefix(a, "--yes="):
 			f, _, _ := strings.Cut(a, "=")
 			return o, cli.Fail("self-update: %s takes no value — pass it on its own", f)
 		case strings.HasPrefix(a, "-"):
 			f, _, _ := strings.Cut(a, "=")
-			return o, cli.Fail("self-update: unknown flag '%s' (self-update takes a version, --pre and --yes)", f)
+			return o, cli.Fail("self-update: unknown flag '%s' (self-update takes a version, --pre, --yes and --from)", f)
 		default:
 			if o.Version != "" {
 				return o, cli.Fail("self-update: two versions given ('%s' and '%s') — one run installs one", o.Version, a)
@@ -87,6 +112,9 @@ func Parse(args []string) (Options, error) {
 			}
 			o.Version = a
 		}
+	}
+	if o.From != "" && !exact(o.Version) {
+		return o, cli.Fail("self-update: --from verifies one release — name this binary's version exactly (vN.M.P)")
 	}
 	return o, nil
 }
@@ -123,12 +151,27 @@ func Run(c Ctx, o Options) error {
 	if err := install.CheckLib(c.Root); err != nil {
 		return err
 	}
-	if o.Version == "" && !haveMajor {
-		return cli.Fail("this kasbah carries no build stamp, so `self-update` cannot tell which major to follow — name a version: kasbah self-update vN")
-	}
-	v, how, err := c.Client.Resolve(o.Version, major, o.Pre)
-	if err != nil {
-		return err
+	var (
+		v   version.Version
+		how string
+		rel *Release
+		err error
+	)
+	if o.From != "" {
+		if v, err = fromOwn(c, o); err != nil {
+			return err
+		}
+		if rel, err = c.Client.Local(v.String(), o.From); err != nil {
+			return err
+		}
+		how = "this binary's own release, checksums.txt from " + o.From
+	} else {
+		if o.Version == "" && !haveMajor {
+			return cli.Fail("this kasbah carries no build stamp, so `self-update` cannot tell which major to follow — name a version: kasbah self-update vN")
+		}
+		if v, how, err = c.Client.Resolve(o.Version, major, o.Pre); err != nil {
+			return err
+		}
 	}
 	ver := v.String()
 	fmt.Fprintf(c.Out.Stdout, "resolved %s (%s)\n", ver, how)
@@ -150,9 +193,10 @@ func Run(c Ctx, o Options) error {
 		install.PathNote(c.Out, c.BinDir, os.Getenv("PATH"))
 		return nil
 	}
-	rel, err := c.Client.Release(ver)
-	if err != nil {
-		return err
+	if rel == nil {
+		if rel, err = c.Client.Release(ver); err != nil {
+			return err
+		}
 	}
 	fmt.Fprintf(c.Out.Stdout, "verified checksums.txt: key %s, trusted comment \"%s\"\n", rel.KeyID, rel.Comment)
 	name := AssetName(ver, c.Arch)
@@ -183,6 +227,28 @@ func Run(c Ctx, o Options) error {
 		Bin:     func(path string) error { return c.Client.Download(rel, name, path) },
 		Server:  map[string]install.Source{c.Arch: install.File(bin)},
 	})
+}
+
+// fromOwn is the version --from may install: this binary's own, a release,
+// run from outside any library — refused otherwise, before anything is read.
+func fromOwn(c Ctx, o Options) (version.Version, error) {
+	v, err := version.Parse(strings.TrimPrefix(strings.TrimSpace(o.Version), "v"))
+	if err != nil {
+		return v, cli.Fail("self-update: %v", err)
+	}
+	switch {
+	case !c.Loose:
+		return v, cli.Fail("--from installs a downloaded release binary, and %s is already in the library", c.Exe).Cont(
+			"nothing was installed — drop --from to install through the releases API")
+	case c.Self == "":
+		return v, cli.Fail("--from installs this binary itself, and it carries no build stamp — nothing was installed")
+	case version.Dev(c.Self):
+		return v, cli.Fail("--from installs this binary itself, and it is a dev build (%s), not a release — nothing was installed", c.Self)
+	case v.String() != c.Self:
+		return v, cli.Fail("--from installs this binary itself, and it is kasbah %s, not %s", c.Self, v).Cont(
+			"nothing was installed — drop --from to install another version through the releases API")
+	}
+	return v, nil
 }
 
 // ownBytes reads the binary at exe whole and returns it when its size and
