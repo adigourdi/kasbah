@@ -33,7 +33,8 @@ var (
 
 var reCrypt = regexp.MustCompile(`^\$6\$[^$]+\$[./A-Za-z0-9]+$`)
 
-// MailTimeout is how long the start step waits for SnappyMail's healthcheck.
+// MailTimeout is how long the start step waits for Cypht's healthcheck, which
+// passes ~5 s after start on a workstation; the slack is for a slow VPS.
 const MailTimeout = 180
 
 // MailValues are what the mail stack is rendered and seeded with.
@@ -225,14 +226,14 @@ func (s *session) mailSync(o Options, rendered, cur map[string]string) ([]string
 	return changed, nil
 }
 
-// mailStart is unbounded by RunTimeout: a first start pulls ~1.5 GB, and the
-// SnappyMail wait is bounded on the server.
+// mailStart is unbounded by RunTimeout: a first start pulls ~1.6 GB, and the
+// Cypht wait is bounded on the server.
 func (s *session) mailStart(o Options) (Facts, error) {
 	res, rc := s.mailCall(nil, false, "start", o.Apps, strconv.Itoa(MailTimeout))
 	if rc != 0 {
 		return nil, cli.Fail("could not start the mail stack on %s (the remote step exited %d, see above)", s.target, rc)
 	}
-	return checked("the mail start", s.target, res, "mail_snappymail_health", "mail_dms_state",
+	return checked("the mail start", s.target, res, "mail_cypht_health", "mail_dms_state",
 		"mail_dms_health", "mail_dms_restarts", "mail_dms_image")
 }
 
@@ -248,7 +249,7 @@ func reportMail(out *cli.Output, o Options, v MailValues, r *mail.ReadReport, ch
 	out.Info("        domains: %s (primary %s, %s)", strings.Join(v.Domains, " "), p, v.Origin)
 	out.Info("        routers: mail.%s (cert-trigger, no backend), https://webmail.%s", p, p)
 	out.Info("        .env %s, postmaster %s, dkim override %s", lay["mail_env"], lay["mail_account"], lay["mail_dkim_seed"])
-	out.Info("        snappymail %s, dms %s (%s, %s restarts)", st["mail_snappymail_health"], st["mail_dms_state"], st["mail_dms_health"], st["mail_dms_restarts"])
+	out.Info("        cypht %s, dms %s (%s, %s restarts)", st["mail_cypht_health"], st["mail_dms_state"], st["mail_dms_health"], st["mail_dms_restarts"])
 	out.Info("        setup guide: kasbah server mail-setup-guide %s", o.Target)
 	if st["mail_dms_health"] != "healthy" {
 		// Inside the 60 s start_period and crashlooping on a missing

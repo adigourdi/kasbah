@@ -105,24 +105,50 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # SnappyMail boots in about ten seconds whatever the certificate store holds,
-  # which is why the original project hung the cert-trigger router on it. kasbah does not
-  # need that trick — the fragment is a file — but the property still matters:
-  # webmail is up long before DMS settles.
-  mail-snappymail:
-    image: djmaze/snappymail:v2.38.2
-    container_name: mail-snappymail
+  # Webmail. Users sign in with their mailbox credentials, checked against DMS
+  # over IMAP; more accounts, here or elsewhere, are added in Cypht's settings.
+  # The login page needs no backend, so this is healthy long before DMS settles.
+  mail-cypht:
+    image: cypht/cypht:2.13.0
+    container_name: mail-cypht
     restart: unless-stopped
+    # The image's entrypoint exits after ten failed database probes, so it gets
+    # an SQLite file here. Settings, attachments and the database all live in it.
     volumes:
-      - ${DATA_PATH}/mail/snappymail:/var/lib/snappymail
+      - ${DATA_PATH}/mail/cypht:/var/lib/hm3
+    environment:
+      # TLS to the public name: DMS's certificate is issued for it alone.
+      AUTH_TYPE: IMAP
+      IMAP_AUTH_NAME: ${MAIL_HOSTNAME}
+      IMAP_AUTH_SERVER: ${MAIL_HOSTNAME}
+      IMAP_AUTH_PORT: 993
+      IMAP_AUTH_TLS: "true"
+      DEFAULT_SMTP_NAME: ${MAIL_HOSTNAME}
+      DEFAULT_SMTP_SERVER: ${MAIL_HOSTNAME}
+      DEFAULT_SMTP_PORT: 465
+      DEFAULT_SMTP_TLS: "true"
+
+      SESSION_TYPE: PHP
+      USER_CONFIG_TYPE: file
+      DB_DRIVER: sqlite
+      DB_NAME: /var/lib/hm3/cypht.sqlite
+
+      # Not `developer`: its server-information page shows the site config to
+      # every logged-in user. Not `brute_force`: it locks out per client address,
+      # and behind Traefik every client has Traefik's, so five typos lock out all.
+      CYPHT_MODULES: core,imap,smtp,account,profiles,imap_folders,contacts,local_contacts,nux,idle_timer,themes,history,saved_searches,advanced_search,inline_message,keyboard_shortcuts,tags,highlights,recover_settings
+      # The image ships Xdebug at mode=debug.
+      XDEBUG_MODE: "off"
     networks:
       - kasbah-net
+    # An anonymous AJAX call runs the PHP stack and answers 303 with no body
+    # (~5 ms), where `/` renders the 677 KB login page. Healthy ~5 s after start.
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8888/"]
+      test: ["CMD", "curl", "-fs", "-o", "/dev/null", "-X", "POST", "-d", "hm_ajax_hook=ajax_hm_folders", "http://localhost/"]
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 30s
     logging:
       driver: json-file
       options:

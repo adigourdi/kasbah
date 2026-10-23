@@ -193,11 +193,12 @@ and what makes Postfix accept mail for the domain at all.
 
 5. Webmail
 ---------------------------------------------------------------------------
-    ssh {T} 'docker exec mail-snappymail cat /var/lib/snappymail/_data_/_default_/admin_password.txt'
-
-Then https://webmail.{P}/?admin as {BT}admin{BT}, and change that password
-immediately. Users log in at https://webmail.{P} with their full
-address.
+Users log in at https://webmail.{P} with their full address and
+mailbox password; there is no separate webmail admin. Further accounts, on
+this server or elsewhere, are added in Cypht's settings, and its combined
+views (Everything, Unread, Flagged…) span all of them. Cypht keeps a
+settings change only once it is saved with the login password, under
+Settings → Save ("Save" or "Save and Logout"); "Just Logout" discards it.
 
 A domain's IMAP/SMTP config can be pre-seeded from a project's manifest:
 
@@ -237,5 +238,5 @@ holding the old one fails verification until its cache expires.
     ssh {T} 'tar czf - -C {D}/mail dms/config' > dms-config-$(date +%F).tar.gz
 
 Mailboxes live in {D}/mail/dms/mail-data/, webmail settings in
-{D}/mail/snappymail/.
+{D}/mail/cypht/.
 `

@@ -113,7 +113,7 @@ func TestRemoteLayout(t *testing.T) {
 	if mode(t, apps+"/mail/.env") != 0o600 || mode(t, data+"/mail/dms/config/rspamd/override.d/dkim_signing.conf") != 0o644 {
 		t.Error("seed modes")
 	}
-	for _, d := range []string{"/mail/dms/mail-data", "/mail/dms/mail-state", "/mail/dms/mail-logs", "/mail/snappymail"} {
+	for _, d := range []string{"/mail/dms/mail-data", "/mail/dms/mail-state", "/mail/dms/mail-logs", "/mail/cypht"} {
 		if fi, err := os.Stat(data + d); err != nil || !fi.IsDir() {
 			t.Errorf("%s not created", d)
 		}
@@ -125,6 +125,7 @@ func TestRemoteLayout(t *testing.T) {
 	// The operator's relay survives, a hand-loosened mode does not, and an
 	// account is never written over.
 	os.WriteFile(apps+"/mail/.env", []byte(env+"RELAY_PASSWORD=s3cret\n"), 0o644)
+	os.Chmod(data+"/mail/cypht", 0o700)
 	body = lb("postmaster@a.com|{SHA512-CRYPT}$6$new$z")
 	out, _, rc = run(t, body, signed(body, "layout", apps, data)...)
 	if rc != 0 || out != "mail_env=unchanged\nmail_account=kept\nmail_dkim_seed=kept\nmail_layout=done\n" || mode(t, apps+"/mail/.env") != 0o600 {
@@ -132,6 +133,9 @@ func TestRemoteLayout(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(acc); !strings.Contains(string(b), "$6$x$y") {
 		t.Errorf("account rewritten: %q", b)
+	}
+	if mode(t, data+"/mail/cypht") != 0o755 {
+		t.Errorf("cypht/ left at %o, which www-data cannot traverse", mode(t, data+"/mail/cypht"))
 	}
 	os.WriteFile(apps+"/mail/.env", []byte("DOMAIN=b.com\nRELAY_PASSWORD=s3cret\n"), 0o600)
 	out, _, _ = run(t, body, signed(body, "layout", apps, data)...)
@@ -356,6 +360,8 @@ func TestGuide(t *testing.T) {
 		"mail.example.test.               IN A     203.0.113.7",
 		"ip4:203.0.113.7", "Reverse DNS (PTR)", "Port 25 **outbound**", "_dmarc.shop.test.",
 		"CLI is `docker exec mail-dms setup …`", "dms-config-$(date +%F).tar.gz",
+		"log in at https://webmail.example.test with their full address", "\"Just Logout\" discards it",
+		"webmail settings in\n/apps/data/mail/cypht/.",
 		"selector ed   domain shop.test'\n\nThe keys land",
 		"---------------------------------------------------------------------------\n\n; ---------- example.test: the stack's own names",
 	} {

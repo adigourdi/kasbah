@@ -535,7 +535,7 @@ func (x *run) printMail() {
 	for _, s := range []struct {
 		name string
 		st   Stack
-	}{{"mail-dms", x.r.MailDMS}, {"mail-snappymail", x.r.MailWeb}} {
+	}{{"mail-dms", x.r.MailDMS}, {"mail-cypht", x.r.MailWeb}} {
 		switch s.st.State {
 		case "absent":
 			x.p("  %-16s absent — the stack is scaffolded and not running\n", s.name)

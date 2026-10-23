@@ -2,7 +2,7 @@
 # Integration test: `kasbah server init --with-mail` against the live rig.
 #
 # What the hermetic suite cannot show: that Traefik really *loads* the fragment
-# (a file that parses is not a file that registers), that SnappyMail really
+# (a file that parses is not a file that registers), that Cypht really
 # serves through it, that the seeds land before DMS's first start, and that the
 # whole thing is re-runnable against a stack the containers have already taken
 # ownership of.
@@ -76,14 +76,14 @@ if ! rig_clean; then
 fi
 
 # Both images are in the rig's cache and are pinned by the template. Pulling
-# 1.5 GB inside a suite is not a test, so a missing image is an environment
+# 1.6 GB inside a suite is not a test, so a missing image is an environment
 # problem and says so.
 dms_image=$(yq -r '.services["mail-dms"].image' "$repo_dir/templates/mail/compose.yml" 2>/dev/null)
-sm_image=$(yq -r '.services["mail-snappymail"].image' "$repo_dir/templates/mail/compose.yml" 2>/dev/null)
-for img in "$dms_image" "$sm_image"; do
+cy_image=$(yq -r '.services["mail-cypht"].image' "$repo_dir/templates/mail/compose.yml" 2>/dev/null)
+for img in "$dms_image" "$cy_image"; do
     if ! rig_ssh "docker image inspect '$img' >/dev/null 2>&1"; then
         echo "error: the rig has no $img in its image cache" >&2
-        echo "       pull it once on the rig; this suite will not spend 1.5 GB of a test run on it" >&2
+        echo "       pull it once on the rig; this suite will not spend 1.6 GB of a test run on it" >&2
         exit 2
     fi
 done
@@ -103,8 +103,8 @@ init_err() { cat "$tmpdir/err"; }
 # So: the whole tree above the data path, names and contents; the data path's
 # *structure* only, down to the directories kasbah creates; and the two seeded
 # files by name, which kasbah owns and the containers must not rewrite. Read
-# with sudo, because SnappyMail chowns its own directory to uid 82 at mode 750
-# and the deploy user cannot walk it — itself a fact this suite checks below.
+# with sudo: the containers own parts of the data tree, at modes of their
+# choosing.
 apps_checksum() {
     rig_ssh "{ sudo find $apps -path $data -prune -o -printf '%y %m %u:%g %p\n' | sort; \
                sudo find $apps -path $data -prune -o -type f -exec sha256sum {} + | sort; \
@@ -171,7 +171,7 @@ kv accounts_line "$(head -1 "$accounts" 2>/dev/null)"
 # config and the Dovecot that panics without an account have already run.
 kv t_accounts "$(stat -c '%Y' "$accounts" 2>/dev/null)"
 kv t_dkim     "$(stat -c '%Y' "$dkim" 2>/dev/null)"
-# (no snappymail mtime: the container writes into that directory on boot)
+# (no cypht mtime: the container writes into that directory on boot)
 kv t_dms_created "$(date -d "$(docker inspect -f '{{.Created}}' mail-dms 2>/dev/null)" +%s 2>/dev/null)"
 
 # The other ordering, and the one the whole design is sold on: _mail.yml has to
@@ -193,13 +193,14 @@ frag_ns=$(stat -c '%.9Z' "$frag" 2>/dev/null)
 kv t_frag_landed_ns "${frag_ns%.*}${frag_ns#*.}"
 kv t_traefik_started_ns "$(date -d "$(docker inspect -f '{{.State.StartedAt}}' traefik 2>/dev/null)" +%s%N 2>/dev/null)"
 
-# SnappyMail's own tree, which kasbah does not create: the container builds it
-# and takes it over, and the domains/ directory it makes is where a per-project
-# config is seeded (docs/mail.md). Read with sudo, because 750 uid 82 is
-# precisely the state being reported.
-isdir "$mail_data/snappymail" d_sm
-if sudo test -d "$mail_data/snappymail/_data_/_default_/domains"; then kv d_sm_domains yes; else kv d_sm_domains no; fi
-kv sm_owner "$(sudo stat -c '%u:%g %a' "$mail_data/snappymail" 2>/dev/null)"
+# Cypht's tree inside the directory kasbah makes: the entrypoint creates the
+# SQLite database as root and hands users/ and attachments/ to www-data (33).
+isdir "$mail_data/cypht" d_cy
+kv cy_owner    "$(sudo stat -c '%u:%g' "$mail_data/cypht" 2>/dev/null)"
+kv cy_db       "$(sudo stat -c '%u:%g %a' "$mail_data/cypht/cypht.sqlite" 2>/dev/null)"
+kv cy_users    "$(sudo stat -c '%u:%g' "$mail_data/cypht/users" 2>/dev/null)"
+kv cy_attach   "$(sudo stat -c '%u:%g' "$mail_data/cypht/attachments" 2>/dev/null)"
+kv me          "$(id -u):$(id -g)"
 
 kv dms_state    "$(docker inspect -f '{{.State.Status}}' mail-dms 2>/dev/null)"
 kv dms_image    "$(docker inspect -f '{{.Config.Image}}' mail-dms 2>/dev/null)"
@@ -214,9 +215,10 @@ kv dms_mounts   "$(docker inspect -f '{{range .Mounts}}{{.Source}}:{{.Destinatio
 # `25/tcp`, `NetworkSettings.Networks` still listing the network. So the network
 # rows above are safe as they stand and only this one had to move.
 kv dms_ports    "$(docker inspect -f '{{range $p, $b := .HostConfig.PortBindings}}{{$p}} {{end}}' mail-dms 2>/dev/null)"
-kv sm_health    "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' mail-snappymail 2>/dev/null)"
-kv sm_image     "$(docker inspect -f '{{.Config.Image}}' mail-snappymail 2>/dev/null)"
-kv sm_nets      "$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' mail-snappymail 2>/dev/null)"
+kv cy_health    "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' mail-cypht 2>/dev/null)"
+kv cy_image     "$(docker inspect -f '{{.Config.Image}}' mail-cypht 2>/dev/null)"
+kv cy_nets      "$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' mail-cypht 2>/dev/null)"
+kv cy_env       "$(docker inspect -f '{{range .Config.Env}}{{.}} {{end}}' mail-cypht 2>/dev/null)"
 
 # The signature that says the crashloop is the documented one. Counted rather
 # than quoted: the line repeats once per restart, and one occurrence is enough.
@@ -242,9 +244,9 @@ missing=()
 for key in d_mail f_compose f_env f_registry f_frag env_mode accounts_mode \
            f_accounts f_dkim accounts_line t_accounts t_dkim \
            t_dms_created t_frag_landed_ns t_traefik_started_ns \
-           d_sm d_sm_domains sm_owner \
+           d_cy cy_owner cy_db cy_users cy_attach me \
            dms_state dms_image dms_project dms_nets dms_mounts dms_ports \
-           sm_health sm_image sm_nets dms_certmiss dms_welcome; do
+           cy_health cy_image cy_nets cy_env dms_certmiss dms_welcome; do
     [ -n "${fact[$key]+set}" ] || missing+=("$key")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
@@ -302,9 +304,8 @@ assert '[ "${fact[t_dkim]}" -lt "${fact[t_dms_created]}" ]' \
     "and so was dkim_signing.conf (${fact[t_dkim]} < ${fact[t_dms_created]})"
 # Both mtimes survive DMS: it reads these two files and rewrites neither, across
 # every restart of the crashloop (observed at 8). No such assertion is made
-# about snappymail/, because SnappyMail *does* write into it on boot and its
-# mtime is the container's, not kasbah's — that directory's evidence is its
-# owner, below.
+# about cypht/, because Cypht *does* write into it on boot and its mtime is the
+# container's, not kasbah's — that directory's evidence is its owner, below.
 
 # --- The fragment was in the watch directory before Traefik started -----------
 # server init syncs the mail fragment *above* the Traefik start on
@@ -317,15 +318,15 @@ assert '[ "${fact[t_dkim]}" -lt "${fact[t_dms_created]}" ]' \
 assert '[ "${fact[t_frag_landed_ns]}" -lt "${fact[t_traefik_started_ns]}" ]' \
     "_mail.yml was in $apps/traefik/dynamic before Traefik started, so both certificates are requested at configuration load (landed ${fact[t_frag_landed_ns]}, started ${fact[t_traefik_started_ns]})"
 
-# The SnappyMail side of the pre-seeding mechanism: kasbah makes the bind-mount
-# source and the container makes the rest, including the directory a per-project
-# domain config is copied into. Both halves matter — kasbah must not pre-create
-# that tree (it broke the re-run) and it must exist afterwards.
-assert '[ "${fact[d_sm]}" = "yes" ]'         "$mail_data/snappymail exists (got '${fact[d_sm]}')"
-assert '[ "${fact[d_sm_domains]}" = "yes" ]' \
-    "and SnappyMail built _data_/_default_/domains/ inside it (got '${fact[d_sm_domains]}')"
-assert '[ "${fact[sm_owner]%% *}" != "0:0" ]' \
-    "the directory is not root:root, so Docker did not materialise it (got '${fact[sm_owner]}')"
+# kasbah makes the bind-mount source and Cypht fills it. The database is what
+# the image's entrypoint dies without, so its presence is the boot's evidence.
+assert '[ "${fact[d_cy]}" = "yes" ]' "$mail_data/cypht exists (got '${fact[d_cy]}')"
+assert '[ "${fact[cy_owner]}" = "${fact[me]}" ]' \
+    "owned by the deploy user, so kasbah made it and Docker did not (got '${fact[cy_owner]}', deploy user '${fact[me]}')"
+assert '[ "${fact[cy_db]}" = "0:0 644" ]' \
+    "Cypht created its SQLite database there, root's at 644 (got '${fact[cy_db]}')"
+assert '[ "${fact[cy_users]}" = "33:33" ] && [ "${fact[cy_attach]}" = "33:33" ]' \
+    "and handed users/ and attachments/ to www-data (got '${fact[cy_users]}', '${fact[cy_attach]}')"
 
 # --- Traefik registered both routers ------------------------------------------
 # The assertion the file cannot make. A fragment that parses and does not load
@@ -380,12 +381,12 @@ if jq -e . >/dev/null 2>&1 <<<"$routers"; then
 fi
 
 # --- And the routers actually answer ------------------------------------------
-sm_code=$(http_code "webmail.$rig_domain" https)
-assert '[ "$sm_code" = "200" ]' \
-    "https://webmail.$rig_domain serves SnappyMail through the fragment (got '$sm_code')"
-sm_http=$(http_code "webmail.$rig_domain" http)
-assert '[ "$sm_http" = "301" ]' \
-    "and plain HTTP redirects rather than 404ing, which is the whole of what the web router buys (got '$sm_http')"
+cy_code=$(http_code "webmail.$rig_domain" https)
+assert '[ "$cy_code" = "200" ]' \
+    "https://webmail.$rig_domain serves Cypht through the fragment (got '$cy_code')"
+cy_http=$(http_code "webmail.$rig_domain" http)
+assert '[ "$cy_http" = "301" ]' \
+    "and plain HTTP redirects rather than 404ing, which is the whole of what the web router buys (got '$cy_http')"
 mail_http=$(http_code "mail.$rig_domain" http)
 assert '[ "$mail_http" = "301" ]' \
     "http://mail.$rig_domain redirects too (got '$mail_http')"
@@ -401,31 +402,35 @@ assert '[ "$acme_probe" = "404" ]' \
     "http://mail.$rig_domain/.well-known/acme-challenge/... reaches acme-http@internal, not the redirect (got '$acme_probe')"
 assert '[ "$acme_probe" != "$mail_http" ]' \
     "and is not what the same host answers at / — the challenge path is never redirected (challenge '$acme_probe', root '$mail_http')"
-sm_acme=$(http_code "webmail.$rig_domain" http "/.well-known/acme-challenge/kasbah-no-such-token")
-assert '[ "$sm_acme" = "404" ]' \
-    "and webmail.$rig_domain's challenge path is answered by Traefik too, not proxied to SnappyMail (got '$sm_acme')"
+cy_acme=$(http_code "webmail.$rig_domain" http "/.well-known/acme-challenge/kasbah-no-such-token")
+assert '[ "$cy_acme" = "404" ]' \
+    "and webmail.$rig_domain's challenge path is answered by Traefik too, not proxied to Cypht (got '$cy_acme')"
 # noop@internal answers **418**, not 404 — measured. Nothing is served and no
 # backend is reached, which is all the cert-trigger needs; the number is pinned
 # so a later change to a real service is noticed.
 mail_https=$(http_code "mail.$rig_domain" https)
 assert '[ "$mail_https" = "418" ]' \
     "https://mail.$rig_domain reaches noop@internal and serves nothing (got '$mail_https')"
-assert '[ "$mail_https" != "$sm_code" ]' \
-    "and is not SnappyMail — the cert-trigger has no backend at all"
+assert '[ "$mail_https" != "$cy_code" ]' \
+    "and is not Cypht — the cert-trigger has no backend at all"
 
 # --- The containers -----------------------------------------------------------
-assert '[ "${fact[sm_health]}" = "healthy" ]' \
-    "mail-snappymail is healthy (got '${fact[sm_health]}')"
-assert '[ "${fact[sm_image]}" = "$sm_image" ]' \
-    "from the pinned image (got '${fact[sm_image]}')"
+assert '[ "${fact[cy_health]}" = "healthy" ]' \
+    "mail-cypht is healthy without DMS, which never is here (got '${fact[cy_health]}')"
+assert '[ "${fact[cy_image]}" = "$cy_image" ]' \
+    "from the pinned image (got '${fact[cy_image]}')"
+# The login is checked against the public name, whose certificate DMS serves.
+for kvp in AUTH_TYPE=IMAP "IMAP_AUTH_SERVER=mail.$rig_domain" "DEFAULT_SMTP_SERVER=mail.$rig_domain" XDEBUG_MODE=off; do
+    assert 'grep -qwF -- "$kvp" <<<"${fact[cy_env]}"' "Cypht runs with $kvp (env: ${fact[cy_env]})"
+done
 assert '[ "${fact[dms_image]}" = "$dms_image" ]' \
     "and DMS from its own (got '${fact[dms_image]}')"
 assert '[ "${fact[dms_project]}" = "mail" ]' \
     "both belong to the compose project kasbah names with -p (got '${fact[dms_project]}')"
 assert 'grep -qw "kasbah-net" <<<"${fact[dms_nets]}"' \
     "DMS is on the shared network (networks: ${fact[dms_nets]})"
-assert 'grep -qw "kasbah-net" <<<"${fact[sm_nets]}"' \
-    "and so is SnappyMail, which is how Traefik resolves http://mail-snappymail:8888 (networks: ${fact[sm_nets]})"
+assert 'grep -qw "kasbah-net" <<<"${fact[cy_nets]}"' \
+    "and so is Cypht, which is how Traefik resolves http://mail-cypht:80 (networks: ${fact[cy_nets]})"
 assert 'grep -qF "$data/traefik/letsencrypt/acme.json:/etc/letsencrypt/acme.json:ro" <<<"${fact[dms_mounts]}"' \
     "Traefik's certificate store is mounted into DMS read-only (mounts: ${fact[dms_mounts]})"
 assert 'grep -qF "$mail_data/dms/config:/tmp/docker-mailserver:rw" <<<"${fact[dms_mounts]}"' \
@@ -543,7 +548,7 @@ init --with-mail --no-backup >/dev/null 2>&1
 # "no".
 init --no-mail --no-backup; rc=$?
 assert '[ "$rc" = "0" ]' "a --no-mail re-run against a server with mail succeeds (exit $rc: $(init_err))"
-assert '[ "$(rig_ssh "docker inspect -f '{{.State.Status}}' mail-snappymail" 2>/dev/null | tr -d "\r")" = "running" ]' \
+assert '[ "$(rig_ssh "docker inspect -f '{{.State.Status}}' mail-cypht" 2>/dev/null | tr -d "\r")" = "running" ]' \
     "and leaves the mail stack running — init scaffolds mail, it never removes it"
 assert '[ "$(rig_ssh "[ -f $frag ] && echo yes || echo no" 2>/dev/null | tr -d "\r")" = "yes" ]' \
     "with its Traefik fragment still in place"

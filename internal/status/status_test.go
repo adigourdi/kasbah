@@ -296,7 +296,7 @@ func TestCertsAndMail(t *testing.T) {
 	out, _, _ := runStatus(t, r)
 	has(t, out,
 		"  Certificates: 4 in /apps/data/traefik/letsencrypt/acme.json\n  Dashboard: traefik.rig.test\n      certificate EXPIRED 2 day(s) ago (",
-		"Mail: /apps/mail\n  mail-dms         running (healthy), 3 restart(s)\n  mail-snappymail  absent — the stack is scaffolded and not running\n  Primary: rig.test   Domains: rig.test shop.test\n  mail.rig.test\n      certificate valid for 50 more day(s) (until ",
+		"Mail: /apps/mail\n  mail-dms         running (healthy), 3 restart(s)\n  mail-cypht       absent — the stack is scaffolded and not running\n  Primary: rig.test   Domains: rig.test shop.test\n  mail.rig.test\n      certificate valid for 50 more day(s) (until ",
 		"  webmail.rig.test\n      certificate (as a SAN of mail.rig.test) valid for 50 more day(s)",
 		"  demo           1/1 running    1.0.0      deploy 2026-08-13T22:30:37+00:00 (kasbah 0.1.0)\n      demo.test\n          certificate expires in 10 day(s) (",
 		"Traefik renews at 30, so renewal has missed its window",

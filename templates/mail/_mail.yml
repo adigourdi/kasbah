@@ -9,9 +9,9 @@
 # requests a certificate for a hostname some router claims. A router carried by
 # DMS would therefore deadlock: DMS will not boot, so the router never
 # registers, so the certificate is never issued, so DMS will not boot.
-# The original project broke that by hanging the cert-trigger router on the *SnappyMail*
-# container's labels — it boots in ten seconds regardless. kasbah does not wire
-# the docker provider in at all, so the routers move here, and the boot order
+# The original project broke that by hanging the cert-trigger router on the labels of its
+# webmail container, which boots in seconds regardless. kasbah does not wire
+# the docker provider in at all, so the routers live here, and the boot order
 # stops mattering: Traefik loads this file at startup and asks for both
 # certificates before either container exists.
 #
@@ -36,8 +36,8 @@ http:
     #
     # It answers **418**, not 404 — that is what Traefik's noop service returns,
     # measured. Either way nothing is served and no backend is reached, which is
-    # the whole requirement; the original project's 404 came from SnappyMail being asked for
-    # a path it did not have.
+    # the whole requirement; the original project's 404 came from its webmail being asked
+    # for a path it did not have.
     mail-cert:
       rule: "Host(`mail.__MAIL_PRIMARY_DOMAIN__`)"
       entryPoints:
@@ -90,4 +90,4 @@ http:
     webmail:
       loadBalancer:
         servers:
-          - url: "http://mail-snappymail:8888"
+          - url: "http://mail-cypht:80"

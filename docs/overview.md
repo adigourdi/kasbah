@@ -25,14 +25,14 @@ the same battle-tested workflow without copying scripts between repos.
 
 ### In
 - **Server prep** — check Docker/Compose, create folder layout, start a shared
-  Traefik (optionally DMS + SnappyMail mail stack).
+  Traefik (optionally DMS + Cypht mail stack).
 - **Project lifecycle** — build, push (`docker save` streamed over ssh into `docker load`),
   deploy, rollback, check, logs.
 - **Env management** — interactive `.env` generation from a rich template,
   drift detection against `.env.prod.example`.
 - **Compliance check** — structural conformance (compose.yml, manifest, Traefik
   fragment, healthchecks, logging, restart policy, env sync).
-- **Mail primitive** — shared DMS + SnappyMail stack apps can claim a domain
+- **Mail primitive** — shared DMS + Cypht stack apps can claim a domain
   from; accounts are managed out-of-band via DMS CLI.
 - **Off-VPS backup (optional)** — restic push from each VPS to S3-compatible
   storage; per-client repos, append-only credentials.

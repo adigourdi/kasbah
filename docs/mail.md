@@ -1,4 +1,4 @@
-# Mail — docker-mailserver + SnappyMail
+# Mail — docker-mailserver + Cypht
 
 An optional kasbah primitive: one shared mail stack per VPS, enabled via
 `kasbah server init --with-mail`. Ported from the original project's `mail/` and
@@ -9,23 +9,59 @@ generalized to serve multiple app domains.
 | Service | Image | Container | Purpose |
 |---|---|---|---|
 | `mail-dms` | `ghcr.io/docker-mailserver/docker-mailserver:15.1.0` | `mail-dms` | Postfix + Dovecot + Rspamd + Fail2ban. One maintained image, replacing OpenDKIM, OpenDMARC, Amavis and policyd-spf with Rspamd |
-| `mail-snappymail` | `djmaze/snappymail:v2.38.2` | `mail-snappymail` | Webmail, served at `webmail.<domain>` through Traefik |
+| `mail-cypht` | `cypht/cypht:2.13.0` | `mail-cypht` | Webmail, served at `webmail.<domain>` through Traefik (see Webmail below) |
 
-Both pinned to the exact tags the original project runs in production, which is the
-whole argument for them: these two versions are known to work together and
-with Traefik's `acme.json`. Bumping either is a deliberate edit to
-`templates/mail/compose.yml` and a re-run of init.
+Both are pinned. DMS's tag is the one the original project runs in production, known to
+work with Traefik's `acme.json`. The webmail is not the original project's: SnappyMail cut
+no release after v2.38.2 (October 2024), while Cypht releases every few weeks
+and reads several accounts in one combined inbox. Bumping either is a
+deliberate edit to `templates/mail/compose.yml` and a re-run of init.
 
 The container names are load-bearing twice over — this document's
 `docker exec mail-dms …` lines, and `_mail.yml`'s
-`http://mail-snappymail:8888`. The compose *service* names match them rather
-than being the shorter `dms`/`snappymail`, because compose registers a
+`http://mail-cypht:80`. The compose *service* names match them rather
+than being the shorter `dms`/`cypht`, because compose registers a
 service name as a DNS alias on every network it joins and a bare `dms` on the
 shared `kasbah-net` is the collision `kasbah check`'s C09 warns every project
 about.
 
 Mail ports `25`, `465`, `587` and `993` are bound on the host. Traefik is an
 HTTP proxy and is not in the mail data path.
+
+## Webmail (Cypht)
+
+Users sign in at `https://webmail.<primary>` with a full mailbox address and
+its password. Cypht checks them against DMS over IMAP at `mail.<primary>:993`
+(TLS) and sends through `mail.<primary>:465`. It uses the public name, never
+`mail-dms`, because DMS's certificate is issued for that name alone. Every
+domain on the server signs in the same way; webmail needs no per-domain config.
+
+- **Combined inbox.** Other accounts, on this server or anywhere else (IMAP/SMTP),
+  are added under Settings → Servers. The combined views (Everything, Unread,
+  Flagged…) span all of them. Their credentials sit in the user's settings,
+  encrypted with the login password.
+- **Settings are kept only when saved.** A change, an added account included, is
+  written only by Settings → Save, with the password ("Save" or "Save and
+  Logout"). "Just Logout" discards it. The setup guide says so.
+- **Data:** `<data>/mail/cypht` is mounted at `/var/lib/hm3`. It holds `users/` (one
+  encrypted settings file per address, `www-data` 0644), `attachments/`, and
+  `cypht.sqlite`. The image's entrypoint exits after ten failed database probes,
+  so Cypht gets an SQLite file even though nothing in this configuration writes
+  to it: sessions are PHP's, settings are files, and sign-in is IMAP. The
+  entrypoint creates it root-owned 0644.
+- **Modules** are listed explicitly in `CYPHT_MODULES`. `developer` is left out,
+  because its server-information page shows the site config to every logged-in user.
+  `brute_force` is left out too: it locks out per client address, and behind
+  Traefik every client has Traefik's address (backlog: `webmail-login-throttle`).
+  `XDEBUG_MODE=off`, because the image ships Xdebug at `mode=debug`.
+- **Health:** the healthcheck is an anonymous AJAX POST, which answers 303 with no
+  body in ~5 ms. `GET /` renders the 677 KB login page. Cypht is healthy ~5 s
+  after start. The login page needs no backend, so this holds while DMS is still
+  waiting for its certificate.
+- **Known quirk:** after signing out and back in, the combined view can show stale
+  rows from the browser's local cache (one account's message twice, another's
+  missing). Reloading after clearing site data fixes it. Each account's own folder
+  is always right. Observed with Cypht 2.13.0.
 
 ## TLS flow
 
@@ -38,11 +74,11 @@ never issued → DMS won't boot.
 `/apps/traefik/dynamic/_mail.yml` that declares a **cert-trigger router**
 claiming `Host(\`mail.<domain>\`)` on `websecure` with
 `tls.certResolver: letsencrypt`. The router is registered the moment
-Traefik loads the fragment — independent of SnappyMail or DMS startup.
+Traefik loads the fragment — independent of webmail or DMS startup.
 Traefik requests the cert → DMS reads it from `acme.json` and boots.
 
-The `_mail.yml` fragment also holds SnappyMail's webmail router
-(`Host(\`webmail.<domain>\`)` → `http://mail-snappymail:8888`). Both
+The `_mail.yml` fragment also holds the webmail router
+(`Host(\`webmail.<domain>\`)` → `http://mail-cypht:80`). Both
 routers living in a kasbah-owned fragment makes the boot-order deadlock
 impossible regardless of container health.
 
@@ -271,11 +307,9 @@ the whole of what makes them work, and is asserted rather than assumed.
 - **SnappyMail domain config** — pre-seeded from the file referenced in a
   project's manifest, keyed by the project's domain, by `kasbah deploy`
   (copy-if-missing, through `docker cp` — see "Per-app mail claims" above).
-  What `server init` does
-  is create `<data>/mail/snappymail` as the bind-mount source — and *only*
-  that, because SnappyMail builds `_data_/_default_/domains/` itself and
-  takes ownership of the lot, and a kasbah that pre-created that tree worked
-  once and then failed every re-run with a permission denial.
+- **Webmail data** — `server init` creates `<data>/mail/cypht` as the
+  bind-mount source and nothing inside it: the container's entrypoint builds
+  `users/`, `attachments/` and `cypht.sqlite` (see Webmail above).
 
 ## Outbound relay (opt-in)
 
@@ -321,7 +355,7 @@ requirement** for DMS, not a nicety. On a first run the sequence is:
 
 1. Init ships `_mail.yml` and the two pre-seeds, then starts Traefik. Traefik
    loads the fragment and asks Let's Encrypt for both hostnames straight away.
-2. Init starts the mail stack. SnappyMail is healthy in ~10 s and init waits
+2. Init starts the mail stack. Cypht is healthy in ~5 s and init waits
    for it.
 3. If the certificate is not in `acme.json` yet, **DMS crashloops**, logging
    `Unable to find key and/or cert for '<domain>' in

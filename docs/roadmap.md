@@ -50,7 +50,7 @@ one-line `kasbah.yml` and deploy identically.
 
 ## Phase 2 — v0.2 (Mail + polish)
 
-- `kasbah server init --with-mail` (DMS + SnappyMail, ported from the original project)
+- `kasbah server init --with-mail` (DMS ported from the original project, Cypht webmail)
 - `kasbah server add-mail-domain <domain>` — multi-domain support
 - Mail claim reconciliation on deploy
 - `kasbah server mail-setup-guide` — printed walkthrough

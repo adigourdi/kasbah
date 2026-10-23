@@ -164,7 +164,7 @@ func Collect(apps string) *Report {
 	reg := apps + "/mail/kasbah.yml"
 	r.RegistryState, r.Registry = probe.FState(reg), probe.B64(reg)
 	r.MailDMS = stack(docker, "mail", "mail-dms")
-	r.MailWeb = stack(docker, "mail", "mail-snappymail")
+	r.MailWeb = stack(docker, "mail", "mail-cypht")
 
 	r.Backup = backuprec.Collect(apps, data)
 	r.Traefik = traefik(docker)

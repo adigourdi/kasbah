@@ -321,10 +321,10 @@ step "rollback" run rollback "$RIG_TARGET"
 
 # --- Snapshots ----------------------------------------------------------------
 # Container-filled trees are listed down to the directory kasbah made: what DMS,
-# SnappyMail and the project's own bind mount put inside them is theirs.
+# Cypht and the project's own bind mount put inside them is theirs.
 rig_files_snapshot \
     -x "$data/mail/dms/mail-data" -x "$data/mail/dms/mail-state" -x "$data/mail/dms/mail-logs" \
-    -x "$data/mail/snappymail" -x "$apps/$project/state" \
+    -x "$data/mail/cypht" -x "$apps/$project/state" \
     "${RIG_SNAPSHOT_ROOTS[@]}" > "$snap_dir/vps" ||
     { echo "error: could not snapshot the server roots" >&2; exit 2; }
 rig_files_snapshot -r "${shared_roots[@]}" > "$tmpdir/shared.after" ||

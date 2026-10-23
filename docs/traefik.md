@@ -148,7 +148,7 @@ Kasbah-owned fragments (written by `kasbah server init`):
 - `_mail.yml` — four routers, only written when `--with-mail` is passed:
   `mail-cert` (`websecure`, `certResolver: letsencrypt`, `noop@internal`) is
   the cert-trigger that makes DMS bootable at all; `webmail` (`websecure`,
-  `security-headers`) proxies to `http://mail-snappymail:8888`; and
+  `security-headers`) proxies to `http://mail-cypht:80`; and
   `mail-cert-http` / `webmail-http` redirect on `web`. It defines no
   middlewares of its own — the frozen ones are `_shared.yml`'s. See `mail.md`.
 
@@ -388,7 +388,7 @@ server status` surfaces it.
 - Add routers in their fragment for `traefik.<domain>` (reserved for the
   dashboard).
 - Add routers in their fragment for `mail.<domain>` or `webmail.<domain>`
-  (claimed by kasbah's `_mail.yml` — cert-trigger and SnappyMail).
+  (claimed by kasbah's `_mail.yml` — cert-trigger and webmail).
 - Bind ports 80 or 443 on the host (they belong to Traefik).
 - Replace the `kasbah-net` network.
 - Attach non-routed services (databases, caches, workers) to `kasbah-net` —

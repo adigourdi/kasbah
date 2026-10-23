@@ -32,7 +32,7 @@ hard fail naming the flag to pass.
 Flags:
 - `--domain=<apex>` — domain for the Traefik dashboard and acme email config.
 - `--email=<addr>` — ACME email for Let's Encrypt registration.
-- `--with-mail` / `--no-mail` — scaffold `/apps/mail/` (DMS + SnappyMail) and
+- `--with-mail` / `--no-mail` — scaffold `/apps/mail/` (DMS + Cypht) and
   start it, or explicitly skip it. Unset → prompt. `--no-mail` against a
   server that already has mail leaves it alone: init scaffolds mail, it never
   removes it. See `mail.md` and `server-setup.md` → With mail.
@@ -159,7 +159,7 @@ What it does:
    pre-seeds land **before** Traefik starts, so Traefik requests both
    certificates at configuration load. The mail containers start **after**
    Traefik is healthy, because DMS reads `mail.<domain>`'s certificate out of
-   `acme.json`. Init waits for SnappyMail and reports DMS without waiting for
+   `acme.json`. Init waits for Cypht and reports DMS without waiting for
    it — a first-run crashloop is expected while the certificate is issued.
 9. If `--with-backup`: scaffold `<apps>/.kasbah/backup/` — the scheduler stack,
    the runner, the mode-600 environment file and one encryption password per
@@ -436,7 +436,7 @@ Prints:
 - Traefik: running state, health, the image tag it was created from **and**
   the resolved image id (a tag can be re-pushed; the id cannot), what its ACME
   store holds, and the dashboard hostname out of `_shared.yml`
-- The mail stack: `mail-dms` and `mail-snappymail` by their compose labels with
+- The mail stack: `mail-dms` and `mail-cypht` by their compose labels with
   state, health and **restart count** — a DMS that cannot find a certificate for
   `mail.<primary>` restarts until one appears, and only the count says so — plus
   the registry's primary domain and the domains it serves. A server prepared

@@ -67,7 +67,7 @@ Default paths (override with `--apps-path`, `--data-path`):
 │       └── acme.json                touched as a file, chmod 600
 ├── backups/                         top-level backups (always created)
 ├── mail/                            only with --with-mail (see below)
-│   ├── compose.yml                  DMS + SnappyMail
+│   ├── compose.yml                  DMS + Cypht
 │   ├── kasbah.yml                   the registry: primary_domain + domains
 │   └── .env                         mode 600 — kasbah's three keys, the operator's relay block
 └── traefik/
@@ -80,10 +80,8 @@ Default paths (override with `--apps-path`, `--data-path`):
 ```
 
 With `--with-mail`, the data path gains `mail/dms/{mail-data,mail-state,mail-logs,config}`
-and `mail/snappymail`. Only those; SnappyMail builds its own `_data_/` tree
-inside the last one and chowns it to the container's uid — pre-creating any of
-it is what makes the *second* run fail, since the deploy user can no longer
-traverse in. The postmaster account (`mail/dms/config/postfix-accounts.cf`,
+and `mail/cypht`. Only those; Cypht's entrypoint builds `users/`,
+`attachments/` and `cypht.sqlite` inside the last one (`mail.md` → Webmail). The postmaster account (`mail/dms/config/postfix-accounts.cf`,
 mode 600) and the Rspamd DKIM override
 (`mail/dms/config/rspamd/override.d/dkim_signing.conf`) are seeded there before
 DMS first starts, and never written over afterwards.
@@ -495,7 +493,7 @@ and why the exit status of the delete is not what decides it.
 
 ## With mail (`--with-mail`)
 
-Scaffolds `/apps/mail/` with docker-mailserver + SnappyMail (ported from
+Scaffolds `/apps/mail/` with docker-mailserver + Cypht (DMS ported from
 the original project's `mail/compose.yml`) and starts it. See `mail.md` for the stack
 itself; this section is what `server init` does with it.
 
@@ -592,7 +590,7 @@ Traefik: running (healthy)
 
 Mail: /apps/mail
   mail-dms         running (healthy)
-  mail-snappymail  running (healthy)
+  mail-cypht       running (healthy)
   Primary: example.com   Domains: example.com
   mail.example.com
       certificate valid for 89 more day(s) (until Nov 23 08:05:25 2026 GMT, C = US, O = Let's Encrypt, CN = YR1)
@@ -686,6 +684,8 @@ server binary reads it out of the marker.
   postmaster password is not regenerated and no mailbox is lost; **never
   rewrites the Rspamd DKIM override**, which `setup config dkim` extends; and
   never touches mail data. It does not prompt for a password it will not use.
+  The stack starts with `up -d --remove-orphans`, so a container the template
+  no longer names is removed (its data directory is not).
 - `mail/.env`'s mode is enforced as 600 on every run, exactly as `acme.json`'s
   is and for the same reason: the mode is a fact about the file, not about the
   run that happened to write it, so a file left 644 by a hand edit converges on

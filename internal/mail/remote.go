@@ -280,13 +280,19 @@ func remoteLayout(apps, data, size, sum string, stdin io.Reader, stdout io.Write
 		return fmt.Errorf("%s: the payload is not a mail layout", dir)
 	}
 	mdata := data + "/mail"
-	// Bind-mount sources, which Docker would make root's. snappymail/ alone:
-	// SnappyMail takes its tree over at 750 and builds domains/ itself.
+	// Bind-mount sources, which Docker would make root's. Cypht leaves cypht/
+	// its creator's and fills it as root: cypht.sqlite at 644, users/ and
+	// attachments/ handed to www-data (uid 33).
 	for _, d := range []string{dir, mdata + "/dms/mail-data", mdata + "/dms/mail-state", mdata + "/dms/mail-logs",
-		mdata + "/dms/config/rspamd/override.d", mdata + "/snappymail"} {
+		mdata + "/dms/config/rspamd/override.d", mdata + "/cypht"} {
 		if err := os.MkdirAll(d, 0o777); err != nil {
 			return fmt.Errorf("could not create %s", d)
 		}
+	}
+	// www-data must traverse into users/ whatever the deploy user's umask; at 700
+	// the healthcheck still passes and every settings save fails silently.
+	if err := os.Chmod(mdata+"/cypht", 0o755); err != nil {
+		return fmt.Errorf("could not set the mode of %s/cypht", mdata)
 	}
 
 	env := dir + "/.env"
@@ -356,7 +362,7 @@ func inspect(id, format string) (string, error) {
 	return strings.TrimRight(string(out), "\n"), err
 }
 
-// remoteStart is `compose up -d` and a wait for SnappyMail alone. DMS is
+// remoteStart is `compose up -d` and a wait for Cypht alone. DMS is
 // reported, never waited for: without its certificate it crashloops, forever
 // where mail.<primary> does not resolve publicly.
 func remoteStart(apps string, timeout time.Duration, stdout, stderr io.Writer) error {
@@ -376,12 +382,13 @@ func remoteStart(apps string, timeout time.Duration, stdout, stderr io.Writer) e
 		out, _ := cmd.Output()
 		return strings.TrimSpace(string(out))
 	}
-	if err := dc("up", "-d"); err != nil {
-		return fmt.Errorf("docker compose -p %s up -d failed in %s", Project, dir)
+	// --remove-orphans: a service the template no longer names is removed.
+	if err := dc("up", "-d", "--remove-orphans"); err != nil {
+		return fmt.Errorf("docker compose -p %s up -d --remove-orphans failed in %s", Project, dir)
 	}
-	sm := cid("mail-snappymail")
-	if sm == "" {
-		return errors.New("compose reported no mail-snappymail container after up -d")
+	web := cid("mail-cypht")
+	if web == "" {
+		return errors.New("compose reported no mail-cypht container after up -d")
 	}
 	dms := cid("mail-dms")
 	if dms == "" {
@@ -398,25 +405,25 @@ func remoteStart(apps string, timeout time.Duration, stdout, stderr io.Writer) e
 		fmt.Fprintf(stderr, "remote: %s\n", msg)
 		dc("ps", "-a")
 		if logs {
-			dc("logs", "--no-color", "--tail", "60", "mail-snappymail")
+			dc("logs", "--no-color", "--tail", "60", "mail-cypht")
 		}
 		return errSaid
 	}
 	deadline := time.Now().Add(timeout)
 	h := ""
 	for {
-		h = health(sm)
+		h = health(web)
 		if h == "healthy" {
 			break
 		}
 		if h == "none" {
-			return diagnose("the mail-snappymail container declares no healthcheck — compose.yml lost it", false)
+			return diagnose("the mail-cypht container declares no healthcheck — compose.yml lost it", false)
 		}
-		if running, err := inspect(sm, "{{.State.Running}}"); err != nil || running != "true" {
-			return diagnose(fmt.Sprintf("mail-snappymail is not running (health %s) — it exited instead of coming up", h), true)
+		if running, err := inspect(web, "{{.State.Running}}"); err != nil || running != "true" {
+			return diagnose(fmt.Sprintf("mail-cypht is not running (health %s) — it exited instead of coming up", h), true)
 		}
 		if !time.Now().Before(deadline) {
-			return diagnose(fmt.Sprintf("mail-snappymail did not report healthy within %ds (last health: %s)", int(timeout/time.Second), h), true)
+			return diagnose(fmt.Sprintf("mail-cypht did not report healthy within %ds (last health: %s)", int(timeout/time.Second), h), true)
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -424,7 +431,7 @@ func remoteStart(apps string, timeout time.Duration, stdout, stderr io.Writer) e
 	restarts, _ := inspect(dms, "{{.RestartCount}}")
 	image, _ := inspect(dms, "{{.Config.Image}}")
 	var out bytes.Buffer
-	fmt.Fprintf(&out, "mail_snappymail_health=%s\nmail_dms_state=%s\nmail_dms_health=%s\nmail_dms_restarts=%s\nmail_dms_image=%s\n",
+	fmt.Fprintf(&out, "mail_cypht_health=%s\nmail_dms_state=%s\nmail_dms_health=%s\nmail_dms_restarts=%s\nmail_dms_image=%s\n",
 		h, state, health(dms), restarts, image)
 	_, err := stdout.Write(out.Bytes())
 	return err
