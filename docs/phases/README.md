@@ -20,6 +20,7 @@ during execution.
 | 7 | [Operate](07-operate.md) | **Done.** Mail stack (`--with-mail`, `add-mail-domain`, claim reconciliation, setup guide), `logs`/`exec`, `check --server` + R04, full `server status`, `server prune`, `upgrade-traefik` |
 | 8 | [Keep](08-keep.md) | **Done.** `drop [--prune]`, `server destroy`, `--with-backup` (restic push, append-only, proved), `check --fix`, and backups visible to `server status` / `check --server` |
 | 10 | [Recast](10-recast.md) | **Done (1.0.1).** kasbah is one Go binary on the workstation and on every VPS (shipped to `<apps>/.kasbah/bin/kasbah`, newer wins); no Bash left on either side; every feature kept, proven on the rig and on `vps`. Ran before Phase 9 |
+| 11 | [Open](11-open.md) | Anyone installs kasbah with one `curl \| sh` or from source at any tag; one Go routine places every install; `self-update` needs no token. Runs before Phase 9 |
 | 9 | [Adopt](09-adopt.md) | Both existing consumers migrated: the original project (scripts/ deleted, mail included, live cutover) and lab (RPi stacks as kasbah projects) |
 
 ## The real milestone
@@ -45,9 +46,11 @@ repo) against a throwaway fixture, so a routing-model failure costs a day
 instead of a Ship rework. Within phases, tasks keep the repo's established
 rhythm: one capability slice per task, tests landing with it.
 
-**Execution order is 0–8, 10, 9.** Phase 10 (the Go port) was inserted on
+**Execution order is 0–8, 10, 11, 9.** Phase 10 (the Go port) was inserted on
 2026-10-18 and runs before Adopt, so both consumers migrate onto the tool they
-will keep. Ids are addresses and do not move; Phase 9 now depends on Phase 10.
+will keep. Phase 11 (the public install path) was inserted on 2026-10-23 and
+also runs before Adopt, which does not depend on it. Ids are addresses and do not
+move; Phase 9 now depends on Phase 10.
 
 ## Parallelism
 
