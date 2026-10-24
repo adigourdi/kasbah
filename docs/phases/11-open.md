@@ -56,12 +56,22 @@ at the close.
 
 ## Exit criteria
 
-- [ ] In a fresh Debian container (dash) and a fresh Alpine container (busybox),
+- [x] In a fresh Debian container (dash) and a fresh Alpine container (busybox),
       `get.sh` from the v1.1.0 release installs 1.1.0; `v1` and `v1.1` resolve;
-      `kasbah --version` answers from `~/.local/bin`
-- [ ] `./install-dev.sh v1.1.0` produces exactly the hashes in v1.1.0's `checksums.txt`
-- [ ] A working-tree `./install-dev.sh` leaves one dev build installed beside the releases
-- [ ] `./test.sh` and `KASBAH_RIG_TESTS=1 ./test.sh` green
+      `kasbah --version` answers from `~/.local/bin` — 2026-10-24, `debian:trixie-slim`
+      (`/bin/sh` → dash) and `alpine:3.22` (busybox), a fresh user each, the private
+      repo reached with `GITHUB_TOKEN`: the bare run installed the binary's own verified
+      bytes (`1c39e9f3…` = the published amd64 sum, binary and server build), `v1`,
+      `v1.1` and an up-to-date re-run exit 0, `kasbah 1.1.0 (schema 1)`
+- [x] `./install-dev.sh v1.1.0` produces exactly the hashes in v1.1.0's `checksums.txt`
+      — `1c39e9f3…` (amd64, binary and server) and `be62f33b…` (arm64)
+- [x] A working-tree `./install-dev.sh` leaves one dev build installed beside the releases
+      — a `1.1.1-dev…dirty` install removed a planted `1.1.0-dev…` and kept `1.1.0`
+- [x] `./test.sh` and `KASBAH_RIG_TESTS=1 ./test.sh` green — `./test.sh` inside
+      `release.sh v1.1.0`; on a reset rig at the released commit 37 suites passed,
+      `install_test.sh` failed on a release checkout (fixed in `6b8f57f`, both its
+      branches then green) and `server_destroy_test.sh` skipped on a restic pull
+      the laptop's suspend cut short (re-run alone: green)
 - [ ] *Only once the repo is public* ([[go-public]]): an anonymous `curl | sh` from
       the public URL, and `self-update` with no token
 
@@ -249,9 +259,20 @@ transport errors after the redirect drop the signed query.
 ### 11.8 — Proof (M)
 
 **Deliverables**
-- [ ] `VERSION` 1.1.0 in its release commit; `./release.sh v1.1.0` run by the user
-- [ ] The exit criteria walked in fresh containers, with the commands and their output
-      recorded here
+- [x] `VERSION` 1.1.0 in its release commit (`779a27f`); `./release.sh v1.1.0` run by
+      the user on `10da1bb` — two identical builds, five assets, marked Latest
+- [x] The exit criteria walked in fresh containers, with the commands and their output
+      recorded here — above, and:
+  - every rung of `get.sh` against the real private release: the API with
+    `GITHUB_TOKEN` (both containers), and `gh release download` (host, curl stubbed
+    to fail, gh's token tried on the API rung first)
+  - `docs/install.md`'s by-hand path in a fresh Debian: `minisign -Vm` with the
+    published key ("Trusted comment: kasbah 1.1.0"), `sha256sum -c --ignore-missing`,
+    then the asset's own `self-update v1.1.0` installed itself
+  - a token GitHub refused: one warning, an anonymous retry, the private-repo 404
+  - `self-update` with no token on the private repo: the may-be-private refusal, exit 1
+  - not walked: arm64 (no arm64 host — the asset's hash matches the source build,
+    its first run will be the lab RPi), and the public, tokenless path ([[go-public]])
 
 ## Open decisions
 
@@ -259,13 +280,24 @@ None — the rulings above settle every deliverable.
 
 ## Findings
 
-Approved scope (2026-10-23): the whole phase, 11.1–11.8, in plan order, one commit per unit (11.3 + 11.4 are one).
+Ran 2026-10-23/24: 11.1–11.10, one commit per unit; 11.9 and 11.10 were added
+mid-run (rulings above their blocks) and landed before the release. What a library
+is, and who asks before moving the symlink, now live in `files.md` and `install.md`.
 
-- A library is kasbah's when it is empty or holds any directory named as a version
-  (an interrupted first install included); a pre-1.0.0 library is refused, not swept.
-  `self-update` checks this before any network call.
-- `__install` moves the symlink across majors without asking, as `install.sh`'s
-  `ln -sfn` did; `self-update` still asks.
+- **Two suites assumed what the build under test is.** `server_binary_test.sh` put
+  its outranking release at `X.0.1`, below a `1.1.0-dev` line; `install_test.sh`
+  assumed a dev build, so `./test.sh` failed on a clean checkout of a release tag —
+  `release.sh` runs the suite before it tags, which is why the release passed. Both
+  derive from the stamp now (`10da1bb`, `6b8f57f`); the v1.1.0 tag predates the
+  second fix, a disposable release ([[go-public]]). A suite must pass on a dev tree
+  *and* on its tag's checkout.
+- The spec claimed `self-update` checked the signature's trusted comment; the code only
+  printed it (found in 11.10). A safety check a doc asserts is not one until a test
+  breaks without it — the token, redirect and query guards here were each proven by
+  breaking the code and watching the suite fail.
+- `tests/integration/server_binary_test.sh` assumed the dev line sat at `X.0.1-dev`;
+  the `VERSION` bump to 1.1.0 broke that silently until the rig ran. Version fixtures
+  derive from the build under test now.
 - On this kernel a binary just exec'd can report "text file busy" to an in-place
   write for a moment after it exits: replace binaries by rename, never rewrite them.
 - No suite builds a tag: `install-dev.sh vN` is proven by hand (11.2) and in 11.8 —
