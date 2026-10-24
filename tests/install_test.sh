@@ -116,8 +116,10 @@ assert '{ [ "$rc" = "0" ] || [ "$rc" = "6" ]; } && grep -qF "Summary:" <<<"$out"
 # answering --version as that build would: releases older and newer, a newer
 # one that does not run (the symlink skips it), and two other dev builds, the
 # symlink pointing at one of them. A re-install replaces this build's files in
-# place, removes both dev builds, and repoints.
+# place and repoints; a dev build removes both dev builds, a release (a clean
+# checkout of its tag) removes none. Only dev stamps carry +g<sha>.
 major=${stamp%%.*}
+case $stamp in *+g*) dev=1 ;; *) dev=0 ;; esac
 plant() {
     mkdir -p "$lib_dir/$1/server"
     printf '#!/bin/sh\necho "kasbah %s (schema 1)"\n' "$1" > "$lib_dir/$1/kasbah"
@@ -135,19 +137,28 @@ install_it; rc=$?
 assert '[ "$rc" = "0" ] && cmp -s "$repo/dist/kasbah" "$ver_dir/kasbah"' \
     "a re-install replaces this build's own binary (exit $rc: $(cat "$tmpdir/install.err"))"
 dirs="$(cd "$lib_dir" && find . -mindepth 1 -maxdepth 1 | sort | tr '\n' ' ')"
-want_dirs="$(printf './%s\n' "$older" "$newer" "$broken" "$rc_rel" "$stamp" | sort | tr '\n' ' ')"
-assert '[ "$dirs" = "$want_dirs" ]' \
-    "every other dev build is removed, every release kept (got: $dirs)"
-assert 'grep -qxF "  removed: $lib_dir/$old_dev (another dev build)" "$tmpdir/install.out" && grep -qxF "  removed: $lib_dir/$new_dev (another dev build)" "$tmpdir/install.out"' \
-    "and install-dev.sh names each removal (got '$(cat "$tmpdir/install.out")')"
+if [ "$dev" = 1 ]; then
+    want_dirs="$(printf './%s\n' "$older" "$newer" "$broken" "$rc_rel" "$stamp" | sort | tr '\n' ' ')"
+    assert '[ "$dirs" = "$want_dirs" ]' \
+        "every other dev build is removed, every release kept (got: $dirs)"
+    assert 'grep -qxF "  removed: $lib_dir/$old_dev (another dev build)" "$tmpdir/install.out" && grep -qxF "  removed: $lib_dir/$new_dev (another dev build)" "$tmpdir/install.out"' \
+        "and install-dev.sh names each removal (got '$(cat "$tmpdir/install.out")')"
+else
+    want_dirs="$(printf './%s\n' "$older" "$newer" "$broken" "$rc_rel" "$old_dev" "$new_dev" "$stamp" | sort | tr '\n' ' ')"
+    assert '[ "$dirs" = "$want_dirs" ]' \
+        "a release install removes no dev build (got: $dirs)"
+    assert '! grep -qF "removed:" "$tmpdir/install.out"' \
+        "and install-dev.sh names no removal (got '$(cat "$tmpdir/install.out")')"
+fi
 assert '[ "$(readlink "$bin_dir/kasbah")" = "$lib_dir/$rc_rel/kasbah" ]' \
     "<bin>/kasbah, which pointed at a removed dev build, points at the newest version that runs (got '$(readlink "$bin_dir/kasbah")')"
 assert 'grep -qF "bin: $bin_dir/kasbah -> $lib_dir/$rc_rel/kasbah" "$tmpdir/install.out"' \
     "and install-dev.sh says so (got '$(cat "$tmpdir/install.out")')"
 rm -rf "${lib_dir:?}/$older" "${lib_dir:?}/$newer" "${lib_dir:?}/$broken" "${lib_dir:?}/$rc_rel"
 install_it; rc=$?
-assert '[ "$rc" = "0" ] && [ "$(readlink "$bin_dir/kasbah")" = "$ver_dir/kasbah" ]' \
-    "with the releases gone the symlink points back at this build (exit $rc)"
+if [ "$dev" = 1 ]; then linked="$ver_dir/kasbah"; else linked="$lib_dir/$new_dev/kasbah"; fi
+assert '[ "$rc" = "0" ] && [ "$(readlink "$bin_dir/kasbah")" = "$linked" ]' \
+    "with the releases gone the symlink points at the newest left — this build, or for a release the kept dev build (exit $rc)"
 
 # Installing into the build's own dist/ would copy each binary onto itself.
 before="$(cd "$repo/dist" && find . -type f -exec sha256sum {} + | sort)"
@@ -242,7 +253,7 @@ broken_rc=$?
 mv -f "$tmpdir/kasbah.aside" "$repo/dist/kasbah"
 assert '[ "$broken_rc" != "0" ]' "a binary that cannot run fails the install (exit $broken_rc)"
 assert '! grep -q "^installed" <<<"$broken_out"' "and it does not claim success (got '$broken_out')"
-assert 'cmp -s "$repo/dist/kasbah" "$bin_dir/kasbah" && [ "$(readlink "$bin_dir/kasbah")" = "$ver_dir/kasbah" ] && "$bin_dir/kasbah" --version >/dev/null' \
+assert '[ "$(readlink "$bin_dir/kasbah")" = "$linked" ] && cmp -s "$repo/dist/kasbah" "$ver_dir/kasbah" && "$bin_dir/kasbah" --version >/dev/null' \
     "and the installed kasbah is the previous one, still linked and running"
 
 
