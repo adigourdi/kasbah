@@ -1,44 +1,108 @@
 # kasbah
 
-A CLI that turns a plain VPS into a multi-project Docker host — shared
-Traefik with file-provider routing, image shipping over SSH
-(`docker save` streamed into `docker load`, no registry), per-project env
-management, hooks, and rollback. Think "cPanel for Docker Compose", in
-one Go binary — nothing but Docker and that binary runs on the server.
+kasbah turns a plain Linux VPS into a host for many Docker Compose projects.
+You keep writing your own compose file and building on your own machine;
+kasbah streams the images to the server over SSH, with no registry in
+between, runs each project behind one shared Traefik that serves its domain
+over HTTPS, and records every version it deploys so you can roll back. The
+server needs only Docker: kasbah copies its own binary there, and everything
+it runs is a container.
 
-## Install
+A shared mail server and off-server backups are there when a project needs
+them.
 
-Linux, amd64 or arm64:
+The name is the shape: a kasbah is a fortified citadel, many dwellings behind
+one wall, reached through one gate.
+
+## How to use it
+
+From a project's directory, every release is a git tag and two commands:
+
+```sh
+git tag v1.2.0
+kasbah build-push deploy@vps.example.com   # build the images, stream them to the server, push the tag
+kasbah deploy                              # ship the files, start the new version, route it
+```
+
+And when something goes wrong:
+
+```sh
+kasbah history     # what ran on the server, and when
+kasbah rollback    # back to the previous version
+kasbah logs -f     # follow the project's logs
+```
+
+Commands remember the last server a project used. `kasbah --help` lists them
+all; [docs/cli.md](docs/cli.md) describes each one.
+
+## Requirements
+
+- **Your machine:** Linux on amd64 or arm64, with Docker and its compose plugin,
+  `ssh` and `git`.
+- **The server:** Docker 24 or newer with Compose v2 or newer, SSH key login as
+  a user in the `docker` group, passwordless `sudo` for the first setup, ports
+  80 and 443 reachable from the internet, and DNS pointing at it for each
+  project's domain and for `traefik.<your domain>`, where the Traefik dashboard
+  is served.
+
+## Installation
 
 ```sh
 curl -fsSL https://github.com/adigourdi/kasbah/releases/latest/download/get.sh | sh
-curl -fsSL https://github.com/adigourdi/kasbah/releases/latest/download/get.sh | sh -s -- v1   # a version
-kasbah self-update      # later: the newest release of this major
-./install-dev.sh        # from a checkout: build this tree (a dev build); ./install-dev.sh v1 builds a tag
 ```
 
-Everything lands under `~/.local/share/kasbah/<version>/`, with `~/.local/bin/kasbah`
-linked to the newest. Verifying by hand, tokens, uninstalling: [docs/install.md](docs/install.md).
+kasbah installs under `~/.local/share/kasbah/` and links `~/.local/bin/kasbah`;
+`kasbah self-update` later installs the newest release of the same major
+version. Other ways to install, verifying a download yourself, and
+uninstalling: [docs/install.md](docs/install.md).
 
-## Release
+## Setup
+
+Once per server, prepare it to host projects. It asks whether you want the
+mail server and the backups:
 
 ```sh
-./release.sh keygen      # once: the minisign key pair; commit release.pub
-./release.sh v1.2.3      # VERSION must say 1.2.3; tests, reproducible build, signed checksums, GitHub Release
+kasbah server init deploy@vps.example.com --domain=example.com --email=you@example.com
 ```
 
-## Quick start
+Certificates come from Let's Encrypt, whose rate limits count failed attempts:
+until DNS is right, `--acme-staging` rehearses against its staging service.
+
+Once per project, from its directory:
 
 ```sh
-cd ~/work/my-app
 kasbah init-project --name=my-app --domain=my-app.example.com
-# author compose.prod.yml (a starter is printed), then:
-kasbah check
 ```
 
-## Docs
+It writes `kasbah.yml` and `.env.prod.example`, the template the server's
+`.env` is generated from: each variable listed there is asked for at the first
+deploy. It also prints a starter for the two files you write yourself:
+`compose.prod.yml`, the compose file the server runs, and
+`traefik-dynamic.yml`, how its domain routes to it. `kasbah check` then tells
+you whether the project is ready to deploy. More in
+[docs/server-setup.md](docs/server-setup.md) and
+[docs/project-manifest.md](docs/project-manifest.md).
 
-The spec lives in [docs/](docs/) — start with
-[overview.md](docs/overview.md) (the decisions table) and
-[project-manifest.md](docs/project-manifest.md). Development: run
-`./test.sh` before committing; conventions in [CLAUDE.md](CLAUDE.md).
+## Limitations
+
+- Your machine must run Linux; there is no macOS or Windows build.
+- kasbah checks that Docker and SSH access on the server are ready, but installs
+  none of the prerequisites, never checks ports or DNS, and never touches the
+  firewall or SSH configuration.
+- Deploys start from your machine; nothing deploys on a `git push`.
+- Each `build-push` sends whole images, not only the layers that changed.
+- A rollback restores code and configuration, not data. Undoing a database
+  migration is up to the project's own hooks.
+- Secrets live in a plain `.env` file on the server, readable only by its owner.
+
+## Documentation
+
+The full documentation is in [docs/](docs/README.md).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

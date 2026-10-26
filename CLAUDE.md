@@ -9,52 +9,29 @@ plan and the only progress tracker (the roadmap is scope, not status).
 
 ## Commands
 
-- `./test.sh` — Go checks, a build of `dist/`, then the black-box suites
-  (~3 min, no server). Must pass before any commit. Needs Docker, and GNU `diff`
-  and `patch` on the host (the diff suite proves kasbah's diffs against them);
-  the `get.sh` suite also needs `python3`, `openssl`, `dash`, `curl`, `wget`,
-  `shasum` (perl) and util-linux's `script`/`setsid` (its fake release host).
-  `KASBAH_BIN=<path>` tests that binary instead and skips the build. One line
-  per suite; each suite's full output is in `.cache/test-logs/<suite>.log`,
-  dumped after a FAIL; `KASBAH_TEST_VERBOSE=1` streams everything.
+- `./test.sh` — Go checks, a build of `dist/`, then the black-box suites (a few
+  minutes, no server). Must pass before any commit. Needs Docker and the host
+  tools `CONTRIBUTING.md` lists. `KASBAH_BIN=<path>` tests that binary instead
+  and skips the build. One line per suite; each suite's full output is in
+  `.cache/test-logs/<suite>.log`, dumped after a FAIL; `KASBAH_TEST_VERBOSE=1`
+  streams everything.
 - `KASBAH_RIG_TESTS=1 ./test.sh` — adds integration tests against the
-  fake-VPS rig (~35 min: run it in the background). Run `tests/rig/rig.sh up`
-  first; see `tests/rig/README.md` for what the rig can and cannot prove.
-  Exit 2 means the environment is wrong (rig down), not that a test failed.
-- `docker compose run --rm build` — `dist/kasbah` plus the linux/amd64 and
-  linux/arm64 server binaries in `dist/server/`; `docker compose run --rm test`
-  — vet, gofmt, `go test`. Inner loop: `docker compose up -d dev`, then
-  `docker compose exec dev go test ./...`. No Go on the host: the version
-  lives in `compose.yml` alone. Build from the main checkout — a git worktree's
-  `.git` points outside the mounted tree and the version stamp fails.
+  fake-VPS rig (over half an hour: run it in the background). Run
+  `tests/rig/rig.sh up` first; see `tests/rig/README.md` for what the rig can
+  and cannot prove. Exit 2 means the environment is wrong (rig down), not that
+  a test failed.
+- `docker compose run --rm build` — `dist/kasbah` plus the server binaries in
+  `dist/server/`; `docker compose run --rm test` — vet, gofmt, `go test`. Inner
+  loop: `docker compose up -d dev`, then `docker compose exec dev go test ./...`.
+  No Go on the host: the version lives in `compose.yml` alone. Build from the
+  main checkout — a git worktree's `.git` points outside the mounted tree and
+  the version stamp fails.
 - `dist/kasbah <cmd>` — run the CLI from the checkout; no install needed.
-- `./install-dev.sh` — build this tree and install it as the one dev build
-  under `~/.local/share/kasbah/<stamp>/`, linking `~/.local/bin/kasbah` to the
-  newest installed version (`KASBAH_SKIP_BUILD=1` installs `dist/` as it is).
-  `./install-dev.sh vN[.M[.P]] [--pre]` builds that local tag in a temporary
-  clone with its own `compose.yml` (the working tree is built first: it does
-  the resolving and the installing) — a release tag reproduces the release.
-- `./release.sh vX.Y.Z` — a release: `VERSION` must equal it, HEAD pushed and
-  clean; the tag made first (the stamp reads it; removed again if the run
-  fails before the push), `./test.sh`, two builds that must hash identically, `checksums.txt`
-  signed with minisign (its container; the key at `~/.config/kasbah/release.key`,
-  made once by `./release.sh keygen`, whose public half is committed as
-  `release.pub`), the tag pushed, `gh release create`. Needs `gh` authenticated
-  and a terminal for the key's password. `-rc.N` tags are prereleases. The
-  assets come from `./release.sh stage vX.Y.Z DIR` (the binaries, `get.sh` with
-  its `stamped=''` line set to the version, `checksums.txt`) and the flags from
-  `./release.sh flags vX.Y.Z` — "Latest" only for the highest final `vN.N.N` tag
-  on origin; the dispatch-only workflow runs the same two. The
-  next release's number is set by editing `VERSION` in its release commit:
-  patch for fixes, minor for additive features, major for a schema change.
-- Versions: `VERSION` names the release a line is at or heading to; the stamp
-  comes from git. HEAD tagged `v<VERSION>` and clean → the stamp is `VERSION`
-  exactly (a release, `-rc.N` included; `--version` prints `kasbah 1.0.0
-  (schema 1)`). Anything else is a pre-release stamp: `1.0.1-dev.<commits>.
-  <time>+g<sha>[.dirty]` once `v1.0.0` exists, `1.1.0-dev…` while `VERSION`
-  says `1.1.0` and no such tag exists — so a later build always outranks an
-  earlier one, a release outranks every dev build of its line, and no build
-  can claim a release it is not. Nothing bumps `VERSION` after a release.
+- Installing a build, releasing, and how builds are versioned:
+  `CONTRIBUTING.md`, `docs/install.md` and `docs/overview.md` (Distribution).
+  The next release's number is set by editing `VERSION` in its release
+  commit — patch for fixes, minor for additive features, major for a schema
+  change — and nothing bumps it after a release.
 
 ## Hard conventions
 
@@ -74,19 +51,21 @@ plan and the only progress tracker (the roadmap is scope, not status).
   parse a file once and query the tree, never re-parse per rule.
 - **Output is locale-independent**: ASCII names and schemes, UTF-8 character
   counts, byte-order lists.
-- **Signals:** every command calls `atexit.HandleSignals()` and leaves through
+- **Signals:** every workstation command, and every server-side arm that leaves
+  something to clean up, calls `atexit.HandleSignals()` and leaves through
   `atexit.Exit`, so temp files, the ssh master and terminal echo are cleaned on
-  Ctrl-C; every server-side step that changes state (deploy and rollback,
-  `drop`, `destroy`, a Traefik start and its rollback, backup init, migrate) ignores
-  SIGHUP/SIGPIPE, so a dropped session never leaves it half-done.
+  a signal. Every server-side step that changes state ignores SIGHUP/SIGPIPE,
+  so a dropped session never leaves it half-done.
 - **CRLF tolerance:** strip `\r` before matching any user-authored file.
 - **Interactive, never assume:** an unset flag means *prompt*, not *no*.
   Every prompt has a `--with-x`/`--no-x` (or `--yes`) pair; without a TTY,
   an unanswered prompt is a hard fail naming the flag.
 - **Compose:** files are `compose.yml` (never docker-compose.yml), no
   `version:` attribute.
-- **Shell scripts** (`test.sh`, `install-dev.sh`, `release.sh`, `tests/`): `set -euo pipefail`;
-  under pipefail never pipe a producer into `grep -q` — capture, then `grep -q <<<`.
+- **Shell scripts:** every executed Bash script runs under `set -uo pipefail`,
+  and `-e` too except `test.sh` and the `*_test.sh` suites, which count failures
+  rather than stop at the first; under pipefail never pipe a producer into
+  `grep -q` — capture, then `grep -q <<<`.
   `get.sh` is the exception: POSIX `sh` run as `curl | sh` (dash, busybox ash,
   posh), so `set -eu`, no pipefail, and the token never on any command's argv.
 - **Tests land with the code they test, in the same change.**
@@ -112,8 +91,10 @@ prefix (reserved, injected at deploy, exempt from drift); the manifest schema
 - `templates/` — files kasbah renders onto servers, embedded in the binary.
 - `tests/` — black-box `*_test.sh` suites (`tests/cli.sh` resolves `KASBAH_BIN`);
   `tests/rig/` fake VPS; `tests/integration/` rig-driven; `tests/fixtures/` sample projects.
-- `docs/` — the spec; start with `overview.md` (decisions table), `compliance.md`
-  (rule catalog) and `files.md` (every file kasbah writes); `install.md` owns
-  every install path (`get.sh`, by hand, `self-update`, `install-dev.sh`).
+- `README.md` is the project's front page; `CONTRIBUTING.md` covers building,
+  testing and releasing for people.
+- `docs/` — the spec, indexed by `docs/README.md`; `compliance.md` is the rule
+  catalog, `files.md` lists every file kasbah writes, and `install.md` owns
+  every install path.
 - `docs/phases/` — build plan; phase Findings sections are the project's memory of traps. Read the relevant phase file before touching its area.
 - `docs/research/` — dated competitive/background notes. **Not spec, not normative**; acted on by lifting findings into a spec doc, the roadmap, or the backlog.

@@ -25,8 +25,8 @@ is already installed, so every fresh machine today runs a dev build of whatever
    other dev build; releases are never removed.
 4. **`get.sh` is a release asset**, its version stamped in by `release.sh` and
    listed in `checksums.txt`. The README shows
-   `curl -fsSL https://github.com/adigourdi/kasbah/releases/latest/download/get.sh | sh`
-   and `sh -s -- v1` for a version. POSIX `sh`, no sudo, no shell-rc edits.
+   `curl -fsSL https://github.com/adigourdi/kasbah/releases/latest/download/get.sh | sh`;
+   `docs/install.md` adds `sh -s -- v1` for a version. POSIX `sh`, no sudo, no shell-rc edits.
 5. **`get.sh` transport, in order**: curl (or wget) bare → curl with a token
    (`GITHUB_TOKEN`, else `gh auth token`) through the API → `gh release download`.
 6. **One version grammar** everywhere: `vN | vN.M | vN.M.P` (the v optional,
@@ -40,7 +40,7 @@ is already installed, so every fresh machine today runs a dev build of whatever
    its `releases/latest/download/get.sh` URL are frozen contracts.
 9. **Releases cut in this phase are disposable**: they are cleaned up before the
    repo goes public, which starts again at a new v1 ([[go-public]]). The licence is
-   decided there too ([[license-choice]]).
+   MIT (`LICENSE`).
 10. **The proof runs in fresh containers only** (Debian/dash, Alpine/busybox);
     nothing touches `~/.local` on the workstation.
 11. **Out of scope:** macOS (the asset name `kasbah_<ver>_darwin_<arch>` extends
