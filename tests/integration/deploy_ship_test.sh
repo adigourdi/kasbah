@@ -664,8 +664,8 @@ assert '! grep -qF "does not serve it" "$tmpdir/err"' \
 assert '! grep -qF "has no .env" "$tmpdir/err"' "not the state below it (said '$(cli_err)')"
 
 # The registry, for real, listing the claimed domain. This is the reconciliation
-# running end to end against the payload: openssl base64 on the far side, yq on
-# this one.
+# running end to end against the payload: openssl base64 on the far side, kasbah's
+# own reader on this one.
 rig_ssh "printf 'name: mail\nprimary_domain: built-app.test\ndomains:\n  - built-app.test\n  - mail.built-app.test\n' > $apps/mail/kasbah.yml" >/dev/null 2>&1
 deploy "$RIG_TARGET"; rc=$?
 assert '[ "$rc" = "0" ]' "a claim the registry serves deploys (exit $rc)

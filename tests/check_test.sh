@@ -5,6 +5,7 @@ set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 . "$repo_dir/tests/cli.sh"
+need_yaml2json
 kasbah="$KASBAH_BIN"
 
 tmpdir="$(mktemp -d)"
@@ -1241,8 +1242,7 @@ assert '[ "$rc" = "6" ]'                                                        
 assert 'grep -qF "✗ Backup hook container '"'"'not-in-compose'"'"' not found among compose container_names" <<<"$out"' "HK03 fail line"
 
 # --- Case 35: HK01–03 — full valid hooks + backup → pass --------------------
-# Regression guard for the .hooks/.value[]? extraction and the container_name
-# set assembly. If the yq stage names get refactored this should catch it.
+# Regression guard for the hooks extraction and the container_name set assembly.
 proj35="$tmpdir/hk-all-pass"
 make_project "$proj35"
 cat > "$proj35/compose.prod.yml" <<'YAML'
@@ -1581,7 +1581,7 @@ assert 'grep -qF -- "--server USER@HOST" <<<"$out"' "--help documents the flag (
 #
 # And each `before` carries comments above, inside and below the block being
 # edited, blank lines, and hand-spacing, because the whole reason --fix is a
-# line editor rather than a yq round trip is that those survive it. An
+# line editor rather than a parse-and-dump round trip is that those survive it. An
 # assertion that only checked the rule now passes would be satisfied by a
 # reformatter.
 
@@ -2187,8 +2187,8 @@ mkdir -p "$f11"
 cp -a "$repo_dir/tests/fixtures/demo/." "$f11/"
 printf '.env\n.kasbah/\n' > "$f11/.gitignore"
 comments_before="$(grep -c '#' "$f11/compose.prod.yml")"
-# Line-oriented on purpose: sed, so the suite needs nothing yq does not already
-# bring, and so the breakage is legible next to the fixture it is applied to.
+# Line-oriented on purpose: sed, so the breakage is legible next to the
+# fixture it is applied to.
 sed -i -e '1i version: "3.7"' \
        -e '/^    restart: unless-stopped$/d' \
        -e 's/^    cpus: ${KASBAH_CPU_LIMIT}$/    cpus: "0.5"/' \
@@ -2316,11 +2316,11 @@ assert 'cmp -s "$f14/compose.prod.yml" "$f14/expected"' \
 # Paired positives, so the byte comparison is not the only thing holding these
 # two properties up. Both would still parse if they were wrong: `restart` as a
 # logging option is legal YAML, and dropping `default` is legal compose.
-assert '[ "$(yq -r ".services[\"demo-web\"].restart" "$f14/compose.prod.yml")" = "unless-stopped" ]' \
+assert '[ "$(yaml2json "$f14/compose.prod.yml" | jq -r ".services[\"demo-web\"].restart")" = "unless-stopped" ]' \
     "F14: restart landed on the service, not inside logging.options"
-assert '[ "$(yq -r ".services[\"demo-web\"].logging.options | keys | length" "$f14/compose.prod.yml")" = "2" ]' \
+assert '[ "$(yaml2json "$f14/compose.prod.yml" | jq -r ".services[\"demo-web\"].logging.options | keys | length")" = "2" ]' \
     "F14: and logging.options gained exactly the one key it was missing"
-assert '[ "$(yq -r ".services[\"demo-web\"].networks | join(\",\")" "$f14/compose.prod.yml")" = "default,kasbah-net" ]' \
+assert '[ "$(yaml2json "$f14/compose.prod.yml" | jq -r ".services[\"demo-web\"].networks | join(\",\")")" = "default,kasbah-net" ]' \
     "F14: the service is on kasbah-net and still on the default it had"
 assert 'grep -qF "default spelled out so the service keeps the network it had" <<<"$out"' \
     "F14: and the plan says why (said '$out')"
@@ -2328,8 +2328,8 @@ assert 'grep -qF "default spelled out so the service keeps the network it had" <
 # --- Case F15: rewritten in place, never appended beside ---------------------
 # Every rule here fails on a value rather than on a missing key, so the repair
 # is a rewrite of the line that is already there. Appending the right key next
-# to the wrong one would satisfy the rule just as well — compose and yq both
-# take the last of two duplicate keys — and would leave a file saying two
+# to the wrong one would satisfy the rule just as well — compose and kasbah's
+# reader both take the last of two duplicate keys — and would leave a file saying two
 # things. Hence the per-key counts below, which are what tell the two apart.
 f15="$tmpdir/fix-rewrite"
 fx_project "$f15" <<'YAML'
@@ -2377,7 +2377,7 @@ assert 'cmp -s "$f15/compose.prod.yml" "$f15/expected"' \
     "F15: five values rewritten where they stood, quoting and the comment kept$(diff -u "$f15/expected" "$f15/compose.prod.yml" 2>&1 || true)"
 # Each key appears exactly once. Without these, a --fix that appended
 # `restart: unless-stopped` under the `restart: "no"` it was supposed to correct
-# would pass every rule and every yq lookup above.
+# would pass every rule and every lookup above.
 for key in restart cpus mem_limit max-size driver external; do
     assert '[ "$(grep -c "^ *$key:" "$f15/compose.prod.yml")" = 1 ]' \
         "F15: '$key' is written once, not twice ($(grep -c "^ *$key:" "$f15/compose.prod.yml") lines)"
@@ -2463,9 +2463,9 @@ networks:
 YAML
 # The three values as YAML sees them, read *before* the fix so the comparison
 # below is against what the author wrote and not against what --fix produced.
-f16_mid="$(yq -r '.services["demo-mid"].entrypoint'  "$f16/compose.prod.yml" | od -An -c)"
-f16_web="$(yq -r '.services["demo-web"].entrypoint'  "$f16/compose.prod.yml" | od -An -c)"
-f16_keep="$(yq -r '.services["demo-keep"].command'   "$f16/compose.prod.yml" | od -An -c)"
+f16_mid="$(yaml2json "$f16/compose.prod.yml" | jq -r '.services["demo-mid"].entrypoint' | od -An -c)"
+f16_web="$(yaml2json "$f16/compose.prod.yml" | jq -r '.services["demo-web"].entrypoint' | od -An -c)"
+f16_keep="$(yaml2json "$f16/compose.prod.yml" | jq -r '.services["demo-keep"].command' | od -An -c)"
 cat > "$f16/expected" <<'YAML'
 services:
   # the scalar comes first, and its content is deeper than its own header —
@@ -2529,15 +2529,15 @@ assert 'cmp -s "$f16/compose.prod.yml" "$f16/expected"' \
 # damage: the splice is invisible in the *text* diff of a reviewer skimming it —
 # it is the string's contents that lose two lines. Compared through od, so a
 # `|+`'s trailing newlines count.
-assert '[ "$(yq -r ".services[\"demo-mid\"].entrypoint" "$f16/compose.prod.yml" | od -An -c)" = "$f16_mid" ]' \
+assert '[ "$(yaml2json "$f16/compose.prod.yml" | jq -r ".services[\"demo-mid\"].entrypoint" | od -An -c)" = "$f16_mid" ]' \
     "F16: demo-mid's scalar is the same string it was"
-assert '[ "$(yq -r ".services[\"demo-web\"].entrypoint" "$f16/compose.prod.yml" | od -An -c)" = "$f16_web" ]' \
+assert '[ "$(yaml2json "$f16/compose.prod.yml" | jq -r ".services[\"demo-web\"].entrypoint" | od -An -c)" = "$f16_web" ]' \
     "F16: demo-web's scalar kept the two comment lines that are its text"
-assert '[ "$(yq -r ".services[\"demo-keep\"].command" "$f16/compose.prod.yml" | od -An -c)" = "$f16_keep" ]' \
+assert '[ "$(yaml2json "$f16/compose.prod.yml" | jq -r ".services[\"demo-keep\"].command" | od -An -c)" = "$f16_keep" ]' \
     "F16: demo-keep's |+ kept the trailing newlines that are its value"
 # And the negative that would otherwise be vacuous on its own: a `restart:` key
 # spliced into a scalar becomes part of the string, so it must not be there.
-assert '! grep -qF "restart" <<<"$(yq -r ".services[\"demo-web\"].entrypoint" "$f16/compose.prod.yml")"' \
+assert '! grep -qF "restart" <<<"$(yaml2json "$f16/compose.prod.yml" | jq -r ".services[\"demo-web\"].entrypoint")"' \
     "F16: no compose key ended up inside the shell script"
 cp "$f16/compose.prod.yml" "$f16/first-run"
 out="$(fx_run "$f16")"; rc=$?
@@ -2595,10 +2595,10 @@ $out"
 assert 'cmp -s "$f17/compose.prod.yml" "$f17/expected"' \
     "F17: both values replaced whole, and no quote left stranded$(diff -u "$f17/expected" "$f17/compose.prod.yml" 2>&1 || true)"
 # The paired positive, because "the bytes match" would also hold if --fix had
-# refused both and the expected file said so: yq has to read the references.
-assert '[ "$(yq -r ".services[\"demo-web\"].cpus" "$f17/compose.prod.yml")" = "\${KASBAH_CPU_LIMIT}" ]' \
+# refused both and the expected file said so: the references have to be read back.
+assert '[ "$(yaml2json "$f17/compose.prod.yml" | jq -r ".services[\"demo-web\"].cpus")" = "\${KASBAH_CPU_LIMIT}" ]' \
     "F17: cpus reads as the variable reference"
-assert '[ "$(yq -r ".services[\"demo-web\"].mem_limit" "$f17/compose.prod.yml")" = "\${KASBAH_MEM_LIMIT}" ]' \
+assert '[ "$(yaml2json "$f17/compose.prod.yml" | jq -r ".services[\"demo-web\"].mem_limit")" = "\${KASBAH_MEM_LIMIT}" ]' \
     "F17: mem_limit too"
 assert '! grep -q "sized for the box" "$f17/compose.prod.yml"' \
     "F17: the old value went whole — no half of it survives as a comment"
@@ -2746,97 +2746,8 @@ assert '! grep -qF "✗ Services missing restart policy" <<<"$out"' \
     "F19: rather than the failure it repaired"
 assert '[ "$rc" = "0" ]' "F19: so the run ends clean (rc $rc)
 $out"
-# --- Case F20: one yq fork per file, never one per rule ----------------------
-# Every form of check is the Go binary's, which reads each YAML file once
-# itself (internal/yamlx.Cache) and so forks no yq at all. A rule that goes
-# back to forking still produces the right report — it just takes ~180 ms per
-# question — so nothing else in this suite would notice. These are the pins
-# that do.
-#
-# The shape is asserted, not a ceiling: which file was read, by which kind of
-# read, how many times. A bound would pass by luck on a fixture that never
-# reaches the code that regressed, and the `--fix` runs in particular have to
-# run against a project that really gets fixed — a compliant one never stages a
-# candidate and so never exercises the staging, the guard or the re-plan.
-#
-# A shim on PATH records every call and execs the real thing, so the run under
-# test is the real run.
-shimdir="$tmpdir/forkshim"
-mkdir -p "$shimdir"
-real_yq="$(command -v yq)"
-{
-    printf '#!/usr/bin/env bash\n'
-    printf 'printf "YQCALL %%s\\\\n" "$*" >> "$YQ_COUNT_FILE"\n'
-    printf 'exec %s "$@"\n' "$real_yq"
-} > "$shimdir/yq"
-chmod +x "$shimdir/yq"
-
-fork_run() { # DIR ARGS...
-    local d="$1"; shift
-    : > "$tmpdir/forks.log"
-    (cd "$d" && PATH="$shimdir:$PATH" YQ_COUNT_FILE="$tmpdir/forks.log" \
-        "$kasbah" "$@" >/dev/null 2>&1)
-    return 0
-}
-# `KIND FILE COUNT` per distinct read, sorted. The candidate carries the run's
-# pid, so it is folded back to a fixed name; anything that is neither a whole
-# file conversion nor the sentinel keeps its raw text and shows up as a stray.
-fork_shape() {
-    sed -E -e 's/^YQCALL -c \. /convert /' \
-           -e 's/^YQCALL -r \.schema .* /sentinel /' \
-           -e 's/\.kasbah-fix\.[0-9]+$/.kasbah-fix.PID/' "$tmpdir/forks.log" \
-        | sort | uniq -c | awk '{ print $2, $3, $1 }' | sort
-}
-
-# Plain check and --fix are the Go binary's, which reads YAML itself (once per
-# file, internal/yamlx.Cache): neither forks yq at all.
-f20="$tmpdir/forks-plain"
-make_project "$f20"
-fork_run "$f20" check
-got="$(fork_shape)"
-want=""
-assert '[ "$got" = "$want" ]' \
-    "F20: a plain check forks no yq
-$(diff -u <(printf '%s\n' "$want") <(printf '%s\n' "$got") 2>&1 || true)
-        raw:
-$(sed 's/^/        /' < "$tmpdir/forks.log")"
-
-# A project with a real C01 violation, so --fix stages a candidate, verifies it
-# and re-plans it — the three places that read a document during the fix.
-f20b="$tmpdir/forks-fix"
-fx_project "$f20b" <<'YAML'
-services:
-  demo-web:
-    image: nginx:alpine
-    container_name: demo-web
-    cpus: ${KASBAH_CPU_LIMIT}
-    mem_limit: ${KASBAH_MEM_LIMIT}
-    networks: [kasbah-net]
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-networks:
-  kasbah-net:
-    external: true
-YAML
-fork_run "$f20b" check --fix --yes
-got="$(fork_shape)"
-want=""
-assert '[ "$got" = "$want" ]' \
-    "F20: --fix forks no yq either
-$(diff -u <(printf '%s\n' "$want") <(printf '%s\n' "$got") 2>&1 || true)
-        raw:
-$(sed 's/^/        /' < "$tmpdir/forks.log")"
-# The fixture really was fixed, so the shape above is the shape of a run that
-# went all the way through staging rather than one that found nothing to do.
-assert 'grep -qF "restart: unless-stopped" "$f20b/compose.prod.yml"' \
-    "F20: and the --fix fixture really was rewritten"
-
 # --- Case F21: a document that does not parse yields no services at all ------
-# `yq -c .` will write the documents it managed to read *and* exit non-zero, so
+# A reader can write the documents it managed to read *and* exit non-zero, so
 # a multi-document compose file with one broken document has a good half. That
 # half is dropped: the rules see one unreadable file rather than a project made
 # of whichever documents happened to survive. Pinned because the failure it
@@ -2856,7 +2767,7 @@ make_project "$f21"
 # The precondition, asserted rather than assumed: this file really is *partly*
 # readable. A fixture that failed outright would satisfy everything below while
 # proving nothing.
-f21_half="$(cd "$f21" && yq -c '.' compose.prod.yml 2>/dev/null)"; f21_rc=$?
+f21_half="$(cd "$f21" && yaml2json compose.prod.yml 2>/dev/null)"; f21_rc=$?
 assert '[ "$f21_rc" != 0 ]' "F21: the fixture does not parse (rc $f21_rc)"
 assert 'grep -q "demo-web" <<<"$f21_half"' \
     "F21: and yet one of its documents converts (said '$f21_half')"

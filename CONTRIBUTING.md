@@ -12,7 +12,7 @@ defined by `compose.yml`, which pins its version. The container writes as uid
 `env UID="$(id -u)" GID="$(id -g)" docker compose …` does the same.
 
 ```sh
-docker compose run --rm build   # dist/kasbah, and the server binaries in dist/server/
+docker compose run --rm build   # dist/kasbah, the server binaries in dist/server/, dist/yaml2json (test helper)
 dist/kasbah --help              # run the build straight from the checkout
 ./install-dev.sh                # or install it as your kasbah (docs/install.md)
 ```
@@ -35,14 +35,14 @@ read from git, and a worktree's `.git` points outside the mounted directory.
 
 It runs `go vet`, the `gofmt` check and `go test`, builds `dist/`, then runs the
 black-box suites in `tests/` against that build. It must pass before every
-commit. Besides Docker, the suites use `git`, `jq`, kislyuk `yq` 3.1.0 (the
-jq-syntax wrapper, not mikefarah's), GNU `diff` and `patch`, `python3`,
-`openssl`, `dash`, `curl`, `wget`, `sha256sum`, `shasum` (perl) and
+commit. Besides Docker, the suites use `git`, `jq`, GNU `diff` and `patch`,
+`python3`, `openssl`, `dash`, `curl`, `wget`, `sha256sum`, `shasum` (perl) and
 util-linux's `script` and `setsid`.
 
 Each suite prints one line; its full output is in `.cache/test-logs/`, and is
 shown when it fails. `KASBAH_TEST_VERBOSE=1` streams everything;
-`KASBAH_BIN=<path>` tests that binary instead of building one.
+`KASBAH_BIN=<path>` tests that binary instead of building one; the suites still
+read YAML through this checkout's `dist/yaml2json`, so run the build once first.
 
 The integration tests run against the rig, a container that plays a VPS
 ([tests/rig/README.md](tests/rig/README.md)). They take much longer:

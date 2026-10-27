@@ -17,6 +17,8 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+. "$repo_dir/tests/cli.sh"
+need_yaml2json
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -332,7 +334,7 @@ assert '! [ -f "$DOCKER_LOG" ] && ! [ -f "$GH_LOG" ]' "stage neither builds, sig
 # The workflow stages and flags through release.sh and uploads what stage
 # wrote plus the signature — no more, no less.
 wf="$repo_dir/.github/workflows/release.yml"
-wf_run() { yq -r --arg n "$1" '.jobs.release.steps[] | select(.name == $n) | .run' "$wf"; }
+wf_run() { yaml2json "$wf" | jq -r --arg n "$1" '.jobs.release.steps[] | select(.name == $n) | .run'; }
 assert '[ "$(wf_run "Stage assets and checksums")" = "./release.sh stage \"\$TAG\" release" ]' \
     "the workflow stages with ./release.sh stage (got: $(wf_run "Stage assets and checksums"))"
 wf_create="$(wf_run "Create the GitHub release")"

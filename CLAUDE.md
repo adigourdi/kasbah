@@ -12,7 +12,8 @@ plan and the only progress tracker (the roadmap is scope, not status).
 - `./test.sh` — Go checks, a build of `dist/`, then the black-box suites (a few
   minutes, no server). Must pass before any commit. Needs Docker and the host
   tools `CONTRIBUTING.md` lists. `KASBAH_BIN=<path>` tests that binary instead
-  and skips the build. One line per suite; each suite's full output is in
+  and skips the build (the suites still read YAML through `dist/yaml2json`).
+  One line per suite; each suite's full output is in
   `.cache/test-logs/<suite>.log`, dumped after a FAIL; `KASBAH_TEST_VERBOSE=1`
   streams everything.
 - `KASBAH_RIG_TESTS=1 ./test.sh` — adds integration tests against the
@@ -21,8 +22,9 @@ plan and the only progress tracker (the roadmap is scope, not status).
   and cannot prove. Exit 2 means the environment is wrong (rig down), not that
   a test failed.
 - `docker compose run --rm build` — `dist/kasbah` plus the server binaries in
-  `dist/server/`; `docker compose run --rm test` — vet, gofmt, `go test`. Inner
-  loop: `docker compose up -d dev`, then `docker compose exec dev go test ./...`.
+  `dist/server/` and the suites' `dist/yaml2json`; `docker compose run --rm
+  test` — vet, gofmt, `go test`. Inner loop: `docker compose up -d dev`, then
+  `docker compose exec dev go test ./...`.
   No Go on the host: the version lives in `compose.yml` alone. Build from the
   main checkout — a git worktree's `.git` points outside the mounted tree and
   the version stamp fails.

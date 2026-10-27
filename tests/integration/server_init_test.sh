@@ -17,6 +17,7 @@ set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$repo_dir/tests/integration/rig_env.sh"
+need_yaml2json
 
 apps=/apps
 data=/apps/data
@@ -422,16 +423,16 @@ assert 'grep -qw "kasbah-net" <<<"${tfk[nets]}"' \
     "and Traefik is attached to it (networks: ${tfk[nets]})"
 
 shared_yml=$(rig_ssh "cat $apps/traefik/dynamic/_shared.yml" 2>/dev/null)
-assert 'yq -e . >/dev/null 2>&1 <<<"$shared_yml"' "_shared.yml on the rig parses as YAML"
+assert 'yaml2json <<<"$shared_yml" 2>/dev/null | jq -e . >/dev/null 2>&1' "_shared.yml on the rig parses as YAML"
 for mw in http-to-https http-www-to-https-non-www https-www-to-https-non-www \
           security-headers gzip-compression api-rate-limit; do
-    assert '[ "$(yq -r ".http.middlewares | has(\"$mw\")" <<<"$shared_yml")" = "true" ]' \
+    assert '[ "$(yaml2json <<<"$shared_yml" | jq -r ".http.middlewares | has(\"$mw\")")" = "true" ]' \
         "the shipped _shared.yml defines the frozen middleware $mw"
 done
-assert '[ "$(yq -r ".tls.options | has(\"default\")" <<<"$shared_yml")" = "true" ]' \
+assert '[ "$(yaml2json <<<"$shared_yml" | jq -r ".tls.options | has(\"default\")")" = "true" ]' \
     "and the 'default' TLS options every websecure router depends on"
-assert '[ "$(yq -r ".tls.options.default.minVersion" <<<"$shared_yml")" = "VersionTLS12" ]' \
-    "floored at TLS 1.2 (got '$(yq -r ".tls.options.default.minVersion" <<<"$shared_yml")')"
+assert '[ "$(yaml2json <<<"$shared_yml" | jq -r ".tls.options.default.minVersion")" = "VersionTLS12" ]' \
+    "floored at TLS 1.2 (got '$(yaml2json <<<"$shared_yml" | jq -r ".tls.options.default.minVersion")')"
 assert 'grep -qF "\$2y\$" <<<"$shared_yml"' \
     "the bcrypt hash landed with single dollars — doubling them here would be the bug"
 assert '! grep -qF "$dash_pass" <<<"$shared_yml"' \

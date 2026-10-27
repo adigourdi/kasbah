@@ -29,6 +29,7 @@ set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$repo_dir/tests/integration/rig_env.sh"
+need_yaml2json
 
 apps=/apps
 rig_domain=rig.test
@@ -48,7 +49,6 @@ assert() {
     fi
 }
 
-command -v yq >/dev/null || { echo "error: this suite needs yq" >&2; exit 2; }
 if [ ! -f "$RIG_SSH_CONFIG" ]; then
     echo "error: no $RIG_SSH_CONFIG — start the rig first (tests/rig/rig.sh up)" >&2
     exit 2
@@ -114,7 +114,7 @@ api() {
 }
 served_version() {
     local body; body=$(api version)
-    yq -r '.Version // ""' <<<"$body" 2>/dev/null
+    jq -r '.Version // ""' <<<"$body" 2>/dev/null
 }
 http_code() {
     rig_ssh "curl -s -o /dev/null -m 15 -w '%{http_code}' -H 'Host: $1' http://127.0.0.1/" 2>/dev/null
@@ -172,7 +172,7 @@ assert '[ "$(acme_digest)" = "$before_acme" ]' "acme.json is byte-identical afte
 bdir=$(sed -n 's/.*backed up .* to \(.*\)$/\1/p' <<<"$up_out" | tr -d '\r')
 assert '[ -n "$bdir" ]' "the run names where it put the backup (said: $up_out)"
 assert '[ "$(backup_count)" = 1 ]' "and made exactly one (got '$(backup_count)')"
-backed_image=$(rig_ssh "cat '$bdir/compose.yml'" 2>/dev/null | yq -r '.services.traefik.image' 2>/dev/null)
+backed_image=$(rig_ssh "cat '$bdir/compose.yml'" 2>/dev/null | yaml2json 2>/dev/null | jq -r '.services.traefik.image' 2>/dev/null)
 assert '[ "$backed_image" = "$before_image" ]' \
     "the backed-up compose.yml is the one from before the overwrite (got '$backed_image')"
 for f in traefik.yml _shared.yml kasbah-upgrade; do
@@ -201,7 +201,7 @@ assert '[ "$(served_version)" = "${target_a#v}" ]' "the proxy is still serving t
 #
 # The middleware does not exist, which is the commonest way a project fragment
 # is wrong and one the file provider only complains about at router-build time —
-# `yq .` accepts this file, so nothing short of booting Traefik catches it.
+# a YAML parse accepts this file, so nothing short of booting Traefik catches it.
 rig_ssh "cat > $apps/traefik/dynamic/broken.yml" <<'YML'
 http:
   routers:

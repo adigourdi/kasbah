@@ -25,6 +25,7 @@ set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$repo_dir/tests/integration/rig_env.sh"
+need_yaml2json
 
 apps=/apps
 data=/apps/data
@@ -78,8 +79,8 @@ fi
 # Both images are in the rig's cache and are pinned by the template. Pulling
 # 1.6 GB inside a suite is not a test, so a missing image is an environment
 # problem and says so.
-dms_image=$(yq -r '.services["mail-dms"].image' "$repo_dir/templates/mail/compose.yml" 2>/dev/null)
-cy_image=$(yq -r '.services["mail-cypht"].image' "$repo_dir/templates/mail/compose.yml" 2>/dev/null)
+dms_image=$(yaml2json "$repo_dir/templates/mail/compose.yml" 2>/dev/null | jq -r '.services["mail-dms"].image')
+cy_image=$(yaml2json "$repo_dir/templates/mail/compose.yml" 2>/dev/null | jq -r '.services["mail-cypht"].image')
 for img in "$dms_image" "$cy_image"; do
     if ! rig_ssh "docker image inspect '$img' >/dev/null 2>&1"; then
         echo "error: the rig has no $img in its image cache" >&2
@@ -274,13 +275,13 @@ assert '[ "${fact[env_mode]}" = "600" ]' \
     ".env is mode 600 — the relay block is a credential (got '${fact[env_mode]}')"
 
 registry_yml=$(rig_ssh "cat $mail_dir/kasbah.yml" 2>/dev/null)
-assert 'yq -e . >/dev/null 2>&1 <<<"$registry_yml"' "the registry on the rig parses as YAML"
-assert '[ "$(yq -r ".name" <<<"$registry_yml")" = "mail" ]' \
-    "and names the stack (got '$(yq -r ".name" <<<"$registry_yml")')"
-assert '[ "$(yq -r ".primary_domain" <<<"$registry_yml")" = "$rig_domain" ]' \
-    "with the primary domain init was given (got '$(yq -r ".primary_domain" <<<"$registry_yml")')"
-assert '[ "$(yq -r ".domains | join(\",\")" <<<"$registry_yml")" = "$rig_domain" ]' \
-    "and it in the domains list (got '$(yq -r ".domains | join(\",\")" <<<"$registry_yml")')"
+assert 'yaml2json <<<"$registry_yml" 2>/dev/null | jq -e . >/dev/null 2>&1' "the registry on the rig parses as YAML"
+assert '[ "$(yaml2json <<<"$registry_yml" | jq -r ".name")" = "mail" ]' \
+    "and names the stack (got '$(yaml2json <<<"$registry_yml" | jq -r ".name")')"
+assert '[ "$(yaml2json <<<"$registry_yml" | jq -r ".primary_domain")" = "$rig_domain" ]' \
+    "with the primary domain init was given (got '$(yaml2json <<<"$registry_yml" | jq -r ".primary_domain")')"
+assert '[ "$(yaml2json <<<"$registry_yml" | jq -r ".domains | join(\",\")")" = "$rig_domain" ]' \
+    "and it in the domains list (got '$(yaml2json <<<"$registry_yml" | jq -r ".domains | join(\",\")")')"
 
 env_body=$(rig_ssh "cat $mail_dir/.env" 2>/dev/null)
 assert 'grep -qxF "MAIL_HOSTNAME=mail.$rig_domain" <<<"$env_body"' \
@@ -548,8 +549,8 @@ assert '[ "$rc" = "0" ]' "init runs against an edited registry (exit $rc: $(init
 assert 'grep -qF "primary mx.$rig_domain, reused" "$tmpdir/err"' \
     "honouring the edit rather than putting --domain's apex back (said '$(init_err)')"
 frag_body=$(rig_ssh "cat $frag" 2>/dev/null)
-assert '[ "$(yq -r ".http.routers[\"mail-cert\"].rule" <<<"$frag_body")" = "Host(\`mail.mx.$rig_domain\`)" ]' \
-    "and the fragment followed it (got '$(yq -r ".http.routers[\"mail-cert\"].rule" <<<"$frag_body")')"
+assert '[ "$(yaml2json <<<"$frag_body" | jq -r ".http.routers[\"mail-cert\"].rule")" = "Host(\`mail.mx.$rig_domain\`)" ]' \
+    "and the fragment followed it (got '$(yaml2json <<<"$frag_body" | jq -r ".http.routers[\"mail-cert\"].rule")')"
 env_after=$(rig_ssh "cat $mail_dir/.env" 2>/dev/null)
 assert 'grep -qxF "MAIL_HOSTNAME=mail.mx.$rig_domain" <<<"$env_after"' \
     "and so did the .env — one writer per fact (got '$(grep MAIL_HOSTNAME <<<"$env_after")')"
@@ -587,14 +588,14 @@ aliases="$mail_data/dms/config/postfix-virtual.cf"
 # primary and moved it back, and `server init` prepends a primary without ever
 # removing the old one — so what is in domains: at this point is a fact about
 # this run, and the assertion is that the new domain is *appended* to it.
-domains_before=$(yq -r '.domains | join(" ")' <<<"$(rig_ssh "cat $mail_dir/kasbah.yml" 2>/dev/null)")
+domains_before=$(yaml2json <<<"$(rig_ssh "cat $mail_dir/kasbah.yml" 2>/dev/null)" | jq -r '.domains | join(" ")')
 add_domain "$extra_domain"; rc=$?
 assert '[ "$rc" = "0" ]' "add-mail-domain adds a domain (exit $rc: $(init_err))"
 registry_after=$(rig_ssh "cat $mail_dir/kasbah.yml" 2>/dev/null)
-domains_after=$(yq -r '.domains | join(" ")' <<<"$registry_after")
+domains_after=$(yaml2json <<<"$registry_after" | jq -r '.domains | join(" ")')
 assert '[ "$domains_after" = "$domains_before $extra_domain" ]' \
     "and the registry on the server gains it and keeps everything it had (was '$domains_before', is '$domains_after')"
-assert '[ "$(yq -r ".primary_domain" <<<"$registry_after")" = "$rig_domain" ]' \
+assert '[ "$(yaml2json <<<"$registry_after" | jq -r ".primary_domain")" = "$rig_domain" ]' \
     "with the primary untouched — the MX target and both certificates hang off it"
 aliases_after=$(rig_ssh "cat $aliases" 2>/dev/null | tr -d '\r')
 assert 'grep -qxF "postmaster@$extra_domain postmaster@$rig_domain" <<<"$aliases_after"' \

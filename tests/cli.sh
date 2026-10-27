@@ -1,5 +1,6 @@
-# Shared test helper: the kasbah binary under test. Sourced by every suite that
-# runs the CLI, and by tests/integration/rig_env.sh. Never executed.
+# Shared test helpers: the kasbah binary under test and yaml2json. Sourced by
+# the unit suites that drive the CLI and by tests/integration/rig_env.sh (so by
+# every rig suite). Never executed.
 #
 # KASBAH_BIN names it; unset, it is this checkout's own build, dist/kasbah
 # (`docker compose run --rm build`). A relative path is taken from the current
@@ -40,4 +41,29 @@ kasbah_base_version() {
         s=${BASH_REMATCH[1]}
     fi
     printf '%s\n' "$s"
+}
+
+# yaml2json [FILE|-] — each YAML document as one line of JSON, for jq. This
+# checkout's dist/yaml2json, else the one beside the binary under test (both
+# come from `docker compose run --rm build`).
+_yaml2json_path() {
+    local b
+    b="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/dist/yaml2json"
+    [ -x "$b" ] || b="${KASBAH_BIN%/*}/yaml2json"
+    [ -x "$b" ] || return 1
+    printf '%s\n' "$b"
+}
+yaml2json() {
+    local b
+    b="$(_yaml2json_path)" || { echo "no yaml2json — build it: docker compose run --rm build" >&2; return 127; }
+    "$b" "$@"
+}
+
+# need_yaml2json — a suite that reads YAML through it calls this first: no
+# binary is "could not run" (exit 2), not a failure.
+need_yaml2json() {
+    _yaml2json_path >/dev/null || {
+        echo "no dist/yaml2json — build it: docker compose run --rm build" >&2
+        exit 2
+    }
 }

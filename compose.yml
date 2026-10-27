@@ -5,14 +5,16 @@
 #                                                                    architecture: the checkout entry
 #                                   dist/server/kasbah-linux-amd64   the server binaries
 #                                   dist/server/kasbah-linux-arm64
+#                                   dist/yaml2json                   a test helper (tests/cli.sh)
 #   docker compose run --rm test    go vet, the gofmt check, go test
 #
-# All three binaries are static (CGO_ENABLED=0) and carry one build stamp from
+# The three kasbah binaries are static (CGO_ENABLED=0) and carry one build stamp from
 # `go run ./tools/stamp`: VERSION exactly when HEAD is tagged v<VERSION> and the
 # tree is clean — a release build, an rc included, is reproducible — and
 # otherwise a pre-release of the line's next version with the commit count,
 # the build time and +g<sha>[.dirty] (1.0.1-dev.142.1760790000+g1a2b3c4).
-# A server binary ships only when its stamp is the workstation's.
+# A server binary ships only when its stamp is the workstation's. yaml2json is
+# unstamped and never released.
 # Each is written beside its final name and renamed into place, so a reader
 # never sees a partial file.
 name: kasbah
@@ -54,6 +56,8 @@ services:
         ldflags="-s -w -X main.build=$$v"
         go build -trimpath -ldflags "$$ldflags" -o dist/.kasbah.new ./cmd/kasbah
         mv -f dist/.kasbah.new dist/kasbah
+        go build -trimpath -ldflags "-s -w" -o dist/.yaml2json.new ./tools/yaml2json
+        mv -f dist/.yaml2json.new dist/yaml2json
         for arch in amd64 arm64; do
             out=dist/server/kasbah-linux-$$arch
             GOOS=linux GOARCH=$$arch go build -trimpath -ldflags "$$ldflags" \

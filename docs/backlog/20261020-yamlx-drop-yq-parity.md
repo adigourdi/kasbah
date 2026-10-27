@@ -6,7 +6,7 @@ description: >
   the reader keeps that contract or moves to plain YAML 1.2 as `go.yaml.in/yaml/v3`
   reads it; the `check` rules that read compose values, and CLAUDE.md's hard
   convention, change with it.
-state: needs-decision
+state: ready
 priority: low
 ---
 
@@ -31,20 +31,27 @@ is gone it's a quirk being preserved for its own sake".
   hard convention; `docs/compliance.md:212` ties rule evaluation to "the parsed
   tree (the one `yq -c .` prints)".
 
-## To decide
+## Ruling (2026-10-27)
 
-1. **Keep or drop the contract.** Keep: nothing to do beyond rewording CLAUDE.md
-   to say *why* (compose files are read as a YAML 1.2-with-octal tree, the goldens
-   pin it). Drop: read with `yaml/v3` defaults; the diff is mostly `0755`-style
-   octal, number formatting, and merge-key/anchor edge cases — enumerate it from
-   the goldens before choosing.
-2. **What depends on the old reading on servers.** Manifests and markers kasbah
-   wrote are its own format (schema 1); `check` reads user compose files only on
-   the workstation. If nothing server-side depends on yq semantics, there is no
-   migration, only a behaviour change in `check` output — which must then go
-   through `docs/compliance.md` and the rule goldens in the same change.
-3. **Does `jv` survive?** If `check` no longer needs jq number spelling, `jv` may
-   go entirely, or shrink to what `kasbah remote` reports still use.
+Drop it all: "`yq` was an old dependency when we were fully bash, now we're go
+and go only, so drop anything related to it … we stay standard and clean, and
+do not build/maintain special stuff for jq/yq." YAML reads as `yaml.v3` reads
+it, JSON as `encoding/json` does, `check` rules are plain Go, and the test
+suites need no host `yq`. An ordered map stays where kasbah writes JSON whose
+key order must hold (server.json, state.json, the `traefik.yml` edit).
+
+## Work
+
+- [x] Tests read YAML through `tools/yaml2json` (built into `dist/`, never
+      released) piped to `jq`; no suite and no doc needs host `yq`
+- [ ] `internal/yamlx` on plain `yaml.v3`: the Python-object model, the
+      goldens, `regen.sh` and the parity test deleted
+- [ ] The shared tree loses its jq semantics and becomes `internal/tree`:
+      JSON through `encoding/json`, Go accessors in place of
+      `Alt`/`Truthy`/`ToString`/`Raw`, no jq-shaped error text; every package
+      but `check` migrated
+- [ ] `check` rules as plain Go queries; `internal/check/jq.go` and the
+      tree's last jq helpers deleted
 
 ## References
 
