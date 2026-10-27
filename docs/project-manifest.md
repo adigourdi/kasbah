@@ -222,7 +222,10 @@ Each hook is a list of strings. Each string starts with a literal
 **container name**, followed by the command to run inside it. The target
 service in `compose.prod.yml` must set an explicit `container_name:` —
 compose's auto-generated `<project>_<service>_1` won't match. `kasbah check`
-(HK01) enforces this.
+(HK01) enforces this. `hooks:` holds only `pre-deploy`, `post-deploy`,
+`pre-rollback` and `post-rollback`; any other key (a typo such as `pre_deploy`)
+is refused — except in a tag's manifest (`rollback`, `deploy X.Y.Z`), where it is
+a warning and ignored, so a version a server has run stays rollable.
 
 The rest of the string is a **shell command**, not an argument vector. Kasbah
 runs it as:

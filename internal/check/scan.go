@@ -380,9 +380,10 @@ func (t *text) locateTop(key string) int {
 }
 
 // setValue rewrites the scalar at idx in place: indentation, the key as
-// spelled, quoting and a trailing comment all kept. False when the line is
-// not a `key: value` this can take apart.
-func (t *text) setValue(idx int, val string) bool {
+// spelled and a trailing comment kept, and the old quoting too when str (val
+// is a string); otherwise val is written bare. False when the line is not a
+// `key: value` this can take apart.
+func (t *text) setValue(idx int, val string, str bool) bool {
 	s, cr := t.lines[idx], ""
 	if strings.HasSuffix(s, "\r") {
 		s, cr = s[:len(s)-1], "\r"
@@ -396,7 +397,7 @@ func (t *text) setValue(idx int, val string) bool {
 		return false
 	}
 	q := ""
-	if len(old) >= 2 && (old[0] == '"' || old[0] == '\'') && old[len(old)-1] == old[0] {
+	if str && len(old) >= 2 && (old[0] == '"' || old[0] == '\'') && old[len(old)-1] == old[0] {
 		q = old[:1]
 	}
 	t.rep[idx] = m[1] + " " + q + val + q + cmt + cr

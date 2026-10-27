@@ -117,6 +117,8 @@ client: acme
 		"hooks: x\n":                                                     "hooks: is not a block",
 		"hooks: false\n":                                                 "hooks: is not a block",
 		"hooks: ['demo-web a']\n":                                        "hooks: is not a block",
+		"hooks: {pre_deploy: ['demo-web a']}\n":                          "hooks.pre_deploy is not a hook kasbah runs — hooks: holds the lists pre-deploy:",
+		"backup: yes\n":                                                  "backup: is not a block",
 		"backup: {container: c, check: [a], command: c, extension: x}\n": "backup.check must be a string, not [\"a\"]",
 		"health: x\n":                                                    "health: is not a block",
 		"health: [a]\n":                                                  "health: is not a block",

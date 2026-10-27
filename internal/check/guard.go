@@ -1,15 +1,13 @@
 package check
 
 import (
-	"github.com/adigourdi/kasbah/internal/jv"
+	"github.com/adigourdi/kasbah/internal/tree"
 )
 
 // The guard: a candidate is written only when its parsed tree is the
 // original's with exactly the planned edits applied. A text edit that lands
 // where the scanner misread the file — inside a block scalar, under an alias —
-// changes some other value, and that is refused rather than shipped. The
-// comparison has jq's setpath / delpaths semantics, over every document of the
-// file.
+// changes some other value, and that is refused rather than shipped.
 
 // edit is one planned change to the tree: set a value, delete a key, append to
 // a sequence (null is an empty one), or mask — a rewritten scalar, whose new
@@ -17,142 +15,127 @@ import (
 type edit struct {
 	kind byte // 's', 'd', 'a', 'm'
 	path []string
-	val  jv.Value
+	val  tree.Value
 }
 
-func (x *fixer) set(v jv.Value, p ...string) { x.edits = append(x.edits, edit{'s', p, v}) }
-func (x *fixer) del(p ...string)             { x.edits = append(x.edits, edit{'d', p, nil}) }
-func (x *fixer) app(v jv.Value, p ...string) { x.edits = append(x.edits, edit{'a', p, v}) }
-func (x *fixer) mask(p ...string)            { x.edits = append(x.edits, edit{'m', p, nil}) }
+func (x *fixer) set(v tree.Value, p ...string) { x.edits = append(x.edits, edit{'s', p, v}) }
+func (x *fixer) del(p ...string)               { x.edits = append(x.edits, edit{'d', p, nil}) }
+func (x *fixer) app(v tree.Value, p ...string) { x.edits = append(x.edits, edit{'a', p, v}) }
+func (x *fixer) mask(p ...string)              { x.edits = append(x.edits, edit{'m', p, nil}) }
 
-func obj(kv ...jv.Value) *jv.Map {
-	m := jv.NewMap()
+func obj(kv ...tree.Value) *tree.Map {
+	m := tree.NewMap()
 	for i := 0; i+1 < len(kv); i += 2 {
 		m.Set(kv[i].(string), kv[i+1])
 	}
 	return m
 }
 
-func rotation() *jv.Map { return obj("max-size", "10m", "max-file", "3") }
+func rotation() *tree.Map { return obj("max-size", "10m", "max-file", "3") }
 
-// guard is whether each candidate document is its original with the edits
-// applied, masked paths aside on both. A path that would not compile into the
-// jq filter, or an edit jq would fail on, is a refusal.
-func guard(orig, cand []jv.Value, edits []edit) bool {
-	if len(orig) != len(cand) {
-		return false
-	}
-	es := make([]edit, len(edits))
-	for i, e := range edits {
-		es[i] = edit{kind: e.kind, val: e.val, path: make([]string, len(e.path))}
-		for j, k := range e.path {
-			d, ok := literal(k)
-			if !ok {
-				return false
-			}
-			es[i].path[j] = d
+// guard is whether the candidate is the original with the edits applied,
+// masked paths aside on both. An edit that meets a value that is not a
+// mapping where its path runs is a refusal.
+func guard(orig, cand tree.Value, edits []edit) bool {
+	want, got := orig, cand
+	ok := true
+	for _, e := range edits {
+		switch e.kind {
+		case 's':
+			want, ok = setPath(want, e.path, e.val)
+		case 'd':
+			want, ok = delPath(want, e.path)
+		case 'a':
+			want, ok = appendAt(want, e.path, e.val)
 		}
-	}
-	for i := range orig {
-		want, got := orig[i], cand[i]
-		var err error
-		for _, e := range es {
-			if e.kind != 'm' {
-				if want, err = applyEdit(want, e); err != nil {
-					return false
-				}
-			}
-		}
-		for _, e := range es {
-			if e.kind == 'm' {
-				if want, err = delPath(want, e.path); err != nil {
-					return false
-				}
-				if got, err = delPath(got, e.path); err != nil {
-					return false
-				}
-			}
-		}
-		if !equal(want, got) {
+		if !ok {
 			return false
 		}
 	}
-	return true
+	for _, e := range edits {
+		if e.kind != 'm' {
+			continue
+		}
+		if want, ok = delPath(want, e.path); !ok {
+			return false
+		}
+		if got, ok = delPath(got, e.path); !ok {
+			return false
+		}
+	}
+	return equal(want, got)
 }
 
-func applyEdit(v jv.Value, e edit) (jv.Value, error) {
-	switch e.kind {
-	case 's':
-		return setPath(v, e.path, e.val)
-	case 'd':
-		return delPath(v, e.path)
+// appendAt adds x to the list at p; null or absent there is an empty list.
+func appendAt(v tree.Value, p []string, x tree.Value) (tree.Value, bool) {
+	cur, bad := lookup(v, p...)
+	if bad != "" {
+		return nil, false
 	}
-	cur, err := path(v, e.path...)
-	if err != nil {
-		return nil, err
-	}
-	var xs []jv.Value
+	var xs []tree.Value
 	switch c := cur.(type) {
 	case nil:
-	case []jv.Value:
+	case []tree.Value:
 		xs = append(xs, c...)
 	default:
-		return nil, errf("%s and array cannot be added", describe(cur))
+		return nil, false
 	}
-	return setPath(v, e.path, append(xs, e.val))
+	return setPath(v, p, append(xs, x))
 }
 
-// setPath is jq's setpath: objects made where there was null.
-func setPath(v jv.Value, p []string, x jv.Value) (jv.Value, error) {
+// setPath is v with x at p, making mappings where there was null; v itself
+// is left as it was.
+func setPath(v tree.Value, p []string, x tree.Value) (tree.Value, bool) {
 	if len(p) == 0 {
-		return x, nil
+		return x, true
 	}
-	var m *jv.Map
+	var m *tree.Map
 	switch c := v.(type) {
 	case nil:
-		m = jv.NewMap()
-	case *jv.Map:
+		m = tree.NewMap()
+	case *tree.Map:
 		m = c.Clone()
 	default:
-		return nil, errf("Cannot index %s with %q", jv.Type(v), p[0])
+		return nil, false
 	}
 	child, _ := m.Get(p[0])
-	nv, err := setPath(child, p[1:], x)
-	if err != nil {
-		return nil, err
+	nv, ok := setPath(child, p[1:], x)
+	if !ok {
+		return nil, false
 	}
 	m.Set(p[0], nv)
-	return m, nil
+	return m, true
 }
 
-// delPath is jq's delpaths of one path: nothing to do under null or a missing
-// key, an error under anything that is not an object.
-func delPath(v jv.Value, p []string) (jv.Value, error) {
+// delPath is v without the key at p: unchanged where the key or a mapping
+// on the way is absent or null.
+func delPath(v tree.Value, p []string) (tree.Value, bool) {
 	switch c := v.(type) {
 	case nil:
-		return nil, nil
-	case *jv.Map:
-		child, ok := c.Get(p[0])
-		if !ok {
-			return c, nil
+		return nil, true
+	case *tree.Map:
+		child, has := c.Get(p[0])
+		if !has {
+			return c, true
 		}
 		m := c.Clone()
 		if len(p) == 1 {
 			m.Delete(p[0])
-			return m, nil
+			return m, true
 		}
-		nv, err := delPath(child, p[1:])
-		if err != nil {
-			return nil, err
+		nv, ok := delPath(child, p[1:])
+		if !ok {
+			return nil, false
 		}
 		m.Set(p[0], nv)
-		return m, nil
+		return m, true
 	}
-	return nil, errf("Cannot delete field at object index of %s", jv.Type(v))
+	return nil, false
 }
 
-// equal is jq's ==: objects regardless of key order, numbers by value.
-func equal(a, b jv.Value) bool {
+// equal compares two trees: mappings regardless of key order, numbers by
+// value.
+func equal(a, b tree.Value) bool {
 	switch x := a.(type) {
 	case nil:
 		return b == nil
@@ -162,11 +145,11 @@ func equal(a, b jv.Value) bool {
 	case string:
 		y, ok := b.(string)
 		return ok && x == y
-	case jv.Number:
-		y, ok := b.(jv.Number)
+	case tree.Number:
+		y, ok := b.(tree.Number)
 		return ok && (x == y || x.Float64() == y.Float64())
-	case []jv.Value:
-		y, ok := b.([]jv.Value)
+	case []tree.Value:
+		y, ok := b.([]tree.Value)
 		if !ok || len(x) != len(y) {
 			return false
 		}
@@ -176,8 +159,8 @@ func equal(a, b jv.Value) bool {
 			}
 		}
 		return true
-	case *jv.Map:
-		y, ok := b.(*jv.Map)
+	case *tree.Map:
+		y, ok := b.(*tree.Map)
 		if !ok || x.Len() != y.Len() {
 			return false
 		}

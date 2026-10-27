@@ -14,9 +14,10 @@ import (
 	"github.com/adigourdi/kasbah/internal/acme"
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/envtpl"
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/mailreg"
+	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/probe"
 	"github.com/adigourdi/kasbah/internal/remote"
@@ -24,6 +25,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/serverinit"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/internal/tree"
 )
 
 // ErrHelp is --help.
@@ -314,13 +316,10 @@ func newServer(sr *ServerRead, now time.Time) *server {
 
 // t05Server is T05 under --server: each family exact when its source was
 // read, on the heuristic when not — never unguarded.
-func (c *checker) t05Server(routers string) {
+func (c *checker) t05Server(routers []string) {
 	s := c.srv
 	var bad []string
-	for _, r := range lines(routers) {
-		if r == "" {
-			continue
-		}
+	for _, r := range routers {
 		for _, m := range hostRule.FindAllStringSubmatch(c.rule(r), -1) {
 			host := m[1]
 			label, _, _ := strings.Cut(host, ".")
@@ -420,32 +419,19 @@ func (c *checker) envDrift() {
 	}
 }
 
-// manifestMailDomain is `.mail.domain` under the local Mail section's shape
-// guard.
+// manifestMailDomain is the mail domain a deploy would claim, "" for none or
+// a mail: block the Mail section fails.
 func (c *checker) manifestMailDomain() string {
-	mv, ok := c.m.Get("mail")
-	if _, isMap := mv.(*jv.Map); !ok || !isMap {
-		return ""
-	}
-	d, _ := c.m.Get("mail", "domain")
-	return strings.TrimSuffix(jv.Raw(jv.Alt(d, "")), "\r")
+	d, _ := deploy.MailDomain(c.m)
+	return d
 }
 
-// healthContainer is `.health.container // ""`.
-func (c *checker) healthContainer() string {
-	return healthOf(c.m.Doc)
-}
+func (c *checker) healthContainer() string { return healthOf(c.m) }
 
-func healthOf(doc jv.Value) string {
-	v, ok := jv.Get(doc, "health", "container")
-	if !ok {
-		return ""
-	}
-	h := strings.TrimSuffix(jv.Raw(jv.Alt(v, "")), "\r")
-	if h == "null" {
-		return ""
-	}
-	return h
+// healthOf is health.container as a deploy reads it, "" for none.
+func healthOf(m *manifest.Manifest) string {
+	h, _ := deploy.ReadHealth(m)
+	return h.Container
 }
 
 // m03: the mail stack knows the domain the manifest claims, by the one
@@ -722,7 +708,7 @@ func (c *checker) r04() {
 // run, an overdue deadline and a stopped scheduler fail — the scheduler first.
 func (c *checker) b01() {
 	s := c.srv
-	if en, ok := jv.Get(s.mk.JSON, "backup", "enabled"); !ok || jv.ToString(jv.Alt(en, false)) != "true" {
+	if en, _ := tree.Lookup(s.mk.JSON, "backup", "enabled"); en != true {
 		return
 	}
 	dir := s.apps + "/.kasbah/backup"

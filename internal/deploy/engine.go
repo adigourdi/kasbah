@@ -291,7 +291,8 @@ func (e *engine) stateClause(c string) string {
 	return c + " is " + s
 }
 
-func hookContainer(h string) string {
+// HookContainer is a hook line's first word, the container it runs in.
+func HookContainer(h string) string {
 	h = strings.TrimLeft(h, " \t")
 	if i := strings.IndexAny(h, " \t\n\v\f\r"); i >= 0 {
 		return h[:i]
@@ -310,7 +311,7 @@ func (e *engine) outgoing(prev string, before bool) error {
 	isPre := map[string]bool{}
 	if !e.sp.SkipHooks {
 		for _, h := range e.sp.Pre {
-			c := hookContainer(h)
+			c := HookContainer(h)
 			isPre[c] = true
 			if !seen[c] {
 				seen[c] = true
@@ -532,7 +533,7 @@ func globEscape(s string) string {
 func (e *engine) hooks(what string, outgoing bool, prev, backup string, list []string) error {
 	for _, h := range list {
 		h = strings.TrimLeft(h, " \t")
-		c := hookContainer(h)
+		c := HookContainer(h)
 		rest := strings.TrimLeft(strings.TrimPrefix(h, c), " \t\n\v\f\r")
 		if c == "" {
 			return failf("a %s hook has no container name in it: '%s'", what, h)

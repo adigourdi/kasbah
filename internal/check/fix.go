@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
-	"github.com/adigourdi/kasbah/internal/envtpl"
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/manifest"
+	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/udiff"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
@@ -18,14 +18,14 @@ import (
 // R01–R03 and the kasbah_version backfill, in compose.prod.yml and kasbah.yml
 // only, as targeted edits over the existing bytes — never a YAML round trip,
 // which would drop the comments compose files carry. Every verdict comes from
-// the parsed documents, asked with jq's semantics; the line
-// scanner only finds where a key is written. A staged candidate must parse,
-// keep its keys and re-plan to nothing before it is shown.
+// the parsed document; the line scanner only finds where a key is written. A
+// staged candidate must parse, keep its keys and re-plan to nothing before it
+// is shown.
 
 // fixer plans the edits to one file.
 type fixer struct {
 	c       *checker
-	docs    []jv.Value
+	root    tree.Value
 	t       *text
 	collect bool
 	plan    []string
@@ -46,65 +46,17 @@ func (x *fixer) leftf(format string, a ...any) {
 	}
 }
 
-// yq is `_cf_yq`: the filter's output with errors ignored, `null` as empty.
-func (x *fixer) yq(g gen, ok bool) string {
-	if !ok {
-		return ""
-	}
-	s := run(x.docs, g).sub()
-	if s == "null" {
-		s = ""
-	}
-	return strings.TrimRight(strings.TrimSuffix(s, "\r"), "\n")
-}
+// at is the text at path, "" where the document has none.
+func (x *fixer) at(p ...string) string { return scalar(opt(x.root, p...)) }
 
-// at is `_cf_yq` of `.[a][b]… // def`.
-func (x *fixer) at(def jv.Value, p ...string) string {
-	return x.yq(pathThen(func(v jv.Value) (jv.Value, error) { return jv.Alt(v, def), nil }, p...))
-}
-
-// has is `_cf_has`: `PATH | has(KEY)` printing exactly true.
-func (x *fixer) has(key string, p ...string) bool {
-	g, ok := pathThen(hasKey(key), p...)
-	if !ok {
-		return false
-	}
-	return strings.TrimSuffix(run(x.docs, g).or("false"), "\r") == "true"
-}
-
-// keyList is `PATH | keys | .[]` (with `// {}` when alt), errors ignored.
-func keyList(docs []jv.Value, alt bool, p ...string) string {
-	return run(docs, func(d jv.Value, emit func(jv.Value)) error {
-		v, err := path(d, p...)
-		if err != nil {
-			return err
-		}
-		if alt {
-			v = jv.Alt(v, jv.NewMap())
-		}
-		ks, err := keys(v)
-		for _, k := range ks {
-			emit(k)
-		}
-		return err
-	}).sub()
-}
+// has is whether the mapping at path holds key.
+func (x *fixer) has(key string, p ...string) bool { return hasKey(opt(x.root, p...), key) }
 
 // --- The compose planner ------------------------------------------------------
 
 func (x *fixer) planCompose() {
 	t := x.t
-	services := x.yq(func(d jv.Value, emit func(jv.Value)) error {
-		s, err := index(d, "services")
-		if err != nil {
-			return err
-		}
-		ks, err := keys(jv.Alt(s, jv.NewMap()))
-		for _, k := range ks {
-			emit(k)
-		}
-		return err
-	}, true)
+	services := keysOf(opt(x.root, "services"))
 
 	top, end, ci := t.locateTop("services"), -1, 0
 	if top >= 0 {
@@ -112,13 +64,10 @@ func (x *fixer) planCompose() {
 		ci, _ = t.childIndent(top)
 	}
 	anyOn := false
-	defaultHN := x.at("", "networks", "default", "name") == "kasbah-net"
-	routed := strings.Join(envtpl.SortUniq(x.c.routedHosts()), "\n")
+	defaultHN := x.at("networks", "default", "name") == "kasbah-net"
+	routed := x.c.routedHosts()
 
-	for _, svc := range lines(services) {
-		if svc == "" {
-			continue
-		}
+	for _, svc := range services {
 		if top < 0 {
 			x.leftf("compose: cannot find the top-level services: key in the file's text — --fix edits block mappings, not a flow-style document")
 			break
@@ -143,27 +92,12 @@ func (x *fixer) planCompose() {
 		x.c01(s)
 		x.c08(s)
 
-		joined := false
-		hn, ok := pathThen(func(v jv.Value) (jv.Value, error) {
-			switch m := v.(type) {
-			case nil:
-				v = []jv.Value{}
-			case *jv.Map:
-				ks, _ := keys(m)
-				v = ks
-			}
-			return anyEq(v, "kasbah-net")
-		}, "services", svc, "networks")
-		if x.yq(hn, ok) == "true" {
-			joined = true
-		} else if defaultHN && !x.has("networks", "services", svc) {
-			joined = true
-		}
+		joined := joinsNet(opt(x.root, "services", svc, "networks")) || (defaultHN && !x.has("networks", "services", svc))
 		if joined {
 			anyOn = true
 		}
-		cn := x.at("", "services", svc, "container_name")
-		if cn != "" && routed != "" && grepX(routed, cn) && !joined {
+		cn := x.at("services", svc, "container_name")
+		if cn != "" && inList(routed, cn) && !joined {
 			if x.c03(s) {
 				anyOn = true
 			}
@@ -185,19 +119,23 @@ type svcBlock struct {
 	pre              string
 }
 
-func (x *fixer) svcQ(def jv.Value, s svcBlock, p ...string) string {
-	return x.at(def, append([]string{"services", s.name}, p...)...)
+func (x *fixer) svcQ(s svcBlock, p ...string) string {
+	return x.at(append([]string{"services", s.name}, p...)...)
+}
+
+func (x *fixer) svcV(s svcBlock, p ...string) tree.Value {
+	return opt(x.root, append([]string{"services", s.name}, p...)...)
 }
 
 // c01: every service sets a restart policy.
 func (x *fixer) c01(s svcBlock) {
-	r := x.svcQ("", s, "restart")
+	r := x.svcQ(s, "restart")
 	if restartOK.MatchString(r) {
 		return
 	}
 	if x.has("restart", "services", s.name) {
 		i := x.t.locateChild("restart", s.idx, s.end, s.ci)
-		if i < 0 || !x.t.setValue(i, "unless-stopped") {
+		if i < 0 || !x.t.setValue(i, "unless-stopped", true) {
 			x.leftf("C01 %s — its restart: is written in a shape --fix cannot rewrite", s.name)
 			return
 		}
@@ -221,10 +159,10 @@ func orEmpty(s string) string {
 // someone's logging: survives.
 func (x *fixer) c02(s svcBlock) {
 	t := x.t
-	drv := x.svcQ("", s, "logging", "driver")
-	ms := x.svcQ("", s, "logging", "options", "max-size")
-	mf := x.svcQ("", s, "logging", "options", "max-file")
-	if drv == "json-file" && ms != "" && mf != "" {
+	drv := x.svcQ(s, "logging", "driver")
+	ms := rotationSet(x.svcV(s, "logging", "options", "max-size"))
+	mf := rotationSet(x.svcV(s, "logging", "options", "max-file"))
+	if drv == "json-file" && ms && mf {
 		return
 	}
 	if !x.has("logging", "services", s.name) {
@@ -251,7 +189,7 @@ func (x *fixer) c02(s svcBlock) {
 	if drv != "json-file" {
 		if x.has("driver", "services", s.name, "logging") {
 			i := t.locateChild("driver", l, lEnd, lci)
-			if i < 0 || !t.setValue(i, "json-file") {
+			if i < 0 || !t.setValue(i, "json-file", true) {
 				x.leftf("C02 %s — its logging.driver is written in a shape --fix cannot rewrite", s.name)
 				return
 			}
@@ -263,7 +201,7 @@ func (x *fixer) c02(s svcBlock) {
 			x.planf("C02 %s — add logging.driver: json-file", s.name)
 		}
 	}
-	if ms != "" && mf != "" {
+	if ms && mf {
 		return
 	}
 	if !x.has("options", "services", s.name, "logging") {
@@ -290,12 +228,12 @@ func (x *fixer) c02(s svcBlock) {
 		if k == "max-file" {
 			v, nv = mf, "3"
 		}
-		if v != "" {
+		if v {
 			continue
 		}
 		if x.has(k, "services", s.name, "logging", "options") {
 			i := t.locateChild(k, o, oEnd, oci)
-			if i < 0 || !t.setValue(i, nv) {
+			if i < 0 || !t.setValue(i, nv, true) {
 				x.leftf("C02 %s — its logging.options.%s is written in a shape --fix cannot rewrite", s.name, k)
 				continue
 			}
@@ -363,8 +301,7 @@ func (x *fixer) c03(s svcBlock) bool {
 		return true
 	}
 	npre := spaces(nci)
-	kind, ok := pathThen(func(v jv.Value) (jv.Value, error) { return jv.Type(v), nil }, "services", s.name, "networks")
-	if x.yq(kind, ok) == "object" {
+	if _, isMap := x.svcV(s, "networks").(*tree.Map); isMap {
 		t.insertAfter(nEnd, npre+"kasbah-net:")
 		x.set(nil, "services", s.name, "networks", "kasbah-net")
 		x.planf("C03 %s — add kasbah-net to its networks mapping", s.name)
@@ -384,14 +321,14 @@ func (x *fixer) c04(anyOn, defaultHN bool) {
 		return
 	}
 	if defaultHN {
-		if x.at(false, "networks", "default", "external") == "true" {
+		if opt(x.root, "networks", "default", "external") == true {
 			return
 		}
 		x.leftf("C04 — the default network aliases kasbah-net (C07). Making it external: true would entrench that shape; join kasbah-net per routed service instead")
 		return
 	}
-	ext := x.at(false, "networks", "kasbah-net", "external")
-	if ext == "true" {
+	ext := opt(x.root, "networks", "kasbah-net", "external")
+	if ext == true {
 		return
 	}
 	top := t.locateTop("networks")
@@ -435,7 +372,7 @@ func (x *fixer) c04(anyOn, defaultHN bool) {
 		return
 	}
 	if raw := t.rawValue(k); raw != "" {
-		if raw == "{}" && t.setValue(k, "{external: true}") {
+		if raw == "{}" && t.setValue(k, "{external: true}", false) {
 			x.set(obj("external", true), "networks", "kasbah-net")
 			x.planf("C04 — kasbah-net: {} → {external: true}")
 			return
@@ -447,12 +384,12 @@ func (x *fixer) c04(anyOn, defaultHN bool) {
 	kci, _ := t.childIndent(k)
 	if x.has("external", "networks", "kasbah-net") {
 		i := t.locateChild("external", k, kEnd, kci)
-		if i < 0 || !t.setValue(i, "true") {
+		if i < 0 || !t.setValue(i, "true", false) {
 			x.leftf("C04 — kasbah-net's external: is written in a shape --fix cannot rewrite")
 			return
 		}
 		x.mask("networks", "kasbah-net", "external")
-		x.planf("C04 — kasbah-net external: %s → true", ext)
+		x.planf("C04 — kasbah-net external: %s → true", tree.Compact(ext))
 		return
 	}
 	at := kEnd
@@ -466,7 +403,7 @@ func (x *fixer) c04(anyOn, defaultHN bool) {
 
 // c05: the deprecated top-level version: goes, and nothing around it.
 func (x *fixer) c05() {
-	v := x.at("", "version")
+	v := x.at("version")
 	if v == "" {
 		return
 	}
@@ -486,7 +423,7 @@ func (x *fixer) c08(s svcBlock) {
 	if !x.has("build", "services", s.name) {
 		return
 	}
-	img := x.svcQ("", s, "image")
+	img := x.svcQ(s, "image")
 	if img == "" {
 		x.leftf("C08 %s — builds an image but names no image:, and kasbah will not invent one. Add 'image: <name>:current'", s.name)
 		return
@@ -500,7 +437,7 @@ func (x *fixer) c08(s svcBlock) {
 	}
 	base := imageBase(img)
 	i := x.t.locateChild("image", s.idx, s.end, s.ci)
-	if i < 0 || !x.t.setValue(i, base+":current") {
+	if i < 0 || !x.t.setValue(i, base+":current", true) {
 		x.leftf("C08 %s — its image: is written in a shape --fix cannot rewrite", s.name)
 		return
 	}
@@ -524,13 +461,13 @@ func (x *fixer) r01r02(s svcBlock) {
 		{"cpus", "${KASBAH_CPU_LIMIT}", "R01"},
 		{"mem_limit", "${KASBAH_MEM_LIMIT}", "R02"},
 	} {
-		cur := x.svcQ("", s, k.key)
+		cur := x.svcQ(s, k.key)
 		if cur == k.want {
 			continue
 		}
 		if x.has(k.key, "services", s.name) {
 			i := x.t.locateChild(k.key, s.idx, s.end, s.ci)
-			if i < 0 || !x.t.setValue(i, k.want) {
+			if i < 0 || !x.t.setValue(i, k.want, true) {
 				x.leftf("%s %s — its %s: is written in a shape --fix cannot rewrite", k.rule, s.name, k.key)
 				continue
 			}
@@ -547,7 +484,7 @@ func (x *fixer) r01r02(s svcBlock) {
 // r03: reservations go, and a resources: or deploy: they leave empty with them.
 func (x *fixer) r03(s svcBlock) {
 	t := x.t
-	if x.svcQ("", s, "mem_reservation") != "" {
+	if x.svcV(s, "mem_reservation") != nil {
 		if i := t.locateChild("mem_reservation", s.idx, s.end, s.ci); i < 0 {
 			x.leftf("R03 %s — cannot find its mem_reservation: in the file's text", s.name)
 		} else {
@@ -556,7 +493,7 @@ func (x *fixer) r03(s svcBlock) {
 			x.planf("R03 %s — remove mem_reservation", s.name)
 		}
 	}
-	if x.svcQ("", s, "deploy", "resources", "reservations") == "" {
+	if x.svcV(s, "deploy", "resources", "reservations") == nil {
 		return
 	}
 	d := t.locateChild("deploy", s.idx, s.end, s.ci)
@@ -578,23 +515,14 @@ func (x *fixer) r03(s svcBlock) {
 		x.leftf("R03 %s — cannot find deploy.resources.reservations in the file's text", s.name)
 		return
 	}
-	count := func(p ...string) string {
-		return x.yq(pathThen(func(v jv.Value) (jv.Value, error) {
-			ks, err := keys(v)
-			if err != nil {
-				return nil, err
-			}
-			return length(ks)
-		}, append([]string{"services", s.name}, p...)...))
-	}
-	resKeys, depKeys := count("deploy", "resources"), count("deploy")
+	resKeys, depKeys := len(keysOf(x.svcV(s, "deploy", "resources"))), len(keysOf(x.svcV(s, "deploy")))
 	target := "deploy.resources.reservations"
 	switch {
-	case resKeys == "1" && depKeys == "1":
+	case resKeys == 1 && depKeys == 1:
 		t.deleteKey(d)
 		x.del("services", s.name, "deploy")
 		target = "deploy (it held nothing else)"
-	case resKeys == "1":
+	case resKeys == 1:
 		t.deleteKey(rs)
 		x.del("services", s.name, "deploy", "resources")
 		target = "deploy.resources (it held nothing else)"
@@ -626,33 +554,27 @@ func (x *fixer) planManifest() {
 // verifyCompose: the same top-level keys but for version: leaving and
 // networks: arriving, and the same services. An edit at the wrong indentation
 // can parse; it cannot keep both.
-func verifyCompose(a, b []jv.Value) bool {
-	ka, kb := keyList(a, false), keyList(b, false)
-	for _, k := range lines(ka) {
-		if k != "" && !inLines(kb, k) && k != "version" {
+func verifyCompose(a, b tree.Value) bool {
+	ka, kb := keysOf(a), keysOf(b)
+	for _, k := range ka {
+		if !inList(kb, k) && k != "version" {
 			return false
 		}
 	}
-	for _, k := range lines(kb) {
-		if k != "" && !inLines(ka, k) && k != "networks" {
+	for _, k := range kb {
+		if !inList(ka, k) && k != "networks" {
 			return false
 		}
 	}
-	return keyList(a, true, "services") == keyList(b, true, "services")
+	return slices.Equal(keysOf(opt(a, "services")), keysOf(opt(b, "services")))
 }
 
 // verifyManifest: the same top-level keys, kasbah_version aside.
-func verifyManifest(a, b []jv.Value) bool {
-	strip := func(s string) string {
-		var out []string
-		for _, l := range lines(s) {
-			if l != "kasbah_version" {
-				out = append(out, l)
-			}
-		}
-		return strings.TrimRight(strings.Join(out, "\n"), "\n")
+func verifyManifest(a, b tree.Value) bool {
+	strip := func(ks []string) []string {
+		return slices.DeleteFunc(ks, func(k string) bool { return k == "kasbah_version" })
 	}
-	return strip(keyList(a, false)) == strip(keyList(b, false))
+	return slices.Equal(strip(keysOf(a)), strip(keysOf(b)))
 }
 
 // --- Staging, showing, writing --------------------------------------------------
@@ -670,7 +592,7 @@ type staged struct {
 
 // stage plans FILE and writes the candidate beside it, proven to parse, keep
 // its keys and settle. nil with nothing to do or when refused (said why).
-func (r *fixRun) stage(file string, docs []jv.Value, planner func(*fixer), verify func(a, b []jv.Value) bool, version string) *staged {
+func (r *fixRun) stage(file string, root tree.Value, planner func(*fixer), verify func(a, b tree.Value) bool, version string) *staged {
 	c := r.c
 	data, err := readRegular(file)
 	if err != nil {
@@ -678,7 +600,7 @@ func (r *fixRun) stage(file string, docs []jv.Value, planner func(*fixer), verif
 		r.leftf("%s — could not be read; it was left exactly as it was", file)
 		return nil
 	}
-	x := &fixer{c: c, docs: docs, t: readText(data), collect: true, left: &r.left, version: version}
+	x := &fixer{c: c, root: root, t: readText(data), collect: true, left: &r.left, version: version}
 	planner(x)
 	if len(x.plan) == 0 {
 		return nil
@@ -720,19 +642,23 @@ func (r *fixRun) stage(file string, docs []jv.Value, planner func(*fixer), verif
 		r.leftf("%s — the edited file would not have parsed as YAML; it was left exactly as it was", file)
 		return nil
 	}
-	if !verify(docs, newDocs) {
+	var newRoot tree.Value
+	if len(newDocs) == 1 {
+		newRoot = newDocs[0]
+	}
+	if !verify(root, newRoot) {
 		os.Remove(tmp)
 		c.out.Err("check --fix: the edited %s no longer declares the same keys — nothing was written", file)
 		r.leftf("%s — the edited file no longer declared the same keys; it was left exactly as it was", file)
 		return nil
 	}
-	if !guard(docs, newDocs, x.edits) {
+	if len(newDocs) != 1 || !guard(root, newRoot, x.edits) {
 		os.Remove(tmp)
 		c.out.Err("check --fix: the edited %s would change values the fix did not plan to — nothing was written", file)
 		r.leftf("%s — the edit would have changed more than the fix planned; it was left exactly as it was", file)
 		return nil
 	}
-	again := &fixer{c: c, docs: newDocs, t: readText(out), left: &r.left, version: version}
+	again := &fixer{c: c, root: newRoot, t: readText(out), left: &r.left, version: version}
 	planner(again)
 	if len(again.plan) != 0 {
 		os.Remove(tmp)
@@ -785,14 +711,13 @@ func (c *checker) fix(e Env) error {
 
 	var files []*staged
 	if isFile(composeFile) {
-		if f := c.cache.Get(composeFile); f.Err != nil {
-			r.leftf("compose.prod.yml does not parse as YAML — --fix will not pattern-match its way through a file it cannot read")
-		} else if s := r.stage(composeFile, f.Docs, (*fixer).planCompose, verifyCompose, e.Version); s != nil {
+		if d := c.load(composeFile); d.bad != "" {
+			r.leftf("compose.prod.yml %s — --fix will not pattern-match its way through a file it cannot read", d.bad)
+		} else if s := r.stage(composeFile, d.root, (*fixer).planCompose, verifyCompose, e.Version); s != nil {
 			files = append(files, s)
 		}
 	}
-	m := c.cache.Get(manifest.File)
-	if s := r.stage(manifest.File, m.Docs, (*fixer).planManifest, verifyManifest, e.Version); s != nil {
+	if s := r.stage(manifest.File, c.load(manifest.File).root, (*fixer).planManifest, verifyManifest, e.Version); s != nil {
 		files = append(files, s)
 	}
 

@@ -1537,14 +1537,15 @@ out="$(cd "$projm2" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "M01 fails a mail: block with no domain: (rc $rc)"
 assert 'grep -qF "mail: has no domain:" <<<"$out"' "saying which field (said '$out')"
 
-# A mail: that is not a block. The operator gets the shape, not jq's type error.
+# A mail: that is not a block. The operator gets the shape, in deploy's words.
 projm3="$tmpdir/mail-scalar"
 make_project "$projm3" mailer3 mailer3.example.com
 printf 'mail: mailer3.example.com\n' >> "$projm3/kasbah.yml"
 out="$(cd "$projm3" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "a scalar mail: fails (rc $rc)"
-assert 'grep -qF "mail: has type '\''string'\''" <<<"$out"' "naming what it found (said '$out')"
-assert '! grep -qF "Cannot index" <<<"$out"' "and not jq'\''s own error (said '$out')"
+assert 'grep -qF "✗ kasbah.yml: mail: is not a block — it has to be a block with a domain: under it" <<<"$out"' \
+    "naming what it found, as deploy does (said '$out')"
+assert '! grep -qF "Cannot index" <<<"$out"' "and not a type error (said '$out')"
 
 
 # =============================================================================
@@ -2795,14 +2796,14 @@ make_project "$projq"
 printf 'services:\n  web: nginx\n' > "$projq/compose.prod.yml"
 out="$(cd "$projq" && "$kasbah" check 2>"$tmpdir/q.err")"; rc=$?
 assert '[ "$rc" = "1" ]' "an unanswerable question is exit 1 (got $rc)"
-assert 'grep -qF "cannot check compose.prod.yml" "$tmpdir/q.err"' \
-    "naming the file it could not check (said '$(cat "$tmpdir/q.err")')"
+assert 'grep -qxF "error: cannot check compose.prod.yml: services.web is a string, not a mapping" "$tmpdir/q.err"' \
+    "naming the file and the key it could not check (said '$(cat "$tmpdir/q.err")')"
 assert '! grep -qF "Summary:" <<<"$out"' "and the report is cut short, with no summary"
-# A service name a rule cannot quote: exit 1, naming the file and the name.
+# A service name holding a quote is a name like any other: the rules judge it.
 printf '%s\n' 'services:' "  'we\"b': {image: nginx}" > "$projq/compose.prod.yml"
-(cd "$projq" && "$kasbah" check >/dev/null 2>"$tmpdir/q.err"); rc=$?
-assert '[ "$rc" = "1" ] && grep -qF "cannot check compose.prod.yml, the name '\''we\"b'\''" "$tmpdir/q.err"' \
-    "an unquotable name is exit 1, naming the file and the name (exit $rc: $(cat "$tmpdir/q.err"))"
+out="$(cd "$projq" && "$kasbah" check 2>"$tmpdir/q.err")"; rc=$?
+assert '[ "$rc" = "6" ] && grep -qxF "  ✗ Services missing restart policy: we\"b" <<<"$out"' \
+    "a name holding a quote is checked, and named in the failure (exit $rc: $out $(cat "$tmpdir/q.err"))"
 
 # --- The --fix diffs, through GNU patch (fx_run) -----------------------------
 if ! gnu_patch; then

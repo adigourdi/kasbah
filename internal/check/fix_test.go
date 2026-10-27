@@ -258,15 +258,22 @@ func TestFixGuard(t *testing.T) {
 	m := obj("a", obj("s", "x"), "keep", "y")
 	cand := obj("a", obj("s", "x", "restart", "unless-stopped"), "keep", "y")
 	set := []edit{{'s', []string{"a", "restart"}, "unless-stopped"}}
-	if !guard([]any{m}, []any{cand}, set) {
+	if !guard(m, cand, set) {
 		t.Error("the planned edit alone was refused")
 	}
 	lost := obj("a", obj("s", "x", "restart", "unless-stopped"), "keep", "y-")
-	if guard([]any{m}, []any{lost}, set) {
+	if guard(m, lost, set) {
 		t.Error("a value the plan did not touch changed, and the guard let it through")
 	}
-	if guard([]any{m}, []any{cand}, []edit{{'s', []string{"a\"", "restart"}, "x"}}) {
-		t.Error("a path that does not compile was accepted")
+	if guard(m, cand, []edit{{'s', []string{"keep", "restart"}, "x"}}) {
+		t.Error("an edit through a string was accepted")
+	}
+	q := obj("a\"b", obj("s", "x"))
+	if !guard(q, obj("a\"b", obj("s", "x", "restart", "unless-stopped")), []edit{{'s', []string{"a\"b", "restart"}, "unless-stopped"}}) {
+		t.Error("a name holding a quote was refused")
+	}
+	if guard(m, obj("a", obj("s", "x"), "keep", "y"), []edit{{'m', []string{"keep", "x"}, nil}}) {
+		t.Error("a mask through a string was accepted")
 	}
 
 	compose := "services:\n  demo-web:\n    build: .\n    image: x@sha256:abc\n"
@@ -277,4 +284,34 @@ func TestFixGuard(t *testing.T) {
 		!strings.Contains(string(got), "image: x@sha256:abc\n") {
 		t.Fatalf("stdout:\n%s\nfile:\n%s", o, got)
 	}
+}
+
+// A name holding a quote or a backslash is edited like any other.
+func TestFixNameWithQuote(t *testing.T) {
+	head := "services:\n  demo-a\"b\\c:\n    image: x\n    container_name: demo-web\n" +
+		"    cpus: ${KASBAH_CPU_LIMIT}\n    mem_limit: ${KASBAH_MEM_LIMIT}\n" +
+		"    logging: {driver: json-file, options: {max-size: 1m, max-file: \"1\"}}\n    networks: [kasbah-net]\n"
+	tail := "networks:\n  kasbah-net: {external: true}\n"
+	fixed(t, head+tail, head+"    restart: unless-stopped\n"+tail)
+}
+
+// A compose file of several documents is left alone, said why.
+func TestFixSeveralDocuments(t *testing.T) {
+	compose := "services:\n  demo-web:\n    image: x\n---\nservices:\n  demo-db:\n    image: y\n"
+	project(t, map[string]string{"compose.prod.yml": compose})
+	o, _, _ := fix(t, true)
+	got, _ := os.ReadFile(composeFile)
+	if !strings.Contains(o, "compose.prod.yml holds 2 YAML documents, where kasbah reads one — --fix will not pattern-match") || string(got) != compose {
+		t.Fatalf("stdout:\n%s\nfile:\n%s", o, got)
+	}
+}
+
+// A rotation value that is not one is replaced; a quoted "true" is not
+// external, and is rewritten bare.
+func TestFixRotationAndExternal(t *testing.T) {
+	head := "services:\n  demo-web:\n    image: x\n    container_name: demo-web\n    restart: always\n" +
+		"    cpus: ${KASBAH_CPU_LIMIT}\n    mem_limit: ${KASBAH_MEM_LIMIT}\n    networks: [kasbah-net]\n" +
+		"    logging:\n      driver: json-file\n      options:\n"
+	fixed(t, head+"        max-size: false\n        max-file: 3\nnetworks:\n  kasbah-net:\n    external: \"true\"\n",
+		head+"        max-size: 10m\n        max-file: 3\nnetworks:\n  kasbah-net:\n    external: true\n")
 }

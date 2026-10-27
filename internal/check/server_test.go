@@ -21,9 +21,9 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/tree"
 )
 
 var testNow = time.Unix(2000000000, 0)
@@ -50,25 +50,25 @@ func certPEM(t *testing.T, cn string, sans []string, notAfter time.Time) string 
 func b64s(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 
 func store(main string, sans []string, cert string) string {
-	m := jv.NewMap()
-	d := jv.NewMap()
+	m := tree.NewMap()
+	d := tree.NewMap()
 	d.Set("main", main)
-	var sv []jv.Value
+	var sv []tree.Value
 	for _, s := range sans {
 		sv = append(sv, s)
 	}
 	d.Set("sans", sv)
-	e := jv.NewMap()
+	e := tree.NewMap()
 	e.Set("domain", d)
 	e.Set("certificate", cert)
 	e.Set("key", secret)
-	acct := jv.NewMap()
+	acct := tree.NewMap()
 	acct.Set("PrivateKey", secret)
-	le := jv.NewMap()
+	le := tree.NewMap()
 	le.Set("Account", acct)
-	le.Set("Certificates", []jv.Value{e})
+	le.Set("Certificates", []tree.Value{e})
 	m.Set("letsencrypt", le)
-	return jv.Compact(m)
+	return tree.Compact(m)
 }
 
 const srvEnv = "DOMAIN=demo.example.com\n# >>> kasbah managed block >>>\nKASBAH_CPU_LIMIT=14.4\nKASBAH_MEM_LIMIT=54g\n# <<< kasbah managed block <<<\n"
@@ -617,7 +617,7 @@ exit 1
 }
 
 func TestServerB01BackupNotAnObject(t *testing.T) {
-	for _, b := range []string{`"backup":"yes"`, `"backup":[true]`, `"backup":{"enabled":false}`, `"backup":{"enabled":"no"}`} {
+	for _, b := range []string{`"backup":"yes"`, `"backup":[true]`, `"backup":{"enabled":false}`, `"backup":{"enabled":"no"}`, `"backup":{"enabled":"true"}`} {
 		srvProject(t, "")
 		s := newSrv(t)
 		s.marker = strings.Replace(s.marker, "}", ","+b+"}", 1)

@@ -323,3 +323,20 @@ func TestArchiveOnlyChangelogs(t *testing.T) {
 		t.Errorf("deploy: %v\n%s", err, out)
 	}
 }
+
+// A tag's hooks: may hold a key that is not a hook: it is named and ignored,
+// so the version stays rollable; the working tree's manifest refuses it.
+func TestDeployVersionUnknownHook(t *testing.T) {
+	history(t, "  pre_deploy:\n    - 'ghost echo never'\n")
+	f := &fake{}
+	err, out := runTagged(t, f, Options{Target: "d@h", Version: "1.0.0"}, "deploy")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if strings.Join(f.spec.Pre, "|") != "demo-web echo v1-pre-deploy" {
+		t.Errorf("spec %+v", f.spec)
+	}
+	if !strings.Contains(out, "the manifest in this version has hooks.pre_deploy, which is not a hook kasbah runs — ignored") {
+		t.Errorf("no warning naming the key\n%s", out)
+	}
+}

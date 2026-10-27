@@ -440,6 +440,9 @@ func (r *run) readRef(t *tagged) error {
 		r.c.Out.Warn("falling back to '%s', which is client:'s documented default — a", m.Name)
 		r.c.Out.Warn("version tagged before kasbah checked this field still has to roll back")
 	}
+	for _, k := range p.HookNotes {
+		r.c.Out.Warn("the manifest in this version has hooks.%s, which is not a hook kasbah runs — ignored", k)
+	}
 	r.p = p
 	return nil
 }

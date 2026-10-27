@@ -78,7 +78,7 @@ hosts) are in byte order.
 | ID | Rule | Level | Auto-fixable |
 |---|---|---|---|
 | C01 | Every service sets `restart: unless-stopped` (or stronger) | fail | yes |
-| C02 | Every service has `logging.driver: json-file` with `max-size` + `max-file` | fail | yes |
+| C02 | Every service has `logging.driver: json-file` with `max-size` + `max-file`, each a non-empty string or a number | fail | yes |
 | C03 | Every Traefik-routed service (targeted by a fragment `loadBalancer` URL) joins `kasbah-net` | fail | yes |
 | C04 | `kasbah-net` declared `external: true` | fail | yes |
 | C05 | No deprecated `version:` top-level field | warn | yes |
@@ -110,7 +110,7 @@ docker provider is not wired in.
 
 | ID | Rule | Level |
 |---|---|---|
-| T01 | `traefik-dynamic.yml` exists and parses as YAML | warn |
+| T01 | `traefik-dynamic.yml` exists and parses as one YAML document whose `http.routers` is a mapping; otherwise T02–T05 and T08 are skipped, and so are C03 and C07, which need the services it routes | warn |
 | T02 | At least one router's `rule` references `manifest.domain` | fail |
 | T03 | Every router declares `entryPoints` (non-empty list) | fail |
 | T04 | Routers on `websecure` reference `tls.certResolver: letsencrypt` | fail |
@@ -160,7 +160,7 @@ ever printed.
 
 | ID | Rule | Level |
 |---|---|---|
-| HK01 | Every hook's first word is an explicit `container_name:` from compose.prod.yml (compose's auto-generated `<project>_<svc>_1` won't match) | fail |
+| HK01 | `hooks:` holds only the four lists deploy runs, and every hook's first word is an explicit `container_name:` from compose.prod.yml (compose's auto-generated `<project>_<svc>_1` won't match) | fail |
 | HK02 | Backup hook has all required subfields (`check`, `command`, `extension`) | fail |
 | HK03 | Backup hook's container exists among services | fail |
 
@@ -240,8 +240,8 @@ same services and the same top-level keys (only `version:` may leave, only
 planned edits applied** — so an insertion that landed inside a value, or moved
 one, is caught whatever the scanner believed — and must **re-plan to an empty
 plan** — idempotency proved at runtime rather than assumed. An edit that would
-go through an alias, or touch one document of a multi-document file, is refused. Any failure removes the candidate and
-writes nothing.
+go through an alias is refused. Any failure removes the candidate and writes
+nothing.
 
 **A comment immediately above a removed key is left.** It cannot be told from a
 file header, and a compose file that opens with prose and then `version:` is the
@@ -249,7 +249,8 @@ ordinary shape.
 
 ### Refusals, each reported rather than skipped
 
-- A `compose.prod.yml` that does not parse — refused, not pattern-matched.
+- A `compose.prod.yml` that does not parse, or holds several YAML documents
+  where kasbah reads one — refused, not pattern-matched.
 - **C08** on a built service naming no `image:` at all. It is a tag rewrite;
   kasbah will not invent an image name.
 - **C04** under the banned default-alias shape, where declaring the default

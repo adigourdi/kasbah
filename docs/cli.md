@@ -597,7 +597,13 @@ Flags:
 Run the compliance check on the current project. See `compliance.md` for
 the full rule set. Exit code 0 on pass, 6 on any failure (see "Exit codes" below),
 and 1 — naming the file and the reason — when a file is shaped so badly that a
-rule cannot be evaluated at all (`services: {web: nginx}`).
+rule cannot be evaluated at all: inside a mapping `services:`, a service that is
+neither null nor a mapping (`services: {web: nginx}`) or a `networks:` entry
+that is not a mapping; inside a mapping `http.routers`, a router that is not a
+mapping or a `websecure` router whose `tls:` is not one; and an unreadable
+`.env.prod.example`. Every other bad shape — a compose file that does not parse,
+holds several documents, or whose document or `services:` is not a mapping, and
+every manifest shape — is a named failure (6).
 
 `--server USER@HOST` also asks that VPS: whether the project is deployed there,
 whether its `.env` still matches this checkout's `.env.prod.example`, whether

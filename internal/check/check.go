@@ -1,12 +1,11 @@
 // Package check is `kasbah check`: the local rules of docs/compliance.md,
 // judged from the project directory alone, --fix, and --server's rules.
 //
-// Each rule answers its question as a jq filter would under LC_ALL=C.UTF-8 —
-// per document, with jq's errors, fallbacks and exit statuses — because that
-// answer is the rule's verdict on an odd file. A question that cannot be
-// answered at all (a scalar where an object belongs, a name that cannot be
-// spliced into a filter, a template that cannot be read) ends the run with the
-// report cut short and exit 1.
+// Each rule queries the parsed files, each read once, and reports a shape it
+// cannot accept as its own failure (exit 6). A step it cannot take at all —
+// compose's networks:, one of its networks, a service or a router that is not
+// a mapping, or a router's tls: that is not one — and a template that cannot
+// be read end the run with the report cut short and exit 1.
 package check
 
 import (
@@ -18,11 +17,12 @@ import (
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/envtpl"
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
 
@@ -79,6 +79,11 @@ type checker struct {
 	m                *manifest.Manifest
 	pass, warn, fail int
 	srv              *server
+	// compose is compose.prod.yml when it exists; services are its service
+	// names in byte order, servicesBad why services: cannot be read.
+	compose     yamlDoc
+	services    []string
+	servicesBad string
 }
 
 // Run checks the project in the current directory and returns the exit code:
@@ -119,7 +124,7 @@ func Run(e Env) (code int) {
 		if err != nil {
 			return e.report(err)
 		}
-		sr, err := sess.Read(m.Name, healthOf(m.Doc))
+		sr, err := sess.Read(m.Name, healthOf(m))
 		if err != nil {
 			return e.report(err)
 		}
@@ -155,27 +160,20 @@ func Run(e Env) (code int) {
 	}
 	c.s08()
 
-	var services string
 	if isFile(composeFile) {
-		services = c.q(composeFile, func(d jv.Value, emit func(jv.Value)) error {
-			s, err := index(d, "services")
-			if err != nil {
-				return err
-			}
-			ks, err := keys(jv.Alt(s, jv.NewMap()))
-			for _, k := range ks {
-				emit(k)
-			}
-			return err
-		}).sub()
+		c.compose = c.load(composeFile)
+		if c.compose.bad == "" {
+			svcs, bad := mapAt(c.compose.root, "services")
+			c.services, c.servicesBad = keysOf(svcs), bad
+		}
 	}
 
-	c.composeSection(services)
-	c.resourcesSection(services)
-	c.traefikSection(services)
-	c.healthSection(services)
+	c.composeSection()
+	c.resourcesSection()
+	c.traefikSection()
+	c.healthSection()
 	c.envSection()
-	c.hooksSection(services)
+	c.hooksSection()
 	c.mailSection()
 	if c.srv != nil {
 		c.serverSection()
@@ -210,23 +208,9 @@ func isFile(p string) bool {
 	return err == nil && fi.Mode().IsRegular()
 }
 
-// lines is a here-string's lines: `while read` over "$s" sees each.
-func lines(s string) []string { return strings.Split(s, "\n") }
-
 func inLines(s, x string) bool {
-	for _, l := range lines(s) {
+	for _, l := range strings.Split(s, "\n") {
 		if l == x {
-			return true
-		}
-	}
-	return false
-}
-
-// grepX is `grep -qxF -- PATTERN <<<"$s"`: each line of a multi-line pattern
-// is a pattern of its own.
-func grepX(s, pattern string) bool {
-	for _, p := range lines(pattern) {
-		if inLines(s, p) {
 			return true
 		}
 	}
@@ -247,92 +231,13 @@ func gitignoreHas(pattern string) bool {
 	return inLines(s, pattern)
 }
 
-// q asks a project file; the manifest is answered from the validated document.
-func (c *checker) q(file string, f gen) result {
-	var r result
-	if file == manifest.File {
-		r = run([]jv.Value{c.m.Doc}, f)
-	} else if fl := c.cache.Get(file); fl.Err != nil {
-		return result{rc: 2}
-	} else {
-		r = run(fl.Docs, f)
-	}
-	if r.msg != "" {
-		r.msg = "error: cannot check " + file + ", " + r.msg
-	}
-	return r
-}
-
-// must is a question the run cannot go on without: a failed query ends it
-// with exit 1 and its diagnostic on stderr.
-func (c *checker) must(r result) string {
-	if r.rc != 0 {
-		if r.msg != "" {
-			fmt.Fprintln(c.out.Stderr, r.msg)
-		}
-		panic(abort{cli.ExitFailure})
-	}
-	return r.sub()
-}
-
-// at asks `.[a][b]… // def` of a file.
-func (c *checker) at(file string, def jv.Value, p ...string) result {
-	return c.then(file, func(v jv.Value) (jv.Value, error) { return jv.Alt(v, def), nil }, p...)
-}
-
-// then asks `.[a][b]… | f`.
-func (c *checker) then(file string, f func(v jv.Value) (jv.Value, error), p ...string) result {
-	g, ok := pathThen(f, p...)
-	if !ok {
-		name := ""
-		for _, k := range p {
-			if _, lit := literal(k); !lit {
-				name = k
-			}
-		}
-		return result{rc: 3, msg: fmt.Sprintf("error: cannot check %s, the name '%s' holds a character kasbah's rules cannot quote", file, name)}
-	}
-	return c.q(file, g)
-}
-
-// pathThen is the filter `.[a][b]… | f`; ok is false where it would not
-// compile. Names spliced into the filter (a service or router) are decoded as
-// the filter's string literal.
-func pathThen(f func(v jv.Value) (jv.Value, error), p ...string) (g gen, ok bool) {
-	keys := make([]string, len(p))
-	for i, k := range p {
-		if keys[i], ok = literal(k); !ok {
-			return nil, false
-		}
-	}
-	return func(d jv.Value, emit func(jv.Value)) error {
-		v, err := path(d, keys...)
-		if err != nil {
-			return err
-		}
-		x, err := f(v)
-		if err != nil {
-			return err
-		}
-		emit(x)
-		return nil
-	}, true
-}
-
-func hasKey(k string) func(jv.Value) (jv.Value, error) {
-	return func(v jv.Value) (jv.Value, error) { return has(v, k) }
-}
-
-func anyOf(s string) func(jv.Value) (jv.Value, error) {
-	return func(v jv.Value) (jv.Value, error) { return anyEq(jv.Alt(v, []jv.Value{}), s) }
-}
+func (c *checker) failErr(err error) { c.failf("%s", strings.ReplaceAll(err.Error(), "\n", "; ")) }
 
 func (c *checker) s08() {
-	v, _ := c.m.Get("client")
-	raw := strings.TrimRight(jv.Raw(jv.ToString(jv.Alt(v, ""))), "\n")
-	raw = strings.TrimSuffix(raw, "\r")
-	if raw == "null" {
-		raw = ""
+	raw, err := deploy.Field(c.m, "a string", "client")
+	if err != nil {
+		c.failErr(err)
+		return
 	}
 	switch reason, ok := manifest.ClientCheck(raw); {
 	case raw == "":
@@ -348,25 +253,36 @@ func (c *checker) s08() {
 
 var restartOK = regexp.MustCompile(`^(unless-stopped|always|on-failure(:[0-9]+)?)$`)
 
-func (c *checker) composeSection(services string) {
+// svc is the value at path under a service, nil where the file has none.
+func (c *checker) svc(name string, p ...string) tree.Value {
+	return opt(c.compose.root, append([]string{"services", name}, p...)...)
+}
+
+func (c *checker) composeSection() {
 	if !isFile(composeFile) {
 		return
 	}
 	c.section("Compose")
-	if c.cache.Get(composeFile).Err != nil {
-		c.failf("compose.prod.yml does not parse as YAML")
+	if c.compose.bad != "" {
+		c.failf("compose.prod.yml %s", c.compose.bad)
 		return
 	}
-	if services == "" {
+	if c.servicesBad != "" {
+		c.failf("compose.prod.yml: %s", c.servicesBad)
+		if _, ok := c.compose.root.(*tree.Map); ok {
+			c.c05()
+		}
+		return
+	}
+	if len(c.services) == 0 {
 		c.warnf("compose.prod.yml declares no services — skipping Compose checks")
 		c.c05()
 		return
 	}
 
 	var bad []string
-	for _, svc := range lines(services) {
-		r := c.at(composeFile, "", "services", svc, "restart").or("")
-		if !restartOK.MatchString(r) {
+	for _, svc := range c.services {
+		if !restartOK.MatchString(scalar(c.svc(svc, "restart"))) {
 			bad = append(bad, svc)
 		}
 	}
@@ -377,11 +293,11 @@ func (c *checker) composeSection(services string) {
 	}
 
 	bad = nil
-	for _, svc := range lines(services) {
-		drv := c.at(composeFile, "", "services", svc, "logging", "driver").or("")
-		ms := c.at(composeFile, "", "services", svc, "logging", "options", "max-size").or("")
-		mf := c.at(composeFile, "", "services", svc, "logging", "options", "max-file").or("")
-		if drv != "json-file" || ms == "" || mf == "" {
+	for _, svc := range c.services {
+		drv := scalar(c.svc(svc, "logging", "driver"))
+		ms := rotationSet(c.svc(svc, "logging", "options", "max-size"))
+		mf := rotationSet(c.svc(svc, "logging", "options", "max-file"))
+		if drv != "json-file" || !ms || !mf {
 			bad = append(bad, svc)
 		}
 	}
@@ -391,29 +307,27 @@ func (c *checker) composeSection(services string) {
 		c.failf("Services missing json-file logging with max-size/max-file: %s", strings.Join(bad, " "))
 	}
 
-	onHN, defaultAliases := c.networks(services)
+	onHN, defaultAliases := c.networks()
 	c.c09(onHN, defaultAliases)
 	c.c05()
-	if c.anyBuilt(services) {
-		c.c08(services)
+	if c.anyBuilt() {
+		c.c08()
 	}
 }
 
 func (c *checker) c05() {
-	if c.must(c.at(composeFile, "", "version")) != "" {
+	if scalar(c.need(c.compose, "version")) != "" {
 		c.warnf("compose.prod.yml uses deprecated 'version:' field")
 	} else {
 		c.passf("No deprecated 'version:' field")
 	}
 }
 
-func (c *checker) built(svc string) bool {
-	return c.then(composeFile, hasKey("build"), "services", svc).or("false") == "true"
-}
+func (c *checker) built(svc string) bool { return hasKey(c.svc(svc), "build") }
 
-func (c *checker) anyBuilt(services string) bool {
-	for _, svc := range lines(services) {
-		if svc != "" && c.built(svc) {
+func (c *checker) anyBuilt() bool {
+	for _, svc := range c.services {
+		if c.built(svc) {
 			return true
 		}
 	}
@@ -421,15 +335,15 @@ func (c *checker) anyBuilt(services string) bool {
 }
 
 // c08: a built service's image is tagged :current, the tag deploy moves.
-func (c *checker) c08(services string) {
+func (c *checker) c08() {
 	var bad []string
-	for _, svc := range lines(services) {
-		if svc == "" || !c.built(svc) {
+	for _, svc := range c.services {
+		if !c.built(svc) {
 			continue
 		}
-		image := c.at(composeFile, "", "services", svc, "image").or("")
+		image := scalar(c.svc(svc, "image"))
 		switch {
-		case image == "" || image == "null":
+		case image == "":
 			bad = append(bad, svc+" (no image:)")
 		case !strings.HasSuffix(image, ":current"):
 			bad = append(bad, svc+" ("+image+")")
@@ -444,44 +358,22 @@ func (c *checker) c08(services string) {
 
 // networks is C03, C04 and C07; it returns the services on kasbah-net and
 // whether the banned default-alias shape put them there, for C09.
-func (c *checker) networks(services string) (onHN string, defaultAliases bool) {
-	defaultName := c.must(c.at(composeFile, "", "networks", "default", "name"))
-	defaultExt := c.must(c.at(composeFile, false, "networks", "default", "external"))
-	hnExt := c.must(c.at(composeFile, false, "networks", "kasbah-net", "external"))
-	defaultAliases = defaultName == "kasbah-net"
+func (c *checker) networks() (on []string, defaultAliases bool) {
+	d := c.compose
+	defaultAliases = scalar(c.need(d, "networks", "default", "name")) == "kasbah-net"
+	defaultExt := c.need(d, "networks", "default", "external") == true
+	hnExt := c.need(d, "networks", "kasbah-net", "external") == true
+	routed := c.routedHosts()
+	_, unread := c.fragment()
 
-	routed := strings.Join(envtpl.SortUniq(c.routedHosts()), "\n")
-
-	var badC03, badC07, on []string
-	anyOn, anyRouted := false, false
-	for _, svc := range lines(services) {
-		if svc == "" {
-			continue
-		}
-		joined, isRouted := false, false
-		hn := c.then(composeFile, func(v jv.Value) (jv.Value, error) {
-			switch m := v.(type) {
-			case nil:
-				v = []jv.Value{}
-			case *jv.Map:
-				ks, _ := keys(m)
-				v = ks
-			}
-			return anyEq(v, "kasbah-net")
-		}, "services", svc, "networks").or("false")
-		if hn == "true" {
-			joined = true
-		} else if defaultAliases {
-			if c.then(composeFile, hasKey("networks"), "services", svc).or("false") != "true" {
-				joined = true
-			}
-		}
-		cn := c.must(c.at(composeFile, "", "services", svc, "container_name"))
-		if cn != "" && cn != "null" && routed != "" && grepX(routed, cn) {
-			isRouted, anyRouted = true, true
-		}
+	var badC03, badC07 []string
+	anyRouted := false
+	for _, svc := range c.services {
+		joined := joinsNet(c.svc(svc, "networks")) || (defaultAliases && !hasKey(c.svc(svc), "networks"))
+		cn := scalar(c.need(d, "services", svc, "container_name"))
+		isRouted := cn != "" && inList(routed, cn)
+		anyRouted = anyRouted || isRouted
 		if joined {
-			anyOn = true
 			on = append(on, svc)
 		}
 		if isRouted && !joined {
@@ -493,6 +385,10 @@ func (c *checker) networks(services string) (onHN string, defaultAliases bool) {
 	}
 
 	switch {
+	case unread != "" && (defaultAliases || len(on) == 0):
+		c.warnf("%s — skipping C03, which needs the services it routes", unread)
+	case unread != "":
+		c.warnf("%s — skipping C03 and C07, which need the services it routes", unread)
 	case len(badC03) > 0:
 		c.failf("Routed services not on kasbah-net: %s", strings.Join(badC03, " "))
 	case anyRouted:
@@ -500,8 +396,8 @@ func (c *checker) networks(services string) (onHN string, defaultAliases bool) {
 	default:
 		c.passf("No Traefik-routed services in compose")
 	}
-	if anyOn {
-		if hnExt == "true" || (defaultAliases && defaultExt == "true") {
+	if len(on) > 0 {
+		if hnExt || (defaultAliases && defaultExt) {
 			c.passf("kasbah-net declared external")
 		} else {
 			c.failf("kasbah-net not declared external: true")
@@ -510,24 +406,25 @@ func (c *checker) networks(services string) (onHN string, defaultAliases bool) {
 	switch {
 	case defaultAliases:
 		c.failf("default network aliases kasbah-net — every service joins the shared network; join it explicitly per routed service and keep the rest on a project-internal network")
+	case unread != "" && len(on) > 0:
 	case len(badC07) > 0:
 		c.failf("Non-routed services on kasbah-net: %s", strings.Join(badC07, " "))
 	default:
 		c.passf("No internal services on kasbah-net")
 	}
-	return strings.Join(on, "\n"), defaultAliases
+	return on, defaultAliases
 }
 
 // c09 warns about a service on kasbah-net not named for the project; silent
 // with nothing on the network, and under the default-alias shape C07 failed.
-func (c *checker) c09(onHN string, defaultAliases bool) {
-	if defaultAliases || onHN == "" {
+func (c *checker) c09(onHN []string, defaultAliases bool) {
+	if defaultAliases || len(onHN) == 0 {
 		return
 	}
 	name := c.m.Name
 	var bad []string
-	for _, svc := range lines(onHN) {
-		if svc != "" && svc != name && !strings.HasPrefix(svc, name+"-") {
+	for _, svc := range onHN {
+		if svc != name && !strings.HasPrefix(svc, name+"-") {
 			bad = append(bad, svc)
 		}
 	}
@@ -540,21 +437,18 @@ func (c *checker) c09(onHN string, defaultAliases bool) {
 
 // --- Resources (R01–R03) ----------------------------------------------------
 
-func (c *checker) resourcesSection(services string) {
-	if !isFile(composeFile) || services == "" || c.cache.Get(composeFile).Err != nil {
+func (c *checker) resourcesSection() {
+	if !isFile(composeFile) || len(c.services) == 0 {
 		return
 	}
 	c.section("Resources")
 	var bad []string
-	for _, svc := range lines(services) {
-		if svc == "" {
-			continue
-		}
+	for _, svc := range c.services {
 		var wrong []string
-		if c.at(composeFile, "", "services", svc, "cpus").or("") != "${KASBAH_CPU_LIMIT}" {
+		if scalar(c.svc(svc, "cpus")) != "${KASBAH_CPU_LIMIT}" {
 			wrong = append(wrong, "cpus")
 		}
-		if c.at(composeFile, "", "services", svc, "mem_limit").or("") != "${KASBAH_MEM_LIMIT}" {
+		if scalar(c.svc(svc, "mem_limit")) != "${KASBAH_MEM_LIMIT}" {
 			wrong = append(wrong, "mem_limit")
 		}
 		if len(wrong) > 0 {
@@ -568,13 +462,8 @@ func (c *checker) resourcesSection(services string) {
 	}
 
 	bad = nil
-	for _, svc := range lines(services) {
-		if svc == "" {
-			continue
-		}
-		resv := c.at(composeFile, nil, "services", svc, "deploy", "resources", "reservations").or("null")
-		memr := c.at(composeFile, "", "services", svc, "mem_reservation").or("")
-		if resv != "null" || (memr != "" && memr != "null") {
+	for _, svc := range c.services {
+		if c.svc(svc, "deploy", "resources", "reservations") != nil || c.svc(svc, "mem_reservation") != nil {
 			bad = append(bad, svc)
 		}
 	}
@@ -587,30 +476,16 @@ func (c *checker) resourcesSection(services string) {
 
 // --- Traefik (T01–T08) ------------------------------------------------------
 
-func (c *checker) traefikSection(services string) {
+func (c *checker) traefikSection() {
 	c.section("Traefik")
-	var routers string
-	parsed := false
-	if !isFile(traefikFile) {
-		c.warnf("traefik-dynamic.yml missing — skipping T02–T05 and T08")
-	} else if r := c.q(traefikFile, func(d jv.Value, emit func(jv.Value)) error {
-		h, err := path(d, "http", "routers")
-		if err != nil {
-			return err
-		}
-		ks, err := keys(jv.Alt(h, jv.NewMap()))
-		for _, k := range ks {
-			emit(k)
-		}
-		return err
-	}); r.rc != 0 {
-		c.warnf("traefik-dynamic.yml does not parse as YAML — skipping T02–T05 and T08")
+	routers, unread := c.fragment()
+	if unread != "" {
+		c.warnf("%s — skipping T02–T05 and T08", unread)
 	} else {
 		c.passf("traefik-dynamic.yml exists")
-		routers, parsed = r.sub(), true
 	}
 
-	if parsed {
+	if unread == "" {
 		domain := c.m.Domain
 		if domain != "" {
 			c.t02(routers, domain)
@@ -623,19 +498,39 @@ func (c *checker) traefikSection(services string) {
 			c.t08(routers, domain)
 		}
 		c.t05(routers)
-		c.t07(services)
+		c.t07()
 	}
-	c.t06(services)
+	c.t06()
 }
 
-func (c *checker) rule(r string) string {
-	return c.must(c.at(traefikFile, "", "http", "routers", r, "rule"))
+// fragment is the fragment's router names when T01 reads it; unread says why
+// it does not.
+func (c *checker) fragment() (routers []string, unread string) {
+	if !isFile(traefikFile) {
+		return nil, "traefik-dynamic.yml missing"
+	}
+	d := c.load(traefikFile)
+	if d.bad != "" {
+		return nil, "traefik-dynamic.yml " + d.bad
+	}
+	m, bad := mapAt(d.root, "http", "routers")
+	if bad != "" {
+		return nil, "traefik-dynamic.yml: " + bad
+	}
+	return keysOf(m), ""
 }
 
-func (c *checker) t02(routers, domain string) {
+// router is the value at path under a router.
+func (c *checker) router(r string, p ...string) tree.Value {
+	return c.need(c.load(traefikFile), append([]string{"http", "routers", r}, p...)...)
+}
+
+func (c *checker) rule(r string) string { return scalar(c.router(r, "rule")) }
+
+func (c *checker) t02(routers []string, domain string) {
 	found := false
-	for _, r := range lines(routers) {
-		if r != "" && strings.Contains(c.rule(r), domain) {
+	for _, r := range routers {
+		if strings.Contains(c.rule(r), domain) {
 			found = true
 			break
 		}
@@ -647,17 +542,18 @@ func (c *checker) t02(routers, domain string) {
 	}
 }
 
-func (c *checker) t03(routers string) {
+func (c *checker) t03(routers []string) {
 	var bad []string
-	for _, r := range lines(routers) {
-		if r == "" {
-			continue
-		}
-		n := c.must(c.then(traefikFile, func(v jv.Value) (jv.Value, error) {
-			return length(jv.Alt(v, []jv.Value{}))
-		}, "http", "routers", r, "entryPoints"))
-		if n == "0" {
+	for _, r := range routers {
+		switch ep := c.router(r, "entryPoints").(type) {
+		case nil:
 			bad = append(bad, r)
+		case []tree.Value:
+			if len(ep) == 0 {
+				bad = append(bad, r)
+			}
+		default:
+			bad = append(bad, r+" (entryPoints is "+kind(ep)+", not a list)")
 		}
 	}
 	if len(bad) == 0 {
@@ -667,16 +563,13 @@ func (c *checker) t03(routers string) {
 	}
 }
 
-func (c *checker) t04(routers string) {
+func (c *checker) t04(routers []string) {
 	var bad []string
-	for _, r := range lines(routers) {
-		if r == "" {
+	for _, r := range routers {
+		if !listHas(c.router(r, "entryPoints"), "websecure") {
 			continue
 		}
-		if c.must(c.then(traefikFile, anyOf("websecure"), "http", "routers", r, "entryPoints")) != "true" {
-			continue
-		}
-		if c.must(c.at(traefikFile, "", "http", "routers", r, "tls", "certResolver")) != "letsencrypt" {
+		if scalar(c.router(r, "tls", "certResolver")) != "letsencrypt" {
 			bad = append(bad, r)
 		}
 	}
@@ -687,13 +580,10 @@ func (c *checker) t04(routers string) {
 	}
 }
 
-func (c *checker) t08(routers, domain string) {
+func (c *checker) t08(routers []string, domain string) {
 	found := false
-	for _, r := range lines(routers) {
-		if r == "" || !strings.Contains(c.rule(r), domain) {
-			continue
-		}
-		if c.must(c.then(traefikFile, anyOf("web"), "http", "routers", r, "entryPoints")) == "true" {
+	for _, r := range routers {
+		if strings.Contains(c.rule(r), domain) && listHas(c.router(r, "entryPoints"), "web") {
 			found = true
 			break
 		}
@@ -707,22 +597,22 @@ func (c *checker) t08(routers, domain string) {
 
 var hostRule = regexp.MustCompile("Host\\(`([^`]+)`\\)")
 
+// reservedLabels are the first DNS labels kasbah's own subdomains use.
+var reservedLabels = []string{"traefik", "mail", "webmail"}
+
 // t05 is the local form: a Host() whose first DNS label is one kasbah's own
 // subdomains use. The exact match against a server's hostnames is --server's.
-func (c *checker) t05(routers string) {
+func (c *checker) t05(routers []string) {
 	if c.srv != nil {
 		c.t05Server(routers)
 		return
 	}
 	var bad []string
-	for _, r := range lines(routers) {
-		if r == "" {
-			continue
-		}
+	for _, r := range routers {
 		for _, m := range hostRule.FindAllStringSubmatch(c.rule(r), -1) {
 			host := m[1]
 			label, _, _ := strings.Cut(host, ".")
-			if grepX("traefik\nmail\nwebmail", label) {
+			if inList(reservedLabels, label) {
 				bad = append(bad, r+"→"+host)
 			}
 		}
@@ -734,39 +624,10 @@ func (c *checker) t05(routers string) {
 	}
 }
 
-func (c *checker) t06(services string) {
-	if services == "" {
-		c.passf("compose.prod.yml has no traefik.* labels")
-		return
-	}
+func (c *checker) t06() {
 	var bad []string
-	for _, svc := range lines(services) {
-		if svc == "" {
-			continue
-		}
-		has := c.then(composeFile, func(v jv.Value) (jv.Value, error) {
-			var names []jv.Value
-			switch m := v.(type) {
-			case nil:
-			case *jv.Map:
-				names, _ = keys(m)
-			default:
-				xs, err := iter(v, false)
-				if err != nil {
-					return nil, err
-				}
-				for _, x := range xs {
-					names = append(names, cutAssign(jv.ToString(x)))
-				}
-			}
-			for _, n := range names {
-				if strings.HasPrefix(n.(string), "traefik.") {
-					return true, nil
-				}
-			}
-			return false, nil
-		}, "services", svc, "labels").or("false")
-		if has == "true" {
+	for _, svc := range c.services {
+		if traefikLabel(c.svc(svc, "labels")) {
 			bad = append(bad, svc)
 		}
 	}
@@ -777,20 +638,26 @@ func (c *checker) t06(services string) {
 	}
 }
 
-// cutAssign is jq's `sub("=.*"; "")`, whose `.` stops at a newline.
-func cutAssign(s string) string {
-	i := strings.IndexByte(s, '=')
-	if i < 0 {
-		return s
+// traefikLabel is whether labels: names a traefik.* label, as a mapping's
+// key or a list's `name=value` entry.
+func traefikLabel(labels tree.Value) bool {
+	names := keysOf(labels)
+	if l, ok := labels.([]tree.Value); ok {
+		for _, x := range l {
+			name, _, _ := strings.Cut(scalar(x), "=")
+			names = append(names, name)
+		}
 	}
-	if j := strings.IndexByte(s[i:], '\n'); j >= 0 {
-		return s[:i] + s[i+j:]
+	for _, n := range names {
+		if strings.HasPrefix(n, "traefik.") {
+			return true
+		}
 	}
-	return s[:i]
+	return false
 }
 
-func (c *checker) t07(services string) {
-	if services == "" {
+func (c *checker) t07() {
+	if len(c.services) == 0 {
 		return
 	}
 	hosts := envtpl.SortUniq(c.routedHosts())
@@ -798,10 +665,10 @@ func (c *checker) t07(services string) {
 		c.passf("Fragment has no loadBalancer server URLs to verify")
 		return
 	}
-	names := strings.Join(envtpl.SortUniq(c.containerNames(services)), "\n")
+	names := c.containerNames()
 	var bad []string
 	for _, h := range hosts {
-		if h != "" && !grepX(names, h) {
+		if !inList(names, h) {
 			bad = append(bad, h)
 		}
 	}
@@ -815,98 +682,69 @@ func (c *checker) t07(services string) {
 var (
 	urlScheme = regexp.MustCompile(`^[A-Za-z0-9+.-]+://`)
 	urlTail   = regexp.MustCompile(`[:/].*$`)
-	awkBlank  = regexp.MustCompile(`^[ \t]*$`)
+	blank     = regexp.MustCompile(`^[ \t]*$`)
 )
 
-// routedHosts is every loadBalancer server URL's host, one per line as the
-// `sed`/`awk` pipeline would leave them, before sorting.
+// routedHosts is the host of every string loadBalancer server URL in the
+// fragment, none when it cannot be read.
 func (c *checker) routedHosts() []string {
 	if !isFile(traefikFile) {
 		return nil
 	}
-	r := c.q(traefikFile, func(d jv.Value, emit func(jv.Value)) error {
-		s, err := path(d, "http", "services")
-		if err != nil {
-			return err
-		}
-		_, vs, err := entries(jv.Alt(s, jv.NewMap()))
-		if err != nil {
-			return err
-		}
-		for _, v := range vs {
-			srv, err := path(v, "loadBalancer", "servers")
-			if err != nil {
-				return err
-			}
-			xs, err := iter(jv.Alt(srv, []jv.Value{}), false)
-			if err != nil {
-				return err
-			}
-			for _, x := range xs {
-				u, err := index(x, "url")
-				if err != nil {
-					return err
-				}
-				emit(jv.Alt(u, ""))
-			}
-		}
+	d := c.load(traefikFile)
+	if d.bad != "" {
 		return nil
-	})
+	}
+	svcs, _ := mapAt(d.root, "http", "services")
+	if svcs == nil {
+		return nil
+	}
 	var out []string
-	for _, l := range strings.SplitAfter(r.out, "\n") {
-		if l == "" {
-			continue
-		}
-		l = strings.TrimSuffix(l, "\n")
-		l = urlTail.ReplaceAllString(urlScheme.ReplaceAllString(l, ""), "")
-		if !awkBlank.MatchString(l) {
-			out = append(out, l)
+	for _, k := range svcs.Keys() {
+		v, _ := svcs.Get(k)
+		servers, _ := opt(v, "loadBalancer", "servers").([]tree.Value)
+		for _, s := range servers {
+			u, _ := opt(s, "url").(string)
+			host := urlTail.ReplaceAllString(urlScheme.ReplaceAllString(u, ""), "")
+			if !blank.MatchString(host) {
+				out = append(out, host)
+			}
 		}
 	}
 	return out
 }
 
-// containerNames is every explicit container_name, as lines. It ran in a
-// command substitution, where errexit is off: a failed query keeps going.
-func (c *checker) containerNames(services string) []string {
-	var b strings.Builder
-	for _, svc := range lines(services) {
-		if svc == "" {
-			continue
-		}
-		cn := c.at(composeFile, "", "services", svc, "container_name").sub()
-		if cn != "" && cn != "null" {
-			b.WriteString(cn + "\n")
+// containerNames is every explicit container_name, in service order.
+func (c *checker) containerNames() []string {
+	var out []string
+	for _, svc := range c.services {
+		if cn := scalar(c.svc(svc, "container_name")); cn != "" {
+			out = append(out, cn)
 		}
 	}
-	s := strings.TrimSuffix(b.String(), "\n")
-	if b.Len() == 0 {
-		return nil
-	}
-	return lines(s)
+	return out
 }
 
 // --- Healthchecks (H01, H02) ------------------------------------------------
 
-func (c *checker) hasBlock(key string) bool {
-	v := c.at(manifest.File, nil, key).sub()
-	return v != "null" && v != ""
+// block is whether the manifest has a block at key, as a deploy reads it:
+// absent, null and false are none.
+func (c *checker) block(key string) bool {
+	v, _ := c.m.Get(key)
+	return v != nil && v != false
 }
 
-func (c *checker) healthSection(services string) {
-	built := isFile(composeFile) && services != "" && c.anyBuilt(services)
-	health := c.hasBlock("health")
+func (c *checker) healthSection() {
+	built := isFile(composeFile) && c.anyBuilt()
+	health := c.block("health")
 	if !built && !health {
 		return
 	}
 	c.section("Healthchecks")
 	if built {
 		var bad []string
-		for _, svc := range lines(services) {
-			if svc == "" || !c.built(svc) {
-				continue
-			}
-			if c.must(c.at(composeFile, nil, "services", svc, "healthcheck")) == "null" {
+		for _, svc := range c.services {
+			if c.built(svc) && c.svc(svc, "healthcheck") == nil {
 				bad = append(bad, svc)
 			}
 		}
@@ -917,14 +755,16 @@ func (c *checker) healthSection(services string) {
 		}
 	}
 	if health {
-		ctr := c.must(c.at(manifest.File, "", "health", "container"))
+		h, err := deploy.ReadHealth(c.m)
 		switch {
-		case ctr == "" || ctr == "null":
+		case err != nil:
+			c.failErr(err)
+		case h.Container == "":
 			c.passf("manifest health: names no container — the deploy waits on every container with a healthcheck")
-		case grepX(strings.Join(c.containerNames(services), "\n"), ctr):
-			c.passf("manifest health.container '%s' exists in compose", ctr)
+		case inList(c.containerNames(), h.Container):
+			c.passf("manifest health.container '%s' exists in compose", h.Container)
 		default:
-			c.failf("manifest health.container '%s' not found among compose container_names", ctr)
+			c.failf("manifest health.container '%s' not found among compose container_names", h.Container)
 		}
 	}
 }
@@ -1009,83 +849,109 @@ var (
 	generator  = regexp.MustCompile(`^` + envtpl.Space + `*!`)
 	hint       = regexp.MustCompile(`^` + envtpl.Space + `*#`)
 	inlineHint = regexp.MustCompile(envtpl.Space + `+#.*$`)
-	firstSpace = regexp.MustCompile(envtpl.Space)
 )
 
 // --- Hooks (HK01–HK03) ------------------------------------------------------
 
-func (c *checker) hooksSection(services string) {
-	hooks, backup := c.hasBlock("hooks"), c.hasBlock("backup")
+func (c *checker) hooksSection() {
+	hv, _ := c.m.Get("hooks")
+	hooks, backup := hv != nil, c.block("backup")
 	if !hooks && !backup {
 		return
 	}
 	c.section("Hooks")
-	names := strings.Join(envtpl.SortUniq(c.containerNames(services)), "\n")
-
+	names := c.containerNames()
 	if hooks {
-		hs := c.must(c.q(manifest.File, func(d jv.Value, emit func(jv.Value)) error {
-			h, err := index(d, "hooks")
-			if err != nil {
-				return err
-			}
-			_, vs, err := entries(jv.Alt(h, jv.NewMap()))
-			if err != nil {
-				return err
-			}
-			for _, v := range vs {
-				xs, _ := iter(v, true)
-				for _, x := range xs {
-					emit(x)
-				}
-			}
-			return nil
-		}))
-		if hs == "" {
-			c.passf("Hooks block is empty")
-		} else {
-			var bad []string
-			for _, h := range lines(hs) {
-				if h == "" {
-					continue
-				}
-				ctr := h
-				if loc := firstSpace.FindStringIndex(h); loc != nil {
-					ctr = h[:loc[0]]
-				}
-				if !grepX(names, ctr) {
-					bad = append(bad, ctr)
-				}
-			}
-			if len(bad) == 0 {
-				c.passf("All hook commands target known container_names")
-			} else {
-				c.failf("Hooks reference unknown container_names: %s (set container_name on the target service in compose.prod.yml)", strings.Join(bad, " "))
-			}
+		c.hk01(hv, names)
+	}
+	if backup {
+		c.hk02hk03(names)
+	}
+}
+
+// hk01: each hook deploy would run names a container compose names, read in
+// the manifest's own order.
+func (c *checker) hk01(hv tree.Value, names []string) {
+	lists, err := deploy.ReadHooks(c.m)
+	if err != nil {
+		c.failErr(err)
+		return
+	}
+	var hs []string
+	for _, k := range keysInOrder(hv) {
+		hs = append(hs, lists[k]...)
+	}
+	if len(hs) == 0 {
+		c.passf("Hooks block is empty")
+		return
+	}
+	var bad []string
+	for _, h := range hs {
+		if ctr := deploy.HookContainer(h); !inList(names, ctr) {
+			bad = append(bad, ctr)
 		}
 	}
+	if len(bad) == 0 {
+		c.passf("All hook commands target known container_names")
+	} else {
+		c.failf("Hooks reference unknown container_names: %s (set container_name on the target service in compose.prod.yml)", strings.Join(bad, " "))
+	}
+}
 
-	if backup {
-		var missing []string
-		for _, f := range []string{"check", "command", "extension"} {
-			v := c.must(c.at(manifest.File, "", "backup", f))
-			if v == "" || v == "null" {
-				missing = append(missing, f)
-			}
-		}
-		if len(missing) == 0 {
-			c.passf("Backup hook has check, command, and extension")
-		} else {
-			c.failf("Backup hook missing required field(s): %s", strings.Join(missing, " "))
-		}
+func keysInOrder(v tree.Value) []string {
+	if m, ok := v.(*tree.Map); ok && m != nil {
+		return m.Keys()
+	}
+	return nil
+}
 
-		ctr := c.must(c.at(manifest.File, "", "backup", "container"))
-		switch {
-		case ctr == "" || ctr == "null":
-			c.failf("Backup hook missing 'container' field")
-		case grepX(names, ctr):
-			c.passf("Backup hook container '%s' exists in compose", ctr)
-		default:
-			c.failf("Backup hook container '%s' not found among compose container_names", ctr)
+// hk02hk03: the backup block's fields, each read as a deploy reads it; with
+// all of them there, whatever else a deploy refuses in the block fails too.
+func (c *checker) hk02hk03(names []string) {
+	if bv, _ := c.m.Get("backup"); kind(bv) != "a mapping" {
+		if _, err := deploy.ReadBackup(c.m); err != nil {
+			c.failErr(err)
+		}
+		return
+	}
+	read := func(f string) (string, error) {
+		if v, _ := c.m.Get("backup", f); f == "check" && (v == true || v == false) {
+			return tree.Compact(v), nil
+		}
+		return deploy.Field(c.m, "a string", "backup", f)
+	}
+	var missing []string
+	wrong := false
+	for _, f := range []string{"check", "command", "extension"} {
+		switch v, err := read(f); {
+		case err != nil:
+			c.failErr(err)
+			wrong = true
+		case v == "":
+			missing = append(missing, f)
+		}
+	}
+	switch {
+	case len(missing) > 0:
+		c.failf("Backup hook missing required field(s): %s", strings.Join(missing, " "))
+	case !wrong:
+		c.passf("Backup hook has check, command, and extension")
+	}
+
+	ctr, err := read("container")
+	switch {
+	case err != nil:
+		c.failErr(err)
+	case ctr == "":
+		c.failf("Backup hook missing 'container' field")
+	case inList(names, ctr):
+		c.passf("Backup hook container '%s' exists in compose", ctr)
+	default:
+		c.failf("Backup hook container '%s' not found among compose container_names", ctr)
+	}
+	if err == nil && ctr != "" && len(missing) == 0 && !wrong {
+		if _, err := deploy.ReadBackup(c.m); err != nil {
+			c.failErr(err)
 		}
 	}
 }
@@ -1093,24 +959,12 @@ func (c *checker) hooksSection(services string) {
 // --- Mail (M01) -------------------------------------------------------------
 
 func (c *checker) mailSection() {
-	if !c.hasBlock("mail") {
+	if !c.block("mail") {
 		return
 	}
 	c.section("Mail")
-	kind := strings.TrimSuffix(c.then(manifest.File, func(v jv.Value) (jv.Value, error) {
-		return jv.Type(v), nil
-	}, "mail").sub(), "\r")
-	if kind != "object" {
-		if kind == "" {
-			kind = "unknown"
-		}
-		c.failf("mail: has type '%s' — it has to be a block with a domain: under it", kind)
-		return
-	}
-
-	d := strings.TrimSuffix(c.at(manifest.File, "", "mail", "domain").sub(), "\r")
-	if d == "" || d == "null" {
-		c.failf("mail: has no domain: (the claim is that the VPS mail stack handles that domain)")
+	if d, err := deploy.MailDomain(c.m); err != nil {
+		c.failErr(err)
 	} else {
 		c.passf("Mail claim names domain '%s'", d)
 	}

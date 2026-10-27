@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -28,6 +29,8 @@ type Plan struct {
 	Client string
 	// ClientNote is why a tag's unusable client: was replaced by the name.
 	ClientNote string
+	// HookNotes name the keys under a tag's hooks: that are not hooks, ignored.
+	HookNotes  []string
 	MailDomain string
 	// Hooks holds all four lists; the engine is sent its mode's pair.
 	Hooks  map[string][]string
@@ -38,10 +41,10 @@ type Plan struct {
 
 func trim(s string) string { return strings.TrimFunc(s, unicode.IsSpace) }
 
-// str is the string or number at path, "" for none, null or the string
+// Field is the string or number at path, "" for none, null or the string
 // "null"; CR and surrounding blanks dropped. Anything else is refused as not
 // being what (`a string`, `a whole number`, `a duration like …`).
-func str(m *manifest.Manifest, what string, path ...any) (string, error) {
+func Field(m *manifest.Manifest, what string, path ...any) (string, error) {
 	v, _ := m.Get(path...)
 	switch v.(type) {
 	case nil, string, tree.Number:
@@ -179,7 +182,7 @@ func MailDomain(m *manifest.Manifest) (string, error) {
 	if _, ok := v.(*tree.Map); !ok {
 		return "", cli.Fail("kasbah.yml: mail: is not a block — it has to be a block with a domain: under it (docs/project-manifest.md → mail)")
 	}
-	d, err := str(m, "a string", "mail", "domain")
+	d, err := Field(m, "a string", "mail", "domain")
 	if err != nil {
 		return "", err
 	}
@@ -199,7 +202,7 @@ func readMail(m *manifest.Manifest, p *Plan) error {
 }
 
 func readClient(m *manifest.Manifest, p *Plan, historical bool) error {
-	raw, err := str(m, "a string", "client")
+	raw, err := Field(m, "a string", "client")
 	if err != nil {
 		return err
 	}
@@ -222,13 +225,33 @@ func readClient(m *manifest.Manifest, p *Plan, historical bool) error {
 
 var hookNames = []string{"pre-deploy", "post-deploy", "pre-rollback", "post-rollback"}
 
+// ReadHooks is the manifest's four hook lists as a deploy reads them.
+func ReadHooks(m *manifest.Manifest) (map[string][]string, error) {
+	var p Plan
+	err := readHooks(m, &p, false)
+	return p.Hooks, err
+}
+
 // readHooks validates every hook here: a hook with no command found on the
 // server would be found after the backup and the retag.
-func readHooks(m *manifest.Manifest, p *Plan) error {
+// historical is a tag's manifest, where a key that is not a hook is noted and
+// ignored: a version a server has run stays rollable.
+func readHooks(m *manifest.Manifest, p *Plan, historical bool) error {
 	p.Hooks = map[string][]string{}
 	if h, _ := m.Get("hooks"); h != nil {
-		if _, ok := h.(*tree.Map); !ok {
+		hm, ok := h.(*tree.Map)
+		if !ok {
 			return cli.Fail("kasbah.yml: hooks: is not a block — it holds the lists pre-deploy:, post-deploy:, pre-rollback: and post-rollback: (docs/project-manifest.md)")
+		}
+		for _, k := range hm.Keys() {
+			if slices.Contains(hookNames, k) {
+				continue
+			}
+			if historical {
+				p.HookNotes = append(p.HookNotes, k)
+				continue
+			}
+			return cli.Fail("kasbah.yml: hooks.%s is not a hook kasbah runs — hooks: holds the lists pre-deploy:, post-deploy:, pre-rollback: and post-rollback: (docs/project-manifest.md)", k)
 		}
 	}
 	for _, which := range hookNames {
@@ -256,7 +279,7 @@ func readHooks(m *manifest.Manifest, p *Plan) error {
 			if line == "" || line == "null" {
 				continue
 			}
-			c := hookContainer(line)
+			c := HookContainer(line)
 			if trim(strings.TrimPrefix(line, c)) == "" {
 				return cli.Fail("kasbah.yml: the %s hook '%s' names a container and no command — each entry is \"<container> <command…>\" (docs/project-manifest.md)", which, line)
 			}
@@ -290,6 +313,13 @@ func Seconds(raw string) (int, error) {
 	return n, nil
 }
 
+// ReadHealth is the manifest's health: block as a deploy reads it.
+func ReadHealth(m *manifest.Manifest) (Health, error) {
+	var p Plan
+	err := readHealth(m, &p)
+	return p.Health, err
+}
+
 func readHealth(m *manifest.Manifest, p *Plan) error {
 	p.Health = Health{Timeout: 120}
 	if v, _ := m.Get("health"); v == nil || v == false {
@@ -298,10 +328,10 @@ func readHealth(m *manifest.Manifest, p *Plan) error {
 		return cli.Fail("kasbah.yml: health: is not a block — it holds container: and timeout: (docs/project-manifest.md)")
 	}
 	var err error
-	if p.Health.Container, err = str(m, "a string", "health", "container"); err != nil {
+	if p.Health.Container, err = Field(m, "a string", "health", "container"); err != nil {
 		return err
 	}
-	raw, err := str(m, "a duration like 120s, 5m or 2h", "health", "timeout")
+	raw, err := Field(m, "a duration like 120s, 5m or 2h", "health", "timeout")
 	if err != nil {
 		return err
 	}
@@ -316,9 +346,19 @@ func readHealth(m *manifest.Manifest, p *Plan) error {
 	return nil
 }
 
+// ReadBackup is the manifest's backup: block as a deploy reads it, nil for
+// none.
+func ReadBackup(m *manifest.Manifest) (*Backup, error) {
+	var p Plan
+	err := readBackup(m, &p)
+	return p.Backup, err
+}
+
 func readBackup(m *manifest.Manifest, p *Plan) error {
 	if v, _ := m.Get("backup"); v == nil || v == false {
 		return nil
+	} else if _, ok := v.(*tree.Map); !ok {
+		return cli.Fail("kasbah.yml: backup: is not a block — it holds check:, command:, extension: and container: (docs/project-manifest.md)")
 	}
 	b := &Backup{}
 	// check is a command, and a boolean is the command of that name.
@@ -330,13 +370,13 @@ func readBackup(m *manifest.Manifest, p *Plan) error {
 		to  *string
 	}{{"container", &b.Container}, {"command", &b.Command}, {"pipe", &b.Pipe}, {"extension", &b.Extension}} {
 		var err error
-		if *f.to, err = str(m, "a string", "backup", f.key); err != nil {
+		if *f.to, err = Field(m, "a string", "backup", f.key); err != nil {
 			return err
 		}
 	}
 	if b.Check == "" {
 		var err error
-		if b.Check, err = str(m, "a string", "backup", "check"); err != nil {
+		if b.Check, err = Field(m, "a string", "backup", "check"); err != nil {
 			return err
 		}
 	}
@@ -352,7 +392,7 @@ func readBackup(m *manifest.Manifest, p *Plan) error {
 	case strings.IndexFunc(b.Extension, func(r rune) bool { return r == '/' || unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0:
 		return cli.Fail("kasbah.yml: backup.extension '%s' must be a plain filename extension — it lands in backups/pre-deploy-<timestamp>.<extension>, and versions.log's fields are space-delimited", b.Extension)
 	}
-	raw, err := str(m, "a whole number", "backup", "retain")
+	raw, err := Field(m, "a whole number", "backup", "retain")
 	if err != nil {
 		return err
 	}
@@ -435,7 +475,10 @@ func readPlan(m *manifest.Manifest, pwd, version string, historical bool) (*Plan
 	if err := readClient(m, p, historical); err != nil {
 		return nil, err
 	}
-	for _, f := range []func(*manifest.Manifest, *Plan) error{readHooks, readHealth, readBackup} {
+	if err := readHooks(m, p, historical); err != nil {
+		return nil, err
+	}
+	for _, f := range []func(*manifest.Manifest, *Plan) error{readHealth, readBackup} {
 		if err := f(m, p); err != nil {
 			return nil, err
 		}
