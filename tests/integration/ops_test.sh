@@ -263,15 +263,15 @@ assert '[ "$(cli_err)" = "" ]' \
 assert '[ "$(grep -c . "$tmpdir/out")" = "3" ]' \
     "while the reader got its three lines (got $(grep -c . "$tmpdir/out"))"
 
-# The same pipeline without `-f`: the log fits the pipe buffer, ssh finishes
-# writing before the reader is missed, and the run is an ordinary 0. Recorded so
+# The same pipeline without `-f`, its reader draining after the three lines: no
+# write ever lands on a closed pipe, so the run is an ordinary 0. Recorded so
 # the 255 above reads as "the pipe closed under a write", not "piping is 255".
 ( cd "$projdir" && env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
     "$KASBAH_BIN" logs "$RIG_TARGET" "$c_web" 2>"$tmpdir/err" </dev/null
-  echo "$?" > "$tmpdir/prc" ) | head -3 > "$tmpdir/out"
+  echo "$?" > "$tmpdir/prc" ) | { head -3; cat >/dev/null; } > "$tmpdir/out"
 prc="$(cat "$tmpdir/prc" 2>/dev/null)"
 assert '[ "$prc" = "0" ]' \
-    "a finite log small enough to fit the pipe buffer exits 0 through the same \`| head -3\` (rc '$prc')"
+    "a finite log read through \`| head -3\` by a draining reader exits 0 (rc '$prc')"
 
 # --- -f really follows ----------------------------------------------------------------
 # The distinguishing fact is not that it printed something — the plain run above
