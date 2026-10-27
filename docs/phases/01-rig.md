@@ -104,7 +104,8 @@ swings ±20 s and swamps it. Every assertion was watched going red on a
 false premise; every probe key was watched going missing.
 
 **Watch out for:** every kasbah command the suite will ever run must be
-flag-driven (cross-phase rule 1) — no test may ever block on a prompt.
+flag-driven (CLAUDE.md, "Interactive, never assume") — no test may ever
+block on a prompt.
 
 **Not assertable in this phase:** the plan wanted the smoke test to prove
 `kasbah` fails loudly rather than hangs when a required flag is missing

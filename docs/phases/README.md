@@ -61,32 +61,11 @@ move; Phase 9 now depends on Phase 10.
 
 ## Cross-phase rules
 
-1. **Interactive, never assume.** An unset flag means *prompt*, not *no*
-   (`overview.md` → Interactivity). Every prompt has a flag for scripted use:
-   a `--with-x`/`--no-x` pair for a feature, a differently-spelled pair where
-   that reads better (`--reset-acme`/`--keep-acme`), or a bare `--yes` where
-   the prompt guards a destructive act and declining just aborts. Without a
-   TTY an unanswered prompt is a hard fail naming its own flags. This is also
-   what lets the rig tests drive everything headless. **One deliberate
-   exception, added in Phase 6:** `--acme-staging` does not prompt, because
-   production is both the default and the status quo.
-2. **Frozen contracts — never rename:** `kasbah-net`, entrypoints
-   `web`/`websecure`, certresolver `letsencrypt`, `_shared.yml` middleware
-   names, versions.log's four positional fields, the `KASBAH_` env prefix.
-3. **yq is the kislyuk wrapper (jq dialect).** Do not write mikefarah v4
-   syntax — it will parse differently or not at all.
-4. **Bash discipline:** `set -euo pipefail` everywhere; mind SIGPIPE with
-   `grep -q` under pipefail (capture first, then grep — see check.sh
-   comments); helpers sourced with load guards.
-5. **Tests land with the code, same phase.** Unit suite: `./test.sh`
-   (fast, no rig). Integration suite: requires the rig, opt-in via
-   `KASBAH_RIG_TESTS=1 ./test.sh` (wired in Phase 1).
-6. **Docs are the spec.** When reality disagrees, fix the doc in the same
-   phase — reconciliation is part of every phase's exit bar.
-7. **Compose conventions:** files named `compose.yml` (not
-   docker-compose.yml), no `version:` attribute.
-8. **VPS-side helpers are kasbah-owned** and overwritten on every deploy;
-   projects never vendor kasbah bash.
+The repository's rules have one home: `CLAUDE.md` (Hard conventions, Frozen
+contracts, Commands), with interactivity specified in `overview.md` →
+Interactivity. Every phase follows them, and reconciling the docs with what it
+built is part of every phase's exit bar; a phase file records only what is
+particular to its own work.
 
 ## Before starting Phase 9 (after Phase 10)
 
@@ -101,9 +80,10 @@ Three things Phase 10 leaves for this phase. **The arm64 server binary has never
 run** — 9.5 on the lab RPi is its first execution (Phase 10's last exit criterion
 waits on it). **A hand-edited mail registry with no `primary_domain`, a non-domain
 entry or a non-list `domains:` is now refused by every command** (D4) — check
-the original project's before its cutover. **Between releases `VERSION` is a pre-release**
-(`1.0.2-dev`), or a server already holding the release keeps it and new
-server-side code never ships.
+the original project's before its cutover. **`VERSION` stays at the last release between
+releases**: the build stamp makes every later build a pre-release of the next
+patch (`overview.md` → Distribution), so a server holding the release still
+takes new server-side code.
 
 ## Before Phase 10 (history)
 

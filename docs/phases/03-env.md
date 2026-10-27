@@ -126,7 +126,8 @@ injection into the deploy path from Phase 2.
 
 **Watch out for:** `ssh -t` breaks when the local side has no TTY — the
 interactive path needs a TTY end to end; without one, fall back to the
-exit-5 hard fail (cross-phase rule 1), never a hung prompt.
+exit-5 hard fail (CLAUDE.md, "Interactive, never assume"), never a hung
+prompt.
 
 ## Carried in from Phase 2
 
