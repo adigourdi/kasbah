@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/jv"
+	"github.com/adigourdi/kasbah/internal/tree"
 )
 
 func golden(t *testing.T, name string) string {
@@ -21,17 +21,17 @@ func golden(t *testing.T, name string) string {
 
 var testBackup = &Backup{RepoBase: "s3:x", At: "03:00", Jitter: 30, Timeout: 3600, Retention: Retention{7, 4, 6}}
 
-// Build's bytes against the jq program it replaces (testdata/README).
+// Build's bytes against the frozen markers in testdata (README).
 func TestBuild(t *testing.T) {
-	existing, err := jv.ParseOne([]byte(golden(t, "existing-input.json")))
+	existing, err := tree.ParseOne([]byte(golden(t, "existing-input.json")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	nullBackup, _ := jv.ParseOne([]byte(`{"backup":null}`))
+	nullBackup, _ := tree.ParseOne([]byte(`{"backup":null}`))
 	cases := []struct {
 		golden   string
 		f        Fields
-		existing jv.Value
+		existing tree.Value
 		backup   *Backup
 	}{
 		{"fresh.json", Fields{"1.0.0", "/apps", "/data", "2", "1g"}, nil, nil},
@@ -41,9 +41,9 @@ func TestBuild(t *testing.T) {
 		{"null-backup.json", Fields{"1.0.0", "/apps", "/data", "2", "1g"}, nullBackup, nil},
 	}
 	for _, c := range cases {
-		var e *jv.Map
+		var e *tree.Map
 		if c.existing != nil {
-			e = c.existing.(*jv.Map)
+			e = c.existing.(*tree.Map)
 		}
 		m, err := Build(c.f, e, c.backup)
 		if err != nil {
@@ -61,18 +61,17 @@ func TestBuild(t *testing.T) {
 		t.Error("a re-run changes the marker")
 	}
 	for _, in := range []string{`{"backup":"x"}`, `{"backup":true}`, `{"backup":{"retention":"x"}}`} {
-		bad, _ := jv.ParseOne([]byte(in))
-		if _, err := Build(Fields{}, bad.(*jv.Map), testBackup); err == nil {
-			t.Errorf("%s merges a new backup; jq errors", in)
+		bad, _ := tree.ParseOne([]byte(in))
+		if _, err := Build(Fields{}, bad.(*tree.Map), testBackup); err == nil {
+			t.Errorf("%s merges a new backup", in)
 		}
 	}
-	// jq: `$e.backup.retention` on false — Cannot index boolean with string "retention".
-	off, _ := jv.ParseOne([]byte(`{"backup":false}`))
-	if _, err := Build(Fields{}, off.(*jv.Map), testBackup); err == nil || err.Error() != `Cannot index boolean with string "retention"` {
+	off, _ := tree.ParseOne([]byte(`{"backup":false}`))
+	if _, err := Build(Fields{}, off.(*tree.Map), testBackup); err == nil || err.Error() != "the existing marker's backup is false, not an object, so the new backup settings cannot be merged into it" {
 		t.Errorf("backup false: %v", err)
 	}
-	if m, err := Build(Fields{}, off.(*jv.Map), nil); err != nil || jv.Compact(m) != `{"backup":false,"kasbah_version":"","apps_path":"","data_path":"","cpu_limit":"","mem_limit":""}` {
-		t.Errorf("backup false, none given: %v %v", jv.Compact(m), err)
+	if m, err := Build(Fields{}, off.(*tree.Map), nil); err != nil || tree.Compact(m) != `{"backup":false,"kasbah_version":"","apps_path":"","data_path":"","cpu_limit":"","mem_limit":""}` {
+		t.Errorf("backup false, none given: %v %v", tree.Compact(m), err)
 	}
 	if Mode != 0o644 || Path("/srv/apps") != "/srv/apps/.kasbah/server.json" {
 		t.Error("mode or path")
@@ -97,7 +96,7 @@ func TestValidate(t *testing.T) {
 	if v, _ := m.JSON.Get("future"); v != "kept" {
 		t.Error("unknown keys survive for later readers")
 	}
-	// $(…) drops trailing newlines before the checks see the values.
+	// Trailing newlines are dropped before the checks see the values.
 	if m, err := Validate([]byte(`{"apps_path":"/apps\n","data_path":"/data\n\n","cpu_limit":"2\n","mem_limit":"1g"}`), path, target, initCmd); err != nil || m.AppsPath != "/apps" || m.CPULimit != "2" {
 		t.Errorf("trailing newlines: %+v %v", m, err)
 	}
@@ -128,6 +127,20 @@ func TestValidate(t *testing.T) {
 	_, err = Validate([]byte(`{"apps_path":"/a","data_path":"/d","cpu_limit":"1"}`), path, target, initCmd)
 	if e := err.(*cli.Error); len(e.Lines) != 5 || e.Lines[4] != "(docs/env-template.md). Re-run `"+initCmd+"` to rewrite it." {
 		t.Errorf("limit refusal lines %q", e.Lines)
+	}
+}
+
+// A marker as kasbah 1.1.0 wrote it (jq's rendering) reads, and a re-run of
+// init over it writes the same bytes back.
+func TestReadsJqWrittenMarker(t *testing.T) {
+	body := golden(t, "existing-backup.json")
+	m, err := Validate([]byte(body), path, target, initCmd)
+	if err != nil || m.AppsPath != "/srv/apps" || m.CPULimit != "14.4" {
+		t.Fatalf("%+v %v", m, err)
+	}
+	again, err := Build(Fields{"1.0.0", "/srv/apps", "/srv/data", "14.4", "54g"}, m.JSON, nil)
+	if err != nil || string(Render(again)) != body {
+		t.Errorf("re-rendered\n%s\nwant\n%s", Render(again), body)
 	}
 }
 

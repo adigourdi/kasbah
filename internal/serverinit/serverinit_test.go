@@ -234,6 +234,25 @@ func TestExtract(t *testing.T) {
 	if _, err := DashboardApex("http: [1\n"); err == nil {
 		t.Error("broken YAML parses")
 	}
+	for _, doc := range []string{"http: x\n", "http:\n  routers: [1]\n"} {
+		if _, err := DashboardApex(doc); !Unparsed(err) {
+			t.Errorf("%q: a wrong-typed step reads: %v", doc, err)
+		}
+		if _, err := ExtractAuth(doc); doc == "http: x\n" && !Unparsed(err) {
+			t.Errorf("%q: auth through a wrong-typed step reads: %v", doc, err)
+		}
+	}
+	for _, doc := range []string{"http:\n  middlewares: {}\n", "http: ~\n", "other: 1\n"} {
+		if d, err := DashboardApex(doc); err != nil || d != "" {
+			t.Errorf("%q: an absent rule: %q %v", doc, d, err)
+		}
+	}
+	if _, err := StaticField("certificatesResolvers: x\n", "email"); !Unparsed(err) {
+		t.Errorf("a wrong-typed resolver reads: %v", err)
+	}
+	if e, err := StaticField("certificatesResolvers: {}\n", "email"); err != nil || e != "" {
+		t.Errorf("an absent resolver: %q %v", e, err)
+	}
 	for _, c := range []struct{ doc, want string }{
 		{"services:\n  traefik:\n    image: traefik:v3.8.0\n", "traefik:v3.8.0"},
 		{"services:\n  traefik:\n    image: mirror.example/traefik:v3\n", ""},

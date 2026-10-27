@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/jv"
+	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
 
@@ -27,22 +27,23 @@ func Base(ref string) string {
 	return ref
 }
 
-// Built is every service of the compose document with a build: key, in jq's
-// `keys` order. A built service must name its image: deploy moves
+// Built is every service of the compose document with a build: key, by
+// service name. A built service must name its image: deploy moves
 // <image>:current, and compose's generated name is not one it can move.
-func Built(doc jv.Value, project, version string) ([]Image, error) {
+func Built(doc tree.Value, project, version string) ([]Image, error) {
 	unreadable := cli.Fail("%s: could not read its services", Compose)
-	var services jv.Value
+	var services tree.Value
 	switch d := doc.(type) {
 	case nil:
-	case *jv.Map:
+	case *tree.Map:
 		services, _ = d.Get("services")
 	default:
 		return nil, unreadable
 	}
-	var svcs *jv.Map
-	switch s := jv.Alt(services, jv.NewMap()).(type) {
-	case *jv.Map:
+	svcs := tree.NewMap()
+	switch s := services.(type) {
+	case nil:
+	case *tree.Map:
 		svcs = s
 	default:
 		return nil, unreadable
@@ -53,7 +54,7 @@ func Built(doc jv.Value, project, version string) ([]Image, error) {
 	var out []Image
 	for _, name := range keys {
 		v, _ := svcs.Get(name)
-		svc, ok := v.(*jv.Map)
+		svc, ok := v.(*tree.Map)
 		if !ok {
 			return nil, cli.Fail("%s: could not read service '%s'", Compose, name)
 		}
@@ -61,7 +62,8 @@ func Built(doc jv.Value, project, version string) ([]Image, error) {
 			continue
 		}
 		img, _ := svc.Get("image")
-		image := strings.TrimSuffix(jv.Raw(jv.Alt(img, "")), "\r")
+		image, _ := tree.String(img)
+		image = strings.TrimSuffix(image, "\r")
 		if image == "" || image == "null" {
 			return nil, cli.Fail("%s: service '%s' builds an image but does not name one", Compose, name).Cont(
 				"kasbah tags what it builds <image>:<version>, and deploy moves",
@@ -76,7 +78,7 @@ func Built(doc jv.Value, project, version string) ([]Image, error) {
 
 // ReadCompose loads the compose file in the current directory; why says, on
 // a missing file, what the caller needed it for.
-func ReadCompose(pwd, why string) (jv.Value, error) {
+func ReadCompose(pwd, why string) (tree.Value, error) {
 	if fi, err := os.Stat(Compose); err != nil || !fi.Mode().IsRegular() {
 		return nil, cli.Fail("%s: not found (cwd=%s) — %s", Compose, pwd, why)
 	}

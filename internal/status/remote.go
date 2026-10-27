@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/backuprec"
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/probe"
+	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
@@ -139,8 +139,8 @@ func Collect(apps string) *Report {
 	}
 	if r.MarkerState == "ok" {
 		if b, err := os.ReadFile(marker); err == nil {
-			if m, err := jv.ParseOne(b); err == nil {
-				if v, ok := jv.Get(m, "data_path"); ok {
+			if m, err := tree.ParseOne(b); err == nil {
+				if v, ok := tree.Lookup(m, "data_path"); ok {
 					if s, ok := v.(string); ok {
 						r.DataPath = s
 					}

@@ -34,9 +34,9 @@ func read(t *testing.T, path string) string {
 	return string(b)
 }
 
-// tree is an apps path with three projects (two sharing a client, one with
+// appsTree is an apps path with three projects (two sharing a client, one with
 // a record that is no name), mail, and a password for acme.
-func tree(t *testing.T) (apps, data string) {
+func appsTree(t *testing.T) (apps, data string) {
 	root := t.TempDir()
 	apps, data = root+"/apps", root+"/apps/data"
 	for _, d := range []string{"/.kasbah/backup/repos", "/.kasbah/backup/state", "/traefik", "/backups"} {
@@ -68,7 +68,7 @@ func runner(apps, data string, at time.Time) (*Runner, *bytes.Buffer, *bytes.Buf
 }
 
 func TestPlan(t *testing.T) {
-	apps, data := tree(t)
+	apps, data := appsTree(t)
 	r, out, errb, _ := runner(apps, data, time.Now())
 	want := strings.Join([]string{
 		"project alpha acme record", "project beta acme record", "project gamma gamma invalid",
@@ -127,7 +127,7 @@ func TestNext(t *testing.T) {
 }
 
 func TestHealth(t *testing.T) {
-	apps, data := tree(t)
+	apps, data := appsTree(t)
 	r, out, errb, _ := runner(apps, data, time.Unix(1700000000, 0))
 	if rc := r.Run([]string{"health"}); rc != 1 || !strings.Contains(errb.String(), "has not reported in") {
 		t.Errorf("no record: %d %s", rc, errb)
@@ -176,7 +176,7 @@ esac
 `
 
 func TestOnce(t *testing.T) {
-	apps, data := tree(t)
+	apps, data := appsTree(t)
 	os.Remove(apps + "/gamma/.kasbah-client")
 	write(t, apps+"/.kasbah/backup/repos/mail.pass", "pw\n")
 	write(t, apps+"/.kasbah/backup/env", "# c\nKASBAH_BACKUP_REPO_BASE=rest:http://u:p@h/b/\nRESTIC_PASSWORD=nope\nAWS_KEY=k\n")
@@ -242,7 +242,7 @@ func TestOnce(t *testing.T) {
 }
 
 func TestOnceBounded(t *testing.T) {
-	apps, data := tree(t)
+	apps, data := appsTree(t)
 	write(t, apps+"/.kasbah/backup/env", "KASBAH_BACKUP_REPO_BASE=b/\n")
 	os.RemoveAll(apps + "/mail")
 	os.RemoveAll(apps + "/gamma")
@@ -263,7 +263,7 @@ func TestOnceBounded(t *testing.T) {
 }
 
 func TestLastRunCarried(t *testing.T) {
-	apps, data := tree(t)
+	apps, data := appsTree(t)
 	rec := apps + "/.kasbah/backup/state/status"
 	r, _, _, _ := runner(apps, data, time.Unix(1700001000, 0))
 	for _, tc := range []struct{ body, want string }{
@@ -292,7 +292,7 @@ func TestLastRunCarried(t *testing.T) {
 }
 
 func TestRead(t *testing.T) {
-	apps, data := tree(t)
+	apps, data := appsTree(t)
 	write(t, apps+"/.kasbah/backup/env", "AWS_ACCESS_KEY_ID=secret-value\nRESTIC_REPOSITORY=x\n")
 	write(t, apps+"/.kasbah/backup/compose.yml", "name: kasbah-backup\n")
 	os.MkdirAll(data+"/vol", 0o755)
@@ -393,7 +393,7 @@ func TestLayout(t *testing.T) {
 }
 
 func TestRepos(t *testing.T) {
-	apps, _ := tree(t)
+	apps, _ := appsTree(t)
 	write(t, apps+"/.kasbah/backup/repos/.hidden.pass", "x")
 	r := Repos(apps)
 	if strings.Join(r.Repos, " ") != "acme" || r.Pass["acme"] != base64.StdEncoding.EncodeToString([]byte("pw\n")) {
@@ -405,7 +405,7 @@ const lastRun = "state=sleeping\nsince=1700000000\ndeadline=1700000900\nnext_run
 
 // A scheduler brought up by a restart carries the stack's history (12e543a).
 func TestScheduleCarriesLastRun(t *testing.T) {
-	apps, data := tree(t)
+	apps, data := appsTree(t)
 	rec := apps + "/.kasbah/backup/state/status"
 	write(t, rec, lastRun)
 	r, _, _, _ := runner(apps, data, time.Unix(1700001000, 0))
@@ -430,7 +430,7 @@ func TestScheduleCarriesLastRun(t *testing.T) {
 // A hand-run `once` beside a scheduler carries the record's last run into its
 // running record, with its own start, under a deadline sized to the plan.
 func TestOnceRunningRecord(t *testing.T) {
-	apps, data := tree(t)
+	apps, data := appsTree(t)
 	rec := apps + "/.kasbah/backup/state/status"
 	write(t, rec, lastRun)
 	write(t, apps+"/.kasbah/backup/env", "KASBAH_BACKUP_REPO_BASE=b/\n")

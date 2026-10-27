@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/adigourdi/kasbah/internal/jv"
+	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
 
@@ -46,7 +46,7 @@ func convert(in io.Reader, out io.Writer) error {
 	}
 	w := bufio.NewWriter(out)
 	for _, d := range docs {
-		w.WriteString(jv.Compact(d))
+		w.WriteString(tree.Compact(d))
 		w.WriteByte('\n')
 	}
 	return w.Flush()

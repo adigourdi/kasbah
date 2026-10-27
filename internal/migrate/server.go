@@ -15,9 +15,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/probe"
+	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
@@ -133,14 +133,14 @@ func lockAll(apps string) (locks, error) {
 	return held, nil
 }
 
-func readMarker(apps string) (*jv.Map, []byte, error) {
+func readMarker(apps string) (*tree.Map, []byte, error) {
 	path := marker.Path(apps)
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not read %s: %v", path, err)
 	}
-	v, perr := jv.ParseOne(body)
-	m, ok := v.(*jv.Map)
+	v, perr := tree.ParseOne(body)
+	m, ok := v.(*tree.Map)
 	if perr != nil || !ok {
 		return nil, nil, fmt.Errorf("%s is not a JSON object", path)
 	}
@@ -149,9 +149,8 @@ func readMarker(apps string) (*jv.Map, []byte, error) {
 
 // Majors is a marker's major and ours as integers; a version that cannot be
 // compared is an error here, never a guess.
-func Majors(m *jv.Map, ours string) (from, to int, err error) {
-	v, _ := m.Get("kasbah_version")
-	version := strings.TrimRight(jv.ToString(jv.Alt(v, "")), "\n")
+func Majors(m *tree.Map, ours string) (from, to int, err error) {
+	version := strings.TrimRight(tree.TextAt(m, "kasbah_version"), "\n")
 	from, err1 := strconv.Atoi(marker.Major(version))
 	to, err2 := strconv.Atoi(marker.Major(ours))
 	if err1 != nil || from < 0 {
@@ -256,9 +255,9 @@ func Run(apps, ours string, steps []Step, now time.Time) (*Report, error) {
 			return nil, fmt.Errorf("%v — the marker still says major %d; the files are in %s, and a rerun picks up where this stopped", err, from, r.Snapshot)
 		}
 	}
-	own := jv.NewMap()
+	own := tree.NewMap()
 	own.Set("kasbah_version", ours)
-	if err := writeAtomic(marker.Path(apps), marker.Render(jv.Add(m, own)), marker.Mode); err != nil {
+	if err := writeAtomic(marker.Path(apps), marker.Render(tree.Merge(m, own)), marker.Mode); err != nil {
 		return nil, err
 	}
 	r.Marker = "updated"

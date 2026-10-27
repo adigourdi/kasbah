@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/jv"
+	"github.com/adigourdi/kasbah/internal/tree"
 )
 
 const version = "0.9.0-dev"
@@ -80,15 +80,18 @@ func TestRefusals(t *testing.T) {
 	refused(t, write(t, "schema: 1\nname: Demo_App\n"), 1, "invalid name 'Demo_App'")
 	refused(t, write(t, "schema: 1\n"), 1, "missing required field 'name'")
 	refused(t, write(t, "schema: 1\nname: \"null\"\n"), 1, "missing required field 'name'")
-	refused(t, write(t, "schema: 1\nname: false\n"), 1, "missing required field 'name'")
+	refused(t, write(t, "schema: 1\nname: false\n"), 1, "name: must be a string, not false")
+	refused(t, write(t, "schema: 1\nname: demo\ndomain: false\n"), 1, "domain: must be a string, not false")
+	refused(t, write(t, "schema: 1\nkasbah_version: true\nname: demo\n"), 1, "kasbah_version: must be a string, not true")
+	refused(t, write(t, "schema: false\nname: demo\n"), 1, "schema must be an integer (got 'false')")
 	refused(t, write(t, "schema: 1\nname: [unterminated\n"), 1, "could not parse YAML")
-	refused(t, write(t, "just a string\n"), 1, `Cannot index string with "schema"`)
-	refused(t, write(t, "- a\n"), 1, `Cannot index array with "schema"`)
+	refused(t, write(t, "just a string\n"), 1, "the document is not a mapping")
+	refused(t, write(t, "- a\n"), 1, "the document is not a mapping")
 	refused(t, write(t, "schema: 1\nname: a\n---\nschema: 1\nname: b\n"), 1, "expected a single YAML document")
 	refused(t, write(t, ""), 1, "expected a single YAML document")
 	refused(t, write(t, "# only a comment\n"), 1, "expected a single YAML document")
-	// A field rendered over several lines breaks the five-line read, as in Bash.
-	refused(t, write(t, "schema: 1\nname: demo\ndomain: {a: 1}\n"), 1, "expected a single YAML document")
+	refused(t, write(t, "schema: 1\nname: demo\ndomain: {a: 1}\n"), 1, "domain: is a list or a mapping")
+	refused(t, write(t, "schema: 1\nname: \"de\\nmo\"\n"), 1, "name: spans more than one line")
 	for _, r := range Reserved {
 		p := write(t, "schema: 1\nkasbah_version: 0.1.0\nname: "+r+"\ndomain: \"r.test\"\nsync: []\n")
 		refused(t, p, 1, "is reserved — kasbah owns <apps>/"+r+" on every server (reserved: traefik mail data backups)")
@@ -133,8 +136,8 @@ func TestRender(t *testing.T) {
 	if err != nil || m.Name != "integration" || m.Domain != "" {
 		t.Errorf("written manifest reads back as %+v %v", m, err)
 	}
-	if v, _ := m.Get("sync"); jv.Compact(v) != `["compose.prod.yml -> compose.yml",".env.prod.example"]` {
-		t.Errorf("sync %v", jv.Compact(v))
+	if v, _ := m.Get("sync"); tree.Compact(v) != `["compose.prod.yml -> compose.yml",".env.prod.example"]` {
+		t.Errorf("sync %v", tree.Compact(v))
 	}
 }
 

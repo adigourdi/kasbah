@@ -14,11 +14,11 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/buildpush"
 	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/vlog"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
@@ -94,34 +94,35 @@ func Repos(compose string) (repos []string, ok bool) {
 	}
 	seen := map[string]bool{}
 	for _, d := range docs {
-		var svcs []jv.Value
-		sv, found := jv.Get(d, "services")
-		if !found {
+		var svcs []tree.Value
+		var sv tree.Value
+		switch d := d.(type) {
+		case nil:
+		case *tree.Map:
+			sv, _ = d.Get("services")
+		default:
 			return nil, false
 		}
-		switch s := jv.Alt(sv, nil).(type) {
+		switch s := sv.(type) {
 		case nil:
-		case *jv.Map:
+		case *tree.Map:
 			for _, k := range s.Keys() {
 				v, _ := s.Get(k)
 				svcs = append(svcs, v)
 			}
-		case []jv.Value:
+		case []tree.Value:
 			svcs = s
 		default:
 			return nil, false
 		}
 		for _, v := range svcs {
-			m, isMap := v.(*jv.Map)
+			m, isMap := v.(*tree.Map)
 			if !isMap || !m.Has("build") {
 				continue
 			}
 			img, _ := m.Get("image")
-			if img == nil || img == false || img == "" {
-				continue
-			}
-			ref := strings.TrimSuffix(jv.Raw(img), "\r")
-			if ref == "" {
+			ref, _ := tree.String(img)
+			if ref = strings.TrimSuffix(ref, "\r"); ref == "" {
 				continue
 			}
 			if b := buildpush.Base(ref); !seen[b] {
@@ -438,13 +439,12 @@ func readScan(out []byte, target string) (*Scan, error) {
 
 // dataDir is the marker's data_path when it is a direct child of apps.
 func dataDir(body []byte, apps, path, target string) (string, error) {
-	v, err := jv.ParseOne(body)
-	m, ok := v.(*jv.Map)
+	v, err := tree.ParseOne(body)
+	m, ok := v.(*tree.Map)
 	if err != nil || !ok {
 		return "", cli.Fail("%s on %s does not parse — prune will not decide a deletion against a marker it cannot read", path, target)
 	}
-	dv, _ := m.Get("data_path")
-	data := strings.TrimRight(jv.ToString(jv.Alt(dv, "")), "\n")
+	data := strings.TrimRight(tree.TextAt(m, "data_path"), "\n")
 	rest, found := strings.CutPrefix(data, apps+"/")
 	if !found || rest == "" || strings.Contains(rest, "/") {
 		return "", nil

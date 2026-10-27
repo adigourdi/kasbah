@@ -11,11 +11,11 @@ import (
 	"github.com/adigourdi/kasbah/internal/backup"
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/tmpl"
+	"github.com/adigourdi/kasbah/internal/tree"
 )
 
 const bkCmd = "server init"
@@ -63,13 +63,12 @@ func (v *BackupValues) Marker() *marker.Backup {
 		Retention: marker.Retention{Daily: v.Daily, Weekly: v.Weekly, Monthly: v.Monthly}}
 }
 
-// recorded is `.backup.<path> // "" | tostring` of an existing marker.
-func recorded(m *jv.Map, path ...any) string {
+// recorded is an existing marker's backup.<path> as text, "" for none or null.
+func recorded(m *tree.Map, path ...any) string {
 	if m == nil {
 		return ""
 	}
-	v, _ := jv.Get(m, append([]any{"backup"}, path...)...)
-	return jv.ToString(jv.Alt(v, ""))
+	return tree.TextAt(m, append([]any{"backup"}, path...)...)
 }
 
 func in(ss []string, s string) bool {
@@ -84,7 +83,7 @@ func in(ss []string, s string) bool {
 // BackupResolve reproduces what the marker records, asks for what nothing
 // says, and asks for a password only for a repository without one: a
 // password on the server is never rewritten.
-func BackupResolve(out *cli.Output, p *prompt.Prompter, o Options, r *backup.ReadReport, existing *jv.Map) (*BackupValues, error) {
+func BackupResolve(out *cli.Output, p *prompt.Prompter, o Options, r *backup.ReadReport, existing *tree.Map) (*BackupValues, error) {
 	b := o.Bk
 	v := &BackupValues{RepoBase: b.RepoBase, BaseOrigin: "flag", Pass: map[string]string{}, HasPass: r.HasPass}
 	switch r.Dir {

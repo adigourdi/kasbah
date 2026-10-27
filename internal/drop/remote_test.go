@@ -25,7 +25,7 @@ func stubDocker(t *testing.T, fn func(args []string) (string, error)) *[][]strin
 	return &calls
 }
 
-func tree(t *testing.T) (apps, data string) {
+func appsTree(t *testing.T) (apps, data string) {
 	t.Helper()
 	root := t.TempDir()
 	apps, data = filepath.Join(root, "apps"), filepath.Join(root, "apps", "data")
@@ -43,7 +43,7 @@ func tree(t *testing.T) (apps, data string) {
 }
 
 func TestScan(t *testing.T) {
-	apps, data := tree(t)
+	apps, data := appsTree(t)
 	stubDocker(t, func(a []string) (string, error) {
 		switch a[0] {
 		case "ps":
@@ -100,7 +100,7 @@ func report(t *testing.T, out string) ActReport {
 }
 
 func TestActGuards(t *testing.T) {
-	apps, data := tree(t)
+	apps, data := appsTree(t)
 	calls := stubDocker(t, func([]string) (string, error) { return "", nil })
 	base := ActArgs{Apps: apps, Data: data, Name: "built-app", RegSize: "0", RegSum: "-", RegPrev: "-"}
 	for _, c := range []struct {
@@ -141,7 +141,7 @@ func TestActGuards(t *testing.T) {
 }
 
 func TestActPlain(t *testing.T) {
-	apps, data := tree(t)
+	apps, data := appsTree(t)
 	calls := stubDocker(t, func(a []string) (string, error) {
 		if a[0] == "image" && a[2] == "bad:1" {
 			return "", &os.PathError{Op: "rm", Path: "bad:1", Err: os.ErrPermission}
@@ -175,7 +175,7 @@ func TestActPlain(t *testing.T) {
 }
 
 func TestActPrune(t *testing.T) {
-	apps, data := tree(t)
+	apps, data := appsTree(t)
 	stubDocker(t, func([]string) (string, error) { return "", nil })
 	reg := filepath.Join(apps, "mail", "kasbah.yml")
 	prev, _ := os.ReadFile(reg)
@@ -213,7 +213,7 @@ func TestActPrune(t *testing.T) {
 	}
 
 	// The registry changed between the plan's read and the act: left alone.
-	apps, data = tree(t)
+	apps, data = appsTree(t)
 	os.WriteFile(filepath.Join(apps, "mail", "kasbah.yml"), []byte("primary_domain: a.test\ndomains: [b.test]\n"), 0o644)
 	a.Apps, a.Data = apps, data
 	so, _, _ = runAct(t, a, string(body))
@@ -236,7 +236,7 @@ func snapshot(root string) string {
 }
 
 func TestActRefusalsChangeNothing(t *testing.T) {
-	apps, data := tree(t)
+	apps, data := appsTree(t)
 	calls := stubDocker(t, func([]string) (string, error) { return "", nil })
 	before := snapshot(filepath.Dir(apps))
 	for _, n := range []string{"data", "backups", ".kasbah", "traefik", "mail"} {
@@ -265,7 +265,7 @@ func TestActRefusalsChangeNothing(t *testing.T) {
 // --data-path equal to --apps-path is a layout init accepts: <data>/<name> is
 // then the project directory itself, and --prune goes ahead.
 func TestActDataEqualsApps(t *testing.T) {
-	apps, _ := tree(t)
+	apps, _ := appsTree(t)
 	stubDocker(t, func([]string) (string, error) { return "", nil })
 	so, se, code := runAct(t, ActArgs{Apps: apps, Data: apps, Name: "built-app", Prune: true, RegSize: "0", RegSum: "-", RegPrev: "-"}, "")
 	if code != 0 {
@@ -295,7 +295,7 @@ func TestLockStateUnknown(t *testing.T) {
 }
 
 func TestActOverlapUncleanPaths(t *testing.T) {
-	apps, _ := tree(t)
+	apps, _ := appsTree(t)
 	calls := stubDocker(t, func([]string) (string, error) { return "", nil })
 	root := filepath.Dir(apps)
 	unclean := strings.Replace(apps, "/apps", "//apps", 1)

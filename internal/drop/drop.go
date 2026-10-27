@@ -21,7 +21,6 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/env"
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/mail"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/marker"
@@ -30,6 +29,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/internal/tree"
 )
 
 // ErrHelp is --help: the usage on stdout, exit 0.
@@ -509,22 +509,22 @@ func (p *Plan) pruneCliff(out *cli.Output) error {
 // outgoing steps need: backup:'s, or a pre-deploy hook. A drop removes both.
 func needsAllowStopped(m *manifest.Manifest) bool {
 	if v, _ := m.Get("backup", "container"); v != nil && v != false {
-		if s := strings.TrimSuffix(jv.Raw(v), "\r"); s != "" && s != "null" {
+		if s := strings.TrimSuffix(tree.Text(v), "\r"); s != "" && s != "null" {
 			return true
 		}
 	}
 	v, _ := m.Get("hooks", "pre-deploy")
 	switch h := v.(type) {
-	case []jv.Value:
+	case []tree.Value:
 		return len(h) > 0
-	case *jv.Map:
-		return len(h.Keys()) > 0
+	case *tree.Map:
+		return h.Len() > 0
 	case string:
 		return h != ""
-	case nil, bool:
-		return false
+	case tree.Number:
+		return h != "0"
 	}
-	return jv.Raw(v) != "0"
+	return false
 }
 
 // Run is the command.

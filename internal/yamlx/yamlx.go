@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/adigourdi/kasbah/internal/jv"
+	"github.com/adigourdi/kasbah/internal/tree"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -37,9 +37,9 @@ const expansionFactor = 1000
 
 // Load converts a YAML stream into its documents. An empty or comment-only
 // stream is no documents; anything unreadable fails the lot.
-func Load(data []byte) ([]jv.Value, error) {
+func Load(data []byte) ([]tree.Value, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))))
-	var docs []jv.Value
+	var docs []tree.Value
 	for {
 		var n yaml.Node
 		err := dec.Decode(&n)
@@ -59,7 +59,7 @@ func Load(data []byte) ([]jv.Value, error) {
 }
 
 // LoadFile is Load over a file's content.
-func LoadFile(path string) ([]jv.Value, error) {
+func LoadFile(path string) ([]tree.Value, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -83,7 +83,7 @@ type walker struct {
 	budget int
 }
 
-func (w *walker) value(n *yaml.Node) (jv.Value, error) {
+func (w *walker) value(n *yaml.Node) (tree.Value, error) {
 	if w.budget--; w.budget < 0 {
 		return nil, refuse(n, "aliases expand the document past %d times its size", expansionFactor)
 	}
@@ -101,7 +101,7 @@ func (w *walker) value(n *yaml.Node) (jv.Value, error) {
 		defer delete(w.open, n.Alias)
 		return w.value(n.Alias)
 	case yaml.SequenceNode:
-		out := make([]jv.Value, 0, len(n.Content))
+		out := make([]tree.Value, 0, len(n.Content))
 		for _, c := range n.Content {
 			v, err := w.value(c)
 			if err != nil {
@@ -119,7 +119,7 @@ func (w *walker) value(n *yaml.Node) (jv.Value, error) {
 // mapping keeps each key at its first place with its last value; `<<` is such
 // a key, and its last value merges in at its first place beneath the
 // mapping's own keys. Every value must convert, kept or not.
-func (w *walker) mapping(n *yaml.Node) (*jv.Map, error) {
+func (w *walker) mapping(n *yaml.Node) (*tree.Map, error) {
 	var keys []string
 	names := make([]string, len(n.Content)/2)
 	own := map[string]bool{}
@@ -142,8 +142,8 @@ func (w *walker) mapping(n *yaml.Node) (*jv.Map, error) {
 		}
 		names[i] = ks
 	}
-	vals := map[string]jv.Value{}
-	var merged *jv.Map
+	vals := map[string]tree.Value{}
+	var merged *tree.Map
 	for i, ks := range names {
 		v := n.Content[2*i+1]
 		var err error
@@ -156,7 +156,7 @@ func (w *walker) mapping(n *yaml.Node) (*jv.Map, error) {
 			return nil, err
 		}
 	}
-	m := jv.NewMap()
+	m := tree.NewMap()
 	for i := 0; i <= len(keys); i++ {
 		if i == mergeAt {
 			for _, k := range merged.Keys() {
@@ -175,12 +175,12 @@ func isMerge(k *yaml.Node) bool { return k.Kind == yaml.ScalarNode && k.ShortTag
 
 // merge is a mapping, an alias to one, or a sequence of those, an earlier
 // source winning over a later; keys the mapping has itself are left out.
-func (w *walker) merge(v *yaml.Node, own map[string]bool) (*jv.Map, error) {
+func (w *walker) merge(v *yaml.Node, own map[string]bool) (*tree.Map, error) {
 	srcs := []*yaml.Node{v}
 	if v.Kind == yaml.SequenceNode {
 		srcs = v.Content
 	}
-	out := jv.NewMap()
+	out := tree.NewMap()
 	for _, s := range srcs {
 		if deref(s).Kind != yaml.MappingNode {
 			return nil, refuse(s, "a merge (<<) takes a mapping or a sequence of mappings")
@@ -189,9 +189,9 @@ func (w *walker) merge(v *yaml.Node, own map[string]bool) (*jv.Map, error) {
 		if err != nil {
 			return nil, err
 		}
-		for _, k := range src.(*jv.Map).Keys() {
+		for _, k := range src.(*tree.Map).Keys() {
 			if !own[k] && !out.Has(k) {
-				x, _ := src.(*jv.Map).Get(k)
+				x, _ := src.(*tree.Map).Get(k)
 				out.Set(k, x)
 			}
 		}
@@ -219,15 +219,15 @@ func key(n *yaml.Node) (string, error) {
 	switch v := v.(type) {
 	case string:
 		return v, nil
-	case jv.Number:
+	case tree.Number:
 		return string(v), nil
 	}
-	return jv.Compact(v), nil
+	return tree.Compact(v), nil
 }
 
 var reDecimal = regexp.MustCompile(`^[-+]?[0-9][0-9_]*$`)
 
-func scalar(n *yaml.Node) (jv.Value, error) {
+func scalar(n *yaml.Node) (tree.Value, error) {
 	if !strings.HasPrefix(n.ShortTag(), "!!") {
 		c := *n
 		c.Tag, c.Style = "", c.Style&^yaml.TaggedStyle
@@ -241,11 +241,11 @@ func scalar(n *yaml.Node) (jv.Value, error) {
 	case nil, bool, string:
 		return v, nil
 	case int:
-		return jv.Number(strconv.Itoa(v)), nil
+		return tree.Number(strconv.Itoa(v)), nil
 	case int64:
-		return jv.Number(strconv.FormatInt(v, 10)), nil
+		return tree.Number(strconv.FormatInt(v, 10)), nil
 	case uint64:
-		return jv.Number(strconv.FormatUint(v, 10)), nil
+		return tree.Number(strconv.FormatUint(v, 10)), nil
 	case float64:
 		if math.IsInf(v, 0) || math.IsNaN(v) {
 			return nil, refuse(n, "%s has no JSON number", n.Value)
@@ -253,14 +253,14 @@ func scalar(n *yaml.Node) (jv.Value, error) {
 		// A plain integer past uint64 keeps its digits.
 		if n.Style == 0 && reDecimal.MatchString(n.Value) {
 			if b, ok := new(big.Int).SetString(strings.ReplaceAll(n.Value, "_", ""), 10); ok {
-				return jv.Number(b.String()), nil
+				return tree.Number(b.String()), nil
 			}
 		}
 		s := strconv.FormatFloat(v, 'g', -1, 64)
 		if !strings.ContainsAny(s, ".eE") {
 			s += ".0"
 		}
-		return jv.Number(s), nil
+		return tree.Number(s), nil
 	case time.Time:
 		return n.Value, nil
 	case []byte:
@@ -273,7 +273,7 @@ func scalar(n *yaml.Node) (jv.Value, error) {
 // Docs, never by reading it again (CLAUDE.md, "Read a YAML file once").
 type File struct {
 	Path string
-	Docs []jv.Value
+	Docs []tree.Value
 	// Err is the read or conversion failure; Docs is empty when it is set.
 	Err error
 }

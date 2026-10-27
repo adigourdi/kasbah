@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/adigourdi/kasbah/internal/manifest"
+	"github.com/adigourdi/kasbah/internal/yamlx"
 )
 
 func TestParseSync(t *testing.T) {
@@ -108,16 +109,30 @@ client: acme
 	}
 
 	for yml, want := range map[string]string{
-		"hooks: {pre-deploy: ['demo-web']}\n":                                     "names a container and no command",
-		"hooks: {pre-deploy: [\"demo-web a\\nb\"]}\n":                             "spans more than one line",
-		"hooks: {pre-deploy: demo-web x}\n":                                       "is not a list",
+		"hooks: {pre-deploy: ['demo-web']}\n":                            "names a container and no command",
+		"hooks: {pre-deploy: [\"demo-web a\\nb\"]}\n":                    "spans more than one line",
+		"hooks: {pre-deploy: demo-web x}\n":                              "is not a list",
+		"hooks: {pre-deploy: false}\n":                                   "is not a list",
+		"hooks: {pre-deploy: [false]}\n":                                 "hooks.pre-deploy holds false — each entry must be a string",
+		"hooks: x\n":                                                     "hooks: is not a block",
+		"hooks: false\n":                                                 "hooks: is not a block",
+		"hooks: ['demo-web a']\n":                                        "hooks: is not a block",
+		"backup: {container: c, check: [a], command: c, extension: x}\n": "backup.check must be a string, not [\"a\"]",
+		"health: x\n":                                                    "health: is not a block",
+		"health: [a]\n":                                                  "health: is not a block",
+		"backup: {container: c, check: c, command: c, extension: x, pipe: false}":  "backup.pipe must be a string, not false",
+		"backup: {container: c, check: c, command: c, extension: x, retain: true}": "backup.retain must be a whole number, not true",
+		"health: {timeout: false}\n":                                              "health.timeout must be a duration like 120s, 5m or 2h, not false",
+		"health: {container: [a]}\n":                                              "health.container must be a string, not [\"a\"]",
+		"client: false\n":                                                         "client must be a string, not false",
+		"mail: {domain: false}\n":                                                 "mail.domain must be a string, not false",
 		"health: {timeout: 0s}\n":                                                 "is zero",
 		"backup: {container: c, check: c, command: c}\n":                          "has no extension:",
 		"backup: {container: c, check: c, command: c, extension: a/b}\n":          "plain filename extension",
 		"backup: {container: c, check: c, command: c, extension: \"sql\\a\"}\n":   "plain filename extension",
 		"backup: {container: c, check: c, command: c, extension: \"a\u00a0b\"}\n": "plain filename extension",
 		"backup: {container: c, check: c, command: c, extension: x, retain: 0}":   "retain is 0",
-		"mail: example.test\n":                                                    "mail: has type 'string'",
+		"mail: example.test\n":                                                    "mail: is not a block",
 		"mail: {}\n":                                                              "has no domain:",
 	} {
 		if _, err := plan(t, yml); err == nil || !strings.Contains(err.Error(), want) {
@@ -126,6 +141,23 @@ client: acme
 	}
 	if _, err := plan(t, ""); err != nil {
 		t.Fatal(err)
+	}
+	if p, err := plan(t, "health: false\nbackup: false\nmail: false\n"); err != nil || p.Backup != nil || p.MailDomain != "" || p.Health.Timeout != 120 {
+		t.Errorf("false turns a block off: %+v %v", p, err)
+	}
+	if p, err := plan(t, "backup: {container: c, check: c, command: c, extension: x, retain: 3}\nhealth: {timeout: 30}\nhooks: ~\n"); err != nil || p.Backup.Retain != 3 || p.Health.Timeout != 30 {
+		t.Errorf("numbers: %+v %v", p, err)
+	}
+	for yml, want := range map[string]string{"true": "true", "false": "false"} {
+		if p, err := plan(t, "backup: {container: c, check: "+yml+", command: c, extension: x}\n"); err != nil || p.Backup.Check != want {
+			t.Errorf("check: %s: %+v %v", yml, p, err)
+		}
+	}
+	for _, sync := range []string{"sync: {a: compose.yml}\n", "sync: compose.yml\n"} {
+		docs, _ := yamlx.Load([]byte("schema: 1\nname: demo\n" + sync))
+		if _, err := syncLines(&manifest.Manifest{Doc: docs[0]}); err == nil || !strings.Contains(err.Error(), "sync: is not a list") {
+			t.Errorf("%q: %v", sync, err)
+		}
 	}
 	os.Remove(filepath.Join(".", "compose.prod.yml"))
 	m, _ := manifest.Require(manifest.File, "0.1.0")

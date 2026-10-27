@@ -10,10 +10,10 @@ import (
 	"github.com/adigourdi/kasbah/internal/backup"
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/tmpl"
+	"github.com/adigourdi/kasbah/internal/tree"
 )
 
 func TestParseBackup(t *testing.T) {
@@ -146,8 +146,8 @@ func TestBackupResolve(t *testing.T) {
 
 func TestBackupMarker(t *testing.T) {
 	v := &BackupValues{RepoBase: "rest:http://new/", At: "02:00", Jitter: 11, Timeout: 900, Daily: 7, Weekly: 4, Monthly: 3}
-	old, _ := jv.ParseOne([]byte(`{"future_key":{"kept":[1,2]},"backup":{"enabled":true,"repo_base":"s3:https://old/","from_a_newer_kasbah":42,"retention":{"also_newer":1,"weekly":9}}}`))
-	m, err := marker.Build(marker.Fields{KasbahVersion: "1", AppsPath: "/apps", DataPath: "/apps/data", CPULimit: "1", MemLimit: "1g"}, old.(*jv.Map), v.Marker())
+	old, _ := tree.ParseOne([]byte(`{"future_key":{"kept":[1,2]},"backup":{"enabled":true,"repo_base":"s3:https://old/","from_a_newer_kasbah":42,"retention":{"also_newer":1,"weekly":9}}}`))
+	m, err := marker.Build(marker.Fields{KasbahVersion: "1", AppsPath: "/apps", DataPath: "/apps/data", CPULimit: "1", MemLimit: "1g"}, old.(*tree.Map), v.Marker())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,10 +366,10 @@ func TestTemplatesCRLFAndLints(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The dashboard is reached through its authenticated router only.
-	if v, err := yamlGet(r["traefik.yml"], field("api", "insecure")); err != nil || (v != "" && v != "false") {
+	if v, err := yamlField(r["traefik.yml"], "api", "insecure"); err != nil || (v != "" && v != "false") {
 		t.Errorf("api.insecure is %q (%v)", v, err)
 	}
-	if v, _ := yamlGet(r["traefik.yml"], field("api", "dashboard")); v != "true" {
+	if v, _ := yamlField(r["traefik.yml"], "api", "dashboard"); v != "true" {
 		t.Errorf("api.dashboard is %q", v)
 	}
 	for _, w := range []string{"minVersion: VersionTLS12", "maxVersion: VersionTLS13", `contentSecurityPolicyReportOnly: "default-src 'self'"`} {

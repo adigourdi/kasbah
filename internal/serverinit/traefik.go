@@ -10,9 +10,9 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/tmpl"
+	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
 
@@ -20,52 +20,67 @@ import (
 // relative to <apps>/traefik.
 var Files = []string{"compose.yml", "traefik.yml", "dynamic/_shared.yml"}
 
-// errUnparsed is yaml_get's exit 2: the document does not parse, or the
-// query raises where jq would.
+// errUnparsed is a Traefik file that does not read as one YAML mapping.
 type errUnparsed struct{}
 
 func (errUnparsed) Error() string { return "unparsed" }
 
-// yamlGet is `$(yq -r …)` of a query over content —
-// trailing newlines off, "" for empty content or a null answer, one CR off.
-func yamlGet(content string, q func(jv.Value) (jv.Value, bool)) (string, error) {
+// yamlDoc is content's document: nil for empty content, errUnparsed when it
+// does not load, holds several documents, or is not a mapping.
+func yamlDoc(content string) (tree.Value, error) {
 	if content == "" {
-		return "", nil
+		return nil, nil
 	}
 	docs, err := yamlx.Load([]byte(content))
-	if err != nil {
-		return "", errUnparsed{}
+	if err != nil || len(docs) > 1 {
+		return nil, errUnparsed{}
 	}
-	var outs []string
-	for _, d := range docs {
-		v, ok := q(d)
-		if !ok {
-			return "", errUnparsed{}
+	if len(docs) == 0 || docs[0] == nil {
+		return nil, nil
+	}
+	if _, ok := docs[0].(*tree.Map); !ok {
+		return nil, errUnparsed{}
+	}
+	return docs[0], nil
+}
+
+// at is the value at path through mappings: nil where a key is absent or a
+// step is null, errUnparsed where a step is some other kind of value.
+func at(d tree.Value, path ...string) (tree.Value, error) {
+	for _, k := range path {
+		switch m := d.(type) {
+		case nil:
+			return nil, nil
+		case *tree.Map:
+			d, _ = m.Get(k)
+		default:
+			return nil, errUnparsed{}
 		}
-		outs = append(outs, jv.Raw(v))
 	}
-	s := strings.TrimRight(strings.Join(outs, "\n"), "\n")
-	if s == "null" {
-		s = ""
-	}
-	return strings.TrimSuffix(s, "\r"), nil
+	return d, nil
 }
 
-// field is `.a.b.c // ""`.
-func field(path ...any) func(jv.Value) (jv.Value, bool) {
-	return func(d jv.Value) (jv.Value, bool) {
-		v, ok := jv.Get(d, path...)
-		return jv.Alt(v, ""), ok
+// yamlField is the text at path in content's document — "" for none or null,
+// trailing newlines and then one CR off.
+func yamlField(content string, path ...string) (string, error) {
+	d, err := yamlDoc(content)
+	if err != nil {
+		return "", err
 	}
+	v, err := at(d, path...)
+	if err != nil || v == nil {
+		return "", err
+	}
+	return strings.TrimSuffix(strings.TrimRight(tree.Text(v), "\n"), "\r"), nil
 }
 
-// Unparsed is whether err is a file that does not parse as YAML.
+// Unparsed is whether err is a file that does not read as a YAML mapping.
 func Unparsed(err error) bool { _, ok := err.(errUnparsed); return ok }
 
-// StaticField is `.certificatesResolvers.letsencrypt.acme.<key> // ""` of a
+// StaticField is certificatesResolvers.letsencrypt.acme.<key> of a
 // traefik.yml.
 func StaticField(static, key string) (string, error) {
-	return yamlGet(static, field("certificatesResolvers", "letsencrypt", "acme", key))
+	return yamlField(static, "certificatesResolvers", "letsencrypt", "acme", key)
 }
 
 var reDashboard = regexp.MustCompile("^Host\\(`traefik\\.([^`]+)`\\)$")
@@ -73,7 +88,7 @@ var reDashboard = regexp.MustCompile("^Host\\(`traefik\\.([^`]+)`\\)$")
 // DashboardApex is traefik_dashboard_apex: the apex the dashboard router hangs
 // off, "" when the rule is not the shape kasbah renders.
 func DashboardApex(shared string) (string, error) {
-	rule, err := yamlGet(shared, field("http", "routers", "traefik-dashboard", "rule"))
+	rule, err := yamlField(shared, "http", "routers", "traefik-dashboard", "rule")
 	if err != nil {
 		return "", err
 	}
@@ -83,59 +98,31 @@ func DashboardApex(shared string) (string, error) {
 	return "", nil
 }
 
-// users is `(.http.middlewares["traefik-dashboard-auth"].basicAuth.users // [])`.
-func users(d jv.Value) (jv.Value, bool) {
-	v, ok := jv.Get(d, "http", "middlewares", "traefik-dashboard-auth", "basicAuth", "users")
-	return jv.Alt(v, []jv.Value{}), ok
-}
-
-// length is jq's.
-func length(v jv.Value) (jv.Value, bool) {
-	switch v := v.(type) {
-	case nil:
-		return jv.Number("0"), true
-	case bool:
-		return nil, false
-	case string:
-		return jv.Number(fmt.Sprint(len([]rune(v)))), true
-	case []jv.Value:
-		return jv.Number(fmt.Sprint(len(v))), true
-	case *jv.Map:
-		return jv.Number(fmt.Sprint(v.Len())), true
-	case jv.Number:
-		s := string(v)
-		return jv.Number(strings.TrimPrefix(s, "-")), true
-	}
-	return nil, false
-}
-
 // ExtractAuth is _si_extract_auth: the dashboard's own htpasswd entry, keyed to
-// its middleware so an operator's basicAuth elsewhere is never adopted.
+// its middleware so an operator's basicAuth elsewhere is never adopted. Users
+// that are not a list leave the file unparsed.
 func ExtractAuth(shared string) (string, error) {
-	count, err := yamlGet(shared, func(d jv.Value) (jv.Value, bool) {
-		u, ok := users(d)
-		if !ok {
-			return nil, false
-		}
-		return length(u)
-	})
+	d, err := yamlDoc(shared)
 	if err != nil {
 		return "", err
 	}
-	entry, err := yamlGet(shared, func(d jv.Value) (jv.Value, bool) {
-		u, ok := users(d)
-		if !ok {
-			return nil, false
-		}
-		v, ok := jv.Get(u, 0)
-		return jv.Alt(v, ""), ok
-	})
+	u, err := at(d, "http", "middlewares", "traefik-dashboard-auth", "basicAuth", "users")
 	if err != nil {
 		return "", err
 	}
-	if count == "" || count == "0" {
+	var users []tree.Value
+	switch u := u.(type) {
+	case nil:
+	case []tree.Value:
+		users = u
+	default:
+		return "", errUnparsed{}
+	}
+	if len(users) == 0 {
 		return "", nil
 	}
+	entry, _ := tree.String(users[0])
+	entry = strings.TrimSuffix(strings.TrimRight(entry, "\n"), "\r")
 	if entry != "" && !strings.Contains(entry, "\n") && strings.Contains(entry, ":") {
 		return entry, nil
 	}
@@ -154,7 +141,7 @@ var reImage = regexp.MustCompile(`^traefik:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
 // ExtractImage is the official traefik image with a tag, or "": anything else
 // falls back to this kasbah's pin.
 func ExtractImage(compose string) (string, error) {
-	ref, err := yamlGet(compose, field("services", "traefik", "image"))
+	ref, err := yamlField(compose, "services", "traefik", "image")
 	if err != nil || !reImage.MatchString(ref) {
 		return "", err
 	}
@@ -342,8 +329,8 @@ func Resolve(out *cli.Output, p *prompt.Prompter, o Options, cur map[string]stri
 			sharedErr = err
 		}
 	}
-	storedEmail, staticErr := yamlGet(static, field("certificatesResolvers", "letsencrypt", "acme", "email"))
-	storedCA, caErr := yamlGet(static, field("certificatesResolvers", "letsencrypt", "acme", "caServer"))
+	storedEmail, staticErr := StaticField(static, "email")
+	storedCA, caErr := StaticField(static, "caServer")
 	storedImage, composeErr := ExtractImage(compose)
 
 	if storedImage != "" && composeErr == nil {

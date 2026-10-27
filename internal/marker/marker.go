@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/jv"
+	"github.com/adigourdi/kasbah/internal/tree"
 )
 
 // Mode is the marker's file mode (docs/files.md).
@@ -32,10 +32,10 @@ type Backup struct {
 	Retention Retention
 }
 
-func num(i int) jv.Number { return jv.Number(fmt.Sprint(i)) }
+func num(i int) tree.Number { return tree.Number(fmt.Sprint(i)) }
 
-func (b *Backup) object() *jv.Map {
-	m := jv.NewMap()
+func (b *Backup) object() *tree.Map {
+	m := tree.NewMap()
 	m.Set("enabled", true)
 	m.Set("repo_base", b.RepoBase)
 	m.Set("at", b.At)
@@ -44,8 +44,8 @@ func (b *Backup) object() *jv.Map {
 	return m
 }
 
-func (r Retention) object() *jv.Map {
-	m := jv.NewMap()
+func (r Retention) object() *tree.Map {
+	m := tree.NewMap()
 	m.Set("daily", num(r.Daily))
 	m.Set("weekly", num(r.Weekly))
 	m.Set("monthly", num(r.Monthly))
@@ -57,51 +57,43 @@ type Fields struct {
 	KasbahVersion, AppsPath, DataPath, CPULimit, MemLimit string
 }
 
-// objectOr is jq's `x // {}` feeding an object `+`: null and false are
-// empty, any other non-object is jq's error.
-func objectOr(v jv.Value, what string) (*jv.Map, error) {
+// objectOr is v as an object to merge into: null is an empty one, anything
+// else that is not an object is refused.
+func objectOr(v tree.Value, what string) (*tree.Map, error) {
 	switch v := v.(type) {
-	case *jv.Map:
+	case *tree.Map:
 		return v, nil
 	case nil:
-		return jv.NewMap(), nil
-	case bool:
-		if !v {
-			return jv.NewMap(), nil
-		}
+		return tree.NewMap(), nil
 	}
-	return nil, fmt.Errorf("%s (%s) and object cannot be added", what, jv.Type(v))
+	return nil, fmt.Errorf("the existing marker's %s is %s, not an object, so the new backup settings cannot be merged into it", what, tree.Text(v))
 }
 
-// Build is _server_marker_json: merged into existing (nil for none), owned
+// Build is the marker `server init` writes: merged into existing (nil for none), owned
 // keys keeping their place. A nil backup keeps the existing one or records
 // `{enabled: false}`; a given one merges into it, retention into retention.
-func Build(f Fields, existing *jv.Map, backup *Backup) (*jv.Map, error) {
+func Build(f Fields, existing *tree.Map, backup *Backup) (*tree.Map, error) {
 	e := existing
 	if e == nil {
-		e = jv.NewMap()
+		e = tree.NewMap()
 	}
-	own := jv.NewMap()
+	own := tree.NewMap()
 	own.Set("kasbah_version", f.KasbahVersion)
 	own.Set("apps_path", f.AppsPath)
 	own.Set("data_path", f.DataPath)
 	own.Set("cpu_limit", f.CPULimit)
 	own.Set("mem_limit", f.MemLimit)
-	out := jv.Add(e, own)
+	out := tree.Merge(e, own)
 
 	if backup == nil {
 		if !out.Has("backup") {
-			off := jv.NewMap()
+			off := tree.NewMap()
 			off.Set("enabled", false)
 			out.Set("backup", off)
 		}
 		return out, nil
 	}
 	eb, _ := e.Get("backup")
-	if b, ok := eb.(bool); ok && !b {
-		// `$e.backup.retention` indexes the false itself.
-		return nil, fmt.Errorf(`Cannot index boolean with string "retention"`)
-	}
 	old, err := objectOr(eb, "backup")
 	if err != nil {
 		return nil, err
@@ -111,10 +103,10 @@ func Build(f Fields, existing *jv.Map, backup *Backup) (*jv.Map, error) {
 	if err != nil {
 		return nil, err
 	}
-	merged := jv.Add(old, backup.object())
-	ret := jv.NewMap()
-	ret.Set("retention", jv.Add(oldRet, backup.Retention.object()))
-	out.Set("backup", jv.Add(merged, ret))
+	merged := tree.Merge(old, backup.object())
+	ret := tree.NewMap()
+	ret.Set("retention", tree.Merge(oldRet, backup.Retention.object()))
+	out.Set("backup", tree.Merge(merged, ret))
 	return out, nil
 }
 
@@ -132,12 +124,12 @@ func ReadLocal(apps string) ([]byte, error) {
 	return os.ReadFile(p)
 }
 
-// Render is the marker's bytes: jq's pretty print and one newline.
-func Render(m *jv.Map) []byte { return []byte(jv.Pretty(m) + "\n") }
+// Render is the marker's bytes: indented JSON and one newline.
+func Render(m *tree.Map) []byte { return []byte(tree.Indent(m) + "\n") }
 
 // Marker is a server marker that passed Validate.
 type Marker struct {
-	JSON     *jv.Map
+	JSON     *tree.Map
 	AppsPath string
 	DataPath string
 	// CPULimit and MemLimit are written through as spelled (`14.4`, `54g`).
@@ -145,18 +137,17 @@ type Marker struct {
 	MemLimit string
 }
 
-// field is `$(jq -r '.k // "" | tostring')`: trailing newlines go with $(…).
-func field(m *jv.Map, k string) string {
-	v, _ := m.Get(k)
-	return strings.TrimRight(jv.ToString(jv.Alt(v, "")), "\n")
+// field is a key's value as text, "" for none or null, trailing newlines off.
+func field(m *tree.Map, k string) string {
+	return strings.TrimRight(tree.TextAt(m, k), "\n")
 }
 
 // Validate judges a marker's content, read from path
 // on target. initCmd is the init command spelled for this server, which every
 // refusal names as the remedy.
 func Validate(body []byte, path, target, initCmd string) (*Marker, error) {
-	v, err := jv.ParseOne(body)
-	m, ok := v.(*jv.Map)
+	v, err := tree.ParseOne(body)
+	m, ok := v.(*tree.Map)
 	if err != nil || !ok {
 		return nil, cli.Fail("%s on %s is not a JSON object — re-run `%s`", path, target, initCmd)
 	}
@@ -206,8 +197,8 @@ func MigrateCmd(target string) string { return "kasbah migrate server " + target
 // or a version that cannot be compared, passes — the caller's own reading
 // judges those.
 func Check(body []byte, ours, path, target string, migrating bool) error {
-	v, perr := jv.ParseOne(body)
-	m, ok := v.(*jv.Map)
+	v, perr := tree.ParseOne(body)
+	m, ok := v.(*tree.Map)
 	if perr != nil || !ok {
 		return nil
 	}
@@ -238,8 +229,8 @@ func Check(body []byte, ours, path, target string, migrating bool) error {
 // marker is known to be an object; versions that cannot be compared are
 // warned about.
 func Compat(existing []byte, ours, path, target string) (warnings []string, err error) {
-	v, perr := jv.ParseOne(existing)
-	m, ok := v.(*jv.Map)
+	v, perr := tree.ParseOne(existing)
+	m, ok := v.(*tree.Map)
 	if perr != nil || !ok {
 		return nil, cli.Fail("%s on %s is not a JSON object", path, target).Cont(
 			"kasbah will not overwrite a marker it cannot read — look at it, then remove",

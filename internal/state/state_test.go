@@ -20,7 +20,7 @@ func read(t *testing.T, p string) string {
 	return string(b)
 }
 
-// state_init's bytes: jq -n's pretty print and a newline.
+// Init's bytes: indented JSON and a newline.
 func TestInit(t *testing.T) {
 	p := path(t)
 	if err := Init(p, version); err != nil {
@@ -61,7 +61,7 @@ func TestRecord(t *testing.T) {
 	}
 
 	// Merged, never replaced: fields this command does not own survive, in
-	// their place, with jq's spelling of their numbers.
+	// their place, their numbers spelled as the file spells them.
 	os.WriteFile(p, []byte(`{"kasbah_version":"0.1.0","last_server":"deploy@vps","last_deploy":null,"last_version":"1.2.3","schema_migrations_applied":["m1"],"future_key":7,"ratio":1.50,"big":1e2}`), 0o644)
 	if err := Record(p, version, "last_server", "other@vps"); err != nil {
 		t.Fatal(err)
@@ -76,7 +76,7 @@ func TestRecord(t *testing.T) {
   ],
   "future_key": 7,
   "ratio": 1.50,
-  "big": 1E+2
+  "big": 1e2
 }
 `
 	if got := read(t, p); got != want {
@@ -119,7 +119,7 @@ func TestRefusals(t *testing.T) {
 			t.Errorf("get over %q: %v", bad, err)
 		}
 	}
-	// An empty file has nothing in it to read: jq prints nothing and succeeds.
+	// An empty file has no values in it, and nothing to read.
 	os.WriteFile(p, nil, 0o644)
 	if v, err := Get(p, "last_server"); v != "" || err != nil {
 		t.Errorf("empty file: %q %v", v, err)
@@ -139,26 +139,24 @@ func TestGetRendering(t *testing.T) {
 	p := path(t)
 	os.MkdirAll(filepath.Dir(p), 0o755)
 	os.WriteFile(p, []byte(`{"s":"a\r","n":1.0,"f":false,"o":{"b":[1,"x"]},"z":null}`), 0o644)
-	for k, want := range map[string]string{"s": "a", "n": "1.0", "f": "", "o": `{"b":[1,"x"]}`, "z": "", "missing": ""} {
+	for k, want := range map[string]string{"s": "a", "n": "1.0", "f": "false", "o": `{"b":[1,"x"]}`, "z": "", "missing": ""} {
 		if got, err := Get(p, k); got != want || err != nil {
 			t.Errorf("%s: %q %v, want %q", k, got, err, want)
 		}
 	}
 }
 
-// jq reads a state file that opens with a byte-order mark; so does this.
+// A byte-order mark is not JSON: the file is refused and left as it is.
 func TestBOM(t *testing.T) {
 	p := path(t)
 	os.MkdirAll(filepath.Dir(p), 0o755)
-	os.WriteFile(p, []byte("\ufeff{\"last_server\":\"bom@vps\"}\n"), 0o644)
-	if v, err := Get(p, "last_server"); v != "bom@vps" || err != nil {
-		t.Errorf("get: %q %v", v, err)
+	body := "\ufeff{\"last_server\":\"bom@vps\"}\n"
+	os.WriteFile(p, []byte(body), 0o644)
+	if _, err := Get(p, "last_server"); err == nil || !strings.Contains(err.Error(), "not readable as JSON") {
+		t.Errorf("get: %v", err)
 	}
-	if err := Record(p, version, "last_version", "1.0.0"); err != nil {
-		t.Fatal(err)
-	}
-	if got := read(t, p); !strings.HasPrefix(got, "{\n  \"kasbah_version\"") || !strings.Contains(got, `"last_server": "bom@vps"`) {
-		t.Errorf("record over a BOM'd file wrote\n%s", got)
+	if err := Record(p, version, "last_version", "1.0.0"); err == nil || read(t, p) != body {
+		t.Errorf("record over a BOM'd file: %v", err)
 	}
 }
 

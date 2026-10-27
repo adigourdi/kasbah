@@ -183,6 +183,10 @@ func TestPrune(t *testing.T) {
 	if _, _, _, err := prune(t, off, PruneOptions{NoEnv: true}, nil); !strings.Contains(errText(err), "says backup.enabled is false") {
 		t.Error(err)
 	}
+	str := &fakePrune{marker: strings.Replace(prunedMarker, `"enabled":true`, `"enabled":"true"`, 1)}
+	if _, _, _, err := prune(t, str, PruneOptions{NoEnv: true}, nil); !strings.Contains(errText(err), `says backup.enabled is "true", not a boolean`) {
+		t.Errorf("a string enabled: %v", err)
+	}
 	leak := &fakePrune{marker: prunedMarker, rc: 0}
 	leak.repos = ReposReport{Repos: []string{"alpha"}, Pass: map[string]string{}}
 	if _, _, _, err := prune(t, leak, PruneOptions{NoEnv: true, Yes: true}, nil); !strings.Contains(errText(err), "sent no password") {

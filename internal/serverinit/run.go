@@ -12,12 +12,12 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/backup"
 	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/tree"
 )
 
 // TraefikTimeout is how long the start step waits for Traefik's healthcheck.
@@ -316,7 +316,7 @@ func Run(c Ctx, o Options) (err error) {
 		br.Mail = br.Mail || mailOn
 	}
 
-	var existingMap *jv.Map
+	var existingMap *tree.Map
 	if present {
 		warns, err := marker.Compat(existing, c.Version, markerPath, target)
 		if err != nil {
@@ -325,12 +325,12 @@ func Run(c Ctx, o Options) (err error) {
 		for _, w := range warns {
 			out.Warn("%s", w)
 		}
-		v, _ := jv.ParseOne(existing)
-		existingMap, _ = v.(*jv.Map)
+		v, _ := tree.ParseOne(existing)
+		existingMap, _ = v.(*tree.Map)
 		if existingMap == nil {
 			return cli.Fail("internal: %s on %s passed the compatibility check and is not an object", markerPath, target)
 		}
-		if b, _ := jv.Get(existingMap, "backup", "enabled"); !backupOn && jv.ToString(jv.Alt(b, false)) == "true" {
+		if b, _ := tree.Lookup(existingMap, "backup", "enabled"); !backupOn && b == true {
 			out.Warn("%s already has a backup stack at %s/.kasbah/backup and this run is not", target, o.Apps)
 			out.Warn("touching it: init scaffolds backups, it never removes them. To take it down:")
 			out.Warn("  ssh %s 'cd %s/.kasbah/backup && docker compose -p %s down'", target, o.Apps, backup.Project)

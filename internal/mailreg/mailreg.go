@@ -8,7 +8,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/initproject"
-	"github.com/adigourdi/kasbah/internal/jv"
+	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
 
@@ -53,20 +53,20 @@ func Parse(data []byte, where string) (*Registry, error) {
 	if err != nil || len(docs) > 1 {
 		return nil, unparseable{cli.Fail("%s could not be read as YAML", where)}
 	}
-	var doc jv.Value
+	var doc tree.Value
 	if len(docs) == 1 {
 		doc = docs[0]
 	}
-	if _, ok := doc.(*jv.Map); !ok {
+	if _, ok := doc.(*tree.Map); !ok {
 		return nil, unparseable{cli.Fail("%s could not be read as YAML", where)}
 	}
-	str := func(v jv.Value) string {
+	str := func(v tree.Value) string {
 		if v == nil {
 			return ""
 		}
-		return strings.TrimSuffix(jv.Raw(v), "\r")
+		return strings.TrimSuffix(tree.Text(v), "\r")
 	}
-	pv, _ := jv.Get(doc, "primary_domain")
+	pv, _ := tree.Lookup(doc, "primary_domain")
 	r := &Registry{Primary: str(pv)}
 	if r.Primary == "" {
 		return nil, cli.Fail("%s has no primary_domain: — it is the MX target and the name both certificates are issued for, and nothing here can invent it", where).Cont(
@@ -76,10 +76,10 @@ func Parse(data []byte, where string) (*Registry, error) {
 		return nil, cli.Fail("%s has primary_domain: '%s', which is not a domain name", where, r.Primary)
 	}
 	r.Domains = []string{r.Primary}
-	dv, _ := jv.Get(doc, "domains")
+	dv, _ := tree.Lookup(doc, "domains")
 	switch l := dv.(type) {
 	case nil:
-	case []jv.Value:
+	case []tree.Value:
 		for _, v := range l {
 			d := str(v)
 			if d == "" {

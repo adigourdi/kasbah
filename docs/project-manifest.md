@@ -102,6 +102,13 @@ mail:
 
 ## Field reference
 
+Types are what the YAML says, not what it can be printed as. A text field
+(`name`, `domain`, `client`, `kasbah_version`, every command, container and
+domain below) takes a string — a number reads as its text — and refuses a
+boolean, a list or a block; a block (`health`, `hooks`, `backup`, `mail`) that
+is not a mapping is refused, and an absent or null one means none (`false`
+too, for `health`, `backup` and `mail`); `sync` must be a list. The one boolean a text field takes is `backup.check`'s, below.
+
 ### `schema` *(required)*
 
 Integer. The manifest schema version. Bumps when the format changes in a
@@ -275,7 +282,8 @@ exists before any hook touches live state.
 
 - `check` — any command. Exit code 0 triggers the backup; non-zero skips
   it. Projects decide their own trigger: pending migrations, a sentinel
-  file, config change detection, or simply `true` to back up every deploy.
+  file, config change detection, or simply `true` to back up every deploy
+  (a YAML boolean is the command of that name: `true` always, `false` never).
   It runs in the **VPS's own shell**, with the working directory set to the
   project directory — so `[ -f ./.force-backup ]` reads a file next to the
   compose file, and reaching into a container means writing the `docker exec`
@@ -346,6 +354,8 @@ for defaults, not a source of truth for what's actually running.
 
 ### Write rules
 
+- Written as standard JSON (2-space indent, key order kept); a file that is
+  not valid JSON — a byte-order mark included — is refused and left untouched.
 - Written **only on success**, where success means *kasbah's* work — reach the
   server, find the project, do what was asked. Failed commands leave state
   untouched.

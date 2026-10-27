@@ -13,12 +13,12 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/tree"
 )
 
 const pruneCmd = "server backup-prune"
@@ -208,9 +208,8 @@ func DockerRestic(dir, network, repo string, args ...string) (string, int) {
 	return strings.TrimRight(out.String(), "\n"), exitCode(err)
 }
 
-func field(m *jv.Map, path ...any) string {
-	v, _ := jv.Get(m, path...)
-	return strings.TrimRight(jv.ToString(jv.Alt(v, "")), "\n")
+func field(m *tree.Map, path ...any) string {
+	return strings.TrimRight(tree.TextAt(m, path...), "\n")
 }
 
 // Prune applies the retention with the full-access credential, from this
@@ -242,8 +241,12 @@ func Prune(c PruneCtx, o PruneOptions) error {
 		return err
 	}
 	apps := m.AppsPath
-	if en, _ := jv.Get(m.JSON, "backup", "enabled"); jv.ToString(jv.Alt(en, false)) != "true" {
-		return cli.Fail("%s has no backups: %s says backup.enabled is %s", o.Target, path, jv.ToString(jv.Alt(en, false))).Cont(
+	if en, found := tree.Lookup(m.JSON, "backup", "enabled"); en != true {
+		said := "false"
+		if found && en != nil && en != false {
+			said = tree.Compact(en) + ", not a boolean"
+		}
+		return cli.Fail("%s has no backups: %s says backup.enabled is %s", o.Target, path, said).Cont(
 			"there is nothing to prune. Install them with:",
 			"  kasbah server init "+o.Target+" --with-backup")
 	}

@@ -46,7 +46,7 @@ key order must hold (server.json, state.json, the `traefik.yml` edit).
       released) piped to `jq`; no suite and no doc needs host `yq`
 - [x] `internal/yamlx` on plain `yaml.v3`: the Python-object model, the
       goldens, `regen.sh` and the parity test deleted
-- [ ] The shared tree loses its jq semantics and becomes `internal/tree`:
+- [x] The shared tree loses its jq semantics and becomes `internal/tree`:
       JSON through `encoding/json`, Go accessors in place of
       `Alt`/`Truthy`/`ToString`/`Raw`, no jq-shaped error text; every package
       but `check` migrated

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/adigourdi/kasbah/internal/jv"
+	"github.com/adigourdi/kasbah/internal/tree"
 )
 
 // Resolver is the certresolver kasbah configures, a frozen contract.
@@ -39,12 +39,12 @@ type Lookup struct {
 // An entry matches on its main domain or any of its SANs.
 func Find(content []byte, domain string, now time.Time) Lookup {
 	var l Lookup
-	vals, err := jv.Parse(content)
+	vals, err := tree.Parse(content)
 	if err != nil || len(vals) != 1 {
 		l.State = "notjson"
 		return l
 	}
-	top, ok := vals[0].(*jv.Map)
+	top, ok := vals[0].(*tree.Map)
 	if !ok {
 		l.State = "notjson"
 		return l
@@ -53,18 +53,22 @@ func Find(content []byte, domain string, now time.Time) Lookup {
 		l.State = "noresolver"
 		return l
 	}
-	certs, ok := jv.Get(top, Resolver, "Certificates")
-	if !ok {
+	var certs tree.Value
+	switch r, _ := top.Get(Resolver); r := r.(type) {
+	case nil:
+	case *tree.Map:
+		certs, _ = r.Get("Certificates")
+	default:
 		l.State = "notjson"
 		return l
 	}
-	list, isList := certs.([]jv.Value)
+	list, isList := certs.([]tree.Value)
 	switch {
 	case certs == nil:
 		l.State = "empty"
 		return l
 	case !isList:
-		l.State, l.Kind = "notarray", jv.Type(certs)
+		l.State, l.Kind = "notarray", tree.Kind(certs)
 		return l
 	}
 	l.Count = len(list)
@@ -74,11 +78,9 @@ func Find(content []byte, domain string, now time.Time) Lookup {
 	}
 	found := -1
 	for i, c := range list {
-		mv, ok := jv.Get(c, "domain", "main")
-		main := ""
-		if ok {
-			main = strings.TrimSuffix(jv.Raw(jv.Alt(mv, "")), "\r")
-		}
+		mv, _ := tree.Lookup(c, "domain", "main")
+		main, _ := tree.String(mv)
+		main = strings.TrimSuffix(main, "\r")
 		if main == domain || sansMatch(c, domain) {
 			found, l.Main = i, main
 			break
@@ -88,8 +90,9 @@ func Find(content []byte, domain string, now time.Time) Lookup {
 		l.State = "nomatch"
 		return l
 	}
-	cv, _ := jv.Get(list[found], "certificate")
-	b64 := strings.TrimSuffix(jv.Raw(jv.Alt(cv, "")), "\r")
+	cv, _ := tree.Lookup(list[found], "certificate")
+	b64, _ := tree.String(cv)
+	b64 = strings.TrimSuffix(b64, "\r")
 	if b64 == "" {
 		l.State = "nocert"
 		return l
@@ -116,14 +119,11 @@ func Find(content []byte, domain string, now time.Time) Lookup {
 	return l
 }
 
-func sansMatch(c jv.Value, domain string) bool {
-	sv, ok := jv.Get(c, "domain", "sans")
-	if !ok {
-		return false
-	}
-	sans, _ := sv.([]jv.Value)
+func sansMatch(c tree.Value, domain string) bool {
+	sv, _ := tree.Lookup(c, "domain", "sans")
+	sans, _ := sv.([]tree.Value)
 	for _, s := range sans {
-		if strings.TrimSuffix(jv.ToString(jv.Alt(s, "")), "\r") == domain {
+		if s, ok := s.(string); ok && strings.TrimSuffix(s, "\r") == domain {
 			return true
 		}
 	}

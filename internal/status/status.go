@@ -19,13 +19,13 @@ import (
 	"github.com/adigourdi/kasbah/internal/acme"
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/mailreg"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/serverinit"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/vlog"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
@@ -187,8 +187,8 @@ func JudgeMarker(body []byte, path, target string) error {
 	if len(body) == 0 {
 		return cli.Fail("%s on %s is empty — kasbah server init did not finish, or something truncated it", path, target)
 	}
-	v, err := jv.ParseOne(body)
-	if _, ok := v.(*jv.Map); err != nil || !ok {
+	v, err := tree.ParseOne(body)
+	if _, ok := v.(*tree.Map); err != nil || !ok {
 		return cli.Fail("%s on %s is not a JSON object — look at it before running anything else against this server", path, target)
 	}
 	return nil
@@ -203,7 +203,7 @@ type run struct {
 	source string
 	r      *Report
 
-	mk                                      *jv.Map
+	mk                                      *tree.Map
 	mkApps, mkData, mkVersion, mkCPU, mkMem string
 	bkEnabled                               bool
 	bkBase, bkAt, bkJitter                  string
@@ -255,13 +255,10 @@ func b64(s string) []byte {
 	return b
 }
 
-// field is `jq -r '.k // "" | tostring'`.
-func field(m *jv.Map, path ...any) string {
-	v, ok := jv.Get(m, path...)
-	if !ok {
-		return ""
-	}
-	return strings.TrimRight(jv.ToString(jv.Alt(v, "")), "\n")
+// field is the value at path as text, "" for none or null, trailing
+// newlines off.
+func field(m *tree.Map, path ...any) string {
+	return strings.TrimRight(tree.TextAt(m, path...), "\n")
 }
 
 func (x *run) readMarker() error {
@@ -291,11 +288,12 @@ func (x *run) readMarker() error {
 	if err := JudgeMarker(body, path, x.target); err != nil {
 		return err
 	}
-	v, _ := jv.ParseOne(body)
-	m := v.(*jv.Map)
+	v, _ := tree.ParseOne(body)
+	m := v.(*tree.Map)
 	x.mkApps, x.mkData, x.mkVersion = field(m, "apps_path"), field(m, "data_path"), field(m, "kasbah_version")
 	x.mkCPU, x.mkMem = field(m, "cpu_limit"), field(m, "mem_limit")
-	x.bkEnabled = field(m, "backup", "enabled") == "true"
+	en, _ := tree.Lookup(m, "backup", "enabled")
+	x.bkEnabled = en == true
 	x.bkBase, x.bkAt, x.bkJitter = field(m, "backup", "repo_base"), field(m, "backup", "at"), field(m, "backup", "jitter")
 	return nil
 }
@@ -792,35 +790,34 @@ func (x *run) printProjects() {
 var reHost = regexp.MustCompile("Host\\(`([^`]+)`\\)")
 
 // FragmentHosts is every Host() a fragment's routers claim, each once, in
-// router order; ok is false when the fragment does not parse.
+// router order; ok is false when the fragment does not parse, or it or its
+// http: is not a mapping.
 func FragmentHosts(content []byte) (hosts []string, ok bool) {
 	docs, err := yamlx.Load(content)
 	if err != nil || len(docs) > 1 {
 		return nil, false
 	}
-	var doc jv.Value
+	var doc tree.Value
 	if len(docs) == 1 {
 		doc = docs[0]
 	}
-	rv, ok := jv.Get(doc, "http", "routers")
-	if !ok {
-		return nil, false
+	http, _ := tree.Lookup(doc, "http")
+	for _, v := range []tree.Value{doc, http} {
+		if _, isMap := v.(*tree.Map); !isMap && v != nil {
+			return nil, false
+		}
 	}
-	routers, isMap := rv.(*jv.Map)
-	if _, isBool := rv.(bool); isBool {
-		return nil, false
-	}
+	rv, _ := tree.Lookup(http, "routers")
+	routers, isMap := rv.(*tree.Map)
 	if !isMap {
 		return nil, true
 	}
 	seen := map[string]bool{}
 	for _, k := range routers.Keys() {
 		v, _ := routers.Get(k)
-		rule, ok := jv.Get(v, "rule")
-		if !ok {
-			continue
-		}
-		for _, m := range reHost.FindAllStringSubmatch(jv.ToString(jv.Alt(rule, "")), -1) {
+		rv, _ := tree.Lookup(v, "rule")
+		rule, _ := tree.String(rv)
+		for _, m := range reHost.FindAllStringSubmatch(rule, -1) {
 			if !seen[m[1]] {
 				seen[m[1]] = true
 				hosts = append(hosts, m[1])

@@ -20,11 +20,11 @@ import (
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/env"
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverinit"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
 
@@ -369,7 +369,7 @@ func DryStatic(static string) (string, error) {
 	if err != nil || len(docs) != 1 {
 		return "", errors.New("the rendered traefik.yml is not one YAML document")
 	}
-	root, ok := docs[0].(*jv.Map)
+	root, ok := docs[0].(*tree.Map)
 	if !ok {
 		return "", errors.New("the rendered traefik.yml is not a mapping")
 	}
@@ -378,10 +378,10 @@ func DryStatic(static string) (string, error) {
 		for _, k := range path[:len(path)-1] {
 			next, _ := m.Get(k)
 			switch n := next.(type) {
-			case *jv.Map:
+			case *tree.Map:
 				m = n
 			case nil:
-				n2 := jv.NewMap()
+				n2 := tree.NewMap()
 				m.Set(k, n2)
 				m = n2
 			default:
@@ -402,7 +402,7 @@ func DryStatic(static string) (string, error) {
 			return "", err
 		}
 	}
-	return jv.Pretty(root) + "\n", nil
+	return tree.Indent(root) + "\n", nil
 }
 
 func (x *run) render(v serverinit.Values) error {

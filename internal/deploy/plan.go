@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strconv"
@@ -9,8 +10,8 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/buildpush"
 	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/manifest"
+	"github.com/adigourdi/kasbah/internal/tree"
 )
 
 // Entry is one sync: line: src copied to dst under the project directory,
@@ -37,14 +38,25 @@ type Plan struct {
 
 func trim(s string) string { return strings.TrimFunc(s, unicode.IsSpace) }
 
-// str is `yq -r '<path> // ""'`, CR and surrounding blanks dropped.
-func str(m *manifest.Manifest, path ...any) string {
+// str is the string or number at path, "" for none, null or the string
+// "null"; CR and surrounding blanks dropped. Anything else is refused as not
+// being what (`a string`, `a whole number`, `a duration like …`).
+func str(m *manifest.Manifest, what string, path ...any) (string, error) {
 	v, _ := m.Get(path...)
-	s := strings.TrimSuffix(jv.Raw(jv.Alt(v, "")), "\r")
+	switch v.(type) {
+	case nil, string, tree.Number:
+	default:
+		names := make([]string, len(path))
+		for i, p := range path {
+			names[i] = fmt.Sprint(p)
+		}
+		return "", cli.Fail("kasbah.yml: %s must be %s, not %s", strings.Join(names, "."), what, tree.Compact(v))
+	}
+	s := strings.TrimSuffix(tree.TextAt(m.Doc, path...), "\r")
 	if s == "null" {
 		s = ""
 	}
-	return trim(s)
+	return trim(s), nil
 }
 
 func checkSyncPath(p, side, entry string) error {
@@ -98,22 +110,18 @@ func ParseSync(lines []string) ([]Entry, error) {
 func syncLines(m *manifest.Manifest) ([]string, error) {
 	v, _ := m.Get("sync")
 	var lines []string
-	add := func(x jv.Value) {
-		// jq's tostring, then `yq -r`'s lines.
-		lines = append(lines, strings.Split(jv.ToString(x), "\n")...)
+	add := func(x tree.Value) {
+		// Each entry's text, one line per line of it.
+		lines = append(lines, strings.Split(tree.Text(x), "\n")...)
 	}
-	switch s := jv.Alt(v, []jv.Value{}).(type) {
-	case []jv.Value:
+	switch s := v.(type) {
+	case nil:
+	case []tree.Value:
 		for _, x := range s {
 			add(x)
 		}
-	case *jv.Map:
-		for _, k := range s.Keys() {
-			x, _ := s.Get(k)
-			add(x)
-		}
 	default:
-		return nil, cli.Fail("kasbah.yml: sync: is not a list")
+		return nil, cli.Fail("kasbah.yml: sync: is not a list — it lists the files a deploy ships (docs/project-manifest.md)")
 	}
 	return lines, nil
 }
@@ -168,10 +176,13 @@ func MailDomain(m *manifest.Manifest) (string, error) {
 	if v == nil || v == false {
 		return "", nil
 	}
-	if _, ok := v.(*jv.Map); !ok {
-		return "", cli.Fail("kasbah.yml: mail: has type '%s' — it has to be a block with a domain: under it (docs/project-manifest.md → mail)", jv.Type(v))
+	if _, ok := v.(*tree.Map); !ok {
+		return "", cli.Fail("kasbah.yml: mail: is not a block — it has to be a block with a domain: under it (docs/project-manifest.md → mail)")
 	}
-	d := str(m, "mail", "domain")
+	d, err := str(m, "a string", "mail", "domain")
+	if err != nil {
+		return "", err
+	}
 	if d == "" {
 		return "", cli.Fail("kasbah.yml: mail: has no domain: — the claim is that the VPS mail stack handles that domain, and there is nothing else in the block for kasbah to check (docs/project-manifest.md)")
 	}
@@ -188,10 +199,9 @@ func readMail(m *manifest.Manifest, p *Plan) error {
 }
 
 func readClient(m *manifest.Manifest, p *Plan, historical bool) error {
-	v, _ := m.Get("client")
-	raw := strings.TrimSuffix(jv.ToString(jv.Alt(v, "")), "\r")
-	if raw == "null" {
-		raw = ""
+	raw, err := str(m, "a string", "client")
+	if err != nil {
+		return err
 	}
 	if raw == "" {
 		p.Client = m.Name
@@ -216,17 +226,28 @@ var hookNames = []string{"pre-deploy", "post-deploy", "pre-rollback", "post-roll
 // server would be found after the backup and the retag.
 func readHooks(m *manifest.Manifest, p *Plan) error {
 	p.Hooks = map[string][]string{}
+	if h, _ := m.Get("hooks"); h != nil {
+		if _, ok := h.(*tree.Map); !ok {
+			return cli.Fail("kasbah.yml: hooks: is not a block — it holds the lists pre-deploy:, post-deploy:, pre-rollback: and post-rollback: (docs/project-manifest.md)")
+		}
+	}
 	for _, which := range hookNames {
 		v, _ := m.Get("hooks", which)
-		var list []jv.Value
-		switch l := jv.Alt(v, []jv.Value{}).(type) {
-		case []jv.Value:
+		var list []tree.Value
+		switch l := v.(type) {
+		case nil:
+		case []tree.Value:
 			list = l
 		default:
 			return cli.Fail("kasbah.yml: hooks.%s is not a list of strings", which)
 		}
 		for _, x := range list {
-			line := jv.ToString(x)
+			switch x.(type) {
+			case nil, string, tree.Number:
+			default:
+				return cli.Fail("kasbah.yml: hooks.%s holds %s — each entry must be a string, \"<container> <command…>\"", which, tree.Compact(x))
+			}
+			line := tree.Text(x)
 			line = strings.TrimRight(line, "\n")
 			if first, _, ok := strings.Cut(line, "\n"); ok {
 				return cli.Fail("kasbah.yml: the %s hook '%s…' spans more than one line — a hook is one line whose first word is the container name, and a multi-line value would be run as several hooks (docs/project-manifest.md)", which, first)
@@ -271,11 +292,19 @@ func Seconds(raw string) (int, error) {
 
 func readHealth(m *manifest.Manifest, p *Plan) error {
 	p.Health = Health{Timeout: 120}
-	if v, _ := m.Get("health"); !jv.Truthy(v) {
+	if v, _ := m.Get("health"); v == nil || v == false {
 		return nil
+	} else if _, ok := v.(*tree.Map); !ok {
+		return cli.Fail("kasbah.yml: health: is not a block — it holds container: and timeout: (docs/project-manifest.md)")
 	}
-	p.Health.Container = str(m, "health", "container")
-	raw := str(m, "health", "timeout")
+	var err error
+	if p.Health.Container, err = str(m, "a string", "health", "container"); err != nil {
+		return err
+	}
+	raw, err := str(m, "a duration like 120s, 5m or 2h", "health", "timeout")
+	if err != nil {
+		return err
+	}
 	if raw == "" {
 		raw = "120s"
 	}
@@ -288,15 +317,28 @@ func readHealth(m *manifest.Manifest, p *Plan) error {
 }
 
 func readBackup(m *manifest.Manifest, p *Plan) error {
-	if v, _ := m.Get("backup"); !jv.Truthy(v) {
+	if v, _ := m.Get("backup"); v == nil || v == false {
 		return nil
 	}
-	b := &Backup{
-		Check:     str(m, "backup", "check"),
-		Container: str(m, "backup", "container"),
-		Command:   str(m, "backup", "command"),
-		Pipe:      str(m, "backup", "pipe"),
-		Extension: str(m, "backup", "extension"),
+	b := &Backup{}
+	// check is a command, and a boolean is the command of that name.
+	if c, _ := m.Get("backup", "check"); c == true || c == false {
+		b.Check = tree.Compact(c)
+	}
+	for _, f := range []struct {
+		key string
+		to  *string
+	}{{"container", &b.Container}, {"command", &b.Command}, {"pipe", &b.Pipe}, {"extension", &b.Extension}} {
+		var err error
+		if *f.to, err = str(m, "a string", "backup", f.key); err != nil {
+			return err
+		}
+	}
+	if b.Check == "" {
+		var err error
+		if b.Check, err = str(m, "a string", "backup", "check"); err != nil {
+			return err
+		}
 	}
 	switch {
 	case b.Check == "":
@@ -310,7 +352,10 @@ func readBackup(m *manifest.Manifest, p *Plan) error {
 	case strings.IndexFunc(b.Extension, func(r rune) bool { return r == '/' || unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0:
 		return cli.Fail("kasbah.yml: backup.extension '%s' must be a plain filename extension — it lands in backups/pre-deploy-<timestamp>.<extension>, and versions.log's fields are space-delimited", b.Extension)
 	}
-	raw := str(m, "backup", "retain")
+	raw, err := str(m, "a whole number", "backup", "retain")
+	if err != nil {
+		return err
+	}
 	if raw == "" {
 		raw = "10"
 	}

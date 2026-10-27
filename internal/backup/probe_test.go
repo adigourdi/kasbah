@@ -50,7 +50,7 @@ esac
 `
 
 func fakeEnv(t *testing.T, mode string) (apps, state string) {
-	apps, _ = tree(t)
+	apps, _ = appsTree(t)
 	write(t, apps+"/.kasbah/backup/env", "KASBAH_BACKUP_REPO_BASE=rest:http://real/\nAWS_ACCESS_KEY_ID=theirs\nRESTIC_REPOSITORY=sneaky\nKASBAH_BACKUP_SOMETHING=x\n")
 	bin := t.TempDir()
 	state = t.TempDir()
@@ -115,7 +115,7 @@ func TestProbe(t *testing.T) {
 }
 
 func TestProbeNoEnv(t *testing.T) {
-	apps, _ := tree(t)
+	apps, _ := appsTree(t)
 	if err := Probe(apps, ResticImage, time.Second, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "no credentials to test") {
 		t.Error(err)
 	}

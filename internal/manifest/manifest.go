@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/jv"
+	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
 
@@ -72,11 +72,11 @@ type Manifest struct {
 	// and the commands that need one enforce it themselves.
 	Domain string
 	// Doc is the whole document, for every other question about it.
-	Doc jv.Value
+	Doc tree.Value
 }
 
-// Get answers a path into the document as jq's `.a.b[0]` would.
-func (m *Manifest) Get(path ...any) (jv.Value, bool) { return jv.Get(m.Doc, path...) }
+// Get is the value at path in the document (tree.Lookup).
+func (m *Manifest) Get(path ...any) (tree.Value, bool) { return tree.Lookup(m.Doc, path...) }
 
 // Require reads and validates the manifest at path. A
 // missing manifest is exit 2; anything else wrong is exit 1. version is this
@@ -91,28 +91,29 @@ func Require(path, version string) (*Manifest, error) {
 		return nil, cli.Fail("%s: could not parse YAML", path).Cont(err.Error())
 	}
 
-	// The four fields read as `yq -r` lines of `.schema, .kasbah_version,
-	// .name, .domain // "", "__EOM__"`: exactly five, a multi-line field included.
-	var lines []string
-	for _, d := range docs {
-		switch d.(type) {
-		case nil, *jv.Map:
-		default:
-			return nil, cli.Fail("%s: could not parse YAML", path).
-				Cont(fmt.Sprintf(`Cannot index %s with "schema"`, jv.Type(d)))
-		}
-		for _, k := range []string{"schema", "kasbah_version", "name", "domain"} {
-			v, _ := jv.Get(d, k)
-			lines = append(lines, jv.Raw(jv.Alt(v, "")))
-		}
-		lines = append(lines, "__EOM__")
-	}
-	fields := strings.Split(strings.TrimRight(strings.Join(lines, "\n"), "\n"), "\n")
-	if len(fields) != 5 || fields[4] != "__EOM__" {
+	if len(docs) != 1 {
 		return nil, cli.Fail("%s: expected a single YAML document", path)
 	}
-	for i := range 4 {
-		fields[i] = strings.TrimSuffix(fields[i], "\r")
+	if _, ok := docs[0].(*tree.Map); !ok && docs[0] != nil {
+		return nil, cli.Fail("%s: the document is not a mapping — kasbah.yml is a set of fields like schema: and name:", path)
+	}
+	// The four fields are single-line values: null or absent is "".
+	var fields [4]string
+	for i, k := range []string{"schema", "kasbah_version", "name", "domain"} {
+		v, _ := tree.Lookup(docs[0], k)
+		switch v.(type) {
+		case []tree.Value, *tree.Map:
+			return nil, cli.Fail("%s: %s: is a list or a mapping — it has to be a single value", path, k)
+		case bool:
+			if k != "schema" {
+				return nil, cli.Fail("%s: %s: must be a string, not %s", path, k, tree.Compact(v))
+			}
+		}
+		f := tree.TextAt(docs[0], k)
+		if strings.Contains(f, "\n") {
+			return nil, cli.Fail("%s: %s: spans more than one line — it has to be a single value", path, k)
+		}
+		fields[i] = strings.TrimSuffix(f, "\r")
 	}
 	schema, kv, name, domain := fields[0], fields[1], fields[2], fields[3]
 

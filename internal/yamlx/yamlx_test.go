@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/adigourdi/kasbah/internal/jv"
+	"github.com/adigourdi/kasbah/internal/tree"
 )
 
 // The cache answers from the first read until told to forget.
@@ -14,7 +14,7 @@ func TestCache(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "f.yml")
 	os.WriteFile(p, []byte("name: first\n"), 0o644)
 	var c Cache
-	name := func() jv.Value { v, _ := jv.Get(c.Get(p).Docs[0], "name"); return v }
+	name := func() tree.Value { v, _ := tree.Lookup(c.Get(p).Docs[0], "name"); return v }
 	if name() != "first" {
 		t.Fatal("first read")
 	}
@@ -113,7 +113,7 @@ func TestLoad(t *testing.T) {
 		if err == nil {
 			parts := make([]string, len(docs))
 			for i, d := range docs {
-				parts[i] = jv.Compact(d)
+				parts[i] = tree.Compact(d)
 			}
 			got = strings.Join(parts, "|")
 		} else if _, ok := err.(*Error); !ok {

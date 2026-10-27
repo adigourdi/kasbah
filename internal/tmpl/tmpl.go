@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/jv"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
 
@@ -42,7 +41,7 @@ func CheckYAML(s string) error {
 	if err != nil {
 		return err
 	}
-	if len(docs) == 0 || !jv.Truthy(docs[len(docs)-1]) {
+	if len(docs) == 0 || docs[len(docs)-1] == nil || docs[len(docs)-1] == false {
 		return fmt.Errorf("the document is empty, null or false")
 	}
 	return nil
