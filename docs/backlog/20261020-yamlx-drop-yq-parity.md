@@ -44,7 +44,7 @@ key order must hold (server.json, state.json, the `traefik.yml` edit).
 
 - [x] Tests read YAML through `tools/yaml2json` (built into `dist/`, never
       released) piped to `jq`; no suite and no doc needs host `yq`
-- [ ] `internal/yamlx` on plain `yaml.v3`: the Python-object model, the
+- [x] `internal/yamlx` on plain `yaml.v3`: the Python-object model, the
       goldens, `regen.sh` and the parity test deleted
 - [ ] The shared tree loses its jq semantics and becomes `internal/tree`:
       JSON through `encoding/json`, Go accessors in place of

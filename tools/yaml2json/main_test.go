@@ -2,54 +2,51 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func run(t *testing.T, src string) (string, error) {
-	t.Helper()
-	var out bytes.Buffer
-	err := convert(strings.NewReader(src), &out)
-	return out.String(), err
-}
+// The binary itself: a file or stdin in, one line per document out, and a
+// stream that does not read is exit 1 with nothing on stdout.
+func TestCLI(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "yaml2json")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	run := func(stdin string, args ...string) (string, string, int) {
+		cmd := exec.Command(bin, args...)
+		cmd.Stdin = strings.NewReader(stdin)
+		var out, errb bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &errb
+		cmd.Run()
+		return out.String(), errb.String(), cmd.ProcessState.ExitCode()
+	}
 
-func TestKeyOrderKept(t *testing.T) {
-	got, err := run(t, "z: 1\na: [x, {q: true, b: null}]\nm: \"s<>\"\n")
-	if err != nil {
+	f := filepath.Join(dir, "f.yml")
+	if err := os.WriteFile(f, []byte("z: 1\na: \"<&>\"\n---\n- 2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	want := `{"z":1,"a":["x",{"q":true,"b":null}],"m":"s<>"}` + "\n"
-	if got != want {
-		t.Fatalf("got %q want %q", got, want)
+	want := "{\"z\":1,\"a\":\"<&>\"}\n[2]\n"
+	if out, _, rc := run("", f); rc != 0 || out != want {
+		t.Errorf("file: rc %d, %q", rc, out)
 	}
-}
-
-func TestMultiDoc(t *testing.T) {
-	got, err := run(t, "a: 1\n---\n- 2\n---\nplain\n")
-	if err != nil {
-		t.Fatal(err)
+	if out, _, rc := run("z: 1\na: \"<&>\"\n---\n- 2\n", "-"); rc != 0 || out != want {
+		t.Errorf("stdin: rc %d, %q", rc, out)
 	}
-	if want := "{\"a\":1}\n[2]\n\"plain\"\n"; got != want {
-		t.Fatalf("got %q want %q", got, want)
+	if out, _, rc := run(""); rc != 0 || out != "" {
+		t.Errorf("empty stdin: rc %d, %q", rc, out)
 	}
-}
-
-func TestAnchorsAndEmpty(t *testing.T) {
-	got, err := run(t, "a: &x {k: v}\nb: *x\n---\n")
-	if err != nil {
-		t.Fatal(err)
+	if out, errs, rc := run("a: 1\n---\nb:\n\tc: 2\n"); rc != 1 || out != "" || !strings.HasPrefix(errs, "yaml2json: ") {
+		t.Errorf("a broken second document: rc %d, out %q, err %q", rc, out, errs)
 	}
-	if !strings.HasPrefix(got, `{"a":{"k":"v"},"b":{"k":"v"}}`+"\n") {
-		t.Fatalf("got %q", got)
+	if _, errs, rc := run("", filepath.Join(dir, "absent.yml")); rc != 1 || errs == "" {
+		t.Errorf("a missing file: rc %d, err %q", rc, errs)
 	}
-}
-
-func TestParseErrorKeepsEarlierDocs(t *testing.T) {
-	got, err := run(t, "a: 1\n---\nb:\n\tc: 2\n")
-	if err == nil {
-		t.Fatal("want an error")
-	}
-	if got != "{\"a\":1}\n" {
-		t.Fatalf("got %q", got)
+	if _, _, rc := run("", "a", "b"); rc != 2 {
+		t.Errorf("two arguments: rc %d", rc)
 	}
 }

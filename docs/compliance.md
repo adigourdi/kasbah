@@ -208,10 +208,12 @@ newline.
 
 **The parsed document decides what is true; the line scanner only finds where
 it is written.** Every verdict and every insert-versus-replace decision comes
-from the parsed tree (the one `yq -c .` prints). If the
-scanner then cannot locate that key in the text — a quoted key, a flow mapping,
-an inline value — the fix is **refused and named**, never guessed. That split is
-what keeps a pattern-matcher from deciding semantics.
+from the parsed tree (as `internal/yamlx` reads it — yaml.v3's reading; a
+file it refuses, such as one with a `%YAML 1.2` directive, `.inf`/`.nan`, an
+alias cycle or aliases expanding past 1000× its written size, does not
+parse). If the scanner then cannot locate that key in the text — a quoted key,
+a flow mapping, an inline value — the fix is **refused and named**, never
+guessed. That split is what keeps a pattern-matcher from deciding semantics.
 
 Where a new service-level key lands: the last *content* line of the service
 block, stepping over blank lines and trailing comments, so an inserted key

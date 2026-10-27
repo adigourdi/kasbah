@@ -1,119 +1,61 @@
-// Package yamlx reads YAML as the JSON `yq -c .` prints (kislyuk yq 3.1.0:
-// libyaml, PyYAML constructors, jq). yq resolves plain scalars by YAML 1.2
-// core — `yes`, `on`, `1:30` are strings — yet `0755` is octal 493.
+// Package yamlx reads YAML documents into trees: yaml.v3 parses and resolves
+// scalars, then a walk applies kasbah's rules (duplicate keys, merges, local
+// tags, numbers JSON can hold) — TestLoad's table lists them.
 package yamlx
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"math"
+	"math/big"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
-	"unicode/utf8"
+	"time"
 
 	"github.com/adigourdi/kasbah/internal/jv"
 	"go.yaml.in/yaml/v3"
 )
 
-// Error is a document yq would not convert. The loader drops the whole
-// file on any such failure, including a later document of a stream whose
-// earlier ones converted.
+// Error is a stream that does not read as YAML, or holds a value a tree
+// cannot: the loader yields no documents for it.
 type Error struct {
 	Msg string
 }
 
 func (e *Error) Error() string { return e.Msg }
 
-func refuse(format string, args ...any) error {
-	return &Error{Msg: sprintf(format, args...)}
+func refuse(n *yaml.Node, format string, args ...any) error {
+	return &Error{Msg: fmt.Sprintf("yaml: line %d: ", n.Line) + fmt.Sprintf(format, args...)}
 }
 
-// yq's --max-expansion-factor default: a document whose JSON outgrows its
-// source this many times over is refused.
-const expansionFactor = 1024
+// A document's aliases may expand it to at most this many times the nodes
+// it is written with.
+const expansionFactor = 1000
 
 // Load converts a YAML stream into its documents. An empty or comment-only
-// stream is no documents; a document that does not convert fails the lot.
+// stream is no documents; anything unreadable fails the lot.
 func Load(data []byte) ([]jv.Value, error) {
-	// yq reads its input as a text file: strict UTF-8, universal newlines.
-	if !utf8.Valid(data) {
-		return nil, refuse("yaml: input is not valid UTF-8")
-	}
-	data, err := normalize(data)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	var nodes []*yaml.Node
+	dec := yaml.NewDecoder(bytes.NewReader(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))))
+	var docs []jv.Value
 	for {
-		n := new(yaml.Node)
-		err := dec.Decode(n)
+		var n yaml.Node
+		err := dec.Decode(&n)
 		if err == io.EOF {
-			break
+			return docs, nil
 		}
 		if err != nil {
 			return nil, &Error{Msg: err.Error()}
 		}
-		nodes = append(nodes, n)
-	}
-
-	starts := rootStarts(data, nodes)
-	docs := make([]jv.Value, 0, len(nodes))
-	for i, n := range nodes {
-		if err := checkAnchors(n); err != nil {
-			return nil, err
-		}
-		o, err := newBuilder().build(n)
-		if err != nil {
-			return nil, err
-		}
-		// yq hands the JSON to jq, whose parser refuses it past this depth.
-		if (o.kind == kList || o.kind == kDict) && depth(o, map[*obj]int{}) >= jv.DepthLimit {
-			return nil, refuse("yaml: line %d: nested deeper than jq's parser allows", n.Line)
-		}
-		// yq divides by the source between this root's end and the last one's;
-		// starts bound that from above, so this is never stricter than yq.
-		prev := 0
-		if i > 0 {
-			prev = starts[i-1]
-		}
-		if pySize(o, map[*obj]int{}) > (starts[i+1]-prev+2)*expansionFactor {
-			return nil, refuse("yaml: detected unsafe YAML entity expansion")
-		}
-		v, err := o.value(map[*obj]jv.Value{})
+		w := &walker{open: map[*yaml.Node]bool{}, budget: expansionFactor * written(&n)}
+		v, err := w.value(&n)
 		if err != nil {
 			return nil, err
 		}
 		docs = append(docs, v)
 	}
-	return docs, nil
-}
-
-// rootStarts is each document root's offset in characters, then the stream's
-// length in characters.
-func rootStarts(data []byte, docs []*yaml.Node) []int {
-	lines := []int{0}
-	chars := 0
-	for _, r := range string(data) {
-		chars++
-		if r == '\n' {
-			lines = append(lines, chars)
-		}
-	}
-	out := make([]int, 0, len(docs)+1)
-	for _, d := range docs {
-		n := d
-		if len(d.Content) > 0 {
-			n = d.Content[0]
-		}
-		off := 0
-		if n.Line >= 1 && n.Line <= len(lines) {
-			off = lines[n.Line-1] + max(n.Column-1, 0)
-		}
-		out = append(out, off)
-	}
-	return append(out, chars)
 }
 
 // LoadFile is Load over a file's content.
@@ -125,123 +67,206 @@ func LoadFile(path string) ([]jv.Value, error) {
 	return Load(data)
 }
 
-// Render is `yq -c .`'s stdout for the documents: one compact line each.
-func Render(docs []jv.Value) string {
-	var b strings.Builder
-	for _, d := range docs {
-		b.WriteString(jv.Compact(d))
-		b.WriteByte('\n')
+// written counts the nodes as the source spells them, an alias as one.
+func written(n *yaml.Node) int {
+	c := 1
+	for _, k := range n.Content {
+		c += written(k)
 	}
-	return b.String()
+	return c
 }
 
-// normalize is what reaches libyaml in yq, in a shape yaml.v3 reads alike:
-// universal newlines, a line-opening byte-order mark as the column libyaml
-// skips it as, and `%YAML 1.2` (libyaml accepts it, yaml.v3 refuses) as 1.1.
-func normalize(data []byte) ([]byte, error) {
-	if bytes.ContainsRune(data, '\r') {
-		data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
-		data = bytes.ReplaceAll(data, []byte("\r"), []byte("\n"))
-	}
-	data, err := lineBOMs(data)
-	if err != nil {
-		return nil, err
-	}
-	return yaml12(data), nil
+// walker converts one document: open holds the alias targets being expanded,
+// budget the nodes it may still produce.
+type walker struct {
+	open   map[*yaml.Node]bool
+	budget int
 }
 
-func isBreak(r rune) bool { return r == '\n' || r == 0x85 || r == 0x2028 || r == 0x2029 }
-
-var reDocStart = regexp.MustCompile(`^---(?:[ \t]+(?:#.*)?)?$`)
-
-// lineBOMs accepts a line-opening byte-order mark only where it opens a
-// document (stream start, or after a bare `---`), as one column of indent.
-// Elsewhere libyaml's reading depends on the scalar it interrupts: refused.
-func lineBOMs(data []byte) ([]byte, error) {
-	const bom = "\uFEFF"
-	s := string(data)
-	if len(s) < 2 || !strings.Contains(s[1:], bom) {
-		return data, nil
+func (w *walker) value(n *yaml.Node) (jv.Value, error) {
+	if w.budget--; w.budget < 0 {
+		return nil, refuse(n, "aliases expand the document past %d times its size", expansionFactor)
 	}
-	var out strings.Builder
-	line, lineStart, prevLine := 1, 0, -1
-	for i, r := range s {
-		if r == 0xFEFF && i > 0 && lineStart == i {
-			prev := ""
-			if prevLine >= 0 {
-				prev = strings.TrimRightFunc(s[prevLine:lineStart], isBreak)
+	switch n.Kind {
+	case yaml.DocumentNode:
+		if len(n.Content) == 0 {
+			return nil, nil
+		}
+		return w.value(n.Content[0])
+	case yaml.AliasNode:
+		if w.open[n.Alias] {
+			return nil, refuse(n, "alias *%s is inside its own anchor", n.Value)
+		}
+		w.open[n.Alias] = true
+		defer delete(w.open, n.Alias)
+		return w.value(n.Alias)
+	case yaml.SequenceNode:
+		out := make([]jv.Value, 0, len(n.Content))
+		for _, c := range n.Content {
+			v, err := w.value(c)
+			if err != nil {
+				return nil, err
 			}
-			onlyBreaks := strings.TrimFunc(s[:i], func(r rune) bool { return isBreak(r) || r == 0xFEFF }) == ""
-			if !onlyBreaks && !reDocStart.MatchString(prev) {
-				return nil, refuse("yaml: line %d: a byte-order mark opens a line inside a document", line)
+			out = append(out, v)
+		}
+		return out, nil
+	case yaml.MappingNode:
+		return w.mapping(n)
+	}
+	return scalar(n)
+}
+
+// mapping keeps each key at its first place with its last value; `<<` is such
+// a key, and its last value merges in at its first place beneath the
+// mapping's own keys. Every value must convert, kept or not.
+func (w *walker) mapping(n *yaml.Node) (*jv.Map, error) {
+	var keys []string
+	names := make([]string, len(n.Content)/2)
+	own := map[string]bool{}
+	mergeAt := -1
+	for i := range names {
+		k := n.Content[2*i]
+		if isMerge(k) {
+			if mergeAt < 0 {
+				mergeAt = len(keys)
 			}
-			out.WriteByte(' ')
 			continue
 		}
-		out.WriteRune(r)
-		if isBreak(r) {
-			prevLine, lineStart = lineStart, i+utf8.RuneLen(r)
-			line++
+		ks, err := key(k)
+		if err != nil {
+			return nil, err
+		}
+		if !own[ks] {
+			own[ks] = true
+			keys = append(keys, ks)
+		}
+		names[i] = ks
+	}
+	vals := map[string]jv.Value{}
+	var merged *jv.Map
+	for i, ks := range names {
+		v := n.Content[2*i+1]
+		var err error
+		if isMerge(n.Content[2*i]) {
+			merged, err = w.merge(v, own)
+		} else {
+			vals[ks], err = w.value(v)
+		}
+		if err != nil {
+			return nil, err
 		}
 	}
-	return []byte(out.String()), nil
+	m := jv.NewMap()
+	for i := 0; i <= len(keys); i++ {
+		if i == mergeAt {
+			for _, k := range merged.Keys() {
+				v, _ := merged.Get(k)
+				m.Set(k, v)
+			}
+		}
+		if i < len(keys) {
+			m.Set(keys[i], vals[keys[i]])
+		}
+	}
+	return m, nil
 }
 
-// yaml12 rewrites `%YAML 1.2` only on directive lines: at the stream's start
-// or after a `...`, before the `---` that opens the document.
-func yaml12(data []byte) []byte {
-	if !bytes.Contains(data, []byte("%YAML")) {
-		return data
+func isMerge(k *yaml.Node) bool { return k.Kind == yaml.ScalarNode && k.ShortTag() == "!!merge" }
+
+// merge is a mapping, an alias to one, or a sequence of those, an earlier
+// source winning over a later; keys the mapping has itself are left out.
+func (w *walker) merge(v *yaml.Node, own map[string]bool) (*jv.Map, error) {
+	srcs := []*yaml.Node{v}
+	if v.Kind == yaml.SequenceNode {
+		srcs = v.Content
 	}
-	lines := strings.SplitAfter(string(data), "\n")
-	directives := true
-	for i, l := range lines {
-		body := strings.TrimSuffix(strings.TrimPrefix(l, "\uFEFF"), "\n")
-		trimmed := strings.TrimSpace(body)
-		switch {
-		case directives && strings.HasPrefix(body, "%"):
-			lines[i] = reYAML12.ReplaceAllString(l, "${1}1${2}")
-		case directives && (trimmed == "" || strings.HasPrefix(trimmed, "#")):
-		case directives:
-			directives = false
-		case body == "..." || strings.HasPrefix(body, "... ") || strings.HasPrefix(body, "...\t"):
-			directives = true
+	out := jv.NewMap()
+	for _, s := range srcs {
+		if deref(s).Kind != yaml.MappingNode {
+			return nil, refuse(s, "a merge (<<) takes a mapping or a sequence of mappings")
+		}
+		src, err := w.value(s)
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range src.(*jv.Map).Keys() {
+			if !own[k] && !out.Has(k) {
+				x, _ := src.(*jv.Map).Get(k)
+				out.Set(k, x)
+			}
 		}
 	}
-	return []byte(strings.Join(lines, ""))
+	return out, nil
 }
 
-var reYAML12 = regexp.MustCompile(`^(\x{FEFF}?%YAML[ \t]+1\.)2([ \t\n]|$)`)
-
-// checkAnchors applies PyYAML's composer rules that yaml.v3 does not: an
-// anchor defined twice in one document is an error, and an alias resolves only
-// against anchors of its own document, defined before it.
-func checkAnchors(doc *yaml.Node) error {
-	defined := map[*yaml.Node]bool{}
-	names := map[string]bool{}
-	var walk func(n *yaml.Node) error
-	walk = func(n *yaml.Node) error {
-		if n.Kind == yaml.AliasNode {
-			if !defined[n.Alias] {
-				return refuse("yaml: line %d: found undefined alias %q", n.Line, n.Value)
-			}
-			return nil
-		}
-		if n.Anchor != "" {
-			if names[n.Anchor] {
-				return refuse("yaml: line %d: found duplicate anchor %q", n.Line, n.Anchor)
-			}
-			names[n.Anchor] = true
-			defined[n] = true
-		}
-		for _, c := range n.Content {
-			if err := walk(c); err != nil {
-				return err
-			}
-		}
-		return nil
+func deref(n *yaml.Node) *yaml.Node {
+	for n.Kind == yaml.AliasNode {
+		n = n.Alias
 	}
-	return walk(doc)
+	return n
+}
+
+// key is a scalar key's resolved value as text: `1` "1", `~` "null".
+func key(n *yaml.Node) (string, error) {
+	n = deref(n)
+	if n.Kind != yaml.ScalarNode {
+		return "", refuse(n, "a mapping key must be a scalar")
+	}
+	v, err := scalar(n)
+	if err != nil {
+		return "", err
+	}
+	switch v := v.(type) {
+	case string:
+		return v, nil
+	case jv.Number:
+		return string(v), nil
+	}
+	return jv.Compact(v), nil
+}
+
+var reDecimal = regexp.MustCompile(`^[-+]?[0-9][0-9_]*$`)
+
+func scalar(n *yaml.Node) (jv.Value, error) {
+	if !strings.HasPrefix(n.ShortTag(), "!!") {
+		c := *n
+		c.Tag, c.Style = "", c.Style&^yaml.TaggedStyle
+		n = &c
+	}
+	var v any
+	if err := n.Decode(&v); err != nil {
+		return nil, &Error{Msg: err.Error()}
+	}
+	switch v := v.(type) {
+	case nil, bool, string:
+		return v, nil
+	case int:
+		return jv.Number(strconv.Itoa(v)), nil
+	case int64:
+		return jv.Number(strconv.FormatInt(v, 10)), nil
+	case uint64:
+		return jv.Number(strconv.FormatUint(v, 10)), nil
+	case float64:
+		if math.IsInf(v, 0) || math.IsNaN(v) {
+			return nil, refuse(n, "%s has no JSON number", n.Value)
+		}
+		// A plain integer past uint64 keeps its digits.
+		if n.Style == 0 && reDecimal.MatchString(n.Value) {
+			if b, ok := new(big.Int).SetString(strings.ReplaceAll(n.Value, "_", ""), 10); ok {
+				return jv.Number(b.String()), nil
+			}
+		}
+		s := strconv.FormatFloat(v, 'g', -1, 64)
+		if !strings.ContainsAny(s, ".eE") {
+			s += ".0"
+		}
+		return jv.Number(s), nil
+	case time.Time:
+		return n.Value, nil
+	case []byte:
+		return string(v), nil
+	}
+	return nil, refuse(n, "unsupported scalar %q", n.Value)
 }
 
 // File is one YAML file read once: every question about it is answered from
@@ -269,44 +294,8 @@ func (c *Cache) Get(path string) *File {
 		c.files = map[string]*File{}
 	}
 	docs, err := LoadFile(path)
-	f := &File{Path: path, Docs: Reread(docs), Err: err}
-	if err != nil {
-		f.Docs = nil
-	}
-	c.files[path] = f
-	return f
-}
-
-// Reread is the documents as jq reads them back from yq's output, which is
-// what a yq | jq reader holds: there an infinity is the literal yq printed
-// for it, and jq spells a literal the decNumber way.
-func Reread(docs []jv.Value) []jv.Value {
-	for i, d := range docs {
-		docs[i] = reread(d)
-	}
-	return docs
-}
-
-func reread(v jv.Value) jv.Value {
-	switch c := v.(type) {
-	case jv.Number:
-		switch c {
-		case "1.7976931348623157e+308":
-			return jv.Number("1.7976931348623157E+308")
-		case "-1.7976931348623157e+308":
-			return jv.Number("-1.7976931348623157E+308")
-		}
-	case []jv.Value:
-		for i, x := range c {
-			c[i] = reread(x)
-		}
-	case *jv.Map:
-		for _, k := range c.Keys() {
-			x, _ := c.Get(k)
-			c.Set(k, reread(x))
-		}
-	}
-	return v
+	c.files[path] = &File{Path: path, Docs: docs, Err: err}
+	return c.files[path]
 }
 
 // Forget drops a path, so the next Get reads it again.

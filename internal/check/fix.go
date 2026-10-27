@@ -714,7 +714,6 @@ func (r *fixRun) stage(file string, docs []jv.Value, planner func(*fixer), verif
 	}
 
 	newDocs, err := yamlx.Load(out)
-	newDocs = yamlx.Reread(newDocs)
 	if err != nil {
 		os.Remove(tmp)
 		c.out.Err("check --fix: the edited %s would not parse as YAML — nothing was written", file)

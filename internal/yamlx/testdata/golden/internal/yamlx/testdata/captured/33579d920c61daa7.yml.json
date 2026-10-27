@@ -1,1 +1,0 @@
-{"services":{"demo-web":{"image":"nginx:alpine","restart":"unless-stopped","logging":{"driver":"json-file","options":{"max-size":"10m","max-file":"3"}},"labels":["traefik.enable=true","traefik.http.routers.app.rule=Host(`demo.example.com`)"]}},"networks":{"default":{"name":"kasbah-net","external":true}}}

@@ -1,4 +1,0 @@
-http:
-  routers:
-    bad: [ this is
-      not yaml

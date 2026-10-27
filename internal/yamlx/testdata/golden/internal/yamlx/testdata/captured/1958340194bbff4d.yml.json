@@ -1,1 +1,0 @@
-{"http":{"routers":{"demo":{"rule":"Host(`demo.example.com`)","entryPoints":["websecure"],"service":"noop@internal"}}}}

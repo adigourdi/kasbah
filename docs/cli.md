@@ -618,7 +618,7 @@ and without `--yes` it is a hard fail naming the flag. Declining writes nothing
 and leaves no candidate behind. `--yes` on its own is refused rather than
 ignored — it does nothing without `--fix`.
 
-The fixes are **targeted text edits, never a YAML round-trip**: `yq` reorders
+The fixes are **targeted text edits, never a YAML round-trip**: a round-trip reorders
 keys and drops comments, and compose files carry load-bearing ones. Everything
 not being changed comes back byte for byte — comments, blank lines, key order,
 quoting, hand-spacing, CRLF line endings and a missing final newline included. A

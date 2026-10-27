@@ -1,9 +1,0 @@
-schema: 1
-kasbah_version: 0.1.0-dev
-
-name: t05
-domain: "mail.other.example.com"
-
-sync:
-  - compose.prod.yml -> compose.yml
-  - .env.prod.example

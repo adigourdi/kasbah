@@ -1,1 +1,0 @@
-{"http":{"routers":{"mailer4-http":{"rule":"Host(`mailer4.example.com`)","entryPoints":["web"],"middlewares":["http-to-https@file"],"service":"noop@internal"},"mailer4":{"rule":"Host(`mailer4.example.com`)","entryPoints":["websecure"],"tls":{"certResolver":"letsencrypt"},"service":"mailer4"}},"services":{"mailer4":{"loadBalancer":{"servers":[{"url":"http://mailer4-web:80"}]}}}}}

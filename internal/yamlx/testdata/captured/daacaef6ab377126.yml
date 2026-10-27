@@ -1,8 +1,0 @@
-services:
-  demo-web:
-    image: nginx:alpine
-    restart: unless-stopped
-networks:
-  default:
-    name: kasbah-net
-    external: true

@@ -75,6 +75,8 @@ func TestRefusals(t *testing.T) {
 	}
 	refused(t, write(t, "kasbah_version: x\nname: demo\n"), 1, "missing required field 'schema'")
 	refused(t, write(t, "schema: 1.0\nname: demo\n"), 1, "schema must be an integer (got '1.0')")
+	refused(t, write(t, "schema: 1e0\nname: demo\n"), 1, "schema must be an integer (got '1.0')")
+	refused(t, write(t, "schema: 1.5\nname: demo\n"), 1, "schema must be an integer (got '1.5')")
 	refused(t, write(t, "schema: 1\nname: Demo_App\n"), 1, "invalid name 'Demo_App'")
 	refused(t, write(t, "schema: 1\n"), 1, "missing required field 'name'")
 	refused(t, write(t, "schema: 1\nname: \"null\"\n"), 1, "missing required field 'name'")

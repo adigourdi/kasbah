@@ -1,1 +1,0 @@
-{"version":"3.7","name":"demo","services":{"demo-web":{"image":"nginx:alpine","container_name":"demo-web","volumes":["./site:/usr/share/nginx/html:ro"],"environment":{"DEMO_GREETING":"${DEMO_GREETING}"},"networks":["internal"],"cpus":"0.5","mem_limit":"512m","mem_reservation":"64m"}},"networks":{"kasbah-net":{},"internal":{}}}

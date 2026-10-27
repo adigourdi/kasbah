@@ -36,7 +36,7 @@ func Render(tpl, label string, subst map[string]string) (string, error) {
 	return b.String(), nil
 }
 
-// CheckYAML is `yq -e .`: the document parses, and is not empty, null or false.
+// CheckYAML reports whether the document parses and is not empty, null or false.
 func CheckYAML(s string) error {
 	docs, err := yamlx.Load([]byte(s))
 	if err != nil {

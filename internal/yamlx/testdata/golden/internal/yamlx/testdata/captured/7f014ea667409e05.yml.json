@@ -1,1 +1,0 @@
-{"services":{"api":{"build":"./api","image":"demo-web:1.2.3","container_name":"demo-web","restart":"unless-stopped","cpus":"${KASBAH_CPU_LIMIT}","mem_limit":"${KASBAH_MEM_LIMIT}","logging":{"driver":"json-file","options":{"max-size":"10m","max-file":"3"}},"networks":["kasbah-net","internal"]}},"networks":{"kasbah-net":{"external":true},"internal":{}}}

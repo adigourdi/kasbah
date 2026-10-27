@@ -1,1 +1,0 @@
-{"schema":1,"kasbah_version":"0.1.0-dev","name":"mailer","domain":"mailer.example.com","sync":["compose.prod.yml -> compose.yml",".env.prod.example"],"mail":{"domain":"mailer.example.com","snappymail_domain":"./mail/snappymail-domain.json"}}

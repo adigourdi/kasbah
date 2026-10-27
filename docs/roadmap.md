@@ -11,7 +11,7 @@ the multi-project layer.
   to `~/.local/share/kasbah/`
 - Self-version: `kasbah --version` reports from a committed
   `VERSION` file
-- Manifest parsing: yq-based reader with schema-version check
+- Manifest parsing: a YAML reader with schema-version check
 - `.kasbah/state.json` read/write
 
 ### 1.2 Server setup

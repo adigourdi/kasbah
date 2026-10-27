@@ -2765,12 +2765,13 @@ make_project "$f21"
     printf '\tbroken: 1\n'
 } > "$f21/compose.prod.yml"
 # The precondition, asserted rather than assumed: this file really is *partly*
-# readable. A fixture that failed outright would satisfy everything below while
-# proving nothing.
-f21_half="$(cd "$f21" && yaml2json compose.prod.yml 2>/dev/null)"; f21_rc=$?
-assert '[ "$f21_rc" != 0 ]' "F21: the fixture does not parse (rc $f21_rc)"
+# readable — its first document converts on its own. A fixture that failed
+# outright would satisfy everything below while proving nothing.
+f21_whole="$(cd "$f21" && yaml2json compose.prod.yml 2>/dev/null)"; f21_rc=$?
+assert '[ "$f21_rc" != 0 ] && [ -z "$f21_whole" ]' "F21: the fixture does not parse (rc $f21_rc, said '$f21_whole')"
+f21_half="$(sed '/^---$/q' "$f21/compose.prod.yml" | yaml2json 2>/dev/null)"
 assert 'grep -q "demo-web" <<<"$f21_half"' \
-    "F21: and yet one of its documents converts (said '$f21_half')"
+    "F21: and yet its first document converts (said '$f21_half')"
 
 out="$(cd "$f21" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "F21: the run fails (rc $rc)"

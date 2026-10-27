@@ -47,10 +47,11 @@ plan and the only progress tracker (the roadmap is scope, not status).
   under `~/.local/share/kasbah/<version>/` (`internal/launcher`). No protocol
   negotiation exists: a `kasbah remote` arm may change in any release.
   `remote version` prints `build=<stamp>` and readers ignore unknown keys.
-- **YAML reads as kislyuk `yq` 3.1.0 printed it** — plain scalars per YAML 1.2
-  (`yes`/`on` are strings) but `0755` octal, numbers in jq 1.7's spelling.
-  `internal/yamlx` + `internal/jv` reproduce it (goldens from the real yq);
-  parse a file once and query the tree, never re-parse per rule.
+- **YAML reads as `go.yaml.in/yaml/v3` reads it**, through `internal/yamlx`:
+  key order kept, a duplicate key's last value wins, merges and aliases
+  expanded, compose's local tags (`!reset`) ignored, a float stays a float
+  (`1.0`). No yq or jq emulation anywhere. Parse a file once and query the
+  tree, never re-parse per rule.
 - **Output is locale-independent**: ASCII names and schemes, UTF-8 character
   counts, byte-order lists.
 - **Signals:** every workstation command, and every server-side arm that leaves
