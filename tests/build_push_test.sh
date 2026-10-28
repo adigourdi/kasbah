@@ -189,8 +189,10 @@ stock="$(make stock demo v2.0.0)"
 
 projdir="$(make untagged built-app)"
 run; rc=$?
-assert '[ "$rc" = "1" ]' "an untagged HEAD is a failure (exit $rc)"
+assert '[ "$rc" = "1" ]' "an untagged HEAD with no terminal and no --bump is a failure (exit $rc)"
 assert 'grep -qF "no version tag" <<<"$err"' "saying HEAD carries no version (said '$err')"
+assert 'grep -qF -- "--bump=patch|minor|major" <<<"$err"' "and naming the flag that answers it (said '$err')"
+assert '[ -z "$(cd "$projdir" && git tag)" ]' "and tagging nothing"
 assert '[ ! -s "$DOCKER_LOG" ]' \
     "and nothing was built — docker was never called (log: $(cat "$DOCKER_LOG"))"
 assert '[ ! -s "$SSH_LOG" ]' "nor reached for a server (ssh log: $(cat "$SSH_LOG"))"
@@ -516,6 +518,73 @@ assert 'grep -qF "no '"'"'origin'"'"' remote" <<<"$err"' "with a warning that sa
 assert 'grep -qF "git:     v3.1.0 not pushed" <<<"$err"' \
     "and the summary line under the headline agrees with the warning (said '$err')"
 assert '[ "$(grep -c "^save " "$DOCKER_LOG")" = "1" ]' "and the images did ship (log: $(cat "$DOCKER_LOG"))"
+
+# --- An untagged HEAD is tagged first -------------------------------------------------------
+# HEAD one commit past v3.1.0: --bump=minor makes it v3.2.0, which is what the
+# images carry and what reaches origin.
+
+bump_origin="$tmpdir/bump-origin.git"
+git init -q --bare "$bump_origin" >/dev/null 2>&1
+projdir="$(make bumped built-app v3.1.0)"
+( cd "$projdir" && git commit -q --allow-empty -m fix && git remote add origin "$bump_origin" ) >/dev/null 2>&1 || exit 2
+head_tags() { (cd "$projdir" && git tag --points-at HEAD | tr '\n' ' '); }
+
+run --bump=minor "deploy@vps"; rc=$?
+assert '[ "$rc" = "0" ]' "an untagged HEAD with --bump=minor ships (exit $rc: $err)"
+assert '[ "$(head_tags)" = "v3.2.0 " ]' "having tagged HEAD v3.2.0 (HEAD has: '$(head_tags)')"
+assert 'grep -qF "Tagged HEAD v3.2.0" <<<"$err"' "and said so (said '$err')"
+assert 'grep -qF "Shipped built-app 3.2.0 to deploy@vps" <<<"$err"' "under that version (said '$err')"
+assert 'grep -qF ":3.2.0" "$DOCKER_LOG"' "which is the images' tag (log: $(cat "$DOCKER_LOG"))"
+assert '[ "$(git --git-dir="$bump_origin" tag | tr "\n" " ")" = "v3.2.0 " ]' \
+    "and the tag reached origin (origin has: '$(git --git-dir="$bump_origin" tag | tr '\n' ' ')')"
+
+# A server that cannot be reached: the tag was already cut, and stays — local.
+projdir="$(make bumpfail built-app v3.1.0)"
+( cd "$projdir" && git commit -q --allow-empty -m fix ) >/dev/null 2>&1 || exit 2
+SSH_RC=255 run --bump=patch "deploy@vps"; rc=$?
+assert '[ "$rc" != "0" ]' "an unreachable server still fails the run (exit $rc)"
+assert '[ "$(head_tags)" = "v3.1.1 " ]' "and leaves HEAD tagged for the next run (HEAD has: '$(head_tags)')"
+assert 'grep -qF "the tag stays" <<<"$err"' "as the run said it would (said '$err')"
+
+# A computed tag that exists elsewhere is refused before anything happens.
+projdir="$(make bumptaken built-app v3.1.0)"
+( cd "$projdir" && git commit -q --allow-empty -m fix && git tag v3.1.1 "$(git commit-tree "HEAD^{tree}" -m side)" ) >/dev/null 2>&1 || exit 2
+run --bump=patch "deploy@vps"; rc=$?
+assert '[ "$rc" = "1" ]' "a bump onto a tag that exists is refused (exit $rc)"
+assert 'grep -qF "v3.1.1 already exists" <<<"$err"' "naming it (said '$err')"
+assert '[ -z "$(head_tags)" ]' "tagging nothing (HEAD has: '$(head_tags)')"
+assert '[ ! -s "$DOCKER_LOG" ] && [ ! -s "$SSH_LOG" ]' "building and reaching nothing"
+
+# --build-only tags too: the images it builds carry the version.
+projdir="$(make bumplocal built-app v3.1.0)"
+( cd "$projdir" && git commit -q --allow-empty -m fix ) >/dev/null 2>&1 || exit 2
+run --build-only --bump=major; rc=$?
+assert '[ "$rc" = "0" ]' "--build-only --bump=major builds (exit $rc: $err)"
+assert '[ "$(head_tags)" = "v4.0.0 " ]' "having tagged HEAD v4.0.0 (HEAD has: '$(head_tags)')"
+assert 'grep -qF ":4.0.0" "$DOCKER_LOG" && [ ! -s "$SSH_LOG" ]' "tagging the images so, and shipping nothing"
+
+# A project that builds nothing has nothing to release: asked, but not tagged.
+projdir="$(make bumpstock demo v2.0.0)"
+( cd "$projdir" && git commit -q --allow-empty -m fix ) >/dev/null 2>&1 || exit 2
+run --bump=patch "user@somewhere"; rc=$?
+assert '[ "$rc" = "0" ]' "a stock-only project with --bump exits 0 (exit $rc: $err)"
+assert 'grep -qF "HEAD was not tagged v2.0.1" <<<"$err"' "saying it tagged nothing (said '$err')"
+assert '[ -z "$(head_tags)" ] && [ ! -s "$DOCKER_LOG" ] && [ ! -s "$SSH_LOG" ]' "and tagging, building and reaching nothing"
+
+# A tag that is not a v-tag is warned about, --bump or not.
+projdir="$(make bumpplain built-app release-7)"
+run --build-only --bump=patch; rc=$?
+assert '[ "$rc" = "0" ]' "a HEAD tagged release-7 is bumped from 0.0.0 (exit $rc: $err)"
+assert 'grep -qF "HEAD is tagged release-7" <<<"$err"' "with a warning naming the tag (said '$err')"
+assert '[ "$(head_tags)" = "release-7 v0.0.1 " ]' "and HEAD gains v0.0.1 (HEAD has: '$(head_tags)')"
+
+# Untagged and dirty: commit first.
+projdir="$(make bumpdirty built-app v3.1.0)"
+( cd "$projdir" && git commit -q --allow-empty -m fix && echo x > scratch ) >/dev/null 2>&1 || exit 2
+run --bump=patch "deploy@vps"; rc=$?
+assert '[ "$rc" = "1" ]' "an untagged, dirty HEAD is refused (exit $rc)"
+assert 'grep -qF "commit first" <<<"$err"' "saying commit first (said '$err')"
+assert '[ -z "$(head_tags)" ] && [ ! -s "$DOCKER_LOG" ]' "tagging and building nothing"
 
 # --- The command line -------------------------------------------------------------------------
 

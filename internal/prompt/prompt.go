@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -187,6 +188,39 @@ func (p *Prompter) Value(flag, question, given, def string) (string, error) {
 			return a, nil
 		}
 		p.Out.Warn("an answer is required")
+	}
+}
+
+// Select asks for one of choices, listed numbered with their labels: the
+// number or the choice answers, --<flag>=<choice> answers for a script, and q
+// declines (ok false).
+func (p *Prompter) Select(flag, question string, choices, labels []string, given string) (choice string, ok bool, err error) {
+	if given != "" {
+		return strings.TrimSuffix(given, "\r"), true, nil
+	}
+	flags := "--" + flag + "=" + strings.Join(choices, "|")
+	if !p.TTY {
+		return "", false, giveUp(reasonNoTTY, question, flags)
+	}
+	fmt.Fprintln(p.Out.Stderr, question)
+	for i, l := range labels {
+		fmt.Fprintf(p.Out.Stderr, "  %d) %s\n", i+1, l)
+	}
+	for {
+		a, err := p.ask(fmt.Sprintf("Choose 1-%d, or q to abort: ", len(choices)))
+		if err != nil {
+			return "", false, giveUp(reasonEOF, question, flags)
+		}
+		switch a {
+		case "q", "Q", "quit", "abort":
+			return "", false, nil
+		}
+		for i, c := range choices {
+			if a == c || a == strconv.Itoa(i+1) {
+				return c, true, nil
+			}
+		}
+		p.Out.Warn("answer 1-%d, one of %s, or q", len(choices), strings.Join(choices, " "))
 	}
 }
 

@@ -35,10 +35,11 @@ type fake struct {
 	// mtimes, when set, records each sync source's mtime (a symlink's own).
 	mtimes map[string]time.Time
 
-	calls   []string
-	client  string
-	injects [][]string
-	spec    *Spec
+	calls            []string
+	unlocked, closed int
+	client           string
+	injects          [][]string
+	spec             *Spec
 }
 
 func (f *fake) log(c string) { f.calls = append(f.calls, c) }
@@ -47,11 +48,11 @@ func (f *fake) Marker() (*marker.Marker, error) {
 	f.log("marker")
 	return &marker.Marker{AppsPath: "/apps", DataPath: "/data", CPULimit: "1", MemLimit: "1g"}, nil
 }
-func (f *fake) HoldServer(string, string) (func(), error) { return func() {}, nil }
+func (f *fake) HoldServer(string, string) (func(), error) { return func() { f.unlocked++ }, nil }
 func (f *fake) Prepare(string) error                      { return nil }
 func (f *fake) ShipTemplate(string, string) error         { return nil }
 func (f *fake) Setup(string, bool) int                    { return 0 }
-func (f *fake) Close()                                    {}
+func (f *fake) Close()                                    { f.closed++ }
 func (f *fake) Sync(e Entry, base string) error {
 	f.log("sync " + e.Src)
 	if fi, err := os.Lstat(e.Src); err == nil && f.mtimes != nil {
@@ -302,7 +303,7 @@ func TestMailClaim(t *testing.T) {
 func TestMailUnknownKeyIgnored(t *testing.T) {
 	project(t, "mail:\n  domain: demo.test\n  snappymail_domain: ./x.json\n")
 	f := &fake{mail: facts("primary_domain: demo.test\n", "running")}
-	err, out := deployWith(t, f, Options{Target: "d@h"})
+	err, out := deployWith(t, f, Options{Target: "d@h", NoGitPush: true})
 	if err != nil || !strings.Contains(out, "is served by the stack") || strings.Contains(out, "warning:") || strings.Contains(out, "x.json") {
 		t.Errorf("%v\n%s", err, out)
 	}
@@ -454,5 +455,154 @@ func TestChangelogDirtyEndpoints(t *testing.T) {
 		if !strings.Contains(b.String(), c.want) || strings.Contains(b.String(), c.not) {
 			t.Errorf("prev %s:\n%s", c.prev, b.String())
 		}
+	}
+}
+
+func TestParseBumpAndPush(t *testing.T) {
+	for in, want := range map[string]string{
+		"--bump=major d@h":     "bump=major push=true",
+		"--no-git-push":        "bump= push=false",
+		"--bump=x":             "error: deploy: --bump=x is not a bump",
+		"--bump":               "error: deploy: --bump takes its value with '='",
+		"--no-git-push=1":      "error: deploy: --no-git-push takes no value",
+		"--bump=patch --dirty": "error: deploy: --dirty ships under no tag",
+		"--bump=patch 1.0.0":   "error: deploy: 1.0.0 names a tag that exists",
+		"--no-git-push 1.0.0":  "error: deploy: --no-git-push is the working-tree deploy's",
+	} {
+		o, err := Parse(strings.Split(in, " "))
+		got := "bump=" + o.Bump + " push=" + map[bool]string{true: "false", false: "true"}[o.NoGitPush]
+		if err != nil {
+			got = "error: " + err.Error()
+		}
+		if !strings.HasPrefix(got, want) {
+			t.Errorf("Parse(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for _, a := range []string{"--bump=patch", "--no-git-push"} {
+		if _, err := ParseRollback([]string{a}); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+			t.Errorf("rollback %s: %v", a, err)
+		}
+	}
+}
+
+// untagged is project with HEAD one commit past v1.0.0, and a bare origin.
+func untagged(t *testing.T) string {
+	t.Helper()
+	project(t, "")
+	gitc(t, "commit", "-q", "--allow-empty", "-m", "fix")
+	origin := t.TempDir()
+	gitc(t, "init", "-q", "--bare", origin)
+	gitc(t, "remote", "add", "origin", origin)
+	return origin
+}
+
+func TestRunUntaggedBumps(t *testing.T) {
+	origin := untagged(t)
+	f := &fake{}
+	err, out := deployWith(t, f, Options{Target: "d@h"})
+	if err == nil || !strings.Contains(out, "--bump=patch|minor|major") || len(f.calls) != 0 || gitc(t, "tag", "--points-at", "HEAD") != "" {
+		t.Fatalf("no terminal, no --bump: %v %v\n%s", err, f.calls, out)
+	}
+	noState(t, "unanswered")
+
+	err, out = deployWith(t, f, Options{Target: "d@h", Bump: "patch"})
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if f.spec.Version != "1.0.1" || gitc(t, "tag", "--points-at", "HEAD") != "v1.0.1" {
+		t.Errorf("spec %q, HEAD %q", f.spec.Version, gitc(t, "tag", "--points-at", "HEAD"))
+	}
+	if got := gitc(t, "--git-dir="+origin, "tag"); got != "v1.0.1" {
+		t.Errorf("origin's tags %q", got)
+	}
+	tagged, pushed := strings.Index(out, "Tagged HEAD v1.0.1"), strings.Index(out, "git:     pushed v1.0.1 to origin")
+	if tagged < 0 || pushed < tagged || !strings.Contains(out, "the tag stays") {
+		t.Errorf("output\n%s", out)
+	}
+}
+
+// A run that fails after the tag leaves it here, unpushed, for the next run.
+func TestRunUntaggedFailureKeepsTag(t *testing.T) {
+	origin := untagged(t)
+	f := &fake{rc: 1}
+	if err, out := deployWith(t, f, Options{Target: "d@h", Bump: "minor"}); err == nil {
+		t.Fatalf("deployed\n%s", out)
+	}
+	if gitc(t, "tag", "--points-at", "HEAD") != "v1.1.0" || gitc(t, "--git-dir="+origin, "tag") != "" {
+		t.Errorf("HEAD %q, origin %q", gitc(t, "tag", "--points-at", "HEAD"), gitc(t, "--git-dir="+origin, "tag"))
+	}
+	noState(t, "failed")
+	f = &fake{}
+	if err, out := deployWith(t, f, Options{Target: "d@h", NoGitPush: true}); err != nil || f.spec.Version != "1.1.0" || !strings.Contains(out, "v1.1.0 left where it is") {
+		t.Errorf("the rerun: %v\n%s", err, out)
+	}
+}
+
+func TestRunUntaggedDirtyRefused(t *testing.T) {
+	untagged(t)
+	os.WriteFile("scratch.txt", []byte("x"), 0o644)
+	f := &fake{}
+	err, out := deployWith(t, f, Options{Target: "d@h", Bump: "patch"})
+	if err == nil || !strings.Contains(out, "commit first") || !strings.Contains(out, "kasbah deploy --dirty") || len(f.calls) != 0 {
+		t.Fatalf("%v %v\n%s", err, f.calls, out)
+	}
+	if gitc(t, "tag", "--points-at", "HEAD") != "" {
+		t.Error("HEAD was tagged")
+	}
+}
+
+func TestRunUntaggedBuiltRefused(t *testing.T) {
+	builtProject(t)
+	gitc(t, "commit", "-qam", "fix")
+	for _, bump := range []string{"", "patch"} {
+		f := &fake{}
+		err, out := deployWith(t, f, Options{Target: "d@h", Bump: bump})
+		if err == nil || !strings.Contains(out, "demo builds images") || !strings.Contains(out, "kasbah build-push d@h") || strings.Contains(out, "--bump=patch|minor|major") || len(f.calls) != 0 {
+			t.Errorf("bump %q: %v %v\n%s", bump, err, f.calls, out)
+		}
+		if gitc(t, "tag", "--points-at", "HEAD") != "" {
+			t.Errorf("bump %q: HEAD was tagged", bump)
+		}
+	}
+}
+
+// A tagged HEAD is pushed too, once; again is "already there"; the server is
+// let go of before origin is asked.
+func TestRunPushesTag(t *testing.T) {
+	project(t, "")
+	origin := t.TempDir()
+	gitc(t, "init", "-q", "--bare", origin)
+	gitc(t, "remote", "add", "origin", origin)
+	f := &fake{}
+	err, out := deployWith(t, f, Options{Target: "d@h"})
+	if err != nil || !strings.Contains(out, "git:     pushed v1.0.0 to origin") || gitc(t, "--git-dir="+origin, "tag") != "v1.0.0" {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if f.unlocked != 1 || f.closed != 1 {
+		t.Errorf("unlocked %d, closed %d", f.unlocked, f.closed)
+	}
+	if err, out := deployWith(t, &fake{}, Options{Target: "d@h"}); err != nil || !strings.Contains(out, "git:     v1.0.0 is already on origin") {
+		t.Errorf("again: %v\n%s", err, out)
+	}
+}
+
+func TestRunPushFails(t *testing.T) {
+	project(t, "")
+	gitc(t, "remote", "add", "origin", filepath.Join(t.TempDir(), "gone.git"))
+	err, out := deployWith(t, &fake{}, Options{Target: "d@h"})
+	var ce *cli.Error
+	if !errors.As(err, &ce) || ce.Code != 1 || !strings.Contains(out, "git:     v1.0.0 NOT pushed") || !strings.Contains(out, "could not push v1.0.0") || !strings.Contains(out, "the deploy to d@h succeeded") {
+		t.Errorf("%#v\n%s", err, out)
+	}
+	if v, _ := state.Get(state.File, "last_version"); v != "1.0.0" {
+		t.Errorf("the deploy itself is recorded: last_version %q", v)
+	}
+}
+
+func TestRunNoOriginWarnsOnce(t *testing.T) {
+	project(t, "")
+	err, out := deployWith(t, &fake{}, Options{Target: "d@h"})
+	if n := strings.Count(out, "warning: this repository has no 'origin' remote"); err != nil || n != 1 || strings.Count(out, "warning:") != 1 {
+		t.Errorf("%d warnings: %v\n%s", n, err, out)
 	}
 }

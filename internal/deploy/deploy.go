@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
@@ -36,15 +37,24 @@ type Options struct {
 	Target, Version, OnDrift              string
 	SkipHooks, NoHealthWait, AllowStopped bool
 	Dirty                                 bool
+	// The working-tree deploy's: Bump answers the untagged-HEAD question,
+	// NoGitPush keeps the tag off origin.
+	Bump      string
+	NoGitPush bool
 }
 
 const usage = `Usage: kasbah deploy [USER@HOST] [VERSION] [--on-drift=setup|continue|abort]
                      [--skip-hooks] [--no-health-wait] [--allow-stopped] [--dirty]
+                     [--bump=patch|minor|major] [--no-git-push]
 
 Ships the working tree to a prepared server and brings the project up there.
 Run from the project root. The version is HEAD's v-tag, and a working tree with
 uncommitted changes or untracked files .gitignore does not cover is refused
-(--dirty ships it anyway); USER@HOST defaults to the last server this project
+(--dirty ships it anyway). An untagged HEAD asks which release to tag it as —
+a patch, minor or major bump of the highest release tag merged into HEAD, else
+of 0.0.0 — and tags it before anything reaches the server; a dirty tree is then
+refused (commit first), and so is a project that builds images (build-push is
+what tags and ships those). USER@HOST defaults to the last server this project
 deployed to (.kasbah/state.json).
 
 With a VERSION, it ships that tag instead — every file out of ` + "`git archive\nv<VERSION>`" + `, the working tree neither read nor touched. That is the rollback
@@ -62,6 +72,8 @@ What it does:
     health wait, post-deploy hooks, one versions.log entry
   * ships traefik-dynamic.yml to <apps>/traefik/dynamic/<name>.yml, last
   * prints the commits between the version the server was running and this one
+  * git push origin v<version>, when the tag is not on origin yet — last, once
+    the deploy succeeded; a repository with no origin warns and carries on
 
 Flags:
   --dirty               ship the working tree as it stands, labelled as the
@@ -70,6 +82,10 @@ Flags:
                         the highest v-tag reachable from HEAD, else 0.0.0 (a
                         project that builds nothing is labelled by this run).
                         Never a rollback target; not taken with a VERSION
+  --bump=patch|minor|major
+                        answers the untagged-HEAD question; without a terminal
+                        and without --bump, an untagged HEAD is a failure
+  --no-git-push         deploy, and leave the tag where it is
   --on-drift=setup      re-run the interactive setup when .env has drifted
   --on-drift=continue   deploy against the .env as it stands
   --on-drift=abort      stop, changing nothing
@@ -142,6 +158,17 @@ func parse(cmd string, args []string) (Options, error) {
 			o.AllowStopped = true
 		case a == "--dirty" && cmd == "deploy":
 			o.Dirty = true
+		case a == "--no-git-push" && cmd == "deploy":
+			o.NoGitPush = true
+		case strings.HasPrefix(a, "--bump=") && cmd == "deploy":
+			o.Bump = strings.TrimSuffix(strings.TrimPrefix(a, "--bump="), "\r")
+			if err := release.CheckBump(cmd, o.Bump); err != nil {
+				return o, err
+			}
+		case a == "--bump" && cmd == "deploy":
+			return o, cli.Fail("deploy: --bump takes its value with '=' — --bump=patch, --bump=minor or --bump=major")
+		case strings.HasPrefix(a, "--no-git-push=") && cmd == "deploy":
+			return o, cli.Fail("deploy: --no-git-push takes no value — pass it on its own")
 		case a == "--dirty" || strings.HasPrefix(a, "--dirty="):
 			if cmd == "rollback" {
 				return o, cli.Fail("rollback: --dirty is not a rollback flag — a rollback ships a version's tag, never the working tree, and a --dirty build is never a rollback target")
@@ -175,13 +202,19 @@ func parse(cmd string, args []string) (Options, error) {
 			"a dirty build is the working tree's:  kasbah build-push --dirty, then kasbah deploy --dirty")
 	case o.Dirty && o.Version != "":
 		return o, cli.Fail("deploy: --dirty ships the working tree, and %s names a tag whose files ship instead — pass one or the other", o.Version)
+	case o.Bump != "" && o.Dirty:
+		return o, cli.Fail("deploy: --dirty ships under no tag, and --bump=%s cuts one — pass one or the other", o.Bump)
+	case o.Bump != "" && o.Version != "":
+		return o, cli.Fail("deploy: %s names a tag that exists, and --bump=%s cuts a new one on HEAD — pass one or the other", o.Version, o.Bump)
+	case o.NoGitPush && o.Version != "":
+		return o, cli.Fail("deploy: --no-git-push is the working-tree deploy's — deploying %s pushes no tag", o.Version)
 	}
 	return o, nil
 }
 
 func takes(cmd string) string {
 	if cmd == "deploy" {
-		return "USER@HOST, VERSION, --on-drift=, --skip-hooks, --no-health-wait, --allow-stopped and --dirty"
+		return "USER@HOST, VERSION, --on-drift=, --skip-hooks, --no-health-wait, --allow-stopped, --dirty, --bump= and --no-git-push"
 	}
 	return "USER@HOST, VERSION, --on-drift=, --skip-hooks, --no-health-wait and --allow-stopped"
 }
@@ -246,17 +279,18 @@ func Run(c Ctx, o Options) error {
 	if r.target, _, err = state.Server(o.Target, "deploy", "kasbah deploy user@vps"); err != nil {
 		return err
 	}
+	// The plan's images do not depend on the version: they say whether an
+	// untagged HEAD can be deployed at all.
+	if r.p, err = ReadPlan(m, c.PWD, ""); err != nil {
+		return err
+	}
+	fresh := false
 	if !o.Dirty {
-		if r.version, err = release.Resolve(c.PWD); err != nil {
-			return err
-		}
-		if err := release.RequireClean("deploy", r.version, "kasbah deploy --dirty"); err != nil {
+		if r.version, fresh, err = release.Head(c.PWD, release.Tagging{Cmd: "deploy", Retry: "kasbah deploy --dirty",
+			Bump: o.Bump, Push: !o.NoGitPush, P: c.Prompter, Untagged: r.unbuilt}); err != nil {
 			return err
 		}
 	} else if err := release.Repo(c.PWD); err != nil {
-		return err
-	}
-	if r.p, err = ReadPlan(m, c.PWD, r.version); err != nil {
 		return err
 	}
 	if o.Dirty {
@@ -264,19 +298,26 @@ func Run(c Ctx, o Options) error {
 			return err
 		}
 	}
+	if fresh {
+		if err := release.Cut(c.Out, r.version); err != nil {
+			return err
+		}
+	}
 
 	if r.s, err = c.Dial(r.target); err != nil {
 		return err
 	}
-	defer r.s.Close()
+	closeSession := sync.OnceFunc(r.s.Close)
+	defer closeSession()
 	if r.mk, err = r.s.Marker(); err != nil {
 		return err
 	}
-	release, err := r.s.HoldServer(r.mk.AppsPath, "deploy")
+	hold, err := r.s.HoldServer(r.mk.AppsPath, "deploy")
 	if err != nil {
 		return err
 	}
-	defer release()
+	unlock := sync.OnceFunc(hold)
+	defer unlock()
 	r.dir = r.mk.AppsPath + "/" + m.Name
 
 	claim, err := r.readClaim()
@@ -316,12 +357,35 @@ func Run(c Ctx, o Options) error {
 		"last_version", r.version); err != nil {
 		return err
 	}
+	// The tag goes to origin last, with the server let go: a slow origin must
+	// not hold the server lock, and a tag naming a failed deploy is the worse mess.
+	var gitResult string
+	var pushErr error
+	if !o.Dirty {
+		unlock()
+		closeSession()
+		gitResult, pushErr = release.Push(c.Out, r.version, !o.NoGitPush, "the deploy to "+r.target+" succeeded")
+	}
 	r.banner("Deployed "+m.Name+" "+r.version+" to "+r.target, rep, clientState, shipped)
 	if o.Dirty {
 		c.Out.Info("  dirty:   the working tree as it stood, under no tag — never a rollback target")
+	} else {
+		c.Out.Info("  git:     %s", gitResult)
 	}
 	r.changelog(rep)
-	return nil
+	return pushErr
+}
+
+// unbuilt refuses an untagged HEAD of a project that builds images: a deploy
+// retags what build-push shipped, and nothing was shipped under a new version.
+func (r *run) unbuilt() error {
+	if len(r.p.Images) == 0 {
+		return nil
+	}
+	return cli.Fail("deploy: HEAD carries no version tag, and %s builds images — a deploy retags the images `kasbah build-push` shipped, and none were shipped under a version not cut yet", r.m.Name).Cont(
+		"build-push offers the tag; ship the images, then deploy them:",
+		"  kasbah build-push "+r.target,
+		"  kasbah deploy "+r.target)
 }
 
 // dirtyLabel is a --dirty deploy's version: the label build-push --dirty

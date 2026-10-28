@@ -925,6 +925,26 @@ else
     assert 'false' "could not plant a second prepared tree at $alt_apps on the rig"
 fi
 
+# --- An untagged HEAD: deploy --bump=patch tags it, deploys it, pushes it -----------------
+# A commit past v$project_version, and a bare repository standing in for origin.
+bump_origin="$tmpdir/bump-origin.git"
+bumped=$(printf '%s' "$project_version" | awk -F. '{ printf "%d.%d.%d", $1, $2, $3 + 1 }')
+if ! ( git init -q --bare "$bump_origin" && cd "$projdir" && git commit -q --allow-empty -m "past v$project_version" \
+        && git remote add origin "$bump_origin" ) >"$tmpdir/git.log" 2>&1; then
+    echo "error: could not move HEAD past v$project_version in the fixture copy" >&2
+    sed 's/^/       | /' "$tmpdir/git.log" >&2
+    exit 2
+fi
+deploy "$RIG_TARGET" --bump=patch; rc=$?
+assert '[ "$rc" = "0" ]' "deploy --bump=patch on an untagged HEAD succeeds (exit $rc: $(cli_err))"
+head_tags=$(cd "$projdir" && git tag --points-at HEAD | tr '\n' ' ')
+assert '[ "$head_tags" = "v$bumped " ]' "having tagged HEAD v$bumped (HEAD has: '$head_tags')"
+last_line=$(rig_ssh "tail -n 1 $apps/$project/versions.log" 2>/dev/null | tr -d '\r')
+assert '[[ "$last_line" == *" deploy $bumped "* ]]' "and deployed it under that version (line: $last_line)"
+origin_tags=$(git --git-dir="$bump_origin" tag | tr '\n' ' ')
+assert '[ "$origin_tags" = "v$bumped " ]' "and pushed the tag to origin (origin has: '$origin_tags')"
+assert 'grep -qF "git:     pushed v$bumped to origin" "$tmpdir/err"' "saying so (said '$(cli_err)')"
+
 # --- Leave the rig as it was found, but only on success ------------------------------------
 if [ "$fail" -eq 0 ]; then
     rig_clean || fail=1

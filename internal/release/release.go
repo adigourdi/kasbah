@@ -18,17 +18,7 @@ var reVersion = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)
 // Pick is the version in `git tag --points-at HEAD`'s output, without its v:
 // zero v-tags and two are different mistakes, refused differently.
 func Pick(tags string) (string, error) {
-	var vs, other []string
-	for _, l := range strings.Split(tags, "\n") {
-		l = strings.TrimSuffix(l, "\r")
-		switch {
-		case l == "":
-		case len(l) > 1 && l[0] == 'v':
-			vs = append(vs, l)
-		default:
-			other = append(other, l)
-		}
-	}
+	vs, other := split(tags)
 	if len(vs) == 0 {
 		e := cli.Fail("HEAD carries no version tag, so this release has nothing to label itself with")
 		if len(other) > 0 {

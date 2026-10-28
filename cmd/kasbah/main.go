@@ -591,11 +591,12 @@ func buildPushCmd(o buildpush.Options, err error) int {
 		return report(out, err)
 	}
 	code := report(out, buildpush.Run(buildpush.Ctx{
-		Out:     out,
-		PWD:     pwd,
-		Version: v,
-		Self:    remote.Self(build),
-		Local:   local,
+		Out:      out,
+		Prompter: prompt.Std(out),
+		PWD:      pwd,
+		Version:  v,
+		Self:     remote.Self(build),
+		Local:    local,
 	}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c

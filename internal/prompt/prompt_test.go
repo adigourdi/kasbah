@@ -285,3 +285,31 @@ func TestWait(t *testing.T) {
 		}
 	}
 }
+
+func TestSelect(t *testing.T) {
+	choices, labels := []string{"patch", "minor", "major"}, []string{"patch v1.0.1", "minor v1.1.0", "major v2.0.0"}
+	for _, c := range []struct {
+		in, given string
+		tty       bool
+		want      string
+		ok        bool
+		err       string
+	}{
+		{"", "minor", false, "minor", true, ""},
+		{"", "", false, "", false, "pass --bump=patch|minor|major instead"},
+		{"3\n", "", true, "major", true, ""},
+		{"x\npatch\n", "", true, "patch", true, ""},
+		{"q\n", "", true, "", false, ""},
+		{"", "", true, "", false, "no answer given"},
+	} {
+		var e bytes.Buffer
+		p := &Prompter{In: strings.NewReader(c.in), Out: &cli.Output{Stderr: &e}, TTY: c.tty}
+		got, ok, err := p.Select("bump", "Which?", choices, labels, c.given)
+		if got != c.want || ok != c.ok || (err == nil) != (c.err == "") || (err != nil && !strings.Contains(err.Error(), c.err)) {
+			t.Errorf("%+v: %q %v %v\n%s", c, got, ok, err, e.String())
+		}
+		if c.tty && c.in != "" && !strings.Contains(e.String(), "  2) minor v1.1.0") {
+			t.Errorf("%+v: the choices were not listed\n%s", c, e.String())
+		}
+	}
+}

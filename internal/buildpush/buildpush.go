@@ -14,6 +14,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/manifest"
+	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/release"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
@@ -29,6 +30,8 @@ type Options struct {
 	Target               string
 	BuildOnly, NoGitPush bool
 	Dirty                bool
+	// Bump answers the question an untagged HEAD asks: patch, minor or major.
+	Bump string
 }
 
 // The state fields a --dirty build-push leaves for `kasbah deploy --dirty`:
@@ -40,6 +43,7 @@ const (
 )
 
 const usage = `Usage: kasbah build-push [USER@HOST] [--build-only] [--no-git-push] [--dirty]
+                         [--bump=patch|minor|major]
 
 Builds this project's images, tags them with HEAD's version, and loads them onto
 a server over ssh — no registry involved. Run from the project root. USER@HOST
@@ -48,6 +52,9 @@ defaults to the last server this project talked to (.kasbah/state.json).
 What it does:
   * resolves the version from HEAD's single v-tag, and refuses a working tree
     with uncommitted changes or untracked files .gitignore does not cover
+  * an untagged HEAD asks which release to tag it as — a patch, minor or major
+    bump of the highest release tag merged into HEAD, else of 0.0.0 — and
+    tags HEAD before anything is built
   * builds every service in compose.prod.yml that has a build: key, and tags
     each one <image>:<version> from the image: that service names
   * docker save (one stream, all images) | gzip, streamed over ssh into
@@ -66,6 +73,9 @@ Flags:
                   <base>-dirty.<UTC yyyymmddhhmmss> (base: the highest v-tag
                   reachable from HEAD, else 0.0.0). Pushes no tag, is never a
                   rollback target, and is what ` + "`kasbah deploy --dirty`" + ` deploys
+  --bump=patch|minor|major
+                  answers the untagged-HEAD question; without a terminal and
+                  without --bump, an untagged HEAD is a failure
 
 See docs/build-deploy.md and docs/cli.md.
 `
@@ -87,12 +97,19 @@ func Parse(args []string) (Options, error) {
 		case "--dirty":
 			o.Dirty = true
 		default:
-			name, _, _ := strings.Cut(a, "=")
+			name, val, _ := strings.Cut(a, "=")
 			switch {
+			case name == "--bump" && strings.Contains(a, "="):
+				o.Bump = strings.TrimSuffix(val, "\r")
+				if err := release.CheckBump("build-push", o.Bump); err != nil {
+					return o, err
+				}
+			case name == "--bump":
+				return o, cli.Fail("build-push: --bump takes its value with '=' — --bump=patch, --bump=minor or --bump=major")
 			case name == "--build-only" || name == "--no-git-push" || name == "--dirty":
 				return o, cli.Fail("build-push: %s takes no value — pass it on its own", name)
 			case strings.HasPrefix(a, "-"):
-				return o, cli.Fail("build-push: unknown flag '%s' (build-push takes USER@HOST, --build-only, --no-git-push and --dirty)", name)
+				return o, cli.Fail("build-push: unknown flag '%s' (build-push takes USER@HOST, --build-only, --no-git-push, --dirty and --bump=)", name)
 			case o.Target == "":
 				o.Target = strings.TrimSuffix(a, "\r")
 			default:
@@ -100,41 +117,46 @@ func Parse(args []string) (Options, error) {
 			}
 		}
 	}
+	if o.Dirty && o.Bump != "" {
+		return o, cli.Fail("build-push: --dirty ships under no tag, and --bump=%s cuts one — pass one or the other", o.Bump)
+	}
 	return o, nil
 }
 
 // Ctx is what a run needs from the process.
 type Ctx struct {
-	Out     *cli.Output
-	PWD     string
-	Version string
-	Self    remote.Info
-	Local   func(arch string) (string, error)
+	Out *cli.Output
+	// Prompter asks which release an untagged HEAD is.
+	Prompter *prompt.Prompter
+	PWD      string
+	Version  string
+	Self     remote.Info
+	Local    func(arch string) (string, error)
 	// Now labels a --dirty build; time.Now when nil.
 	Now func() time.Time
 }
 
-// label is what this run tags its images: HEAD's version on a clean tree,
-// a dirty label and the tree it was read from with --dirty.
-func label(c Ctx, o Options) (v, tree string, err error) {
+// label is what this run tags its images: HEAD's version on a clean tree —
+// fresh when HEAD has no tag yet and v is the one to cut — or a dirty label
+// and the tree it was read from with --dirty.
+func label(c Ctx, o Options) (v, tree string, fresh bool, err error) {
 	if !o.Dirty {
-		if v, err = release.Resolve(c.PWD); err != nil {
-			return "", "", err
-		}
-		return v, "", release.RequireClean("build-push", v, "kasbah build-push --dirty")
+		v, fresh, err = release.Head(c.PWD, release.Tagging{Cmd: "build-push", Retry: "kasbah build-push --dirty",
+			Bump: o.Bump, Push: !o.NoGitPush && !o.BuildOnly, P: c.Prompter})
+		return v, "", fresh, err
 	}
 	if err = release.Repo(c.PWD); err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	now := c.Now
 	if now == nil {
 		now = time.Now
 	}
 	if tree, err = release.Fingerprint("build-push"); err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	v, err = release.DirtyLabel("build-push", now())
-	return v, tree, err
+	return v, tree, false, err
 }
 
 // Run is the command. Everything that is a fact about this checkout is
@@ -147,9 +169,15 @@ func Run(c Ctx, o Options) error {
 	if err != nil {
 		return err
 	}
-	version, tree, err := label(c, o)
+	version, tree, fresh, err := label(c, o)
 	if err != nil {
 		return err
+	}
+	cut := func() error {
+		if !fresh {
+			return nil
+		}
+		return release.Cut(c.Out, version)
 	}
 	doc, err := ReadCompose(c.PWD, "build-push derives the images to ship from it")
 	if err != nil {
@@ -162,10 +190,16 @@ func Run(c Ctx, o Options) error {
 	if len(images) == 0 {
 		c.Out.Info("%s builds nothing — no service in %s has a build: key", m.Name, Compose)
 		c.Out.Info("  stock images are pulled on the server by `kasbah deploy`; nothing to ship")
+		if fresh {
+			c.Out.Info("  HEAD was not tagged v%s — there is nothing to release under it", version)
+		}
 		return nil
 	}
 
 	if o.BuildOnly {
+		if err := cut(); err != nil {
+			return err
+		}
 		if err := build(m.Name, images); err != nil {
 			return err
 		}
@@ -177,6 +211,9 @@ func Run(c Ctx, o Options) error {
 	target, _, err := state.Server(o.Target, "build-push", "kasbah build-push user@vps",
 		"to build and tag here without shipping anything, use --build-only")
 	if err != nil {
+		return err
+	}
+	if err := cut(); err != nil {
 		return err
 	}
 	// The server is proved reachable and prepared before the build: the end of
@@ -211,7 +248,7 @@ func Run(c Ctx, o Options) error {
 	gitResult := "nothing pushed — a --dirty build has no tag"
 	if o.Dirty {
 		kv = append(kv, DirtyBuild, version, DirtyServer, target, DirtyTree, tree)
-	} else if gitResult, err = gitPush(c.Out, target, version, !o.NoGitPush); err != nil {
+	} else if gitResult, err = release.Push(c.Out, version, !o.NoGitPush, "the images are on "+target); err != nil {
 		return err
 	}
 	// Only now: a failed command leaves the state file untouched.
@@ -259,32 +296,4 @@ func build(project string, images []Image) error {
 		}
 	}
 	return nil
-}
-
-// gitPush pushes the version tag last, after the images are on the server:
-// a tag on origin naming images no server has is the worse mess. What it did
-// is returned for the line under the `Shipped …` headline.
-func gitPush(out *cli.Output, target, version string, push bool) (string, error) {
-	tag := "v" + version
-	if !push {
-		return tag + " left where it is (--no-git-push)", nil
-	}
-	if exec.Command("git", "remote", "get-url", "origin").Run() != nil {
-		out.Warn("this repository has no 'origin' remote, so %s was not pushed", tag)
-		out.Warn("the images are on %s regardless — push the tag wherever this project lives", target)
-		return tag + " not pushed — this repository has no 'origin' remote", nil
-	}
-	ls := exec.Command("git", "ls-remote", "--exit-code", "origin", "refs/tags/"+tag)
-	ls.Stdin = os.Stdin
-	if ls.Run() == nil {
-		return tag + " is already on origin", nil
-	}
-	p := exec.Command("git", "push", "origin", tag)
-	p.Stdin, p.Stdout, p.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if p.Run() != nil {
-		return "", cli.Fail("could not push %s to origin (see git's error above)", tag).Cont(
-			"the images are already on "+target+" and none of that needs redoing —",
-			"push the tag once the remote is reachable:  git push origin "+tag)
-	}
-	return "pushed " + tag + " to origin", nil
 }

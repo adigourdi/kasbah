@@ -688,6 +688,8 @@ else `last_server` from `.kasbah/state.json`, which is written on success.
 Flags:
 - `--build-only` — skip transfer/load/push (local build + tag only).
 - `--no-git-push` — don't push the git tag.
+- `--bump=patch|minor|major` — on an untagged HEAD, which tag to cut
+  (`build-deploy.md` → Versioning contract); unset means ask.
 - `--dirty` — build the working tree as it stands, as a test build labelled
   `<base>-dirty.<UTC stamp>`; no tag is needed or pushed. The label, target and
   the tree's digest are recorded in `.kasbah/state.json` for `deploy --dirty`
@@ -699,7 +701,9 @@ Flags:
 Two modes:
 
 - **No `VERSION` arg** — deploys the **working tree**, labeled with HEAD's
-  `v-tag`. Fails fast if HEAD isn't tagged or the tree is not clean. With
+  `v-tag` — on an untagged HEAD of a project that builds nothing it asks which
+  tag to cut first (`--bump=`); one that builds images is sent to `build-push`
+  — and fails fast when the tree is not clean. With
   `--dirty` it deploys the tree as it stands under the label the last
   `build-push --dirty` recorded for this server and this exact tree (a
   stock-only project labels its own), and refuses otherwise, naming
@@ -715,7 +719,7 @@ Two modes:
 Flow (no-args / working-tree path):
 1. Open SSH ControlMaster for the whole deploy (reused by every ssh session and file transfer).
 2. Verify SSH reachability; ship the kasbah binary if the server's is absent or older (asking first when a dev build would replace a release — Hand-off below).
-3. Resolve version = HEAD's `v-tag` (fail if not tagged).
+3. Resolve version = HEAD's `v-tag`, cutting one first on an untagged HEAD of a project that builds nothing (`--bump=`).
 4. Ensure remote dirs exist (`/apps/<name>/`, `backups/`, `/apps/data/<name>/`).
 5. Sync the manifest's `sync:` list (`kasbah remote sync`: only changed files travel).
    The Traefik fragment is not shipped here — it goes last, after the stack is
@@ -736,8 +740,13 @@ Flow (no-args / working-tree path):
 9. Sync `traefik-dynamic.yml` to `/apps/traefik/dynamic/<name>.yml` — locally
    driven, after the stack is up, so a failed deploy leaves no live route.
 10. Print local changelog (`git log <prev>..<new>`).
+11. `git push origin v<version>` if origin lacks it — a failed push is reported
+    after the banner and makes the run exit non-zero; no `origin` warns.
 
 Flags:
+- `--bump=patch|minor|major` — on an untagged HEAD, which tag to cut; unset
+  means ask.
+- `--no-git-push` — don't push the tag.
 - `--on-drift=setup|continue|abort` — what step 6 does when the server's `.env`
   has drifted from `.env.prod.example`. Unset it asks; with no terminal to ask
   on the run stops with exit `5`. See `kasbah env` below.

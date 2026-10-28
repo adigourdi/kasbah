@@ -16,6 +16,27 @@ Versions come from git tags on the project repo, formatted `vX.Y.Z` (semver).
   `--dirty` included: kasbah cannot see what it holds.
 - `kasbah deploy` (no args) ships the **working tree** under HEAD's tag, and
   requires the same clean tree — so the tag names exactly what runs.
+- **An untagged HEAD is a release in waiting**: build-push — and deploy, for a
+  project that builds no images (one that does is sent to build-push, since
+  that version was never built) — offer three tags — patch, minor and major bumps of the highest final `vX.Y.Z`
+  merged into HEAD (rc and dirty-shaped tags ignored; `0.0.0` when there is
+  none) — cut the chosen one at HEAD as a lightweight tag, and carry on as a
+  tagged run. `--bump=patch|minor|major` answers without a terminal; without
+  either the run fails naming it. A computed tag that already exists locally —
+  or on origin, when the run will push — is refused; an untagged dirty HEAD is
+  refused ("commit first"); a shallow clone, or one with no tag merged into
+  HEAD while origin has v-tags this clone lacks, is refused (`git fetch
+  --unshallow --tags`), so a CI checkout never counts from `0.0.0`. The tag is lightweight
+  (`tag.gpgSign` is overridden) and cut before anything reaches the server — a
+  run that fails later keeps it, and says how to drop it (`git tag -d`). Every
+  call to origin says what it is asking. Without a terminal it is bounded (60 s,
+  its whole process group killed) and runs with `GIT_TERMINAL_PROMPT=0`, plus
+  `BatchMode=yes` when the ssh command is `ssh` itself — so nothing waits on a
+  prompt nobody can answer. With a terminal git may prompt, and nothing is
+  killed; only ssh's connect is bounded (15 s). A wrapper in `GIT_SSH_COMMAND`
+  or `GIT_SSH` is never given options. `deploy` pushes the
+  tag to origin once the deploy succeeded, as build-push does once the images
+  shipped; `--no-git-push` skips that, and no `origin` warns.
 - `--dirty`, on either, is the quick-test path: no commit, no tag. The build is
   labelled `<base>-dirty.<UTC yyyymmddhhmmss>` — base is the highest `v*` tag
   merged into HEAD, else `0.0.0` — in the image tag, `versions.log` and the
@@ -164,7 +185,8 @@ That's `deploy`'s job — decoupling lets you build-push without deploying
 ### Two modes
 
 1. **No version arg** — deploy the working tree, using HEAD's `v-tag` as
-   the version label. Everyday path. Fails fast if HEAD isn't tagged.
+   the version label. Everyday path. An untagged HEAD is offered a tag first
+   when the project builds nothing (Versioning contract).
 2. **Explicit `X.Y.Z`** — deploy that tagged version *exactly* as it was.
    Files come from `git archive v<X.Y.Z>`, not the working tree. Reproducible.
 
@@ -182,7 +204,8 @@ below). The only differences:
 2. Check SSH reachability (fail fast), and ship the kasbah binary to
    <apps>/.kasbah/bin/kasbah if the server's is absent or older — asking
    first when a dev build would replace a release (`cli.md` → Hand-off).
-3. Resolve version = HEAD's v-tag. Fail if HEAD isn't tagged.
+3. Resolve version = HEAD's v-tag, cutting one first when HEAD has none
+   (`--bump=`, Versioning contract).
 4. Ensure remote dirs exist (`kasbah remote deploy prepare`):
      /apps/<name>/, backups/, /apps/data/<name>/
 5. Sync from the working tree: every path in manifest's `sync:` list → /apps/<name>/.
@@ -214,6 +237,8 @@ below). The only differences:
    *local* side once the engine has returned 0 with a valid report — the file
    is on the workstation, and the ordering is the point (see below).
 10. Compute changelog (git log <prev-deploy>..<new>) and print it locally.
+11. git push origin v<version> if origin lacks it (--no-git-push skips), once
+    the server lock and the ssh session are released.
 ```
 
 ### Why the fragment ships last
