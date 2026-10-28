@@ -40,7 +40,8 @@ all; [docs/cli.md](docs/cli.md) describes each one.
 - **Your machine:** Linux on amd64 or arm64, with Docker and its compose plugin,
   `ssh` and `git`.
 - **The server:** Docker 24 or newer with Compose v2 or newer, SSH key login as
-  a user in the `docker` group, passwordless `sudo` for the first setup, ports
+  a user in the `docker` group, root for the first setup (passwordless `sudo`,
+  or running the few commands kasbah prints), ports
   80 and 443 reachable from the internet, and DNS pointing at it for each
   project's domain and for `traefik.<your domain>`, where the Traefik dashboard
   is served.

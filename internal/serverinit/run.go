@@ -15,6 +15,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/rootsteps"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/tree"
@@ -159,7 +160,7 @@ if [ "$(id -u)" != 0 ]; then
         printf 'pointer=unchanged\npointer_dir_mode=%s\n' "$drift"
         exit 0
     else
-        printf 'pointer=nosudo\n'
+        printf 'pointer=nosudo\npointer_dir=%s\n' "$(stat -c '%a' "$dir" 2>/dev/null || echo absent)"
         exit 0
     fi
 fi
@@ -181,7 +182,7 @@ exit 0
 // PointerVerdict is what a pointer that could not be written costs: a
 // warning at the default apps path, which is found without it; a failure
 // anywhere else, which is not.
-func PointerVerdict(out *cli.Output, state, target, apps, user string) error {
+func PointerVerdict(out *cli.Output, state, target, apps, user string, b *rootsteps.Block, shown bool) error {
 	switch state {
 	case "written", "unchanged":
 		return nil
@@ -189,19 +190,104 @@ func PointerVerdict(out *cli.Output, state, target, apps, user string) error {
 	default:
 		return cli.Fail("the pointer step on %s reported '%s', which this kasbah does not know", target, state)
 	}
-	dir := Pointer[:strings.LastIndex(Pointer, "/")]
 	if apps != DefaultApps {
 		return cli.Fail("could not write %s on %s — `sudo -n` is not available to %s", Pointer, target, user).Cont(
 			fmt.Sprintf("%s is prepared at %s and nothing can find it: that file is", target, apps),
 			"how `kasbah deploy` and `kasbah env` discover a server prepared anywhere other",
 			fmt.Sprintf("than %s. Without it they look under %s, find no marker", DefaultApps, DefaultApps),
-			"and exit 4. Grant NOPASSWD sudo and re-run, or create it once by hand:",
-			fmt.Sprintf(`  ssh %s 'sudo mkdir -p %s && printf "%%s\n" %s | sudo tee %s >/dev/null && sudo chmod 644 %s'`, target, dir, apps, Pointer, Pointer))
+			"and exit 4. Write it by hand — a re-run of init then finds it in place:").Cont(b.Lines()...)
 	}
 	out.Warn("could not write %s on %s — `sudo -n` is not available to %s", Pointer, target, user)
 	out.Warn("nothing is broken: %s is where every project command looks when there is no", apps)
 	out.Warn("pointer. It would only matter if this server were ever re-prepared elsewhere.")
+	if !shown {
+		printBlock(out, b)
+	}
 	return nil
+}
+
+func printBlock(out *cli.Output, b *rootsteps.Block) {
+	for _, l := range b.Lines() {
+		out.ErrCont("%s", l)
+	}
+}
+
+// PointerBlock is what root runs to finish the pointer step from what it
+// reported: the file written whole, or only the directory's mode put back.
+func PointerBlock(pt Facts, target, apps, user string) *rootsteps.Block {
+	b := &rootsteps.Block{Target: target, User: user}
+	dir := rootsteps.Quote(pointerPath[:strings.LastIndex(pointerPath, "/")])
+	file := rootsteps.Quote(pointerPath)
+	switch {
+	case pt["pointer"] == "nosudo":
+		if pt["pointer_dir"] == "absent" {
+			b.Add("sudo mkdir -p " + dir)
+		}
+		if pt["pointer_dir"] != "755" {
+			b.Add("sudo chmod 755 " + dir)
+		}
+		b.Add(`printf '%s\n' `+rootsteps.Quote(apps)+" | sudo tee "+file+" >/dev/null",
+			"sudo chown 0:0 "+file, "sudo chmod 644 "+file)
+	case pt["pointer_dir_mode"] != "":
+		b.Add("sudo chmod 755 " + dir)
+	}
+	return b
+}
+
+// probe is the bootstrap read, run again whenever the server may have changed.
+func (s *session) probe(o Options) (Facts, error) {
+	raw, rc := s.script(probeScript, o.Apps, o.Data, pointerPath)
+	if rc != 0 {
+		return nil, cli.Fail("could not collect prerequisites from %s (the remote probe exited %d)", s.target, rc)
+	}
+	return ParseProbe(s.target, raw)
+}
+
+// pointer is the pointer step, run again whenever the server may have changed.
+func (s *session) pointer(o Options) (Facts, error) {
+	res, rc := s.script(pointerScript, o.Apps, pointerPath)
+	if rc != 0 {
+		return nil, cli.Fail("could not write %s on %s (the remote step exited %d, see above)", Pointer, s.target, rc)
+	}
+	return checked("the pointer step", s.target, res, "pointer")
+}
+
+// awaitApps waits on the operator to create the apps path with their own
+// root, re-probing after each Enter; a path in any state but the two the
+// commands lead to is the preflight's to refuse.
+func (s *session) awaitApps(p *prompt.Prompter, o Options, f Facts) error {
+	cur := f
+	why := func() []string { return []string{AppsWhy(cur, s.target, o.Apps)} }
+	done, last, err := rootsteps.Await(p, why, AppsBlock(f, s.target, o.Apps), func() (*rootsteps.Block, error) {
+		g, err := s.probe(o)
+		if err != nil {
+			return nil, err
+		}
+		if g["apps_state"] == "dir" && g["apps_owned"] == "yes" && g["apps_writable"] == "yes" {
+			return nil, nil
+		}
+		if b := AppsBlock(g, s.target, o.Apps); !b.Empty() {
+			cur = g
+			return b, nil
+		}
+		if err := Preflight(g, s.target, o.Apps, o.Data, true); err != nil {
+			return nil, err
+		}
+		return nil, cli.Fail("internal: %s on %s is neither ready nor refused", o.Apps, s.target)
+	})
+	if err != nil || done {
+		return err
+	}
+	return cli.Fail("stopped: %s", AppsWhy(cur, s.target, o.Apps)).Cont(
+		"this run changed nothing on the server. Run these, then re-run init:").Cont(last.Lines()...)
+}
+
+// AppsWhy is why the apps path needs root, in the state f found it.
+func AppsWhy(f Facts, target, apps string) string {
+	if f["apps_state"] == "dir" {
+		return fmt.Sprintf("%s on %s exists and belongs to %s, not %s: only root can hand it over.", apps, target, f["apps_owner"], f["user"])
+	}
+	return fmt.Sprintf("%s does not exist on %s, and only root can create it.", apps, target)
 }
 
 func stepFailed(what, target string, rc int) error {
@@ -225,16 +311,35 @@ func Run(c Ctx, o Options) (err error) {
 	s := &session{conn: conn, target: o.Target}
 	target := o.Target
 
-	raw, rc := s.script(probeScript, o.Apps, o.Data, pointerPath)
-	if rc != 0 {
-		return cli.Fail("could not collect prerequisites from %s (the remote probe exited %d)", target, rc)
-	}
-	f, err := ParseProbe(target, raw)
+	f, err := s.probe(o)
 	if err != nil {
 		return err
 	}
-	if err := Preflight(f, target, o.Apps, o.Data); err != nil {
+	if err := Preflight(f, target, o.Apps, o.Data, c.Prompter.TTY); err != nil {
 		return err
+	}
+	if f["pointer_state"] == "unreachable" {
+		why := func() []string {
+			return []string{fmt.Sprintf("%s on %s cannot be entered by %s, so whether this server already", pointerPath, target, f["user"]),
+				"records an apps path cannot be told."}
+		}
+		g := f
+		done, _, err := rootsteps.Await(c.Prompter, why, PointerDirBlock(f, target), func() (*rootsteps.Block, error) {
+			var err error
+			if g, err = s.probe(o); err != nil {
+				return nil, err
+			}
+			return PointerDirBlock(g, target), nil
+		})
+		if err != nil {
+			return err
+		}
+		if done {
+			f = g
+			if err := Preflight(f, target, o.Apps, o.Data, c.Prompter.TTY); err != nil {
+				return err
+			}
+		}
 	}
 	// Before anything ships: the binary's bootstrap mode ignores the pointer.
 	if err := CheckPointer(f, target, o.Apps); err != nil {
@@ -380,20 +485,29 @@ func Run(c Ctx, o Options) (err error) {
 		return cli.Fail("internal: could not build the server marker: %v", err)
 	}
 
-	// Elevation, once, on a bare host; then the binary lands in what it made.
+	// Elevation, once, on a bare host — by sudo, else by the operator while
+	// the run waits; then the binary lands in what it made.
+	byHand := false
 	if elevate {
-		res, rc := s.script(elevateScript, o.Apps, f["user"]+":"+f["group"])
-		if rc != 0 {
-			return stepFailed("lay out "+o.Apps, target, rc)
-		}
-		if _, err := checked("the apps path step", target, res, "elevated"); err != nil {
-			return err
+		if f["sudo_nopasswd"] == "yes" {
+			res, rc := s.script(elevateScript, o.Apps, f["user"]+":"+f["group"])
+			if rc != 0 {
+				return stepFailed("lay out "+o.Apps, target, rc)
+			}
+			if _, err := checked("the apps path step", target, res, "elevated"); err != nil {
+				return err
+			}
+		} else {
+			if err := s.awaitApps(c.Prompter, o, f); err != nil {
+				return err
+			}
+			byHand = true
 		}
 		defer func() {
 			if err == nil {
 				return
 			}
-			out.Warn("%s was created with sudo by this run, which did not finish; it is left as it stands", o.Apps)
+			out.Warn("%s was created for this run, which did not finish; it is left as it stands", o.Apps)
 			if !started {
 				out.Warn("a re-run picks it up (it is %s's), or remove it: ssh %s 'sudo rm -rf %s'", f["user"], target, o.Apps)
 				return
@@ -502,25 +616,63 @@ func Run(c Ctx, o Options) (err error) {
 		return err
 	}
 
-	res, rc = s.script(pointerScript, o.Apps, pointerPath)
-	if rc != 0 {
-		return cli.Fail("could not write %s on %s (the remote step exited %d, see above)", Pointer, target, rc)
-	}
-	pt, err := checked("the pointer step", target, res, "pointer")
+	pt, err := s.pointer(o)
 	if err != nil {
 		return err
 	}
-	if err := PointerVerdict(out, pt["pointer"], target, o.Apps, f["user"]); err != nil {
-		return err
-	}
-	if m := pt["pointer_dir_mode"]; m != "" {
+	if b := PointerBlock(pt, target, o.Apps, f["user"]); !b.Empty() {
 		dir := pointerPath[:strings.LastIndex(pointerPath, "/")]
-		out.Warn("%s on %s is mode %s, not 755, and `sudo -n` is not available to %s to repair it", dir, target, m, f["user"])
-		out.Warn("a user who cannot traverse it reads no pointer and falls back to %s: ssh %s 'sudo chmod 755 %s'", DefaultApps, target, dir)
+		last := pt
+		why := func() []string {
+			if last["pointer"] == "nosudo" {
+				return []string{fmt.Sprintf("%s on %s is how a server prepared outside %s is found, and only root can write it.", pointerPath, target, DefaultApps)}
+			}
+			return []string{fmt.Sprintf("%s on %s is mode %s, not 755: a user who cannot traverse it reads no pointer.", dir, target, last["pointer_dir_mode"])}
+		}
+		done, left, err := rootsteps.Await(c.Prompter, why, b, func() (*rootsteps.Block, error) {
+			next, err := s.pointer(o)
+			if err != nil {
+				return nil, err
+			}
+			if nb := PointerBlock(next, target, o.Apps, f["user"]); !nb.Empty() {
+				last = next
+				return nb, nil
+			}
+			return nil, nil
+		})
+		if err != nil {
+			return err
+		}
+		// On a terminal the block is already on screen; a hard fail repeats it
+		// so the error stands on its own.
+		shown := c.Prompter.TTY
+		switch {
+		case done && pt["pointer"] == "nosudo":
+			pt = Facts{"pointer": "written by hand"}
+		case done:
+			pt = Facts{"pointer": "unchanged, " + dir + " repaired by hand"}
+		case last["pointer"] == "nosudo":
+			if err := PointerVerdict(out, last["pointer"], target, o.Apps, f["user"], left, shown); err != nil {
+				return err
+			}
+			pt = last
+		default:
+			out.Warn("%s on %s is mode %s, not 755, and `sudo -n` is not available to %s to repair it", dir, target, last["pointer_dir_mode"], f["user"])
+			out.Warn("a user who cannot traverse it reads no pointer and falls back to %s", DefaultApps)
+			if !shown {
+				printBlock(out, left)
+			}
+			pt = last
+		}
+	} else if err := PointerVerdict(out, pt["pointer"], target, o.Apps, f["user"], b, false); err != nil {
+		return err
 	}
 
 	out.Info("Prepared %s", target)
-	if elevate {
+	switch {
+	case byHand:
+		out.Info("  created %s by hand, owner %s:%s", o.Apps, f["user"], f["group"])
+	case elevate:
 		out.Info("  created %s with sudo, owner %s:%s", o.Apps, f["user"], f["group"])
 	}
 	if lay["acme"] == "created" {

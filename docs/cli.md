@@ -118,7 +118,9 @@ What it does:
    on the final component (so an existing directory is an error rather than
    a silent adoption), then `chown` to the SSH user — and only when the path
    does not already exist; everything below it is
-   created unelevated. See `server-setup.md` ("Who creates the apps path").
+   created unelevated. Without passwordless sudo, init prints those commands
+   and, at a terminal, waits for Enter and re-checks; without one it fails
+   naming them. See `server-setup.md` ("Who creates the apps path").
    Then `mkdir -p /apps/data /apps/backups`.
 3. `mkdir -p <data>/traefik/letsencrypt && touch <data>/traefik/letsencrypt/acme.json && chmod 600 ...`
    (touch-as-file is mandatory — Docker silently creates a directory otherwise).
@@ -350,8 +352,13 @@ Server-wide:
   before it succeeded — kasbah's own binary `<apps>/.kasbah/bin/kasbah` and
   `<apps>/.kasbah/` once empty
 - `/etc/kasbah/apps-path`, and `/etc/kasbah/` once it is empty — root-owned, so this needs
-  passwordless `sudo`. Without it the run **warns and continues**, exits 0, and
-  prints the exact command to finish by hand. A server left in that state has no
+  root. Without passwordless `sudo`, destroy prints the commands
+  (`sudo rm -f …`, `sudo rmdir …`) and, at a terminal — `--yes` included —
+  waits for Enter and re-checks. `sudo rmdir /etc/kasbah` stays among the
+  commands while the directory exists and holds nothing else; one holding
+  something kasbah did not write is left alone and said so. Without a
+  terminal, or after `q`, the run **warns and continues**, exits 0, and leaves
+  the commands to finish by hand. A server left in that state has no
   marker but still has its pointer, and destroy says so on a re-run rather than
   claiming there is nothing to remove.
 - the **backup stack**, stopped rather than merely unlinked: `docker compose -p

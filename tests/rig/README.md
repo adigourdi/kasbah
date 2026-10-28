@@ -42,7 +42,7 @@ changing nothing. That is the intended direction of failure.
 | | |
 |---|---|
 | Base | `debian:bookworm-slim` + docker-ce from Docker's apt repo, **unpinned** |
-| SSH user | `stevedore` — in the `docker` group, passwordless sudo, **root login disabled** |
+| SSH user | `stevedore` — in the `docker` group, passwordless sudo, **root login disabled**. `integration/apps_path_test.sh` switches it to a prompting sudo for its own cases and restores it on exit |
 | Ports | `5022→22`, `5080→80`, `5043→443`, bound to `127.0.0.1` |
 | Storage | named volume at `/var/lib/docker`; nested driver `overlayfs` |
 | Keypair | generated per checkout by `rig.sh`, gitignored, never committed |

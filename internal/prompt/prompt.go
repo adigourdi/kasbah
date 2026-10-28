@@ -257,6 +257,28 @@ func (p *Prompter) askHidden(prompt string) (a string, err error) {
 	return p.ask(prompt)
 }
 
+// Wait holds the run until the operator presses Enter: true then, false on q
+// or end of input. There is nothing to wait for without a terminal.
+func (p *Prompter) Wait(question string) bool {
+	if !p.TTY {
+		return false
+	}
+	for {
+		a, err := p.ask(question + " ")
+		if err != nil {
+			fmt.Fprintln(p.Out.Stderr)
+			return false
+		}
+		switch a {
+		case "":
+			return true
+		case "q", "Q", "quit":
+			return false
+		}
+		p.Out.Warn("press Enter, or type q to stop")
+	}
+}
+
 // Typed is the second half of a double confirmation (08-keep.md, D10): only
 // expected typed back exactly is true, and a mismatch is an answer, never
 // re-asked. --<flag> answers it for a script.

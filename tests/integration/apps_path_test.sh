@@ -58,7 +58,22 @@ assert() {
 
 tmpdir="$(mktemp -d)"
 projdir="$tmpdir/$project"
+
+# A sudo that prompts, for the section that needs one: a later sudoers file
+# whose rule asks for a password wins over the image's NOPASSWD one.
+rig_pw='rig-sudo-pw'
+sudo_prompts() {
+    rig_ssh "printf '%s:%s\n' $RIG_SSH_USER '$rig_pw' | sudo chpasswd &&
+             sudo sh -c 'f=/etc/sudoers.d/zz-prompting; printf \"%s ALL=(ALL) ALL\\n\" $RIG_SSH_USER > \$f.new &&
+                         chmod 0440 \$f.new && mv -f \$f.new \$f'"
+}
+# Back to the image's NOPASSWD sudo and a locked password, as root through the
+# password: harmless when sudo never prompted.
+sudo_restored() {
+    rig_ssh "sudo -S -p '' sh -c 'rm -f /etc/sudoers.d/zz-prompting && usermod -p \"!\" $RIG_SSH_USER'" <<<"$rig_pw"
+}
 cleanup() {
+    sudo_restored >/dev/null 2>&1
     # The tree, the pointer and the two compose projects it owns: all of it is
     # outside what rig_clean reaches, or reached by it only on a passing run.
     rig_ssh "docker compose -p $project down -v --remove-orphans; docker compose -p traefik down -v --remove-orphans; sudo rm -rf $alt_root; sudo rm -f $pointer" >/dev/null 2>&1
@@ -290,6 +305,121 @@ assert '[ "$(rig_ssh "cat $pointer" 2>/dev/null | tr -d "\r")" = "$alt_apps" ]' 
     "and the pointer is back"
 status; rc=$?
 assert '[ "$rc" = "0" ]' "status finds the server again with no flag (exit $rc: $(cli_err))"
+
+# --- No passwordless sudo: the operator runs the printed commands ------------------
+# With a sudo that prompts, init and destroy cannot do their root steps; on a
+# terminal they print the commands, wait for Enter and check again. The suite
+# plays the operator: it waits for the prompt, runs the printed block as root
+# through its own password, and presses Enter.
+
+# drive ARGS… — kasbah behind a pty in the background, its keyboard a fifo on
+# fd 7 that the suite types into once the run is waiting.
+drive_pid=""
+drive() {
+    rm -f "$tmpdir/tty-in" "$tmpdir/tty-out"
+    mkfifo "$tmpdir/tty-in" || return 1
+    timeout 600 script -qfec "$(printf '%q ' env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" NO_COLOR=1 \
+        "$KASBAH_BIN" "$@")" "$tmpdir/tty-out" <"$tmpdir/tty-in" >/dev/null 2>&1 &
+    drive_pid=$!
+    exec 7>"$tmpdir/tty-in"
+}
+# press — Enter on the run's keyboard. A run that is already gone fails the
+# press instead of killing the suite with SIGPIPE.
+press() {
+    kill -0 "$drive_pid" 2>/dev/null || return 1
+    ( trap '' PIPE; printf '\n' >&7 ) 2>/dev/null
+}
+# finish — closes the keyboard; the run's exit status.
+finish() { exec 7>&-; wait "$drive_pid"; }
+tty_out() { tr -d '\r' <"$tmpdir/tty-out"; }
+# waiting N — until the Nth "Press Enter" is on the pty. Bounded, and given up
+# as soon as the run is gone: a run that never asks must fail, not hang.
+waiting() {
+    local i n
+    for ((i = 0; i < 480; i++)); do
+        n=$(grep -c "Press Enter" "$tmpdir/tty-out" 2>/dev/null)
+        [ "${n:-0}" -ge "$1" ] && return 0
+        kill -0 "$drive_pid" 2>/dev/null || return 1
+        sleep 0.5
+    done
+    return 1
+}
+# block — the last printed block's commands, one per line.
+block() { tty_out | awk '/^Run on /{b=""; on=1; next} on && /^    /{b=b substr($0,5) "\n"; next} {on=0} END{printf "%s", b}'; }
+as_root() { rig_ssh "sudo -S -p '' sh -s" <<<"$rig_pw"$'\n'"$1" >/dev/null 2>&1; }
+
+rig_ssh "docker compose -p $project down -v --remove-orphans; docker compose -p traefik down -v --remove-orphans; sudo rm -rf $alt_root; sudo rm -f $pointer" >/dev/null 2>&1
+if ! sudo_prompts >/dev/null 2>&1; then
+    echo "  FAIL: could not give $RIG_SSH_USER a prompting sudo on the rig" >&2
+    fail=1
+fi
+assert '! rig_ssh "sudo -n true" >/dev/null 2>&1' "sudo prompts on the rig now"
+
+# Without a terminal: the refusal stands, and names the commands for this state.
+init --apps-path="$alt_apps" --no-mail --no-backup "${traefik_flags[@]}"; rc=$?
+assert '[ "$rc" = 1 ]' "no sudo and no terminal is a refusal (exit $rc: $(cli_err))"
+err_lines=$(sed 's/^ *//' "$tmpdir/err")
+for want in "sudo mkdir -p $alt_root" "sudo mkdir $alt_apps" "sudo chown $RIG_SSH_USER:$RIG_SSH_USER $alt_apps"; do
+    assert 'grep -qxF "$want" <<<"$err_lines"' "naming \`$want\` (said '$(cli_err)')"
+done
+assert '[ "$(exists $alt_root)" = absent ]' "and creating nothing"
+
+# On a terminal: init waits twice — for the apps path, then for the pointer.
+drive server init "$RIG_TARGET" --apps-path="$alt_apps" --no-mail --no-backup "${traefik_flags[@]}"
+if waiting 1; then
+    apps_block=$(block)
+    assert '[ "$apps_block" = "sudo mkdir -p $alt_root
+sudo mkdir $alt_apps
+sudo chown $RIG_SSH_USER:$RIG_SSH_USER $alt_apps" ]' "init prints the apps path's commands (got '$apps_block')"
+    as_root "$apps_block"
+    press || assert false "the run was gone before Enter: $(tty_out)"
+    if waiting 2; then
+        pointer_block=$(block)
+        assert 'grep -qxF "printf '"'"'%s\\n'"'"' $alt_apps | sudo tee $pointer >/dev/null" <<<"$pointer_block"' \
+            "then the pointer's (got '$pointer_block')"
+        assert '! grep -qF "chmod 755" <<<"$pointer_block"' \
+            "only the steps this server needs: /etc/kasbah is already 755 (got '$pointer_block')"
+        as_root "$pointer_block"
+    else
+        assert false "init never asked for the pointer: $(tty_out)"
+    fi
+    press || assert false "the run was gone before Enter: $(tty_out)"
+else
+    assert false "init never asked for the apps path: $(tty_out)"
+fi
+finish; rc=$?
+assert '[ "$rc" = 0 ]' "init finishes once the commands have run (exit $rc: $(tty_out))"
+assert 'grep -qF "created $alt_apps by hand, owner $RIG_SSH_USER:$RIG_SSH_USER" <<<"$(tty_out)"' "and says who created the apps path"
+assert 'grep -qF "pointer: $pointer -> $alt_apps (written by hand)" <<<"$(tty_out)"' "and the pointer"
+pointer_facts=$(rig_ssh "stat -c '%U:%G %a' $pointer; cat $pointer" 2>&1 | tr -d '\r')
+assert '[ "$pointer_facts" = "root:root 644
+$alt_apps" ]' "the hand-written pointer is the one init writes (got '$pointer_facts')"
+assert '[ "$(exists $alt_marker)" = present ]' "and the marker is in place"
+
+# destroy: the pointer is left to the operator, re-checked until it is gone.
+drive server destroy "$RIG_TARGET" --yes
+if waiting 1; then
+    destroy_block=$(block)
+    assert '[ "$destroy_block" = "sudo rm -f $pointer
+sudo rmdir ${pointer%/*}" ]' "destroy prints the pointer's removal (got '$destroy_block')"
+    press || assert false "the run was gone before Enter: $(tty_out)"
+    if waiting 2; then
+        assert 'grep -qF "still needs root" <<<"$(tty_out)"' "Enter with nothing done asks again"
+        as_root "$destroy_block"
+    else
+        assert false "destroy did not ask again: $(tty_out)"
+    fi
+    press || assert false "the run was gone before Enter: $(tty_out)"
+else
+    assert false "destroy never asked: $(tty_out)"
+fi
+finish; rc=$?
+assert '[ "$rc" = 0 ]' "destroy finishes once the pointer is gone (exit $rc: $(tty_out))"
+assert 'grep -qF "$pointer and ${pointer%/*}/ were removed by hand" <<<"$(tty_out)"' "and says so"
+assert '! grep -qF "still there and names" <<<"$(tty_out)"' "with no warning that the pointer is still there"
+assert '[ "$(exists $pointer)" = absent ]' "the pointer is gone"
+sudo_restored >/dev/null 2>&1
+assert 'rig_ssh "sudo -n true" >/dev/null 2>&1' "passwordless sudo is back on the rig"
 
 # --- Leave the rig as it was found, but only on success ----------------------------
 if [ "$fail" -eq 0 ]; then

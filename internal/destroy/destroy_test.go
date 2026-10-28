@@ -247,6 +247,7 @@ type fake struct {
 	tailOut   string
 	tailRC    int
 	left      string
+	pointer   []string
 	calls     []string
 	actedWith []string
 }
@@ -273,6 +274,15 @@ func (f *fake) Tail(string) ([]byte, int) {
 func (f *fake) Leftovers() ([]byte, int) {
 	f.calls = append(f.calls, "leftovers")
 	return []byte(f.left), 0
+}
+func (f *fake) Pointer() ([]byte, int) {
+	f.calls = append(f.calls, "pointer")
+	if len(f.pointer) == 0 {
+		return nil, 255
+	}
+	out := f.pointer[0]
+	f.pointer = f.pointer[1:]
+	return []byte(out), 0
 }
 func (f *fake) Close() {}
 
@@ -342,10 +352,13 @@ func TestRunHeldAndNosudo(t *testing.T) {
 		t.Fatalf("held: %d %v\n%s\n%s", code, f.calls, so, se)
 	}
 	f = &fake{mk: mk(), scan: scanFixture(), actOut: okAct,
-		tailOut: "pointer=nosudo\npointer_dir=nosudo\nbinary=removed\nbin_dir=removed\nkasbah_dir=removed\ndone=yes\n"}
+		tailOut: "pointer=nosudo\npointer_dir=nosudo\nbinary=removed\nbin_dir=removed\nkasbah_dir=removed\ndone=yes\n",
+		pointer: []string{"pointer=present\npointer_dir=empty\n"}}
 	so, se, code = run(t, f, Options{Target: "deploy@vps.example", Yes: true}, false, "")
 	if code != 0 || !strings.Contains(so, "one file short of a plain Docker Compose host") ||
-		!strings.Contains(so, "ssh deploy@vps.example 'sudo rm -f /etc/kasbah/apps-path && sudo rmdir /etc/kasbah'") {
+		!strings.Contains(so, "  Run on deploy@vps.example, as root or as deploy with your own sudo") ||
+		!strings.Contains(so, "\n      sudo rm -f /etc/kasbah/apps-path\n      sudo rmdir /etc/kasbah\n") ||
+		strings.Count(strings.Join(f.calls, " "), "pointer") != 1 {
 		t.Fatalf("nosudo: %d\n%s\n%s", code, so, se)
 	}
 	f = &fake{mk: mk(), scan: scanFixture(), actOut: okAct, tailOut: "pointer=removed\n", tailRC: 255}
@@ -365,10 +378,22 @@ func TestRunNothingLeft(t *testing.T) {
 		{"pointer=yes\nkasbah=/apps/.kasbah\nitem=/apps/.kasbah/stray\n", "/etc/kasbah/apps-path is still there", 0},
 		{"pointer=no\nkasbah=/apps/.kasbah\ncreds=/apps/.kasbah/backup\nitem=/apps/.kasbah/backup\n", "/apps/.kasbah/backup is still there", 1},
 	} {
-		f := &fake{mkErr: none, left: c.left}
+		f := &fake{mkErr: none, left: c.left, pointer: []string{"pointer=present\npointer_dir=empty\n"}}
 		so, se, code := run(t, f, Options{Target: "deploy@vps"}, false, "")
 		if code != c.code || !strings.Contains(so, c.want) || strings.Contains(strings.Join(f.calls, " "), "scan") {
 			t.Errorf("%q: %d\n%s\n%s", c.left, code, so, se)
+		}
+	}
+	// The pointer outlived the marker: the block for what the probe sees, and
+	// no rmdir of a directory holding something else.
+	for probe, want := range map[string]string{
+		"pointer=present\npointer_dir=empty\n": "\n      sudo rm -f /etc/kasbah/apps-path\n      sudo rmdir /etc/kasbah\n",
+		"pointer=present\npointer_dir=dir\n":   "\n      sudo rm -f /etc/kasbah/apps-path\n  nothing else",
+	} {
+		f := &fake{mkErr: none, left: "pointer=yes\nkasbah=/apps/.kasbah\nitem=/apps/.kasbah/stray\n", pointer: []string{probe}}
+		so, se, code := run(t, f, Options{Target: "deploy@vps"}, false, "")
+		if code != 0 || !strings.Contains(so, want) || strings.Contains(se, "ssh deploy@vps 'sudo") {
+			t.Errorf("%q: %d\n%s\n%s", probe, code, so, se)
 		}
 	}
 	s := scanFixture()
@@ -380,7 +405,7 @@ func TestRunNothingLeft(t *testing.T) {
 }
 
 func TestScriptsParse(t *testing.T) {
-	shtest.Check(t, "destroy", map[string]string{"tail": tailScript, "leftover": leftoverScript})
+	shtest.Check(t, "destroy", map[string]string{"tail": tailScript, "leftover": leftoverScript, "pointer": pointerScript})
 }
 
 func TestTailScript(t *testing.T) {
@@ -418,6 +443,12 @@ func testTailScript(t *testing.T, sh shtest.Shell) {
 	if _, err := os.Stat(filepath.Join(etc, "apps-path")); err != nil {
 		t.Errorf("the pointer went without sudo")
 	}
+	// Without sudo and without a pointer there is nothing it could not remove.
+	os.Rename(filepath.Join(etc, "apps-path"), etc+".pointer")
+	if got := tail("#!/bin/sh\nexit 1\n"); got["pointer"] != "absent" || got["pointer_dir"] != "nosudo" {
+		t.Errorf("nosudo, no pointer: %v", got)
+	}
+	os.Rename(etc+".pointer", filepath.Join(etc, "apps-path"))
 	os.MkdirAll(filepath.Join(apps, ".kasbah", "bin"), 0o755)
 	os.WriteFile(filepath.Join(apps, ".kasbah", "bin", "kasbah"), nil, 0o755)
 	got = tail("#!/bin/sh\n[ \"$1\" = -n ] && shift\nexec \"$@\"\n")
@@ -484,6 +515,22 @@ func TestRunFinishesTheTail(t *testing.T) {
 	f := &fake{mkErr: none, left: "pointer=yes\n", tailOut: "pointer=failed\n", tailRC: 0}
 	if _, _, code := run(t, f, Options{Target: "deploy@vps"}, false, ""); code != 1 {
 		t.Errorf("a tail that did not finish: %d", code)
+	}
+	// No sudo: one wait for the server-wide pointer, after every tail.
+	nosudo := "pointer=nosudo\npointer_dir=nosudo\nbinary=removed\nbin_dir=removed\nkasbah_dir=removed\ndone=yes\n"
+	two := "pointer=yes\nkasbah=/apps/.kasbah\nkasbah=/srv/apps/.kasbah\n"
+	f = &fake{mkErr: none, left: two, tailOut: nosudo,
+		pointer: []string{"pointer=present\npointer_dir=empty\n", "pointer=absent\npointer_dir=absent\n"}}
+	so, se, code := run(t, f, Options{Target: "deploy@vps"}, true, "\n")
+	if code != 0 || strings.Join(f.calls, " ") != "marker leftovers tail tail pointer pointer" || strings.Count(se, "Press Enter") != 1 ||
+		!strings.Contains(so, "/etc/kasbah/apps-path and /etc/kasbah/ were removed by hand") || strings.Contains(se, "ssh deploy@vps") {
+		t.Errorf("no sudo, a terminal: %d %v\n%s\n%s", code, f.calls, so, se)
+	}
+	f = &fake{mkErr: none, left: "pointer=yes\n", tailOut: nosudo, pointer: []string{"pointer=present\npointer_dir=empty\n"}}
+	so, se, code = run(t, f, Options{Target: "deploy@vps"}, false, "")
+	if code != 0 || !strings.Contains(so, "one file short") || strings.Contains(se, "ssh deploy@vps") ||
+		!strings.Contains(so, "\n      sudo rm -f /etc/kasbah/apps-path\n      sudo rmdir /etc/kasbah\n") {
+		t.Errorf("no sudo, no terminal: %d %v\n%s\n%s", code, f.calls, so, se)
 	}
 }
 
@@ -646,5 +693,111 @@ func testLinksAreNotKasbahs(t *testing.T, sh shtest.Shell) {
 		if b, err := os.ReadFile(filepath.Join(outside, "kasbah")); err != nil || string(b) != "theirs" {
 			t.Errorf("%s: the file behind the link was touched", linked)
 		}
+	}
+}
+
+// No `sudo -n`, but a terminal: destroy waits for the operator to remove the
+// pointer, checks, and asks again while anything is left.
+func TestRunNosudoWaits(t *testing.T) {
+	nosudo := "pointer=nosudo\npointer_dir=nosudo\nbinary=removed\nbin_dir=removed\nkasbah_dir=removed\ndone=yes\n"
+	f := &fake{mk: mk(), scan: scanFixture(), actOut: okAct, tailOut: nosudo,
+		pointer: []string{"pointer=present\npointer_dir=empty\n", "pointer=present\npointer_dir=empty\n", "pointer=absent\npointer_dir=absent\n"}}
+	so, se, code := run(t, f, Options{Target: "deploy@vps.example", Yes: true}, true, "\n\n")
+	if code != 0 || strings.Count(se, "    sudo rm -f /etc/kasbah/apps-path\n    sudo rmdir /etc/kasbah\n") != 2 ||
+		strings.Count(se, "Press Enter") != 2 || strings.Contains(se, "is still there and names") ||
+		!strings.Contains(so, "/etc/kasbah/apps-path and /etc/kasbah/ were removed by hand") ||
+		!strings.Contains(so, "plain Docker Compose host now") || len(f.pointer) != 0 {
+		t.Fatalf("waited: %d %v\n%s\n%s", code, f.calls, so, se)
+	}
+	// The pointer gone, the offered rmdir skipped, then q: what is left is said,
+	// and the block on the terminal is not printed a second time.
+	f = &fake{mk: mk(), scan: scanFixture(), actOut: okAct, tailOut: nosudo,
+		pointer: []string{"pointer=present\npointer_dir=empty\n", "pointer=absent\npointer_dir=empty\n"}}
+	so, se, code = run(t, f, Options{Target: "deploy@vps.example", Yes: true}, true, "\nq\n")
+	if code != 0 || !strings.Contains(se, "/etc/kasbah/ on deploy@vps.example is empty and root-owned") ||
+		strings.Count(se+so, "sudo rmdir /etc/kasbah") != 2 || strings.Count(se+so, "sudo rm -f") != 1 ||
+		!strings.Contains(so, "but for /etc/kasbah/, which is") || strings.Contains(so, "were removed by hand") ||
+		!strings.Contains(so, "The commands above finish it.") {
+		t.Fatalf("rmdir skipped, then q: %d %v\n%s\n%s", code, f.calls, so, se)
+	}
+	// A directory holding something else: the pointer alone, and the directory stays.
+	f = &fake{mk: mk(), scan: scanFixture(), actOut: okAct, tailOut: nosudo,
+		pointer: []string{"pointer=present\npointer_dir=dir\n", "pointer=absent\npointer_dir=dir\n"}}
+	so, _, code = run(t, f, Options{Target: "deploy@vps.example", Yes: true}, true, "\n")
+	if code != 0 || !strings.Contains(so, "removed by hand; /etc/kasbah/ stays — it holds something kasbah did not write") {
+		t.Fatalf("dir kept: %d\n%s", code, so)
+	}
+	f = &fake{mk: mk(), scan: scanFixture(), actOut: okAct, tailOut: nosudo, pointer: []string{"pointer=present\npointer_dir=empty\n"}}
+	so, se, code = run(t, f, Options{Target: "deploy@vps.example", Yes: true}, true, "q\n")
+	if code != 0 || !strings.Contains(so, "one file short") || strings.Count(strings.Join(f.calls, " "), "pointer") != 1 ||
+		strings.Count(se+so, "sudo rm -f /etc/kasbah/apps-path") != 1 {
+		t.Fatalf("q: %d %v\n%s\n%s", code, f.calls, so, se)
+	}
+	// No pointer to begin with: nothing about it is promised, failed or waited on.
+	sc := scanFixture()
+	sc.PointerState, sc.Sudo = "missing", "no"
+	nopointer := "pointer=absent\npointer_dir=nosudo\nbinary=removed\nbin_dir=removed\nkasbah_dir=removed\ndone=yes\n"
+	f = &fake{mk: mk(), scan: sc, actOut: okAct, tailOut: nopointer, pointer: []string{"pointer=absent\npointer_dir=dir\n"}}
+	so, se, code = run(t, f, Options{Target: "deploy@vps.example", Yes: true}, true, "")
+	if code != 0 || strings.Contains(se, "Press Enter") || !strings.Contains(so, "plain Docker Compose host now") ||
+		strings.Contains(so, "printed for you to run") || strings.Contains(so, "could NOT remove") ||
+		strings.Contains(se, "still there") || !strings.Contains(so, "there was no /etc/kasbah/apps-path") {
+		t.Fatalf("no pointer: %d\n%s\n%s", code, so, se)
+	}
+	// No pointer, but its directory left empty: the rmdir is still the operator's.
+	f = &fake{mk: mk(), scan: sc, actOut: okAct, tailOut: nopointer,
+		pointer: []string{"pointer=absent\npointer_dir=empty\n", "pointer=absent\npointer_dir=absent\n"}}
+	so, se, code = run(t, f, Options{Target: "deploy@vps.example", Yes: true}, true, "\n")
+	if code != 0 || !strings.Contains(se, "    sudo rmdir /etc/kasbah\n") || strings.Contains(se, "sudo rm -f") ||
+		!strings.Contains(so, "/etc/kasbah/ was removed by hand") || !strings.Contains(so, "plain Docker Compose host now") {
+		t.Fatalf("an empty directory: %d\n%s\n%s", code, so, se)
+	}
+	f = &fake{mk: mk(), scan: sc, actOut: okAct, tailOut: nopointer, pointer: []string{"pointer=absent\npointer_dir=empty\n"}}
+	so, _, code = run(t, f, Options{Target: "deploy@vps.example", Yes: true}, false, "")
+	if code != 0 || !strings.Contains(so, "but for /etc/kasbah/, which is") || !strings.Contains(so, "\n      sudo rmdir /etc/kasbah\n") {
+		t.Fatalf("an empty directory, no terminal: %d\n%s", code, so)
+	}
+}
+
+func TestPointerScript(t *testing.T) {
+	for _, sh := range shtest.Shells(t) {
+		t.Run(sh.Name, func(t *testing.T) { testPointerScript(t, sh) })
+	}
+}
+
+func testPointerScript(t *testing.T, sh shtest.Shell) {
+	dir := t.TempDir() + "/kasbah"
+	ptr := dir + "/apps-path"
+	probe := func() string {
+		out, err := sh.Stdin(pointerScript, ptr).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
+	}
+	if got := probe(); got != "pointer=absent\npointer_dir=absent\n" {
+		t.Errorf("nothing: %q", got)
+	}
+	os.Mkdir(dir, 0o755)
+	os.WriteFile(ptr, []byte("/apps\n"), 0o644)
+	if got := probe(); got != "pointer=present\npointer_dir=empty\n" {
+		t.Errorf("present: %q", got)
+	}
+	os.Remove(ptr)
+	if got := probe(); got != "pointer=absent\npointer_dir=empty\n" {
+		t.Errorf("an empty directory: %q", got)
+	}
+	os.WriteFile(dir+"/other", nil, 0o644)
+	if got := probe(); got != "pointer=absent\npointer_dir=dir\n" {
+		t.Errorf("a directory holding something else: %q", got)
+	}
+	os.Remove(dir + "/other")
+	os.WriteFile(ptr, []byte("/apps\n"), 0o644)
+	if os.Geteuid() != 0 {
+		os.Chmod(dir, 0o600)
+		if got := probe(); got != "pointer=unknown\npointer_dir=dir\n" {
+			t.Errorf("behind a wall: %q", got)
+		}
+		os.Chmod(dir, 0o755)
 	}
 }

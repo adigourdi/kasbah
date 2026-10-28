@@ -8,6 +8,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/rootsteps"
 )
 
 // probeScript is the bootstrap read: every fact the verdicts need, before
@@ -280,8 +281,9 @@ func below(m string, n int64) bool {
 }
 
 // Preflight is every row of the prerequisites table judged at once: a server
-// three rows short costs one round trip, not three.
-func Preflight(f Facts, target, apps, data string) error {
+// three rows short costs one round trip, not three. An apps path only root can
+// create is a row only when nothing can wait for the operator to create it.
+func Preflight(f Facts, target, apps, data string, wait bool) error {
 	var rows []string
 	user := f["user"]
 	owner := user + ":" + f["group"]
@@ -311,12 +313,14 @@ func Preflight(f Facts, target, apps, data string) error {
 
 	switch f["apps_state"] {
 	case "absent":
-		if f["sudo_nopasswd"] != "yes" {
+		if f["sudo_nopasswd"] != "yes" && !wait {
 			add(fmt.Sprintf("passwordless sudo — `sudo -n true` failed as %s.", user),
 				fmt.Sprintf("  %s does not exist, and it lives outside the deploy user's home,", apps),
-				"  so only root can create it. Grant NOPASSWD sudo, or run this once",
-				"  by hand and re-run init:",
-				fmt.Sprintf("  ssh %s 'sudo mkdir -p %s && sudo chown %s %s'", target, apps, owner, apps))
+				"  so only root can create it. Run these once and re-run init — or run init",
+				"  from a terminal, where it waits while you do:")
+			for _, l := range AppsBlock(f, target, apps).Lines() {
+				add("  " + l)
+			}
 		}
 	case "dangling":
 		add(apps+" is a symlink to nothing.",
@@ -394,6 +398,37 @@ func Preflight(f Facts, target, apps, data string) error {
 	return e.Cont("kasbah checks prerequisites and never installs them — see docs/server-setup.md")
 }
 
+// AppsBlock is what root runs to create the apps path and hand it to the SSH
+// user, from the state the probe found it in: nothing when there is no such work.
+func AppsBlock(f Facts, target, apps string) *rootsteps.Block {
+	b := &rootsteps.Block{Target: target, User: f["user"]}
+	owner := rootsteps.Quote(f["user"] + ":" + f["group"])
+	q := rootsteps.Quote(apps)
+	switch {
+	case f["apps_state"] == "absent":
+		parent := apps[:strings.LastIndex(apps, "/")]
+		if parent == "" {
+			parent = "/"
+		}
+		if f["apps_base"] != parent {
+			b.Add("sudo mkdir -p " + rootsteps.Quote(parent))
+		}
+		b.Add("sudo mkdir "+q, "sudo chown "+owner+" "+q)
+	case f["apps_state"] == "dir" && f["apps_owned"] != "yes":
+		b.Add("sudo chown " + owner + " " + q)
+	}
+	return b
+}
+
+// PointerDirBlock makes the pointer's directory traversable again.
+func PointerDirBlock(f Facts, target string) *rootsteps.Block {
+	b := &rootsteps.Block{Target: target, User: f["user"]}
+	if f["pointer_state"] == "unreachable" {
+		b.Add("sudo chmod 755 " + rootsteps.Quote(pointerPath[:strings.LastIndex(pointerPath, "/")]))
+	}
+	return b
+}
+
 // CheckPointer refuses a server whose pointer records another apps path, or
 // one that cannot be told: one server runs one kasbah, because one Traefik
 // holds :80 and :443.
@@ -412,8 +447,8 @@ func CheckPointer(f Facts, target, apps string) error {
 			"so whether this server already records an apps path cannot be told, and",
 			fmt.Sprintf("this run would prepare %s. If the two differ that stands a second", apps),
 			"Traefik beside the one already holding :80 and :443, so kasbah stops here.",
-			"Make it traversable — it is mode 755 on a server kasbah prepared:",
-			fmt.Sprintf("  ssh %s 'sudo chmod 755 %s'", target, dir))
+			"Make it traversable — it is mode 755 on a server kasbah prepared.").Cont(
+			PointerDirBlock(f, target).Lines()...)
 	case "unreadable":
 		return cli.Fail("%s on %s cannot be read, by %s or by root", Pointer, target, f["user"]).Cont(
 			"it records where this server was prepared, and this run would prepare",

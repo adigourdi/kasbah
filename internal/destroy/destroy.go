@@ -22,6 +22,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/rootsteps"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
 )
@@ -103,6 +104,8 @@ type Session interface {
 	Tail(apps string) ([]byte, int)
 	// Leftovers is the shell probe for a server with no marker.
 	Leftovers() ([]byte, int)
+	// Pointer is the shell probe for the pointer the tail could not remove.
+	Pointer() ([]byte, int)
 	Close()
 }
 
@@ -148,7 +151,33 @@ func (s SSH) Leftovers() ([]byte, int) {
 	return s.script(leftoverScript, serverbin.Pointer, serverbin.DefaultApps)
 }
 
+func (s SSH) Pointer() ([]byte, int) {
+	return s.script(pointerScript, serverbin.Pointer)
+}
+
 func (s SSH) Close() { s.Conn.Close() }
+
+// pointerScript tells whether the pointer is still there; behind a directory
+// this user cannot enter it may be, so that is not "absent".
+const pointerScript = `set -u
+export LC_ALL=C
+pointer=$1
+dir=${pointer%/*}
+if [ -e "$pointer" ] || [ -L "$pointer" ]; then echo pointer=present
+elif [ -d "$dir" ] && [ ! -x "$dir" ]; then echo pointer=unknown
+else echo pointer=absent
+fi
+# empty: nothing in it but the pointer, so the operator's rmdir is still due.
+if [ -d "$dir" ]; then
+    other=no
+    for f in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+        { [ -e "$f" ] || [ -L "$f" ]; } && [ "$f" != "$pointer" ] && other=yes
+    done
+    if [ "$other" = no ] && [ -r "$dir" ] && [ -x "$dir" ]; then echo pointer_dir=empty; else echo pointer_dir=dir; fi
+else
+    echo pointer_dir=absent
+fi
+`
 
 // tailScript removes the root-owned pointer (sudo -n), then — the binary that
 // ran the act having exited — the binary, its directory and <apps>/.kasbah.
@@ -167,8 +196,12 @@ elif sudo -n true >/dev/null 2>&1; then s="sudo -n"
 else s=no
 fi
 if [ "$s" = no ]; then
-    echo pointer=nosudo
-    echo pointer_dir=nosudo
+    if { [ -d "$dir" ] && [ ! -x "$dir" ]; } || [ -e "$pointer" ] || [ -L "$pointer" ]; then
+        echo pointer=nosudo
+    else
+        echo pointer=absent
+    fi
+    if [ -d "$dir" ]; then echo pointer_dir=nosudo; else echo pointer_dir=absent; fi
 else
     if $s test -e "$pointer" 2>/dev/null; then
         if $s rm -f "$pointer"; then echo pointer=removed; else echo pointer=failed; fi
@@ -274,7 +307,7 @@ func Run(c Ctx, o Options) error {
 	mk, err := s.Marker()
 	var ce *cli.Error
 	if err != nil && errors.As(err, &ce) && ce.Code == cli.ExitNoRemoteState {
-		return nothingToFind(c.Out, s, o.Target, ce.Lines[0])
+		return nothingToFind(c.Out, c.Prompter, s, o.Target, ce.Lines[0])
 	}
 	if err != nil {
 		return err
@@ -329,7 +362,7 @@ func Run(c Ctx, o Options) error {
 	if !typed {
 		return cli.Fail("that is not %s — nothing was changed on %s", host, o.Target)
 	}
-	return p.act(c.Out, s)
+	return p.act(c.Out, c.Prompter, s)
 }
 
 func dataDir(apps, data string) string {
@@ -462,10 +495,10 @@ func (p *Plan) Report(w io.Writer) {
 	fmt.Fprintf(w, "\n  marker      %s/.kasbah/server.json (%s)\n", p.Apps, s.MarkerState)
 	sudo := s.Sudo == "root" || s.Sudo == "yes"
 	fmt.Fprintf(w, "  pointer     %s (%s)", serverbin.Pointer, s.PointerState)
-	if sudo {
+	if sudo || s.PointerState == "missing" {
 		fmt.Fprintln(w)
 	} else {
-		fmt.Fprintf(w, " — root-owned, and `sudo -n` is not available here,\n              so this one is warned about and skipped\n")
+		fmt.Fprintf(w, " — root-owned, and `sudo -n` is not available here,\n              so the commands to remove it are printed for you to run\n")
 	}
 	switch {
 	case !sudo || s.PointerDir != "dir":
@@ -528,7 +561,7 @@ func (r *reporter) step(v, did, absent, failure string) {
 	}
 }
 
-func (p *Plan) act(o *cli.Output, s Session) error {
+func (p *Plan) act(o *cli.Output, pr *prompt.Prompter, s Session) error {
 	names := make([]string, len(p.Projects))
 	for i, r := range p.Projects {
 		names[i] = r.Name
@@ -562,8 +595,8 @@ func (p *Plan) act(o *cli.Output, s Session) error {
 	}
 	r := &reporter{o: o, target: p.Target}
 	p.reportBackup(r, &a)
-	for _, pr := range a.Projects {
-		p.reportProject(r, pr)
+	for _, res := range a.Projects {
+		p.reportProject(r, res)
 	}
 	p.reportMail(r, &a)
 
@@ -596,17 +629,118 @@ func (p *Plan) act(o *cli.Output, s Session) error {
 		}
 		return e
 	}
-	r.say("")
-	if tail["pointer"] == "nosudo" {
-		r.say("%s is one file short of a plain Docker Compose host. Every site is", p.Target)
-		r.say("still running, and the only thing kasbah installed that is still there is")
-		r.say("%s, which this user cannot remove:", serverbin.Pointer)
-		r.say("  ssh %s 'sudo rm -f %s && sudo rmdir %s'", p.Target, serverbin.Pointer, pointerDir())
-		return nil
+	if tail["pointer"] == "nosudo" || tail["pointer_dir"] == "nosudo" {
+		h, err := pointerByHand(pr, s, p.Target)
+		if err != nil {
+			return err
+		}
+		if !h.ending(r, pr.TTY) {
+			return nil
+		}
 	}
+	r.say("")
 	r.say("%s is a plain Docker Compose host now. Every site is still running,", p.Target)
 	r.say("and nothing kasbah installed is left to hand over with it.")
 	return nil
+}
+
+// pointerBlock removes what the pointer probe sees: the pointer, and its
+// directory while nothing else is in it.
+func pointerBlock(target string, facts map[string]string) *rootsteps.Block {
+	user, _, ok := strings.Cut(target, "@")
+	if !ok {
+		user = ""
+	}
+	b := &rootsteps.Block{Target: target, User: user}
+	if facts["pointer"] != "absent" {
+		b.Add("sudo rm -f " + rootsteps.Quote(serverbin.Pointer))
+	}
+	if facts["pointer_dir"] == "empty" {
+		b.Add("sudo rmdir " + rootsteps.Quote(pointerDir()))
+	}
+	return b
+}
+
+// byHand is the pointer and its directory where `sudo -n` cannot reach them:
+// first and last are what the pointer probe saw, left what was still to run.
+type byHand struct {
+	first, last map[string]string
+	left        *rootsteps.Block
+	done        bool
+}
+
+func probePointer(s Session, target string) (map[string]string, error) {
+	out, rc := s.Pointer()
+	facts := kv(out)
+	if rc != 0 || facts["pointer"] == "" || facts["pointer_dir"] == "" {
+		return nil, cli.Fail("the pointer check on %s exited %d", target, rc)
+	}
+	return facts, nil
+}
+
+// pointerByHand prints the commands for what the probe sees and, on a
+// terminal, waits for them, probing again after each Enter.
+func pointerByHand(pr *prompt.Prompter, s Session, target string) (*byHand, error) {
+	first, err := probePointer(s, target)
+	if err != nil {
+		return nil, err
+	}
+	h := &byHand{first: first, last: first}
+	why := func() []string {
+		if h.last["pointer"] == "absent" {
+			return []string{fmt.Sprintf("%s/ on %s is empty and root-owned, left behind by kasbah.", pointerDir(), target)}
+		}
+		return []string{fmt.Sprintf("%s on %s is root-owned and still names this server as one kasbah prepared.", serverbin.Pointer, target)}
+	}
+	h.done, h.left, err = rootsteps.Await(pr, why, pointerBlock(target, first), func() (*rootsteps.Block, error) {
+		facts, err := probePointer(s, target)
+		if err != nil {
+			return nil, err
+		}
+		h.last = facts
+		return pointerBlock(target, facts), nil
+	})
+	return h, err
+}
+
+// report says what the operator removed, or what is left for them: the
+// commands, unless they are already on the terminal.
+func (h *byHand) report(r *reporter, tty bool) {
+	switch {
+	case pointerBlock("", h.first).Empty():
+	case !h.done && tty:
+		r.say("The commands above finish it.")
+	case !h.done:
+		for _, l := range h.left.Lines() {
+			r.say("%s", l)
+		}
+	case h.first["pointer"] == "absent":
+		r.say("%s/ was removed by hand", pointerDir())
+	case h.last["pointer_dir"] == "dir":
+		r.say("%s was removed by hand; %s/ stays — it holds something kasbah did not write", serverbin.Pointer, pointerDir())
+	default:
+		r.say("%s and %s/ were removed by hand", serverbin.Pointer, pointerDir())
+	}
+}
+
+// ending is a run's last word on the pointer: true when nothing of it is
+// left, else what is left has been said, with how to remove it.
+func (h *byHand) ending(r *reporter, tty bool) bool {
+	if h.done {
+		h.report(r, tty)
+		return true
+	}
+	r.say("")
+	if h.last["pointer"] == "absent" {
+		r.say("%s is a plain Docker Compose host now, but for %s/, which is", r.target, pointerDir())
+		r.say("still there, empty and root-owned.")
+	} else {
+		r.say("%s is one file short of a plain Docker Compose host. Every site is", r.target)
+		r.say("still running, and the only thing kasbah installed that is still there is")
+		r.say("%s, which this user cannot remove.", serverbin.Pointer)
+	}
+	h.report(r, tty)
+	return false
 }
 
 func (p *Plan) reportBackup(r *reporter, a *ActReport) {
@@ -739,7 +873,6 @@ func (p *Plan) reportTail(r *reporter, t map[string]string) {
 		r.say("there was no %s", serverbin.Pointer)
 	case "nosudo":
 		r.say("could NOT remove %s — it is root-owned and `sudo -n` is not available", serverbin.Pointer)
-		r.o.Warn("%s on %s is still there and names this server as one kasbah prepared", serverbin.Pointer, p.Target)
 	default:
 		r.say("FAILED to remove %s", serverbin.Pointer)
 		r.o.Err("could not remove %s on %s", serverbin.Pointer, p.Target)
@@ -808,7 +941,7 @@ func ownOnly(items []string) bool {
 
 // finishTail is the last step a run never reached — its session dropped
 // after the marker went: the pointer and the binary, removed now.
-func finishTail(o *cli.Output, s Session, target string, kasbah []string) error {
+func finishTail(o *cli.Output, pr *prompt.Prompter, s Session, target string, kasbah []string) error {
 	fmt.Fprintf(o.Stdout, "  what is left is kasbah's last step, which an earlier run did not reach — finishing it\n")
 	apps := []string{serverbin.DefaultApps}
 	if len(kasbah) > 0 {
@@ -826,20 +959,25 @@ func finishTail(o *cli.Output, s Session, target string, kasbah []string) error 
 			return cli.Fail("the last destroy step on %s exited %d", target, rc)
 		}
 		(&Plan{Target: target, Apps: a}).reportTail(r, t)
-		nosudo = nosudo || t["pointer"] == "nosudo"
+		nosudo = nosudo || t["pointer"] == "nosudo" || t["pointer_dir"] == "nosudo"
 	}
 	if r.bad {
 		return cli.Fail("%s was not fully de-branded — see the FAILED line(s) above", target)
 	}
 	if nosudo {
-		o.Warn("  ssh %s 'sudo rm -f %s && sudo rmdir %s'", target, serverbin.Pointer, pointerDir())
+		// Server-wide: one wait, whichever apps path's tail found it.
+		h, err := pointerByHand(pr, s, target)
+		if err != nil {
+			return err
+		}
+		h.ending(r, pr.TTY)
 	}
 	return nil
 }
 
 // nothingToFind is a server with no marker: what a completed destroy leaves,
 // so not an error — unless the backup credentials outlived it.
-func nothingToFind(o *cli.Output, s Session, target, reason string) error {
+func nothingToFind(o *cli.Output, pr *prompt.Prompter, s Session, target, reason string) error {
 	w := o.Stdout
 	fmt.Fprintf(w, "kasbah server destroy — %s\n\n", target)
 	if reason != "" {
@@ -871,7 +1009,7 @@ func nothingToFind(o *cli.Output, s Session, target, reason string) error {
 		}
 	}
 	if len(creds) == 0 && (pointer || len(kasbah) > 0) && ownOnly(items) {
-		return finishTail(o, s, target, kasbah)
+		return finishTail(o, pr, s, target, kasbah)
 	}
 	left := false
 	var credErr error
@@ -896,8 +1034,16 @@ func nothingToFind(o *cli.Output, s Session, target, reason string) error {
 	if pointer {
 		left = true
 		fmt.Fprintf(w, "  %s is still there, and it names this server as one kasbah prepared.\n", serverbin.Pointer)
-		o.Warn("%s on %s outlived the marker — take it off by hand:", serverbin.Pointer, target)
-		o.Warn("  ssh %s 'sudo rm -f %s && sudo rmdir %s'", target, serverbin.Pointer, pointerDir())
+		facts, err := probePointer(s, target)
+		if err != nil {
+			return err
+		}
+		// Reported, never waited on: this path removes nothing, sudo or not.
+		b := pointerBlock(target, facts)
+		b.User = ""
+		for _, l := range b.Lines() {
+			fmt.Fprintf(w, "  %s\n", l)
+		}
 	}
 	if left {
 		fmt.Fprintf(w, "  nothing else can be enumerated without a marker, and nothing was removed\n")

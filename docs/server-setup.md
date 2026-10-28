@@ -17,7 +17,7 @@ assumes.
 | A POSIX userland — `uname`, `id`, `stat`, `od`, `timeout`, `sed`, `head`, `tr`, `wc`, `find`, `cat`, `mkdir`, `mv`, `rm`, `nproc`, `df` | The remaining shell steps (the bootstrap probe and the `sudo` steps) assume these rather than check them, because a box without them cannot run a shell step usefully in the first place. The rule kasbah's remote shell follows is **POSIX `sh` builtins and the coreutils that busybox also provides, nothing separately packaged** (GNU coreutils and busybox are both exercised); the deploy engine and the env setup are the kasbah binary and need none of it | Not checked; failure surfaces as the step's own error |
 | **`:80` and `:443` free, and reachable from the internet** | Traefik binds both, and ACME's HTTP-01 challenge is answered on `:80` from outside. **Not probed** — init does not look at what is listening or at any firewall, so a port already held, or a `ufw` rule, surfaces as Traefik failing to start or as a challenge that never validates | Not checked |
 | **DNS in place before the first certificate** — `traefik.<apex>`, plus every project domain | A challenge for a name that does not resolve to this host fails, and **failed challenges count against Let's Encrypt's rate limits**. Rehearse with `--acme-staging` until DNS is right. **Not probed** — kasbah never resolves a name for you | Not checked |
-| Passwordless `sudo` — when the apps path does not exist yet, **and** to write the discovery pointer | `/apps` lives outside the deploy user's home, so nobody but root can create it; `/etc/kasbah/apps-path` is root-owned for the same reason it is machine-wide. Once both exist, init elevates again only to repair `/etc/kasbah` if its mode has drifted from `755` — re-runs otherwise only read the pointer | Apps path: hard fail naming the two commands to run by hand. Pointer: hard fail at a non-default apps path (the server would be undiscoverable), a warning at `/apps` (the fallback covers it) |
+| Passwordless `sudo`, **or** an operator who runs the printed root commands by hand — when the apps path does not exist yet, **and** to write the discovery pointer | `/apps` lives outside the deploy user's home, so nobody but root can create it; `/etc/kasbah/apps-path` is root-owned for the same reason it is machine-wide. Once both exist, init needs root again only to repair `/etc/kasbah` if its mode has drifted from `755` — re-runs otherwise only read the pointer | With `sudo -n` refused and a terminal: init prints the exact commands, waits for Enter, re-checks, and carries on once they are done (`q` gives up). Without a terminal: apps path — hard fail naming the commands; pointer — hard fail at a non-default apps path (the server would be undiscoverable), a warning at `/apps` (the fallback covers it) |
 
 `kasbah server init` does **not**:
 
@@ -195,16 +195,25 @@ about elsewhere. Elevation happens **only** on the first run against a bare
 host: once the directory exists and the deploy user owns it, init takes the
 unprivileged path and calls `sudo` again only to put `/etc/kasbah` back to `755`.
 
-A sudo that would *prompt* is detected up front (`sudo -n true`) and refused
-with the manual commands to run, rather than being allowed to block on a
-password prompt — a deploy driven from a script has no terminal to answer
-it, and a hung init is worse than a named failure.
+A sudo that would *prompt* is detected up front (`sudo -n true`) and never
+allowed to block on a password prompt over ssh. Instead init prints the exact
+commands this server still needs — only those, with its real apps path and
+user, each written with `sudo` so they work from a root shell too — waits for
+Enter, and probes again: done, it carries on as if it had run them itself;
+not done, it prints what is left and waits again; `q`, end of input or Ctrl-C
+gives up. The wait comes where elevation used to, after every question is
+answered, so nothing has been created before it. Without a terminal the
+commands are part of the failure and nothing waits — a script has no one to
+press Enter, and a hung init is worse than a named failure. The same applies
+to `/etc/kasbah`: an unreadable or drifted directory, or a pointer at `/apps`,
+waits on its commands at a terminal, and `q` falls back to the warning or
+failure a run without a terminal gets.
 
 There are exactly two acceptable states, and a third that init refuses:
 
 | Apps path | Init does |
 |---|---|
-| Does not exist, and the SSH user can reach where it would go | `sudo mkdir -p` the parent, bare `mkdir` the final component, `chown` it — once |
+| Does not exist, and the SSH user can reach where it would go | `sudo mkdir -p` the parent, bare `mkdir` the final component, `chown` it — once, by kasbah or by the operator from the printed commands |
 | Exists, owned by the SSH user | Nothing — stays unelevated |
 | Exists, owned by anyone else | **Refuses**, naming the `chown` to run |
 | The SSH user cannot traverse to it, whether or not it exists | **Refuses** |

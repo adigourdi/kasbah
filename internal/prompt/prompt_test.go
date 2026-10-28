@@ -263,3 +263,25 @@ func TestGiven(t *testing.T) {
 		t.Errorf("conflict: %v", err)
 	}
 }
+
+func TestWait(t *testing.T) {
+	for _, c := range []struct {
+		tty  bool
+		in   string
+		want bool
+		warn bool
+	}{
+		{false, "\n", false, false},
+		{true, "\n", true, false},
+		{true, "  \r\n", true, false},
+		{true, "q\n", false, false},
+		{true, "", false, false},
+		{true, "done\n\n", true, true},
+	} {
+		var e bytes.Buffer
+		p := &Prompter{In: strings.NewReader(c.in), Out: &cli.Output{Stderr: &e}, TTY: c.tty}
+		if got := p.Wait("go?"); got != c.want || strings.Contains(e.String(), "type q") != c.warn {
+			t.Errorf("tty=%v %q: %v %q", c.tty, c.in, got, e.String())
+		}
+	}
+}

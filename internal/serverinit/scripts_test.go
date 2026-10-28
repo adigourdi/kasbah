@@ -99,7 +99,7 @@ func testProbeScript(t *testing.T, sh shtest.Shell) {
 		f["pointer_state"] != "present" || f["pointer_value"] != "/srv/apps" || f["sudo_nopasswd"] != "no" {
 		t.Errorf("prepared host: %v", f)
 	}
-	if err := Preflight(f, "d@h", apps, data); err != nil {
+	if err := Preflight(f, "d@h", apps, data, false); err != nil {
 		t.Errorf("a stubbed host fails preflight: %v", err)
 	}
 	// Owned but stripped of its write bit: the errno is what tells it from a
@@ -164,9 +164,21 @@ func testPointerScript(t *testing.T, sh shtest.Shell) {
 		t.Errorf("a CRLF pointer: %v", f)
 	}
 	os.WriteFile(ptr, []byte("/apps\n"), 0o644)
-	if f, _, _ := run("STUB_SUDO=no"); f["pointer"] != "nosudo" {
+	if f, _, _ := run("STUB_SUDO=no"); f["pointer"] != "nosudo" || f["pointer_dir"] != "755" {
 		t.Errorf("wrong content without sudo: %v", f)
 	}
+	os.Chmod(dir, 0o700)
+	if f, _, _ := run("STUB_SUDO=no"); f["pointer"] != "nosudo" || f["pointer_dir"] != "700" {
+		t.Errorf("wrong content, drifted directory, without sudo: %v", f)
+	}
+	os.Chmod(dir, 0o755)
+	os.Rename(ptr, dir+".pointer")
+	os.Remove(dir)
+	if f, _, _ := run("STUB_SUDO=no"); f["pointer"] != "nosudo" || f["pointer_dir"] != "absent" {
+		t.Errorf("no directory without sudo: %v", f)
+	}
+	os.Mkdir(dir, 0o755)
+	os.Rename(dir+".pointer", ptr)
 	os.Remove(ptr)
 	os.Mkdir(ptr, 0o755)
 	if _, e, rc := run(); rc != 1 || !strings.Contains(e, "not a regular file") {

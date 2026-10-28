@@ -127,8 +127,13 @@ func goodFacts() Facts {
 }
 
 func TestPreflight(t *testing.T) {
-	if err := Preflight(goodFacts(), "d@h", "/apps", "/apps/data"); err != nil {
+	if err := Preflight(goodFacts(), "d@h", "/apps", "/apps/data", false); err != nil {
 		t.Fatalf("a good host fails: %v", err)
+	}
+	nosudo := goodFacts()
+	nosudo["sudo_nopasswd"] = "no"
+	if err := Preflight(nosudo, "d@h", "/apps", "/apps/data", true); err != nil {
+		t.Errorf("an apps path root must create is no refusal when the run can wait: %v", err)
 	}
 	for _, c := range []struct {
 		set  Facts
@@ -140,7 +145,7 @@ func TestPreflight(t *testing.T) {
 		{Facts{"compose_version": ""}, "produced nothing"},
 		{Facts{"compose_version": "1.29.2"}, "the plugin reports 1.29.2"},
 		{Facts{"compose_version": "5.2.0"}, ""},
-		{Facts{"sudo_nopasswd": "no"}, "sudo mkdir -p /apps && sudo chown deploy:deploy /apps"},
+		{Facts{"sudo_nopasswd": "no"}, "\n      sudo mkdir /apps\n      sudo chown deploy:deploy /apps"},
 		{Facts{"apps_state": "dangling"}, "symlink to nothing"},
 		{Facts{"apps_state": "unreachable", "apps_root_state": "exists", "apps_root_owner": "root:root"}, "cannot see it"},
 		{Facts{"apps_state": "dir", "apps_owned": "no", "apps_owner": "root:root"}, "sudo chown deploy:deploy /apps"},
@@ -153,7 +158,7 @@ func TestPreflight(t *testing.T) {
 		for k, v := range c.set {
 			f[k] = v
 		}
-		got := errText(Preflight(f, "d@h", "/apps", "/apps/data"))
+		got := errText(Preflight(f, "d@h", "/apps", "/apps/data", false))
 		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
 			t.Errorf("%v: got %q, want %q", c.set, got, c.want)
 		}
@@ -192,18 +197,24 @@ func newOut() (*cli.Output, *bytes.Buffer) {
 func TestPointerVerdict(t *testing.T) {
 	out, b := newOut()
 	for _, s := range []string{"written", "unchanged"} {
-		if err := PointerVerdict(out, s, "d@h", "/srv/apps", "u"); err != nil || b.Len() != 0 {
+		if err := PointerVerdict(out, s, "d@h", "/srv/apps", "u", nil, false); err != nil || b.Len() != 0 {
 			t.Errorf("%s: %v %q", s, err, b.String())
 		}
 	}
-	if err := PointerVerdict(out, "nosudo", "d@h", "/apps", "u"); err != nil || !strings.Contains(b.String(), "warning:") {
-		t.Errorf("nosudo at /apps is a warning: %v %q", err, b.String())
+	blk := PointerBlock(Facts{"pointer": "nosudo", "pointer_dir": "755"}, "d@h", "/srv/apps", "u")
+	if err := PointerVerdict(out, "nosudo", "d@h", "/apps", "u", blk, false); err != nil || !strings.Contains(b.String(), "warning:") ||
+		!strings.Contains(b.String(), "sudo chmod 644 /etc/kasbah/apps-path") {
+		t.Errorf("nosudo at /apps is a warning, with the commands: %v %q", err, b.String())
 	}
-	err := PointerVerdict(out, "nosudo", "d@h", "/srv/apps", "u")
-	if got := errText(err); !strings.Contains(got, "exit 4") || !strings.Contains(got, "sudo tee /etc/kasbah/apps-path") {
+	err := PointerVerdict(out, "nosudo", "d@h", "/srv/apps", "u", blk, false)
+	if got := errText(err); !strings.Contains(got, "exit 4") || !strings.Contains(got, "\n    printf '%s\\n' /srv/apps | sudo tee /etc/kasbah/apps-path >/dev/null\n") {
 		t.Errorf("nosudo elsewhere: %q", got)
 	}
-	if PointerVerdict(out, "other", "d@h", "/apps", "u") == nil {
+	b.Reset()
+	if err := PointerVerdict(out, "nosudo", "d@h", "/apps", "u", blk, true); err != nil || strings.Contains(b.String(), "sudo tee") {
+		t.Errorf("a block already on the terminal is not printed again: %v %q", err, b.String())
+	}
+	if PointerVerdict(out, "other", "d@h", "/apps", "u", nil, false) == nil {
 		t.Error("an unknown report passes")
 	}
 }
@@ -631,5 +642,68 @@ exit 0
 	}
 	if b, _ := os.ReadFile(log); strings.Contains(string(b), " stop ") {
 		t.Errorf("stopped without a reset:\n%s", b)
+	}
+}
+
+func TestRootBlocks(t *testing.T) {
+	for _, c := range []struct {
+		set  Facts
+		apps string
+		want []string
+	}{
+		{Facts{}, "/apps", []string{"sudo mkdir /apps", "sudo chown deploy:deploy /apps"}},
+		{Facts{"apps_base": "/"}, "/srv/apps", []string{"sudo mkdir -p /srv", "sudo mkdir /srv/apps", "sudo chown deploy:deploy /srv/apps"}},
+		{Facts{"apps_base": "/srv"}, "/srv/my apps", []string{"sudo mkdir '/srv/my apps'", "sudo chown deploy:deploy '/srv/my apps'"}},
+		{Facts{"apps_state": "dir", "apps_owned": "no"}, "/apps", []string{"sudo chown deploy:deploy /apps"}},
+		{Facts{"apps_state": "dir", "apps_owned": "yes"}, "/apps", nil},
+		{Facts{"apps_state": "unreachable"}, "/apps", nil},
+	} {
+		f := goodFacts()
+		for k, v := range c.set {
+			f[k] = v
+		}
+		if got := AppsBlock(f, "d@h", c.apps).Commands; strings.Join(got, "|") != strings.Join(c.want, "|") {
+			t.Errorf("apps %v: %q, want %q", c.set, got, c.want)
+		}
+	}
+	tee := `printf '%s\n' /srv/apps | sudo tee /etc/kasbah/apps-path >/dev/null`
+	own := []string{tee, "sudo chown 0:0 /etc/kasbah/apps-path", "sudo chmod 644 /etc/kasbah/apps-path"}
+	for _, c := range []struct {
+		pt   Facts
+		want []string
+	}{
+		{Facts{"pointer": "nosudo", "pointer_dir": "absent"}, append([]string{"sudo mkdir -p /etc/kasbah", "sudo chmod 755 /etc/kasbah"}, own...)},
+		{Facts{"pointer": "nosudo", "pointer_dir": "700"}, append([]string{"sudo chmod 755 /etc/kasbah"}, own...)},
+		{Facts{"pointer": "nosudo", "pointer_dir": "755"}, own},
+		{Facts{"pointer": "unchanged", "pointer_dir_mode": "711"}, []string{"sudo chmod 755 /etc/kasbah"}},
+		{Facts{"pointer": "unchanged"}, nil},
+		{Facts{"pointer": "written"}, nil},
+	} {
+		if got := PointerBlock(c.pt, "d@h", "/srv/apps", "u").Commands; strings.Join(got, "|") != strings.Join(c.want, "|") {
+			t.Errorf("pointer %v: %q, want %q", c.pt, got, c.want)
+		}
+	}
+	if got := PointerDirBlock(Facts{"pointer_state": "unreachable", "user": "u"}, "d@h").Commands; len(got) != 1 || got[0] != "sudo chmod 755 /etc/kasbah" {
+		t.Errorf("pointer dir: %q", got)
+	}
+	if !PointerDirBlock(Facts{"pointer_state": "present"}, "d@h").Empty() {
+		t.Error("a reachable pointer asks for a chmod")
+	}
+}
+
+// Part-way through: the operator made the directory and stopped short of the
+// chown, so the reason and the commands are about the chown alone.
+func TestAppsPartial(t *testing.T) {
+	f := goodFacts()
+	f["apps_state"], f["apps_owned"], f["apps_owner"] = "dir", "no", "root:root"
+	why := AppsWhy(f, "d@h", "/srv/apps")
+	if !strings.Contains(why, "/srv/apps on d@h exists and belongs to root:root, not deploy") {
+		t.Errorf("why: %q", why)
+	}
+	if got := AppsBlock(f, "d@h", "/srv/apps").Commands; len(got) != 1 || got[0] != "sudo chown deploy:deploy /srv/apps" {
+		t.Errorf("block: %q", got)
+	}
+	if why := AppsWhy(goodFacts(), "d@h", "/srv/apps"); !strings.Contains(why, "does not exist") {
+		t.Errorf("absent: %q", why)
 	}
 }
