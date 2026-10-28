@@ -127,6 +127,31 @@ func TestQueries(t *testing.T) {
 	}
 }
 
+func TestPrevDeploySkipsDirty(t *testing.T) {
+	rec := func(lines ...string) *Record {
+		r := &Record{}
+		for _, l := range lines {
+			r.Items = append(r.Items, Item{Parse(l), false})
+		}
+		return r
+	}
+	const d = "2026-01-01T00:00:00+00:00 deploy "
+	for _, tt := range []struct {
+		lines []string
+		want  int
+	}{
+		// The running one counts as the latest even when dirty; an earlier dirty one is never the target.
+		{[]string{d + "1.0.0 -", d + "1.1.0-dirty.20260101000000 -", d + "1.1.0 -"}, 0},
+		{[]string{d + "1.0.0 -", d + "1.1.0-dirty.20260101000000 -"}, 0},
+		{[]string{d + "1.0.0-dirty.20260101000000 -", d + "1.1.0 -"}, -1},
+		{[]string{d + "1.0.0 -", d + "1.0.0-dirty.20260101000000 -", d + "1.0.0-dirty.20260102000000 -"}, 0},
+	} {
+		if i, _ := rec(tt.lines...).PrevDeploy(); i != tt.want {
+			t.Errorf("PrevDeploy over %q = %d, want %d", tt.lines, i, tt.want)
+		}
+	}
+}
+
 // The cases the retired Bash suite held: an active log that is not base64,
 // a last line with no newline, a zero-byte log this user cannot read.
 func TestReadProbeEdges(t *testing.T) {

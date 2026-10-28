@@ -24,6 +24,7 @@ func TestParse(t *testing.T) {
 		{"pending", []string{"a@b", "c@d"}, "two servers given"},
 		{"pending", []string{"v1.0.0"}, "write the version without the 'v'"},
 		{"changelog", []string{"--x"}, "changelog: unknown flag '--x' (changelog takes USER@HOST)"},
+		{"pending", []string{"1.2.0-dirty.20261028123456"}, "is a --dirty build — no tag holds it"},
 	} {
 		if _, err := Parse(c.cmd, c.args); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s %v = %v", c.cmd, c.args, err)

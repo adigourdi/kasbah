@@ -530,6 +530,24 @@ assert 'grep -qF "\`git log v1.0.0..v3.0.0\`" <<<"$OUT"' \
 assert '! grep -qF "redeploy" <<<"$OUT"' \
     "and it is not read as a redeploy, which is what the last two *deploy* entries would have paired (got '$OUT')"
 
+# A --dirty build has no tag: either endpoint reads as its base tag, said so.
+{ printf '%s deploy 1.0.0-dirty.20260801000000 no-backup kasbah=0.1.0 digest=-\n' 2026-08-01T00:00:00+00:00
+  printf '%s deploy 2.0.0-dirty.20260802000000 no-backup kasbah=0.1.0 digest=-\n' 2026-08-02T00:00:00+00:00; } > "$act"
+drive changelog
+assert '[ "$DRC" = 0 ]' "changelog between two --dirty builds runs (rc $DRC: $ERR)"
+assert 'grep -qF "2.0.0-dirty.20260802000000 is a --dirty build — compared as its base tag v2.0.0" <<<"$OUT"' \
+    "saying the dirty endpoint is read as its base tag (got '$OUT')"
+assert 'grep -qxF "v1.0.0..v2.0.0 — 1 commit" <<<"$OUT"' "and logging the base tags' range (got '$OUT')"
+drive pending
+assert '[ "$DRC" = 0 ] && grep -qxF "v2.0.0..HEAD — 1 commit" <<<"$OUT"' \
+    "pending from a --dirty build starts at its base tag (rc $DRC, got '$OUT')"
+drive history
+assert 'grep -qF "deploy  2.0.0-dirty.20260802000000" <<<"$OUT"' "history shows the dirty label (got '$OUT')"
+{ printf '%s deploy 0.0.0-dirty.20260801000000 no-backup kasbah=0.1.0 digest=-\n' 2026-08-01T00:00:00+00:00; } > "$act"
+drive pending
+assert '[ "$DRC" = 0 ] && grep -qF "no tagged base" <<<"$OUT" && ! grep -qF "fetch" <<<"$OUT$ERR"' \
+    "a --dirty build with no tagged base says so, and sends nobody to fetch v0.0.0 (rc $DRC, got '$OUT' '$ERR')"
+
 # The ordinary case: two deploys, the log of what the newer one shipped.
 { printf '%s deploy 1.0.0 no-backup kasbah=0.1.0 digest=-\n' 2026-08-01T00:00:00+00:00
   printf '%s deploy 3.0.0 no-backup kasbah=0.1.0 digest=-\n' 2026-08-02T00:00:00+00:00; } > "$act"

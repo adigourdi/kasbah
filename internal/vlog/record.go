@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/version"
 )
 
 // Probe is `kasbah remote vlog APPS NAME`: both files' states and bytes,
@@ -262,9 +263,10 @@ func (r *Record) LastActive() int {
 	return -1
 }
 
-// PrevDeploy is the second-latest action=deploy entry over the whole record
-// (-1 when there are not two), and how many unparsed lines it stepped over:
-// a truncated latest deploy otherwise makes the one before it the target.
+// PrevDeploy is the latest action=deploy entry before the latest one, a
+// --dirty build's never chosen (-1 when there is none), and how many unparsed
+// lines it stepped over: a truncated latest deploy otherwise makes the one
+// before it the target.
 func (r *Record) PrevDeploy() (idx, skipped int) {
 	seen := 0
 	for i := len(r.Items) - 1; i >= 0; i-- {
@@ -276,7 +278,7 @@ func (r *Record) PrevDeploy() (idx, skipped int) {
 		if e.Action != "deploy" {
 			continue
 		}
-		if seen++; seen == 2 {
+		if seen++; seen >= 2 && !version.IsDirty(e.Version) {
 			return i, skipped
 		}
 	}

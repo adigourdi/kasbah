@@ -23,6 +23,7 @@ func TestPick(t *testing.T) {
 		{"v1.4\n", "", "'v1.4' is not a version"},
 		{"vnext\n", "", "'vnext' is not a version"},
 		{"v1.2.3-\n", "", "is not a version"},
+		{"v1.2.0-dirty.20261028123456\n", "", "shaped like a --dirty build's label"},
 		{"v١.2.3\n", "", "is not a version"},
 	} {
 		got, err := Pick(tt.tags)

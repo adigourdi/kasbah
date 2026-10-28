@@ -112,7 +112,7 @@ func TestRollbackShipsTheTag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if !strings.Contains(out, "rolling back to 1.0.0 — the second-most-recent `deploy` entry") {
+	if !strings.Contains(out, "rolling back to 1.0.0 — the latest clean `deploy` entry before the running one") {
 		t.Errorf("implicit target not announced\n%s", out)
 	}
 	sp := f.spec
@@ -194,6 +194,9 @@ func TestRollbackRefusals(t *testing.T) {
 		{"no earlier deploy", Options{Target: "d@h"},
 			&fake{record: record("2026-02-01T00:00:00+00:00 deploy 2.0.0 no-backup\n", "", true)},
 			"there is no earlier deploy of demo on d@h to roll back to"},
+		{"only dirty before", Options{Target: "d@h"},
+			&fake{record: record("2026-01-01T00:00:00+00:00 deploy 1.0.0-dirty.20260101000000 no-backup\n2026-02-01T00:00:00+00:00 deploy 2.0.0 no-backup\n", "", true)},
+			"--dirty builds in it are never a rollback target"},
 		{"empty, archive unread", Options{Target: "d@h"},
 			&fake{record: record("", "", false)},
 			"this is not evidence that"},
@@ -338,5 +341,25 @@ func TestDeployVersionUnknownHook(t *testing.T) {
 	}
 	if !strings.Contains(out, "the manifest in this version has hooks.pre_deploy, which is not a hook kasbah runs — ignored") {
 		t.Errorf("no warning naming the key\n%s", out)
+	}
+}
+
+func TestRollbackStepsOverDirty(t *testing.T) {
+	history(t, "")
+	t.Setenv("TMPDIR", t.TempDir())
+	log := "2026-01-01T00:00:00+00:00 deploy 1.0.0 no-backup\n" +
+		"2026-01-15T00:00:00+00:00 deploy 1.0.0-dirty.20260115000000 no-backup\n" +
+		"2026-02-01T00:00:00+00:00 deploy 2.0.0-dirty.20260201000000 no-backup\n"
+	prev := "{\"" + ReportKey + "\":1,\"version\":\"1.0.0\",\"prev_version\":\"2.0.0-dirty.20260201000000\",\"deployed_before\":true,\"backup\":\"no-backup\",\"digest\":\"-\"}\n"
+	f := &fake{record: record(log, "", true), out: &prev}
+	err, out := runTagged(t, f, Options{Target: "d@h"}, "rollback")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if f.spec.Version != "1.0.0" || !strings.Contains(out, "stepped over 1 --dirty deploy(s)") {
+		t.Errorf("target %q\n%s", f.spec.Version, out)
+	}
+	if !strings.Contains(out, "2.0.0-dirty.20260201000000 is a --dirty build — compared as its base tag v2.0.0") || !strings.Contains(out, "v1.0.0..v2.0.0") {
+		t.Errorf("gave up: the dirty endpoint is not read as its base tag\n%s", out)
 	}
 }

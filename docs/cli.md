@@ -232,8 +232,9 @@ which is also what makes a client offboarding a deliberate decision.
 
 Image retention cleanup across all projects on the VPS: removes
 `:<version>` image tags that are both older than 3 months and not among
-the project's last 3 deployed versions — the version `:current` points
-at counts as the first of the 3, and `:current` itself is never pruned.
+the project's last 3 deployed clean versions — the version `:current` points
+at counts as the first of the 3, and `:current` itself is never pruned, even
+when it is a `-dirty.` build; other dirty tags never count toward the 3.
 The time window mirrors versions.log rotation — see `build-deploy.md`.
 Prints what it would remove and asks once; `--yes` answers that question
 for scripts, and without it and without a terminal the run stops naming
@@ -656,7 +657,9 @@ invent a command.
 
 ### `kasbah build-push [USER@HOST]`
 
-1. Resolve version from git tag on HEAD (exactly one `vX.Y.Z`). Fail otherwise.
+1. Resolve version from git tag on HEAD (exactly one `vX.Y.Z`), on a clean tree
+   (`build-deploy.md` → Versioning contract). Fail otherwise — or, with
+   `--dirty`, label the build `<base>-dirty.<UTC stamp>`.
    Then reach the server and ship the kasbah binary if its own is absent or
    older — before any build, so an unreachable server (exit 3) or one `server
    init` never prepared (exit 4) is known in seconds.
@@ -685,15 +688,22 @@ else `last_server` from `.kasbah/state.json`, which is written on success.
 Flags:
 - `--build-only` — skip transfer/load/push (local build + tag only).
 - `--no-git-push` — don't push the git tag.
+- `--dirty` — build the working tree as it stands, as a test build labelled
+  `<base>-dirty.<UTC stamp>`; no tag is needed or pushed. The label, target and
+  the tree's digest are recorded in `.kasbah/state.json` for `deploy --dirty`
+  (not when the tree changed during the build);
+  `--dirty --build-only` records nothing.
 
 ### `kasbah deploy [USER@HOST] [VERSION] [flags]`
 
 Two modes:
 
 - **No `VERSION` arg** — deploys the **working tree**, labeled with HEAD's
-  `v-tag`. Fails fast if HEAD isn't tagged. This is the everyday path: you
-  may have tweaked compose or env template since cutting the tag, and you
-  want to ship current disk state under that version label.
+  `v-tag`. Fails fast if HEAD isn't tagged or the tree is not clean. With
+  `--dirty` it deploys the tree as it stands under the label the last
+  `build-push --dirty` recorded for this server and this exact tree (a
+  stock-only project labels its own), and refuses otherwise, naming
+  `kasbah build-push <target> --dirty`.
 - **Explicit `VERSION`** — deploys that tagged version exactly as it was,
   read out of the `v<VERSION>` ref (no checkout, working tree untouched).
   See the rollback flow in `build-deploy.md`: it is the same code path, and
@@ -746,8 +756,10 @@ Flags:
 
 ### `kasbah rollback [USER@HOST] [VERSION]`
 
-Default target: second-most-recent entry with `action=deploy`, read from
-`versions.log` and `versions.log.gz` together (`build-deploy.md` → rollback flow).
+Default target: the most recent `action=deploy` entry before the running one
+that is not a `-dirty.` build, read from `versions.log` and `versions.log.gz`
+together (`build-deploy.md` → rollback flow); it says how many dirty deploys it
+stepped over. A dirty `VERSION` is refused.
 
 Flow (see `build-deploy.md` for full detail):
 1. Resolve target version.
@@ -938,6 +950,11 @@ holds that kasbah cannot parse, and the note saying the archive was not read
 in full. A **diagnostic about this checkout or the transport** goes to
 stderr: a missing tag, an unborn HEAD, a `git log` that failed. Piping any of
 the three gives the answer and nothing else.
+
+A `-dirty.` version has no git tag: `changelog` and the changelog a deploy or
+rollback prints read it as its base tag and say so in a line — and skip the
+changelog when that base is no tag here (`0.0.0`, or a tag whose `+metadata`
+the label dropped). `pending` refuses a dirty `VERSION`.
 
 ### `kasbah pending [USER@HOST] [VERSION]`
 

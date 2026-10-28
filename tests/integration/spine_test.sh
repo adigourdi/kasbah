@@ -381,8 +381,11 @@ fix_image()   { sed -i "s|image: $broken_image|image: nginx:alpine|" "$projdir/c
 break_image
 assert 'grep -qF "$broken_image" "$projdir/compose.prod.yml"' \
     "the working tree really does name an unpullable image — else this case proves nothing"
-deploy "$RIG_TARGET"; rc=$?
+# --dirty: the edit is uncommitted, and a deploy refuses that before compose up.
+deploy "$RIG_TARGET" --dirty; rc=$?
 assert '[ "$rc" != "0" ]' "a deploy whose compose up fails is a failed deploy (exit $rc)"
+assert 'grep -qF "up -d --remove-orphans failed in" "$tmpdir/err"' \
+    "and it is compose up that failed it, not the clean-tree check (said '$(cli_err)')"
 assert '[ "$(rig_ssh "[ -e $fragment ] && echo present || echo absent" 2>/dev/null)" = "absent" ]' \
     "and ships no fragment — nothing reaches traefik/dynamic until the deploy is known to have finished"
 unrouted_code=$(code_stays "$project_host" 404); stays_rc=$?
@@ -702,7 +705,8 @@ env_before=$(rig_ssh "sha256sum $apps/$project/.env | cut -d' ' -f1" 2>/dev/null
 printf 'DRIFT_PROBE=added since the .env was rendered\n' >> "$projdir/.env.prod.example"
 
 drift_started=$(date +%s%3N)
-deploy_bounded; rc=$?
+# --dirty throughout: the drift is an uncommitted edit to the template.
+deploy_bounded --dirty; rc=$?
 drift_ms=$(( $(date +%s%3N) - drift_started ))
 assert '[ "$rc" != "124" ]' \
     "a drifting .env with nobody to ask returns rather than waiting on a prompt (took ${drift_ms}ms)"
@@ -721,7 +725,7 @@ survived_code=$(code_stays "$project_host" 200); stays_rc=$?
 assert '[ "$stays_rc" = "0" ]' \
     "and the version already serving keeps serving (went to '$survived_code')"
 
-deploy_bounded --on-drift=abort; rc=$?
+deploy_bounded --dirty --on-drift=abort; rc=$?
 assert '[ "$rc" = "5" ]' "--on-drift=abort is the same refusal, asked for (exit $rc: $(cli_err))"
 assert '[ "$(rig_ssh "sha256sum $apps/$project/.env | cut -d\" \" -f1" 2>/dev/null)" = "$env_before" ]' \
     "changing nothing on the server"
@@ -729,7 +733,7 @@ assert '[ "$(rig_ssh "sha256sum $apps/$project/.env | cut -d\" \" -f1" 2>/dev/nu
 # The scriptable way through. `continue` means the .env is left as it stands —
 # the new template key does *not* appear in it — and only the managed block is
 # refreshed.
-deploy_bounded --on-drift=continue; rc=$?
+deploy_bounded --dirty --on-drift=continue; rc=$?
 assert '[ "$rc" = "0" ]' "--on-drift=continue deploys against the .env as it stands (exit $rc: $(cli_err))"
 drifted_env=$(rig_ssh "cat $apps/$project/.env" 2>/dev/null)
 assert '! grep -q "^DRIFT_PROBE=" <<<"$drifted_env"' \

@@ -17,6 +17,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/internal/version"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
@@ -209,7 +210,10 @@ func (r *run) implicitTarget(rec *vlog.Record) error {
 	if idx >= 0 {
 		it := rec.Items[idx]
 		r.version = it.Version
-		o.Info("rolling back to %s — the second-most-recent `deploy` entry in %s's record (%s)", r.version, r.target, it.Time)
+		o.Info("rolling back to %s — the latest clean `deploy` entry before the running one in %s's record (%s)", r.version, r.target, it.Time)
+		if n := dirtyDeploys(rec.Items[idx+1 : latestDeploy(rec)]); n > 0 {
+			o.Info("  stepped over %d --dirty deploy(s) after it — never a rollback target", n)
+		}
 		// A line a killed append left is still a deploy that ran: stepped
 		// over, it makes the target one version too far back.
 		if damaged > 0 {
@@ -240,6 +244,9 @@ func (r *run) implicitTarget(rec *vlog.Record) error {
 	if damaged > 0 {
 		e.Cont(fmt.Sprintf("%d line(s) of that record could not be read, and any of them may be one", damaged))
 	}
+	if dirtyDeploys(rec.Items) > 0 {
+		e.Cont("(--dirty builds in it are never a rollback target, and are not counted)")
+	}
 	arch, act := rec.Count()
 	switch {
 	case arch+act > 0 && arch > 0:
@@ -262,6 +269,27 @@ func (r *run) implicitTarget(rec *vlog.Record) error {
 		e.Cont(n)
 	}
 	return e.Cont("name a version if you know one:  kasbah rollback " + r.target + " <X.Y.Z>")
+}
+
+// dirtyDeploys counts the readable --dirty deploy entries in items.
+func dirtyDeploys(items []vlog.Item) int {
+	n := 0
+	for _, it := range items {
+		if it.OK && it.Action == "deploy" && version.IsDirty(it.Version) {
+			n++
+		}
+	}
+	return n
+}
+
+// latestDeploy is the index of the record's latest readable deploy entry.
+func latestDeploy(rec *vlog.Record) int {
+	for i := len(rec.Items) - 1; i >= 0; i-- {
+		if it := rec.Items[i]; it.OK && it.Action == "deploy" {
+			return i
+		}
+	}
+	return len(rec.Items)
 }
 
 // requireDeployed: any entry naming the version counts, whatever its action.
@@ -672,9 +700,13 @@ func (r *run) gaveUp(rep *Report) {
 		o.Info("  gave up: nothing — %s was already running %s", t, v)
 		return
 	}
-	rng := "v" + v + "..v" + prev
-	if exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/v"+prev+"^{commit}").Run() != nil {
-		o.Warn("%s was running %s, and this checkout has no tag v%s — so there", t, prev, prev)
+	from, ok := asTag(o, prev)
+	if !ok {
+		return
+	}
+	rng := "v" + v + ".." + from
+	if exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/"+from+"^{commit}").Run() != nil {
+		o.Warn("%s was running %s, and this checkout has no tag %s — so there", t, prev, from)
 		o.Warn("is no list of what the rollback gave up. `git fetch --tags`, then `git log %s`", rng)
 		return
 	}

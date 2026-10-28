@@ -67,6 +67,8 @@ case "${1:-}" in
         if [ -n "${DOCKER_SAVE_RC:-}" ]; then head -c 3000000 /dev/urandom; exit "$DOCKER_SAVE_RC"; fi
         printf 'fake-image-stream\n' ;;
     load) cat > "$LOADED"; exit "${DOCKER_LOAD_RC:-0}" ;;
+    # A tree edited while the build runs.
+    compose) [ -z "${DOCKER_BUILD_TOUCH:-}" ] || printf 'during\n' >> "$DOCKER_BUILD_TOUCH" ;;
 esac
 exit "${DOCKER_RC:-0}"
 STUB
@@ -116,6 +118,13 @@ printf '[user]\n\temail = build-push-test@kasbah.test\n\tname = kasbah build-pus
     > "$fakehome/.gitconfig"
 
 # --- Running the command ---------------------------------------------------------
+
+# recommit <tag> — commit what a case edited in $projdir and move the tag onto
+# it: build-push refuses a working tree that is not HEAD's.
+recommit() {
+    ( cd "$projdir" && HOME="$fakehome" git add -A && HOME="$fakehome" git commit -qm edit \
+        && git tag -f "$1" ) >/dev/null 2>&1 || { echo "error: could not commit the edit in $projdir" >&2; exit 2; }
+}
 
 projdir=""
 out=""
@@ -222,6 +231,7 @@ assert '[ ! -e "$stock/.kasbah/state.json" ]' \
 
 projdir="$(make noimage built-app v1.4.2)"
 sed -i '/^    image: built-app-web:current$/d' "$projdir/compose.prod.yml"
+recommit v1.4.2
 assert '! grep -q "image: built-app-web" "$projdir/compose.prod.yml"' \
     "the compose file really has lost its image: key — else the case below proves nothing"
 run --build-only; rc=$?
@@ -257,6 +267,7 @@ services:
   cache:
     image: redis:7-alpine
 COMPOSE
+recommit v1.4.2
 
 run --build-only; rc=$?
 assert '[ "$rc" = "0" ]' "--build-only against four built services succeeds (exit $rc: $err)"
@@ -275,6 +286,7 @@ assert '[ "$(grep -c "^tag " "$DOCKER_LOG")" = "4" ]' \
 # kasbah through a YAML parser, and nothing downstream may end up with a \r in a
 # tag no docker daemon could match.
 sed -i 's/$/\r/' "$projdir/compose.prod.yml"
+recommit v1.4.2
 assert 'grep -qU $'"'"'\r'"'"' "$projdir/compose.prod.yml"' \
     "the compose file really is CRLF now — else the case below proves nothing"
 run --build-only; rc=$?
@@ -282,6 +294,7 @@ assert '[ "$rc" = "0" ]' "a CRLF compose file is read (exit $rc: $err)"
 assert 'grep -qxF "tag built-app-web:current built-app-web:1.4.2" "$DOCKER_LOG"' \
     "with no carriage return anywhere in the tag (log: $(cat -v "$DOCKER_LOG"))"
 sed -i 's/\r$//' "$projdir/compose.prod.yml"
+recommit v1.4.2
 
 # --- --build-only stops after the tag ---------------------------------------------------
 
@@ -328,6 +341,7 @@ services:
   cache:
     image: redis:7-alpine
 COMPOSE
+recommit v1.4.2
 
 run --no-git-push "deploy@vps"; rc=$?
 assert '[ "$rc" = "0" ]' "a two-image project ships (exit $rc: $err)"
@@ -550,6 +564,7 @@ assert '[ "$rc" = "2" ]' "a directory with no kasbah.yml is exit 2 (exit $rc: $e
 
 projdir="$(make nocompose built-app v1.4.2)"
 rm -f "$projdir/compose.prod.yml"
+recommit v1.4.2
 run --build-only; rc=$?
 assert '[ "$rc" = "1" ]' "a project with no compose.prod.yml fails (exit $rc)"
 assert 'grep -qF "compose.prod.yml: not found" <<<"$err"' \
@@ -581,6 +596,73 @@ projdir="$built"
 DOCKER_RC=1 run --build-only; rc=$?
 assert '[ "$rc" = "1" ]' "a failing docker compose build fails the run (exit $rc)"
 assert 'grep -qF "build failed" <<<"$err"' "saying which step (said '$err')"
+
+# --- A working tree that is not HEAD's -------------------------------------------------------------
+# Without --dirty it is refused before anything is built; with it, it ships
+# under <base>-dirty.<UTC time>, pushes no tag, and leaves deploy --dirty the
+# label, the server and the tree it built.
+
+projdir="$(make dirty built-app v1.4.2)"
+dirty_origin="$tmpdir/dirty-origin.git"
+git init -q --bare "$dirty_origin" >/dev/null 2>&1
+( cd "$projdir" && git remote add origin "$dirty_origin" ) || exit 2
+printf 'scratch\n' > "$projdir/notes.txt"
+run "deploy@vps"; rc=$?
+assert '[ "$rc" = "1" ]' "an untracked file refuses the build-push (exit $rc: $err)"
+assert 'grep -qF "?? notes.txt" <<<"$err"' "naming the file (said '$err')"
+assert 'grep -qF "kasbah build-push --dirty" <<<"$err"' "and the flag that ships it anyway (said '$err')"
+assert '[ ! -s "$DOCKER_LOG" ] && [ ! -s "$SSH_LOG" ]' \
+    "before a build or a connection (docker: $(cat "$DOCKER_LOG"), ssh: $(cat "$SSH_LOG"))"
+
+rm -f "$projdir/notes.txt"
+printf '# edited\n' >> "$projdir/compose.prod.yml"
+run "deploy@vps"; rc=$?
+assert '[ "$rc" = "1" ]' "a tracked change refuses it too (exit $rc: $err)"
+assert 'grep -qF " M compose.prod.yml" <<<"$err"' "naming the file (said '$err')"
+
+mkdir -p "$projdir/.kasbah"
+printf '{}\n' > "$projdir/.kasbah/state.json"
+printf 'ignored\n' >> "$projdir/.gitignore"
+printf 'x\n' > "$projdir/ignored"
+run --dirty "deploy@vps"; rc=$?
+assert '[ "$rc" = "0" ]' "--dirty ships it (exit $rc: $err)"
+label="$(sed -n 's/^tag built-app-web:current built-app-web:\(.*\)$/\1/p' "$DOCKER_LOG")"
+assert 'grep -qxE "1\.4\.2-dirty\.20[0-9]{12}" <<<"$label"' \
+    "tagged <base>-dirty.<UTC yyyymmddhhmmss> (log: $(cat "$DOCKER_LOG"))"
+assert 'grep -qF "built-app-web:$label" <<<"$(grep -F "'"'"'remote'"'"' '"'"'load'"'"'" "$SSH_LOG")"' \
+    "and loaded on the server under it (ssh log: $(cat "$SSH_LOG"))"
+assert 'grep -qF "Shipped built-app $label to deploy@vps" <<<"$err"' "reporting the label (said '$err')"
+assert '[ -z "$(git --git-dir="$dirty_origin" tag)" ]' "pushing no tag (origin has: '$(git --git-dir="$dirty_origin" tag)')"
+assert 'grep -qF "nothing pushed" <<<"$err"' "and saying so (said '$err')"
+state="$(cat "$projdir/.kasbah/state.json" 2>/dev/null)"
+assert '[ "$(jq -r .dirty_build <<<"$state")" = "$label" ] && [ "$(jq -r .dirty_server <<<"$state")" = "deploy@vps" ]' \
+    "recording the label and the server for deploy --dirty (state: $state)"
+assert 'grep -qxE "[0-9a-f]{64}" <<<"$(jq -r .dirty_tree <<<"$state")"' \
+    "and the working tree it built (state: $state)"
+
+# A tree edited during the build ships images that match neither state: not recorded.
+DOCKER_BUILD_TOUCH="$projdir/during.txt" run --dirty "deploy@vps"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "the working tree changed while" <<<"$err"' \
+    "a tree edited during the build is refused (exit $rc: $err)"
+assert '[ "$(cat "$projdir/.kasbah/state.json" 2>/dev/null)" = "$state" ]' \
+    "and the label of the build before stays the recorded one (state: $(cat "$projdir/.kasbah/state.json"))"
+rm -f "$projdir/during.txt"
+
+# Paths git is told not to read are refused, --dirty included.
+( cd "$projdir" && git update-index --assume-unchanged compose.prod.yml ) || exit 2
+run --dirty --build-only; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "kasbah cannot see what is on disk for these" <<<"$err" && grep -qF "  compose.prod.yml" <<<"$err"' \
+    "an assume-unchanged path refuses even --dirty, naming it (exit $rc: $err)"
+( cd "$projdir" && git update-index --no-assume-unchanged compose.prod.yml ) || exit 2
+
+# With nothing to change, --dirty is still a test build; an untagged HEAD's base
+# is the highest tag it reaches.
+recommit v1.4.2
+( cd "$projdir" && HOME="$fakehome" git commit -q --allow-empty -m untagged ) || exit 2
+run --dirty --build-only; rc=$?
+assert '[ "$rc" = "0" ]' "--dirty on a clean, untagged HEAD builds (exit $rc: $err)"
+assert 'grep -qE "^tag built-app-web:current built-app-web:1\.4\.2-dirty\.[0-9]{14}$" "$DOCKER_LOG"' \
+    "labelled from the reachable v1.4.2 (log: $(cat "$DOCKER_LOG"))"
 
 # --- The fence around fixture_repo_make's rm -rf ---------------------------------------------------
 # It opens with `rm -rf` on a path its caller chose, so the guard is pinned in

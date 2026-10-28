@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/buildpush"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/mailreg"
@@ -22,6 +23,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/release"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/internal/version"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
@@ -33,14 +35,17 @@ var ErrHelp = errors.New("help")
 type Options struct {
 	Target, Version, OnDrift              string
 	SkipHooks, NoHealthWait, AllowStopped bool
+	Dirty                                 bool
 }
 
 const usage = `Usage: kasbah deploy [USER@HOST] [VERSION] [--on-drift=setup|continue|abort]
-                     [--skip-hooks] [--no-health-wait] [--allow-stopped]
+                     [--skip-hooks] [--no-health-wait] [--allow-stopped] [--dirty]
 
 Ships the working tree to a prepared server and brings the project up there.
-Run from the project root. The version is HEAD's v-tag; USER@HOST defaults to
-the last server this project deployed to (.kasbah/state.json).
+Run from the project root. The version is HEAD's v-tag, and a working tree with
+uncommitted changes or untracked files .gitignore does not cover is refused
+(--dirty ships it anyway); USER@HOST defaults to the last server this project
+deployed to (.kasbah/state.json).
 
 With a VERSION, it ships that tag instead — every file out of ` + "`git archive\nv<VERSION>`" + `, the working tree neither read nor touched. That is the rollback
 path with a ` + "`deploy`" + ` log entry and the pre-/post-deploy hooks, and it is
@@ -59,6 +64,12 @@ What it does:
   * prints the commits between the version the server was running and this one
 
 Flags:
+  --dirty               ship the working tree as it stands, labelled as the
+                        images ` + "`kasbah build-push --dirty`" + ` last shipped to this
+                        server — <base>-dirty.<UTC yyyymmddhhmmss>, base being
+                        the highest v-tag reachable from HEAD, else 0.0.0 (a
+                        project that builds nothing is labelled by this run).
+                        Never a rollback target; not taken with a VERSION
   --on-drift=setup      re-run the interactive setup when .env has drifted
   --on-drift=continue   deploy against the .env as it stands
   --on-drift=abort      stop, changing nothing
@@ -129,6 +140,13 @@ func parse(cmd string, args []string) (Options, error) {
 			o.NoHealthWait = true
 		case a == "--allow-stopped":
 			o.AllowStopped = true
+		case a == "--dirty" && cmd == "deploy":
+			o.Dirty = true
+		case a == "--dirty" || strings.HasPrefix(a, "--dirty="):
+			if cmd == "rollback" {
+				return o, cli.Fail("rollback: --dirty is not a rollback flag — a rollback ships a version's tag, never the working tree, and a --dirty build is never a rollback target")
+			}
+			return o, cli.Fail("deploy: --dirty takes no value — pass it on its own (`kasbah deploy USER@HOST --dirty`)")
 		case strings.HasPrefix(a, "--skip-hooks=") || strings.HasPrefix(a, "--no-health-wait=") || strings.HasPrefix(a, "--allow-stopped="):
 			name, _, _ := strings.Cut(a, "=")
 			return o, cli.Fail("%s: %s takes no value — pass it on its own (`kasbah %s USER@HOST %s`)", cmd, name, cmd, name)
@@ -141,14 +159,31 @@ func parse(cmd string, args []string) (Options, error) {
 			return o, cli.Fail("%s: --on-drift takes its value with '=' — --on-drift=setup, --on-drift=continue or --on-drift=abort", cmd)
 		case strings.HasPrefix(a, "-"):
 			name, _, _ := strings.Cut(a, "=")
-			return o, cli.Fail("%s: unknown flag '%s' (%s takes USER@HOST, VERSION, --on-drift=, --skip-hooks, --no-health-wait and --allow-stopped)", cmd, name, cmd)
+			return o, cli.Fail("%s: unknown flag '%s' (%s takes %s)", cmd, name, cmd, takes(cmd))
 		default:
 			if err := Classify(cmd, a, &o.Target, &o.Version); err != nil {
 				return o, err
 			}
 		}
 	}
+	switch {
+	case version.IsDirty(o.Version) && cmd == "rollback":
+		return o, cli.Fail("rollback: %s is a --dirty build — no tag holds its files, and it is never a rollback target", o.Version).Cont(
+			"roll back to a tagged version, or deploy the working tree again:  kasbah deploy --dirty")
+	case version.IsDirty(o.Version):
+		return o, cli.Fail("deploy: %s is a --dirty build — no tag holds its files to ship again", o.Version).Cont(
+			"a dirty build is the working tree's:  kasbah build-push --dirty, then kasbah deploy --dirty")
+	case o.Dirty && o.Version != "":
+		return o, cli.Fail("deploy: --dirty ships the working tree, and %s names a tag whose files ship instead — pass one or the other", o.Version)
+	}
 	return o, nil
+}
+
+func takes(cmd string) string {
+	if cmd == "deploy" {
+		return "USER@HOST, VERSION, --on-drift=, --skip-hooks, --no-health-wait, --allow-stopped and --dirty"
+	}
+	return "USER@HOST, VERSION, --on-drift=, --skip-hooks, --no-health-wait and --allow-stopped"
 }
 
 // Server is one server as a deploy needs it: the env step's session plus the
@@ -211,11 +246,23 @@ func Run(c Ctx, o Options) error {
 	if r.target, _, err = state.Server(o.Target, "deploy", "kasbah deploy user@vps"); err != nil {
 		return err
 	}
-	if r.version, err = release.Resolve(c.PWD); err != nil {
+	if !o.Dirty {
+		if r.version, err = release.Resolve(c.PWD); err != nil {
+			return err
+		}
+		if err := release.RequireClean("deploy", r.version, "kasbah deploy --dirty"); err != nil {
+			return err
+		}
+	} else if err := release.Repo(c.PWD); err != nil {
 		return err
 	}
 	if r.p, err = ReadPlan(m, c.PWD, r.version); err != nil {
 		return err
+	}
+	if o.Dirty {
+		if r.version, err = r.dirtyLabel(); err != nil {
+			return err
+		}
 	}
 
 	if r.s, err = c.Dial(r.target); err != nil {
@@ -270,8 +317,61 @@ func Run(c Ctx, o Options) error {
 		return err
 	}
 	r.banner("Deployed "+m.Name+" "+r.version+" to "+r.target, rep, clientState, shipped)
+	if o.Dirty {
+		c.Out.Info("  dirty:   the working tree as it stood, under no tag — never a rollback target")
+	}
 	r.changelog(rep)
 	return nil
+}
+
+// dirtyLabel is a --dirty deploy's version: the label build-push --dirty
+// shipped this tree's images under, or a fresh one when nothing is built.
+// Anything less than that exact build is refused, never guessed at.
+func (r *run) dirtyLabel() (string, error) {
+	if len(r.p.Images) == 0 {
+		return release.DirtyLabel("deploy", r.c.Now())
+	}
+	var got [3]string
+	for i, k := range []string{buildpush.DirtyBuild, buildpush.DirtyServer, buildpush.DirtyTree} {
+		v, err := state.Get(state.File, k)
+		if err != nil {
+			return "", err
+		}
+		if v == "null" {
+			v = ""
+		}
+		got[i] = v
+	}
+	label, server, tree := got[0], got[1], got[2]
+	redo := []string{"build and ship this tree's images first, then deploy them:",
+		"  kasbah build-push " + r.target + " --dirty",
+		"  kasbah deploy " + r.target + " --dirty"}
+	switch {
+	case !version.IsDirty(label) || tree == "":
+		return "", cli.Fail("deploy --dirty: %s builds images, and %s records no `kasbah build-push --dirty` that shipped them", r.m.Name, state.File).Cont(
+			"a dirty deploy retags the images that run labelled — it never builds, and never guesses a label").Cont(redo...)
+	case server != r.target:
+		return "", cli.Fail("deploy --dirty: the last dirty build, %s, was shipped to %s — not %s", label, server, r.target).Cont(redo...)
+	}
+	now, err := release.Fingerprint("deploy")
+	if err != nil {
+		return "", err
+	}
+	if now != tree {
+		return "", cli.Fail("deploy --dirty: the working tree has changed since `kasbah build-push --dirty` built %s", label).Cont(
+			"its images are not what is on disk now, and this deploy would ship the two side by side").Cont(redo...)
+	}
+	return label, nil
+}
+
+// asTag is the tag a changelog compares v as (release.Endpoint), its note
+// said on stderr; false is no changelog, and the note says why.
+func asTag(o *cli.Output, v string) (string, bool) {
+	tag, note, ok := release.Endpoint(v)
+	if note != "" {
+		o.Info("  (%s)", note)
+	}
+	return tag, ok
 }
 
 func (r *run) rerun() string {
@@ -415,11 +515,21 @@ func (r *run) changelog(rep *Report) {
 		o.Info("  changes: first deploy to %s — no previous version to compare against", r.target)
 		return
 	}
-	rng := "v" + prev + "..v" + v
-	if exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/v"+prev+"^{commit}").Run() != nil {
-		o.Warn("%s was running %s, and this checkout has no tag v%s — no changelog", r.target, prev, prev)
-		o.Warn("`git fetch --tags`, then `git log %s`", rng)
+	from, ok := asTag(o, prev)
+	if !ok {
 		return
+	}
+	to, ok := asTag(o, v)
+	if !ok {
+		return
+	}
+	rng := from + ".." + to
+	for _, t := range []string{from, to} {
+		if exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/"+t+"^{commit}").Run() != nil {
+			o.Warn("%s was running %s, and this checkout has no tag %s — no changelog", r.target, prev, t)
+			o.Warn("`git fetch --tags`, then `git log %s`", rng)
+			return
+		}
 	}
 	cmd := exec.Command("git", "log", "--no-color", "--format=%h %s", rng, "--")
 	cmd.Stderr = os.Stderr
@@ -432,9 +542,11 @@ func (r *run) changelog(rep *Report) {
 	switch {
 	case log == "" && prev == v:
 		o.Info("  changes: none — %s is empty, so this is a redeploy of the version already there", rng)
+	case log == "" && from == to:
+		o.Info("  changes: none in commits — %s and %s are both builds of %s", prev, v, from)
 	case log == "":
 		o.Info("  changes: none in %s — %s is not ahead of the %s this server was running", rng, v, prev)
-		o.Info("           this deploy takes it back to %s; `git log v%s..v%s` is what it gives up", v, v, prev)
+		o.Info("           this deploy takes it back to %s; `git log %s..%s` is what it gives up", v, to, from)
 	default:
 		o.Info("  changes: %s", rng)
 		for _, l := range strings.Split(log, "\n") {

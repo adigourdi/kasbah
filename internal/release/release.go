@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/version"
 )
 
 var reVersion = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$`)
@@ -45,19 +46,32 @@ func Pick(tags string) (string, error) {
 		return "", cli.Fail("HEAD's tag '%s' is not a version kasbah can use", vs[0]).Cont(
 			"expected v<major>.<minor>.<patch> (docs/build-deploy.md → versioning contract)")
 	}
+	if version.IsDirty(vs[0][1:]) {
+		return "", cli.Fail("HEAD's tag '%s' is shaped like a --dirty build's label, which no release may carry", vs[0]).Cont(
+			"every reader treats a -dirty.<14 digits> version as untagged and never a rollback target —",
+			"tag the release plainly, or ship this tree with --dirty")
+	}
 	return vs[0][1:], nil
+}
+
+// Repo is what every read of the checkout needs: git, a repository, a HEAD.
+func Repo(pwd string) error {
+	if _, err := exec.LookPath("git"); err != nil {
+		return cli.Fail("git is required — kasbah resolves the version from HEAD's tag")
+	}
+	if exec.Command("git", "rev-parse", "--git-dir").Run() != nil {
+		return cli.Fail("%s is not a git repository — kasbah resolves the version from HEAD's tag", pwd)
+	}
+	if exec.Command("git", "rev-parse", "-q", "--verify", "HEAD").Run() != nil {
+		return cli.Fail("this repository has no commits yet, so there is no HEAD to read a version tag from")
+	}
+	return nil
 }
 
 // Resolve reads HEAD's version in the current directory's repository.
 func Resolve(pwd string) (string, error) {
-	if _, err := exec.LookPath("git"); err != nil {
-		return "", cli.Fail("git is required — kasbah resolves the version from HEAD's tag")
-	}
-	if exec.Command("git", "rev-parse", "--git-dir").Run() != nil {
-		return "", cli.Fail("%s is not a git repository — kasbah resolves the version from HEAD's tag", pwd)
-	}
-	if exec.Command("git", "rev-parse", "-q", "--verify", "HEAD").Run() != nil {
-		return "", cli.Fail("this repository has no commits yet, so there is no HEAD to read a version tag from")
+	if err := Repo(pwd); err != nil {
+		return "", err
 	}
 	cmd := exec.Command("git", "tag", "--points-at", "HEAD")
 	cmd.Stderr = os.Stderr

@@ -100,6 +100,9 @@ func TestKeep(t *testing.T) {
 		{"empty", "", "", "refused"},
 		{"damaged in span", "", log5 + "this line was written by a truncated append\n", "refused"},
 		{"damaged beyond span", "", "a truncated line, older than everything\n" + log5, "1.5.0 1.4.0 1.3.0"},
+		{"dirty never counts", "", log5 + "2026-05-04T10:00:00+00:00 deploy 1.5.0-dirty.20260504100000 no-backup kasbah=0.1.0 digest=-\n" +
+			"2026-05-05T10:00:00+00:00 deploy 1.5.0-dirty.20260505100000 no-backup kasbah=0.1.0 digest=-\n", "1.5.0 1.4.0 1.3.0"},
+		{"only dirty", "", "2026-05-04T10:00:00+00:00 deploy 0.0.0-dirty.20260504100000 no-backup kasbah=0.1.0 digest=-\n", ""},
 		{"archive counts", "2025-01-01T10:00:00+00:00 deploy 0.9.0 no-backup kasbah=0.1.0 digest=-\n", "2026-05-01T10:00:00+00:00 deploy 1.5.0 no-backup kasbah=0.1.0 digest=-\n", "1.5.0 0.9.0"},
 	}
 	for _, c := range cases {

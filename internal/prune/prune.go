@@ -19,6 +19,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/tree"
+	"github.com/adigourdi/kasbah/internal/version"
 	"github.com/adigourdi/kasbah/internal/vlog"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
@@ -38,8 +39,8 @@ const Usage = `Usage: kasbah server prune USER@HOST [--yes]
 Image retention cleanup across every project on the server. Removes
 <image>:<version> tags that are both older than 3 months and not among the
 project's last 3 deployed versions — the version :current points at counts as
-the first of the 3, and :current itself is never pruned. The time window is the
-same one versions.log rotation uses.
+the first of the 3, a --dirty build never counts, and :current itself is never
+pruned. The time window is the same one versions.log rotation uses.
 
 Prints the plan and asks once before removing anything.
 
@@ -135,21 +136,27 @@ func Repos(compose string) (repos []string, ok bool) {
 }
 
 // Keep is the last three distinct versions the record names, newest first,
-// deploy and rollback alike. ok is false when the walk met a line it could not
-// read before it had three, or the record holds no entry at all.
+// deploy and rollback alike, --dirty builds never among them. ok is false when
+// the walk met a line it could not read before it had three, or the record
+// holds no entry at all.
 func Keep(r *vlog.Record) (keep []string, ok bool) {
 	seen := map[string]bool{}
+	entries := 0
 	for i := len(r.Items) - 1; i >= 0 && len(keep) < 3; i-- {
 		it := r.Items[i]
 		if !it.OK || it.Version == "" {
 			return nil, false
+		}
+		entries++
+		if version.IsDirty(it.Version) {
+			continue
 		}
 		if !seen[it.Version] {
 			seen[it.Version] = true
 			keep = append(keep, it.Version)
 		}
 	}
-	return keep, len(keep) > 0
+	return keep, entries > 0
 }
 
 // Line is one candidate tag and its verdict.
@@ -257,6 +264,9 @@ func Decide(s *Scan, target, apps, dataDir string) (*Plan, error) {
 			continue
 		}
 		keepShow := strings.Join(keep, " ")
+		if keepShow == "" {
+			keepShow = "none: the record names only --dirty builds"
+		}
 		inKeep := map[string]bool{}
 		for _, v := range keep {
 			inKeep[v] = true

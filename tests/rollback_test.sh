@@ -807,11 +807,12 @@ assert 'grep -qF "falling back to '\''demo'\''" <<<"$out"' \
 assert 'grep -qF "'\''/apps'\'' '\''/apps/data'\'' '\''demo'\'' '\''demo'\''" "$ssh_log"' \
     "which is what the prepare step was handed (ssh saw: $(grep -F "/apps/data" "$ssh_log"))"
 # The paired refusal, one command over: the same value in the working tree's
-# manifest is a hard failure, because there the file can be fixed.
+# manifest is a hard failure, because there the file can be fixed. --dirty, as
+# an uncommitted edit is otherwise refused before the manifest is read.
 badclient="$tmpdir/badclient"
 rm -rf "$badclient"; cp -R "$project" "$badclient"
 sed -i 's|^client: beta-corp$|client: Acme Corp|' "$badclient/kasbah.yml"
-out="$( cd "$badclient" && kasbah_run deploy deploy@vps )"; rc=$?
+out="$( cd "$badclient" && kasbah_run deploy deploy@vps --dirty )"; rc=$?
 assert '[ "$rc" != "0" ]' "the same value in the working tree fails a deploy (rc $rc: $out)"
 assert 'grep -qF "kasbah.yml: client '\''Acme Corp'\''" <<<"$out"' \
     "naming the file the operator can fix (said '$out')"
@@ -1103,6 +1104,24 @@ calls=$(<"$call_log")
 assert '[ "$rc" = "0" ]' "a rollback to a version with no mail: block succeeds (rc $rc: $out)"
 assert '! grep -qF "'"'"'deploy'"'"' '"'"'mail'"'"'" <<<"$calls"' \
     "and never looks for a mail stack ($(grep -F "'mail'" <<<"$calls"))"
+rm -rf "$project/.kasbah"
+
+# --- --dirty builds ---------------------------------------------------------------------
+# Never a rollback target: named, it is refused before any connection; implicit,
+# the pick steps over it to the clean deploy before.
+: > "$call_log"
+out="$( rollback deploy@vps 1.0.0-dirty.20260801000000 )"; rc=$?
+assert '[ "$rc" = "1" ]' "a --dirty build named as the target is refused (rc $rc: $out)"
+assert 'grep -qF "never a rollback target" <<<"$out"' "saying why (said '$out')"
+assert '[ ! -s "$call_log" ]' "before any connection ($(<"$call_log"))"
+out="$( rollback deploy@vps --dirty )"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "not a rollback flag" <<<"$out"' "rollback takes no --dirty (rc $rc: $out)"
+
+out="$( FAKE_ACTIVE=$'2026-08-01T00:00:00+00:00 deploy 1.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-02T00:00:00+00:00 deploy 2.0.0-dirty.20260802000000 no-backup kasbah=0.1.0 digest=-\n2026-08-03T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n' \
+        rollback deploy@vps )"; rc=$?
+assert '[ "$rc" = "0" ]' "a record with a --dirty deploy in it still rolls back (rc $rc: $out)"
+assert '[ "$(ran)" = "rollback 1.0.0" ]' "to the clean deploy before it (ran: $(ran))"
+assert 'grep -qF "stepped over 1 --dirty deploy(s)" <<<"$out"' "saying what it stepped over (said '$out')"
 rm -rf "$project/.kasbah"
 
 exit "$fail"

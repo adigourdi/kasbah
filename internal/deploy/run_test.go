@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/buildpush"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/release"
 	"github.com/adigourdi/kasbah/internal/state"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
@@ -124,11 +126,18 @@ func project(t *testing.T, extra string) {
 		os.WriteFile(n, []byte(b), 0o644)
 	}
 	for _, a := range [][]string{{"init", "-q", "."}, {"add", "-A"}, {"commit", "-qm", "x"}, {"tag", "v1.0.0"}} {
-		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, a...)...)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v %s", a, err, out)
-		}
+		gitc(t, a...)
 	}
+}
+
+func gitc(t *testing.T, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func deployWith(t *testing.T, f *fake, o Options) (error, string) {
@@ -214,6 +223,8 @@ func TestRunInterruptedLeavesTheServerToFinish(t *testing.T) {
 func TestRunSuccess(t *testing.T) {
 	project(t, "client: acme\n")
 	os.Remove(Fragment)
+	gitc(t, "commit", "-qam", "no fragment")
+	gitc(t, "tag", "-f", "v1.0.0")
 	f := &fake{drift: "template_exists=no\nenv_exists=yes\nmissing=\nextra=\n"}
 	err, out := deployWith(t, f, Options{Target: "d@h", SkipHooks: true, NoHealthWait: true, AllowStopped: true})
 	if err != nil {
@@ -319,5 +330,129 @@ func TestProtocolParsers(t *testing.T) {
 	}
 	if r, missing, _ := ParseReport(`{"kasbah_deploy_report":1,"version":1,"prev_version":"","deployed_before":false,"backup":"x","digest":"-"}`); r != nil || strings.Join(missing, "") != "readable values" {
 		t.Errorf("a mistyped value: %v %v", r, missing)
+	}
+}
+
+// deployWith's clock is the epoch.
+const epochLabel = "1.0.0-dirty.19700101000000"
+
+func TestParseDirty(t *testing.T) {
+	for _, tt := range []struct {
+		cmd  string
+		args []string
+		want string
+	}{
+		{"deploy", []string{"d@h", "--dirty"}, ""},
+		{"deploy", []string{"--dirty=1"}, "--dirty takes no value"},
+		{"deploy", []string{"--dirty", "1.2.0"}, "pass one or the other"},
+		{"deploy", []string{"1.2.0-dirty.20261028080507"}, "no tag holds its files"},
+		{"rollback", []string{"--dirty"}, "not a rollback flag"},
+		{"rollback", []string{"d@h", "1.2.0-dirty.20261028080507"}, "never a rollback target"},
+		{"rollback", []string{"1.2.0-rc.1"}, ""},
+	} {
+		o, err := parse(tt.cmd, tt.args)
+		switch {
+		case tt.want == "" && err != nil:
+			t.Errorf("%s %q: %v", tt.cmd, tt.args, err)
+		case tt.want == "" && tt.cmd == "deploy" && !o.Dirty:
+			t.Errorf("%s %q: Dirty not set", tt.cmd, tt.args)
+		case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
+			t.Errorf("%s %q = %v, want %q", tt.cmd, tt.args, err, tt.want)
+		}
+	}
+}
+
+func TestDirtyTreeRefused(t *testing.T) {
+	project(t, "")
+	os.WriteFile("scratch.txt", []byte("x"), 0o644)
+	f := &fake{}
+	err, out := deployWith(t, f, Options{Target: "d@h"})
+	if err == nil || !strings.Contains(out, "?? scratch.txt") || !strings.Contains(out, "kasbah deploy --dirty") {
+		t.Fatalf("a dirty tree deployed: %v\n%s", err, out)
+	}
+	if len(f.calls) != 0 {
+		t.Errorf("the server was reached: %v", f.calls)
+	}
+	noState(t, "dirty tree")
+}
+
+// A project that builds nothing labels its own --dirty run.
+func TestDirtyStockOnly(t *testing.T) {
+	project(t, "")
+	os.WriteFile(".env.prod.example", []byte("A=2\n"), 0o644)
+	f := &fake{}
+	err, out := deployWith(t, f, Options{Target: "d@h", Dirty: true})
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if f.spec.Version != epochLabel || !strings.Contains(out, "Deployed demo "+epochLabel) || !strings.Contains(out, "never a rollback target") {
+		t.Errorf("spec %q\n%s", f.spec.Version, out)
+	}
+	if v, _ := state.Get(state.File, "last_version"); v != epochLabel {
+		t.Errorf("last_version %q", v)
+	}
+}
+
+func builtProject(t *testing.T) {
+	project(t, "")
+	os.WriteFile("compose.prod.yml", []byte("services:\n  web:\n    build: .\n    image: demo-web:current\n"), 0o644)
+	gitc(t, "commit", "-qam", "build")
+	gitc(t, "tag", "-f", "v1.0.0")
+	os.WriteFile(".env.prod.example", []byte("A=2\n"), 0o644)
+}
+
+func TestDirtyBuiltNeedsItsBuild(t *testing.T) {
+	builtProject(t)
+	tree, err := release.Fingerprint("deploy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const label = "1.0.0-dirty.20261028080507"
+	record := func(server, tree string) {
+		os.Remove(state.File)
+		if server == "" {
+			return
+		}
+		state.Record(state.File, "0.1.0", buildpush.DirtyBuild, label, buildpush.DirtyServer, server, buildpush.DirtyTree, tree)
+	}
+	for _, c := range []struct {
+		name, server, tree, want string
+	}{
+		{"never built", "", "", "records no `kasbah build-push --dirty`"},
+		{"another server", "x@other", tree, "was shipped to x@other — not d@h"},
+		{"tree moved on", "d@h", "0000", "the working tree has changed since"},
+	} {
+		record(c.server, c.tree)
+		f := &fake{}
+		err, out := deployWith(t, f, Options{Target: "d@h", Dirty: true})
+		if err == nil || !strings.Contains(out, c.want) || !strings.Contains(out, "kasbah build-push d@h --dirty") {
+			t.Errorf("%s: %v\n%s", c.name, err, out)
+		}
+		if len(f.calls) != 0 {
+			t.Errorf("%s: the server was reached: %v", c.name, f.calls)
+		}
+	}
+
+	record("d@h", tree)
+	f := &fake{}
+	err, out := deployWith(t, f, Options{Target: "d@h", Dirty: true})
+	if err != nil || f.spec.Version != label || strings.Join(f.spec.Images, ",") != "demo-web" {
+		t.Fatalf("the recorded build: %v %+v\n%s", err, f.spec, out)
+	}
+}
+
+func TestChangelogDirtyEndpoints(t *testing.T) {
+	project(t, "")
+	for _, c := range []struct{ prev, want, not string }{
+		{"1.0.0-dirty.20261028080507", "compared as its base tag v1.0.0", "git fetch"},
+		{"0.0.0-dirty.20261028080507", "no tagged base", "git fetch"},
+		{"3.0.0-dirty.20261028080507", "based on 3.0.0, and v3.0.0 is no tag in this checkout", "git fetch"},
+	} {
+		var b strings.Builder
+		r := &run{c: Ctx{Out: &cli.Output{Stdout: &b, Stderr: &b}}, version: "1.0.0", target: "d@h", mode: "deploy"}
+		r.changelog(&Report{PrevVersion: c.prev})
+		if !strings.Contains(b.String(), c.want) || strings.Contains(b.String(), c.not) {
+			t.Errorf("prev %s:\n%s", c.prev, b.String())
+		}
 	}
 }

@@ -16,9 +16,11 @@ import (
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/marker"
+	"github.com/adigourdi/kasbah/internal/release"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/internal/version"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
@@ -117,6 +119,9 @@ func Parse(cmd string, args []string) (Options, error) {
 			}
 			if err := deploy.Classify(cmd, arg, &o.Target, &o.Version); err != nil {
 				return o, err
+			}
+			if version.IsDirty(o.Version) {
+				return o, cli.Fail("pending: %s is a --dirty build — no tag holds it, so there is no range to end at; name a tagged version, or none for HEAD", o.Version)
 			}
 		}
 	}
@@ -394,6 +399,16 @@ func (x *run) printLog(rng, log string) {
 	}
 }
 
+// asTag is the tag a range reads v as (release.Endpoint), its note printed;
+// false is no range, and the note says why.
+func (x *run) asTag(v string) (string, bool) {
+	tag, note, ok := release.Endpoint(v)
+	if note != "" {
+		x.printf("%s\n", note)
+	}
+	return tag, ok
+}
+
 func (x *run) pending() {
 	o := x.c.Out
 	idx := x.deployed()
@@ -405,9 +420,13 @@ func (x *run) pending() {
 	if x.o.Version != "" {
 		label, ref = "v"+x.o.Version, "refs/tags/v"+x.o.Version
 	}
-	rng := "v" + deployed + ".." + label
-	if !haveRef("refs/tags/v" + deployed) {
-		o.Warn("%s is running %s and this checkout has no tag v%s — nothing to compare against", x.target, deployed, deployed)
+	from, ok := x.asTag(deployed)
+	if !ok {
+		return
+	}
+	rng := from + ".." + label
+	if !haveRef("refs/tags/" + from) {
+		o.Warn("%s is running %s and this checkout has no tag %s — nothing to compare against", x.target, deployed, from)
 		o.Warn("`git fetch --tags`, then `git log %s`", rng)
 		return
 	}
@@ -427,11 +446,11 @@ func (x *run) pending() {
 	switch {
 	case log != "":
 		x.printLog(rng, log)
-	case sameCommit("refs/tags/v"+deployed, ref):
+	case sameCommit("refs/tags/"+from, ref):
 		x.printf("%s — nothing pending: %s is the commit %s is already running\n", rng, label, x.target)
 	default:
 		x.printf("%s — nothing pending: %s is not ahead of the %s %s is running\n", rng, label, deployed, x.target)
-		x.printf("`git log %s..v%s` is what deploying it would give up\n", label, deployed)
+		x.printf("`git log %s..%s` is what deploying it would give up\n", label, from)
 	}
 }
 
@@ -472,10 +491,18 @@ func (x *run) changelog() {
 		x.printf("that entry came out of an archive this run could only read part of, so an entry between it and %s may be inside the part that could not be decoded\n", curr)
 		x.note()
 	}
-	rng := "v" + prev + "..v" + curr
-	for _, v := range []string{prev, curr} {
-		if !haveRef("refs/tags/v" + v) {
-			o.Warn("this checkout has no tag v%s — no changelog", v)
+	from, ok := x.asTag(prev)
+	if !ok {
+		return
+	}
+	to, ok := x.asTag(curr)
+	if !ok {
+		return
+	}
+	rng := from + ".." + to
+	for _, v := range []string{from, to} {
+		if !haveRef("refs/tags/" + v) {
+			o.Warn("this checkout has no tag %s — no changelog", v)
 			o.Warn("`git fetch --tags`, then `git log %s`", rng)
 			return
 		}
@@ -490,8 +517,10 @@ func (x *run) changelog() {
 		x.printLog(rng, log)
 	case prev == curr:
 		x.printf("%s — none: %s was already the version there, so the entry above it is a redeploy\n", rng, curr)
+	case from == to:
+		x.printf("%s — none in commits: %s and %s are both builds of %s\n", rng, prev, curr, from)
 	default:
 		x.printf("%s — none: %s is not ahead of the %s it replaced\n", rng, curr, prev)
-		x.printf("`git log v%s..v%s` is what that gave up\n", curr, prev)
+		x.printf("`git log %s..%s` is what that gave up\n", to, from)
 	}
 }

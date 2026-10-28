@@ -15,8 +15,9 @@ Design review, 2026-10-28, user: "maybe we can make deploy find latest tag,
 and ask if the release is major/minor/patch or something, and it increases and
 tags and pushes before proceeding?"
 
-Pairs with [[dirty-tree-deploys]]: a tag cut from HEAD now is clean by
-construction.
+build-push and deploy already refuse a dirty tree unless `--dirty`
+(`build-deploy.md` → Versioning contract), so a tag cut from HEAD here is
+clean by construction.
 
 ## Work
 

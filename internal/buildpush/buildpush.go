@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/manifest"
@@ -27,16 +28,26 @@ var ErrHelp = errors.New("help")
 type Options struct {
 	Target               string
 	BuildOnly, NoGitPush bool
+	Dirty                bool
 }
 
-const usage = `Usage: kasbah build-push [USER@HOST] [--build-only] [--no-git-push]
+// The state fields a --dirty build-push leaves for `kasbah deploy --dirty`:
+// the label it shipped, where to, and the working tree it built.
+const (
+	DirtyBuild  = "dirty_build"
+	DirtyServer = "dirty_server"
+	DirtyTree   = "dirty_tree"
+)
+
+const usage = `Usage: kasbah build-push [USER@HOST] [--build-only] [--no-git-push] [--dirty]
 
 Builds this project's images, tags them with HEAD's version, and loads them onto
 a server over ssh — no registry involved. Run from the project root. USER@HOST
 defaults to the last server this project talked to (.kasbah/state.json).
 
 What it does:
-  * resolves the version from HEAD's single v-tag
+  * resolves the version from HEAD's single v-tag, and refuses a working tree
+    with uncommitted changes or untracked files .gitignore does not cover
   * builds every service in compose.prod.yml that has a build: key, and tags
     each one <image>:<version> from the image: that service names
   * docker save (one stream, all images) | gzip, streamed over ssh into
@@ -51,6 +62,10 @@ It does not move :current and does not run ` + "`compose up`" + `. Both are ` + 
 Flags:
   --build-only    build and tag locally; ship nothing, push nothing
   --no-git-push   ship the images, leave the git tag where it is
+  --dirty         build the working tree as it stands, labelled
+                  <base>-dirty.<UTC yyyymmddhhmmss> (base: the highest v-tag
+                  reachable from HEAD, else 0.0.0). Pushes no tag, is never a
+                  rollback target, and is what ` + "`kasbah deploy --dirty`" + ` deploys
 
 See docs/build-deploy.md and docs/cli.md.
 `
@@ -69,13 +84,15 @@ func Parse(args []string) (Options, error) {
 			o.BuildOnly = true
 		case "--no-git-push":
 			o.NoGitPush = true
+		case "--dirty":
+			o.Dirty = true
 		default:
 			name, _, _ := strings.Cut(a, "=")
 			switch {
-			case name == "--build-only" || name == "--no-git-push":
+			case name == "--build-only" || name == "--no-git-push" || name == "--dirty":
 				return o, cli.Fail("build-push: %s takes no value — pass it on its own", name)
 			case strings.HasPrefix(a, "-"):
-				return o, cli.Fail("build-push: unknown flag '%s' (build-push takes USER@HOST, --build-only and --no-git-push)", name)
+				return o, cli.Fail("build-push: unknown flag '%s' (build-push takes USER@HOST, --build-only, --no-git-push and --dirty)", name)
 			case o.Target == "":
 				o.Target = strings.TrimSuffix(a, "\r")
 			default:
@@ -93,6 +110,31 @@ type Ctx struct {
 	Version string
 	Self    remote.Info
 	Local   func(arch string) (string, error)
+	// Now labels a --dirty build; time.Now when nil.
+	Now func() time.Time
+}
+
+// label is what this run tags its images: HEAD's version on a clean tree,
+// a dirty label and the tree it was read from with --dirty.
+func label(c Ctx, o Options) (v, tree string, err error) {
+	if !o.Dirty {
+		if v, err = release.Resolve(c.PWD); err != nil {
+			return "", "", err
+		}
+		return v, "", release.RequireClean("build-push", v, "kasbah build-push --dirty")
+	}
+	if err = release.Repo(c.PWD); err != nil {
+		return "", "", err
+	}
+	now := c.Now
+	if now == nil {
+		now = time.Now
+	}
+	if tree, err = release.Fingerprint("build-push"); err != nil {
+		return "", "", err
+	}
+	v, err = release.DirtyLabel("build-push", now())
+	return v, tree, err
 }
 
 // Run is the command. Everything that is a fact about this checkout is
@@ -105,7 +147,7 @@ func Run(c Ctx, o Options) error {
 	if err != nil {
 		return err
 	}
-	version, err := release.Resolve(c.PWD)
+	version, tree, err := label(c, o)
 	if err != nil {
 		return err
 	}
@@ -154,18 +196,36 @@ func Run(c Ctx, o Options) error {
 	if err := ship(conn, serverbin.Path(res.Apps), images); err != nil {
 		return err
 	}
-	gitResult, err := gitPush(c.Out, target, version, !o.NoGitPush)
-	if err != nil {
+	if o.Dirty {
+		after, err := release.Fingerprint("build-push")
+		if err != nil {
+			return err
+		}
+		if after != tree {
+			return cli.Fail("the working tree changed while %s was being built — the images shipped to %s may match neither state", version, target).Cont(
+				"so they are not recorded for `kasbah deploy --dirty`; leave the tree alone and re-run:",
+				"  kasbah build-push "+target+" --dirty")
+		}
+	}
+	kv := []string{"last_server", target}
+	gitResult := "nothing pushed — a --dirty build has no tag"
+	if o.Dirty {
+		kv = append(kv, DirtyBuild, version, DirtyServer, target, DirtyTree, tree)
+	} else if gitResult, err = gitPush(c.Out, target, version, !o.NoGitPush); err != nil {
 		return err
 	}
 	// Only now: a failed command leaves the state file untouched.
-	if err := state.Record(state.File, c.Version, "last_server", target); err != nil {
+	if err := state.Record(state.File, c.Version, kv...); err != nil {
 		return err
 	}
 
 	c.Out.Info("Shipped %s %s to %s", m.Name, version, target)
 	listImages(c.Out, images)
-	c.Out.Info("  current: unmoved — `kasbah deploy` is what cuts over to %s", version)
+	if o.Dirty {
+		c.Out.Info("  current: unmoved — `kasbah deploy %s --dirty` is what cuts over to %s", target, version)
+	} else {
+		c.Out.Info("  current: unmoved — `kasbah deploy` is what cuts over to %s", version)
+	}
 	c.Out.Info("  git:     %s", gitResult)
 	return nil
 }

@@ -350,6 +350,7 @@ to the VPS. Tracks:
 | `last_deploy` | `deploy`, `rollback` on success | nothing yet — recorded for a future deployed-vs-local diff |
 | `last_version` | `deploy`, `rollback` on success | nothing yet |
 | `schema_migrations_applied` | `kasbah migrate` | `kasbah migrate` (idempotency) |
+| `dirty_build`, `dirty_server`, `dirty_tree` | `build-push --dirty` once the images shipped and only when the tree did not change during the build: the label, the target, and a digest of the working tree it built | `deploy --dirty`, which deploys that label only to that server from that same tree (`build-deploy.md` → Versioning contract) |
 
 `kasbah pending` does **not** read `last_version`. It resolves the deployed
 version by querying `versions.log` on the VPS at runtime. State is a cache

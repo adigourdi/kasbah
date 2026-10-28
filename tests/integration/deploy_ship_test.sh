@@ -475,9 +475,9 @@ assert 'grep -qF "$image_web is healthy" "$tmpdir/err"' \
 # first is the deliverable; the second is what makes the concurrency case a
 # property of this fixture rather than a race against wall-clock.
 #
-# `kasbah deploy` with no version ships the *working tree* under HEAD's tag, so
-# editing the manifest here needs no new commit and no new tag
-# (docs/build-deploy.md → two modes).
+# `kasbah deploy` with no version refuses a working tree that is not HEAD's, so
+# the edit is committed and v$project_version moved onto it: the images it
+# labels are unchanged (docs/build-deploy.md → two modes).
 hook_sleep=8
 sed -i 's|^  check: test -f ./compose.yml$|  check: "false"|' "$projdir/kasbah.yml"
 sed -i "/^  post-deploy:\$/i\\    - 'built-app-web sleep $hook_sleep'" "$projdir/kasbah.yml"
@@ -485,6 +485,14 @@ assert 'grep -qF "check: \"false\"" "$projdir/kasbah.yml"' \
     "the fixture copy's backup.check now exits non-zero"
 assert 'grep -qF "built-app-web sleep $hook_sleep" "$projdir/kasbah.yml"' \
     "and its pre-deploy hooks end with one that sleeps"
+recommit() {
+    if ! ( cd "$projdir" && git add -A && git commit -qm "$2" && git tag -f "v$1" ) >"$tmpdir/git.log" 2>&1; then
+        echo "error: could not commit the fixture edit and move v$1 onto it" >&2
+        sed 's/^/       | /' "$tmpdir/git.log" >&2
+        exit 2
+    fi
+}
+recommit "$project_version" "the backup gate says no"
 
 backups_before="$(backup_names)"
 crumbs_reset
@@ -704,6 +712,7 @@ assert '[ "$(versions_log)" = "$log_before" ]' "and deploying nothing (log: $(ve
 rig_ssh "rm -rf $apps/mail" >/dev/null 2>&1
 sed -i '/^mail:$/,$d' "$projdir/kasbah.yml"
 assert '! grep -qF "mail:" "$projdir/kasbah.yml"' "the mail claim is out of the manifest again"
+recommit "$next_version" "no mail claim"
 
 # ==================================================================================
 # The exit codes docs/cli.md promises, out of a real `kasbah deploy`
@@ -736,9 +745,64 @@ assert '[ "$marker_back" = "0" ]' "and the marker was put back for the cleanup b
 assert '[ "$(rig_ssh "[ -f $marker ] && echo present || echo absent" 2>/dev/null | tr -d "\r")" = "present" ]' \
     "which the server agrees with"
 
+# ==================================================================================
+# A --dirty build: refused without the flag, shipped and served under
+# <base>-dirty.<UTC time> with it, and never a rollback target or one of prune's three
+# ==================================================================================
+kx() (
+    cd "$projdir" || return 2
+    timeout "${DEPLOY_TIMEOUT:-240}" env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
+        "$KASBAH_BIN" "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
+)
+printf 'RUN printf "dirty-build\\n" > /usr/share/nginx/html/dirty.txt\n' >> "$projdir/Dockerfile"
+build_push "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "kasbah build-push --dirty" "$tmpdir/err"' \
+    "build-push refuses the edited tree, naming --dirty (exit $rc: $(cli_err))"
+deploy "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "kasbah deploy --dirty" "$tmpdir/err"' \
+    "and so does deploy (exit $rc: $(cli_err))"
+deploy "$RIG_TARGET" --dirty; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "kasbah build-push $RIG_TARGET --dirty" "$tmpdir/err"' \
+    "deploy --dirty with no dirty build-push behind it is refused, naming it (exit $rc: $(cli_err))"
+
+build_push "$RIG_TARGET" --dirty; rc=$?
+assert '[ "$rc" = "0" ]' "build-push --dirty ships (exit $rc: $(cli_err))"
+label="$(jq -r .dirty_build "$projdir/.kasbah/state.json" 2>/dev/null)"
+assert 'grep -qxE "${next_version//./\\.}-dirty\.[0-9]{14}" <<<"$label"' \
+    "labelled from the reachable v$next_version (label '$label')"
+deploy "$RIG_TARGET" --dirty; rc=$?
+assert '[ "$rc" = "0" ]' "deploy --dirty retags what it shipped (exit $rc: $(cli_err))"
+assert '[[ "$(versions_log | tail -n 1)" == *" deploy $label no-backup "* ]]' \
+    "versions.log carries the label (line: $(versions_log | tail -n 1))"
+served=$(rig_ssh "docker exec \$(docker ps -q --filter label=com.docker.compose.project=$project --filter label=com.docker.compose.service=built-app-web) wget -qO- http://127.0.0.1/dirty.txt" 2>/dev/null | tr -d '\r')
+assert '[ "$served" = "dirty-build" ]' "and the running container serves the dirty build (got '$served')"
+
+kx history "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "0" ] && grep -qE "deploy +$label " "$tmpdir/out"' \
+    "history shows the label (exit $rc: $(cat "$tmpdir/out"))"
+kx rollback "$RIG_TARGET" "$label"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "never a rollback target" "$tmpdir/err"' \
+    "a rollback to it is refused (exit $rc: $(cli_err))"
+
+( cd "$projdir" && git checkout -q -- Dockerfile ) || exit 2
+deploy "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "0" ]' "the clean tree deploys v$next_version over it (exit $rc: $(cli_err))"
+kx rollback "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "stepped over 1 --dirty deploy(s)" "$tmpdir/err"' \
+    "the implicit rollback steps over the dirty deploy (exit $rc: $(cli_err))"
+assert '[[ "$(versions_log | tail -n 1)" == *" rollback $next_version "* ]]' \
+    "to the clean one before it (line: $(versions_log | tail -n 1))"
+
+kx server prune "$RIG_TARGET"; rc=$?
+plan="$(cat "$tmpdir/out")"
+assert 'grep -qE "^  keep +$image_web:$label  " <<<"$plan" && ! grep -E "^  keep +$image_web:$label  " <<<"$plan" | grep -qF "among the last 3"' \
+    "prune keeps the dirty tag only for the window, not as one of the three (exit $rc: $plan)"
+assert 'grep -E "^  keep +$image_web:$label  " <<<"$plan" | grep -qF "inside the 3-month window"' \
+    "— the only reason left once :current has moved off it (plan: $plan)"
+
 # --- Leave the rig as it was found, but only on success ---------------------------------
 if [ "$fail" -eq 0 ]; then
-    rig_ssh "docker image rm -f $web $worker $image_web:$next_version $image_worker:$next_version $image_web:current $image_worker:current" >/dev/null 2>&1
+    rig_ssh "docker image rm -f $web $worker $image_web:$next_version $image_worker:$next_version $image_web:$label $image_worker:$label $image_web:current $image_worker:current" >/dev/null 2>&1
     rig_clean || fail=1
 fi
 

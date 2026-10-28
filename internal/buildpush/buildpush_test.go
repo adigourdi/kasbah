@@ -26,6 +26,8 @@ func TestParse(t *testing.T) {
 		"--build-only=yes":   "error: build-push: --build-only takes no value",
 		"--no-git-push=true": "error: build-push: --no-git-push takes no value",
 		"u@h 1.4.2":          "error: build-push: too many arguments ('1.4.2')",
+		"--dirty u@h":        "target=u@h build=false nopush=false dirty=true",
+		"--dirty=1":          "error: build-push: --dirty takes no value",
 	} {
 		var args []string
 		if in != "" {
@@ -39,7 +41,7 @@ func TestParse(t *testing.T) {
 		case err != nil:
 			got = "error: " + err.Error()
 		default:
-			got = "target=" + o.Target + " build=" + bstr(o.BuildOnly) + " nopush=" + bstr(o.NoGitPush)
+			got = "target=" + o.Target + " build=" + bstr(o.BuildOnly) + " nopush=" + bstr(o.NoGitPush) + " dirty=" + bstr(o.Dirty)
 		}
 		if !strings.HasPrefix(got, want) {
 			t.Errorf("Parse(%q) = %q, want %q", in, got, want)

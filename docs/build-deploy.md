@@ -7,10 +7,27 @@ and generalized so every project gets the same flow.
 
 Versions come from git tags on the project repo, formatted `vX.Y.Z` (semver).
 
-- `build-push` requires HEAD to have exactly one `v<semver>` tag.
-- `kasbah deploy` (no args) labels the **working tree** with HEAD's tag
-  and ships it as-is. Lets you iterate on compose / env template between
-  tagged releases without forcing a commit for every tweak.
+- `build-push` requires HEAD to have exactly one `v<semver>` tag — not one
+  shaped like a dirty label below — and a **clean tree**: no tracked change and
+  no untracked file git does not ignore (`.kasbah/` aside — kasbah writes it),
+  edits inside submodules and embedded repositories included whatever git's
+  `ignore` settings say. A path git is told not to read from disk
+  (assume-unchanged, skip-worktree, a sparse checkout) is refused outright,
+  `--dirty` included: kasbah cannot see what it holds.
+- `kasbah deploy` (no args) ships the **working tree** under HEAD's tag, and
+  requires the same clean tree — so the tag names exactly what runs.
+- `--dirty`, on either, is the quick-test path: no commit, no tag. The build is
+  labelled `<base>-dirty.<UTC yyyymmddhhmmss>` — base is the highest `v*` tag
+  merged into HEAD, else `0.0.0` — in the image tag, `versions.log` and the
+  report (`+` is not allowed in a Docker tag, `-` is). build-push records the
+  label, the target and a digest of the working tree in `.kasbah/state.json` —
+  only when the tree is the same after the build as before it, so an edit made
+  mid-build is never vouched for. The digest writes nothing into git: HEAD's
+  tree plus a sha256 of every changed or untracked file, submodules included; `deploy --dirty` deploys only that label, to that
+  server, from that same tree, and otherwise refuses naming `build-push
+  --dirty` (a stock-only project makes its own label). A dirty build is never
+  a rollback target: naming one is refused, the implicit target steps over
+  them, and `deploy X.Y.Z` refuses one too — git cannot reproduce it.
 - `kasbah deploy X.Y.Z` and `kasbah rollback X.Y.Z` target a specific
   tagged version. Files come from `git archive v<X.Y.Z>` — no checkout,
   working tree untouched.
@@ -50,7 +67,9 @@ among the project's last 3 deployed versions — where the version
 `:current` points at counts as the first of the 3. `:current` itself is
 never pruned. The time window mirrors the versions.log rotation cutoff;
 the count floor guarantees rollback targets exist (current plus two
-older) even on rarely-deployed projects.
+older) even on rarely-deployed projects. A `-dirty.` tag is never among
+those three — it cannot be rolled back to — so it goes once it is outside the
+window, unless `:current` still points at it.
 
 Three further things are never removed, and `cli.md` → `kasbah server
 prune` states them with the command: the image `:current` resolves to
@@ -219,10 +238,10 @@ yet.
 
 ### Why working-tree for no-args, git-archive for explicit versions
 
-`kasbah deploy` with no args is the iterate-and-ship path: you've cut
-a tag, tweaked compose or the env template since, and want to ship
-what's on disk. Using `git archive` there would force every tweak to
-be committed first, blocking the workflow.
+`kasbah deploy` with no args ships what is on disk, and what is on disk must be
+what HEAD's tag says — so a version names one byte set wherever it ran, and
+`rollback 1.2.0` restores what 1.2.0 really was. A tweak worth trying before it
+is committed goes through `--dirty`, which says so in every record it leaves.
 
 `kasbah deploy X.Y.Z` means "deploy version X.Y.Z as it was tagged" —
 reproducible, so it comes from `git archive`. The working tree is
@@ -421,7 +440,9 @@ small without sacrificing history.
 1. Open SSH ControlMaster.
 2. Resolve target version:
    - explicit: positional VERSION arg
-   - implicit: second-latest entry with action=deploy, across
+   - explicit `-dirty.` version: refused — git cannot reproduce it
+   - implicit: the latest `action=deploy` entry before the running one that is
+     not a `-dirty.` build (the running one counts even when dirty), across
      versions.log **and** versions.log.gz — a project that deploys less
      often than the 3-month rotation would otherwise have no implicit
      target at all, and the answer is identical whenever the active log
