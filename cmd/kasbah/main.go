@@ -44,8 +44,22 @@ import (
 // build is stamped at build time: -ldflags "-X main.build=…".
 var build string
 
+// argv is the command line a hand-off re-runs, and shipDev the answer it
+// carries in devEnv.
+var (
+	argv    = os.Args[1:]
+	shipDev string
+)
+
 func main() {
 	args := os.Args[1:]
+	if len(args) > 0 && args[0] != "remote" {
+		rest, answer, err := answerShipDev(prompt.Std(cli.Std()), args, os.Getenv)
+		if err != nil {
+			os.Exit(cli.Std().Report(err))
+		}
+		args, argv, shipDev = rest, rest, answer
+	}
 	if len(args) > 0 {
 		switch args[0] {
 		case "remote":
@@ -248,12 +262,12 @@ func remoteCmd(args []string) int {
 		out.Stdout.Write(body)
 		return cli.ExitOK
 	}
-	if len(args) == 2 && args[0] == "install-self" {
+	if len(args) == 3 && args[0] == "install-self" && strings.HasPrefix(args[2], "--over=") {
 		exe, err := os.Executable()
 		if err != nil {
 			return report(out, cli.Fail("cannot locate this binary: %v", err))
 		}
-		return report(out, serverbin.InstallSelf(remote.Self(build), exe, args[1], out.Stdout))
+		return report(out, serverbin.InstallSelf(remote.Self(build), exe, args[1], strings.TrimPrefix(args[2], "--over="), out.Stdout))
 	}
 	sub := "(none)"
 	if len(args) > 0 {

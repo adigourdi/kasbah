@@ -20,7 +20,12 @@ import (
 func report(out *cli.Output, err error) int {
 	if bin := resolve(err, os.Getenv); bin != "" {
 		atexit.Run()
-		if xerr := launcher.Exec(bin, build, os.Args[1:]); xerr != nil {
+		if shipDev != "" {
+			os.Setenv(devEnv, shipDev)
+		} else {
+			os.Unsetenv(devEnv)
+		}
+		if xerr := launcher.Exec(bin, build, argv); xerr != nil {
 			cont(err, fmt.Sprintf("could not run %s: %v", bin, xerr))
 		}
 	}

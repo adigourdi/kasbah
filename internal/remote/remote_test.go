@@ -157,3 +157,40 @@ func TestReplaces(t *testing.T) {
 		}
 	}
 }
+
+// Only a dev build over a release asks; a dev build on the server, nothing
+// there, or a release workstation never does.
+func TestDevOverRelease(t *testing.T) {
+	const dev = "1.1.1-dev.14.1793223447+g090aa7d"
+	info := func(b string) *Info { return &Info{Build: b} }
+	for _, tt := range []struct {
+		ours string
+		srv  *Info
+		want bool
+	}{
+		{dev, info("1.1.0"), true},
+		{dev, info("1.0.0+g1a2b3c4"), true},
+		{dev, info("1.1.0-rc.1"), true},
+		{dev, info("1.1.1-dev.13.1793223000+gabc1234"), false},
+		{dev, nil, false},
+		{"1.1.1", info("1.1.0"), false},
+		{"1.1.1", info("1.1.1-dev.13.1793223000"), false},
+	} {
+		if got := DevOverRelease(Self(tt.ours), tt.srv); got != tt.want {
+			t.Errorf("%s over %v: got %v, want %v", tt.ours, tt.srv, got, tt.want)
+		}
+	}
+}
+
+// Keeping the server's build is a *Newer: the hand-off to that build.
+func TestKept(t *testing.T) {
+	var n *Newer
+	err := error(Kept("1.1.0", "1.1.1-dev.14.1"))
+	if !errors.As(err, &n) || n.Server != "1.1.0" || n.Ours != "1.1.1-dev.14.1" {
+		t.Fatalf("Kept is %#v, want a *Newer naming both builds", err)
+	}
+	var e *cli.Error
+	if !errors.As(err, &e) || e.Code != cli.ExitFailure || !strings.Contains(err.Error(), "keeps its kasbah 1.1.0") {
+		t.Errorf("Kept says %q", err)
+	}
+}

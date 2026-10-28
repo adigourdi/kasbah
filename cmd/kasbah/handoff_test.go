@@ -64,6 +64,8 @@ func TestResolve(t *testing.T) {
 			"a dev build from another checkout (1.0.1-dev.9.1+g1a2b3c4): check out and build commit 1a2b3c4 and install it"},
 		{"the server's dirty dev build is not installed", newerThan("1.0.1-dev.5.1", "1.0.1-dev.9.1+g1a2b3c4.dirty"), lib, "", "commit 1a2b3c4 (built from a dirty tree"},
 		{"the server's unmarked dev build is not installed", newerThan("1.0.1-dev.5.1", "1.0.1-dev.9.1"), lib, "", "build that commit and install it"},
+		{"the release kept over our dev build", remote.Kept("1.1.0", "1.1.1-dev.14.1"), lib, v110, ""},
+		{"the release kept is not installed", remote.Kept("1.3.0", "1.3.1-dev.14.1"), lib, "", "install it: `kasbah self-update v1.3.0`"},
 		{"a newer major is no hand-off", newer("2.0.1"), lib, "", ""},
 		{"the manifest's major, newest installed", schema("schema: 2\nname: demo\n"), lib, v201, ""},
 		{"the manifest's major is not installed", schema("schema: 3\nname: demo\n"), lib, "", "kasbah self-update v3"},

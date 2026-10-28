@@ -454,9 +454,10 @@ server's is newer, naming both builds and handing off to the newer version
 when it is installed on the workstation (`cli.md` → Hand-off). One exception:
 a release build replaces a dev build of its major whatever their order, so a
 server that got a `1.0.2-dev…` build never locks a `1.0.0` workstation out.
-An `-rc.N` build counts as a pre-release here, so a higher dev build does
-replace it, and a dev workstation and a release workstation sharing a server
-re-ship the binary on every alternation — scaffolding, by design. The server
+An `-rc.N` build counts as a pre-release here, so a release replaces it. A dev
+build replacing a release — an `-rc.N` included — asks first (`--ship-dev` /
+`--keep-server`, `cli.md` → Hand-off), so unreleased code reaches a release
+server only on purpose; a dev server takes any newer build without asking. The server
 never serves a workstation of another build.
 
 Both directions are judged from the probe's copy of the marker, before any

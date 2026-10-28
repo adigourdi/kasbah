@@ -48,6 +48,10 @@ Commands:
   server upgrade-traefik USER@HOST --version=<tag>
                                              Dry-run the fragments against a Traefik version, then switch.
 
+Every command that reaches a server also takes:
+  --ship-dev | --keep-server                 When this dev build would replace the release the server
+                                             runs: ship it, or keep the server's and run its build.
+
 Run ` + "`kasbah <command> --help`" + ` for a command's flags. The docs/ files kasbah's
 messages name are in the kasbah repository; docs/cli.md is the full reference.
 `

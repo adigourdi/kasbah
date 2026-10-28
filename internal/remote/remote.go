@@ -55,8 +55,9 @@ const (
 	Keep
 )
 
-// Newer is the refusal of a server build newer than ours within our major:
-// the build the workstation must run instead is Server.
+// Newer is the refusal to talk to the server's build — newer than ours within
+// our major, or a release the operator kept over our dev build (Kept): the
+// build the workstation must run instead is Server.
 type Newer struct {
 	Server, Ours string
 	err          *cli.Error
@@ -95,6 +96,19 @@ func Decide(ours Info, srv *Info) (Action, error) {
 	}
 	return 0, &Newer{Server: srv.Build, Ours: ours.Build, err: cli.Fail(
 		"the server runs kasbah %s, newer than this kasbah %s — both ends run the server's build", srv.Build, ours.Build)}
+}
+
+// Kept is the refusal after the operator kept the server's build rather than
+// ship ours over it (DevOverRelease): the run goes to the server's build.
+func Kept(server, ours string) *Newer {
+	return &Newer{Server: server, Ours: ours, err: cli.Fail(
+		"the server keeps its kasbah %s, and this kasbah %s is another build — both ends run the server's build", server, ours)}
+}
+
+// DevOverRelease is whether shipping ours over srv puts a dev build where a
+// release ran, which the operator is asked first.
+func DevOverRelease(ours Info, srv *Info) bool {
+	return srv != nil && version.Dev(ours.Build) && !version.Dev(srv.Build)
 }
 
 // Replaces is whether build a goes over build b on a server: a is the higher,

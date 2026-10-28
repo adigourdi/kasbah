@@ -1,12 +1,14 @@
 // Package serverbin puts kasbah's own binary on a server, at the one shared
 // path <apps>/.kasbah/bin/kasbah, under the same-build rule: absent or older
 // is replaced by this build's, the same is kept, a newer one refuses — the
-// workstation then runs the server's build (remote.Newer).
+// workstation then runs the server's build (remote.Newer). A dev build asks
+// before it replaces a release (ShipDev).
 package serverbin
 
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
@@ -20,6 +22,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/marker"
+	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/selfupdate"
 	"github.com/adigourdi/kasbah/internal/ssh"
@@ -32,6 +35,28 @@ const (
 	Pointer     = "/etc/kasbah/apps-path"
 	DefaultApps = "/apps"
 )
+
+// DevFlags answer ShipDev's question on the command line.
+var DevFlags = prompt.Pair{Yes: "ship-dev", No: "keep-server"}
+
+// ShipDev is whether this dev build replaces the release the server runs
+// (remote.DevOverRelease); false keeps the server's, and the run goes to its
+// build (remote.Kept). main answers it from DevFlags or the terminal; unset,
+// it reads no terminal and fails naming the flags.
+var ShipDev = func(server, ours string) (bool, error) {
+	noTTY := &prompt.Prompter{In: strings.NewReader(""), Out: cli.Std()}
+	return AskShipDev(noTTY, prompt.Unset, server, ours)
+}
+
+// AskShipDev is ShipDev's question, answered by given or asked on p.
+func AskShipDev(p *prompt.Prompter, given prompt.Given, server, ours string) (bool, error) {
+	return p.Choice(DevFlags, fmt.Sprintf(
+		"the server runs the release kasbah %s; replace it with this dev build %s? (no keeps %s, and the command runs on %s if it is installed here, else stops)",
+		server, ours, server, server), given)
+}
+
+// Notes carries the line naming each change of the server's binary.
+var Notes = cli.Std()
 
 // RunTimeout bounds every run of a server binary, in seconds.
 var RunTimeout = 30
@@ -581,7 +606,8 @@ type Options struct {
 // Ensure leaves at Path(apps) this build's binary when the server's is absent,
 // not runnable or older, and keeps the server's when it is the same build; a
 // newer one is refused before anything is uploaded, as is a marker of another
-// major (marker.Check). local finds this build's
+// major (marker.Check), and a dev build asks before replacing a release
+// (ShipDev). Each change is one line on Notes. local finds this build's
 // server binary for a GOARCH.
 func Ensure(c *ssh.Conn, self remote.Info, local func(arch string) (string, error), opt Options) (*Result, error) {
 	target := c.Target.String()
@@ -629,19 +655,45 @@ func Ensure(c *ssh.Conn, self remote.Info, local func(arch string) (string, erro
 	if err != nil {
 		return nil, err
 	}
-	kept, err := ship(c, self, file, bin)
-	if err != nil {
-		return nil, err
-	}
-	if kept != nil {
-		// Another workstation installed a build of its own meanwhile.
-		if _, err := remote.Decide(self, kept); err != nil {
+	over := res.Old
+	// Another workstation may install meanwhile; a kept build is judged once
+	// more, then the run goes to it.
+	for try := 0; ; try++ {
+		if remote.DevOverRelease(self, srv) {
+			yes, err := ShipDev(srv.Build, self.Build)
+			if err != nil {
+				return nil, err
+			}
+			if !yes {
+				return nil, remote.Kept(srv.Build, self.Build)
+			}
+		}
+		kept, err := ship(c, self, file, bin, cmp.Or(over, "none"))
+		if err != nil {
 			return nil, err
 		}
-		res.Action, res.Now = remote.Keep, kept.Build
-		return res, nil
+		if kept == nil {
+			break
+		}
+		action, err := remote.Decide(self, kept)
+		if err != nil {
+			return nil, err
+		}
+		if action == remote.Keep {
+			res.Action, res.Now = remote.Keep, kept.Build
+			return res, nil
+		}
+		if try > 0 {
+			return nil, remote.Kept(kept.Build, self.Build)
+		}
+		srv, over, res.Old = kept, kept.Build, kept.Build
 	}
 	res.Now = self.Build
+	old := res.Old
+	if old == "" || old == "unknown" {
+		old = "(" + cmp.Or(old, "none") + ")"
+	}
+	Notes.Info("server kasbah %s → %s", old, res.Now)
 	return res, nil
 }
 
@@ -674,9 +726,10 @@ fi
 chmod 775 "$1/$2"`
 
 // ship uploads file beside bin, proves the upload runs there and is this
-// build, then has it install itself under the server-side lock. A non-nil
-// Info is the newer build another run installed meanwhile.
-func ship(c *ssh.Conn, self remote.Info, file, bin string) (*remote.Info, error) {
+// build, then has it install itself under the server-side lock over the build
+// the probe saw (over: a build, none or unknown). A non-nil Info is the build
+// another run installed meanwhile, which install-self kept.
+func ship(c *ssh.Conn, self remote.Info, file, bin, over string) (*remote.Info, error) {
 	target := c.Target.String()
 	dir := path.Dir(bin)
 	name, err := tempName()
@@ -734,7 +787,7 @@ func ship(c *ssh.Conn, self remote.Info, file, bin string) (*remote.Info, error)
 	}
 
 	var iout bytes.Buffer
-	inst := c.Command(Bounded(tmp, 2*RunTimeout+LockWait, "install-self", bin)...)
+	inst := c.Command(Bounded(tmp, 2*RunTimeout+LockWait, "install-self", bin, "--over="+over)...)
 	inst.Stdout = &iout
 	if err := inst.Run(); err != nil {
 		return nil, cli.Fail("installing kasbah at %s on %s failed (exit %d, see above)", bin, target, ssh.ExitCode(err))

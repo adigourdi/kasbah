@@ -704,7 +704,7 @@ Two modes:
 
 Flow (no-args / working-tree path):
 1. Open SSH ControlMaster for the whole deploy (reused by every ssh session and file transfer).
-2. Verify SSH reachability; ship the kasbah binary if the server's is absent or older.
+2. Verify SSH reachability; ship the kasbah binary if the server's is absent or older (asking first when a dev build would replace a release — Hand-off below).
 3. Resolve version = HEAD's `v-tag` (fail if not tagged).
 4. Ensure remote dirs exist (`/apps/<name>/`, `backups/`, `/apps/data/<name>/`).
 5. Sync the manifest's `sync:` list (`kasbah remote sync`: only changed files travel).
@@ -1172,7 +1172,7 @@ vN[.M[.P]]` builds and installs a release tag instead) — and
 `~/.local/bin/kasbah` is a symlink to the newest installed version that runs, or
 to the one a version argument named. A running kasbah hands off to a sibling version — re-executing
 `<lib>/<version>/kasbah` with the same arguments and environment, before any
-side effect — in two cases:
+side effect — in three cases:
 
 - **A server holds a newer build** of its major. The same-build rule refuses
   to talk to it; when that build is installed, the refusal becomes a hand-off
@@ -1180,8 +1180,28 @@ side effect — in two cases:
   names the remedy: `kasbah self-update vN.M.P` when the wanted build is a
   release; when it is a dev build from another checkout, the commit to build
   (`+g<sha>`) — or ship a release, which replaces any dev build of its major.
+- **The operator keeps the server's release** over this dev build
+  (`--keep-server`, below): when that release is installed, it runs the
+  command; otherwise the run stops naming `kasbah self-update vN.M.P`.
 - **A manifest's `schema` belongs to a newer major**: the newest installed
   kasbah of that major runs the command.
+
+**A dev build asks before it replaces a release.** When the workstation runs a
+dev build and the server a release (an `-rc.N` included) that the dev build
+would replace, every command that reaches the server asks first: ship the dev
+build, or keep the server's release. `--ship-dev` / `--keep-server` answer it
+on any such command (both together are refused; they are taken out of the
+arguments before a hand-off, so an older release never sees them, and the
+answer travels as `KASBAH_SHIP_DEV=ship|keep`, honoured only beside
+`KASBAH_HANDOFF`); without a terminal and without either, the run fails naming
+both. The server's install re-checks under its lock: a release another
+operator installed since the probe is kept, and the workstation asks about it
+once more; a further release landing during that second install is where the
+run goes — handed off to when installed, else the run stops. A dev build on the
+server is a test target and is replaced by any newer build without asking, and
+a release replaces a dev build, or an older release, without asking. Every
+change of the server's binary prints `server kasbah OLD → NEW` (`(none)` on a
+first install, `(unknown)` when the old binary could not say).
 
 One hop only: the exec'd binary carries `KASBAH_HANDOFF=<build it came from>`,
 and a second refusal is final. A kasbah run from a checkout (`dist/kasbah`)

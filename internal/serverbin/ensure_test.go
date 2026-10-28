@@ -2,19 +2,23 @@ package serverbin
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/shtest"
 	"github.com/adigourdi/kasbah/internal/ssh"
@@ -28,6 +32,7 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "remote" {
 		os.Exit(fakeMain(os.Args[2:]))
 	}
+	Notes = &cli.Output{Stdout: io.Discard, Stderr: io.Discard}
 	os.Exit(m.Run())
 }
 
@@ -55,8 +60,24 @@ func fakeMain(args []string) int {
 		}
 		fmt.Println(remote.Self(build).Line())
 		return 0
-	case len(args) == 2 && args[0] == "install-self":
-		if err := InstallSelf(remote.Self(build), exe, args[1], os.Stdout); err != nil {
+	case len(args) == 3 && args[0] == "install-self" && strings.HasPrefix(args[2], "--over="):
+		// Another operator's install lands between the probe and this one:
+		// the listed build after the one there, else the first.
+		if list, ok := strings.CutPrefix(mode, "plant:"); ok {
+			builds := strings.Split(list, ",")
+			other := builds[0]
+			if d, err := os.ReadFile(args[1]); err == nil {
+				if j := bytes.LastIndex(d, []byte(fakeTag)); j >= 0 {
+					there, _, _ := strings.Cut(strings.TrimSpace(string(d[j+len(fakeTag):])), ";")
+					if k := slices.Index(builds, there); k >= 0 && k+1 < len(builds) {
+						other = builds[k+1]
+					}
+				}
+			}
+			os.Remove(args[1])
+			os.WriteFile(args[1], append(b[:i:i], []byte(fakeTag+other+";\n")...), 0o755)
+		}
+		if err := InstallSelf(remote.Self(build), exe, args[1], strings.TrimPrefix(args[2], "--over="), os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
@@ -489,7 +510,7 @@ func TestInstallSelfRace(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				o, err := exec.Command(self, "remote", "install-self", dest).CombinedOutput()
+				o, err := exec.Command(self, "remote", "install-self", dest, "--over=none").CombinedOutput()
 				outs[i] = string(o)
 				if err != nil {
 					t.Errorf("install-self: %v: %s", err, o)
@@ -508,12 +529,12 @@ func TestInstallSelf(t *testing.T) {
 	dest := filepath.Join(dir, "kasbah")
 	self := filepath.Join(dir, ".kasbah.x")
 	fake(t, self, "0.1.0-dev.5.1", "", 0o755)
-	out, err := exec.Command(self, "remote", "install-self", dest).Output()
+	out, err := exec.Command(self, "remote", "install-self", dest, "--over=none").Output()
 	if err != nil || string(out) != "installed old=none\n" {
 		t.Errorf("into nothing: %q, %v", out, err)
 	}
 	fake(t, self, "0.1.0-dev.4.1", "", 0o755)
-	out, err = exec.Command(self, "remote", "install-self", dest).Output()
+	out, err = exec.Command(self, "remote", "install-self", dest, "--over=none").Output()
 	if err != nil || string(out) != "kept build=0.1.0-dev.5.1\n" {
 		t.Errorf("over a newer one: %q, %v", out, err)
 	}
@@ -529,23 +550,39 @@ func TestInstallSelf(t *testing.T) {
 	}
 	refake(dest, "0.2.0-dev.1.1+g1a2b3c4.dirty")
 	refake(self, "0.1.0")
-	out, err = exec.Command(self, "remote", "install-self", dest).Output()
+	out, err = exec.Command(self, "remote", "install-self", dest, "--over=none").Output()
 	if err != nil || string(out) != "installed old=0.2.0-dev.1.1+g1a2b3c4.dirty\n" {
 		t.Errorf("a release over a higher pre-release: %q, %v", out, err)
 	}
 	refake(self, "0.1.0-dev.9.1")
-	out, err = exec.Command(self, "remote", "install-self", dest).Output()
+	out, err = exec.Command(self, "remote", "install-self", dest, "--over=none").Output()
 	if err != nil || string(out) != "kept build=0.1.0\n" {
 		t.Errorf("a pre-release over the release it ranks below: %q, %v", out, err)
 	}
+	// A dev build goes over a release only when that is the build its
+	// workstation saw, and asked about.
+	refake(dest, "0.0.9")
+	for _, over := range []string{"none", "unknown", "0.0.8", "0.0.9"} {
+		refake(self, "0.1.0-dev.9.1")
+		out, err = exec.Command(self, "remote", "install-self", dest, "--over="+over).Output()
+		want := "kept build=0.0.9\n"
+		if over == "0.0.9" {
+			want = "installed old=0.0.9\n"
+			refake(dest, "0.0.9")
+		}
+		if err != nil || string(out) != want {
+			t.Errorf("a dev build over the release 0.0.9, the workstation having seen %s: %q, %v; want %q", over, out, err, want)
+		}
+	}
+	refake(dest, "0.1.0")
 	refake(self, "0.1.0")
-	out, err = exec.Command(self, "remote", "install-self", dest).Output()
+	out, err = exec.Command(self, "remote", "install-self", dest, "--over=none").Output()
 	if err != nil || string(out) != "kept build=0.1.0\n" {
 		t.Errorf("the same release again: %q, %v", out, err)
 	}
 	os.Remove(dest)
 	os.Mkdir(dest, 0o755)
-	if out, err := exec.Command(self, "remote", "install-self", dest).CombinedOutput(); err == nil || !strings.Contains(string(out), "not a regular file") {
+	if out, err := exec.Command(self, "remote", "install-self", dest, "--over=none").CombinedOutput(); err == nil || !strings.Contains(string(out), "not a regular file") {
 		t.Errorf("over a directory: %q, %v", out, err)
 	}
 }
@@ -782,5 +819,106 @@ func TestBounded(t *testing.T) {
 	}
 	if InitCmd("d@h", DefaultApps) != "kasbah server init d@h" || InitCmd("d@h", "/srv") != "kasbah server init d@h --apps-path=/srv" {
 		t.Error("InitCmd")
+	}
+}
+
+// A dev build asks before it replaces a release, and only then; every change
+// of the server's binary is one line.
+func TestEnsureDevOverRelease(t *testing.T) {
+	const ours = "0.1.0-dev.142.1760790000"
+	RunTimeout = 2
+	t.Cleanup(func() { RunTimeout = 30 })
+	saved, savedNotes := ShipDev, Notes
+	t.Cleanup(func() { ShipDev, Notes = saved, savedNotes })
+	noTTY := &prompt.Prompter{In: strings.NewReader(""), Out: &cli.Output{Stdout: io.Discard, Stderr: io.Discard}}
+	cases := []struct {
+		name   string
+		server string // "" none
+		given  prompt.Given
+		asked  bool
+		refuse string // "" ships
+		kept   bool   // the refusal is the hand-off to the server's build
+		note   string
+		race   string // the releases other operators install meanwhile, one per install
+	}{
+		{"release, no tty", "0.0.9", prompt.Unset, true, "pass --ship-dev or --keep-server", false, "", ""},
+		{"release, --ship-dev", "0.0.9", prompt.Yes, true, "", false, "server kasbah 0.0.9 → " + ours, ""},
+		{"release, --keep-server", "0.0.9", prompt.No, true, "keeps its kasbah 0.0.9", true, "", ""},
+		{"an rc", "0.0.9-rc.1", prompt.Unset, true, "--keep-server", false, "", ""},
+		{"dev build", "0.1.0-dev.141.1760790000+gabc1234", prompt.Unset, false, "", false, "server kasbah 0.1.0-dev.141.1760790000+gabc1234 → " + ours, ""},
+		{"none", "", prompt.Unset, false, "", false, "server kasbah (none) → " + ours, ""},
+		{"race, no tty", "", prompt.Unset, true, "pass --ship-dev or --keep-server", false, "", "0.0.9"},
+		{"race, --ship-dev", "", prompt.Yes, true, "", false, "server kasbah 0.0.9 → " + ours, "0.0.9"},
+		{"race, --keep-server", "", prompt.No, true, "keeps its kasbah 0.0.9", true, "", "0.0.9"},
+		{"race twice, --ship-dev", "", prompt.Yes, true, "keeps its kasbah 0.0.8", true, "", "0.0.9,0.0.8"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			stubSSH(t)
+			s := newScratch(t)
+			s.marker(s.apps)
+			bin := Path(s.apps)
+			var before [32]byte
+			if tt.server != "" {
+				fake(t, bin, tt.server, "", 0o755)
+				before = sum(t, bin)
+			}
+			local := filepath.Join(s.root, "local", "kasbah-linux")
+			first, last := "", ""
+			if tt.race != "" {
+				races := strings.Split(tt.race, ",")
+				first, last = races[0], races[len(races)-1]
+			}
+			mode := ""
+			if tt.race != "" {
+				mode = "plant:" + tt.race
+			}
+			fake(t, local, ours, mode, 0o755)
+			asked := false
+			ShipDev = func(server, o string) (bool, error) {
+				asked = true
+				if server != cmp.Or(first, tt.server) || o != ours {
+					t.Errorf("asked about %s over %s", o, server)
+				}
+				return AskShipDev(noTTY, tt.given, server, o)
+			}
+			var notes bytes.Buffer
+			Notes = &cli.Output{Stdout: io.Discard, Stderr: &notes}
+			c, err := ssh.Connect("d@h")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			res, err := Ensure(c, remote.Self(ours), func(string) (string, error) { return local, nil }, Options{})
+			if asked != tt.asked {
+				t.Errorf("asked: %v, want %v", asked, tt.asked)
+			}
+			if got := strings.TrimSpace(notes.String()); got != tt.note {
+				t.Errorf("notes %q, want %q", got, tt.note)
+			}
+			if tt.refuse != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.refuse) {
+					t.Fatalf("got %+v, %v; want a refusal saying %q", res, err, tt.refuse)
+				}
+				var n *remote.Newer
+				if errors.As(err, &n) != tt.kept || (tt.kept && n.Server != cmp.Or(last, tt.server)) {
+					t.Errorf("hand-off to the server's build: %v, want %v (%v)", !tt.kept, tt.kept, err)
+				}
+				if tt.race != "" {
+					if o, _ := exec.Command(bin, "remote", "version").Output(); string(o) != "build="+last+"\n" {
+						t.Errorf("the release installed meanwhile was replaced: %q", o)
+					}
+				} else if sum(t, bin) != before {
+					t.Error("a refusal replaced the server's binary")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Action != remote.Ship || res.Now != ours || sum(t, bin) != sum(t, local) {
+				t.Errorf("got %+v; want this build shipped", res)
+			}
+		})
 	}
 }

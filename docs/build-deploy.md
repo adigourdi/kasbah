@@ -161,7 +161,8 @@ below). The only differences:
 ```
 1. Open SSH ControlMaster (see "SSH multiplexing" below).
 2. Check SSH reachability (fail fast), and ship the kasbah binary to
-   <apps>/.kasbah/bin/kasbah if the server's is absent or older.
+   <apps>/.kasbah/bin/kasbah if the server's is absent or older — asking
+   first when a dev build would replace a release (`cli.md` → Hand-off).
 3. Resolve version = HEAD's v-tag. Fail if HEAD isn't tagged.
 4. Ensure remote dirs exist (`kasbah remote deploy prepare`):
      /apps/<name>/, backups/, /apps/data/<name>/

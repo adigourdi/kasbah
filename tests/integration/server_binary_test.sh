@@ -11,7 +11,10 @@
 # A newer same-major build is refused, and the workstation hands the command
 # off to that build when it is installed under KASBAH_LIB_DIR. A release
 # build replaces a dev build of its major however the two order, and a dev
-# build never replaces the release it ranks below.
+# build never replaces the release it ranks below. A dev build over a release
+# that ranks below it asks first: without a terminal or --ship-dev/--keep-server
+# it fails naming both; --keep-server hands off to the release when it is
+# installed; --ship-dev ships. Every change prints `server kasbah OLD → NEW`.
 #
 # Also: an unprepared server refuses with exit 4; a server binary from another
 # build is refused before it replaces anything; two workstations racing end on
@@ -101,7 +104,7 @@ if [ ! -f "$ours_server" ]; then
 fi
 
 # --- Variant builds -----------------------------------------------------------
-older="$major.0.0-0"
+older="$major.0.0-dev.0.0"
 newer="$major.999999.0"
 next_major="$((major + 1)).0.0"
 # A release of our major that outranks our build — our own base version when
@@ -114,6 +117,8 @@ else
     release="${base%.*}.$(( ${base##*.} + 1 ))"
 fi
 dev_above="$major.999999.0-dev.1.1+gabc1234.dirty"
+# A release ours replaces, when ours is a dev build of a later version.
+below="$major.0.0"
 
 mkdir -p "$repo_dir/.cache"
 variants=$(mktemp -d "$repo_dir/.cache/server-binary-test.XXXXXX")
@@ -126,7 +131,7 @@ if ! docker compose -f "$repo_dir/compose.yml" run --rm -T --entrypoint sh build
                 -o "'"$rel"'/kasbah-$v" ./cmd/kasbah
         done
         GOOS=linux GOARCH='"$arch"' go build -o "'"$rel"'/hang" "'"$rel"'/hang.go"' \
-        sh "$older" "$newer" "$next_major" "$release" "$dev_above" >"$tmpdir/build.log" 2>&1 </dev/null; then
+        sh "$older" "$newer" "$next_major" "$release" "$dev_above" "$below" >"$tmpdir/build.log" 2>&1 </dev/null; then
     echo "error: could not build the variant server binaries:" >&2
     cat "$tmpdir/build.log" >&2
     exit 2
@@ -161,6 +166,7 @@ newer_sha=$(sha "$variants/kasbah-$newer")
 major_sha=$(sha "$variants/kasbah-$next_major")
 release_sha=$(sha "$variants/kasbah-$release")
 dev_above_sha=$(sha "$variants/kasbah-$dev_above")
+below_sha=$(sha "$variants/kasbah-$below")
 
 # --- Case 0: a server init never prepared -------------------------------------
 ensure; rc=$?
@@ -186,6 +192,7 @@ rig_ssh "rm -rf $bin_dir" >/dev/null 2>&1
 ensure; rc=$?
 assert '[ "$rc" = 0 ]' "absent: ensure succeeds (exit $rc: $(err))"
 assert '[ "$(out)" = "shipped=none->$ours" ]' "absent: the workstation's build is shipped (said '$(out)')"
+assert 'grep -qxF "server kasbah (none) → $ours" <<<"$(err)"' "absent: the change is one line on stderr (said '$(err)')"
 assert '[ "$(server_sha)" = "$ours_sha" ]' "absent: the server holds the workstation's server build ($(server_sha))"
 assert '[ "$(bin_dir_list)" = ".lock
 kasbah" ]' "absent: the binary and the install lock, nothing else, in $bin_dir ($(bin_dir_list | tr '\n' ' '))"
@@ -204,6 +211,7 @@ assert '[ "$(server_sha)" = "$older_sha" ]' "older: the older build is planted"
 ensure; rc=$?
 assert '[ "$rc" = 0 ]' "older: ensure succeeds (exit $rc: $(err))"
 assert '[ "$(out)" = "shipped=$older->$ours" ]' "older: replaced, naming both builds (said '$(out)')"
+assert 'grep -qxF "server kasbah $older → $ours" <<<"$(err)"' "older: a dev build on the server is replaced without a question, in one line (said '$(err)')"
 assert '[ "$(server_sha)" = "$ours_sha" ]' "older: the server now holds the workstation's build"
 assert '[ -z "$(uploads_left)" ]' "older: no upload left behind ($(uploads_left))"
 
@@ -213,6 +221,7 @@ ensure; rc=$?
 inode_after=$(rig_ssh "stat -c %i $bin" 2>/dev/null | tr -d '\r')
 assert '[ "$rc" = 0 ]' "same: ensure succeeds (exit $rc: $(err))"
 assert '[ "$(out)" = "kept=$ours" ]' "same: kept (said '$(out)')"
+assert '[ -z "$(err)" ]' "same: nothing changed, nothing said (said '$(err)')"
 assert '[ "$inode_before" = "$inode_after" ] && [ "$(server_sha)" = "$ours_sha" ]' \
     "same: the file was not rewritten (inode $inode_before → $inode_after)"
 
@@ -281,6 +290,50 @@ else
     assert 'false' "release over dev: the rig ($machine) is not this machine's architecture ($(uname -m)); the release build cannot run here"
 fi
 
+# --- Case 4c: a dev build over a release asks first --------------------------
+dev_ours=no
+case $ours in *-*.*.*.*) [ "${ours%%-*}" != "$below" ] && dev_ours=yes ;; esac
+if [ "$dev_ours" = no ]; then
+    echo "  note: $ours is no dev build above $below; the dev-over-release case does not apply" >&2
+elif [ "$(uname -m)" != "$machine" ]; then
+    assert 'false' "dev over release: the rig ($machine) is not this machine's architecture ($(uname -m)); the release build cannot run here"
+else
+    plant "$variants/kasbah-$below"
+    ensure; rc=$?
+    assert '[ "$rc" = 1 ] && grep -qF -- "--ship-dev or --keep-server" <<<"$(err)" && grep -qF "$below" <<<"$(err)"' \
+        "dev over release, no terminal and no flag: fails naming both flags and the release (exit $rc: $(err))"
+    assert '[ -z "$(out)" ] && [ "$(server_sha)" = "$below_sha" ] && [ -z "$(uploads_left)" ]' \
+        "dev over release, unanswered: nothing was replaced ($(out); $(bin_dir_list | tr '\n' ' '))"
+    ensure --ship-dev --keep-server; rc=$?
+    assert '[ "$rc" = 1 ] && grep -qF "cannot both be given" <<<"$(err)" && [ "$(server_sha)" = "$below_sha" ]' \
+        "dev over release: both flags are refused (exit $rc: $(err))"
+    ensure --keep-server; rc=$?
+    assert '[ "$rc" = 1 ] && grep -qF "keeps its kasbah $below" <<<"$(err)" && grep -qF "checkout" <<<"$(err)"' \
+        "--keep-server from a checkout: keeps the release and says a checkout does not hand off (exit $rc: $(err))"
+    assert '[ "$(server_sha)" = "$below_sha" ] && [ -z "$(uploads_left)" ]' "--keep-server: nothing was replaced"
+    kept_lib="$tmpdir/keptlib"
+    mkdir -p "$kept_lib/$ours/server" "$kept_lib/$below"
+    cp "$KASBAH_BIN" "$kept_lib/$ours/kasbah"
+    cp "$ours_server" "$kept_lib/$ours/server/kasbah-linux-$arch"
+    cp "$variants/kasbah-$below" "$kept_lib/$below/kasbah"
+    kept_ensure() {
+        env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" KASBAH_LIB_DIR="$kept_lib" \
+            "$kept_lib/$ours/kasbah" __ensure-server "$@" "$RIG_TARGET" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
+    }
+    kept_ensure --keep-server; rc=$?
+    assert '[ "$rc" = 0 ] && [ "$(out)" = "kept=$below" ]' \
+        "--keep-server, the release installed: the run hands off to it, without the flag it does not know (exit $rc: $(out) $(err))"
+    assert '[ "$(server_sha)" = "$below_sha" ] && [ -z "$(uploads_left)" ]' "--keep-server hand-off: nothing was replaced"
+    rm -rf "${kept_lib:?}/$below"
+    kept_ensure --keep-server; rc=$?
+    assert '[ "$rc" = 1 ] && grep -qF "kasbah self-update v$below" <<<"$(err)"' \
+        "--keep-server, the release not installed: aborts naming self-update (exit $rc: $(err))"
+    ensure --ship-dev; rc=$?
+    assert '[ "$rc" = 0 ] && [ "$(out)" = "shipped=$below->$ours" ]' "--ship-dev: ships over the release (exit $rc: $(out) $(err))"
+    assert 'grep -qxF "server kasbah $below → $ours" <<<"$(err)"' "--ship-dev: the change is one line (said '$(err)')"
+    assert '[ "$(server_sha)" = "$ours_sha" ] && [ -z "$(uploads_left)" ]' "--ship-dev: the server holds the dev build"
+fi
+
 # --- Case 5: newer major → refusal, nothing replaced --------------------------
 plant "$variants/kasbah-$next_major"
 ensure; rc=$?
@@ -332,9 +385,11 @@ if [ "$(uname -m)" = "$machine" ]; then
         kasbah_cli __ensure-server "$RIG_TARGET" >"$tmpdir/race_a" 2>&1 </dev/null; rc_a=$?
         wait "$pid_b"; rc_b=$?
         a=$(tr -d '\r' <"$tmpdir/race_a"); b=$(tr -d '\r' <"$tmpdir/race_b")
+        # The result line is the last; a change line may precede it.
+        b_result=${b##*$'\n'}
         assert '[ "$rc_a" = 0 ] && [ "$rc_b" = 0 ]' "race $round: both runs succeed ($rc_a: $a / $rc_b: $b)"
         assert '[ "$(server_sha)" = "$ours_sha" ]' "race $round: the server ends on the newer build (A: $a, B: $b)"
-        assert 'case $b in "shipped="*"->$older"|"shipped="*"->$ours"|"kept=$ours"|"kept=$older") true ;; *) false ;; esac' \
+        assert 'case $b_result in "shipped="*"->$older"|"shipped="*"->$ours"|"kept=$ours"|"kept=$older") true ;; *) false ;; esac' \
             "race $round: the older run reports what it did truthfully, handed off or not (said '$b')"
         assert '[ -z "$(uploads_left)" ]' "race $round: no upload left ($(uploads_left))"
     done
