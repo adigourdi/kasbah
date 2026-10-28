@@ -311,7 +311,7 @@ assert '[[ "$f_backup" =~ ^backups/pre-deploy-[0-9]{8}-[0-9]{6}\.txt\.gz$ ]]' \
     "field 4 is the backup path (got '$f_backup')"
 assert '[ "$f_kasbah" = "kasbah=$kasbah_version" ]' \
     "then kasbah=<version>, which is the kasbah that drove it (got '$f_kasbah')"
-assert '[ -z "$f_extra" ]' "and nothing after digest= yet (got '$f_extra')"
+assert '[ "$f_extra" = "by=stevedore" ]' "then by=<ssh user>, and nothing after it yet (got '$f_extra')"
 
 # One session, one line per fact, validated as a complete key set before any
 # assertion reads a value. Each image is inspected on its own: `docker image

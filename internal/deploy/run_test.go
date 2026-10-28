@@ -45,10 +45,11 @@ func (f *fake) Marker() (*marker.Marker, error) {
 	f.log("marker")
 	return &marker.Marker{AppsPath: "/apps", DataPath: "/data", CPULimit: "1", MemLimit: "1g"}, nil
 }
-func (f *fake) Prepare(string) error              { return nil }
-func (f *fake) ShipTemplate(string, string) error { return nil }
-func (f *fake) Setup(string, bool) int            { return 0 }
-func (f *fake) Close()                            {}
+func (f *fake) HoldServer(string, string) (func(), error) { return func() {}, nil }
+func (f *fake) Prepare(string) error                      { return nil }
+func (f *fake) ShipTemplate(string, string) error         { return nil }
+func (f *fake) Setup(string, bool) int                    { return 0 }
+func (f *fake) Close()                                    {}
 func (f *fake) Sync(e Entry, base string) error {
 	f.log("sync " + e.Src)
 	if fi, err := os.Lstat(e.Src); err == nil && f.mtimes != nil {

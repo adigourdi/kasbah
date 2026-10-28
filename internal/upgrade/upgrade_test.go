@@ -220,6 +220,9 @@ func (f *fake) Marker() (*marker.Marker, error) {
 	return &marker.Marker{AppsPath: "/apps", DataPath: "/apps/data"}, nil
 }
 func (f *fake) Close() {}
+func (f *fake) Lock(apps string) (func(), error) {
+	return func() {}, nil
+}
 func (f *fake) Call(stdin []byte, bounded bool, args ...string) ([]byte, int) {
 	f.calls = append(f.calls, args[0]+" "+args[1])
 	j := func(v any) []byte { b, _ := json.Marshal(v); return b }

@@ -52,8 +52,8 @@ Flags:
   turns out to be able to delete.
 - `--backup-repo-base=<url>` — the repository base, ending in `/`. kasbah never
   parses it, so any restic backend works. Asked only when the marker records
-  none. **Do not embed credentials in it** — the marker is mode 644 by
-  contract, so a secret in this URL is world-readable on the VPS.
+  none. **Do not embed credentials in it** — the marker is mode 664 by
+  contract, world-readable, so a secret in this URL is readable by anyone on the VPS.
 - `--backup-env=KEY=VALUE` (repeatable) / `--no-backup-env` — the storage
   credentials and anything else restic needs in its environment, written mode
   600. Asked once, on the run that creates the file; after that the file is the
@@ -284,7 +284,8 @@ marker and drops that row, exactly as `server status` does.
 Three round trips: the bootstrap probe (which brings kasbah's own binary up to
 date), one batched read of the whole server (`kasbah remote prune scan`), and —
 only if there is something to remove and the operator said yes — one removal
-(`kasbah remote prune rm`). Every decision is made on the workstation. Exits 4
+(`kasbah remote prune rm <apps> <tag>…`), holding the server lock exclusively
+(`server-setup.md` → Operators). Every decision is made on the workstation. Exits 4
 on a host with no server marker, 1 on one whose marker cannot be read: prune
 does not delete images on a machine it cannot tell is a kasbah server.
 
@@ -892,7 +893,9 @@ Either decline exits 1 having changed nothing but, possibly, kasbah's own binary
 without a terminal an unanswered prompt is a hard fail naming `--yes`.
 
 Takes `<project>/.deploy.lock` **in the act**, the same exclusive lock
-the deploy engine holds, so nothing is removed while a deploy is running. The
+the deploy engine holds (and, for the whole run, the server lock
+`<apps>/.kasbah/server.lock` shared, so it never runs inside a `server init`
+or `upgrade-traefik`), so nothing is removed while a deploy is running. The
 batched read, the plan and both confirmations run **unlocked** — a read step
 never writes into the tree it is reading — so a deploy starting while you answer
 the second prompt makes the act refuse. That refusal reads as one: a run stopped
@@ -913,7 +916,8 @@ refused `--prune`.
 ### `kasbah history [USER@HOST] [--all]`
 
 Tabular view of `versions.log`. Columns: timestamp, action, version,
-backup file, kasbah version.
+backup file, kasbah version, and BY — the operator whose ssh user wrote the
+line (`by=`; empty for lines written before it existed).
 
 A line the frozen format cannot be read out of is still shown — in place,
 marked, as the bytes the file holds. Inventing column values for it would
@@ -1199,7 +1203,8 @@ prompt is a hard fail naming the flag). A server already at this major does
 nothing and exits 0.
 
 On the server (`kasbah remote migrate`, outliving a dropped session): the
-migration lock `<apps>/.kasbah/migrate.lock` and every project's
+migration lock `<apps>/.kasbah/migrate.lock`, the server lock
+`<apps>/.kasbah/server.lock` (exclusive) and every project's
 `.deploy.lock` are taken without waiting (a held one refuses, naming the
 project); every file the steps declare, plus the marker, is written into
 `<apps>/.kasbah/migrate/<from>-to-<to>-<stamp>.tar` before anything is

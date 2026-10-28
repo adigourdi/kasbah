@@ -17,6 +17,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/rootsteps"
 	"github.com/adigourdi/kasbah/internal/serverbin"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/tree"
 )
@@ -48,11 +49,13 @@ func Features(p *prompt.Prompter, o Options) (mail, backup bool, err error) {
 	return
 }
 
-// session is one run's connection and, once shipped, the server's binary.
+// session is one run's connection and, once shipped, the server's binary;
+// release lets go of the server lock once it is held.
 type session struct {
-	conn   *ssh.Conn
-	target string
-	bin    string
+	conn    *ssh.Conn
+	target  string
+	bin     string
+	release func()
 }
 
 // script runs a bootstrap step under the server's sh with its args as $1….
@@ -92,12 +95,19 @@ func (s *session) send(body []byte, args ...string) (string, int) {
 	return s.call(body, true, append(args, size, sum)...)
 }
 
+// ensure ships the server's binary, then takes the server lock exclusive for
+// the rest of the run: no deploy, rollback or drop runs under an init.
 func (s *session) ensure(c Ctx, apps string) (*serverbin.Result, error) {
 	res, err := serverbin.Ensure(s.conn, c.Self, c.Local, serverbin.Options{Apps: apps})
 	if err != nil {
 		return nil, err
 	}
 	s.bin = serverbin.Path(res.Apps)
+	if s.release == nil {
+		if s.release, err = serverlock.Hold(s.conn, s.bin, res.Apps, serverlock.Exclusive, "server init"); err != nil {
+			return nil, err
+		}
+	}
 	return res, nil
 }
 
@@ -309,6 +319,11 @@ func Run(c Ctx, o Options) (err error) {
 	}
 	defer conn.Close()
 	s := &session{conn: conn, target: o.Target}
+	defer func() {
+		if s.release != nil {
+			s.release()
+		}
+	}()
 	target := o.Target
 
 	f, err := s.probe(o)
@@ -401,6 +416,9 @@ func Run(c Ctx, o Options) (err error) {
 				return cli.Fail("the mail stack read on %s reported nothing kasbah can use", target).Cont(
 					"the step was truncated, or the server's kasbah rejected it — raw output:", "| "+strings.TrimSpace(body))
 			}
+		}
+		if mr.EnvOwner != "" {
+			return serverlock.PrivateRefusal("--with-mail", mr.EnvOwner, o.Apps+"/mail/.env")
 		}
 		if mcur, err = MailCurrent(&mr, target); err != nil {
 			return err
@@ -529,6 +547,23 @@ func Run(c Ctx, o Options) (err error) {
 		return err
 	}
 
+	// The seeds before DMS's first start.
+	var mlay, mst Facts
+	var mchanged []string
+	if mailOn {
+		if mlay, err = s.mailLayout(o, mrendered, mv); err != nil {
+			return err
+		}
+	}
+
+	// After the layouts made every directory, before any file Traefik reads
+	// lands: what follows is born the group's and never re-grouped, which
+	// would move its ctime ("_mail.yml landed before Traefik started").
+	early, err := s.group(o, f["user"])
+	if err != nil {
+		return err
+	}
+
 	var changed []string
 	restart := false
 	for _, rel := range Files {
@@ -544,13 +579,8 @@ func Run(c Ctx, o Options) (err error) {
 	}
 
 	// Before Traefik starts, so it requests both certificates at
-	// configuration load; the seeds before DMS's first start.
-	var mlay, mst Facts
-	var mchanged []string
+	// configuration load.
 	if mailOn {
-		if mlay, err = s.mailLayout(o, mrendered, mv); err != nil {
-			return err
-		}
 		if mchanged, err = s.mailSync(o, mrendered, mcur); err != nil {
 			return err
 		}
@@ -616,41 +646,76 @@ func Run(c Ctx, o Options) (err error) {
 		return err
 	}
 
+	// The group step's root commands go in one block with the pointer's.
+	user := f["user"]
+	// Read again at the end: <data> may not have existed before the layout.
+	gf, err := s.group(o, user)
+	if err != nil {
+		return err
+	}
+	if gf["group_action"] == "unchanged" && strings.HasPrefix(early["group_action"], "converged") {
+		gf["group_action"] = early["group_action"]
+	}
 	pt, err := s.pointer(o)
 	if err != nil {
 		return err
 	}
-	if b := PointerBlock(pt, target, o.Apps, f["user"]); !b.Empty() {
+	both := func(g, p Facts) *rootsteps.Block {
+		b := GroupBlock(g, target, o.Apps, o.Data, user)
+		b.Add(PointerBlock(p, target, o.Apps, user).Commands...)
+		return b
+	}
+	if b := both(gf, pt); !b.Empty() {
 		dir := pointerPath[:strings.LastIndex(pointerPath, "/")]
-		last := pt
+		last, lastG := pt, gf
 		why := func() []string {
-			if last["pointer"] == "nosudo" {
-				return []string{fmt.Sprintf("%s on %s is how a server prepared outside %s is found, and only root can write it.", pointerPath, target, DefaultApps)}
+			var l []string
+			if !GroupBlock(lastG, target, o.Apps, o.Data, user).Empty() {
+				l = append(l, GroupWhy(target, o.Apps, user))
 			}
-			return []string{fmt.Sprintf("%s on %s is mode %s, not 755: a user who cannot traverse it reads no pointer.", dir, target, last["pointer_dir_mode"])}
+			switch {
+			case PointerBlock(last, target, o.Apps, user).Empty():
+			case last["pointer"] == "nosudo":
+				l = append(l, fmt.Sprintf("%s on %s is how a server prepared outside %s is found, and only root can write it.", pointerPath, target, DefaultApps))
+			default:
+				l = append(l, fmt.Sprintf("%s on %s is mode %s, not 755: a user who cannot traverse it reads no pointer.", dir, target, last["pointer_dir_mode"]))
+			}
+			return l
 		}
 		done, left, err := rootsteps.Await(c.Prompter, why, b, func() (*rootsteps.Block, error) {
+			ng, err := s.group(o, user)
+			if err != nil {
+				return nil, err
+			}
 			next, err := s.pointer(o)
 			if err != nil {
 				return nil, err
 			}
-			if nb := PointerBlock(next, target, o.Apps, f["user"]); !nb.Empty() {
-				last = next
+			nb := both(ng, next)
+			if !nb.Empty() {
+				last, lastG = next, ng
 				return nb, nil
 			}
+			last, lastG = next, ng
 			return nil, nil
 		})
 		if err != nil {
 			return err
 		}
+		if done && gf["group_action"] == "nosudo" {
+			lastG["group_action"] = "converged by hand"
+		}
+		gf = lastG
 		// On a terminal the block is already on screen; a hard fail repeats it
 		// so the error stands on its own.
 		shown := c.Prompter.TTY
+		pointerLeft := !PointerBlock(last, target, o.Apps, user).Empty()
 		switch {
-		case done && pt["pointer"] == "nosudo":
+		case !pointerLeft && pt["pointer"] == "nosudo":
 			pt = Facts{"pointer": "written by hand"}
-		case done:
+		case !pointerLeft && !PointerBlock(pt, target, o.Apps, user).Empty():
 			pt = Facts{"pointer": "unchanged, " + dir + " repaired by hand"}
+		case !pointerLeft:
 		case last["pointer"] == "nosudo":
 			if err := PointerVerdict(out, last["pointer"], target, o.Apps, f["user"], left, shown); err != nil {
 				return err
@@ -663,6 +728,13 @@ func Run(c Ctx, o Options) (err error) {
 				printBlock(out, left)
 			}
 			pt = last
+		}
+		if !GroupBlock(gf, target, o.Apps, o.Data, user).Empty() {
+			out.Warn("%s on %s is not the '%s' group's yet, and `sudo -n` is not available to %s", o.Apps, target, serverlock.Group, user)
+			out.Warn("nothing is broken for %s: only a second operator's deploy needs it.", user)
+			if !shown && !pointerLeft {
+				printBlock(out, left)
+			}
 		}
 	} else if err := PointerVerdict(out, pt["pointer"], target, o.Apps, f["user"], b, false); err != nil {
 		return err
@@ -707,6 +779,7 @@ func Run(c Ctx, o Options) (err error) {
 	if backupOn {
 		reportBackup(out, o, bv, brep)
 	}
+	out.Info("  group: %s, %s; add an operator: ssh %s 'sudo usermod -aG %s <user>'", serverlock.Group, GroupState(gf), target, serverlock.Group)
 	out.Info("  marker: %s (%s)", markerPath, mk["marker"])
 	out.Info("  pointer: %s -> %s (%s)", Pointer, o.Apps, pt["pointer"])
 	return nil

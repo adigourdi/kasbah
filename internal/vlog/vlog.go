@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 )
@@ -21,7 +22,24 @@ import (
 const (
 	Log     = "versions.log"
 	Archive = "versions.log.gz"
+	// Mode is both files': every operator in the kasbah group appends.
+	Mode = 0o664
 )
+
+// owned is whether this process's user owns the file: only the owner may
+// chmod it, whatever its group bits allow.
+func owned(fi os.FileInfo) bool {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && int(st.Uid) == os.Getuid()
+}
+
+// fixMode puts a file this user owns back to Mode; another operator's is
+// left as it is.
+func fixMode(path string) {
+	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm() != Mode && owned(fi) {
+		os.Chmod(path, Mode)
+	}
+}
 
 // Entry is one non-blank line. OK is the frozen-format predicate: four
 // non-empty positional fields, the first beginning YYYY-MM-DDT. A line that
@@ -30,7 +48,7 @@ type Entry struct {
 	Raw                           string
 	OK                            bool
 	Time, Action, Version, Backup string
-	Kasbah, Digest                string
+	Kasbah, Digest, By            string
 }
 
 var reStamp = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T`)
@@ -55,6 +73,8 @@ func Parse(line string) Entry {
 			e.Kasbah = v
 		} else if v, ok := strings.CutPrefix(p, "digest="); ok {
 			e.Digest = v
+		} else if v, ok := strings.CutPrefix(p, "by="); ok {
+			e.By = v
 		}
 	}
 	return e
@@ -78,9 +98,9 @@ func Stamp(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05-07:0
 // Line renders an entry. Every value is refused when empty or holding
 // whitespace: either would shift every field after it, in a file every later
 // kasbah must parse.
-func Line(ts, action, version, backup, kasbah, digest string) (string, error) {
+func Line(ts, action, version, backup, kasbah, digest, by string) (string, error) {
 	for _, p := range [][2]string{{"timestamp", ts}, {"action", action}, {"version", version},
-		{"backup path", backup}, {"kasbah version", kasbah}, {"digest", digest}} {
+		{"backup path", backup}, {"kasbah version", kasbah}, {"digest", digest}, {"user", by}} {
 		if p[1] == "" {
 			return "", fmt.Errorf("refusing to write versions.log: the %s is empty, which would shift every field after it", p[0])
 		}
@@ -88,7 +108,7 @@ func Line(ts, action, version, backup, kasbah, digest string) (string, error) {
 			return "", fmt.Errorf("refusing to write versions.log: the %s ('%s') contains whitespace or a control character, which would shift every field after it", p[0], p[1])
 		}
 	}
-	return fmt.Sprintf("%s %s %s %s kasbah=%s digest=%s", ts, action, version, backup, kasbah, digest), nil
+	return fmt.Sprintf("%s %s %s %s kasbah=%s digest=%s by=%s", ts, action, version, backup, kasbah, digest, by), nil
 }
 
 // Append adds one line to dir's log. A last line with no newline — an append
@@ -96,11 +116,12 @@ func Line(ts, action, version, backup, kasbah, digest string) (string, error) {
 // repaired is true.
 func Append(dir, line string) (repaired bool, err error) {
 	path := filepath.Join(dir, Log)
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0o666)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|os.O_CREATE, Mode)
 	if err != nil {
 		return false, fmt.Errorf("could not append to %s", path)
 	}
 	defer f.Close()
+	fixMode(path)
 	if fi, err := f.Stat(); err == nil && fi.Size() > 0 {
 		b := make([]byte, 1)
 		if _, err := f.ReadAt(b, fi.Size()-1); err != nil {
@@ -192,7 +213,7 @@ func (e RotateError) Error() string {
 
 // Rotate moves entries older than (now's month − 3) into the archive, archive
 // first, so a crash duplicates rather than loses. Kept lines travel byte for
-// byte; the log keeps its mode, a new archive takes it.
+// byte; both files end at Mode wherever this user owns them.
 func Rotate(dir string, now time.Time) (moved, cut int, err error) {
 	log := filepath.Join(dir, Log)
 	gz := filepath.Join(dir, Archive)
@@ -244,15 +265,7 @@ func Rotate(dir string, now time.Time) (moved, cut int, err error) {
 	if zw.Close() != nil || os.WriteFile(part, z.Bytes(), 0o666) != nil {
 		return 0, cut, Untouched
 	}
-	var gzmode os.FileMode
-	if gi, err := os.Stat(gz); err == nil {
-		gzmode = gi.Mode().Perm()
-	} else if !errors.Is(err, os.ErrNotExist) {
-		gzmode = 0
-	} else {
-		gzmode = fi.Mode().Perm()
-	}
-	af, err := os.OpenFile(gz, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o666)
+	af, err := os.OpenFile(gz, os.O_WRONLY|os.O_APPEND|os.O_CREATE, Mode)
 	appended := err == nil
 	if appended {
 		if _, err := af.Write(z.Bytes()); err != nil {
@@ -264,17 +277,14 @@ func Rotate(dir string, now time.Time) (moved, cut int, err error) {
 	}
 	// Applied after a short append too: those bytes are in a file someone has
 	// to open to repair it.
-	if gzmode != 0 {
-		os.Chmod(gz, gzmode)
-	}
+	fixMode(gz)
 	if !appended {
 		return 0, cut, Partial
 	}
-	perm := fi.Mode().Perm()
 	if os.Rename(keep, log) != nil {
 		return 0, cut, Duplicated
 	}
-	os.Chmod(log, perm)
+	os.Chmod(log, Mode)
 	return moved, cut, nil
 }
 

@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
@@ -83,8 +84,9 @@ type engine struct {
 	preName      string
 	postName     string
 	verb         string
-	// lockFile holds the flock until the run returns; any exit releases it.
-	lockFile *os.File
+	// lockFile and serverLock hold their flocks until the run returns; any
+	// exit releases them.
+	lockFile, serverLock *os.File
 }
 
 func (e *engine) note(format string, a ...any) {
@@ -120,6 +122,9 @@ func Engine(dir string, stdin io.Reader, stdout, stderr io.Writer) int {
 	r, err := e.run()
 	if e.lockFile != nil {
 		defer e.lockFile.Close()
+	}
+	if e.serverLock != nil {
+		defer e.serverLock.Close()
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "remote: %v\n", err)
@@ -220,7 +225,7 @@ func (e *engine) run() (*Report, error) {
 	if kv == "" {
 		kv = "unknown"
 	}
-	line, err := vlog.Line(vlog.Stamp(e.now()), sp.Mode, sp.Version, backup, kv, digest)
+	line, err := vlog.Line(vlog.Stamp(e.now()), sp.Mode, sp.Version, backup, kv, digest, serverlock.Who())
 	if err != nil {
 		return nil, fatal{err.Error()}
 	}
@@ -243,10 +248,11 @@ func (e *engine) run() (*Report, error) {
 }
 
 // lock is flock(2) on .deploy.lock, held until the process exits — the lock
-// util-linux's flock takes, so `drop` sees the same one.
+// util-linux's flock takes, so `drop` sees the same one — then the server
+// lock, shared, so no server-wide step runs under the deploy.
 func (e *engine) lock() error {
 	path := filepath.Join(e.dir, ".deploy.lock")
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o666)
+	f, err := serverlock.Open(path)
 	if err != nil {
 		return failf("could not open the lock file %s", path)
 	}
@@ -261,6 +267,11 @@ func (e *engine) lock() error {
 		return failf("another deploy or rollback is already running in %s — it holds the lock on %s", e.dir, path)
 	}
 	e.lockFile = f
+	sl, err := serverlock.Take(filepath.Dir(e.dir), serverlock.Shared, "")
+	if err != nil {
+		return failf("%s", strings.TrimSuffix(err.Error(), " Nothing was changed; re-run once it has finished."))
+	}
+	e.serverLock = sl
 	return nil
 }
 
@@ -421,7 +432,11 @@ func (e *engine) backup() (string, error) {
 	}
 	// A name the rotation glob cannot match until the dump is whole.
 	tmp := filepath.Join(e.dir, file+".partial")
-	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o666)
+	// 660: a dump holds the project's data, the operators' group's and no one else's.
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o660)
+	if err == nil {
+		err = out.Chmod(0o660)
+	}
 	if err != nil {
 		return "", failf("could not write %s", tmp)
 	}

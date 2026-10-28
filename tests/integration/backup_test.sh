@@ -250,7 +250,7 @@ assert 'grep -qF "repository base carries a credential" "$tmpdir/err"' \
 assert 'grep -qF "mode 644 by contract" "$tmpdir/err"' \
     "naming where that string then ends up"
 marker_mode=$(rig_ssh "stat -c '%a' $marker" 2>/dev/null)
-assert '[ "$(nocr "$marker_mode")" = "644" ]' \
+assert '[ "$(nocr "$marker_mode")" = "664" ]' \
     "which is true: the marker really is world-readable (got '$marker_mode')"
 
 # Everything the stack leaves on the server, read off the rig rather than

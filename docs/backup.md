@@ -146,7 +146,7 @@ one password per repository means a departing client's repository can be
 handed over with its password without exposing any other.
 
 **Never embed a credential in the repository URL.** `repo_base` is recorded
-in the server marker, which is mode **644** by contract — a URL carrying a
+in the server marker, which is mode **664** by contract — a URL carrying a
 secret is world-readable on the VPS. Credentials belong in the environment
 block, which is mode 600.
 

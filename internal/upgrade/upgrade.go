@@ -23,6 +23,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverinit"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/yamlx"
@@ -142,6 +143,8 @@ func Parse(args []string) (Options, error) {
 type Session interface {
 	Marker() (*marker.Marker, error)
 	Call(stdin []byte, bounded bool, args ...string) ([]byte, int)
+	// Lock holds the server lock exclusive until release.
+	Lock(apps string) (release func(), err error)
 	Close()
 }
 
@@ -157,6 +160,11 @@ func Dial(self remote.Info, local func(arch string) (string, error)) func(string
 		}
 		return &SSH{&env.SSH{Conn: c, Self: self, Local: local}}, nil
 	}
+}
+
+// Lock is serverlock.Hold: no deploy, rollback or drop runs under the upgrade.
+func (s *SSH) Lock(apps string) (func(), error) {
+	return serverlock.Hold(s.Conn, s.Bin(), apps, serverlock.Exclusive, "server upgrade-traefik")
 }
 
 // Call is `kasbah remote ARGS…`, bounded unless the step bounds itself.
@@ -209,6 +217,11 @@ func Run(c Ctx, o Options) error {
 	if err != nil {
 		return err
 	}
+	release, err := s.Lock(mk.AppsPath)
+	if err != nil {
+		return err
+	}
+	defer release()
 	x := &run{c: c, o: o, s: s, apps: mk.AppsPath, data: mk.DataPath,
 		stamp: c.Now().UTC().Format("20060102T150405Z"), imageNew: "traefik:" + o.Version}
 	if err := x.readStack(); err != nil {

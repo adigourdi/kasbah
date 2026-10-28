@@ -223,6 +223,7 @@ type fake struct {
 func (f *fake) Marker() (*marker.Marker, error) {
 	return &marker.Marker{AppsPath: "/apps", DataPath: "/apps/data"}, nil
 }
+func (f *fake) HoldServer(string, string) (func(), error) { return func() {}, nil }
 func (f *fake) Scan(apps, data, name string) ([]byte, int) {
 	f.scanned++
 	b, _ := json.Marshal(f.scan)

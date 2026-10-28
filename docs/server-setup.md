@@ -214,18 +214,19 @@ There are exactly two acceptable states, and a third that init refuses:
 | Apps path | Init does |
 |---|---|
 | Does not exist, and the SSH user can reach where it would go | `sudo mkdir -p` the parent, bare `mkdir` the final component, `chown` it — once, by kasbah or by the operator from the printed commands |
-| Exists, owned by the SSH user | Nothing — stays unelevated |
-| Exists, owned by anyone else | **Refuses**, naming the `chown` to run |
+| Exists, owned by the SSH user — or another operator's kasbah server: it holds `.kasbah/server.json`, is the `kasbah` group's, and this user can write it (see Operators) | Nothing — stays unelevated |
+| Another operator's kasbah server this user cannot write yet | **Refuses**, naming `sudo usermod -aG kasbah <user>` and a re-run — or only the re-run when the user is in the group but this SSH session predates it; never a `chown` |
+| Exists, owned by anyone else, with no `.kasbah/server.json` | **Refuses**, naming the `chown` to run |
 | The SSH user cannot traverse to it, whether or not it exists | **Refuses** |
 
-The third row is a refusal rather than a `chown` on purpose. `--apps-path`
+The last-but-one row is a refusal rather than a `chown` on purpose. `--apps-path`
 is an operator-supplied path, and a version of init that quietly took
 ownership of whatever it was pointed at would hand `/var/www` to the deploy
 user on a live host — while reporting that it had *created* it. Seizing a
 directory kasbah did not create is not a repair; one command from the
 operator is cheaper than the class of accident it prevents.
 
-The fourth row exists because the first three are not decidable by the
+The last row exists because the others are not decidable by the
 deploy user alone. A directory behind a parent they cannot traverse answers
 "does it exist?" with *no*, so a path that plainly exists reads as row one
 and gets seized by a root `chown` — the deploy user's blindness laundered
@@ -239,6 +240,66 @@ The alternative — requiring a pre-created `/apps` as a documented
 prerequisite, which this document's "checked, not installed" philosophy
 leans toward — was considered and rejected: one manual step before every
 fresh VPS costs more than a sudo the prerequisites table can simply name.
+
+## Operators
+
+Several people can run one server, each as their own Unix user over SSH. Every
+operator is in the `docker` group and in a **`kasbah` group**, which owns the
+apps tree: directories are setgid and group-writable (`2775`), so what anyone
+creates there stays the group's, and the files one operator's run rewrites and
+the next one's reads are group read-write — `.env` (`660`), `versions.log` and
+its archive, `.deploy.lock`, the marker, `server.lock` and `bin/.lock` (`664`),
+the shared binary (`775`). Every `kasbah remote …` step runs at umask `002`;
+setgid does not make a file group-writable, so kasbah also writes those modes
+explicitly. Secrets that are not the operators' stay private: `acme.json`,
+`mail/.env` and the backup stack's directory keep `600`/`700`. Every operator
+reads every project's `.env` — the group is one trust domain.
+
+`server init` brings a server to that state once its layout (and the mail
+stack's) exists and before it writes Traefik's and mail's files — so `<data>/`'s
+contents stay the deploy user's, and every file Traefik reads is created in the
+group rather than regrouped under it — and reads it again at the end. It does
+so the same way it creates the apps path: with `sudo -n` when it can,
+otherwise by printing the commands and waiting (see "Who creates the apps
+path"). Only what is missing is run — `groupadd kasbah`, `usermod -aG kasbah
+<user>`, then a `find … -exec chgrp -h kasbah` and `chmod g+rwxs` over the
+apps tree, and `g+rwX` on the files listed above. **`<data>/` itself joins the
+group, nothing inside it does**: those files belong to the containers, and
+re-grouping a database's directory is not kasbah's call. For the same reason
+only entries **owned by an operator** — the ssh user, a member of `kasbah`, or
+a user whose primary group it is, by uid — are regrouped anywhere in the tree; a container's own files
+in a project's bind mount keep their group, and a directory with no group bits
+at all stays private. The apps and data paths are resolved once (a symlinked
+`/apps` is converted where it points); nothing below them is followed. A re-run on an existing server converges it, which is how a server
+prepared before operators existed migrates. To add an operator: create their
+user with SSH access and `usermod -aG docker,kasbah <user>`. Membership reaches
+new SSH sessions only, so nothing later in the same init run relies on it.
+
+Synced files are never re-moded or re-timed when another operator owns them —
+the receiver sends the file again and renames it into place, which needs only
+the directory's write bit. Directories get the group the owner's bits.
+
+**One lock orders the server.** `<apps>/.kasbah/server.lock` (`flock(2)`,
+never waited on) is taken exclusively by `server init` and `server
+upgrade-traefik` — both for every SSH step of the run, through `kasbah remote
+lock` — and by `server prune`, `server destroy` and `migrate server`; and shared
+by `deploy`, `rollback`, `deploy X.Y.Z` and `drop` for their whole run, from the
+marker read to the fragment, on top of their per-project `.deploy.lock`. A held lock refuses at once and names the command, user and pid
+holding it, read from `/proc/locks`; nothing is written into the file. Each
+`versions.log` line records the operator as `by=<user>` (`build-deploy.md`).
+
+A file kasbah needs at a fixed mode (`acme.json`, `mail/.env`, the backup
+stack's files) is re-moded only when its mode differs; when it differs on a file
+another operator owns, init stops naming the owner and the `chmod` to run, since
+only the owner or root can. A second operator can therefore re-run a plain
+`server init`; `--with-mail` and `--with-backup` belong to the operator who
+holds their private files (`mail/.env`, `.kasbah/backup/`), and another
+operator's run is refused before anything is written, naming that owner.
+
+A whole-run shared hold lives as long as the workstation's SSH session, so a
+laptop that drops off the network silently keeps it until sshd notices. An
+exclusive step blocked by one names every holder — command, user, pid, read
+from `/proc/locks` — so a stale one can be found and killed.
 
 ## Traefik stack (ported from the original project, generalized)
 
@@ -675,6 +736,8 @@ server binary reads it out of the marker.
 
 `kasbah server init` can be re-run:
 - Folders are `mkdir -p`.
+- The `kasbah` group step runs only what is missing (see Operators), so a
+  converged server needs no root and prints nothing.
 - `acme.json` is created if missing; its mode is enforced as 600 on every
   run, and a *directory* found at that path is a hard failure rather than
   something init works around. It is archived and re-created only when a CA

@@ -661,7 +661,7 @@ func tempName() (string, error) {
 // on a signal or a short read ($3 bytes expected); uploads older than an
 // hour, left by a killed run, are swept first.
 const uploadScript = `set -eu
-umask 022
+umask 002
 mkdir -p "$1"
 find "$1" -maxdepth 1 -name '` + TempPrefix + `*' -type f -mmin +60 -exec rm -f {} + 2>/dev/null || :
 (set -C; : > "$1/$2")
@@ -671,7 +671,7 @@ if ! cat > "$1/$2" || [ "$(wc -c < "$1/$2")" -ne "$3" ]; then
     echo "remote: the upload of $1/$2 was cut short" >&2
     exit 1
 fi
-chmod 755 "$1/$2"`
+chmod 775 "$1/$2"`
 
 // ship uploads file beside bin, proves the upload runs there and is this
 // build, then has it install itself under the server-side lock. A non-nil

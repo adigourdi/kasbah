@@ -265,8 +265,8 @@ for d in d_apps:"$apps" d_kasbah:"$apps/.kasbah" d_backups:"$apps/backups" \
     got="${fact[$key]}"
     assert '[ "$got" = "yes" ]' "$path is a directory on the rig (got '$got')"
 done
-assert '[ "${fact[apps_owner]}" = "$RIG_SSH_USER:$RIG_SSH_USER" ]' \
-    "$apps is handed to the deploy user, so nothing below it needs sudo (got '${fact[apps_owner]}')"
+assert '[ "${fact[apps_owner]}" = "$RIG_SSH_USER:kasbah" ]' \
+    "$apps is handed to the deploy user and the kasbah group, so nothing below it needs sudo (got '${fact[apps_owner]}')"
 
 # --- acme.json is a file, and the test can tell -------------------------------
 assert '[ "${fact[acme_isfile]}" = "yes" ]'  "$acme is a regular file (got '${fact[acme_isfile]}')"
@@ -705,7 +705,7 @@ handed=$(rig_ssh "[ -f $owned/.kasbah/server.json ] && echo marker-ok; stat -c '
 assert '[ "$rc" = "0" ]' "init uses the path once it has been handed over (exit $rc: $(init_err))"
 assert 'grep -qF "marker-ok" <<<"$handed"' "the marker lands there (got '$handed')"
 assert 'grep -qF "root:root" <<<"$handed"' \
-    "and the pre-existing file is still root's — kasbah chowns nothing recursively (got '$handed')"
+    "and the pre-existing file is still root's, group and all — the root step regroups only what an operator owns (got '$handed')"
 assert '[ "$(rig_ssh "cat /etc/kasbah/apps-path" 2>/dev/null | tr -d "\r")" = "$owned" ]' \
     "and the server's record now names the tree it was prepared at"
 assert '[ "$(rig_ssh "stat -c \"%U %a\" /etc/kasbah/apps-path" 2>/dev/null | tr -d "\r")" = "root 644" ]' \

@@ -119,6 +119,11 @@ func RunTagged(c Ctx, o Options, mode string) error {
 	if r.mk, err = r.s.Marker(); err != nil {
 		return err
 	}
+	release, err := r.s.HoldServer(r.mk.AppsPath, mode)
+	if err != nil {
+		return err
+	}
+	defer release()
 	r.dir = r.mk.AppsPath + "/" + m.Name
 
 	var rec *vlog.Record

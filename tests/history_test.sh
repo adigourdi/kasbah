@@ -178,7 +178,7 @@ backup_path=backups/pre-deploy-20260204-100000.sql.gz
 { printf '%s deploy 0.9.0 no-backup kasbah=0.1.0 digest=-\n' 2026-01-04T10:00:00+00:00
   printf '%s deploy 1.0.0 %s kasbah=0.1.0 digest=-\n' 2026-02-04T10:00:00+00:00 "$backup_path"; } > "$arch"
 { printf '%s deploy 1.10.0-rc.1 no-backup kasbah=0.1.0 digest=-\n' 2026-08-01T00:00:00+00:00
-  printf '%s rollback 1.0.0 no-backup kasbah=0.2.0-dev digest=-\n' 2026-08-02T00:00:00+00:00; } > "$act"
+  printf '%s rollback 1.0.0 no-backup kasbah=0.2.0-dev digest=- by=alice\n' 2026-08-02T00:00:00+00:00; } > "$act"
 
 assert '[ "${#backup_path}" = "41" ] && [ "${#backup_path}" -gt "$(printf %s no-backup | wc -c)" ]' \
     "the archive's backup column really is wider than the active log's (${#backup_path} vs 9)"
@@ -186,13 +186,13 @@ assert '[ "${#backup_path}" = "41" ] && [ "${#backup_path}" -gt "$(printf %s no-
 # Plain: the active log only, so the backup column is nine wide and not
 # forty-one — the width comes from what is shown, not from what was fetched.
 drive history
-head_plain="$(printf '%-25s  %-8s  %-11s  %-9s  %s' TIMESTAMP ACTION VERSION BACKUP KASBAH)"
-row_a1="$(printf '%-25s  %-8s  %-11s  %-9s  %s' 2026-08-01T00:00:00+00:00 deploy 1.10.0-rc.1 no-backup 0.1.0)"
-row_a2="$(printf '%-25s  %-8s  %-11s  %-9s  %s' 2026-08-02T00:00:00+00:00 rollback 1.0.0 no-backup 0.2.0-dev)"
+head_plain="$(printf '%-25s  %-8s  %-11s  %-9s  %-9s  %s' TIMESTAMP ACTION VERSION BACKUP KASBAH BY)"
+row_a1="$(printf '%-25s  %-8s  %-11s  %-9s  %-9s  %s' 2026-08-01T00:00:00+00:00 deploy 1.10.0-rc.1 no-backup 0.1.0 -)"
+row_a2="$(printf '%-25s  %-8s  %-11s  %-9s  %-9s  %s' 2026-08-02T00:00:00+00:00 rollback 1.0.0 no-backup 0.2.0-dev alice)"
 assert '[ "$DRC" = 0 ]'                         "plain history renders (rc $DRC: $OUT / $ERR)"
-assert 'grep -qxF "$head_plain" <<<"$OUT"'      "the header names the five columns docs/cli.md lists, padded (got '$(head -1 "$tmpdir/o")')"
+assert 'grep -qxF "$head_plain" <<<"$OUT"'      "the header names the six columns docs/cli.md lists, padded (got '$(head -1 "$tmpdir/o")')"
 assert 'grep -qxF "$row_a1" <<<"$OUT"'          "a deploy row lines up under it (got '$(sed -n 2p "$tmpdir/o")')"
-assert 'grep -qxF "$row_a2" <<<"$OUT"'          "and so does a rollback row, whose action is two characters wider (got '$(sed -n 3p "$tmpdir/o")')"
+assert 'grep -qxF "$row_a2" <<<"$OUT"'          "and so does a rollback row, whose action is two characters wider, naming who ran it (got '$(sed -n 3p "$tmpdir/o")')"
 assert '! grep -qF "0.9.0" <<<"$OUT"'           "plain history shows no archived entry (got '$OUT')"
 assert '! grep -qF "$backup_path" <<<"$OUT"'    "not even one whose backup path would widen the table (got '$OUT')"
 assert 'grep -qxF "2 entries in /apps/demo/versions.log on deploy@vps" <<<"$OUT"' \
@@ -206,10 +206,10 @@ assert '[ -z "$ERR" ]' "and nothing at all goes to stderr — the report is the 
 # --all: the archive in front, the rotation point marked, and the columns
 # re-measured against the wider data.
 drive history yes
-head_all="$(printf '%-25s  %-8s  %-11s  %-41s  %s' TIMESTAMP ACTION VERSION BACKUP KASBAH)"
-row_g1="$(printf '%-25s  %-8s  %-11s  %-41s  %s' 2026-01-04T10:00:00+00:00 deploy 0.9.0 no-backup 0.1.0)"
-row_g2="$(printf '%-25s  %-8s  %-11s  %-41s  %s' 2026-02-04T10:00:00+00:00 deploy 1.0.0 "$backup_path" 0.1.0)"
-row_b1="$(printf '%-25s  %-8s  %-11s  %-41s  %s' 2026-08-01T00:00:00+00:00 deploy 1.10.0-rc.1 no-backup 0.1.0)"
+head_all="$(printf '%-25s  %-8s  %-11s  %-41s  %-9s  %s' TIMESTAMP ACTION VERSION BACKUP KASBAH BY)"
+row_g1="$(printf '%-25s  %-8s  %-11s  %-41s  %-9s  %s' 2026-01-04T10:00:00+00:00 deploy 0.9.0 no-backup 0.1.0 -)"
+row_g2="$(printf '%-25s  %-8s  %-11s  %-41s  %-9s  %s' 2026-02-04T10:00:00+00:00 deploy 1.0.0 "$backup_path" 0.1.0 -)"
+row_b1="$(printf '%-25s  %-8s  %-11s  %-41s  %-9s  %s' 2026-08-01T00:00:00+00:00 deploy 1.10.0-rc.1 no-backup 0.1.0 -)"
 assert '[ "$DRC" = 0 ]'                    "--all renders (rc $DRC: $OUT / $ERR)"
 assert 'grep -qxF "$head_all" <<<"$OUT"'   "its header is measured against the archived backup path too (got '$(head -1 "$tmpdir/o")')"
 assert 'grep -qxF "$row_g1" <<<"$OUT"'     "the archived deploy is a row (got '$OUT')"
@@ -257,8 +257,8 @@ assert 'grep -qxF "1 entry in /apps/demo/versions.log on deploy@vps" <<<"$OUT"' 
   printf '%s deploy 1.1\r\n' 2026-08-02T00:00:00+00:00
   printf '%s deploy 1.2.0 no-backup\n' 2026-08-03T00:00:00+00:00; } > "$act"
 drive history
-row_c1="$(printf '%-25s  %-6s  %-7s  %-9s  %s' 2026-08-01T00:00:00+00:00 deploy 1.0.0 no-backup 0.1.0)"
-row_c3="$(printf '%-25s  %-6s  %-7s  %-9s  %s' 2026-08-03T00:00:00+00:00 deploy 1.2.0 no-backup -)"
+row_c1="$(printf '%-25s  %-6s  %-7s  %-9s  %-6s  %s' 2026-08-01T00:00:00+00:00 deploy 1.0.0 no-backup 0.1.0 -)"
+row_c3="$(printf '%-25s  %-6s  %-7s  %-9s  %-6s  %s' 2026-08-03T00:00:00+00:00 deploy 1.2.0 no-backup - -)"
 bad_line="!! entry 2 of versions.log is not a kasbah entry: 2026-08-02T00:00:00+00:00 deploy 1.1"
 assert 'grep -qxF "$row_c1" <<<"$OUT"' "a table with one damaged line still renders the good ones (got '$OUT')"
 assert 'grep -qxF "$bad_line" <<<"$OUT"' \
@@ -268,7 +268,7 @@ assert '[ "$(grep -nxF "$bad_line" <<<"$OUT" | cut -d: -f1)" = "3" ]' \
 assert '! grep -q $'"'"'\r'"'"' <<<"$OUT"' \
     "with the CR a CRLF log carries stripped from it (got '$(grep "^!!" "$tmpdir/o" | cat -A)')"
 assert 'grep -qxF "$row_c3" <<<"$OUT"' \
-    "a line carrying only the four frozen fields prints '-' for the kasbah it never had (got '$(sed -n 4p "$tmpdir/o")')"
+    "a line carrying only the four frozen fields prints '-' for the kasbah and the user it never had (got '$(sed -n 4p "$tmpdir/o")')"
 assert 'grep -qxF "3 entries in /apps/demo/versions.log on deploy@vps" <<<"$OUT"' \
     "the count includes it — it is an entry, not a nothing (got '$OUT')"
 assert 'grep -qF "1 of them could not be read as a kasbah entry" <<<"$OUT"' \

@@ -450,8 +450,8 @@ func TestEnsure(t *testing.T) {
 					if sum(t, bin) != sum(t, local) {
 						t.Error("the shipped binary is not the local one")
 					}
-					if fi, _ := os.Stat(bin); fi.Mode().Perm() != 0o755 {
-						t.Errorf("the shipped binary is mode %v, want 0755", fi.Mode().Perm())
+					if fi, _ := os.Stat(bin); fi.Mode().Perm() != 0o775 {
+						t.Errorf("the shipped binary is mode %v, want 0775", fi.Mode().Perm())
 					}
 				case remote.Keep:
 					if sum(t, bin) != before {

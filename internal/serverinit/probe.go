@@ -9,6 +9,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/rootsteps"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 )
 
 // probeScript is the bootstrap read: every fact the verdicts need, before
@@ -163,6 +164,11 @@ kv apps_base_mode "$(stat -c '%a' "$apps_base" 2>/dev/null | flat)"
 if [ "$(stat -L -c '%u' "$apps" 2>/dev/null)" = "$uid" ]; then kv apps_owned yes; else kv apps_owned no; fi
 if [ -w "$apps" ] && [ -x "$apps" ]; then kv apps_writable yes; else kv apps_writable no; fi
 kv apps_owner "$(stat -c '%U:%G' "$apps" 2>/dev/null | flat)"
+kv apps_group "$(stat -L -c '%G' "$apps" 2>/dev/null | flat)"
+if [ -f "$apps/.kasbah/server.json" ]; then kv apps_marker yes; else kv apps_marker no; fi
+# The group database's answer, and this session's: usermod reaches new logins only.
+case " $(id -nG "$(id -un)" 2>/dev/null) " in *" kasbah "*) kv kasbah_member yes ;; *) kv kasbah_member no ;; esac
+case " $(id -nG 2>/dev/null) " in *" kasbah "*) kv kasbah_session yes ;; *) kv kasbah_session no ;; esac
 
 # A read-only mount and a stripped mode are the same -w and want opposite
 # advice; only the errno tells them apart.
@@ -207,7 +213,7 @@ exit 0
 var probeKeys = []string{"user", "group", "have_docker", "docker_server", "docker_error",
 	"compose_version", "sudo_nopasswd",
 	"pointer_state", "pointer_value",
-	"apps_state", "apps_owned", "apps_writable", "apps_owner", "apps_write_error",
+	"apps_state", "apps_owned", "apps_writable", "apps_owner", "apps_group", "apps_marker", "kasbah_member", "kasbah_session", "apps_write_error",
 	"apps_root_state", "apps_root_owner", "apps_base", "apps_base_owner", "apps_base_mode",
 	"data_state", "data_writable", "data_owner", "data_scope", "data_base", "data_base_writable",
 	"acme_store", "nproc", "memtotal_kb"}
@@ -343,6 +349,10 @@ func Preflight(f Facts, target, apps, data string, wait bool) error {
 			"  Remove it, or point init elsewhere with --apps-path=<dir>.")
 	case "dir":
 		switch {
+		case f["apps_owned"] != "yes" && SharedApps(f):
+			// Another operator's server, handed to the group: shared.
+		case f["apps_owned"] != "yes" && f["apps_marker"] == "yes":
+			add(operatorRows(f, target, apps)...)
 		case f["apps_owned"] != "yes":
 			add(fmt.Sprintf("%s already exists and belongs to %s, not %s.", apps, f["apps_owner"], user),
 				"  kasbah only elevates to create the apps path; it never takes over one",
@@ -370,7 +380,12 @@ func Preflight(f Facts, target, apps, data string, wait bool) error {
 		add(fmt.Sprintf("the data path %s exists and is not a directory.", data),
 			"  Remove it, or point init elsewhere with --data-path=<dir>.")
 	case "dir":
-		if f["data_writable"] != "yes" {
+		if f["data_writable"] != "yes" && f["apps_owned"] != "yes" && f["apps_marker"] == "yes" {
+			if SharedApps(f) {
+				add(fmt.Sprintf("the data path %s is %s's and not writable through the '%s' group.", data, f["data_owner"], serverlock.Group),
+					fmt.Sprintf("  A run of `kasbah server init` by its owner hands %s to the group.", data))
+			}
+		} else if f["data_writable"] != "yes" {
 			add(fmt.Sprintf("the data path %s exists and is not writable by %s (owner %s).", data, user, f["data_owner"]),
 				fmt.Sprintf("  ssh %s 'sudo chown %s %s'", target, owner, data))
 		}
@@ -398,6 +413,34 @@ func Preflight(f Facts, target, apps, data string, wait bool) error {
 	return e.Cont("kasbah checks prerequisites and never installs them — see docs/server-setup.md")
 }
 
+// SharedApps is a kasbah server another operator prepared and handed to the
+// group, writable by this user through it.
+func SharedApps(f Facts) bool {
+	return f["apps_marker"] == "yes" && f["apps_group"] == serverlock.Group && f["apps_writable"] == "yes"
+}
+
+// operatorRows is the refusal for another operator's server this user cannot
+// write: join the group, never take the tree over.
+func operatorRows(f Facts, target, apps string) []string {
+	user, g := f["user"], serverlock.Group
+	head := fmt.Sprintf("%s is the kasbah server %s prepared, and %s cannot write it.", apps, f["apps_owner"], user)
+	switch {
+	case f["apps_group"] != g:
+		return []string{head,
+			fmt.Sprintf("  It is not the '%s' group's yet: %s's own `kasbah server init %s`", g, strings.SplitN(f["apps_owner"], ":", 2)[0], target),
+			"  hands it to the group. Then add yourself, and re-run:",
+			fmt.Sprintf("  ssh %s 'sudo usermod -aG %s %s'", target, g, user)}
+	case f["kasbah_member"] == "yes" && f["kasbah_session"] != "yes":
+		return []string{head,
+			fmt.Sprintf("  %s is in the '%s' group, but this ssh session began before that:", user, g),
+			"  a re-run opens a new one, which has it. Re-run init."}
+	}
+	return []string{head,
+		fmt.Sprintf("  Every operator works as their own user in the '%s' group — join it, then re-run", g),
+		"  (a new ssh session picks the group up; kasbah never takes the tree over):",
+		fmt.Sprintf("  ssh %s 'sudo usermod -aG %s %s'", target, g, user)}
+}
+
 // AppsBlock is what root runs to create the apps path and hand it to the SSH
 // user, from the state the probe found it in: nothing when there is no such work.
 func AppsBlock(f Facts, target, apps string) *rootsteps.Block {
@@ -414,7 +457,7 @@ func AppsBlock(f Facts, target, apps string) *rootsteps.Block {
 			b.Add("sudo mkdir -p " + rootsteps.Quote(parent))
 		}
 		b.Add("sudo mkdir "+q, "sudo chown "+owner+" "+q)
-	case f["apps_state"] == "dir" && f["apps_owned"] != "yes":
+	case f["apps_state"] == "dir" && f["apps_owned"] != "yes" && f["apps_marker"] != "yes":
 		b.Add("sudo chown " + owner + " " + q)
 	}
 	return b

@@ -259,6 +259,8 @@ case "${1:-} ${2:-}" in
         printf 'missing=%s\n' "${ENV_MISSING:-}"
         printf 'extra=%s\n' "${ENV_EXTRA:-}" ;;
     "setup-env inject") exit 0 ;;
+    # The server lock, held until the run closes its stdin.
+    "lock "*) printf 'locked=%s\n' "$3"; cat >/dev/null ;;
     "setup-env prepare") printf 'prepared=yes\n' ;;
     # The sync, received by the binary under test under a scratch root; the
     # call log keeps where it was aimed.

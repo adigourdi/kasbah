@@ -8,6 +8,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/treesync"
 )
@@ -44,6 +45,12 @@ func (s *SSH) Marker() (*marker.Marker, error) {
 	}
 	s.bin = serverbin.Path(res.Apps)
 	return mk, nil
+}
+
+// HoldServer holds the server lock shared until release, so no server-wide
+// step runs anywhere in a deploy, rollback or drop; known once Marker has run.
+func (s *SSH) HoldServer(apps, what string) (func(), error) {
+	return serverlock.Hold(s.Conn, s.bin, apps, serverlock.Shared, what)
 }
 
 // Bin is the server binary's path, known once Marker has run.

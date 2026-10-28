@@ -134,6 +134,11 @@ type ServerReport struct {
 	HealthHealth  string          `json:"health_health"`
 	DockerError   string          `json:"docker_error"`
 	Backup        backuprec.Facts `json:"backup"`
+	// GroupState is whether the server has the kasbah group; PermsCount
+	// counts the apps-tree entries Perms flags, Perms lists the first ones.
+	GroupState string   `json:"group_state"`
+	PermsCount int      `json:"perms_count"`
+	Perms      []string `json:"perms"`
 }
 
 // Remote is `kasbah remote check APPS DATA NAME HEALTH`, run by the server
@@ -166,6 +171,7 @@ func CollectServer(apps, data, name, health string) *ServerReport {
 		Acme:          probe.B64(acmePath),
 		Backup:        backuprec.Collect(apps, data),
 	}
+	r.GroupState, r.PermsCount, r.Perms = Perms(apps, data, Group)
 	switch {
 	case health == "":
 		r.HealthState, r.HealthHealth = "skipped", "skipped"
@@ -365,6 +371,27 @@ func (c *checker) serverSection() {
 	c.cert()
 	c.r04()
 	c.b01()
+	c.groupPerms()
+}
+
+// groupPerms is the multi-operator model: the apps tree is the kasbah
+// group's, its directories setgid and group-writable.
+func (c *checker) groupPerms() {
+	s := c.srv
+	switch {
+	case s.r.GroupState == "absent":
+		c.warnf("%s has no '%s' group — a second operator cannot deploy here. `kasbah server init %s` creates it and converges %s", s.target, Group, s.target, s.apps)
+	case s.r.PermsCount == 0:
+		c.passf("%s on %s is the '%s' group's, setgid and group-writable", s.apps, s.target, Group)
+	default:
+		c.warnf("%d entries under %s on %s are not the '%s' group's or lack its write bits — another operator's deploy can fail on them; `kasbah server init %s` converges the tree:", s.r.PermsCount, s.apps, s.target, Group, s.target)
+		for _, l := range s.r.Perms {
+			fmt.Fprintf(c.w, "      %s\n", l)
+		}
+		if more := s.r.PermsCount - len(s.r.Perms); more > 0 {
+			fmt.Fprintf(c.w, "      and %d more\n", more)
+		}
+	}
 }
 
 func (c *checker) projectDir() {

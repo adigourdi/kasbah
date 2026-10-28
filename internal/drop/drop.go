@@ -103,6 +103,8 @@ func Parse(args []string) (Options, error) {
 // Session is what drop needs from a server.
 type Session interface {
 	Marker() (*marker.Marker, error)
+	// HoldServer holds the server lock shared until release.
+	HoldServer(apps, what string) (release func(), err error)
 	Scan(apps, data, name string) ([]byte, int)
 	// Act runs the removal with stdin as its payload; unbounded, one
 	// `docker image rm` per tag however many.
@@ -553,6 +555,11 @@ func Run(c Ctx, o Options) error {
 		return err
 	}
 	p.Apps, p.Data = mk.AppsPath, mk.DataPath
+	release, err := s.HoldServer(p.Apps, "drop")
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	out, rc := s.Scan(p.Apps, p.Data, p.Name)
 	if rc != 0 {

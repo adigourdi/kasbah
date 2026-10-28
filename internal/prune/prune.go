@@ -363,7 +363,7 @@ type Session interface {
 	// where the apps path is and which entry under it is the data path.
 	Ensure() (apps, dataDir string, err error)
 	Scan(apps string) ([]byte, int)
-	Remove(tags []string) ([]byte, int)
+	Remove(apps string, tags []string) ([]byte, int)
 	Close()
 }
 
@@ -409,8 +409,8 @@ func (s *SSH) Scan(apps string) ([]byte, int) {
 }
 
 // Remove is unbounded: one `docker image rm` per tag, however many.
-func (s *SSH) Remove(tags []string) ([]byte, int) {
-	out, err := s.Conn.Run(append([]string{s.bin, "remote", "prune", "rm"}, tags...)...)
+func (s *SSH) Remove(apps string, tags []string) ([]byte, int) {
+	out, err := s.Conn.Run(append([]string{s.bin, "remote", "prune", "rm", apps}, tags...)...)
 	return out, ssh.ExitCode(err)
 }
 
@@ -500,16 +500,16 @@ func Run(c Ctx, o Options) error {
 	if !yes {
 		return cli.Fail("not confirmed — nothing was removed")
 	}
-	return remove(c, s, o.Target, pl.Remove)
+	return remove(c, s, o.Target, apps, pl.Remove)
 }
 
-func remove(c Ctx, s Session, target string, tags []string) error {
+func remove(c Ctx, s Session, target, apps string, tags []string) error {
 	for _, t := range tags {
 		if strings.HasPrefix(t, "-") || strings.ContainsAny(t, " \t\n\r\v\f") {
 			return cli.Fail("refusing to remove '%s' on %s: that is not an image tag docker gave back", t, target)
 		}
 	}
-	out, rc := s.Remove(tags)
+	out, rc := s.Remove(apps, tags)
 	if rc != 0 {
 		return cli.Fail("the removal step on %s exited %d", target, rc).Cont(
 			fmt.Sprintf("some of the %d tags may have been removed — `kasbah server prune %s` again to see", len(tags), target))

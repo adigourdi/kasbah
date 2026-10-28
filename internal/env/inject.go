@@ -20,6 +20,13 @@ const (
 	ManagedEnd   = "# <<< kasbah managed block <<<"
 )
 
+// Mode is a new .env's: the secrets are the kasbah group's, every operator's.
+const Mode = 0o660
+
+// GroupMode is an existing .env's mode with the group given the owner's read
+// and write, so a 600 file converges to 660 on its next write.
+func GroupMode(m os.FileMode) os.FileMode { return m | (m&0o600)>>3 }
+
 var rePair = regexp.MustCompile(`^` + envtpl.ReservedPrefix + `[A-Za-z0-9_]*=`)
 
 // rawLines splits a file keeping each line's bytes, CR included, NULs
@@ -163,9 +170,9 @@ func Inject(envfile string, pairs []string, errw io.Writer) int {
 	}
 	pop := atexit.Push(func() { os.Remove(tmp) })
 	defer pop()
-	mode := os.FileMode(0o600)
+	mode := os.FileMode(Mode)
 	if exists {
-		mode = fi.Mode().Perm()
+		mode = GroupMode(fi.Mode().Perm())
 	}
 	_, werr := io.WriteString(f, b.String())
 	if cerr := f.Close(); werr == nil {

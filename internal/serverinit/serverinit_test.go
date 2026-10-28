@@ -120,7 +120,7 @@ func goodFacts() Facts {
 		"docker_error": "", "compose_version": "v2.29.7",
 		"sudo_nopasswd": "yes", "pointer_state": "absent",
 		"pointer_value": "", "apps_state": "absent", "apps_owned": "no", "apps_writable": "no",
-		"apps_owner": "", "apps_write_error": "", "apps_root_state": "absent", "apps_root_owner": "",
+		"apps_owner": "", "apps_group": "", "apps_marker": "no", "kasbah_member": "no", "kasbah_session": "no", "apps_write_error": "", "apps_root_state": "absent", "apps_root_owner": "",
 		"apps_base": "/", "apps_base_owner": "root:root", "apps_base_mode": "755", "data_state": "absent",
 		"data_writable": "no", "data_owner": "", "data_scope": "inside", "data_base": "/",
 		"data_base_writable": "no", "acme_store": "absent", "nproc": "4", "memtotal_kb": "8000000"}
@@ -505,7 +505,7 @@ func TestRemoteSteps(t *testing.T) {
 	if out, _, _ := remoteRun(t, "{\n  \"a\": 1\n}\n", signed("{\n  \"a\": 1\n}\n", "marker", apps)...); out != "marker=unchanged\n" {
 		t.Errorf("marker re-run: %q", out)
 	}
-	if mode(t, apps+"/.kasbah/server.json") != 0o644 {
+	if mode(t, apps+"/.kasbah/server.json") != 0o664 {
 		t.Errorf("marker mode %o", mode(t, apps+"/.kasbah/server.json"))
 	}
 	if out, _, _ := remoteRun(t, "", "read", apps); !strings.Contains(out, `"marker":"present"`) {
@@ -705,5 +705,34 @@ func TestAppsPartial(t *testing.T) {
 	}
 	if why := AppsWhy(goodFacts(), "d@h", "/srv/apps"); !strings.Contains(why, "does not exist") {
 		t.Errorf("absent: %q", why)
+	}
+}
+
+// A second operator's init: the tree is another user's, handed to the group
+// and writable through it — no refusal and no chown.
+func TestSharedApps(t *testing.T) {
+	f := goodFacts()
+	f["apps_state"], f["apps_owned"], f["apps_owner"], f["apps_group"], f["apps_writable"], f["apps_marker"] = "dir", "no", "alice:kasbah", "kasbah", "yes", "yes"
+	if err := Preflight(f, "d@h", "/apps", "/apps/data", false); err != nil {
+		t.Errorf("a shared tree is refused: %v", err)
+	}
+	if b := AppsBlock(f, "d@h", "/apps"); !b.Empty() {
+		t.Errorf("a shared tree asks for %v", b.Commands)
+	}
+	f["apps_writable"] = "no"
+	err := Preflight(f, "d@h", "/apps", "/apps/data", false)
+	if err == nil || !strings.Contains(err.Error(), "sudo usermod -aG kasbah deploy") || strings.Contains(err.Error(), "chown") {
+		t.Errorf("not yet in the group: %v", err)
+	}
+	if b := AppsBlock(f, "d@h", "/apps"); !b.Empty() {
+		t.Errorf("another operator's server asks for %v", b.Commands)
+	}
+	f["kasbah_member"] = "yes"
+	if err := Preflight(f, "d@h", "/apps", "/apps/data", false); err == nil || !strings.Contains(err.Error(), "Re-run init") {
+		t.Errorf("in the group, not in this session: %v", err)
+	}
+	f["apps_marker"], f["apps_writable"] = "no", "yes"
+	if err := Preflight(f, "d@h", "/apps", "/apps/data", false); err == nil || !strings.Contains(err.Error(), "chown") {
+		t.Errorf("a kasbah-group directory with no marker (a mistyped --apps-path) is accepted: %v", err)
 	}
 }

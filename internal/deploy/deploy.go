@@ -164,6 +164,7 @@ type Server interface {
 	// gone, and the deploy record.
 	Images(version string, images []string) (checked int, missing []string, err error)
 	Record(apps, name string) (*vlog.Record, error)
+	HoldServer(apps, what string) (release func(), err error)
 }
 
 // Ctx is what a run needs from its process.
@@ -224,6 +225,11 @@ func Run(c Ctx, o Options) error {
 	if r.mk, err = r.s.Marker(); err != nil {
 		return err
 	}
+	release, err := r.s.HoldServer(r.mk.AppsPath, "deploy")
+	if err != nil {
+		return err
+	}
+	defer release()
 	r.dir = r.mk.AppsPath + "/" + m.Name
 
 	claim, err := r.readClaim()

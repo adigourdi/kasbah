@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -149,6 +150,21 @@ func snapshot(t *testing.T, root string) map[string]string {
 	return out
 }
 
+// asServer is a source snapshot as the receiver lays it down: directories
+// get the group the owner's bits (dirMode).
+func asServer(m map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range m {
+		var mode uint32
+		var mt int64
+		if n, _ := fmt.Sscanf(v, "d %o %d", &mode, &mt); n == 2 {
+			v = fmt.Sprintf("d %o %d", dirMode(mode, 0), mt)
+		}
+		out[k] = v
+	}
+	return out
+}
+
 func diff(a, b map[string]string) []string {
 	var d []string
 	for k, v := range a {
@@ -259,7 +275,7 @@ func TestTreeMatchesSource(t *testing.T) {
 	if r.err != nil || r.rc != 0 {
 		t.Fatalf("sync failed: %v rc %d: %s", r.err, r.rc, r.remote)
 	}
-	want := snapshot(t, src)
+	want := asServer(snapshot(t, src))
 	delete(want, "fifo")
 	if d := diff(want, snapshot(t, dest)); len(d) > 0 {
 		t.Errorf("dest differs from src:\n%s", strings.Join(d, "\n"))
@@ -306,6 +322,60 @@ func TestSkipsSpecialFiles(t *testing.T) {
 	f, _ := File(dir+"/src/fifo", &warn)
 	if len(f.Ents) != 0 || !strings.Contains(warn.String(), `skipping non-regular file "fifo"`) {
 		t.Errorf("a fifo as the one file: %v, %q", f.Ents, warn.String())
+	}
+}
+
+func TestDirMode(t *testing.T) {
+	for _, c := range []struct {
+		src  uint32
+		cur  fs.FileMode
+		want uint32
+	}{{0o755, 0, 0o775}, {0o755, fs.ModeSetgid, 0o2775}, {0o700, fs.ModeSetgid | 0o770, 0o2770}, {0o555, 0, 0o555}} {
+		if got := dirMode(c.src, c.cur); got != c.want {
+			t.Errorf("dirMode(%o, %v) = %o, want %o", c.src, c.cur, got, c.want)
+		}
+	}
+}
+
+// TestOtherOperator: entries another user owns are never chmodded or
+// re-timed — a current file whose mode differs is sent again and renamed
+// over, a symlink re-made, a directory left as it is.
+func TestOtherOperator(t *testing.T) {
+	dir := t.TempDir()
+	src, dest := dir+"/src", dir+"/dest"
+	write(t, src+"/d/f", "AAAA\n", 0o644, at("2020-01-01 00:00:00"))
+	os.Symlink("f", src+"/d/l")
+	if r := transfer(t, dirSrc(t, src), dest); r.rc != 0 {
+		t.Fatalf("rc %d: %s", r.rc, r.remote)
+	}
+	if fi, _ := os.Stat(dest + "/d"); fi.Mode().Perm() != 0o775 {
+		t.Errorf("a received directory is %o, want the group given the owner's bits (775)", fi.Mode().Perm())
+	}
+	os.Chmod(src+"/d/f", 0o640)
+	os.Chmod(src+"/d", 0o700)
+	os.Chtimes(src+"/d", at("2021-01-01 00:00:00"), at("2021-01-01 00:00:00"))
+	ino := func(p string) uint64 { fi, _ := os.Lstat(p); return fi.Sys().(*syscall.Stat_t).Ino }
+	before, link := ino(dest+"/d/f"), ino(dest+"/d/l")
+	lt := at("2022-01-01 00:00:00")
+	if d, err := os.Open(src + "/d"); err == nil {
+		lutimes(d, "l", lt.Unix(), 0)
+		d.Close()
+	}
+	selfUID = func() int { return -1 }
+	defer func() { selfUID = os.Getuid }()
+	r := transfer(t, dirSrc(t, src), dest)
+	if r.rc != 0 {
+		t.Fatalf("rc %d: %s", r.rc, r.remote)
+	}
+	fi, _ := os.Stat(dest + "/d/f")
+	if fi.Mode().Perm() != 0o640 || ino(dest+"/d/f") == before {
+		t.Errorf("another's file: mode %o, renamed over %v — want 640 by a rename", fi.Mode().Perm(), ino(dest+"/d/f") != before)
+	}
+	if ino(dest+"/d/l") == link {
+		t.Error("another's symlink with a new mtime was not re-made")
+	}
+	if fi, _ := os.Stat(dest + "/d"); fi.Mode().Perm() != 0o775 {
+		t.Errorf("another's directory was chmodded to %o", fi.Mode().Perm())
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 )
 
 // Remote is `kasbah remote mail <step> …`, run by the server binary: read
@@ -71,8 +72,10 @@ var errSaid = errors.New("")
 type ReadReport struct {
 	// Dir is <apps>/mail: absent, dir or notdir.
 	Dir string `json:"dir"`
-	// Env is whether <apps>/mail/.env is a regular file.
-	Env bool `json:"env"`
+	// Env is whether <apps>/mail/.env is a regular file; EnvOwner its owner
+	// when that is not this user.
+	Env      bool   `json:"env"`
+	EnvOwner string `json:"env_owner"`
 	// Accounts is postfix-accounts.cf: absent, empty (readable, no account
 	// line) or present — unreadable counts as present, since layout keeps it.
 	Accounts string `json:"accounts"`
@@ -136,6 +139,7 @@ func read(apps, data string) ReadReport {
 		}
 	}
 	_, r.Env = isFile(dir + "/.env")
+	r.EnvOwner = serverlock.Foreign(dir + "/.env")
 	if _, regular := isFile(accountsPath(data)); regular {
 		r.Accounts = "empty"
 		if has, ok := hasAccount(accountsPath(data)); has || !ok {
@@ -199,7 +203,12 @@ func remoteWrite(apps, data, size, sum string, stdin io.Reader, stdout io.Writer
 
 // appendLine adds line, first ending a last line that has no newline.
 func appendLine(path, line string) error {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o666)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o664)
+	if errors.Is(err, os.ErrPermission) {
+		if fi, serr := os.Stat(path); serr == nil {
+			return fmt.Errorf("%s belongs to %s and is mode %o, not group-writable: only its owner or root can append to it", path, serverlock.OwnerName(fi), fi.Mode().Perm())
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -328,8 +337,8 @@ func remoteLayout(apps, data, size, sum string, stdin io.Reader, stdout io.Write
 		}
 	}
 	// Every run: the mode is a fact about the file, not about this run.
-	if err := os.Chmod(env, 0o600); err != nil {
-		return fmt.Errorf("could not set mode 600 on %s", env)
+	if err := serverlock.EnsureMode(env, 0o600); err != nil {
+		return err
 	}
 
 	accounts := accountsPath(data)

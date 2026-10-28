@@ -38,7 +38,7 @@ func TestUploadScript(t *testing.T) {
 		if b, _ := os.ReadFile(f); string(b) != "hello" {
 			t.Errorf("%s: %q", sh.Name, b)
 		}
-		if fi, err := os.Stat(f); err != nil || fi.Mode().Perm() != 0o755 {
+		if fi, err := os.Stat(f); err != nil || fi.Mode().Perm() != 0o775 {
 			t.Errorf("%s: mode %v", sh.Name, fi)
 		}
 		if _, rc := up(TempPrefix+"a", "other", "5"); rc == 0 {

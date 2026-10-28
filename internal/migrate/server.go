@@ -17,6 +17,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/probe"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
@@ -67,7 +68,7 @@ func (l locks) release() {
 
 // flock takes path exclusively without waiting; held is the holder's refusal.
 func flock(path string, held func(path string) error) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o666)
+	f, err := serverlock.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("could not open the lock file %s: %v", path, err)
 	}
@@ -104,8 +105,8 @@ func Projects(apps string) ([]string, error) {
 	return out, nil
 }
 
-// lockAll takes the migration lock, then every project's .deploy.lock — the
-// one deploy, rollback and drop hold — so no project changes under a run.
+// lockAll takes the migration lock, the server lock exclusive, then every
+// project's .deploy.lock, so nothing changes under a run.
 func lockAll(apps string) (locks, error) {
 	var held locks
 	f, err := flock(filepath.Join(apps, Lock), func(p string) error {
@@ -115,6 +116,14 @@ func lockAll(apps string) (locks, error) {
 		return nil, err
 	}
 	held = append(held, f)
+	sl, err := serverlock.Take(apps, serverlock.Exclusive, "kasbah migrate")
+	if err != nil {
+		held.release()
+		return nil, err
+	}
+	if sl != nil {
+		held = append(held, sl)
+	}
 	projects, err := Projects(apps)
 	if err != nil {
 		held.release()

@@ -227,7 +227,7 @@ func TestRunFailingStepLeavesMarkerAndFinishesOnRerun(t *testing.T) {
 func TestUndo(t *testing.T) {
 	apps := newApps(t, "0.9.0")
 	write(t, apps, "alpha/a.yml", "v0\na\n")
-	line, _ := vlog.Line(vlog.Stamp(now.Add(-time.Hour)), "deploy", "1.0.0", "-", "0.9.0", "-")
+	line, _ := vlog.Line(vlog.Stamp(now.Add(-time.Hour)), "deploy", "1.0.0", "-", "0.9.0", "-", "deploy")
 	write(t, apps, "alpha/versions.log", line+"\n")
 	write(t, apps, "beta/versions.log", "garbage\n")
 	before := read(t, apps, ".kasbah/server.json")
@@ -251,7 +251,7 @@ func TestUndo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	later, _ := vlog.Line(vlog.Stamp(now.Add(2*time.Minute)), "deploy", "1.0.1", "-", "1.0.2-dev", "-")
+	later, _ := vlog.Line(vlog.Stamp(now.Add(2*time.Minute)), "deploy", "1.0.1", "-", "1.0.2-dev", "-", "deploy")
 	write(t, apps, "alpha/versions.log", line+"\n"+later+"\n")
 	_, err = Undo(apps)
 	if err == nil || !strings.Contains(err.Error(), "alpha was deployed at "+vlog.Stamp(now.Add(2*time.Minute))) || !strings.Contains(err.Error(), r.Snapshot) {

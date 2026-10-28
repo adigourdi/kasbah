@@ -15,7 +15,7 @@ import (
 )
 
 // Mode is the marker's file mode (docs/files.md).
-const Mode = 0o644
+const Mode = 0o664
 
 // Path is the marker's path under an apps path.
 func Path(apps string) string { return apps + "/.kasbah/server.json" }

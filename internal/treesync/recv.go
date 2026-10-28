@@ -253,7 +253,7 @@ func (rc *receiver) prepare(i int, e Entry) bool {
 	case kindDir:
 		if exists && fi.IsDir() {
 			// Writable for the run, as rsync makes it; finish sets the mode.
-			if fi.Mode().Perm()&0o700 != 0o700 {
+			if fi.Mode().Perm()&0o700 != 0o700 && owned(fi) {
 				rc.root.Chmod(p, fi.Mode()&(fs.ModePerm|fs.ModeSetuid|fs.ModeSetgid|fs.ModeSticky)|0o700)
 			}
 			return false
@@ -273,6 +273,11 @@ func (rc *receiver) prepare(i int, e Entry) bool {
 		return false
 	case kindFile:
 		if exists && fi.Mode().IsRegular() && fi.Size() == e.Size && fi.ModTime().Unix() == e.Sec {
+			if unixMode(fi.Mode()) != e.Mode && !owned(fi) {
+				// Another operator's file: only its owner may chmod it, so
+				// it is sent again and renamed over.
+				return true
+			}
 			if unixMode(fi.Mode()) != e.Mode {
 				if err := rc.root.Chmod(p, fileMode(e.Mode)); err != nil {
 					rc.fail("could not set the mode of %s: %v", p, unwrap(err))
@@ -288,7 +293,7 @@ func (rc *receiver) prepare(i int, e Entry) bool {
 		return true
 	default:
 		if exists && fi.Mode()&fs.ModeSymlink != 0 {
-			if t, err := rc.root.Readlink(p); err == nil && t == e.Target {
+			if t, err := rc.root.Readlink(p); err == nil && t == e.Target && (fi.ModTime().Unix() == e.Sec || owned(fi)) {
 				if fi.ModTime().Unix() != e.Sec {
 					rc.linkTimes(p, e)
 				}
@@ -460,8 +465,13 @@ func (rc *receiver) finish() {
 		if err != nil || !fi.IsDir() {
 			continue
 		}
-		if unixMode(fi.Mode()) != e.Mode {
-			if err := rc.root.Chmod(p, fileMode(e.Mode)); err != nil {
+		// A directory another operator owns keeps its mode and mtime: only
+		// its owner may set them, and its group bits already let this run in.
+		if !owned(fi) {
+			continue
+		}
+		if m := dirMode(e.Mode, fi.Mode()); unixMode(fi.Mode()) != m {
+			if err := rc.root.Chmod(p, fileMode(m)); err != nil {
 				rc.fail("could not set the mode of %s: %v", p, unwrap(err))
 			}
 		}
@@ -473,3 +483,24 @@ func (rc *receiver) finish() {
 		}
 	}
 }
+
+// dirMode is a directory's mode on the server: the source's, with the group
+// given the owner's bits so every operator can write into it, and the
+// setgid bit the apps tree hands down kept.
+func dirMode(src uint32, cur fs.FileMode) uint32 {
+	m := src | (src&0o700)>>3
+	if cur&fs.ModeSetgid != 0 {
+		m |= 0o2000
+	}
+	return m
+}
+
+// owned is whether this process's user owns the entry: only the owner may
+// chmod it or set its times, whatever its group bits allow.
+func owned(fi fs.FileInfo) bool {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && int(st.Uid) == selfUID()
+}
+
+// selfUID is os.Getuid, replaced by tests to play another operator.
+var selfUID = os.Getuid

@@ -20,6 +20,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/fsstate"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 )
 
 // Image is one image: its id and every tag it carries.
@@ -307,7 +308,7 @@ func Sum(b []byte) string {
 // the process exits.
 func takeLock(dir string) (*os.File, error) {
 	path := filepath.Join(dir, ".deploy.lock")
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o666)
+	f, err := serverlock.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("could not open the lock file %s. Nothing was changed.", path)
 	}
@@ -329,6 +330,13 @@ func act(a ActArgs, stdin io.Reader, stdout io.Writer) error {
 			return fmt.Errorf("the mail registry: %v", err)
 		}
 		registry = b
+	}
+	sl, err := serverlock.Take(a.Apps, serverlock.Shared, "")
+	if err != nil {
+		return err
+	}
+	if sl != nil {
+		defer sl.Close()
 	}
 	dir := filepath.Join(a.Apps, a.Name)
 	if fi, err := os.Stat(dir); err == nil && fi.IsDir() {

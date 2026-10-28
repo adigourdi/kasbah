@@ -7,7 +7,7 @@ set -uo pipefail
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 busybox=busybox:1.37.0
 shellcheck=koalaman/shellcheck:v0.11.0
-want="destroy-leftover destroy-pointer destroy-tail serverbin-probe serverbin-upload serverinit-elevate serverinit-pointer serverinit-probe"
+want="destroy-leftover destroy-pointer destroy-tail serverbin-probe serverbin-upload serverinit-elevate serverinit-group serverinit-pointer serverinit-probe"
 
 if ! docker info >/dev/null 2>&1; then
     echo "docker is needed: busybox and shellcheck run from pinned images" >&2

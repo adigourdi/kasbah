@@ -15,6 +15,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/version"
 )
 
@@ -35,7 +36,7 @@ func InstallSelf(self remote.Info, selfPath, dest string, out io.Writer) error {
 	if err != nil {
 		return cli.Fail("this kasbah's build '%s' is not a version; it does not install itself", self.Build)
 	}
-	lock, err := os.OpenFile(filepath.Join(filepath.Dir(dest), LockName), os.O_CREATE|os.O_RDWR, 0o644)
+	lock, err := serverlock.Open(filepath.Join(filepath.Dir(dest), LockName))
 	if err != nil {
 		return cli.Fail("cannot open the install lock beside %s: %v", dest, err)
 	}

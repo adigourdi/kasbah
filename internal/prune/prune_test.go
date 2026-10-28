@@ -293,7 +293,7 @@ type fake struct {
 
 func (f *fake) Ensure() (string, string, error) { return "/apps", "store", nil }
 func (f *fake) Scan(string) ([]byte, int)       { f.steps++; return f.scan, f.scanRC }
-func (f *fake) Remove(tags []string) ([]byte, int) {
+func (f *fake) Remove(apps string, tags []string) ([]byte, int) {
 	f.steps++
 	f.removed = append(f.removed, tags)
 	var b bytes.Buffer

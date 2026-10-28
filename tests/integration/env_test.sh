@@ -125,18 +125,18 @@ $block"
 got=$(remote "cat $pdir/.env")
 assert '[ "$got" = "$want" ]' "the .env is the template answered, export dropped, block last
         got: $got"
-assert '[ "$(remote "stat -c %a $pdir/.env")" = 600 ]' "a .env kasbah creates is 600 (got $(remote "stat -c %a $pdir/.env"))"
+assert '[ "$(remote "stat -c %a:%G $pdir/.env")" = 660:kasbah ]' "a .env kasbah creates is 660, the kasbah group's (got $(remote "stat -c %a:%G $pdir/.env"))"
 assert '[ "$(last_server)" = "$RIG_TARGET" ]' "a run that worked records last_server"
 assert 'no_staging' "no staging file left"
 
-# --- Case 3: in sync: declined, then reconfigured — the mode stays -----------------
-remote "chmod 640 $pdir/.env" >/dev/null
+# --- Case 3: in sync: declined, then reconfigured — a 600 .env converges to 660 ----
+remote "chmod 600 $pdir/.env" >/dev/null
 tty 'n' "$RIG_TARGET"
 assert '[ "$tty_rc" = 0 ] && grep -qF "up to date" <<<"$tty_out"' "declining the reconfigure exits 0 (rc $tty_rc: $tty_out)"
 tty $'y\n\n\n\n\n\n' "$RIG_TARGET"
 assert '[ "$tty_rc" = 0 ] && grep -qF ".env written to" <<<"$tty_out"' "reconfiguring rewrites it (rc $tty_rc: $tty_out)"
 assert '[ "$(remote "cat $pdir/.env")" = "$want" ]' "every live value kept through Enter"
-assert '[ "$(remote "stat -c %a $pdir/.env")" = 640 ]' "an existing .env keeps its mode through the setup"
+assert '[ "$(remote "stat -c %a $pdir/.env")" = 660 ]' "an existing 600 .env is given the group's read and write by the setup"
 assert 'no_staging' "no staging file left"
 
 # An existing .env the deploy user cannot read is never taken for a first run.

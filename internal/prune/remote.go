@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/manifest"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
@@ -153,18 +154,26 @@ type Removal struct {
 	Reason  string `json:"reason,omitempty"`
 }
 
-// Remote is the server's half: `scan APPS` reads, `rm TAG…` removes.
+// Remote is the server's half: `scan APPS` reads, `rm APPS TAG…` removes, under the server lock.
 func Remote(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case len(args) == 2 && args[0] == "scan":
 		b, _ := json.Marshal(scan(args[1], time.Now()))
 		fmt.Fprintf(stdout, "%s\n", b)
 		return 0
-	case len(args) >= 2 && args[0] == "rm":
+	case len(args) >= 3 && args[0] == "rm":
+		sl, err := serverlock.Take(args[1], serverlock.Exclusive, "server prune")
+		if err != nil {
+			fmt.Fprintf(stderr, "remote: %v\n", err)
+			return 1
+		}
+		if sl != nil {
+			defer sl.Close()
+		}
 		// A dropped session does not stop the removals half way.
 		signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
 		enc := json.NewEncoder(stdout)
-		for _, ref := range args[1:] {
+		for _, ref := range args[2:] {
 			if _, err := runDocker("image", "rm", ref); err != nil {
 				enc.Encode(Removal{Failed: ref, Reason: err.Error()})
 			} else {
@@ -173,6 +182,6 @@ func Remote(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	fmt.Fprintln(stderr, "remote: usage: kasbah remote prune scan APPS | rm TAG…")
+	fmt.Fprintln(stderr, "remote: usage: kasbah remote prune scan APPS | rm APPS TAG…")
 	return 1
 }

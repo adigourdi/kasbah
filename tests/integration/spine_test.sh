@@ -294,8 +294,8 @@ assert '[ ! -f "$projdir/.kasbah/state.json" ]' \
 # generator the message recommends is the server's own kasbah binary, which this
 # run ensured, and no shell helper is shipped beside the project any more.
 srvbin="$apps/.kasbah/bin/kasbah"
-assert '[ "$(rig_ssh "stat -c %a $srvbin" 2>/dev/null)" = "755" ]' \
-    "the server binary that renders .env is there and executable (got '$(rig_ssh "stat -c %a $srvbin" 2>/dev/null)')"
+assert '[ "$(rig_ssh "stat -c %a $srvbin" 2>/dev/null)" = "775" ]' \
+    "the server binary that renders .env is there, executable, and the operators' group may replace it (got '$(rig_ssh "stat -c %a $srvbin" 2>/dev/null)')"
 assert '[ "$(rig_ssh "[ -e $apps/$project/scripts ] && echo present || echo absent" 2>/dev/null)" = "absent" ]' \
     "and no scripts/ directory was shipped — the server's binary runs the deploy"
 assert '[ "$(rig_ssh "[ -e $apps/$project/.env.prod.example ] && echo present || echo absent" 2>/dev/null)" = "present" ]' \
@@ -573,7 +573,7 @@ assert '[ "$v_kasbah" = "kasbah=$(kasbah_base_version)" ]' \
     "then kasbah=<this checkout's version> (got '$v_kasbah')"
 assert '[ "$v_digest" = "digest=-" ]' \
     "and digest=- , because a stock-only project builds no image (got '$v_digest')"
-assert '[ -z "$v_extra" ]' "with nothing appended after it yet (got '$v_extra')"
+assert '[ "$v_extra" = "by=$RIG_SSH_USER" ]' "then by=<the ssh user>, and nothing after it yet (got '$v_extra')"
 
 # --- The container, and how Traefik reaches it -------------------------------------------
 assert '[ "${got[c_state]}" = "running" ]' "$container is running (got '${got[c_state]}')"

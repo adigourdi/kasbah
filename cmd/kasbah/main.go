@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
@@ -29,6 +30,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/selfupdate"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/serverinit"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/status"
 	"github.com/adigourdi/kasbah/internal/term"
@@ -47,6 +49,12 @@ func main() {
 	if len(args) > 0 {
 		switch args[0] {
 		case "remote":
+			// Group-writable by default: every operator is in the kasbah group,
+			// and setgid directories give what is created here that group.
+			syscall.Umask(0o002)
+			if len(args) > 1 && args[1] == "lock" {
+				os.Exit(serverlock.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
+			}
 			if len(args) > 1 && args[1] == "load" {
 				// A signal abandons the docker load rather than let it finish
 				// on a stream that was cut short.

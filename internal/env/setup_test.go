@@ -33,8 +33,9 @@ func mode(t *testing.T, p string) os.FileMode {
 	return fi.Mode().Perm()
 }
 
-// A .env the setup creates holds secrets and starts 600 whatever the umask;
-// one that exists keeps its mode, and a symlinked one is written through.
+// A .env the setup creates holds secrets and starts 660 whatever the umask;
+// one that exists keeps its mode with the group given the owner's read and
+// write, and a symlinked one is written through.
 func TestSetupMode(t *testing.T) {
 	old := syscall.Umask(0o022)
 	defer syscall.Umask(old)
@@ -44,18 +45,18 @@ func TestSetupMode(t *testing.T) {
 	if rc := runSetup(t, dir, "\n"); rc != 0 {
 		t.Fatalf("rc %d", rc)
 	}
-	if m := mode(t, dir+"/.env"); m != 0o600 {
-		t.Errorf("a created .env is %o, want 600", m)
+	if m := mode(t, dir+"/.env"); m != 0o660 {
+		t.Errorf("a created .env is %o, want 660", m)
 	}
 
-	os.Chmod(dir+"/.env", 0o640)
+	os.Chmod(dir+"/.env", 0o600)
 	var before syscall.Stat_t
 	syscall.Stat(dir+"/.env", &before)
 	if rc := runSetup(t, dir, "y\n"); rc != 0 {
 		t.Fatalf("rc %d", rc)
 	}
-	if m := mode(t, dir+"/.env"); m != 0o640 {
-		t.Errorf("an existing .env became %o, want its own 640", m)
+	if m := mode(t, dir+"/.env"); m != 0o660 {
+		t.Errorf("an existing 600 .env became %o, want 660", m)
 	}
 	var after syscall.Stat_t
 	syscall.Stat(dir+"/.env", &after)
@@ -80,22 +81,29 @@ func TestSetupMode(t *testing.T) {
 	if b, _ := os.ReadFile(dir + "/real"); string(b) != "A=old\n" {
 		t.Errorf("the link's target holds %q", b)
 	}
-	if m := mode(t, dir+"/real"); m != 0o644 {
-		t.Errorf("the target became %o", m)
+	if m := mode(t, dir+"/real"); m != 0o664 {
+		t.Errorf("the target became %o, want 664", m)
 	}
 }
 
-func TestInjectCreates600(t *testing.T) {
+func TestInjectCreates660(t *testing.T) {
 	old := syscall.Umask(0o022)
 	defer syscall.Umask(old)
 	dir := t.TempDir()
 	if rc := Inject(dir+"/.env", []string{"KASBAH_CPU_LIMIT=0"}, &bytes.Buffer{}); rc != 0 {
 		t.Fatalf("rc %d", rc)
 	}
-	if m := mode(t, dir+"/.env"); m != 0o600 {
+	if m := mode(t, dir+"/.env"); m != 0o660 {
 		t.Errorf("an injected-into-existence .env is %o", m)
 	}
-	want := ManagedBegin + "\nKASBAH_CPU_LIMIT=0\n" + ManagedEnd + "\n"
+	os.Chmod(dir+"/.env", 0o600)
+	if rc := Inject(dir+"/.env", []string{"KASBAH_CPU_LIMIT=1"}, &bytes.Buffer{}); rc != 0 {
+		t.Fatalf("rc %d", rc)
+	}
+	if m := mode(t, dir+"/.env"); m != 0o660 {
+		t.Errorf("an existing 600 .env converged to %o, want 660", m)
+	}
+	want := ManagedBegin + "\nKASBAH_CPU_LIMIT=1\n" + ManagedEnd + "\n"
 	if b, _ := os.ReadFile(dir + "/.env"); string(b) != want {
 		t.Errorf("got %q", b)
 	}

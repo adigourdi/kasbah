@@ -34,6 +34,9 @@ tmpdir="$(mktemp -d)"
 hidden=""
 cleanup() {
     [ -z "$hidden" ] || rig_ssh "sudo mv -f /usr/bin/rsync.hidden /usr/bin/rsync" >/dev/null 2>&1
+    # The deploy user's home is not rig_clean's: nothing is left in it.
+    [ -z "${base:-}" ] || [ -n "${KASBAH_SYNC_KEEP:-}" ] ||
+        rig_ssh "chmod -R u+rwx $base 2>/dev/null; rm -rf $base" >/dev/null 2>&1
     chmod -R u+rwx "$tmpdir" 2>/dev/null
     if [ -n "${KASBAH_SYNC_KEEP:-}" ]; then echo "kept: $tmpdir" >&2; else rm -rf "$tmpdir"; fi
 }
@@ -64,7 +67,9 @@ chmod 0755 "$stub/rsync"
 assert '[ "$(env PATH="$RIG_SHIM_DIR:$stub:$PATH" sh -c "command -v rsync")" = "$stub/rsync" ]' \
     "the failing rsync stub is the one kasbah's PATH finds"
 
-base=/apps/parity
+# Outside the apps tree: its setgid directories hand their group down, which
+# rsync's own chmod of each directory would undo and kasbah's keeps.
+base=/home/$RIG_SSH_USER/parity
 rig_ssh "rm -rf $base && mkdir -p $base/r $base/k $base/out-r $base/out-k" >/dev/null 2>&1 || exit 2
 
 hide_rsync() {
@@ -112,17 +117,31 @@ REMOTE
 # looking. -D drops directory mtimes: a one-file sync manages none, so its
 # parent's is the moment the file landed, a different one on each side.
 undated() { sed -E 's/^(d [^ ]+ [^ ]+ -) [0-9.]+ /\1 /'; }
+# received LIST|SNAP — directories with the group given the owner's bits, as
+# treesync's dirMode lays them down; applied to both sides alike.
+received() {
+    local l m rest
+    while IFS= read -r l; do
+        case $1:$l in
+            list:"d "*) m=${l#d }; rest=${m#* }; m=${m%% *}
+                        l="d $(printf '%o' $(( 8#$m | ((8#$m & 8#700) >> 3) ))) $rest" ;;
+            snap:*" d") rest=${l% d}; m=${rest##* }; rest=${rest% *}; m=${rest##* }
+                        l="${rest% *} $(printf '%o' $(( 8#$m | ((8#$m & 8#700) >> 3) ))) ${l##* $m }" ;;
+        esac
+        printf '%s\n' "$l"
+    done
+}
 same() {
     local blank=cat
     [ "$1" != -D ] || { blank=undated; shift; }
     local c=$1 r=$2 k=$3 d
-    rig_list "$r" | $blank >"$tmpdir/$c.r.list" 2>&1
-    rig_list "$k" | $blank >"$tmpdir/$c.k.list" 2>&1
+    rig_list "$r" | $blank | received list >"$tmpdir/$c.r.list" 2>&1
+    rig_list "$k" | $blank | received list >"$tmpdir/$c.k.list" 2>&1
     d=$(diff "$tmpdir/$c.r.list" "$tmpdir/$c.k.list")
     assert '[ -z "$d" ] && [ -s "$tmpdir/$c.r.list" ]' "$c: kasbah's tree is rsync's
 $d"
-    rig_files_snapshot -r "$r" | sed "s|^$r||" >"$tmpdir/$c.r.snap"
-    rig_files_snapshot -r "$k" | sed "s|^$k||" >"$tmpdir/$c.k.snap"
+    rig_files_snapshot -r "$r" | sed "s|^$r||" | received snap >"$tmpdir/$c.r.snap"
+    rig_files_snapshot -r "$k" | sed "s|^$k||" | received snap >"$tmpdir/$c.k.snap"
     d=$(diff "$tmpdir/$c.r.snap" "$tmpdir/$c.k.snap")
     assert '[ -z "$d" ]' "$c: and rig_files_snapshot agrees
 $d"

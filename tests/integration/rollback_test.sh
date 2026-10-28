@@ -305,7 +305,7 @@ assert '[ "$r_digest" = "digest=$v1_web_id,$v1_worker_id" ]' \
     "digest= is what the rig's own daemon calls the two images after the retag
         log: $r_digest
         rig: digest=$v1_web_id,$v1_worker_id"
-assert '[ -z "$r_extra" ]' "with nothing after it (got '$r_extra')"
+assert '[ "$r_extra" = "by=stevedore" ]' "then by=<ssh user>, and nothing after it (got '$r_extra')"
 
 crumb_text="$(crumbs)"
 assert '[ "$(grep -c . <<<"$crumb_text")" = "2" ]' \

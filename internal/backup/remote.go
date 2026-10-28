@@ -19,6 +19,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/probe"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 )
 
 // RemoteInit is `kasbah remote backup-init <step> …`: init's backup half and
@@ -67,10 +68,12 @@ func RemoteInit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // decides anything. The env file's content never travels: only whether it
 // has any, and the first key in it kasbah sets itself.
 type ReadReport struct {
-	Dir      string              `json:"dir"`
-	Compose  string              `json:"compose_b64"`
-	Env      string              `json:"env"`
-	EnvOwned string              `json:"env_owned"`
+	Dir      string `json:"dir"`
+	Compose  string `json:"compose_b64"`
+	Env      string `json:"env"`
+	EnvOwned string `json:"env_owned"`
+	// Owner is the backup directory's owner when it is not this user's.
+	Owner    string              `json:"owner"`
 	HasPass  []string            `json:"haspass"`
 	Mail     bool                `json:"mail"`
 	Projects []backuprec.Project `json:"projects"`
@@ -89,6 +92,7 @@ func Read(apps, data string) ReadReport {
 		HasPass:  backuprec.HasPass(dir + "/repos"),
 		Mail:     probe.DirState(apps+"/mail") == "dir",
 		Projects: backuprec.Projects(apps, data),
+		Owner:    serverlock.Foreign(dir),
 	}
 	if env, ok := readEnv(dir + "/env"); ok {
 		r.Env = "empty"
@@ -156,13 +160,20 @@ func remoteLayout(apps, size, sum string, stdin io.Reader, stdout io.Writer) err
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return fmt.Errorf("could not create %s/repos and %s/state", dir, dir)
 		}
-		if err := os.Chmod(d, 0o700); err != nil {
-			return fmt.Errorf("could not restrict %s", dir)
+		if err := serverlock.EnsureMode(d, 0o700); err != nil {
+			return err
 		}
 	}
 
 	envPath := dir + "/env"
-	current, _ := readEnv(envPath)
+	current := ""
+	if _, err := os.Stat(envPath); err == nil {
+		b, err := os.ReadFile(envPath)
+		if err != nil {
+			return fmt.Errorf("could not read %s: %v", envPath, err)
+		}
+		current = string(b)
+	}
 	if k := FirstOwned(current); k != "" {
 		return fmt.Errorf("%s sets %s, which kasbah sets itself — remove the line and re-run", envPath, k)
 	}
@@ -173,8 +184,8 @@ func remoteLayout(apps, size, sum string, stdin io.Reader, stdout io.Writer) err
 			return err
 		}
 		state = "written"
-	} else if err := os.Chmod(envPath, 0o600); err != nil {
-		return fmt.Errorf("could not set mode 600 on %s", envPath)
+	} else if err := serverlock.EnsureMode(envPath, 0o600); err != nil {
+		return err
 	}
 
 	var written, kept []string

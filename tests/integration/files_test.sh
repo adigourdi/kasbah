@@ -222,6 +222,8 @@ check_listing() {
         fi
         want=$(fixed "${row_owner[$ROW]}")
         [ "$want" != deploy ] || want=$me
+        # The ssh user, and the operators' group (server-setup.md).
+        [ "$want" != deploy:kasbah ] || want="${me%%:*}:kasbah"
         if [ -n "$want" ] && [ "$want" != "$owner" ]; then
             echo "  FAIL: $path is owned $owner; row \`${row_pat[$ROW]}\` says $want" >&2
             fail=1

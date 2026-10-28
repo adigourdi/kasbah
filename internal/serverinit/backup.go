@@ -14,6 +14,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/tmpl"
 	"github.com/adigourdi/kasbah/internal/tree"
 )
@@ -291,6 +292,9 @@ func (s *session) backupRead(o Options) (*backup.ReadReport, error) {
 	if json.Unmarshal([]byte(body), &r) != nil || r.Dir == "" || r.Env == "" {
 		return nil, cli.Fail("the backup stack read on %s reported nothing kasbah can use", s.target).Cont(
 			"the step was truncated, or the server's kasbah rejected it — raw output:", "| "+strings.TrimSpace(body))
+	}
+	if r.Owner != "" {
+		return nil, serverlock.PrivateRefusal("--with-backup", r.Owner, o.Apps+"/.kasbah/backup")
 	}
 	return &r, nil
 }

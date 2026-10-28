@@ -94,7 +94,8 @@ you whether the project is ready to deploy. More in
 - Each `build-push` sends whole images, not only the layers that changed.
 - A rollback restores code and configuration, not data. Undoing a database
   migration is up to the project's own hooks.
-- Secrets live in a plain `.env` file on the server, readable only by its owner.
+- Secrets live in a plain `.env` file on the server, readable by every operator
+  in the server's `kasbah` group and nobody else.
 
 ## Documentation
 

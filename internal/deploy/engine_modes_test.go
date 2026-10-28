@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/adigourdi/kasbah/internal/serverlock"
 )
 
 func TestEngineRollbackMode(t *testing.T) {
@@ -36,7 +38,7 @@ func TestEngineRollbackMode(t *testing.T) {
 	}
 	b, _ := os.ReadFile(filepath.Join(r.dir, "versions.log"))
 	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-	if len(lines) != 3 || !strings.HasSuffix(lines[2], " rollback 0.9.0 no-backup kasbah=0.1.0 digest=sha256:id-of-demo-web:current") {
+	if len(lines) != 3 || !strings.HasSuffix(lines[2], " rollback 0.9.0 no-backup kasbah=0.1.0 digest=sha256:id-of-demo-web:current by="+serverlock.Who()) {
 		t.Errorf("versions.log %q", b)
 	}
 }

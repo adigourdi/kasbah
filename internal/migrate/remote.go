@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/remote"
@@ -37,7 +36,6 @@ func Remote(args []string, stdout, stderr io.Writer) int {
 	}
 	w, done := remote.Outlive(stderr)
 	defer done()
-	syscall.Umask(0o022)
 	var r *Report
 	var err error
 	if undo {

@@ -110,7 +110,9 @@ Built as build-plan Phase 10 (`docs/phases/10-recast.md`).
 
 - Private registry management (no Harbor/Zot/Distribution).
 - Web UI for kasbah.
-- Multi-user access control on a VPS.
+- Multi-user access control on a VPS. Several operators share one server as
+  one trust domain, the `kasbah` group (`server-setup.md` → Operators); no
+  per-project permissions.
 - Support for Swarm / Kubernetes.
 - Automated DNS management (no Cloudflare API integration).
 - One-project-to-many-servers deploys — each project targets exactly one

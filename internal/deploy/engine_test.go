@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/serverlock"
+	"github.com/adigourdi/kasbah/internal/vlog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -139,11 +141,14 @@ func TestEngineOrder(t *testing.T) {
 	}
 	log, _ := os.ReadFile(filepath.Join(r.dir, "versions.log"))
 	lines := strings.Split(strings.TrimSpace(string(log)), "\n")
-	if len(lines) != 2 || !strings.HasSuffix(lines[1], " deploy 1.0.0 "+rep.Backup+" kasbah=0.1.0 digest=sha256:id-of-demo-web:current") {
+	if len(lines) != 2 || !strings.HasSuffix(lines[1], " deploy 1.0.0 "+rep.Backup+" kasbah=0.1.0 digest=sha256:id-of-demo-web:current by="+serverlock.Who()) {
 		t.Fatalf("versions.log %q", log)
 	}
-	if fi, _ := os.Stat(filepath.Join(r.dir, "versions.log")); fi.Mode().Perm() != 0o640 {
-		t.Errorf("versions.log mode %o", fi.Mode().Perm())
+	if fi, _ := os.Stat(filepath.Join(r.dir, "versions.log")); fi.Mode().Perm() != vlog.Mode {
+		t.Errorf("versions.log mode %o, want %o", fi.Mode().Perm(), vlog.Mode)
+	}
+	if fi, _ := os.Stat(filepath.Join(r.dir, ".deploy.lock")); fi.Mode().Perm() != serverlock.Mode {
+		t.Errorf(".deploy.lock mode %o, want %o", fi.Mode().Perm(), serverlock.Mode)
 	}
 	if strings.Contains(out, "echo") || strings.Count(strings.TrimSpace(out), "\n") != 0 {
 		t.Errorf("stdout carries more than the report: %q", out)

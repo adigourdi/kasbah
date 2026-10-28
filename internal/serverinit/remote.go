@@ -13,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	markerpkg "github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 )
 
 // Remote is `kasbah remote init <step> …`, run by the server binary. Each step
@@ -143,8 +145,21 @@ func remoteLayout(apps, data string, stdout io.Writer) error {
 		f.Close()
 		state = "created"
 	}
-	if err := os.Chmod(acme, 0o600); err != nil {
-		return fmt.Errorf("could not set mode 600 on %s", acme)
+	if err := serverlock.EnsureMode(acme, 0o600); err != nil {
+		return err
+	}
+	// What every operator writes beside init, put back to its group mode where
+	// it is this user's; the root step's file find covers the others'.
+	for p, m := range map[string]os.FileMode{
+		markerpkg.Path(apps):           markerpkg.Mode,
+		serverlock.Path(apps):          serverlock.Mode,
+		apps + "/.kasbah/migrate.lock": serverlock.Mode,
+		apps + "/.kasbah/bin/.lock":    serverlock.Mode,
+		apps + "/.kasbah/bin/kasbah":   0o775,
+	} {
+		if fi, err := os.Lstat(p); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm() != m && serverlock.Owned(fi) {
+			os.Chmod(p, m)
+		}
 	}
 	fmt.Fprintf(stdout, "acme=%s\n", state)
 	return nil
@@ -183,8 +198,8 @@ func remoteAcmeReset(acme, stamp string, stdout io.Writer) error {
 		return fmt.Errorf("could not empty %s in place: %v", acme, err)
 	}
 	f.Close()
-	if err := os.Chmod(acme, 0o600); err != nil {
-		return fmt.Errorf("could not set mode 600 on %s", acme)
+	if err := serverlock.EnsureMode(acme, 0o600); err != nil {
+		return err
 	}
 	fmt.Fprintln(stdout, "acme_reset=done")
 	return nil
@@ -256,7 +271,7 @@ func remoteMarker(apps, size, sum string, stdin io.Reader, stdout io.Writer) err
 			return nil
 		}
 	}
-	if err := remote.Install(marker, body, 0o644); err != nil {
+	if err := remote.Install(marker, body, markerpkg.Mode); err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, "marker=written")

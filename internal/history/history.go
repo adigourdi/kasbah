@@ -235,7 +235,7 @@ func (x *run) note() {
 func (x *run) history() {
 	r := x.r
 	nArch, nAct, nBad := 0, 0, 0
-	w := [4]int{9, 6, 7, 6}
+	w := [5]int{9, 6, 7, 6, 6}
 	type row struct {
 		i, ord int
 	}
@@ -257,7 +257,7 @@ func (x *run) history() {
 			nBad++
 			continue
 		}
-		for k, v := range []string{it.Time, it.Action, it.Version, it.Backup} {
+		for k, v := range []string{it.Time, it.Action, it.Version, it.Backup, it.Kasbah} {
 			w[k] = max(w[k], utf8.RuneCountInString(v))
 		}
 	}
@@ -265,10 +265,10 @@ func (x *run) history() {
 		x.empty(nArch)
 		return
 	}
-	line := func(a, b, c, d, e string) {
-		x.printf("%-*s  %-*s  %-*s  %-*s  %s\n", w[0], a, w[1], b, w[2], c, w[3], d, e)
+	line := func(a, b, c, d, e, f string) {
+		x.printf("%-*s  %-*s  %-*s  %-*s  %-*s  %s\n", w[0], a, w[1], b, w[2], c, w[3], d, w[4], e, f)
 	}
-	line("TIMESTAMP", "ACTION", "VERSION", "BACKUP", "KASBAH")
+	line("TIMESTAMP", "ACTION", "VERSION", "BACKUP", "KASBAH", "BY")
 	sep := false
 	for _, s := range shown {
 		it := r.Items[s.i]
@@ -284,11 +284,14 @@ func (x *run) history() {
 			x.printf("!! entry %d of %s is not a kasbah entry: %s\n", s.ord, file, strings.TrimSuffix(it.Raw, "\r"))
 			continue
 		}
-		k := it.Kasbah
+		k, by := it.Kasbah, it.By
 		if k == "" {
 			k = "-"
 		}
-		line(it.Time, it.Action, it.Version, it.Backup, k)
+		if by == "" {
+			by = "-"
+		}
+		line(it.Time, it.Action, it.Version, it.Backup, k, by)
 	}
 	if x.o.All {
 		x.printf("%d %s on %s — %d archived in %s, %d active in %s\n",

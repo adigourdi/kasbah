@@ -73,7 +73,7 @@ func TestBuild(t *testing.T) {
 	if m, err := Build(Fields{}, off.(*tree.Map), nil); err != nil || tree.Compact(m) != `{"backup":false,"kasbah_version":"","apps_path":"","data_path":"","cpu_limit":"","mem_limit":""}` {
 		t.Errorf("backup false, none given: %v %v", tree.Compact(m), err)
 	}
-	if Mode != 0o644 || Path("/srv/apps") != "/srv/apps/.kasbah/server.json" {
+	if Mode != 0o664 || Path("/srv/apps") != "/srv/apps/.kasbah/server.json" {
 		t.Error("mode or path")
 	}
 }

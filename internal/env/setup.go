@@ -458,9 +458,9 @@ func writeEnv(path string, lines []string) error {
 			return err
 		}
 	}
-	mode := os.FileMode(0o600)
+	mode := os.FileMode(Mode)
 	if fi, err := os.Stat(target); err == nil {
-		mode = fi.Mode().Perm()
+		mode = GroupMode(fi.Mode().Perm())
 	}
 	tmp := target + ".kasbah-setup." + strconv.Itoa(os.Getpid())
 	os.Remove(tmp)

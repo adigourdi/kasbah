@@ -190,9 +190,9 @@ assert '[ "$(server_sha)" = "$ours_sha" ]' "absent: the server holds the worksta
 assert '[ "$(bin_dir_list)" = ".lock
 kasbah" ]' "absent: the binary and the install lock, nothing else, in $bin_dir ($(bin_dir_list | tr '\n' ' '))"
 modes=$(rig_ssh "stat -c '%a %U %G' $bin_dir $bin $bin_dir/.lock" 2>/dev/null | tr -d '\r')
-assert '[ "$modes" = "755 $RIG_SSH_USER $RIG_SSH_USER
-755 $RIG_SSH_USER $RIG_SSH_USER
-644 $RIG_SSH_USER $RIG_SSH_USER" ]' "the directory and the binary are 755, the lock 644, all the deploy user's (got '$modes')"
+assert '[ "$modes" = "2775 $RIG_SSH_USER kasbah
+775 $RIG_SSH_USER kasbah
+664 $RIG_SSH_USER kasbah" ]' "the directory is 2775, the binary 775, the lock 664: the deploy user's, and the kasbah group's for every operator (got '$modes')"
 direct=$(rig_ssh "$bin remote version; $bin --version" 2>&1 | tr -d '\r')
 ours_line=$("$KASBAH_BIN" --version)
 assert '[ "$direct" = "build=$ours
@@ -388,7 +388,7 @@ rig_ssh "rm -f $bin" >/dev/null 2>&1
 # the run is caught with a partial `.kasbah.*` on the server.
 slow="$tmpdir/slow"
 mkdir -p "$slow"
-printf '#!/usr/bin/env bash\ncase "${!#}" in\n    *"umask 022"*) touch %q; { head -c 200000; sleep 20; cat; } | %q "$@"; exit ;;\nesac\nexec %q "$@"\n' \
+printf '#!/usr/bin/env bash\ncase "${!#}" in\n    *"umask 002"*) touch %q; { head -c 200000; sleep 20; cat; } | %q "$@"; exit ;;\nesac\nexec %q "$@"\n' \
     "$tmpdir/uploading" "$RIG_SHIM_DIR/ssh" "$RIG_SHIM_DIR/ssh" >"$slow/ssh"
 chmod 0755 "$slow/ssh"
 env HOME="$RIG_HOME" PATH="$slow:$RIG_SHIM_DIR:$PATH" \

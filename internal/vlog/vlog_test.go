@@ -40,17 +40,28 @@ func TestParsePredicate(t *testing.T) {
 	}
 }
 
+func TestParseBy(t *testing.T) {
+	e := Parse("2026-01-01T00:00:00+00:00 deploy 1.0.0 - kasbah=1.2.0 digest=- by=alice future=x")
+	if !e.OK || e.By != "alice" || e.Kasbah != "1.2.0" {
+		t.Fatalf("Parse = %+v", e)
+	}
+	if e := Parse("2026-01-01T00:00:00+00:00 deploy 1.0.0 - kasbah=1.2.0"); e.By != "" {
+		t.Fatalf("a line with no by= has none: %+v", e)
+	}
+}
+
 func TestLineRefuses(t *testing.T) {
-	if l, err := Line("T", "deploy", "1.0.0", "no-backup", "0.1.0", "-"); err != nil || l != "T deploy 1.0.0 no-backup kasbah=0.1.0 digest=-" {
+	if l, err := Line("T", "deploy", "1.0.0", "no-backup", "0.1.0", "-", "alice"); err != nil || l != "T deploy 1.0.0 no-backup kasbah=0.1.0 digest=- by=alice" {
 		t.Fatalf("Line = %q, %v", l, err)
 	}
-	for _, bad := range [][6]string{
-		{"", "deploy", "1", "b", "k", "d"},
-		{"T", "deploy", "1 0", "b", "k", "d"},
-		{"T", "deploy", "1", "b", "k", ""},
-		{"T", "deploy", "1", "b\n", "k", "d"},
+	for _, bad := range [][7]string{
+		{"", "deploy", "1", "b", "k", "d", "u"},
+		{"T", "deploy", "1 0", "b", "k", "d", "u"},
+		{"T", "deploy", "1", "b", "k", "", "u"},
+		{"T", "deploy", "1", "b\n", "k", "d", "u"},
+		{"T", "deploy", "1", "b", "k", "d", ""},
 	} {
-		if _, err := Line(bad[0], bad[1], bad[2], bad[3], bad[4], bad[5]); err == nil {
+		if _, err := Line(bad[0], bad[1], bad[2], bad[3], bad[4], bad[5], bad[6]); err == nil {
 			t.Errorf("Line(%q) accepted", bad)
 		}
 	}
@@ -72,6 +83,10 @@ func TestAppendRepairsATruncatedLine(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(dir, Log))
 	if string(b) != "one\ntrunc\ntwo\n" {
 		t.Fatalf("log = %q", b)
+	}
+	// A 640 log of this user's, whatever the umask made it, ends group-writable.
+	if fi, _ := os.Stat(filepath.Join(dir, Log)); fi.Mode().Perm() != Mode {
+		t.Fatalf("log mode %o, want %o", fi.Mode().Perm(), Mode)
 	}
 	if l, _ := LastLine(dir); l != "two" {
 		t.Fatalf("LastLine = %q", l)
@@ -152,21 +167,21 @@ func TestRotate(t *testing.T) {
 		t.Fatalf("kept %q", b)
 	}
 	for _, f := range []string{log, filepath.Join(dir, Archive)} {
-		if fi, _ := os.Stat(f); fi.Mode().Perm() != 0o640 {
-			t.Errorf("%s mode %o, want the log's 640", f, fi.Mode().Perm())
+		if fi, _ := os.Stat(f); fi.Mode().Perm() != Mode {
+			t.Errorf("%s mode %o, want %o", f, fi.Mode().Perm(), Mode)
 		}
 	}
 	if got := gunzip(t, filepath.Join(dir, Archive)); !strings.HasPrefix(got, "2026-03-30") || strings.Count(got, "\n") != 2 {
 		t.Fatalf("archive %q", got)
 	}
-	// A second member appended; an existing archive keeps its own mode.
+	// A second member appended; an archive of this user's is put back to Mode.
 	os.Chmod(filepath.Join(dir, Archive), 0o600)
 	moved, _, err = Rotate(dir, now.AddDate(0, 1, 0))
 	if err != nil || moved != 1 {
 		t.Fatalf("second rotation = %d %v", moved, err)
 	}
-	if fi, _ := os.Stat(filepath.Join(dir, Archive)); fi.Mode().Perm() != 0o600 {
-		t.Errorf("archive mode %o, want its own 600", fi.Mode().Perm())
+	if fi, _ := os.Stat(filepath.Join(dir, Archive)); fi.Mode().Perm() != Mode {
+		t.Errorf("archive mode %o, want %o", fi.Mode().Perm(), Mode)
 	}
 	if got := gunzip(t, filepath.Join(dir, Archive)); strings.Count(got, "\n") != 3 {
 		t.Fatalf("both members read back: %q", got)

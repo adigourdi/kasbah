@@ -19,6 +19,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 )
 
 // The backup stack's compose project and the objects it leaves behind
@@ -249,7 +250,7 @@ func scan(apps, pointer string) Scan {
 	s.KasbahDir = fsstate.Dir(k)
 	for _, n := range entries(k) {
 		switch n {
-		case "server.json", "backup":
+		case "server.json", "backup", serverlock.Name:
 		case "bin":
 			for _, b := range entries(filepath.Join(k, "bin")) {
 				if b == serverbin.LockName {
@@ -443,6 +444,13 @@ func act(apps string, names []string, stdout io.Writer) error {
 			return fmt.Errorf("refusing to act: '%s' is a directory kasbah owns under %s, not a project", n, apps)
 		}
 	}
+	sl, err := serverlock.Take(apps, serverlock.Exclusive, "server destroy")
+	if err != nil {
+		return err
+	}
+	if sl != nil {
+		defer sl.Close()
+	}
 	// A dropped session does not strand the act half way.
 	signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
 	fmt.Fprintln(stdout, "started=yes")
@@ -547,6 +555,9 @@ func act(apps string, names []string, stdout io.Writer) error {
 	r.Marker = "held"
 	if !bad {
 		r.Marker = fsstate.Remove(filepath.Join(k, "server.json"))
+		// Unlinked while held so .kasbah can go; a command that reaches the
+		// server after this refuses it for want of a marker before locking.
+		os.Remove(serverlock.Path(apps))
 	}
 	b, _ := json.Marshal(r)
 	fmt.Fprintf(stdout, "%s\n", b)

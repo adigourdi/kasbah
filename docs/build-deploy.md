@@ -304,7 +304,7 @@ rsync sent only its changed blocks.
 Append-only, space-delimited. Lives at `/apps/<name>/versions.log` on the VPS:
 
 ```
-<iso-timestamp> <action> <version> <backup-path-or-"no-backup"> kasbah=<version> digest=<sha256:…,…|->
+<iso-timestamp> <action> <version> <backup-path-or-"no-backup"> kasbah=<version> digest=<sha256:…,…|-> by=<user>
 ```
 
 Example:
@@ -327,6 +327,9 @@ Fields:
   hashes depends on the server's image store — the config under overlay2,
   the manifest under the containerd store (the real host runs the latter) —
   so compare it only with ids from the same server. No registry is involved.
+- `by=...` — the Unix user the server-side step ran as: the operator's ssh
+  user (`server-setup.md` → Operators), or `uid=<n>` when the name could not
+  be written as one token.
 
 The four positional fields are **frozen forever** — never reordered, never
 removed. New data lands as `key=value` pairs appended at the end.
@@ -639,7 +642,11 @@ attempted.
 
   Both modes hold an exclusive `flock` for the whole run, so a second
   concurrent deploy or rollback fails fast instead of interleaving hooks and
-  retags (multi-operator safety). The lock is a dedicated file,
+  retags (multi-operator safety). The whole run, from the marker read to the
+  fragment, also holds the server lock `<apps>/.kasbah/server.lock` shared
+  (`kasbah remote lock`), so a deploy never runs inside a
+  `server init`, `upgrade-traefik`, `server prune` or `server destroy`, which
+  take it exclusively; either refusal names every holder — command, user, pid. The lock is a dedicated file,
   `<project>/.deploy.lock`, held on its own file descriptor — flocking the
   directory path itself is not portable.
 

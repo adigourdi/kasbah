@@ -64,7 +64,62 @@ func runScript(t *testing.T, sh shtest.Shell, script string, env []string, args 
 }
 
 func TestScriptsParse(t *testing.T) {
-	shtest.Check(t, "serverinit", map[string]string{"probe": probeScript, "elevate": elevateScript, "pointer": pointerScript})
+	shtest.Check(t, "serverinit", map[string]string{"probe": probeScript, "elevate": elevateScript, "pointer": pointerScript, "group": groupScript})
+}
+
+func TestGroupScript(t *testing.T) { eachShell(t, testGroupScript) }
+
+// testGroupScript: no group is everything to do; a group the tree is not
+// reads as tree and directories to do, on the resolved path of a symlinked
+// apps path; entries owned by no one considered are left out.
+func testGroupScript(t *testing.T, sh shtest.Shell) {
+	stubs(t)
+	root := t.TempDir()
+	real, apps := root+"/real", root+"/my apps"
+	os.MkdirAll(real+"/demo", 0o755)
+	os.Symlink(real, apps)
+	os.WriteFile(real+"/demo/.env", nil, 0o660)
+	os.Chmod(real+"/demo/.env", 0o660)
+	me := strconv.Itoa(os.Getuid())
+	// root's primary group is root's: uid 0 is an owner the step considers.
+	out, e, rc := runScript(t, sh, groupScript, nil, apps, apps+"/data", me, "no-such-group-kasbah")
+	f, err := checked("group", "d@h", out, groupKeys...)
+	if rc != 0 || err != nil || f["group_exists"] != "no" || f["group_tree"] != "yes" || f["group_sudo"] != "yes" || f["group_apps"] != real {
+		t.Fatalf("no group: %d %v %v %s", rc, err, f, e)
+	}
+	out, e, rc = runScript(t, sh, groupScript, []string{"STUB_SUDO=no"}, apps, apps+"/data", me, "root")
+	f, err = checked("group", "d@h", out, groupKeys...)
+	if rc != 0 || err != nil || f["group_exists"] != "yes" || f["group_sudo"] != "no" || f["group_uids"] != strings.TrimSuffix(me+",0", map[bool]string{true: ",0"}[me == "0"]) ||
+		f["group_tree"] != "yes" || f["group_dirs"] != "yes" || f["group_files"] != "no" {
+		t.Fatalf("root's group: %d %v %v %s", rc, err, f, e)
+	}
+	os.Chmod(real+"/demo/.env", 0o600)
+	out, _, _ = runScript(t, sh, groupScript, []string{"STUB_SUDO=no"}, apps, apps+"/data", me, "root")
+	if f, _ := checked("group", "d@h", out, groupKeys...); f["group_files"] != "yes" {
+		t.Errorf("a 600 .env through the symlinked apps path: %v", f)
+	}
+}
+
+func TestGroupBlock(t *testing.T) {
+	all := Facts{"group_exists": "no", "group_member": "no", "group_tree": "yes", "group_dirs": "yes", "group_data": "yes", "group_files": "yes",
+		"group_apps": "/srv/my apps", "group_datadir": "/srv/my apps/data", "group_uids": "1000,1001"}
+	b := GroupBlock(all, "d@h", "/apps", "/apps/data", "ops")
+	tree := `sudo find '/srv/my apps' \( -path '/srv/my apps/data' -o -path '/srv/my apps/data' \) -prune -o \( -user 1000 -o -user 1001 \)`
+	want := []string{
+		"sudo groupadd kasbah",
+		"sudo usermod -aG kasbah ops",
+		tree + " ! -group kasbah -exec chgrp -h kasbah {} +",
+		`sudo find '/srv/my apps' \( -path '/srv/my apps/data' -o -path '/srv/my apps/data' \) -prune -o -type d \( -user 1000 -o -user 1001 \) -perm /070 ! -perm -2070 -exec chmod g+rwxs {} +`,
+		`sudo find '/srv/my apps/data' -maxdepth 0 -type d \( -user 1000 -o -user 1001 \) -exec chgrp -h kasbah {} + -exec chmod g+rwxs {} +`,
+	}
+	if len(b.Commands) != 6 || strings.Join(b.Commands[:5], "\n") != strings.Join(want, "\n") ||
+		!strings.Contains(b.Commands[5], "! -path '/srv/my apps/mail/.env'") || !strings.Contains(b.Commands[5], "-path '/srv/my apps/.kasbah/migrate.lock'") {
+		t.Fatalf("block:\n%s", strings.Join(b.Commands, "\n"))
+	}
+	none := Facts{"group_exists": "yes", "group_member": "yes", "group_tree": "no", "group_dirs": "no", "group_data": "no", "group_files": "no"}
+	if b := GroupBlock(none, "d@h", "/apps", "/apps/data", "ops"); !b.Empty() {
+		t.Errorf("a converged server needs %v", b.Commands)
+	}
 }
 
 // eachShell runs f once per POSIX sh the scripts are held to.

@@ -227,6 +227,10 @@ assert '[ "$rc" = "0" ]' "kasbah history reads the record it wrote (exit $rc)
         stderr: $(cli_err)"
 assert '[ "$(head -1 <<<"$out" | awk "{print \$1, \$2, \$3, \$4, \$5}")" = "TIMESTAMP ACTION VERSION BACKUP KASBAH" ]' \
     "with the five columns docs/cli.md names, in that order (header: '$(head -1 <<<"$out")')"
+assert '[ "$(head -1 <<<"$out" | awk "{print \$6}")" = "BY" ]' \
+    "and BY last: the ssh user each line was written as (header: '$(head -1 <<<"$out")')"
+assert '[ "$(grep -c " stevedore$" <<<"$out")" = "2" ]' \
+    "both rows name the rig user who deployed them (got '$out')"
 assert '[ "$(cli_err)" = "" ]' "and nothing on stderr — a piped history is the table (stderr: $(cli_err))"
 assert '[ "$(grep -c "^20" <<<"$out")" = "2" ]' \
     "two rows for two deploys (got '$out')"
