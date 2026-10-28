@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
@@ -622,7 +623,7 @@ func envValue(content []byte, key string) string {
 	return v
 }
 
-var reCPU = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
+var reCPU = regexp.MustCompile(`^([0-9]+(\.[0-9]+)?|\.[0-9]+)$`)
 
 // cmpCPU is above, below, same or unknown.
 func cmpCPU(a, b string) string {
@@ -641,27 +642,29 @@ func cmpCPU(a, b string) string {
 	return "same"
 }
 
-var reMem = regexp.MustCompile(`^([0-9]+)(b|k|kb|m|mb|g|gb)?$`)
+var reMem = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?|\.[0-9]+) ?(b|[kmgtp](?:i?b)?)?$`)
 
-// MemBytes is a compose memory size in bytes; ok false when it is not one.
+// MemBytes is a memory size in bytes as docker reads one — a decimal, an
+// optional space, a binary unit with an optional b or ib, any case, the
+// fraction truncated; ok false when it is not one or overflows int64.
 func MemBytes(v string) (int64, bool) {
 	m := reMem.FindStringSubmatch(strings.ToLower(strings.TrimSuffix(v, "\r")))
 	if m == nil {
 		return 0, false
 	}
-	n, err := strconv.ParseInt(m[1], 10, 64)
-	if err != nil {
+	n, ok := new(big.Rat).SetString(m[1])
+	if !ok {
 		return 0, false
 	}
-	switch m[2] {
-	case "k", "kb":
-		n *= 1024
-	case "m", "mb":
-		n *= 1024 * 1024
-	case "g", "gb":
-		n *= 1024 * 1024 * 1024
+	if m[2] != "" && m[2] != "b" {
+		unit := new(big.Int).Lsh(big.NewInt(1), uint(10*(strings.IndexByte("kmgtp", m[2][0])+1)))
+		n.Mul(n, new(big.Rat).SetInt(unit))
 	}
-	return n, true
+	q := new(big.Int).Quo(n.Num(), n.Denom())
+	if !q.IsInt64() {
+		return 0, false
+	}
+	return q.Int64(), true
 }
 
 func cmpMem(a, b string) string {
@@ -679,14 +682,20 @@ func cmpMem(a, b string) string {
 }
 
 // r04: the limits the containers get, against the ceiling the host was
-// measured at. Above fails; below warns.
+// measured at. Above fails; below warns. A literal in compose.prod.yml is
+// compared as written; a KASBAH_* reference through the server's .env.
 func (c *checker) r04() {
 	s := c.srv
+	// A 0 ceiling compares as the number 0, not as "no limit"; init never writes one.
+	hostCPU, hostMem := s.mk.CPULimit, s.mk.MemLimit
+	useCPU, useMem := c.r04Literals(hostCPU, hostMem)
+	if !useCPU && !useMem {
+		return
+	}
 	if s.r.Project != "dir" || (s.r.EnvState != "file" && s.r.EnvState != "empty") {
 		return
 	}
 	cpu, mem := envValue(s.env, "KASBAH_CPU_LIMIT"), envValue(s.env, "KASBAH_MEM_LIMIT")
-	hostCPU, hostMem := s.mk.CPULimit, s.mk.MemLimit
 	if cpu == "" && mem == "" {
 		c.warnf("%s/%s/.env on %s carries no KASBAH_CPU_LIMIT or KASBAH_MEM_LIMIT, so there is no effective limit to compare with the host's %s cpus / %s — every deploy rewrites that block, so it has been edited out", s.apps, c.m.Name, s.target, hostCPU, hostMem)
 		return
@@ -698,7 +707,14 @@ func (c *checker) r04() {
 		}
 		note += n
 	}
-	switch cmpCPU(cpu, hostCPU) {
+	cmpC, cmpM := cmpCPU(cpu, hostCPU), cmpMem(mem, hostMem)
+	if !useCPU {
+		cmpC = "same"
+	}
+	if !useMem {
+		cmpM = "same"
+	}
+	switch cmpC {
 	case "above":
 		verdict, note = "above", "cpus "+cpu+" > "+hostCPU
 	case "below":
@@ -706,7 +722,7 @@ func (c *checker) r04() {
 	case "unknown":
 		note = "cpus '" + or(cpu, "unset") + "' is not a number"
 	}
-	switch cmpMem(mem, hostMem) {
+	switch cmpM {
 	case "above":
 		add("mem_limit " + mem + " > " + hostMem)
 		verdict = "above"
@@ -726,8 +742,74 @@ func (c *checker) r04() {
 	case note != "":
 		c.warnf("effective resource limits on %s could not all be compared with the host's %s cpus / %s: %s", s.target, hostCPU, hostMem, note)
 	default:
-		c.passf("effective resource limits on %s match the host's 90%% ceiling (%s cpus, %s)", s.target, cpu, mem)
+		var used []string
+		if useCPU {
+			used = append(used, cpu+" cpus")
+		}
+		if useMem {
+			used = append(used, mem)
+		}
+		c.passf("effective resource limits on %s match the host's 90%% ceiling (%s)", s.target, strings.Join(used, ", "))
 	}
+}
+
+// r04Literals judges every literal limit in compose.prod.yml against the
+// marker's ceiling, and says whether any service takes cpus / mem_limit from
+// the .env — both do when the services cannot be read.
+func (c *checker) r04Literals(hostCPU, hostMem string) (useCPU, useMem bool) {
+	if !isFile(composeFile) || len(c.services) == 0 {
+		return true, true
+	}
+	verdict, note, n := "same", "", 0
+	add := func(n string) {
+		if note != "" {
+			note += "; "
+		}
+		note += n
+	}
+	for _, svc := range c.services {
+		for _, k := range limitKeys {
+			kind, v, _ := limitOf(c.svc(svc), k.key, k.deploy, k.ref)
+			if kind == "ref" {
+				useCPU, useMem = useCPU || k.key == "cpus", useMem || k.key == "mem_limit"
+			}
+			if kind != "literal" {
+				continue
+			}
+			n++
+			host, cmp := hostCPU, cmpCPU(v, hostCPU)
+			if k.key == "mem_limit" {
+				host, cmp = hostMem, cmpMem(v, hostMem)
+			}
+			switch cmp {
+			case "above":
+				add(svc + " " + k.key + " " + v + " > " + host)
+				verdict = "above"
+			case "below":
+				add(svc + " " + k.key + " " + v + " < " + host)
+				if verdict != "above" {
+					verdict = "below"
+				}
+			case "unknown":
+				add(svc + " " + k.key + " " + v + " against '" + or(host, "unset") + "'")
+				if verdict == "same" {
+					verdict = "unknown"
+				}
+			}
+		}
+	}
+	s := c.srv
+	switch {
+	case verdict == "above":
+		c.failf("literal resource limits in compose.prod.yml are above the 90%% ceiling of %s: %s — kasbah's limits are anti-takeover ceilings, and one service over them can take the host down", s.target, note)
+	case verdict == "below":
+		c.warnf("literal resource limits in compose.prod.yml are below the 90%% ceiling of %s: %s — a tighter per-service limit is allowed, but flagged", s.target, note)
+	case verdict == "unknown":
+		c.warnf("literal resource limits in compose.prod.yml could not all be compared with the %s cpus / %s ceiling of %s: %s", hostCPU, hostMem, s.target, note)
+	case n > 0:
+		c.passf("literal resource limits in compose.prod.yml match the 90%% ceiling of %s (%s cpus, %s)", s.target, hostCPU, hostMem)
+	}
+	return useCPU, useMem
 }
 
 // b01: has this server's backup stack run, and did the last run work? Asked

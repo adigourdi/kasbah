@@ -138,11 +138,11 @@ from compose itself.
 
 Three details in that flow are load-bearing.
 
-**The build needs the resource-limit variables set to something.** Compliance
-rules R01/R02 make `cpus: ${KASBAH_CPU_LIMIT}` and `mem_limit:
-${KASBAH_MEM_LIMIT}` mandatory in every project's compose file, and a build
-has no server to read them from, so a bare `docker compose build` fails on
-every kasbah-compliant project before it reaches the Dockerfile:
+**The build needs the resource-limit variables set to something.** A project
+on `cpus: ${KASBAH_CPU_LIMIT}` and `mem_limit: ${KASBAH_MEM_LIMIT}` (R01/R02 —
+the default `check --fix` writes) cannot interpolate them without values, and a
+build has no server to read them from, so a bare `docker compose build` fails on
+every such project before it reaches the Dockerfile:
 
 ```
 error while interpolating services.web.cpus: failed to cast to expected type:

@@ -336,6 +336,77 @@ func TestServerR04(t *testing.T) {
 	}
 }
 
+// A literal is compared as written; the .env is asked only for the keys a
+// service takes from it.
+func TestServerR04Literals(t *testing.T) {
+	compose := func(cpus, mem string) string {
+		return strings.Replace(strings.Replace(goodCompose, "${KASBAH_CPU_LIMIT}", cpus, 1), "${KASBAH_MEM_LIMIT}", mem, 1)
+	}
+	for _, tc := range []struct {
+		compose, env string
+		want, not    []string
+		code         int
+	}{
+		{compose("16", "2g"), "KASBAH_CPU_LIMIT=999\n",
+			[]string{"  ✓ All services set cpus/mem_limit, some as literals: demo-web(cpus=16,mem_limit=2g) — compared with the host's ceiling under Server (R04)",
+				"  ✗ literal resource limits in compose.prod.yml are above the 90% ceiling of deploy@vps: demo-web cpus 16 > 14.4; demo-web mem_limit 2g < 54g — kasbah's limits are anti-takeover ceilings"},
+			[]string{"Services with literal resource limits", "effective resource limits on"}, 6},
+		{compose("0.5", "${KASBAH_MEM_LIMIT}"), "KASBAH_CPU_LIMIT=lots\nKASBAH_MEM_LIMIT=54g\n",
+			[]string{"  ⚠ literal resource limits in compose.prod.yml are below the 90% ceiling of deploy@vps: demo-web cpus 0.5 < 14.4 — a tighter per-service limit is allowed, but flagged",
+				"  ✓ effective resource limits on deploy@vps match the host's 90% ceiling (54g)"},
+			nil, 0},
+		{compose("14.40", "55296m"), "",
+			[]string{"  ✓ literal resource limits in compose.prod.yml match the 90% ceiling of deploy@vps (14.4 cpus, 54g)"},
+			[]string{"effective resource limits on", "carries no KASBAH_CPU_LIMIT"}, 0},
+		{strings.Replace(goodCompose, "    cpus: ${KASBAH_CPU_LIMIT}\n", "    deploy: {resources: {limits: {cpus: 16}}}\n", 1), "KASBAH_MEM_LIMIT=54g\n",
+			[]string{"  ✗ literal resource limits in compose.prod.yml are above the 90% ceiling of deploy@vps: demo-web cpus 16 > 14.4",
+				"  ✓ effective resource limits on deploy@vps match the host's 90% ceiling (54g)"},
+			nil, 6},
+		{compose("${KASBAH_CPU_LIMIT}", "99g"), "KASBAH_CPU_LIMIT=14.4\n",
+			[]string{"  ✗ literal resource limits in compose.prod.yml are above the 90% ceiling of deploy@vps: demo-web mem_limit 99g > 54g",
+				"  ✓ effective resource limits on deploy@vps match"},
+			[]string{"is not a size"}, 6},
+	} {
+		srvProject(t, "")
+		os.WriteFile(composeFile, []byte(tc.compose), 0o644)
+		s := newSrv(t)
+		s.r.Env = b64s("DOMAIN=demo.example.com\n" + tc.env)
+		out, code := s.run()
+		contains(t, out, tc.want...)
+		hasNot(t, out, tc.not...)
+		if code != tc.code {
+			t.Errorf("%q: exit %d, want %d:\n%s", tc.compose, code, tc.code, out)
+		}
+	}
+	t.Run("a literal is compared before the project is deployed", func(t *testing.T) {
+		srvProject(t, "")
+		os.WriteFile(composeFile, []byte(compose("32", "${KASBAH_MEM_LIMIT}")), 0o644)
+		s := newSrv(t)
+		s.r.Project, s.r.EnvState, s.r.Env, s.r.HealthState = "absent", "absent", "", "absent"
+		out, code := s.run()
+		contains(t, out, "  ✗ literal resource limits in compose.prod.yml are above the 90% ceiling of deploy@vps: demo-web cpus 32 > 14.4")
+		if code != 6 {
+			t.Errorf("exit %d, want 6", code)
+		}
+	})
+}
+
+func TestMemBytes(t *testing.T) {
+	for in, want := range map[string]int64{
+		"512m": 512 << 20, "1.5g": 1610612736, "2GiB": 2 << 30, "1t": 1 << 40, "512 MB": 512 << 20,
+		".5k": 512, "536870912": 536870912, "1b": 1, "54G": 54 << 30, "8191p": 8191 << 50,
+	} {
+		if got, ok := MemBytes(in); !ok || got != want {
+			t.Errorf("MemBytes(%q) = %d, %v; want %d", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"512mi", "1ib", "8192p", "99999999999t", "5.5.5m", "1e3", "-1m", "512  m", "1,5g", ""} {
+		if got, ok := MemBytes(in); ok {
+			t.Errorf("MemBytes(%q) = %d, want not a size", in, got)
+		}
+	}
+}
+
 func TestServerT05(t *testing.T) {
 	fragOf := func(host string) map[string]string {
 		i := strings.Index(goodFragment, "  services:")

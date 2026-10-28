@@ -1458,8 +1458,17 @@ networks:
 YAML
 out="$(cd "$proj40" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                  "R rules fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Services with missing or literal resource limits: demo-web(cpus)" <<<"$out"' "R01 fail line (literal cpus)"
+assert 'grep -qF "⚠ Services with literal resource limits: demo-web(cpus=1.5) — a literal does not follow the host'"'"'s ceiling" <<<"$out"' "R01 warns on a literal cpus locally"
+assert '! grep -qF "malformed resource limits" <<<"$out"' "R01/R02 pass a literal"
 assert 'grep -qF "✗ Services declare resource reservations: demo-web" <<<"$out"'                "R03 fail line"
+
+# --- Case 40b: R01/R02 malformed literals fail -----------------------------
+sed -e 's/^    cpus: "1.5"$/    cpus: 1,5/' -e 's/^    mem_limit: ${KASBAH_MEM_LIMIT}$/    mem_limit: 0/' \
+    -e '/^    mem_reservation:/d' "$proj40/compose.prod.yml" > "$proj40/c.next" && mv "$proj40/c.next" "$proj40/compose.prod.yml"
+out="$(cd "$proj40" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]' "malformed limits exit 6 (got $rc)"
+assert 'grep -qF "✗ Services with missing or malformed resource limits: demo-web(cpus,mem_limit) — each sets cpus: \${KASBAH_CPU_LIMIT} or a positive number" <<<"$out"' \
+    "R01/R02 fail '1,5' and a zero size (said '$out')"
 
 # --- Case 41: T07 — fragment targets a hostname with no container_name ------
 proj41="$tmpdir/t07-unknown-target"
@@ -1808,7 +1817,7 @@ services:
       replicas: 1
       resources:
         limits:
-          cpus: "1"
+          pids: 100
         reservations:
           cpus: "0.25"
           memory: 64M
@@ -1869,7 +1878,7 @@ services:
       replicas: 1
       resources:
         limits:
-          cpus: "1"
+          pids: 100
 
   demo-side:
     build:
@@ -2181,8 +2190,9 @@ assert '[ -z "$(find "$f10" -name "*.kasbah-fix.*" -print -quit)" ]' \
 # --- Case F11: the real fixture, broken every fixable way, comes back clean --
 # tests/fixtures/demo is a compose file whose comments carry the reasoning for
 # every choice in it. It is broken here in the awkward shapes an operator would
-# leave — a literal cpus:, a flow-mapping network, a removed logging block — and
-# has to come back to exit 0 with all of that prose still in it.
+# leave — a flow-mapping network, a removed logging block, a reservation — and
+# has to come back to exit 0 with all of that prose still in it; its literal
+# cpus: and mem_limit: are the author's and stay as written.
 f11="$tmpdir/fix-fixture"
 mkdir -p "$f11"
 cp -a "$repo_dir/tests/fixtures/demo/." "$f11/"
@@ -2209,6 +2219,8 @@ out="$(fx_run "$f11")"; rc=$?
 assert '[ "$rc" = "0" ]' "F11: and --fix takes it to a clean run (rc $rc)
 $out"
 assert 'grep -qF "0 failed" <<<"$out"' "F11: with nothing failing (said '$out')"
+assert 'grep -qxF "    cpus: \"0.5\"" "$f11/compose.prod.yml"' "F11: a literal cpus is the author's, left alone"
+assert 'grep -qxF "    mem_limit: 512m" "$f11/compose.prod.yml"' "F11: and so is a literal mem_limit"
 assert '[ "$(grep -c "#" "$f11/compose.prod.yml")" = "$comments_before" ]' \
     "F11: every one of the $comments_before comment lines survived (found $(grep -c '#' "$f11/compose.prod.yml"))"
 assert 'grep -qF "compose publishes the service name" "$f11/compose.prod.yml"' \
@@ -2339,8 +2351,8 @@ services:
     image: nginx:alpine
     container_name: demo-web
     restart: "no"     # compose's default, spelled out
-    cpus: "0.5"
-    mem_limit: 512m   # sized for the old box
+    cpus: "half"
+    mem_limit: lots   # sized for the old box
     networks: [kasbah-net]
     logging:
       driver: local

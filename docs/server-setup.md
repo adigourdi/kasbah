@@ -508,9 +508,9 @@ sentinel-delimited managed block, written through unchanged — injection
 formats nothing and validates nothing, so a `0` reaches the file as `0`
 (reserved prefix, exempt from env drift detection; see `env-template.md` for
 the block's shape and the stray-removal rule). Project compose files
-must reference the vars, never literal values — `kasbah check` enforces
-this (R01–R03), and `check --server` warns on values tightened below 90%
-and fails anything above (R04).
+reference the vars or set literals of their own (R01–R03, `compliance.md`), and
+`check --server` warns on values tightened below 90% and fails anything above
+(R04), literals included.
 
 ## With backup (`--with-backup`)
 

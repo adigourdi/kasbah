@@ -455,28 +455,32 @@ func imageBase(ref string) string {
 	return ref
 }
 
-// r01r02: the limits, as the KASBAH_* references.
+// r01r02: a missing or malformed limit becomes the KASBAH_* reference; a
+// literal is the author's per-service choice and stays, and so does the
+// deploy.resources.limits form, which --fix does not edit.
 func (x *fixer) r01r02(s svcBlock) {
-	for _, k := range []struct{ key, want, rule string }{
-		{"cpus", "${KASBAH_CPU_LIMIT}", "R01"},
-		{"mem_limit", "${KASBAH_MEM_LIMIT}", "R02"},
-	} {
+	for _, k := range limitKeys {
 		cur := x.svcQ(s, k.key)
-		if cur == k.want {
+		kind, _, deploy := limitOf(x.svcV(s), k.key, k.deploy, k.ref)
+		if kind == "ref" || kind == "literal" {
+			continue
+		}
+		if deploy {
+			x.leftf("%s %s — deploy.resources.limits.%s is malformed or differs from %s:; fix it by hand — --fix writes no %s: beside it", k.rule, s.name, k.deploy, k.key, k.key)
 			continue
 		}
 		if x.has(k.key, "services", s.name) {
 			i := x.t.locateChild(k.key, s.idx, s.end, s.ci)
-			if i < 0 || !x.t.setValue(i, k.want, true) {
+			if i < 0 || !x.t.setValue(i, k.ref, true) {
 				x.leftf("%s %s — its %s: is written in a shape --fix cannot rewrite", k.rule, s.name, k.key)
 				continue
 			}
 			x.mask("services", s.name, k.key)
-			x.planf("%s %s — %s: %s → %s", k.rule, s.name, k.key, orEmpty(cur), k.want)
+			x.planf("%s %s — %s: %s → %s", k.rule, s.name, k.key, orEmpty(cur), k.ref)
 		} else {
-			x.t.insertAfter(s.at, s.pre+k.key+": "+k.want)
-			x.set(k.want, "services", s.name, k.key)
-			x.planf("%s %s — add %s: %s", k.rule, s.name, k.key, k.want)
+			x.t.insertAfter(s.at, s.pre+k.key+": "+k.ref)
+			x.set(k.ref, "services", s.name, k.key)
+			x.planf("%s %s — add %s: %s", k.rule, s.name, k.key, k.ref)
 		}
 	}
 }

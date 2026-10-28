@@ -89,18 +89,23 @@ hosts) are in byte order.
 
 ### Resources
 
-Hard limits only — reservations are banned. The values come from
-kasbah-managed env vars (`KASBAH_CPU_LIMIT`, `KASBAH_MEM_LIMIT` — 90%
-of host cores/RAM, computed at `server init`, injected into the project's
-`.env` at deploy — see `server-setup.md`). Literal values are rejected so
-limits scale with the host instead of fossilizing one VPS's numbers.
+Hard limits only — reservations are banned. Every service sets both limits — as
+`cpus`/`mem_limit` or as compose's `deploy.resources.limits` —
+either to the kasbah-managed env vars (`KASBAH_CPU_LIMIT`, `KASBAH_MEM_LIMIT` —
+90% of host cores/RAM, computed at `server init`, injected into the project's
+`.env` at deploy — see `server-setup.md`), which scale with the host, or to a
+literal of the project's choosing (`cpus: "0.5"`, `mem_limit: 512m`) — a
+database given 2g and a web process 512m. A literal cannot be compared with a
+host locally, so plain `check` warns on it and `check --server` (R04) holds it
+to the server's ceiling. A per-container limit never stops two containers
+hogging the host together; a per-project ceiling (a cgroup slice) is not done.
 
 | ID | Rule | Level | Auto-fixable |
 |---|---|---|---|
-| R01 | Every service sets `cpus: ${KASBAH_CPU_LIMIT}` — missing or literal value fails | fail | yes |
-| R02 | Every service sets `mem_limit: ${KASBAH_MEM_LIMIT}` — missing or literal value fails | fail | yes |
+| R01 | Every service sets `cpus:` (or `deploy.resources.limits.cpus`) to `${KASBAH_CPU_LIMIT}` or a number above 0 — missing, malformed, or the two forms set to different values fails; a literal warns locally | fail/warn | yes (missing or malformed top-level only) |
+| R02 | Every service sets `mem_limit:` (or `deploy.resources.limits.memory`) to `${KASBAH_MEM_LIMIT}` or a size Docker accepts — bytes or a decimal with `k`/`m`/`g`/`t`/`p`, an optional `b` or `ib`, any case, one optional space — of at least Docker's `6m` minimum and within int64 (a string under `deploy.resources.limits`, as compose requires); missing, malformed, or the two forms set to different values (compared as sizes) fails; a literal warns locally | fail/warn | yes (missing or malformed top-level only) |
 | R03 | No service declares resource `reservations` | fail | yes |
-| R04 | (`--server`) Effective limit vs host size: above 90% fails; below 90% warns (deliberately tighter is allowed, but flagged) | fail/warn | no |
+| R04 | (`--server`) Effective limit vs host size — the server `.env`'s values for services on the variables, each literal for the others: above 90% fails; below 90% warns (deliberately tighter is allowed, but flagged) | fail/warn | no |
 
 ### Traefik
 
@@ -187,7 +192,10 @@ diff shown before writing).
 Fixable today:
 - C01, C02, C03, C04, C05, C08 (compose hygiene — C08 is a mechanical tag
   rewrite, refused for an image pinned by digest, which has no tag to move)
-- R01, R02, R03 (insert/replace limits with the `KASBAH_*` var references)
+- R01, R02, R03 (insert the `KASBAH_*` var references where a limit is missing,
+  replace a malformed top-level one; a valid literal is left alone, and a
+  `deploy.resources.limits` limit is the author's to fix — no top-level key is
+  ever added beside one, which compose would refuse)
 - Adding `kasbah_version` to manifest if missing
 
 Unfixable (must be done by hand):
@@ -290,10 +298,11 @@ runs; these are added, and T05 tightens (above).
 | Is the apps tree the operators' group's? | warn when the server has no `kasbah` group, and for every entry under the resolved apps path that an operator owns (`<data>/`'s contents, entries no operator owns and directories with no group bits aside) that is not the group's or lacks the bits another operator's write needs — setgid and group `rwx` on a directory, group read-write on a file kasbah rewrites in place (`.env`, `versions.log`, the locks, the marker), group `rwx` on the shared binary; counted exactly, the first twenty named. `kasbah server init` converges it (`server-setup.md` → Operators) |
 | Has the backup stack run, and did the last run work? (B01) | fail when the last run failed, when the scheduler's state has outlived its deadline, or when its container is not running; warn for every way the record can decline to answer, for a repository with no password, for an orphan password left by a dropped project, and for a run that shipped nothing; silent on a server with no backups. The record is `<apps>/.kasbah/backup/state/status`, read through the one parser `server status` shares |
 
-The effective limits are `KASBAH_CPU_LIMIT` / `KASBAH_MEM_LIMIT` in the VPS's
-own `<apps>/<name>/.env` — the values compose interpolates into every service's
-`cpus:` and `mem_limit:`, which R01/R02 have already pinned as references rather
-than literals. The ceiling is the server marker's, which `server init` computed
+The effective limits are, for a service on the variables, `KASBAH_CPU_LIMIT` /
+`KASBAH_MEM_LIMIT` in the VPS's own `<apps>/<name>/.env` — the values compose
+interpolates — and for one with literals — top-level or `deploy.resources.limits` — the
+literals themselves, compared even before the project has deployed (only the
+marker is needed). The `.env` is asked only for the keys some service takes from it. The ceiling is the server marker's, which `server init` computed
 as 90% of the host. Sizes are compared in bytes, so `55296m` and `54g` are the
 same limit.
 

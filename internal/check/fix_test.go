@@ -113,7 +113,7 @@ func TestFixRewritesInPlace(t *testing.T) {
 		"    networks: [internal]\n    logging:\n      driver: local\n      options:\n        max-size:\n        max-file: \"3\"\n"+
 		"networks:\n  internal: {}\n  kasbah-net: {}\n",
 		"services:\n  demo-web:\n    image: x\n    container_name: demo-web\n"+
-			"    restart: \"unless-stopped\"   # spelled out\n    cpus: '${KASBAH_CPU_LIMIT}'\n    mem_limit: ${KASBAH_MEM_LIMIT} # sized\n"+
+			"    restart: \"unless-stopped\"   # spelled out\n    cpus: '${KASBAH_CPU_LIMIT}'\n    mem_limit: 512m # sized\n"+
 			"    networks: [internal, kasbah-net]\n    logging:\n      driver: json-file\n      options:\n        max-size: 10m\n        max-file: \"3\"\n"+
 			"networks:\n  internal: {}\n  kasbah-net: {external: true}\n")
 	if !strings.Contains(o, "C01 demo-web — restart: no → unless-stopped") {
@@ -130,6 +130,31 @@ func TestFixRewritesInPlace(t *testing.T) {
 	if code != 6 || string(got) != compose ||
 		!strings.Contains(o, "R02 demo-web — its mem_limit: is written in a shape --fix cannot rewrite") ||
 		strings.Contains(o, "nothing --fix can change") {
+		t.Fatalf("exit %d, file:\n%s\nstdout:\n%s", code, got, o)
+	}
+}
+
+// A literal limit is the author's per-service choice: --fix keeps it and adds
+// only the reference a service is missing.
+func TestFixLeavesLiterals(t *testing.T) {
+	head := "services:\n  demo-web:\n    image: x\n    container_name: demo-web\n    networks: [kasbah-net]\n" +
+		"    restart: always\n    logging: {driver: json-file, options: {max-size: 1m, max-file: \"1\"}}\n"
+	tail := "networks:\n  kasbah-net: {external: true}\n"
+	o := fixed(t, head+"    cpus: 0.5\n"+tail, head+"    cpus: 0.5\n    mem_limit: ${KASBAH_MEM_LIMIT}\n"+tail)
+	if strings.Contains(o, "R01 demo-web") || !strings.Contains(o, "R02 demo-web — add mem_limit: ${KASBAH_MEM_LIMIT}") {
+		t.Errorf("plan:\n%s", o)
+	}
+	fixed(t, head+"    cpus: \"2\"\n    mem_limit: 0\n"+tail, head+"    cpus: \"2\"\n    mem_limit: ${KASBAH_MEM_LIMIT}\n"+tail)
+	fixed(t, head+"    mem_limit: 1.5g\n    deploy: {resources: {limits: {cpus: .5}}}\n"+tail, head+"    mem_limit: 1.5g\n    deploy: {resources: {limits: {cpus: .5}}}\n"+tail)
+
+	// A deploy-form limit it would fail is the author's to fix: a top-level
+	// key beside it is what compose refuses.
+	compose := head + "    cpus: 1\n    deploy: {resources: {limits: {memory: lots}}}\n" + tail
+	project(t, map[string]string{"compose.prod.yml": compose})
+	o, _, code := fix(t, true)
+	got, _ := os.ReadFile(composeFile)
+	if code != 6 || string(got) != compose ||
+		!strings.Contains(o, "R02 demo-web — deploy.resources.limits.memory is malformed or differs from mem_limit:; fix it by hand — --fix writes no mem_limit: beside it") {
 		t.Fatalf("exit %d, file:\n%s\nstdout:\n%s", code, got, o)
 	}
 }

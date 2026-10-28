@@ -437,28 +437,96 @@ func (c *checker) c09(onHN []string, defaultAliases bool) {
 
 // --- Resources (R01–R03) ----------------------------------------------------
 
+// limitKeys are R01/R02: each top-level key, its compose-spec
+// deploy.resources.limits twin, and the reference that tracks the host.
+var limitKeys = []struct{ key, deploy, ref, rule string }{
+	{"cpus", "cpus", "${KASBAH_CPU_LIMIT}", "R01"},
+	{"mem_limit", "memory", "${KASBAH_MEM_LIMIT}", "R02"},
+}
+
+// memMin is the smallest memory limit docker accepts.
+const memMin = 6 << 20
+
+// limitOf is how a service spells one limit — "ref", "literal", "missing" or
+// "malformed" — and whether deploy.resources.limits carries it.
+func limitOf(svc tree.Value, key, depKey, ref string) (kind, text string, deploy bool) {
+	top, dep := opt(svc, key), opt(svc, "deploy", "resources", "limits", depKey)
+	switch {
+	case top == nil && dep == nil:
+		return "missing", "", false
+	case dep == nil:
+		kind, text = limitValue(top, key, ref)
+		return kind, text, false
+	}
+	dk, dt := limitValue(dep, key, ref)
+	if depKey == "memory" && tree.Kind(dep) == "number" {
+		dk = "malformed" // compose's schema takes memory only as a string
+	}
+	if top == nil {
+		return dk, dt, true
+	}
+	// Both forms: compose refuses them unless they are the same limit.
+	tk, tt := limitValue(top, key, ref)
+	same := tk == dk && (tk == "ref" || tk == "literal" &&
+		(key == "cpus" && cmpCPU(tt, dt) == "same" || key != "cpus" && cmpMem(tt, dt) == "same"))
+	if !same {
+		return "malformed", tt, true
+	}
+	return tk, tt, true
+}
+
+// limitValue judges one spelling of a limit.
+func limitValue(v tree.Value, key, ref string) (kind, text string) {
+	t := scalar(v)
+	if t == ref {
+		return "ref", t
+	}
+	if k := tree.Kind(v); k != "string" && k != "number" {
+		return "malformed", t
+	}
+	if key == "cpus" {
+		if reCPU.MatchString(t) && strings.ContainsAny(t, "123456789") {
+			return "literal", t
+		}
+	} else if n, ok := MemBytes(t); ok && n >= memMin {
+		return "literal", t
+	}
+	return "malformed", t
+}
+
 func (c *checker) resourcesSection() {
 	if !isFile(composeFile) || len(c.services) == 0 {
 		return
 	}
 	c.section("Resources")
-	var bad []string
+	var bad, lits []string
 	for _, svc := range c.services {
-		var wrong []string
-		if scalar(c.svc(svc, "cpus")) != "${KASBAH_CPU_LIMIT}" {
-			wrong = append(wrong, "cpus")
-		}
-		if scalar(c.svc(svc, "mem_limit")) != "${KASBAH_MEM_LIMIT}" {
-			wrong = append(wrong, "mem_limit")
+		var wrong, lit []string
+		for _, k := range limitKeys {
+			switch kind, t, _ := limitOf(c.svc(svc), k.key, k.deploy, k.ref); kind {
+			case "missing", "malformed":
+				wrong = append(wrong, k.key)
+			case "literal":
+				lit = append(lit, k.key+"="+t)
+			}
 		}
 		if len(wrong) > 0 {
 			bad = append(bad, svc+"("+strings.Join(wrong, ",")+")")
 		}
+		if len(lit) > 0 {
+			lits = append(lits, svc+"("+strings.Join(lit, ",")+")")
+		}
 	}
-	if len(bad) == 0 {
+	switch {
+	case len(bad) > 0:
+		c.failf("Services with missing or malformed resource limits: %s — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values", strings.Join(bad, " "))
+	case len(lits) == 0:
 		c.passf("All services set cpus/mem_limit via KASBAH_* vars")
-	} else {
-		c.failf("Services with missing or literal resource limits: %s", strings.Join(bad, " "))
+	case c.srv != nil:
+		c.passf("All services set cpus/mem_limit, some as literals: %s — compared with the host's ceiling under Server (R04)", strings.Join(lits, " "))
+	}
+	if len(lits) > 0 && c.srv == nil {
+		c.warnf("Services with literal resource limits: %s — a literal does not follow the host's ceiling, and only check --server can compare it with it", strings.Join(lits, " "))
 	}
 
 	bad = nil

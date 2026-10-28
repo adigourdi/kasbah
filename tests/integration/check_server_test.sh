@@ -59,8 +59,10 @@ assert() {
 
 tmpdir="$(mktemp -d)"
 acme_locked=""
+marker_saved=""
 cleanup() {
     [ -z "$acme_locked" ] || rig_ssh "chmod 600 '$acme'" >/dev/null 2>&1
+    [ -z "$marker_saved" ] || rig_ssh "cat > $marker" <<<"$marker_saved" >/dev/null 2>&1
     rm -rf "$tmpdir"
 }
 trap cleanup EXIT
@@ -280,6 +282,32 @@ assert '[ "$rc" = "6" ]' "R04 fails an effective cpu limit above the host's ceil
 assert 'grep -qF "✗ effective resource limits on $RIG_TARGET are above the host'"'"'s 90% ceiling: cpus 999 > $marker_cpu" <<<"$out"' \
     "naming both numbers, read off the .env and the marker (said '$out')"
 rig_ssh "mv -f $project_dir/.env.kasbah-suite-backup $project_dir/.env" >/dev/null 2>&1
+
+# --- R04, literal limits in compose.prod.yml -------------------------------------------
+# Against a 2 cpus / 1g marker for their length: a 0/0 one has nothing below it.
+marker_saved="$marker_json"
+lit_marker=$(jq '.cpu_limit = "2" | .mem_limit = "1g"' <<<"$marker_json" 2>/dev/null)
+assert '[ -n "$lit_marker" ] && rig_ssh "cat > $marker" <<<"$lit_marker" >/dev/null 2>&1' \
+    "a 2 cpus / 1g ceiling written into the marker for the literal cases"
+cp "$projdir/compose.prod.yml" "$tmpdir/compose.before"
+sed -i 's/^\( *\)cpus: .*/\1cpus: 999/' "$projdir/compose.prod.yml"
+check --server "$RIG_TARGET"; rc=$?
+out="$(cli_out)"
+assert '[ "$rc" = "6" ]' "R04 fails a literal cpus above the host's ceiling (exit $rc)"
+assert 'grep -qF "✗ literal resource limits in compose.prod.yml are above the 90% ceiling of $RIG_TARGET: $container cpus 999 > 2" <<<"$out"' \
+    "naming the service and both numbers (said '$out')"
+assert '! grep -qF "Services with literal resource limits" <<<"$out"' \
+    "under --server the literal is compared, not merely warned about (said '$out')"
+sed -i -e 's/^\( *\)cpus: .*/\1cpus: "0.5"/' -e 's/^\( *\)mem_limit: .*/\1mem_limit: 512m/' "$projdir/compose.prod.yml"
+check --server "$RIG_TARGET"; rc=$?
+out="$(cli_out)"
+assert '[ "$rc" = "0" ]' "R04 only warns on literals below the ceiling (exit $rc)"
+assert 'grep -qF "⚠ literal resource limits in compose.prod.yml are below the 90% ceiling of $RIG_TARGET: $container cpus 0.5 < 2; $container mem_limit 512m < 1g" <<<"$out"' \
+    "both literals named against the marker (said '$out')"
+assert '! grep -qF "effective resource limits on $RIG_TARGET" <<<"$out"' \
+    "and the .env is not compared for limits no service takes from it (said '$out')"
+cp "$tmpdir/compose.before" "$projdir/compose.prod.yml"
+rig_ssh "cat > $marker" <<<"$marker_saved" >/dev/null 2>&1 && marker_saved=""
 
 # --- A project that has not been deployed ------------------------------------------------
 notdir="$tmpdir/not-deployed"
