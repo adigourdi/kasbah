@@ -530,6 +530,23 @@ assert 'grep -qF "\`git log v1.0.0..v3.0.0\`" <<<"$OUT"' \
 assert '! grep -qF "redeploy" <<<"$OUT"' \
     "and it is not read as a redeploy, which is what the last two *deploy* entries would have paired (got '$OUT')"
 
+# A deploy-failed entry is never an endpoint, at either end: the range is the
+# two versions that went through around it.
+{ printf '%s deploy 1.0.0 no-backup kasbah=0.1.0 digest=-\n' 2026-08-01T00:00:00+00:00
+  printf '%s deploy-failed 2.5.0 no-backup kasbah=0.1.0 digest=- reason=revert\n' 2026-08-02T00:00:00+00:00
+  printf '%s deploy 3.0.0 no-backup kasbah=0.1.0 digest=-\n' 2026-08-03T00:00:00+00:00
+  printf '%s deploy-failed 4.0.0 no-backup kasbah=0.1.0 digest=- reason=post-hook\n' 2026-08-04T00:00:00+00:00; } > "$act"
+drive changelog
+assert '[ "$DRC" = 0 ] && grep -qF "last entry is a deploy-failed 4.0.0" <<<"$OUT"' \
+    "changelog steps over a trailing deploy-failed entry, saying so (rc $DRC: $OUT)"
+assert 'grep -qxF "deploy@vps runs demo 3.0.0 (deploy, 2026-08-03T00:00:00+00:00)" <<<"$OUT" &&
+        grep -qxF "after 1.0.0 (deploy, 2026-08-01T00:00:00+00:00)" <<<"$OUT"' \
+    "and pairs the deploys around the failed ones (got '$OUT')"
+{ printf '%s deploy-failed 4.0.0 no-backup kasbah=0.1.0 digest=- reason=post-hook\n' 2026-08-04T00:00:00+00:00; } > "$act"
+drive changelog
+assert 'grep -qF "is a deploy-failed one — no version deployed there" <<<"$OUT"' \
+    "a record of failed runs alone has no endpoint (got '$OUT')"
+
 # A --dirty build has no tag: either endpoint reads as its base tag, said so.
 { printf '%s deploy 1.0.0-dirty.20260801000000 no-backup kasbah=0.1.0 digest=-\n' 2026-08-01T00:00:00+00:00
   printf '%s deploy 2.0.0-dirty.20260802000000 no-backup kasbah=0.1.0 digest=-\n' 2026-08-02T00:00:00+00:00; } > "$act"

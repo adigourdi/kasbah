@@ -82,6 +82,24 @@ func (s *SSH) Sync(e Entry, base string) error {
 	return nil
 }
 
+// Snapshot is unbounded, as the engine is: it copies the sync targets, and
+// those have no size limit.
+func (s *SSH) Snapshot(dir, token string, targets []string) error {
+	out, err := s.Conn.Run(append([]string{s.Bin(), "remote", "deploy", "snapshot", dir, token}, targets...)...)
+	if err != nil {
+		return cli.Fail("could not copy aside the files this run replaces in %s on %s (%s, see above) — nothing was changed", dir, s.target(), serverbin.ExitText(ssh.ExitCode(err), 0))
+	}
+	return parseSnapshot(out, s.target())
+}
+
+func parseSnapshot(out []byte, target string) error {
+	if v := lines(out)["snapshot"]; v != "written" && v != "none" {
+		return rawOutput(cli.Fail("the snapshot step on %s reported no snapshot", target).Cont(
+			"the step was truncated, or the server's kasbah rejected it — raw output:"), out)
+	}
+	return nil
+}
+
 func (s *SSH) Mail(apps string) (*MailFacts, error) {
 	dir := apps + "/mail"
 	out, err := s.Conn.Run(s.Bounded("deploy", "mail", apps)...)

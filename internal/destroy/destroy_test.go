@@ -97,6 +97,7 @@ func tree(t *testing.T) string {
 	w("demo/.kasbah-client", "demo\n", 0o644)
 	w("demo/.env", "A=1\n"+B+"\nKASBAH_CPU_LIMIT=0\n"+E+"\n", 0o640)
 	w("demo/compose.yml", "services: {}\n", 0o644)
+	w("demo/.kasbah-prev/v1/.env", "A=0\n", 0o660)
 	w("beta/scripts/remote-deploy.sh", "#!/bin/sh\n", 0o755)
 	w("beta/scripts/setup-env.sh", "#!/bin/sh\n", 0o755)
 	w("beta/scripts/notes.txt", "mine\n", 0o644)
@@ -133,7 +134,8 @@ func TestScan(t *testing.T) {
 		rows = append(rows, string(b))
 	}
 	if s.Count != 3 || s.Projects[0].Name != "beta" || s.Projects[0].Helpers != 2 || s.Projects[0].Other != 1 ||
-		s.Projects[1].Name != "demo" || s.Projects[1].Sentinels != 2 || s.Projects[1].Vlog != "ok" {
+		s.Projects[1].Name != "demo" || s.Projects[1].Sentinels != 2 || s.Projects[1].Vlog != "ok" ||
+		s.Projects[1].Prev != "dir" || s.Projects[0].Prev != "absent" {
 		t.Errorf("rows: %v", rows)
 	}
 }
@@ -166,9 +168,9 @@ func TestAct(t *testing.T) {
 		t.Errorf("calls %v", *calls)
 	}
 	want := []ProjectResult{
-		{"beta", "absent", "absent", "kept", "absent", "absent", "absent"},
-		{"demo", "removed", "absent", "absent", "absent", "removed", "stripped"},
-		{"gamma", "absent", "absent", "removed", "absent", "absent", "absent"},
+		{"beta", "absent", "absent", "kept", "absent", "absent", "absent", "absent"},
+		{"demo", "removed", "absent", "absent", "absent", "removed", "stripped", "removed"},
+		{"gamma", "absent", "absent", "removed", "absent", "absent", "absent", "absent"},
 	}
 	for i, w := range want {
 		if r.Projects[i] != w {

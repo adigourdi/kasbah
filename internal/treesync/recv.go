@@ -342,6 +342,9 @@ func (rc *receiver) symlink(p string, e Entry) {
 	rc.synced++
 }
 
+// Lutimes sets the mtime of the symlink name in dir, never its target's.
+func Lutimes(dir *os.File, name string, sec, nsec int64) error { return lutimes(dir, name, sec, nsec) }
+
 func (rc *receiver) linkTimes(p string, e Entry) error {
 	d, err := rc.root.Open(path.Dir(p))
 	if err == nil {

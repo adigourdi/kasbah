@@ -66,6 +66,8 @@ type Row struct {
 	Client    string `json:"client"`
 	Env       string `json:"env"`
 	Sentinels int    `json:"sentinels"`
+	// Prev is .kasbah-prev/, a failed deploy's snapshot (fsstate.Dir).
+	Prev string `json:"prev"`
 }
 
 // Scan is `kasbah remote destroy scan APPS POINTER`.
@@ -314,7 +316,8 @@ func scan(apps, pointer string) Scan {
 			Vlog: fsstate.File(filepath.Join(d, "versions.log")), VlogGz: fsstate.File(filepath.Join(d, "versions.log.gz")),
 			Scripts: fsstate.Dir(filepath.Join(d, "scripts")),
 			Lock:    fsstate.File(filepath.Join(d, ".deploy.lock")), Client: fsstate.File(filepath.Join(d, ".kasbah-client")),
-			Env: fsstate.File(filepath.Join(d, ".env")), Sentinels: countSentinels(filepath.Join(d, ".env"))}
+			Env: fsstate.File(filepath.Join(d, ".env")), Sentinels: countSentinels(filepath.Join(d, ".env")),
+			Prev: prevState(filepath.Join(d, ".kasbah-prev"))}
 		for _, f := range entries(filepath.Join(d, "scripts")) {
 			if helper(f) {
 				r.Helpers++
@@ -346,6 +349,7 @@ type ProjectResult struct {
 	Lock    string `json:"lock"`
 	Client  string `json:"client"`
 	Env     string `json:"env"`
+	Prev    string `json:"prev"`
 }
 
 // ActReport is what `kasbah remote destroy act` did. A `started=yes` line
@@ -516,10 +520,11 @@ func act(apps string, names []string, stdout io.Writer) error {
 		}
 		p.Lock = fsstate.Remove(filepath.Join(d, ".deploy.lock"))
 		p.Client = fsstate.Remove(filepath.Join(d, ".kasbah-client"))
+		p.Prev = removePrev(filepath.Join(d, ".kasbah-prev"))
 		// The sentinel comments go; KASBAH_CPU_LIMIT and KASBAH_MEM_LIMIT
 		// stay, because compose interpolates them into every service.
 		p.Env = rewrite(filepath.Join(d, ".env"), func(l string) bool { return !sentinel(l) }, 0)
-		for _, v := range []string{p.Vlog, p.VlogGz, p.Scripts, p.Lock, p.Client} {
+		for _, v := range []string{p.Vlog, p.VlogGz, p.Scripts, p.Lock, p.Client, p.Prev} {
 			if v == "failed" {
 				bad = true
 			}
@@ -581,4 +586,24 @@ func Remote(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stderr, "remote: usage: kasbah remote destroy scan APPS POINTER | act APPS NAME…")
 	return 1
+}
+
+// prevState is the snapshot directory's fsstate.Dir; a symlink there is
+// notdir, never followed.
+func prevState(p string) string {
+	if fi, err := os.Lstat(p); err == nil && !fi.IsDir() {
+		return "notdir"
+	}
+	return fsstate.Dir(p)
+}
+
+// removePrev removes a failed deploy's snapshot: it holds a copy of .env.
+func removePrev(p string) string {
+	if !fsstate.Exists(p) {
+		return "absent"
+	}
+	if os.RemoveAll(p) != nil {
+		return "failed"
+	}
+	return "removed"
 }

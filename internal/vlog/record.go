@@ -263,10 +263,11 @@ func (r *Record) LastActive() int {
 	return -1
 }
 
-// PrevDeploy is the latest action=deploy entry before the latest one, a
-// --dirty build's never chosen (-1 when there is none), and how many unparsed
-// lines it stepped over: a truncated latest deploy otherwise makes the one
-// before it the target.
+// PrevDeploy is the latest clean deploy entry before the latest deploy-like
+// one (a failed deploy's is the latest when it is newest, never a target; a
+// --dirty build's is never chosen), -1 when there is none, and how many
+// unparsed lines it stepped over: a truncated latest deploy otherwise makes
+// the one before it the target.
 func (r *Record) PrevDeploy() (idx, skipped int) {
 	seen := 0
 	for i := len(r.Items) - 1; i >= 0; i-- {
@@ -275,10 +276,10 @@ func (r *Record) PrevDeploy() (idx, skipped int) {
 			skipped++
 			continue
 		}
-		if e.Action != "deploy" {
+		if !e.DeployLike() {
 			continue
 		}
-		if seen++; seen >= 2 && !version.IsDirty(e.Version) {
+		if seen++; seen >= 2 && e.Action == "deploy" && !version.IsDirty(e.Version) {
 			return i, skipped
 		}
 	}
@@ -286,7 +287,8 @@ func (r *Record) PrevDeploy() (idx, skipped int) {
 }
 
 // FindVersion is the most recent entry naming v, whatever its action — a
-// rollback entry proves a version ran exactly as a deploy entry does.
+// rollback entry proves a version ran exactly as a deploy entry does — but
+// never a failed one: a version that only ever failed is no target.
 func (r *Record) FindVersion(v string) (idx, skipped int) {
 	for i := len(r.Items) - 1; i >= 0; i-- {
 		e := r.Items[i]
@@ -294,7 +296,7 @@ func (r *Record) FindVersion(v string) (idx, skipped int) {
 			skipped++
 			continue
 		}
-		if e.Version == v {
+		if e.Version == v && !e.IsFailed() {
 			return i, skipped
 		}
 	}

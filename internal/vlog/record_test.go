@@ -127,6 +127,23 @@ func TestQueries(t *testing.T) {
 	}
 }
 
+func TestFailedEntries(t *testing.T) {
+	e := Parse("2026-01-02T00:00:00+00:00 deploy-failed 1.1.0 no-backup kasbah=1.0.0 digest=- by=al reason=post-hook mode=rollback")
+	if !e.IsFailed() || e.Reason != "post-hook" || e.Mode != "rollback" || e.By != "al" || e.DeployLike() {
+		t.Errorf("parsed %+v", e)
+	}
+	r := &Record{}
+	for _, l := range []string{"2026-01-01T00:00:00+00:00 deploy 1.0.0 -", "2026-01-02T00:00:00+00:00 deploy-failed 1.1.0 - reason=up"} {
+		r.Items = append(r.Items, Item{Parse(l), false})
+	}
+	if i, _ := r.FindVersion("1.1.0"); i != -1 {
+		t.Errorf("a version that only failed is a rollback target (%d)", i)
+	}
+	if i, _ := r.FindVersion("1.0.0"); i != 0 {
+		t.Errorf("FindVersion(1.0.0) = %d", i)
+	}
+}
+
 func TestPrevDeploySkipsDirty(t *testing.T) {
 	rec := func(lines ...string) *Record {
 		r := &Record{}
@@ -136,6 +153,7 @@ func TestPrevDeploySkipsDirty(t *testing.T) {
 		return r
 	}
 	const d = "2026-01-01T00:00:00+00:00 deploy "
+	const f = "2026-01-02T00:00:00+00:00 deploy-failed "
 	for _, tt := range []struct {
 		lines []string
 		want  int
@@ -145,6 +163,13 @@ func TestPrevDeploySkipsDirty(t *testing.T) {
 		{[]string{d + "1.0.0 -", d + "1.1.0-dirty.20260101000000 -"}, 0},
 		{[]string{d + "1.0.0-dirty.20260101000000 -", d + "1.1.0 -"}, -1},
 		{[]string{d + "1.0.0 -", d + "1.0.0-dirty.20260101000000 -", d + "1.0.0-dirty.20260102000000 -"}, 0},
+		// A failed deploy is the running one when newest, never the target;
+		// a failed rollback, like a rollback, is not counted at all.
+		{[]string{d + "1.0.0 -", d + "1.1.0 -", f + "1.2.0 - reason=post-hook"}, 1},
+		{[]string{d + "1.0.0 -", f + "1.1.0 - reason=revert", f + "1.1.0 - reason=post-hook"}, 0},
+		{[]string{f + "1.0.0 - reason=post-hook", d + "1.1.0 -"}, -1},
+		{[]string{d + "1.0.0 -", f + "1.1.0 - reason=revert", d + "1.1.0 -"}, 0},
+		{[]string{d + "1.0.0 -", d + "1.1.0 -", f + "1.0.0 - reason=post-hook mode=rollback"}, 0},
 	} {
 		if i, _ := rec(tt.lines...).PrevDeploy(); i != tt.want {
 			t.Errorf("PrevDeploy over %q = %d, want %d", tt.lines, i, tt.want)

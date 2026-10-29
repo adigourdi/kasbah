@@ -99,14 +99,16 @@ var (
 
 // Hold defers the exit while a child the run streams through is alive: the
 // first signal goes to fn (to forward it) and is left for the holder to read
-// through Interrupted; a second exits as usual. release ends the hold.
+// through Interrupted; a second exits as usual. release ends the hold,
+// putting back any hold it was nested in.
 func Hold(fn func(os.Signal)) (release func()) {
 	holdMu.Lock()
+	outer := held
 	held = fn
 	holdMu.Unlock()
 	return func() {
 		holdMu.Lock()
-		held = nil
+		held = outer
 		holdMu.Unlock()
 	}
 }

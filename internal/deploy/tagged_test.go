@@ -213,7 +213,7 @@ func TestRollbackRefusals(t *testing.T) {
 		if err == nil || !strings.Contains(out, c.want) {
 			t.Errorf("%s: %v\n%s", c.name, err, out)
 		}
-		if c.f.called("prepare") || c.f.called("sync") || c.f.called("run") {
+		if c.f.called("snapshot") || c.f.called("prepare") || c.f.called("sync") || c.f.called("run") {
 			t.Errorf("%s: reached the server's files: %v", c.name, c.f.calls)
 		}
 		noState(t, c.name)

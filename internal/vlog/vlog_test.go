@@ -50,6 +50,17 @@ func TestParseBy(t *testing.T) {
 	}
 }
 
+func TestLineExtra(t *testing.T) {
+	if l, err := Line("T", Failed, "1.0.0", "no-backup", "0.1.0", "-", "al", "reason=up", "mode=rollback"); err != nil || l != "T deploy-failed 1.0.0 no-backup kasbah=0.1.0 digest=- by=al reason=up mode=rollback" {
+		t.Errorf("%q %v", l, err)
+	}
+	for _, bad := range []string{"reason=", "reason=a b"} {
+		if _, err := Line("T", Failed, "1.0.0", "no-backup", "0.1.0", "-", "al", bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
 func TestLineRefuses(t *testing.T) {
 	if l, err := Line("T", "deploy", "1.0.0", "no-backup", "0.1.0", "-", "alice"); err != nil || l != "T deploy 1.0.0 no-backup kasbah=0.1.0 digest=- by=alice" {
 		t.Fatalf("Line = %q, %v", l, err)

@@ -332,9 +332,27 @@ func (x *run) empty(nArch int) {
 // deployed is the active log's last entry and the header both changelogs
 // open with; -1, reason printed, when there is none to compare against —
 // "no entry" and "an entry that will not parse" being different answers.
-func (x *run) deployed() int {
+// skipFailed passes over deploy-failed entries: never a changelog's endpoint.
+func (x *run) deployed(skipFailed bool) int {
 	r := x.r
 	idx := r.LastActive()
+	failed := ""
+	for skipFailed && idx >= 0 && r.Items[idx].IsFailed() {
+		if failed == "" {
+			failed = r.Items[idx].Version
+		}
+		if idx--; idx >= 0 && r.Items[idx].Archived {
+			x.printf("every entry of %s is a deploy-failed one — no version deployed there to compare against\n", r.ActivePath)
+			return -1
+		}
+	}
+	if idx < 0 && failed != "" {
+		x.printf("every entry of %s is a deploy-failed one — no version deployed there to compare against\n", r.ActivePath)
+		return -1
+	}
+	if failed != "" {
+		x.printf("%s's last entry is a deploy-failed %s, never a changelog's endpoint — the last that went through:\n", r.ActivePath, failed)
+	}
 	if idx < 0 {
 		nArch, _ := r.Count()
 		switch {
@@ -411,7 +429,7 @@ func (x *run) asTag(v string) (string, bool) {
 
 func (x *run) pending() {
 	o := x.c.Out
-	idx := x.deployed()
+	idx := x.deployed(false)
 	if idx < 0 {
 		return
 	}
@@ -454,16 +472,20 @@ func (x *run) pending() {
 	}
 }
 
-// changelog is the last two entries whatever their action, spanning the
-// rotation point without noticing it.
+// changelog is the last two entries whatever their action but deploy-failed,
+// spanning the rotation point without noticing it.
 func (x *run) changelog() {
 	o, r := x.c.Out, x.r
-	idx := x.deployed()
+	idx := x.deployed(true)
 	if idx < 0 {
 		return
 	}
 	curr := r.Items[idx].Version
-	if idx == 0 {
+	pi := idx - 1
+	for pi >= 0 && r.Items[pi].IsFailed() {
+		pi--
+	}
+	if pi < 0 {
 		if r.Whole() {
 			x.printf("nothing in the record before it — %s is the first version %s ran here\n", curr, x.target)
 		} else {
@@ -472,7 +494,7 @@ func (x *run) changelog() {
 		}
 		return
 	}
-	p := r.Items[idx-1]
+	p := r.Items[pi]
 	if !p.OK {
 		x.printf("the entry before it is not one a version can be read out of:\n")
 		x.printf("  %s\n", strings.TrimSuffix(p.Raw, "\r"))

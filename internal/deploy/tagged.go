@@ -30,8 +30,9 @@ const rollbackUsage = `Usage: kasbah rollback [USER@HOST] [VERSION] [--on-drift=
 Puts a server back on a version it has already run. Run from the project root.
 An argument containing '@' is the server, anything else is the version.
 
-VERSION defaults to the second-most-recent deploy in the server's versions.log
-(the archive included). USER@HOST defaults to the last server this project
+VERSION defaults to the clean deploy before the running one in the server's
+versions.log (the archive included); a deploy-failed entry can be the running
+one, never the target. USER@HOST defaults to the last server this project
 deployed to (.kasbah/state.json).
 
 Everything shipped comes from the v<VERSION> git tag, never from the working
@@ -43,7 +44,8 @@ tree, which is neither read nor touched:
     never re-ships one (docs/build-deploy.md → Retention)
   * ` + "`kasbah remote deploy`" + ` on the server: pre-rollback hooks, retag
     <image>:current, docker compose -p <name> up -d --remove-orphans, health
-    wait, post-rollback hooks, one versions.log entry
+    wait, post-rollback hooks, one versions.log entry — a failed up or health
+    wait put back as a deploy's is (kasbah deploy --help)
   * <VERSION>'s traefik-dynamic.yml, last, once the stack is up
 
 Not restored: .env values (not in git — drift is prompted for as usual), data
@@ -157,14 +159,9 @@ func RunTagged(c Ctx, o Options, mode string) error {
 	if err != nil {
 		return err
 	}
-	clientState, err := r.s.PrepareProject(r.mk.AppsPath, r.mk.DataPath, m.Name, r.p.Client, RemoteParents(r.dir, r.p.Sync))
+	clientState, err := r.ship()
 	if err != nil {
 		return err
-	}
-	for _, e := range r.p.Sync {
-		if err := r.s.Sync(e, r.dir); err != nil {
-			return err
-		}
 	}
 	st := &env.Step{Out: c.Out, Prompter: c.Prompter, S: r.s, Target: r.target, TTYIn: c.TTYIn, TTYOut: c.TTYOut, Color: c.Color}
 	if err := st.Run(r.dir, r.mk.CPULimit, r.mk.MemLimit, o.OnDrift, false); err != nil {
@@ -173,19 +170,22 @@ func RunTagged(c Ctx, o Options, mode string) error {
 	if claim != nil {
 		r.mailClaim(claim)
 	}
+	r.route = func() (bool, error) {
+		if t.hasFrag {
+			return r.fragment()
+		}
+		dest := r.mk.AppsPath + "/traefik/dynamic/" + m.Name + ".yml"
+		c.Out.Warn("v%s carries no %s — nothing was written to %s", r.version, t.fragName, dest)
+		c.Out.Warn("whatever is there now is left as it is: removing a route is `kasbah drop`'s decision")
+		return false, nil
+	}
 	rep, err := r.remote()
 	if err != nil {
 		return err
 	}
-	shipped := false
-	if t.hasFrag {
-		if shipped, err = r.fragment(); err != nil {
-			return err
-		}
-	} else {
-		dest := r.mk.AppsPath + "/traefik/dynamic/" + m.Name + ".yml"
-		c.Out.Warn("v%s carries no %s — nothing was written to %s", r.version, t.fragName, dest)
-		c.Out.Warn("whatever is there now is left as it is: removing a route is `kasbah drop`'s decision")
+	shipped, err := r.route()
+	if err != nil {
+		return err
 	}
 	if err := state.Record(state.File, c.Version,
 		"last_server", r.target,
@@ -282,10 +282,11 @@ func dirtyDeploys(items []vlog.Item) int {
 	return n
 }
 
-// latestDeploy is the index of the record's latest readable deploy entry.
+// latestDeploy is the index of the record's latest deploy-like entry, the
+// one PrevDeploy counts as running.
 func latestDeploy(rec *vlog.Record) int {
 	for i := len(rec.Items) - 1; i >= 0; i-- {
-		if it := rec.Items[i]; it.OK && it.Action == "deploy" {
+		if it := rec.Items[i]; it.DeployLike() {
 			return i
 		}
 	}

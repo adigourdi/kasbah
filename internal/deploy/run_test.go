@@ -40,6 +40,7 @@ type fake struct {
 	client           string
 	injects          [][]string
 	spec             *Spec
+	token            string
 }
 
 func (f *fake) log(c string) { f.calls = append(f.calls, c) }
@@ -82,6 +83,11 @@ func (f *fake) PrepareProject(apps, data, name, client string, parents []string)
 	return f.clientState, nil
 }
 func (f *fake) Mail(string) (*MailFacts, error) { f.log("mail"); return f.mail, f.mailErr }
+func (f *fake) Snapshot(dir, token string, targets []string) error {
+	f.log("snapshot " + strings.Join(targets, ","))
+	f.token = token
+	return nil
+}
 func (f *fake) Run(dir string, sp Spec) (string, int) {
 	f.log("run")
 	f.spec = &sp
@@ -168,13 +174,27 @@ func noState(t *testing.T, what string) {
 func TestRunFailuresLeaveNoState(t *testing.T) {
 	other := "{\"" + ReportKey + "\":1,\"version\":\"9.9.9\",\"prev_version\":\"\",\"deployed_before\":false,\"backup\":\"no-backup\",\"digest\":\"-\"}\n"
 	none := "hook chatter\n"
+	failure := func(outcome string) string {
+		return "chatter\n{\"" + FailureKey + "\":1,\"outcome\":\"" + outcome + "\",\"reason\":\"up\",\"prev\":\"0.9.0\"}\n"
+	}
+	reverted, first, post, revFailed := failure(Reverted), failure(FirstFailed), failure(PostHook), failure(RevertFailed)
+	restored, unrestored, unrecorded := failure(Restored), failure(Unrestored), failure(Unrecorded)
+	envKept := "{\"" + FailureKey + "\":1,\"outcome\":\"restored\",\"reason\":\"start\",\"prev\":\"0.9.0\",\"saved\":\"/apps/demo/.env.kasbah-replaced\"}\n"
 	cases := []struct {
 		name string
 		f    *fake
 		want string
 		frag bool
 	}{
-		{"engine fails", &fake{rc: 1}, "may already carry :current", false},
+		{"engine fails", &fake{rc: 1}, "nothing was started", false},
+		{"engine reverted", &fake{rc: 1, out: &reverted}, "it was reverted: d@h runs what it ran before", false},
+		{"first deploy failed", &fake{rc: 1, out: &first}, "a first deploy has nothing to revert to", false},
+		{"post-hook failed", &fake{rc: 1, out: &post}, "The Traefik fragment was shipped, so the route names the live containers", true},
+		{"revert failed", &fake{rc: 1, out: &revFailed}, "the revert to what ran before failed too", false},
+		{"restored", &fake{rc: 1, out: &restored}, "the files it had shipped were put back", false},
+		{"unrestored", &fake{rc: 1, out: &unrestored}, "putting back the files it had shipped failed", false},
+		{"unrecorded", &fake{rc: 1, out: &unrecorded}, "versions.log could not record it", false},
+		{"env kept", &fake{rc: 1, out: &envKept}, "/apps/demo/.env.kasbah-replaced — carry anything typed there back into .env", false},
 		{"connection lost", &fake{rc: 255, out: &none}, "kasbah history", false},
 		{"no report", &fake{out: &none}, "reported no report", false},
 		{"another version", &fake{out: &other}, "reported version '9.9.9', not the 1.0.0", false},
@@ -246,9 +266,12 @@ func TestRunSuccess(t *testing.T) {
 	if v, _ := state.Get(state.File, "last_version"); v != "1.0.0" {
 		t.Errorf("last_version %q", v)
 	}
-	want := []string{"marker", "prepare", "sync compose.prod.yml", "sync .env.prod.example", "drift", "inject", "run"}
+	want := []string{"marker", "snapshot .env,.env.prod.example,compose.yml", "prepare", "sync compose.prod.yml", "sync .env.prod.example", "drift", "inject", "run"}
 	if strings.Join(f.calls, ",") != strings.Join(want, ",") {
 		t.Errorf("calls %v", f.calls)
+	}
+	if len(f.token) != 24 || f.spec.Snapshot != f.token {
+		t.Errorf("snapshot token %q, spec's %q", f.token, f.spec.Snapshot)
 	}
 }
 
@@ -307,13 +330,21 @@ func TestMailUnknownKeyIgnored(t *testing.T) {
 	if err != nil || !strings.Contains(out, "is served by the stack") || strings.Contains(out, "warning:") || strings.Contains(out, "x.json") {
 		t.Errorf("%v\n%s", err, out)
 	}
-	want := []string{"marker", "mail", "prepare", "sync compose.prod.yml", "sync .env.prod.example", "drift", "inject", "run", "fragment /apps/traefik/dynamic/demo.yml"}
+	want := []string{"marker", "mail", "snapshot .env,.env.prod.example,compose.yml", "prepare", "sync compose.prod.yml", "sync .env.prod.example", "drift", "inject", "run", "fragment /apps/traefik/dynamic/demo.yml"}
 	if strings.Join(f.calls, ",") != strings.Join(want, ",") {
 		t.Errorf("calls %v", f.calls)
 	}
 }
 
 func TestProtocolParsers(t *testing.T) {
+	for in, ok := range map[string]bool{"snapshot=written\n": true, "snapshot=none\r\n": true, "": false, "snapshot=\n": false} {
+		if err := parseSnapshot([]byte(in), "d@h"); (err == nil) != ok {
+			t.Errorf("parseSnapshot(%q) = %v", in, err)
+		}
+	}
+	if ParseFailure("{\""+FailureKey+"\":1,\"outcome\":\"\"}\n") != nil || ParseFailure("x\n") != nil {
+		t.Error("ParseFailure took a line with no outcome")
+	}
 	if c, err := parsePrepare([]byte("client=written\r\nprepared=yes\n"), "d@h"); err != nil || c != "written" {
 		t.Errorf("parsePrepare = %q %v", c, err)
 	}

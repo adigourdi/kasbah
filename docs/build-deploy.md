@@ -168,13 +168,48 @@ arrives as a short stream and is refused. A partial image is never tagged:
 short input. A broken transfer restarts from zero. Measured on the rig: 2.7 s for two images (28.7 MB gzipped) against 6.2 s
 for the tarball path.
 
-**A deploy that fails at `compose up` has already moved `:current`.** The
-order is retag → up, so the tag then points at a version whose containers
-did not start — and because `versions.log` is only appended to at the end of
-a successful run, nothing on the server records that the tag moved. This is
-by design: `:current` is a pointer, not a record, and `versions.log` plus the
-image `:<version>` tags are the record. `kasbah rollback` is what puts the
-pointer back, and the deploy's own failure message says so.
+**A deploy that fails at `compose up` or its health wait reverts.** The order
+is retag → up, and by then the workstation has already replaced the project's
+files, so a revert has to put back both. Before the sync, `kasbah remote deploy
+snapshot` — under `.deploy.lock`, refused when another run holds it — copies
+every path the run will overwrite — the sync targets after their renames,
+directories whole, and `.env` — into `<apps>/<name>/.kasbah-prev/`, noting which
+did not exist, under a token the engine is handed. **A snapshot that exists
+always holds the files the live stack started from**: one left by a run that
+died on the workstation (the env step, the sync, an interrupt) is kept, and the
+next run copies only the targets it does not cover. The first engine run a snapshot
+serves records in it each built image's `:current` id — the ids the live stack
+started from, kept with a kept snapshot — and every run records the running
+containers before retagging. Any
+failure before the retag (preflight, the backup, a `pre-deploy` hook) puts the
+files back; any failure from the retag through the health wait also puts every
+`:current` back on its old id (untagging one that did not exist), runs `compose
+up -d --remove-orphans` on the restored files and waits on the containers that
+were running before. A revert that works writes nothing to `versions.log` —
+the server is where it was — and the run still fails, saying it is back on the
+previous version. A revert that cannot work (no matching snapshot, the old
+stack will not come up) appends a `deploy-failed` line naming why and keeps the
+snapshot. A first deploy has nothing to revert to and is left as it failed. The
+snapshot is removed whenever the disk matches the live stack again: a
+successful run, a revert or restore that worked, a post-hook failure — its
+manifest first, so a removal cut short leaves no snapshot rather than half of
+one (a manifest whose copies are missing counts as none).
+
+**Nothing typed is lost to a restore.** An operator told to fix `.env` on the
+server after a failed env step may have done so before the next run fails too;
+a restore that would replace a `.env` differing from the snapshot's first saves
+it as `.env.kasbah-replaced` (`660`) and the run names it. If it cannot be
+saved, `.env` is not put back. Two operators deploying the same project at the
+same moment can still cost one of them its revert — the snapshot's lock is
+released before the sync — and that run says so and records `deploy-failed`.
+
+**A `post-deploy` hook that fails is not reverted**: a migration may already
+have run, and old code on a new schema is worse than new code with a failed
+hook. The run appends `deploy-failed … reason=post-hook` — the new version is
+the one running — ships the Traefik fragment, which now matches the live
+containers, pushes no tag, and fails. A run whose stack came up but whose
+`versions.log` line could not be written says exactly that: the new version is
+live and unrecorded, and its fragment is not shipped.
 
 `build-push` does **not** touch `:current` and does **not** run `compose up`.
 That's `deploy`'s job — decoupling lets you build-push without deploying
@@ -206,7 +241,10 @@ below). The only differences:
    first when a dev build would replace a release (`cli.md` → Hand-off).
 3. Resolve version = HEAD's v-tag, cutting one first when HEAD has none
    (`--bump=`, Versioning contract).
-4. Ensure remote dirs exist (`kasbah remote deploy prepare`):
+4. Snapshot what the run will overwrite (`kasbah remote deploy snapshot`:
+   the sync targets and `.env`, into <name>/.kasbah-prev/ — see "A deploy
+   that fails … reverts" above), then ensure remote dirs exist
+   (`kasbah remote deploy prepare`):
      /apps/<name>/, backups/, /apps/data/<name>/
 5. Sync from the working tree: every path in manifest's `sync:` list → /apps/<name>/.
    The Traefik fragment is deliberately **not** shipped here — see step 9.
@@ -229,8 +267,12 @@ below). The only differences:
      d. docker compose up -d --remove-orphans.
      e. Wait for manifest's health.container to be healthy.
      f. Run post-deploy hooks against new containers.
+     a–b failing: put the files back. c–e failing: put the files back,
+        retag :current back, up the old stack — or, when that cannot work,
+        append `deploy-failed`. f failing: append `deploy-failed …
+        reason=post-hook`, no revert; the fragment still ships (step 9).
      g. Append deploy entry to versions.log, then rotate it (see Rotation
-        below).
+        below), and remove the snapshot.
      h. Print the run's report on stdout — see "The remote report" below.
 9. Sync traefik-dynamic.yml → /apps/traefik/dynamic/<name>.yml (its content —
    a symlinked fragment ships what it points to, mode 644). Done by the
@@ -361,7 +403,13 @@ Example:
 ```
 
 Fields:
-- `action` — `deploy` or `rollback`.
+- `action` — `deploy`, `rollback`, or `deploy-failed` (a run the engine could
+  not finish or revert; it carries `reason=up|health|post-hook|revert`, and
+  `mode=rollback` when the run was a rollback). A `deploy-failed` line is
+  history, never a rollback target and never a "previous version": the hooks'
+  `PREV_VERSION`, the implicit rollback target, `rollback X`'s "was it
+  deployed here" and prune's last three all step over it — a newest failed
+  deploy still counts as what is running when the implicit target is picked.
 - `version` — the semver that ran.
 - `backup` — relative path to backup file, or `no-backup`.
 - `kasbah=...` — version of kasbah that wrote the entry.
@@ -611,7 +659,8 @@ The engine has two modes:
 
 The engine ignores `SIGHUP` and `SIGPIPE` and keeps draining its own output, so a
 session that drops — a closed laptop, Ctrl-C at the workstation — never leaves a
-deploy or rollback half-done: it runs to its `versions.log` line on the server.
+deploy or rollback half-done: it runs to its `versions.log` line, or through its
+revert, on the server.
 The workstation says it was interrupted, that the server carries on, and to look
 at `kasbah history USER@HOST`; the Traefik fragment, which ships only after a
 report, has not moved, so the next deploy ships it. A `SIGTERM` sent to kasbah
@@ -628,6 +677,15 @@ one thing: the report, printed as the run's last act — *after* the
 ```
 {"version":"1.3.0","prev_version":"1.2.0","deployed_before":true,"backup":"backups/pre-deploy-20260419-101500.sql.gz","digest":"sha256:9f2a…,sha256:c81b…"}
 ```
+
+A run that fails prints a failure line there instead,
+`{"kasbah_deploy_failed":1,"outcome":…,"reason":…,"prev":…}`, and the
+workstation's message follows its outcome: `restored` (files put back before
+any container moved), `reverted` (back on `prev`), `unrestored` / `unreverted`
+(the put-back failed — `deploy-failed` recorded), and `saved` names a replaced
+`.env` kept aside; `post-hook` (the new version
+is live, its hook failed), `unrecorded` (live, but `versions.log` refused the
+line). No line at all means the engine stopped before touching anything.
 
 That placement makes it two things at once. It is how the local side learns
 facts only the server has — chiefly the pair `deployed_before` and

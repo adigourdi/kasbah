@@ -788,7 +788,8 @@ kasbah's management layer:
   themselves are **not** removed: they are operator property, and an
   append-only credential could not delete them in any case
 - per project: `versions.log(.gz)`, the `scripts/` helpers by name,
-  `.deploy.lock`, `.kasbah-client`, and the `.env` managed-block **sentinel
+  `.deploy.lock`, `.kasbah-client`, a failed deploy's snapshot `.kasbah-prev/`
+  (it holds a copy of `.env`), and the `.env` managed-block **sentinel
   comments** — the `KASBAH_*` values between them stay, or compose loses the
   interpolation every service's `cpus:`/`mem_limit:` depends on. Not
   `kasbah.yml` — the manifest is never synced to a server (`project-manifest.md`)

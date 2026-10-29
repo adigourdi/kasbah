@@ -22,7 +22,8 @@ printf '%s\n' "$*" >> "$LOG"
 for last; do :; done
 case "$1" in
 image)
-    grep -qxF "$last" "$IMAGES" || exit 1
+    [ -z "$IMAGE_ERR" ] || { echo "$IMAGE_ERR" >&2; exit 1; }
+    grep -qxF "$last" "$IMAGES" || { echo "Error: No such image: $last" >&2; exit 1; }
     [ "$3" != -f ] || echo "sha256:id-of-$last"
     exit 0 ;;
 tag) echo "$3" >> "$IMAGES"; exit 0 ;;
@@ -36,7 +37,10 @@ inspect)
     *Name*) echo "/$last" ;;
     esac
     exit 0 ;;
-compose) case "$*" in *" up "*) [ -z "$HUP_PARENT" ] || { kill -HUP "$PPID"; sleep 0.2; echo "Container demo-web Started" >&2; }; exit "${UP_RC:-0}" ;; *" ps "*) echo cid; exit 0 ;; esac ;;
+compose) case "$*" in *" up "*) [ -z "$HUP_PARENT" ] || { kill -HUP "$PPID"; sleep 0.2; echo "Container demo-web Started" >&2; }
+        # UPS: one "rc [health]" line per up, the health written for the wait after it.
+        if [ -s "${UPS:-/nonexistent}" ]; then set -- $(head -n1 "$UPS"); sed -i 1d "$UPS"; [ -z "${2:-}" ] || echo "$2" > "$HEALTH"; exit "$1"; fi
+        exit "${UP_RC:-0}" ;; *" ps "*) echo cid; exit 0 ;; esac ;;
 exec)
     if [ "$2" = -e ]; then exit "${EXEC_RC:-0}"; fi
     shift 2; exec "$@" ;;
@@ -227,8 +231,8 @@ func TestEngineHealthAndLock(t *testing.T) {
 	var out, errb bytes.Buffer
 	now := time.Unix(1000, 0)
 	e := &engine{dir: r.dir, sp: sp, stderr: &errb, now: func() time.Time { return now }, sleep: func(d time.Duration) { now = now.Add(d) }}
-	if _, err := e.run(); err == nil || !strings.Contains(err.Error(), "did not become healthy within 5s — its last state was 'starting'") {
-		t.Fatalf("health: %v", err)
+	if _, err := e.run(); err == nil || !strings.Contains(errb.String(), "did not become healthy within 5s — its last state was 'starting'") || !strings.Contains(err.Error(), "nothing to revert to") {
+		t.Fatalf("health: %v\n%s", err, errb.String())
 	}
 	e.lockFile.Close()
 	if _, err := os.Stat(filepath.Join(r.dir, "versions.log")); err == nil {

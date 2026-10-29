@@ -136,9 +136,9 @@ func Repos(compose string) (repos []string, ok bool) {
 }
 
 // Keep is the last three distinct versions the record names, newest first,
-// deploy and rollback alike, --dirty builds never among them. ok is false when
-// the walk met a line it could not read before it had three, or the record
-// holds no entry at all.
+// deploy and rollback alike, --dirty builds and failed runs never among them.
+// ok is false when the walk met a line it could not read before it had three,
+// or the record holds no entry at all.
 func Keep(r *vlog.Record) (keep []string, ok bool) {
 	seen := map[string]bool{}
 	entries := 0
@@ -148,7 +148,7 @@ func Keep(r *vlog.Record) (keep []string, ok bool) {
 			return nil, false
 		}
 		entries++
-		if version.IsDirty(it.Version) {
+		if version.IsDirty(it.Version) || it.IsFailed() {
 			continue
 		}
 		if !seen[it.Version] {

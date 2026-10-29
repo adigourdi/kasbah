@@ -228,6 +228,11 @@ case "${1:-} ${2:-}" in
             "${FAKE_ARCHIVE_STATE:-missing}" "${FAKE_ARCHIVE_B64:-}" ;;
     "deploy prepare")
         printf 'client=%s\nprepared=yes\n' "${PREPARE_CLIENT:-written}" ;;
+    # The snapshot of what the run overwrites: its token is kept, for the
+    # spec to be held to.
+    "deploy snapshot")
+        printf '%s\n' "$4" > "$SPEC_COPY.token"
+        printf 'snapshot=written\n' ;;
     # Derived, not answered: a stub that says a constant cannot tell a check
     # that looked at every image from one that looked at the first.
     "deploy images")
@@ -243,7 +248,11 @@ case "${1:-} ${2:-}" in
     # version it was actually asked for.
     "deploy run")
         cat > "$SPEC_COPY"
-        [ "${REMOTE_RC:-0}" = 0 ] || exit "$REMOTE_RC"
+        if [ "${REMOTE_RC:-0}" != 0 ]; then
+            [ -z "${REMOTE_FAILURE:-}" ] ||
+                printf '{"kasbah_deploy_failed":1,"outcome":"%s","reason":"up","prev":"2.0.0"}\n' "$REMOTE_FAILURE"
+            exit "$REMOTE_RC"
+        fi
         asked="$(jq -r .version "$SPEC_COPY")"
         hist=true; [ "${REPORT_HISTORY-yes}" = yes ] || hist=false
         r='{"kasbah_deploy_report":1'
@@ -288,7 +297,7 @@ log_two=$'2026-08-01T00:00:00+00:00 deploy 1.0.0 no-backup kasbah=0.1.0 digest=-
 
 kasbah_run() {
     : > "$ssh_log"; : > "$call_log"
-    rm -f "$spec_copy"
+    rm -f "$spec_copy" "$spec_copy.token"
     rm -rf "$sync_root"
     env -u KASBAH_LIB_DIR \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$run_tmp" \
@@ -1017,21 +1026,21 @@ assert '[ "$rc" != "0" ]' "a report naming another version fails the rollback (r
 assert 'grep -qF "9.9.9" <<<"$out" && grep -qF "1.0.0" <<<"$out"' \
     "quoting both what it said and what it was asked for (said '$out')"
 
-# A remote step that failed has already retagged :current — the retag runs before
-# `compose up` and versions.log records only runs that finished, so nothing on
-# the server says the tag moved.
-out="$( REMOTE_RC=1 rollback deploy@vps 1.0.0 )"; rc=$?
+# A remote step that failed says what it left the server as: its failure line
+# names the outcome, and none is a failure before anything was started.
+out="$( REMOTE_RC=1 REMOTE_FAILURE=reverted rollback deploy@vps 1.0.0 )"; rc=$?
 calls="$(<"$call_log")"
 assert '[ "$rc" != "0" ]' "a remote step that fails fails the rollback (rc $rc: $out)"
-assert 'grep -qF "may already carry :current" <<<"$out"' \
-    "and says the tag may have moved regardless (said '$out')"
+assert 'grep -qF "it was reverted: deploy@vps runs what it ran before" <<<"$out"' \
+    "and says the server reverted (said '$out')"
 assert '! grep -qF "/dynamic/demo.yml" <<<"$calls"' "with no route written"
 
 out="$( REMOTE_RC=1 FAKE_ACTIVE= FAKE_ACTIVE_STATE=missing deploy deploy@vps 1.0.0 )"; rc=$?
 assert '[ "$rc" != "0" ]' "the same failure in deploy mode fails too (rc $rc: $out)"
-assert 'grep -qF "may already carry :current" <<<"$out"' "and carries the same warning (said '$out')"
-assert 'grep -qF "kasbah rollback deploy@vps" <<<"$out"' \
-    "naming the command that puts the tag back, which only a deploy can be told (said '$out')"
+assert 'grep -qF "nothing was started" <<<"$out"' "and, with no failure line, says nothing was started (said '$out')"
+out="$( REMOTE_RC=1 REMOTE_FAILURE=post-hook deploy deploy@vps 1.0.0 )"; rc=$?
+assert '[ "$rc" != "0" ] && grep -qF "1.0.0 is live" <<<"$out" && grep -qF "kasbah rollback deploy@vps" <<<"$out"' \
+    "a failed post-deploy hook says the version is live and names the rollback (rc $rc: $out)"
 
 # --- The changelog a rollback prints ----------------------------------------------------
 # The range runs the other way round: what the server was running, back to what it
@@ -1104,6 +1113,14 @@ calls=$(<"$call_log")
 assert '[ "$rc" = "0" ]' "a rollback to a version with no mail: block succeeds (rc $rc: $out)"
 assert '! grep -qF "'"'"'deploy'"'"' '"'"'mail'"'"'" <<<"$calls"' \
     "and never looks for a mail stack ($(grep -F "'mail'" <<<"$calls"))"
+snap_line="$(grep -nF "'deploy' 'snapshot'" <<<"$calls" | head -n1)"
+prep_line="$(grep -nF "'deploy' 'prepare'" <<<"$calls" | head -n1)"
+assert '[ -n "$snap_line" ] && [ -n "$prep_line" ] && [ "${snap_line%%:*}" -lt "${prep_line%%:*}" ]' \
+    "the files the run overwrites are copied aside before prepare and the sync (snapshot at ${snap_line%%:*}, prepare at ${prep_line%%:*})"
+assert 'grep -qF "'"'"'snapshot'"'"' '"'"'/apps/demo'"'"'" <<<"$calls" && grep -qF "'"'"'.env'"'"' '"'"'.env.prod.example'"'"' '"'"'compose.yml'"'"'" <<<"$calls"' \
+    "of the project, .env and v1.0.0's targets ($(grep -F "'snapshot'" <<<"$calls"))"
+assert '[ -s "$spec_copy.token" ] && [ "$(jq -r .snapshot "$spec_copy")" = "$(<"$spec_copy.token")" ]' \
+    "and the engine is handed that snapshot's token ($(jq -r .snapshot "$spec_copy" 2>/dev/null) vs $(cat "$spec_copy.token" 2>/dev/null))"
 rm -rf "$project/.kasbah"
 
 # --- --dirty builds ---------------------------------------------------------------------

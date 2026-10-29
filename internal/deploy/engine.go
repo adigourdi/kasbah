@@ -32,6 +32,9 @@ type Spec struct {
 	Post         []string `json:"post"`
 	Health       Health   `json:"health"`
 	Backup       *Backup  `json:"backup"`
+	// Snapshot is the token of this run's `deploy snapshot`; a revert
+	// restores only the snapshot carrying it.
+	Snapshot string `json:"snapshot"`
 }
 
 // Health is the manifest's health: block; an empty Container waits on every
@@ -67,6 +70,30 @@ type Report struct {
 // ReportKey marks the protocol line on stdout.
 const ReportKey = "kasbah_deploy_report"
 
+// FailureKey marks a failed run's protocol line on stdout: what the server
+// was left as, for the workstation to say.
+const FailureKey = "kasbah_deploy_failed"
+
+// Failure outcomes; PostHook and RevertFailed append deploy-failed.
+const (
+	Restored     = "restored"
+	Unrestored   = "unrestored"
+	Reverted     = "reverted"
+	FirstFailed  = "first"
+	PostHook     = "post-hook"
+	RevertFailed = "revert-failed"
+	Unrecorded   = "unrecorded"
+)
+
+// Failure is the line FailureKey marks.
+type Failure struct {
+	Outcome string `json:"outcome"`
+	Reason  string `json:"reason"`
+	Prev    string `json:"prev"`
+	// Saved is where a restore kept the .env it replaced.
+	Saved string `json:"saved,omitempty"`
+}
+
 // fatal stops the engine; its text is the run's last stderr line.
 type fatal struct{ msg string }
 
@@ -87,6 +114,14 @@ type engine struct {
 	// lockFile and serverLock hold their flocks until the run returns; any
 	// exit releases them.
 	lockFile, serverLock *os.File
+	// What a failure needs to say and undo.
+	logRead, history, retagged bool
+	prev, lastFail             string
+	backupPath                 string
+	digest                     string
+	prevIDs                    map[string]string
+	liveBefore                 []string
+	failure                    *Failure
 }
 
 func (e *engine) note(format string, a ...any) {
@@ -128,6 +163,10 @@ func Engine(dir string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "remote: %v\n", err)
+		if e.failure != nil {
+			b, _ := json.Marshal(e.failure)
+			fmt.Fprintf(stdout, "{\"%s\":1,%s\n", FailureKey, b[1:])
+		}
 		return 1
 	}
 	b, _ := json.Marshal(r)
@@ -156,35 +195,60 @@ func (e *engine) run() (*Report, error) {
 		sp.Health.Timeout = 120
 		e.sp.Health.Timeout = 120
 	}
+	composeMissing := failf("%s/compose.yml is missing — the project's sync: list must map its compose file to compose.yml", e.dir)
+	if fi, err := os.Stat(e.dir); err != nil || !fi.IsDir() {
+		return nil, composeMissing
+	}
+	if err := e.lock(); err != nil {
+		return nil, err
+	}
+	rep, err := e.locked(composeMissing)
+	if err != nil && !e.retagged && e.failure == nil {
+		err = e.unchanged(err)
+	}
+	return rep, err
+}
+
+// locked is the run under .deploy.lock.
+func (e *engine) locked(composeMissing error) (*Report, error) {
+	sp := e.sp
 	if fi, err := os.Stat(filepath.Join(e.dir, "compose.yml")); err != nil || fi.IsDir() {
-		return nil, failf("%s/compose.yml is missing — the project's sync: list must map its compose file to compose.yml", e.dir)
+		return nil, composeMissing
 	}
 	if _, err := os.Stat(filepath.Join(e.dir, ".env")); err != nil {
 		return nil, failf("%s/.env is missing — compose reads the project's values from it", e.dir)
 	}
-
-	if err := e.lock(); err != nil {
-		return nil, err
-	}
-	if err := e.preflight(); err != nil {
-		return nil, err
-	}
-	last, err := vlog.LastLine(e.dir)
-	if err != nil {
+	data, err := os.ReadFile(filepath.Join(e.dir, vlog.Log))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, failf("could not read %s/%s", e.dir, vlog.Log)
 	}
-	prev := ""
-	if en := vlog.Parse(last); last != "" && en.OK {
-		prev = en.Version
+	e.logRead = true
+	// The previous version is the last entry that is not a failed run's; a
+	// line no version can be read out of still says something ran.
+	prev, before := "", false
+	entries := vlog.Entries(strings.ReplaceAll(string(data), "\r", ""))
+	for i := len(entries) - 1; i >= 0; i-- {
+		if en := entries[i]; en.IsFailed() {
+			if e.lastFail == "" {
+				e.lastFail = en.Version
+			}
+		} else {
+			prev, before = en.Version, true
+			break
+		}
 	}
 	// An absent active log is not a first deploy while the archive holds
 	// entries: rotation never empties the log, so it was lost or replaced.
-	if last == "" {
+	if len(entries) == 0 {
 		if fi, err := os.Stat(filepath.Join(e.dir, vlog.Archive)); err == nil && fi.Size() > 0 {
 			e.archiveOnly = true
 		}
 	}
-	before := last != "" || e.archiveOnly
+	before = before || e.archiveOnly
+	e.prev, e.history = prev, len(entries) > 0 || e.archiveOnly
+	if err := e.preflight(); err != nil {
+		return nil, err
+	}
 	if err := e.outgoing(prev, before); err != nil {
 		return nil, err
 	}
@@ -195,46 +259,68 @@ func (e *engine) run() (*Report, error) {
 			return nil, err
 		}
 	}
+	e.backupPath, e.digest = backup, "-"
 	if sp.SkipHooks {
 		e.note("%s hooks skipped (--skip-hooks)", e.preName)
 	} else if err := e.hooks(e.preName, true, prev, backup, sp.Pre); err != nil {
 		return nil, err
 	}
-	if err := e.retag(); err != nil {
-		return nil, err
-	}
-	digest, err := e.digests()
+	ids, err := e.currentIDs()
 	if err != nil {
 		return nil, err
 	}
-	if e.docker("compose", "-p", e.project, "up", "-d", "--remove-orphans").Run() != nil {
-		return nil, failf("docker compose -p %s up -d --remove-orphans failed in %s", e.project, e.dir)
+	// The ids the live stack started from: a kept snapshot's, from the run
+	// that first took it.
+	e.prevIDs = pinIDs(e.dir, sp.Snapshot, sp.Images, ids, e.stderr)
+	e.liveBefore = e.liveContainers()
+	e.retagged = true
+	if err := e.retag(); err != nil {
+		return nil, e.failed("up", err)
+	}
+	digest, err := e.digests()
+	if err != nil {
+		return nil, e.failed("up", err)
+	}
+	e.digest = digest
+	if e.up() != nil {
+		return nil, e.failed("up", failf("docker compose -p %s up -d --remove-orphans failed in %s", e.project, e.dir))
 	}
 	if sp.NoHealthWait {
 		e.note("health wait skipped (--no-health-wait)")
-	} else if err := e.healthWait(); err != nil {
-		return nil, err
+	} else if err := e.healthWaitFor(sp.Health.Container); err != nil {
+		return nil, e.failed("health", err)
 	}
 	if sp.SkipHooks {
 		e.note("%s hooks skipped (--skip-hooks)", e.postName)
 	} else if err := e.hooks(e.postName, false, prev, backup, sp.Post); err != nil {
-		return nil, err
+		return nil, e.postFailed(err)
 	}
 
-	kv := sp.Kasbah
+	dropSnapshot(e.dir)
+	if err := e.record(sp.Mode); err != nil {
+		e.failure = &Failure{Outcome: Unrecorded, Reason: "record", Prev: e.prev}
+		return nil, failf("%v — %s %s is live: its containers are up and healthy and its hooks ran, and versions.log does not record it", err, e.project, sp.Version)
+	}
+	return &Report{Version: sp.Version, PrevVersion: prev, DeployedBefore: before, Backup: backup, Digest: digest, ArchiveOnly: e.archiveOnly}, nil
+}
+
+// record appends the run's versions.log line, extra pairs after by=, then
+// rotates the log.
+func (e *engine) record(action string, extra ...string) error {
+	kv := e.sp.Kasbah
 	if kv == "" {
 		kv = "unknown"
 	}
-	line, err := vlog.Line(vlog.Stamp(e.now()), sp.Mode, sp.Version, backup, kv, digest, serverlock.Who())
+	line, err := vlog.Line(vlog.Stamp(e.now()), action, e.sp.Version, e.backupPath, kv, e.digest, serverlock.Who(), extra...)
 	if err != nil {
-		return nil, fatal{err.Error()}
+		return fatal{err.Error()}
 	}
 	repaired, err := vlog.Append(e.dir, line)
 	if repaired {
 		e.note("the last line of versions.log had no newline on it — an append that was interrupted. Terminated it rather than writing into it; it is left exactly as it stands.")
 	}
 	if err != nil {
-		return nil, fatal{err.Error()}
+		return fatal{err.Error()}
 	}
 	// Never the run's status: a failed compaction must not cost the route.
 	moved, cut, rerr := vlog.Rotate(e.dir, e.now())
@@ -244,7 +330,200 @@ func (e *engine) run() (*Report, error) {
 	case moved > 0:
 		e.note("versions.log: %d entries older than %s moved to versions.log.gz", moved, vlog.MonthName(cut))
 	}
-	return &Report{Version: sp.Version, PrevVersion: prev, DeployedBefore: before, Backup: backup, Digest: digest, ArchiveOnly: e.archiveOnly}, nil
+	return nil
+}
+
+func (e *engine) up() error {
+	return e.docker("compose", "-p", e.project, "up", "-d", "--remove-orphans").Run()
+}
+
+// recordFailed appends the deploy-failed line; a line that cannot be written
+// is said, never the run's new failure.
+func (e *engine) recordFailed(reason string) bool {
+	extra := []string{"reason=" + reason}
+	if e.sp.Mode == "rollback" {
+		extra = append(extra, "mode=rollback")
+	}
+	if err := e.record(vlog.Failed, extra...); err != nil {
+		e.note("%v — versions.log does not record this failure", err)
+		return false
+	}
+	return true
+}
+
+// was names what ran before this run, for the failure messages.
+func (e *engine) was() string {
+	switch {
+	case e.lastFail != "":
+		return "the stack it ran before this run (versions.log's last entry is a failed " + e.lastFail + ")"
+	case e.prev != "":
+		return e.prev
+	}
+	return "the version it ran before this run (versions.log's last line names none)"
+}
+
+// unchanged is a failure before the retag: nothing was started, so the files
+// the run shipped are put back and the disk matches the live stack again.
+func (e *engine) unchanged(cause error) error {
+	if e.sp.Snapshot == "" || !e.logRead {
+		return cause
+	}
+	if !e.history {
+		dropSnapshot(e.dir)
+		return cause
+	}
+	e.note("%v", cause)
+	res, err := restore(e.dir, e.sp.Snapshot)
+	saved := e.saved(res)
+	switch {
+	case errors.Is(err, errForeign):
+		e.note("%v", err)
+		return failf("the %s of %s stopped before anything was started; its files are on the server beside the running stack", e.sp.Mode, e.sp.Version)
+	case err != nil:
+		e.failure = &Failure{Outcome: Unrestored, Reason: "start", Prev: e.prev, Saved: res.Saved}
+		return failf("the %s of %s stopped before anything was started, and putting back the files it had shipped failed: %v (%s) — %s/%s is kept, and the next run starts from it%s", e.sp.Mode, e.sp.Version, err, res.what(), e.dir, PrevDir, saved)
+	}
+	dropSnapshot(e.dir)
+	e.failure = &Failure{Outcome: Restored, Reason: "start", Prev: e.prev, Saved: res.Saved}
+	return failf("the %s of %s stopped before anything was started, and the files it had shipped were put back — the server is as it was%s", e.sp.Mode, e.sp.Version, saved)
+}
+
+// saved is the clause naming the .env a restore kept, "" for none.
+func (e *engine) saved(res *restored) string {
+	if res == nil || res.Saved == "" {
+		return ""
+	}
+	e.note("the .env on the server differed from the one the running stack started from: it is kept as %s", res.Saved)
+	return ". The .env it replaced is kept as " + res.Saved
+}
+
+// failed is a failure after the retag: back to what ran (files, :current,
+// containers), logged only when that fails. It outlasts a signal.
+func (e *engine) failed(reason string, cause error) error {
+	e.note("%v", cause)
+	v := e.sp.Version
+	if !e.history {
+		dropSnapshot(e.dir)
+		e.failure = &Failure{Outcome: FirstFailed, Reason: reason}
+		return failf("the %s of %s failed (%s), and this is the first deploy of %s here, so there is nothing to revert to — the stack is left as the run left it, :current names %s, and versions.log records nothing", e.sp.Mode, v, reason, e.project, v)
+	}
+	release := atexit.Hold(func(os.Signal) {})
+	defer release()
+	e.note("reverting: the files this run replaced, each :current back on the image it had, and %s brought up again", e.was())
+	state, res, err := e.revert()
+	saved := e.saved(res)
+	if err == nil {
+		dropSnapshot(e.dir)
+		e.failure = &Failure{Outcome: Reverted, Reason: reason, Prev: e.prev, Saved: res.Saved}
+		return failf("the %s of %s failed (%s) and was reverted — the server is back on %s: its files, its images and its containers. versions.log records nothing for %s%s", e.sp.Mode, v, reason, e.was(), v, saved)
+	}
+	e.note("the revert failed: %v", err)
+	logged := "versions.log records it as deploy-failed (reason=revert)"
+	if !e.recordFailed("revert") {
+		logged = "and versions.log could not record it"
+	}
+	e.failure = &Failure{Outcome: RevertFailed, Reason: reason, Prev: e.prev}
+	if res != nil {
+		e.failure.Saved = res.Saved
+	}
+	return failf("the %s of %s failed (%s), and so did the revert to %s — %s. %s%s", e.sp.Mode, v, reason, e.was(), state, logged, saved)
+}
+
+// revert returns what the restore did and, on failure, the state it left
+// the server in.
+func (e *engine) revert() (string, *restored, error) {
+	v := e.sp.Version
+	res, err := restore(e.dir, e.sp.Snapshot)
+	if err != nil {
+		return res.what() + " — the rest of the files, :current and whatever compose up left are " + v + "'s", res, err
+	}
+	e.note("put back the files this run replaced (%s)", strings.Join(res.Done, ", "))
+	st, err := e.retagBack()
+	return st, res, err
+}
+
+// retagBack is the revert after the files: each :current on its old id, that
+// stack up and waited on.
+func (e *engine) retagBack() (string, error) {
+	v := e.sp.Version
+	for _, img := range e.sp.Images {
+		id := e.prevIDs[img]
+		if id == "" {
+			// No :current before this run: the old stack never named it.
+			if e.docker("image", "rm", img+":current").Run() != nil {
+				return "the files are back, and " + img + ":current still names " + v, fmt.Errorf("could not untag %s:current", img)
+			}
+			e.note("untagged %s:current, which nothing named before this run", img)
+			continue
+		}
+		if e.docker("tag", id, img+":current").Run() != nil {
+			return "the files are back, and " + img + ":current still names " + v, fmt.Errorf("could not retag %s as %s:current", id, img)
+		}
+		e.note("retagged %s:current back to %s", img, id)
+	}
+	if e.up() != nil {
+		return "the files and :current are back, and compose up of them failed — the stack may be down or partial", fmt.Errorf("docker compose -p %s up -d --remove-orphans failed in %s", e.project, e.dir)
+	}
+	if e.sp.NoHealthWait {
+		return "", nil
+	}
+	// The containers that ran before: this run's health.container may be
+	// one the old stack never had.
+	if err := e.healthWait(e.liveBefore); err != nil {
+		return "the old stack is up again and not healthy", err
+	}
+	return "", nil
+}
+
+// postFailed: the new version is live and its hook may have changed data, so
+// nothing is reverted; deploy-failed records it.
+func (e *engine) postFailed(cause error) error {
+	e.note("%v", cause)
+	dropSnapshot(e.dir)
+	logged := "versions.log records it as deploy-failed (reason=post-hook)"
+	if !e.recordFailed("post-hook") {
+		logged = "versions.log could not record it"
+	}
+	e.failure = &Failure{Outcome: PostHook, Reason: "post-hook", Prev: e.prev}
+	return failf("a %s hook of %s failed after its containers came up healthy — %s is live and was not reverted, since the hook may already have changed data; %s", e.postName, e.sp.Version, e.sp.Version, logged)
+}
+
+// currentIDs is each built image's :current id before the retag, absent for
+// none; any other answer than "No such image" stops the run.
+func (e *engine) currentIDs() (map[string]string, error) {
+	ids := map[string]string{}
+	for _, img := range e.sp.Images {
+		c := exec.Command("docker", "image", "inspect", "-f", "{{.Id}}", img+":current")
+		c.Env = append(os.Environ(), "LC_ALL=C")
+		c.Dir = e.dir
+		var stderr strings.Builder
+		c.Stderr = &stderr
+		out, err := c.Output()
+		id := strings.TrimSpace(string(out))
+		switch {
+		case err == nil && id != "":
+			ids[img] = id
+		case err != nil && strings.Contains(strings.ToLower(stderr.String()), "no such image"):
+		default:
+			return nil, failf("could not read what %s:current is before retagging it (%s) — a revert would have nothing to go back to. Nothing was started.", img, strings.TrimSpace(stderr.String()))
+		}
+	}
+	return ids, nil
+}
+
+// liveContainers is the names of the compose project's running containers.
+func (e *engine) liveContainers() []string {
+	out, err := e.query("compose", "-p", e.project, "ps", "-q")
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, id := range strings.Fields(out) {
+		if n, err := e.query("inspect", "-f", "{{.Name}}", id); err == nil && n != "" {
+			names = append(names, strings.TrimPrefix(n, "/"))
+		}
+	}
+	return names
 }
 
 // lock is flock(2) on .deploy.lock, held until the process exits — the lock
@@ -611,23 +890,21 @@ func (e *engine) name(c string) string {
 	return n
 }
 
+// healthWaitFor waits on container, or on every container of the project.
+func (e *engine) healthWaitFor(container string) error {
+	if container != "" {
+		return e.healthWait([]string{container})
+	}
+	out, err := e.query("compose", "-p", e.project, "ps", "-q")
+	if err != nil {
+		return failf("could not list the containers of compose project %s", e.project)
+	}
+	return e.healthWait(strings.Fields(out))
+}
+
 // healthWait polls under one deadline, health.timeout, for the whole wait. A
 // container with no healthcheck passes at once.
-func (e *engine) healthWait() error {
-	var targets []string
-	if c := e.sp.Health.Container; c != "" {
-		targets = []string{c}
-	} else {
-		out, err := e.query("compose", "-p", e.project, "ps", "-q")
-		if err != nil {
-			return failf("could not list the containers of compose project %s", e.project)
-		}
-		for _, t := range strings.Split(out, "\n") {
-			if t = strings.TrimSpace(t); t != "" {
-				targets = append(targets, t)
-			}
-		}
-	}
+func (e *engine) healthWait(targets []string) error {
 	if len(targets) == 0 {
 		e.note("health: compose project %s has no containers to wait on", e.project)
 		return nil

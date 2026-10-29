@@ -123,3 +123,19 @@ func TestSecondSignal(t *testing.T) {
 		t.Errorf("child exited %v, want 130 from the second signal", err)
 	}
 }
+
+func TestHoldNests(t *testing.T) {
+	outer := Hold(func(os.Signal) {})
+	inner := Hold(func(os.Signal) {})
+	inner()
+	holdMu.Lock()
+	still := held != nil
+	holdMu.Unlock()
+	outer()
+	holdMu.Lock()
+	gone := held == nil
+	holdMu.Unlock()
+	if !still || !gone {
+		t.Errorf("inner release ended the outer hold (%v) or the outer did not end it (%v)", !still, !gone)
+	}
+}

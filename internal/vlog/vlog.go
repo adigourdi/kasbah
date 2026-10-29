@@ -24,6 +24,9 @@ const (
 	Archive = "versions.log.gz"
 	// Mode is both files': every operator in the kasbah group appends.
 	Mode = 0o664
+	// Failed is the action of a run that failed and was not reverted: its
+	// version is no deployed one, and never a rollback target.
+	Failed = "deploy-failed"
 )
 
 // owned is whether this process's user owns the file: only the owner may
@@ -49,6 +52,18 @@ type Entry struct {
 	OK                            bool
 	Time, Action, Version, Backup string
 	Kasbah, Digest, By            string
+	// Reason and Mode are a Failed entry's: the step that failed, and
+	// "rollback" when the run was one.
+	Reason, Mode string
+}
+
+// IsFailed is a readable Failed entry.
+func (e Entry) IsFailed() bool { return e.OK && e.Action == Failed }
+
+// DeployLike is a deploy entry, or a failed deploy's: either one leaves the
+// version it names running in place of the one before.
+func (e Entry) DeployLike() bool {
+	return e.OK && (e.Action == "deploy" || (e.Action == Failed && e.Mode != "rollback"))
 }
 
 var reStamp = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T`)
@@ -75,6 +90,10 @@ func Parse(line string) Entry {
 			e.Digest = v
 		} else if v, ok := strings.CutPrefix(p, "by="); ok {
 			e.By = v
+		} else if v, ok := strings.CutPrefix(p, "reason="); ok {
+			e.Reason = v
+		} else if v, ok := strings.CutPrefix(p, "mode="); ok {
+			e.Mode = v
 		}
 	}
 	return e
@@ -95,12 +114,17 @@ func Entries(text string) []Entry {
 // Stamp is versions.log's timestamp: `date -u -Iseconds`.
 func Stamp(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05-07:00") }
 
-// Line renders an entry. Every value is refused when empty or holding
-// whitespace: either would shift every field after it, in a file every later
-// kasbah must parse.
-func Line(ts, action, version, backup, kasbah, digest, by string) (string, error) {
-	for _, p := range [][2]string{{"timestamp", ts}, {"action", action}, {"version", version},
-		{"backup path", backup}, {"kasbah version", kasbah}, {"digest", digest}, {"user", by}} {
+// Line renders an entry, extra being key=value pairs appended after by=.
+// Every value is refused when empty or holding whitespace: either would shift
+// every field after it, in a file every later kasbah must parse.
+func Line(ts, action, version, backup, kasbah, digest, by string, extra ...string) (string, error) {
+	vals := [][2]string{{"timestamp", ts}, {"action", action}, {"version", version},
+		{"backup path", backup}, {"kasbah version", kasbah}, {"digest", digest}, {"user", by}}
+	for _, kv := range extra {
+		k, v, _ := strings.Cut(kv, "=")
+		vals = append(vals, [2]string{k, v})
+	}
+	for _, p := range vals {
 		if p[1] == "" {
 			return "", fmt.Errorf("refusing to write versions.log: the %s is empty, which would shift every field after it", p[0])
 		}
@@ -108,7 +132,11 @@ func Line(ts, action, version, backup, kasbah, digest, by string) (string, error
 			return "", fmt.Errorf("refusing to write versions.log: the %s ('%s') contains whitespace or a control character, which would shift every field after it", p[0], p[1])
 		}
 	}
-	return fmt.Sprintf("%s %s %s %s kasbah=%s digest=%s by=%s", ts, action, version, backup, kasbah, digest, by), nil
+	line := fmt.Sprintf("%s %s %s %s kasbah=%s digest=%s by=%s", ts, action, version, backup, kasbah, digest, by)
+	for _, kv := range extra {
+		line += " " + kv
+	}
+	return line, nil
 }
 
 // Append adds one line to dir's log. A last line with no newline — an append

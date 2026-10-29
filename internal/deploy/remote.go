@@ -13,7 +13,7 @@ import (
 )
 
 // RemoteUsage names `kasbah remote deploy`'s modes.
-const RemoteUsage = "usage: kasbah remote deploy prepare APPS DATA NAME CLIENT [DIR…] | run DIR (spec on stdin) | mail APPS | images VERSION IMAGE…"
+const RemoteUsage = "usage: kasbah remote deploy prepare APPS DATA NAME CLIENT [DIR…] | snapshot DIR TOKEN TARGET… | run DIR (spec on stdin) | mail APPS | images VERSION IMAGE…"
 
 // Remote is `kasbah remote deploy …` on a server. stdout is a protocol in
 // every mode; narration and docker's output go to stderr.
@@ -28,6 +28,10 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		w, done := remote.Outlive(stderr)
 		defer done()
 		return Engine(args[1], stdin, stdout, w)
+	case args[0] == "snapshot" && len(args) >= 3:
+		w, done := remote.Outlive(stderr)
+		defer done()
+		return takeSnapshot(args[1], args[2], args[3:], stdout, w)
 	case args[0] == "prepare" && len(args) >= 5:
 		w, done := remote.Outlive(stderr)
 		defer done()

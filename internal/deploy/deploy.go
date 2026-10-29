@@ -4,7 +4,10 @@
 package deploy
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -63,13 +66,18 @@ allowed to be the first time that version reaches this server.
 An argument containing '@' is the server, anything else is the version.
 
 What it does:
+  * copies aside what the run overwrites — the sync: targets and .env — into
+    <apps>/<name>/.kasbah-prev/
   * ships every path in the manifest's sync: list to <apps>/<name>/
   * renders <apps>/<name>/.env when it is missing, checks it for drift against
     .env.prod.example otherwise, and refreshes the KASBAH_* block in it from
     the server marker's resource limits
   * runs ` + "`kasbah remote deploy`" + ` on the server: backup, pre-deploy hooks,
     retag <image>:current, docker compose -p <name> up -d --remove-orphans,
-    health wait, post-deploy hooks, one versions.log entry
+    health wait, post-deploy hooks, one versions.log entry. A failed up or
+    health wait is reverted — those files back, each :current on its old
+    image, that stack up — and records nothing; a failed post-deploy hook
+    is not reverted, and records a deploy-failed entry
   * ships traefik-dynamic.yml to <apps>/traefik/dynamic/<name>.yml, last
   * prints the commits between the version the server was running and this one
   * git push origin v<version>, when the tag is not on origin yet — last, once
@@ -224,6 +232,8 @@ func takes(cmd string) string {
 type Server interface {
 	env.Session
 	PrepareProject(apps, data, name, client string, parents []string) (string, error)
+	// Snapshot copies aside, under token, the paths a run overwrites.
+	Snapshot(dir, token string, targets []string) error
 	Sync(e Entry, base string) error
 	Mail(apps string) (*MailFacts, error)
 	Run(dir string, sp Spec) (stdout string, rc int)
@@ -267,6 +277,10 @@ type run struct {
 	mode   string
 	tagged bool
 	frag   string
+	// snap is the token of this run's snapshot (snapshot.go); route ships
+	// the Traefik fragment, after a report or a failed post-hook.
+	snap  string
+	route func() (bool, error)
 }
 
 // Run is the command.
@@ -324,14 +338,9 @@ func Run(c Ctx, o Options) error {
 	if err != nil {
 		return err
 	}
-	clientState, err := r.s.PrepareProject(r.mk.AppsPath, r.mk.DataPath, m.Name, r.p.Client, RemoteParents(r.dir, r.p.Sync))
+	clientState, err := r.ship()
 	if err != nil {
 		return err
-	}
-	for _, e := range r.p.Sync {
-		if err := r.s.Sync(e, r.dir); err != nil {
-			return err
-		}
 	}
 	// After the sync (the setup prompts from the template it shipped) and
 	// before the engine (compose reads what it writes).
@@ -342,11 +351,12 @@ func Run(c Ctx, o Options) error {
 	if claim != nil {
 		r.mailClaim(claim)
 	}
+	r.route = r.fragment
 	rep, err := r.remote()
 	if err != nil {
 		return err
 	}
-	shipped, err := r.fragment()
+	shipped, err := r.route()
 	if err != nil {
 		return err
 	}
@@ -445,6 +455,27 @@ func (r *run) rerun() string {
 	return "kasbah deploy " + r.target
 }
 
+// ship is the snapshot, the project's directories and the sync. The snapshot
+// is first, before prepare makes a directory the run then fills.
+func (r *run) ship() (string, error) {
+	b := make([]byte, 12)
+	rand.Read(b)
+	r.snap = hex.EncodeToString(b)
+	if err := r.s.Snapshot(r.dir, r.snap, SnapshotTargets(r.p.Sync)); err != nil {
+		return "", err
+	}
+	clientState, err := r.s.PrepareProject(r.mk.AppsPath, r.mk.DataPath, r.m.Name, r.p.Client, RemoteParents(r.dir, r.p.Sync))
+	if err != nil {
+		return "", err
+	}
+	for _, e := range r.p.Sync {
+		if err := r.s.Sync(e, r.dir); err != nil {
+			return "", err
+		}
+	}
+	return clientState, nil
+}
+
 // remote runs the engine and reads its report, which is the completion
 // marker: no report means the run did not reach its end, and nothing after
 // it — the fragment above all — may happen.
@@ -454,7 +485,7 @@ func (r *run) remote() (*Report, error) {
 		Mode: r.mode, Version: r.version, Kasbah: r.c.Version,
 		SkipHooks: r.o.SkipHooks, NoHealthWait: r.o.NoHealthWait, AllowStopped: r.o.AllowStopped,
 		Images: b.Images, Pre: b.Hooks["pre-"+r.mode], Post: b.Hooks["post-"+r.mode],
-		Health: b.Health, Backup: b.Backup,
+		Health: b.Health, Backup: b.Backup, Snapshot: r.snap,
 	}
 	// Held: the engine finishes on the server whatever happens to this end,
 	// so a signal waits for ssh rather than tearing the master down under it.
@@ -467,26 +498,24 @@ func (r *run) remote() (*Report, error) {
 	}
 	if c := interrupted(); c != 0 && rc != 0 {
 		return nil, cli.Failf(c, "interrupted during the %s on %s", r.mode, r.target).Cont(
-			"the server carries on without this end: it finishes the "+r.mode+" and records it",
-			"in versions.log. `kasbah history "+r.target+"` shows where it ended.",
-			"The Traefik fragment was not shipped. Re-running `"+r.rerun()+"` is safe.")
+			"the server carries on without this end. Finished, it records the "+r.mode+" in",
+			"versions.log; failing before `compose up` or at it or the health wait, it puts",
+			"back what ran before and records nothing; a failed post-"+r.mode+" hook or a",
+			"revert that failed it records as deploy-failed. `kasbah history "+r.target+"`",
+			"shows the record. The Traefik fragment was not shipped. Re-running",
+			"`"+r.rerun()+"` is safe.")
 	}
 	if rc == 255 || rc == -1 {
 		// ssh's own failure: the engine may have run to its end regardless.
 		return nil, cli.Fail("the connection to %s was lost during the %s (ssh exited %d)", r.target, r.mode, rc).Cont(
-			"the server may have finished it — check `kasbah history "+r.target+"` for a "+r.version+" entry.",
-			"The Traefik fragment was not shipped. Re-running `"+r.rerun()+"` is safe.")
+			"the server carries on regardless: `kasbah history "+r.target+"` shows a "+r.version+" entry",
+			"if it finished, or a deploy-failed one if a post-"+r.mode+" hook or a revert failed.",
+			"No entry means it stopped or was reverted, the server back on what it ran",
+			"before — or that it is still running. The Traefik fragment was not shipped.",
+			"Re-running `"+r.rerun()+"` is safe.")
 	}
 	if rc != 0 {
-		e := cli.Fail("the %s failed on %s (the server's kasbah exited %d, see above)", r.mode, r.target, rc).Cont(
-			"the files are already there — fix what it reported and re-run `"+r.rerun()+"`.",
-			r.m.Name+"'s images on "+r.target+" may already carry :current for",
-			r.version+" even though its containers did not start — the retag runs",
-			"before `compose up`, and nothing on the server records that it moved.")
-		if r.mode == "deploy" {
-			e.Cont("`kasbah rollback " + r.target + "` is what puts it back.")
-		}
-		return nil, e
+		return nil, r.engineFailed(out, rc)
 	}
 	rep, missing, found := ParseReport(out)
 	if rep == nil {
@@ -511,6 +540,73 @@ func (r *run) remote() (*Report, error) {
 		return nil, cli.Fail("the %s step on %s reported version '%s', not the %s it was asked for", r.mode, r.target, rep.Version, r.version)
 	}
 	return rep, nil
+}
+
+// engineFailed says what the failed engine left the server as, read from
+// its failure line; none is a failure before anything was started.
+func (r *run) engineFailed(out string, rc int) error {
+	e := cli.Fail("the %s failed on %s (the server's kasbah exited %d, see above)", r.mode, r.target, rc)
+	v, t, again := r.version, r.target, "fix what it reported and re-run `"+r.rerun()+"`."
+	f := ParseFailure(out)
+	if f == nil {
+		return e.Cont("nothing was started — the containers and :current are what they were,",
+			"and "+v+"'s files are on the server beside them — "+again)
+	}
+	if f.Saved != "" {
+		e.Cont("the .env the server had differed from the running stack's: it is kept as",
+			f.Saved+" — carry anything typed there back into .env.")
+	}
+	switch f.Outcome {
+	case Restored:
+		return e.Cont("nothing was started, and the files it had shipped were put back: the",
+			"server is as it was before this run — "+again)
+	case Unrestored:
+		return e.Cont("nothing was started, and putting back the files it had shipped failed —",
+			"some of "+v+"'s files are on the server beside the running stack. Its snapshot",
+			"is kept, so the next run still reverts to what is running — "+again)
+	case Unrecorded:
+		return e.Cont(v+" is live — its containers are up and healthy and its hooks ran — and",
+			"versions.log could not record it (see above). The Traefik fragment was not",
+			"shipped. Fix what it reported, then re-run `"+r.rerun()+"`.")
+	case Reverted:
+		return e.Cont("it was reverted: "+t+" runs what it ran before, with that version's files,",
+			"images and containers, and versions.log records nothing for "+v+".",
+			"The Traefik fragment was not shipped — "+again)
+	case FirstFailed:
+		return e.Cont("a first deploy has nothing to revert to: the stack is left as `compose up`",
+			"left it, :current names "+v+", and versions.log records nothing.",
+			"The Traefik fragment was not shipped — "+again)
+	case PostHook:
+		e.Cont(v+" is live — `compose up` replaced the containers and they came up healthy —",
+			"and was not reverted, because the hook may already have changed data.",
+			"versions.log records it as deploy-failed.")
+		if shipped, ferr := r.route(); ferr != nil {
+			e.Cont("The Traefik fragment could not be shipped: " + ferr.Error() + ".")
+		} else if shipped {
+			e.Cont("The Traefik fragment was shipped, so the route names the live containers.")
+		}
+		return e.Cont("Fix the hook's work by hand, then re-run `"+r.rerun()+"`, or",
+			"`kasbah rollback "+t+"` to the version before it.")
+	}
+	return e.Cont("the revert to what ran before failed too — the server is in the state the",
+		"line above names, and versions.log records it as deploy-failed. The Traefik",
+		"fragment was not shipped. Look at the server, then re-run `"+r.rerun()+"`",
+		"or `kasbah rollback "+t+"`.")
+}
+
+// ParseFailure is a failed engine's last failure line, nil when none.
+func ParseFailure(out string) *Failure {
+	var found *Failure
+	for _, l := range strings.Split(strings.ReplaceAll(out, "\r", ""), "\n") {
+		if !strings.HasPrefix(l, "{\""+FailureKey+"\":") {
+			continue
+		}
+		var f Failure
+		if json.Unmarshal([]byte(l), &f) == nil && f.Outcome != "" {
+			found = &f
+		}
+	}
+	return found
 }
 
 // fragment ships the route last; a project without one deploys anyway.

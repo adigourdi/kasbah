@@ -377,6 +377,7 @@ Per project:
 - the `scripts/` helpers, **by name** — `remote-deploy.sh` and `setup-env.sh`,
   then `rmdir`. The directory survives if it holds anything else, because
   destroy cannot tell an operator's file from kasbah's except by name
+- `.kasbah-prev/`, a failed deploy's snapshot, which holds a copy of `.env`
 - `.deploy.lock`, and `.kasbah-client` (written by `deploy`, read by the backup
   run — see `project-manifest.md`)
 - the **managed-block sentinel comments** in `.env`. The `KASBAH_CPU_LIMIT` and
@@ -720,7 +721,9 @@ Flow (no-args / working-tree path):
 1. Open SSH ControlMaster for the whole deploy (reused by every ssh session and file transfer).
 2. Verify SSH reachability; ship the kasbah binary if the server's is absent or older (asking first when a dev build would replace a release — Hand-off below).
 3. Resolve version = HEAD's `v-tag`, cutting one first on an untagged HEAD of a project that builds nothing (`--bump=`).
-4. Ensure remote dirs exist (`/apps/<name>/`, `backups/`, `/apps/data/<name>/`).
+4. Snapshot what the run will overwrite (the sync targets and `.env`, so a
+   failed `up` or health wait can revert — `build-deploy.md`), then ensure
+   remote dirs exist (`/apps/<name>/`, `backups/`, `/apps/data/<name>/`).
 5. Sync the manifest's `sync:` list (`kasbah remote sync`: only changed files travel).
    The Traefik fragment is not shipped here — it goes last, after the stack is
    up, so a failed deploy cannot leave a live route to nothing (`build-deploy.md`).
@@ -959,6 +962,9 @@ holds that kasbah cannot parse, and the note saying the archive was not read
 in full. A **diagnostic about this checkout or the transport** goes to
 stderr: a missing tag, an unborn HEAD, a `git log` that failed. Piping any of
 the three gives the answer and nothing else.
+
+A changelog's two ends never land on a `deploy-failed` line; it says when it
+stepped over one.
 
 A `-dirty.` version has no git tag: `changelog` and the changelog a deploy or
 rollback prints read it as its base tag and say so in a line — and skip the
