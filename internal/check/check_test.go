@@ -108,7 +108,7 @@ Traefik:
   ✓ A router serves demo.example.com on the web entrypoint
   ✓ No router claims reserved hostnames (traefik.*, mail.*, webmail.*)
   ✓ No router or service reaches a Traefik internal service other than noop@internal
-  ✓ Fragment loadBalancer URLs target explicit container_names
+  ✓ Fragment loadBalancer URLs target a service, alias or container_name compose defines
   ✓ compose.prod.yml has no traefik.* labels
 
 Env:

@@ -376,11 +376,10 @@ func (c *checker) networks() (on, own []string, defaultAliases bool) {
 	var badC03, badC07HN, badC07PN, legacy []string
 	nRouted := 0
 	for _, svc := range c.services {
+		isRouted := c.routes(svc, routed)
 		nets := c.svc(svc, "networks")
 		hn := joinsNet(nets, "kasbah-net") || (defaultAliases && !hasKey(c.svc(svc), "networks"))
 		pn := joinsNet(nets, projectNet)
-		cn := scalar(c.need(d, "services", svc, "container_name"))
-		isRouted := cn != "" && inList(routed, cn)
 		if isRouted {
 			nRouted++
 		}
@@ -927,24 +926,70 @@ func (c *checker) t07() {
 		return
 	}
 	names := c.containerNames()
-	var bad []string
+	defaultAliases := scalar(opt(c.compose.root, "networks", "default", "name")) == "kasbah-net"
+	var own, legacy, unjoined []string
+	for _, svc := range c.services {
+		nets := c.svc(svc, "networks")
+		switch {
+		case joinsNet(nets, projectNet):
+			own = append(own, c.netNames(svc)...)
+		case joinsNet(nets, "kasbah-net") || (defaultAliases && !hasKey(c.svc(svc), "networks")):
+			legacy = append(legacy, c.netNames(svc)...)
+		default:
+			unjoined = append(unjoined, c.netNames(svc)...)
+		}
+	}
+	var bad, shared, off []string
 	for _, h := range hosts {
-		if !inList(names, h) {
+		switch {
+		case inList(names, h) || inList(own, h):
+		case inList(legacy, h):
+			shared = append(shared, h)
+		case inList(unjoined, h):
+			off = append(off, h)
+		default:
 			bad = append(bad, h)
 		}
 	}
-	if len(bad) == 0 {
-		c.passf("Fragment loadBalancer URLs target explicit container_names")
-	} else {
-		c.failf("Fragment targets unknown container_names: %s (set container_name in compose.prod.yml)", strings.Join(bad, " "))
+	if len(shared) > 0 {
+		c.failf("Fragment targets services on kasbah-net by name: %s — there every project's same-named service answers too; set container_name, or join the service to the kasbah network", strings.Join(shared, " "))
+	}
+	if len(off) > 0 {
+		c.failf("Fragment targets services on no Traefik network: %s — join them to the kasbah network", strings.Join(off, " "))
+	}
+	switch {
+	case len(bad) > 0:
+		c.failf("Fragment targets names no service answers to: %s (target a service on the kasbah network, one of its kasbah aliases, or a container_name)", strings.Join(bad, " "))
+	case len(shared)+len(off) == 0:
+		c.passf("Fragment loadBalancer URLs target a service, alias or container_name compose defines")
 	}
 }
 
-var (
-	urlScheme = regexp.MustCompile(`^[A-Za-z0-9+.-]+://`)
-	urlTail   = regexp.MustCompile(`[:/].*$`)
-	blank     = regexp.MustCompile(`^[ \t]*$`)
-)
+// netNames is what svc answers to on its networks besides a container_name:
+// its own name and its aliases on the kasbah network.
+func (c *checker) netNames(svc string) []string {
+	out := []string{svc}
+	for _, a := range asList(opt(c.svc(svc, "networks"), projectNet, "aliases")) {
+		if s, ok := a.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// routes is whether a fragment host names svc, by container_name, service
+// name or kasbah alias.
+func (c *checker) routes(svc string, hosts []string) bool {
+	if cn := scalar(c.need(c.compose, "services", svc, "container_name")); cn != "" && inList(hosts, cn) {
+		return true
+	}
+	for _, n := range c.netNames(svc) {
+		if inList(hosts, n) {
+			return true
+		}
+	}
+	return false
+}
 
 // routedHosts is the host of every string loadBalancer server URL in the
 // fragment, none when it cannot be read.
@@ -956,23 +1001,17 @@ func (c *checker) routedHosts() []string {
 	if d.bad != "" {
 		return nil
 	}
-	svcs, _ := mapAt(d.root, "http", "services")
-	if svcs == nil {
+	if svcs, _ := mapAt(d.root, "http", "services"); svcs == nil {
 		return nil
 	}
-	var out []string
-	for _, k := range svcs.Keys() {
-		v, _ := svcs.Get(k)
-		servers, _ := opt(v, "loadBalancer", "servers").([]tree.Value)
-		for _, s := range servers {
-			u, _ := opt(s, "url").(string)
-			host := urlTail.ReplaceAllString(urlScheme.ReplaceAllString(u, ""), "")
-			if !blank.MatchString(host) {
-				out = append(out, host)
-			}
-		}
-	}
-	return out
+	return deploy.RoutedHosts(d.root)
+}
+
+// targets is what a hook, health.container or backup.container may name: a
+// container_name or a service, which a deploy resolves to its first running
+// replica.
+func (c *checker) targets() []string {
+	return append(c.containerNames(), c.services...)
 }
 
 // containerNames is every explicit container_name, in service order.
@@ -1022,10 +1061,10 @@ func (c *checker) healthSection() {
 			c.failErr(err)
 		case h.Container == "":
 			c.passf("manifest health: names no container — the deploy waits on every container with a healthcheck")
-		case inList(c.containerNames(), h.Container):
+		case inList(c.targets(), h.Container):
 			c.passf("manifest health.container '%s' exists in compose", h.Container)
 		default:
-			c.failf("manifest health.container '%s' not found among compose container_names", h.Container)
+			c.failf("manifest health.container '%s' is neither a container_name nor a service in compose", h.Container)
 		}
 	}
 }
@@ -1121,7 +1160,7 @@ func (c *checker) hooksSection() {
 		return
 	}
 	c.section("Hooks")
-	names := c.containerNames()
+	names := c.targets()
 	if hooks {
 		c.hk01(hv, names)
 	}
@@ -1153,9 +1192,9 @@ func (c *checker) hk01(hv tree.Value, names []string) {
 		}
 	}
 	if len(bad) == 0 {
-		c.passf("All hook commands target known container_names")
+		c.passf("All hook commands target a container_name or service in compose")
 	} else {
-		c.failf("Hooks reference unknown container_names: %s (set container_name on the target service in compose.prod.yml)", strings.Join(bad, " "))
+		c.failf("Hooks reference names that are neither a container_name nor a service: %s (start each hook with a service name or container_name from compose.prod.yml)", strings.Join(bad, " "))
 	}
 }
 
@@ -1208,7 +1247,7 @@ func (c *checker) hk02hk03(names []string) {
 	case inList(names, ctr):
 		c.passf("Backup hook container '%s' exists in compose", ctr)
 	default:
-		c.failf("Backup hook container '%s' not found among compose container_names", ctr)
+		c.failf("Backup hook container '%s' is neither a container_name nor a service in compose", ctr)
 	}
 	if err == nil && ctr != "" && len(missing) == 0 && !wrong {
 		if _, err := deploy.ReadBackup(c.m); err != nil {

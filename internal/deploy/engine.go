@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -32,6 +33,9 @@ type Spec struct {
 	Post         []string `json:"post"`
 	Health       Health   `json:"health"`
 	Backup       *Backup  `json:"backup"`
+	// Routed is the loadBalancer hosts of the fragment this run ships, which
+	// name the routed services a deploy may roll rather than recreate.
+	Routed []string `json:"routed"`
 	// Snapshot is the token of this run's `deploy snapshot`; a revert
 	// restores only the snapshot carrying it.
 	Snapshot string `json:"snapshot"`
@@ -121,7 +125,10 @@ type engine struct {
 	digest                     string
 	prevIDs                    map[string]string
 	liveBefore                 []string
-	failure                    *Failure
+	// liveSvc is each live container's service, so a revert waits on the
+	// replica that replaced a rolled one.
+	liveSvc map[string]string
+	failure *Failure
 }
 
 func (e *engine) note(format string, a ...any) {
@@ -273,6 +280,10 @@ func (e *engine) locked(composeMissing error) (*Report, error) {
 	// that first took it.
 	e.prevIDs = pinIDs(e.dir, sp.Snapshot, sp.Images, ids, e.stderr)
 	e.liveBefore = e.liveContainers()
+	e.liveSvc = map[string]string{}
+	for _, c := range e.projectContainers() {
+		e.liveSvc[c.name] = c.svc
+	}
 	e.retagged = true
 	if err := e.retag(); err != nil {
 		return nil, e.failed("up", err)
@@ -282,8 +293,8 @@ func (e *engine) locked(composeMissing error) (*Report, error) {
 		return nil, e.failed("up", err)
 	}
 	e.digest = digest
-	if e.up() != nil {
-		return nil, e.failed("up", failf("docker compose -p %s up -d --remove-orphans failed in %s", e.project, e.dir))
+	if reason, err := e.upStack(); err != nil {
+		return nil, e.failed(reason, err)
 	}
 	if err := e.joinTraefik(); err != nil {
 		return nil, e.failed("up", err)
@@ -394,6 +405,7 @@ func (e *engine) unchanged(cause error) error {
 	}
 	e.note("%v", cause)
 	res, err := restore(e.dir, e.sp.Snapshot)
+	e.restoreNotes(res)
 	saved := e.saved(res)
 	switch {
 	case errors.Is(err, errForeign):
@@ -401,11 +413,27 @@ func (e *engine) unchanged(cause error) error {
 		return failf("the %s of %s stopped before anything was started; its files are on the server beside the running stack", e.sp.Mode, e.sp.Version)
 	case err != nil:
 		e.failure = &Failure{Outcome: Unrestored, Reason: "start", Prev: e.prev, Saved: res.Saved}
-		return failf("the %s of %s stopped before anything was started, and putting back the files it had shipped failed: %v (%s) — %s/%s is kept, and the next run starts from it%s", e.sp.Mode, e.sp.Version, err, res.what(), e.dir, PrevDir, saved)
+		return failf("the %s of %s stopped before anything was started, and putting back the files it had shipped failed: %v (%s%s) — %s/%s is kept, and the next run starts from it%s", e.sp.Mode, e.sp.Version, err, res.what(), e.mixed(res), e.dir, PrevDir, saved)
 	}
 	dropSnapshot(e.dir)
 	e.failure = &Failure{Outcome: Restored, Reason: "start", Prev: e.prev, Saved: res.Saved}
 	return failf("the %s of %s stopped before anything was started, and the files it had shipped were put back — the server is as it was%s", e.sp.Mode, e.sp.Version, saved)
+}
+
+func (e *engine) restoreNotes(res *restored) {
+	if res != nil {
+		for _, n := range res.Notes {
+			e.note("%s", n)
+		}
+	}
+}
+
+// mixed is the clause naming targets a restore left half done, "" for none.
+func (e *engine) mixed(res *restored) string {
+	if res == nil || len(res.Partial) == 0 {
+		return ""
+	}
+	return "; " + res.mixed(e.prev, e.sp.Version)
 }
 
 // saved is the clause naming the .env a restore kept, "" for none.
@@ -454,8 +482,9 @@ func (e *engine) failed(reason string, cause error) error {
 func (e *engine) revert() (string, *restored, error) {
 	v := e.sp.Version
 	res, err := restore(e.dir, e.sp.Snapshot)
+	e.restoreNotes(res)
 	if err != nil {
-		return res.what() + " — the rest of the files, :current and whatever compose up left are " + v + "'s", res, err
+		return res.what() + e.mixed(res) + " — the rest of the files, :current and whatever compose up left are " + v + "'s", res, err
 	}
 	e.note("put back the files this run replaced (%s)", strings.Join(res.Done, ", "))
 	st, err := e.retagBack()
@@ -492,10 +521,32 @@ func (e *engine) retagBack() (string, error) {
 	}
 	// The containers that ran before: this run's health.container may be
 	// one the old stack never had.
-	if err := e.healthWait(e.liveBefore); err != nil {
+	if err := e.healthWait(e.beforeTargets()); err != nil {
 		return "the old stack is up again and not healthy", err
 	}
 	return "", nil
+}
+
+// beforeTargets is liveBefore now: a container a roll replaced stands for
+// its service's running replicas.
+func (e *engine) beforeTargets() []string {
+	now := e.projectContainers()
+	if len(now) == 0 {
+		return e.liveBefore
+	}
+	var out []string
+	for _, b := range e.liveBefore {
+		if slices.ContainsFunc(now, func(c ctr) bool { return c.name == b }) {
+			out = append(out, b)
+			continue
+		}
+		for _, c := range now {
+			if svc := e.liveSvc[b]; svc != "" && c.svc == svc && c.running && !slices.Contains(out, c.name) {
+				out = append(out, c.name)
+			}
+		}
+	}
+	return out
 }
 
 // postFailed: the new version is live and its hook may have changed data, so
@@ -589,6 +640,10 @@ func (e *engine) running(c string) bool {
 }
 
 func (e *engine) stateClause(c string) string {
+	if t, isSvc := e.target(c); isSvc {
+		s, _ := e.query("inspect", "-f", "{{.State.Status}}", t)
+		return "service " + c + " has no running container (" + t + " is " + s + ")"
+	}
 	s, err := e.query("inspect", "-f", "{{.State.Status}}", c)
 	if err != nil || s == "" {
 		return c + " does not exist on this server"
@@ -630,7 +685,7 @@ func (e *engine) outgoing(prev string, before bool) error {
 	var list, absent, hooksDown []string
 	backupDown := false
 	for _, c := range cs {
-		if c == "" || e.running(c) {
+		if t, _ := e.target(c); c == "" || e.running(t) {
 			continue
 		}
 		clause := e.stateClause(c)
@@ -687,7 +742,7 @@ func (e *engine) outgoing(prev string, before bool) error {
 			names = "backup.container, or the first word of a pre-deploy hook"
 		}
 		e.note("%s, and this project has deployed here before (%s)", all, recorded)
-		e.note("%s — the manifest names it (%s) and this server's compose file defines no container_name: that matches", strings.Join(absent, ", "), names)
+		e.note("%s — the manifest names it (%s) and no container of this compose project carries that name or belongs to a service of that name", strings.Join(absent, ", "), names)
 		e.note("`kasbah check`'s HK01 catches that on the workstation, before any deploy")
 		return failf("make kasbah.yml and the compose file agree on the name. --allow-stopped would %s past this, and would go on skipping %s silently on every %s after it. Nothing was changed.", e.verb, skipped, e.sp.Mode)
 	}
@@ -712,7 +767,8 @@ func (e *engine) backup() (string, error) {
 	if b == nil {
 		return "no-backup", nil
 	}
-	if !e.running(b.Container) {
+	in, _ := e.target(b.Container)
+	if !e.running(in) {
 		e.note("no %s is running, so there is nothing to back up", b.Container)
 		return "no-backup", nil
 	}
@@ -736,7 +792,7 @@ func (e *engine) backup() (string, error) {
 	}
 	pop := atexit.Push(func() { os.Remove(tmp) })
 	defer pop()
-	rc := e.dump(b, out)
+	rc := e.dump(b, in, out)
 	if cerr := out.Close(); cerr != nil && rc == 0 {
 		rc = 1
 	}
@@ -756,8 +812,8 @@ func (e *engine) backup() (string, error) {
 
 // dump is `docker exec C sh -c CMD [| sh -c PIPE] > out`, with pipefail's
 // status: the last non-zero one.
-func (e *engine) dump(b *Backup, out *os.File) int {
-	ex := exec.Command("docker", "exec", b.Container, "sh", "-c", b.Command)
+func (e *engine) dump(b *Backup, in string, out *os.File) int {
+	ex := exec.Command("docker", "exec", in, "sh", "-c", b.Command)
 	ex.Env = append(os.Environ(), "LC_ALL=C")
 	ex.Dir, ex.Stderr = e.dir, e.stderr
 	if b.Pipe == "" {
@@ -850,13 +906,18 @@ func (e *engine) hooks(what string, outgoing bool, prev, backup string, list []s
 		if rest == "" {
 			return failf("the %s hook '%s' names a container and no command", what, h)
 		}
-		if outgoing && !e.running(c) {
+		in, isSvc := e.target(c)
+		if outgoing && !e.running(in) {
 			e.note("%s hook skipped: no %s is running", what, c)
 			continue
 		}
-		e.note("%s hook: %s: %s", what, c, rest)
+		at := c
+		if isSvc {
+			at = c + " (" + in + ")"
+		}
+		e.note("%s hook: %s: %s", what, at, rest)
 		if e.docker("exec", "-e", "VERSION="+e.sp.Version, "-e", "PREV_VERSION="+prev,
-			"-e", "DEPLOY_BACKUP="+backup, c, "sh", "-c", rest).Run() != nil {
+			"-e", "DEPLOY_BACKUP="+backup, in, "sh", "-c", rest).Run() != nil {
 			return failf("the %s hook failed in %s: %s", what, c, rest)
 		}
 	}
@@ -908,7 +969,8 @@ func (e *engine) name(c string) string {
 // healthWaitFor waits on container, or on every container of the project.
 func (e *engine) healthWaitFor(container string) error {
 	if container != "" {
-		return e.healthWait([]string{container})
+		t, _ := e.target(container)
+		return e.healthWait([]string{t})
 	}
 	out, err := e.query("compose", "-p", e.project, "ps", "-q")
 	if err != nil {

@@ -96,8 +96,8 @@ extract() {
 }
 extract "  services:" 1 > compose.prod.yml
 extract "  http:"     0 > traefik-dynamic.yml
-assert 'grep -qxF "    container_name: snip-web" compose.prod.yml' \
-    "the compose block came out whole (got: $(cat compose.prod.yml))"
+assert 'grep -qxF "    networks: [kasbah]" compose.prod.yml && ! grep -qF container_name compose.prod.yml' \
+    "the compose block came out whole, with no container_name: the fragment targets the service (got: $(cat compose.prod.yml))"
 assert 'grep -qxF "          - url: \"http://snip-web:80\"" traefik-dynamic.yml' \
     "and so did the fragment (got: $(cat traefik-dynamic.yml))"
 

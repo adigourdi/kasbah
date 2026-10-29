@@ -637,3 +637,18 @@ func TestRunNoOriginWarnsOnce(t *testing.T) {
 		t.Errorf("%d warnings: %v\n%s", n, err, out)
 	}
 }
+
+// The engine is told which hosts the shipped fragment routes to.
+func TestRunSendsRoutedHosts(t *testing.T) {
+	project(t, "")
+	os.WriteFile(Fragment, []byte("http:\n  services:\n    demo:\n      loadBalancer:\n        servers:\n          - url: \"http://demo-web:80\"\n          - url: http://demo-alt/x\n"), 0o644)
+	gitc(t, "commit", "-qam", "route")
+	gitc(t, "tag", "-f", "v1.0.0")
+	f := &fake{drift: "template_exists=yes\nenv_exists=yes\nmissing=\nextra=\n"}
+	if err, out := deployWith(t, f, Options{Target: "d@h", SkipHooks: true, NoHealthWait: true, AllowStopped: true}); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if got := strings.Join(f.spec.Routed, ","); got != "demo-web,demo-alt" {
+		t.Errorf("routed %q", got)
+	}
+}

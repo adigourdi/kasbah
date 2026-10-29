@@ -212,7 +212,6 @@ const snippet = "Next step: author compose.prod.yml. Starter snippet:\n" +
 	"  services:\n" +
 	"    {name}-web:\n" +
 	"      image: nginx:alpine\n" +
-	"      container_name: {name}-web\n" +
 	"      restart: unless-stopped\n" +
 	"      cpus: ${KASBAH_CPU_LIMIT}\n" +
 	"      mem_limit: ${KASBAH_MEM_LIMIT}\n" +

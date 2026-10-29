@@ -374,9 +374,8 @@ compose file, `<project>_kasbah` on the server — which deploy attaches Traefik
 to, and the mail stack has `mail_kasbah`; every Traefik start init runs
 re-attaches all of them. Internal services stay on a project-internal network —
 see `traefik.md` → Network for the isolation and alias-collision rationale.
-Traefik resolves routed containers by `container_name` on those networks — the
-file provider fragment names them explicitly in
-`services.<x>.loadBalancer.servers`.
+Traefik resolves routed services by name on those networks — the file provider
+fragment names them explicitly in `services.<x>.loadBalancer.servers`.
 
 ## The discovery pointer (`/etc/kasbah/apps-path`)
 

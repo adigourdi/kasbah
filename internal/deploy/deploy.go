@@ -486,6 +486,7 @@ func (r *run) remote() (*Report, error) {
 		SkipHooks: r.o.SkipHooks, NoHealthWait: r.o.NoHealthWait, AllowStopped: r.o.AllowStopped,
 		Images: b.Images, Pre: b.Hooks["pre-"+r.mode], Post: b.Hooks["post-"+r.mode],
 		Health: b.Health, Backup: b.Backup, Snapshot: r.snap,
+		Routed: fragmentHosts(r.frag),
 	}
 	// Held: the engine finishes on the server whatever happens to this end,
 	// so a signal waits for ssh rather than tearing the master down under it.

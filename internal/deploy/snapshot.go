@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/serverlock"
@@ -445,7 +446,11 @@ const Replaced = ".env.kasbah-replaced"
 // restored is what a restore did: the targets put back, and Saved when the
 // .env on disk was kept as Replaced.
 type restored struct {
-	Done  []string
+	Done []string
+	// Partial is the directory targets a reconcile left half put back.
+	Partial []string
+	// Notes are what a restore that worked could not do exactly.
+	Notes []string
 	Saved string
 }
 
@@ -508,52 +513,338 @@ func restore(dir, token string) (*restored, error) {
 				res.Saved = dir + "/" + Replaced
 			}
 		}
-		parent := path.Dir(t.Path)
-		stage := path.Join(parent, fmt.Sprintf(".kasbah-restore.%d.%d", os.Getpid(), i))
-		aside := path.Join(parent, fmt.Sprintf(".kasbah-aside.%d.%d", os.Getpid(), i))
-		err := root.MkdirAll(parent, 0o770)
-		if err == nil && t.Existed {
-			removeTree(root, stage)
-			err = copyEntry(root, PrevDir+"/"+t.Copy, stage, nil, "")
-			for rel, m := range t.Dirs {
-				if err == nil {
-					err = root.Chmod(strings.TrimSuffix(stage+"/"+rel, "/"), fs.FileMode(m))
+		if t.Existed && isDir(root, t.Path) && isDir(root, PrevDir+"/"+t.Copy) {
+			// In place: a container's bind mount holds the directory's inode.
+			rc := &reconcile{root: root, dirs: t.Dirs, widened: map[string]fs.FileMode{}}
+			err := rc.dir(PrevDir+"/"+t.Copy, t.Path, "")
+			if err != nil {
+				rc.narrow()
+			}
+			res.Notes = append(res.Notes, rc.notes...)
+			if err != nil && errors.Is(err, fs.ErrPermission) {
+				if aside, serr := swapWhole(root, t, i, true); serr == nil {
+					res.Notes = append(res.Notes, fmt.Sprintf("%s could not be put back in place (%v), so it was replaced whole — the running container's mount still sees %s/%s, kept; remove it once that container is recreated", t.Path, err, dir, aside))
+					res.Done = append(res.Done, t.Path)
+					continue
 				}
 			}
-		}
-		moved := false
-		if err == nil {
-			if _, lerr := root.Lstat(t.Path); lerr == nil {
-				removeTree(root, aside)
-				err, moved = root.Rename(t.Path, aside), true
+			switch {
+			case err == nil:
+				res.Done = append(res.Done, t.Path)
+			case rc.changed:
+				res.Partial = append(res.Partial, t.Path)
+				if first == nil {
+					first = fmt.Errorf("could not put all of %s back: %v", t.Path, err)
+				}
+			case first == nil:
+				first = fmt.Errorf("could not put %s back: %v", t.Path, err)
 			}
+			continue
 		}
-		if err == nil && t.Existed {
-			if err = root.Rename(stage, t.Path); err != nil && moved {
-				root.Rename(aside, t.Path)
-				moved = false
-			}
-		}
-		if err == nil && moved {
-			removeTree(root, aside)
-		}
-		if err == nil {
-			res.Done = append(res.Done, t.Path)
-		}
-		if err != nil {
-			removeTree(root, stage)
+		if _, err := swapWhole(root, t, i, false); err != nil {
 			if first == nil {
 				first = fmt.Errorf("could not put %s back: %v", t.Path, err)
 			}
+		} else {
+			res.Done = append(res.Done, t.Path)
 		}
 	}
 	return res, first
 }
 
+// isDir is whether p is a directory, not a symlink to one.
+func isDir(root *os.Root, p string) bool {
+	fi, err := root.Lstat(p)
+	return err == nil && fi.IsDir()
+}
+
+// swapWhole puts target i back by a rename beside it: its copy staged, the
+// current one moved aside, then removed once the copy is in unless keep —
+// a container's mount may hold it. It returns the aside's path.
+func swapWhole(root *os.Root, t snapTarget, i int, keep bool) (string, error) {
+	parent := path.Dir(t.Path)
+	stage := path.Join(parent, fmt.Sprintf(".kasbah-restore.%d.%d", os.Getpid(), i))
+	aside := path.Join(parent, fmt.Sprintf(".kasbah-aside.%d.%d", os.Getpid(), i))
+	err := root.MkdirAll(parent, 0o770)
+	if err == nil && t.Existed {
+		removeTree(root, stage)
+		err = copyEntry(root, PrevDir+"/"+t.Copy, stage, nil, "")
+		for rel, m := range t.Dirs {
+			if err == nil {
+				err = root.Chmod(strings.TrimSuffix(stage+"/"+rel, "/"), fs.FileMode(m))
+			}
+		}
+	}
+	moved := false
+	if err == nil {
+		if _, lerr := root.Lstat(t.Path); lerr == nil {
+			removeTree(root, aside)
+			err, moved = root.Rename(t.Path, aside), true
+		}
+	}
+	if err == nil && t.Existed {
+		if err = root.Rename(stage, t.Path); err != nil && moved {
+			root.Rename(aside, t.Path)
+			moved = false
+		}
+	}
+	if err == nil && moved && !keep {
+		removeTree(root, aside)
+	}
+	if err != nil {
+		removeTree(root, stage)
+	}
+	return aside, err
+}
+
+// restoreFault, set by tests, fails an operation of the in-place restore.
+var restoreFault func(op, p string) error
+
+// reconcile puts a directory target back inside the existing directory,
+// keeping every directory's inode; changed says it has altered anything.
+type reconcile struct {
+	root    *os.Root
+	dirs    map[string]uint32
+	n       int
+	changed bool
+	notes   []string
+	// widened is each directory given owner rwx and not yet settled, with
+	// the mode it had.
+	widened map[string]fs.FileMode
+}
+
+// narrow gives each directory widened and never settled its mode back.
+func (rc *reconcile) narrow() {
+	for _, p := range sortedKeys(rc.widened) {
+		if err := rc.root.Chmod(p, rc.widened[p]); err != nil {
+			rc.notes = append(rc.notes, fmt.Sprintf("%s was left mode %v, not %v: %v", p, rc.widened[p]|0o700, rc.widened[p], err))
+		}
+	}
+}
+
+func (rc *reconcile) fault(op, p string) error {
+	if restoreFault != nil {
+		return restoreFault(op, p)
+	}
+	return nil
+}
+
+// dir makes dst hold what src holds: every entry of src is brought back
+// first — a directory on both sides reconciled, anything else staged beside
+// its place and renamed over it — then entries src lacks are removed, then
+// dst takes its mode and mtime, best-effort.
+func (rc *reconcile) dir(src, dst, rel string) error {
+	root := rc.root
+	sfi, err := root.Lstat(src)
+	if err != nil {
+		return err
+	}
+	want, err := dirNames(root, src)
+	if err != nil {
+		return err
+	}
+	have, err := dirNames(root, dst)
+	if err != nil {
+		return err
+	}
+	for _, x := range sortedKeys(want) {
+		from, to := src+"/"+x, dst+"/"+x
+		sub := x
+		if rel != "" {
+			sub = rel + "/" + x
+		}
+		if isDir(root, from) && isDir(root, to) {
+			if err := rc.dir(from, to, sub); err != nil {
+				return err
+			}
+			continue
+		}
+		if fi, err := root.Lstat(to); err == nil && !fi.IsDir() && sameFile(root, from, to) {
+			continue
+		}
+		if err := rc.writable(dst); err != nil {
+			return err
+		}
+		if err := rc.put(from, to, dst); err != nil {
+			return err
+		}
+	}
+	for _, x := range sortedKeys(have) {
+		if want[x] {
+			continue
+		}
+		if err := rc.writable(dst); err != nil {
+			return err
+		}
+		err := rc.fault("remove", dst+"/"+x)
+		if err == nil {
+			err = removeTree(root, dst+"/"+x)
+		}
+		if err != nil {
+			return err
+		}
+		rc.changed = true
+	}
+	mode := sfi.Mode() & (fs.ModePerm | fs.ModeSetgid | fs.ModeSetuid | fs.ModeSticky)
+	if m, ok := rc.dirs[rel]; ok {
+		mode = fs.FileMode(m)
+	}
+	rc.settle(dst, mode, sfi.ModTime())
+	return nil
+}
+
+// put stages from beside to and renames it over to; a directory swapped with
+// a non-directory goes aside first, as a rename cannot replace it.
+func (rc *reconcile) put(from, to, dst string) error {
+	root := rc.root
+	rc.n++
+	stage := fmt.Sprintf("%s/.kasbah-restore.%d.%d", dst, os.Getpid(), rc.n)
+	removeTree(root, stage)
+	err := rc.fault("stage", stage)
+	if err == nil {
+		err = copyEntry(root, from, stage, nil, "")
+	}
+	if err != nil {
+		removeTree(root, stage)
+		return err
+	}
+	if _, lerr := root.Lstat(to); lerr == nil && (isDir(root, to) || isDir(root, stage)) {
+		aside := fmt.Sprintf("%s/.kasbah-aside.%d.%d", dst, os.Getpid(), rc.n)
+		err := rc.fault("rename", to)
+		if err == nil {
+			err = root.Rename(to, aside)
+		}
+		if err != nil {
+			removeTree(root, stage)
+			return err
+		}
+		if err := root.Rename(stage, to); err != nil {
+			root.Rename(aside, to)
+			removeTree(root, stage)
+			return err
+		}
+		rc.changed = true
+		if err := removeTree(root, aside); err != nil {
+			rc.notes = append(rc.notes, fmt.Sprintf("could not remove %s, which the restore moved aside: %v", aside, err))
+		}
+		return nil
+	}
+	err = rc.fault("rename", to)
+	if err == nil {
+		err = root.Rename(stage, to)
+	}
+	if err != nil {
+		removeTree(root, stage)
+		return err
+	}
+	rc.changed = true
+	return nil
+}
+
+// writable gives dst owner rwx when it lacks it, so entries can be put in
+// it; settle sets the real mode back.
+func (rc *reconcile) writable(dst string) error {
+	fi, err := rc.root.Lstat(dst)
+	if err != nil {
+		return err
+	}
+	if fi.Mode().Perm()&0o700 == 0o700 {
+		return nil
+	}
+	err = rc.fault("chmod", dst)
+	if err == nil {
+		err = rc.root.Chmod(dst, fi.Mode().Perm()|0o700)
+	}
+	if err == nil {
+		rc.widened[dst] = fi.Mode().Perm()
+	}
+	return err
+}
+
+// settle gives dst its mode and mtime, each only where it differs, a failure
+// only noted: the directory may be a container's, its contents still back.
+func (rc *reconcile) settle(dst string, mode fs.FileMode, mtime time.Time) {
+	fi, err := rc.root.Lstat(dst)
+	if err != nil {
+		return
+	}
+	delete(rc.widened, dst)
+	if fi.Mode()&(fs.ModePerm|fs.ModeSetgid|fs.ModeSetuid|fs.ModeSticky) != mode {
+		err := rc.fault("chmod", dst)
+		if err == nil {
+			err = rc.root.Chmod(dst, mode)
+		}
+		if err != nil {
+			rc.notes = append(rc.notes, fmt.Sprintf("%s is back, and kept its mode %v rather than %v: %v", dst, fi.Mode().Perm(), mode.Perm(), err))
+		}
+	}
+	if fi, err = rc.root.Lstat(dst); err == nil && !fi.ModTime().Equal(mtime) {
+		err := rc.fault("chtimes", dst)
+		if err == nil {
+			err = rc.root.Chtimes(dst, mtime, mtime)
+		}
+		if err != nil {
+			rc.notes = append(rc.notes, fmt.Sprintf("%s is back, and kept its modification time: %v", dst, err))
+		}
+	}
+}
+
+func dirNames(root *os.Root, p string) (map[string]bool, error) {
+	d, err := root.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer d.Close()
+	l, err := d.Readdirnames(-1)
+	m := map[string]bool{}
+	for _, x := range l {
+		m[x] = true
+	}
+	return m, err
+}
+
+// sameFile is rsync's quick check on two non-directories: type, mode, size,
+// mtime and, for a symlink, its target. The snapshot keeps mtimes, so a file
+// the run did not touch is left.
+func sameFile(root *os.Root, a, b string) bool {
+	fa, err1 := root.Lstat(a)
+	fb, err2 := root.Lstat(b)
+	if err1 != nil || err2 != nil || fa.Mode() != fb.Mode() || fa.Size() != fb.Size() || !fa.ModTime().Equal(fb.ModTime()) {
+		return false
+	}
+	if fa.Mode()&fs.ModeSymlink != 0 {
+		ta, _ := root.Readlink(a)
+		tb, _ := root.Readlink(b)
+		return ta == tb
+	}
+	return fa.Mode().IsRegular()
+}
+
 // what says which targets a restore put back.
 func (r *restored) what() string {
-	if len(r.Done) == 0 {
+	var parts []string
+	if len(r.Done) > 0 {
+		parts = append(parts, "put back: "+strings.Join(r.Done, ", "))
+	}
+	if len(r.Partial) > 0 {
+		parts = append(parts, "partly put back: "+strings.Join(r.Partial, ", "))
+	}
+	if len(parts) == 0 {
 		return "nothing was put back"
 	}
-	return "put back: " + strings.Join(r.Done, ", ")
+	return strings.Join(parts, "; ")
+}
+
+// mixed says which targets are part prev's, part v's, "" for none; with no
+// prev, part as they were before the run.
+func (r *restored) mixed(prev, v string) string {
+	was := "as it was before this run"
+	if prev != "" {
+		was = prev + "'s"
+	}
+	var out []string
+	for _, p := range r.Partial {
+		out = append(out, p+" is part "+was+", part "+v+"'s")
+	}
+	return strings.Join(out, ", ")
 }

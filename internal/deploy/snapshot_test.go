@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -218,6 +220,64 @@ func TestSnapshotRefusesWhileARunHoldsTheLock(t *testing.T) {
 
 // A directory without owner write is copied writable, so the snapshot can go,
 // and put back with its own mode.
+// A directory target is put back in place: a container's bind mount holds its
+// inode, and must see the old contents through it.
+func TestSnapshotRestoresADirectoryInPlace(t *testing.T) {
+	dir := t.TempDir()
+	st := filepath.Join(dir, "state")
+	os.MkdirAll(filepath.Join(st, "sub"), 0o755)
+	os.MkdirAll(filepath.Join(st, "was-dir"), 0o755)
+	os.WriteFile(filepath.Join(st, "a"), []byte("old a\n"), 0o644)
+	os.WriteFile(filepath.Join(st, "sub", "b"), []byte("old b\n"), 0o600)
+	os.WriteFile(filepath.Join(st, "was-file"), []byte("f\n"), 0o644)
+	os.WriteFile(filepath.Join(st, "was-dir", "x"), []byte("x\n"), 0o644)
+	ino := func(p string) uint64 {
+		fi, err := os.Stat(p)
+		if err != nil {
+			return 0
+		}
+		return fi.Sys().(*syscall.Stat_t).Ino
+	}
+	before, beforeSub := ino(st), ino(filepath.Join(st, "sub"))
+	var out, errb bytes.Buffer
+	if rc := takeSnapshot(dir, "tok", []string{"state"}, &out, &errb); rc != 0 {
+		t.Fatalf("rc %d %s", rc, errb.String())
+	}
+	// The run, and a mount: an open handle on the directory.
+	held, err := os.Open(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	os.WriteFile(filepath.Join(st, "a"), []byte("new a\n"), 0o644)
+	os.WriteFile(filepath.Join(st, "added"), []byte("n\n"), 0o644)
+	os.Remove(filepath.Join(st, "sub", "b"))
+	os.Remove(filepath.Join(st, "was-file"))
+	os.MkdirAll(filepath.Join(st, "was-file"), 0o755)
+	os.RemoveAll(filepath.Join(st, "was-dir"))
+	os.WriteFile(filepath.Join(st, "was-dir"), []byte("now a file\n"), 0o644)
+
+	if _, err := restore(dir, "tok"); err != nil {
+		t.Fatal(err)
+	}
+	if ino(st) != before || ino(filepath.Join(st, "sub")) != beforeSub {
+		t.Fatalf("the directory was replaced: inode %d -> %d, sub %d -> %d", before, ino(st), beforeSub, ino(filepath.Join(st, "sub")))
+	}
+	names, _ := held.Readdirnames(-1)
+	sort.Strings(names)
+	if got := strings.Join(names, ","); got != "a,sub,was-dir,was-file" {
+		t.Errorf("through the held handle: %s", got)
+	}
+	for p, want := range map[string]string{"a": "old a\n", "sub/b": "old b\n", "was-file": "f\n", "was-dir/x": "x\n"} {
+		if b, _ := os.ReadFile(filepath.Join(st, p)); string(b) != want {
+			t.Errorf("%s holds %q", p, b)
+		}
+	}
+	if fi, _ := os.Stat(filepath.Join(st, "sub", "b")); fi.Mode().Perm() != 0o600 {
+		t.Errorf("sub/b is %v", fi.Mode())
+	}
+}
+
 func TestSnapshotReadOnlyDirectory(t *testing.T) {
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, "ro"), 0o755)
@@ -285,5 +345,197 @@ func TestSnapshotPinsTheLiveStacksIDs(t *testing.T) {
 	}
 	if got := pinIDs(dir, "other", imgs, map[string]string{"web": "v9"}, io.Discard); got["web"] != "v9" {
 		t.Errorf("a foreign token pinned %v", got)
+	}
+}
+
+// stateDir is a project with a synced state/ snapshotted under "tok": a, b,
+// cache/c and a read-only ro/ holding r, every mtime fixed.
+func stateDir(t *testing.T) (dir, st string) {
+	t.Helper()
+	dir = t.TempDir()
+	st = filepath.Join(dir, "state")
+	os.MkdirAll(filepath.Join(st, "cache"), 0o755)
+	os.MkdirAll(filepath.Join(st, "ro"), 0o755)
+	for p, b := range map[string]string{"a": "a\n", "b": "b\n", "cache/c": "c\n", "ro/r": "r\n"} {
+		os.WriteFile(filepath.Join(st, p), []byte(b), 0o644)
+	}
+	old := time.Unix(1_600_000_000, 0)
+	for _, p := range []string{"a", "b", "cache/c", "ro/r", "cache", "ro", "."} {
+		os.Chtimes(filepath.Join(st, p), old, old)
+	}
+	os.Chmod(filepath.Join(st, "ro"), 0o555)
+	t.Cleanup(func() { os.Chmod(filepath.Join(st, "ro"), 0o755) })
+	var out, errb bytes.Buffer
+	if rc := takeSnapshot(dir, "tok", []string{"state"}, &out, &errb); rc != 0 {
+		t.Fatalf("snapshot rc %d %s", rc, errb.String())
+	}
+	return dir, st
+}
+
+func inode(p string) uint64 {
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return 0
+	}
+	return fi.Sys().(*syscall.Stat_t).Ino
+}
+
+// faults fails each operation under prefix with errno, logging every one.
+func faults(t *testing.T, prefix string, errno error, ops ...string) *[]string {
+	var log []string
+	restoreFault = func(op, p string) error {
+		log = append(log, op+" "+p)
+		if strings.HasPrefix(p, prefix) && (len(ops) == 0 || slicesContains(ops, op)) {
+			return &os.PathError{Op: op, Path: p, Err: errno}
+		}
+		return nil
+	}
+	t.Cleanup(func() { restoreFault = nil })
+	return &log
+}
+
+func slicesContains(l []string, s string) bool {
+	for _, x := range l {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// A directory a container owns that the run left as it was is not touched:
+// the restore stays in place.
+func TestRestoreLeavesAnUntouchedForeignDirectory(t *testing.T) {
+	dir, st := stateDir(t)
+	os.WriteFile(filepath.Join(st, "a"), []byte("new a\n"), 0o644)
+	faults(t, "state/cache", syscall.EPERM)
+	before := inode(st)
+	res, err := restore(dir, "tok")
+	if err != nil || inode(st) != before || len(res.Done) != 1 || len(res.Notes) != 0 {
+		t.Fatalf("err %v, inode %d -> %d, %+v", err, before, inode(st), res)
+	}
+	if b, _ := os.ReadFile(filepath.Join(st, "a")); string(b) != "a\n" {
+		t.Errorf("a holds %q", b)
+	}
+}
+
+// One the run changed blocks the reconcile: the target is swapped whole, and
+// the restore says the running container's mount sees the old directory.
+func TestRestoreFallsBackToASwap(t *testing.T) {
+	dir, st := stateDir(t)
+	os.WriteFile(filepath.Join(st, "cache", "c"), []byte("new c\n"), 0o644)
+	faults(t, "state/cache", syscall.EACCES)
+	before := inode(st)
+	res, err := restore(dir, "tok")
+	if err != nil || len(res.Done) != 1 || len(res.Partial) != 0 {
+		t.Fatalf("err %v, %+v", err, res)
+	}
+	if len(res.Notes) != 1 || !strings.Contains(res.Notes[0], "state could not be put back in place") || !strings.Contains(res.Notes[0], "the running container's mount still sees "+dir+"/.kasbah-aside.") || !strings.Contains(res.Notes[0], ", kept; remove it once that container is recreated") {
+		t.Errorf("notes %q", res.Notes)
+	}
+	// The aside is the inode a container may hold: kept, with the run's files.
+	asides, _ := filepath.Glob(filepath.Join(dir, ".kasbah-aside.*"))
+	for _, a := range asides {
+		t.Cleanup(func() { os.Chmod(filepath.Join(a, "ro"), 0o755) })
+	}
+	if len(asides) != 1 || inode(asides[0]) != before {
+		t.Errorf("asides %v (inode %d, want %d)", asides, inode(asides[0]), before)
+	} else if b, _ := os.ReadFile(filepath.Join(asides[0], "cache", "c")); string(b) != "new c\n" {
+		t.Errorf("the aside's cache/c holds %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(st, "cache", "c")); string(b) != "c\n" || inode(st) == before {
+		t.Errorf("cache/c holds %q, inode %d -> %d", b, before, inode(st))
+	}
+}
+
+// Every snapshot entry is back before anything the run added is removed.
+func TestRestoreStagesBeforeDeleting(t *testing.T) {
+	dir, st := stateDir(t)
+	os.WriteFile(filepath.Join(st, "a"), []byte("new a\n"), 0o644)
+	os.Remove(filepath.Join(st, "b"))
+	os.WriteFile(filepath.Join(st, "added"), []byte("x\n"), 0o644)
+	log := faults(t, "-", nil)
+	if _, err := restore(dir, "tok"); err != nil {
+		t.Fatal(err)
+	}
+	firstRemove, lastPut := -1, -1
+	for i, l := range *log {
+		switch {
+		case strings.HasPrefix(l, "remove state/") && firstRemove < 0:
+			firstRemove = i
+		case strings.HasPrefix(l, "rename state/"):
+			lastPut = i
+		}
+	}
+	if firstRemove < 0 || lastPut < 0 || lastPut > firstRemove || !slicesContains(*log, "rename state/b") || !slicesContains(*log, "remove state/added") {
+		t.Errorf("order:\n%s", strings.Join(*log, "\n"))
+	}
+}
+
+// A reconcile cut short is part put back, and says so.
+func TestRestoreReportsAPartialTarget(t *testing.T) {
+	dir, st := stateDir(t)
+	os.WriteFile(filepath.Join(st, "a"), []byte("new a\n"), 0o644)
+	os.WriteFile(filepath.Join(st, "b"), []byte("new b\n"), 0o644)
+	faults(t, "state/b", syscall.EIO, "rename")
+	res, err := restore(dir, "tok")
+	if err == nil || !strings.Contains(err.Error(), "could not put all of state back") || len(res.Done) != 0 || len(res.Partial) != 1 {
+		t.Fatalf("err %v, %+v", err, res)
+	}
+	if w := res.what(); w != "partly put back: state" {
+		t.Errorf("what %q", w)
+	}
+	if m := res.mixed("1.0.0", "1.1.0"); m != "state is part 1.0.0's, part 1.1.0's" {
+		t.Errorf("mixed %q", m)
+	}
+	if m := res.mixed("", "1.1.0"); m != "state is part as it was before this run, part 1.1.0's" {
+		t.Errorf("mixed with no previous version %q", m)
+	}
+	if b, _ := os.ReadFile(filepath.Join(st, "a")); string(b) != "a\n" {
+		t.Errorf("a holds %q", b)
+	}
+}
+
+// Directories get their mode back — a narrowed one's real mode from Dirs —
+// and their mtime, in place; a mode the restore may not set is only noted.
+func TestRestoreDirectoryModesInPlace(t *testing.T) {
+	dir, st := stateDir(t)
+	ro := filepath.Join(st, "ro")
+	before := inode(ro)
+	os.Chmod(ro, 0o755)
+	os.WriteFile(filepath.Join(ro, "added"), []byte("x\n"), 0o644)
+	if _, err := restore(dir, "tok"); err != nil {
+		t.Fatal(err)
+	}
+	fi, _ := os.Lstat(ro)
+	if fi.Mode().Perm() != 0o555 || !fi.ModTime().Equal(time.Unix(1_600_000_000, 0)) || inode(ro) != before {
+		t.Errorf("ro is %v at %v, inode %d -> %d", fi.Mode(), fi.ModTime(), before, inode(ro))
+	}
+	if _, err := os.Lstat(filepath.Join(ro, "added")); err == nil {
+		t.Error("ro/added survived")
+	}
+
+	// A read-only directory widened for a reconcile that then fails is narrowed back.
+	dir, st = stateDir(t)
+	ro = filepath.Join(st, "ro")
+	os.Chmod(ro, 0o755)
+	os.WriteFile(filepath.Join(ro, "r"), []byte("changed\n"), 0o644)
+	os.Chmod(ro, 0o555)
+	faults(t, "state/ro/r", syscall.EIO, "rename")
+	if _, err := restore(dir, "tok"); err == nil {
+		t.Fatal("a failed rename restored")
+	}
+	if fi, _ := os.Lstat(ro); fi.Mode().Perm() != 0o555 {
+		t.Errorf("ro was left %v after a failed reconcile", fi.Mode())
+	}
+	restoreFault = nil
+
+	dir, st = stateDir(t)
+	os.Chmod(filepath.Join(st, "cache"), 0o700)
+	os.WriteFile(filepath.Join(st, "a"), []byte("new a\n"), 0o644)
+	faults(t, "state/cache", syscall.EPERM, "chmod", "chtimes")
+	res, err := restore(dir, "tok")
+	if err != nil || len(res.Done) != 1 || len(res.Notes) != 1 || !strings.Contains(res.Notes[0], "state/cache is back, and kept its mode -rwx------ rather than -rwxr-xr-x") {
+		t.Errorf("err %v, %+v", err, res)
 	}
 }

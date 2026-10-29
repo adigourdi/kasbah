@@ -189,7 +189,20 @@ project's network again, and waits on the containers that were running before. A
 the server is where it was — and the run still fails, saying it is back on the
 previous version. A revert that cannot work (no matching snapshot, the old
 stack will not come up) appends a `deploy-failed` line naming why and keeps the
-snapshot. A first deploy has nothing to revert to and is left as it failed. The
+snapshot. A directory target is put back **in place** — every snapshot entry staged
+beside its place and renamed over it first, entries the snapshot lacks removed
+only afterwards, entries that already match left untouched, the directory itself
+never replaced — so a container that survives the revert and bind-mounts it
+sees the restored files, not an empty directory; files are put back by
+temp-and-rename, as the sync writes them. A directory's mode and mtime are put
+back where they differ, best-effort. When a container-owned entry refuses the
+reconcile (permission denied), that target is swapped whole instead: the directory the failed run left is
+kept as `.kasbah-aside.<pid>.<n>` beside it — the inode the running container
+still has mounted — and the run names it, to remove once that container is
+recreated. Whether an entry already matches is rsync's quick check (type,
+mode, size, mtime, a symlink's target); no file is read to decide.
+A reconcile cut short leaves its target part one version, part the other, and
+the run says that rather than listing it as put back. A first deploy has nothing to revert to and is left as it failed. The
 snapshot is removed whenever the disk matches the live stack again: a
 successful run, a revert or restore that worked, a post-hook failure — its
 manifest first, so a removal cut short leaves no snapshot rather than half of
@@ -264,8 +277,11 @@ below). The only differences:
         against currently-running (previous version) containers. Rotate.
      b. Run pre-deploy hooks against currently-running containers.
      c. Retag :<version> as :current for each built image.
-     d. docker compose up -d --remove-orphans, then attach Traefik to
-        <name>_kasbah (`docker network connect`, live; traefik.md → Network).
+     d. docker compose up -d --remove-orphans — a routed service that can roll
+        instead gets a new replica beside the old one, waited healthy, then the
+        old one removed by id (see "What this intentionally skips") — then
+        attach Traefik to <name>_kasbah (`docker network connect`, live;
+        traefik.md → Network).
      e. Wait for manifest's health.container to be healthy.
      f. Run post-deploy hooks against new containers.
      a–b failing: put the files back. c–e failing: put the files back,
@@ -767,7 +783,22 @@ directory is listed in `files.md`).
 ## What this intentionally skips
 
 - **No `:latest` tag** — git is the source of truth for what's newest.
-- **No blue/green** — projects briefly overlap during `compose up -d`.
+- **No blue/green across the project** — but a routed service **rolls**: one
+  with no `container_name`, a healthcheck (its own or its image's), no
+  published host port, no `depends_on` condition but `service_started` (only a
+  plain `up` waits for the others — a migration that must succeed first), every
+  host the **live** fragment reaches it by being its service name or a `kasbah`
+  alias (so the route Traefik holds during the roll keeps answering), and
+  health wait on, has its stopped old containers removed, gets its new replicas
+  started beside the running ones (`up -d --no-deps --no-recreate --scale
+  <svc>=<running+replicas>`), waits for them to be healthy under
+  `health.timeout`, then has the old container stopped and removed **by id** —
+  never by compose's choice on scale-down. Measured on the rig at ~15 req/s:
+  2–7 502s per in-place recreate, 0 per roll. A replica that never turns
+  healthy is removed and the deploy reverts, the old container untouched. Every
+  other service — and a routed one that cannot roll, which the deploy names
+  with why — is recreated in place, briefly unrouted. A process that exits on SIGTERM without draining can still drop its
+  in-flight requests as the old container stops.
   Acceptable for the homelab / small-business target.
 - **No pre-flight image scan** — assume local security scanning.
 - **No database migration framework** — hosts hand that off to hooks.

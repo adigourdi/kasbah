@@ -96,8 +96,7 @@ func (x *fixer) planCompose() {
 		hn := joinsNet(nets, "kasbah-net") || (defaultHN && !x.has("networks", "services", svc))
 		pn := joinsNet(nets, projectNet)
 		anyHN, anyPN = anyHN || hn, anyPN || pn
-		cn := x.at("services", svc, "container_name")
-		if cn != "" && inList(routed, cn) && !hn && !pn {
+		if x.c.routes(svc, routed) && !hn && !pn {
 			if x.c03(s) {
 				anyPN = true
 			}

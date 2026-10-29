@@ -48,8 +48,8 @@ health:
   timeout: 120s
 
 # Hooks run via `docker exec` on the VPS. Each entry is:
-#   "<container> <cmd...>"
-# The container name is resolved against the running compose project.
+#   "<container-or-service> <cmd...>"
+# A service name resolves to the service's first running replica.
 #
 # pre-deploy runs BEFORE `compose up -d` — against the currently-running
 # (previous version) containers. Use for: schema precheck, draining
@@ -218,11 +218,14 @@ guarded form is `{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}
 
 ### `hooks` *(optional)*
 
-Each hook is a list of strings. Each string starts with a literal
-**container name**, followed by the command to run inside it. The target
-service in `compose.prod.yml` must set an explicit `container_name:` —
-compose's auto-generated `<project>_<service>_1` won't match. `kasbah check`
-(HK01) enforces this. `hooks:` holds only `pre-deploy`, `post-deploy`,
+Each hook is a list of strings. Each string starts with a **target** —
+a service's `container_name`, or its compose service name — followed by the
+command to run inside it. A service name resolves on the server to that
+service's lowest-numbered running replica (or its first container when none
+runs), which is what lets a hook target a service compose names
+`<project>-<service>-N` and a rolling deploy renames; an exact `container_name`
+wins on a clash. `kasbah check` (HK01) enforces that the target is one of the
+two. The same applies to `health.container` and the `backup` block's container. `hooks:` holds only `pre-deploy`, `post-deploy`,
 `pre-rollback` and `post-rollback`; any other key (a typo such as `pre_deploy`)
 is refused — except in a tag's manifest (`rollback`, `deploy X.Y.Z`), where it is
 a warning and ignored, so a version a server has run stays rollable.

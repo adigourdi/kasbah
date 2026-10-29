@@ -90,7 +90,6 @@ network:
 # /apps/<project>/compose.yml
 services:
   myapp-web:
-    container_name: myapp-web
     networks: [kasbah, internal]
   postgres:
     networks: [internal]
@@ -131,11 +130,13 @@ app could silently reach project B's database. Keeping internal services on a
 project-internal network scopes those aliases. `kasbah check` enforces the split
 (C03/C04/C07/C09).
 
-The network is what lets Traefik resolve `http://<container_name>:<port>` in the
-file fragment, and fragments target `container_name` (T07), which Docker keeps
-unique per host. That alone does not make the target unambiguous: Traefik
-resolves names across every network it is on, and another project's **service
-name or alias** answers for the same name — so a project naming a service like
+The network is what lets Traefik resolve `http://<name>:<port>` in the file
+fragment. On a project's `kasbah` network a fragment targets the routed
+**service name** (or an alias, or a `container_name`, T07): Docker DNS answers
+it with every replica, which is what lets a deploy roll a new container in
+beside the old one with no 502 (`build-deploy.md`). A name is not unambiguous
+on its own, though: Traefik resolves names across every network it is on, and
+another project's service name or alias answers for the same name — so a project naming a service like
 its neighbour's container would receive the neighbour's traffic. Every name on a
 project's `kasbah` network must therefore carry the project's own prefix (C09,
 a failure), and its network must be exactly `kasbah: {}` (C04): any setting
@@ -216,8 +217,11 @@ http:
           - url: "http://myapp-web:80"
 ```
 
-The service URL names a container on the project's `kasbah` network. Pin it via compose's
-`container_name:` so the URL stays stable across restarts.
+The service URL names the routed service on the project's `kasbah` network —
+stable across restarts and rolling deploys, since compose registers the service
+name as an alias for every replica. A `container_name` works too, but a service
+pinned to one cannot roll: it is recreated in place, briefly unrouted. On the
+legacy `kasbah-net` only a `container_name` will do (T07).
 
 Both routers, not just the `websecure` one: without the `web` half the
 hostname answers plain HTTP with Traefik's 404 rather than a redirect, which

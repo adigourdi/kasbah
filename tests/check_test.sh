@@ -24,8 +24,8 @@ assert() {
 # check group's pass path (Structure, Compose, Resources, Traefik, Env).
 # The routed service joins the project's own kasbah network and keeps an
 # internal one (C03/C04/C07); it is named for the project; limits reference the KASBAH_*
-# vars (R01/R02); the fragment's loadBalancer targets the container_name
-# (T07) and carries both routers for the domain, the redirect on `web` and
+# vars (R01/R02); the fragment's loadBalancer targets the service name, with
+# no container_name (T07), and carries both routers for the domain, the redirect on `web` and
 # the TLS one on `websecure` (T08). Healthchecks and Hooks sections are
 # silent — manifest has no health/hooks/backup blocks, and the only service
 # has no build:.
@@ -46,7 +46,6 @@ make_project() {
 services:
   ${name}-web:
     image: nginx:alpine
-    container_name: ${name}-web
     restart: unless-stopped
     cpus: \${KASBAH_CPU_LIMIT}
     mem_limit: \${KASBAH_MEM_LIMIT}
@@ -115,7 +114,7 @@ assert 'grep -qF "✓ Secure routers reference letsencrypt cert resolver" <<<"$o
 assert 'grep -qF "✓ A router serves demo.example.com on the web entrypoint" <<<"$out"'         "T08 pass line"
 assert 'grep -qF "✓ No router claims reserved hostnames" <<<"$out"'                            "T05 pass line"
 assert 'grep -qF "✓ No router or service reaches a Traefik internal service other than noop@internal" <<<"$out"' "T09 pass line"
-assert 'grep -qF "✓ Fragment loadBalancer URLs target explicit container_names" <<<"$out"'     "T07 pass line"
+assert 'grep -qF "✓ Fragment loadBalancer URLs target a service, alias or container_name compose defines" <<<"$out"'     "T07 pass line"
 assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'                              "E01 pass line"
 assert 'grep -qF "✓ .env.prod.example has no obvious long secrets" <<<"$out"'                  "E04 pass line"
 assert 'grep -qF "✓ .env.prod.example leaves the KASBAH_* prefix to kasbah" <<<"$out"'       "E05 pass line"
@@ -966,7 +965,7 @@ health:
 YAML
 out="$(cd "$proj26" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                                                  "H02 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ manifest health.container '"'"'nonexistent-container'"'"' not found among compose container_names" <<<"$out"' "H02 fail line"
+assert 'grep -qF "✗ manifest health.container '"'"'nonexistent-container'"'"' is neither a container_name nor a service in compose" <<<"$out"' "H02 fail line"
 
 # --- Case 26b: H02 — a health: block with only a timeout is legal -----------
 # docs/project-manifest.md says health: defaults to waiting on every service
@@ -1209,7 +1208,7 @@ hooks:
 YAML
 out="$(cd "$proj32" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                              "HK01 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Hooks reference unknown container_names: ghost-container" <<<"$out"' "HK01 fail line"
+assert 'grep -qF "✗ Hooks reference names that are neither a container_name nor a service: ghost-container" <<<"$out"' "HK01 fail line"
 
 # --- Case 33: HK02 — backup missing required field → fail --------------------
 proj33="$tmpdir/hk02-missing-field"
@@ -1271,7 +1270,7 @@ backup:
 YAML
 out="$(cd "$proj34" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                                            "HK03 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Backup hook container '"'"'not-in-compose'"'"' not found among compose container_names" <<<"$out"' "HK03 fail line"
+assert 'grep -qF "✗ Backup hook container '"'"'not-in-compose'"'"' is neither a container_name nor a service in compose" <<<"$out"' "HK03 fail line"
 
 # --- Case 35: HK01–03 — full valid hooks + backup → pass --------------------
 # Regression guard for the hooks extraction and the container_name set assembly.
@@ -1345,9 +1344,31 @@ backup:
 YAML
 out="$(cd "$proj35" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                       "HK pass exits 0 (got $rc)"
-assert 'grep -qF "✓ All hook commands target known container_names" <<<"$out"' "HK01 pass line"
+assert 'grep -qF "✓ All hook commands target a container_name or service in compose" <<<"$out"' "HK01 pass line"
 assert 'grep -qF "✓ Backup hook has check, command, and extension" <<<"$out"'  "HK02 pass line"
 assert 'grep -qF "✓ Backup hook container '"'"'demo-db'"'"' exists in compose" <<<"$out"' "HK03 pass line"
+
+# --- Case 35b: hooks, health and backup name services, not container_names --
+proj35b="$tmpdir/hk-services"
+make_project "$proj35b"
+cat >> "$proj35b/kasbah.yml" <<'YAML'
+
+health:
+  container: demo-web
+hooks:
+  post-deploy:
+    - demo-web echo after
+backup:
+  container: demo-web
+  check: "true"
+  command: "echo dump"
+  extension: txt
+YAML
+out="$(cd "$proj35b" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]' "service names as hook, health and backup targets pass (got $rc: $out)"
+assert 'grep -qF "✓ All hook commands target a container_name or service in compose" <<<"$out"' "HK01 takes a service name"
+assert 'grep -qF "✓ manifest health.container '"'"'demo-web'"'"' exists in compose" <<<"$out"' "health.container takes a service name"
+assert 'grep -qF "✓ Backup hook container '"'"'demo-web'"'"' exists in compose" <<<"$out"' "HK03 takes a service name"
 
 # --- Case 36: T01 — malformed traefik-dynamic.yml → warn, exit 0 ------------
 # T01 was downgraded to warn (worker-only projects). A malformed file is the
@@ -1502,15 +1523,15 @@ assert '[ "$rc" = "6" ]' "malformed limits exit 6 (got $rc)"
 assert 'grep -qF "✗ Services with missing or malformed resource limits: demo-web(cpus,mem_limit) — each sets cpus: \${KASBAH_CPU_LIMIT} or a positive number" <<<"$out"' \
     "R01/R02 fail '1,5' and a zero size (said '$out')"
 
-# --- Case 41: T07 — fragment targets a hostname with no container_name ------
+# --- Case 41: T07 — fragment targets a name nothing answers to ---------------
 proj41="$tmpdir/t07-unknown-target"
 make_project "$proj41"
-# Compose renames the container; the make_project fragment still targets
-# demo-web. The routed set is now empty, so C03/C07 stay quiet — T07 is the
-# rule that catches the dangling reference.
+# Compose renames the service and its container; the make_project fragment
+# still targets demo-web. The routed set is now empty, so C03/C07 stay quiet —
+# T07 is the rule that catches the dangling reference.
 cat > "$proj41/compose.prod.yml" <<'YAML'
 services:
-  demo-web:
+  demo-app:
     image: nginx:alpine
     container_name: demo-renamed
     restart: unless-stopped
@@ -1524,7 +1545,38 @@ services:
 YAML
 out="$(cd "$proj41" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                       "T07 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Fragment targets unknown container_names: demo-web" <<<"$out"' "T07 fail line"
+assert 'grep -qF "✗ Fragment targets names no service answers to: demo-web (target a service on the kasbah network, one of its kasbah aliases, or a container_name)" <<<"$out"' "T07 fail line"
+
+# --- Case 41b: T07 — a kasbah alias, and a service name only on kasbah-net ---
+proj41b="$tmpdir/t07-alias"
+make_project "$proj41b"
+sed -i 's|^    networks: \[kasbah, internal\]|    networks:\n      kasbah:\n        aliases: [demo-site]\n      internal: {}|' "$proj41b/compose.prod.yml"
+sed -i 's|http://demo-web:|http://demo-site:|' "$proj41b/traefik-dynamic.yml"
+out="$(cd "$proj41b" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]' "a fragment targeting a kasbah alias passes (got $rc: $out)"
+assert 'grep -qF "✓ Fragment loadBalancer URLs target a service, alias or container_name compose defines" <<<"$out"' "T07 pass line for an alias"
+assert 'grep -qF "✓ All routed services join the project'"'"'s kasbah network" <<<"$out"' "the aliased service counts as routed (C03)"
+
+proj41c="$tmpdir/t07-legacy-service"
+make_project "$proj41c"
+sed -i 's|^    networks: \[kasbah, internal\]|    networks: [kasbah-net, internal]|; s|^  kasbah: {}|  kasbah-net:\n    external: true|' "$proj41c/compose.prod.yml"
+out="$(cd "$proj41c" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]' "a service name on kasbah-net fails T07 (got $rc)"
+assert 'grep -qF "✗ Fragment targets services on kasbah-net by name: demo-web — there every project'"'"'s same-named service answers too" <<<"$out"' \
+    "T07 says kasbah-net needs a container_name ($out)"
+sed -i 's|^    image: nginx:alpine|    image: nginx:alpine\n    container_name: demo-web|' "$proj41c/compose.prod.yml"
+out="$(cd "$proj41c" && "$kasbah" check 2>&1)"
+assert 'grep -qF "✓ Fragment loadBalancer URLs target a service, alias or container_name compose defines" <<<"$out"' \
+    "with container_name set, the legacy shape passes T07"
+
+proj41d="$tmpdir/t07-no-network"
+make_project "$proj41d"
+sed -i '/^    networks: \[kasbah, internal\]/d' "$proj41d/compose.prod.yml"
+out="$(cd "$proj41d" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]' "a routed service on no network fails (got $rc)"
+assert 'grep -qF "✗ Fragment targets services on no Traefik network: demo-web — join them to the kasbah network" <<<"$out"' \
+    "T07 says it is on no Traefik network, not kasbah-net ($out)"
+assert '! grep -qF "kasbah-net by name" <<<"$out"' "and does not talk of kasbah-net"
 
 # --- Case 42: a name kasbah owns on the server -------------------------------
 # The project should learn this from `check`, not from the deploy that syncs
@@ -2145,7 +2197,7 @@ assert 'grep -qF "Services on kasbah-net whose name is not" <<<"$out"'      "F8:
 assert 'grep -qF "✗ No router rule references manifest domain" <<<"$out"'   "F8: T02 still reported"
 assert 'grep -qF "✗ Routers without entryPoints: demo" <<<"$out"'           "F8: T03 still reported"
 assert 'grep -qF "✗ Routers claim reserved hostnames" <<<"$out"'            "F8: T05 still reported"
-assert 'grep -qF "✗ Hooks reference unknown container_names: nope" <<<"$out"' "F8: HK01 still reported"
+assert 'grep -qF "✗ Hooks reference names that are neither a container_name nor a service: nope" <<<"$out"' "F8: HK01 still reported"
 # The paired positive: those rules were not merely *reported* untouched, the
 # file really is untouched where they live. A --fix that had renamed `cache` or
 # rewritten the fragment would satisfy every grep above by making them pass.
