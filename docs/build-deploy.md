@@ -129,7 +129,9 @@ from compose itself.
      run with KASBAH_CPU_LIMIT=0 KASBAH_MEM_LIMIT=0 in the environment
 4. Tag each built image:
      <image>:<version>
-5. docker save <all built images> | gzip, streamed over the ssh master into
+5. kasbah remote layers <chain ids>   # which layers the server already holds
+   docker save <all built images> | (drop those layers) | gzip, streamed over
+   the ssh master into
      <apps>/.kasbah/bin/kasbah remote load <images>   # gunzip → docker load,
                                                       # then inspect each image
 6. git push origin v<version>   # if tag not on origin yet; a repo with no
@@ -159,11 +161,40 @@ key; nothing enforces that today.
 separately throws away the layer dedup a single stream gives you across
 images that share a base.
 
+**Only the layers the server lacks cross the wire.** One round trip on the
+same ssh session, `kasbah remote layers`, asks which of the built images'
+layers the server's store already holds — by **chain ID**, since a layer is
+reusable only on top of the same parents, which is how both image stores look
+layers up — and a streaming tar filter drops those layers' `blobs/sha256/…`
+entries (and docker 25's `<id>/layer.tar` links to them) from `docker save`'s
+output, constant memory, `manifest.json` and the configs untouched. Measured on
+the rig: a re-push after changing one page sent 6.4 kB where the whole images
+gzip to 28.7 MB. Anything kasbah cannot trust — its own layer lists unreadable,
+an answer that fails, times out or names an ID it did not ask about — ships the
+whole images, with a warning. A `docker save` in the pre-25 format, and a workstation
+on the containerd store (whose saved layers are compressed, so their names are
+not layer IDs), ship whole: nothing matches, nothing is skipped.
+
+On the containerd image store `docker load` of an archive missing a layer
+succeeds when the store already has that layer unpacked — even one only a pull
+put there — and when it does not, docker prints `Error unpacking image` and
+**exits 0**, leaving a tagged image no container can be created from. `kasbah
+remote load` therefore proves every image it loaded by creating — never
+starting — a container from it (`docker create --pull=never <image> true`,
+removed at once), and reads docker's output for that line as an early sign;
+either refuses the load (`incomplete=`), which also stops a whole load from
+passing in that state. On overlay2 a missing layer fails the load outright.
+Whenever a stream that left layers out arrived whole and the load still failed
+— a layer pruned between the question and the load included — the workstation
+re-sends the images whole once, with a warning, and reports both streams'
+bytes. A containerd-store workstation, where nothing can be matched, says so
+rather than reporting "0 already on the server".
+
 **The images stream; no tarball touches disk.** The workstation gzips `docker
 save` into the ssh master's stdin and the server's kasbah binary gunzips into
 `docker load`, so a failed transfer leaves nothing behind on either machine.
-The gzip trailer is written only after `docker save` exits 0, so a failed save
-arrives as a short stream and is refused. A partial image is never tagged:
+The tar end marker and the gzip trailer are written only after `docker save`
+exits 0, so a failed save arrives as a short stream and is refused. A partial image is never tagged:
 `docker save` writes every layer before `manifest.json`, and docker refuses
 short input. A broken transfer restarts from zero. Measured on the rig: 2.7 s for two images (28.7 MB gzipped) against 6.2 s
 for the tarball path.

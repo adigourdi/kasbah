@@ -681,9 +681,12 @@ invent a command.
    interpolate without them and a build has no server to read them from
    (`build-deploy.md`).
 4. Tag each built image: `<image>:<version>`.
-5. One `docker save` of every built image, gzipped and streamed over ssh into
-   the server's `kasbah remote load`, which feeds `docker load` and confirms each
-   image. Nothing is written to disk on either end; a stream cut short is refused.
+5. Ask the server which layers it already holds (`kasbah remote layers`), then
+   one `docker save` of every built image with those layers left out, gzipped
+   and streamed over ssh into the server's `kasbah remote load`, which feeds
+   `docker load` and confirms each image (`build-deploy.md`). Nothing is written
+   to disk on either end; a stream cut short is refused. The summary says how
+   many layers, and how many bytes, were not sent.
 6. `git push origin v<version>` if the tag isn't yet on origin. A repository
    with no `origin` remote at all warns and exits 0: the image has already
    shipped by then, and a local-only project is a real shape.

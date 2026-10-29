@@ -65,8 +65,33 @@ case "${1:-}" in
         # More than the sender's 1 MiB buffer, so a failing save has really
         # sent part of a stream when it fails.
         if [ -n "${DOCKER_SAVE_RC:-}" ]; then head -c 3000000 /dev/urandom; exit "$DOCKER_SAVE_RC"; fi
+        if [ -n "${STUB_SAVE_TAR:-}" ]; then cat "$STUB_SAVE_TAR"; exit 0; fi
         printf 'fake-image-stream\n' ;;
-    load) cat > "$LOADED"; exit "${DOCKER_LOAD_RC:-0}" ;;
+    load)
+        cat > "$LOADED"; cp "$LOADED" "$LOADED.$(ls "$LOADED".* 2>/dev/null | wc -l)"
+        # The containerd store's answer to a layer it does not hold: a tagged
+        # image, a line of narration, and exit 0.
+        if [ -n "${STUB_UNPACK_FAIL:-}" ]; then
+            names="$(tar -tf "$LOADED" 2>/dev/null)"
+            grep -qF "$STUB_UNPACK_FAIL" <<<"$names" \
+                || echo "Error unpacking image built-app-web:1.4.2: content digest sha256:$STUB_UNPACK_FAIL: not found"
+        fi
+        # The overlay2 store's: docker load fails.
+        if [ -n "${STUB_LOAD_FAIL:-}" ]; then
+            names="$(tar -tf "$LOADED" 2>/dev/null)"
+            grep -qF "$STUB_LOAD_FAIL" <<<"$names" || { echo "open blobs/sha256/$STUB_LOAD_FAIL: no such file" >&2; exit 1; }
+        fi
+        exit "${DOCKER_LOAD_RC:-0}" ;;
+    # Layer lists, by image name or id, from $STUB_ROOTFS; the server's own
+    # images are the srv-* ids its image ls lists.
+    image)
+        if [ -n "${STUB_ROOTFS:-}" ] && [ "${2:-}" = ls ]; then cat "$STUB_ROOTFS/ids"; exit 0; fi
+        if [ -n "${STUB_ROOTFS:-}" ] && [ "${2:-} ${3:-}" = "inspect --format" ]; then
+            shift 4
+            case "$*" in srv-*) [ "${STUB_SERVER_INSPECT_RC:-0}" = 0 ] || exit "$STUB_SERVER_INSPECT_RC" ;; esac
+            for i; do cat "$STUB_ROOTFS/${i//:/_}" || exit 1; done
+            exit 0
+        fi ;;
     # A tree edited while the build runs.
     compose) [ -z "${DOCKER_BUILD_TOUCH:-}" ] || printf 'during\n' >> "$DOCKER_BUILD_TOUCH" ;;
 esac
@@ -135,7 +160,7 @@ reset_logs() {
     : > "$SSH_LOG"
     : > "$SSH_STDIN_LOG"
     : > "$RSYNC_LOG"
-    rm -f "$LOADED"
+    rm -f "$LOADED" "$LOADED".*
     rm -rf "$scratch"
     mkdir -p "$scratch"
     printf '{"kasbah_version":"1.0.0","apps_path":"%s","data_path":"%s/data","cpu_limit":"1","mem_limit":"1g"}\n' \
@@ -384,6 +409,71 @@ assert '[ -z "$(find "$scratch" -maxdepth 1 -name "kasbah-ssh.*" 2>/dev/null)" ]
     "the ssh master's private directory is gone (found: $(find "$scratch" -maxdepth 1 -name "kasbah-ssh.*" 2>/dev/null))"
 assert '! grep -qF "'"'"'rm'"'"'" "$SSH_LOG"' \
     "and nothing is left on the server to remove (ssh log: $(cat "$SSH_LOG"))"
+
+# --- Layers the server already holds stay off the wire -----------------------------------
+# A real docker ≥25 save shape: both images on one base, the server holding
+# that base under an image of its own.
+lay="$tmpdir/layers"
+mkdir -p "$lay/tar/blobs/sha256" "$lay/rootfs"
+blob() { local h; h="$(sha256sum "$1" | cut -d' ' -f1)"; mv "$1" "$lay/tar/blobs/sha256/$h"; printf '%s' "$h"; }
+head -c 200000 /dev/urandom > "$lay/b"; hb="$(blob "$lay/b")"
+printf 'web-app' > "$lay/a"; ha="$(blob "$lay/a")"
+printf 'worker-app' > "$lay/w"; hw="$(blob "$lay/w")"
+printf '{"Config":"x","Layers":["blobs/sha256/%s"]}' "$hb" > "$lay/tar/manifest.json"
+printf '{}' > "$lay/tar/index.json"; printf '{"imageLayoutVersion":"1.0.0"}' > "$lay/tar/oci-layout"
+tar -C "$lay/tar" -cf "$lay/save.tar" blobs index.json manifest.json oci-layout
+printf '["sha256:%s","sha256:%s"]\n' "$hb" "$ha" > "$lay/rootfs/built-app-web_1.4.2"
+printf '["sha256:%s","sha256:%s"]\n' "$hb" "$hw" > "$lay/rootfs/built-app-worker_1.4.2"
+printf '["sha256:%s"]\n' "$hb" > "$lay/rootfs/srv-base"
+printf 'srv-base\nsrv-base\n' > "$lay/rootfs/ids"
+loaded_names() { tar -tf "${1:-$LOADED}" 2>/dev/null; }
+
+STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs" run --no-git-push "deploy@vps"; rc=$?
+assert '[ "$rc" = "0" ]' "a ship over layers the server holds succeeds (exit $rc: $err)"
+ssh_cmds="$(grep -oF -e "'remote' 'layers'" -e "'remote' 'load'" "$SSH_LOG")"
+assert '[ "$ssh_cmds" = "'"'"'remote'"'"' '"'"'layers'"'"'
+'"'"'remote'"'"' '"'"'load'"'"'" ]' \
+    "one remote layers question, then the one remote load (ssh log: $(cat "$SSH_LOG"))"
+names="$(loaded_names)"
+assert '! grep -qF "$hb" <<<"$names"' "the base layer the server has did not travel (loaded: $names)"
+assert 'grep -qF "$ha" <<<"$names" && grep -qF "$hw" <<<"$names" && grep -qxF "manifest.json" <<<"$names"' \
+    "the two app layers and the manifest did (loaded: $names)"
+assert 'gzip -t "$SSH_STDIN_LOG" 2>/dev/null' "still as one complete gzip stream"
+assert 'grep -qF "1 of 3 layers (200.0 kB) already on the server, not sent" <<<"$err"' \
+    "and the run says what it left out (said '$err')"
+
+# Under the containerd store a load whose layer is missing exits 0 and leaves
+# the image unpacked: the far side says so, and the images go again, whole.
+STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs" STUB_UNPACK_FAIL="$hb" run --no-git-push "deploy@vps"; rc=$?
+assert '[ "$rc" = "0" ]' "an image the server cannot unpack on its own layers is re-sent whole (exit $rc: $err)"
+assert '[ "$(grep -cF "'"'"'remote'"'"' '"'"'load'"'"'" "$SSH_LOG")" = "2" ]' \
+    "in a second remote load (ssh log: $(cat "$SSH_LOG"))"
+assert '! grep -qF "$hb" <<<"$(loaded_names "$LOADED.0")" && grep -qF "$hb" <<<"$(loaded_names "$LOADED.1")"' \
+    "the first without the base layer, the second with it"
+assert 'grep -qF "could not load the images on the layers it reported" <<<"$err" && grep -qF "sent whole, after " <<<"$err"' \
+    "saying why, and what each stream sent (said '$err')"
+
+# An overlay2 server that lost the layer since it answered: the load fails.
+STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs" STUB_LOAD_FAIL="$hb" run --no-git-push "deploy@vps"; rc=$?
+assert '[ "$rc" = "0" ]' "a load that fails without the skipped layers is retried whole (exit $rc: $err)"
+assert '[ "$(grep -cF "'"'"'remote'"'"' '"'"'load'"'"'" "$SSH_LOG")" = "2" ] && grep -qF "$hb" <<<"$(loaded_names)"' \
+    "in a second remote load carrying every layer (ssh log: $(cat "$SSH_LOG"))"
+
+# A containerd-store workstation saves compressed blobs, named by no diffID.
+cp -r "$lay/rootfs" "$lay/rootfs-c"
+zid() { printf 'sha256:%s' "$(printf '%s' "$1" | sha256sum | cut -d' ' -f1)"; }
+printf '["%s","%s"]\n' "$(zid b)" "$(zid a)" > "$lay/rootfs-c/built-app-web_1.4.2"
+printf '["%s","%s"]\n' "$(zid b)" "$(zid w)" > "$lay/rootfs-c/built-app-worker_1.4.2"
+printf '["%s"]\n' "$(zid b)" > "$lay/rootfs-c/srv-base"
+STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs-c" run --no-git-push "deploy@vps"; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "$hb" <<<"$(loaded_names)"' "a save that names no layer by diffID ships whole (exit $rc: $err)"
+assert 'grep -qF "saves compressed layers — nothing could be left out" <<<"$err" && ! grep -qF "already on the server, not sent" <<<"$err"' \
+    "and says why nothing was left out, not that nothing was there (said '$err')"
+
+STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs" STUB_SERVER_INSPECT_RC=1 run --no-git-push "deploy@vps"; rc=$?
+assert '[ "$rc" = "0" ]' "a server that cannot list its layers still gets the images (exit $rc: $err)"
+assert 'grep -qF "$hb" <<<"$(loaded_names)"' "every layer of them (loaded: $(loaded_names))"
+assert 'grep -qF "which layers it holds" <<<"$err"' "with a note that nothing was skipped (said '$err')"
 
 # Nothing below this line ships successfully, so the state file the run above
 # wrote is cleared: what the failure cases assert is that none of them writes one.

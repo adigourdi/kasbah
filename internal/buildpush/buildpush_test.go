@@ -125,7 +125,8 @@ services:
 
 // fakeDocker puts a docker first on PATH: `load` copies its stdin to
 // $dir/loaded and writes $dir/load-done only if it is not killed before its
-// stdin closes; `image inspect` fails for $FAKE_MISSING.
+// stdin closes; `image inspect` fails for $FAKE_MISSING, `create` for
+// $FAKE_UNCREATABLE.
 func fakeDocker(t *testing.T) string {
 	dir := t.TempDir()
 	script := `#!/bin/sh
@@ -134,6 +135,9 @@ echo "$*" >> "$d/calls"
 case "$1" in
 load) cat > "$d/loaded"; echo done > "$d/load-done"; exit "${FAKE_LOAD_RC:-0}" ;;
 image) [ "$3" = "${FAKE_MISSING:-}" ] && exit 1; exit 0 ;;
+create) for a; do [ "$a" = true ] && break; img=$a; done
+	[ "$img" = "${FAKE_UNCREATABLE:-}" ] && exit 1; echo "cid-$img"; exit 0 ;;
+rm) exit 0 ;;
 esac
 exit 9
 `
@@ -172,6 +176,7 @@ func TestLoad(t *testing.T) {
 		// Every byte of the tar reaches the fake; it is killed before EOF.
 		{name: "no trailer", in: whole[:len(whole)-8], rc: 1, stderr: "cut short or corrupted"},
 		{name: "load fails", in: whole, env: map[string]string{"FAKE_LOAD_RC": "3"}, rc: 1, stderr: "docker load exited 3", loaded: true},
+		{name: "not unpacked", in: whole, env: map[string]string{"FAKE_UNCREATABLE": "b:1"}, rc: 1, stdout: "incomplete=b:1\n", stderr: "left b:1 unusable", loaded: true, inspect: true},
 		{name: "image missing", in: whole, env: map[string]string{"FAKE_MISSING": "b:1"}, rc: 1, stderr: "b:1 is not on this server", loaded: true, inspect: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

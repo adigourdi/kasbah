@@ -44,7 +44,7 @@ changing nothing. That is the intended direction of failure.
 | Base | `debian:bookworm-slim` + docker-ce from Docker's apt repo, **unpinned** |
 | SSH user | `stevedore` — in the `docker` group, passwordless sudo, **root login disabled**. `integration/apps_path_test.sh` switches it to a prompting sudo for its own cases and restores it on exit |
 | Ports | `5022→22`, `5080→80`, `5043→443`, bound to `127.0.0.1` |
-| Storage | named volume at `/var/lib/docker`; nested driver `overlayfs` |
+| Storage | named volume at `/var/lib/docker`; docker's **containerd image store** (snapshotter `overlayfs`, docker 29's default) — the store the real host runs, not overlay2. Switching it to overlay2 sticks once overlay2 data exists, until `/var/lib/docker/{overlay2,image}` are wiped |
 | Keypair | generated per checkout by `rig.sh`, gitignored, never committed |
 | Connection contract | the generated `tests/rig/ssh_config` — hand it to `ssh -F`, `scp -F`, `rsync -e`. Do not restate its flags anywhere |
 | Backup harness | two `restic/rest-server:0.14.0` sidecars at `10.77.29.10` and `10.77.29.11`, over one named volume; contract in the generated `tests/rig/backup_env.sh` |

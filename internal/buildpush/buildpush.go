@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,7 +59,8 @@ What it does:
   * builds every service in compose.prod.yml that has a build: key, and tags
     each one <image>:<version> from the image: that service names
   * docker save (one stream, all images) | gzip, streamed over ssh into
-    docker load on the server — no tarball is written on either end
+    docker load on the server — no tarball is written on either end, and the
+    layers the server already holds are left out of the stream
   * git push origin v<version>, when the tag is not on origin yet
 
 A project whose compose file builds nothing exits 0 having done nothing: stock
@@ -230,7 +232,8 @@ func Run(c Ctx, o Options) error {
 	if err := build(m.Name, images); err != nil {
 		return err
 	}
-	if err := ship(conn, serverbin.Path(res.Apps), images); err != nil {
+	st, err := ship(c.Out, conn, serverbin.Path(res.Apps), images)
+	if err != nil {
 		return err
 	}
 	if o.Dirty {
@@ -258,6 +261,16 @@ func Run(c Ctx, o Options) error {
 
 	c.Out.Info("Shipped %s %s to %s", m.Name, version, target)
 	listImages(c.Out, images)
+	switch {
+	case st.abandoned > 0:
+		c.Out.Info("  stream:  %s sent whole, after %s in a stream without the server's layers that it could not load", mb(st.sent), mb(st.abandoned))
+	case st.compressed:
+		c.Out.Info("  stream:  %s sent; this workstation's image store saves compressed layers — nothing could be left out", mb(st.sent))
+	case st.layers > 0:
+		c.Out.Info("  stream:  %s sent; %d of %d layers (%s) already on the server, not sent", mb(st.sent), st.skipped, st.layers, mb(st.skippedBytes))
+	default:
+		c.Out.Info("  stream:  %s sent, every layer", mb(st.sent))
+	}
 	if o.Dirty {
 		c.Out.Info("  current: unmoved — `kasbah deploy %s --dirty` is what cuts over to %s", target, version)
 	} else {
@@ -265,6 +278,17 @@ func Run(c Ctx, o Options) error {
 	}
 	c.Out.Info("  git:     %s", gitResult)
 	return nil
+}
+
+// mb is a byte count in decimal units, as docker prints image sizes.
+func mb(n int64) string {
+	switch {
+	case n < 1000:
+		return strconv.FormatInt(n, 10) + " B"
+	case n < 1e6:
+		return strconv.FormatFloat(float64(n)/1e3, 'f', 1, 64) + " kB"
+	}
+	return strconv.FormatFloat(float64(n)/1e6, 'f', 1, 64) + " MB"
 }
 
 func listImages(out *cli.Output, images []Image) {

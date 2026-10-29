@@ -37,6 +37,10 @@ worker="$image_worker:$project_version"
 web_marker=served-by-built-app-from-an-image-shipped-over-ssh
 worker_marker=built-app-worker-payload-shipped-over-ssh
 
+# The re-push: the same project with only the web page changed.
+web2="$image_web:1.5.1"
+worker2="$image_worker:1.5.1"
+
 stock=demo
 stock_version=2.0.0
 
@@ -53,8 +57,8 @@ tmpdir="$(mktemp -d)"
 # by design, and the workstation's docker is not this suite's to sweep. Removed
 # by exact name, here and on the rig, whatever happens.
 cleanup() {
-    rig_ssh "docker image rm -f $web $worker $image_web:current $image_worker:current" >/dev/null 2>&1
-    docker image rm -f "$web" "$worker" "$image_web:current" "$image_worker:current" >/dev/null 2>&1
+    rig_ssh "docker image rm -f $web $worker $web2 $worker2 $image_web:current $image_worker:current" >/dev/null 2>&1
+    docker image rm -f "$web" "$worker" "$web2" "$worker2" "$image_web:current" "$image_worker:current" >/dev/null 2>&1
     rm -rf "$tmpdir"
 }
 trap cleanup EXIT
@@ -259,6 +263,38 @@ assert '[ "${got[containers]}" = "0" ]' \
 local_id=$(docker image inspect -f '{{.Id}}' "$web" 2>/dev/null)
 assert '[ -n "$local_id" ]' "the build left $web on this workstation too (got '$local_id')"
 
+# --- A re-push sends only the layer that changed --------------------------------------------
+# Measured, not assumed: the stream line of each push, and what a whole save of
+# the re-pushed images would have weighed.
+stream_line() { grep -m1 'stream:' "$tmpdir/err"; }
+first_stream="$(stream_line)"
+sed -i 's|</body></html>|<p id="v2">re-pushed</p></body></html>|' "$projdir/Dockerfile"
+if ! ( cd "$projdir" && git add -A && git -c user.name=t -c user.email=t@t commit -qm v2 && git tag v1.5.1 ) >/dev/null 2>&1; then
+    echo "error: could not commit the re-push's edit in $projdir" >&2
+    exit 2
+fi
+build_push "$projdir" "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "0" ]' "a re-push with only the web page changed succeeds (exit $rc: $(cli_err))"
+second_stream="$(stream_line)"
+whole=$(docker save "$web2" "$worker2" 2>/dev/null | gzip | wc -c)
+echo "note: first push   $first_stream" >&2
+echo "note: re-push      $second_stream" >&2
+echo "note: a whole save of the re-pushed images gzips to $whole bytes" >&2
+# A containerd-store workstation saves compressed blobs, which no diffID
+# names: nothing can be left out, and this suite has nothing to measure.
+env_skip=0
+if grep -qF "saves compressed layers" <<<"$second_stream"; then
+    echo "skip: this workstation's docker uses the containerd image store — the layer skip cannot be measured from it" >&2
+    env_skip=1
+else
+    skipped=$(sed -n 's/.*sent; \([0-9]*\) of \([0-9]*\) layers.*/\1 \2/p' <<<"$second_stream")
+    assert '[ -n "$skipped" ] && [ "${skipped% *}" -gt 0 ] && [ "$(( ${skipped#* } - ${skipped% *} ))" = "1" ]' \
+        "every layer but the changed one stayed home (said '$second_stream')"
+fi
+page2=$(rig_ssh "docker run --rm --entrypoint cat $web2 /usr/share/nginx/html/index.html; docker run --rm --entrypoint cat $worker2 /etc/built-app-worker.marker" 2>&1 | tr -d '\r\n')
+assert 'grep -qF "re-pushed" <<<"$page2" && grep -qF "$web_marker" <<<"$page2" && grep -qF "$worker_marker" <<<"$page2"' \
+    "and both images run on the rig, the web one with the new page (read '$page2')"
+
 # --- A stock-only project ships nothing --------------------------------------------------
 # The other half of the deliverable, and the reason it is measured rather than
 # read off stdout: "nothing was shipped" is a claim about two /tmp directories
@@ -276,7 +312,7 @@ assert '[ ! -e "$stockdir/.kasbah/state.json" ]' \
     "and recording no server, because it talked to none"
 
 # --- The images this suite loaded, removed by name ------------------------------------------
-rig_ssh "docker image rm -f $web $worker" >/dev/null 2>&1
+rig_ssh "docker image rm -f $web $worker $web2 $worker2" >/dev/null 2>&1
 after="$(rig_image_states)"
 assert '[ "$(state_of web "$after")" = "absent" ]' \
     "the suite takes $web off the rig again (docker said '$(state_of web "$after")')"
@@ -288,4 +324,6 @@ if [ "$fail" -eq 0 ]; then
     rig_clean || fail=1
 fi
 
+# Exit 2 is test.sh's "the environment cannot run this", not a pass.
+[ "$fail" -eq 0 ] && [ "$env_skip" -eq 1 ] && exit 2
 exit "$fail"
