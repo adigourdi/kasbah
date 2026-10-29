@@ -180,3 +180,22 @@ func TestReportMailUnban(t *testing.T) {
 		}
 	}
 }
+
+// The summary ends with the guide pointer and the deliverability checklist,
+// whatever else it says.
+func TestReportMailChecklist(t *testing.T) {
+	o := Options{Target: "deploy@vps", Apps: "/apps", Data: "/apps/data"}
+	v := MailValues{Primary: "a.com", Origin: "reused", Domains: []string{"a.com", "b.com"}}
+	out, b := newOut()
+	// Every warning the summary can raise, so the checklist is shown to follow them.
+	reportMail(out, o, v, &mail.ReadReport{Dir: "dir"}, nil, Facts{},
+		Facts{"mail_dms_health": "starting", "mail_cypht_unbanned": "failed", "mail_jail": "failed", "mail_cypht_addr": "172.18.0.5"})
+	want := "        setup guide: kasbah server mail-setup-guide deploy@vps\n" +
+		"        before the first real send (each one a step of the guide):\n" +
+		"          DKIM  keys per domain: docker exec mail-dms setup config dkim ... (step 2)\n" +
+		"          PTR   the VPS IP's reverse DNS names mail.a.com, set at the provider (step 0)\n" +
+		"          SPF   a TXT record on each domain (step 3)\n"
+	if got := b.String(); !strings.HasSuffix(got, want) || !strings.Contains(got, "could not unban") || !strings.Contains(got, "healthcheck says 'starting'") {
+		t.Errorf("summary does not end with the checklist:\n%s", got)
+	}
+}

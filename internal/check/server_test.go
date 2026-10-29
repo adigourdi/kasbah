@@ -75,6 +75,20 @@ const srvEnv = "DOMAIN=demo.example.com\n# >>> kasbah managed block >>>\nKASBAH_
 const srvRegistry = "name: mail\nprimary_domain: rig.test\ndomains:\n  - rig.test\n  - shop.rig.test\n"
 const srvShared = "http:\n  routers:\n    traefik-dashboard:\n      rule: \"Host(`traefik.rig.test`)\"\n      entryPoints: [websecure]\n"
 
+var srvKeys = []string{"rsa-2048-mail-rig.test.private.txt", "ed25519-ed-rig.test.private.txt",
+	"rsa-2048-mail-shop.rig.test.private.txt", "ed25519-ed-shop.rig.test.private.txt"}
+
+// srvConf is the seeded override with the hand-added block for shop.rig.test.
+const srvConf = `domain {
+    rig.test { selectors [
+        { path = "/tmp/docker-mailserver/rspamd/dkim/rsa-2048-mail-rig.test.private.txt"; selector = "mail"; },
+        { path = "/tmp/docker-mailserver/rspamd/dkim/ed25519-ed-rig.test.private.txt"; selector = "ed"; } ] }
+    shop.rig.test { selectors [
+        { path = "/tmp/docker-mailserver/rspamd/dkim/rsa-2048-mail-shop.rig.test.private.txt"; selector = "mail"; },
+        { path = "/tmp/docker-mailserver/rspamd/dkim/ed25519-ed-shop.rig.test.private.txt"; selector = "ed"; } ] }
+}
+`
+
 type fakeSession struct{ sr *ServerRead }
 
 func (f *fakeSession) Read(name, health string) (*ServerRead, error) { return f.sr, nil }
@@ -95,6 +109,7 @@ func newSrv(t *testing.T) *srvCase {
 			SharedState: "file", Shared: b64s(srvShared),
 			AcmeState: "file", Acme: b64s(acme),
 			HealthState: "running", HealthHealth: "healthy",
+			DKIMState: "dir", DKIMKeys: srvKeys, DKIMConfState: "file", DKIMConf: b64s(srvConf),
 			Backup: backuprec.Facts{Dir: "absent", Record: "absent", Now: "2000000000",
 				Container: backuprec.Container{State: "absent", Health: "none"}},
 		}}
@@ -156,7 +171,8 @@ func TestServerGolden(t *testing.T) {
 		"  ✓ certificate for 'demo.example.com' valid for 400 more day(s) (until ",
 		"O = kasbah test fixture, CN = demo.example.com)",
 		"  ✓ effective resource limits on deploy@vps match the host's 90% ceiling (14.4 cpus, 54g)",
-		"  ✓ No router claims a hostname kasbah owns on deploy@vps (traefik.rig.test mail.rig.test webmail.rig.test)")
+		"  ✓ No router claims a hostname kasbah owns on deploy@vps (traefik.rig.test mail.rig.test webmail.rig.test)",
+		"  ✓ every mail domain on deploy@vps has both DKIM keys, listed in its signing override (rig.test shop.rig.test)")
 	hasNot(t, out, secret, "backup on", "backup scheduler")
 	if st, _ := os.ReadFile(".kasbah/state.json"); !strings.Contains(string(st), `"last_server": "deploy@vps"`) {
 		t.Errorf("last_server not recorded: %s", st)
@@ -238,6 +254,109 @@ func TestServerM03(t *testing.T) {
 		out, _ := newSrv(t).run()
 		hasNot(t, out, "mail stack on")
 	})
+}
+
+// M04 answers for every registry domain, whether or not the project claims
+// mail, and warns rather than fails; no registry, no line.
+func TestServerM04(t *testing.T) {
+	const dir, conf = "/apps/data/mail/dms/config/rspamd/dkim", "/apps/data/mail/dms/config/rspamd/override.d/dkim_signing.conf"
+	rsa := "\n      ssh deploy@vps 'docker exec mail-dms setup config dkim keytype rsa     selector mail domain shop.rig.test'"
+	ed := "\n      ssh deploy@vps 'docker exec mail-dms setup config dkim keytype ed25519 selector ed   domain shop.rig.test'"
+	tail := " — its mail leaves unsigned and receivers file it as spam (kasbah server mail-setup-guide deploy@vps, step 2):"
+	cant := ", so whether the mail domains are DKIM-signed cannot be checked"
+	for _, tc := range []struct {
+		name string
+		set  func(s *srvCase)
+		want []string
+		not  []string
+	}{
+		{"no keys for one domain", func(s *srvCase) { s.r.DKIMKeys = s.r.DKIMKeys[:2] },
+			[]string{"⚠ mail domain 'shop.rig.test' on deploy@vps is not DKIM-signed: no rsa-2048-mail-shop.rig.test.private.txt or ed25519-ed-shop.rig.test.private.txt in " + dir + "/" + tail + rsa + ed + "\n"},
+			[]string{"'rig.test' on deploy@vps is not", "every mail domain", "signing block"}},
+		{"ed25519 only", func(s *srvCase) { s.r.DKIMKeys = []string{s.r.DKIMKeys[0], s.r.DKIMKeys[1], s.r.DKIMKeys[3]} },
+			[]string{"is not DKIM-signed: no rsa-2048-mail-shop.rig.test.private.txt in " + dir + "/" + tail + rsa + "\n"}, []string{ed}},
+		{"a hyphenated selector is not the domain's key", func(s *srvCase) {
+			s.r.Registry = b64s("primary_domain: rig.test\ndomains: [rig.test, a.test]\n")
+			s.r.DKIMKeys = append(s.r.DKIMKeys, "rsa-2048-mail-shop-a.test.private.txt", "ed25519-ed-shop-a.test.private.txt")
+			s.r.DKIMConf = b64s(srvConf + strings.ReplaceAll(srvConf, "shop.rig.test", "shop-a.test"))
+		}, []string{"⚠ mail domain 'a.test' on deploy@vps is not DKIM-signed: no rsa-2048-mail-a.test.private.txt or ed25519-ed-a.test.private.txt in " + dir + "/, and " +
+			conf + " does not list rsa-2048-mail-a.test.private.txt or ed25519-ed-a.test.private.txt" + tail,
+			"\n      add its signing block to " + conf + "\n"}, nil},
+		{"keys, no signing block", func(s *srvCase) { s.r.DKIMConf = b64s(strings.ReplaceAll(srvConf, "shop.rig.test", "other.test")) },
+			[]string{"⚠ mail domain 'shop.rig.test' on deploy@vps is not DKIM-signed: " + conf + " does not list rsa-2048-mail-shop.rig.test.private.txt or ed25519-ed-shop.rig.test.private.txt" + tail +
+				"\n      add its signing block to " + conf + "\n"},
+			[]string{"setup config dkim keytype", "'rig.test' on deploy@vps is not"}},
+		{"no key directory yet", func(s *srvCase) { s.r.DKIMState, s.r.DKIMKeys = "absent", nil },
+			[]string{"⚠ mail domain 'rig.test' on deploy@vps is not DKIM-signed", "⚠ mail domain 'shop.rig.test' on deploy@vps is not DKIM-signed"}, nil},
+		{"an empty override lists nothing", func(s *srvCase) { s.r.DKIMConfState, s.r.DKIMConf = "empty", "" },
+			[]string{"'rig.test' on deploy@vps is not DKIM-signed: " + conf + " does not list"}, nil},
+		{"key directory unlistable", func(s *srvCase) { s.r.DKIMState, s.r.DKIMKeys = "unreadable", nil },
+			[]string{"⚠ " + dir + " on deploy@vps cannot be listed by this user" + cant}, []string{"is not DKIM-signed"}},
+		{"key directory a file", func(s *srvCase) { s.r.DKIMState, s.r.DKIMKeys = "notdir", nil },
+			[]string{"⚠ " + dir + " on deploy@vps is not a directory (it is notdir)" + cant}, nil},
+		{"override unreadable", func(s *srvCase) { s.r.DKIMConfState, s.r.DKIMConf = "unreadable", "" },
+			[]string{"⚠ " + conf + " on deploy@vps is unreadable" + cant}, []string{"is not DKIM-signed"}},
+		{"override absent", func(s *srvCase) { s.r.DKIMConfState, s.r.DKIMConf = "absent", "" },
+			[]string{"⚠ " + conf + " on deploy@vps is absent" + cant}, nil},
+		{"override bytes lost", func(s *srvCase) { s.r.DKIMConf = "!!" },
+			[]string{"⚠ " + conf + " on deploy@vps did not come back as readable bytes" + cant}, nil},
+		{"registry unreadable", func(s *srvCase) { s.r.RegistryState, s.r.Registry = "unreadable", "" },
+			[]string{"⚠ /apps/mail/kasbah.yml on deploy@vps is unreadable — so whether the mail domains are DKIM-signed cannot be checked"}, nil},
+		{"registry refused", func(s *srvCase) { s.r.Registry = b64s("domains: [x.test]\n") },
+			[]string{"has no primary_domain:", "— so whether the mail domains are DKIM-signed cannot be checked"}, nil},
+		{"no mail stack", func(s *srvCase) {
+			s.r.RegistryState, s.r.Registry, s.r.DKIMState, s.r.DKIMKeys, s.r.DKIMConfState, s.r.DKIMConf = "absent", "", "absent", nil, "absent", ""
+		}, nil, []string{"DKIM"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			project(t, nil)
+			s := newSrv(t)
+			tc.set(s)
+			out, code := s.run()
+			if code != 0 {
+				t.Errorf("exit %d, want 0:\n%s", code, out)
+			}
+			contains(t, out, tc.want...)
+			hasNot(t, out, tc.not...)
+		})
+	}
+}
+
+// The key directory is listed, never read: private-key names only. The
+// override comes back whole. A path this user cannot reach is unreadable,
+// never absent.
+func TestCollectServerDKIM(t *testing.T) {
+	data := t.TempDir()
+	cfg := data + "/mail/dms/config"
+	dir, conf := cfg+"/rspamd/dkim", cfg+"/rspamd/override.d/dkim_signing.conf"
+	if r := CollectServer(data, data, "demo", ""); r.DKIMState != "absent" || r.DKIMKeys != nil || r.DKIMConfState != "absent" || r.DKIMConf != "" {
+		t.Errorf("absent: %+v", r)
+	}
+	os.MkdirAll(dir+"/sub.private.txt", 0o755)
+	os.MkdirAll(cfg+"/rspamd/override.d", 0o755)
+	os.WriteFile(conf, []byte("domain {}\n"), 0o644)
+	for _, n := range []string{"rsa-2048-mail-a.com.private.txt", "rsa-2048-mail-a.com.public.txt", "rsa-2048-mail-a.com.public.dns.txt"} {
+		os.WriteFile(dir+"/"+n, nil, 0o000)
+	}
+	r := CollectServer(data, data, "demo", "")
+	if r.DKIMState != "dir" || strings.Join(r.DKIMKeys, " ") != "rsa-2048-mail-a.com.private.txt" || r.DKIMConfState != "file" || string(dec(r.DKIMConf)) != "domain {}\n" {
+		t.Errorf("listed: %+v", r)
+	}
+	if os.Geteuid() != 0 {
+		for _, p := range []string{dir, cfg} {
+			os.Chmod(p, 0o000)
+			r := CollectServer(data, data, "demo", "")
+			os.Chmod(p, 0o755)
+			if r.DKIMState != "unreadable" || (p == cfg && r.DKIMConfState != "unreadable") {
+				t.Errorf("%s closed: %q %q", p, r.DKIMState, r.DKIMConfState)
+			}
+		}
+	}
+	os.RemoveAll(dir)
+	os.WriteFile(dir, nil, 0o644)
+	if r := CollectServer(data, data, "demo", ""); r.DKIMState != "notdir" {
+		t.Errorf("a file: %q", r.DKIMState)
+	}
 }
 
 func TestServerHealth(t *testing.T) {

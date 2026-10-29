@@ -356,7 +356,7 @@ func remoteLayout(apps, data, size, sum string, stdin io.Reader, stdout io.Write
 		fmt.Fprintln(stdout, "mail_account=seeded")
 	}
 
-	dkim := mdata + "/dms/config/rspamd/override.d/dkim_signing.conf"
+	dkim := DKIMConf(data)
 	exists, regular = isFile(dkim)
 	switch {
 	case exists && !regular:

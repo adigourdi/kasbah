@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math/big"
+	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +20,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/envtpl"
+	"github.com/adigourdi/kasbah/internal/mail"
 	"github.com/adigourdi/kasbah/internal/mailreg"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/marker"
@@ -50,7 +54,8 @@ Runs structural checks against the current project. Exit 0 if no failures
 Flags:
   --server USER@HOST  also ask that VPS: is the project deployed, does its .env
                       still match .env.prod.example, does the mail stack know
-                      the claimed domain (M03), is health.container healthy, is
+                      the claimed domain (M03) and hold a DKIM key for every
+                      domain it serves (M04), is health.container healthy, is
                       there a certificate for the domain, are the effective
                       resource limits within the host's ceiling (R04), and — on
                       a server with backups configured — has the backup stack
@@ -140,6 +145,12 @@ type ServerReport struct {
 	GroupState string   `json:"group_state"`
 	PermsCount int      `json:"perms_count"`
 	Perms      []string `json:"perms"`
+	// DKIMState is mail.DKIMDir's state; DKIMKeys its *.private.txt names,
+	// listed and never read. DKIMConf is the 644 signing override.
+	DKIMState     string   `json:"dkim_state"`
+	DKIMKeys      []string `json:"dkim_keys"`
+	DKIMConfState string   `json:"dkim_conf_state"`
+	DKIMConf      string   `json:"dkim_conf_b64"`
 }
 
 // Remote is `kasbah remote check APPS DATA NAME HEALTH`, run by the server
@@ -173,6 +184,10 @@ func CollectServer(apps, data, name, health string) *ServerReport {
 		Backup:        backuprec.Collect(apps, data),
 	}
 	r.GroupState, r.PermsCount, r.Perms = Perms(apps, data, Group)
+	r.DKIMState, r.DKIMKeys = dkimKeys(mail.DKIMDir(data))
+	if r.DKIMConfState = stated(mail.DKIMConf(data), probe.FState); r.DKIMConfState == "file" {
+		r.DKIMConf = probe.B64(mail.DKIMConf(data))
+	}
 	switch {
 	case health == "":
 		r.HealthState, r.HealthHealth = "skipped", "skipped"
@@ -197,6 +212,35 @@ func CollectServer(apps, data, name, health string) *ServerReport {
 		r.HealthState, r.HealthHealth = s, h
 	}
 	return r
+}
+
+// stated is state(p), except that a stat failing for any reason but a
+// missing path is unreadable: probe's states call a closed parent absent.
+func stated(p string, state func(string) string) string {
+	if _, err := os.Stat(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "unreadable"
+	}
+	return state(p)
+}
+
+// dkimKeys lists a key directory's private-key names: absent, notdir,
+// unreadable (this user cannot reach or list it) or dir.
+func dkimKeys(dir string) (string, []string) {
+	st := stated(dir, probe.DirState)
+	if st != "dir" {
+		return st, nil
+	}
+	es, err := os.ReadDir(dir)
+	if err != nil {
+		return "unreadable", nil
+	}
+	var keys []string
+	for _, e := range es {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".private.txt") {
+			keys = append(keys, e.Name())
+		}
+	}
+	return "dir", keys
 }
 
 // ServerRead is one server's answer: where it was read, its marker and its
@@ -390,6 +434,7 @@ func (c *checker) serverSection() {
 	c.projectDir()
 	c.envDrift()
 	c.m03()
+	c.m04()
 	c.serverHealth()
 	c.cert()
 	c.r04()
@@ -466,6 +511,73 @@ func (c *checker) envDrift() {
 		c.passf(".env on %s has no extra keys vs .env.prod.example", s.target)
 	} else {
 		c.warnf(".env on %s has extra keys not in .env.prod.example: %s", s.target, strings.Join(extra, " "))
+	}
+}
+
+// m04: every domain the mail stack serves has both keys the signing override
+// names, and the override lists them, or its mail leaves unsigned and lands
+// in spam. Any project, like B01; silent without mail.
+func (c *checker) m04() {
+	s := c.srv
+	regPath := mailreg.Path(s.apps)
+	if s.r.RegistryState == "absent" {
+		return
+	}
+	reg, err := mailreg.Parse(s.registry, regPath+" on "+s.target)
+	if s.r.RegistryState != "file" {
+		err = fmt.Errorf("%s on %s is %s", regPath, s.target, s.r.RegistryState)
+	}
+	if err != nil {
+		c.warnf("%s — so whether the mail domains are DKIM-signed cannot be checked", strings.ReplaceAll(err.Error(), "\n", "; "))
+		return
+	}
+	dir, conf := mail.DKIMDir(s.data), mail.DKIMConf(s.data)
+	switch s.r.DKIMState {
+	case "dir", "absent":
+	case "unreadable":
+		c.warnf("%s on %s cannot be listed by this user, so whether the mail domains are DKIM-signed cannot be checked", dir, s.target)
+		return
+	default:
+		c.warnf("%s on %s is not a directory (it is %s), so whether the mail domains are DKIM-signed cannot be checked", dir, s.target, or(s.r.DKIMState, "unreported"))
+		return
+	}
+	confText := string(dec(s.r.DKIMConf))
+	switch {
+	case s.r.DKIMConfState == "empty":
+	case s.r.DKIMConfState != "file":
+		c.warnf("%s on %s is %s, so whether the mail domains are DKIM-signed cannot be checked", conf, s.target, or(s.r.DKIMConfState, "unreported"))
+		return
+	case confText == "":
+		c.warnf("%s on %s did not come back as readable bytes, so whether the mail domains are DKIM-signed cannot be checked", conf, s.target)
+		return
+	}
+	missing := 0
+	for _, d := range reg.Domains {
+		absent, unlisted := mail.DKIMGaps(d, s.r.DKIMKeys, confText)
+		if len(absent)+len(unlisted) == 0 {
+			continue
+		}
+		missing++
+		var why []string
+		if len(absent) > 0 {
+			why = append(why, "no "+strings.Join(absent, " or ")+" in "+dir+"/")
+		}
+		if len(unlisted) > 0 {
+			why = append(why, conf+" does not list "+strings.Join(unlisted, " or "))
+		}
+		c.warnf("mail domain '%s' on %s is not DKIM-signed: %s — its mail leaves unsigned and receivers file it as spam (kasbah server mail-setup-guide %s, step 2):", d, s.target, strings.Join(why, ", and "), s.target)
+		keygen := mail.DKIMKeygen(s.target, d)
+		for i, n := range mail.DKIMKeyNames(d) {
+			if slices.Contains(absent, n) {
+				fmt.Fprintf(c.w, "      %s\n", keygen[i])
+			}
+		}
+		if len(unlisted) > 0 {
+			fmt.Fprintf(c.w, "      add its signing block to %s\n", conf)
+		}
+	}
+	if missing == 0 {
+		c.passf("every mail domain on %s has both DKIM keys, listed in its signing override (%s)", s.target, strings.Join(reg.Domains, " "))
 	}
 }
 

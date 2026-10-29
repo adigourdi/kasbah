@@ -38,6 +38,7 @@ apps=/apps
 data=/apps/data
 marker="$apps/.kasbah/server.json"
 acme="$data/traefik/letsencrypt/acme.json"
+dkim_dir="$data/mail/dms/config/rspamd/dkim"
 
 rig_domain=rig.test
 traefik_flags=(--domain="$rig_domain" --email="ops@$rig_domain"
@@ -239,6 +240,13 @@ assert 'grep -qF "✓ effective resource limits on $RIG_TARGET match the host'"'
 # router's apex and the registry's primary domain.
 assert 'grep -qF "✓ No router claims a hostname kasbah owns on $RIG_TARGET (traefik.$rig_domain mail.$rig_domain webmail.$rig_domain)" <<<"$out"' \
     "T05 tightened to hostnames read off this server (said '$out')"
+# M04: nothing on the rig has generated a DKIM key (DMS never boots here), so
+# the registry's one domain warns and names the keygen commands; the override
+# init seeded already lists both paths.
+assert 'grep -qF "⚠ mail domain '"'"'$rig_domain'"'"' on $RIG_TARGET is not DKIM-signed: no rsa-2048-mail-$rig_domain.private.txt or ed25519-ed-$rig_domain.private.txt in $dkim_dir/ — " <<<"$out"' \
+    "M04 warns for a registry domain with no DKIM key, and only for the keys (said '$out')"
+assert 'grep -qF "ssh $RIG_TARGET '"'"'docker exec mail-dms setup config dkim keytype ed25519 selector ed   domain $rig_domain'"'"'" <<<"$out"' \
+    "and names the command that generates it (said '$out')"
 
 # The certificate store. There will never be a certificate for demo.test here —
 # no public DNS, so HTTP-01 cannot validate — but which of the three
@@ -269,6 +277,17 @@ assert '[ "$rc" = "6" ]' "M03 fails a claim this stack does not serve (exit $rc)
 assert 'grep -qF "✗ the mail stack on $RIG_TARGET does not serve '"'"'nowhere.rig.test'"'"'" <<<"$out"' \
     "saying so, against the registry on the rig (said '$out')"
 sed -i "s/^  domain: nowhere.rig.test\$/  domain: $rig_domain/" "$projdir/kasbah.yml"
+
+# --- M04, with both keys in place --------------------------------------------------
+# Root's and mode 600, as DMS leaves them: the names are listed, the keys never
+# read, and the override init seeded is what lists their paths.
+dkim_keys="$dkim_dir/rsa-2048-mail-$rig_domain.private.txt $dkim_dir/ed25519-ed-$rig_domain.private.txt"
+rig_ssh "sudo mkdir -p '$dkim_dir' && sudo touch $dkim_keys && sudo chmod 600 $dkim_keys" >/dev/null 2>&1
+check --server "$RIG_TARGET"; rc=$?
+out="$(cli_out)"
+assert 'grep -qF "✓ every mail domain on $RIG_TARGET has both DKIM keys, listed in its signing override ($rig_domain)" <<<"$out"' \
+    "M04 passes once both key files the seeded override names are there (exit $rc, said '$out')"
+rig_ssh "sudo rm -f $dkim_keys" >/dev/null 2>&1
 
 # --- R04, above the host's ceiling ------------------------------------------------------
 # The .env on the rig is edited by the suite, not by kasbah: what is being

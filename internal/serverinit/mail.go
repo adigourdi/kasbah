@@ -279,7 +279,6 @@ func reportMail(out *cli.Output, o Options, v MailValues, r *mail.ReadReport, ch
 	out.Info("        .env %s, postmaster %s, dkim override %s", lay["mail_env"], lay["mail_account"], lay["mail_dkim_seed"])
 	out.Info("        cypht %s, dms %s (%s, %s restarts)", st["mail_cypht_health"], st["mail_dms_state"], st["mail_dms_health"], st["mail_dms_restarts"])
 	out.Info("        %s; %s", jailWords[st["mail_jail"]], nginxWords[st["mail_cypht_nginx"]])
-	out.Info("        setup guide: kasbah server mail-setup-guide %s", o.Target)
 	switch n := st["mail_cypht_unbanned"]; n {
 	case "0", "skipped":
 	case "failed":
@@ -313,6 +312,13 @@ func reportMail(out *cli.Output, o Options, v MailValues, r *mail.ReadReport, ch
 		out.Warn("  ssh %s 'docker inspect -f \"{{.State.Health.Status}}\" mail-dms'", o.Target)
 		out.Warn("  ssh %s 'docker logs --tail 40 mail-dms'", o.Target)
 	}
+	// Last, after any warning: direct delivery from a fresh IP lands in spam
+	// without these three.
+	out.Info("        setup guide: kasbah server mail-setup-guide %s", o.Target)
+	out.Info("        before the first real send (each one a step of the guide):")
+	out.Info("          DKIM  keys per domain: docker exec mail-dms setup config dkim ... (step 2)")
+	out.Info("          PTR   the VPS IP's reverse DNS names mail.%s, set at the provider (step 0)", p)
+	out.Info("          SPF   a TXT record on each domain (step 3)")
 	if r.Dir == "absent" {
 		fmt.Fprintln(out.Stdout)
 		mail.Guide(out.Stdout, mail.GuideData{Target: o.Target, Apps: o.Apps, Data: o.Data, Primary: p, Domains: v.Domains})

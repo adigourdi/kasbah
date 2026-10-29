@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"slices"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
@@ -15,6 +16,53 @@ import (
 
 // Project is the mail stack's compose project and directory under <apps>.
 const Project = "mail"
+
+// DKIMDir is where DMS's `setup config dkim` writes Rspamd's keys, on the
+// host; DKIMContainerDir is the same directory as Rspamd's paths name it.
+func DKIMDir(data string) string { return data + "/mail/dms/config/rspamd/dkim" }
+
+const DKIMContainerDir = "/tmp/docker-mailserver/rspamd/dkim"
+
+// DKIMConf is the Rspamd signing override kasbah seeds; Rspamd signs only
+// with the key paths it lists.
+func DKIMConf(data string) string {
+	return data + "/mail/dms/config/rspamd/override.d/dkim_signing.conf"
+}
+
+// DKIMKeyNames is the pair of key files the signing override names for a
+// domain, in DKIMKeygen's order: the helper's names for those two commands.
+func DKIMKeyNames(domain string) [2]string {
+	return [2]string{"rsa-2048-mail-" + domain + ".private.txt", "ed25519-ed-" + domain + ".private.txt"}
+}
+
+// DKIMKeygen is dual signing's two keygen commands for one domain, RSA first.
+func DKIMKeygen(target, domain string) [2]string {
+	return [2]string{
+		fmt.Sprintf("ssh %s 'docker exec mail-dms setup config dkim keytype rsa     selector mail domain %s'", target, domain),
+		fmt.Sprintf("ssh %s 'docker exec mail-dms setup config dkim keytype ed25519 selector ed   domain %s'", target, domain),
+	}
+}
+
+// DKIMGaps is which of a domain's DKIMKeyNames are not among keys, the key
+// directory's entries, and which conf (the signing override) does not list
+// by path. Commented lines list nothing.
+func DKIMGaps(domain string, keys []string, conf string) (absent, unlisted []string) {
+	var live strings.Builder
+	for _, l := range strings.Split(conf, "\n") {
+		if t := strings.TrimSpace(strings.TrimRight(l, "\r")); !strings.HasPrefix(t, "#") {
+			live.WriteString(t + "\n")
+		}
+	}
+	for _, n := range DKIMKeyNames(domain) {
+		if !slices.Contains(keys, n) {
+			absent = append(absent, n)
+		}
+		if !strings.Contains(live.String(), DKIMContainerDir+"/"+n) {
+			unlisted = append(unlisted, n)
+		}
+	}
+	return absent, unlisted
+}
 
 // DomainsBlock is the YAML list the registry template's __MAIL_DOMAINS__
 // stands for. Every entry has passed the FQDN check, so none can open a key.
@@ -69,8 +117,9 @@ func Guide(w io.Writer, g GuideData) {
 		"{IP}", ip, "{NOTE}", note, "{DOMAINS}", strings.Join(g.Domains, " "), "{BT}", "`")
 	var keys, dns strings.Builder
 	for _, d := range g.Domains {
-		fmt.Fprintf(&keys, "    ssh %s 'docker exec mail-dms setup config dkim keytype rsa     selector mail domain %s'\n", g.Target, d)
-		fmt.Fprintf(&keys, "    ssh %s 'docker exec mail-dms setup config dkim keytype ed25519 selector ed   domain %s'\n", g.Target, d)
+		for _, c := range DKIMKeygen(g.Target, d) {
+			fmt.Fprintf(&keys, "    %s\n", c)
+		}
 	}
 	p := g.Primary
 	fmt.Fprintf(&dns, "; ---------- %s: the stack's own names ----------\n", p)
@@ -156,7 +205,8 @@ hand** to
 
     {D}/mail/dms/config/rspamd/override.d/dkim_signing.conf
 
-Rspamd reloads on its own; no restart.
+Rspamd reloads on its own; no restart. {BT}kasbah check --server{BT} warns for
+every domain in the registry that lacks either key or its block in that file.
 
 3. Publish DNS, for this server's registry
 ---------------------------------------------------------------------------

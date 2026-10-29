@@ -170,13 +170,14 @@ ever printed.
 | HK02 | Backup hook has all required subfields (`check`, `command`, `extension`) | fail |
 | HK03 | Backup hook's container exists among services | fail |
 
-### Mail (only if `mail:` present in manifest)
+### Mail (M01–M03 only if `mail:` present in manifest)
 
 | ID | Rule | Level |
 |---|---|---|
 | M01 | `domain` set | fail |
 | M02 | *Retired, id not reused.* It validated `snappymail_domain`, a SnappyMail seed file that the manifest no longer has | — |
 | M03 | (with `--server` flag) Mail stack on VPS knows this domain | fail |
+| M04 | (with `--server` flag, any project, silent on a server without mail) Every domain in the mail registry has both DKIM keys, listed in the signing override | warn |
 
 ### Backup (only with `--server`, and only on a server that has backups)
 
@@ -297,6 +298,7 @@ runs; these are added, and T05 tightens (above).
 | Cert status for the project's `domain` in Traefik's `acme.json` | fail when the certificate has expired; warn inside Traefik's 30-day renewal window, and warn for every way the store can decline to answer, each with its own message (absent, empty, unreadable, not a regular file, no entry for this domain, not JSON, a resolver key that is not `letsencrypt`, a `Certificates` that is not a list, an entry with no `certificate`, one that is not base64, one openssl will not read) — they have different remedies, so collapsing them into "no certificate" throws away the only thing that says what to do next |
 | Effective resource limits vs host size (R04) | above the marker's ceiling fails, below warns |
 | Is the apps tree the operators' group's? | warn when the server has no `kasbah` group, and for every entry under the resolved apps path that an operator owns (`<data>/`'s contents, entries no operator owns and directories with no group bits aside) that is not the group's or lacks the bits another operator's write needs — setgid and group `rwx` on a directory, group read-write on a file kasbah rewrites in place (`.env`, `versions.log`, the locks, the marker), group `rwx` on the shared binary; counted exactly, the first twenty named. `kasbah server init` converges it (`server-setup.md` → Operators) |
+| Is every mail domain DKIM-signed? (M04) | warn for each domain in `<apps>/mail/kasbah.yml` that lacks either key Rspamd signs with — `rsa-2048-mail-<d>.private.txt` and `ed25519-ed-<d>.private.txt` in `<data>/mail/dms/config/rspamd/dkim/`, names listed, keys never read — or whose paths the signing override `override.d/dkim_signing.conf` does not list (a domain added after init whose block was never added), naming the keygen commands and the block to add; warn "cannot be checked" for a registry that is unreadable or refused, a key directory that cannot be listed, or an override that cannot be read; silent on a server with no mail registry; runs whether or not the project has `mail:`. Unsigned mail is what lands in spam. A path commented out with `//` or `/* */` rather than `#` still counts as listed |
 | Has the backup stack run, and did the last run work? (B01) | fail when the last run failed, when the scheduler's state has outlived its deadline, or when its container is not running; warn for every way the record can decline to answer, for a repository with no password, for an orphan password left by a dropped project, and for a run that shipped nothing; silent on a server with no backups. The record is `<apps>/.kasbah/backup/state/status`, read through the one parser `server status` shares |
 
 The effective limits are, for a service on the variables, `KASBAH_CPU_LIMIT` /

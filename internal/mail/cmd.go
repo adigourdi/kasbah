@@ -290,16 +290,18 @@ func add(c Ctx, s Session, o Options, apps, data string, r *ReadReport, reg *mai
 func followup(w io.Writer, target, d, primary, data string) {
 	fmt.Fprintf(w, "\nStill to do for %s — none of it is kasbah's to do:\n\n", d)
 	fmt.Fprintf(w, "1. Generate its DKIM keys, on the VPS:\n")
-	fmt.Fprintf(w, "     ssh %s 'docker exec mail-dms setup config dkim keytype rsa     selector mail domain %s'\n", target, d)
-	fmt.Fprintf(w, "     ssh %s 'docker exec mail-dms setup config dkim keytype ed25519 selector ed   domain %s'\n", target, d)
+	for _, c := range DKIMKeygen(target, d) {
+		fmt.Fprintf(w, "     %s\n", c)
+	}
 	fmt.Fprintf(w, "\n2. Add a block for it to the Rspamd signing override, which kasbah wrote\n")
 	fmt.Fprintf(w, "   once for %s and never rewrites:\n", primary)
-	fmt.Fprintf(w, "     %s/mail/dms/config/rspamd/override.d/dkim_signing.conf\n\n", data)
+	fmt.Fprintf(w, "     %s\n\n", DKIMConf(data))
 	fmt.Fprintf(w, "     domain {\n")
 	fmt.Fprintf(w, "         %s {\n", d)
 	fmt.Fprintf(w, "             selectors [\n")
-	fmt.Fprintf(w, "                 { path = \"/tmp/docker-mailserver/rspamd/dkim/rsa-2048-mail-%s.private.txt\"; selector = \"mail\"; },\n", d)
-	fmt.Fprintf(w, "                 { path = \"/tmp/docker-mailserver/rspamd/dkim/ed25519-ed-%s.private.txt\"; selector = \"ed\"; }\n", d)
+	k := DKIMKeyNames(d)
+	fmt.Fprintf(w, "                 { path = \"%s/%s\"; selector = \"mail\"; },\n", DKIMContainerDir, k[0])
+	fmt.Fprintf(w, "                 { path = \"%s/%s\"; selector = \"ed\"; }\n", DKIMContainerDir, k[1])
 	fmt.Fprintf(w, "             ]\n")
 	fmt.Fprintf(w, "         }\n")
 	fmt.Fprintf(w, "     }\n\n")

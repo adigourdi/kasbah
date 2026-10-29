@@ -627,7 +627,9 @@ every manifest shape — is a named failure (6).
 whether its `.env` still matches this checkout's `.env.prod.example`, whether
 the mail stack knows the claimed domain (M03), whether `health.container` is
 healthy, what Traefik's `acme.json` holds for the project's domain, and whether
-the effective resource limits are within the host's ceiling (R04). It also
+the effective resource limits are within the host's ceiling (R04), whether
+every mail domain on it can sign (M04), whether the backup stack ran (B01) and
+whether the apps tree is the operators' group's. It also
 tightens T05 from a first-label heuristic to the hostnames that server really
 owns. It changes nothing on the server but kasbah's own binary, brought up to
 date first. Given without a `USER@HOST`

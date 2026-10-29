@@ -282,7 +282,10 @@ binary and `internal/mailreg` — and names
 the same claim. **M03** — "the stack on the VPS knows this domain" — is a `--server`
 rule and runs under `kasbah check --server`, which reads this file and fails a
 claim it does not carry; the deploy asks that question anyway, on every deploy,
-and only warns, because an unmet claim costs mail rather than the site.
+and only warns, because an unmet claim costs mail rather than the site. **M04**
+warns, from any project's `check --server`, for each domain of the registry
+missing either DKIM key or its block in the signing override — kasbah never generates one, and unsigned mail from a fresh
+VPS is mail in spam.
 
 What kasbah does NOT do:
 - Create mailboxes.
@@ -294,7 +297,10 @@ is printed once by the `kasbah server init --with-mail` run that *creates* the
 stack, and on demand by `kasbah server mail-setup-guide user@vps`. A re-run of
 init prints the one-line pointer at that command instead, along with the stack's
 state and the one warning that matters — that DMS crashlooping while the first
-certificate is issued is expected.
+certificate is issued is expected. Every run ends with a three-line
+deliverability checklist — a DKIM key per domain, a PTR record matching the mail
+hostname, an SPF record — each pointing at its step of the guide; kasbah states
+them and probes none.
 
 The guide is rendered for the server's own registry rather than shown as an
 example: the primary domain, every domain under `domains:`, the DNS records each

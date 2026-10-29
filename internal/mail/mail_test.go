@@ -372,6 +372,8 @@ func TestGuide(t *testing.T) {
 		"log in at https://webmail.example.test with their full address", "\"Just Logout\" discards it",
 		"webmail settings in\n/apps/data/mail/cypht/.",
 		"selector ed   domain shop.test'\n\nThe keys land",
+		"ssh deploy@vps 'docker exec mail-dms setup config dkim keytype rsa     selector mail domain example.test'\n",
+		"`kasbah check --server` warns for\nevery domain in the registry that lacks either key or its block in that file.",
 		"---------------------------------------------------------------------------\n\n; ---------- example.test: the stack's own names",
 	} {
 		if !strings.Contains(so, want) {
@@ -382,6 +384,39 @@ func TestGuide(t *testing.T) {
 	Guide(&b, GuideData{Target: "t", Primary: "p.com", Domains: []string{"p.com"}})
 	if !strings.Contains(b.String(), "VPS address:    <VPS IP>\n") {
 		t.Error("no placeholder")
+	}
+}
+
+// Both of the names the override signs with, by equality, and listed on a
+// live line of the override; the seeded template lists both for the primary.
+func TestDKIMGaps(t *testing.T) {
+	tpl, err := fs.ReadFile(templates.FS, "mail/rspamd-dkim-signing.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeded := strings.ReplaceAll(strings.ReplaceAll(string(tpl), "__MAIL_PRIMARY_DOMAIN__", "a.com"), "\n", "\r\n")
+	both := []string{"rsa-2048-mail-a.com.private.txt", "ed25519-ed-a.com.private.txt"}
+	for _, c := range []struct {
+		name           string
+		keys           []string
+		conf           string
+		absent, unlist string
+	}{
+		{"both, seeded", both, seeded, "", ""},
+		{"ed25519 only", both[1:], seeded, "rsa-2048-mail-a.com.private.txt", ""},
+		{"rsa only", both[:1], seeded, "ed25519-ed-a.com.private.txt", ""},
+		{"a hyphenated selector is another domain's key",
+			[]string{"rsa-2048-mail-shop-a.com.private.txt", "ed25519-ed-shop-a.com.private.txt", "rsa-4096-mail-a.com.private.txt", "ed25519-ed-a.com.public.txt"},
+			seeded, strings.Join(both, " "), ""},
+		{"keys, no block (a domain added later)", both, strings.ReplaceAll(seeded, "a.com", "b.com"), "", strings.Join(both, " ")},
+		{"a commented-out block", both, "# path = \"/tmp/docker-mailserver/rspamd/dkim/rsa-2048-mail-a.com.private.txt\";\n" +
+			"  #path = \"/tmp/docker-mailserver/rspamd/dkim/ed25519-ed-a.com.private.txt\";\n", "", strings.Join(both, " ")},
+		{"a longer domain's path", both, strings.ReplaceAll(seeded, "a.com", "xa.com"), "", strings.Join(both, " ")},
+	} {
+		absent, unlisted := DKIMGaps("a.com", c.keys, c.conf)
+		if strings.Join(absent, " ") != c.absent || strings.Join(unlisted, " ") != c.unlist {
+			t.Errorf("%s: absent %q unlisted %q", c.name, absent, unlisted)
+		}
 	}
 }
 
