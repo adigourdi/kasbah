@@ -221,19 +221,17 @@ const snippet = "Next step: author compose.prod.yml. Starter snippet:\n" +
 	"        options:\n" +
 	"          max-size: \"10m\"\n" +
 	"          max-file: \"3\"\n" +
-	"      networks: [kasbah-net]\n" +
+	"      networks: [kasbah]\n" +
 	"\n" +
 	"  networks:\n" +
-	"    kasbah-net:\n" +
-	"      external: true\n" +
+	"    kasbah: {}\n" +
 	"\n" +
-	"  Only Traefik-routed containers join kasbah-net — one service needs nothing\n" +
-	"  else. Add a second, project-internal network the moment there is a service\n" +
-	"  nothing routes to, and keep that service off the shared one (see\n" +
-	"  docs/traefik.md in the kasbah repository). Compose publishes the service *name* as a DNS alias on\n" +
-	"  every network it joins, so name it for the project: a bare `web` on\n" +
-	"  kasbah-net collides with every other project that has one. The KASBAH_*\n" +
-	"  limits are injected into .env at deploy.\n" +
+	"  Only Traefik-routed containers join the kasbah network — the project's own,\n" +
+	"  which compose creates as {name}_kasbah and deploy connects Traefik to; it is\n" +
+	"  not external, so the file runs under plain `docker compose up` too. Add a\n" +
+	"  second, project-internal network the moment there is a service nothing\n" +
+	"  routes to, and keep that service off kasbah (see docs/traefik.md in the\n" +
+	"  kasbah repository). The KASBAH_* limits are injected into .env at deploy.\n" +
 	"\n" +
 	"Routing is declared in traefik-dynamic.yml at the project root (see\n" +
 	"docs/traefik.md in the kasbah repository). Starter:\n" +

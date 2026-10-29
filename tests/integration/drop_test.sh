@@ -233,6 +233,29 @@ web_id="$(rig_ssh "docker image inspect --format '{{.Id}}' $image_web:$version" 
 nginx_id="$(rig_ssh "docker image inspect --format '{{.Id}}' nginx:alpine" 2>/dev/null | tr -d '\r')"
 assert '[ -n "$web_id" ] && [ -n "$nginx_id" ]' "the two images this suite reasons about have ids"
 
+# --- Isolation: built-app's own network, demo still on the shared kasbah-net ----
+# A container reaches only the networks it is on; Traefik is on both projects'.
+# reach <from> <url>: whether a wget from that container gets an answer.
+reach() { rig_ssh "docker exec $1 wget -q -T 3 -O /dev/null $2 >/dev/null 2>&1 && echo yes || echo no" 2>/dev/null | tr -d '\r'; }
+nets_of() { rig_ssh "docker inspect -f '{{range \$k, \$v := .NetworkSettings.Networks}}{{\$k}} {{end}}' $1" 2>/dev/null | tr -d '\r'; }
+ip_on() { rig_ssh "docker inspect -f '{{(index .NetworkSettings.Networks \"$2\").IPAddress}}' $1" 2>/dev/null | tr -d '\r'; }
+web_nets=$(nets_of built-app-web)
+assert 'grep -qw built-app_kasbah <<<"$web_nets" && ! grep -qw kasbah-net <<<"$web_nets"' \
+    "built-app-web is on its project's kasbah network and off kasbah-net (on: $web_nets)"
+assert 'grep -qw built-app_kasbah <<<"$(nets_of traefik)"' \
+    "and deploy connected Traefik to it (traefik on: $(nets_of traefik))"
+web_ip=$(ip_on built-app-web built-app_kasbah)
+demo_ip=$(ip_on demo-web kasbah-net)
+assert '[ -n "$web_ip" ] && [ -n "$demo_ip" ]' "both routed containers have an address ($web_ip, $demo_ip)"
+assert '[ "$(reach traefik http://built-app-web:80/)" = yes ] && [ "$(reach traefik http://$web_ip:80/)" = yes ]' \
+    "Traefik reaches built-app-web by name and by address — the probe can succeed"
+assert '[ "$(reach demo-web http://127.0.0.1/)" = yes ] && [ "$(reach built-app-web http://127.0.0.1/)" = yes ]' \
+    "each probing container answers itself — a no below is the network, not the probe"
+assert '[ "$(reach demo-web http://built-app-web:80/)" = no ]' "demo-web cannot reach built-app-web by name"
+assert '[ "$(reach demo-web http://$web_ip:80/)" = no ]' "nor by its address $web_ip"
+assert '[ "$(reach built-app-web http://demo-web:80/)" = no ]' "built-app-web cannot reach demo-web by name"
+assert '[ "$(reach built-app-web http://$demo_ip:80/)" = no ]' "nor by its address $demo_ip"
+
 # --- A run nobody answered --------------------------------------------------------
 #
 # kasbah_bounded gives the command no terminal, so this is the tri-state's
@@ -284,6 +307,11 @@ assert '[ "$(labelled $neighbour)" = "demo-web " ]' \
 assert '[ "$(remote_exists $apps/traefik/dynamic/$neighbour.yml)" = yes ]' "with its route"
 serve=$(wait_http "$neighbour.test" 200)
 assert '[ "$serve" = 200 ]' "and Traefik still serves it (got '$serve')"
+net_gone=$(rig_ssh "docker network inspect built-app_kasbah >/dev/null 2>&1 && echo present || echo gone" 2>/dev/null | tr -d '\r')
+assert '[ "$net_gone" = gone ]' "the drop took built-app's own network with it (got '$net_gone')"
+assert '! grep -qw built-app_kasbah <<<"$(nets_of traefik)"' "Traefik is off it (on: $(nets_of traefik))"
+assert 'grep -qF "disconnected traefik from built-app_kasbah" "$tmpdir/out"' \
+    "and the drop says it disconnected Traefik before the down (stdout: $(cli_out))"
 gone_serve=$(wait_http "$project.test" 404)
 assert '[ "$gone_serve" = 404 ]' \
     "while the dropped host is unrouted rather than 502 — it served 200 before this drop (got '$gone_serve')"

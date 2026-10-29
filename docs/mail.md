@@ -21,9 +21,17 @@ The container names are load-bearing twice over — this document's
 `docker exec mail-dms …` lines, and `_mail.yml`'s
 `http://mail-cypht:80`. The compose *service* names match them rather
 than being the shorter `dms`/`cypht`, because compose registers a
-service name as a DNS alias on every network it joins and a bare `dms` on the
-shared `kasbah-net` is the collision `kasbah check`'s C09 warns every project
-about.
+service name as a DNS alias on every network it joins, and Traefik — which joins
+the mail stack's network and every project's — would see a bare `dms` beside any
+project's.
+
+**The mail stack has its own network, `mail_kasbah`**, which both containers
+join and Traefik is attached to at the mail start (and at every Traefik start),
+the same way it is attached to projects' — for webmail. No project shares a
+network with DMS. A server whose mail stack was on the shared `kasbah-net`
+moves it off at its next `server init --with-mail`, which says so once: apps
+that reached `mail-dms` over `kasbah-net` lose it and send through
+`mail.<domain>:587` instead.
 
 Mail ports `25`, `465`, `587` and `993` are bound on the host. Traefik is an
 HTTP proxy and is not in the mail data path.
@@ -87,8 +95,8 @@ domain on the server signs in the same way; webmail needs no per-domain config.
   - The client address is real because `mail-cypht` mounts a kasbah-owned
     `<apps>/mail/cypht-nginx.conf`: the image's own config plus `real_ip`,
     trusting `X-Forwarded-For` from the private ranges. Traefik sets that header,
-    and `mail-cypht` publishes no port, so only kasbah-net containers could forge
-    it. When the shipped file differs
+    and `mail-cypht` publishes no port, so only Traefik and the mail stack itself,
+    the containers on `mail_kasbah`, could forge it. When the shipped file differs
     from the one the container is serving, the start step recreates `mail-cypht`,
     because a renamed file does not reach a single-file bind mount.
   - Proved locally against 2.13.0: 5 failures with `X-Forwarded-For: 203.0.113.9`
@@ -243,20 +251,23 @@ the claimed domain is known to the mail stack.
 
 ## SMTP access from apps
 
-Apps that need to send mail connect to DMS over the shared `kasbah-net`
-network:
+Apps send mail the way any mail client does — through the server's public
+submission port, with a mailbox login, against a certificate that matches:
 
 ```
-MAIL_HOST=mail-dms      # container hostname
-MAIL_PORT=587           # submission / STARTTLS
+MAIL_HOST=mail.example.com   # the stack's public hostname
+MAIL_PORT=587                # submission / STARTTLS
 MAIL_USER=noreply@example.com
-MAIL_PASSWORD=...       # set by admin via setup.sh
+MAIL_PASSWORD=...            # set by admin via setup.sh
 MAIL_ENCRYPTION=tls
 ```
 
-Apps don't expose SMTP publicly; they only use it internally. External
-submission (e.g. for humans using a mail client) goes through the public
-ports (25/465/587/993) on the VPS.
+No app shares a network with DMS, so a compromised app cannot reach the mail
+server's other ports or its internals — only the authenticated submission
+every client gets. The connection leaves the container for the host's public
+address and comes back in through the published port; `kasbah check` warns on
+a project that still names `mail-dms` (C10). That hairpin is what most VPS
+networks do; one whose provider drops it needs the relay below instead.
 
 ## Per-app mail claims
 

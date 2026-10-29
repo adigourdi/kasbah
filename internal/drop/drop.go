@@ -743,6 +743,15 @@ func (p *Plan) reportAct(o *cli.Output, r *ActReport) error {
 		o.ErrCont("by hand, or re-deploy the project")
 		bad = true
 	}
+	for _, n := range strings.Fields(r.Detached) {
+		say("disconnected traefik from %s", n)
+	}
+	if r.DetachErr != "" {
+		say("FAILED to disconnect traefik from %s's network", p.Name)
+		o.Err("could not disconnect traefik from %s's kasbah network on %s: %s", p.Name, p.Target, r.DetachErr)
+		o.ErrCont("the down below cannot remove a network traefik is still on")
+		bad = true
+	}
 	left := strings.TrimSpace(r.DownLeft)
 	switch r.Down {
 	case "ok":

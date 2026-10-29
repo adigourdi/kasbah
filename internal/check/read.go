@@ -159,8 +159,8 @@ func listHas(v tree.Value, s string) bool {
 	return false
 }
 
-// joinsNet is whether a service's networks: names kasbah-net, as a list
-// member or a mapping key.
-func joinsNet(networks tree.Value) bool {
-	return listHas(networks, "kasbah-net") || hasKey(networks, "kasbah-net")
+// joinsNet is whether a service's networks: names net, as a list member or
+// a mapping key.
+func joinsNet(networks tree.Value, net string) bool {
+	return listHas(networks, net) || hasKey(networks, net)
 }

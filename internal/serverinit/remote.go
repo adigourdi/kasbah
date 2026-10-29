@@ -17,6 +17,7 @@ import (
 	markerpkg "github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverlock"
+	"github.com/adigourdi/kasbah/internal/traefiknet"
 )
 
 // Remote is `kasbah remote init <step> …`, run by the server binary. Each step
@@ -370,6 +371,15 @@ func remoteStart(apps string, restart bool, timeout time.Duration, acme, stamp s
 			return fmt.Errorf("docker compose -p %s restart traefik failed", project)
 		}
 	}
+	// A recreated Traefik is on kasbah-net alone: every project's network and
+	// the mail stack's are joined again, or their routes answer 502.
+	nets, joined, err := traefiknet.Docker(traefiknet.Exec).JoinAll(apps)
+	if err != nil {
+		return fmt.Errorf("traefik is up and could not rejoin the project networks (%v) — their sites answer 502 until a re-run of init or a deploy connects it", err)
+	}
+	for _, n := range joined {
+		fmt.Fprintf(stderr, "remote: connected traefik to %s\n", n)
+	}
 
 	diagnose := func(msg string) error {
 		fmt.Fprintf(stderr, "remote: %s\n", msg)
@@ -410,8 +420,8 @@ func remoteStart(apps string, restart bool, timeout time.Duration, acme, stamp s
 	}
 	name, _ := inspect(id, "{{.Name}}")
 	image, _ := inspect(id, "{{.Config.Image}}")
-	fmt.Fprintf(stdout, "traefik_action=%s\ntraefik_health=%s\ntraefik_started_at=%s\ntraefik_image=%s\ntraefik_container=%s\n",
-		action, health, after, image, strings.TrimPrefix(name, "/"))
+	fmt.Fprintf(stdout, "traefik_action=%s\ntraefik_health=%s\ntraefik_started_at=%s\ntraefik_image=%s\ntraefik_container=%s\ntraefik_networks=%s\n",
+		action, health, after, image, strings.TrimPrefix(name, "/"), strings.Join(nets, " "))
 	return nil
 }
 
@@ -424,7 +434,8 @@ func resetByHand(err error, state, dir, acme, stamp string) error {
 		"  cd %s && docker compose -p traefik stop traefik\n"+
 		"  cp -p %s %s.%s\n"+
 		"  : > %s\n"+
-		"  docker compose -p traefik up -d", err, state, dir, acme, acme, stamp, acme)
+		"  docker compose -p traefik up -d\n"+
+		"then re-run init, whose Traefik start rejoins the project networks", err, state, dir, acme, acme, stamp, acme)
 }
 
 // errSaid is a failure already explained on stderr.

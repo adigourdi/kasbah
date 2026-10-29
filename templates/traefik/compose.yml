@@ -57,8 +57,9 @@ services:
     # every site with it. `kasbah check`'s R01-R03 govern project compose
     # files, not kasbah-owned stacks.
 
-# The network every routed container joins, declared `external: true` on the
-# project side. Traefik resolves backends by container_name across it.
+# Kasbah's own shared network, kept for projects still routed through it
+# (declared `external: true` on their side). Each project's own network, and
+# the mail stack's, is joined live with `docker network connect` instead.
 networks:
   kasbah-net:
     name: kasbah-net

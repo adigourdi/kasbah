@@ -11,10 +11,9 @@
 name: built-app
 
 services:
-  # Prefixed with the project name because compose registers the service name
-  # as a DNS alias on kasbah-net, which every project on the host shares — a
-  # service called `web` claims the bare `web` alias there (C09). Nothing stops
-  # a service and its container carrying the same name.
+  # Prefixed with the project name: Traefik sits on every project's network
+  # and resolves names across them all. Nothing stops a service and its
+  # container carrying the same name.
   built-app-web:
     build:
       context: .
@@ -24,8 +23,9 @@ services:
     # not one it can move. The tag reads :current because that is what the
     # server's compose file resolves to (docs/build-deploy.md → image tags).
     image: built-app-web:current
-    # Traefik resolves the backend by container name over kasbah-net, so this
-    # is what traefik-dynamic.yml's loadBalancer URL points at (docs/traefik.md).
+    # Traefik resolves the backend by container name over the project's kasbah
+    # network, so this is what traefik-dynamic.yml's loadBalancer URL points at
+    # (docs/traefik.md).
     container_name: built-app-web
     restart: unless-stopped
     volumes:
@@ -35,9 +35,9 @@ services:
     environment:
       BUILT_APP_GREETING: ${BUILT_APP_GREETING}
     networks:
-      # Routed service: on kasbah-net for Traefik, and on the project's own
-      # network for anything internal. Nothing else joins kasbah-net (C07).
-      - kasbah-net
+      # Routed service: on the project's kasbah network, which deploy connects
+      # Traefik to, and on internal for the rest. Nothing else joins kasbah (C07).
+      - kasbah
       - internal
     # Injected into .env by kasbah from the server marker, into its managed
     # block. Unset, compose fails outright — an empty value is not a valid
@@ -58,7 +58,7 @@ services:
     container_name: built-app-worker
     restart: unless-stopped
     networks:
-      # Nothing routes to it, so it stays off kasbah-net (C07).
+      # Nothing routes to it, so it stays off kasbah (C07).
       - internal
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: ${KASBAH_MEM_LIMIT}
@@ -74,10 +74,8 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     networks:
-      # Internal only. A service nothing routes to must stay off kasbah-net:
-      # compose registers service-name aliases on every network it joins, and
-      # two projects with a `cache` service would round-robin across each
-      # other (C07).
+      # Internal only. A service nothing routes to stays off kasbah: Traefik
+      # joins that network, and only what it routes belongs there (C07).
       - internal
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: ${KASBAH_MEM_LIMIT}
@@ -87,7 +85,8 @@ services:
         max-size: "10m"
         max-file: "3"
 
+# Both the project's own: compose creates built-app_kasbah and
+# built-app_internal, so the file runs under plain `docker compose up` too.
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
   internal: {}

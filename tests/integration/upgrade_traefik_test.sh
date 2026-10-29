@@ -81,7 +81,12 @@ fi
 # template, rendered — a hand-written stand-in would not carry the four routers
 # it actually declares.
 sed "s/__MAIL_PRIMARY_DOMAIN__/$rig_domain/g" "$repo_dir/templates/mail/_mail.yml" > "$work/_mail.yml"
-cat > "$work/gallery.yml" <<YML
+# Two of them backed by real compose projects on their own kasbah networks,
+# under <apps>/ as deployed projects are, joined to Traefik as deploy joins
+# them: a recreated Traefik has to rejoin both, or each answers 502. A third,
+# run by hand outside <apps>, is never joined.
+for p in gallery shop; do
+cat > "$work/$p.yml" <<YML
 http:
   routers:
     gallery-http:
@@ -102,9 +107,22 @@ http:
         servers:
           - url: "http://gallery-web:80"
 YML
-rsync -e "ssh -F $RIG_SSH_CONFIG" "$work/_mail.yml" "$work/gallery.yml" \
+sed -i "s/gallery/$p/g" "$work/$p.yml"
+printf 'name: %s\nservices:\n  %s-web:\n    image: nginx:alpine\n    container_name: %s-web\n    networks: [kasbah]\nnetworks:\n  kasbah: {}\n' \
+    "$p" "$p" "$p" > "$work/$p-compose.yml"
+done
+rsync -e "ssh -F $RIG_SSH_CONFIG" "$work/_mail.yml" "$work/gallery.yml" "$work/shop.yml" \
     "$RIG_SSH_ALIAS:$apps/traefik/dynamic/" >/dev/null \
     || { echo "error: could not plant the fragments on the rig" >&2; exit 2; }
+for p in gallery shop; do
+    rig_ssh "mkdir -p $apps/$p && cat > $apps/$p/compose.yml && cd $apps/$p &&
+             docker compose -p $p up -d >/dev/null 2>&1 && docker network connect ${p}_kasbah traefik" \
+        <"$work/$p-compose.yml" >/dev/null 2>&1 \
+        || { echo "error: could not bring up the $p project on its own network" >&2; exit 2; }
+done
+sed 's/gallery/handrun/g' "$work/gallery-compose.yml" | rig_ssh "mkdir -p /tmp/kasbah-handrun && cat > /tmp/kasbah-handrun/compose.yml &&
+    cd /tmp/kasbah-handrun && docker compose -p handrun up -d" >/dev/null 2>&1 \
+    || { echo "error: could not bring up the hand-run project" >&2; exit 2; }
 
 # Traefik's own answer about itself, through its own :443 and its own dashboard
 # router — so "still serving" and "which version" are one read, and neither is
@@ -131,6 +149,28 @@ wait_code() {
     done
     printf '%s' "$got"
 }
+# 200 from the project's nginx through Traefik's :443; 502 when Traefik is not
+# on the project's network.
+https_code() {
+    rig_ssh "curl -sk -o /dev/null -m 15 -w '%{http_code}' --resolve '$1:443:127.0.0.1' https://$1/" 2>/dev/null
+}
+wait_https() {
+    local waited=0 got=""
+    while [ "$waited" -lt 15 ]; do
+        got=$(https_code "$1")
+        [ "$got" != 200 ] || break
+        sleep 1; waited=$((waited + 1))
+    done
+    printf '%s' "$got"
+}
+traefik_nets() { rig_ssh "docker inspect -f '{{range \$k, \$v := .NetworkSettings.Networks}}{{\$k}} {{end}}' traefik" 2>/dev/null; }
+both_serve() {   # both_serve <when>
+    local p
+    for p in gallery shop; do
+        assert '[ "$(wait_https $p.$rig_domain)" = 200 ]' \
+            "$1: $p, on its own kasbah network, is served through Traefik (got '$(https_code $p.$rig_domain)', traefik on: $(traefik_nets))"
+    done
+}
 inspected_image() { rig_ssh "docker inspect -f '{{.Config.Image}}' traefik" 2>/dev/null; }
 acme_digest() { rig_ssh "openssl dgst -sha256 -r < $apps/data/traefik/letsencrypt/acme.json | cut -d' ' -f1" 2>/dev/null; }
 dry_leftovers() { rig_ssh "docker ps -aq --filter label=kasbah.role=traefik-dry-run | wc -l" 2>/dev/null; }
@@ -144,6 +184,25 @@ assert '[ "$before_image" = "$pinned" ]' "the rig starts on kasbah's own pin (go
 assert '[ -n "$before_version" ]' "and Traefik answers /api/version through its own dashboard (got '$before_version')"
 assert '[ "$(wait_code gallery.$rig_domain 301)" = 301 ]' \
     "the planted project fragment is live and redirecting (got '$(http_code gallery.$rig_domain)')"
+
+both_serve "before any upgrade"
+# Two projects on their own networks: neither reaches the other, by name or by
+# address, while Traefik reaches both.
+reach() { rig_ssh "docker exec $1 wget -q -T 3 -O /dev/null $2 >/dev/null 2>&1 && echo yes || echo no" 2>/dev/null | tr -d '\r'; }
+shop_ip=$(rig_ssh "docker inspect -f '{{(index .NetworkSettings.Networks \"shop_kasbah\").IPAddress}}' shop-web" 2>/dev/null | tr -d '\r')
+assert '[ -n "$shop_ip" ] && [ "$(reach traefik http://shop-web:80/)" = yes ] && [ "$(reach traefik http://$shop_ip:80/)" = yes ]' \
+    "Traefik reaches shop-web by name and by address ($shop_ip)"
+assert '[ "$(reach gallery-web http://127.0.0.1/)" = yes ]' "gallery-web answers itself — a no below is the network, not the probe"
+assert '[ "$(reach gallery-web http://shop-web:80/)" = no ] && [ "$(reach gallery-web http://$shop_ip:80/)" = no ]' \
+    "gallery-web reaches shop-web neither by name nor by address"
+# The control: off its network, the same route is a 502. Left off, so the
+# upgrade's rejoin is what brings it back.
+rig_ssh "docker network disconnect shop_kasbah traefik" >/dev/null 2>&1
+shop_off=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    shop_off=$(https_code "shop.$rig_domain"); [ "$shop_off" != 502 ] || break; sleep 1
+done
+assert '[ "$shop_off" = 502 ]' "with Traefik off shop_kasbah, shop answers 502 (got '$shop_off')"
 
 # --- Direction one: a real bump ------------------------------------------------------
 up_out=$(kasbah_cli server upgrade-traefik "$RIG_TARGET" --version="$target_a" 2>&1 </dev/null)
@@ -159,6 +218,13 @@ assert '[ "$after_version" != "$before_version" ]' \
     "the version genuinely moved (from '$before_version')"
 assert '[ "$(http_code gallery.$rig_domain)" = 301 ]' \
     "the project fragment is still routing afterwards (got '$(http_code gallery.$rig_domain)')"
+both_serve "after the upgrade recreated Traefik"
+assert 'grep -qw gallery_kasbah <<<"$(traefik_nets)" && grep -qw shop_kasbah <<<"$(traefik_nets)"' \
+    "Traefik is back on both project networks (on: $(traefik_nets))"
+assert 'grep -qF "rejoined 2 project network(s): gallery_kasbah shop_kasbah" <<<"$up_out"' \
+    "and the upgrade says it rejoined them (said: $up_out)"
+assert '! grep -qw handrun_kasbah <<<"$(traefik_nets)"' \
+    "and not a hand-run compose project's kasbah network outside $apps (on: $(traefik_nets))"
 assert 'grep -qF "dry run passed" <<<"$up_out"' "the dry run ran and passed (said: $up_out)"
 for router in traefik-dashboard@file mail-cert@file webmail@file gallery@file; do
     assert 'grep -qF "$router" <<<"$up_out"' \
@@ -196,6 +262,7 @@ $reinit_out"
 assert '[ "$(inspected_image)" = "traefik:$target_a" ]' \
     "and leaves the upgraded tag alone — a managed bump survives the next init (got '$(inspected_image)')"
 assert '[ "$(served_version)" = "${target_a#v}" ]' "the proxy is still serving that version"
+both_serve "after a re-run of init"
 
 # --- Direction two: a broken fragment stops the whole thing ---------------------------
 #
@@ -257,6 +324,7 @@ assert 'grep -qF "dry run passed" <<<"$off_up" && grep -qF "gallery@file" <<<"$o
     "its dry run read the fragments (said: $off_up)"
 assert '! grep -qF "traefik-dashboard@file" <<<"$off_up"' "and built no dashboard router"
 assert '[ "$(inspected_image)" = "traefik:$target_b" ]' "the container runs the new tag (got '$(inspected_image)')"
+both_serve "after the second upgrade"
 assert '[ "$(rig_ssh "cat $apps/traefik/dynamic/_shared.yml" 2>/dev/null)" = "$off_shared" ]' \
     "and _shared.yml is still the off one — the anchor never shipped"
 assert '[ "$(dry_leftovers)" = 0 ]' "the throwaway left nothing behind (got '$(dry_leftovers)')"

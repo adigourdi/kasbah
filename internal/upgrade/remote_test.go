@@ -26,6 +26,9 @@ type fakeDocker struct {
 	healthyOn map[int]bool
 	calls     []string
 	onUp      func(n int)
+	// connectErr fails every `network connect`; traefik starts on kasbah-net
+	// alone, two project networks waiting.
+	connectErr bool
 }
 
 func (f *fakeDocker) run(dir string, args ...string) (string, error) {
@@ -40,6 +43,16 @@ func (f *fakeDocker) run(dir string, args ...string) (string, error) {
 		return "", nil
 	case strings.HasPrefix(j, "compose -p traefik ps"):
 		return "cid", nil
+	case strings.HasPrefix(j, "network ls --filter label=com.docker.compose.network=kasbah --format"):
+		// hand_kasbah has no <apps>/hand: a compose project run by hand.
+		return "mail_kasbah mail\ndemo_kasbah demo\nhand_kasbah hand\n", nil
+	case strings.HasPrefix(j, "network connect"):
+		if f.connectErr {
+			return "", errors.New("exit status 1")
+		}
+		return "", nil
+	case args[0] == "inspect" && strings.Contains(j, "NetworkSettings.Networks"):
+		return "kasbah-net\n", nil
 	case strings.HasPrefix(j, "compose -p traefik logs"):
 		return "level=error msg=boom", nil
 	case args[0] == "inspect":
@@ -75,6 +88,7 @@ func stack(t *testing.T) (apps, backupDir string) {
 	backupDir = apps + "/traefik/backups/S"
 	os.MkdirAll(apps+"/traefik/dynamic", 0o755)
 	os.MkdirAll(backupDir, 0o755)
+	os.MkdirAll(apps+"/demo", 0o755)
 	for _, f := range []string{"compose.yml", "traefik.yml", "dynamic/_shared.yml"} {
 		os.WriteFile(apps+"/traefik/"+f, []byte("new "+f), 0o644)
 		os.WriteFile(backupDir+"/"+filepath.Base(f), []byte("old "+f), 0o644)
@@ -98,8 +112,21 @@ func (failWriter) Write([]byte) (int, error) { return 0, syscall.EPIPE }
 func TestStart(t *testing.T) {
 	apps, bk := stack(t)
 	install(t, &fakeDocker{healthyOn: map[int]bool{1: true}})
-	if u := start(apps, bk, "", time.Second, failWriter{}); u.RolledBack != "no" || u.Health != "healthy" || restored(apps) {
+	f0 := &fakeDocker{healthyOn: map[int]bool{1: true}}
+	install(t, f0)
+	if u := start(apps, bk, "", time.Second, failWriter{}); u.RolledBack != "no" || u.Health != "healthy" || restored(apps) ||
+		u.Networks != "demo_kasbah mail_kasbah" || u.JoinErr != "" {
 		t.Errorf("healthy: %+v", u)
+	}
+	// Rejoined right after the up, before the health wait.
+	if i, j, k := indexOf(f0.calls, "compose -p traefik up -d"), indexOf(f0.calls, "network connect demo_kasbah traefik"), indexOf(f0.calls, "inspect -f {{if"); i < 0 || j < i || k < j ||
+		indexOf(f0.calls, "network connect mail_kasbah traefik") < 0 {
+		t.Errorf("join order: %q", f0.calls)
+	}
+	apps, bk = stack(t)
+	install(t, &fakeDocker{healthyOn: map[int]bool{1: true}, connectErr: true})
+	if u := start(apps, bk, "", time.Second, failWriter{}); u.RolledBack != "no" || !strings.Contains(u.JoinErr, "docker network connect demo_kasbah traefik failed") {
+		t.Errorf("a failed join: %+v", u)
 	}
 
 	apps, bk = stack(t)
@@ -109,6 +136,10 @@ func TestStart(t *testing.T) {
 	u := start(apps, bk, "", time.Second, &se)
 	if u.RolledBack != "yes" || !restored(apps) || f.ups != 2 || !strings.Contains(se.String(), "boom") {
 		t.Errorf("unhealthy: %+v restored=%v ups=%d %s", u, restored(apps), f.ups, se.String())
+	}
+	// The restored Traefik is a new container too, and rejoins after its up.
+	if n := countOf(f.calls, "network connect demo_kasbah traefik"); n != 2 || lastIndexOf(f.calls, "network connect demo_kasbah traefik") < lastIndexOf(f.calls, "compose -p traefik up -d") {
+		t.Errorf("the restore did not rejoin (%d): %q", n, f.calls)
 	}
 	// The failing stack's log is taken before the restore, and said after it.
 	if i, j := indexOf(f.calls, "compose -p traefik logs"), lastIndexOf(f.calls, "compose -p traefik up -d"); i < 0 || i > j {
@@ -120,6 +151,16 @@ func TestStart(t *testing.T) {
 	if u := start(apps, apps+"/nope", "", time.Second, failWriter{}); u.RolledBack != "failed" || restored(apps) {
 		t.Errorf("no backup: %+v", u)
 	}
+}
+
+func countOf(l []string, p string) int {
+	n := 0
+	for _, s := range l {
+		if strings.HasPrefix(s, p) {
+			n++
+		}
+	}
+	return n
 }
 
 func indexOf(l []string, p string) int {

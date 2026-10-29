@@ -14,6 +14,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/serverlock"
+	"github.com/adigourdi/kasbah/internal/traefiknet"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
@@ -284,6 +285,9 @@ func (e *engine) locked(composeMissing error) (*Report, error) {
 	if e.up() != nil {
 		return nil, e.failed("up", failf("docker compose -p %s up -d --remove-orphans failed in %s", e.project, e.dir))
 	}
+	if err := e.joinTraefik(); err != nil {
+		return nil, e.failed("up", err)
+	}
 	if sp.NoHealthWait {
 		e.note("health wait skipped (--no-health-wait)")
 	} else if err := e.healthWaitFor(sp.Health.Container); err != nil {
@@ -334,6 +338,23 @@ func (e *engine) record(action string, extra ...string) error {
 
 func (e *engine) up() error {
 	return e.docker("compose", "-p", e.project, "up", "-d", "--remove-orphans").Run()
+}
+
+// joinTraefik connects Traefik to the project's kasbah network, which the up
+// may just have created; a project still on kasbah-net has none.
+func (e *engine) joinTraefik() error {
+	d := traefiknet.Docker(traefiknet.Exec)
+	nets, err := d.Networks(e.project)
+	if err == nil {
+		var done []string
+		if done, err = d.Join(nets); err == nil {
+			for _, n := range done {
+				e.note("connected traefik to %s", n)
+			}
+			return nil
+		}
+	}
+	return failf("could not connect traefik to %s's kasbah network: %v", e.project, err)
 }
 
 // recordFailed appends the deploy-failed line; a line that cannot be written
@@ -462,6 +483,9 @@ func (e *engine) retagBack() (string, error) {
 	}
 	if e.up() != nil {
 		return "the files and :current are back, and compose up of them failed — the stack may be down or partial", fmt.Errorf("docker compose -p %s up -d --remove-orphans failed in %s", e.project, e.dir)
+	}
+	if err := e.joinTraefik(); err != nil {
+		return "the old stack is up again and Traefik is not on its network — its routes answer 502", err
 	}
 	if e.sp.NoHealthWait {
 		return "", nil

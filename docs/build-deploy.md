@@ -184,8 +184,8 @@ containers before retagging. Any
 failure before the retag (preflight, the backup, a `pre-deploy` hook) puts the
 files back; any failure from the retag through the health wait also puts every
 `:current` back on its old id (untagging one that did not exist), runs `compose
-up -d --remove-orphans` on the restored files and waits on the containers that
-were running before. A revert that works writes nothing to `versions.log` —
+up -d --remove-orphans` on the restored files, attaches Traefik to the
+project's network again, and waits on the containers that were running before. A revert that works writes nothing to `versions.log` —
 the server is where it was — and the run still fails, saying it is back on the
 previous version. A revert that cannot work (no matching snapshot, the old
 stack will not come up) appends a `deploy-failed` line naming why and keeps the
@@ -264,7 +264,8 @@ below). The only differences:
         against currently-running (previous version) containers. Rotate.
      b. Run pre-deploy hooks against currently-running containers.
      c. Retag :<version> as :current for each built image.
-     d. docker compose up -d --remove-orphans.
+     d. docker compose up -d --remove-orphans, then attach Traefik to
+        <name>_kasbah (`docker network connect`, live; traefik.md → Network).
      e. Wait for manifest's health.container to be healthy.
      f. Run post-deploy hooks against new containers.
      a–b failing: put the files back. c–e failing: put the files back,
@@ -584,7 +585,8 @@ small without sacrificing history.
 10. Run the engine on the VPS in rollback mode (`kasbah remote deploy run`):
      a. Run pre-rollback hooks against currently-running containers.
      b. Retag :<target> as :current for each v<target>-era built image.
-     c. docker compose up -d --remove-orphans.
+     c. docker compose up -d --remove-orphans, then attach Traefik to
+        <name>_kasbah.
      d. Wait for health.container.
      e. Run post-rollback hooks against rolled-back containers.
      f. Append rollback entry to versions.log, rotate.

@@ -351,6 +351,23 @@ func TestRun(t *testing.T) {
 		t.Errorf("rolled back: %d\n%s", code, se)
 	}
 	f = newFake(t, "traefik:v3.7.10")
+	f.up = Up{RolledBack: "no", Health: "healthy", State: "running", Image: "traefik:v3.7.11", AcmeDigest: "d1", Networks: "a_kasbah b_kasbah"}
+	if se, code = runUp(t, f, "v3.7.11"); code != 0 || !strings.Contains(se, "rejoined 2 project network(s): a_kasbah b_kasbah") {
+		t.Errorf("rejoined: %d\n%s", code, se)
+	}
+	f = newFake(t, "traefik:v3.7.10")
+	f.up = Up{RolledBack: "no", Health: "healthy", Image: "traefik:v3.7.11", JoinErr: "docker network connect b_kasbah traefik failed: boom"}
+	if se, code = runUp(t, f, "v3.7.11"); code != 1 || !strings.Contains(se, "could not rejoin the project networks: docker network connect b_kasbah traefik failed: boom") ||
+		!strings.Contains(se, "docker network connect <network> traefik") {
+		t.Errorf("join failed: %d\n%s", code, se)
+	}
+	f = newFake(t, "traefik:v3.7.10")
+	f.up, f.upRC = Up{RolledBack: "yes", Health: "healthy", Image: "traefik:v3.7.10", JoinErr: "docker network connect b_kasbah traefik failed: boom"}, 3
+	if se, code = runUp(t, f, "v3.7.11"); code != 1 || !strings.Contains(se, "rolled back to traefik:v3.7.10") ||
+		!strings.Contains(se, "the restored Traefik could not rejoin the project networks: docker network connect b_kasbah traefik failed: boom") {
+		t.Errorf("rolled back, join failed: %d\n%s", code, se)
+	}
+	f = newFake(t, "traefik:v3.7.10")
 	f.up, f.upRC = Up{RolledBack: "failed", Health: "none"}, 3
 	if se, code = runUp(t, f, "v3.7.11"); code != 1 || !strings.Contains(se, "every site on this host is down") {
 		t.Errorf("rollback failed: %d\n%s", code, se)

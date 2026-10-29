@@ -246,7 +246,8 @@ func (s *session) mailStart(o Options) (Facts, error) {
 		return nil, cli.Fail("could not start the mail stack on %s (the remote step exited %d, see above)", s.target, rc)
 	}
 	return checked("the mail start", s.target, res, "mail_cypht_health", "mail_cypht_nginx", "mail_dms_state",
-		"mail_dms_health", "mail_dms_restarts", "mail_dms_image", "mail_jail", "mail_cypht_unbanned", "mail_cypht_addr")
+		"mail_dms_health", "mail_dms_restarts", "mail_dms_image", "mail_jail", "mail_cypht_unbanned", "mail_cypht_addr",
+		"mail_networks", "mail_moved")
 }
 
 // jailWords and nginxWords are the start step's mail_jail and
@@ -279,6 +280,13 @@ func reportMail(out *cli.Output, o Options, v MailValues, r *mail.ReadReport, ch
 	out.Info("        .env %s, postmaster %s, dkim override %s", lay["mail_env"], lay["mail_account"], lay["mail_dkim_seed"])
 	out.Info("        cypht %s, dms %s (%s, %s restarts)", st["mail_cypht_health"], st["mail_dms_state"], st["mail_dms_health"], st["mail_dms_restarts"])
 	out.Info("        %s; %s", jailWords[st["mail_jail"]], nginxWords[st["mail_cypht_nginx"]])
+	out.Info("        network: %s, traefik joined for webmail", st["mail_networks"])
+	if st["mail_moved"] == "yes" {
+		out.Warn("the mail stack left the shared kasbah-net for its own network (%s).", st["mail_networks"])
+		out.Warn("an app that reached mail-dms over kasbah-net (SMTP host mail-dms) has lost it:")
+		out.Warn("switch it to mail.%s:587 with STARTTLS and a mailbox login, like any client", p)
+		out.Warn("(docs/mail.md → SMTP access from apps). `kasbah check` warns on a project naming mail-dms.")
+	}
 	switch n := st["mail_cypht_unbanned"]; n {
 	case "0", "skipped":
 	case "failed":

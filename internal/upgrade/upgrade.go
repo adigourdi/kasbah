@@ -275,6 +275,9 @@ func Run(c Ctx, o Options) error {
 	}
 	c.Out.Info("  %s, previous bytes at %s", shipped, x.backupDir)
 	c.Out.Info("  validated %d fragment(s): %s", len(x.stack.Fragments), strings.Join(x.stack.Fragments, " "))
+	if nets := strings.Fields(up.Networks); len(nets) > 0 {
+		c.Out.Info("  rejoined %d project network(s): %s", len(nets), strings.Join(nets, " "))
+	}
 	if x.stack.AcmeState == "nonempty" {
 		if up.AcmeDigest == x.stack.AcmeDigest {
 			c.Out.Info("  acme.json: unchanged (kasbah never writes it; the certificates carried over)")
@@ -664,20 +667,33 @@ func (x *run) start() (Up, error) {
 			"  cp -p "+x.backupDir+"/compose.yml "+x.apps+"/traefik/compose.yml",
 			"  cp -p "+x.backupDir+"/traefik.yml "+x.apps+"/traefik/traefik.yml",
 			"  cp -p "+x.backupDir+"/_shared.yml "+x.apps+"/traefik/dynamic/_shared.yml",
-			"  cd "+x.apps+"/traefik && docker compose -p "+Project+" up -d")
+			"  cd "+x.apps+"/traefik && docker compose -p "+Project+" up -d",
+			"a recreated Traefik is on kasbah-net alone: `kasbah server init "+t+"` rejoins it to the project networks.")
 	}
 	if err := remote.Decode(out, &up,
-		[]string{"up_rolled_back", "up_health", "up_state", "up_image", "up_started_at", "up_acme_digest"}, "the Traefik start", t); err != nil {
+		[]string{"up_rolled_back", "up_health", "up_state", "up_image", "up_started_at", "up_acme_digest", "up_networks"}, "the Traefik start", t); err != nil {
 		return up, err
 	}
-	switch up.RolledBack {
-	case "no":
+	rejoin := []string{
+		"every site whose network it is not on answers 502 until it is connected:",
+		"  docker network ls --filter label=com.docker.compose.network=kasbah",
+		"  docker network connect <network> traefik",
+		"or re-run `kasbah server init " + t + "`, whose Traefik start rejoins them."}
+	switch {
+	case up.RolledBack == "no" && up.JoinErr == "":
 		return up, nil
-	case "yes":
-		return up, cli.Fail("%s did not come up healthy on %s — rolled back to %s", x.imageNew, t, x.imageNow).Cont(
+	case up.RolledBack == "no":
+		return up, cli.Fail("Traefik is up on %s (%s) and could not rejoin the project networks: %s", t, up.Image, up.JoinErr).Cont(rejoin...)
+	case up.RolledBack == "yes":
+		e := cli.Fail("%s did not come up healthy on %s — rolled back to %s", x.imageNew, t, x.imageNow).Cont(
 			"the proxy is serving again on "+up.Image+" ("+up.Health+");",
 			"the backup it was restored from is at "+x.backupDir+".",
 			"the failing stack's log is above.")
+		if up.JoinErr != "" {
+			e.Cont("and the restored Traefik could not rejoin the project networks: " + up.JoinErr)
+			e.Cont(rejoin...)
+		}
+		return up, e
 	}
 	state := up.State
 	if state == "" {
@@ -686,5 +702,6 @@ func (x *run) start() (Up, error) {
 	return up, cli.Fail("%s did not come up on %s and the rollback did not come up either", x.imageNew, t).Cont(
 		"the proxy is "+state+" ("+up.Health+") — every site on this host is down.",
 		"the previous stack's files are at "+x.backupDir+"; restore them and run:",
-		"  cd "+x.apps+"/traefik && docker compose -p "+Project+" up -d")
+		"  cd "+x.apps+"/traefik && docker compose -p "+Project+" up -d",
+		"then `kasbah server init "+t+"`, which rejoins Traefik to the project networks.")
 }

@@ -368,11 +368,14 @@ networks:
     driver: bridge
 ```
 
-Only the containers Traefik routes to join `kasbah-net` (declared
-`external: true` in the project compose); internal services stay on a
-project-internal network — see `traefik.md` for the alias-collision
-rationale. Traefik resolves routed containers by `container_name` on
-this network — the file provider fragment names them explicitly in
+`kasbah-net` is a frozen name that only legacy projects still join. Each
+project has its own network instead — declared under the key `kasbah` in its
+compose file, `<project>_kasbah` on the server — which deploy attaches Traefik
+to, and the mail stack has `mail_kasbah`; every Traefik start init runs
+re-attaches all of them. Internal services stay on a project-internal network —
+see `traefik.md` → Network for the isolation and alias-collision rationale.
+Traefik resolves routed containers by `container_name` on those networks — the
+file provider fragment names them explicitly in
 `services.<x>.loadBalancer.servers`.
 
 ## The discovery pointer (`/etc/kasbah/apps-path`)

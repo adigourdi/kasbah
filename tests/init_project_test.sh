@@ -56,17 +56,18 @@ assert 'grep -qxF ".kasbah/" .gitignore' "gitignore has .kasbah/"
 # --- Case 1b: the starter snippet is a project `kasbah check` accepts ---------
 # It is the first compose file most projects ever have, so what it teaches is
 # what most compose files end up looking like. One routed service: named for
-# the project because compose publishes the service name as a DNS alias on the
-# shared network (C09), on kasbah-net and nothing else because a lone routed
-# service has nothing to keep off it, and behind both routers for the domain so
-# plain HTTP redirects instead of 404ing (T08).
+# the project, on the project's own kasbah network and nothing else because a
+# lone routed service has nothing to keep off it, and behind both routers for
+# the domain so plain HTTP redirects instead of 404ing (T08).
 projs="$tmpdir/snippet"
 mkdir -p "$projs"
 cd "$projs"
 snippet="$("$kasbah" init-project --name=snip --domain=snip.example.com 2>/dev/null)"
 assert 'grep -qF "    snip-web:" <<<"$snippet"'            "the scaffolded service is named for the project (said '$snippet')"
 assert '! grep -qE "^    (app|web):" <<<"$snippet"'        "and not with a name every other project would also pick"
-assert 'grep -qF "networks: [kasbah-net]" <<<"$snippet"'   "the one routed service joins the shared network alone"
+assert 'grep -qF "networks: [kasbah]" <<<"$snippet"'       "the one routed service joins the project's kasbah network alone"
+assert 'grep -qF "    kasbah: {}" <<<"$snippet"'            "which is the project's own, not external"
+assert '! grep -qF "kasbah-net" <<<"$snippet"'              "and the shared kasbah-net is not offered"
 assert '! grep -qF "internal: {}" <<<"$snippet"'           "with no second network it has nothing to put on"
 assert 'grep -qF "entryPoints: [web]" <<<"$snippet"'       "the fragment carries the redirect router"
 assert 'grep -qF "entryPoints: [websecure]" <<<"$snippet"' "and the TLS one"
@@ -104,8 +105,10 @@ check_out="$("$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "the scaffolded project passes kasbah check (exit $rc)"
 assert 'grep -qF ", 0 warning, 0 failed" <<<"$check_out"' \
     "with nothing warned and nothing failed (said '$(tail -1 <<<"$check_out")')"
-assert 'grep -qF "✓ kasbah-net service names are project-prefixed" <<<"$check_out"' \
-    "C09 among them, which is the rule the service name is chosen for"
+assert 'grep -qF "✓ All routed services join the project'"'"'s kasbah network" <<<"$check_out"' \
+    "C03 among them, on the new shape"
+assert 'grep -qF "✓ The kasbah network is the project'"'"'s own (snip_kasbah)" <<<"$check_out"' \
+    "and C04 names the network deploy connects Traefik to"
 assert 'grep -qF "✓ A router serves snip.example.com on the web entrypoint" <<<"$check_out"' \
     "and T08, which is why the fragment prints two routers"
 

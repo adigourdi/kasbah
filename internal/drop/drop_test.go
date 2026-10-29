@@ -369,6 +369,20 @@ func TestRunActOutcomes(t *testing.T) {
 		strings.Contains(so, "everything a redeploy needs") {
 		t.Fatalf("partial: %d\n%s\n%s", code, so, se)
 	}
+	// Traefik left the network, and one it could not leave.
+	f = &fake{scan: fixture(), actOut: `started=yes
+{"fragment":"removed","detached":"built-app_kasbah","down":"ok","down_detail":"","down_left":"","removed":["built-app-web:3.4.0","built-app-web:current","built-app-worker:3.4.0","built-app-worker:current"],"failed":[]}
+`}
+	if so, se, code := run(t, f, Options{Target: "deploy@vps", Yes: true}, false, ""); code != 0 || !strings.Contains(so, "disconnected traefik from built-app_kasbah") {
+		t.Fatalf("detached: %d\n%s\n%s", code, so, se)
+	}
+	f = &fake{scan: fixture(), actOut: `started=yes
+{"fragment":"removed","detached":"","detach_err":"docker network disconnect built-app_kasbah traefik failed: boom","down":"failed","down_detail":"Network built-app_kasbah Resource is still in use — network built-app_kasbah is still there (still in use)","down_left":"","removed":["built-app-web:3.4.0","built-app-web:current","built-app-worker:3.4.0","built-app-worker:current"],"failed":[]}
+`}
+	if _, se, code := run(t, f, Options{Target: "deploy@vps", Yes: true}, false, ""); code != 1 ||
+		!strings.Contains(se, "could not disconnect traefik from built-app's kasbah network on deploy@vps: docker network disconnect built-app_kasbah traefik failed: boom") {
+		t.Fatalf("detach failed: %d\n%s", code, se)
+	}
 	// A report that does not account for every tag.
 	f = &fake{scan: fixture(), actOut: `started=yes
 {"fragment":"removed","down":"ok","down_detail":"","down_left":"","removed":[],"failed":[]}

@@ -195,6 +195,15 @@ assert '[ "$(image_id built-app-web:current)" = "$web1" ] && [ "$(image_id built
 state=$(remote "docker inspect -f '{{.State.Status}} {{.Image}}' built-app-web")
 assert '[ "$state" = "running $web1" ]' "built-app-web runs 5.1.0's image (got '$state')"
 assert '[ "$(remote "grep -c . $bremote/versions.log")" = 1 ]' "versions.log records nothing for 5.2.0"
+# built-app is on its own kasbah network: the reverted stack is still routed.
+bserved=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    bserved=$(remote "curl -s -m 5 -H 'Host: built-app.test' http://127.0.0.1/"); grep -qF served-by-built-app-from-an-image-shipped-over-ssh <<<"$bserved" && break; sleep 1
+done
+assert 'grep -qF served-by-built-app-from-an-image-shipped-over-ssh <<<"$bserved"' \
+    "Traefik serves 5.1.0's page after the revert (got '$(head -c 200 <<<"$bserved")')"
+tk=$(remote "docker inspect -f '{{range \$k, \$v := .NetworkSettings.Networks}}{{\$k}} {{end}}' traefik")
+assert 'grep -qw built-app_kasbah <<<"$tk"' "through built-app's own network (traefik on: $tk)"
 
 [ "$fail" = 0 ] && rig_clean >/dev/null 2>&1
 exit "$fail"

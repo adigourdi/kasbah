@@ -21,6 +21,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverlock"
+	"github.com/adigourdi/kasbah/internal/traefiknet"
 )
 
 // Image is one image: its id and every tag it carries.
@@ -218,7 +219,11 @@ func scan(apps, data, name string) Scan {
 // `started=yes` precedes it: every guard is above that line, so a run that
 // never printed it changed nothing.
 type ActReport struct {
-	Fragment   string    `json:"fragment"`
+	Fragment string `json:"fragment"`
+	// Detached is the networks Traefik left before the down, space-separated;
+	// DetachErr why it could not leave one.
+	Detached   string    `json:"detached"`
+	DetachErr  string    `json:"detach_err,omitempty"`
 	Down       string    `json:"down"`
 	DownDetail string    `json:"down_detail"`
 	DownLeft   string    `json:"down_left"`
@@ -362,6 +367,19 @@ func act(a ActArgs, stdin io.Reader, stdout io.Writer) error {
 		r.Fragment = fsstate.Remove(fragment)
 	}
 
+	// Traefik leaves the project's network first: down cannot remove a
+	// network a foreign container is still attached to.
+	d := traefiknet.Docker(func(args ...string) (string, error) { return runDocker("", args...) })
+	nets, err := d.Networks(a.Name)
+	if err == nil {
+		var done []string
+		done, err = d.Leave(nets)
+		r.Detached = strings.Join(done, " ")
+	}
+	if err != nil {
+		r.DetachErr = err.Error()
+	}
+
 	// By label from /: no compose file or .env needed, and none picked up.
 	// Without -v: named volumes are data, and drop keeps data.
 	out, err := runDocker("/", "compose", "-p", a.Name, "down", "--remove-orphans")
@@ -371,6 +389,13 @@ func act(a ActArgs, stdin io.Reader, stdout io.Writer) error {
 		r.DownDetail = err.Error()
 	} else {
 		r.DownDetail = flat(out)
+	}
+	// down exits 0 leaving a network still in use: one that survived is a failure.
+	for _, n := range nets {
+		if _, ierr := runDocker("", "network", "inspect", n); ierr == nil {
+			r.Down = "failed"
+			r.DownDetail = strings.TrimSpace(r.DownDetail + " — network " + n + " is still there (still in use)")
+		}
 	}
 	left, _ := runDocker("", "ps", "-a", "--filter", "label=com.docker.compose.project="+a.Name, "--format", "{{.Names}}")
 	r.DownLeft = strings.Join(lines(left), " ")

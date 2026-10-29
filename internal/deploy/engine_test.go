@@ -28,6 +28,7 @@ image)
     exit 0 ;;
 tag) echo "$3" >> "$IMAGES"; exit 0 ;;
 inspect)
+    [ "$last" != traefik ] || { cat "${TNETS:-/dev/null}" 2>/dev/null; exit 0; }
     st=$(sed -n "s/^$last=//p" "$CONTAINERS")
     [ -n "$st" ] || exit 1
     case "$3" in
@@ -41,6 +42,14 @@ compose) case "$*" in *" up "*) [ -z "$HUP_PARENT" ] || { kill -HUP "$PPID"; sle
         # UPS: one "rc [health]" line per up, the health written for the wait after it.
         if [ -s "${UPS:-/nonexistent}" ]; then set -- $(head -n1 "$UPS"); sed -i 1d "$UPS"; [ -z "${2:-}" ] || echo "$2" > "$HEALTH"; exit "$1"; fi
         exit "${UP_RC:-0}" ;; *" ps "*) echo cid; exit 0 ;; esac ;;
+network)
+    # NETS: what network ls answers; CONNECTS: one rc per connect; TNETS: what traefik is on.
+    case "$2" in
+    ls) cat "${NETS:-/dev/null}" 2>/dev/null ;;
+    connect) if [ -s "${CONNECTS:-/nonexistent}" ]; then rc=$(head -n1 "$CONNECTS"); sed -i 1d "$CONNECTS"; [ "$rc" = 0 ] || { echo "Error: refused" >&2; exit 1; }; fi
+        echo "$3" >> "${TNETS:-/dev/null}" ;;
+    esac
+    exit 0 ;;
 exec)
     if [ "$2" = -e ]; then exit "${EXEC_RC:-0}"; fi
     shift 2; exec "$@" ;;

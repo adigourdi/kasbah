@@ -603,8 +603,8 @@ has no opinion on which service is "primary", what ports to expose, etc. After
 running, kasbah prints a minimal starter compose snippet and a matching Traefik
 fragment to stdout so the user can paste and adapt if useful. Both are shapes
 `kasbah check` passes clean: one routed service named for the project (C09) on
-`kasbah-net` alone, and two routers for the domain so plain HTTP redirects
-rather than 404s (T08).
+the project's own `kasbah` network, and two routers for the domain so plain HTTP
+redirects rather than 404s (T08).
 
 Flags:
 - `--name=<name>` (default: current directory name)
@@ -839,9 +839,12 @@ data bind mounts or `.env` secret values. For schema rollback, use
 
 Remove the project from the VPS. Plain `drop` is reversible:
 
-Removes:
-- containers (`docker compose down`)
+Removes, in this order:
 - the Traefik fragment (`/apps/traefik/dynamic/<name>.yml`)
+- Traefik's attachment to the project's network (`<project>_kasbah`), which
+  `compose down` could not otherwise remove
+- containers and the project's networks (`docker compose down`) — a network
+  that is still there afterwards (still in use) is reported as a failed down
 - the project's own images — every tag of every repository the project's
   server-side `compose.yml` declares on a service with a `build:` key
 

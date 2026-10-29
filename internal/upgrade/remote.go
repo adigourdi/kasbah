@@ -2,6 +2,7 @@ package upgrade
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/traefiknet"
 )
 
 // Project is the live stack's frozen compose project name: anything else
@@ -70,6 +72,10 @@ type Up struct {
 	Image      string `json:"up_image"`
 	StartedAt  string `json:"up_started_at"`
 	AcmeDigest string `json:"up_acme_digest"`
+	// Networks is every project network Traefik is on after the start;
+	// JoinErr why it could not rejoin one.
+	Networks string `json:"up_networks"`
+	JoinErr  string `json:"up_join_err,omitempty"`
 }
 
 func b64(path string) string {
@@ -97,10 +103,16 @@ func digest(path string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// dockerCmd's error carries docker's stderr, as traefiknet.Docker's contract asks.
 var dockerCmd = func(dir string, args ...string) (string, error) {
 	cmd := exec.Command("docker", args...)
 	cmd.Dir = dir
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
 	out, err := cmd.Output()
+	if msg := strings.TrimSpace(errb.String()); err != nil && msg != "" {
+		err = errors.New(msg)
+	}
 	return strings.TrimSpace(string(out)), err
 }
 
@@ -367,14 +379,27 @@ func start(apps, backupDir, acme string, timeout time.Duration, stderr io.Writer
 		}
 	}
 	u := Up{RolledBack: "no", Health: "none"}
-	if dc("up", "-d") != nil || !waitHealthy() {
+	// A recreated Traefik is on kasbah-net alone: it rejoins every project
+	// network and the mail stack's as soon as it is up.
+	up := func() bool {
+		if dc("up", "-d") != nil {
+			return false
+		}
+		nets, _, err := traefiknet.Docker(func(a ...string) (string, error) { return dockerCmd("", a...) }).JoinAll(apps)
+		u.Networks, u.JoinErr = strings.Join(nets, " "), ""
+		if err != nil {
+			u.JoinErr = err.Error()
+		}
+		return true
+	}
+	if !up() || !waitHealthy() {
 		failing, _ := dockerCmd(dir, "compose", "-p", Project, "logs", "--no-color", "--tail", "40")
 		u.RolledBack = "failed"
 		if fi, err := os.Stat(backupDir); err == nil && fi.IsDir() &&
 			copyFile(backupDir+"/compose.yml", dir+"/compose.yml") == nil &&
 			copyFile(backupDir+"/traefik.yml", dir+"/traefik.yml") == nil &&
 			copyFile(backupDir+"/_shared.yml", dir+"/dynamic/_shared.yml") == nil &&
-			dc("up", "-d") == nil && waitHealthy() {
+			up() && waitHealthy() {
 			u.RolledBack = "yes"
 		}
 		fmt.Fprintf(stderr, "remote: the new Traefik did not come up healthy — restored %s (rollback: %s); its log:\n%s\n", backupDir, u.RolledBack, failing)

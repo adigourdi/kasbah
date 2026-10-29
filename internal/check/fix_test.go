@@ -74,9 +74,9 @@ func TestFixAnchorsDeepestFirst(t *testing.T) {
 		"services:\n  demo-web:\n    image: x\n    container_name: demo-web\n"+
 			"    logging:\n      options:\n        max-file: \"3\"\n        max-size: \"10m\"\n"+
 			"      driver: json-file\n    restart: unless-stopped\n"+
-			"    networks:\n      - default\n      - kasbah-net\n"+
+			"    networks:\n      - default\n      - kasbah\n"+
 			"    cpus: ${KASBAH_CPU_LIMIT}\n    mem_limit: ${KASBAH_MEM_LIMIT}\n"+
-			"\nnetworks:\n  kasbah-net:\n    external: true")
+			"\nnetworks:\n  kasbah: {}")
 }
 
 // A block scalar's `#` and blank lines are its value: an insertion goes after
@@ -101,8 +101,8 @@ func TestFixCRLF(t *testing.T) {
 		crlf("services:\n    demo-web:\n        image: x\n        container_name: demo-web\n"+
 			"        restart: always\n        cpus: ${KASBAH_CPU_LIMIT}\n        mem_limit: ${KASBAH_MEM_LIMIT}\n"+
 			"        logging:\n            driver: json-file\n            options: {max-size: 1m, max-file: \"1\"}\n"+
-			"        networks:\n            - default\n            - kasbah-net\n"+
-			"\nnetworks:\n    kasbah-net:\n        external: true\n"))
+			"        networks:\n            - default\n            - kasbah\n"+
+			"\nnetworks:\n    kasbah: {}\n"))
 }
 
 // Values are rewritten where they stand: quoting and comments kept, and a
@@ -111,11 +111,16 @@ func TestFixRewritesInPlace(t *testing.T) {
 	o := fixed(t, "version: \"3\"\nservices:\n  demo-web:\n    image: x\n    container_name: demo-web\n"+
 		"    restart: \"no\"   # spelled out\n    cpus: '1.5 # old box'\n    mem_limit: 512m # sized\n"+
 		"    networks: [internal]\n    logging:\n      driver: local\n      options:\n        max-size:\n        max-file: \"3\"\n"+
-		"networks:\n  internal: {}\n  kasbah-net: {}\n",
+		"networks:\n  internal: {}\n",
 		"services:\n  demo-web:\n    image: x\n    container_name: demo-web\n"+
 			"    restart: \"unless-stopped\"   # spelled out\n    cpus: '${KASBAH_CPU_LIMIT}'\n    mem_limit: 512m # sized\n"+
-			"    networks: [internal, kasbah-net]\n    logging:\n      driver: json-file\n      options:\n        max-size: 10m\n        max-file: \"3\"\n"+
-			"networks:\n  internal: {}\n  kasbah-net: {external: true}\n")
+			"    networks: [internal, kasbah]\n    logging:\n      driver: json-file\n      options:\n        max-size: 10m\n        max-file: \"3\"\n"+
+			"networks:\n  internal: {}\n  kasbah: {}\n")
+	// A legacy kasbah-net project keeps its network, made external in place.
+	legacy := "services:\n  demo-web:\n    image: x\n    container_name: demo-web\n    restart: always\n" +
+		"    cpus: ${KASBAH_CPU_LIMIT}\n    mem_limit: ${KASBAH_MEM_LIMIT}\n    networks: [internal, kasbah-net]\n" +
+		"    logging: {driver: json-file, options: {max-size: 1m, max-file: \"1\"}}\nnetworks:\n  internal: {}\n  kasbah-net: {}\n"
+	fixed(t, legacy, strings.Replace(legacy, "kasbah-net: {}", "kasbah-net: {external: true}", 1))
 	if !strings.Contains(o, "C01 demo-web — restart: no → unless-stopped") {
 		t.Errorf("plan:\n%s", o)
 	}
@@ -260,11 +265,11 @@ func TestFixFlushSequence(t *testing.T) {
 	fixed(t, "services:\n  demo-web:\n    image: x\n    container_name: demo-web\n    networks:\n    - internal\n"+
 		"    restart: always\n    cpus: ${KASBAH_CPU_LIMIT}\n    mem_limit: ${KASBAH_MEM_LIMIT}\n"+
 		"    logging: {driver: json-file, options: {max-size: 1m, max-file: \"1\"}}\n"+
-		"networks:\n  internal: {}\n  kasbah-net: {external: true}\n",
-		"services:\n  demo-web:\n    image: x\n    container_name: demo-web\n    networks:\n    - internal\n    - kasbah-net\n"+
+		"networks:\n  internal: {}\n",
+		"services:\n  demo-web:\n    image: x\n    container_name: demo-web\n    networks:\n    - internal\n    - kasbah\n"+
 			"    restart: always\n    cpus: ${KASBAH_CPU_LIMIT}\n    mem_limit: ${KASBAH_MEM_LIMIT}\n"+
 			"    logging: {driver: json-file, options: {max-size: 1m, max-file: \"1\"}}\n"+
-			"networks:\n  internal: {}\n  kasbah-net: {external: true}\n")
+			"networks:\n  internal: {}\n  kasbah: {}\n")
 }
 
 // The same, as the service's last key and with restart: missing: both land on
@@ -273,8 +278,8 @@ func TestFixFlushSequenceLast(t *testing.T) {
 	head := "services:\n  demo-web:\n    image: x\n    container_name: demo-web\n" +
 		"    cpus: ${KASBAH_CPU_LIMIT}\n    mem_limit: ${KASBAH_MEM_LIMIT}\n" +
 		"    logging: {driver: json-file, options: {max-size: 1m, max-file: \"1\"}}\n    networks:\n    - internal\n"
-	tail := "networks:\n  internal: {}\n  kasbah-net: {external: true}\n"
-	fixed(t, head+tail, head+"    - kasbah-net\n    restart: unless-stopped\n"+tail)
+	tail := "networks:\n  internal: {}\n"
+	fixed(t, head+tail, head+"    - kasbah\n    restart: unless-stopped\n"+tail+"  kasbah: {}\n")
 }
 
 // The guard refuses a candidate whose tree differs from the plan's, and a

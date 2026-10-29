@@ -5,10 +5,8 @@ description: >
   target a project-prefixed network alias the routed service declares instead,
   and resolve hook containers through `compose ps` rather than a fixed name,
   in the check rules, the fragment starter and the deploy engine.
-state: blocked
+state: ready
 priority: normal
-after:
-  - "[[per-project-networks]] — the alias lives on the project network, and which network decides the uniqueness rule"
 ---
 
 ## Prompted by

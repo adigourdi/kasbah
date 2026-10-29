@@ -447,10 +447,13 @@ assert '[ "${fact[dms_image]}" = "$dms_image" ]' \
     "and DMS from its own (got '${fact[dms_image]}')"
 assert '[ "${fact[dms_project]}" = "mail" ]' \
     "both belong to the compose project kasbah names with -p (got '${fact[dms_project]}')"
-assert 'grep -qw "kasbah-net" <<<"${fact[dms_nets]}"' \
-    "DMS is on the shared network (networks: ${fact[dms_nets]})"
-assert 'grep -qw "kasbah-net" <<<"${fact[cy_nets]}"' \
-    "and so is Cypht, which is how Traefik resolves http://mail-cypht:80 (networks: ${fact[cy_nets]})"
+assert 'grep -qw "mail_kasbah" <<<"${fact[dms_nets]}" && ! grep -qw "kasbah-net" <<<"${fact[dms_nets]}"' \
+    "DMS is on the mail stack's own network and off the shared kasbah-net (networks: ${fact[dms_nets]})"
+assert 'grep -qw "mail_kasbah" <<<"${fact[cy_nets]}" && ! grep -qw "kasbah-net" <<<"${fact[cy_nets]}"' \
+    "and so is Cypht, which DMS resolves there for Fail2ban (networks: ${fact[cy_nets]})"
+tk_nets=$(rig_ssh "docker inspect -f '{{range \$k, \$v := .NetworkSettings.Networks}}{{\$k}} {{end}}' traefik" 2>/dev/null | tr -d '\r')
+assert 'grep -qw "mail_kasbah" <<<"$tk_nets"' \
+    "and Traefik joined it, which is how it resolves http://mail-cypht:80 (traefik on: $tk_nets)"
 assert 'grep -qF "$data/traefik/letsencrypt/acme.json:/etc/letsencrypt/acme.json:ro" <<<"${fact[dms_mounts]}"' \
     "Traefik's certificate store is mounted into DMS read-only (mounts: ${fact[dms_mounts]})"
 assert 'grep -qF "$mail_data/dms/config:/tmp/docker-mailserver:rw" <<<"${fact[dms_mounts]}"' \
@@ -562,6 +565,30 @@ assert '[ "$(jq -r ".[] | select(.name == \"mail-cert@file\") | .rule" <<<"$rout
 rig_ssh "sed -i 's|^primary_domain: .*|primary_domain: $rig_domain|' $mail_dir/kasbah.yml" >/dev/null 2>&1
 init --with-mail --no-backup >/dev/null 2>&1
 
+# --- A stack still on kasbah-net is moved off it, and the run says so ---------
+# The shape every server had before the mail stack got its own network.
+rig_ssh "cd $mail_dir && sed -i 's/^      - kasbah\$/      - kasbah-net/; s/^  kasbah: {}\$/  kasbah-net:\\n    external: true/' compose.yml &&
+         docker compose -p mail up -d --remove-orphans" >/dev/null 2>&1
+dms_old=$(rig_ssh "docker inspect -f '{{range \$k, \$v := .NetworkSettings.Networks}}{{\$k}} {{end}}' mail-dms" 2>/dev/null | tr -d '\r')
+assert 'grep -qw "kasbah-net" <<<"$dms_old"' "the legacy shape is in place: DMS on kasbah-net (networks: $dms_old)"
+init --with-mail --no-backup; rc=$?
+assert '[ "$rc" = "0" ]' "a --with-mail re-run moves it (exit $rc: $(init_err))"
+assert 'grep -qF "the mail stack left the shared kasbah-net for its own network (mail_kasbah)" "$tmpdir/err"' \
+    "and says the stack left kasbah-net (said '$(init_err)')"
+assert 'grep -qF "switch it to mail.$rig_domain:587" "$tmpdir/err"' \
+    "and that apps reaching mail-dms over it must switch to public submission"
+for c in mail-dms mail-cypht; do
+    moved=$(rig_ssh "docker inspect -f '{{range \$k, \$v := .NetworkSettings.Networks}}{{\$k}} {{end}}' $c" 2>/dev/null | tr -d '\r')
+    assert 'grep -qw "mail_kasbah" <<<"$moved" && ! grep -qw "kasbah-net" <<<"$moved"' "$c is on mail_kasbah alone now (networks: $moved)"
+done
+cy_moved=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    cy_moved=$(http_code "webmail.$rig_domain" https); [ "$cy_moved" != 200 ] || break; sleep 2
+done
+assert '[ "$cy_moved" = "200" ]' "webmail still routes after the move (got '$cy_moved')"
+init --with-mail --no-backup >/dev/null 2>&1
+assert '! grep -qF "left the shared kasbah-net" "$tmpdir/err"' "a run with nothing to move says nothing about it"
+
 # --- --no-mail does not take an existing stack away ---------------------------
 # Adding mail is a re-run of init; removing it is not something init does, and a
 # flag that silently downed a mail server would be the worst possible reading of
@@ -574,6 +601,8 @@ assert '[ "$(rig_ssh "[ -f $frag ] && echo yes || echo no" 2>/dev/null | tr -d "
     "with its Traefik fragment still in place"
 assert '! grep -qF "mail:" "$tmpdir/err"' \
     "and says nothing about mail, because it did nothing to it (said '$(init_err)')"
+assert 'grep -qF "on 1 project network(s): mail_kasbah" "$tmpdir/err"' \
+    "while its Traefik start keeps Traefik on the mail stack's network (said '$(init_err)')"
 
 # --- add-mail-domain and mail-setup-guide, against the running stack ----------
 # 7.1b's two commands, driven where the registry they read is a real file on a

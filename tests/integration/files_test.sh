@@ -385,7 +385,7 @@ require ws "$snap_dir/ws.project" '<project-dir>/.kasbah' '<project-dir>/.kasbah
 
 # --- Docker objects -----------------------------------------------------------
 docker_list=$(cat "$snap_dir/docker")
-for want in "network kasbah-net" "image $image_web:$v1" "image $image_web:$v2" "image $image_web:current" \
+for want in "network kasbah-net" "network ${project}_kasbah" "network mail_kasbah" "image $image_web:$v1" "image $image_web:$v2" "image $image_web:current" \
             "image $image_worker:current" "project traefik" "project mail" "project $project" "project kasbah-backup"; do
     assert 'grep -qxF "$want" <<<"$docker_list"' "the rig holds $want (docs/files.md → Docker objects)"
 done

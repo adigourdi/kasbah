@@ -279,6 +279,11 @@ fi
 # clean is a known starting state. Safe only because of the marker above.
 # `down` removes by project label, so it needs no compose file.
 projects=$(docker compose ls --all -q 2>/dev/null) || projects=""
+# Traefik first: it is attached to every project's own network, which that
+# project's down cannot remove while it is.
+if grep -qx traefik <<<"$projects"; then
+    projects=$(printf 'traefik\n%s\n' "$(grep -vx traefik <<<"$projects")")
+fi
 while IFS= read -r project; do
     [ -n "$project" ] || continue
     docker compose -p "$project" down -v --remove-orphans >/dev/null 2>&1 || status=1

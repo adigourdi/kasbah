@@ -307,8 +307,10 @@ func (c *checker) composeSection() {
 		c.failf("Services missing json-file logging with max-size/max-file: %s", strings.Join(bad, " "))
 	}
 
-	onHN, defaultAliases := c.networks()
+	onHN, own, defaultAliases := c.networks()
 	c.c09(onHN, defaultAliases)
+	c.c09Project(own)
+	c.c10()
 	c.c05()
 	if c.anyBuilt() {
 		c.c08()
@@ -356,9 +358,14 @@ func (c *checker) c08() {
 	}
 }
 
-// networks is C03, C04 and C07; it returns the services on kasbah-net and
-// whether the banned default-alias shape put them there, for C09.
-func (c *checker) networks() (on []string, defaultAliases bool) {
+// projectNet is the compose network key a project's routed services join:
+// compose names it <name>_kasbah, and deploy connects Traefik to it.
+const projectNet = "kasbah"
+
+// networks is C03, C04 and C07; it returns the services on kasbah-net, those
+// on the project's kasbah network, and whether the banned default-alias shape
+// put them on kasbah-net, for C09.
+func (c *checker) networks() (on, own []string, defaultAliases bool) {
 	d := c.compose
 	defaultAliases = scalar(c.need(d, "networks", "default", "name")) == "kasbah-net"
 	defaultExt := c.need(d, "networks", "default", "external") == true
@@ -366,35 +373,55 @@ func (c *checker) networks() (on []string, defaultAliases bool) {
 	routed := c.routedHosts()
 	_, unread := c.fragment()
 
-	var badC03, badC07 []string
-	anyRouted := false
+	var badC03, badC07HN, badC07PN, legacy []string
+	nRouted := 0
 	for _, svc := range c.services {
-		joined := joinsNet(c.svc(svc, "networks")) || (defaultAliases && !hasKey(c.svc(svc), "networks"))
+		nets := c.svc(svc, "networks")
+		hn := joinsNet(nets, "kasbah-net") || (defaultAliases && !hasKey(c.svc(svc), "networks"))
+		pn := joinsNet(nets, projectNet)
 		cn := scalar(c.need(d, "services", svc, "container_name"))
 		isRouted := cn != "" && inList(routed, cn)
-		anyRouted = anyRouted || isRouted
-		if joined {
+		if isRouted {
+			nRouted++
+		}
+		if hn {
 			on = append(on, svc)
 		}
-		if isRouted && !joined {
-			badC03 = append(badC03, svc)
+		if pn {
+			own = append(own, svc)
 		}
-		if !isRouted && joined && !defaultAliases {
-			badC07 = append(badC07, svc)
+		switch {
+		case isRouted && !hn && !pn:
+			badC03 = append(badC03, svc)
+		case isRouted && hn:
+			legacy = append(legacy, svc)
+		}
+		if !isRouted && hn && !defaultAliases {
+			badC07HN = append(badC07HN, svc)
+		}
+		if !isRouted && pn {
+			badC07PN = append(badC07PN, svc)
 		}
 	}
 
 	switch {
-	case unread != "" && (defaultAliases || len(on) == 0):
+	case unread != "" && (defaultAliases || len(on)+len(own) == 0):
 		c.warnf("%s — skipping C03, which needs the services it routes", unread)
 	case unread != "":
 		c.warnf("%s — skipping C03 and C07, which need the services it routes", unread)
 	case len(badC03) > 0:
-		c.failf("Routed services not on kasbah-net: %s", strings.Join(badC03, " "))
-	case anyRouted:
+		c.failf("Routed services on neither the project's kasbah network nor kasbah-net: %s", strings.Join(badC03, " "))
+	case nRouted > 0 && len(legacy) == 0:
+		c.passf("All routed services join the project's kasbah network")
+	case nRouted > 0 && len(legacy) == nRouted:
 		c.passf("All routed services join kasbah-net")
+	case nRouted > 0:
+		c.passf("All routed services join the project's kasbah network or kasbah-net")
 	default:
 		c.passf("No Traefik-routed services in compose")
+	}
+	if unread == "" && !defaultAliases && len(legacy) > 0 {
+		c.warnf("Routed through the shared kasbah-net: %s — every project's routed containers reach each other there; move them to a project network under the key kasbah (docs/traefik.md → Network)", strings.Join(legacy, " "))
 	}
 	if len(on) > 0 {
 		if hnExt || (defaultAliases && defaultExt) {
@@ -403,16 +430,134 @@ func (c *checker) networks() (on []string, defaultAliases bool) {
 			c.failf("kasbah-net not declared external: true")
 		}
 	}
+	if len(own) > 0 {
+		c.c04Project()
+	}
+	c.c04External()
 	switch {
 	case defaultAliases:
 		c.failf("default network aliases kasbah-net — every service joins the shared network; join it explicitly per routed service and keep the rest on a project-internal network")
-	case unread != "" && len(on) > 0:
-	case len(badC07) > 0:
-		c.failf("Non-routed services on kasbah-net: %s", strings.Join(badC07, " "))
+	case unread != "" && len(on)+len(own) > 0:
+	case len(badC07HN)+len(badC07PN) > 0:
+		if len(badC07PN) > 0 {
+			c.failf("Non-routed services on the kasbah network: %s — Traefik joins it, so only what it routes belongs there", strings.Join(badC07PN, " "))
+		}
+		if len(badC07HN) > 0 {
+			c.failf("Non-routed services on kasbah-net: %s", strings.Join(badC07HN, " "))
+		}
 	default:
-		c.passf("No internal services on kasbah-net")
+		c.passf("No internal services on the kasbah network or kasbah-net")
 	}
-	return on, defaultAliases
+	return on, own, defaultAliases
+}
+
+// c04Project is C04 for the project's own network: declared, and exactly {}.
+// Compose recreates a network whose settings change, which fails while
+// Traefik is attached, so it gets none.
+func (c *checker) c04Project() {
+	d := c.compose
+	name := c.m.Name + "_" + projectNet
+	v := c.need(d, "networks", projectNet)
+	m, isMap := v.(*tree.Map)
+	switch {
+	case !hasKey(c.need(d, "networks"), projectNet):
+		c.failf("The kasbah network is not declared under the top-level networks: — add kasbah: {}")
+	case v != nil && !isMap:
+		c.failf("The kasbah network is declared as %s — declare it as kasbah: {}", tree.Compact(v))
+	case isMap && m != nil && truthy(opt(m, "external")):
+		c.failf("The kasbah network is declared external — it is the project's own: drop external: so compose creates %s, which deploy connects Traefik to", name)
+	case isMap && m != nil && m.Len() > 0:
+		c.failf("The kasbah network sets %s — declare it as kasbah: {}: compose recreates a network whose settings change, which fails while Traefik is attached, and every later deploy would fail at up", strings.Join(m.Keys(), ", "))
+	default:
+		c.passf("The kasbah network is the project's own (%s)", name)
+	}
+}
+
+// truthy is a compose external: — true, or the old {name: …} mapping.
+func truthy(v tree.Value) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case *tree.Map:
+		return x != nil
+	}
+	return false
+}
+
+// c04External: the only network a project may take from outside is the
+// legacy kasbah-net; another stack's (mail_kasbah, <other>_kasbah) is not its.
+func (c *checker) c04External() {
+	var bad []string
+	nets, _ := c.need(c.compose, "networks").(*tree.Map)
+	for _, k := range keysOf(nets) {
+		n, _ := opt(nets, k).(*tree.Map)
+		if n == nil || !truthy(opt(n, "external")) {
+			continue
+		}
+		real := k
+		if x := scalar(opt(n, "name")); x != "" {
+			real = x
+		} else if x := scalar(opt(n, "external", "name")); x != "" {
+			real = x
+		}
+		if real != "kasbah-net" {
+			bad = append(bad, k+" ("+real+")")
+		}
+	}
+	if len(bad) > 0 {
+		c.failf("External networks other than kasbah-net: %s — a project joins only its own networks and the legacy kasbah-net", strings.Join(bad, " "))
+	}
+}
+
+// c09Project fails a name on the kasbah network not named for the project:
+// Traefik sits on every project's network and resolves names across them, so
+// another project's service, alias or container_name could answer for this one's.
+func (c *checker) c09Project(own []string) {
+	if len(own) == 0 {
+		return
+	}
+	name := c.m.Name
+	ok := func(s string) bool { return s == name || strings.HasPrefix(s, name+"-") }
+	var bad []string
+	for _, svc := range own {
+		if !ok(svc) {
+			bad = append(bad, svc+" (service)")
+		}
+		for _, a := range asList(opt(c.svc(svc, "networks"), projectNet, "aliases")) {
+			if s, _ := a.(string); !ok(s) {
+				bad = append(bad, tree.Text(a)+" (alias of "+svc+")")
+			}
+		}
+		if cn := scalar(c.svc(svc, "container_name")); cn != "" && !ok(cn) {
+			bad = append(bad, cn+" (container_name of "+svc+")")
+		}
+	}
+	if len(bad) == 0 {
+		c.passf("Names on the kasbah network are project-prefixed")
+	} else {
+		c.failf("Names on the kasbah network that are not '%s' or '%s-*': %s — Traefik resolves names across every project's network, so another project's name can answer for this one's", name, name, strings.Join(bad, " "))
+	}
+}
+
+// c10 warns where the project still names mail-dms: off kasbah-net it is
+// out of reach, and apps submit on mail.<domain>:587 (docs/mail.md).
+func (c *checker) c10() {
+	var bad []string
+	for _, f := range []string{composeFile, templateFile} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		for _, l := range strings.Split(strings.ReplaceAll(string(b), "\r", ""), "\n") {
+			if t := strings.TrimSpace(l); !strings.HasPrefix(t, "#") && strings.Contains(t, "mail-dms") {
+				bad = append(bad, f)
+				break
+			}
+		}
+	}
+	if len(bad) > 0 {
+		c.warnf("mail-dms is named in %s — no project shares a network with the mail server; send through mail.<domain>:587 with a mailbox login (docs/mail.md → SMTP access from apps)", strings.Join(bad, " and "))
+	}
 }
 
 // c09 warns about a service on kasbah-net not named for the project; silent

@@ -63,7 +63,7 @@ func (x *fixer) planCompose() {
 		end = t.blockEnd(top)
 		ci, _ = t.childIndent(top)
 	}
-	anyOn := false
+	anyHN, anyPN := false, false
 	defaultHN := x.at("networks", "default", "name") == "kasbah-net"
 	routed := x.c.routedHosts()
 
@@ -92,14 +92,14 @@ func (x *fixer) planCompose() {
 		x.c01(s)
 		x.c08(s)
 
-		joined := joinsNet(opt(x.root, "services", svc, "networks")) || (defaultHN && !x.has("networks", "services", svc))
-		if joined {
-			anyOn = true
-		}
+		nets := opt(x.root, "services", svc, "networks")
+		hn := joinsNet(nets, "kasbah-net") || (defaultHN && !x.has("networks", "services", svc))
+		pn := joinsNet(nets, projectNet)
+		anyHN, anyPN = anyHN || hn, anyPN || pn
 		cn := x.at("services", svc, "container_name")
-		if cn != "" && inList(routed, cn) && !joined {
+		if cn != "" && inList(routed, cn) && !hn && !pn {
 			if x.c03(s) {
-				anyOn = true
+				anyPN = true
 			}
 		}
 
@@ -107,7 +107,8 @@ func (x *fixer) planCompose() {
 		x.c02(s)
 		x.r03(s)
 	}
-	x.c04(anyOn, defaultHN)
+	made := x.c04Project(anyPN)
+	x.c04(anyHN, defaultHN, made)
 	x.c05()
 }
 
@@ -247,17 +248,17 @@ func (x *fixer) c02(s svcBlock) {
 	}
 }
 
-// c03: a routed service joins kasbah-net, and only ever gains it: a service
-// on compose's implicit default keeps it, spelled out. True when an edit was
-// planned.
+// c03: a routed service on neither network joins the project's kasbah one,
+// and only ever gains it: a service on compose's implicit default keeps it,
+// spelled out. True when an edit was planned.
 func (x *fixer) c03(s svcBlock) bool {
 	t := x.t
 	p2 := spaces(s.ci + x.svcStep)
 	if !x.has("networks", "services", s.name) {
-		t.insertAfter(s.at, s.pre+"networks:\n"+p2+"- default\n"+p2+"- kasbah-net")
+		t.insertAfter(s.at, s.pre+"networks:\n"+p2+"- default\n"+p2+"- "+projectNet)
 		x.app("default", "services", s.name, "networks")
-		x.app("kasbah-net", "services", s.name, "networks")
-		x.planf("C03 %s — add networks: [default, kasbah-net] (default spelled out so the service keeps the network it had implicitly)", s.name)
+		x.app(projectNet, "services", s.name, "networks")
+		x.planf("C03 %s — add networks: [default, kasbah] (default spelled out so the service keeps the network it had implicitly)", s.name)
 		return true
 	}
 	n := t.locateChild("networks", s.idx, s.end, s.ci)
@@ -269,7 +270,7 @@ func (x *fixer) c03(s svcBlock) bool {
 		// A flow sequence gets one more member; a flow mapping's members carry
 		// options this would have to invent.
 		if len(raw) < 2 || raw[0] != '[' || raw[len(raw)-1] != ']' {
-			x.leftf("C03 %s — its networks: is written inline as %s; add kasbah-net by hand", s.name, raw)
+			x.leftf("C03 %s — its networks: is written inline as %s; add kasbah by hand", s.name, raw)
 			return false
 		}
 		line, cr := t.lines[n], ""
@@ -278,44 +279,82 @@ func (x *fixer) c03(s svcBlock) bool {
 		}
 		m := reFlowSeq.FindStringSubmatch(line)
 		if m == nil {
-			x.leftf("C03 %s — its networks: list spans more than one line; add kasbah-net by hand", s.name)
+			x.leftf("C03 %s — its networks: list spans more than one line; add kasbah by hand", s.name)
 			return false
 		}
 		sep := ", "
 		if reBlank.MatchString(m[2]) {
 			sep = ""
 		}
-		t.rep[n] = m[1] + m[2] + sep + "kasbah-net" + m[3] + cr
+		t.rep[n] = m[1] + m[2] + sep + projectNet + m[3] + cr
 		t.hasRep[n] = true
-		x.app("kasbah-net", "services", s.name, "networks")
-		x.planf("C03 %s — add kasbah-net to its networks list", s.name)
+		x.app(projectNet, "services", s.name, "networks")
+		x.planf("C03 %s — add kasbah to its networks list", s.name)
 		return true
 	}
 	nEnd := t.blockEnd(n)
 	nci, _ := t.childIndent(n)
 	if nEnd < 0 {
-		t.insertAfter(n, p2+"- default\n"+p2+"- kasbah-net")
+		t.insertAfter(n, p2+"- default\n"+p2+"- "+projectNet)
 		x.app("default", "services", s.name, "networks")
-		x.app("kasbah-net", "services", s.name, "networks")
-		x.planf("C03 %s — fill its empty networks: with default and kasbah-net", s.name)
+		x.app(projectNet, "services", s.name, "networks")
+		x.planf("C03 %s — fill its empty networks: with default and kasbah", s.name)
 		return true
 	}
 	npre := spaces(nci)
 	if _, isMap := x.svcV(s, "networks").(*tree.Map); isMap {
-		t.insertAfter(nEnd, npre+"kasbah-net:")
-		x.set(nil, "services", s.name, "networks", "kasbah-net")
-		x.planf("C03 %s — add kasbah-net to its networks mapping", s.name)
+		t.insertAfter(nEnd, npre+projectNet+":")
+		x.set(nil, "services", s.name, "networks", projectNet)
+		x.planf("C03 %s — add kasbah to its networks mapping", s.name)
 	} else {
-		t.insertAfter(nEnd, npre+"- kasbah-net")
-		x.app("kasbah-net", "services", s.name, "networks")
-		x.planf("C03 %s — add kasbah-net to its networks list", s.name)
+		t.insertAfter(nEnd, npre+"- "+projectNet)
+		x.app(projectNet, "services", s.name, "networks")
+		x.planf("C03 %s — add kasbah to its networks list", s.name)
 	}
 	return true
 }
 
+// c04Project declares the project's kasbah network where a service joins it
+// and nothing does; true when that created the top-level networks:.
+func (x *fixer) c04Project(anyPN bool) bool {
+	t := x.t
+	if !anyPN || x.has(projectNet, "networks") {
+		return false
+	}
+	top := t.locateTop("networks")
+	if top < 0 {
+		n := len(t.lines)
+		if n == 0 {
+			x.leftf("C04 — compose.prod.yml is empty")
+			return false
+		}
+		step := 2
+		if i := t.locateTop("services"); i >= 0 {
+			_, step = t.childIndent(i)
+		}
+		t.insertAfter(n-1, "\nnetworks:\n"+spaces(step)+projectNet+": {}")
+		x.set(obj(), "networks", projectNet)
+		x.planf("C04 — add a top-level networks: with the project's kasbah: {}")
+		return true
+	}
+	if t.inline(top) {
+		x.leftf("C04 — the top-level networks: is written inline; declare kasbah: {} by hand")
+		return false
+	}
+	at := t.blockEnd(top)
+	if at < 0 {
+		at = top
+	}
+	tci, _ := t.childIndent(top)
+	t.insertAfter(at, spaces(tci)+projectNet+": {}")
+	x.set(obj(), "networks", projectNet)
+	x.planf("C04 — declare the project's kasbah: {} network")
+	return false
+}
+
 // c04: kasbah-net is external — asked only when something is on it, and never
 // under the default-alias shape C07 fails, which external: true would entrench.
-func (x *fixer) c04(anyOn, defaultHN bool) {
+func (x *fixer) c04(anyOn, defaultHN, made bool) {
 	t := x.t
 	if !anyOn {
 		return
@@ -332,6 +371,10 @@ func (x *fixer) c04(anyOn, defaultHN bool) {
 		return
 	}
 	top := t.locateTop("networks")
+	if top < 0 && made {
+		x.leftf("C04 — declare kasbah-net external: true by hand, beside the kasbah network this run adds")
+		return
+	}
 	if top < 0 {
 		n := len(t.lines)
 		if n == 0 {

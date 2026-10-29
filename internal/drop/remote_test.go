@@ -3,6 +3,7 @@ package drop
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,8 +162,8 @@ func TestActPlain(t *testing.T) {
 		strings.Join(r.Removed, " ") != "x:1" || len(r.Failed) != 1 || r.Failed[0].Ref != "bad:1" || r.Config != "" {
 		t.Errorf("%+v", r)
 	}
-	if want := "compose -p built-app down --remove-orphans"; strings.Join((*calls)[0], " ") != want {
-		t.Errorf("down: %v", (*calls)[0])
+	if want := "compose -p built-app down --remove-orphans"; strings.Join((*calls)[1], " ") != want {
+		t.Errorf("down: %v", *calls)
 	}
 	for _, p := range []string{"built-app/compose.yml", "data/built-app/keep", "built-app/backups/pre-deploy-1.sql"} {
 		if _, err := os.Stat(filepath.Join(apps, p)); err != nil {
@@ -171,6 +172,76 @@ func TestActPlain(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(apps, "traefik/dynamic/built-app.yml")); err == nil {
 		t.Errorf("the route survived")
+	}
+}
+
+// Traefik leaves the project's network after the route goes and before the
+// down, which cannot remove a network a foreign container is on.
+func TestActDisconnectsTraefik(t *testing.T) {
+	for _, tc := range []struct {
+		name, inspect, detached, err string
+		inspectErr                   error
+	}{
+		{"attached", "kasbah-net\nbuilt-app_kasbah\n", "built-app_kasbah", "", nil},
+		{"not attached", "kasbah-net\n", "", "", nil},
+		{"no traefik", "", "", "", errors.New("Error: No such object: traefik")},
+		{"inspect fails", "", "", "docker inspect traefik failed: boom", errors.New("boom")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			apps, data := appsTree(t)
+			disconnected := false
+			calls := stubDocker(t, func(a []string) (string, error) {
+				switch a[0] {
+				case "network":
+					switch a[1] {
+					case "ls":
+						return "built-app_kasbah built-app\n", nil
+					case "disconnect":
+						disconnected = true
+					case "inspect":
+						// Gone after the down, unless Traefik kept it in use.
+						if tc.err != "" || (!disconnected && strings.Contains(tc.inspect, "built-app_kasbah")) {
+							return "[{}]", nil
+						}
+						return "", errors.New("Error: No such network: built-app_kasbah")
+					}
+				case "inspect":
+					return tc.inspect, tc.inspectErr
+				}
+				return "", nil
+			})
+			so, se, code := runAct(t, ActArgs{Apps: apps, Data: data, Name: "built-app", RegSize: "0", RegSum: "-", RegPrev: "-"}, "")
+			if code != 0 {
+				t.Fatalf("%d %s", code, se)
+			}
+			r := report(t, so)
+			// A failed disconnect leaves the network in use: down exits 0 and is
+			// still reported failed.
+			wantDown := "ok"
+			if tc.err != "" {
+				wantDown = "failed"
+			}
+			if r.Detached != tc.detached || r.DetachErr != tc.err || r.Down != wantDown ||
+				(wantDown == "failed") != strings.Contains(r.DownDetail, "network built-app_kasbah is still there") {
+				t.Fatalf("%+v", r)
+			}
+			var seq []string
+			for _, c := range *calls {
+				seq = append(seq, strings.Join(c, " "))
+			}
+			disc, down := -1, -1
+			for i, c := range seq {
+				if c == "network disconnect built-app_kasbah traefik" {
+					disc = i
+				}
+				if strings.HasPrefix(c, "compose -p built-app down") {
+					down = i
+				}
+			}
+			if (tc.detached != "") != (disc >= 0) || down < 0 || disc > down {
+				t.Fatalf("disconnect %d, down %d:\n%s", disc, down, strings.Join(seq, "\n"))
+			}
+		})
 	}
 }
 

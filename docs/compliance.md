@@ -18,8 +18,10 @@ Structure:
 Compose:
   ✓ All services set restart policy
   ✓ All services set json-file logging with rotation
-  ✓ Routed services join kasbah-net; internal services stay off it
-  ✓ Services on kasbah-net are named for the project
+  ✓ All routed services join the project's kasbah network
+  ✓ The kasbah network is the project's own (my-app_kasbah)
+  ✓ No internal services on the kasbah network or kasbah-net
+  ✓ Names on the kasbah network are project-prefixed
   ✓ No `version:` field (deprecated)
   ✓ All built services reference their image as :current
 
@@ -79,13 +81,14 @@ hosts) are in byte order.
 |---|---|---|---|
 | C01 | Every service sets `restart: unless-stopped` (or stronger) | fail | yes |
 | C02 | Every service has `logging.driver: json-file` with `max-size` + `max-file`, each a non-empty string or a number | fail | yes |
-| C03 | Every Traefik-routed service (targeted by a fragment `loadBalancer` URL) joins `kasbah-net` | fail | yes |
-| C04 | `kasbah-net` declared `external: true` | fail | yes |
+| C03 | Every Traefik-routed service (targeted by a fragment `loadBalancer` URL) joins the project's `kasbah` network — or the legacy shared `kasbah-net`, which warns: every project's routed containers reach each other there (`traefik.md` → Network) | fail / warn | yes (adds the `kasbah` network where neither is joined) |
+| C04 | The `kasbah` network is declared as exactly `kasbah: {}` (or empty) — compose names it `<project>_kasbah`, the network deploy attaches Traefik to, and any setting (`driver`, `labels`, `name`, `external`, …) would make compose try to recreate it under Traefik and fail every later deploy. No `external` network but the legacy `kasbah-net` (itself `external: true`): joining `mail_kasbah` or another project's network is refused, naming the network | fail | yes (adds a missing `kasbah: {}` only) |
 | C05 | No deprecated `version:` top-level field | warn | yes |
 | C06 | Every service has `container_name` OR project uses compose's default naming | info | no |
-| C07 | No non-routed service joins `kasbah-net` — internal services use a project-internal network (service-name aliases on a shared network round-robin across projects) | fail | no |
+| C07 | No non-routed service joins the `kasbah` network or `kasbah-net` — internal services use a project-internal network (Traefik joins the `kasbah` network, and service-name aliases on a shared network round-robin across projects) | fail | no |
 | C08 | Every service with a `build:` key names an `image:` tagged `:current`. Deploy moves `<image>:current` and never rewrites compose, so a service pinned to `:1.2.3` keeps running the old image while the deploy reports success and changes nothing — the quietest failure in the tool. Silent on projects that build nothing | fail | yes |
-| C09 | Every service on `kasbah-net` is named `<manifest.name>` or `<manifest.name>-*`. Compose registers the *service* name — not `container_name` — as a DNS alias on every network it joins, so a service called `web` claims the bare `web` alias on the network every project shares; two projects doing it leave two claimants and a third resolving `web` round-robins between them (measured: `aliases=[gbrev-web web]`). Latent rather than live, since Traefik targets `container_name`, which Docker keeps unique per host — hence warn. C07 already fails a non-routed service there, so in practice this bites the routed one. Silent — no line either way — on a project with no service on `kasbah-net` (nothing joins the shared network, so nothing can collide on it), and on the banned default-alias shape, where C07 has already failed on the shape and the fix is that, not a rename | warn | no |
+| C09 | On the project's `kasbah` network, every service name, every `networks.kasbah.aliases` entry and every `container_name` is `<manifest.name>` or `<manifest.name>-*` — **fail**. Traefik is on every project's network and resolves names across all of them, so a service named, or aliased, like another project's container answers for it: Traefik would send that project's traffic here (measured: 3 of 3 lookups). A prefix shared by two names (`shop` and `shop-admin`) is not caught. On the legacy `kasbah-net` the same naming is a warning, as compose registers service names as aliases there and two projects' `web` round-robin; silent on a project with nothing on `kasbah-net` | fail / warn | no |
+| C10 | Neither `compose.prod.yml` nor `.env.prod.example` names `mail-dms` outside a `#` comment line: no project shares a network with the mail server, so an app sends through `mail.<domain>:587` with a mailbox login (`mail.md` → SMTP access from apps). Silent when neither does | warn | no |
 
 ### Resources
 
@@ -192,8 +195,11 @@ hook commands. Only edits `compose.prod.yml` and `kasbah.yml` (with a
 diff shown before writing).
 
 Fixable today:
-- C01, C02, C03, C04, C05, C08 (compose hygiene — C08 is a mechanical tag
-  rewrite, refused for an image pinned by digest, which has no tag to move)
+- C01, C02, C03, C04, C05, C08 (compose hygiene — C03/C04 put a routed service
+  that joins neither network on a `kasbah` network and declare `kasbah: {}`,
+  leaving a project already on the legacy `kasbah-net` as it is, warned; C08 is
+  a mechanical tag rewrite, refused for an image pinned by digest, which has no
+  tag to move)
 - R01, R02, R03 (insert the `KASBAH_*` var references where a limit is missing,
   replace a malformed top-level one; a valid literal is left alone, and a
   `deploy.resources.limits` limit is the author's to fix — no top-level key is

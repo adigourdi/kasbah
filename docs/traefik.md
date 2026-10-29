@@ -80,53 +80,66 @@ it lasts until the next init.
 
 ## Network
 
-```yaml
-# /apps/traefik/compose.yml (excerpt)
-networks:
-  kasbah-net:
-    name: kasbah-net
-    driver: bridge
-```
-
-Only the containers Traefik routes to join this network — explicitly, never
-via the project's `default` network:
+**Each project has its own network, and Traefik is the only thing on more than
+one.** A project's compose file declares a network under the key `kasbah` — not
+`external`, so the project still runs with plain `docker compose up` anywhere —
+and puts its routed services on it, and everything else on a project-internal
+network:
 
 ```yaml
 # /apps/<project>/compose.yml
 services:
   myapp-web:
     container_name: myapp-web
-    networks: [kasbah-net, internal]
+    networks: [kasbah, internal]
   postgres:
     networks: [internal]
 
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
   internal: {}
 ```
 
-Why not put the whole project on `kasbah-net` via `default:`? Compose
-registers every service's **service name** as a DNS alias on each network
-it joins. On a shared network, two projects that each have a service called
-`postgres` would both register the `postgres` alias — and Docker DNS
-round-robins between them, so project A's app can silently connect to
-project B's database. Keeping internal services on a project-internal
-network scopes those aliases. `kasbah check` enforces the split (C03/C07/C09).
+Compose names it `<project>_kasbah`. At every deploy and rollback, right after
+`compose up`, kasbah attaches the running Traefik to it (`docker network
+connect`, live — no restart, nothing changes in Traefik's compose file) before
+the health wait; `drop` detaches it before `compose down`, which could not
+remove a network a foreign container is still on. A compromised container
+therefore reaches its own project and nothing else: no other project shares a
+network with it. Traefik reaches everything, which is its job.
 
-**The split scopes the internal half only.** A *routed* service still carries
-its service name as an alias on the shared `kasbah-net`: two projects that each
-call their routed service `web` both register `web` there, and a third project
-resolving that bare name round-robins between them. Only `container_name` is
-guaranteed unique, because Docker refuses a duplicate outright — which is why
-fragments target it. Name routed services for the project, as distinctly as
-their containers, or pin the alias with `networks.kasbah-net.aliases:`;
-`kasbah check` warns on any un-prefixed name on the shared network (C09).
+A recreated Traefik container keeps only the networks its compose file names,
+so every Traefik start kasbah runs — `server init`, `upgrade-traefik` and its
+restore, the mail stack's start — rejoins every network compose labels with the
+key `kasbah` (`com.docker.compose.network=kasbah`) whose compose project is the
+mail stack or has a directory under the apps path, so a compose project someone
+runs by hand elsewhere on the host never gets Traefik attached. A Traefik recreated by hand
+(`docker compose -p traefik up -d`) has lost them: every site answers 502 until
+`server init` is re-run.
 
-The network is what lets Traefik resolve `http://<container_name>:<port>`
-in the file fragment. Container names — unlike service-name aliases — are
-unique per host (Docker refuses to start a duplicate), so fragments always
-target `container_name` (T07).
+**`kasbah-net`** (a frozen name) is still created by the Traefik stack, and a
+project still routed through it — `networks: [kasbah-net]`, `external: true` —
+keeps working, with `kasbah check` warning that it should move to a `kasbah`
+network. Projects on it see each other, as all projects did before.
+
+Why not put the whole project on its network via `default:`? Compose registers
+every service's **service name** as a DNS alias on each network it joins, and
+Traefik — on every project network — resolves names across all of them: two
+projects with a `postgres` both on the network Traefik shares would make the
+name ambiguous from Traefik's side, and on the legacy shared network project A's
+app could silently reach project B's database. Keeping internal services on a
+project-internal network scopes those aliases. `kasbah check` enforces the split
+(C03/C04/C07/C09).
+
+The network is what lets Traefik resolve `http://<container_name>:<port>` in the
+file fragment, and fragments target `container_name` (T07), which Docker keeps
+unique per host. That alone does not make the target unambiguous: Traefik
+resolves names across every network it is on, and another project's **service
+name or alias** answers for the same name — so a project naming a service like
+its neighbour's container would receive the neighbour's traffic. Every name on a
+project's `kasbah` network must therefore carry the project's own prefix (C09,
+a failure), and its network must be exactly `kasbah: {}` (C04): any setting
+makes compose try to recreate it while Traefik is attached, which fails.
 
 ## Discovery
 
@@ -203,7 +216,7 @@ http:
           - url: "http://myapp-web:80"
 ```
 
-The service URL names a container on `kasbah-net`. Pin it via compose's
+The service URL names a container on the project's `kasbah` network. Pin it via compose's
 `container_name:` so the URL stays stable across restarts.
 
 Both routers, not just the `websecure` one: without the `web` half the
@@ -387,10 +400,13 @@ server status` surfaces it.
   so Traefik sees a single atomic replace event and reloads.
 - **Rollback** — kasbah reads `traefik-dynamic.yml` from
   `git archive v<target>` and syncs it to the same destination.
-- **Drop** — `rm /apps/traefik/dynamic/<manifest.name>.yml` before
-  `docker compose down`. That order is the point: the route goes first, so a
-  run that dies between the two leaves a stopped project nothing is routing to,
-  rather than a live route onto nothing. (`kasbah server destroy` deliberately
+- **Deploy / rollback, before the fragment** — after `compose up`, Traefik is
+  attached to `<project>_kasbah` (a failed attach fails the run, which reverts);
+  a revert's own `up` attaches it again.
+- **Drop** — `rm /apps/traefik/dynamic/<manifest.name>.yml`, then Traefik
+  detached from `<project>_kasbah`, then `docker compose down`. That order is the
+  point: the route goes first, so a run that dies between them leaves a stopped
+  project nothing is routing to, rather than a live route onto nothing. (`kasbah server destroy` deliberately
   leaves fragments in place — a handover keeps every site routing.)
 
 ## What projects may NOT do
@@ -403,11 +419,13 @@ server status` surfaces it.
 - Route to a Traefik `@internal` service other than `noop@internal` — `api@internal`
   and its kin would publish Traefik's API with no auth (T09).
 - Bind ports 80 or 443 on the host (they belong to Traefik).
-- Replace the `kasbah-net` network.
-- Attach non-routed services (databases, caches, workers) to `kasbah-net` —
-  internal services stay on a project-internal network.
+- Replace the `kasbah-net` network, or declare their `kasbah` network
+  `external` or with a fixed `name:`.
+- Attach non-routed services (databases, caches, workers) to the `kasbah`
+  network (or the legacy `kasbah-net`) — internal services stay on a
+  project-internal network.
 
-`kasbah check` enforces these (rules T01–T09, C07, C09).
+`kasbah check` enforces these (rules T01–T09, C03, C04, C07, C09).
 
 ## Upgrading Traefik
 

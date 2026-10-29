@@ -17,6 +17,21 @@ const goodCompose = `services:
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: ${KASBAH_MEM_LIMIT}
     logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+    networks: [kasbah]
+networks:
+  kasbah: {}
+`
+
+// legacyCompose routes through the shared kasbah-net, the 1.x shape check
+// still accepts with a warning.
+const legacyCompose = `services:
+  demo-web:
+    image: nginx:alpine
+    container_name: demo-web
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
     networks: [kasbah-net]
 networks:
   kasbah-net: {external: true}
@@ -75,10 +90,10 @@ Structure:
 Compose:
   ✓ All services set restart policy
   ✓ All services set json-file logging with rotation
-  ✓ All routed services join kasbah-net
-  ✓ kasbah-net declared external
-  ✓ No internal services on kasbah-net
-  ✓ kasbah-net service names are project-prefixed
+  ✓ All routed services join the project's kasbah network
+  ✓ The kasbah network is the project's own (demo_kasbah)
+  ✓ No internal services on the kasbah network or kasbah-net
+  ✓ Names on the kasbah network are project-prefixed
   ✓ No deprecated 'version:' field
 
 Resources:
@@ -137,10 +152,10 @@ func TestVerdicts(t *testing.T) {
 			map[string]string{"compose.prod.yml": goodCompose + "version: false\n"}, 0,
 			[]string{"  ⚠ compose.prod.yml uses deprecated 'version:' field"}},
 		{"external: only a boolean true is external",
-			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "{external: true}", "{external: \"true\"}", 1)}, 6,
+			map[string]string{"compose.prod.yml": strings.Replace(legacyCompose, "{external: true}", "{external: \"true\"}", 1)}, 6,
 			[]string{"  ✗ kasbah-net not declared external: true"}},
 		{"reservations: false is still a reservation",
-			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "    networks: [kasbah-net]\n", "    networks: [kasbah-net]\n    deploy: {resources: {reservations: false}}\n", 1)}, 6,
+			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "    networks: [kasbah]\n", "    networks: [kasbah]\n    deploy: {resources: {reservations: false}}\n", 1)}, 6,
 			[]string{"  ✗ Services declare resource reservations: demo-web"}},
 		{"routers: that is not a mapping skips the router rules",
 			map[string]string{"traefik-dynamic.yml": "http:\n  routers: [a]\n"}, 0,
@@ -148,13 +163,55 @@ func TestVerdicts(t *testing.T) {
 				"  ⚠ traefik-dynamic.yml: http.routers is a list, not a mapping — skipping C03 and C07, which need the services it routes"}},
 		{"with no fragment read, C03 and C07 conclude nothing",
 			map[string]string{"traefik-dynamic.yml": ""}, 0,
-			[]string{"  ⚠ traefik-dynamic.yml missing — skipping C03 and C07, which need the services it routes", "  ✓ kasbah-net declared external"}},
+			[]string{"  ⚠ traefik-dynamic.yml missing — skipping C03 and C07, which need the services it routes", "  ✓ The kasbah network is the project's own (demo_kasbah)"}},
 		{"with no fragment read and nothing on kasbah-net, C07 still passes",
-			map[string]string{"traefik-dynamic.yml": "", "compose.prod.yml": strings.Replace(goodCompose, "networks: [kasbah-net]", "networks: [internal]", 1)}, 0,
-			[]string{"  ⚠ traefik-dynamic.yml missing — skipping C03, which needs the services it routes", "  ✓ No internal services on kasbah-net"}},
+			map[string]string{"traefik-dynamic.yml": "", "compose.prod.yml": strings.Replace(goodCompose, "networks: [kasbah]", "networks: [internal]", 1)}, 0,
+			[]string{"  ⚠ traefik-dynamic.yml missing — skipping C03, which needs the services it routes", "  ✓ No internal services on the kasbah network or kasbah-net"}},
 		{"with no fragment read, the default-alias shape still fails C07",
-			map[string]string{"traefik-dynamic.yml": "", "compose.prod.yml": goodCompose + "  default: {name: kasbah-net}\n"}, 6,
+			map[string]string{"traefik-dynamic.yml": "", "compose.prod.yml": legacyCompose + "  default: {name: kasbah-net}\n"}, 6,
 			[]string{"  ⚠ traefik-dynamic.yml missing — skipping C03, which needs the services it routes", "  ✗ default network aliases kasbah-net — every service joins the shared network; join it explicitly per routed service and keep the rest on a project-internal network"}},
+		{"a legacy project on kasbah-net passes C03 and is warned to move",
+			map[string]string{"compose.prod.yml": legacyCompose}, 0,
+			[]string{"  ✓ All routed services join kasbah-net", "  ⚠ Routed through the shared kasbah-net: demo-web — every project's routed containers reach each other there; move them to a project network under the key kasbah (docs/traefik.md → Network)",
+				"  ✓ kasbah-net declared external", "  ✓ kasbah-net service names are project-prefixed"}},
+		{"a routed service on neither network fails C03",
+			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "networks: [kasbah]", "networks: [internal]", 1)}, 6,
+			[]string{"  ✗ Routed services on neither the project's kasbah network nor kasbah-net: demo-web"}},
+		{"an external kasbah network fails C04",
+			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "kasbah: {}", "kasbah: {external: true}", 1)}, 6,
+			[]string{"  ✗ The kasbah network is declared external — it is the project's own: drop external: so compose creates demo_kasbah, which deploy connects Traefik to"}},
+		{"a renamed kasbah network fails C04",
+			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "kasbah: {}", "kasbah: {name: shared}", 1)}, 6,
+			[]string{"  ✗ The kasbah network sets name — declare it as kasbah: {}: compose recreates a network whose settings change, which fails while Traefik is attached, and every later deploy would fail at up"}},
+		{"any setting on the kasbah network fails C04, naming it",
+			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "kasbah: {}", "kasbah: {driver: bridge, labels: {a: b}}", 1)}, 6,
+			[]string{"  ✗ The kasbah network sets driver, labels — declare it as kasbah: {}: compose recreates a network whose settings change, which fails while Traefik is attached, and every later deploy would fail at up"}},
+		{"a null kasbah network is as empty as {}",
+			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "kasbah: {}", "kasbah:", 1)}, 0,
+			[]string{"  ✓ The kasbah network is the project's own (demo_kasbah)"}},
+		{"another stack's network, taken external, fails C04",
+			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "  kasbah: {}\n", "  kasbah: {}\n  m: {name: mail_kasbah, external: true}\n  o: {external: {name: shop_kasbah}}\n", 1)}, 6,
+			[]string{"  ✗ External networks other than kasbah-net: m (mail_kasbah) o (shop_kasbah) — a project joins only its own networks and the legacy kasbah-net"}},
+		{"a name on the kasbah network not named for the project fails C09",
+			map[string]string{"compose.prod.yml": strings.Replace(strings.Replace(goodCompose, "  demo-web:\n", "  web:\n", 1),
+				"    networks: [kasbah]\n", "    networks: {kasbah: {aliases: [demo-api, krvb-w]}}\n", 1)}, 6,
+			[]string{"  ✗ Names on the kasbah network that are not 'demo' or 'demo-*': web (service) krvb-w (alias of web) — Traefik resolves names across every project's network, so another project's name can answer for this one's"}},
+		{"a container_name on the kasbah network not named for the project fails C09",
+			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "container_name: demo-web", "container_name: krvb-w", 1),
+				"traefik-dynamic.yml": strings.Replace(goodFragment, "demo-web:80", "krvb-w:80", 1)}, 6,
+			[]string{"  ✗ Names on the kasbah network that are not 'demo' or 'demo-*': krvb-w (container_name of demo-web) — Traefik resolves names across every project's network, so another project's name can answer for this one's"}},
+		{"a commented mail-dms is not a use of it",
+			map[string]string{".env.prod.example": "# c\n# SMTP_HOST=mail-dms was the old way\nDOMAIN=x\n"}, 0,
+			[]string{"  ✓ .env.prod.example syntax is valid"}},
+		{"an undeclared kasbah network fails C04",
+			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "  kasbah: {}\n", "  other: {}\n", 1)}, 6,
+			[]string{"  ✗ The kasbah network is not declared under the top-level networks: — add kasbah: {}"}},
+		{"a non-routed service on the kasbah network fails C07",
+			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "networks:\n  kasbah", "  db: {image: postgres, restart: always, cpus: 1, mem_limit: 1g, logging: {driver: json-file, options: {max-size: 1m, max-file: 1}}, networks: [kasbah]}\nnetworks:\n  kasbah", 1)}, 6,
+			[]string{"  ✗ Non-routed services on the kasbah network: db — Traefik joins it, so only what it routes belongs there"}},
+		{"a compose or env template naming mail-dms is warned",
+			map[string]string{".env.prod.example": "# c\nSMTP_HOST=mail-dms\n"}, 0,
+			[]string{"  ⚠ mail-dms is named in .env.prod.example — no project shares a network with the mail server; send through mail.<domain>:587 with a mailbox login (docs/mail.md → SMTP access from apps)"}},
 		{"max-size: false is no rotation",
 			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "max-size: 10m", "max-size: false", 1)}, 6,
 			[]string{"  ✗ Services missing json-file logging with max-size/max-file: demo-web"}},
@@ -312,5 +369,16 @@ func TestUnanswerable(t *testing.T) {
 		if code != 1 || errs != tc.want || strings.Contains(out, "Summary:") {
 			t.Errorf("exit %d, stderr %q, want %q:\n%s", code, errs, tc.want, out)
 		}
+	}
+}
+
+func TestC10SkipsComments(t *testing.T) {
+	project(t, map[string]string{".env.prod.example": "# c\r\n  # SMTP_HOST=mail-dms was the old way\r\nDOMAIN=x\r\n"})
+	if out, _, _ := check(t); strings.Contains(out, "mail-dms") {
+		t.Fatalf("a commented mail-dms warned:\n%s", out)
+	}
+	project(t, map[string]string{"compose.prod.yml": goodCompose + "x-smtp: mail-dms # still used\n"})
+	if out, _, _ := check(t); !strings.Contains(out, "⚠ mail-dms is named in compose.prod.yml — ") {
+		t.Fatalf("a used mail-dms did not warn:\n%s", out)
 	}
 }

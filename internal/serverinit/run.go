@@ -623,7 +623,7 @@ func Run(c Ctx, o Options) (err error) {
 	}
 
 	// After Traefik is healthy: DMS reads mail.<primary>'s certificate out of
-	// acme.json, and kasbah-net is Traefik's to create.
+	// acme.json, and the mail stack's network is joined by a running Traefik.
 	if mailOn {
 		if mst, err = s.mailStart(o); err != nil {
 			return err
@@ -764,6 +764,9 @@ func Run(c Ctx, o Options) (err error) {
 		shipped = "shipped " + strings.Join(changed, " ")
 	}
 	out.Info("  traefik: %s, %s, %s (%s)", tfk["traefik_action"], tfk["traefik_health"], tfk["traefik_image"], shipped)
+	if nets := strings.Fields(tfk["traefik_networks"]); len(nets) > 0 {
+		out.Info("           on %d project network(s): %s", len(nets), strings.Join(nets, " "))
+	}
 	from := ""
 	if v.Acme.Stored != "" && v.Acme.Stored != v.Acme.CA {
 		from = v.Acme.Stored + " -> "
