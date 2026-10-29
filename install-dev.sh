@@ -62,6 +62,9 @@ esac
 
 repo_dir="$(cd "$(dirname "$0")" && pwd)"
 dist="$repo_dir/dist"
+# dist/kasbah must run here: darwin on a Mac (compose.yml, KASBAH_GOOS).
+host_goos=linux
+[ "$(uname -s)" != Darwin ] || host_goos=darwin
 
 need_docker() {
     if ! command -v docker >/dev/null 2>&1; then
@@ -77,7 +80,7 @@ if [ "$skip_build" = 0 ]; then
     # container falls back to uid 1000 and writes dist/ as somebody else. -p
     # because an exported COMPOSE_PROJECT_NAME outranks the file's `name:`, and
     # stdin from /dev/null because -T still forwards it.
-    env UID="$(id -u)" GID="$(id -g)" \
+    env UID="$(id -u)" GID="$(id -g)" KASBAH_GOOS="$host_goos" \
         docker compose -p kasbah -f "$repo_dir/compose.yml" run --rm -T build >&2 </dev/null
 fi
 
@@ -122,7 +125,7 @@ git -C "$work/src" -c advice.detachedHead=false checkout --quiet "refs/tags/$tag
 # the build user could then neither write .cache/ nor the cleanup remove it.
 mkdir -p "$repo_dir/.cache/go-mod" "$repo_dir/.cache/go-build" \
          "$work/src/.cache/go-mod" "$work/src/.cache/go-build"
-env UID="$(id -u)" GID="$(id -g)" \
+env UID="$(id -u)" GID="$(id -g)" KASBAH_GOOS="$host_goos" \
     docker compose -p "$project" -f "$work/src/compose.yml" run --rm -T \
         -v "$repo_dir/.cache/go-mod:/workspace/.cache/go-mod" \
         -v "$repo_dir/.cache/go-build:/workspace/.cache/go-build" \
@@ -132,6 +135,10 @@ reported="$("$work/src/dist/kasbah" --version)" || reported=""
 read -r name ver _ <<<"$reported" || true
 if [ "${name:-}" != kasbah ] || [ "${ver:-}" != "${tag#v}" ]; then
     echo "install-dev: the build of $tag reports '$reported', not kasbah ${tag#v} — nothing was installed" >&2
+    if [ "$host_goos" = darwin ] && ! grep -q KASBAH_GOOS "$work/src/compose.yml"; then
+        echo "  $tag predates macOS builds: its compose.yml builds a linux dist/kasbah, which cannot run here" >&2
+        echo "  install a release instead: kasbah self-update $tag" >&2
+    fi
     exit 1
 fi
 "$dist/kasbah" __install --pin "$work/src/dist"

@@ -66,6 +66,8 @@ its own bytes must match the signed checksum, and nothing is downloaded.
             Only for a downloaded release binary installing itself, its own
             version named exactly (vN.M.P) — what get.sh hands off with. The
             same checks apply: signature, trusted comment, this binary's bytes.
+            On macOS the two linux server builds (kasbah_<ver>_linux_amd64,
+            _arm64) are read from DIR too, each checked against checksums.txt.
 
 A kasbah run from a checkout does not self-update: build and install it.
 `
@@ -125,9 +127,9 @@ type Ctx struct {
 	Out    *cli.Output
 	// Prompter asks the major-change question.
 	Prompter *prompt.Prompter
-	// Root is the library (<lib>), BinDir where the symlink lives, Arch this
-	// machine's GOARCH.
-	Root, BinDir, Arch string
+	// Root is the library (<lib>), BinDir where the symlink lives, OS and Arch
+	// this machine's GOOS ("" is linux) and GOARCH.
+	Root, BinDir, OS, Arch string
 	// Self is this build's stamp, "" when unstamped: the major a bare
 	// `self-update` resolves within.
 	Self string
@@ -199,7 +201,11 @@ func Run(c Ctx, o Options) error {
 		}
 	}
 	fmt.Fprintf(c.Out.Stdout, "verified checksums.txt: key %s, trusted comment \"%s\"\n", rel.KeyID, rel.Comment)
-	name := AssetName(ver, c.Arch)
+	goos := c.OS
+	if goos == "" {
+		goos = "linux"
+	}
+	name := AssetFor(ver, goos, c.Arch)
 	t := install.Target{
 		Lib:        c.Root,
 		BinDir:     c.BinDir,
@@ -209,24 +215,62 @@ func Run(c Ctx, o Options) error {
 		Pin:        pin,
 		RunTimeout: c.RunTimeout,
 	}
+	b := install.Build{Version: ver}
 	if c.Loose && ver == c.Self && !version.Dev(c.Self) {
 		own, err := ownBytes(c.Exe, rel, name)
 		if err != nil {
 			return err
 		}
 		fmt.Fprintf(c.Out.Stdout, "this binary is the published %s (sha256 %s) — installing it, nothing downloaded\n", name, rel.Sums[name])
-		return install.Install(t, install.Build{
-			Version: ver,
-			Bin:     content(own),
-			Server:  map[string]install.Source{c.Arch: content(own)},
-		})
+		b.Bin = content(own)
+		b.Server = map[string]install.Source{c.Arch: content(own)}
+	} else {
+		b.Bin = func(path string) error { return c.Client.Download(rel, name, path) }
+		// The release asset for this arch is also the server binary for it.
+		b.Server = map[string]install.Source{c.Arch: install.File(bin)}
 	}
-	// The release asset for this arch is also the server binary for it.
-	return install.Install(t, install.Build{
-		Version: ver,
-		Bin:     func(path string) error { return c.Client.Download(rel, name, path) },
-		Server:  map[string]install.Source{c.Arch: install.File(bin)},
-	})
+	if goos != "linux" {
+		if b.Server, err = serverBuilds(c, rel, ver, o.From); err != nil {
+			return err
+		}
+	}
+	return install.Install(t, b)
+}
+
+// serverBuilds are both linux server builds, for a workstation that is not
+// linux: the copies in from (get.sh downloads them) verified, else downloaded.
+func serverBuilds(c Ctx, rel *Release, ver, from string) (map[string]install.Source, error) {
+	m := map[string]install.Source{}
+	for _, arch := range ServerArches {
+		name := AssetName(ver, arch)
+		if from == "" {
+			m[arch] = func(path string) error { return c.Client.Download(rel, name, path) }
+			continue
+		}
+		b, err := listedBytes(filepath.Join(from, name), rel, name)
+		if err != nil {
+			return nil, err
+		}
+		m[arch] = content(b)
+	}
+	return m, nil
+}
+
+// listedBytes is the file at p when its sha256 is the one rel signed for name.
+func listedBytes(p string, rel *Release, name string) ([]byte, error) {
+	want, ok := rel.Sums[name]
+	if !ok {
+		return nil, cli.Fail("%s's checksums.txt has no entry for %s — nothing was installed", rel.Tag, name)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil, cli.Fail("cannot read the server build %s: %v", p, err).Cont("nothing was installed — get.sh downloads both linux server builds beside the binary")
+	}
+	sum := sha256.Sum256(b)
+	if got := hex.EncodeToString(sum[:]); got != want {
+		return nil, cli.Fail("%s is not the published %s: sha256 %s, the signed checksums.txt says %s", p, name, got, want).Cont("nothing was installed")
+	}
+	return b, nil
 }
 
 // fromOwn is the version --from may install: this binary's own, a release,

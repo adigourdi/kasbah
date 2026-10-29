@@ -14,8 +14,9 @@ import (
 const Compose = "compose.prod.yml"
 
 // Image is one built service: the image: compose names, which the build tags,
-// and <base>:<version>, which is tagged, saved and loaded.
-type Image struct{ Service, Source, Ref string }
+// and <base>:<version>, which is tagged, saved and loaded. Platform is the
+// service's own platform:, "" when it sets none.
+type Image struct{ Service, Source, Ref, Platform string }
 
 // Base is image_base: the reference without its tag. A registry port is not a
 // tag — only a colon in the last path component is.
@@ -71,7 +72,13 @@ func Built(doc tree.Value, project, version string) ([]Image, error) {
 				"move. Give the service an image: key:",
 				"    image: "+project+"-"+name+":current")
 		}
-		out = append(out, Image{Service: name, Source: image, Ref: Base(image) + ":" + version})
+		pv, _ := svc.Get("platform")
+		platform, _ := tree.String(pv)
+		platform = strings.TrimSuffix(platform, "\r")
+		if platform == "null" {
+			platform = ""
+		}
+		out = append(out, Image{Service: name, Source: image, Ref: Base(image) + ":" + version, Platform: platform})
 	}
 	return out, nil
 }

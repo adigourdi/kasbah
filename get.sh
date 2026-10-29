@@ -1,9 +1,10 @@
 #!/bin/sh
-# Install kasbah on Linux: download this release's binary for the machine,
-# its checksums.txt and checksums.txt.minisig, check the sha256 (and the
-# signature when minisign is here), then hand off to the binary's own
-# `self-update`, which installs it. With no version that is this release,
-# verified from the files already here (`--from`): no API call at all.
+# Install kasbah on Linux or macOS: download this release's binary for the
+# machine (on macOS the two linux server builds too), its checksums.txt and
+# checksums.txt.minisig, check the sha256s (and the signature when minisign is
+# here), then hand off to the binary's own `self-update`, which installs it.
+# With no version that is this release, verified from the files already here
+# (`--from`): no API call at all.
 #
 #   curl -fsSL https://github.com/adigourdi/kasbah/releases/latest/download/get.sh | sh
 #   curl -fsSL …/get.sh | sh -s -- [vN | vN.M | vN.M.P[-rc.K]] [--pre] [--yes]
@@ -291,12 +292,20 @@ get_main() {
     esac
 
     g_os=$(uname -s)
-    [ "$g_os" = Linux ] || die "kasbah runs on Linux, not $g_os"
+    case $g_os in
+        Linux) g_goos=linux ;;
+        Darwin) g_goos=darwin ;;
+        *) die "kasbah runs on Linux or macOS, not $g_os" ;;
+    esac
     g_m=$(uname -m)
+    # A shell under Rosetta reports x86_64 on an arm64 Mac.
+    if [ "$g_goos$g_m" = darwinx86_64 ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || :)" = 1 ]; then
+        g_m=arm64
+    fi
     case $g_m in
         x86_64 | amd64) g_arch=amd64 ;;
         aarch64 | arm64) g_arch=arm64 ;;
-        *) die "kasbah has no build for $g_m: Linux on x86_64 (amd64) or aarch64 (arm64) only" ;;
+        *) die "kasbah has no build for $g_m: x86_64 (amd64) or aarch64/arm64 only" ;;
     esac
 
     if command -v sha256sum >/dev/null 2>&1; then
@@ -321,9 +330,12 @@ get_main() {
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
-    g_asset=kasbah_${g_ver}_linux_$g_arch
+    g_asset=kasbah_${g_ver}_${g_goos}_$g_arch
+    # A Mac ships the linux builds to its servers: self-update --from installs them.
+    g_bins=$g_asset
+    [ "$g_goos" = linux ] || g_bins="$g_asset kasbah_${g_ver}_linux_amd64 kasbah_${g_ver}_linux_arm64"
     # The signature always: kasbah verifies this release from these files.
-    g_files="$g_asset checksums.txt checksums.txt.minisig"
+    g_files="$g_bins checksums.txt checksums.txt.minisig"
     g_minisign=''
     if command -v minisign >/dev/null 2>&1; then
         g_minisign=minisign
@@ -332,7 +344,7 @@ get_main() {
     g_api=${KASBAH_RELEASES_API:-https://api.github.com}
     g_api=${g_api%/}
 
-    say "kasbah $g_ver for linux/$g_arch: fetching $g_asset from $g_base/v$g_ver/"
+    say "kasbah $g_ver for $g_goos/$g_arch: fetching $g_bins from $g_base/v$g_ver/"
     g_report='' g_denied=''
     # Whitespace a token may carry around it: space, newline, tab, CR.
     g_ws=$(printf ' \n\t\r')
@@ -360,13 +372,15 @@ get_main() {
         say 'no minisign here: kasbah checks the signature itself before it installs'
     fi
 
-    g_want_sum=$(awk -v n="$g_asset" '{ sub(/\r$/, "") } NF == 2 && ($2 == n || $2 == "*" n) { print $1; exit }' "$g_tmp/checksums.txt")
-    [ -n "$g_want_sum" ] || die "checksums.txt lists no $g_asset: nothing was installed"
-    g_sum=$($g_sha <"$g_tmp/$g_asset")
-    g_sum=${g_sum%% *}
-    [ "$g_sum" = "$g_want_sum" ] ||
-        die "$g_asset does not match checksums.txt: nothing was installed" "sha256 $g_sum" "expected $g_want_sum"
-    say "sha256 of $g_asset matches checksums.txt"
+    for g_f in $g_bins; do
+        g_want_sum=$(awk -v n="$g_f" '{ sub(/\r$/, "") } NF == 2 && ($2 == n || $2 == "*" n) { print $1; exit }' "$g_tmp/checksums.txt")
+        [ -n "$g_want_sum" ] || die "checksums.txt lists no $g_f: nothing was installed"
+        g_sum=$($g_sha <"$g_tmp/$g_f")
+        g_sum=${g_sum%% *}
+        [ "$g_sum" = "$g_want_sum" ] ||
+            die "$g_f does not match checksums.txt: nothing was installed" "sha256 $g_sum" "expected $g_want_sum"
+        say "sha256 of $g_f matches checksums.txt"
+    done
 
     mv "$g_tmp/$g_asset" "$g_tmp/kasbah"
     chmod 755 "$g_tmp/kasbah"

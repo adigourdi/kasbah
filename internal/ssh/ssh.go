@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -20,10 +21,18 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 )
 
-// CtlPathMax is the longest ControlPath a master can bind: sun_path's 108
-// bytes, less the NUL and the `.<16 random chars>` it listens on before
-// renaming. Measured on OpenSSH 9.6p1: 90 connects, 91 fails.
-const CtlPathMax = 90
+// CtlPathMax is the longest ControlPath a master can bind here.
+var CtlPathMax = PathMax(runtime.GOOS)
+
+// PathMax is the ControlPath budget on goos: sun_path (108 bytes on linux,
+// 104 on macOS and the BSDs) less the NUL and the `.<16 random chars>` the
+// master binds before renaming. Measured on linux, OpenSSH 9.6p1: 90 connects, 91 fails.
+func PathMax(goos string) int {
+	if goos == "linux" {
+		return 90
+	}
+	return 86
+}
 
 // Target is USER@HOST.
 type Target struct{ User, Host string }

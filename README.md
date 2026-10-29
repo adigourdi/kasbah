@@ -37,7 +37,8 @@ all; [docs/cli.md](docs/cli.md) describes each one.
 
 ## Requirements
 
-- **Your machine:** Linux on amd64 or arm64, with Docker and its compose plugin,
+- **Your machine:** Linux or macOS on amd64 or arm64 (the macOS build is not yet
+  verified on a Mac), with Docker and its compose plugin,
   `ssh` and `git`.
 - **The server:** Docker 24 or newer with Compose v2 or newer, SSH key login as
   a user in the `docker` group, root for the first setup (passwordless `sudo`,
@@ -86,7 +87,7 @@ you whether the project is ready to deploy. More in
 
 ## Limitations
 
-- Your machine must run Linux; there is no macOS or Windows build.
+- There is no Windows build, and the macOS one has not yet been run on a Mac.
 - kasbah checks that Docker and SSH access on the server are ready, but installs
   none of the prerequisites, never checks ports or DNS, and never touches the
   firewall or SSH configuration.

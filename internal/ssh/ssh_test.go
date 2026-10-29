@@ -301,3 +301,21 @@ func TestLongTmpdirRefusedBeforeSSH(t *testing.T) {
 		t.Errorf("the refusal left %v behind", ents)
 	}
 }
+
+// macOS's per-user TMPDIR (/var/folders/<2>/<28>/T/) leaves the control path
+// well inside the smaller budget its 104-byte sun_path allows.
+func TestPathMaxDarwin(t *testing.T) {
+	for _, tt := range []struct {
+		goos string
+		want int
+	}{{"linux", 90}, {"darwin", 86}, {"freebsd", 86}} {
+		if got := PathMax(tt.goos); got != tt.want {
+			t.Errorf("PathMax(%s) = %d, want %d", tt.goos, got, tt.want)
+		}
+	}
+	tmp := "/var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/T/"
+	p := strings.TrimSuffix(tmp, "/") + "/kasbah-ssh.Ab3dE9/m1"
+	if len(p) > PathMax("darwin")-10 {
+		t.Errorf("a macOS TMPDIR control path is %d bytes, too close to the %d budget", len(p), PathMax("darwin"))
+	}
+}

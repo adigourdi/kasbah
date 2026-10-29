@@ -75,17 +75,20 @@ case " $* " in
             echo "docker stub: the build ran on a dirty tree — the stamp would carry .dirty" >&2
             exit 9
         fi
+        printf '%s\n' "${KASBAH_GOOS-unset}" > "$BUILD_COUNT.goos"
         n=$(( $(cat "$BUILD_COUNT" 2>/dev/null || echo 0) + 1 ))
         echo "$n" > "$BUILD_COUNT"
         salt=
         [ -n "${BUILD_DRIFT:-}" ] && [ "$n" -ge 2 ] && salt="-$n"
-        mkdir -p dist/server
+        mkdir -p dist/server dist/darwin
         # dist/kasbah answers --version as the real build would: the tag's
         # version exactly, or what STUB_STAMP says instead.
         printf '#!/bin/sh\necho "kasbah %s (schema 1)"\n# fake kasbah%s\n' "${STUB_STAMP:-$(tr -d '\r\n' <VERSION)}" "$salt" > dist/kasbah
         chmod 0755 dist/kasbah
         printf 'fake kasbah linux/amd64%s\n' "$salt" > dist/server/kasbah-linux-amd64
         printf 'fake kasbah linux/arm64%s\n' "$salt" > dist/server/kasbah-linux-arm64
+        printf 'fake kasbah darwin/amd64%s\n' "$salt" > dist/darwin/kasbah-darwin-amd64
+        printf 'fake kasbah darwin/arm64%s\n' "$salt" > dist/darwin/kasbah-darwin-arm64
         echo "built kasbah (stub $n)" ;;
     *" jedisct1/minisign -S "*)
         printf 'fake signature\n' > "$(host_of /work/checksums.txt.minisig)" ;;
@@ -136,7 +139,7 @@ export KASBAH_RELEASE_KEY="$key_dir/release.key"
 # fresh <version> — a committed, pushed repo holding release.sh, a VERSION, a
 # test.sh that passes (TEST_SH_RC otherwise) and logs, and the key pair.
 fresh() {
-    rm -rf "$repo" "$origin" "$key_dir" "$DOCKER_LOG" "$GH_LOG" "$GH_KEEP" "$TEST_SH_LOG" "$BUILD_COUNT" "$VERIFY_SAW_PUB"
+    rm -rf "$repo" "$origin" "$key_dir" "$DOCKER_LOG" "$GH_LOG" "$GH_KEEP" "$TEST_SH_LOG" "$BUILD_COUNT" "$BUILD_COUNT.goos" "$VERIFY_SAW_PUB"
     mkdir -p "$repo" "$key_dir"
     cp "$repo_dir/release.sh" "$repo_dir/get.sh" "$repo/"
     printf '%s\n' "$1" > "$repo/VERSION"
@@ -189,6 +192,7 @@ assert '[ "$(origin_tags)" = v1.2.3 ]' "the tag was pushed to origin (origin has
 assert '[ "$(grep -c "^test.sh" "$TEST_SH_LOG")" = 1 ]' "test.sh ran once"
 builds="$(grep -c "compose --progress quiet -p kasbah -f $repo/compose.yml run --rm -T build" "$DOCKER_LOG")"
 assert '[ "$builds" = 2 ]' "the compose build ran twice, quietly, with -p kasbah (ran $builds times)"
+assert '[ "$(cat "$BUILD_COUNT.goos")" = linux ]' "with dist/kasbah built for this host, linux (KASBAH_GOOS=$(cat "$BUILD_COUNT.goos"))"
 sign="$(grep "jedisct1/minisign -S" "$DOCKER_LOG")"
 scratch_of_sign="$(sed -n 's/.* -v \([^ ]*\):\/work -w .*/\1/p' <<<"$sign")"
 assert '[ -n "$sign" ]' "checksums.txt was signed through the minisign container"
@@ -204,7 +208,7 @@ assert '! grep -q "^release upload" "$GH_LOG"' "and not uploaded to, since it di
 create="$(grep "^release create" "$GH_LOG")"
 assert '[ -n "$create" ]' "gh release create was called"
 assert 'grep -q "^release create v1.2.3 --title kasbah 1.2.3 --notes-file " <<<"$create"' "with the tag and the title (got: $create)"
-for a in kasbah_1.2.3_linux_amd64 kasbah_1.2.3_linux_arm64 get.sh checksums.txt checksums.txt.minisig; do
+for a in kasbah_1.2.3_linux_amd64 kasbah_1.2.3_linux_arm64 kasbah_1.2.3_darwin_amd64 kasbah_1.2.3_darwin_arm64 get.sh checksums.txt checksums.txt.minisig; do
     assert 'grep -q "/$a\( \|$\)" <<<"$create"' "with asset $a (got: $create)"
     assert '[ -f "$GH_KEEP/$a" ]' "and $a existed when gh was called"
 done
@@ -216,10 +220,12 @@ assert '[ "$(sed "s/^stamped='"'"'1.2.3'"'"'\$/stamped='"''"'/" "$GH_KEEP/get.sh
     "and is the repo's get.sh otherwise"
 assert 'cmp -s "$GH_KEEP/kasbah_1.2.3_linux_amd64" "$repo/dist/server/kasbah-linux-amd64"' "the amd64 asset is the linux/amd64 build"
 assert 'cmp -s "$GH_KEEP/kasbah_1.2.3_linux_arm64" "$repo/dist/server/kasbah-linux-arm64"' "the arm64 asset is the linux/arm64 build"
-expected="$(cd "$GH_KEEP" && sha256sum get.sh kasbah_1.2.3_linux_amd64 kasbah_1.2.3_linux_arm64)"
+assert 'cmp -s "$GH_KEEP/kasbah_1.2.3_darwin_amd64" "$repo/dist/darwin/kasbah-darwin-amd64" && cmp -s "$GH_KEEP/kasbah_1.2.3_darwin_arm64" "$repo/dist/darwin/kasbah-darwin-arm64"' \
+    "the darwin assets are the darwin builds"
+expected="$(cd "$GH_KEEP" && sha256sum get.sh kasbah_1.2.3_darwin_amd64 kasbah_1.2.3_darwin_arm64 kasbah_1.2.3_linux_amd64 kasbah_1.2.3_linux_arm64)"
 assert '[ "$(cat "$GH_KEEP/checksums.txt")" = "$expected" ]' \
-    "checksums.txt is sha256sum's format over the three assets (got: $(tr '\n' '|' <"$GH_KEEP/checksums.txt"))"
-assert '[ "$(wc -l <"$GH_KEEP/checksums.txt")" = 3 ]' "and nothing else"
+    "checksums.txt is sha256sum's format over the five assets, in name order (got: $(tr '\n' '|' <"$GH_KEEP/checksums.txt"))"
+assert '[ "$(wc -l <"$GH_KEEP/checksums.txt")" = 5 ]' "and nothing else"
 assert '[ "$(cat "$GH_KEEP/checksums.txt.minisig")" = "fake signature" ]' "the minisig is what minisign wrote"
 notes="$(sed -n 's/.*--notes-file \([^ ]*\).*/\1/p' <<<"$create")"
 assert '[ "$(cat "$GH_KEEP/$(basename "$notes")")" = "$(printf -- "- second commit\n- first commit")" ]' \
@@ -228,8 +234,8 @@ assert '[ "$(cat "$repo/VERSION")" = 1.2.3 ]' "VERSION is left as it was (got $(
 assert '[ -z "$(git -C "$repo" status --porcelain)" ]' "and the tree is clean after the release ($(git -C "$repo" status --porcelain | tr '\n' ' '))"
 assert 'grep -q "^released v1.2.3" <<<"$out" && grep -q "https://github.example/releases/tag/v1.2.3" <<<"$out"' \
     "the summary names the tag and the release URL (got: $out)"
-assert 'grep -q "assets: kasbah_1.2.3_linux_amd64 kasbah_1.2.3_linux_arm64 get.sh checksums.txt checksums.txt.minisig$" <<<"$out"' \
-    "the summary lists the five assets (got: $out)"
+assert 'grep -q "assets: kasbah_1.2.3_darwin_amd64 kasbah_1.2.3_darwin_arm64 kasbah_1.2.3_linux_amd64 kasbah_1.2.3_linux_arm64 get.sh checksums.txt checksums.txt.minisig$" <<<"$out"' \
+    "the summary lists the seven assets (got: $out)"
 assert '[ ! -f "$fakehome/.config/kasbah/release.key" ]' "nothing was written under HOME"
 
 # --- Case 2: notes since the previous tag; an existing tag on HEAD is reused ----
@@ -312,23 +318,27 @@ assert '! grep -q "^release create" "$GH_LOG" 2>/dev/null' "an origin whose tags
 # --- stage <tag> <dir>, as the workflow runs it --------------------------------
 
 fresh 1.2.3
-mkdir -p "$repo/dist/server"
+mkdir -p "$repo/dist/server" "$repo/dist/darwin"
 printf 'amd64 bytes\n' > "$repo/dist/server/kasbah-linux-amd64"
 printf 'arm64 bytes\n' > "$repo/dist/server/kasbah-linux-arm64"
+printf 'darwin amd64 bytes\n' > "$repo/dist/darwin/kasbah-darwin-amd64"
+printf 'darwin arm64 bytes\n' > "$repo/dist/darwin/kasbah-darwin-arm64"
 stage_in() { (cd "$tmpdir" && "$repo/release.sh" stage "$@" >"$tmpdir/out" 2>"$tmpdir/err"); }
 stage_in v1.4.0-rc.2 staged; rc=$?
 st="$tmpdir/staged"
 assert '[ "$rc" = 0 ]' "stage succeeds (exit $rc: $(cat "$tmpdir/err"))"
-assert '[ "$(ls "$st" | tr "\n" " ")" = "checksums.txt get.sh kasbah_1.4.0-rc.2_linux_amd64 kasbah_1.4.0-rc.2_linux_arm64 " ]' \
-    "a relative DIR is the caller's, holding the four files (got: $(ls "$st" 2>&1 | tr '\n' ' '))"
+assert '[ "$(ls "$st" | tr "\n" " ")" = "checksums.txt get.sh kasbah_1.4.0-rc.2_darwin_amd64 kasbah_1.4.0-rc.2_darwin_arm64 kasbah_1.4.0-rc.2_linux_amd64 kasbah_1.4.0-rc.2_linux_arm64 " ]' \
+    "a relative DIR is the caller's, holding the six files (got: $(ls "$st" 2>&1 | tr '\n' ' '))"
 assert 'cmp -s "$st/kasbah_1.4.0-rc.2_linux_amd64" "$repo/dist/server/kasbah-linux-amd64" && cmp -s "$st/kasbah_1.4.0-rc.2_linux_arm64" "$repo/dist/server/kasbah-linux-arm64"' \
-    "the binaries are dist/server's"
+    "the linux binaries are dist/server's"
+assert 'cmp -s "$st/kasbah_1.4.0-rc.2_darwin_amd64" "$repo/dist/darwin/kasbah-darwin-amd64" && cmp -s "$st/kasbah_1.4.0-rc.2_darwin_arm64" "$repo/dist/darwin/kasbah-darwin-arm64"' \
+    "the darwin binaries dist/darwin's"
 assert '[ "$(grep -cx "stamped='"'"'1.4.0-rc.2'"'"'" "$st/get.sh")" = 1 ] && ! grep -qF "stamped='"''"'" "$st/get.sh"' \
     "get.sh is stamped with the version, no v (got: $(grep '^stamped=' "$st/get.sh"))"
 assert 'sh -n "$st/get.sh"' "and still parses"
 assert '(cd "$st" && sha256sum --quiet -c checksums.txt)' "checksums.txt checks out"
-assert '[ "$(cut -d" " -f3 "$st/checksums.txt" | tr "\n" " ")" = "get.sh kasbah_1.4.0-rc.2_linux_amd64 kasbah_1.4.0-rc.2_linux_arm64 " ]' \
-    "over the three, in name order (got: $(tr '\n' '|' <"$st/checksums.txt"))"
+assert '[ "$(cut -d" " -f3 "$st/checksums.txt" | tr "\n" " ")" = "get.sh kasbah_1.4.0-rc.2_darwin_amd64 kasbah_1.4.0-rc.2_darwin_arm64 kasbah_1.4.0-rc.2_linux_amd64 kasbah_1.4.0-rc.2_linux_arm64 " ]' \
+    "over the five, in name order (got: $(tr '\n' '|' <"$st/checksums.txt"))"
 assert '! [ -f "$DOCKER_LOG" ] && ! [ -f "$GH_LOG" ]' "stage neither builds, signs nor releases"
 
 # The workflow stages and flags through release.sh and uploads what stage
@@ -363,6 +373,10 @@ stage_in v1.4.0 staged; rc=$?
 assert '[ "$rc" = 1 ] && grep -q "0 times, not once" "$tmpdir/err" && ! [ -e "$st/checksums.txt" ]' \
     "stage refuses get.sh without the stamp line, and writes no checksums.txt (exit $rc: $(cat "$tmpdir/err"))"
 cp "$repo_dir/get.sh" "$repo/get.sh"
+rm -rf "$st" "$repo/dist/darwin"
+stage_in v1.4.0 staged; rc=$?
+assert '[ "$rc" = 1 ] && grep -q "no dist/darwin/kasbah-darwin-amd64 — build first" "$tmpdir/err" && ! [ -e "$st" ]' \
+    "stage refuses a dist/ without the darwin builds (exit $rc: $(cat "$tmpdir/err"))"
 rm -rf "$repo/dist" "$st"
 stage_in v1.4.0 staged; rc=$?
 assert '[ "$rc" = 1 ] && grep -q "build first" "$tmpdir/err" && ! [ -e "$st" ]' "stage refuses without a build (exit $rc: $(cat "$tmpdir/err"))"
@@ -467,7 +481,7 @@ assert '! grep -q minisign "$DOCKER_LOG"' "two builds that differ: nothing signe
 assert '[ -z "$(local_tags)" ]' "two builds that differ: the tag made for the build is taken away (tags: $(local_tags | tr '\n' ' '))"
 assert 'grep -q "not reproducible" <<<"$err" && grep -q "^first:" <<<"$err" && grep -q "^second:" <<<"$err"' \
     "two builds that differ: both hash sets printed (got: $err)"
-assert '[ "$(grep -c "dist/server/kasbah-linux-arm64" <<<"$err")" = 2 ]' "two builds that differ: every file in both sets"
+assert '[ "$(grep -c "dist/server/kasbah-linux-arm64" <<<"$err")" = 2 ] && [ "$(grep -c "dist/darwin/kasbah-darwin-arm64" <<<"$err")" = 2 ]' "two builds that differ: every file in both sets"
 
 fresh 1.2.3
 git -C "$repo" tag -a v1.2.3 -m "kasbah 1.2.3"
@@ -534,7 +548,7 @@ assert '[ "$rc" = 0 ]' "the rerun succeeds against the half-made release (exit $
 upload="$(grep "^release upload" "$GH_LOG")"
 assert 'grep -q "^release upload v1.2.3 .*/checksums.txt.minisig --clobber$" <<<"$upload"' "the rerun replaces the assets (got: $upload)"
 assert '[ "$(grep -c "^release upload" "$GH_LOG")" = 1 ]' "once"
-for a in kasbah_1.2.3_linux_amd64 kasbah_1.2.3_linux_arm64 get.sh checksums.txt checksums.txt.minisig; do
+for a in kasbah_1.2.3_linux_amd64 kasbah_1.2.3_linux_arm64 kasbah_1.2.3_darwin_amd64 kasbah_1.2.3_darwin_arm64 get.sh checksums.txt checksums.txt.minisig; do
     assert 'grep -q "/$a\( \|$\)" <<<"$upload"' "the rerun uploads $a (got: $upload)"
 done
 assert '! grep -q -- "--latest\|--prerelease" <<<"$upload"' "and leaves latest and prerelease as they are (got: $upload)"

@@ -1,14 +1,19 @@
 # The Go toolchain, containerised: the Go version is pinned by the image tag
 # below and nowhere else — GOTOOLCHAIN=local stops go.mod from fetching another.
 #
-#   docker compose run --rm build   dist/kasbah                      linux, for the docker engine's own
-#                                                                    architecture: the checkout entry
+#   docker compose run --rm build   dist/kasbah                      the checkout entry: for the docker
+#                                                                    engine's own architecture, linux, or
+#                                                                    darwin with KASBAH_GOOS=darwin (a Mac;
+#                                                                    test.sh and install-dev.sh set it)
 #                                   dist/server/kasbah-linux-amd64   the server binaries
 #                                   dist/server/kasbah-linux-arm64
-#                                   dist/yaml2json                   a test helper (tests/cli.sh)
+#                                   dist/darwin/kasbah-darwin-amd64  the macOS workstation binaries
+#                                   dist/darwin/kasbah-darwin-arm64
+#                                   dist/yaml2json                   a test helper (tests/cli.sh), as
+#                                                                    dist/kasbah
 #   docker compose run --rm test    go vet, the gofmt check, go test
 #
-# The three kasbah binaries are static (CGO_ENABLED=0) and carry one build stamp from
+# The five kasbah binaries are static (CGO_ENABLED=0) and carry one build stamp from
 # `go run ./tools/stamp`: VERSION exactly when HEAD is tagged v<VERSION> and the
 # tree is clean — a release build, an rc included, is reproducible — and
 # otherwise a pre-release of the line's next version with the commit count,
@@ -52,15 +57,22 @@ services:
       - sh
       - -euc
       - |
+        os='${KASBAH_GOOS:-linux}'
+        case $$os in
+            linux | darwin) ;;
+            *) echo "KASBAH_GOOS is '$$os': dist/kasbah is built for linux or darwin" >&2; exit 1 ;;
+        esac
         v=$$(go run ./tools/stamp)
         ldflags="-s -w -X main.build=$$v"
-        go build -trimpath -ldflags "$$ldflags" -o dist/.kasbah.new ./cmd/kasbah
+        GOOS=$$os go build -trimpath -ldflags "$$ldflags" -o dist/.kasbah.new ./cmd/kasbah
         mv -f dist/.kasbah.new dist/kasbah
-        go build -trimpath -ldflags "-s -w" -o dist/.yaml2json.new ./tools/yaml2json
+        GOOS=$$os go build -trimpath -ldflags "-s -w" -o dist/.yaml2json.new ./tools/yaml2json
         mv -f dist/.yaml2json.new dist/yaml2json
-        for arch in amd64 arm64; do
-            out=dist/server/kasbah-linux-$$arch
-            GOOS=linux GOARCH=$$arch go build -trimpath -ldflags "$$ldflags" \
+        for target in server/kasbah-linux-amd64 server/kasbah-linux-arm64 darwin/kasbah-darwin-amd64 darwin/kasbah-darwin-arm64; do
+            out=dist/$$target
+            plat=$${target#*/kasbah-}
+            mkdir -p "$$(dirname "$$out")"
+            GOOS=$${plat%-*} GOARCH=$${plat#*-} go build -trimpath -ldflags "$$ldflags" \
                 -o "$$(dirname "$$out")/.$$(basename "$$out").new" ./cmd/kasbah
             mv -f "$$(dirname "$$out")/.$$(basename "$$out").new" "$$out"
         done

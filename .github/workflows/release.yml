@@ -31,7 +31,7 @@ jobs:
         run: |
           set -euo pipefail
           build() { env UID="$(id -u)" GID="$(id -g)" docker compose -p kasbah run --rm -T build </dev/null; }
-          files="dist/kasbah dist/server/kasbah-linux-amd64 dist/server/kasbah-linux-arm64"
+          files="dist/kasbah dist/server/kasbah-linux-amd64 dist/server/kasbah-linux-arm64 dist/darwin/kasbah-darwin-amd64 dist/darwin/kasbah-darwin-arm64"
           build; first="$(sha256sum $files)"
           build; second="$(sha256sum $files)"
           if [ "$first" != "$second" ]; then
@@ -69,7 +69,8 @@ jobs:
           words="$(./release.sh flags "$TAG")"
           read -ra flags <<<"$words"
           gh release create "$TAG" --title "kasbah $ver" --notes-file notes.md "${flags[@]}" \
-            "release/kasbah_${ver}_linux_amd64" "release/kasbah_${ver}_linux_arm64" release/get.sh \
+            "release/kasbah_${ver}_linux_amd64" "release/kasbah_${ver}_linux_arm64" \
+            "release/kasbah_${ver}_darwin_amd64" "release/kasbah_${ver}_darwin_arm64" release/get.sh \
             release/checksums.txt release/checksums.txt.minisig
         env:
           TAG: ${{ inputs.tag }}

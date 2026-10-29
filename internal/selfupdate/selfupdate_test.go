@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -933,9 +934,14 @@ func TestRun(t *testing.T) {
 // release2 re-signs tag ver's checksums after its assets were changed.
 func (g *github) release2(s *signer, ver string) {
 	assets := g.releases["v"+ver]
-	var sums []string
-	for _, arch := range []string{"amd64", "arm64"} {
-		name := AssetName(ver, arch)
+	var names, sums []string
+	for name := range assets {
+		if !strings.HasPrefix(name, "checksums.txt") {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
 		sum := sha256.Sum256(assets[name])
 		sums = append(sums, hex.EncodeToString(sum[:])+"  "+name)
 	}
@@ -1203,5 +1209,111 @@ func TestParse(t *testing.T) {
 		if _, err := Parse(bad); err == nil {
 			t.Errorf("%v parsed", bad)
 		}
+	}
+}
+
+// TestRunDarwin is a macOS workstation: its own darwin asset is the binary,
+// and both linux builds are the server binaries — downloaded, or with --from
+// read from the directory get.sh downloaded them to.
+func TestRunDarwin(t *testing.T) {
+	g := newGithub(t)
+	s := newSigner(t)
+	g.release(s, "1.2.0", true)
+	darwin := map[string][]byte{}
+	for _, arch := range ServerArches {
+		name := AssetFor("1.2.0", "darwin", arch)
+		darwin[arch] = []byte("#!/bin/sh\necho \"kasbah 1.2.0 (schema 1)\"\n# darwin " + arch + "\n")
+		g.releases["v1.2.0"][name] = darwin[arch]
+	}
+	g.release2(s, "1.2.0")
+	c, buf := client(t, g, s)
+	rel := g.releases["v1.2.0"]
+	check := func(root string) {
+		t.Helper()
+		if !fileIs(filepath.Join(root, "1.2.0", "kasbah"), darwin["arm64"]) {
+			t.Errorf("the binary is not the darwin/arm64 asset\n%s", buf)
+		}
+		for _, arch := range ServerArches {
+			if !fileIs(filepath.Join(root, "1.2.0", "server", "kasbah-linux-"+arch), rel[AssetName("1.2.0", arch)]) {
+				t.Errorf("server/kasbah-linux-%s is not the linux/%s asset", arch, arch)
+			}
+		}
+	}
+	ctx := func(exe string, loose bool) Ctx {
+		return Ctx{Client: c, Out: c.Out, Prompter: fakeTTY("", c.Out), Root: filepath.Join(t.TempDir(), "lib"),
+			BinDir: t.TempDir(), OS: "darwin", Arch: "arm64", Self: "1.2.0", Exe: exe, Loose: loose, RunTimeout: 5 * time.Second}
+	}
+
+	// Through the API: three downloads.
+	cx := ctx("", false)
+	if err := Run(cx, Options{Version: "v1.2.0"}); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf)
+	}
+	check(cx.Root)
+	for _, name := range []string{AssetFor("1.2.0", "darwin", "arm64"), AssetName("1.2.0", "amd64"), AssetName("1.2.0", "arm64")} {
+		if g.hits("v1.2.0/"+name) == 0 {
+			t.Errorf("%s was not downloaded", name)
+		}
+	}
+	if g.hits(AssetFor("1.2.0", "darwin", "amd64")) != 0 {
+		t.Error("the other darwin arch was downloaded")
+	}
+
+	// --from, as get.sh hands off: nothing fetched at all.
+	from := t.TempDir()
+	put := func(name string, b []byte) string {
+		p := filepath.Join(from, name)
+		os.WriteFile(p, b, 0o755)
+		return p
+	}
+	for name, b := range rel {
+		if name != AssetFor("1.2.0", "darwin", "amd64") {
+			put(name, b)
+		}
+	}
+	exe := filepath.Join(from, AssetFor("1.2.0", "darwin", "arm64"))
+	before := len(g.paths)
+	buf.Reset()
+	cx = ctx(exe, true)
+	if err := Run(cx, Options{Version: "v1.2.0", From: from}); err != nil {
+		t.Fatalf("--from: %v\n%s", err, buf)
+	}
+	check(cx.Root)
+	if len(g.paths) != before {
+		t.Errorf("--from asked GitHub: %v", g.paths[before:])
+	}
+	if !strings.Contains(buf.String(), "this binary is the published "+AssetFor("1.2.0", "darwin", "arm64")) {
+		t.Errorf("output:\n%s", buf)
+	}
+
+	// A server build tampered with, or missing: refused, nothing installed.
+	put(AssetName("1.2.0", "amd64"), []byte("tampered"))
+	cx = ctx(exe, true)
+	if err := noToken(t, Run(cx, Options{Version: "v1.2.0", From: from})); err == nil || !strings.Contains(err.Error(), "is not the published "+AssetName("1.2.0", "amd64")) {
+		t.Errorf("tampered: %v", err)
+	}
+	os.Remove(filepath.Join(from, AssetName("1.2.0", "amd64")))
+	cx = ctx(exe, true)
+	if err := noToken(t, Run(cx, Options{Version: "v1.2.0", From: from})); err == nil || !strings.Contains(err.Error(), "get.sh downloads both") {
+		t.Errorf("missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cx.Root, "1.2.0")); err == nil {
+		t.Error("a refused run left a version directory")
+	}
+}
+
+func TestAsset(t *testing.T) {
+	for _, tt := range []struct{ goos, arch, want string }{
+		{"linux", "amd64", "kasbah_1.2.0_linux_amd64"},
+		{"linux", "arm64", "kasbah_1.2.0_linux_arm64"},
+		{"darwin", "amd64", "kasbah_1.2.0_darwin_amd64"},
+		{"darwin", "arm64", "kasbah_1.2.0_darwin_arm64"},
+	} {
+		if got := AssetFor("1.2.0", tt.goos, tt.arch); got != tt.want {
+			t.Errorf("AssetFor(%s/%s) = %s, want %s", tt.goos, tt.arch, got, tt.want)
+		}
+	}
+	if AssetName("1.2.0", "arm64") != "kasbah_1.2.0_linux_arm64" {
+		t.Error("AssetName is not the linux build")
 	}
 }

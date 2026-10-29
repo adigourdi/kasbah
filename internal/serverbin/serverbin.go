@@ -573,6 +573,9 @@ type Result struct {
 	Source string
 	// Marker is the marker's bytes as the probe read them.
 	Marker []byte
+	// Arch is the server's GOARCH from its `uname -m`, "" when kasbah builds
+	// for no such machine.
+	Arch string
 }
 
 // TimedOut is a status `timeout` gives a run it ended: GNU's 124 (137 after
@@ -636,7 +639,7 @@ func Ensure(c *ssh.Conn, self remote.Info, local func(arch string) (string, erro
 	if err != nil {
 		return nil, err
 	}
-	res := &Result{Action: action, Apps: p.Apps, Source: p.Source, Marker: p.MarkerBody}
+	res := &Result{Action: action, Apps: p.Apps, Source: p.Source, Marker: p.MarkerBody, Arch: arch}
 	switch {
 	case srv != nil:
 		res.Old = srv.Build

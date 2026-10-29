@@ -6,7 +6,9 @@
 package buildpush
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -202,7 +204,8 @@ func Run(c Ctx, o Options) error {
 		if err := cut(); err != nil {
 			return err
 		}
-		if err := build(m.Name, images); err != nil {
+		// No server to ask: the engine's own platform, or DOCKER_DEFAULT_PLATFORM's.
+		if err := build(m.Name, images, "", ""); err != nil {
 			return err
 		}
 		c.Out.Info("Built and tagged %s %s — nothing was shipped (--build-only)", m.Name, version)
@@ -229,7 +232,23 @@ func Run(c Ctx, o Options) error {
 	if err != nil {
 		return err
 	}
-	if err := build(m.Name, images); err != nil {
+	if res.Arch == "" {
+		return cli.Fail("%s's machine type is not one kasbah builds for, so there is no platform to build its images for", target)
+	}
+	platform := "linux/" + res.Arch
+	engine := enginePlatform()
+	if engine != "" && engine != platform {
+		c.Out.Info("building for %s, the platform of %s — this docker engine is %s", platform, target, engine)
+	}
+	for _, im := range images {
+		if im.Platform != "" && im.Platform != platform {
+			c.Out.Warn("service '%s' sets platform: %s, and %s is %s — its image will not run there", im.Service, im.Platform, target, platform)
+		}
+	}
+	if d := os.Getenv("DOCKER_DEFAULT_PLATFORM"); d != "" && d != platform {
+		c.Out.Info("  DOCKER_DEFAULT_PLATFORM=%s is overridden: the images run on %s", d, target)
+	}
+	if err := build(m.Name, images, platform, engine); err != nil {
 		return err
 	}
 	st, err := ship(c.Out, conn, serverbin.Path(res.Apps), images)
@@ -306,12 +325,27 @@ func docker(args ...string) *exec.Cmd {
 // build is `compose build`, never `up --build`: a service with both build:
 // and image: is not rebuilt by up while an image of that name exists. -p
 // because COMPOSE_PROJECT_NAME outranks the file's name:. The two limits only
-// let a compliant file interpolate; 0 is Docker's "no limit".
-func build(project string, images []Image) error {
+// let a compliant file interpolate; 0 is Docker's "no limit". platform, when
+// set, is the server's: compose builds every service without its own
+// platform: for it.
+func build(project string, images []Image, platform, engine string) error {
 	cmd := docker("compose", "-p", project, "-f", Compose, "build")
 	cmd.Env = append(os.Environ(), "KASBAH_CPU_LIMIT=0", "KASBAH_MEM_LIMIT=0")
+	if platform != "" {
+		cmd.Env = append(cmd.Env, "DOCKER_DEFAULT_PLATFORM="+platform)
+	}
+	// compose's stderr still reaches the terminal; a copy is kept to read its refusal.
+	var errs bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &tail{&errs, 64 << 10})
 	if err := cmd.Run(); err != nil {
-		return cli.Fail("docker compose -p %s -f %s build failed (see the error above)", project, Compose)
+		f := cli.Fail("docker compose -p %s -f %s build failed (see the error above)", project, Compose)
+		if platform != "" && strings.Contains(errs.String(), "does not support value set by DOCKER_DEFAULT_PLATFORM") {
+			f.Cont("the server runs " + platform + ", so every built service's build.platforms must include " + platform + " (or be left out)")
+		} else if engine != "" && platform != "" && engine != platform {
+			f.Cont("building for "+platform+" on a "+engine+" engine needs emulation: Docker Desktop has it;",
+				"on a Linux engine, install it once: docker run --privileged --rm tonistiigi/binfmt --install "+strings.TrimPrefix(platform, "linux/"))
+		}
+		return f
 	}
 	// The permanent tag only; :current stays where the build put it.
 	for _, im := range images {
@@ -320,4 +354,27 @@ func build(project string, images []Image) error {
 		}
 	}
 	return nil
+}
+
+// tail keeps at most max bytes written to b, and never fails a write.
+type tail struct {
+	b   *bytes.Buffer
+	max int
+}
+
+func (t *tail) Write(p []byte) (int, error) {
+	if room := t.max - t.b.Len(); room > 0 {
+		t.b.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
+}
+
+// enginePlatform is the local docker engine's os/arch, "" when it does not say.
+func enginePlatform() string {
+	out, err := exec.Command("docker", "version", "--format", "{{.Server.Os}}/{{.Server.Arch}}").Output()
+	p := strings.TrimSpace(string(out))
+	if err != nil || !strings.Contains(p, "/") || strings.HasPrefix(p, "/") || strings.HasSuffix(p, "/") {
+		return ""
+	}
+	return p
 }

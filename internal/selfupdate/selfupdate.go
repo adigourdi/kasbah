@@ -36,9 +36,15 @@ const (
 	DefaultAPI = "https://api.github.com"
 )
 
-// AssetName is the one-file-per-arch release asset, the workstation binary
-// and that arch's server build alike.
-func AssetName(ver, arch string) string { return "kasbah_" + ver + "_linux_" + arch }
+// AssetFor is the release asset built for goos/arch.
+func AssetFor(ver, goos, arch string) string { return "kasbah_" + ver + "_" + goos + "_" + arch }
+
+// AssetName is the linux build for arch: that arch's server binary, and the
+// workstation binary on a linux workstation.
+func AssetName(ver, arch string) string { return AssetFor(ver, "linux", arch) }
+
+// ServerArches are the server builds every release carries.
+var ServerArches = []string{"amd64", "arm64"}
 
 // Client reaches the releases of Repo through the GitHub API.
 type Client struct {

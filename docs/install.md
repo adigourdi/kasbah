@@ -1,8 +1,10 @@
 # Installing kasbah
 
-kasbah runs on a **Linux** workstation, amd64 or arm64; the same binary is what
-it ships to every server (`overview.md` → Distribution). There is no macOS
-build. Every install path ends in the same place:
+kasbah runs on a **Linux** or **macOS** workstation, amd64 or arm64; on Linux the
+same binary is what it ships to every server, and a macOS install carries the two
+Linux server builds beside its own (`overview.md` → Distribution). The macOS
+build is cross-compiled and unit-tested but has not yet been run on a Mac. Every
+install path ends in the same place:
 
 - `~/.local/share/kasbah/<version>/` (`KASBAH_LIB_DIR`, else
   `$XDG_DATA_HOME/kasbah` when that is set) holds each installed
@@ -37,8 +39,10 @@ one is already there. A malformed version, or `--pre` without one, is a usage
 error before anything is downloaded.
 
 `get.sh` is a POSIX `sh` script (dash, busybox ash) carrying the version of the
-release it belongs to. It downloads that release's `kasbah_<ver>_linux_<arch>`,
-`checksums.txt` and `checksums.txt.minisig`, checks the binary's sha256 — and
+release it belongs to. It downloads that release's `kasbah_<ver>_linux_<arch>` —
+on a Mac `kasbah_<ver>_darwin_<arch>` plus both `kasbah_<ver>_linux_*` server
+builds, an Apple Silicon Mac under Rosetta getting the arm64 build —
+`checksums.txt` and `checksums.txt.minisig`, checks every download's sha256 — and
 the signature too when `minisign` is installed — checks the binary runs, then
 hands off to `kasbah self-update` *run from the download*. For its own release
 (no argument, or that version named) it passes `--from` the downloaded files:
@@ -60,7 +64,7 @@ always answers.
 
 It refuses, running nothing:
 
-- a machine that is not Linux on x86_64/amd64 or aarch64/arm64;
+- a machine that is not Linux or macOS on x86_64/amd64 or aarch64/arm64;
 - a sha256 that does not match `checksums.txt`, or no `sha256sum`/`shasum` to check it;
 - a temp dir it cannot execute from (`/tmp` mounted `noexec`): set `TMPDIR` to
   one that allows execution;
@@ -86,6 +90,11 @@ sha256sum -c --ignore-missing checksums.txt
 chmod +x "kasbah_${ver}_linux_${arch}"
 "./kasbah_${ver}_linux_${arch}" self-update "v$ver"
 ```
+
+On a Mac, download `kasbah_${ver}_darwin_${arch}` and both
+`kasbah_${ver}_linux_amd64`/`_arm64`, check them with `shasum -a 256 -c
+--ignore-missing checksums.txt`, and run the darwin one with `self-update
+"v$ver" --from .` so it installs the two server builds from the same directory.
 
 `curl -fLO https://github.com/adigourdi/kasbah/releases/download/v$ver/<asset>`
 fetches the same files without `gh` once the repository is public. The last line

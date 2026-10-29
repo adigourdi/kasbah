@@ -29,8 +29,8 @@ func selfUpdateCmd(o selfupdate.Options, err error) int {
 }
 
 func selfUpdate(out *cli.Output, o selfupdate.Options) error {
-	if runtime.GOOS != "linux" {
-		return cli.Fail("self-update installs the linux release assets, and this kasbah runs on %s", runtime.GOOS)
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		return cli.Fail("self-update installs the linux and darwin release assets, and this kasbah runs on %s", runtime.GOOS)
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -60,6 +60,7 @@ func selfUpdate(out *cli.Output, o selfupdate.Options) error {
 		Prompter:   prompt.Std(out),
 		Root:       root,
 		BinDir:     binDir,
+		OS:         runtime.GOOS,
 		Arch:       runtime.GOARCH,
 		Self:       build,
 		Exe:        exe,

@@ -126,7 +126,8 @@ from compose itself.
 2. Parse compose.prod.yml for services with `build:`.
    - Zero → exit 0.
 3. docker compose -p <name> -f compose.prod.yml build
-     run with KASBAH_CPU_LIMIT=0 KASBAH_MEM_LIMIT=0 in the environment
+     run with KASBAH_CPU_LIMIT=0 KASBAH_MEM_LIMIT=0 and
+     DOCKER_DEFAULT_PLATFORM=linux/<server arch> in the environment
 4. Tag each built image:
      <image>:<version>
 5. kasbah remote layers <chain ids>   # which layers the server already holds
@@ -396,7 +397,9 @@ Four details in that command are load-bearing:
   it cannot repeat within this one — a name derived from the target
   repeats on a second `ssh_connect`, and a stale socket makes the next
   master silently fall back to no multiplexing at all.
-- **The usable path budget is 90 bytes, not 108.** `sun_path` is 108, but
+- **The usable path budget is 90 bytes, not 108** — on Linux; macOS and the
+  BSDs have a 104-byte `sun_path`, so 86 there (derived, not yet measured on a
+  Mac; a typical macOS `$TMPDIR` gives a ~69-byte path). `sun_path` is 108, but
   the master binds `<path>.<16 random chars>` and renames it into place.
   Measured on OpenSSH 9.6p1: 90 connects, 91 fails with `unix_listener:
   path … too long for Unix domain socket`. `/tmp/kasbah-ssh.XXXXXX/m1`

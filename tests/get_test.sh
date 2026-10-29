@@ -72,7 +72,7 @@ EOF
 release() {
     local d="$srv/releases/v$1" a
     mkdir -p "$d"
-    for a in amd64 arm64; do sed "s/@CLAIM@/${2:-$1}/" "$tmp/stub" >"$d/kasbah_$1_linux_$a"; done
+    for a in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do sed "s/@CLAIM@/${2:-$1}/" "$tmp/stub" >"$d/kasbah_$1_$a"; done
     (cd "$d" && sha256sum kasbah_* >checksums.txt)
     echo "untrusted comment: placeholder" >"$d/checksums.txt.minisig"
 }
@@ -100,7 +100,8 @@ release 1.6.0
 sed -i 's/  / */; s/$/\r/' "$srv/releases/v1.6.0/checksums.txt"
 
 # --- Stubs on PATH --------------------------------------------------------------
-mkdir -p "$tmp/gh" "$tmp/minisign" "$tmp/uname-darwin" "$tmp/uname-riscv" "$tmp/uname-arm"
+mkdir -p "$tmp/gh" "$tmp/minisign" "$tmp/uname-darwin" "$tmp/uname-darwin-x86" "$tmp/uname-rosetta" "$tmp/uname-freebsd" \
+    "$tmp/uname-riscv" "$tmp/uname-arm"
 cat >"$tmp/gh/gh" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"$GET_TEST_OUT/gh.log"
@@ -124,9 +125,14 @@ printf '%s\n' "$*" >>"$GET_TEST_OUT/minisign.log"
 exit "${GET_TEST_MINISIGN_RC:-0}"
 EOF
 printf '#!/bin/sh\ncase $1 in -s) echo Darwin ;; -m) echo arm64 ;; esac\n' >"$tmp/uname-darwin/uname"
+printf '#!/bin/sh\ncase $1 in -s) echo Darwin ;; -m) echo x86_64 ;; esac\n' >"$tmp/uname-darwin-x86/uname"
+# An arm64 Mac's shell under Rosetta: uname says x86_64, sysctl tells.
+cp "$tmp/uname-darwin-x86/uname" "$tmp/uname-rosetta/uname"
+printf '#!/bin/sh\n[ "$*" = "-n sysctl.proc_translated" ] && echo 1\n' >"$tmp/uname-rosetta/sysctl"
+printf '#!/bin/sh\ncase $1 in -s) echo FreeBSD ;; -m) echo amd64 ;; esac\n' >"$tmp/uname-freebsd/uname"
 printf '#!/bin/sh\ncase $1 in -s) echo Linux ;; -m) echo riscv64 ;; esac\n' >"$tmp/uname-riscv/uname"
 printf '#!/bin/sh\ncase $1 in -s) echo Linux ;; -m) echo aarch64 ;; esac\n' >"$tmp/uname-arm/uname"
-chmod 755 "$tmp"/gh/gh "$tmp"/minisign/minisign "$tmp"/uname-*/uname
+chmod 755 "$tmp"/gh/gh "$tmp"/minisign/minisign "$tmp"/uname-*/uname "$tmp"/uname-rosetta/sysctl
 
 # Host tool sets for dash: curl is a wrapper that records its argv.
 toolset() {
@@ -271,8 +277,30 @@ for sh in dash busybox; do
     assert '[ ! -e "$log" ]' "unstamped: requests made"
 
     # --- Platforms ---------------------------------------------------------------
+    # macOS: the darwin binary, and both linux server builds for --from.
     extra="$tmp/uname-darwin" run "$sh" file
-    assert '[ "$rc" = 1 ] && grep -q "kasbah runs on Linux, not Darwin" "$tmp/stderr" && [ ! -e "$log" ]' "darwin: exit $rc: $(cat "$tmp/stderr")"
+    assert '[ "$rc" = 0 ] && [ "$(grep -c "^host /download/v1.1.0/" "$log")" = 5 ]' "darwin: exit $rc, not five downloads: $(cat "$log") $(cat "$tmp/stderr")"
+    for a in kasbah_1.1.0_darwin_arm64 kasbah_1.1.0_linux_amd64 kasbah_1.1.0_linux_arm64; do
+        assert 'grep -q "^host /download/v1.1.0/$a " "$log" && grep -q "sha256 of $a matches checksums.txt" "$tmp/stderr"' "darwin: $a fetched and checked: $(cat "$log") $(cat "$tmp/stderr")"
+    done
+    assert '! grep -q "darwin_amd64" "$log"' "darwin arm64: the amd64 build fetched: $(cat "$log")"
+    tmpd="$(sed -n 's/^self=\(.*\)\/kasbah$/\1/p' "$out/stub.log" 2>/dev/null)"
+    assert '[ -n "$tmpd" ] && grep -qxF "argv: [self-update] [v1.1.0] [--from] [$tmpd]" <<<"$(stub)"' "darwin: --from the downloads: $(stub)"
+    assert 'grep -qxF "has=$tmpd/kasbah_1.1.0_linux_amd64" <<<"$(stub)" && grep -qxF "has=$tmpd/kasbah_1.1.0_linux_arm64" <<<"$(stub)"' \
+        "darwin: the linux builds sit in the --from directory: $(stub)"
+    assert 'grep -q "kasbah 1.1.0 for darwin/arm64" "$tmp/stderr"' "darwin: the platform said: $(cat "$tmp/stderr")"
+    extra="$tmp/uname-darwin-x86" run "$sh" file
+    assert '[ "$rc" = 0 ] && grep -q "^host /download/v1.1.0/kasbah_1.1.0_darwin_amd64 " "$log" && ! grep -q "darwin_arm64" "$log"' "darwin x86_64: exit $rc: $(cat "$log")"
+    extra="$tmp/uname-rosetta" run "$sh" file
+    assert '[ "$rc" = 0 ] && grep -q "^host /download/v1.1.0/kasbah_1.1.0_darwin_arm64 " "$log"' "rosetta: the arm64 build: exit $rc: $(cat "$log")"
+    # A server build that does not match: nothing runs.
+    envs=(KASBAH_GET_VERSION=1.2.0)
+    extra="$tmp/uname-darwin" run "$sh" file
+    assert '[ "$rc" = 1 ] && [ ! -e "$out/stub.log" ] && grep -q "kasbah_1.2.0_linux_amd64 does not match checksums.txt: nothing was installed" "$tmp/stderr"' \
+        "darwin, a server build mismatched: exit $rc: $(cat "$tmp/stderr")"
+    envs=()
+    extra="$tmp/uname-freebsd" run "$sh" file
+    assert '[ "$rc" = 1 ] && grep -q "kasbah runs on Linux or macOS, not FreeBSD" "$tmp/stderr" && [ ! -e "$log" ]' "freebsd: exit $rc: $(cat "$tmp/stderr")"
     extra="$tmp/uname-riscv" run "$sh" file
     assert '[ "$rc" = 1 ] && grep -q "no build for riscv64" "$tmp/stderr" && [ ! -e "$log" ]' "riscv64: exit $rc: $(cat "$tmp/stderr")"
     extra="$tmp/uname-arm" run "$sh" file
@@ -448,6 +476,10 @@ assert '[ "$rc" = 0 ] && grep -q "^host /download/v1.1.0/kasbah_1.1.0_linux_amd6
 tools=shasum
 run dash file
 assert '[ "$rc" = 0 ] && grep -q "sha256 of kasbah_1.1.0_linux_amd64 matches" "$tmp/stderr"' "shasum: exit $rc: $(cat "$tmp/stderr")"
+# A Mac has shasum, not sha256sum.
+extra="$tmp/uname-darwin" run dash file
+assert '[ "$rc" = 0 ] && [ "$(grep -c "^get.sh: sha256 of .* matches checksums.txt" "$tmp/stderr")" = 3 ]' "shasum, darwin: exit $rc: $(cat "$tmp/stderr")"
+extra=''
 tools=nosha
 run dash file
 assert '[ "$rc" = 1 ] && grep -q "neither sha256sum nor shasum" "$tmp/stderr" && [ ! -e "$log" ]' "no sha tool: exit $rc: $(cat "$tmp/stderr")"

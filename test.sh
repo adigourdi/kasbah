@@ -37,13 +37,16 @@ if [ ${#tests[@]} -eq 0 ]; then
     exit 0
 fi
 
+# dist/kasbah runs here: darwin on a Mac, linux otherwise.
+host_goos() { if [ "$(uname -s)" = Darwin ]; then echo darwin; else echo linux; fi; }
+
 # The Go toolchain lives in compose.yml. UID is a read-only shell variable that
 # is never exported, so it goes through env; without it the container writes as
 # uid 1000. -p because an exported COMPOSE_PROJECT_NAME outranks the file's
 # `name:`; stdin from /dev/null because -T still forwards it, and a run put in
 # the background would stop on SIGTTIN.
 go_compose() {
-    env UID="$(id -u)" GID="$(id -g)" \
+    env UID="$(id -u)" GID="$(id -g)" KASBAH_GOOS="$(host_goos)" \
         docker compose --progress quiet -p kasbah -f "$repo_dir/compose.yml" run --rm -T "$@" </dev/null
 }
 # No usable Docker is a fact about this machine, not the code: exit 2, like a

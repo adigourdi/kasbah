@@ -82,7 +82,8 @@ the `_shared.yml` middleware names; `versions.log`'s four positional
 fields (new data = appended `key=value` pairs); the `KASBAH_` env-var
 prefix (reserved, injected at deploy, exempt from drift); the manifest schema
 (1, frozen at 1.0.0 — a change goes through `kasbah migrate`); release tags
-`vMAJOR.MINOR.PATCH` and assets `kasbah_<ver>_linux_<arch>`, `get.sh`,
+`vMAJOR.MINOR.PATCH` and assets `kasbah_<ver>_linux_<arch>`,
+`kasbah_<ver>_darwin_<arch>`, `get.sh`,
 `checksums.txt`, `checksums.txt.minisig`; the installer URL
 `https://github.com/adigourdi/kasbah/releases/latest/download/get.sh`.
 

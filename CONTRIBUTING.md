@@ -12,7 +12,8 @@ defined by `compose.yml`, which pins its version. The container writes as uid
 `env UID="$(id -u)" GID="$(id -g)" docker compose …` does the same.
 
 ```sh
-docker compose run --rm build   # dist/kasbah, the server binaries in dist/server/, dist/yaml2json (test helper)
+docker compose run --rm build   # dist/kasbah, the server binaries in dist/server/, the macOS builds in dist/darwin/, dist/yaml2json (test helper)
+KASBAH_GOOS=darwin docker compose run --rm build   # on a Mac: dist/kasbah and dist/yaml2json as darwin builds (test.sh and install-dev.sh set it)
 dist/kasbah --help              # run the build straight from the checkout
 ./install-dev.sh                # or install it as your kasbah (docs/install.md)
 ```

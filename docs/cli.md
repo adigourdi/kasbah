@@ -702,6 +702,15 @@ else `last_server` from `.kasbah/state.json`, which is written on success.
 Flags:
 - `--build-only` — skip transfer/load/push (local build + tag only).
 - `--no-git-push` — don't push the git tag.
+
+Images are built for the **server's** platform, `linux/<arch>` from the
+bootstrap probe, through `DOCKER_DEFAULT_PLATFORM` — so an arm64 Mac or an arm64
+Linux machine ships what an amd64 VPS runs; the run says so when it differs from
+the local engine's, and overrides a `DOCKER_DEFAULT_PLATFORM` set by hand (saying
+so too). A cross build needs the engine's emulation (`tonistiigi/binfmt
+--install <arch>`), which a failing one names. A service's own `platform:` in
+`compose.prod.yml` still wins and is not checked against the server.
+`--build-only` reaches no server and builds for the local engine.
 - `--bump=patch|minor|major` — on an untagged HEAD, which tag to cut
   (`build-deploy.md` → Versioning contract); unset means ask.
 - `--dirty` — build the working tree as it stands, as a test build labelled
@@ -1212,7 +1221,10 @@ and trusted comment checked) before a single checksum line is read; the asset
 for this machine (`kasbah_<ver>_linux_<arch>`) is streamed to
 `<lib>/<ver>/..kasbah.new.part`, its size and sha256 compared to the verified
 entry, then renamed to `<lib>/<ver>/kasbah` and copied beside as
-`server/kasbah-linux-<arch>` (the same bytes serve both roles); the new binary
+`server/kasbah-linux-<arch>` (the same bytes serve both roles). On a Mac the asset
+is `kasbah_<ver>_darwin_<arch>`, and both `kasbah_<ver>_linux_amd64` and
+`_arm64` are installed beside it as the server builds — downloaded, or read from
+`--from`'s DIR — each checked against its signed entry; the new binary
 must answer `--version` with its own version. A release binary run from
 outside any version directory and outside a checkout — an asset just
 downloaded, as `get.sh` runs it — asked for its own version installs itself:

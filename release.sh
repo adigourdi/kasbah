@@ -15,9 +15,10 @@
 #                                only for the highest final version at origin
 #
 # Assets (frozen): kasbah_<ver>_linux_amd64, kasbah_<ver>_linux_arm64,
-# get.sh (its stamped='' line set to the version), checksums.txt (sha256sum
-# format, over the three), checksums.txt.minisig. The workflow stages and
-# flags through this script too.
+# kasbah_<ver>_darwin_amd64, kasbah_<ver>_darwin_arm64, get.sh (its
+# stamped='' line set to the version), checksums.txt (sha256sum format, over
+# the other five), checksums.txt.minisig. The workflow stages and flags
+# through this script too.
 #
 # A release build — an rc included — carries the tag exactly: tools/stamp
 # finds HEAD tagged v<ver> on a clean tree (no commit count, no build time),
@@ -95,22 +96,39 @@ stamp_get() {
     [ "$n" = 1 ] || die "get.sh holds stamped='$ver' $n times once stamped, not once"
 }
 
-# stage <tag> <dir> — the two binaries from dist/server, the stamped get.sh and
-# checksums.txt over the three in name order, into dir (made if missing).
+# builds — the four binaries a release carries, as dist/ paths (the linux
+# builds in dist/server, the darwin ones in dist/darwin), in their assets' byte order.
+builds=(darwin/kasbah-darwin-amd64 darwin/kasbah-darwin-arm64 server/kasbah-linux-amd64 server/kasbah-linux-arm64)
+
+# asset_names <ver> — kasbah_<ver>_<os>_<arch> for each of the builds, in order.
+asset_names() {
+    local b p
+    for b in "${builds[@]}"; do
+        p=${b#*/kasbah-}
+        printf '%s\n' "kasbah_$1_${p%-*}_${p#*-}"
+    done
+}
+
+# stage <tag> <dir> — the four binaries from dist/, the stamped get.sh and
+# checksums.txt over the five in name order, into dir (made if missing).
 stage() {
     local tag=$1 dir=$2 ver
     check_tag "$tag"
     ver=${tag#v}
     need sha256sum
-    local arch
-    for arch in amd64 arm64; do
-        [ -f "dist/server/kasbah-linux-$arch" ] || die "no dist/server/kasbah-linux-$arch — build first"
+    local b
+    for b in "${builds[@]}"; do
+        [ -f "dist/$b" ] || die "no dist/$b — build first"
     done
     mkdir -p "$dir" || die "could not make $dir"
     stamp_get "$ver" "$dir/get.sh"
-    cp dist/server/kasbah-linux-amd64 "$dir/kasbah_${ver}_linux_amd64"
-    cp dist/server/kasbah-linux-arm64 "$dir/kasbah_${ver}_linux_arm64"
-    (cd "$dir" && sha256sum get.sh "kasbah_${ver}_linux_amd64" "kasbah_${ver}_linux_arm64") \
+    local names=() n i=0
+    while IFS= read -r n; do names+=("$n"); done < <(asset_names "$ver")
+    for b in "${builds[@]}"; do
+        cp "dist/$b" "$dir/${names[i]}" || die "could not copy dist/$b"
+        i=$((i + 1))
+    done
+    (cd "$dir" && sha256sum get.sh "${names[@]}") \
         >"$dir/checksums.txt" || die "could not write $dir/checksums.txt"
 }
 
@@ -218,8 +236,9 @@ release() {
     git push origin "$tag" || die "pushing $tag failed — nothing released; the local tag stays"
     # A release that exists already is one a failed upload left behind: its
     # assets are replaced, the release is not made again.
-    local assets=("$scratch/kasbah_${ver}_linux_amd64" "$scratch/kasbah_${ver}_linux_arm64" "$scratch/get.sh"
-                  "$scratch/checksums.txt" "$scratch/checksums.txt.minisig")
+    local assets=() n
+    while IFS= read -r n; do assets+=("$scratch/$n"); done < <(asset_names "$ver")
+    assets+=("$scratch/get.sh" "$scratch/checksums.txt" "$scratch/checksums.txt.minisig")
     local url
     if gh release view "$tag" >/dev/null 2>&1; then
         gh release upload "$tag" "${assets[@]}" --clobber \
@@ -231,18 +250,23 @@ release() {
     fi
 
     echo "released $tag"
-    echo "  assets: kasbah_${ver}_linux_amd64 kasbah_${ver}_linux_arm64 get.sh checksums.txt checksums.txt.minisig"
+    echo "  assets: $(asset_names "$ver" | tr '\n' ' ')get.sh checksums.txt checksums.txt.minisig"
     echo "  $url"
 }
 
+# dist/kasbah is the host's (its --version is checked here); the assets are
+# the four cross builds, whatever the host.
 build() {
-    env UID="$(id -u)" GID="$(id -g)" \
+    local goos=linux
+    [ "$(uname -s)" = Darwin ] && goos=darwin
+    env UID="$(id -u)" GID="$(id -g)" KASBAH_GOOS="$goos" \
         docker compose --progress quiet -p kasbah -f "$repo_dir/compose.yml" run --rm -T build >&2 </dev/null \
         || die "the build failed"
 }
 
 hashes() {
-    sha256sum dist/kasbah dist/server/kasbah-linux-amd64 dist/server/kasbah-linux-arm64
+    sha256sum dist/kasbah dist/server/kasbah-linux-amd64 dist/server/kasbah-linux-arm64 \
+        dist/darwin/kasbah-darwin-amd64 dist/darwin/kasbah-darwin-arm64
 }
 
 usage="usage: ./release.sh vX.Y.Z[-rc.N] | keygen | stage vX.Y.Z[-rc.N] DIR | flags vX.Y.Z[-rc.N]"

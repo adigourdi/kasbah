@@ -92,8 +92,13 @@ case "${1:-}" in
             for i; do cat "$STUB_ROOTFS/${i//:/_}" || exit 1; done
             exit 0
         fi ;;
-    # A tree edited while the build runs.
-    compose) [ -z "${DOCKER_BUILD_TOUCH:-}" ] || printf 'during\n' >> "$DOCKER_BUILD_TOUCH" ;;
+    # A tree edited while the build runs; the platform each build was asked for.
+    compose)
+        printf '%s\n' "${DOCKER_DEFAULT_PLATFORM-unset}" >> "$DOCKER_LOG.platform"
+        [ -z "${STUB_COMPOSE_ERR:-}" ] || { printf '%s\n' "$STUB_COMPOSE_ERR" >&2; exit 1; }
+        [ -z "${DOCKER_BUILD_TOUCH:-}" ] || printf 'during\n' >> "$DOCKER_BUILD_TOUCH" ;;
+    # The engine's own platform, when a case plays one.
+    version) [ -z "${STUB_ENGINE:-}" ] || printf '%s\n' "$STUB_ENGINE"; exit 0 ;;
 esac
 exit "${DOCKER_RC:-0}"
 STUB
@@ -157,6 +162,7 @@ err=""
 
 reset_logs() {
     : > "$DOCKER_LOG"
+    : > "$DOCKER_LOG.platform"
     : > "$SSH_LOG"
     : > "$SSH_STDIN_LOG"
     : > "$RSYNC_LOG"
@@ -755,6 +761,56 @@ projdir="$built"
 DOCKER_RC=1 run --build-only; rc=$?
 assert '[ "$rc" = "1" ]' "a failing docker compose build fails the run (exit $rc)"
 assert 'grep -qF "build failed" <<<"$err"' "saying which step (said '$err')"
+
+# --- Images are built for the server's platform -----------------------------------------------------
+# The probe's uname -m is this machine's here; the engine the stub plays is
+# the other arch, as a Mac on arm64 shipping to an amd64 VPS is.
+
+case "$(uname -m)" in
+    x86_64) srv_arch=amd64 other=arm64 ;;
+    *) srv_arch=arm64 other=amd64 ;;
+esac
+projdir="$(make platform built-app v1.4.2)"
+STUB_ENGINE="linux/$other" run --no-git-push "deploy@vps"; rc=$?
+plat="$(cat "$DOCKER_LOG.platform")"
+assert '[ "$rc" = "0" ]' "a server of another arch than the engine ships (exit $rc: $err)"
+assert '[ "$plat" = "linux/$srv_arch" ]' "the build is asked for the server's platform, linux/$srv_arch (got: $plat)"
+assert 'grep -qF "building for linux/$srv_arch, the platform of deploy@vps — this docker engine is linux/$other" <<<"$err"' \
+    "and says so, naming both (said '$err')"
+
+STUB_ENGINE="linux/$srv_arch" run --no-git-push "deploy@vps"; rc=$?
+plat="$(cat "$DOCKER_LOG.platform")"
+assert '[ "$rc" = "0" ] && [ "$plat" = "linux/$srv_arch" ]' "an engine of the server's own platform builds for it too (exit $rc, got: $plat)"
+assert '! grep -qF "building for" <<<"$err"' "without a word about it (said '$err')"
+
+STUB_ENGINE="linux/$other" DOCKER_DEFAULT_PLATFORM="linux/$other" run --no-git-push "deploy@vps"; rc=$?
+plat="$(cat "$DOCKER_LOG.platform")"
+assert '[ "$rc" = "0" ] && [ "$plat" = "linux/$srv_arch" ]' "a DOCKER_DEFAULT_PLATFORM of another arch is overridden (exit $rc, got: $plat)"
+assert 'grep -qF "DOCKER_DEFAULT_PLATFORM=linux/$other is overridden" <<<"$err"' "and that is said (said '$err')"
+
+STUB_ENGINE="linux/$other" DOCKER_RC=1 run --no-git-push "deploy@vps"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "needs emulation" <<<"$err" && grep -qF "tonistiigi/binfmt --install $srv_arch" <<<"$err"' \
+    "a cross build that fails points at emulation (exit $rc, said '$err')"
+
+STUB_ENGINE="linux/$other" STUB_COMPOSE_ERR="service \"web\" build.platforms does not support value set by DOCKER_DEFAULT_PLATFORM: linux/$srv_arch" \
+    run --no-git-push "deploy@vps"; rc=$?
+assert '[ "$rc" = 1 ] && grep -qF "build.platforms must include linux/$srv_arch" <<<"$err" && ! grep -qF "emulation" <<<"$err"' \
+    "compose refusing the platform for build.platforms says so, not emulation (exit $rc, said '$err')"
+
+# A service pinned to another platform builds an image the server cannot run.
+sed -i "s|^    image: built-app-web:current|&\n    platform: linux/$other|" "$projdir/compose.prod.yml"
+recommit v1.4.2
+STUB_ENGINE="linux/$srv_arch" run --no-git-push "deploy@vps"; rc=$?
+assert '[ "$rc" = 0 ] && grep -qF "service '"'"'built-app-web'"'"' sets platform: linux/$other, and deploy@vps is linux/$srv_arch" <<<"$err"' \
+    "a service platform: other than the server's is warned about (exit $rc, said '$err')"
+assert '! grep -qF "service '"'"'worker'"'"' sets platform" <<<"$err"' "and only that service (said '$err')"
+
+STUB_ENGINE="linux/$other" run --build-only; rc=$?
+plat="$(cat "$DOCKER_LOG.platform")"
+assert '[ "$rc" = "0" ] && [ "$plat" = unset ]' "--build-only, with no server, sets no platform: the engine's own (exit $rc, got: $plat)"
+DOCKER_DEFAULT_PLATFORM="linux/$other" run --build-only; rc=$?
+plat="$(cat "$DOCKER_LOG.platform")"
+assert '[ "$rc" = "0" ] && [ "$plat" = "linux/$other" ]' "or the one DOCKER_DEFAULT_PLATFORM names (exit $rc, got: $plat)"
 
 # --- A working tree that is not HEAD's -------------------------------------------------------------
 # Without --dirty it is refused before anything is built; with it, it ships
