@@ -115,7 +115,7 @@ docker provider is not wired in.
 
 | ID | Rule | Level |
 |---|---|---|
-| T01 | `traefik-dynamic.yml` exists and parses as one YAML document whose `http.routers` is a mapping; otherwise T02–T05 and T08 are skipped, and so are C03 and C07, which need the services it routes | warn |
+| T01 | `traefik-dynamic.yml` exists and parses as one YAML document whose `http.routers` is a mapping; otherwise T02–T05, T08 and T09 are skipped, and so are C03 and C07, which need the services it routes | warn |
 | T02 | At least one router's `rule` references `manifest.domain` | fail |
 | T03 | Every router declares `entryPoints` (non-empty list) | fail |
 | T04 | Routers on `websecure` reference `tls.certResolver: letsencrypt` | fail |
@@ -123,6 +123,7 @@ docker provider is not wired in.
 | T06 | No service in `compose.prod.yml` carries `traefik.*` labels | fail |
 | T07 | Every fragment `loadBalancer` server URL hostname matches an explicit `container_name` in `compose.prod.yml` | fail |
 | T08 | Some router whose `rule` references `manifest.domain` declares the `web` entrypoint. The minimum viable form (`traefik.md` → Project fragment) is two routers for one hostname, the `websecure` one that serves it and a `web` one that redirects; T03 asks only that a router declare *some* entrypoint, so a fragment carrying the HTTPS half alone passes every other rule and answers plain HTTP with Traefik's 404. Warn, not fail: HTTPS-only is legitimate for an API nothing browses to, and the rule cannot tell that apart from the omission. Domain matching is T02's substring test | warn |
+| T09 | No project router's `service`, no `http.services` entry's `mirroring.service`, `mirroring.mirrors[].name`, `weighted.services[].name`, `highestRandomWeight.services[].name`, `failover.service` or `failover.fallback`, and no `errors` middleware's `service`, is a Traefik `@internal` service other than `noop@internal` — each reference reported once, routers first, then services, then middlewares. `api@internal`, `dashboard@internal`, `rest@internal` and `ping@internal` would publish Traefik's own API with no auth, which `server init --no-dashboard` cannot stop; `noop@internal` is the redirect router's placeholder. Same locally and under `--server` | fail |
 
 ### Healthchecks
 

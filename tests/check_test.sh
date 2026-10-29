@@ -115,6 +115,7 @@ assert 'grep -qF "✓ All routers declare entryPoints" <<<"$out"'               
 assert 'grep -qF "✓ Secure routers reference letsencrypt cert resolver" <<<"$out"'             "T04 pass line"
 assert 'grep -qF "✓ A router serves demo.example.com on the web entrypoint" <<<"$out"'         "T08 pass line"
 assert 'grep -qF "✓ No router claims reserved hostnames" <<<"$out"'                            "T05 pass line"
+assert 'grep -qF "✓ No router or service reaches a Traefik internal service other than noop@internal" <<<"$out"' "T09 pass line"
 assert 'grep -qF "✓ Fragment loadBalancer URLs target explicit container_names" <<<"$out"'     "T07 pass line"
 assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'                              "E01 pass line"
 assert 'grep -qF "✓ .env.prod.example has no obvious long secrets" <<<"$out"'                  "E04 pass line"
@@ -123,7 +124,7 @@ assert '! grep -q "Healthchecks:" <<<"$out"'  "Healthchecks: header suppressed (
 assert '! grep -q "Hooks:" <<<"$out"'         "Hooks: header suppressed (no hooks/backup in manifest)"
 assert '! grep -qF "built services" <<<"$out"' \
     "C08 says nothing about a project that builds nothing — there is no :current to move"
-assert 'grep -qF "26 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
+assert 'grep -qF "27 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
 
 # --- Case 2: missing compose.prod.yml — fail, exit 6 -------------------------
 # Exit 6 is the documented "compliance check failed" code (docs/cli.md).
@@ -387,7 +388,7 @@ assert 'grep -qF "⚠ Services on kasbah-net whose name is not '"'"'demo'"'"' or
        "C09 warn line names the service, not the container (said '$out')"
 assert 'grep -qF "✓ All routed services join kasbah-net" <<<"$out"'            "and C03 is untouched by it"
 assert 'grep -qF "✓ No internal services on kasbah-net" <<<"$out"'             "as is C07"
-assert 'grep -qF "25 passed, 1 warning, 0 failed" <<<"$out"'                    "one line either way (said '$(tail -1 <<<"$out")')"
+assert 'grep -qF "26 passed, 1 warning, 0 failed" <<<"$out"'                    "one line either way (said '$(tail -1 <<<"$out")')"
 
 # The exact project name is as acceptable as a prefixed one, and a service that
 # never joins the shared network is no business of C09's — the alias only
@@ -668,7 +669,7 @@ assert 'grep -qF "⚠ No router serves demo.example.com on the web entrypoint" <
        "T08 warn line (said '$out')"
 assert 'grep -qF "http-to-https@file" <<<"$out"'                                   "and says what to add (said '$out')"
 assert 'grep -qF "✓ All routers declare entryPoints" <<<"$out"'                   "T03 passes on the same fragment — it is not the rule that catches this"
-assert 'grep -qF "25 passed, 1 warning, 0 failed" <<<"$out"'                       "one line either way (said '$(tail -1 <<<"$out")')"
+assert 'grep -qF "26 passed, 1 warning, 0 failed" <<<"$out"'                       "one line either way (said '$(tail -1 <<<"$out")')"
 
 # A `web` router for an unrelated host does not answer for this one: the
 # entrypoint has to be declared by a router whose rule mentions the manifest
@@ -731,7 +732,37 @@ assert 'grep -qF "✓ A router serves demo.example.com on the web entrypoint" <<
        "a web router whose host contains the manifest domain satisfies T08 (said '$out')"
 assert 'grep -qF "✓ At least one router references manifest domain (demo.example.com)" <<<"$out"' \
        "on the same reading T02 already gives it (said '$out')"
-assert 'grep -qF "26 passed, 0 warning, 0 failed" <<<"$out"'                             "and nothing warns (said '$(tail -1 <<<"$out")')"
+assert 'grep -qF "27 passed, 0 warning, 0 failed" <<<"$out"'                             "and nothing warns (said '$(tail -1 <<<"$out")')"
+
+# --- Case 23c: T09 — a router or service reaches api@internal → fail --------
+# Routing a hostname to Traefik's own API publishes it with no auth, whatever
+# `server init --no-dashboard` said. The redirect router's noop@internal stays.
+proj23c="$tmpdir/internal-api"
+make_project "$proj23c"
+cat > "$proj23c/traefik-dynamic.yml" <<'YAML'
+http:
+  routers:
+    demo-http:
+      rule: "Host(`demo.example.com`)"
+      entryPoints: [web]
+      service: noop@internal
+    demo:
+      rule: "Host(`demo.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: api@internal
+  services:
+    split:
+      weighted:
+        services:
+          - name: dashboard@internal
+YAML
+out="$(cd "$proj23c" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                           "T09 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ Fragment routes to Traefik'"'"'s internal services (only noop@internal is allowed): demo→api@internal services.split→dashboard@internal" <<<"$out"' \
+       "T09 fail line names router, service and the weighted entry (said '$out')"
+assert '! grep -qF "noop@internal services" <<<"$out" && ! grep -qF "demo-http→" <<<"$out"' "T09 leaves noop@internal alone"
 
 # --- Case 24: T06 — service carries traefik.* label → fail ------------------
 proj24="$tmpdir/traefik-label"
@@ -1003,7 +1034,7 @@ assert 'grep -qF "✓ .env.prod.example exists" <<<"$out"'                      
 assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'              "E01 passes on comments alone"
 assert 'grep -qF "✓ .env.prod.example has no obvious long secrets" <<<"$out"'  "E04 has nothing to measure"
 assert 'grep -qF "✓ .env.prod.example leaves the KASBAH_* prefix to kasbah" <<<"$out"' "E05 has no key to object to"
-assert 'grep -qF "26 passed, 0 warning, 0 failed" <<<"$out"'                   "and nothing warns about it (said '$(tail -1 <<<"$out")')"
+assert 'grep -qF "27 passed, 0 warning, 0 failed" <<<"$out"'                   "and nothing warns about it (said '$(tail -1 <<<"$out")')"
 
 # --- Case 28: E01 — invalid line → fail --------------------------------------
 proj28="$tmpdir/env-bad-syntax"
@@ -1130,7 +1161,7 @@ out="$(cd "$proj30e" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                     "E05 is a warning, so exit stays 0 (got $rc)"
 assert 'grep -qF "⚠ .env.prod.example defines reserved KASBAH_* keys (kasbah injects these): KASBAH_CPU_LIMIT KASBAH_MEM_LIMIT" <<<"$out"' \
        "E05 warn line names every reserved key, not just the first (said '$out')"
-assert 'grep -qF "25 passed, 1 warning, 0 failed" <<<"$out"'                 "E05 warns instead of passing, one line either way (said '$out')"
+assert 'grep -qF "26 passed, 1 warning, 0 failed" <<<"$out"'                 "E05 warns instead of passing, one line either way (said '$out')"
 
 # The prefix is matched anchored: MY_KASBAH_URL is the user's key. A substring
 # match here would warn about a key kasbah neither injects nor skips.

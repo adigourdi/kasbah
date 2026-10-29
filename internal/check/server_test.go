@@ -458,6 +458,19 @@ func TestServerT05(t *testing.T) {
 	}
 }
 
+// T09 holds under --server as it does locally, the dashboard off included:
+// --no-dashboard is the promise a project fragment would otherwise break.
+func TestServerT09(t *testing.T) {
+	project(t, map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "service: demo}", "service: api@internal}", 1)})
+	s := newSrv(t)
+	s.r.Shared = b64s("http: {}\n")
+	out, code := s.run()
+	contains(t, out, "✗ Fragment routes to Traefik's internal services (only noop@internal is allowed): demo→api@internal")
+	if code != 6 {
+		t.Errorf("exit %d, want 6:\n%s", code, out)
+	}
+}
+
 func TestServerB01(t *testing.T) {
 	rec := func(lines ...string) string { return strings.Join(lines, "\n") + "\n" }
 	ok := rec("state=sleeping", "since=1999990000", "deadline=2000086400", "next_run=2000082800",

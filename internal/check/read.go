@@ -143,6 +143,12 @@ func rotationSet(v tree.Value) bool {
 }
 
 // listHas is whether v is a list holding the string s.
+// asList is a list's items, none for anything else.
+func asList(v tree.Value) []tree.Value {
+	l, _ := v.([]tree.Value)
+	return l
+}
+
 func listHas(v tree.Value, s string) bool {
 	l, _ := v.([]tree.Value)
 	for _, x := range l {

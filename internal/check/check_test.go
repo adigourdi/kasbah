@@ -92,6 +92,7 @@ Traefik:
   ✓ Secure routers reference letsencrypt cert resolver
   ✓ A router serves demo.example.com on the web entrypoint
   ✓ No router claims reserved hostnames (traefik.*, mail.*, webmail.*)
+  ✓ No router or service reaches a Traefik internal service other than noop@internal
   ✓ Fragment loadBalancer URLs target explicit container_names
   ✓ compose.prod.yml has no traefik.* labels
 
@@ -100,7 +101,7 @@ Env:
   ✓ .env.prod.example has no obvious long secrets
   ✓ .env.prod.example leaves the KASBAH_* prefix to kasbah
 
-Summary: 26 passed, 0 warning, 0 failed
+Summary: 27 passed, 0 warning, 0 failed
 `
 	if out != want || code != 0 {
 		t.Errorf("exit %d, report:\n%s", code, out)
@@ -143,7 +144,7 @@ func TestVerdicts(t *testing.T) {
 			[]string{"  ✗ Services declare resource reservations: demo-web"}},
 		{"routers: that is not a mapping skips the router rules",
 			map[string]string{"traefik-dynamic.yml": "http:\n  routers: [a]\n"}, 0,
-			[]string{"  ⚠ traefik-dynamic.yml: http.routers is a list, not a mapping — skipping T02–T05 and T08",
+			[]string{"  ⚠ traefik-dynamic.yml: http.routers is a list, not a mapping — skipping T02–T05, T08 and T09",
 				"  ⚠ traefik-dynamic.yml: http.routers is a list, not a mapping — skipping C03 and C07, which need the services it routes"}},
 		{"with no fragment read, C03 and C07 conclude nothing",
 			map[string]string{"traefik-dynamic.yml": ""}, 0,
@@ -165,11 +166,27 @@ func TestVerdicts(t *testing.T) {
 			[]string{"  ✓ All services set json-file logging with rotation"}},
 		{"a fragment of several documents is not read",
 			map[string]string{"traefik-dynamic.yml": goodFragment + "---\n" + goodFragment}, 0,
-			[]string{"  ⚠ traefik-dynamic.yml holds 2 YAML documents, where kasbah reads one — skipping T02–T05 and T08",
+			[]string{"  ⚠ traefik-dynamic.yml holds 2 YAML documents, where kasbah reads one — skipping T02–T05, T08 and T09",
 				"  ⚠ traefik-dynamic.yml holds 2 YAML documents, where kasbah reads one — skipping C03 and C07, which need the services it routes"}},
 		{"entryPoints: that is not a list",
 			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "entryPoints: [web]", "entryPoints: web", 1)}, 6,
 			[]string{"  ✗ Routers without entryPoints: demo-http (entryPoints is a string, not a list)"}},
+		{"T09 fails a router on api@internal, names router and service",
+			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "service: demo}", "service: api@internal}", 1)}, 6,
+			[]string{"  ✗ Fragment routes to Traefik's internal services (only noop@internal is allowed): demo→api@internal"}},
+		{"T09 fails weighted, mirroring and failover entries on @internal",
+			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "  services:\n",
+				"  services:\n    w: {weighted: {services: [{name: demo}, {name: dashboard@internal}]}}\n"+
+					"    m: {mirroring: {service: rest@internal, mirrors: [{name: ping@internal}, {name: noop@internal}]}}\n"+
+					"    f: {failover: {service: demo, fallback: api@internal}}\n"+
+					"    h: {highestRandomWeight: {services: [{name: api@internal}, {name: api@internal}]}}\n", 1)}, 6,
+			[]string{"  ✗ Fragment routes to Traefik's internal services (only noop@internal is allowed): services.f→api@internal services.h→api@internal services.m→rest@internal services.m→ping@internal services.w→dashboard@internal"}},
+		{"T09 fails an errors middleware's service on @internal",
+			map[string]string{"traefik-dynamic.yml": goodFragment + "  middlewares:\n    oops: {errors: {status: [\"500\"], service: api@internal, query: /}}\n"}, 6,
+			[]string{"  ✗ Fragment routes to Traefik's internal services (only noop@internal is allowed): middlewares.oops→api@internal"}},
+		{"T09 passes noop@internal",
+			nil, 0,
+			[]string{"  ✓ No router or service reaches a Traefik internal service other than noop@internal"}},
 		{"local T05 is the first-label heuristic",
 			map[string]string{"traefik-dynamic.yml": "http:\n  routers:\n    a: {rule: \"Host(`mail.x.io`) || Host(`mailhog.x.io`)\", entryPoints: [web]}\n"}, 6,
 			[]string{"  ✗ Routers claim reserved hostnames: a→mail.x.io"}},

@@ -542,13 +542,13 @@ func (c *checker) resourcesSection() {
 	}
 }
 
-// --- Traefik (T01–T08) ------------------------------------------------------
+// --- Traefik (T01–T09) ------------------------------------------------------
 
 func (c *checker) traefikSection() {
 	c.section("Traefik")
 	routers, unread := c.fragment()
 	if unread != "" {
-		c.warnf("%s — skipping T02–T05 and T08", unread)
+		c.warnf("%s — skipping T02–T05, T08 and T09", unread)
 	} else {
 		c.passf("traefik-dynamic.yml exists")
 	}
@@ -566,6 +566,7 @@ func (c *checker) traefikSection() {
 			c.t08(routers, domain)
 		}
 		c.t05(routers)
+		c.t09(routers)
 		c.t07()
 	}
 	c.t06()
@@ -690,6 +691,53 @@ func (c *checker) t05(routers []string) {
 	} else {
 		c.passf("No router claims reserved hostnames (traefik.*, mail.*, webmail.*)")
 	}
+}
+
+// t09: a project may not reach Traefik's own services (api@internal,
+// dashboard@internal, ...) from a router, a composing service or an errors
+// middleware. noop@internal is the redirect router's placeholder and stays allowed.
+func (c *checker) t09(routers []string) {
+	var bad []string
+	seen := map[string]bool{}
+	flag := func(where string, v tree.Value) {
+		if s := scalar(v); internalService(s) && !seen[where+"→"+s] {
+			seen[where+"→"+s] = true
+			bad = append(bad, where+"→"+s)
+		}
+	}
+	for _, r := range routers {
+		flag(r, c.router(r, "service"))
+	}
+	root := c.load(traefikFile).root
+	svcs, _ := mapAt(root, "http", "services")
+	for _, k := range keysOf(svcs) {
+		v, _ := svcs.Get(k)
+		where := "services." + k
+		flag(where, opt(v, "mirroring", "service"))
+		for _, list := range [][]string{{"mirroring", "mirrors"}, {"weighted", "services"}, {"highestRandomWeight", "services"}} {
+			for _, x := range asList(opt(v, list...)) {
+				flag(where, opt(x, "name"))
+			}
+		}
+		flag(where, opt(v, "failover", "service"))
+		flag(where, opt(v, "failover", "fallback"))
+	}
+	mws, _ := mapAt(root, "http", "middlewares")
+	for _, k := range keysOf(mws) {
+		v, _ := mws.Get(k)
+		flag("middlewares."+k, opt(v, "errors", "service"))
+	}
+	if len(bad) > 0 {
+		c.failf("Fragment routes to Traefik's internal services (only noop@internal is allowed): %s", strings.Join(bad, " "))
+	} else {
+		c.passf("No router or service reaches a Traefik internal service other than noop@internal")
+	}
+}
+
+// internalService is whether a service reference names one of Traefik's own
+// services that T09 refuses: any @internal but noop@internal.
+func internalService(s string) bool {
+	return strings.HasSuffix(s, "@internal") && s != "noop@internal"
 }
 
 func (c *checker) t06() {

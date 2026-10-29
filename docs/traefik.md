@@ -400,12 +400,14 @@ server status` surfaces it.
   dashboard).
 - Add routers in their fragment for `mail.<domain>` or `webmail.<domain>`
   (claimed by kasbah's `_mail.yml` — cert-trigger and webmail).
+- Route to a Traefik `@internal` service other than `noop@internal` — `api@internal`
+  and its kin would publish Traefik's API with no auth (T09).
 - Bind ports 80 or 443 on the host (they belong to Traefik).
 - Replace the `kasbah-net` network.
 - Attach non-routed services (databases, caches, workers) to `kasbah-net` —
   internal services stay on a project-internal network.
 
-`kasbah check` enforces these (rules T01–T08, C07, C09).
+`kasbah check` enforces these (rules T01–T09, C07, C09).
 
 ## Upgrading Traefik
 
