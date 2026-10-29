@@ -21,8 +21,9 @@ type filter struct {
 	buf          []byte
 }
 
-// known is every diffID of the images: matched counts the blobs named by one,
-// and none at all means the save named its layers some other way.
+// known is every diffID of the images and every name a layer of theirs is
+// known by: matched counts the blobs it names, and none at all means the save
+// named its layers some way the run did not learn.
 func newFilter(dst io.Writer, skip, known map[string]bool) *filter {
 	return &filter{tw: tar.NewWriter(dst), skip: skip, known: known, buf: make([]byte, 1<<20)}
 }

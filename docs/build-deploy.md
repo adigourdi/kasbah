@@ -130,10 +130,11 @@ from compose itself.
      DOCKER_DEFAULT_PLATFORM=linux/<server arch> in the environment
 4. Tag each built image:
      <image>:<version>
-5. kasbah remote layers <chain ids>   # which layers the server already holds
+5. kasbah remote layers <apps> <chain ids>   # which layers the server holds,
+                                             # and their known blob names
    docker save <all built images> | (drop those layers) | gzip, streamed over
    the ssh master into
-     <apps>/.kasbah/bin/kasbah remote load <images>   # gunzip → docker load,
+     <apps>/.kasbah/bin/kasbah remote load <apps> <images>   # gunzip → docker load,
                                                       # then inspect each image
 6. git push origin v<version>   # if tag not on origin yet; a repo with no
                                 # 'origin' warns and continues, tag stays local
@@ -172,9 +173,31 @@ output, constant memory, `manifest.json` and the configs untouched. Measured on
 the rig: a re-push after changing one page sent 6.4 kB where the whole images
 gzip to 28.7 MB. Anything kasbah cannot trust — its own layer lists unreadable,
 an answer that fails, times out or names an ID it did not ask about — ships the
-whole images, with a warning. A `docker save` in the pre-25 format, and a workstation
-on the containerd store (whose saved layers are compressed, so their names are
-not layer IDs), ship whole: nothing matches, nothing is skipped.
+whole images, with a warning. A `docker save` in the pre-25 format ships whole:
+nothing in it can be matched.
+
+**A containerd-store workstation** — Docker Desktop, a fresh Docker Engine 29 —
+saves each layer compressed, under its compressed digest, and no Docker API
+gives that digest for a local image without an export; `docker save` writes
+its manifests last, so one pass cannot pair a layer with its ID before the
+layer has gone by. The **server keeps the pairing**: `<apps>/.kasbah/layers.map`,
+compressed blob digest → layer ID, learned by `remote load` from the
+`manifest.json` and configs at the end of every stream it loads — they name
+every layer, the ones left out included, a layer saved under its own ID too —
+and pruned by `remote layers` to the layers still in the server's store, so it
+never outgrows it. `remote layers`
+returns the names it knows, and the filter drops a layer by its ID or any of
+its names, and the workstation asks `docker info` for its store only when a
+skippable layer has no recorded name at all. When a layer the server holds has no known name — the first push
+from such a workstation, a base image the server pulled itself — the workstation
+first runs one **learning save**: a local `docker save` read for its manifests
+and thrown away, announced in one line; nothing crosses the network and nothing
+touches disk. Measured from a containerd-store workstation to the rig: 7.2 kB
+on the first push, 7.4 kB on a one-layer re-push, against 29.9 MB whole. A
+layer another workstation compressed differently is sent once, and its name is
+learned from that load. The workstation's store is read from `docker info`
+(`driver-type io.containerd.snapshotter.v1`); an overlay2 workstation names
+layers by ID and never needs the map.
 
 On the containerd image store `docker load` of an archive missing a layer
 succeeds when the store already has that layer unpacked — even one only a pull
@@ -188,8 +211,8 @@ passing in that state. On overlay2 a missing layer fails the load outright.
 Whenever a stream that left layers out arrived whole and the load still failed
 — a layer pruned between the question and the load included — the workstation
 re-sends the images whole once, with a warning, and reports both streams'
-bytes. A containerd-store workstation, where nothing can be matched, says so
-rather than reporting "0 already on the server".
+bytes. A save in which nothing could be matched — the learning save failed, or
+the store was misread — says so rather than reporting "0 already on the server".
 
 **The images stream; no tarball touches disk.** The workstation gzips `docker
 save` into the ssh master's stdin and the server's kasbah binary gunzips into

@@ -686,7 +686,9 @@ invent a command.
    and streamed over ssh into the server's `kasbah remote load`, which feeds
    `docker load` and confirms each image (`build-deploy.md`). Nothing is written
    to disk on either end; a stream cut short is refused. The summary says how
-   many layers, and how many bytes, were not sent.
+   many layers, and how many bytes, were not sent. On a containerd-store
+   workstation an unknown layer name first costs one local learning export,
+   announced in a line (`build-deploy.md`).
 6. `git push origin v<version>` if the tag isn't yet on origin. A repository
    with no `origin` remote at all warns and exits 0: the image has already
    shipped by then, and a local-only project is a real shape.

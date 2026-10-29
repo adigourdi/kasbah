@@ -174,9 +174,16 @@ func Take(apps, mode, what string) (*os.File, error) {
 	if err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB); err != nil {
 		h := holder(f, path)
 		f.Close()
-		return nil, fmt.Errorf("%s is running on this server — it holds %s. Nothing was changed; re-run once it has finished.", h, path)
+		return nil, &Busy{Holder: h, Path: path}
 	}
 	return f, nil
+}
+
+// Busy is Take refused: Holder holds the lock at Path.
+type Busy struct{ Holder, Path string }
+
+func (b *Busy) Error() string {
+	return fmt.Sprintf("%s is running on this server — it holds %s. Nothing was changed; re-run once it has finished.", b.Holder, b.Path)
 }
 
 // holder names what holds the lock, from /proc/locks: the exclusive holder,

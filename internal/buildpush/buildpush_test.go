@@ -185,7 +185,7 @@ func TestLoad(t *testing.T) {
 				t.Setenv(k, v)
 			}
 			var out, errb bytes.Buffer
-			rc := Load([]string{"a:1", "b:1"}, bytes.NewReader(tt.in), &out, &errb)
+			rc := Load([]string{t.TempDir(), "a:1", "b:1"}, bytes.NewReader(tt.in), &out, &errb)
 			if rc != tt.rc || out.String() != tt.stdout || !strings.Contains(errb.String(), tt.stderr) {
 				t.Errorf("rc %d stdout %q stderr %q; want %d %q %q", rc, out.String(), errb.String(), tt.rc, tt.stdout, tt.stderr)
 			}
@@ -210,10 +210,12 @@ func TestLoad(t *testing.T) {
 		rc        int
 		out, errs string
 	}{
-		{nil, 1, "", "no images named"},
-		{[]string{"--help"}, 0, "usage: kasbah remote load IMAGE...", ""},
-		{[]string{"a:1", "-h"}, 0, "usage: kasbah remote load IMAGE...", ""},
-		{[]string{"--force", "a:1"}, 1, "", "unknown flag '--force'"},
+		{nil, 1, "", "no absolute apps path first"},
+		{[]string{"a:1"}, 1, "", "no absolute apps path first"},
+		{[]string{"/apps"}, 1, "", "no images named"},
+		{[]string{"--help"}, 0, "usage: kasbah remote load APPS IMAGE...", ""},
+		{[]string{"/apps", "a:1", "-h"}, 0, "usage: kasbah remote load APPS IMAGE...", ""},
+		{[]string{"/apps", "--force", "a:1"}, 1, "", "unknown flag '--force'"},
 	} {
 		dir := fakeDocker(t)
 		var out, errb bytes.Buffer

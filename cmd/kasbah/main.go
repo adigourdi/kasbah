@@ -76,7 +76,9 @@ func main() {
 				atexit.Exit(buildpush.Load(args[2:], os.Stdin, os.Stdout, os.Stderr))
 			}
 			if len(args) > 1 && args[1] == "layers" {
-				os.Exit(buildpush.Layers(args[2:], os.Stdout, os.Stderr))
+				// A signal removes a half-written layers.map rewrite.
+				atexit.HandleSignals()
+				atexit.Exit(buildpush.Layers(args[2:], os.Stdout, os.Stderr))
 			}
 			if len(args) > 1 && args[1] == "setup-env" {
 				// Interactive over ssh -t: a signal restores the terminal and

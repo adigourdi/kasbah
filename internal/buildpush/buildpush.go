@@ -251,7 +251,7 @@ func Run(c Ctx, o Options) error {
 	if err := build(m.Name, images, platform, engine); err != nil {
 		return err
 	}
-	st, err := ship(c.Out, conn, serverbin.Path(res.Apps), images)
+	st, err := ship(c.Out, conn, res.Apps, images)
 	if err != nil {
 		return err
 	}

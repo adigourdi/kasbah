@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -61,7 +63,8 @@ type shipped struct {
 	// load it and the images went again whole.
 	abandoned int64
 	// compressed: the server held some layers, but the save named none of
-	// them by diffID (a containerd-store workstation saves compressed blobs).
+	// them by a name the run knew (a containerd-store workstation whose
+	// layer names could not be learned).
 	compressed bool
 	// loadFailed: the stream arrived whole and the server's load failed.
 	loadFailed bool
@@ -73,34 +76,42 @@ var errIncomplete = errors.New("incomplete")
 
 // ship sends every image in one stream, minus the layers the server says it
 // holds; a server that cannot load the images on those gets them whole.
-func ship(out *cli.Output, conn *ssh.Conn, bin string, images []Image) (shipped, error) {
+func ship(out *cli.Output, conn *ssh.Conn, apps string, images []Image) (shipped, error) {
 	refs := make([]string, len(images))
 	for i, im := range images {
 		refs[i] = im.Ref
 	}
-	skip, known := serverLayers(out, conn, bin, refs)
-	st, err := stream(conn, bin, refs, skip, known)
+	skip, diffs := serverLayers(out, conn, apps, refs)
+	drop, known := dropSet(out, refs, skip, diffs)
+	st, err := stream(conn, apps, refs, drop, known)
 	if err != nil && st.loadFailed && st.skipped > 0 {
 		out.Warn("%s could not load the images on the layers it reported — sending them whole", conn.Target)
 		first := st.sent
-		st, err = stream(conn, bin, refs, nil, nil)
+		st, err = stream(conn, apps, refs, nil, nil)
 		st.abandoned = first
 	}
-	st.layers = len(known)
+	st.layers = len(diffs)
 	if errors.Is(err, errIncomplete) {
 		err = cli.Fail("%s could not unpack the images it loaded (see docker's error above)", conn.Target)
 	}
 	return st, err
 }
 
-// serverLayers is the diffIDs the server already holds, asked in one bounded
-// round trip over the open session, and every diffID the images carry. Any
-// answer that cannot be trusted means nothing is skipped.
-func serverLayers(out *cli.Output, conn *ssh.Conn, bin string, refs []string) (skip, known map[string]bool) {
+// serverHeld is what the server holds of the images: the diffIDs that can stay
+// home, and the blob names it knows each one by.
+type serverHeld struct {
+	ids   map[string]bool
+	names map[string][]string
+}
+
+// serverLayers is what the server already holds — skippable diffIDs and their
+// names — asked in one bounded round trip, and every diffID the images carry.
+// Any answer that cannot be trusted means nothing is skipped.
+func serverLayers(out *cli.Output, conn *ssh.Conn, apps string, refs []string) (skip serverHeld, known map[string]bool) {
 	diffs, err := rootFS(refs)
 	if err != nil {
 		out.Warn("could not read the built images' layers (%v) — sending them whole", err)
-		return nil, nil
+		return serverHeld{}, nil
 	}
 	var chains []string
 	known, asked := map[string]bool{}, map[string]bool{}
@@ -114,19 +125,103 @@ func serverLayers(out *cli.Output, conn *ssh.Conn, bin string, refs []string) (s
 		}
 	}
 	if len(chains) == 0 {
-		return nil, known
+		return serverHeld{}, known
 	}
-	raw, err := conn.Run(serverbin.Bounded(bin, serverbin.RunTimeout, append([]string{"layers"}, chains...)...)...)
+	bin := serverbin.Path(apps)
+	raw, err := conn.Run(serverbin.Bounded(bin, serverbin.RunTimeout, append([]string{"layers", apps}, chains...)...)...)
 	if err != nil {
 		out.Warn("could not ask %s which layers it holds (the remote step exited %d) — sending the images whole", conn.Target, ssh.ExitCode(err))
-		return nil, known
+		return serverHeld{}, known
 	}
-	have, err := parseHave(raw, chains)
+	a, err := parseHave(raw, chains, known)
 	if err != nil {
 		out.Warn("%s's layer list was not usable (%v) — sending the images whole", conn.Target, err)
-		return nil, known
+		return serverHeld{}, known
 	}
-	return skippable(diffs, have), known
+	return serverHeld{ids: skippable(diffs, a.have), names: a.names}, known
+}
+
+// dropSet is the blob names the filter leaves out, and every name known for a
+// layer of the images. A skippable layer with no known name on a
+// containerd-store workstation costs one local export to learn the names.
+func dropSet(out *cli.Output, refs []string, skip serverHeld, diffs map[string]bool) (drop, known map[string]bool) {
+	if len(skip.ids) == 0 {
+		return nil, nil
+	}
+	drop, known = map[string]bool{}, map[string]bool{}
+	for d := range diffs {
+		known[d] = true
+		for _, b := range skip.names[d] {
+			known[b] = true
+		}
+	}
+	unnamed := false
+	for d := range skip.ids {
+		drop[d] = true
+		for _, b := range skip.names[d] {
+			drop[b] = true
+		}
+		unnamed = unnamed || len(skip.names[d]) == 0
+	}
+	if !unnamed || !containerdStore() {
+		return drop, known
+	}
+	out.Info("learning this workstation's layer names: one extra local export, nothing sent")
+	local, err := learnLocal(refs)
+	if err != nil {
+		out.Warn("could not learn this workstation's layer names (%v)", err)
+		return drop, known
+	}
+	for b, d := range local {
+		if diffs[d] {
+			known[b] = true
+		}
+		if skip.ids[d] {
+			drop[b] = true
+		}
+	}
+	return drop, known
+}
+
+// containerdStore is whether this engine keeps images in containerd's store,
+// whose save names layers by their compressed digest.
+func containerdStore() bool {
+	raw, err := exec.Command("docker", "info", "--format", "{{json .DriverStatus}}").Output()
+	if err != nil {
+		return false
+	}
+	var status [][]string
+	if json.Unmarshal(bytes.TrimSpace(raw), &status) != nil {
+		return false
+	}
+	for _, kv := range status {
+		if len(kv) == 2 && kv[0] == "driver-type" && kv[1] == "io.containerd.snapshotter.v1" {
+			return true
+		}
+	}
+	return false
+}
+
+// learnLocal is a `docker save` of refs read to its end for its layer names
+// alone; nothing of it is kept or sent.
+func learnLocal(refs []string) (names, error) {
+	save := exec.Command("docker", append([]string{"save"}, refs...)...)
+	var errb bytes.Buffer
+	save.Stderr = &tail{&errb, 4 << 10}
+	src, err := save.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := save.Start(); err != nil {
+		return nil, err
+	}
+	pop := atexit.Push(func() { kill(save) })
+	defer pop()
+	n, lerr := learn(src)
+	if err := save.Wait(); err != nil {
+		return nil, fmt.Errorf("docker save exited %d: %s", ssh.ExitCode(err), strings.TrimSpace(errb.String()))
+	}
+	return n, lerr
 }
 
 // stream is one `docker save` of every image — one stream writes each shared
@@ -135,10 +230,10 @@ func serverLayers(out *cli.Output, conn *ssh.Conn, bin string, refs []string) (s
 // end marker and the gzip trailer are written only after save has exited 0,
 // so a save that fails reaches the server as a truncated stream, which the
 // far side refuses, and never as a short valid one.
-func stream(conn *ssh.Conn, bin string, refs []string, skip, known map[string]bool) (shipped, error) {
+func stream(conn *ssh.Conn, apps string, refs []string, skip, known map[string]bool) (shipped, error) {
 	var st shipped
 	target := conn.Target.String()
-	load := conn.Command(append([]string{bin, "remote", "load"}, refs...)...)
+	load := conn.Command(append([]string{serverbin.Path(apps), "remote", "load", apps}, refs...)...)
 	var report bytes.Buffer
 	load.Stdout = &report
 	sink, err := load.StdinPipe()

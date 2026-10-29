@@ -15,22 +15,23 @@ import (
 	"github.com/adigourdi/kasbah/internal/ssh"
 )
 
-// Load is `kasbah remote load IMAGE...` on the server: a gzipped `docker save`
-// on stdin into `docker load`, then `loaded=<n>` on stdout once every image is
-// there; docker load's narration goes to stderr. `docker save` writes every
+// Load is `kasbah remote load APPS IMAGE...` on the server: a gzipped `docker
+// save` on stdin into `docker load`, then `loaded=<n>` on stdout once every
+// image is there; docker load's narration goes to stderr. `docker save` writes every
 // blob before index.json and manifest.json, and docker refuses short input, so
 // a cut stream never leaves a partial image tagged; a cut in the gzip trailer
 // alone can at worst report failure for images that did load. The stream may
 // leave out layers this server holds (`remote layers`); an image docker then
-// cannot unpack is reported as incomplete=<image> and exits 1.
-const loadUsage = "usage: kasbah remote load IMAGE... (a gzipped docker save of those images on stdin)"
+// cannot unpack is reported as incomplete=<image> and exits 1. A load that
+// succeeds records the stream's layer names in <APPS>/.kasbah/layers.map.
+const loadUsage = "usage: kasbah remote load APPS IMAGE... (a gzipped docker save of those images on stdin)"
 
-func Load(images []string, stdin io.Reader, stdout, stderr io.Writer) int {
+func Load(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fail := func(format string, args ...any) int {
 		fmt.Fprintf(stderr, "remote: "+format+"\n", args...)
 		return 1
 	}
-	for _, a := range images {
+	for _, a := range args {
 		if a == "-h" || a == "--help" {
 			fmt.Fprintln(stdout, loadUsage)
 			return 0
@@ -39,6 +40,10 @@ func Load(images []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return fail("load: unknown flag '%s' — %s", a, loadUsage)
 		}
 	}
+	if len(args) == 0 || !strings.HasPrefix(args[0], "/") {
+		return fail("load: no absolute apps path first — %s", loadUsage)
+	}
+	apps, images := args[0], args[1:]
 	if len(images) == 0 {
 		return fail("load: no images named — %s", loadUsage)
 	}
@@ -64,8 +69,18 @@ func Load(images []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	pop := atexit.Push(func() { kill(dl) })
 	defer pop()
 
+	// The stream is read once more on its way past: its manifest.json and
+	// configs name every layer, left-out ones included.
+	pr, pw := io.Pipe()
+	learned := make(chan names, 1)
+	go func() {
+		n, _ := learn(pr)
+		learned <- n
+	}()
 	sink := &errWriter{w: w}
-	_, cerr := io.Copy(sink, zr)
+	_, cerr := io.Copy(sink, io.TeeReader(zr, pw))
+	pw.Close()
+	pairs := <-learned
 	if cerr != nil && sink.err == nil {
 		// Killed before its stdin closes, so docker never sees a clean end.
 		kill(dl)
@@ -100,8 +115,28 @@ func Load(images []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return fail("docker load left %s unusable — its layers could not be unpacked", strings.Join(incomplete, " "))
 	}
+	recordNames(apps, pairs, stderr)
 	fmt.Fprintf(stdout, "loaded=%d\n", len(images))
 	return 0
+}
+
+// recordNames adds a loaded stream's layer names to the map; never fatal.
+func recordNames(apps string, pairs names, stderr io.Writer) {
+	if len(pairs) == 0 {
+		return
+	}
+	err := updateMap(apps, "build-push", func(n names) bool {
+		changed := false
+		for b, d := range pairs {
+			if n[b] != d {
+				n[b], changed = d, true
+			}
+		}
+		return changed
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "remote: the images loaded; their layer names were not recorded: %v\n", err)
+	}
 }
 
 // unpackWatch passes docker load's narration through and notes each image

@@ -284,7 +284,9 @@ never waited on) is taken exclusively by `server init` and `server
 upgrade-traefik` — both for every SSH step of the run, through `kasbah remote
 lock` — and by `server prune`, `server destroy` and `migrate server`; and shared
 by `deploy`, `rollback`, `deploy X.Y.Z` and `drop` for their whole run, from the
-marker read to the fragment, on top of their per-project `.deploy.lock`. A held lock refuses at once and names the command, user and pid
+marker read to the fragment, on top of their per-project `.deploy.lock` —
+and, for a moment, by `remote load` and `remote layers` writing the layer map
+(skipped, with a note, while an exclusive holder runs). A held lock refuses at once and names the command, user and pid
 holding it, read from `/proc/locks`; nothing is written into the file. Each
 `versions.log` line records the operator as `by=<user>` (`build-deploy.md`).
 
@@ -787,7 +789,7 @@ running, and Traefik and mail with them: the sites stay up. Only kasbah's own
 backup scheduler (`kasbah-backup`) is stopped and removed. What's removed is
 kasbah's management layer:
 
-- `/apps/.kasbah/` (server marker, the backup scheduler stack with its
+- `/apps/.kasbah/` (server marker, the layer map, the backup scheduler stack with its
   credentials — agency-owned secrets never transfer — and, last, kasbah's own
   binary), and the discovery pointer `/etc/kasbah/apps-path`. The repositories
   themselves are **not** removed: they are operator property, and an

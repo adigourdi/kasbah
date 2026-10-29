@@ -120,7 +120,11 @@ func TestScan(t *testing.T) {
 	defer func() { sudoState = old }()
 	os.WriteFile(filepath.Join(apps, ".kasbah", "bin", ".lock"), nil, 0o644)
 	os.WriteFile(filepath.Join(apps, ".kasbah", "stray"), nil, 0o644)
+	os.WriteFile(filepath.Join(apps, ".kasbah", "layers.map"), []byte("x\n"), 0o664)
 	s := scan(apps, filepath.Join(apps, "nope", "apps-path"))
+	if s.LayersMap != "ok" {
+		t.Errorf("layers map %q", s.LayersMap)
+	}
 	if s.MarkerState != "ok" || s.BinState != "ok" || s.BackupDir != "dir" || s.BackupContainer != "running" ||
 		s.MailEnvExtra != 1 || s.RegistryState != "ok" || s.PointerState != "missing" || s.Sudo != "no" || !s.BinLock {
 		t.Fatalf("%+v", s)
@@ -159,9 +163,10 @@ func actOn(t *testing.T, apps string, names ...string) (ActReport, string) {
 func TestAct(t *testing.T) {
 	apps := tree(t)
 	calls := stubDocker(t, func(a []string) (string, error) { return "", nil })
+	os.WriteFile(filepath.Join(apps, ".kasbah", "layers.map"), []byte("x\n"), 0o664)
 	r, _ := actOn(t, apps, "beta", "demo", "gamma")
 	if r.BkDown != "ok" || r.BkFiles != "removed" || r.MailEnv != "stripped" || r.MailEnvN != 1 ||
-		r.MailRegistry != "removed" || r.Marker != "removed" {
+		r.MailRegistry != "removed" || r.LayersMap != "removed" || r.Marker != "removed" {
 		t.Fatalf("%+v", r)
 	}
 	if strings.Join((*calls)[1], " ") != "compose -p kasbah-backup down --remove-orphans" {
@@ -291,14 +296,14 @@ func (f *fake) Close() {}
 func scanFixture() *Scan {
 	return &Scan{HaveDocker: true, AppsState: "dir", MarkerState: "ok", KasbahDir: "dir", KasbahExtra: []string{},
 		BinState: "ok", BackupDir: "absent", BackupContainer: "absent", BackupVolume: "absent", BackupNetwork: "absent",
-		PointerState: "ok", PointerDir: "dir", Sudo: "yes", MailDir: "absent", MailEnvState: "missing", RegistryState: "missing",
+		PointerState: "ok", PointerDir: "dir", Sudo: "yes", MailDir: "absent", MailEnvState: "missing", RegistryState: "missing", LayersMap: "missing",
 		Projects: []Row{{Name: "data", Dir: "dir", Vlog: "missing", VlogGz: "missing", Lock: "missing", Client: "missing"},
 			{Name: "demo", Dir: "dir", Vlog: "ok", VlogGz: "missing", Lock: "ok", Client: "missing", Env: "ok", Sentinels: 2}},
 		Count: 2, Skipped: []string{"README.md"}}
 }
 
 const okAct = `started=yes
-{"bk_down":"skipped","bk_down_detail":"","bk_container":"absent","bk_volume":"absent","bk_network":"absent","bk_files":"absent","projects":[{"name":"demo","vlog":"removed","vlog_gz":"absent","scripts":"absent","lock":"removed","client":"absent","env":"stripped"}],"mail_env":"absent","mail_env_n":0,"mail_registry":"absent","marker":"removed"}
+{"bk_down":"skipped","bk_down_detail":"","bk_container":"absent","bk_volume":"absent","bk_network":"absent","bk_files":"absent","projects":[{"name":"demo","vlog":"removed","vlog_gz":"absent","scripts":"absent","lock":"removed","client":"absent","env":"stripped"}],"mail_env":"absent","mail_env_n":0,"mail_registry":"absent","layers_map":"absent","marker":"removed"}
 `
 
 const okTail = "pointer=removed\npointer_dir=removed\nbinary=removed\nbin_dir=removed\nkasbah_dir=removed\ndone=yes\n"

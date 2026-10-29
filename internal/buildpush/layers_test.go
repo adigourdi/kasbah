@@ -193,11 +193,15 @@ func TestSkippable(t *testing.T) {
 
 func TestParseHave(t *testing.T) {
 	a, b := digest([]byte("a")), digest([]byte("b"))
-	if h, err := parseHave([]byte("have="+a+"\r\nlayers=1\n"), []string{a, b}); err != nil || !h[a] || h[b] {
+	da, z := digest([]byte("da")), digest([]byte("z"))
+	diffs := map[string]bool{da: true}
+	h, err := parseHave([]byte("have="+a+"\r\nname="+da+" "+z+"\r\nname="+da+" "+b+"\nlayers=1\n"), []string{a, b}, diffs)
+	if err != nil || !h.have[a] || h.have[b] || !reflect.DeepEqual(h.names, map[string][]string{da: {z, b}}) {
 		t.Errorf("parseHave: %v %v", h, err)
 	}
-	for _, bad := range []string{"", "have=" + a + "\n", "have=" + a + "\nlayers=2\n", "have=" + digest([]byte("z")) + "\nlayers=1\n"} {
-		if _, err := parseHave([]byte(bad), []string{a, b}); err == nil {
+	for _, bad := range []string{"", "have=" + a + "\n", "have=" + a + "\nlayers=2\n", "have=" + z + "\nlayers=1\n",
+		"name=" + z + " " + a + "\nlayers=0\n", "name=" + da + "\nlayers=0\n", "name=" + da + " nothex\nlayers=0\n"} {
+		if _, err := parseHave([]byte(bad), []string{a, b}, diffs); err == nil {
 			t.Errorf("parseHave(%q) was trusted", bad)
 		}
 	}
@@ -234,7 +238,8 @@ func TestLayers(t *testing.T) {
 	ab := chainIDs([]string{a, b})
 	dir := fakeStore(t, map[string][]string{"i1": {a, b}, "i2": {a}})
 	var out, errb bytes.Buffer
-	if rc := Layers([]string{ab[0], ab[1], x}, &out, &errb); rc != 0 || out.String() != "have="+a+"\nhave="+ab[1]+"\nlayers=2\n" {
+	apps := t.TempDir()
+	if rc := Layers([]string{apps, ab[0], ab[1], x}, &out, &errb); rc != 0 || out.String() != "have="+a+"\nhave="+ab[1]+"\nlayers=2\n" {
 		t.Errorf("rc %d stdout %q stderr %q", rc, out.String(), errb.String())
 	}
 	// Each image inspected once, though image ls named it twice.
@@ -245,11 +250,14 @@ func TestLayers(t *testing.T) {
 
 	t.Setenv("FAKE_INSPECT_RC", "1")
 	out.Reset()
-	if rc := Layers([]string{a}, &out, &errb); rc != 1 || strings.Contains(out.String(), "layers=") {
+	if rc := Layers([]string{apps, a}, &out, &errb); rc != 1 || strings.Contains(out.String(), "layers=") {
 		t.Errorf("a failed inspect answered %q (rc %d)", out.String(), rc)
 	}
 	out.Reset()
-	if rc := Layers([]string{"sha256:nothex"}, &out, &errb); rc != 1 || !strings.Contains(errb.String(), "not a sha256") || out.Len() != 0 {
+	if rc := Layers([]string{a}, &out, &errb); rc != 1 || !strings.Contains(errb.String(), "no absolute apps path") || out.Len() != 0 {
+		t.Errorf("no apps path: rc %d stdout %q", rc, out.String())
+	}
+	if rc := Layers([]string{apps, "sha256:nothex"}, &out, &errb); rc != 1 || !strings.Contains(errb.String(), "not a sha256") || out.Len() != 0 {
 		t.Errorf("a malformed id: rc %d stdout %q", rc, out.String())
 	}
 }
@@ -265,7 +273,7 @@ exit 0
 	os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o755)
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 	var out, errb bytes.Buffer
-	rc := Load([]string{"a:1", "b:1"}, bytes.NewReader(gz(t, []byte("tar"))), &out, &errb)
+	rc := Load([]string{t.TempDir(), "a:1", "b:1"}, bytes.NewReader(gz(t, []byte("tar"))), &out, &errb)
 	if rc != 1 || out.String() != "incomplete=b:1\n" || !strings.Contains(errb.String(), "left b:1 unusable") ||
 		!strings.Contains(errb.String(), "Loaded image: a:1") {
 		t.Errorf("rc %d stdout %q stderr %q", rc, out.String(), errb.String())

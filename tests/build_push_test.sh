@@ -97,6 +97,8 @@ case "${1:-}" in
         printf '%s\n' "${DOCKER_DEFAULT_PLATFORM-unset}" >> "$DOCKER_LOG.platform"
         [ -z "${STUB_COMPOSE_ERR:-}" ] || { printf '%s\n' "$STUB_COMPOSE_ERR" >&2; exit 1; }
         [ -z "${DOCKER_BUILD_TOUCH:-}" ] || printf 'during\n' >> "$DOCKER_BUILD_TOUCH" ;;
+    # The image store, when a case plays the containerd one.
+    info) printf '%s\n' "${STUB_INFO:-}"; exit 0 ;;
     # The engine's own platform, when a case plays one.
     version) [ -z "${STUB_ENGINE:-}" ] || printf '%s\n' "$STUB_ENGINE"; exit 0 ;;
 esac
@@ -395,8 +397,8 @@ assert '! grep -qF ":current" <<<"$saveline"' \
 load_calls="$(grep -F "'remote' 'load'" "$SSH_LOG")"
 assert '[ "$(grep -c . <<<"$load_calls")" = "1" ]' \
     "one stream into one remote load, not one per image (ssh log: $(cat "$SSH_LOG"))"
-assert 'grep -qF "'"'"'$FAKE_APPS/.kasbah/bin/kasbah'"'"' '"'"'remote'"'"' '"'"'load'"'"' '"'"'built-app-web:1.4.2'"'"' '"'"'built-app-worker:1.4.2'"'"'" <<<"$load_calls"' \
-    "run by the server's own binary at the shared path, naming both images (call: '$load_calls')"
+assert 'grep -qF "'"'"'$FAKE_APPS/.kasbah/bin/kasbah'"'"' '"'"'remote'"'"' '"'"'load'"'"' '"'"'$FAKE_APPS'"'"' '"'"'built-app-web:1.4.2'"'"' '"'"'built-app-worker:1.4.2'"'"'" <<<"$load_calls"' \
+    "run by the server's own binary at the shared path, naming its apps path and both images (call: '$load_calls')"
 assert 'grep -qF "deploy@vps" <<<"$load_calls"' "on the server it was told (call: '$load_calls')"
 assert 'gzip -t "$SSH_STDIN_LOG" 2>/dev/null' \
     "what travels is a complete gzip stream, not a bare tar ($(file -b "$SSH_STDIN_LOG" 2>/dev/null))"
@@ -475,6 +477,87 @@ STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs-c" run --no-git-push "dep
 assert '[ "$rc" = "0" ] && grep -qF "$hb" <<<"$(loaded_names)"' "a save that names no layer by diffID ships whole (exit $rc: $err)"
 assert 'grep -qF "saves compressed layers — nothing could be left out" <<<"$err" && ! grep -qF "already on the server, not sent" <<<"$err"' \
     "and says why nothing was left out, not that nothing was there (said '$err')"
+
+# The same workstation that says so: one local export learns the names, the
+# server records them from the stream, and the next push needs no export.
+c="$tmpdir/csave"
+mkdir -p "$c/tar/blobs/sha256" "$c/rootfs"
+cblob() { local h; h="$(sha256sum "$1" | cut -d' ' -f1)"; mv "$1" "$c/tar/blobs/sha256/$h"; printf '%s' "$h"; }
+head -c 200000 /dev/urandom | { printf '\037\213'; cat; } > "$c/b"; cb="$(cblob "$c/b")"
+printf '\037\213web-app' > "$c/a"; ca="$(cblob "$c/a")"
+printf '\037\213worker-app' > "$c/w"; cw="$(cblob "$c/w")"
+printf '{"rootfs":{"type":"layers","diff_ids":["%s","%s"]}}' "$(zid b)" "$(zid a)" > "$c/cfg-web"; cfw="$(cblob "$c/cfg-web")"
+printf '{"rootfs":{"type":"layers","diff_ids":["%s","%s"]}}' "$(zid b)" "$(zid w)" > "$c/cfg-worker"; cfk="$(cblob "$c/cfg-worker")"
+printf '[{"Config":"blobs/sha256/%s","RepoTags":["built-app-web:1.4.2"],"Layers":["blobs/sha256/%s","blobs/sha256/%s"]},{"Config":"blobs/sha256/%s","RepoTags":["built-app-worker:1.4.2"],"Layers":["blobs/sha256/%s","blobs/sha256/%s"]}]' \
+    "$cfw" "$cb" "$ca" "$cfk" "$cb" "$cw" > "$c/tar/manifest.json"
+printf '{}' > "$c/tar/index.json"; printf '{"imageLayoutVersion":"1.0.0"}' > "$c/tar/oci-layout"
+tar -C "$c/tar" -cf "$c/save.tar" blobs index.json manifest.json oci-layout
+map="$FAKE_APPS/.kasbah/layers.map"
+rm -f "$map"
+cinfo='[["driver-type","io.containerd.snapshotter.v1"]]'
+
+STUB_SAVE_TAR="$c/save.tar" STUB_ROOTFS="$lay/rootfs-c" STUB_INFO="$cinfo" run --no-git-push "deploy@vps"; rc=$?
+assert '[ "$rc" = "0" ]' "a containerd-store workstation ships (exit $rc: $err)"
+assert 'grep -qxF "learning this workstation'"'"'s layer names: one extra local export, nothing sent" <<<"$err"' \
+    "announcing one learning export (said '$err')"
+assert '[ "$(grep -c "^save " "$DOCKER_LOG")" = "2" ] && [ "$(grep -cF "'"'"'remote'"'"' '"'"'load'"'"'" "$SSH_LOG")" = "1" ]' \
+    "which is a second local save, not a second stream (docker log: $(cat "$DOCKER_LOG"))"
+names="$(loaded_names)"
+assert '! grep -qF "$cb" <<<"$names" && grep -qF "$ca" <<<"$names" && grep -qF "$cw" <<<"$names"' \
+    "the base layer stayed home under its compressed name (loaded: $names)"
+assert 'grep -qF "1 of 3 layers (200.0 kB) already on the server, not sent" <<<"$err"' \
+    "and the run says so (said '$err')"
+mapc="$(cat "$map" 2>/dev/null)"
+assert 'grep -qxF "sha256:$cb $(zid b)" <<<"$mapc" && grep -qxF "sha256:$ca $(zid a)" <<<"$mapc" && grep -qxF "sha256:$cw $(zid w)" <<<"$mapc" && [ "$(grep -c . <<<"$mapc")" = "3" ]' \
+    "the server recorded every layer's name from the stream, the one left out included (map: $mapc)"
+assert '[ "$(stat -c %a "$map" 2>/dev/null)" = "664" ]' "at mode 664 ($(stat -c %a "$map" 2>/dev/null))"
+
+STUB_SAVE_TAR="$c/save.tar" STUB_ROOTFS="$lay/rootfs-c" STUB_INFO="$cinfo" run --no-git-push "deploy@vps"; rc=$?
+assert '[ "$rc" = "0" ] && [ "$(grep -c "^save " "$DOCKER_LOG")" = "1" ] && ! grep -qF "learning" <<<"$err"' \
+    "the next push learns nothing: the server named the layer (exit $rc, docker log: $(cat "$DOCKER_LOG"), said '$err')"
+assert '! grep -qF "$cb" <<<"$(loaded_names)" && grep -qF "1 of 3 layers" <<<"$err"' \
+    "and still leaves it out (said '$err')"
+mapc="$(cat "$map" 2>/dev/null)"
+assert '[ "$(grep -c . <<<"$mapc")" = "3" ]' \
+    "the map holds the names the server recorded, once each (map: $mapc)"
+# The stub server's images hold only the base: the question prunes the rest,
+# and this push's load records them again.
+STUB_ROOTFS="$lay/rootfs-c" PATH="$stub_dir:$PATH" DOCKER_LOG="$DOCKER_LOG" "$FAKE_APPS/.kasbah/bin/kasbah" remote layers "$FAKE_APPS" >/dev/null 2>"$tmpdir/layers.err"
+assert '[ "$(cat "$map" 2>/dev/null)" = "sha256:$cb $(zid b)" ]' \
+    "remote layers prunes the names of layers no image on the server holds (map: $(cat "$map" 2>/dev/null); $(cat "$tmpdir/layers.err"))"
+printf 'not a map\n' > "$map"
+STUB_SAVE_TAR="$c/save.tar" STUB_ROOTFS="$lay/rootfs-c" STUB_INFO="$cinfo" run --no-git-push "deploy@vps"; rc=$?
+assert '[ "$rc" = "0" ] && [ "$(grep -c "^save " "$DOCKER_LOG")" = "2" ] && [ "$(grep -c . "$map")" = "3" ]' \
+    "an unreadable map is started over, never fatal (exit $rc, map: $(cat "$map"))"
+rm -f "$map"
+
+# A base the containerd store keeps uncompressed is saved under its diffID:
+# the server records that identity, and the next push needs no export.
+u="$tmpdir/usave"
+mkdir -p "$u/tar/blobs/sha256" "$u/rootfs"
+head -c 100000 /dev/urandom | { printf 'base/'; cat; } > "$u/b"
+ub="$(sha256sum "$u/b" | cut -d' ' -f1)"; mv "$u/b" "$u/tar/blobs/sha256/$ub"
+cp "$c/tar/blobs/sha256/$ca" "$c/tar/blobs/sha256/$cw" "$u/tar/blobs/sha256/"
+printf '{"rootfs":{"type":"layers","diff_ids":["sha256:%s","%s"]}}' "$ub" "$(zid a)" > "$u/cfg-web"
+ufw="$(sha256sum "$u/cfg-web" | cut -d' ' -f1)"; mv "$u/cfg-web" "$u/tar/blobs/sha256/$ufw"
+printf '{"rootfs":{"type":"layers","diff_ids":["sha256:%s","%s"]}}' "$ub" "$(zid w)" > "$u/cfg-worker"
+ufk="$(sha256sum "$u/cfg-worker" | cut -d' ' -f1)"; mv "$u/cfg-worker" "$u/tar/blobs/sha256/$ufk"
+printf '[{"Config":"blobs/sha256/%s","Layers":["blobs/sha256/%s","blobs/sha256/%s"]},{"Config":"blobs/sha256/%s","Layers":["blobs/sha256/%s","blobs/sha256/%s"]}]' \
+    "$ufw" "$ub" "$ca" "$ufk" "$ub" "$cw" > "$u/tar/manifest.json"
+printf '{}' > "$u/tar/index.json"
+tar -C "$u/tar" -cf "$u/save.tar" blobs index.json manifest.json
+printf '["sha256:%s","%s"]\n' "$ub" "$(zid a)" > "$u/rootfs/built-app-web_1.4.2"
+printf '["sha256:%s","%s"]\n' "$ub" "$(zid w)" > "$u/rootfs/built-app-worker_1.4.2"
+printf '["sha256:%s"]\n' "$ub" > "$u/rootfs/srv-base"
+printf 'srv-base\n' > "$u/rootfs/ids"
+for i in 1 2; do
+    STUB_SAVE_TAR="$u/save.tar" STUB_ROOTFS="$u/rootfs" STUB_INFO="$cinfo" run --no-git-push "deploy@vps"; rc=$?
+    assert '[ "$rc" = "0" ] && ! grep -qF "$ub" <<<"$(loaded_names)"' "push $i leaves the uncompressed base out (exit $rc: $err)"
+    saves[i]="$(grep -c "^save " "$DOCKER_LOG")"
+done
+assert '[ "${saves[1]}" = "2" ] && [ "${saves[2]}" = "1" ]' \
+    "the first push learns, the second needs no export: the map names the base by its diffID (saves ${saves[1]}, ${saves[2]}; map: $(cat "$map"))"
+rm -f "$map"
 
 STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs" STUB_SERVER_INSPECT_RC=1 run --no-git-push "deploy@vps"; rc=$?
 assert '[ "$rc" = "0" ]' "a server that cannot list its layers still gets the images (exit $rc: $err)"

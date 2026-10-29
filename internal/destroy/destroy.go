@@ -496,6 +496,9 @@ func (p *Plan) Report(w io.Writer) {
 	}
 
 	fmt.Fprintf(w, "\n  marker      %s/.kasbah/server.json (%s)\n", p.Apps, s.MarkerState)
+	if s.LayersMap != "missing" && s.LayersMap != "" {
+		fmt.Fprintf(w, "  layer map   %s/.kasbah/layers.map (%s) — the layer names build-push learned\n", p.Apps, s.LayersMap)
+	}
 	sudo := s.Sudo == "root" || s.Sudo == "yes"
 	fmt.Fprintf(w, "  pointer     %s (%s)", serverbin.Pointer, s.PointerState)
 	if sudo || s.PointerState == "missing" {
@@ -602,6 +605,11 @@ func (p *Plan) act(o *cli.Output, pr *prompt.Prompter, s Session) error {
 		p.reportProject(r, res)
 	}
 	p.reportMail(r, &a)
+
+	if a.LayersMap != "absent" {
+		r.step(a.LayersMap, "removed "+p.Apps+"/.kasbah/layers.map — the layer names build-push learned",
+			"", "could not remove "+p.Apps+"/.kasbah/layers.map on "+p.Target)
+	}
 
 	var tail map[string]string
 	if a.Marker == "held" {

@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -84,41 +86,55 @@ func skippable(images [][]string, have map[string]bool) map[string]bool {
 	return skip
 }
 
+// answer is `remote layers`' reply, accepted only whole.
+type answer struct {
+	have map[string]bool
+	// names is the blob names the server knows for its layers, by diffID.
+	names map[string][]string
+}
+
 // parseHave reads `remote layers`' answer, accepting it only whole: a
-// layers=<n> count matching its have= lines, each a chain that was asked.
-func parseHave(out []byte, asked []string) (map[string]bool, error) {
+// layers=<n> count matching its have= lines, each a chain that was asked, and
+// name= lines only for the diffIDs asked about.
+func parseHave(out []byte, asked []string, diffIDs map[string]bool) (answer, error) {
 	want := map[string]bool{}
 	for _, c := range asked {
 		want[c] = true
 	}
-	have, count := map[string]bool{}, -1
+	a, count := answer{have: map[string]bool{}, names: map[string][]string{}}, -1
 	for _, l := range strings.Split(strings.ReplaceAll(string(out), "\r", ""), "\n") {
 		k, v, _ := strings.Cut(l, "=")
 		switch k {
 		case "have":
 			if !want[v] {
-				return nil, fmt.Errorf("it named a layer that was not asked about (%q)", v)
+				return answer{}, fmt.Errorf("it named a layer that was not asked about (%q)", v)
 			}
-			have[v] = true
+			a.have[v] = true
+		case "name":
+			d, b, ok := strings.Cut(v, " ")
+			if !ok || !validID(b) || !diffIDs[d] {
+				return answer{}, fmt.Errorf("unreadable layer name %q", l)
+			}
+			a.names[d] = append(a.names[d], b)
 		case "layers":
 			n, err := strconv.Atoi(v)
 			if err != nil {
-				return nil, fmt.Errorf("unreadable count %q", l)
+				return answer{}, fmt.Errorf("unreadable count %q", l)
 			}
 			count = n
 		}
 	}
-	if count != len(have) {
-		return nil, fmt.Errorf("its answer was incomplete (layers=%d, %d have= lines)", count, len(have))
+	if count != len(a.have) {
+		return answer{}, fmt.Errorf("its answer was incomplete (layers=%d, %d have= lines)", count, len(a.have))
 	}
-	return have, nil
+	return a, nil
 }
 
-const layersUsage = "usage: kasbah remote layers CHAINID... (prints have=<id> for each one this server's image store holds, then layers=<n>)"
+const layersUsage = "usage: kasbah remote layers APPS CHAINID... (prints have=<id> for each one this server's image store holds, name=<diffID> <blob> for the names it knows them by, then layers=<n>)"
 
-// Layers is `kasbah remote layers CHAINID...` on the server: which of those
-// layer chains any image on this box already has, from one `docker image ls`
-// and one inspect of everything it lists. Read-only.
+// Layers is `kasbah remote layers APPS CHAINID...` on the server: which of
+// those chains its images hold (one image ls, one inspect) and the names
+// layers.map knows them by; then the map loses names no image's layer has.
 func Layers(args []string, stdout, stderr io.Writer) int {
 	fail := func(format string, a ...any) int {
 		fmt.Fprintf(stderr, "remote: layers: "+format+"\n", a...)
@@ -128,7 +144,11 @@ func Layers(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, layersUsage)
 		return 0
 	}
-	for _, a := range args {
+	if len(args) == 0 || !strings.HasPrefix(args[0], "/") {
+		return fail("no absolute apps path first — %s", layersUsage)
+	}
+	apps, chains := args[0], args[1:]
+	for _, a := range chains {
 		if !validID(a) {
 			return fail("'%s' is not a sha256: layer chain id — %s", a, layersUsage)
 		}
@@ -148,26 +168,51 @@ func Layers(args []string, stdout, stderr io.Writer) int {
 			ids = append(ids, id)
 		}
 	}
-	have := map[string]bool{}
-	if len(ids) > 0 && len(args) > 0 {
+	m := readMap(apps)
+	// chain → the diffID it ends in; held is every diffID on the server.
+	have, held := map[string]string{}, map[string]bool{}
+	if len(ids) > 0 && (len(chains) > 0 || len(m) > 0) {
 		all, err := rootFS(ids)
 		if err != nil {
 			return fail("%v", err)
 		}
 		for _, diffs := range all {
-			for _, c := range chainIDs(diffs) {
-				have[c] = true
+			for i, c := range chainIDs(diffs) {
+				have[c] = diffs[i]
+				held[diffs[i]] = true
 			}
 		}
 	}
-	n := 0
-	for _, a := range args {
-		if have[a] {
+	n, asked := 0, map[string]bool{}
+	for _, a := range chains {
+		if d, ok := have[a]; ok {
 			fmt.Fprintf(stdout, "have=%s\n", a)
 			delete(have, a)
+			asked[d] = true
 			n++
 		}
 	}
+	byDiff := m.byDiff()
+	for _, d := range slices.Sorted(maps.Keys(asked)) {
+		for _, b := range byDiff[d] {
+			fmt.Fprintf(stdout, "name=%s %s\n", d, b)
+		}
+	}
 	fmt.Fprintf(stdout, "layers=%d\n", n)
+	if len(m) > 0 {
+		err := updateMap(apps, "build-push", func(n names) bool {
+			changed := false
+			for b, d := range n {
+				if !held[d] {
+					delete(n, b)
+					changed = true
+				}
+			}
+			return changed
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "remote: layers: %s not pruned: %v\n", mapPath(apps), err)
+		}
+	}
 	return 0
 }

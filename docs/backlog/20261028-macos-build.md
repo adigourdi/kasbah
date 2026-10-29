@@ -23,6 +23,7 @@ cliff"); built in the 2026-10-29 run as **traced**, by the user's ruling
 - [ ] terminal: hidden password prompts, the one-key menus, echo restored after Ctrl-C (`internal/term`'s darwin file)
 - [ ] an ssh master opens under macOS's `$TMPDIR` and the derived 86-byte ControlPath budget holds with macOS's OpenSSH (measure as `build-deploy.md` did for Linux)
 - [ ] build-push from an arm64 Mac to an amd64 VPS on Docker Desktop (containerd image store; cross-arch save/load proven here only on overlay2)
+- [ ] on Docker Desktop, the first push runs the learning save and skips the server's layers, a second push skips without it (`docker info` reports `driver-type io.containerd.snapshotter.v1` there?)
 - [ ] `htpasswd -niB` from macOS for the dashboard password
 - [ ] `install-dev.sh` and `KASBAH_GOOS=darwin docker compose run --rm build` on a Mac; `release.sh` from a Mac (it needs `sha256sum`, which macOS lacks)
 - [ ] a project synced from a case-insensitive APFS volume

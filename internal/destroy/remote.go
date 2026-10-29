@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/adigourdi/kasbah/internal/buildpush"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/fsstate"
 	"github.com/adigourdi/kasbah/internal/manifest"
@@ -92,15 +93,17 @@ type Scan struct {
 	MailEnvState    string   `json:"mail_env_state"`
 	MailEnvExtra    int      `json:"mail_env_extra"`
 	RegistryState   string   `json:"registry_state"`
-	Projects        []Row    `json:"projects"`
-	Count           int      `json:"project_count"`
-	Skipped         []string `json:"skipped"`
+	// LayersMap is <apps>/.kasbah/layers.map, build-push's layer-name cache.
+	LayersMap string   `json:"layers_map"`
+	Projects  []Row    `json:"projects"`
+	Count     int      `json:"project_count"`
+	Skipped   []string `json:"skipped"`
 }
 
 var scanKeys = []string{"have_docker", "docker_error", "apps_state", "marker_state", "kasbah_dir",
 	"kasbah_extra", "bin_state", "backup_dir", "backup_container", "backup_volume", "backup_network",
 	"pointer_state", "pointer_dir", "pointer_dir_other", "sudo", "mail_dir", "mail_env_state",
-	"mail_env_extra", "registry_state", "projects", "project_count", "skipped"}
+	"mail_env_extra", "registry_state", "layers_map", "projects", "project_count", "skipped"}
 
 var docker = func(dir string, args ...string) (string, error) {
 	cmd := exec.Command("docker", args...)
@@ -252,7 +255,7 @@ func scan(apps, pointer string) Scan {
 	s.KasbahDir = fsstate.Dir(k)
 	for _, n := range entries(k) {
 		switch n {
-		case "server.json", "backup", serverlock.Name:
+		case "server.json", "backup", serverlock.Name, buildpush.MapName:
 		case "bin":
 			for _, b := range entries(filepath.Join(k, "bin")) {
 				if b == serverbin.LockName {
@@ -267,6 +270,7 @@ func scan(apps, pointer string) Scan {
 		}
 	}
 	s.BinState = fsstate.File(serverbin.Path(apps))
+	s.LayersMap = fsstate.File(filepath.Join(k, buildpush.MapName))
 	s.BackupDir = fsstate.Dir(filepath.Join(k, "backup"))
 	if derr == nil {
 		s.BackupContainer = "absent"
@@ -365,13 +369,14 @@ type ActReport struct {
 	MailEnv      string          `json:"mail_env"`
 	MailEnvN     int             `json:"mail_env_n"`
 	MailRegistry string          `json:"mail_registry"`
+	LayersMap    string          `json:"layers_map"`
 	// Marker is removed, absent, failed — or held, when anything above
 	// failed: the marker is how a second run finds this server.
 	Marker string `json:"marker"`
 }
 
 var actKeys = []string{"bk_down", "bk_down_detail", "bk_container", "bk_volume", "bk_network", "bk_files",
-	"projects", "mail_env", "mail_env_n", "mail_registry", "marker"}
+	"projects", "mail_env", "mail_env_n", "mail_registry", "layers_map", "marker"}
 
 // rewrite replaces a file's lines through keep, beside the file it resolves
 // to: written whole and checked before it is renamed over, mode kept.
@@ -554,6 +559,11 @@ func act(apps string, names []string, stdout io.Writer) error {
 	}
 	r.MailRegistry = fsstate.Remove(filepath.Join(apps, "mail", "kasbah.yml"))
 	if r.MailRegistry == "failed" {
+		bad = true
+	}
+
+	r.LayersMap = fsstate.Remove(filepath.Join(k, buildpush.MapName))
+	if r.LayersMap == "failed" {
 		bad = true
 	}
 
