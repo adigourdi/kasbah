@@ -74,7 +74,7 @@ Default paths (override with `--apps-path`, `--data-path`):
     ├── compose.yml                  the shared Traefik stack
     ├── traefik.yml                  static config
     └── dynamic/                     file-provider watch dir
-        ├── _shared.yml              middlewares + TLS options + dashboard router
+        ├── _shared.yml              middlewares + TLS options + dashboard routers (--with-dashboard)
         ├── _mail.yml                cert-trigger + webmail routers (only with --with-mail)
         └── <project>.yml            one per deployed project (copied in on deploy)
 ```
@@ -88,8 +88,8 @@ DMS first starts, and never written over afterwards.
 
 **The Traefik stack has no `.env`, deliberately.** Traefik expands
 environment variables in neither its static nor its dynamic configuration,
-so the ACME email, the dashboard domain, the basic-auth hash and the ACME
-`caServer` are baked into the rendered files at init time. The rendered `compose.yml` then
+so the ACME email, the dashboard domain and basic-auth hash (when there is a
+dashboard) and the ACME `caServer` are baked into the rendered files at init time. The rendered `compose.yml` then
 contains no `${…}` for compose to interpolate, which leaves an `.env` with
 nothing to hold — and an env knob the container never receives is a dead
 knob. All four are read back *out of* the rendered files on a re-run, which is what
@@ -684,6 +684,9 @@ Projects:
           no certificate — Traefik issues one when the hostname resolves here
       jellyfin-web             exited (none)
 ```
+
+A server without a dashboard says `Dashboard: off (no dashboard router in
+dynamic/_shared.yml)` instead.
 
 Versions appear exactly as `versions.log` holds them — no `v` prefix, and
 the full ISO timestamp the log records rather than a truncated date, because

@@ -52,7 +52,7 @@ if ! rig_env_init "$tmpdir/env" || ! rig_clean; then
     exit 2
 fi
 if ! kasbah_cli server init "$RIG_TARGET" --no-mail --no-backup --domain=rig.test --email=ops@rig.test \
-        --traefik-auth="dashadmin:rig-dashboard-pw" >"$tmpdir/init.out" 2>&1 </dev/null; then
+        --with-dashboard --traefik-auth="dashadmin:rig-dashboard-pw" >"$tmpdir/init.out" 2>&1 </dev/null; then
     echo "error: server init failed on a cleaned rig:" >&2
     cat "$tmpdir/init.out" >&2
     exit 2

@@ -334,9 +334,20 @@ See `server-setup.md` for the full table.
 
 ## Dashboard
 
-Enabled by default at `traefik.<init-domain>`, protected by basic auth (hash
-generated during `kasbah server init`). Both routers live in `_shared.yml`, not
-the docker-provider API entrypoint, and there are two of them:
+**Optional**: `server init --with-dashboard` serves it at `traefik.<init-domain>`,
+protected by basic auth (hash generated during init); `--no-dashboard` leaves it
+out. A first init with neither flag asks; a re-run with neither keeps what the
+server has, and whether it has one is read from `_shared.yml` itself — its two
+routers are there or they are not, so there is no stored setting to drift from
+the file. `--no-dashboard` on a re-run removes both routers, the
+`traefik-dashboard-auth` middleware and its hash, so turning it back on asks
+for credentials as a first init does. While it is off a project may route
+`traefik.<apex>` itself; every init with the dashboard on warns about any
+project fragment that does, naming it. The frozen middlewares are there either
+way. With it off, `traefik.yml` still says `api.dashboard: true` — Traefik's
+API is then reachable through no router at all, since `api.insecure` is never
+set and only `:80`/`:443` are published. When it is on, both routers live in
+`_shared.yml`, not the docker-provider API entrypoint, and there are two of them:
 
 - `traefik-dashboard-http` on `web` — **redirect only**, carrying
   `http-to-https` and served by `noop@internal`. It must never carry the auth
@@ -426,12 +437,14 @@ starts announcing deprecations.
 
 Those excluded lines are also the proof the dry run read anything: the file
 provider emits one per TLS router it built out of the mounted fragments,
-naming it, so a run that loaded nothing has none of them. The upgrade refuses
-unless `traefik-dashboard@file` is among them **and** — when the server's
-`dynamic/` holds any fragment besides `_shared.yml` — at least one router that
-is not `_shared.yml`'s. The dashboard router comes from the `_shared.yml` this
-run renders and overlays, so it alone would appear even with the server's
-directory empty; a clean log on its own is not evidence.
+naming it, so a run that loaded nothing has none of them. The overlay of the
+freshly rendered `_shared.yml` carries one extra router the live file never
+has, `kasbah-dry-run-anchor` — the overlay is written as JSON for that, which
+Traefik reads as YAML — and the upgrade refuses unless `kasbah-dry-run-anchor@file`
+is among them **and** — when the server's `dynamic/` holds any fragment besides
+`_shared.yml` — at least one router that is not `_shared.yml`'s. The anchor
+comes from the overlay this run writes, so it alone would appear even with the
+server's directory empty, dashboard or not; a clean log on its own is not evidence.
 
 The throwaway is isolated in four ways: `--network none`, no published
 port, both mounts read-only, and its own entrypoints moved to `:8080`
@@ -453,8 +466,9 @@ copied back **on the server** and the old version brought up again — the
 restore is part of the same step rather than a round trip, so a dropped
 connection cannot strand the proxy with the fix on the wrong machine.
 
-The endpoint (`caServer`), the ACME address, the dashboard apex and its
-basic-auth entry are recovered off the server and reproduced. A stack that
-will not yield all four is refused and the operator is sent to `server
+The endpoint (`caServer`), the ACME address, and — when the dashboard is on —
+its apex and basic-auth entry are recovered off the server and reproduced; a
+stack with no dashboard router is recovered as one without a dashboard. A stack
+that will not yield them is refused and the operator is sent to `server
 init`: repairing one of those is init's job, and a version bump must not
 move a server's CA or its dashboard credentials as a side effect.

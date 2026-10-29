@@ -249,7 +249,7 @@ neither.
 | Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |
 |---|---|---|---|---|---|---|---|
 | `/tmp/kasbah-apps-path.<pid>` | `server init`: the pointer's unprivileged stage | `sudo cp` | one path | umask | `deploy` | *transient*: removed after the copy | `internal/serverinit/run.go:142` |
-| `$TMPDIR/kasbah-dry-run.*/**` (default `/tmp`) | `server upgrade-traefik`, in the server binary: the candidate `traefik.yml` and `_shared.yml` for the dry-run container | the dry-run container | YAML (the static file as JSON, which Traefik reads as YAML) | dir `700`; files `644` | `deploy` | *transient*: removed on return and on HUP/INT/TERM | `internal/upgrade/remote.go:220` |
+| `$TMPDIR/kasbah-dry-run.*/**` (default `/tmp`) | `server upgrade-traefik`, in the server binary: the candidate `traefik.yml` and `_shared.yml` for the dry-run container, the latter carrying the dry run's own `kasbah-dry-run-anchor` router | the dry-run container | JSON, which Traefik reads as YAML | dir `700`; files `644` | `deploy` | *transient*: removed on return and on HUP/INT/TERM | `internal/upgrade/remote.go:220` |
 | `/tmp/kasbah-backup-probe.*/**` | `server init --with-backup`: the delete-probe's scratch — `src/probe.txt`, `pass`, `env` (the storage credential) — in the server binary's `$TMPDIR` | the probe's restic containers | restic environment → `backup.md` (Credentials) | dir `700`; `pass`, `env` `600` | `deploy` | *transient*: removed when the probe returns and by the signal handlers (SIGHUP and SIGPIPE are ignored), with every probe container it named (`kasbah-probe-<pid>-<n>`, `docker rm -f`); SIGKILL leaves it | `internal/backup/remote.go:317`, cleanup `:330` |
 
 ## Docker objects

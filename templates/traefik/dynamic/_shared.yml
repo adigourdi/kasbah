@@ -6,8 +6,9 @@
 # `<name>@file`, so renaming one breaks every deployed project (docs/traefik.md).
 #
 # The dashboard's domain and its basic-auth entry are substituted on the
-# workstation. A single `$` in the bcrypt hash is correct here — this file is
-# read by Traefik, not interpolated by compose.
+# workstation, and its [dashboard] blocks are left out when it is off. A single
+# `$` in the bcrypt hash is correct here — this file is read by Traefik, not
+# interpolated by compose.
 http:
   middlewares:
     # 301 from :80 to :443, same host and path.
@@ -49,6 +50,7 @@ http:
       rateLimit:
         average: 50
         burst: 100
+# [dashboard]
 
     # The dashboard's own guard. Not part of the frozen set — projects have no
     # reason to reference it, and `traefik.<domain>` is reserved to kasbah.
@@ -85,6 +87,7 @@ http:
         - security-headers
         - traefik-dashboard-auth
       service: api@internal
+# [/dashboard]
 
 # Referenced by `websecure` in the static config, so this block is what makes
 # every HTTPS router in every project fragment work. Cipher suites apply to

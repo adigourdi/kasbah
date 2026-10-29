@@ -422,7 +422,17 @@ func TestServerT05(t *testing.T) {
 		{"mail of another apex is not reserved here", "mail.demo.example.com", nil, "✓ No router claims a hostname kasbah owns on deploy@vps (traefik.rig.test mail.rig.test webmail.rig.test)", 0},
 		{"webmail of the primary is", "webmail.rig.test", nil, "✗ Routers claim hostnames kasbah owns on deploy@vps: x→webmail.rig.test (traefik.rig.test mail.rig.test webmail.rig.test)", 6},
 		{"no registry: the apex", "mail.rig.test", func(s *srvCase) { s.r.RegistryState, s.r.Registry = "absent", "" }, "✗ Routers claim hostnames kasbah owns on deploy@vps: x→mail.rig.test", 6},
-		{"no dashboard: traefik keeps the heuristic", "traefik.elsewhere.test", func(s *srvCase) { s.r.Shared = b64s("http: {}\n") },
+		{"dashboard off: traefik.* is nobody's", "traefik.rig.test", func(s *srvCase) { s.r.Shared = b64s("http: {}\n") },
+			"✓ No router claims a hostname kasbah owns on deploy@vps (mail.rig.test webmail.rig.test; dashboard off, traefik.* not reserved)", 0},
+		{"dashboard off, registry refused", "traefik.rig.test", func(s *srvCase) {
+			s.r.Shared = b64s("http:\n  middlewares: {}\n")
+			s.r.Registry = b64s("domains: [x.test]\n")
+		}, "✓ No router claims reserved hostnames (mail.*, webmail.*) — heuristic: deploy@vps was asked and its mail registry could not be read — the dashboard is off on deploy@vps, so traefik.* is not reserved", 0},
+		{"dashboard off, no registry", "traefik.rig.test", func(s *srvCase) {
+			s.r.Shared = b64s("http: {}\n")
+			s.r.RegistryState, s.r.Registry = "absent", ""
+		}, "✓ No router claims reserved hostnames (mail.*, webmail.*) — heuristic: deploy@vps has no mail registry, and no dashboard apex to name mail.* from — the dashboard is off", 0},
+		{"an unparseable _shared.yml: traefik keeps the heuristic", "traefik.elsewhere.test", func(s *srvCase) { s.r.Shared = b64s("http: [1\n") },
 			"✗ Routers claim hostnames kasbah owns on deploy@vps: x→traefik.elsewhere.test (mail.rig.test webmail.rig.test; traefik.* by heuristic)", 6},
 		{"a refused registry: mail keeps the heuristic", "mail.anything.test", func(s *srvCase) { s.r.Registry = b64s("domains: [x.test]\n") },
 			"✗ Routers claim hostnames kasbah owns on deploy@vps: x→mail.anything.test (traefik.rig.test; mail.* by heuristic; webmail.* by heuristic)", 6},

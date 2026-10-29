@@ -32,7 +32,7 @@ deploy_user="$RIG_SSH_USER:$RIG_SSH_USER"
 
 rig_domain=rig.test
 traefik_flags=(--domain="$rig_domain" --email="ops@$rig_domain"
-               --traefik-auth="dashadmin:rig-dashboard-pw")
+               --with-dashboard --traefik-auth="dashadmin:rig-dashboard-pw")
 project=built-app
 v1=3.1.0
 v2=3.2.0

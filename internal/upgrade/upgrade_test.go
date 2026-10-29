@@ -13,6 +13,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/serverinit"
+	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 	"github.com/adigourdi/kasbah/templates"
 )
@@ -210,6 +211,7 @@ func TestBackupAndStartRemote(t *testing.T) {
 type fake struct {
 	stack   Stack
 	dry     Dry
+	overlay string
 	up      Up
 	upRC    int
 	calls   []string
@@ -234,6 +236,7 @@ func (f *fake) Call(stdin []byte, bounded bool, args ...string) ([]byte, int) {
 		if json.Unmarshal(stdin, &p) != nil || !strings.Contains(p.Static, DryCA) {
 			return nil, 1
 		}
+		f.overlay = p.Shared
 		return j(f.dry), 0
 	case "traefik backup":
 		return j(map[string]string{"backup_dir": "/apps/traefik/backups/S"}), 0
@@ -252,7 +255,7 @@ func newFake(t *testing.T, image string) *fake {
 	tpl := templates.FS
 	o := serverinit.Options{Apps: "/apps", Data: "/apps/data", Target: "deploy@vps"}
 	v := serverinit.Values{Image: image, Domain: "example.com", Email: "ops@example.com",
-		AuthEntry: "admin:$2y$05$abcdefghijklmnopqrstuuOKS6tiVYGv2Cm5Q4PJBTzH9xvOGHT6e"}
+		AuthEntry: "admin:$2y$05$abcdefghijklmnopqrstuuOKS6tiVYGv2Cm5Q4PJBTzH9xvOGHT6e", Dashboard: true}
 	v.Acme.CA = serverinit.CAStaging
 	cur, err := serverinit.Render(tpl, o, v)
 	if err != nil {
@@ -262,7 +265,7 @@ func newFake(t *testing.T, image string) *fake {
 		stack: Stack{Compose: enc(cur["compose.yml"]), Static: enc(cur["traefik.yml"]), Shared: enc(cur["dynamic/_shared.yml"]),
 			Fragments: []string{"_mail.yml", "_shared.yml", "gallery.yml"}, AcmeState: "nonempty", AcmeDigest: "d1", Docker: true,
 			State: "running", Health: "healthy", RunningImage: image},
-		dry:     Dry{Verdict: "spoke", Routers: "traefik-dashboard@file gallery@file "},
+		dry:     Dry{Verdict: "spoke", Routers: "kasbah-dry-run-anchor@file traefik-dashboard@file gallery@file "},
 		up:      Up{RolledBack: "no", Health: "healthy", State: "running", Image: "traefik:v3.7.11", AcmeDigest: "d1"},
 		written: map[string]string{},
 	}
@@ -301,7 +304,7 @@ func TestRun(t *testing.T) {
 
 	// A dry run that says no: nothing backed up, shipped or restarted.
 	f = newFake(t, "traefik:v3.7.10")
-	f.dry = Dry{Verdict: "spoke", Errors: broken["missing-middleware"], Routers: "traefik-dashboard@file gallery@file "}
+	f.dry = Dry{Verdict: "spoke", Errors: broken["missing-middleware"], Routers: "kasbah-dry-run-anchor@file traefik-dashboard@file gallery@file "}
 	se, code = runUp(t, f, "v3.7.11")
 	if code != 1 || len(f.calls) != 2 || !strings.Contains(se, "rejects the configuration already on deploy@vps") || !strings.Contains(se, "nope@file") {
 		t.Errorf("refused: %d %q\n%s", code, f.calls, se)
@@ -310,8 +313,8 @@ func TestRun(t *testing.T) {
 		dry  Dry
 		want string
 	}{
-		{Dry{Verdict: "spoke", Routers: "gallery@file "}, "loaded no traefik-dashboard@file router"},
-		{Dry{Verdict: "spoke", Routers: "traefik-dashboard@file traefik-dashboard-http@file "}, "loaded no router out of /apps/traefik/dynamic"},
+		{Dry{Verdict: "spoke", Routers: "traefik-dashboard@file gallery@file "}, "loaded no kasbah-dry-run-anchor@file router"},
+		{Dry{Verdict: "spoke", Routers: "kasbah-dry-run-anchor@file traefik-dashboard@file traefik-dashboard-http@file "}, "loaded no router out of /apps/traefik/dynamic"},
 		{Dry{Verdict: "exited", ExitCode: "1", Log: "boom"}, "exited (code 1)"},
 		{Dry{Verdict: "timeout"}, "said nothing in 120s"},
 	} {
@@ -325,7 +328,7 @@ func TestRun(t *testing.T) {
 	// Only kasbah's overlay on the server: the anchor alone passes, and says so.
 	f = newFake(t, "traefik:v3.7.10")
 	f.stack.Fragments = []string{"_shared.yml"}
-	f.dry = Dry{Verdict: "spoke", Routers: "traefik-dashboard@file "}
+	f.dry = Dry{Verdict: "spoke", Routers: "kasbah-dry-run-anchor@file traefik-dashboard@file "}
 	if se, code = runUp(t, f, "v3.7.11"); code != 0 || !strings.Contains(se, "no project fragments to validate") {
 		t.Errorf("overlay only: %d\n%s", code, se)
 	}
@@ -360,13 +363,17 @@ func TestRecover(t *testing.T) {
 		want string
 	}{
 		{func(f *fake) { f.stack.Shared = "" }, "dynamic/_shared.yml is missing or unreadable"},
+		{func(f *fake) { f.stack.Shared = enc(" \n\n") }, "dynamic/_shared.yml is missing or unreadable"},
 		{func(f *fake) { f.stack.Docker = false }, "docker is not on deploy@vps's PATH"},
 		{func(f *fake) {
 			f.stack.Static = enc("certificatesResolvers:\n  letsencrypt:\n    acme:\n      email: a@b.c\n")
 		}, "does not say what the ACME endpoint (caServer) is"},
 		{func(f *fake) { f.stack.Static = enc("a: [") }, "traefik.yml on deploy@vps is not valid YAML"},
 		{func(f *fake) { f.stack.Compose = enc("services:\n  traefik:\n    image: mirror/traefik:v3\n") }, "does not say what the traefik service's image is"},
-		{func(f *fake) { f.stack.Shared = enc("http: {}\n") }, "does not say what the dashboard router's rule is"},
+		{func(f *fake) { f.stack.Shared = enc("http:\n  routers:\n    traefik-dashboard-http: {}\n") }, "does not say what the dashboard router's rule is"},
+		{func(f *fake) {
+			f.stack.Shared = enc("http:\n  routers:\n    traefik-dashboard:\n      rule: \"Host(`traefik.example.com`)\"\n")
+		}, "does not say what the dashboard's basic-auth entry is"},
 	} {
 		f := newFake(t, "traefik:v3.7.10")
 		c.edit(f)
@@ -380,5 +387,63 @@ func TestRecover(t *testing.T) {
 	runUp(t, f, "v3.7.11")
 	if strings.Contains(f.written["/apps/traefik/traefik.yml"], "acme-v02") {
 		t.Error("a staging server stays on staging")
+	}
+}
+
+// A server without a dashboard keeps it off: the anchor, not the dashboard
+// router, is the dry run's witness.
+func TestDashboardOff(t *testing.T) {
+	f := newFake(t, "traefik:v3.7.10")
+	cur, err := serverinit.Render(templates.FS, serverinit.Options{Apps: "/apps", Data: "/apps/data"},
+		serverinit.Values{Image: "traefik:v3.7.10", Email: "ops@example.com", Acme: serverinit.Acme{CA: serverinit.CAStaging}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.stack.Shared = enc(cur["dynamic/_shared.yml"])
+	f.dry = Dry{Verdict: "spoke", Routers: "kasbah-dry-run-anchor@file gallery@file "}
+	se, code := runUp(t, f, "v3.7.11")
+	if code != 0 || !strings.Contains(se, "built gallery@file out of 3 fragment(s)") {
+		t.Fatalf("%d\n%s", code, se)
+	}
+	if _, ok := f.written["/apps/traefik/dynamic/_shared.yml"]; ok {
+		t.Error("an off _shared.yml was re-rendered")
+	}
+	if on, _ := serverinit.DashboardOn(f.overlay); on || !strings.Contains(f.overlay, "kasbah-dry-run-anchor") {
+		t.Errorf("overlay:\n%s", f.overlay)
+	}
+	f = newFake(t, "traefik:v3.7.10")
+	f.stack.Shared = enc(cur["dynamic/_shared.yml"])
+	f.stack.Fragments = []string{"_shared.yml"}
+	f.dry = Dry{Verdict: "spoke", Routers: "kasbah-dry-run-anchor@file "}
+	if se, code = runUp(t, f, "v3.7.11"); code != 0 || !strings.Contains(se, "built no router but its own anchor") {
+		t.Errorf("overlay only, dashboard off: %d\n%s", code, se)
+	}
+}
+
+func TestDryShared(t *testing.T) {
+	cur, err := serverinit.Render(templates.FS, serverinit.Options{Apps: "/apps", Data: "/apps/data"},
+		serverinit.Values{Image: "traefik:v3.7.10", Domain: "example.com", Email: "ops@example.com", AuthEntry: "a:$2y$05$x", Dashboard: true, Acme: serverinit.Acme{CA: serverinit.CAStaging}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DryShared(cur["dynamic/_shared.yml"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range [][]string{{"http", "routers", "traefik-dashboard", "service"}, {"http", "routers", "kasbah-dry-run-anchor", "tls", "certResolver"}, {"tls", "options", "default", "minVersion"}} {
+		docs, _ := yamlx.Load([]byte(got))
+		var p []any
+		for _, k := range path {
+			p = append(p, k)
+		}
+		if v, ok := tree.Lookup(docs[0], p...); !ok || v == "" {
+			t.Errorf("overlay lacks %v:\n%s", path, got)
+		}
+	}
+	if a, _ := serverinit.ExtractAuth(got); a != "a:$2y$05$x" {
+		t.Errorf("the overlay's hash: %q", a)
+	}
+	if _, err := DryShared("http: [1\n"); err == nil {
+		t.Error("an unparseable _shared.yml makes an overlay")
 	}
 }

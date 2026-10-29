@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
@@ -81,6 +82,24 @@ func Unparsed(err error) bool { _, ok := err.(errUnparsed); return ok }
 // traefik.yml.
 func StaticField(static, key string) (string, error) {
 	return yamlField(static, "certificatesResolvers", "letsencrypt", "acme", key)
+}
+
+// DashboardOn is whether _shared.yml declares either dashboard router: the
+// one record of whether this server publishes a dashboard.
+func DashboardOn(shared string) (bool, error) {
+	d, err := yamlDoc(shared)
+	if err != nil {
+		return false, err
+	}
+	r, err := at(d, "http", "routers")
+	if err != nil {
+		return false, err
+	}
+	m, ok := r.(*tree.Map)
+	if r != nil && !ok {
+		return false, errUnparsed{}
+	}
+	return ok && (m.Has("traefik-dashboard") || m.Has("traefik-dashboard-http")), nil
 }
 
 var reDashboard = regexp.MustCompile("^Host\\(`traefik\\.([^`]+)`\\)$")
@@ -298,6 +317,10 @@ func chooseUnknown(out *cli.Output, p *prompt.Prompter, o Options, a Acme, origi
 type Values struct {
 	Image, Domain, Email, AuthEntry, AuthOrigin string
 	Acme                                        Acme
+	// Dashboard is whether _shared.yml routes traefik.<Domain>; DashOrigin
+	// is "flag", "kept" or "prompt".
+	Dashboard  bool
+	DashOrigin string
 }
 
 func unreadableStack(o Options, file, flag string) error {
@@ -307,27 +330,58 @@ func unreadableStack(o Options, file, flag string) error {
 		fmt.Sprintf("in there. Fix the file, or delete it, or pass %s to settle the value.", flag))
 }
 
+// DashboardClaims warns about a project fragment already routing the
+// dashboard's name — possible while it was off.
+func DashboardClaims(out *cli.Output, o Options, v Values, hosts map[string][]string) {
+	if !v.Dashboard {
+		return
+	}
+	name := "traefik." + v.Domain
+	files := make([]string, 0, len(hosts))
+	for f := range hosts {
+		files = append(files, f)
+	}
+	sort.Strings(files)
+	for _, f := range files {
+		for _, h := range hosts[f] {
+			if strings.EqualFold(h, name) {
+				out.Warn("%s/traefik/dynamic/%s on %s already routes %s — with the dashboard there too, two routers", o.Apps, f, o.Target, name)
+				out.Warn("claim one name and Traefik serves only one of them; move that project off it")
+				break
+			}
+		}
+	}
+}
+
+// unsetFlags is the dashboard values a run with an unreadable _shared.yml
+// still lacks, each led by sep.
+func unsetFlags(o Options, sep string) string {
+	var s string
+	if o.Domain == "" {
+		s += sep + "--domain="
+	}
+	if o.Auth == "" {
+		s += sep + "--traefik-auth="
+	}
+	return s
+}
+
 // Hasher bcrypts user:pass into an htpasswd line.
 type Hasher func(user, pass string) (string, error)
 
 // Resolve is _server_init_traefik_values: flag, else what the server has,
 // else ask. The ACME question goes first — it alone can end the run.
-func Resolve(out *cli.Output, p *prompt.Prompter, o Options, cur map[string]string, store string, hash Hasher) (Values, error) {
+// mailDomain is whether the mail stack takes its primary domain from --domain.
+func Resolve(out *cli.Output, p *prompt.Prompter, o Options, cur map[string]string, store string, mailDomain bool, hash Hasher) (Values, error) {
 	shared, static, compose := cur["dynamic/_shared.yml"], cur["traefik.yml"], cur["compose.yml"]
 	var v Values
 
+	// The routers alone say on or off; the credentials are read only when
+	// they would be kept.
 	storedDomain, sharedErr := DashboardApex(shared)
-	// Read only when it would be reused: a broken entry is no reason to
-	// refuse a run that sets the credentials outright.
-	var storedAuth string
-	if sharedErr == nil && o.Auth == "" {
-		var err error
-		if storedAuth, err = ExtractAuth(shared); err != nil {
-			if _, bad := err.(errUnparsed); !bad {
-				return v, err
-			}
-			sharedErr = err
-		}
+	storedOn, onErr := DashboardOn(shared)
+	if sharedErr == nil {
+		sharedErr = onErr
 	}
 	storedEmail, staticErr := StaticField(static, "email")
 	storedCA, caErr := StaticField(static, "caServer")
@@ -347,15 +401,45 @@ func Resolve(out *cli.Output, p *prompt.Prompter, o Options, cur map[string]stri
 		return v, err
 	}
 
+	// A re-run keeps what the server has; only a server with no _shared.yml
+	// is asked.
+	switch {
+	case o.Dashboard != prompt.Unset:
+		v.Dashboard, v.DashOrigin = o.Dashboard == prompt.Yes, "flag"
+	case sharedErr != nil:
+		return v, unreadableStack(o, "dynamic/_shared.yml", "--no-dashboard, or --with-dashboard"+unsetFlags(o, " "))
+	case strings.TrimSpace(shared) != "":
+		v.Dashboard, v.DashOrigin = storedOn, "kept"
+	default:
+		if v.Dashboard, err = p.Bool("dashboard", fmt.Sprintf("Publish the Traefik dashboard at traefik.<domain> (basic auth) on %s?", o.Target), prompt.Unset); err != nil {
+			return v, err
+		}
+		v.DashOrigin = "prompt"
+	}
+	if v.Dashboard && sharedErr != nil && (o.Domain == "" || o.Auth == "") {
+		return v, unreadableStack(o, "dynamic/_shared.yml", strings.TrimPrefix(unsetFlags(o, " and "), " and "))
+	}
+	if !v.Dashboard {
+		if o.Auth != "" {
+			out.Warn("--traefik-auth had no effect: the dashboard on %s is off (--with-dashboard publishes it)", o.Target)
+		}
+		if o.Domain != "" && !mailDomain {
+			out.Warn("--domain had no effect: the dashboard on %s is off and no new mail stack takes its domain from it", o.Target)
+		}
+	}
+
+	domainQ := "the dashboard is served at traefik.<domain>"
+	if !v.Dashboard {
+		domainQ = "the mail stack's primary domain, served at mail.<domain>"
+	}
 	switch {
 	case o.Domain != "":
 		v.Domain = o.Domain
-	case sharedErr != nil:
-		return v, unreadableStack(o, "dynamic/_shared.yml", "--domain=")
+	case !v.Dashboard && !mailDomain:
 	case storedDomain != "":
 		v.Domain = storedDomain
 	default:
-		if v.Domain, err = p.Value("domain", fmt.Sprintf("Apex domain for %s (the dashboard is served at traefik.<domain>)", o.Target), "", ""); err != nil {
+		if v.Domain, err = p.Value("domain", fmt.Sprintf("Apex domain for %s (%s)", o.Target, domainQ), "", ""); err != nil {
 			return v, err
 		}
 		if err = CheckDomain(v.Domain); err != nil {
@@ -379,7 +463,16 @@ func Resolve(out *cli.Output, p *prompt.Prompter, o Options, cur map[string]stri
 		}
 	}
 
+	var storedAuth string
+	if v.Dashboard && o.Auth == "" {
+		if storedAuth, err = ExtractAuth(shared); Unparsed(err) {
+			return v, unreadableStack(o, "dynamic/_shared.yml", "--traefik-auth=")
+		} else if err != nil {
+			return v, err
+		}
+	}
 	switch {
+	case !v.Dashboard:
 	case o.Auth != "":
 		user, pass, err := SplitAuth(o.Auth)
 		if err != nil {
@@ -389,8 +482,6 @@ func Resolve(out *cli.Output, p *prompt.Prompter, o Options, cur map[string]stri
 			return v, err
 		}
 		v.AuthOrigin = "flag"
-	case sharedErr != nil:
-		return v, unreadableStack(o, "dynamic/_shared.yml", "--traefik-auth=")
 	case storedAuth != "":
 		v.AuthEntry, v.AuthOrigin = storedAuth, "reused"
 	default:
@@ -464,11 +555,15 @@ func Render(fsys fs.FS, o Options, v Values) (map[string]string, error) {
 	}
 	out := map[string]string{}
 	for _, rel := range Files {
-		tpl, err := fs.ReadFile(fsys, "traefik/"+rel)
+		raw, err := fs.ReadFile(fsys, "traefik/"+rel)
 		if err != nil {
 			return nil, cli.Fail("internal: this kasbah build carries no traefik/%s template", rel)
 		}
-		s, err := tmpl.Render(string(tpl), rel, subst)
+		tpl, err := tmpl.Section(string(raw), rel, "dashboard", v.Dashboard)
+		if err != nil {
+			return nil, err
+		}
+		s, err := tmpl.Render(tpl, rel, subst)
 		if err != nil {
 			return nil, err
 		}

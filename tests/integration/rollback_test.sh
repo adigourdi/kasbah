@@ -36,7 +36,7 @@ kasbah_version="$(kasbah_base_version)"
 
 rig_domain=rig.test
 traefik_flags=(--domain="$rig_domain" --email="ops@$rig_domain"
-               --traefik-auth="dashadmin:rig-dashboard-pw")
+               --with-dashboard --traefik-auth="dashadmin:rig-dashboard-pw")
 
 project=built-app
 # Two versions of the same project, one materially different from the other:

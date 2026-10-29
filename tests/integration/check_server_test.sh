@@ -41,7 +41,7 @@ acme="$data/traefik/letsencrypt/acme.json"
 
 rig_domain=rig.test
 traefik_flags=(--domain="$rig_domain" --email="ops@$rig_domain"
-               --traefik-auth="dashadmin:rig-dashboard-pw")
+               --with-dashboard --traefik-auth="dashadmin:rig-dashboard-pw")
 postmaster_pw='rig-postmaster-pw'
 
 project=demo

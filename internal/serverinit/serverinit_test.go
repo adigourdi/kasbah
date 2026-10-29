@@ -27,8 +27,17 @@ func errText(err error) string {
 func TestParse(t *testing.T) {
 	o, err := Parse([]string{"deploy@vps\r", "--no-mail", "--no-backup"})
 	if err != nil || o.Target != "deploy@vps" || o.Apps != "/apps" || o.Data != "/apps/data" ||
-		o.Mail != prompt.No || o.Backup != prompt.No || o.AcmeChoice != prompt.Unset {
+		o.Mail != prompt.No || o.Backup != prompt.No || o.AcmeChoice != prompt.Unset || o.Dashboard != prompt.Unset {
 		t.Fatalf("defaults: %+v %v", o, err)
+	}
+	if o, err := Parse([]string{"d@h", "--no-dashboard"}); err != nil || o.Dashboard != prompt.No {
+		t.Fatalf("--no-dashboard: %+v %v", o, err)
+	}
+	if o, err := Parse([]string{"d@h", "--with-dashboard"}); err != nil || o.Dashboard != prompt.Yes {
+		t.Fatalf("--with-dashboard: %+v %v", o, err)
+	}
+	if _, err := Parse([]string{"d@h", "--with-dashboard", "--no-dashboard"}); !strings.Contains(errText(err), "dashboard") {
+		t.Fatalf("both dashboard flags: %v", err)
 	}
 	o, err = Parse([]string{"d@h", "--apps-path=/srv/apps/", "--domain=example.com\r", "--email=a@b", "--reset-acme", "--reset-acme", "--yes", "--acme-staging"})
 	if err != nil || o.Apps != "/srv/apps" || o.Data != "/srv/apps/data" || o.Domain != "example.com" ||
@@ -365,27 +374,132 @@ func TestResolveReuses(t *testing.T) {
 		"compose.yml":         "services:\n  traefik:\n    image: traefik:v3.8.1\n",
 	}
 	never := func(string, string) (string, error) { t.Fatal("hashed on a re-run"); return "", nil }
-	v, err := Resolve(out, p, o, cur, "nonempty", never)
+	v, err := Resolve(out, p, o, cur, "nonempty", false, never)
 	if err != nil || v.Domain != "example.com" || v.Email != "ops@example.com" || v.AuthEntry != "dash:$2y$05$OURS" ||
 		v.AuthOrigin != "reused" || v.Image != "traefik:v3.8.1" || v.Acme.Reset {
 		t.Fatalf("re-run: %+v %v", v, err)
 	}
 	// A broken entry is no reason to refuse a run that sets the credentials.
 	cur["dynamic/_shared.yml"] = "http:\n  middlewares:\n    traefik-dashboard-auth:\n      basicAuth:\n        users: [junk]\n"
-	o.Domain, o.Auth = "example.org", "admin:pw"
-	v, err = Resolve(out, p, o, cur, "nonempty", func(u, pw string) (string, error) { return u + ":$2y$05$h", nil })
+	o.Domain, o.Auth, o.Dashboard = "example.org", "admin:pw", prompt.Yes
+	v, err = Resolve(out, p, o, cur, "nonempty", false, func(u, pw string) (string, error) { return u + ":$2y$05$h", nil })
 	if err != nil || v.AuthOrigin != "flag" || v.Domain != "example.org" {
 		t.Fatalf("flags over a broken entry: %+v %v", v, err)
 	}
 	// Without the flag, an unparseable file is not guessed past.
-	o.Domain, o.Auth = "", ""
+	o.Domain, o.Auth, o.Dashboard = "", "", prompt.Unset
 	cur["dynamic/_shared.yml"] = "http: [1\n"
-	if _, err := Resolve(out, p, o, cur, "empty", never); !strings.Contains(errText(err), "could not be read as YAML") {
+	if _, err := Resolve(out, p, o, cur, "empty", false, never); !strings.Contains(errText(err), "could not be read as YAML") ||
+		!strings.Contains(errText(err), "pass --no-dashboard, or --with-dashboard --domain= --traefik-auth= to") {
 		t.Errorf("unparseable _shared.yml: %v", err)
 	}
+	// Every flag the run still needs, named in the one refusal.
+	o.Dashboard = prompt.Yes
+	if _, err := Resolve(out, p, o, cur, "empty", false, never); !strings.Contains(errText(err), "pass --domain= and --traefik-auth= to") {
+		t.Errorf("unparseable _shared.yml, --with-dashboard: %v", err)
+	}
+	o.Domain = "example.org"
+	if _, err := Resolve(out, p, o, cur, "empty", false, never); !strings.Contains(errText(err), "pass --traefik-auth= to") {
+		t.Errorf("unparseable _shared.yml, --with-dashboard --domain=: %v", err)
+	}
+	o.Domain = ""
 	// Nothing on the server and no terminal: the flag is named.
-	if _, err := Resolve(out, p, o, map[string]string{}, "absent", never); !strings.Contains(errText(err), "--domain=<value>") {
+	if _, err := Resolve(out, p, o, map[string]string{}, "absent", false, never); !strings.Contains(errText(err), "--domain=<value>") {
 		t.Errorf("fresh server, no terminal: %v", err)
+	}
+}
+
+func TestResolveDashboard(t *testing.T) {
+	static := "certificatesResolvers:\n  letsencrypt:\n    acme:\n      email: \"ops@example.com\"\n      caServer: \"" + CAProduction + "\"\n"
+	off := "http:\n  middlewares:\n    gzip-compression: {compress: {}}\n"
+	never := func(string, string) (string, error) { t.Fatal("hashed"); return "", nil }
+	hash := func(u, pw string) (string, error) { return u + ":$2y$05$h", nil }
+	resolve := func(shared string, o Options, mailDomain bool, in string, h Hasher) (Values, string, error) {
+		out, b := newOut()
+		p := &prompt.Prompter{In: strings.NewReader(in), Out: out, TTY: in != ""}
+		o.Target = "d@h"
+		cur := map[string]string{"traefik.yml": static, "dynamic/_shared.yml": shared}
+		v, err := Resolve(out, p, o, cur, "empty", mailDomain, h)
+		return v, b.String(), err
+	}
+	// A first init asks, and without a terminal names both flags.
+	if _, _, err := resolve("", Options{}, false, "", never); !strings.Contains(errText(err), "--with-dashboard or --no-dashboard") {
+		t.Errorf("first init, no terminal: %v", err)
+	}
+	if v, said, err := resolve("", Options{}, false, "n\n", never); err != nil || v.Dashboard || v.DashOrigin != "prompt" || v.Domain != "" ||
+		!strings.Contains(said, "Publish the Traefik dashboard") || strings.Contains(said, "Apex domain") {
+		t.Errorf("first init answered no: %+v %q %v", v, said, err)
+	}
+	// Off, and a new mail stack takes its primary from --domain: still asked.
+	if v, said, err := resolve("", Options{Dashboard: prompt.No}, true, "a.example\n", never); err != nil || v.Domain != "a.example" ||
+		!strings.Contains(said, "mail stack's primary domain") {
+		t.Errorf("off with a new mail stack: %+v %q %v", v, said, err)
+	}
+	// A re-run with neither flag keeps what the server has, asking nothing.
+	if v, _, err := resolve(off, Options{}, false, "", never); err != nil || v.Dashboard || v.DashOrigin != "kept" {
+		t.Errorf("re-run of an off server: %+v %v", v, err)
+	}
+	if v, _, err := resolve(sharedDoc, Options{}, false, "", never); err != nil || !v.Dashboard || v.DashOrigin != "kept" || v.AuthEntry != "dash:$2y$05$OURS" {
+		t.Errorf("re-run of an on server: %+v %v", v, err)
+	}
+	// Spare flags on an off server warn and change nothing.
+	if v, said, err := resolve(off, Options{Auth: "admin:pw", Domain: "x.example"}, false, "", never); err != nil || v.Dashboard ||
+		!strings.Contains(said, "--traefik-auth had no effect") || !strings.Contains(said, "--domain had no effect") {
+		t.Errorf("spare flags: %+v %q %v", v, said, err)
+	}
+	// On from off asks as a first init does; --traefik-auth answers headless.
+	if _, _, err := resolve(off, Options{Dashboard: prompt.Yes, Domain: "x.example"}, false, "", never); !strings.Contains(errText(err), "--traefik-auth=<value>") {
+		t.Errorf("on from off, no terminal: %v", err)
+	}
+	if v, _, err := resolve(off, Options{Dashboard: prompt.Yes, Domain: "x.example", Auth: "admin:pw"}, false, "", hash); err != nil ||
+		!v.Dashboard || v.AuthOrigin != "flag" || v.Domain != "x.example" {
+		t.Errorf("on from off with flags: %+v %v", v, err)
+	}
+	// Off from on drops the credentials with the routers.
+	if v, _, err := resolve(sharedDoc, Options{Dashboard: prompt.No}, false, "", never); err != nil || v.Dashboard || v.AuthEntry != "" || v.Domain != "" {
+		t.Errorf("off from on: %+v %v", v, err)
+	}
+	// A junk users entry matters only when the credentials would be kept.
+	junkOn := strings.Replace(sharedDoc, "users:\n          - \"dash:$2y$05$OURS\"", "users: junk", 1)
+	if _, _, err := resolve(junkOn, Options{}, false, "", never); !strings.Contains(errText(err), "pass --traefik-auth= to") {
+		t.Errorf("kept on over a junk entry: %v", err)
+	}
+	if v, _, err := resolve(junkOn, Options{Auth: "admin:pw"}, false, "", hash); err != nil || !v.Dashboard || v.AuthOrigin != "flag" {
+		t.Errorf("junk entry, credentials given: %+v %v", v, err)
+	}
+	junkOff := "http:\n  middlewares:\n    traefik-dashboard-auth:\n      basicAuth:\n        users: [[1]]\n"
+	if v, _, err := resolve(junkOff, Options{}, false, "", never); err != nil || v.Dashboard || v.DashOrigin != "kept" {
+		t.Errorf("off over a junk entry: %+v %v", v, err)
+	}
+	// --no-dashboard settles a _shared.yml that does not parse.
+	if v, _, err := resolve("http: [1\n", Options{Dashboard: prompt.No}, false, "", never); err != nil || v.Dashboard {
+		t.Errorf("--no-dashboard over an unparseable file: %+v %v", v, err)
+	}
+	for doc, want := range map[string]bool{"": false, off: false, sharedDoc: true, "http:\n  routers:\n    traefik-dashboard-http: {}\n": true, "http:\n  routers:\n    gallery: {}\n": false} {
+		if on, err := DashboardOn(doc); err != nil || on != want {
+			t.Errorf("DashboardOn(%q) = %v %v", doc, on, err)
+		}
+	}
+	out, b := newOut()
+	hosts := map[string][]string{"b.yml": {"x.example"}, "a.yml": {"TRAEFIK.x.example"}}
+	DashboardClaims(out, Options{Apps: "/apps", Target: "d@h"}, Values{Dashboard: true, Domain: "x.example"}, hosts)
+	if !strings.Contains(b.String(), "/apps/traefik/dynamic/a.yml on d@h already routes traefik.x.example") || strings.Contains(b.String(), "b.yml") {
+		t.Errorf("claim warning: %q", b.String())
+	}
+	b.Reset()
+	DashboardClaims(out, Options{Apps: "/apps", Target: "d@h"}, Values{Domain: "x.example"}, hosts)
+	if b.Len() != 0 {
+		t.Errorf("off warns: %q", b.String())
+	}
+	dir := t.TempDir()
+	for n, body := range map[string]string{"gallery.yml": "rule: \"Host(`traefik.x.example`)\"\r\n", "_mail.yml": "rule: \"Host(`traefik.x.example`)\"\n", "notes.txt": "Host(`a`)"} {
+		os.WriteFile(filepath.Join(dir, n), []byte(body), 0o644)
+	}
+	if got := fragmentHosts(dir); len(got) != 1 || len(got["gallery.yml"]) != 1 || got["gallery.yml"][0] != "traefik.x.example" {
+		t.Errorf("fragmentHosts: %v", got)
+	}
+	if _, err := DashboardOn("http:\n  routers: [1]\n"); !Unparsed(err) {
+		t.Errorf("routers that are not a mapping: %v", err)
 	}
 }
 
@@ -396,7 +510,7 @@ func repoTemplates(t *testing.T) fs.FS {
 
 func TestRender(t *testing.T) {
 	o := Options{Apps: "/srv/apps", Data: "/data"}
-	v := Values{Image: TraefikImage, Domain: "example.com", Email: "ops@example.com", AuthEntry: "admin:$2y$05$abc", Acme: Acme{CA: CAStaging}}
+	v := Values{Image: TraefikImage, Domain: "example.com", Email: "ops@example.com", AuthEntry: "admin:$2y$05$abc", Acme: Acme{CA: CAStaging}, Dashboard: true}
 	r, err := Render(repoTemplates(t), o, v)
 	if err != nil {
 		t.Fatal(err)
@@ -414,9 +528,36 @@ func TestRender(t *testing.T) {
 			t.Errorf("%s lacks %q", want.rel, want.s)
 		}
 	}
-	if strings.Contains(r["compose.yml"]+r["traefik.yml"]+r["dynamic/_shared.yml"], "__") {
-		t.Error("a token survived")
+	if strings.Contains(r["compose.yml"]+r["traefik.yml"]+r["dynamic/_shared.yml"], "__") || strings.Contains(r["dynamic/_shared.yml"], "# [") {
+		t.Error("a token or a section marker survived")
 	}
+	if on, err := DashboardOn(r["dynamic/_shared.yml"]); err != nil || !on {
+		t.Errorf("rendered on, read back %v %v", on, err)
+	}
+	// Off: neither router, nor the middleware and its hash; the rest intact.
+	v.Dashboard = false
+	off, err := Render(repoTemplates(t), o, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sh := off["dynamic/_shared.yml"]
+	for _, gone := range []string{"traefik-dashboard", "api@internal", "$2y$", "routers:", "# ["} {
+		if strings.Contains(sh, gone) {
+			t.Errorf("off _shared.yml carries %q:\n%s", gone, sh)
+		}
+	}
+	for _, kept := range []string{"http-to-https:", "api-rate-limit:", "minVersion: VersionTLS12"} {
+		if !strings.Contains(sh, kept) {
+			t.Errorf("off _shared.yml lacks %q", kept)
+		}
+	}
+	if on, err := DashboardOn(sh); err != nil || on || strings.Contains(sh, "\n\n\n") {
+		t.Errorf("rendered off, read back %v %v:\n%s", on, err, sh)
+	}
+	if a, err := ExtractAuth(sh); err != nil || a != "" {
+		t.Errorf("off keeps a hash: %q %v", a, err)
+	}
+	v.Dashboard = true
 	// A value carrying a token is not rescanned.
 	o.Apps = "/srv/__STAGE__"
 	if _, err := Render(repoTemplates(t), o, v); err != nil {

@@ -211,6 +211,7 @@ type run struct {
 	acme      []byte
 	acmeReady bool
 	dash      string
+	dashOff   bool
 	trusted   bool
 }
 
@@ -300,9 +301,12 @@ func (x *run) readMarker() error {
 
 func (x *run) decode() {
 	x.acme = b64(x.r.Acme)
-	if apex, err := serverinit.DashboardApex(string(b64(x.r.Shared))); err == nil && apex != "" {
+	shared := string(b64(x.r.Shared))
+	if apex, err := serverinit.DashboardApex(shared); err == nil && apex != "" {
 		x.dash = "traefik." + apex
 	}
+	on, err := serverinit.DashboardOn(shared)
+	x.dashOff = err == nil && strings.TrimSpace(shared) != "" && !on
 	x.trusted = x.mkData != "" && x.r.DataPath == x.mkData
 	// A data path directly under <apps> is not a project.
 	if rest, ok := strings.CutPrefix(x.mkData, x.apps+"/"); ok && rest != "" && !strings.Contains(rest, "/") {
@@ -344,6 +348,8 @@ func (x *run) print() {
 	if x.dash != "" {
 		x.p("  Dashboard: %s\n", x.dash)
 		x.certLine(x.dash, "      ")
+	} else if x.dashOff {
+		x.p("  Dashboard: off (no dashboard router in dynamic/_shared.yml)\n")
 	}
 	x.p("\n")
 	x.printMail()

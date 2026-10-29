@@ -361,7 +361,7 @@ func TestTemplatesCRLFAndLints(t *testing.T) {
 		t.Errorf("CRLF traefik.yml: %q %v", e, err)
 	}
 	r, err := Render(repoTemplates(t), Options{Apps: "/apps", Data: "/apps/data"},
-		Values{Image: TraefikImage, Domain: "example.com", Email: "ops@example.com", AuthEntry: "dash:$2y$05$x", Acme: Acme{CA: CAProduction}})
+		Values{Image: TraefikImage, Domain: "example.com", Email: "ops@example.com", AuthEntry: "dash:$2y$05$x", Acme: Acme{CA: CAProduction}, Dashboard: true})
 	if err != nil {
 		t.Fatal(err)
 	}

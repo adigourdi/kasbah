@@ -66,7 +66,7 @@ rig_clean || { echo "error: the rig could not be cleaned" >&2; exit 2; }
 # --- A prepared server, with three fragments in the watch directory -----------------
 init_out=$(kasbah_cli server init "$RIG_TARGET" \
     --domain="$rig_domain" --email="ops@$rig_domain" \
-    --traefik-auth="$dash_user:$dash_pass" \
+    --with-dashboard --traefik-auth="$dash_user:$dash_pass" \
     --no-mail --no-backup --acme-staging --yes 2>&1 </dev/null)
 init_rc=$?
 if [ "$init_rc" != 0 ]; then
@@ -189,7 +189,7 @@ assert '! grep -q backups <<<"$dyn_listing"' \
 # image is init deciding it owns the value.
 reinit_out=$(kasbah_cli server init "$RIG_TARGET" \
     --domain="$rig_domain" --email="ops@$rig_domain" \
-    --traefik-auth="$dash_user:$dash_pass" \
+    --with-dashboard --traefik-auth="$dash_user:$dash_pass" \
     --no-mail --no-backup --acme-staging --yes 2>&1 </dev/null)
 assert '[ "$?" = 0 ]' "server init re-runs cleanly after an upgrade
 $reinit_out"
@@ -239,6 +239,27 @@ assert '[ "$(dry_leftovers)" = 0 ]' "and the throwaway left nothing behind (got 
 assert '[ "$(acme_digest)" = "$before_acme" ]' "acme.json is untouched by a failed run too"
 
 rig_ssh "rm -f $apps/traefik/dynamic/broken.yml" >/dev/null 2>&1
+
+# --- Direction three: a server without a dashboard ------------------------------------
+# Off is a recovered state, not a missing value, and the dry run's witness is its
+# own anchor router rather than the dashboard's.
+off_out=$(kasbah_cli server init "$RIG_TARGET" --no-dashboard \
+    --no-mail --no-backup --acme-staging --yes 2>&1 </dev/null)
+assert '[ "$?" = 0 ]' "server init --no-dashboard re-runs cleanly
+$off_out"
+off_shared=$(rig_ssh "cat $apps/traefik/dynamic/_shared.yml" 2>/dev/null)
+assert '! grep -qF "traefik-dashboard" <<<"$off_shared"' "the dashboard routers are gone"
+off_up=$(kasbah_cli server upgrade-traefik "$RIG_TARGET" --version="$target_b" 2>&1 </dev/null)
+off_rc=$?
+assert '[ "$off_rc" = 0 ]' "the upgrade to $target_b passes with the dashboard off (rc=$off_rc)
+$off_up"
+assert 'grep -qF "dry run passed" <<<"$off_up" && grep -qF "gallery@file" <<<"$off_up"' \
+    "its dry run read the fragments (said: $off_up)"
+assert '! grep -qF "traefik-dashboard@file" <<<"$off_up"' "and built no dashboard router"
+assert '[ "$(inspected_image)" = "traefik:$target_b" ]' "the container runs the new tag (got '$(inspected_image)')"
+assert '[ "$(rig_ssh "cat $apps/traefik/dynamic/_shared.yml" 2>/dev/null)" = "$off_shared" ]' \
+    "and _shared.yml is still the off one — the anchor never shipped"
+assert '[ "$(dry_leftovers)" = 0 ]' "the throwaway left nothing behind (got '$(dry_leftovers)')"
 
 # A failure's state is left on the rig for inspection; a pass tidies up after
 # itself, the same contract every integration suite here follows.

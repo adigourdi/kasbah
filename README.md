@@ -43,8 +43,8 @@ all; [docs/cli.md](docs/cli.md) describes each one.
   a user in the `docker` group, root for the first setup (passwordless `sudo`,
   or running the few commands kasbah prints), ports
   80 and 443 reachable from the internet, and DNS pointing at it for each
-  project's domain and for `traefik.<your domain>`, where the Traefik dashboard
-  is served.
+  project's domain — and for `traefik.<your domain>` when you serve the Traefik
+  dashboard (optional).
 
 ## Installation
 

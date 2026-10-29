@@ -32,7 +32,7 @@ marker="$apps/.kasbah/server.json"
 
 rig_domain=rig.test
 traefik_flags=(--domain="$rig_domain" --email="ops@$rig_domain"
-               --traefik-auth="dashadmin:rig-dashboard-pw")
+               --with-dashboard --traefik-auth="dashadmin:rig-dashboard-pw")
 
 # The project being dropped, and the neighbour that must survive it. built-app
 # builds two images and pulls one stock one; demo builds nothing and runs

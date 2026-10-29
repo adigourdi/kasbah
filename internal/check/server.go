@@ -272,8 +272,11 @@ type server struct {
 	// T05, per family: the exact hostnames whose source was read, and the
 	// first labels whose source was not and so keep the local heuristic.
 	reserved, heuristic []string
-	note                string
-	now                 time.Time
+	// dashOff is a _shared.yml read with no dashboard router: traefik.* is
+	// nobody's.
+	dashOff bool
+	note    string
+	now     time.Time
 }
 
 func dec(s string) []byte {
@@ -287,13 +290,18 @@ func dec(s string) []byte {
 func newServer(sr *ServerRead, now time.Time) *server {
 	s := &server{target: sr.Target, apps: sr.Marker.AppsPath, data: sr.Marker.DataPath, mk: sr.Marker, r: sr.Report, now: now}
 	s.env, s.acme, s.registry = dec(s.r.Env), dec(s.r.Acme), dec(s.r.Registry)
-	apex, err := serverinit.DashboardApex(string(dec(s.r.Shared)))
+	shared := string(dec(s.r.Shared))
+	apex, err := serverinit.DashboardApex(shared)
 	if err != nil {
 		apex = ""
 	}
-	if apex != "" {
+	on, err := serverinit.DashboardOn(shared)
+	s.dashOff = err == nil && strings.TrimSpace(shared) != "" && !on
+	switch {
+	case s.dashOff:
+	case apex != "":
 		s.reserved = append(s.reserved, "traefik."+apex)
-	} else {
+	default:
 		s.heuristic = append(s.heuristic, "traefik")
 	}
 	// The mail pair: the registry's primary when it is read; the apex when
@@ -315,8 +323,17 @@ func newServer(sr *ServerRead, now time.Time) *server {
 	} else {
 		s.heuristic = append(s.heuristic, "mail", "webmail")
 	}
-	if len(s.reserved) == 0 {
+	switch {
+	case len(s.reserved) > 0:
+	case !s.dashOff:
 		s.note = " — heuristic: " + s.target + " was asked and neither its dashboard fragment nor a mail registry could be read"
+	case !known:
+		s.note = " — heuristic: " + s.target + " was asked and its mail registry could not be read"
+	default:
+		s.note = " — heuristic: " + s.target + " has no mail registry, and no dashboard apex to name mail.* from"
+	}
+	if s.dashOff {
+		s.note += " — the dashboard is off on " + s.target + ", so traefik.* is not reserved"
 	}
 	return s
 }
@@ -336,10 +353,15 @@ func (c *checker) t05Server(routers []string) {
 		}
 	}
 	against := strings.Join(s.reserved, " ")
-	if len(s.reserved) > 0 {
-		for _, l := range s.heuristic {
-			against += "; " + l + ".* by heuristic"
-		}
+	var labels []string
+	for _, l := range s.heuristic {
+		against += "; " + l + ".* by heuristic"
+		labels = append(labels, l+".*")
+	}
+	note := s.note
+	if len(s.reserved) > 0 && s.dashOff {
+		note = ""
+		against += "; dashboard off, traefik.* not reserved"
 	}
 	switch {
 	case len(s.reserved) > 0 && len(bad) > 0:
@@ -347,9 +369,9 @@ func (c *checker) t05Server(routers []string) {
 	case len(s.reserved) > 0:
 		c.passf("No router claims a hostname kasbah owns on %s (%s)", s.target, against)
 	case len(bad) > 0:
-		c.failf("Routers claim reserved hostnames: %s%s", strings.Join(bad, " "), s.note)
+		c.failf("Routers claim reserved hostnames: %s%s", strings.Join(bad, " "), note)
 	default:
-		c.passf("No router claims reserved hostnames (traefik.*, mail.*, webmail.*)%s", s.note)
+		c.passf("No router claims reserved hostnames (%s)%s", strings.Join(labels, ", "), note)
 	}
 }
 

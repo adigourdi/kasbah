@@ -26,6 +26,7 @@ type Options struct {
 	Apps, Data string
 	Mail       prompt.Given
 	Backup     prompt.Given
+	Dashboard  prompt.Given
 	Domain     string
 	Email      string
 	Auth       string
@@ -50,7 +51,7 @@ type BackupFlags struct {
 	Pass []string
 }
 
-const unknownFlags = "--apps-path=, --data-path=, --domain=, --email=, --traefik-auth=, --acme-staging, --reset-acme/--keep-acme, --with-mail/--no-mail, --postmaster-password=, --with-backup/--no-backup, --backup-repo-base=, --backup-env=/--no-backup-env, --backup-password=, --backup-at=, --backup-jitter=, --backup-keep-daily=/-weekly=/-monthly=, --backup-timeout=, --yes"
+const unknownFlags = "--apps-path=, --data-path=, --domain=, --email=, --with-dashboard/--no-dashboard, --traefik-auth=, --acme-staging, --reset-acme/--keep-acme, --with-mail/--no-mail, --postmaster-password=, --with-backup/--no-backup, --backup-repo-base=, --backup-env=/--no-backup-env, --backup-password=, --backup-at=, --backup-jitter=, --backup-keep-daily=/-weekly=/-monthly=, --backup-timeout=, --yes"
 
 // Parse is the command line, every value checked before anything is opened.
 func Parse(args []string) (Options, error) {
@@ -76,6 +77,10 @@ func Parse(args []string) (Options, error) {
 			// Validated, never echoed: the value carries a password.
 			o.Auth = val
 			_, _, err = SplitAuth(val)
+		case a == "--with-dashboard":
+			err = o.Dashboard.Set(prompt.Yes, prompt.Feature("dashboard"), "server init")
+		case a == "--no-dashboard":
+			err = o.Dashboard.Set(prompt.No, prompt.Feature("dashboard"), "server init")
 		case a == "--acme-staging":
 			o.Staging = true
 		case a == "--reset-acme":

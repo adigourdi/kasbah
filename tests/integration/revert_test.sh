@@ -25,7 +25,7 @@ apps=/apps
 project=demo
 pdir="$apps/$project"
 marker="$apps/.kasbah/server.json"
-traefik_flags=(--domain=rig.test --email=ops@rig.test --traefik-auth="dashadmin:rig-dashboard-pw")
+traefik_flags=(--domain=rig.test --email=ops@rig.test --with-dashboard --traefik-auth="dashadmin:rig-dashboard-pw")
 
 fail=0
 assert() {

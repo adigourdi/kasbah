@@ -57,7 +57,7 @@ project_pass='rig-demo-repo-password'
 
 rig_domain=rig.test
 traefik_flags=(--domain="$rig_domain" --email="ops@$rig_domain"
-               --traefik-auth="dashadmin:rig-dashboard-pw")
+               --with-dashboard --traefik-auth="dashadmin:rig-dashboard-pw")
 
 # One prefix per run under the append-only endpoint: rest-server answers 405 to
 # a DELETE on a repository path, so a repository cannot be removed over the wire

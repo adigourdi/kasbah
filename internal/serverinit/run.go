@@ -376,6 +376,7 @@ func Run(c Ctx, o Options) (err error) {
 	var existing []byte
 	present := false
 	cur := map[string]string{}
+	var hosts map[string][]string
 	if !elevate {
 		if ensured, err = s.ensure(c, o.Apps); err != nil {
 			return err
@@ -389,7 +390,7 @@ func Run(c Ctx, o Options) (err error) {
 			return cli.Fail("the read of %s/traefik on %s reported nothing kasbah can use", o.Apps, target).Cont(
 				"the step was truncated, or the server's kasbah rejected it — raw output:", "| "+strings.TrimSpace(body))
 		}
-		present = r.Marker == "present"
+		present, hosts = r.Marker == "present", r.Hosts
 		if existing, err = base64.StdEncoding.DecodeString(r.Body); err != nil {
 			return cli.Fail("the read of %s on %s returned a marker that does not decode", markerPath, target)
 		}
@@ -460,10 +461,11 @@ func Run(c Ctx, o Options) (err error) {
 		}
 	}
 
-	v, err := Resolve(out, c.Prompter, o, cur, f["acme_store"], c.Hash)
+	v, err := Resolve(out, c.Prompter, o, cur, f["acme_store"], mailOn && strings.TrimSpace(mcur["kasbah.yml"]) == "", c.Hash)
 	if err != nil {
 		return err
 	}
+	DashboardClaims(out, o, v, hosts)
 	var mv MailValues
 	var mrendered map[string]string
 	if mailOn {
@@ -772,7 +774,11 @@ func Run(c Ctx, o Options) (err error) {
 	} else if v.Acme.KeptUnknown {
 		out.Info("        acme.json kept and NOT reset — nothing records which CA issued what is in it")
 	}
-	out.Info("  dashboard: https://traefik.%s (basic auth, credentials %s)", v.Domain, v.AuthOrigin)
+	if v.Dashboard {
+		out.Info("  dashboard: https://traefik.%s (basic auth, credentials %s)", v.Domain, v.AuthOrigin)
+	} else {
+		out.Info("  dashboard: off (%s) — --with-dashboard publishes it at traefik.<domain>", dashOff[v.DashOrigin])
+	}
 	if mailOn {
 		reportMail(out, o, mv, &mr, mchanged, mlay, mst)
 	}
@@ -784,6 +790,8 @@ func Run(c Ctx, o Options) (err error) {
 	out.Info("  pointer: %s -> %s (%s)", Pointer, o.Apps, pt["pointer"])
 	return nil
 }
+
+var dashOff = map[string]string{"flag": "--no-dashboard", "kept": "as the server had it", "prompt": "as answered"}
 
 // resetNeedsRestart: an archived store is only worth it when the new
 // endpoint is loaded, which takes a traefik.yml change and its restart.

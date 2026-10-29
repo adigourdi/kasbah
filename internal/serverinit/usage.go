@@ -11,8 +11,11 @@ every project command can find this server without being told. Idempotent.
 Flags:
   --apps-path=<dir>      root directory on the VPS (default /apps)
   --data-path=<dir>      bind-mount root (default <apps-path>/data)
-  --domain=<apex>        the dashboard is served at traefik.<apex>
+  --domain=<apex>        the dashboard is served at traefik.<apex>, and a
+                         new mail stack's primary domain defaults to it
   --email=<addr>         ACME registration address for Let's Encrypt
+  --with-dashboard|--no-dashboard  publish the Traefik dashboard, or leave
+                         it off (a re-run without either keeps the server's)
   --traefik-auth=user:pass   dashboard basic auth; hashed with bcrypt here
   --acme-staging         issue from Let's Encrypt's staging CA (untrusted
                          certificates, far looser rate limits)
@@ -34,7 +37,10 @@ Flags:
   --backup-timeout=<s>   bound on one restic invocation (default 900)
   --yes                  confirm a switch away from a stated endpoint
 
-Every *feature* flag is tri-state: leaving one off asks. --acme-staging and
+Every *feature* flag is tri-state: leaving one off asks. The dashboard is
+asked about on a first init only — a re-run keeps what dynamic/_shared.yml
+has; --no-dashboard removes its routers and its credentials, and
+--with-dashboard asks for them afresh. --acme-staging and
 --yes are not — production is the default and never asks, and --yes only
 answers a confirmation that a stated CA change raises. Domain, email and the
 dashboard credentials are only asked for once — a re-run reuses what is

@@ -35,7 +35,7 @@ marker="$apps/.kasbah/server.json"
 
 rig_domain=rig.test
 traefik_flags=(--domain="$rig_domain" --email="ops@$rig_domain"
-               --traefik-auth="dashadmin:rig-dashboard-pw")
+               --with-dashboard --traefik-auth="dashadmin:rig-dashboard-pw")
 
 project=built-app
 version=3.4.0

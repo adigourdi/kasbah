@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -77,6 +78,8 @@ type ReadReport struct {
 	Marker  string            `json:"marker"`
 	Body    string            `json:"marker_b64"`
 	Traefik map[string]string `json:"traefik_b64"`
+	// Hosts are each project fragment's Host(`…`) names, by file name.
+	Hosts map[string][]string `json:"fragment_hosts"`
 }
 
 // b64 is a file's bytes, "" for one that is absent, not regular or
@@ -109,7 +112,30 @@ func remoteRead(apps string, stdout io.Writer) error {
 	for _, rel := range Files {
 		r.Traefik[rel] = b64(apps + "/traefik/" + rel)
 	}
+	r.Hosts = fragmentHosts(apps + "/traefik/dynamic")
 	return json.NewEncoder(stdout).Encode(r)
+}
+
+var reHost = regexp.MustCompile("Host\\(`([^`]+)`\\)")
+
+// fragmentHosts reads every .yml/.yaml in dir not prefixed `_` (kasbah's own).
+func fragmentHosts(dir string) map[string][]string {
+	hosts := map[string][]string{}
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		n := e.Name()
+		if strings.HasPrefix(n, "_") || !e.Type().IsRegular() || !(strings.HasSuffix(n, ".yml") || strings.HasSuffix(n, ".yaml")) {
+			continue
+		}
+		b, err := os.ReadFile(dir + "/" + n)
+		if err != nil {
+			continue
+		}
+		for _, m := range reHost.FindAllStringSubmatch(strings.ReplaceAll(string(b), "\r", ""), -1) {
+			hosts[n] = append(hosts[n], m[1])
+		}
+	}
+	return hosts
 }
 
 // isFile is `[ -f ]`, symlinks followed.

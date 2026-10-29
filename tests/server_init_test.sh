@@ -160,6 +160,17 @@ run server init deploy@kasbah-unit-test.invalid --no-mail --no-backup --backup-a
 assert 'grep -qF -- "--backup-at= --no-backup-env had no effect: this run is not installing backups" "$tmpdir/err"' \
     "backup flags on a run without backups are named (said '$(cat "$tmpdir/err")')"
 
+# The dashboard question needs the server's _shared.yml, so only the parse is
+# shown here.
+run server init deploy@kasbah-unit-test.invalid --no-mail --no-backup --with-dashboard --no-dashboard; rc=$?
+assert '[ "$rc" != "0" ] && [ "$rc" != "3" ] && grep -qF -- "dashboard" "$tmpdir/err"' \
+    "--with-dashboard with --no-dashboard is refused (exit $rc: $(cat "$tmpdir/err"))"
+assert '[ ! -s "$si_ssh_log" ]' "and nothing was opened (ssh saw: $(cat "$si_ssh_log"))"
+run server init deploy@kasbah-unit-test.invalid --no-mail --no-backup --no-dashboard; rc=$?
+assert '[ "$rc" = "3" ] && [ -s "$si_ssh_log" ]' "--no-dashboard goes on to the server (exit $rc: $(cat "$tmpdir/err"))"
+run server init --help
+assert 'grep -qF -- "--with-dashboard|--no-dashboard" "$tmpdir/out"' "the usage names the dashboard pair"
+
 run server backup-prune; rc=$?
 assert '[ "$rc" = "1" ] && grep -qF "USER@HOST is required" "$tmpdir/err"' "backup-prune wants a target (exit $rc: $(cat "$tmpdir/err"))"
 run server backup-prune deploy@kasbah-unit-test.invalid --envy=s3cr3t-do-not-print; rc=$?

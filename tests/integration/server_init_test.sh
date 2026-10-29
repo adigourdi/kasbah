@@ -32,7 +32,7 @@ dash_host="traefik.$rig_domain"
 dash_user=dashadmin
 dash_pass='rig-dashboard-pw'
 traefik_flags=(--domain="$rig_domain" --email="ops@$rig_domain"
-               --traefik-auth="$dash_user:$dash_pass")
+               --with-dashboard --traefik-auth="$dash_user:$dash_pass")
 
 fail=0
 assert() {
@@ -158,8 +158,8 @@ if rig_ssh "sudo mv $hidden_bin $hidden_bin.hidden" >/dev/null 2>&1; then
 
     assert '! grep -qi "rsync" "$tmpdir/err" && ! grep -qF "prerequisites" "$tmpdir/err"' \
         "a host missing rsync is not refused by preflight (said '$(init_err)')"
-    assert '[ "$rc" != "0" ] && grep -qF -- "--domain=<value>" "$tmpdir/err"' \
-        "the run got past preflight to the Traefik prompt, which names its flag (exit $rc, said '$(init_err)')"
+    assert '[ "$rc" != "0" ] && grep -qF -- "--with-dashboard or --no-dashboard" "$tmpdir/err"' \
+        "the run got past preflight to the Traefik prompt, which names its flags (exit $rc, said '$(init_err)')"
     assert '[ "$(apps_state)" = "absent" ]' \
         "and the run stopped at the Traefik prompt — the apps path is still not there (exit $rc)"
     assert '[ -z "$hidden_bin" ]' "rsync was put back on the rig"
@@ -549,6 +549,65 @@ assert '[ "$id_recreated" != "$id_probe" ]' \
 assert '[ "$boot_recreated" = "1" ]' \
     "and the fresh container was not then restarted on top — it had already read the new static config (got '$boot_recreated' boots)"
 assert '[ "$(apps_checksum)" = "$before" ]' "and both files are back at the rendered bytes"
+
+# --- The dashboard is optional ------------------------------------------------
+# Traefik watches _shared.yml, so each change lands without a restart: polled,
+# bounded, in one ssh.
+wait_dash() {   # wait_dash <expected-code> [curl args]
+    local want=$1; shift
+    rig_ssh "c=; for i in \$(seq 1 30); do
+                 c=\$(curl -s -o /dev/null -m 5 -k --resolve '$dash_host:443:127.0.0.1' -w '%{http_code}' $* 'https://$dash_host/dashboard/')
+                 [ \"\$c\" != '$want' ] || break
+                 sleep 1
+             done
+             printf '%s' \"\$c\"" 2>/dev/null | tr -d '\r'
+}
+shared_file() { rig_ssh "cat $apps/traefik/dynamic/_shared.yml" 2>/dev/null; }
+
+started_on=$(traefik_started_at)
+init --no-mail --no-backup --no-dashboard; rc=$?
+assert '[ "$rc" = "0" ]' "a re-run with --no-dashboard succeeds (exit $rc: $(init_err))"
+shared_off=$(shared_file)
+assert '! grep -qF "traefik-dashboard" <<<"$shared_off" && ! grep -qF "api@internal" <<<"$shared_off"' \
+    "it takes both dashboard routers and the middleware out of _shared.yml (got:
+$shared_off)"
+assert '! grep -qF "\$2y\$" <<<"$shared_off"' "and the dashboard's hash with them"
+assert 'grep -qF "http-to-https:" <<<"$shared_off" && grep -qF "minVersion: VersionTLS12" <<<"$shared_off"' \
+    "leaving the shared middlewares and TLS options in place"
+assert 'grep -qF "dashboard: off (--no-dashboard)" "$tmpdir/err"' "the summary says it is off (said '$(init_err)')"
+code_off=$(wait_dash 404)
+assert '[ "$code_off" = "404" ]' "traefik.$rig_domain now gets Traefik's own 404 (got '$code_off')"
+code_off_auth=$(curl_dash "-u '$dash_user:$dash_pass'")
+assert '[ "$code_off_auth" = "404" ]' "with the old credentials too (got '$code_off_auth')"
+assert '[ "$(traefik_started_at)" = "$started_on" ]' "and Traefik was not restarted for it"
+
+init --no-mail --no-backup; rc=$?
+assert '[ "$rc" = "0" ]' "a re-run with neither dashboard flag succeeds headless (exit $rc: $(init_err))"
+assert '[ "$(shared_file)" = "$shared_off" ]' "and keeps the dashboard off, _shared.yml byte for byte"
+assert 'grep -qF "dashboard: off (as the server had it)" "$tmpdir/err"' "saying so (said '$(init_err)')"
+status_out=$(kasbah_cli server status "$RIG_TARGET" 2>&1 </dev/null)
+assert 'grep -qF "Dashboard: off" <<<"$status_out"' "server status reports it off (said '$status_out')"
+
+init --no-mail --no-backup --with-dashboard --domain="$rig_domain"; rc=$?
+assert '[ "$rc" != "0" ] && grep -qF -- "--traefik-auth=" "$tmpdir/err"' \
+    "--with-dashboard on a server without one asks for the credentials, headless a hard fail naming the flag (exit $rc, said '$(init_err)')"
+assert '[ "$(shared_file)" = "$shared_off" ]' "and changes nothing"
+
+# Claimable while off; :80 only, so the 401/200 below still reach the dashboard.
+rig_ssh "printf 'http:\n  routers:\n    claim:\n      rule: \"Host(\x60$dash_host\x60)\"\n      entryPoints: [web]\n      middlewares: [http-to-https@file]\n      service: noop@internal\n' > $apps/traefik/dynamic/claim.yml" >/dev/null 2>&1
+init --no-mail --no-backup "${traefik_flags[@]}"; rc=$?
+rig_ssh "rm -f $apps/traefik/dynamic/claim.yml" >/dev/null 2>&1
+assert '[ "$rc" = "0" ]' "--with-dashboard --traefik-auth= turns it back on (exit $rc: $(init_err))"
+assert 'grep -qF "$apps/traefik/dynamic/claim.yml on $RIG_TARGET already routes $dash_host" "$tmpdir/err"' \
+    "and warns about the fragment that took its name while it was off (said '$(init_err)')"
+code_back=$(wait_dash 401)
+assert '[ "$code_back" = "401" ]' "the dashboard refuses an unauthenticated request again (got '$code_back')"
+code_back_auth=$(curl_dash "-u '$dash_user:$dash_pass'")
+assert '[ "$code_back_auth" = "200" ]' "and serves the new credentials (got '$code_back_auth')"
+status_out=$(kasbah_cli server status "$RIG_TARGET" 2>&1 </dev/null)
+assert 'grep -qF "Dashboard: $dash_host" <<<"$status_out"' "server status names it again (said '$status_out')"
+# The hash is fresh (bcrypt salts), so the tree's baseline moves with it.
+before=$(apps_checksum)
 
 # --- Every compose call carries -p, and it has to be -p that does the work ----
 # `name: traefik` in the compose file would produce the same project label on

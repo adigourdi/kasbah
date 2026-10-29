@@ -42,7 +42,7 @@ dash_user=dashadmin
 dash_pass='rig-dashboard-pw'
 postmaster_pw='rig-postmaster-pw'
 traefik_flags=(--domain="$rig_domain" --email="ops@$rig_domain"
-               --traefik-auth="$dash_user:$dash_pass")
+               --with-dashboard --traefik-auth="$dash_user:$dash_pass")
 
 fail=0
 assert() {

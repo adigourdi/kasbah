@@ -46,16 +46,18 @@ const (
 	// classifier depends on Traefik printing it and the CA on one line
 	// (v3.5–v3.7): every error line naming DryCA means that broke.
 	DryACMEError = "Unable to obtain ACME certificate for domains"
-	// DryAnchor proves the file provider ran: it comes from the overlay.
-	DryAnchor = "traefik-dashboard@file"
+	// DryAnchor proves the file provider ran: a TLS router the dry run adds
+	// to its own overlay of _shared.yml, never shipped, there with the
+	// dashboard on or off.
+	DryAnchor = "kasbah-dry-run-anchor@file"
 	// DryTimeout bounds the throwaway's verdict; StartTimeout the health wait.
 	DryTimeout   = 120
 	StartTimeout = 180
 )
 
-// SharedRouters are the routers _shared.yml itself declares: the only ones
-// the overlay can contribute.
-var SharedRouters = []string{"traefik-dashboard@file", "traefik-dashboard-http@file"}
+// SharedRouters are the routers the overlay can contribute: _shared.yml's
+// own, and the anchor.
+var SharedRouters = []string{"traefik-dashboard@file", "traefik-dashboard-http@file", DryAnchor}
 
 // Usage is the command's --help.
 const Usage = `Usage: kasbah server upgrade-traefik USER@HOST --version=<tag>
@@ -79,8 +81,9 @@ Flags:
   --version=<tag>   the Traefik image tag to move to, e.g. v3.7.10
 
 The dashboard apex, its basic-auth entry, the ACME address and the ACME
-endpoint are read back off the server and reproduced. A stack that will not
-yield all four is refused: repairing one is ` + "`kasbah server init`" + `'s job, and
+endpoint are read back off the server and reproduced — a server without a
+dashboard keeps it off. A stack that will not yield them is refused:
+repairing one is ` + "`kasbah server init`" + `'s job, and
 this command must not move a server's CA or its dashboard credentials as a
 side effect of a version bump. acme.json is never written.
 
@@ -201,6 +204,7 @@ type run struct {
 	imageNow, imageNew string
 	rendered           map[string]string
 	dryStatic          string
+	dryShared          string
 	changed            []string
 	stamp, backupDir   string
 	routers            string
@@ -310,7 +314,7 @@ func (x *run) readStack() error {
 		"dynamic/_shared.yml": decodeB64(x.stack.Shared),
 	}
 	for _, rel := range serverinit.Files {
-		if x.cur[rel] == "" {
+		if strings.TrimSpace(x.cur[rel]) == "" {
 			return x.noStack(rel)
 		}
 	}
@@ -337,20 +341,25 @@ func (x *run) recover() (serverinit.Values, error) {
 	var v serverinit.Values
 	shared, static, compose := x.cur["dynamic/_shared.yml"], x.cur["traefik.yml"], x.cur["compose.yml"]
 	var err error
+	if v.Dashboard, err = serverinit.DashboardOn(shared); err != nil {
+		return v, x.unreadable("dynamic/_shared.yml")
+	}
 	if v.Domain, err = serverinit.DashboardApex(shared); err != nil {
 		return v, x.unreadable("dynamic/_shared.yml")
 	}
-	if v.Domain == "" {
+	if v.Dashboard && v.Domain == "" {
 		return v, x.missing("the dashboard router's rule", "dynamic/_shared.yml", "--domain=")
 	}
-	if v.AuthEntry, err = serverinit.ExtractAuth(shared); err != nil {
-		if serverinit.Unparsed(err) {
-			return v, x.unreadable("dynamic/_shared.yml")
+	if v.Dashboard {
+		if v.AuthEntry, err = serverinit.ExtractAuth(shared); err != nil {
+			if serverinit.Unparsed(err) {
+				return v, x.unreadable("dynamic/_shared.yml")
+			}
+			return v, err
 		}
-		return v, err
-	}
-	if v.AuthEntry == "" {
-		return v, x.missing("the dashboard's basic-auth entry", "dynamic/_shared.yml", "--traefik-auth=user:pass")
+		if v.AuthEntry == "" {
+			return v, x.missing("the dashboard's basic-auth entry", "dynamic/_shared.yml", "--traefik-auth=user:pass")
+		}
 	}
 	if v.Email, err = serverinit.StaticField(static, "email"); err != nil {
 		return v, x.unreadable("traefik.yml")
@@ -418,6 +427,42 @@ func DryStatic(static string) (string, error) {
 	return tree.Indent(root) + "\n", nil
 }
 
+// DryShared is the rendered _shared.yml with the anchor router added: the
+// throwaway's overlay, never shipped.
+func DryShared(shared string) (string, error) {
+	docs, err := yamlx.Load([]byte(shared))
+	if err != nil || len(docs) != 1 {
+		return "", errors.New("the rendered _shared.yml is not one YAML document")
+	}
+	root, ok := docs[0].(*tree.Map)
+	if !ok {
+		return "", errors.New("the rendered _shared.yml is not a mapping")
+	}
+	m := root
+	for _, k := range []string{"http", "routers"} {
+		next, _ := m.Get(k)
+		switch n := next.(type) {
+		case *tree.Map:
+			m = n
+		case nil:
+			n2 := tree.NewMap()
+			m.Set(k, n2)
+			m = n2
+		default:
+			return "", fmt.Errorf("the rendered _shared.yml's %s is not a mapping", k)
+		}
+	}
+	tls := tree.NewMap()
+	tls.Set("certResolver", "letsencrypt")
+	r := tree.NewMap()
+	r.Set("rule", "Host(`kasbah-dry-run.example.com`)")
+	r.Set("entryPoints", []tree.Value{"websecure"})
+	r.Set("tls", tls)
+	r.Set("service", "noop@internal")
+	m.Set(strings.TrimSuffix(DryAnchor, "@file"), r)
+	return tree.Indent(root) + "\n", nil
+}
+
 func (x *run) render(v serverinit.Values) error {
 	var err error
 	x.rendered, err = serverinit.Render(x.c.Templates, serverinit.Options{Apps: x.apps, Data: x.data, Target: x.o.Target}, v)
@@ -426,6 +471,9 @@ func (x *run) render(v serverinit.Values) error {
 	}
 	if x.dryStatic, err = DryStatic(x.rendered["traefik.yml"]); err != nil {
 		return cli.Fail("could not build the dry-run static configuration from the rendered traefik.yml: %v", err)
+	}
+	if x.dryShared, err = DryShared(x.rendered["dynamic/_shared.yml"]); err != nil {
+		return cli.Fail("could not build the dry-run overlay from the rendered dynamic/_shared.yml: %v", err)
 	}
 	for _, rel := range serverinit.Files {
 		if x.rendered[rel] != x.cur[rel] {
@@ -438,7 +486,7 @@ func (x *run) render(v serverinit.Values) error {
 func (x *run) dryRun() error {
 	t := x.o.Target
 	x.c.Out.Info("Dry run: booting %s against %d fragment(s) in %s/traefik/dynamic (read-only)", x.imageNew, len(x.stack.Fragments), x.apps)
-	body, _ := json.Marshal(DryPayload{Shared: x.rendered["dynamic/_shared.yml"], Static: x.dryStatic})
+	body, _ := json.Marshal(DryPayload{Shared: x.dryShared, Static: x.dryStatic})
 	size, sum := remote.Digest(body)
 	out, rc := x.s.Call(body, false, "traefik", "dry-run", x.apps, x.imageNew, DryLabel, x.stamp,
 		DryACMEError, DryCA, strconv.Itoa(DryTimeout), size, sum)
@@ -511,8 +559,8 @@ func (x *run) dryRun() error {
 	if !anchor {
 		return withLog(cli.Fail("the dry run of %s loaded no %s router — it validated nothing", x.imageNew, DryAnchor).Cont(
 			"every TLS router the file provider builds asks this run's own unreachable CA",
-			"for a certificate and names itself doing it, and the dashboard router is in",
-			"the dynamic/_shared.yml this run rendered and mounted over the directory.",
+			"for a certificate and names itself doing it, and that router is in the",
+			"dynamic/_shared.yml overlay this run rendered and mounted over the directory.",
 			"Seeing not even that one means the file provider read nothing at all, so the",
 			"verdict is not evidence.",
 			"routers seen: "+shown))
@@ -521,7 +569,7 @@ func (x *run) dryRun() error {
 		return withLog(cli.Fail("the dry run of %s loaded no router out of %s/traefik/dynamic — it validated nothing", x.imageNew, x.apps).Cont(
 			fmt.Sprintf("that directory holds %d fragment(s) besides _shared.yml —", serverFrags),
 			strings.Join(x.stack.Fragments, " ")+" — and not one router came out of them.",
-			DryAnchor+" is kasbah's own _shared.yml, rendered here and mounted over",
+			DryAnchor+" is in kasbah's own _shared.yml, rendered here and mounted over",
 			"the directory, so it answers the same whether that directory was read or not.",
 			"Either the read-only mount of it did not apply, or nothing in it declares a",
 			"router on websecure with certResolver: letsencrypt.",
@@ -533,7 +581,13 @@ func (x *run) dryRun() error {
 			x.c.Out.ErrCont("| %s", l)
 		}
 	}
-	x.c.Out.Info("  dry run passed: %s built %s out of %d fragment(s)", x.imageNew, strings.TrimSuffix(d.Routers, " "), len(x.stack.Fragments))
+	var built []string
+	for _, r := range routers {
+		if r != DryAnchor {
+			built = append(built, r)
+		}
+	}
+	x.c.Out.Info("  dry run passed: %s built %s out of %d fragment(s)", x.imageNew, or(strings.Join(built, " "), "no router but its own anchor"), len(x.stack.Fragments))
 	if serverFrags == 0 {
 		x.c.Out.Info("  (that directory holds only kasbah's own _shared.yml — there were no project fragments to validate)")
 	}
@@ -571,6 +625,13 @@ func (x *run) ship() error {
 		}
 	}
 	return nil
+}
+
+func or(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
 }
 
 func contains(l []string, s string) bool {

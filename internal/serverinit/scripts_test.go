@@ -296,8 +296,13 @@ func TestRunOrder(t *testing.T) {
 	// A bare host and a question nobody can answer: nothing created.
 	c, _ := ctx()
 	err = Run(c, o)
-	if !strings.Contains(errText(err), "--domain=<value>") {
+	if !strings.Contains(errText(err), "--with-dashboard or --no-dashboard") {
 		t.Fatalf("unanswered: %v", err)
+	}
+	o.Dashboard = prompt.Yes
+	c, _ = ctx()
+	if err = Run(c, o); !strings.Contains(errText(err), "--domain=<value>") {
+		t.Fatalf("unanswered domain: %v", err)
 	}
 	if _, err := os.Stat(apps); err == nil {
 		t.Error("the apps path was created before every question was answered")

@@ -573,3 +573,20 @@ func TestCollectAccess(t *testing.T) {
 		t.Errorf("got %v", got)
 	}
 }
+
+func TestDashboardOff(t *testing.T) {
+	r := base()
+	r.Shared = b64s("http:\n  middlewares:\n    gzip-compression: {compress: {}}\n")
+	out, errs, code := runStatus(t, r)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errs)
+	}
+	has(t, out, "  Dashboard: off (no dashboard router in dynamic/_shared.yml)\n")
+	// Nothing read is not "off".
+	for _, shared := range []string{"", b64s("http: [1\n")} {
+		r.Shared = shared
+		if out, _, _ := runStatus(t, r); strings.Contains(out, "Dashboard:") {
+			t.Errorf("an unread _shared.yml reports a dashboard state:\n%s", out)
+		}
+	}
+}

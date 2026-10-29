@@ -35,7 +35,7 @@ dash_host="traefik.$rig_domain"
 dash_user=dashadmin
 dash_pass='rig-dashboard-pw'
 traefik_flags=(--domain="$rig_domain" --email="ops@$rig_domain"
-               --traefik-auth="$dash_user:$dash_pass")
+               --with-dashboard --traefik-auth="$dash_user:$dash_pass")
 
 # The project under test: tests/fixtures/demo, copied out of the repo before it
 # is given a git history. `git init` inside the checkout would land in kasbah's

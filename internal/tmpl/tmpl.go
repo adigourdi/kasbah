@@ -46,3 +46,34 @@ func CheckYAML(s string) error {
 	}
 	return nil
 }
+
+// Section keeps or drops the lines between `# [name]` and `# [/name]`; the
+// marker lines themselves never survive. An unbalanced marker is a failure.
+func Section(tpl, label, name string, keep bool) (string, error) {
+	open, shut := "# ["+name+"]", "# [/"+name+"]"
+	var b strings.Builder
+	in := false
+	for _, line := range strings.SplitAfter(tpl, "\n") {
+		switch strings.TrimSpace(line) {
+		case open:
+			if in {
+				return "", cli.Fail("internal: the %s template opens %s twice", label, open)
+			}
+			in = true
+			continue
+		case shut:
+			if !in {
+				return "", cli.Fail("internal: the %s template closes %s without opening it", label, shut)
+			}
+			in = false
+			continue
+		}
+		if !in || keep {
+			b.WriteString(line)
+		}
+	}
+	if in {
+		return "", cli.Fail("internal: the %s template never closes %s", label, open)
+	}
+	return b.String(), nil
+}

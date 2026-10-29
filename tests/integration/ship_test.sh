@@ -86,7 +86,7 @@ fi
 # server init has never prepared is refused (exit 4) before anything is built.
 rig_domain=rig.test
 if ! kasbah_cli server init "$RIG_TARGET" --no-mail --no-backup --domain="$rig_domain" \
-        --email="ops@$rig_domain" --traefik-auth="dashadmin:rig-dashboard-pw" \
+        --email="ops@$rig_domain" --with-dashboard --traefik-auth="dashadmin:rig-dashboard-pw" \
         >"$tmpdir/init.out" 2>"$tmpdir/init.err" </dev/null; then
     echo "error: server init failed on a cleaned rig — build-push has no server binary to load with" >&2
     sed 's/^/       | /' "$tmpdir/init.err" >&2

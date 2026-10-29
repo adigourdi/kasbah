@@ -26,11 +26,17 @@ One-time VPS setup. Idempotent — safe to re-run.
 
 Optional features are tri-state (see the interactivity decision in
 `overview.md`): leaving `--with-mail`/`--no-mail` unset means init *asks* —
-it never treats absence as "no". Without a TTY, an unanswered choice is a
-hard fail naming the flag to pass.
+it never treats absence as "no". `--with-dashboard`/`--no-dashboard` is asked
+only on a first init; a re-run with neither keeps the server's dashboard as
+`_shared.yml` has it (`traefik.md` → Dashboard). Without a TTY, an unanswered
+choice is a hard fail naming the flag to pass.
 
 Flags:
-- `--domain=<apex>` — domain for the Traefik dashboard and acme email config.
+- `--domain=<apex>` — the apex the Traefik dashboard is served under
+  (`traefik.<apex>`), and a new mail stack's primary domain. Unused — a warning,
+  not an error — with the dashboard off and no new mail stack.
+- `--with-dashboard` / `--no-dashboard` — serve the Traefik dashboard behind
+  basic auth, or leave it out (`traefik.md` → Dashboard).
 - `--email=<addr>` — ACME email for Let's Encrypt registration.
 - `--with-mail` / `--no-mail` — scaffold `/apps/mail/` (DMS + Cypht) and
   start it, or explicitly skip it. Unset → prompt. `--no-mail` against a
@@ -317,19 +323,21 @@ certificate authority and spends no rate-limit budget. Its one error family
 — the certificate it therefore cannot obtain — is excluded from the verdict
 by both the message and that URL, and those same lines are what proves it
 read the fragments at all: one per TLS router it built, naming it. Two things
-must hold or the run is a failure rather than a pass — `traefik-dashboard@file`
-must be among them, and, whenever the server's `dynamic/` holds any fragment
-besides `_shared.yml`, so must a router that is not one of `_shared.yml`'s. The
-dashboard router comes from the `_shared.yml` this run renders and overlays, so
-on its own it would appear even if the server's directory read as empty.
+must hold or the run is a failure rather than a pass — `kasbah-dry-run-anchor@file`,
+a router only the dry run's overlay carries, must be among them, and, whenever
+the server's `dynamic/` holds any fragment besides `_shared.yml`, so must a
+router that is not one of `_shared.yml`'s. The anchor comes from the overlay
+this run writes, so on its own it would appear even if the server's directory
+read as empty.
 
 The target image is pulled during the dry run, so a tag that does not exist
 fails while the live proxy is still untouched, and the pull cannot fail
 later, mid-switch.
 
-Four values are recovered off the server and reproduced verbatim: the
-dashboard apex, its basic-auth entry, the ACME address and the ACME
-endpoint. A stack that will not yield all four is refused, naming the one
+The values are recovered off the server and reproduced verbatim: the ACME
+address and endpoint, and — when the dashboard is on — its apex and basic-auth
+entry; a stack with no dashboard router upgrades as one without a dashboard. A
+stack that will not yield them is refused, naming the one
 that is missing and pointing at `server init` — repairing a stack is init's
 job, and a version bump must not move a server's CA or its dashboard
 credentials as a side effect. `acme.json` is never written; the run digests
