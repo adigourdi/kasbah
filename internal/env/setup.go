@@ -182,6 +182,12 @@ func (s *Setup) Run() int {
 		return SetupFail
 	}
 	template := envtpl.Lines(tmplData)
+	lock, err := lockEnv(s.Dir)
+	if err != nil {
+		fmt.Fprintf(s.Err, "ERROR: %v\n", err)
+		return SetupFail
+	}
+	defer lock.Close()
 
 	// The live values, reserved keys aside; the last assignment wins. A .env
 	// that is there but unreadable is never taken for a first run.
@@ -323,6 +329,7 @@ func (s *Setup) Run() int {
 		}
 		masked := sensitive(key)
 		var typed string
+		generated := false
 		shown := func(v string) string {
 			if masked {
 				return "****"
@@ -347,6 +354,7 @@ func (s *Setup) Run() int {
 					if value, rc = s.generate(key, strings.TrimPrefix(raw, "! ")); rc != 0 {
 						return rc
 					}
+					generated = true
 					out("    %s→ generated%s\n", c.green, c.reset)
 				}
 			}
@@ -390,11 +398,21 @@ func (s *Setup) Run() int {
 				value = def
 			}
 		}
-		// Compose reads `$` as interpolation; a kept live value is already escaped.
-		if typed == "" && has {
+		// A kept live value is compose syntax, and so is a template default:
+		// the default only has its `$` escaped, as it always was. A typed
+		// answer or a generator's output is literal text, encoded.
+		switch {
+		case typed == "" && has:
 			lines = append(lines, key+"="+value)
-		} else {
+		case typed == "" && !generated:
 			lines = append(lines, key+"="+strings.ReplaceAll(value, "$", "$$"))
+		default:
+			enc, err := Encode(value)
+			if err != nil {
+				fmt.Fprintf(s.Err, "ERROR: %s: %v — .env left untouched\n", key, err)
+				return SetupFail
+			}
+			lines = append(lines, key+"="+enc)
 		}
 	}
 
@@ -437,6 +455,25 @@ func isHeader(line string) bool {
 		n++
 	}
 	return n >= 3
+}
+
+// Encode is v as a .env value compose reads back as exactly v: bare (`$` as
+// `$$`) when nothing in it needs quoting, else single-quoted (literal to
+// compose) when it holds no `'` and does not end in `\`, else double-quoted
+// with `\`, `"` escaped and `$` as `$$`. A line break or NUL cannot be written.
+func Encode(v string) (string, error) {
+	if strings.ContainsAny(v, "\n\r\x00") {
+		return "", errors.New("the value has a line break or a NUL in it, and .env holds one line per key")
+	}
+	trimmed := strings.TrimSpace(v) == v
+	if trimmed && !strings.HasPrefix(v, "'") && !strings.HasPrefix(v, `"`) && !strings.Contains(v, " #") {
+		return strings.ReplaceAll(v, "$", "$$"), nil
+	}
+	if !strings.Contains(v, "'") && !strings.HasSuffix(v, `\`) {
+		return "'" + v + "'", nil
+	}
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", "$$")
+	return `"` + r.Replace(v) + `"`, nil
 }
 
 // writeEnv renames a staging file over .env (over a symlink's target), so a

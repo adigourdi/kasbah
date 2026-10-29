@@ -757,8 +757,9 @@ attempted.
 
 The manifest never reaches the server: the engine receives its data on stdin.
 `.deploy.lock` is kasbah's — created, never shipped, its contents never read —
-and the engine `flock(2)`s it, as `kasbah drop` does, so the two exclude each
-other (every file kasbah writes in a project
+and the engine `flock(2)`s it, as `kasbah drop`, the snapshot step, `kasbah env`'s
+setup, the managed-block refresh and `kasbah env set` do, so they exclude each
+other — a refusal names the holder (every file kasbah writes in a project
 directory is listed in `files.md`).
 
 ## What this intentionally skips

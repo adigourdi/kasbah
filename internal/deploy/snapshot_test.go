@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/adigourdi/kasbah/internal/serverlock"
 )
 
 func TestSnapshotTargets(t *testing.T) {
@@ -203,7 +205,7 @@ func TestSnapshotKeepsTheLiveStacksFiles(t *testing.T) {
 
 func TestSnapshotRefusesWhileARunHoldsTheLock(t *testing.T) {
 	dir := t.TempDir()
-	held, err := lockProject(dir)
+	held, _, err := serverlock.Project(dir)
 	if err != nil || held == nil {
 		t.Fatal(err)
 	}

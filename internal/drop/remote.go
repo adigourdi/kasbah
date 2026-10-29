@@ -47,15 +47,17 @@ type Project struct {
 // decided from, read in one step and parsed on the workstation. Count is the
 // walk's own tally, so a truncated table is told from a short one.
 type Scan struct {
-	HaveDocker    bool        `json:"have_docker"`
-	DockerError   string      `json:"docker_error"`
-	AppsState     string      `json:"apps_state"`
-	ProjectState  string      `json:"project_state"`
-	DataState     string      `json:"data_state"`
-	BackupsState  string      `json:"backups_state"`
-	BackupsCount  int         `json:"backups_count"`
-	FragmentState string      `json:"fragment_state"`
-	LockState     string      `json:"lock_state"`
+	HaveDocker    bool   `json:"have_docker"`
+	DockerError   string `json:"docker_error"`
+	AppsState     string `json:"apps_state"`
+	ProjectState  string `json:"project_state"`
+	DataState     string `json:"data_state"`
+	BackupsState  string `json:"backups_state"`
+	BackupsCount  int    `json:"backups_count"`
+	FragmentState string `json:"fragment_state"`
+	LockState     string `json:"lock_state"`
+	// LockHolder names the run holding the lock, when it is held.
+	LockHolder    string      `json:"lock_holder,omitempty"`
 	Containers    []Container `json:"containers"`
 	Images        []Image     `json:"images"`
 	MailDir       string      `json:"mail_dir"`
@@ -155,7 +157,9 @@ func scan(apps, data, name string) Scan {
 		}
 	}
 	s.FragmentState = fsstate.File(filepath.Join(apps, "traefik", "dynamic", name+".yml"))
-	s.LockState = lockState(dir)
+	if s.LockState = lockState(dir); s.LockState == "held" {
+		s.LockHolder = serverlock.ProjectHolder(dir)
+	}
 
 	if derr == nil {
 		out, _ := runDocker("", "ps", "-a", "--filter", "label=com.docker.compose.project="+name,
@@ -308,13 +312,12 @@ func Sum(b []byte) string {
 // the process exits.
 func takeLock(dir string) (*os.File, error) {
 	path := filepath.Join(dir, ".deploy.lock")
-	f, err := serverlock.Open(path)
+	f, holder, err := serverlock.Project(dir)
 	if err != nil {
 		return nil, fmt.Errorf("could not open the lock file %s. Nothing was changed.", path)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("another deploy or rollback is already running in %s — it holds the lock on %s. Nothing was changed.", dir, path)
+	if f == nil {
+		return nil, fmt.Errorf("%s is running in %s — it holds the lock on %s. Nothing was changed.", holder, dir, path)
 	}
 	return f, nil
 }

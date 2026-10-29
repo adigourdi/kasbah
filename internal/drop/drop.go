@@ -654,7 +654,11 @@ func (p *Plan) checkServer() error {
 	// unknown: the probe could not ask; the act takes the lock or refuses.
 	case "free", "unknown":
 	case "held":
-		return cli.Fail("a deploy or rollback of %s is running on %s", p.Name, p.Target).Cont(
+		holder := s.LockHolder
+		if holder == "" {
+			holder = "another kasbah run"
+		}
+		return cli.Fail("%s is running in %s/%s on %s", holder, p.Apps, p.Name, p.Target).Cont(
 			"it holds the lock on "+p.Apps+"/"+p.Name+"/.deploy.lock, which drop takes",
 			"for the same reason: nothing was changed. Wait for it and run drop again.")
 	default:

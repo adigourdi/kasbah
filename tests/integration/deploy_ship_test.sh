@@ -569,7 +569,7 @@ assert '[ "$second_rc" != "0" ]' "the second concurrent run fails (exit $second_
         said: $second_out"
 assert 'grep -qF "$projdir_remote/.deploy.lock" <<<"$second_out"' \
     "naming the lock it could not take (said '$second_out')"
-assert 'grep -qF "already running" <<<"$second_out"' "and why (said '$second_out')"
+assert 'grep -qF "a deploy or rollback by " <<<"$second_out"' "and names the run holding it (said '$second_out')"
 assert '[ "$second_ms" -lt $(( hook_sleep * 1000 )) ]' \
     "fast, rather than queued behind the ${hook_sleep}s hook (took ${second_ms}ms)"
 echo "note: the second concurrent run was refused in ${second_ms}ms" >&2

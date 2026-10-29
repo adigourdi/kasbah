@@ -658,6 +658,10 @@ func deployCmd(cmd string, o deploy.Options, err error) int {
 
 func envCmd(o env.Options, err error) int {
 	out := cli.Std()
+	if err == env.ErrHelp && o.Set {
+		fmt.Fprint(out.Stdout, env.SetUsage())
+		return cli.ExitOK
+	}
 	if err == env.ErrHelp {
 		fmt.Fprint(out.Stdout, env.Usage())
 		return cli.ExitOK
@@ -686,6 +690,7 @@ func envCmd(o env.Options, err error) int {
 		TTYOut:   term.IsTerminal(1),
 		Color:    term.IsTerminal(1) && os.Getenv("NO_COLOR") == "",
 		Dial:     env.DialSSH(remote.Self(build), local),
+		DialSet:  env.DialSetSSH(remote.Self(build), local),
 	}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c

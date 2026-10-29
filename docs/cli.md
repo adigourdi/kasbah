@@ -1026,6 +1026,30 @@ a terminal (exit `5`); only the drift case has a question for it to answer.
 the difference is that `deploy` runs the setup only when the `.env` is missing
 or has drifted, while `env` runs it every time, since that is what it is for.
 
+### `kasbah env set KEY [USER@HOST] [--restart|--no-restart]`
+
+Changes one key of the project's server `.env` — a rotated API key, a new
+password — without re-running the whole setup. KEY must be a key of the
+server's `.env.prod.example`; `KASBAH_*` keys are kasbah's and refused. On a
+terminal the value is asked with echo off; without one it is read from stdin
+(one value, its trailing newline dropped; empty, multi-line or over 64 KiB is
+refused), so it never reaches argv or shell history, and no output names it.
+
+The value is taken exactly as typed or piped and written in the form compose
+reads back exactly (`env-template.md`); its size and sha256 travel on stdin with
+it, never on a command line. Every assignment of KEY is replaced (`export KEY=`
+becomes `KEY=`), a key not yet in `.env` is placed beside its template
+neighbours, every other line is kept byte for byte, mode `660`. A line compose
+would read as KEY but kasbah cannot rewrite (`KEY =v`, `KEY: v`, invalid UTF-8)
+and a key inside the `KASBAH_*` managed block are refused, naming the line. `--restart` then runs `docker compose -p <name> up -d`, which
+recreates what reads the key; `--no-restart` leaves the containers on the old
+value. Unset means ask; without a terminal and without either, the run fails
+naming both. The set holds `.deploy.lock` and the server lock shared (both never
+waited on), so it never lands inside a deploy whose revert would put the old
+`.env` back. Every `.env` writer takes `.deploy.lock` — `kasbah env`'s setup for
+its whole interactive session, the managed-block refresh, `env set` — and a
+refusal names the holder. No `versions.log` line is written.
+
 ### `kasbah logs [USER@HOST] [SERVICE] [-f] [--tail=N]`
 
 Thin wrapper around `docker compose logs` on the VPS. If `SERVICE` is

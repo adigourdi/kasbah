@@ -32,6 +32,7 @@ Commands:
   pending [USER@HOST] [VERSION]              Show the commits a deploy would ship.
   changelog [USER@HOST]                      Show what changed in the deployed version.
   env [USER@HOST]                            Render the project's .env on the server.
+  env set KEY [USER@HOST]                    Change one key of the project's .env on the server.
   logs [USER@HOST] [SERVICE] [-f] [--tail=N] Show this project's container logs on a server.
   exec [USER@HOST] SERVICE -- CMD...         Run a command in one of this project's containers.
   migrate                                    Move this project's files to this kasbah's schema.

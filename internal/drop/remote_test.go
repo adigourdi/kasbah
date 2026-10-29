@@ -135,7 +135,7 @@ func TestActGuards(t *testing.T) {
 	syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
 	so, se, code := runAct(t, base, "")
 	f.Close()
-	if code != 1 || !strings.Contains(se, "another deploy or rollback is already running") || so != "" || len(*calls) != 0 {
+	if code != 1 || !strings.Contains(se, "is running in") || so != "" || len(*calls) != 0 {
 		t.Errorf("held: %d %q %q", code, so, se)
 	}
 }

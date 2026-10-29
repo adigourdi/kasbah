@@ -411,7 +411,7 @@ func TestRunRefusals(t *testing.T) {
 		code int
 		want string
 	}{
-		{func(s *Scan) { s.LockState = "held" }, 1, "a deploy or rollback of built-app is running"},
+		{func(s *Scan) { s.LockState = "held"; s.LockHolder = "env set by alice (pid 7)" }, 1, "env set by alice (pid 7) is running in"},
 		{func(s *Scan) { s.DockerError = "Cannot connect" }, 1, "docker did not answer"},
 		{func(s *Scan) { s.AppsState = "absent" }, 4, "/apps on deploy@vps is not there"},
 		{func(s *Scan) { s.Count = 9 }, 1, "counted 9 projects and described 3"},

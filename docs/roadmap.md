@@ -123,5 +123,3 @@ Built as build-plan Phase 10 (`docs/phases/10-recast.md`).
 
 - Should the VPS state be mirrored into a git repo owned by kasbah?
   (Audit trail, but adds complexity.)
-- Should there be a `kasbah secrets` command distinct from `kasbah env`
-  for values that rotate (API keys)? For now, env template handles both.

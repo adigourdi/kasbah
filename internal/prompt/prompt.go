@@ -108,6 +108,26 @@ func (p *Prompter) readLine() (string, error) {
 	return strings.TrimSuffix(s, "\r"), nil
 }
 
+// readExact is a line as typed, only its newline and one trailing CR off; EOF
+// before the newline is no answer.
+func (p *Prompter) readExact() (string, error) {
+	var b []byte
+	var c [1]byte
+	for {
+		n, err := p.In.Read(c[:])
+		if n == 1 {
+			if c[0] == '\n' {
+				return strings.TrimSuffix(string(b), "\r"), nil
+			}
+			b = append(b, c[0])
+			continue
+		}
+		if err != nil {
+			return "", errEOF
+		}
+	}
+}
+
 func (p *Prompter) ask(prompt string) (string, error) {
 	fmt.Fprint(p.Out.Stderr, prompt)
 	return p.readLine()
@@ -236,7 +256,7 @@ func (p *Prompter) Secret(flag, question, given string) (string, error) {
 		return "", giveUp(reasonNoTTY, question, flags)
 	}
 	for {
-		a, err := p.askHidden(question + ": ")
+		a, err := p.askHidden(question+": ", false)
 		fmt.Fprintln(p.Out.Stderr)
 		if errors.Is(err, errEOF) {
 			return "", giveUp(reasonEOF, question, flags)
@@ -251,11 +271,39 @@ func (p *Prompter) Secret(flag, question, given string) (string, error) {
 	}
 }
 
+// Hidden is Secret for a value no flag carries, so a refusal names no flag:
+// the caller says where else the value can come from. The line comes back as
+// typed: only its newline and one CR are dropped.
+func (p *Prompter) Hidden(question string) (string, error) {
+	if !p.TTY {
+		return "", cli.Fail("cannot ask: %s", question).Cont(reasonNoTTY)
+	}
+	for {
+		a, err := p.askHidden(question+": ", true)
+		fmt.Fprintln(p.Out.Stderr)
+		if errors.Is(err, errEOF) {
+			return "", cli.Fail("cannot ask: %s", question).Cont(reasonEOF)
+		}
+		if err != nil {
+			return "", err
+		}
+		if a != "" {
+			return a, nil
+		}
+		p.Out.Warn("an answer is required")
+	}
+}
+
 // askHidden reads with echo off. SIGINT or SIGTERM meanwhile puts the
 // terminal back and exits 128+signal, as bash's `read -s` does.
-func (p *Prompter) askHidden(prompt string) (a string, err error) {
+func (p *Prompter) askHidden(prompt string, exact bool) (a string, err error) {
+	read := p.readLine
+	if exact {
+		read = p.readExact
+	}
 	if p.NoEcho == nil {
-		return p.ask(prompt)
+		fmt.Fprint(p.Out.Stderr, prompt)
+		return read()
 	}
 	restore, err := p.NoEcho()
 	if err != nil {
@@ -288,7 +336,8 @@ func (p *Prompter) askHidden(prompt string) (a string, err error) {
 			err = cli.Fail("could not restore the terminal: %v", rerr)
 		}
 	}()
-	return p.ask(prompt)
+	fmt.Fprint(p.Out.Stderr, prompt)
+	return read()
 }
 
 // Wait holds the run until the operator presses Enter: true then, false on q

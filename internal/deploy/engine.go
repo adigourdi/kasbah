@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 	"unicode"
 
@@ -526,24 +525,16 @@ func (e *engine) liveContainers() []string {
 	return names
 }
 
-// lock is flock(2) on .deploy.lock, held until the process exits — the lock
-// util-linux's flock takes, so `drop` sees the same one — then the server
-// lock, shared, so no server-wide step runs under the deploy.
+// lock is .deploy.lock, held until the process exits, then the server lock,
+// shared, so no server-wide step runs under the deploy.
 func (e *engine) lock() error {
 	path := filepath.Join(e.dir, ".deploy.lock")
-	f, err := serverlock.Open(path)
+	f, holder, err := serverlock.Project(e.dir)
 	if err != nil {
 		return failf("could not open the lock file %s", path)
 	}
-	rc, err := f.SyscallConn()
-	if err != nil {
-		return failf("could not open the lock file %s", path)
-	}
-	var lerr error
-	rc.Control(func(fd uintptr) { lerr = syscall.Flock(int(fd), syscall.LOCK_EX|syscall.LOCK_NB) })
-	if lerr != nil {
-		f.Close()
-		return failf("another deploy or rollback is already running in %s — it holds the lock on %s", e.dir, path)
+	if f == nil {
+		return failf("%s is running in %s — it holds the lock on %s", holder, e.dir, path)
 	}
 	e.lockFile = f
 	sl, err := serverlock.Take(filepath.Dir(e.dir), serverlock.Shared, "")

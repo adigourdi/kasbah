@@ -186,6 +186,19 @@ func TestTerminal(t *testing.T) {
 	if hidden != 0 || errb.String() != "Password?: \n" {
 		t.Errorf("secret: echo balance %d, said %q", hidden, errb.String())
 	}
+
+	p, errb = tty("\n  hunter3 \t\r\n")
+	p.NoEcho = func() (func() error, error) { hidden++; return func() error { hidden--; return nil }, nil }
+	if a, err := p.Hidden("Value"); err != nil || a != "  hunter3 \t" {
+		t.Errorf("hidden: %q %v", a, err)
+	}
+	if hidden != 0 || !strings.Contains(errb.String(), "an answer is required") {
+		t.Errorf("hidden: echo balance %d, said %q", hidden, errb.String())
+	}
+	p, _ = tty("")
+	if _, err := p.Hidden("Value"); err == nil || strings.Contains(err.Error(), "--") {
+		t.Errorf("hidden at EOF names no flag: %v", err)
+	}
 }
 
 // Case 6: confirming a destructive act — one flag, and declining is an answer.

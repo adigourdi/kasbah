@@ -26,7 +26,7 @@ func TestTake(t *testing.T) {
 	if fi, _ := os.Stat(Path(apps)); fi.Mode().Perm() != Mode {
 		t.Errorf("lock mode %o, want %o", fi.Mode().Perm(), Mode)
 	}
-	if _, err := Take(apps, Exclusive, "server init"); err == nil || !strings.Contains(err.Error(), "a deploy, rollback or drop (") ||
+	if _, err := Take(apps, Exclusive, "server init"); err == nil || !strings.Contains(err.Error(), "is running on this server") ||
 		!strings.Contains(err.Error(), "(pid ") {
 		t.Fatalf("exclusive under shared: %v", err)
 	}
@@ -81,12 +81,29 @@ func TestRemote(t *testing.T) {
 	}
 }
 
+func TestProjectNamesItsHolder(t *testing.T) {
+	dir := t.TempDir()
+	a, h, err := Project(dir)
+	if err != nil || a == nil || h != "" {
+		t.Fatal(a, h, err)
+	}
+	defer a.Close()
+	// This test binary holds it: named by command and pid.
+	if b, h, err := Project(dir); err != nil || b != nil || !strings.Contains(h, "(pid ") {
+		t.Errorf("held: %v %q %v", b, h, err)
+	}
+}
+
 func TestDescribe(t *testing.T) {
 	for argv, want := range map[string]string{
 		"/apps/.kasbah/bin/kasbah remote lock /apps exclusive server init": "server init",
 		"/apps/.kasbah/bin/kasbah remote prune rm /apps a:1":               "server prune",
 		"/apps/.kasbah/bin/kasbah remote destroy act /apps":                "server destroy",
-		"/apps/.kasbah/bin/kasbah remote deploy run /apps/x":               "kasbah remote deploy",
+		"/apps/.kasbah/bin/kasbah remote deploy run /apps/x":               "a deploy or rollback",
+		"/apps/.kasbah/bin/kasbah remote deploy images 1.0":                "kasbah remote deploy",
+		"/apps/.kasbah/bin/kasbah remote setup-env set /apps/x K":          "env set",
+		"/apps/.kasbah/bin/kasbah remote setup-env setup /apps/x":          "kasbah env",
+		"/apps/.kasbah/bin/kasbah remote drop act /apps x":                 "drop",
 	} {
 		w := strings.Fields(argv)
 		if argv == "/apps/.kasbah/bin/kasbah remote lock /apps exclusive server init" {

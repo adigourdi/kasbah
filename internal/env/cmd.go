@@ -17,8 +17,13 @@ import (
 // ErrHelp is --help: the usage on stdout, exit 0.
 var ErrHelp = errors.New("help")
 
-// Options are `kasbah env`'s arguments.
-type Options struct{ Target, OnDrift string }
+// Options are `kasbah env`'s arguments; Set is `kasbah env set KEY`.
+type Options struct {
+	Target, OnDrift string
+	Set             bool
+	Key             string
+	Restart         prompt.Given
+}
 
 const usage = `Usage: kasbah env [USER@HOST] [--on-drift=setup|continue|abort]
 
@@ -38,6 +43,8 @@ Flags, for when it has:
   --on-drift=continue   leave .env alone; only refresh the KASBAH_* block
   --on-drift=abort      stop, changing nothing
 
+To change one key without the whole setup: kasbah env set KEY (see --help there).
+
 See docs/env-template.md for the template conventions.
 `
 
@@ -56,6 +63,9 @@ func CheckOnDrift(cmd, v string) error {
 
 // Parse reads `kasbah env`'s arguments.
 func Parse(args []string) (Options, error) {
+	if len(args) > 0 && strings.TrimSuffix(args[0], "\r") == "set" {
+		return parseSet(args[1:])
+	}
 	var o Options
 	for _, a := range args {
 		switch {
@@ -106,10 +116,15 @@ type Ctx struct {
 	// Color is this terminal's decision, handed to the server's prompts.
 	Color bool
 	Dial  func(target string) (Session, error)
+	// DialSet is Dial for `kasbah env set`.
+	DialSet func(target string) (SetSession, error)
 }
 
 // Run is `kasbah env`.
 func Run(c Ctx, o Options) error {
+	if o.Set {
+		return runSet(c, o)
+	}
 	// Relative, as every project command reads them: from the project root.
 	m, err := manifest.Require(manifest.File, c.Version)
 	if err != nil {

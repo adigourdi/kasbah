@@ -88,27 +88,6 @@ func validToken(t string) bool {
 	return t != "" && validTarget(t) && !strings.Contains(t, "/") && t != "snapshot.json" && !strings.HasPrefix(t, ".")
 }
 
-// lockProject takes .deploy.lock without waiting; nil, nil when another run
-// holds it.
-func lockProject(dir string) (*os.File, error) {
-	f, err := serverlock.Open(dir + "/.deploy.lock")
-	if err != nil {
-		return nil, err
-	}
-	rc, err := f.SyscallConn()
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-	var lerr error
-	rc.Control(func(fd uintptr) { lerr = syscall.Flock(int(fd), syscall.LOCK_EX|syscall.LOCK_NB) })
-	if lerr != nil {
-		f.Close()
-		return nil, nil
-	}
-	return f, nil
-}
-
 func loadSnapshot(root *os.Root) *snapshot {
 	b, err := root.ReadFile(snapManifest)
 	if err != nil {
@@ -154,12 +133,12 @@ func takeSnapshot(dir, token string, targets []string, stdout, stderr io.Writer)
 	} else if err != nil || !fi.IsDir() {
 		return fail("%s is not a directory", dir)
 	}
-	lock, err := lockProject(dir)
+	lock, holder, err := serverlock.Project(dir)
 	if err != nil {
 		return fail("could not open the lock file %s/.deploy.lock — nothing was changed", dir)
 	}
 	if lock == nil {
-		return fail("another deploy or rollback is running in %s — it holds %s/.deploy.lock. Nothing was changed; re-run once it has finished.", dir, dir)
+		return fail("%s is running in %s — it holds %s/.deploy.lock. Nothing was changed; re-run once it has finished.", holder, dir, dir)
 	}
 	defer lock.Close()
 	root, err := os.OpenRoot(dir)

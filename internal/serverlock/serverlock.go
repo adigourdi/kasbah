@@ -1,6 +1,6 @@
 // Package serverlock is <apps>/.kasbah/server.lock, the server-wide flock,
 // taken without waiting: exclusive by init, upgrade-traefik, prune, destroy
-// and migrate; shared by deploy, rollback and drop.
+// and migrate; shared by deploy, rollback, drop and env set.
 package serverlock
 
 import (
@@ -118,6 +118,36 @@ func Open(path string) (*os.File, error) {
 	return f, nil
 }
 
+// Project takes a project's .deploy.lock without waiting — the flock
+// util-linux's flock takes, so every writer of the project sees the same one.
+// When another run holds it, f is nil and holder names that run.
+func Project(dir string) (f *os.File, holder string, err error) {
+	f, err = Open(strings.TrimSuffix(dir, "/") + "/.deploy.lock")
+	if err != nil {
+		return nil, "", err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		h := ProjectHolder(dir)
+		f.Close()
+		return nil, h, nil
+	}
+	return f, "", nil
+}
+
+// ProjectHolder names what holds dir's .deploy.lock, from /proc/locks
+// ("env set by alice (pid 12)"); "another kasbah run" when it cannot tell.
+func ProjectHolder(dir string) string {
+	f, err := os.Open(strings.TrimSuffix(dir, "/") + "/.deploy.lock")
+	if err != nil {
+		return "another kasbah run"
+	}
+	defer f.Close()
+	if h := procHolders(f, "WRITE"); len(h) > 0 {
+		return strings.Join(h, "; ")
+	}
+	return "another kasbah run"
+}
+
 // Owned is whether this process's user owns the file: only the owner may
 // chmod it, whatever its group bits allow.
 func Owned(fi os.FileInfo) bool {
@@ -160,9 +190,9 @@ func holder(f *os.File, path string) string {
 	if syscall.Flock(int(g.Fd()), syscall.LOCK_SH|syscall.LOCK_NB) == nil {
 		syscall.Flock(int(g.Fd()), syscall.LOCK_UN)
 		if h := procHolders(f, "READ"); len(h) > 0 {
-			return "a deploy, rollback or drop (" + strings.Join(h, "; ") + ")"
+			return strings.Join(h, "; ")
 		}
-		return "a deploy, rollback or drop"
+		return "a deploy, rollback, drop or env set"
 	}
 	if h := procHolders(f, "WRITE"); len(h) > 0 {
 		return strings.Join(h, "; ")
@@ -220,6 +250,16 @@ func describe(argv []string) string {
 			return "server prune"
 		case rest[0] == "destroy":
 			return "server destroy"
+		case rest[0] == "setup-env" && len(rest) > 1 && rest[1] == "set":
+			return "env set"
+		case rest[0] == "setup-env" && len(rest) > 1 && rest[1] == "setup":
+			return "kasbah env"
+		case rest[0] == "setup-env" && len(rest) > 1 && rest[1] == "inject":
+			return "the managed-block refresh of kasbah env or a deploy"
+		case rest[0] == "deploy" && len(rest) > 1 && (rest[1] == "run" || rest[1] == "snapshot"):
+			return "a deploy or rollback"
+		case rest[0] == "drop":
+			return "drop"
 		}
 		return "kasbah remote " + rest[0]
 	}

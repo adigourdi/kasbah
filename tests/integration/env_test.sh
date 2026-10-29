@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Integration: `kasbah env` against the rig — the Go command on the workstation,
 # `kasbah remote setup-env` in the server binary it ships, the interactive setup
-# over a real `ssh -t`, the managed block, the .env's mode, last_server, and a
-# Ctrl-C at a server prompt.
+# over a real `ssh -t`, the managed block, the .env's mode, last_server, a
+# Ctrl-C at a server prompt, and `kasbah env set` changing one key.
 #
 # The interactive runs sit behind script(1), which gives kasbah a terminal; its
 # answers are typed ahead, which a pty buffers until something reads them.
@@ -29,6 +29,7 @@ tmpdir="$(mktemp -d)"
 holder=""
 cleanup() {
     [ -z "$holder" ] || kill "$holder" 2>/dev/null
+    rig_ssh "cd $pdir 2>/dev/null && docker compose -p $project down >/dev/null 2>&1" >/dev/null 2>&1
     rm -rf "$tmpdir"
 }
 trap cleanup EXIT
@@ -193,5 +194,85 @@ assert '[ "$int_rc" = 5 ]' "Ctrl-C at the server's prompt ends the run with 5 (r
 assert 'remote_empty "pgrep -f '"'remote [s]etup-env'"' || true"' "nothing left running on the server"
 assert '[ "$(remote "cat $pdir/.env")" = "$before" ]' "the .env untouched"
 assert 'no_staging' "no staging file left"
+
+# --- Case 7: env set — one key, the value on stdin, never printed ------------------
+# set_env INPUT ARGS… — `kasbah env set ARGS…` with INPUT on stdin, no terminal.
+set_env() {
+    local input="$1"; shift
+    (cd "$proj" && printf '%s' "$input" | timeout 120 env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
+        NO_COLOR=1 "$KASBAH_BIN" env set "$@") >"$tmpdir/out" 2>"$tmpdir/err"
+}
+said() { nocr <"$tmpdir/out"; nocr <"$tmpdir/err"; }
+before=$(remote "cat $pdir/.env")
+
+set_env $'rotated-pw\n' API_SECRET "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = 1 ] && grep -qF -- "--restart" <<<"$(err)" && grep -qF -- "--no-restart" <<<"$(err)"' \
+    "no terminal and no restart flag is refused naming both (rc $rc: $(err))"
+assert '[ "$(remote "cat $pdir/.env")" = "$before" ]' "and changes nothing"
+
+set_env $'rotated-pw\n' NOPE "$RIG_TARGET" --no-restart; rc=$?
+assert '[ "$rc" = 1 ] && grep -qF "not a key of $pdir/.env.prod.example" <<<"$(err)"' \
+    "a key the server's template lacks is refused naming it (rc $rc: $(err))"
+set_env $'9\n' KASBAH_CPU_LIMIT "$RIG_TARGET" --no-restart; rc=$?
+assert '[ "$rc" = 1 ] && grep -qF "kasbah'"'"'s own" <<<"$(err)"' "a KASBAH_ key is refused (rc $rc: $(err))"
+assert '[ "$(remote "cat $pdir/.env")" = "$before" ]' "neither refusal changed .env"
+
+set_env $'rotated-pw\n' API_SECRET "$RIG_TARGET" --no-restart; rc=$?
+after=$(remote "cat $pdir/.env")
+changed=$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep '^[<>]')
+assert '[ "$rc" = 0 ]' "env set from stdin exits 0 (rc $rc: $(err))"
+assert '[ "$changed" = "< API_SECRET=s3cr3t-typed
+> API_SECRET=rotated-pw" ]' "exactly the one line changed (diff: $changed)"
+assert 'grep -qF "API_SECRET changed" <<<"$(said)"' "the output names the key (said '$(said)')"
+assert '! grep -qF "rotated-pw" <<<"$(said)"' "and never the value"
+assert '[ "$(remote "stat -c %a $pdir/.env")" = 660 ]' "the .env keeps the group's mode"
+assert 'no_staging' "no staging file left"
+
+# --restart recreates the container with the new value.
+remote "cat > $pdir/compose.yml" >/dev/null <<'YML'
+services:
+  envset:
+    image: nginx:alpine
+    container_name: demo-envset
+    environment:
+      API_SECRET: ${API_SECRET}
+YML
+remote "cd $pdir && docker compose -p $project up -d >/dev/null 2>&1" >/dev/null
+old_id=$(remote "docker inspect -f '{{.Id}}' demo-envset")
+assert '[ "$(remote "docker exec demo-envset printenv API_SECRET")" = rotated-pw ]' "the container runs the set value"
+set_env 'restarted-pw' API_SECRET "$RIG_TARGET" --restart; rc=$?
+assert '[ "$rc" = 0 ] && grep -qF "restarted" <<<"$(said)"' "env set --restart exits 0 (rc $rc: $(said))"
+assert '[ "$(remote "docker exec demo-envset printenv API_SECRET")" = restarted-pw ]' "the recreated container has the new value"
+assert '[ "$(remote "docker inspect -f '"'{{.Id}}'"' demo-envset")" != "$old_id" ]' "the container was recreated"
+assert '! grep -qF "restarted-pw" <<<"$(said)"' "the value never printed"
+assert '! grep -qF "env set" <<<"$(remote "cat $pdir/versions.log 2>/dev/null")"' "no versions.log line"
+
+# A value compose would cut or choke on unquoted reaches the container intact.
+nasty="  pa\$\$ss #frag 'q\"\\"
+set_env "$nasty" API_SECRET "$RIG_TARGET" --restart; rc=$?
+assert '[ "$rc" = 0 ]' "env set of a value that needs quoting exits 0 (rc $rc: $(said))"
+assert '[ "$(remote "docker exec demo-envset printenv API_SECRET")" = "$nasty" ]' \
+    "compose reads it back exactly (got [$(remote "docker exec demo-envset printenv API_SECRET")])"
+
+# A run holding .deploy.lock refuses the set. The holder prints its pid once it
+# has the lock, and a bounded read waits for that line.
+mkfifo "$tmpdir/lockfifo"
+rig_ssh "flock -n $pdir/.deploy.lock sh -c 'echo \$\$; exec sleep 60'" >"$tmpdir/lockfifo" 2>/dev/null </dev/null &
+holder=$!
+lock_pid=""
+read -r -t 30 lock_pid <"$tmpdir/lockfifo"
+lock_pid=${lock_pid%$'\r'}
+assert '[ -n "$lock_pid" ]' "the lock holder started"
+set_env 'locked-pw' API_SECRET "$RIG_TARGET" --no-restart; rc=$?
+assert '[ "$rc" = 1 ] && grep -qF ".deploy.lock" <<<"$(err)"' "a held .deploy.lock refuses the set (rc $rc: $(err))"
+assert '! grep -qx "API_SECRET=locked-pw" <<<"$(remote "cat $pdir/.env")"' "and leaves .env alone"
+[ -z "$lock_pid" ] || remote "kill $lock_pid" >/dev/null
+wait "$holder" 2>/dev/null
+holder=""
+
+# On a terminal the value is asked hidden, then the restart question.
+tty $'tty-pw\nn\n' set API_SECRET "$RIG_TARGET"
+assert '[ "$tty_rc" = 0 ] && grep -qF "Restart $project" <<<"$tty_out"' "env set on a terminal asks and exits 0 (rc $tty_rc: $tty_out)"
+assert 'grep -qx "API_SECRET=tty-pw" <<<"$(remote "cat $pdir/.env")"' "the typed value is written"
 
 exit "$fail"

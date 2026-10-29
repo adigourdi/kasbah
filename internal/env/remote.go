@@ -11,7 +11,7 @@ import (
 )
 
 // RemoteUsage names the server half's modes: `kasbah remote setup-env MODE …`.
-const RemoteUsage = "usage: kasbah remote setup-env prepare DIR | drift DIR | setup DIR [--color=yes|no] | inject DIR KASBAH_NAME=value…"
+const RemoteUsage = "usage: kasbah remote setup-env prepare DIR | drift DIR | setup DIR [--color=yes|no] | inject DIR KASBAH_NAME=value… | key DIR KEY | set DIR KEY [--up=NAME] (size, sha256 and value on stdin)"
 
 // Remote is `kasbah remote setup-env` on a server. stdout is a protocol in
 // every mode but setup, whose prompts are the operator's over ssh -t;
@@ -26,7 +26,7 @@ func Remote(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		dir = "/"
 	}
 	// setup is interactive: a hangup abandons it, its staging removed.
-	if mode == "prepare" || mode == "inject" {
+	if mode == "prepare" || mode == "inject" || mode == "set" {
 		w, done := remote.Outlive(stderr)
 		defer done()
 		stderr = w
@@ -63,6 +63,15 @@ func Remote(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		return s.Run()
 	case mode == "inject" && len(args) >= 2:
 		return Inject(dir+"/.env", args[2:], stderr)
+	case mode == "key" && len(args) == 3:
+		fmt.Fprint(stdout, keyReport(dir, args[2]))
+		return 0
+	case mode == "set" && (len(args) == 3 || len(args) == 4 && strings.HasPrefix(args[3], "--up=") && args[3] != "--up="):
+		up := ""
+		if len(args) == 4 {
+			up = strings.TrimPrefix(args[3], "--up=")
+		}
+		return remoteSet(dir, args[2], up, stdin, stdout, stderr)
 	}
 	fmt.Fprintln(stderr, RemoteUsage)
 	return 1

@@ -245,7 +245,7 @@ func TestEngineHealthAndLock(t *testing.T) {
 	syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 	os.Remove(os.Getenv("HEALTH"))
 	rc, _, errs := r.run(sp)
-	if rc != 1 || !strings.Contains(errs, "already running") || !strings.Contains(errs, ".deploy.lock") {
+	if rc != 1 || !strings.Contains(errs, "is running in") || !strings.Contains(errs, ".deploy.lock") {
 		t.Fatalf("lock: rc %d %s", rc, errs)
 	}
 	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)

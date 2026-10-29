@@ -11,6 +11,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/envtpl"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 )
 
 // The managed block's sentinels. Frozen: an older kasbah's block has to be
@@ -71,6 +72,45 @@ func resolve(p string) (string, error) {
 	return "", fmt.Errorf("too many levels of symbolic links")
 }
 
+// managedBlock marks the lines of every managed block, sentinels included.
+func managedBlock(lines []string) []bool {
+	n := len(lines)
+	inBlock := make([]bool, n)
+	for i := 0; i < n; i++ {
+		if strings.TrimSuffix(lines[i], "\r") != ManagedBegin {
+			continue
+		}
+		j := i + 1
+		for ; j < n; j++ {
+			if strings.TrimSuffix(lines[j], "\r") == ManagedEnd {
+				break
+			}
+		}
+		// A begin with no end is only a position, never a block to EOF.
+		if j == n {
+			j = i
+		}
+		for k := i; k <= j; k++ {
+			inBlock[k] = true
+		}
+		i = j
+	}
+	return inBlock
+}
+
+// lockEnv takes dir's .deploy.lock for one read-modify-rename of its .env, so
+// no two writers lose each other's change; held, it names the holder.
+func lockEnv(dir string) (*os.File, error) {
+	f, holder, err := serverlock.Project(dir)
+	if err != nil {
+		return nil, fmt.Errorf("could not open the lock file %s/.deploy.lock — .env left untouched", dir)
+	}
+	if f == nil {
+		return nil, fmt.Errorf("%s is running in %s — it holds %s/.deploy.lock. .env left untouched; re-run once it has finished.", holder, dir, dir)
+	}
+	return f, nil
+}
+
 // Inject rewrites the managed block where the first one began, drops reserved
 // strays and keeps every other line byte for byte (docs/env-template.md);
 // renamed over the symlink-resolved target, whose mode it keeps (new: 600).
@@ -87,6 +127,11 @@ func Inject(envfile string, pairs []string, errw io.Writer) int {
 			return fail("'%s' is not a %sNAME=value pair", p, envtpl.ReservedPrefix)
 		}
 	}
+	lock, err := lockEnv(filepath.Dir(envfile))
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer lock.Close()
 	target := envfile
 	if fi, err := os.Lstat(envfile); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		t, err := resolve(envfile)
@@ -110,27 +155,7 @@ func Inject(envfile string, pairs []string, errw io.Writer) int {
 		lines = rawLines(data)
 	}
 
-	n := len(lines)
-	inBlock := make([]bool, n)
-	for i := 0; i < n; i++ {
-		if strings.TrimSuffix(lines[i], "\r") != ManagedBegin {
-			continue
-		}
-		j := i + 1
-		for ; j < n; j++ {
-			if strings.TrimSuffix(lines[j], "\r") == ManagedEnd {
-				break
-			}
-		}
-		// A begin with no end is only a position, never a block to EOF.
-		if j == n {
-			j = i
-		}
-		for k := i; k <= j; k++ {
-			inBlock[k] = true
-		}
-		i = j
-	}
+	inBlock := managedBlock(lines)
 	var kept []string
 	at := -1
 	for i, l := range lines {

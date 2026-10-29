@@ -1,6 +1,7 @@
 package env
 
 import (
+	"bytes"
 	"os"
 	"strings"
 
@@ -26,6 +27,17 @@ type SSH struct {
 // DialSSH connects; the binary is ensured by Marker.
 func DialSSH(self remote.Info, local func(arch string) (string, error)) func(string) (Session, error) {
 	return func(target string) (Session, error) {
+		c, err := ssh.Connect(target)
+		if err != nil {
+			return nil, err
+		}
+		return &SSH{Conn: c, Self: self, Local: local}, nil
+	}
+}
+
+// DialSetSSH is DialSSH for `kasbah env set`.
+func DialSetSSH(self remote.Info, local func(arch string) (string, error)) func(string) (SetSession, error) {
+	return func(target string) (SetSession, error) {
 		c, err := ssh.Connect(target)
 		if err != nil {
 			return nil, err
@@ -106,6 +118,26 @@ func (s *SSH) Setup(dir string, color bool) int {
 func (s *SSH) Inject(dir string, pairs []string) int {
 	_, err := s.Conn.Run(s.bounded(append([]string{"setup-env", "inject", dir}, pairs...)...)...)
 	return ssh.ExitCode(err)
+}
+
+func (s *SSH) KeyState(dir, key string) (string, int) {
+	out, err := s.Conn.Run(s.bounded("setup-env", "key", dir, key)...)
+	return string(out), ssh.ExitCode(err)
+}
+
+// SetKey sends SetHeader and the value on stdin, never on argv; bringing the
+// project up is bounded by UpTimeout.
+func (s *SSH) SetKey(dir, key, value, up string) (string, int) {
+	args, limit := []string{"setup-env", "set", dir, key}, serverbin.RunTimeout
+	if up != "" {
+		args, limit = append(args, "--up="+up), UpTimeout
+	}
+	cmd := s.Conn.Command(serverbin.Bounded(s.bin, limit, args...)...)
+	cmd.Stdin = strings.NewReader(SetHeader(value) + value)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
+	return out.String(), ssh.ExitCode(err)
 }
 
 func (s *SSH) Close() { s.Conn.Close() }

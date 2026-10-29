@@ -31,10 +31,16 @@ Any line in `.env.prod.example` is one of:
 | `# === Section ===` | Section header | rendered bold during prompts, preserved in output |
 | `# free-form comment` | Preserved in output | shown dimly during prompt |
 
-Values are escaped on the way out: `$` becomes `$$` so docker-compose
-doesn't interpret it — a typed, default or generated value, once. A kept value
-(Enter at its prompt, or untouched by an update) is written as it stands, since
-it was escaped when it was first written. A trailing CR in a typed answer is dropped.
+A template default taken with Enter is compose syntax already: it is written as
+it stands, with `$` as `$$` so docker-compose does not interpolate it. A kept
+value (untouched by an update) is written as it stands, since it was written
+right the first time. A **typed or generated value is literal text**, written
+in the form compose reads back exactly: bare with `$` as `$$` when nothing in it
+needs quoting; single-quoted when it has blanks at either end, starts with a
+quote or holds ` #` — and holds no `'` and does not end in `\`; otherwise
+double-quoted, with `\` and `"` escaped and `$` as `$$`. A line break or NUL is
+refused. A trailing CR in a typed answer is dropped. `kasbah env set` writes
+the same way.
 A `! command` generator runs in `bash --norc --noprofile` and sees `KEY`,
 `TARGET_DIR`, `EXAMPLE` and `OUTPUT`, not the setup's functions.
 
@@ -106,7 +112,7 @@ Outcomes:
 - Any drift → warn, prompt: *"re-run setup" / "continue with current .env" /
   "abort"* — scriptable as `--on-drift=setup|continue|abort`.
 
-One implementation serves `kasbah check` (E02/E03), `kasbah env` and `deploy`:
+One implementation serves `kasbah check` (E02/E03), `kasbah env`, `kasbah env set` and `deploy`:
 the Go engine, on the workstation and as `kasbah remote setup-env` on the server.
 
 Keys prefixed `KASBAH_` are reserved: kasbah injects and refreshes them
