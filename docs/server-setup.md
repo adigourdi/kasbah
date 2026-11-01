@@ -255,9 +255,13 @@ the next one's reads are group read-write — `.env` (`660`), `versions.log` and
 its archive, `.deploy.lock`, the marker, `server.lock` and `bin/.lock` (`664`),
 the shared binary (`775`). Every `kasbah remote …` step runs at umask `002`;
 setgid does not make a file group-writable, so kasbah also writes those modes
-explicitly. Secrets that are not the operators' stay private: `acme.json`,
-`mail/.env` and the backup stack's directory keep `600`/`700`. Every operator
-reads every project's `.env` — the group is one trust domain.
+explicitly. Secrets that are not the operators' stay outside the group:
+`acme.json`, `mail/.env` and the backup stack's directory keep `600`/`700`.
+Every operator reads every project's `.env` — the group is one trust domain.
+It is no wider than the one operators are already in: access to a rootful
+Docker daemon is root on the host, so what the group grants an operator is
+nothing they did not already hold, and the `600`/`700` files are kept out of
+the group, not out of an operator's reach.
 
 `server init` brings a server to that state once its layout (and the mail
 stack's) exists and before it writes Traefik's and mail's files — so `<data>/`'s

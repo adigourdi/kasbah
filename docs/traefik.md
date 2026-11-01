@@ -225,7 +225,8 @@ legacy `kasbah-net` only a `container_name` will do (T07).
 
 Both routers, not just the `websecure` one: without the `web` half the
 hostname answers plain HTTP with Traefik's 404 rather than a redirect, which
-`kasbah check` warns about (T08).
+`kasbah check` warns about (T08). A plain-HTTP project keeps the `web` router
+alone, serving the app instead of redirecting (TLS below).
 
 ### Redirect-only router
 
@@ -268,6 +269,11 @@ Project-specific middlewares go in the same project fragment under
 - ACME via HTTP-01 challenge (port 80 must be reachable), through one resolver
   named `http` after the challenge it answers — a frozen name, which every
   `websecure` router references as `tls.certResolver: http` (T04).
+- HTTPS is per router. A fragment whose routers sit on `web` alone serves plain
+  HTTP and asks for no certificate; `kasbah check` passes it (T08 asks only
+  for a `web` router), though `check --server` warns that its domain has no
+  certificate. The `http-to-https` and www redirect middlewares in
+  `_shared.yml` are for projects that serve HTTPS, not required.
 - Traefik keys `acme.json` by resolver name. A store filled under the
   resolver's former name, `letsencrypt`, is not read: `check --server` and
   `server status` report it as holding no `http` store.
