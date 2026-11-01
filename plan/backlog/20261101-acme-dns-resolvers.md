@@ -2,10 +2,8 @@
 description: HTTP-01 only: no wildcards, none when :80 is proxied or blocked
 cause: traefik.yml renders one httpChallenge resolver; nothing adds another
 where: internal/serverinit, templates/traefik, check T04, docs/traefik.md
-state: blocked
+state: ready
 priority: high
-after:
-  - rename-cert-resolver-http
 ---
 
 ## Prompted by
@@ -29,7 +27,7 @@ resolver per router, so the unit is one resolver per provider; routers opt in.
 - [ ] Env file copied to `<apps>/traefik/acme-dns/<provider>.env` mode 600; `env_file:` lines in Traefik's compose
 - [ ] Each provider renders a resolver named after it with `dnsChallenge` and public `resolvers`; same `acme.json`
 - [ ] Re-runs recover the resolver list from the server's `traefik.yml` like the other four recovered values
-- [ ] T04 becomes "names a resolver"; `check` warns on a name other than `http`, `check --server` verifies against the server
+- [ ] T04 becomes "names a resolver" (today it requires `http`, and names the rename for `letsencrypt`); `check` warns on a name other than `http`, `check --server` verifies against the server
 - [ ] New server rule: `tls.domains` wildcard on a resolver without `dnsChallenge` fails
 - [ ] Docs: `traefik.md` TLS gets a DNS-01 subsection with the one-credential-per-provider limit; `server-setup.md`, `cli.md`, `files.md`
 - [ ] Rig proves rendering, plumbing and rules; first live wildcard on a real VPS, recorded in the phase findings

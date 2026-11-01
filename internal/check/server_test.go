@@ -67,7 +67,7 @@ func store(main string, sans []string, cert string) string {
 	le := tree.NewMap()
 	le.Set("Account", acct)
 	le.Set("Certificates", []tree.Value{e})
-	m.Set("letsencrypt", le)
+	m.Set("http", le)
 	return tree.Compact(m)
 }
 
@@ -401,13 +401,13 @@ func TestServerCert(t *testing.T) {
 		{"a SAN with a space is not a match", "file", store("other.example.com", []string{"demo.example.com x"}, san), "no certificate for 'demo.example.com' in /apps/data/traefik/letsencrypt/acme.json on deploy@vps (1 in the store)", 0},
 		{"nomatch", "file", store("other.example.com", nil, san), "(1 in the store) — Traefik issues one when a router claims the hostname", 0},
 		{"notjson", "file", "{nope", "does not parse as JSON, so the certificate for 'demo.example.com' cannot be read (its bytes are not shown", 0},
-		{"noresolver", "file", `{"other":{}}`, "has no 'letsencrypt' store — that resolver name is a frozen contract", 0},
-		{"notarray", "file", `{"letsencrypt":{"Certificates":{"a":1}}}`, "holds a 'letsencrypt' whose Certificates is a object, not a list", 0},
-		{"empty list", "file", `{"letsencrypt":{"Certificates":[]}}`, "holds no certificates — nothing has been issued for 'demo.example.com' yet", 0},
-		{"null list", "file", `{"letsencrypt":{"Certificates":null}}`, "holds no certificates", 0},
-		{"nocert", "file", `{"letsencrypt":{"Certificates":[{"domain":{"main":"demo.example.com"}}]}}`, "carries no certificate field", 0},
-		{"notbase64", "file", `{"letsencrypt":{"Certificates":[{"domain":{"main":"demo.example.com"},"certificate":"%%%"}]}}`, "is not base64 — the store's schema", 0},
-		{"nopem", "file", `{"letsencrypt":{"Certificates":[{"domain":{"main":"demo.example.com"},"certificate":"` + b64s("hello") + `"}]}}`, "is not a certificate openssl reads", 0},
+		{"noresolver", "file", `{"other":{}}`, "has no 'http' store — a store filled under the resolver's former name 'letsencrypt'", 0},
+		{"notarray", "file", `{"http":{"Certificates":{"a":1}}}`, "holds a 'http' whose Certificates is a object, not a list", 0},
+		{"empty list", "file", `{"http":{"Certificates":[]}}`, "holds no certificates — nothing has been issued for 'demo.example.com' yet", 0},
+		{"null list", "file", `{"http":{"Certificates":null}}`, "holds no certificates", 0},
+		{"nocert", "file", `{"http":{"Certificates":[{"domain":{"main":"demo.example.com"}}]}}`, "carries no certificate field", 0},
+		{"notbase64", "file", `{"http":{"Certificates":[{"domain":{"main":"demo.example.com"},"certificate":"%%%"}]}}`, "is not base64 — the store's schema", 0},
+		{"nopem", "file", `{"http":{"Certificates":[{"domain":{"main":"demo.example.com"},"certificate":"` + b64s("hello") + `"}]}}`, "is not a certificate openssl reads", 0},
 		{"absent", "absent", "", "⚠ no certificate store at /apps/data/traefik/letsencrypt/acme.json on deploy@vps", 0},
 		{"empty", "empty", "", "is empty — Traefik has not issued anything yet, so 'demo.example.com' is served with its self-signed default", 0},
 		{"unreadable", "unreadable", "", "cannot be read by this user, so the certificate for 'demo.example.com' cannot be checked", 0},

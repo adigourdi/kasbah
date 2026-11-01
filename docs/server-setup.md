@@ -95,7 +95,11 @@ nothing to hold — and an env knob the container never receives is a dead
 knob. All four are read back *out of* the rendered files on a re-run, which is what
 lets init stay idempotent without storing them anywhere else — the first three
 to be reproduced verbatim, the `caServer` to detect that this run renders a
-different CA than the one in effect.
+different CA than the one in effect. The email and `caServer` are read from
+the `http` resolver, or from one still named `letsencrypt` (its former name)
+when `http` has none, so a re-run over a server rendered under that name keeps
+both and re-renders the resolver as `http` — the first of the two steps
+`traefik.md` → TLS describes for such a server.
 
 `acme.json` is touched as an empty file before `docker compose up`. If Docker
 sees a missing path on a bind mount, it silently creates a **directory**,
@@ -327,7 +331,7 @@ providers:
     watch: true
 
 certificatesResolvers:
-  letsencrypt:
+  http:
     acme:
       email: <baked at render time from --email>
       caServer: <the production LE directory, or the staging one with --acme-staging>

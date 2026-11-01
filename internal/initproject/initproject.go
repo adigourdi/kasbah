@@ -246,7 +246,7 @@ const snippet = "Next step: author compose.prod.yml. Starter snippet:\n" +
 	"        rule: \"Host(`{domain}`)\"\n" +
 	"        entryPoints: [websecure]\n" +
 	"        tls:\n" +
-	"          certResolver: letsencrypt\n" +
+	"          certResolver: http\n" +
 	"        middlewares: [\"security-headers@file\", \"gzip-compression@file\"]\n" +
 	"        service: {name}\n" +
 	"    services:\n" +

@@ -98,7 +98,7 @@ http:
       rule: "Host(\`gallery.$rig_domain\`)"
       entryPoints: [websecure]
       tls:
-        certResolver: letsencrypt
+        certResolver: http
       middlewares: ["security-headers@file", "gzip-compression@file"]
       service: gallery
   services:
@@ -276,7 +276,7 @@ http:
       rule: "Host(`broken.rig.test`)"
       entryPoints: [websecure]
       tls:
-        certResolver: letsencrypt
+        certResolver: http
       middlewares: ["does-not-exist@file"]
       service: broken
   services:

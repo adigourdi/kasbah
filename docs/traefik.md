@@ -160,7 +160,7 @@ Traefik restart, no `compose up` on the project.
 Kasbah-owned fragments (written by `kasbah server init`):
 - `_shared.yml` — middlewares, TLS options, dashboard router.
 - `_mail.yml` — four routers, only written when `--with-mail` is passed:
-  `mail-cert` (`websecure`, `certResolver: letsencrypt`, `noop@internal`) is
+  `mail-cert` (`websecure`, `certResolver: http`, `noop@internal`) is
   the cert-trigger that makes DMS bootable at all; `webmail` (`websecure`,
   `security-headers`) proxies to `http://mail-cypht:80`; and
   `mail-cert-http` / `webmail-http` redirect on `web`. It defines no
@@ -206,7 +206,7 @@ http:
       rule: "Host(`myapp.example.com`)"
       entryPoints: [websecure]
       tls:
-        certResolver: letsencrypt
+        certResolver: http
       middlewares: ["security-headers@file", "gzip-compression@file"]
       service: myapp
 
@@ -238,7 +238,7 @@ http:
       rule: "Host(`www.myapp.example.com`)"
       entryPoints: [websecure]
       tls:
-        certResolver: letsencrypt
+        certResolver: http
       middlewares: ["https-www-to-https-non-www@file"]
       service: noop@internal
 ```
@@ -265,7 +265,22 @@ Project-specific middlewares go in the same project fragment under
 
 ## TLS
 
-- ACME via HTTP-01 challenge (port 80 must be reachable).
+- ACME via HTTP-01 challenge (port 80 must be reachable), through one resolver
+  named `http` after the challenge it answers — a frozen name, which every
+  `websecure` router references as `tls.certResolver: http` (T04).
+- Traefik keys `acme.json` by resolver name. A store filled under the
+  resolver's former name, `letsencrypt`, is not read: `check --server` and
+  `server status` report it as holding no `http` store.
+- A server rendered under `letsencrypt` moves to `http` in two steps: re-run
+  `server init` (with `--with-mail` where the mail stack runs, so `_mail.yml`
+  is re-rendered too), then redeploy every project from a fragment edited to
+  `http` (T04 refuses the old name). Between the two, a router still naming
+  `letsencrypt` points at a resolver that no longer exists and serves
+  Traefik's self-signed default certificate; each one gets a fresh
+  certificate under `http` once it is redeployed. `upgrade-traefik` can take
+  the first step only while no project fragment and no `_mail.yml` names
+  `letsencrypt`: its dry run boots against them (with its own `_shared.yml`
+  in place of the server's) and refuses on any that does.
 - Stored in `/apps/data/traefik/letsencrypt/acme.json`, `chmod 600`.
 - TLS options default to TLS 1.2–1.3 with modern cipher suites
   (declared in `_shared.yml`).
@@ -288,7 +303,7 @@ rather than by reasoning about a missing field.
 
 ```yaml
 certificatesResolvers:
-  letsencrypt:
+  http:
     acme:
       caServer: "https://acme-staging-v02.api.letsencrypt.org/directory"
 ```
@@ -491,8 +506,12 @@ restore is part of the same step rather than a round trip, so a dropped
 connection cannot strand the proxy with the fix on the wrong machine.
 
 The endpoint (`caServer`), the ACME address, and — when the dashboard is on —
-its apex and basic-auth entry are recovered off the server and reproduced; a
-stack with no dashboard router is recovered as one without a dashboard. A stack
+its apex and basic-auth entry are recovered off the server and reproduced
+(the endpoint and address from the `http` resolver, or from one still named
+`letsencrypt` when `http` has none — though the dry run refuses one whose
+project fragments or `_mail.yml` still name it, and those move through `server
+init`, TLS above); a stack with no dashboard router is recovered as one without
+a dashboard. A stack
 that will not yield them is refused and the operator is sent to `server
 init`: repairing one of those is init's job, and a version bump must not
 move a server's CA or its dashboard credentials as a side effect.

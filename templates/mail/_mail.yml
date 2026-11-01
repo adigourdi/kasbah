@@ -43,7 +43,7 @@ http:
       entryPoints:
         - websecure
       tls:
-        certResolver: letsencrypt
+        certResolver: http
       service: noop@internal
 
     # Not what makes the certificate happen: Traefik answers the HTTP-01
@@ -73,7 +73,7 @@ http:
       entryPoints:
         - websecure
       tls:
-        certResolver: letsencrypt
+        certResolver: http
       middlewares:
         - security-headers
       service: webmail

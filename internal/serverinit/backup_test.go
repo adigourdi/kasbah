@@ -356,7 +356,7 @@ func TestTemplatesCRLFAndLints(t *testing.T) {
 	if d, err := DashboardApex(crlf); err != nil || d != "example.com" {
 		t.Errorf("CRLF apex: %q %v", d, err)
 	}
-	static := "certificatesResolvers:\r\n  letsencrypt:\r\n    acme:\r\n      email: ops@example.com\r\n      caServer: https://acme-staging-v02.api.letsencrypt.org/directory\r\n"
+	static := "certificatesResolvers:\r\n  http:\r\n    acme:\r\n      email: ops@example.com\r\n      caServer: https://acme-staging-v02.api.letsencrypt.org/directory\r\n"
 	if e, err := StaticField(static, "email"); err != nil || e != "ops@example.com" {
 		t.Errorf("CRLF traefik.yml: %q %v", e, err)
 	}

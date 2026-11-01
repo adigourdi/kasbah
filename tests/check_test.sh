@@ -75,7 +75,7 @@ YAML
         printf '      rule: "Host(`%s`)"\n' "$domain"
         printf '      entryPoints: [websecure]\n'
         printf '      tls:\n'
-        printf '        certResolver: letsencrypt\n'
+        printf '        certResolver: http\n'
         printf '      service: %s\n' "$name"
         printf '  services:\n'
         printf '    %s:\n' "$name"
@@ -110,7 +110,7 @@ assert 'grep -qF "✓ compose.prod.yml has no traefik.* labels" <<<"$out"'      
 assert 'grep -qF "✓ traefik-dynamic.yml exists" <<<"$out"'                                     "T01 pass line"
 assert 'grep -qF "✓ At least one router references manifest domain (demo.example.com)" <<<"$out"' "T02 pass line"
 assert 'grep -qF "✓ All routers declare entryPoints" <<<"$out"'                                "T03 pass line"
-assert 'grep -qF "✓ Secure routers reference letsencrypt cert resolver" <<<"$out"'             "T04 pass line"
+assert 'grep -qF "✓ Secure routers reference http cert resolver" <<<"$out"'             "T04 pass line"
 assert 'grep -qF "✓ A router serves demo.example.com on the web entrypoint" <<<"$out"'         "T08 pass line"
 assert 'grep -qF "✓ No router claims reserved hostnames" <<<"$out"'                            "T05 pass line"
 assert 'grep -qF "✓ No router or service reaches a Traefik internal service other than noop@internal" <<<"$out"' "T09 pass line"
@@ -581,7 +581,7 @@ http:
       rule: "Host(`other.test`)"
       entryPoints: [websecure]
       tls:
-        certResolver: letsencrypt
+        certResolver: http
       service: noop@internal
 YAML
 out="$(cd "$proj20" && "$kasbah" check 2>&1)"; rc=$?
@@ -602,8 +602,8 @@ out="$(cd "$proj21" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                          "T03 fail exits 6 (got $rc)"
 assert 'grep -qF "✗ Routers without entryPoints: demo" <<<"$out"' "T03 fail line"
 
-# --- Case 22: T04 — websecure without letsencrypt → fail ---------------------
-proj22="$tmpdir/no-letsencrypt"
+# --- Case 22: T04 — websecure without the http resolver → fail --------------
+proj22="$tmpdir/no-cert-resolver"
 make_project "$proj22"
 cat > "$proj22/traefik-dynamic.yml" <<'YAML'
 http:
@@ -615,7 +615,34 @@ http:
 YAML
 out="$(cd "$proj22" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                       "T04 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Websecure routers without tls.certResolver=letsencrypt: demo" <<<"$out"'   "T04 fail line"
+assert 'grep -qF "✗ Websecure routers without tls.certResolver=http: demo" <<<"$out"'          "T04 fail line"
+assert '! grep -qF "renamed" <<<"$out"'                                                        "T04 fail line does not name the rename"
+
+# --- Case 22b: T04 — the resolver's former name → fail naming the rename -----
+proj22b="$tmpdir/legacy-cert-resolver"
+make_project "$proj22b"
+cat > "$proj22b/traefik-dynamic.yml" <<'YAML'
+http:
+  routers:
+    demo:
+      rule: "Host(`demo.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: noop@internal
+    other:
+      rule: "Host(`other.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: acme
+      service: noop@internal
+YAML
+out="$(cd "$proj22b" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                                       "T04 legacy name exits 6 (got $rc)"
+assert 'grep -qF "✗ certResolver letsencrypt was renamed to http — set tls.certResolver: http on: demo" <<<"$out"' "T04 legacy-name line"
+assert 'grep -qF "✗ Websecure routers without tls.certResolver=http: other" <<<"$out"'         "T04 other wrong value keeps the generic line"
+assert '! grep -qF "Secure routers reference" <<<"$out"'                                       "T04 legacy name is no pass"
+assert 'grep -qF ", 3 failed" <<<"$out"'                                                       "T04 counts each of its two lines as a failure (the third is C07: demo-web on the kasbah network, unrouted)"
 
 # --- Case 23: T05 — router claims a reserved hostname → fail ----------------
 proj23="$tmpdir/reserved-host"
@@ -627,13 +654,13 @@ http:
       rule: "Host(`demo.example.com`)"
       entryPoints: [websecure]
       tls:
-        certResolver: letsencrypt
+        certResolver: http
       service: noop@internal
     demo-mail:
       rule: "Host(`mail.demo.example.com`)"
       entryPoints: [websecure]
       tls:
-        certResolver: letsencrypt
+        certResolver: http
       service: noop@internal
 YAML
 out="$(cd "$proj23" && "$kasbah" check 2>&1)"; rc=$?
@@ -655,7 +682,7 @@ http:
       rule: "Host(`demo.example.com`)"
       entryPoints: [websecure]
       tls:
-        certResolver: letsencrypt
+        certResolver: http
       service: demo
   services:
     demo:
@@ -686,7 +713,7 @@ http:
       rule: "Host(`demo.example.com`)"
       entryPoints: [websecure]
       tls:
-        certResolver: letsencrypt
+        certResolver: http
       service: demo
   services:
     demo:
@@ -718,7 +745,7 @@ http:
       rule: "Host(`demo.example.com`)"
       entryPoints: [websecure]
       tls:
-        certResolver: letsencrypt
+        certResolver: http
       service: demo
   services:
     demo:
@@ -750,7 +777,7 @@ http:
       rule: "Host(`demo.example.com`)"
       entryPoints: [websecure]
       tls:
-        certResolver: letsencrypt
+        certResolver: http
       service: api@internal
   services:
     split:
@@ -1316,7 +1343,7 @@ YAML
     printf '      rule: "Host(`demo.example.com`)"\n'
     printf '      entryPoints: [websecure]\n'
     printf '      tls:\n'
-    printf '        certResolver: letsencrypt\n'
+    printf '        certResolver: http\n'
     printf '      service: demo\n'
     printf '  services:\n'
     printf '    demo:\n'
@@ -1415,7 +1442,7 @@ services:
         max-size: "10m"
         max-file: "3"
 YAML
-{ printf 'http:\n  routers:\n    demo:\n      rule: "Host(`x.test`)"\n      entryPoints: [websecure]\n      tls:\n        certResolver: letsencrypt\n      service: noop@internal\n'; } > "$proj37/traefik-dynamic.yml"
+{ printf 'http:\n  routers:\n    demo:\n      rule: "Host(`x.test`)"\n      entryPoints: [websecure]\n      tls:\n        certResolver: http\n      service: noop@internal\n'; } > "$proj37/traefik-dynamic.yml"
 out="$(cd "$proj37" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                              "empty-domain T02 skip exits 0 (got $rc)"
 assert 'grep -qF "⚠ manifest domain is empty — skipping T02" <<<"$out"'               "empty-domain warn line"

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/acme"
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/env"
@@ -419,8 +420,8 @@ func DryStatic(static string) (string, error) {
 	for _, a := range [][]string{
 		{":8080", "entryPoints", "web", "address"},
 		{":8443", "entryPoints", "websecure", "address"},
-		{DryCA, "certificatesResolvers", "letsencrypt", "acme", "caServer"},
-		{"/tmp/kasbah-dry-run-acme.json", "certificatesResolvers", "letsencrypt", "acme", "storage"},
+		{DryCA, "certificatesResolvers", acme.Resolver, "acme", "caServer"},
+		{"/tmp/kasbah-dry-run-acme.json", "certificatesResolvers", acme.Resolver, "acme", "storage"},
 		{"INFO", "log", "level"},
 	} {
 		if err := set(a[0], a[1:]...); err != nil {
@@ -456,7 +457,7 @@ func DryShared(shared string) (string, error) {
 		}
 	}
 	tls := tree.NewMap()
-	tls.Set("certResolver", "letsencrypt")
+	tls.Set("certResolver", acme.Resolver)
 	r := tree.NewMap()
 	r.Set("rule", "Host(`kasbah-dry-run.example.com`)")
 	r.Set("entryPoints", []tree.Value{"websecure"})
@@ -575,7 +576,7 @@ func (x *run) dryRun() error {
 			DryAnchor+" is in kasbah's own _shared.yml, rendered here and mounted over",
 			"the directory, so it answers the same whether that directory was read or not.",
 			"Either the read-only mount of it did not apply, or nothing in it declares a",
-			"router on websecure with certResolver: letsencrypt.",
+			"router on websecure with certResolver: "+acme.Resolver+".",
 			"routers seen: "+shown))
 	}
 	if d.Warns != "" {

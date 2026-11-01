@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/adigourdi/kasbah/internal/acme"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/tmpl"
@@ -78,9 +79,14 @@ func yamlField(content string, path ...string) (string, error) {
 // Unparsed is whether err is a file that does not read as a YAML mapping.
 func Unparsed(err error) bool { _, ok := err.(errUnparsed); return ok }
 
-// StaticField is certificatesResolvers.letsencrypt.acme.<key> of a
-// traefik.yml.
+// StaticField is certificatesResolvers.http.acme.<key> of a traefik.yml,
+// or the same key under the resolver's former name `letsencrypt` when the
+// first is empty, so a re-run reads an older server's values back.
 func StaticField(static, key string) (string, error) {
+	v, err := yamlField(static, "certificatesResolvers", acme.Resolver, "acme", key)
+	if err != nil || v != "" {
+		return v, err
+	}
 	return yamlField(static, "certificatesResolvers", "letsencrypt", "acme", key)
 }
 
@@ -290,7 +296,7 @@ func chooseUnknown(out *cli.Output, p *prompt.Prompter, o Options, a Acme, origi
 	case "nocontent":
 		out.Warn("%s/traefik/traefik.yml on %s is missing, empty or unreadable, so nothing states which endpoint this server uses", o.Apps, o.Target)
 	default:
-		out.Warn("%s/traefik/traefik.yml on %s parses but names no caServer under certificatesResolvers.letsencrypt.acme", o.Apps, o.Target)
+		out.Warn("%s/traefik/traefik.yml on %s parses but names no caServer under certificatesResolvers.%s.acme", o.Apps, o.Target, acme.Resolver)
 	}
 	out.Warn("acme.json is not empty, and nothing here says which CA issued what is in it.")
 	out.Warn("this run configures the Let's Encrypt %s CA. If the certificates in the store", to)

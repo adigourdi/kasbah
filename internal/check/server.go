@@ -717,7 +717,7 @@ func (c *checker) cert() {
 		c.warnf("%s on %s does not parse as JSON, so the certificate for '%s' cannot be read (its bytes are not shown: the store holds private key material)", path, s.target, d)
 		return
 	case "noresolver":
-		c.warnf("%s on %s has no '%s' store — that resolver name is a frozen contract, so either the schema has shifted with a Traefik upgrade or this Traefik is configured with another one", path, s.target, acme.Resolver)
+		c.warnf("%s on %s has no '%s' store — a store filled under the resolver's former name 'letsencrypt' reads this way until Traefik issues under the new one; otherwise the schema has shifted with a Traefik upgrade", path, s.target, acme.Resolver)
 		return
 	case "notarray":
 		c.warnf("%s on %s holds a '%s' whose Certificates is a %s, not a list — the store's schema is not the one this kasbah reads", path, s.target, acme.Resolver, l.Kind)

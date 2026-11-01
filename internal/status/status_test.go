@@ -281,7 +281,7 @@ func pemCert(t *testing.T, cn string, notAfter time.Time) string {
 func TestCertsAndMail(t *testing.T) {
 	r := base()
 	r.AcmeState = "file"
-	r.Acme = b64s(`{"letsencrypt":{"Account":{"PrivateKey":"SECRET-KEY"},"Certificates":[` +
+	r.Acme = b64s(`{"http":{"Account":{"PrivateKey":"SECRET-KEY"},"Certificates":[` +
 		`{"domain":{"main":"mail.rig.test","sans":["webmail.rig.test"]},"certificate":"` + pemCert(t, "mail.rig.test", now.Add(50*24*time.Hour+time.Hour)) + `","key":"SECRET-KEY"},` +
 		`{"domain":{"main":"traefik.rig.test"},"certificate":"` + pemCert(t, "traefik.rig.test", now.Add(-2*24*time.Hour-time.Hour)) + `"},` +
 		`{"domain":{"main":"demo.test"},"certificate":"` + pemCert(t, "demo.test", now.Add(10*24*time.Hour+time.Hour)) + `"},` +
@@ -326,10 +326,10 @@ func TestCertsAndMail(t *testing.T) {
 	}
 	r.AcmeState = "file"
 	for body, want := range map[string]string{
-		"{x":                                   "does not parse as JSON (its bytes are not shown",
-		`{"a":1}`:                              "has no 'letsencrypt' store",
-		`{"letsencrypt":{"Certificates":"x"}}`: "whose Certificates is a string, not a list",
-		`{"letsencrypt":{}}`:                   "none issued yet",
+		"{x":                            "does not parse as JSON (its bytes are not shown",
+		`{"a":1}`:                       "has no 'http' store",
+		`{"http":{"Certificates":"x"}}`: "whose Certificates is a string, not a list",
+		`{"http":{}}`:                   "none issued yet",
 	} {
 		r.Acme = b64s(body)
 		out, _, _ = runStatus(t, r)
@@ -540,7 +540,7 @@ func TestBrokenMarkerShipsNothing(t *testing.T) {
 
 func TestDecodeShowsNothing(t *testing.T) {
 	r := base()
-	r.Acme = b64s(`{"letsencrypt":{"Account":{"PrivateKey":"SECRET-KEY"}}}`)
+	r.Acme = b64s(`{"http":{"Account":{"PrivateKey":"SECRET-KEY"}}}`)
 	full, _ := json.Marshal(r)
 	for _, out := range [][]byte{full[:len(full)-30], []byte("PrivateKey: SECRET-KEY")} {
 		_, err := Decode(out, "deploy@vps")

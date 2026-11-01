@@ -360,7 +360,7 @@ if jq -e . >/dev/null 2>&1 <<<"$routers"; then
     assert '[ "$rule" = "Host(\`mail.$rig_domain\`)" ]' \
         "the cert-trigger claims mail.$rig_domain (got '$rule')"
     tls=$(jq -r '.[] | select(.name == "mail-cert@file") | .tls.certResolver // ""' <<<"$routers")
-    assert '[ "$tls" = "letsencrypt" ]' \
+    assert '[ "$tls" = "http" ]' \
         "on the frozen resolver — that claim is the whole reason it exists (got '$tls')"
     svc=$(jq -r '.[] | select(.name == "webmail@file") | .service' <<<"$routers")
     assert '[ "$svc" = "webmail" ]' "webmail routes to its own service (got '$svc')"

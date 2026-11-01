@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/acme"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/envtpl"
@@ -777,19 +778,27 @@ func (c *checker) t03(routers []string) {
 }
 
 func (c *checker) t04(routers []string) {
-	var bad []string
+	var bad, legacy []string
 	for _, r := range routers {
 		if !listHas(c.router(r, "entryPoints"), "websecure") {
 			continue
 		}
-		if scalar(c.router(r, "tls", "certResolver")) != "letsencrypt" {
+		switch scalar(c.router(r, "tls", "certResolver")) {
+		case acme.Resolver:
+		case "letsencrypt":
+			legacy = append(legacy, r)
+		default:
 			bad = append(bad, r)
 		}
 	}
-	if len(bad) == 0 {
-		c.passf("Secure routers reference letsencrypt cert resolver")
-	} else {
-		c.failf("Websecure routers without tls.certResolver=letsencrypt: %s", strings.Join(bad, " "))
+	if len(bad) == 0 && len(legacy) == 0 {
+		c.passf("Secure routers reference %s cert resolver", acme.Resolver)
+	}
+	if len(legacy) > 0 {
+		c.failf("certResolver letsencrypt was renamed to %s — set tls.certResolver: %s on: %s", acme.Resolver, acme.Resolver, strings.Join(legacy, " "))
+	}
+	if len(bad) > 0 {
+		c.failf("Websecure routers without tls.certResolver=%s: %s", acme.Resolver, strings.Join(bad, " "))
 	}
 }
 

@@ -28,7 +28,8 @@ providers:
     watch: true
 
 certificatesResolvers:
-  letsencrypt:
+  # Named for the challenge it answers (HTTP-01); fragments reference it by name.
+  http:
     acme:
       email: "__ACME_EMAIL__"
       # Written out even when it is Traefik's own default, so that a re-run can

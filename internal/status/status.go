@@ -470,7 +470,7 @@ func (x *run) printCerts() {
 	case "notjson":
 		x.p("  Certificates: %s does not parse as JSON (its bytes are not shown — it holds private key material)\n", path)
 	case "noresolver":
-		x.p("  Certificates: %s has no '%s' store — the schema has shifted, or this Traefik uses another resolver\n", path, acme.Resolver)
+		x.p("  Certificates: %s has no '%s' store — filled under the former name 'letsencrypt', or the schema has shifted\n", path, acme.Resolver)
 	case "notarray":
 		x.p("  Certificates: %s holds a '%s' whose Certificates is a %s, not a list\n", path, acme.Resolver, l.Kind)
 	case "empty":

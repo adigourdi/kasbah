@@ -49,7 +49,7 @@ func TestParse(t *testing.T) {
 }
 
 func acmeLine(router, host string) string {
-	return fmt.Sprintf("\033[90m2026-08-25T19:44:21Z\033[0m \033[31mERR\033[0m \033[1m%s\033[0m error=\"cannot get ACME client get directory at %s: connection refused\" acmeCA=%s domains=[\"%s\"] providerName=letsencrypt.acme routerName=%s rule=Host(`%s`)\n",
+	return fmt.Sprintf("\033[90m2026-08-25T19:44:21Z\033[0m \033[31mERR\033[0m \033[1m%s\033[0m error=\"cannot get ACME client get directory at %s: connection refused\" acmeCA=%s domains=[\"%s\"] providerName=http.acme routerName=%s rule=Host(`%s`)\n",
 		DryACMEError, DryCA, DryCA, host, router, host)
 }
 
@@ -94,7 +94,7 @@ func TestClassify(t *testing.T) {
 }
 
 func TestDryStatic(t *testing.T) {
-	out, err := DryStatic("entryPoints:\n  web:\n    address: \":80\"\n  websecure:\n    address: \":443\"\ncertificatesResolvers:\n  letsencrypt:\n    acme:\n      email: a@b.c\n      storage: /letsencrypt/acme.json\n      caServer: https://acme-v02.api.letsencrypt.org/directory\nping: {}\n")
+	out, err := DryStatic("entryPoints:\n  web:\n    address: \":80\"\n  websecure:\n    address: \":443\"\ncertificatesResolvers:\n  http:\n    acme:\n      email: a@b.c\n      storage: /letsencrypt/acme.json\n      caServer: https://acme-v02.api.letsencrypt.org/directory\nping: {}\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +383,7 @@ func TestRecover(t *testing.T) {
 		{func(f *fake) { f.stack.Shared = enc(" \n\n") }, "dynamic/_shared.yml is missing or unreadable"},
 		{func(f *fake) { f.stack.Docker = false }, "docker is not on deploy@vps's PATH"},
 		{func(f *fake) {
-			f.stack.Static = enc("certificatesResolvers:\n  letsencrypt:\n    acme:\n      email: a@b.c\n")
+			f.stack.Static = enc("certificatesResolvers:\n  http:\n    acme:\n      email: a@b.c\n")
 		}, "does not say what the ACME endpoint (caServer) is"},
 		{func(f *fake) { f.stack.Static = enc("a: [") }, "traefik.yml on deploy@vps is not valid YAML"},
 		{func(f *fake) { f.stack.Compose = enc("services:\n  traefik:\n    image: mirror/traefik:v3\n") }, "does not say what the traefik service's image is"},
@@ -404,6 +404,16 @@ func TestRecover(t *testing.T) {
 	runUp(t, f, "v3.7.11")
 	if strings.Contains(f.written["/apps/traefik/traefik.yml"], "acme-v02") {
 		t.Error("a staging server stays on staging")
+	}
+	// A traefik.yml naming the resolver letsencrypt is read back and re-rendered as http.
+	f = newFake(t, "traefik:v3.7.10")
+	f.stack.Static = enc("certificatesResolvers:\n  letsencrypt:\n    acme:\n      email: old@example.com\n      caServer: " + serverinit.CAStaging + "\n")
+	if se, code := runUp(t, f, "v3.7.11"); code != 0 {
+		t.Fatalf("legacy resolver name: %d\n%s", code, se)
+	}
+	if w := f.written["/apps/traefik/traefik.yml"]; !strings.Contains(w, "  http:\n") || strings.Contains(w, "letsencrypt:") ||
+		!strings.Contains(w, "old@example.com") || !strings.Contains(w, "acme-staging-v02") {
+		t.Errorf("legacy resolver name not migrated:\n%s", w)
 	}
 }
 

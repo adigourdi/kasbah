@@ -77,7 +77,7 @@ truth; `plan/` holds what is intended and queued (roadmap, backlog, research).
 
 ## Frozen contracts — never rename
 
-`kasbah-net`; entrypoints `web`/`websecure`; certresolver `letsencrypt`;
+`kasbah-net`; entrypoints `web`/`websecure`; certresolver `http`;
 the `_shared.yml` middleware names; `versions.log`'s four positional
 fields (new data = appended `key=value` pairs); the `KASBAH_` env-var
 prefix (reserved, injected at deploy, exempt from drift); the manifest schema

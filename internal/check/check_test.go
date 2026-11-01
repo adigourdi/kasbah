@@ -39,7 +39,7 @@ networks:
 
 const goodFragment = "http:\n  routers:\n" +
 	"    demo-http: {rule: \"Host(`demo.example.com`)\", entryPoints: [web], service: noop@internal}\n" +
-	"    demo: {rule: \"Host(`demo.example.com`)\", entryPoints: [websecure], tls: {certResolver: letsencrypt}, service: demo}\n" +
+	"    demo: {rule: \"Host(`demo.example.com`)\", entryPoints: [websecure], tls: {certResolver: http}, service: demo}\n" +
 	"  services:\n    demo: {loadBalancer: {servers: [{url: \"http://demo-web:80\"}]}}\n"
 
 // project writes a passing project into a fresh working directory, then the
@@ -104,7 +104,7 @@ Traefik:
   ✓ traefik-dynamic.yml exists
   ✓ At least one router references manifest domain (demo.example.com)
   ✓ All routers declare entryPoints
-  ✓ Secure routers reference letsencrypt cert resolver
+  ✓ Secure routers reference http cert resolver
   ✓ A router serves demo.example.com on the web entrypoint
   ✓ No router claims reserved hostnames (traefik.*, mail.*, webmail.*)
   ✓ No router or service reaches a Traefik internal service other than noop@internal

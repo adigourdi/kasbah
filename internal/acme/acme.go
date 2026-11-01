@@ -18,7 +18,7 @@ import (
 )
 
 // Resolver is the certresolver kasbah configures, a frozen contract.
-const Resolver = "letsencrypt"
+const Resolver = "http"
 
 // Lookup is what the store says about one hostname. State is one of notjson,
 // noresolver, empty, notarray (Kind is the type found), nomatch, nocert,

@@ -122,7 +122,7 @@ never issued → DMS won't boot.
 `kasbah server init --with-mail` writes a kasbah-owned fragment at
 `/apps/traefik/dynamic/_mail.yml` that declares a **cert-trigger router**
 claiming `Host(\`mail.<domain>\`)` on `websecure` with
-`tls.certResolver: letsencrypt`. The router is registered the moment
+`tls.certResolver: http`. The router is registered the moment
 Traefik loads the fragment — independent of webmail or DMS startup.
 Traefik requests the cert → DMS reads it from `acme.json` and boots.
 

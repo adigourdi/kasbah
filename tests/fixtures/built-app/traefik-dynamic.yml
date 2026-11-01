@@ -27,7 +27,7 @@ http:
       entryPoints:
         - websecure
       tls:
-        certResolver: letsencrypt
+        certResolver: http
       middlewares:
         - security-headers@file
         - gzip-compression@file

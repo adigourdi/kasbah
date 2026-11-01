@@ -273,6 +273,17 @@ func TestExtract(t *testing.T) {
 	if e, err := StaticField("certificatesResolvers: {}\n", "email"); err != nil || e != "" {
 		t.Errorf("an absent resolver: %q %v", e, err)
 	}
+	legacy := "certificatesResolvers:\n  letsencrypt:\n    acme:\n      email: old@example.com\n      caServer: " + CAStaging + "\n"
+	if e, err := StaticField(legacy, "email"); err != nil || e != "old@example.com" {
+		t.Errorf("the former resolver name is not read back: %q %v", e, err)
+	}
+	both := "certificatesResolvers:\n  http:\n    acme:\n      caServer: " + CAProduction + "\n" + strings.TrimPrefix(legacy, "certificatesResolvers:\n")
+	if ca, err := StaticField(both, "caServer"); err != nil || ca != CAProduction {
+		t.Errorf("http does not win over letsencrypt: %q %v", ca, err)
+	}
+	if e, err := StaticField(both, "email"); err != nil || e != "old@example.com" {
+		t.Errorf("a key http lacks is not read from letsencrypt: %q %v", e, err)
+	}
 	for _, c := range []struct{ doc, want string }{
 		{"services:\n  traefik:\n    image: traefik:v3.8.0\n", "traefik:v3.8.0"},
 		{"services:\n  traefik:\n    image: mirror.example/traefik:v3\n", ""},
@@ -370,7 +381,7 @@ func TestResolveReuses(t *testing.T) {
 	o := Options{Target: "d@h", Apps: "/apps", Data: "/apps/data"}
 	cur := map[string]string{
 		"dynamic/_shared.yml": sharedDoc,
-		"traefik.yml":         "certificatesResolvers:\n  letsencrypt:\n    acme:\n      email: \"ops@example.com\"\n      caServer: \"" + CAProduction + "\"\n",
+		"traefik.yml":         "certificatesResolvers:\n  http:\n    acme:\n      email: \"ops@example.com\"\n      caServer: \"" + CAProduction + "\"\n",
 		"compose.yml":         "services:\n  traefik:\n    image: traefik:v3.8.1\n",
 	}
 	never := func(string, string) (string, error) { t.Fatal("hashed on a re-run"); return "", nil }
@@ -378,6 +389,11 @@ func TestResolveReuses(t *testing.T) {
 	if err != nil || v.Domain != "example.com" || v.Email != "ops@example.com" || v.AuthEntry != "dash:$2y$05$OURS" ||
 		v.AuthOrigin != "reused" || v.Image != "traefik:v3.8.1" || v.Acme.Reset {
 		t.Fatalf("re-run: %+v %v", v, err)
+	}
+	// A server whose traefik.yml names the resolver letsencrypt keeps its address and CA.
+	cur["traefik.yml"] = strings.Replace(cur["traefik.yml"], "  http:\n", "  letsencrypt:\n", 1)
+	if v, err = Resolve(out, p, o, cur, "nonempty", false, never); err != nil || v.Email != "ops@example.com" || v.Acme.CA != CAProduction || v.Acme.Reset {
+		t.Fatalf("re-run over the former resolver name: %+v %v", v, err)
 	}
 	// A broken entry is no reason to refuse a run that sets the credentials.
 	cur["dynamic/_shared.yml"] = "http:\n  middlewares:\n    traefik-dashboard-auth:\n      basicAuth:\n        users: [junk]\n"
@@ -410,7 +426,7 @@ func TestResolveReuses(t *testing.T) {
 }
 
 func TestResolveDashboard(t *testing.T) {
-	static := "certificatesResolvers:\n  letsencrypt:\n    acme:\n      email: \"ops@example.com\"\n      caServer: \"" + CAProduction + "\"\n"
+	static := "certificatesResolvers:\n  http:\n    acme:\n      email: \"ops@example.com\"\n      caServer: \"" + CAProduction + "\"\n"
 	off := "http:\n  middlewares:\n    gzip-compression: {compress: {}}\n"
 	never := func(string, string) (string, error) { t.Fatal("hashed"); return "", nil }
 	hash := func(u, pw string) (string, error) { return u + ":$2y$05$h", nil }
@@ -709,7 +725,7 @@ func TestRemoteStartResetsBetweenStopAndUp(t *testing.T) {
 	os.MkdirAll(filepath.Join(apps, "traefik"), 0o755)
 	os.MkdirAll(bin, 0o755)
 	acme := filepath.Join(root, "acme.json")
-	os.WriteFile(acme, []byte(`{"letsencrypt":{}}`), 0o600)
+	os.WriteFile(acme, []byte(`{"http":{}}`), 0o600)
 	log := filepath.Join(root, "log")
 	os.WriteFile(filepath.Join(bin, "docker"), []byte(`#!/bin/sh
 printf '%s size=%s\n' "$*" "$(wc -c < "$ACME")" >> "$LOG"
@@ -736,14 +752,14 @@ exit 0
 	}
 	b, _ := os.ReadFile(log)
 	calls := string(b)
-	stop, up := strings.Index(calls, "compose -p traefik stop traefik size=18"), strings.Index(calls, "compose -p traefik up -d size=0")
+	stop, up := strings.Index(calls, "compose -p traefik stop traefik size=11"), strings.Index(calls, "compose -p traefik up -d size=0")
 	if stop < 0 || up < 0 || stop > up {
 		t.Fatalf("not stop (store whole) then up (store empty):\n%s", calls)
 	}
 	if strings.Contains(calls, "restart") {
 		t.Errorf("restarted on top of the stop:\n%s", calls)
 	}
-	if a, _ := os.ReadFile(acme + ".20261019T000000Z"); string(a) != `{"letsencrypt":{}}` {
+	if a, _ := os.ReadFile(acme + ".20261019T000000Z"); string(a) != `{"http":{}}` {
 		t.Errorf("archive %q", a)
 	}
 
@@ -752,7 +768,7 @@ exit 0
 	for _, c := range []struct{ name, stopRC string }{{"stop fails", "1"}, {"truncate fails", ""}} {
 		os.WriteFile(log, nil, 0o644)
 		os.Remove(acme)
-		os.WriteFile(acme, []byte(`{"letsencrypt":{}}`), 0o600)
+		os.WriteFile(acme, []byte(`{"http":{}}`), 0o600)
 		stamp := "20261019T00000" + map[string]string{"1": "1Z", "": "2Z"}[c.stopRC]
 		t.Setenv("STOP_RC", c.stopRC)
 		if c.stopRC == "" {
@@ -770,7 +786,7 @@ exit 0
 				t.Errorf("%s: no %q in %q", c.name, want, e)
 			}
 		}
-		if got, _ := os.ReadFile(acme); string(got) != `{"letsencrypt":{}}` {
+		if got, _ := os.ReadFile(acme); string(got) != `{"http":{}}` {
 			t.Errorf("%s: the store changed: %q", c.name, got)
 		}
 	}
