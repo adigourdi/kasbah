@@ -630,6 +630,7 @@ whether its `.env` still matches this checkout's `.env.prod.example`, whether
 the mail stack knows the claimed domain (M03), whether `health.container` is
 healthy, what Traefik's `acme.json` holds for the project's domain, and whether
 the effective resource limits are within the host's ceiling (R04), whether
+the projects' own limits fit the host together (R06), whether
 every mail domain on it can sign (M04), whether the backup stack ran (B01) and
 whether the apps tree is the operators' group's. It also
 tightens T05 from a first-label heuristic to the hostnames that server really
@@ -740,16 +741,19 @@ Two modes:
 - **Explicit `VERSION`** — deploys that tagged version exactly as it was,
   read out of the `v<VERSION>` ref (no checkout, working tree untouched).
   See the rollback flow in `build-deploy.md`: it is the same code path, and
-  only three things differ — the log entry is `action=deploy`, the hook pair
-  is `pre-/post-deploy`, and there is no "must already be in versions.log"
-  precondition, since deploying a version here for the first time is exactly
-  what this mode is for. Its summary carries the same origin check as a
-  rollback's: a tag origin lacks is one `git:` line under it.
+  only four things differ — the log entry is `action=deploy`, the hook pair
+  is `pre-/post-deploy`, there is no "must already be in versions.log"
+  precondition, since deploying a version here for the first time is
+  exactly what this mode is for, and the tag's `resources:` is held to a
+  plain deploy's rules (refused when malformed, unresolvable or above the
+  ceiling) where a rollback warns and takes the ceiling. Its summary carries
+  the same origin check as a rollback's: a tag origin lacks is one `git:`
+  line under it.
 
 Flow (no-args / working-tree path):
-1. Open SSH ControlMaster for the whole deploy (reused by every ssh session and file transfer).
-2. Verify SSH reachability; ship the kasbah binary if the server's is absent or older (asking first when a dev build would replace a release — Hand-off below).
-3. Resolve version = HEAD's `v-tag`, cutting one first on an untagged HEAD of a project that builds nothing (`--bump=`).
+1. Resolve version = HEAD's `v-tag`, cutting one first on an untagged HEAD of a project that builds nothing (`--bump=`) — before anything connects.
+2. Open SSH ControlMaster for the whole deploy (reused by every ssh session and file transfer).
+3. Verify SSH reachability; ship the kasbah binary if the server's is absent or older (asking first when a dev build would replace a release — Hand-off below).
 4. Snapshot what the run will overwrite (the sync targets and `.env`, so a
    failed `up` or health wait can revert — `build-deploy.md`), then ensure
    remote dirs exist (`/apps/<name>/`, `backups/`, `/apps/data/<name>/`).
@@ -758,7 +762,11 @@ Flow (no-args / working-tree path):
    up, so a failed deploy cannot leave a live route to nothing (`build-deploy.md`).
 6. Env drift check on VPS (`kasbah remote setup-env`) — run the setup if missing, prompt on drift.
    Then refresh the kasbah-managed `KASBAH_*` keys in `.env` (resource
-   limits from the server marker) — reserved prefix, exempt from drift.
+   limits from the server marker, or `kasbah.yml`'s `resources:` — resolved
+   on the server once step 1's tag exists and the server lock is held, before
+   step 4: a value above the marker's ceiling stops the run with nothing of the
+   project changed on the server, though a tag step 1 just cut stays in the
+   local repository) — reserved prefix, exempt from drift. The summary's `limits:` line says where each came from.
 7. Mail claim check (if manifest has `mail:`).
 8. Run the engine on the VPS, `kasbah remote deploy run`:
    - If `backup:` configured and its `check` exits 0 → run backup (against
@@ -820,9 +828,12 @@ Flow (see `build-deploy.md` for full detail):
    The extracted tree is then checked to hold every source the list names:
    `git archive` drops anything marked `export-ignore`, which `git ls-tree`
    still reports, so the tree that will actually ship is what gets validated.
-7. Env drift check, exactly as `deploy` runs it — v<target>'s
+7. Env drift check, as `deploy` runs it — v<target>'s
    `.env.prod.example` has just landed, and its keys may differ from the ones
    the server was last set up against. `--on-drift=` answers it headlessly.
+   v<target>'s `resources:` never stops it: a value above today's ceiling
+   warns and takes the marker's ceiling for that half, and a block this
+   kasbah refuses or a resolve that fails takes it for both.
 8. On VPS: run the engine in rollback mode, `kasbah remote deploy run`:
    - Run `pre-rollback` hooks against currently-running containers.
    - Retag `:<target>` as `:current` for each built image.
@@ -1029,8 +1040,11 @@ same words `deploy` uses for it.
 Drift-aware env setup. Ships the kasbah binary if the server's is absent or
 older, syncs `.env.prod.example` to `<apps>/<name>/`, runs the interactive setup
 there over `ssh -t` (`kasbah remote setup-env`), then refreshes the kasbah-managed `KASBAH_*` block in `.env` from
-the server marker's resource limits. See `env-template.md` for the template
-conventions and the managed block.
+the server marker's resource limits, or from `kasbah.yml`'s `resources:`
+resolved on the server before the template ships (a value above the marker's
+ceiling stops the run there, exit 1); the closing `limits:` line names the
+source. See `env-template.md` for the template conventions and the managed
+block.
 
 The injection is not optional decoration: a `.env` without `KASBAH_CPU_LIMIT`
 makes `compose up` fail outright, so a command whose job is producing a usable

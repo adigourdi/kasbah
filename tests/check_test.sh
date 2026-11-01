@@ -245,6 +245,27 @@ assert '[ "$rc" = "0" ]' "S08: a well-formed client: passes (got $rc: $out)"
 assert 'grep -qF "✓ client '"'"'acme'"'"' names a backup repository kasbah can create" <<<"$out"' \
     "and says which repository it is (said '$out')"
 
+# --- Case 9e: R05 — kasbah.yml's resources: --------------------------------
+#
+# A bare memory number would be bytes to docker and is refused naming the units;
+# a well-formed block passes, and a project without one says nothing about it.
+proj9e="$tmpdir/bad-resources"
+make_project "$proj9e"
+printf 'resources:\n  cpus: 50%%\n  memory: 512\n' >> "$proj9e/kasbah.yml"
+out="$(cd "$proj9e" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]' "R05: a bare resources.memory fails the check (got $rc)"
+assert 'grep -qF "✗ kasbah.yml: resources.memory '"'"'512'"'"' has no unit" <<<"$out" && grep -qF "m, g or %" <<<"$out"' \
+    "naming the value and the three units (said '$out')"
+
+proj9f="$tmpdir/good-resources"
+make_project "$proj9f"
+printf 'resources:\r\n  cpus: 1.5\r\n  memory: 2g\r\n' >> "$proj9f/kasbah.yml"
+out="$(cd "$proj9f" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]' "R05: a well-formed resources: passes, CRLF and all (got $rc: $out)"
+assert 'grep -qF "✓ resources: cpus 1.5, memory 2g" <<<"$out"' "and names what it sets (said '$out')"
+out="$(cd "$proj9d" && "$kasbah" check 2>&1)"
+assert '! grep -qF "resources:" <<<"$out"' "R05 is silent on a project without resources: (said '$out')"
+
 # --- Case 10: --help in dispatcher lists check -------------------------------
 out="$("$kasbah" --help 2>&1)"
 assert 'grep -qF "check" <<<"$out"' "--help mentions check"

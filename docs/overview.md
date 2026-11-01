@@ -72,7 +72,7 @@ the same battle-tested workflow without copying scripts between repos.
 | Build config | Lives in each project's `compose.yml` under `build:`. Kasbah does not duplicate it in the manifest. |
 | Traefik | One shared instance per VPS, managed by kasbah. It is attached to each project's own network at deploy, so it is the one container on more than one. |
 | Networks | Each project's routed containers join its own `kasbah` network (`<project>_kasbah`, not external), which deploy attaches Traefik to; every other service (DBs, caches, workers) lives on a project-internal network. No two projects share a network, so a compromised container reaches its own project only. The mail stack has its own too, and apps send through its public submission port. The shared `kasbah-net` remains for legacy projects, warned by `check`. |
-| Resources | Every service sets hard limits `cpus: ${KASBAH_CPU_LIMIT}` / `mem_limit: ${KASBAH_MEM_LIMIT}` — 90% of host cores/RAM, computed at `server init`, injected into each project's `.env` at deploy. No reservations: ceilings against total takeover, not fair-share slices. |
+| Resources | Every service sets hard limits `cpus: ${KASBAH_CPU_LIMIT}` / `mem_limit: ${KASBAH_MEM_LIMIT}` — 90% of host cores/RAM, computed at `server init`, injected into each project's `.env` at deploy. No reservations: ceilings against total takeover, not fair-share slices. A project may set lower per-container limits of its own in `kasbah.yml`'s `resources:` — cores, `m`/`g`, or a `%` of the host resolved on the server — never above the ceiling; `check --server` warns when those add up past the host. |
 | Mail | Kasbah primitive (optional). Apps declare a domain in their manifest; admin manages accounts via DMS CLI. |
 | Databases/caches | Always per-project. Kasbah does not run shared Postgres/Redis. |
 | Hooks | Run via `docker exec` inside a project container. No host scripts get copied into projects. |
@@ -154,4 +154,5 @@ Chosen defaults (overridable via `kasbah server init --apps-path=...`):
   vendor no kasbah code, and servers run none but the kasbah binary.
 - **Versioned state** — every file kasbah writes (on dev and VPS) records its
   version, and from 1.0.0 the schema is frozen: a change goes through an
-  explicit `kasbah migrate`.
+  explicit `kasbah migrate`. An optional key that an older kasbah ignores is
+  not a change of schema.

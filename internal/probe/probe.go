@@ -6,6 +6,7 @@ package probe
 import (
 	"bytes"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -60,15 +61,24 @@ func B64(p string) string {
 	if p == "" {
 		return ""
 	}
-	fi, err := os.Stat(p)
-	if err != nil || !fi.Mode().IsRegular() {
-		return ""
-	}
-	b, err := os.ReadFile(p)
+	b, err := ReadRegular(p)
 	if err != nil {
 		return ""
 	}
 	return base64.StdEncoding.EncodeToString(b)
+}
+
+// ReadRegular is p's contents when p is a regular file: a FIFO or a device
+// is refused rather than opened, so a read never blocks on one.
+func ReadRegular(p string) ([]byte, error) {
+	fi, err := os.Stat(p)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", p)
+	}
+	return os.ReadFile(p)
 }
 
 // Flat is a command's output as one protocol value: CRs dropped, newlines

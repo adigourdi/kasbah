@@ -9,9 +9,7 @@ import (
 	"io/fs"
 	"math/big"
 	"os"
-	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +17,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/deploy"
+	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/envtpl"
 	"github.com/adigourdi/kasbah/internal/mail"
 	"github.com/adigourdi/kasbah/internal/mailreg"
@@ -26,6 +25,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/probe"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/resources"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/serverinit"
 	"github.com/adigourdi/kasbah/internal/ssh"
@@ -57,7 +57,8 @@ Flags:
                       the claimed domain (M03) and hold a DKIM key for every
                       domain it serves (M04), is health.container healthy, is
                       there a certificate for the domain, are the effective
-                      resource limits within the host's ceiling (R04), and — on
+                      resource limits within the host's ceiling (R04), do the
+                      projects' own limits fit the host together (R06), and — on
                       a server with backups configured — has the backup stack
                       run, and did the last run work (B01). It also
                       tightens T05 to the hostnames this server really owns.
@@ -151,6 +152,37 @@ type ServerReport struct {
 	DKIMKeys      []string `json:"dkim_keys"`
 	DKIMConfState string   `json:"dkim_conf_state"`
 	DKIMConf      string   `json:"dkim_conf_b64"`
+	// Limits is every project's KASBAH_CPU_LIMIT / KASBAH_MEM_LIMIT, read from
+	// its .env's managed block and nothing else of it; Host* the host's totals.
+	Limits    []ProjectLimits `json:"limits"`
+	HostCores int64           `json:"host_cores"`
+	HostMemKB int64           `json:"host_mem_kb"`
+}
+
+// ProjectLimits is one project's managed limits.
+type ProjectLimits struct {
+	Name string `json:"name"`
+	CPU  string `json:"cpu"`
+	Mem  string `json:"mem"`
+}
+
+// projectLimits reads the managed block of every project's .env under apps.
+func projectLimits(apps string) []ProjectLimits {
+	out := []ProjectLimits{}
+	ents, err := os.ReadDir(apps)
+	if err != nil {
+		return out
+	}
+	for _, e := range ents {
+		n := e.Name()
+		if !e.IsDir() || probe.IsReserved(n) || strings.HasPrefix(n, ".") {
+			continue
+		}
+		if cpu, mem, ok := env.ManagedLimits(apps + "/" + n + "/.env"); ok && (cpu != "" || mem != "") {
+			out = append(out, ProjectLimits{Name: n, CPU: cpu, Mem: mem})
+		}
+	}
+	return out
 }
 
 // Remote is `kasbah remote check APPS DATA NAME HEALTH`, run by the server
@@ -184,6 +216,8 @@ func CollectServer(apps, data, name, health string) *ServerReport {
 		Backup:        backuprec.Collect(apps, data),
 	}
 	r.GroupState, r.PermsCount, r.Perms = Perms(apps, data, Group)
+	r.Limits = projectLimits(apps)
+	r.HostCores, r.HostMemKB, _ = resources.Host()
 	r.DKIMState, r.DKIMKeys = dkimKeys(mail.DKIMDir(data))
 	if r.DKIMConfState = stated(mail.DKIMConf(data), probe.FState); r.DKIMConfState == "file" {
 		r.DKIMConf = probe.B64(mail.DKIMConf(data))
@@ -438,6 +472,7 @@ func (c *checker) serverSection() {
 	c.serverHealth()
 	c.cert()
 	c.r04()
+	c.r06()
 	c.b01()
 	c.groupPerms()
 }
@@ -764,64 +799,6 @@ func envValue(content []byte, key string) string {
 	return v
 }
 
-var reCPU = regexp.MustCompile(`^([0-9]+(\.[0-9]+)?|\.[0-9]+)$`)
-
-// cmpCPU is above, below, same or unknown.
-func cmpCPU(a, b string) string {
-	a, b = strings.TrimSuffix(a, "\r"), strings.TrimSuffix(b, "\r")
-	if !reCPU.MatchString(a) || !reCPU.MatchString(b) {
-		return "unknown"
-	}
-	x, _ := strconv.ParseFloat(a, 64)
-	y, _ := strconv.ParseFloat(b, 64)
-	switch {
-	case x > y:
-		return "above"
-	case x < y:
-		return "below"
-	}
-	return "same"
-}
-
-var reMem = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?|\.[0-9]+) ?(b|[kmgtp](?:i?b)?)?$`)
-
-// MemBytes is a memory size in bytes as docker reads one — a decimal, an
-// optional space, a binary unit with an optional b or ib, any case, the
-// fraction truncated; ok false when it is not one or overflows int64.
-func MemBytes(v string) (int64, bool) {
-	m := reMem.FindStringSubmatch(strings.ToLower(strings.TrimSuffix(v, "\r")))
-	if m == nil {
-		return 0, false
-	}
-	n, ok := new(big.Rat).SetString(m[1])
-	if !ok {
-		return 0, false
-	}
-	if m[2] != "" && m[2] != "b" {
-		unit := new(big.Int).Lsh(big.NewInt(1), uint(10*(strings.IndexByte("kmgtp", m[2][0])+1)))
-		n.Mul(n, new(big.Rat).SetInt(unit))
-	}
-	q := new(big.Int).Quo(n.Num(), n.Denom())
-	if !q.IsInt64() {
-		return 0, false
-	}
-	return q.Int64(), true
-}
-
-func cmpMem(a, b string) string {
-	x, ok1 := MemBytes(a)
-	y, ok2 := MemBytes(b)
-	switch {
-	case !ok1 || !ok2:
-		return "unknown"
-	case x > y:
-		return "above"
-	case x < y:
-		return "below"
-	}
-	return "same"
-}
-
 // r04: the limits the containers get, against the ceiling the host was
 // measured at. Above fails; below warns. A literal in compose.prod.yml is
 // compared as written; a KASBAH_* reference through the server's .env.
@@ -848,12 +825,20 @@ func (c *checker) r04() {
 		}
 		note += n
 	}
-	cmpC, cmpM := cmpCPU(cpu, hostCPU), cmpMem(mem, hostMem)
+	cmpC, cmpM := resources.CmpCPU(cpu, hostCPU), resources.CmpMem(mem, hostMem)
 	if !useCPU {
 		cmpC = "same"
 	}
 	if !useMem {
 		cmpM = "same"
+	}
+	// Below the ceiling is what kasbah.yml's resources: asks for.
+	var own []string
+	if cmpC == "below" && c.res.CPUs != "" {
+		cmpC, own = "same", append(own, "cpus")
+	}
+	if cmpM == "below" && c.res.Memory != "" {
+		cmpM, own = "same", append(own, "memory")
 	}
 	switch cmpC {
 	case "above":
@@ -890,7 +875,58 @@ func (c *checker) r04() {
 		if useMem {
 			used = append(used, mem)
 		}
+		if len(own) > 0 {
+			c.passf("effective resource limits on %s are within the host's 90%% ceiling (%s) — %s set by kasbah.yml's resources:", s.target, strings.Join(used, ", "), strings.Join(own, " and "))
+			return
+		}
 		c.passf("effective resource limits on %s match the host's 90%% ceiling (%s)", s.target, strings.Join(used, ", "))
+	}
+}
+
+// r06: the projects that set their own limits (below the ceiling) are shares,
+// and their sum should fit the host. A project on the ceiling is a cap
+// against takeover, not a share, and is left out.
+func (c *checker) r06() {
+	s := c.srv
+	if s.r.HostCores <= 0 || s.r.HostMemKB <= 0 {
+		return
+	}
+	cpuSum, memSum := new(big.Rat), int64(0)
+	var cpus, mems []string
+	for _, p := range s.r.Limits {
+		if resources.CmpCPU(p.CPU, s.mk.CPULimit) == "below" {
+			n, _ := resources.Cores(p.CPU)
+			cpuSum.Add(cpuSum, n)
+			cpus = append(cpus, p.Name+" "+p.CPU)
+		}
+		if resources.CmpMem(p.Mem, s.mk.MemLimit) == "below" {
+			n, _ := resources.MemBytes(p.Mem)
+			memSum += n
+			mems = append(mems, p.Name+" "+p.Mem)
+		}
+	}
+	if len(cpus) == 0 && len(mems) == 0 {
+		return
+	}
+	hostMiB := s.r.HostMemKB / 1024
+	over := false
+	if cpuSum.Cmp(new(big.Rat).SetInt64(s.r.HostCores)) > 0 {
+		over = true
+		c.warnf("the projects on %s with their own cpus limit add up to %s cores, more than the host's %d: %s — each limit caps one container, so together they can still starve each other", s.target, cpuSum.FloatString(1), s.r.HostCores, strings.Join(cpus, ", "))
+	}
+	if memSum > s.r.HostMemKB*1024 {
+		over = true
+		c.warnf("the projects on %s with their own memory limit add up to %dm, more than the host's %dm: %s — each limit caps one container, so together they can still run the host out of memory", s.target, memSum>>20, hostMiB, strings.Join(mems, ", "))
+	}
+	if !over {
+		var fit []string
+		if len(cpus) > 0 {
+			fit = append(fit, fmt.Sprintf("%s of %d cores", cpuSum.FloatString(1), s.r.HostCores))
+		}
+		if len(mems) > 0 {
+			fit = append(fit, fmt.Sprintf("%dm of %dm", memSum>>20, hostMiB))
+		}
+		c.passf("the projects on %s with limits of their own fit the host together (%s)", s.target, strings.Join(fit, ", "))
 	}
 }
 
@@ -918,9 +954,9 @@ func (c *checker) r04Literals(hostCPU, hostMem string) (useCPU, useMem bool) {
 				continue
 			}
 			n++
-			host, cmp := hostCPU, cmpCPU(v, hostCPU)
+			host, cmp := hostCPU, resources.CmpCPU(v, hostCPU)
 			if k.key == "mem_limit" {
-				host, cmp = hostMem, cmpMem(v, hostMem)
+				host, cmp = hostMem, resources.CmpMem(v, hostMem)
 			}
 			switch cmp {
 			case "above":

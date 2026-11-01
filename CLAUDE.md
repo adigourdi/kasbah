@@ -81,7 +81,8 @@ truth; `plan/` holds what is intended and queued (roadmap, backlog, research).
 the `_shared.yml` middleware names; `versions.log`'s four positional
 fields (new data = appended `key=value` pairs); the `KASBAH_` env-var
 prefix (reserved, injected at deploy, exempt from drift); the manifest schema
-(1, frozen at 1.0.0 — a change goes through `kasbah migrate`); release tags
+(1, frozen at 1.0.0 — a change goes through `kasbah migrate`; an optional key
+older kasbah ignores is allowed without a bump); release tags
 `vMAJOR.MINOR.PATCH` and assets `kasbah_<ver>_linux_<arch>`,
 `kasbah_<ver>_darwin_<arch>`, `get.sh`,
 `checksums.txt`, `checksums.txt.minisig`; the installer URL

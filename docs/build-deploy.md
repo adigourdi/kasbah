@@ -306,16 +306,20 @@ below). The only differences:
 - Hook pair is `pre-deploy` / `post-deploy` (not `pre-rollback` / `post-rollback`).
 - No "must be in versions.log" precondition — you're allowed to deploy
   a version for the first time.
+- The tag's `resources:` is held to a plain deploy's rules — refused when this
+  kasbah refuses the block, it cannot be resolved, or a value resolves above
+  the ceiling — where a rollback warns and takes the ceiling (rollback flow,
+  step 9).
 
 ### Flow (no-args path — working tree)
 
 ```
-1. Open SSH ControlMaster (see "SSH multiplexing" below).
-2. Check SSH reachability (fail fast), and ship the kasbah binary to
+1. Resolve version = HEAD's v-tag, cutting one first when HEAD has none
+   (`--bump=`, Versioning contract) — before anything connects.
+2. Open SSH ControlMaster (see "SSH multiplexing" below).
+3. Check SSH reachability (fail fast), and ship the kasbah binary to
    <apps>/.kasbah/bin/kasbah if the server's is absent or older — asking
    first when a dev build would replace a release (`cli.md` → Hand-off).
-3. Resolve version = HEAD's v-tag, cutting one first when HEAD has none
-   (`--bump=`, Versioning contract).
 4. Snapshot what the run will overwrite (`kasbah remote deploy snapshot`:
    the sync targets and `.env`, into <name>/.kasbah-prev/ — see "A deploy
    that fails … reverts" above), then ensure remote dirs exist
@@ -328,8 +332,12 @@ below). The only differences:
      DRIFT from template  → prompt: re-run setup / continue / abort
      OK                   → continue
    Then refresh the kasbah-managed `KASBAH_*` keys in `.env` (resource
-   limits read from the server marker). The `KASBAH_` prefix is reserved
-   and exempt from drift detection.
+   limits read from the server marker, or `kasbah.yml`'s `resources:`
+   resolved on the server — once step 1's tag exists and the server lock is
+   held, before step 4, so a value above the ceiling is refused with nothing
+   of the project changed on the server; a tag step 1 just cut stays in the
+   local repository). The `KASBAH_` prefix is
+   reserved and exempt from drift detection.
 7. Mail claim (if manifest has `mail:`):
      look for a mail stack on the server   # today: warn and continue when absent
      verify claimed domain is listed in /apps/mail/kasbah.yml   # warns, never stops
@@ -657,9 +665,13 @@ small without sacrificing history.
    exits 0 with empty output for a path it does not have, so the check
    compares the returned set against the requested one rather than
    trusting an exit status.
-9. Env drift check, exactly as a deploy runs it (step 6 there): render
-   .env when it is missing, prompt on drift, then refresh the managed
-   KASBAH_* block. v<target>'s .env.prod.example is what just landed in
+9. Env drift check, as a deploy runs it (step 6 there): render .env when
+   it is missing, prompt on drift, then refresh the managed KASBAH_* block.
+   One difference: v<target>'s `resources:` never stops a rollback — a value
+   above today's ceiling warns and takes the marker's ceiling for that half,
+   and a block this kasbah refuses or a resolve that fails takes it for both
+   (resolved before step 8, so nothing has shipped when it warns).
+   v<target>'s .env.prod.example is what just landed in
    step 8, so this is the step that notices a template whose keys have
    changed since. --on-drift= answers it without a terminal; exit 5 when
    there is no answer to be had.

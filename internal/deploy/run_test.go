@@ -46,6 +46,9 @@ type fake struct {
 	injects [][]string
 	spec    *Spec
 	token   string
+	// limits is setup-env limits' answer, when set; limitsRC its exit.
+	limits   string
+	limitsRC int
 }
 
 func (f *fake) log(c string) { f.calls = append(f.calls, c) }
@@ -78,6 +81,16 @@ func (f *fake) Inject(dir string, pairs []string) int {
 	f.log("inject")
 	f.injects = append(f.injects, pairs)
 	return 0
+}
+func (f *fake) Limits(cpus, memory string) (string, int) {
+	f.log("limits " + cpus + " " + memory)
+	if f.limitsRC != 0 {
+		return "", f.limitsRC
+	}
+	if f.limits != "" {
+		return f.limits, 0
+	}
+	return "host_cores=2\nhost_mem_kb=2097152\ncpu=0.5\nmem=512m\n", 0
 }
 func (f *fake) Drift(string) (string, int) {
 	f.log("drift")
@@ -254,6 +267,46 @@ func TestRunInterruptedLeavesTheServerToFinish(t *testing.T) {
 		t.Error("the fragment was shipped")
 	}
 	noState(t, "interrupted")
+}
+
+func exitOf(err error) int {
+	var ce *cli.Error
+	if errors.As(err, &ce) {
+		return ce.Code
+	}
+	return -1
+}
+
+func TestRunResources(t *testing.T) {
+	project(t, "resources:\n  cpus: 25%\n  memory: 512m\n")
+	f := &fake{}
+	err, out := deployWith(t, f, Options{Target: "d@h", SkipHooks: true, NoHealthWait: true, AllowStopped: true})
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if len(f.injects) != 1 || strings.Join(f.injects[0], " ") != "KASBAH_CPU_LIMIT=0.5 KASBAH_MEM_LIMIT=512m" ||
+		!strings.Contains(out, "limits:  KASBAH_CPU_LIMIT=0.5 KASBAH_MEM_LIMIT=512m (from kasbah.yml resources)") {
+		t.Errorf("resolved limits: %v\n%s", f.injects, out)
+	}
+	if f.calls[1] != "limits 25% 512m" {
+		t.Errorf("resolved before the sync: %v", f.calls)
+	}
+
+	project(t, "resources:\n  memory: 2g\n")
+	f = &fake{limits: "host_cores=2\nhost_mem_kb=2097152\nmem=2g\n"}
+	err, out = deployWith(t, f, Options{Target: "d@h", SkipHooks: true, NoHealthWait: true, AllowStopped: true})
+	if exitOf(err) != 1 || !strings.Contains(out, "resources.memory '2g' comes to 2g on d@h") || !strings.Contains(out, "ceiling of 1g") ||
+		f.called("sync") || f.called("inject") || f.called("run") {
+		t.Errorf("above the ceiling: %v %v\n%s", err, f.calls, out)
+	}
+	noState(t, "above the ceiling")
+
+	project(t, "resources:\n  memory: 512\n")
+	f = &fake{}
+	err, out = deployWith(t, f, Options{Target: "d@h"})
+	if exitOf(err) != 1 || !strings.Contains(out, "has no unit") || f.called("marker") {
+		t.Errorf("a bare memory is refused before dialing: %v %v\n%s", err, f.calls, out)
+	}
 }
 
 func TestRunSuccess(t *testing.T) {

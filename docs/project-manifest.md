@@ -91,6 +91,13 @@ backup:
   pipe: gzip
   retain: 10
 
+# Per-project limits, each container's own ceiling instead of the server's
+# 90%. Either half may be left out. A % is a share of the whole host, worked
+# out on the server at deploy; a value above the server's ceiling is refused.
+resources:
+  cpus: 2          # cores, at most one decimal (0.5), or a share (25%)
+  memory: 25%      # MiB (512m), GiB (2g) or a share — a bare number is refused
+
 # Mail claim — tells kasbah this project expects `mail.<domain>` (and SMTP)
 # to be available. The deploy checks the stack is there and that its registry
 # serves the domain, and warns without stopping when either is not so. Account
@@ -105,9 +112,9 @@ mail:
 Types are what the YAML says, not what it can be printed as. A text field
 (`name`, `domain`, `client`, `kasbah_version`, every command, container and
 domain below) takes a string — a number reads as its text — and refuses a
-boolean, a list or a block; a block (`health`, `hooks`, `backup`, `mail`) that
-is not a mapping is refused, and an absent or null one means none (`false`
-too, for `health`, `backup` and `mail`); `sync` must be a list. The one boolean a text field takes is `backup.check`'s, below.
+boolean, a list or a block; a block (`health`, `hooks`, `backup`, `resources`,
+`mail`) that is not a mapping is refused, and an absent or null one means none
+(`false` too, for `health`, `backup` and `mail`); `sync` must be a list. The one boolean a text field takes is `backup.check`'s, below.
 
 ### `schema` *(required)*
 
@@ -117,7 +124,9 @@ than the installed binary. In the other direction, every kasbah version
 reads all older schemas of its own major; crossing a major boundary requires
 `kasbah migrate` (see the compatibility policy in `overview.md`). Schema 1 is
 **frozen as of kasbah 1.0.0**: any change to the format is a new schema number
-and goes through an explicit migration. `kasbah --version` prints it.
+and goes through an explicit migration — except an optional key that an older
+kasbah ignores, which schema 1 takes without a bump (`resources:` is one).
+`kasbah --version` prints it.
 
 ### `kasbah_version` *(required, auto-written)*
 
@@ -303,6 +312,51 @@ exists before any hook touches live state.
 - `extension` — filename extension (resulting file:
   `backups/pre-deploy-<timestamp>.<extension>`).
 - `retain` — number of backups to keep (oldest are deleted on success).
+
+### `resources` *(optional)*
+
+The project's own resource limits, in place of the server's 90% ceiling:
+
+```yaml
+resources:
+  cpus: 1.5      # cores, or a share of the host: 25%
+  memory: 2g     # 512m, 2g, or a share of the host: 25%
+```
+
+Either key may be left out; an absent block, or an absent half, keeps the
+server marker's ceiling for that half. What a deploy writes into the managed
+block of `.env` (`KASBAH_CPU_LIMIT`, `KASBAH_MEM_LIMIT` — `env-template.md`) is
+then this value, so every service on the variables gets it: it is a
+**per-container** ceiling, not a budget the project's containers share.
+
+- `cpus` — a number of cores above 0 with at most one decimal (`0.5`, `2`;
+  compose's meaning), or a whole percentage from `1%` to `100%`.
+- `memory` — whole MiB with `m` or GiB with `g` (`512m`, `2g`; at least
+  docker's `6m`), or a whole percentage. A bare number is refused naming the
+  three: docker would read it as bytes. A percentage that comes to less than
+  `6m` on the host it resolves on (`1%` of a 512 MiB host) is refused there,
+  as the server binary resolves it.
+
+A `%` is a share of the **whole host** — `100%` is all of it — and is resolved
+on the server, by the server binary reading its own CPU count and `MemTotal`,
+the same two numbers `server init` measured. It is spelled the way the marker
+spells its ceilings (`server-setup.md` → How the numbers are spelled): cores
+with one decimal, floored to the tenth and never below `0.1`; memory floored to
+whole GiB, else whole MiB. A bare core count gains its decimal (`2` → `2.0`);
+`m` and `g` are written as given. So `.env` stays byte-identical across deploys
+to an unchanged host.
+
+The resolved values are held to the marker's 90% ceiling **before anything of
+the project changes on the server** — at `deploy` before the sync, at
+`kasbah env` before the template ships: a value above it fails with exit 1,
+naming the field, what it came to and the ceiling. `deploy X.Y.Z` holds the
+tag's block to the same rules (a block this kasbah refuses stops it before any
+connection). `rollback` alone never refuses over it, so a version a server has
+run stays rollable: a value above today's ceiling warns and takes the ceiling
+for that half, and a block this kasbah refuses or a resolve that fails warns
+and takes the ceiling for both. `kasbah check` validates the block (R05) and
+`check --server` sums the projects that set limits of their own (R06,
+`compliance.md`).
 
 ### `mail` *(optional)*
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -135,7 +136,7 @@ func testProbeScript(t *testing.T, sh shtest.Shell) {
 	stubs(t)
 	root := t.TempDir()
 	apps, data, ptr := root+"/my apps", root+"/my apps/data", root+"/etc/kasbah/apps-path"
-	out, e, rc := runScript(t, sh, probeScript, nil, apps, data, ptr)
+	out, e, rc := runScript(t, sh, probeScript, []string{"OMP_NUM_THREADS=999", "OMP_THREAD_LIMIT=999"}, apps, data, ptr)
 	f, err := ParseProbe("d@h", out)
 	if rc != 0 || err != nil {
 		t.Fatalf("probe: %d %v %s", rc, err, e)
@@ -143,6 +144,9 @@ func testProbeScript(t *testing.T, sh shtest.Shell) {
 	if f["apps_state"] != "absent" || f["apps_root_state"] != "absent" || f["pointer_state"] != "absent" ||
 		f["sudo_nopasswd"] != "yes" || f["acme_store"] != "absent" || f["compose_version"] != "2.29.7" {
 		t.Errorf("bare host: %v", f)
+	}
+	if f["nproc"] != strconv.Itoa(runtime.NumCPU()) {
+		t.Errorf("nproc %q, not the %d CPUs this process may run on", f["nproc"], runtime.NumCPU())
 	}
 	os.MkdirAll(data+"/traefik/letsencrypt", 0o755)
 	os.WriteFile(data+"/traefik/letsencrypt/acme.json", []byte("{}"), 0o600)

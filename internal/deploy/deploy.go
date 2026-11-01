@@ -260,6 +260,7 @@ type run struct {
 	p       *Plan
 	s       Server
 	mk      *marker.Marker
+	lim     env.Limits
 	target  string
 	version string
 	dir     string
@@ -324,6 +325,10 @@ func Run(c Ctx, o Options) error {
 	unlock := sync.OnceFunc(hold)
 	defer unlock()
 	r.dir = r.mk.AppsPath + "/" + m.Name
+	// Before the sync: a limit over the ceiling is refused with nothing changed.
+	if r.lim, err = env.Resolve(c.Out, r.s, r.target, r.p.Resources, r.mk, false); err != nil {
+		return err
+	}
 
 	claim, err := r.readClaim()
 	if err != nil {
@@ -336,7 +341,7 @@ func Run(c Ctx, o Options) error {
 	// After the sync (the setup prompts from the template it shipped) and
 	// before the engine (compose reads what it writes).
 	st := &env.Step{Out: c.Out, Prompter: c.Prompter, S: r.s, Target: r.target, TTYIn: c.TTYIn, TTYOut: c.TTYOut, Color: c.Color}
-	if err := st.Run(r.dir, r.mk.CPULimit, r.mk.MemLimit, o.OnDrift, false); err != nil {
+	if err := st.Run(r.dir, r.lim.CPU, r.lim.Mem, o.OnDrift, false); err != nil {
 		return err
 	}
 	if claim != nil {
@@ -628,7 +633,7 @@ func (r *run) banner(headline string, rep *Report, client string, shipped bool) 
 	o, apps, name := r.c.Out, r.mk.AppsPath, r.m.Name
 	o.Info("%s", headline)
 	o.Info("  project: %s/%s   data: %s/%s", apps, name, r.mk.DataPath, name)
-	o.Info("  limits:  KASBAH_CPU_LIMIT=%s KASBAH_MEM_LIMIT=%s (from the server marker)", r.mk.CPULimit, r.mk.MemLimit)
+	o.Info("  limits:  KASBAH_CPU_LIMIT=%s KASBAH_MEM_LIMIT=%s (%s)", r.lim.CPU, r.lim.Mem, r.lim.Source)
 	if shipped {
 		o.Info("  routing: %s/traefik/dynamic/%s.yml (Traefik reloads within a couple of seconds)", apps, name)
 	}

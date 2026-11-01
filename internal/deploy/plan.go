@@ -12,6 +12,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/buildpush"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/manifest"
+	"github.com/adigourdi/kasbah/internal/resources"
 	"github.com/adigourdi/kasbah/internal/tree"
 )
 
@@ -37,6 +38,10 @@ type Plan struct {
 	Images []string
 	Health Health
 	Backup *Backup
+	// Resources is resources: as written; ResourcesNote why a tag's was
+	// unusable.
+	Resources     resources.Spec
+	ResourcesNote string
 }
 
 func trim(s string) string { return strings.TrimFunc(s, unicode.IsSpace) }
@@ -220,6 +225,21 @@ func readClient(m *manifest.Manifest, p *Plan, historical bool) error {
 		return cli.Fail("kasbah.yml: %s", why)
 	}
 	p.Client = raw
+	return nil
+}
+
+// readResources judges resources:; a tag's unusable block is noted, for a
+// rollback to take the ceilings instead and a named deploy to refuse.
+func readResources(m *manifest.Manifest, p *Plan, historical bool) error {
+	spec, err := resources.Read(m)
+	switch {
+	case err == nil:
+		p.Resources = spec
+	case historical:
+		p.ResourcesNote = err.Error()
+	default:
+		return cli.Fail("kasbah.yml: %v", err)
+	}
 	return nil
 }
 
@@ -476,6 +496,9 @@ func readPlan(m *manifest.Manifest, pwd, version string, historical bool) (*Plan
 		return nil, err
 	}
 	if err := readHooks(m, p, historical); err != nil {
+		return nil, err
+	}
+	if err := readResources(m, p, historical); err != nil {
 		return nil, err
 	}
 	for _, f := range []func(*manifest.Manifest, *Plan) error{readHealth, readBackup} {

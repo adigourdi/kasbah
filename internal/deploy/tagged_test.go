@@ -405,3 +405,51 @@ func TestRollbackStepsOverDirty(t *testing.T) {
 		t.Errorf("gave up: the dirty endpoint is not read as its base tag\n%s", out)
 	}
 }
+
+// A rollback never refuses over resources:: a block this kasbah refuses or a
+// resolve that fails takes the whole ceiling, a value above it that half's.
+// A named deploy is held to a plain deploy's rules.
+func TestTaggedResources(t *testing.T) {
+	prev := "{\"" + ReportKey + "\":1,\"version\":\"1.0.0\",\"prev_version\":\"2.0.0\",\"deployed_before\":true,\"backup\":\"no-backup\",\"digest\":\"-\"}\n"
+	for _, tc := range []struct {
+		name, block, warn string
+		f                 *fake
+	}{
+		{"above the ceiling", "resources:\n  memory: 2g\n", "resources.memory '2g' comes to 2g on d@h (2 cores, 2097152 kB), above the server's 90% ceiling of 1g — taking the ceiling",
+			&fake{limits: "host_cores=2\nhost_mem_kb=2097152\nmem=2g\n"}},
+		{"malformed", "resources:\n  memory: 512\n", "resources.memory '512' has no unit", &fake{}},
+		{"malformed beside a valid half", "resources:\n  cpus: 0.5\n  memory: 512\n", "resources.memory '512' has no unit", &fake{}},
+		{"a failing resolve", "resources:\n  memory: 1%\n", "could not resolve the resources: of the manifest in this version on d@h", &fake{limitsRC: 1}},
+	} {
+		t.Run("rollback "+tc.name, func(t *testing.T) {
+			history(t, tc.block)
+			tc.f.record, tc.f.out = record(twoDeploys, "", true), &prev
+			err, out := runTagged(t, tc.f, Options{Target: "d@h"}, "rollback")
+			if err != nil {
+				t.Fatalf("%v\n%s", err, out)
+			}
+			if !strings.Contains(out, tc.warn) || len(tc.f.injects) != 1 || strings.Join(tc.f.injects[0], " ") != "KASBAH_CPU_LIMIT=1 KASBAH_MEM_LIMIT=1g" ||
+				!strings.Contains(out, "(from the server marker)") {
+				t.Errorf("warns and takes the ceiling: %v\n%s", tc.f.injects, out)
+			}
+		})
+	}
+
+	history(t, "resources:\n  memory: 2g\n")
+	f := &fake{limits: "host_cores=2\nhost_mem_kb=2097152\nmem=2g\n"}
+	err, out := runTagged(t, f, Options{Target: "d@h", Version: "1.0.0"}, "deploy")
+	if exitOf(err) != 1 || !strings.Contains(out, "resources.memory '2g' comes to 2g on d@h") || !strings.Contains(out, "ceiling of 1g") ||
+		f.called("sync") || f.called("inject") || f.called("run") || f.called("prepare") {
+		t.Errorf("a named deploy above the ceiling: %v %v\n%s", err, f.calls, out)
+	}
+	if v, _ := state.Get(state.File, "last_version"); v != "" {
+		t.Errorf("a refused deploy recorded last_version %q", v)
+	}
+
+	history(t, "resources:\n  memory: 512\n")
+	f = &fake{}
+	err, out = runTagged(t, f, Options{Target: "d@h", Version: "1.0.0"}, "deploy")
+	if exitOf(err) != 1 || !strings.Contains(out, "kasbah.yml in v1.0.0: resources.memory '512' has no unit") || f.called("marker") {
+		t.Errorf("a named deploy of a malformed block is refused before dialing: %v %v\n%s", err, f.calls, out)
+	}
+}

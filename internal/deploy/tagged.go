@@ -159,6 +159,10 @@ func RunTagged(c Ctx, o Options, mode string) error {
 		return err
 	}
 
+	if r.lim, err = env.Resolve(c.Out, r.s, r.target, r.p.Resources, r.mk, mode == "rollback"); err != nil {
+		return err
+	}
+
 	claim, err := r.readClaim()
 	if err != nil {
 		return err
@@ -168,7 +172,7 @@ func RunTagged(c Ctx, o Options, mode string) error {
 		return err
 	}
 	st := &env.Step{Out: c.Out, Prompter: c.Prompter, S: r.s, Target: r.target, TTYIn: c.TTYIn, TTYOut: c.TTYOut, Color: c.Color}
-	if err := st.Run(r.dir, r.mk.CPULimit, r.mk.MemLimit, o.OnDrift, false); err != nil {
+	if err := st.Run(r.dir, r.lim.CPU, r.lim.Mem, o.OnDrift, false); err != nil {
 		return err
 	}
 	if claim != nil {
@@ -488,6 +492,13 @@ func (r *run) readRef(t *tagged) error {
 		r.c.Out.Warn("the manifest in this version says %s", p.ClientNote)
 		r.c.Out.Warn("falling back to '%s', which is client:'s documented default — a", m.Name)
 		r.c.Out.Warn("version tagged before kasbah checked this field still has to roll back")
+	}
+	switch {
+	case p.ResourcesNote != "" && r.mode != "rollback":
+		return cli.Fail("kasbah.yml in v%s: %s", r.version, p.ResourcesNote).Cont(
+			"a version deployed by name is held to the same rules as a deploy of the working tree; only `kasbah rollback` takes the server's ceilings instead.")
+	case p.ResourcesNote != "":
+		r.c.Out.Warn("the manifest in this version says %s — the server's ceilings stand instead", p.ResourcesNote)
 	}
 	for _, k := range p.HookNotes {
 		r.c.Out.Warn("the manifest in this version has hooks.%s, which is not a hook kasbah runs — ignored", k)

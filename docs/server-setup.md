@@ -493,7 +493,8 @@ the writing.
 `nproc`, `mem_limit` from `MemTotal`. No reservations, ever — these are
 anti-takeover ceilings (one runaway project can't lock out SSH, Traefik,
 or its neighbors), not fair-share slices; idle capacity stays fully
-burstable.
+burstable. Each is a ceiling **per container**: fifteen containers on the
+default may each take 90%, so together they can still exhaust the host.
 
 ### How the numbers are spelled
 
@@ -515,14 +516,42 @@ depend on the operator's locale cannot be idempotent. The remote side is not
 assumed to have `awk` or `bc` — the prerequisites table does not list them.
 
 The values live in the server marker and are injected into each project's
-`.env` on every deploy as `KASBAH_CPU_LIMIT` / `KASBAH_MEM_LIMIT`, into a
+`.env` on every deploy as `KASBAH_CPU_LIMIT` / `KASBAH_MEM_LIMIT` — unless the
+project's `resources:` sets its own (Per-project limits, below) — into a
 sentinel-delimited managed block, written through unchanged — injection
 formats nothing and validates nothing, so a `0` reaches the file as `0`
 (reserved prefix, exempt from env drift detection; see `env-template.md` for
 the block's shape and the stray-removal rule). Project compose files
 reference the vars or set literals of their own (R01–R03, `compliance.md`), and
-`check --server` warns on values tightened below 90% and fails anything above
-(R04), literals included.
+`check --server` fails anything above 90% and warns on a value below it that
+the project's `resources:` does not set (R04), literals included.
+
+### Per-project limits
+
+A project can ask for less than the ceiling in `kasbah.yml`'s `resources:`
+(`project-manifest.md` → `resources`): `cpus` in cores or as a `%`, `memory` as
+`m`, `g` or a `%`. A `%` is a share of the whole host, resolved **on the
+server** at deploy and at `kasbah env` by `kasbah remote setup-env limits`: the
+server binary reads its own CPU count and `/proc/meminfo`'s `MemTotal`, and
+spells the share with the integer arithmetic above. Both it and `server init`
+count the CPUs the process may run on (its affinity; init runs `nproc` with
+OpenMP's `OMP_NUM_THREADS` and `OMP_THREAD_LIMIT` unset, which GNU `nproc`
+would otherwise obey), so `90%` comes to the marker's ceiling unless the host
+has changed since `server init` measured it — more or fewer CPUs, or a kernel
+update that moves `MemTotal`. No marker field is added; the workstation passes the two values as
+written and gets back the resolved ones with the totals they came from.
+
+The workstation then holds them to the marker's ceiling before anything of the
+project changes on the server: above it, the run stops with exit 1, naming the
+field, what it came to and the ceiling, and that the ceiling is what
+`server init` measured. A ceiling from a marker written before the host grew
+— or before a kernel update raised `MemTotal` — refuses a share the host could
+now give, `90%` included; re-running `server init` re-measures it. Within it, the resolved values are what the
+managed block carries, and R04 does not warn on a half the manifest set.
+`check --server` adds the projects below the ceiling together (R06): those are
+shares the operator chose, and when their cpus or their memory add up past the
+host it warns; a project on the default ceiling is a cap, not a share, and is
+left out of the sum.
 
 ## With backup (`--with-backup`)
 

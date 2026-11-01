@@ -102,7 +102,7 @@ func parseSet(args []string) (Options, error) {
 		return o, cli.Fail("env set: '%s' is not an env key — letters, digits and _, not starting with a digit", o.Key)
 	}
 	if reserved(o.Key) {
-		return o, cli.Fail("env set: %s is kasbah's own — the %s* keys are the managed block of .env, rewritten from the server marker on every deploy (docs/env-template.md)", o.Key, envtpl.ReservedPrefix)
+		return o, cli.Fail("env set: %s is kasbah's own — the %s* keys are the managed block of .env, rewritten on every deploy from the server marker or kasbah.yml's resources: (docs/env-template.md)", o.Key, envtpl.ReservedPrefix)
 	}
 	return o, nil
 }

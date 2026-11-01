@@ -489,6 +489,88 @@ func TestServerR04(t *testing.T) {
 	}
 }
 
+// Below the ceiling is deliberate when kasbah.yml's resources: sets that half.
+func TestServerR04Resources(t *testing.T) {
+	srvProject(t, "resources:\n  cpus: 2\n")
+	s := newSrv(t)
+	s.r.Env = b64s("DOMAIN=demo.example.com\nKASBAH_CPU_LIMIT=2.0\nKASBAH_MEM_LIMIT=54g\n")
+	out, _ := s.run()
+	contains(t, out, "  ✓ effective resource limits on deploy@vps are within the host's 90% ceiling (2.0 cpus, 54g) — cpus set by kasbah.yml's resources:")
+
+	srvProject(t, "resources:\n  cpus: 2\n")
+	s = newSrv(t)
+	s.r.Env = b64s("DOMAIN=demo.example.com\nKASBAH_CPU_LIMIT=2.0\nKASBAH_MEM_LIMIT=1g\n")
+	out, _ = s.run()
+	contains(t, out, "  ⚠ effective resource limits on deploy@vps are below the host's 90% ceiling: mem_limit 1g < 54g")
+
+	srvProject(t, "resources:\n  memory: 25%\n")
+	s = newSrv(t)
+	s.r.Env = b64s("DOMAIN=demo.example.com\nKASBAH_CPU_LIMIT=14.4\nKASBAH_MEM_LIMIT=15g\n")
+	out, _ = s.run()
+	contains(t, out, "  ✓ effective resource limits on deploy@vps are within the host's 90% ceiling (14.4 cpus, 15g) — memory set by kasbah.yml's resources:")
+	hasNot(t, out, "are below the host's 90% ceiling")
+
+	srvProject(t, "resources:\n  memory: 25%\n")
+	s = newSrv(t)
+	s.r.Env = b64s("DOMAIN=demo.example.com\nKASBAH_CPU_LIMIT=2.0\nKASBAH_MEM_LIMIT=15g\n")
+	out, _ = s.run()
+	contains(t, out, "  ⚠ effective resource limits on deploy@vps are below the host's 90% ceiling: cpus 2.0 < 14.4")
+	hasNot(t, out, "mem_limit 15g < 54g")
+}
+
+// Projects below the ceiling are shares and are summed; one on the ceiling is
+// a cap and is not.
+func TestServerR06(t *testing.T) {
+	for _, tc := range []struct {
+		limits []ProjectLimits
+		want   []string
+		not    []string
+	}{
+		{nil, nil, []string{"fit the host", "add up to"}},
+		{[]ProjectLimits{{"demo", "14.4", "54g"}, {"shop", "14.4", "54g"}}, nil, []string{"fit the host", "add up to"}},
+		{[]ProjectLimits{{"demo", "8.0", "30g"}, {"shop", "4.0", "54g"}, {"blog", "14.4", "20g"}},
+			[]string{"  ✓ the projects on deploy@vps with limits of their own fit the host together (12.0 of 16 cores, 51200m of 61440m)"}, []string{"add up to"}},
+		{[]ProjectLimits{{"demo", "8.0", "40g"}, {"shop", "9.0", "30g"}, {"blog", "14.4", "54g"}},
+			[]string{"  ⚠ the projects on deploy@vps with their own cpus limit add up to 17.0 cores, more than the host's 16: demo 8.0, shop 9.0",
+				"  ⚠ the projects on deploy@vps with their own memory limit add up to 71680m, more than the host's 61440m: demo 40g, shop 30g"},
+			[]string{"fit the host"}},
+		{[]ProjectLimits{{"demo", "14.4", "20g"}},
+			[]string{"  ✓ the projects on deploy@vps with limits of their own fit the host together (20480m of 61440m)"}, []string{"cores", "add up to"}},
+	} {
+		srvProject(t, "")
+		s := newSrv(t)
+		s.r.Limits, s.r.HostCores, s.r.HostMemKB = tc.limits, 16, 62914560
+		out, code := s.run()
+		contains(t, out, tc.want...)
+		hasNot(t, out, tc.not...)
+		if code != 0 {
+			t.Errorf("%v: exit %d", tc.limits, code)
+		}
+	}
+}
+
+// The server reads each project's managed block, and no other line of its .env.
+func TestCollectServerLimits(t *testing.T) {
+	apps := t.TempDir()
+	for name, body := range map[string]string{
+		"demo":    "SECRET=hunter2\n# >>> kasbah managed block - do not edit, rewritten on every deploy >>>\nKASBAH_CPU_LIMIT=2.0\nKASBAH_MEM_LIMIT=1g\n# <<< kasbah managed block <<<\n",
+		"shop":    "KASBAH_CPU_LIMIT=9\n",
+		"traefik": "# >>> kasbah managed block - do not edit, rewritten on every deploy >>>\nKASBAH_CPU_LIMIT=1.0\n# <<< kasbah managed block <<<\n",
+	} {
+		os.MkdirAll(filepath.Join(apps, name), 0o755)
+		os.WriteFile(filepath.Join(apps, name, ".env"), []byte(body), 0o600)
+	}
+	os.MkdirAll(filepath.Join(apps, "empty"), 0o755)
+	r := CollectServer(apps, apps+"/data", "demo", "")
+	if len(r.Limits) != 1 || r.Limits[0] != (ProjectLimits{"demo", "2.0", "1g"}) || r.HostCores < 1 || r.HostMemKB < 1 {
+		t.Errorf("limits: %+v %d %d", r.Limits, r.HostCores, r.HostMemKB)
+	}
+	b, _ := json.Marshal(r.Limits)
+	if strings.Contains(string(b), "hunter2") {
+		t.Errorf("a secret crossed: %s", b)
+	}
+}
+
 // A literal is compared as written; the .env is asked only for the keys a
 // service takes from it.
 func TestServerR04Literals(t *testing.T) {
@@ -542,22 +624,6 @@ func TestServerR04Literals(t *testing.T) {
 			t.Errorf("exit %d, want 6", code)
 		}
 	})
-}
-
-func TestMemBytes(t *testing.T) {
-	for in, want := range map[string]int64{
-		"512m": 512 << 20, "1.5g": 1610612736, "2GiB": 2 << 30, "1t": 1 << 40, "512 MB": 512 << 20,
-		".5k": 512, "536870912": 536870912, "1b": 1, "54G": 54 << 30, "8191p": 8191 << 50,
-	} {
-		if got, ok := MemBytes(in); !ok || got != want {
-			t.Errorf("MemBytes(%q) = %d, %v; want %d", in, got, ok, want)
-		}
-	}
-	for _, in := range []string{"512mi", "1ib", "8192p", "99999999999t", "5.5.5m", "1e3", "-1m", "512  m", "1,5g", ""} {
-		if got, ok := MemBytes(in); ok {
-			t.Errorf("MemBytes(%q) = %d, want not a size", in, got)
-		}
-	}
 }
 
 func TestServerT05(t *testing.T) {

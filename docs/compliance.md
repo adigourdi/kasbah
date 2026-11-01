@@ -101,15 +101,21 @@ either to the kasbah-managed env vars (`KASBAH_CPU_LIMIT`, `KASBAH_MEM_LIMIT` �
 literal of the project's choosing (`cpus: "0.5"`, `mem_limit: 512m`) — a
 database given 2g and a web process 512m. A literal cannot be compared with a
 host locally, so plain `check` warns on it and `check --server` (R04) holds it
-to the server's ceiling. A per-container limit never stops two containers
-hogging the host together; a per-project ceiling (a cgroup slice) is not done.
+to the server's ceiling. A project may lower the values the variables carry
+in `kasbah.yml`'s `resources:` (`project-manifest.md` → `resources`), which R05
+validates and the deploy resolves on the server. A per-container limit never
+stops two containers hogging the host together; a per-project ceiling (a cgroup
+slice) is not done, and R06 only warns when the projects' own limits add up
+past the host.
 
 | ID | Rule | Level | Auto-fixable |
 |---|---|---|---|
 | R01 | Every service sets `cpus:` (or `deploy.resources.limits.cpus`) to `${KASBAH_CPU_LIMIT}` or a number above 0 — missing, malformed, or the two forms set to different values fails; a literal warns locally | fail/warn | yes (missing or malformed top-level only) |
 | R02 | Every service sets `mem_limit:` (or `deploy.resources.limits.memory`) to `${KASBAH_MEM_LIMIT}` or a size Docker accepts — bytes or a decimal with `k`/`m`/`g`/`t`/`p`, an optional `b` or `ib`, any case, one optional space — of at least Docker's `6m` minimum and within int64 (a string under `deploy.resources.limits`, as compose requires); missing, malformed, or the two forms set to different values (compared as sizes) fails; a literal warns locally | fail/warn | yes (missing or malformed top-level only) |
 | R03 | No service declares resource `reservations` | fail | yes |
-| R04 | (`--server`) Effective limit vs host size — the server `.env`'s values for services on the variables, each literal for the others: above 90% fails; below 90% warns (deliberately tighter is allowed, but flagged) | fail/warn | no |
+| R04 | (`--server`) Effective limit vs host size — the server `.env`'s values for services on the variables, each literal for the others: above 90% fails; below 90% warns (deliberately tighter is allowed, but flagged) — except, for the values from the `.env`, a half `kasbah.yml`'s `resources:` sets, where below is what was asked for and passes | fail/warn | no |
+| R05 | `kasbah.yml`'s `resources:`, when present, is a mapping of `cpus` and `memory` alone: `cpus` a number of cores above 0 with at most one decimal or a whole `1%`–`100%`; `memory` whole `m` or `g` of at least `6m`, or such a percentage — a bare number fails naming `m`, `g` and `%`. Silent with no block; `check --fix` leaves it alone | fail | no |
+| R06 | (`--server`) The projects on the server whose effective limits (each project's `.env` managed block, read on the server, nothing else of the file) are below the marker's ceiling add up to no more than the host's cores, and separately its `MemTotal` — each project counted once, per half; a project on the ceiling is left out. Silent when no project is below | warn | no |
 
 ### Traefik
 
@@ -305,7 +311,8 @@ runs; these are added, and T05 tightens (above).
 | Is the claimed mail domain known to the mail stack? (M03) | fail — the registry `<apps>/mail/kasbah.yml` is the only thing asked, read one key at a time. A registry that cannot be parsed warns instead: "cannot be checked" is not "not served". This is where `deploy`'s warning has a level; deploy keeps warning, because an unmet claim costs mail rather than the site |
 | Is the manifest's `health.container` currently healthy (if deployed)? | fail when the container reports `unhealthy` — Traefik keeps routing to it. Warn when it is starting, has no healthcheck, or is not running at all |
 | Cert status for the project's `domain` in Traefik's `acme.json` | pass without reading the store when this checkout's fragment has no router that could serve HTTPS and an `http` router names the domain in a `Host()` — it is served over plain HTTP and no certificate is expected (`traefik.md` → TLS). Otherwise, fail when the certificate has expired; warn inside Traefik's 30-day renewal window, and warn for every way the store can decline to answer, each with its own message (absent, empty, unreadable, not a regular file, no entry for this domain, not JSON, no `http` resolver key (which is how a store filled under the former name `letsencrypt` reads), a `Certificates` that is not a list, an entry with no `certificate`, one that is not base64, one openssl will not read) — they have different remedies, so collapsing them into "no certificate" throws away the only thing that says what to do next |
-| Effective resource limits vs host size (R04) | above the marker's ceiling fails, below warns |
+| Effective resource limits vs host size (R04) | above the marker's ceiling fails, below warns — unless `kasbah.yml`'s `resources:` sets that half |
+| Do the projects' own limits fit the host together? (R06) | warn when the cpus, or the memory, of every project below the ceiling add up past the host's cores or `MemTotal`, naming each; pass when they fit |
 | Is the apps tree the operators' group's? | warn when the server has no `kasbah` group, and for every entry under the resolved apps path that an operator owns (`<data>/`'s contents, entries no operator owns and directories with no group bits aside) that is not the group's or lacks the bits another operator's write needs — setgid and group `rwx` on a directory, group read-write on a file kasbah rewrites in place (`.env`, `versions.log`, the locks, the marker), group `rwx` on the shared binary; counted exactly, the first twenty named. `kasbah server init` converges it (`server-setup.md` → Operators) |
 | Is every mail domain DKIM-signed? (M04) | warn for each domain in `<apps>/mail/kasbah.yml` that lacks either key Rspamd signs with — `rsa-2048-mail-<d>.private.txt` and `ed25519-ed-<d>.private.txt` in `<data>/mail/dms/config/rspamd/dkim/`, names listed, keys never read — or whose paths the signing override `override.d/dkim_signing.conf` does not list (a domain added after init whose block was never added), naming the keygen commands and the block to add; warn "cannot be checked" for a registry that is unreadable or refused, a key directory that cannot be listed, or an override that cannot be read; silent on a server with no mail registry; runs whether or not the project has `mail:`. Unsigned mail is what lands in spam. A path commented out with `//` or `/* */` rather than `#` still counts as listed |
 | Has the backup stack run, and did the last run work? (B01) | fail when the last run failed, when the scheduler's state has outlived its deadline, or when its container is not running; warn for every way the record can decline to answer, for a repository with no password, for an orphan password left by a dropped project, and for a run that shipped nothing; silent on a server with no backups. The record is `<apps>/.kasbah/backup/state/status`, read through the one parser `server status` shares |
@@ -316,7 +323,9 @@ interpolates — and for one with literals — top-level or `deploy.resources.li
 literals themselves, compared even before the project has deployed (only the
 marker is needed). The `.env` is asked only for the keys some service takes from it. The ceiling is the server marker's, which `server init` computed
 as 90% of the host. Sizes are compared in bytes, so `55296m` and `54g` are the
-same limit.
+same limit. For R06 the server reads the managed block of every project's
+`.env` under the apps path — the two `KASBAH_*` limits and no other line, so
+no secret crosses — and its own core count and `MemTotal`.
 
 **`--server` writes nothing but kasbah's own binary**, which it brings up to date
 first. It is a linter: the server binary reads the files and asks docker, and

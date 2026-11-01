@@ -10,6 +10,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/resources"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/state"
 )
@@ -102,6 +103,9 @@ type Session interface {
 	Drift(dir string) (out string, rc int)
 	Setup(dir string, color bool) int
 	Inject(dir string, pairs []string) int
+	// Limits resolves kasbah.yml's resources: halves ("-" for unset) on the
+	// server: setup-env limits' key=value lines.
+	Limits(cpus, memory string) (out string, rc int)
 	Close()
 }
 
@@ -140,12 +144,21 @@ func Run(c Ctx, o Options) error {
 		return cli.Fail("no .env.prod.example in %s — that file is the template this renders .env from (docs/env-template.md)", c.PWD)
 	}
 
+	spec, err := resources.Read(m)
+	if err != nil {
+		return cli.Fail("kasbah.yml: %v", err)
+	}
+
 	s, err := c.Dial(target)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
 	mk, err := s.Marker()
+	if err != nil {
+		return err
+	}
+	lim, err := Resolve(c.Out, s, target, spec, mk, false)
 	if err != nil {
 		return err
 	}
@@ -158,7 +171,7 @@ func Run(c Ctx, o Options) error {
 		return err
 	}
 	st := &Step{Out: c.Out, Prompter: c.Prompter, S: s, Target: target, TTYIn: c.TTYIn, TTYOut: c.TTYOut, Color: c.Color}
-	if err := st.Run(dir, mk.CPULimit, mk.MemLimit, o.OnDrift, true); err != nil {
+	if err := st.Run(dir, lim.CPU, lim.Mem, o.OnDrift, true); err != nil {
 		return err
 	}
 	if err := state.Record(statePath, c.Version, "last_server", target); err != nil {
@@ -166,7 +179,7 @@ func Run(c Ctx, o Options) error {
 	}
 	c.Out.Info("%s's .env on %s is ready", m.Name, target)
 	c.Out.Info("  file:   %s/.env", dir)
-	c.Out.Info("  limits: KASBAH_CPU_LIMIT=%s KASBAH_MEM_LIMIT=%s (from the server marker)", mk.CPULimit, mk.MemLimit)
+	c.Out.Info("  limits: KASBAH_CPU_LIMIT=%s KASBAH_MEM_LIMIT=%s (%s)", lim.CPU, lim.Mem, lim.Source)
 	return nil
 }
 

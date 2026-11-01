@@ -22,6 +22,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/envtpl"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/resources"
 	"github.com/adigourdi/kasbah/internal/state"
 	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/yamlx"
@@ -74,10 +75,12 @@ func (e Env) prompter() *prompt.Prompter {
 type abort struct{ code int }
 
 type checker struct {
-	out              *cli.Output
-	w                io.Writer
-	cache            yamlx.Cache
-	m                *manifest.Manifest
+	out   *cli.Output
+	w     io.Writer
+	cache yamlx.Cache
+	m     *manifest.Manifest
+	// res is kasbah.yml's resources:, unset when R05 refused it.
+	res              resources.Spec
 	pass, warn, fail int
 	srv              *server
 	// compose is compose.prod.yml when it exists; services are its service
@@ -671,7 +674,7 @@ func (c *checker) c09(onHN []string, defaultAliases bool) {
 	}
 }
 
-// --- Resources (R01–R03) ----------------------------------------------------
+// --- Resources (R01–R03, R05) -----------------------------------------------
 
 // limitKeys are R01/R02: each top-level key, its compose-spec
 // deploy.resources.limits twin, and the reference that tracks the host.
@@ -704,7 +707,7 @@ func limitOf(svc tree.Value, key, depKey, ref string) (kind, text string, deploy
 	// Both forms: compose refuses them unless they are the same limit.
 	tk, tt := limitValue(top, key, ref)
 	same := tk == dk && (tk == "ref" || tk == "literal" &&
-		(key == "cpus" && cmpCPU(tt, dt) == "same" || key != "cpus" && cmpMem(tt, dt) == "same"))
+		(key == "cpus" && resources.CmpCPU(tt, dt) == "same" || key != "cpus" && resources.CmpMem(tt, dt) == "same"))
 	if !same {
 		return "malformed", tt, true
 	}
@@ -721,20 +724,26 @@ func limitValue(v tree.Value, key, ref string) (kind, text string) {
 		return "malformed", t
 	}
 	if key == "cpus" {
-		if reCPU.MatchString(t) && strings.ContainsAny(t, "123456789") {
+		if resources.CPUText(t) && strings.ContainsAny(t, "123456789") {
 			return "literal", t
 		}
-	} else if n, ok := MemBytes(t); ok && n >= memMin {
+	} else if n, ok := resources.MemBytes(t); ok && n >= memMin {
 		return "literal", t
 	}
 	return "malformed", t
 }
 
 func (c *checker) resourcesSection() {
-	if !isFile(composeFile) || len(c.services) == 0 {
+	block, _ := c.m.Get("resources")
+	svcs := isFile(composeFile) && len(c.services) > 0
+	if !svcs && block == nil {
 		return
 	}
 	c.section("Resources")
+	c.r05(block)
+	if !svcs {
+		return
+	}
 	var bad, lits []string
 	for _, svc := range c.services {
 		var wrong, lit []string
@@ -776,6 +785,31 @@ func (c *checker) resourcesSection() {
 	} else {
 		c.failf("Services declare resource reservations: %s", strings.Join(bad, " "))
 	}
+}
+
+// r05: kasbah.yml's resources: block, silent when there is none.
+func (c *checker) r05(block tree.Value) {
+	if block == nil {
+		return
+	}
+	spec, err := resources.Read(c.m)
+	if err != nil {
+		c.failf("kasbah.yml: %v", err)
+		return
+	}
+	var set []string
+	if spec.CPUs != "" {
+		set = append(set, "cpus "+spec.CPUs)
+	}
+	if spec.Memory != "" {
+		set = append(set, "memory "+spec.Memory)
+	}
+	if len(set) == 0 {
+		c.passf("resources: sets nothing — the containers get the server's 90%% ceiling")
+		return
+	}
+	c.res = spec
+	c.passf("resources: %s — resolved on the server at deploy (a %% is a share of the host) and held to its 90%% ceiling", strings.Join(set, ", "))
 }
 
 // --- Traefik (T01–T09) ------------------------------------------------------

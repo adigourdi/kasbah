@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/resources"
 	"github.com/adigourdi/kasbah/internal/state"
 )
 
@@ -24,6 +26,7 @@ type fakeServer struct {
 	setupRC   int
 	injectRC  int
 	injected  []string
+	limitsRC  int
 }
 
 func report(tmpl, env, missing, extra string) string {
@@ -58,6 +61,28 @@ func (f *fakeServer) Inject(dir string, pairs []string) int {
 	f.calls = append(f.calls, "inject "+dir)
 	f.injected = pairs
 	return f.injectRC
+}
+
+// Limits resolves as the server binary does, on a 16-core host with 60 GiB,
+// whose marker reads 14.4 / 54g.
+func (f *fakeServer) Limits(cpus, memory string) (string, int) {
+	f.calls = append(f.calls, "limits "+cpus+" "+memory)
+	if f.limitsRC != 0 {
+		return "", f.limitsRC
+	}
+	spec := resources.Spec{CPUs: strings.TrimPrefix(cpus, "-"), Memory: strings.TrimPrefix(memory, "-")}
+	cpu, mem, err := resources.Resolve(spec, 16, 62914560)
+	if err != nil {
+		return "", 1
+	}
+	out := "host_cores=16\nhost_mem_kb=62914560\n"
+	if cpu != "" {
+		out += "cpu=" + cpu + "\n"
+	}
+	if mem != "" {
+		out += "mem=" + mem + "\n"
+	}
+	return out, 0
 }
 func (f *fakeServer) Close() {}
 
@@ -297,6 +322,91 @@ func TestInjectFailureIsExit1(t *testing.T) {
 	expect(t, r.code == 1 && strings.Contains(r.stderr, "managed block") && lastServer(t) == "", "inject failure: %d %q", r.code, r.stderr)
 }
 
+func TestResources(t *testing.T) {
+	withResources := func(block string) {
+		project(t, true)
+		write(t, "kasbah.yml", "schema: 1\nkasbah_version: 0.1.0\nname: demo\ndomain: demo.test\nsync:\n  - .env.prod.example\n"+block)
+	}
+	pairs := func(srv *fakeServer) string { return strings.Join(srv.injected, " ") }
+
+	project(t, true)
+	srv := inSync()
+	r := runEnv(t, srv, true, "", "deploy@vps")
+	expect(t, r.code == 0 && srv.called("limits") < 0 && pairs(srv) == "KASBAH_CPU_LIMIT=14.4 KASBAH_MEM_LIMIT=54g",
+		"unset keeps the marker's ceilings: %d %v %q", r.code, srv.calls, pairs(srv))
+
+	withResources("resources:\n  cpus: 50%\n  memory: 2g\n")
+	srv = inSync()
+	r = runEnv(t, srv, true, "", "deploy@vps")
+	expect(t, r.code == 0 && pairs(srv) == "KASBAH_CPU_LIMIT=8.0 KASBAH_MEM_LIMIT=2g", "resolved: %d %q %q", r.code, pairs(srv), r.stderr)
+	expect(t, srv.called("limits 50% 2g") == 1 && srv.called("prepare") == 2, "resolved first, before anything is written: %v", srv.calls)
+
+	withResources("resources:\n  memory: 10%\n")
+	srv = inSync()
+	r = runEnv(t, srv, true, "", "deploy@vps")
+	expect(t, r.code == 0 && pairs(srv) == "KASBAH_CPU_LIMIT=14.4 KASBAH_MEM_LIMIT=6g", "half set: %d %q", r.code, pairs(srv))
+
+	withResources("resources:\n  memory: 95%\n")
+	srv = inSync()
+	r = runEnv(t, srv, true, "", "deploy@vps")
+	expect(t, r.code == 1 && strings.Contains(r.stderr, "resources.memory '95%' comes to 57g on deploy@vps") &&
+		strings.Contains(r.stderr, "ceiling of 54g") && srv.called("prepare") < 0 && srv.called("inject") < 0 && lastServer(t) == "",
+		"above the ceiling: %d %q %v", r.code, r.stderr, srv.calls)
+
+	withResources("resources:\n  cpus: 15\n")
+	srv = inSync()
+	r = runEnv(t, srv, true, "", "deploy@vps")
+	expect(t, r.code == 1 && strings.Contains(r.stderr, "resources.cpus '15' comes to 15.0") && strings.Contains(r.stderr, "ceiling of 14.4"),
+		"cores above the ceiling: %d %q", r.code, r.stderr)
+
+	withResources("resources:\n  memory: 512\n")
+	r = runEnv(t, inSync(), false, "", "deploy@vps")
+	expect(t, r.code == 1 && strings.Contains(r.stderr, "m, g or %") && !r.dialed, "a bare memory: %d %q", r.code, r.stderr)
+
+	withResources("resources:\n  cpus: 1\n")
+	srv = inSync()
+	srv.limitsRC = 1
+	r = runEnv(t, srv, true, "", "deploy@vps")
+	expect(t, r.code == 1 && strings.Contains(r.stderr, "setup-env limits") && srv.called("prepare") < 0, "a failed resolve: %d %q", r.code, r.stderr)
+}
+
+func TestResolveLenient(t *testing.T) {
+	var stderr bytes.Buffer
+	out := &cli.Output{Stdout: &bytes.Buffer{}, Stderr: &stderr}
+	mk := &marker.Marker{CPULimit: "14.4", MemLimit: "54g"}
+	l, err := Resolve(out, inSync(), "deploy@vps", resources.Spec{CPUs: "2", Memory: "95%"}, mk, true)
+	expect(t, err == nil && l.CPU == "2.0" && l.Mem == "54g" && l.Source == "cpus from kasbah.yml resources, memory from the server marker" &&
+		strings.Contains(stderr.String(), "taking the ceiling"), "a tag over the ceiling: %+v %v %q", l, err, stderr.String())
+
+	stderr.Reset()
+	srv := inSync()
+	srv.limitsRC = 1
+	l, err = Resolve(out, srv, "deploy@vps", resources.Spec{Memory: "1%"}, mk, true)
+	expect(t, err == nil && l.CPU == "14.4" && l.Mem == "54g" && l.Source == "from the server marker" &&
+		strings.Contains(stderr.String(), "taking the server's ceilings"), "a tag whose resolve fails: %+v %v %q", l, err, stderr.String())
+
+	_, err = Resolve(out, inSync(), "deploy@vps", resources.Spec{Memory: "90%"}, &marker.Marker{CPULimit: "14.4", MemLimit: "50g"}, false)
+	expect(t, err != nil && strings.Contains(err.Error(), "ceiling of 50g") && strings.Contains(err.Error(), "re-run it"),
+		"above a ceiling measured on a smaller host: %v", err)
+}
+
+func TestManagedLimits(t *testing.T) {
+	p := t.TempDir() + "/.env"
+	write(t, p, "KASBAH_CPU_LIMIT=9\nSECRET=x\n"+ManagedBegin+"\r\nKASBAH_CPU_LIMIT=2.0\r\nKASBAH_MEM_LIMIT=1g\n"+ManagedEnd+"\n")
+	cpu, mem, ok := ManagedLimits(p)
+	expect(t, ok && cpu == "2.0" && mem == "1g", "managed block: %q %q %v", cpu, mem, ok)
+	if _, _, ok := ManagedLimits(p + ".missing"); ok {
+		t.Error("a missing .env read")
+	}
+	fifo := t.TempDir() + "/.env"
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := ManagedLimits(fifo); ok {
+		t.Error("a FIFO .env read")
+	}
+}
+
 func TestRemoteModes(t *testing.T) {
 	dir := t.TempDir()
 	var out, errw bytes.Buffer
@@ -314,7 +424,16 @@ func TestRemoteModes(t *testing.T) {
 	if rc := Remote([]string{"inject", dir + "/demo", "KASBAH_A=1"}, nil, &out, &errw); rc != 0 {
 		t.Errorf("inject: %d", rc)
 	}
-	for _, args := range [][]string{nil, {"drift"}, {"bogus", dir}, {"drift", dir, "extra"}} {
+	out.Reset()
+	if rc := Remote([]string{"limits", "100%", "6m"}, nil, &out, &errw); rc != 0 || !strings.Contains(out.String(), "host_cores=") ||
+		!strings.Contains(out.String(), "\ncpu=") || !strings.Contains(out.String(), "\nmem=6m\n") {
+		t.Errorf("limits: %d %q", rc, out.String())
+	}
+	errw.Reset()
+	if rc := Remote([]string{"limits", "-", "512"}, nil, &out, &errw); rc != 1 || !strings.Contains(errw.String(), "m, g or %") {
+		t.Errorf("limits with a bare memory: %d %q", rc, errw.String())
+	}
+	for _, args := range [][]string{nil, {"drift"}, {"bogus", dir}, {"drift", dir, "extra"}, {"limits", "1"}} {
 		errw.Reset()
 		if rc := Remote(args, nil, &out, &errw); rc != 1 || !strings.Contains(errw.String(), "usage") {
 			t.Errorf("%v: %d %q", args, rc, errw.String())

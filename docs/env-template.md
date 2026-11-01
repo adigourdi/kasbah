@@ -143,6 +143,10 @@ Rules, all of them load-bearing:
   stray below the block would silently outrank the server marker. The match is
   anchored (optional blanks, optional `export `) and never a substring: a
   user's own `MY_KASBAH_URL` is not kasbah's to delete.
+- The values are the server marker's ceilings, or the project's own from
+  `kasbah.yml`'s `resources:`, resolved on the server before the env step and
+  held to those ceilings (`project-manifest.md` → `resources`) — per half, so
+  a manifest setting only `memory` keeps the marker's `KASBAH_CPU_LIMIT`.
 - Values are written through unchanged. A `0` limit stays `0` — the rig cannot
   apply cgroup limits at all, and injection must keep working when the values
   it writes are ones the host cannot honour.

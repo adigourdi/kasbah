@@ -120,6 +120,11 @@ func (s *SSH) Inject(dir string, pairs []string) int {
 	return ssh.ExitCode(err)
 }
 
+func (s *SSH) Limits(cpus, memory string) (string, int) {
+	out, err := s.Conn.Run(s.bounded("setup-env", "limits", cpus, memory)...)
+	return string(out), ssh.ExitCode(err)
+}
+
 func (s *SSH) KeyState(dir, key string) (string, int) {
 	out, err := s.Conn.Run(s.bounded("setup-env", "key", dir, key)...)
 	return string(out), ssh.ExitCode(err)

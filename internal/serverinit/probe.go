@@ -8,6 +8,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/resources"
 	"github.com/adigourdi/kasbah/internal/rootsteps"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 )
@@ -200,7 +201,9 @@ elif [ -s "$acme" ];  then kv acme_store nonempty
 else                       kv acme_store empty
 fi
 
-kv nproc "$(nproc 2>/dev/null | flat)"
+# GNU nproc honours OpenMP's limits: unset, it counts the CPUs this process
+# may run on, as the server binary does when it resolves a share.
+kv nproc "$( (unset OMP_NUM_THREADS OMP_THREAD_LIMIT; nproc) 2>/dev/null | flat)"
 memtotal_kb=""
 while read -r field value _; do
     if [ "$field" = "MemTotal:" ]; then memtotal_kb=$value; break; fi
@@ -524,7 +527,8 @@ func CheckPointer(f Facts, target, apps string) error {
 }
 
 // Limits is 90% of the host in integer arithmetic, so the marker's bytes
-// never depend on a locale: tenths of a core, floored GiB, else floored MiB.
+// never depend on a locale: tenths of a core, floored GiB, else floored MiB —
+// the spelling a project's resources: share resolves to.
 func Limits(nproc, memKB string) (cpu, mem string, err error) {
 	if !reInt.MatchString(nproc) {
 		return "", "", cli.Fail("internal: nproc '%s' is not a core count", nproc)
@@ -537,14 +541,5 @@ func Limits(nproc, memKB string) (cpu, mem string, err error) {
 	if err1 != nil || err2 != nil {
 		return "", "", cli.Fail("internal: nproc '%s' or MemTotal '%s' is out of range", nproc, memKB)
 	}
-	tenths := cores * 9
-	cpu = fmt.Sprintf("%d.%d", tenths/10, tenths%10)
-	if gib := kb * 9 / 10485760; gib >= 1 {
-		return cpu, fmt.Sprintf("%dg", gib), nil
-	}
-	mib := kb * 9 / 10240
-	if mib < 1 {
-		mib = 1
-	}
-	return cpu, fmt.Sprintf("%dm", mib), nil
+	return resources.CPUShare(cores, 90), resources.MemShare(kb, 90), nil
 }

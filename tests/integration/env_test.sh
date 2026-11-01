@@ -275,4 +275,52 @@ tty $'tty-pw\nn\n' set API_SECRET "$RIG_TARGET"
 assert '[ "$tty_rc" = 0 ] && grep -qF "Restart $project" <<<"$tty_out"' "env set on a terminal asks and exits 0 (rc $tty_rc: $tty_out)"
 assert 'grep -qx "API_SECRET=tty-pw" <<<"$(remote "cat $pdir/.env")"' "the typed value is written"
 
+
+# --- Case 8: resources: in kasbah.yml — a share of the host, resolved on it -------
+# The server binary reads its own nproc and MemTotal; the suite reads them over
+# ssh and spells 50% the way the marker spells 90%.
+cores=$(remote "nproc")
+kb=$(remote "cat /proc/meminfo" | sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p')
+share() { # PCT → the cpus and memory a share of this host resolves to
+    local t=$((cores * $1 / 10)) g=$((kb * $1 / 104857600))
+    [ "$t" -ge 1 ] || t=1
+    share_cpu="$((t / 10)).$((t % 10))"
+    if [ "$g" -ge 1 ]; then share_mem="${g}g"; else share_mem="$((kb * $1 / 102400))m"; fi
+}
+share 50
+cp "$proj/kasbah.yml" "$tmpdir/kasbah.yml.before"
+printf '\nresources:\n  cpus: 50%%\n  memory: 50%%\n' >> "$proj/kasbah.yml"
+tty 'n' "$RIG_TARGET"
+assert '[ "$tty_rc" = 0 ] && grep -qF "KASBAH_CPU_LIMIT=$share_cpu KASBAH_MEM_LIMIT=$share_mem (from kasbah.yml resources)" <<<"$tty_out"' \
+    "env resolves 50% of $cores cores / $kb kB on the server (rc $tty_rc: $tty_out)"
+got=$(remote "cat $pdir/.env")
+assert 'grep -qxF "KASBAH_CPU_LIMIT=$share_cpu" <<<"$got" && grep -qxF "KASBAH_MEM_LIMIT=$share_mem" <<<"$got"' \
+    "the managed block carries the resolved values (got: $got)"
+tty 'n' "$RIG_TARGET"
+assert '[ "$(remote "cat $pdir/.env")" = "$got" ]' "a re-run leaves the .env byte for byte"
+
+# Two neighbours at the same share: three projects below the ceiling that add
+# up to 150% of the host, which check --server sums.
+for other in shop blog; do
+    remote "mkdir -p $apps/$other && printf '%s\\n' 'SECRET=x' '# >>> kasbah managed block - do not edit, rewritten on every deploy >>>' 'KASBAH_CPU_LIMIT=$share_cpu' 'KASBAH_MEM_LIMIT=$share_mem' '# <<< kasbah managed block <<<' > $apps/$other/.env" >/dev/null
+done
+(cd "$proj" && timeout 120 env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" NO_COLOR=1 \
+    "$KASBAH_BIN" check --server "$RIG_TARGET") >"$tmpdir/out" 2>&1 </dev/null
+said_check=$(nocr <"$tmpdir/out")
+assert 'grep -qF "⚠ the projects on $RIG_TARGET with their own cpus limit add up to" <<<"$said_check" && grep -qF "⚠ the projects on $RIG_TARGET with their own memory limit add up to" <<<"$said_check"' \
+    "check --server warns that the shares add up past the host (said '$said_check')"
+assert 'grep -qF "blog $share_cpu, $project $share_cpu, shop $share_cpu" <<<"$said_check"' "naming each project once (said '$said_check')"
+assert 'grep -qF "set by kasbah.yml'"'"'s resources:" <<<"$said_check" && ! grep -qF "are below the host" <<<"$said_check"' \
+    "and R04 does not warn on a limit kasbah.yml asked for (said '$said_check')"
+remote "rm -rf $apps/shop $apps/blog" >/dev/null
+
+# Over the ceiling: refused before anything is written.
+cp "$tmpdir/kasbah.yml.before" "$proj/kasbah.yml"
+printf '\nresources:\n  memory: 95%%\n' >> "$proj/kasbah.yml"
+headless "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = 1 ] && grep -qF "resources.memory '"'"'95%'"'"' comes to" <<<"$(err)" && grep -qF "ceiling of $mem" <<<"$(err)"' \
+    "a share above the 90% ceiling is refused naming the field and the ceiling (rc $rc: $(err))"
+assert '[ "$(remote "cat $pdir/.env")" = "$got" ]' "and the .env is untouched"
+cp "$tmpdir/kasbah.yml.before" "$proj/kasbah.yml"
+
 exit "$fail"
