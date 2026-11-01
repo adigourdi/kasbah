@@ -20,6 +20,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
+	"github.com/adigourdi/kasbah/internal/serverinit"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 )
 
@@ -96,10 +97,12 @@ type Scan struct {
 	MailEnvExtra    int      `json:"mail_env_extra"`
 	RegistryState   string   `json:"registry_state"`
 	// LayersMap is <apps>/.kasbah/layers.map, build-push's layer-name cache.
-	LayersMap string   `json:"layers_map"`
-	Projects  []Row    `json:"projects"`
-	Count     int      `json:"project_count"`
-	Skipped   []string `json:"skipped"`
+	LayersMap string `json:"layers_map"`
+	// AcmeDNS is the DNS providers whose credentials are under traefik/acme-dns.
+	AcmeDNS  []string `json:"acme_dns"`
+	Projects []Row    `json:"projects"`
+	Count    int      `json:"project_count"`
+	Skipped  []string `json:"skipped"`
 }
 
 var scanKeys = []string{"have_docker", "docker_error", "apps_state", "marker_state", "kasbah_dir",
@@ -273,6 +276,7 @@ func scan(apps, pointer string) Scan {
 	}
 	s.BinState = fsstate.File(serverbin.Path(apps))
 	s.LayersMap = fsstate.File(filepath.Join(k, buildpush.MapName))
+	s.AcmeDNS = serverinit.PresentDNS(filepath.Join(apps, "traefik", serverinit.DNSDir))
 	s.BackupDir = fsstate.Dir(filepath.Join(k, "backup"))
 	if derr == nil {
 		s.BackupContainer = "absent"
@@ -373,13 +377,15 @@ type ActReport struct {
 	MailEnvN     int             `json:"mail_env_n"`
 	MailRegistry string          `json:"mail_registry"`
 	LayersMap    string          `json:"layers_map"`
+	// AcmeDNS is the DNS providers' credentials: removed, absent or failed.
+	AcmeDNS string `json:"acme_dns"`
 	// Marker is removed, absent, failed — or held, when anything above
 	// failed: the marker is how a second run finds this server.
 	Marker string `json:"marker"`
 }
 
 var actKeys = []string{"bk_down", "bk_down_detail", "bk_container", "bk_volume", "bk_network", "bk_files",
-	"projects", "mail_env", "mail_env_n", "mail_registry", "layers_map", "marker"}
+	"projects", "mail_env", "mail_env_n", "mail_registry", "layers_map", "acme_dns", "marker"}
 
 // rewrite replaces a file's lines through keep, beside the file it resolves
 // to: written whole and checked before it is renamed over, mode kept.
@@ -571,6 +577,11 @@ func act(apps string, names []string, stdout io.Writer) error {
 		bad = true
 	}
 
+	r.AcmeDNS = removeAcmeDNS(apps)
+	if r.AcmeDNS == "failed" {
+		bad = true
+	}
+
 	r.Marker = "held"
 	if !bad {
 		r.Marker = fsstate.Remove(filepath.Join(k, "server.json"))
@@ -581,6 +592,29 @@ func act(apps string, names []string, stdout io.Writer) error {
 	b, _ := json.Marshal(r)
 	fmt.Fprintf(stdout, "%s\n", b)
 	return nil
+}
+
+// dnsEnvLine is a line of the env_file block server init renders into
+// Traefik's compose.yml.
+var dnsEnvLine = regexp.MustCompile(`^(    env_file:|      - ` + serverinit.DNSDir + `/[a-z0-9]+\.env|    # Each DNS provider's credentials, .*)$`)
+
+// removeAcmeDNS takes the DNS providers' credentials, agency-owned, off the
+// server: compose.yml's env_file block first, so the stack still comes up
+// from its own files, then the directory. The running Traefik keeps them.
+func removeAcmeDNS(apps string) string {
+	dir := filepath.Join(apps, "traefik", serverinit.DNSDir)
+	if !fsstate.Exists(dir) {
+		return "absent"
+	}
+	switch rewrite(filepath.Join(apps, "traefik", "compose.yml"), func(l string) bool { return !dnsEnvLine.MatchString(l) }, 0) {
+	case "stripped", "noblock", "absent":
+	default:
+		return "failed"
+	}
+	if os.RemoveAll(dir) != nil {
+		return "failed"
+	}
+	return "removed"
 }
 
 // Remote is the server's half: `scan APPS POINTER` reads, `act APPS NAME…`

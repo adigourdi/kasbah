@@ -21,6 +21,10 @@ Flags:
                          certificates, far looser rate limits)
   --reset-acme|--keep-acme   what to do with a certificate store whose CA
                          nothing on the server records
+  --acme-dns=<provider>:<env file>  add or replace a DNS-01 resolver named
+                         <provider> (lego's name), its credentials read from
+                         the file's KEY=value lines (repeatable)
+  --no-acme-dns=<provider>   remove that resolver and its credentials
   --with-mail|--no-mail      scaffold the mail stack, or skip it
   --postmaster-password=<pw> password for postmaster@<mail domain>, seeded
                          before DMS first starts; hashed here, never sent
@@ -46,6 +50,13 @@ answers a confirmation that a stated CA change raises. Domain, email and the
 dashboard credentials are only asked for once — a re-run reuses what is
 already on the server, since bcrypt salts randomly and a fresh hash would
 rewrite the stack on every run.
+
+Certificates come from the HTTP-01 resolver 'http' unless a router names a
+DNS provider's resolver (certResolver: <provider>), which --acme-dns adds.
+A re-run without --acme-dns keeps every DNS resolver the server has; each
+needs its env file at <apps>/traefik/acme-dns/<provider>.env (mode 640,
+group kasbah). --no-acme-dns is refused while any file under dynamic/ names the
+provider. See docs/traefik.md -> TLS.
 
 The ACME endpoint is production unless --acme-staging says otherwise, on
 every run: a re-run without the flag against a staging server is how you

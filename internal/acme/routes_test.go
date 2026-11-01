@@ -97,3 +97,18 @@ func TestRoutesHosts(t *testing.T) {
 		t.Errorf("routes %+v", r)
 	}
 }
+
+func TestResolverFor(t *testing.T) {
+	docs, err := yamlx.Load([]byte("http:\n  routers:\n    a: {rule: \"Host(`a.example.com`)\", tls: {certResolver: cloudflare}}\n" +
+		"    b: {rule: \"Host(`b.example.com`)\", tls: {}}\n    c: {rule: \"Host(`a.example.com`)\", tls: {certResolver: http}}\n" +
+		"tcp:\n  routers:\n    t: {tls: {certResolver: ovh}}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := Routes(docs[0])
+	for host, want := range map[string]string{"A.example.com": "cloudflare", "b.example.com": Resolver, "z.example.com": Resolver} {
+		if got := ResolverFor(routes, host); got != want {
+			t.Errorf("ResolverFor(%s) = %s, want %s", host, got, want)
+		}
+	}
+}

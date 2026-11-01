@@ -38,6 +38,7 @@ certificatesResolvers:
       storage: /letsencrypt/acme.json
       httpChallenge:
         entryPoint: web
+__ACME_DNS_RESOLVERS__
 
 api:
   dashboard: true

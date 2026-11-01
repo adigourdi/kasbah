@@ -81,9 +81,11 @@ Moves the shared Traefik proxy to another image tag. Two halves:
 Flags:
   --version=<tag>   the Traefik image tag to move to, e.g. v3.7.10
 
-The dashboard apex, its basic-auth entry, the ACME address and the ACME
-endpoint are read back off the server and reproduced — a server without a
-dashboard keeps it off. A stack that will not yield them is refused:
+The dashboard apex, its basic-auth entry, the ACME address, the ACME
+endpoint and the DNS-01 resolvers are read back off the server and
+reproduced — a server without a dashboard keeps it off. Each DNS resolver's
+env file must be on the server; it is never backed up or written, and the
+dry run gets no credentials. A stack that will not yield them is refused:
 repairing one is ` + "`kasbah server init`" + `'s job, and
 this command must not move a server's CA or its dashboard credentials as a
 side effect of a version bump. acme.json is never written.
@@ -305,7 +307,7 @@ func (x *run) readStack() error {
 		return cli.Fail("could not read the Traefik stack on %s (the remote step exited %d, see above)", x.o.Target, rc)
 	}
 	if err := remote.DecodeHidden(out, &x.stack,
-		[]string{"compose_b64", "static_b64", "shared_b64", "fragments", "acme_state", "acme_digest", "docker",
+		[]string{"compose_b64", "static_b64", "shared_b64", "fragments", "acme_dns", "acme_state", "acme_digest", "docker",
 			"traefik_state", "traefik_health", "traefik_running_image"}, "the Traefik stack read", x.o.Target); err != nil {
 		return err
 	}
@@ -339,8 +341,9 @@ func (x *run) missing(what, file, flag string) error {
 		"`kasbah server init "+x.o.Target+" "+flag+"` sets it; this command only moves the version.")
 }
 
-// recover reads the four values back, and the image in effect. The endpoint
-// is reproduced, never decided: a bump must not move a server's CA.
+// recover reads the four values back, the DNS resolvers, and the image in
+// effect. The endpoint is reproduced, never decided: a bump must not move a
+// server's CA.
 func (x *run) recover() (serverinit.Values, error) {
 	var v serverinit.Values
 	shared, static, compose := x.cur["dynamic/_shared.yml"], x.cur["traefik.yml"], x.cur["compose.yml"]
@@ -376,6 +379,18 @@ func (x *run) recover() (serverinit.Values, error) {
 	}
 	if v.Acme.CA == "" {
 		return v, x.missing("the ACME endpoint (caServer)", "traefik.yml", "--acme-staging (or without it for production)")
+	}
+	if v.DNS, err = serverinit.DNSResolvers(static); err != nil {
+		return v, x.unreadable("traefik.yml")
+	}
+	for _, p := range v.DNS {
+		if !contains(x.stack.AcmeDNS, p) {
+			return v, cli.Fail("%s/traefik/traefik.yml on %s declares the DNS resolver '%s', and its credentials are not there", x.apps, x.o.Target, p).Cont(
+				fmt.Sprintf("%s/traefik/%s is missing, and Traefik's compose stack reads it, so", x.apps, serverinit.DNSEnvRel(p)),
+				"the upgraded stack would not start. upgrade-traefik never writes credentials:",
+				fmt.Sprintf("`kasbah server init %s --acme-dns=%s:<env file>` installs them, or", x.o.Target, p),
+				fmt.Sprintf("`kasbah server init %s --no-acme-dns=%s` removes the resolver.", x.o.Target, p))
+		}
 	}
 	if x.imageNow, err = serverinit.ExtractImage(compose); err != nil {
 		return v, x.unreadable("compose.yml")
@@ -417,13 +432,25 @@ func DryStatic(static string) (string, error) {
 		m.Set(path[len(path)-1], val)
 		return nil
 	}
-	for _, a := range [][]string{
+	edits := [][]string{
 		{":8080", "entryPoints", "web", "address"},
 		{":8443", "entryPoints", "websecure", "address"},
-		{DryCA, "certificatesResolvers", acme.Resolver, "acme", "caServer"},
-		{"/tmp/kasbah-dry-run-acme.json", "certificatesResolvers", acme.Resolver, "acme", "storage"},
 		{"INFO", "log", "level"},
-	} {
+	}
+	// Every resolver, DNS-01 ones included, shares the throwaway's CA and store.
+	rs, _ := root.Get("certificatesResolvers")
+	if m, ok := rs.(*tree.Map); ok {
+		for _, k := range m.Keys() {
+			edits = append(edits,
+				[]string{DryCA, "certificatesResolvers", k, "acme", "caServer"},
+				[]string{"/tmp/kasbah-dry-run-acme.json", "certificatesResolvers", k, "acme", "storage"})
+		}
+	} else {
+		edits = append(edits,
+			[]string{DryCA, "certificatesResolvers", acme.Resolver, "acme", "caServer"},
+			[]string{"/tmp/kasbah-dry-run-acme.json", "certificatesResolvers", acme.Resolver, "acme", "storage"})
+	}
+	for _, a := range edits {
 		if err := set(a[0], a[1:]...); err != nil {
 			return "", err
 		}

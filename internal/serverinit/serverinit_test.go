@@ -582,14 +582,15 @@ func TestRender(t *testing.T) {
 
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, "traefik/dynamic"), 0o755)
+	tokens := map[string]string{"compose.yml": "__ACME_DNS_ENV_FILES__\n", "traefik.yml": "__ACME_DNS_RESOLVERS__\n"}
 	for _, rel := range Files {
-		os.WriteFile(filepath.Join(dir, "traefik", rel), []byte("a: __NOPE__\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, "traefik", rel), []byte("a: __NOPE__\n"+tokens[rel]), 0o644)
 	}
 	if _, err := Render(os.DirFS(dir), o, v); !strings.Contains(errText(err), "__NOPE__") {
 		t.Errorf("an unknown token: %v", err)
 	}
 	for _, rel := range Files {
-		os.WriteFile(filepath.Join(dir, "traefik", rel), []byte("a: \"__ACME_EMAIL__\"\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, "traefik", rel), []byte("a: \"__ACME_EMAIL__\"\n"+tokens[rel]), 0o644)
 	}
 	v.Email = `x"y: [`
 	if _, err := Render(os.DirFS(dir), o, v); !strings.Contains(errText(err), "not valid YAML") {

@@ -36,9 +36,15 @@ type Lookup struct {
 	Days    int64
 }
 
-// Find looks domain up in the store's content, judging expiry against now.
-// An entry matches on its main domain or any of its SANs.
+// Find looks domain up in the store's Resolver entry; see FindIn.
 func Find(content []byte, domain string, now time.Time) Lookup {
+	return FindIn(content, Resolver, domain, now)
+}
+
+// FindIn looks domain up in the store's content under resolver — every
+// resolver's entry, in store order, when resolver is "" — judging expiry
+// against now. An entry matches on its main domain or any of its SANs.
+func FindIn(content []byte, resolver, domain string, now time.Time) Lookup {
 	var l Lookup
 	vals, err := tree.Parse(content)
 	if err != nil || len(vals) != 1 {
@@ -50,27 +56,40 @@ func Find(content []byte, domain string, now time.Time) Lookup {
 		l.State = "notjson"
 		return l
 	}
-	if !top.Has(Resolver) {
+	names := []string{resolver}
+	if resolver == "" {
+		names = nil
+		for _, k := range top.Keys() {
+			if v, _ := top.Get(k); v != nil {
+				if _, ok := v.(*tree.Map); ok {
+					names = append(names, k)
+				}
+			}
+		}
+	}
+	if len(names) == 0 || resolver != "" && !top.Has(resolver) {
 		l.State = "noresolver"
 		return l
 	}
-	var certs tree.Value
-	switch r, _ := top.Get(Resolver); r := r.(type) {
-	case nil:
-	case *tree.Map:
-		certs, _ = r.Get("Certificates")
-	default:
-		l.State = "notjson"
-		return l
-	}
-	list, isList := certs.([]tree.Value)
-	switch {
-	case certs == nil:
-		l.State = "empty"
-		return l
-	case !isList:
-		l.State, l.Kind = "notarray", tree.Kind(certs)
-		return l
+	var list []tree.Value
+	for _, name := range names {
+		var certs tree.Value
+		switch r, _ := top.Get(name); r := r.(type) {
+		case nil:
+		case *tree.Map:
+			certs, _ = r.Get("Certificates")
+		default:
+			l.State = "notjson"
+			return l
+		}
+		switch c := certs.(type) {
+		case nil:
+		case []tree.Value:
+			list = append(list, c...)
+		default:
+			l.State, l.Kind = "notarray", tree.Kind(certs)
+			return l
+		}
 	}
 	l.Count = len(list)
 	if l.Count == 0 {

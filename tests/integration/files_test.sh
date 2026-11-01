@@ -125,7 +125,7 @@ ere_quote() {
     printf '%s' "$out"
 }
 versions_re="($(ere_quote "$v1")|$(ere_quote "$v2"))"
-declare -A ph_vps=([apps]=$apps [data]=$data [project]=$project
+declare -A ph_vps=([apps]=$apps [data]=$data [project]=$project [provider]=cloudflare
                    [version]=$versions_re [repo]="($(ere_quote "$project")|mail)")
 declare -A ph_ws=([project-dir]='<project-dir>' [tmp]='<tmp>' [project]=$project
                   [version]=$versions_re)
@@ -283,8 +283,10 @@ rig_files_snapshot -r "${shared_roots[@]}" > "$before/shared" ||
 rig_files_local -r "$RIG_HOME" '~' > "$before/home" ||
     { echo "error: could not snapshot the scratch HOME" >&2; exit 2; }
 
+# A DNS provider's credentials: a dummy token, the rig issues nothing with it.
+printf 'CF_DNS_API_TOKEN=rig-dummy-token\n' > "$tmpdir/cf.env" && chmod 600 "$tmpdir/cf.env"
 step "server init --with-mail --with-backup" run server init "$RIG_TARGET" \
-    "${traefik_flags[@]}" --with-mail --postmaster-password=rig-postmaster-pw \
+    "${traefik_flags[@]}" --acme-dns=cloudflare:"$tmpdir/cf.env" --with-mail --postmaster-password=rig-postmaster-pw \
     --with-backup --no-backup-env --backup-repo-base="${RIG_BACKUP_REPO_BASE}$run_id/" \
     --backup-password="$project=rig-project-repo-pw" --backup-password="mail=rig-mail-repo-pw"
 
@@ -373,6 +375,7 @@ require vps "$snap_dir/vps" \
     '<apps>/traefik' '<apps>/traefik/compose.yml' '<apps>/traefik/traefik.yml' \
     '<apps>/traefik/dynamic' '<apps>/traefik/dynamic/_shared.yml' '<apps>/traefik/dynamic/_mail.yml' \
     '<apps>/traefik/dynamic/<project>.yml' \
+    '<apps>/traefik/acme-dns' '<apps>/traefik/acme-dns/<provider>.env' \
     '<apps>/mail' '<apps>/mail/compose.yml' '<apps>/mail/kasbah.yml' '<apps>/mail/.env' \
     '<data>' '<data>/traefik/letsencrypt/acme.json' \
     '<data>/mail/dms/config/postfix-accounts.cf' \

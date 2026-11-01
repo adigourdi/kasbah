@@ -12,17 +12,29 @@ import (
 
 // Route is one http router of a fragment as certificates concern it: the
 // hosts its rule names in a plain Host(), whether its entrypoints are exactly
-// [web], and whether it carries a tls key.
+// [web], whether it carries a tls key, and the cert resolver that key names.
 type Route struct {
-	Name    string
-	Hosts   []string
-	WebOnly bool
-	TLS     bool
+	Name     string
+	Hosts    []string
+	WebOnly  bool
+	TLS      bool
+	Resolver string
 }
 
 // One Host() with a backtick or double-quoted literal; a match carrying a
 // leading ! is a negation, which names nothing.
 var reHost = regexp.MustCompile("(!\\s*)?\\bHost\\s*\\(\\s*(?:`([^`]*)`|\"([^\"\\\\]*)\")\\s*\\)")
+
+// RuleHosts is every host a rule names in a plain Host(), negations aside.
+func RuleHosts(rule string) []string {
+	var out []string
+	for _, sm := range reHost.FindAllStringSubmatch(rule, -1) {
+		if sm[1] == "" && sm[2]+sm[3] != "" {
+			out = append(out, sm[2]+sm[3])
+		}
+	}
+	return out
+}
 
 // Routes is every router under the tree's http.routers, in file order; none
 // when that is not a mapping.
@@ -38,11 +50,7 @@ func Routes(root tree.Value) []Route {
 		r := Route{Name: k}
 		rule, _ := tree.Lookup(v, "rule")
 		s, _ := rule.(string)
-		for _, sm := range reHost.FindAllStringSubmatch(s, -1) {
-			if sm[1] == "" && sm[2]+sm[3] != "" {
-				r.Hosts = append(r.Hosts, sm[2]+sm[3])
-			}
-		}
+		r.Hosts = RuleHosts(s)
 		eps, _ := tree.Lookup(v, "entryPoints")
 		l, _ := eps.([]tree.Value)
 		r.WebOnly = len(l) > 0
@@ -51,9 +59,27 @@ func Routes(root tree.Value) []Route {
 			r.WebOnly = r.WebOnly && s == "web"
 		}
 		_, r.TLS = tree.Lookup(v, "tls")
+		r.Resolver = resolverOf(v)
 		out = append(out, r)
 	}
 	return out
+}
+
+func resolverOf(router tree.Value) string {
+	v, _ := tree.Lookup(router, "tls", "certResolver")
+	s, _ := v.(string)
+	return strings.TrimSuffix(s, "\r")
+}
+
+// ResolverFor is the resolver whose store holds host's certificate: the first
+// router naming host with a certResolver, else Resolver.
+func ResolverFor(routes []Route, host string) string {
+	for _, r := range routes {
+		if r.Resolver != "" && r.Names(host) {
+			return r.Resolver
+		}
+	}
+	return Resolver
 }
 
 // Hosts is every host the routes name, each once, in router order.

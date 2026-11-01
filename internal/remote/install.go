@@ -6,10 +6,10 @@ import (
 	"os"
 )
 
-// Install writes body beside path as <path>.tmp.<pid> and renames it over,
-// mode set first: a reader sees the old file or the new, and a write that did
-// not finish is removed, never renamed.
-func Install(path string, body []byte, mode fs.FileMode) error {
+// Install writes body beside path as <path>.tmp.<pid>, sets mode (and gid,
+// when given and allowed), and renames it over: a reader sees the old file or
+// the new, and an unfinished write is removed, never renamed.
+func Install(path string, body []byte, mode fs.FileMode, gid ...int) error {
 	tmp := fmt.Sprintf("%s.tmp.%d", path, os.Getpid())
 	if err := os.WriteFile(tmp, body, mode); err != nil {
 		os.Remove(tmp)
@@ -18,6 +18,9 @@ func Install(path string, body []byte, mode fs.FileMode) error {
 	if err := os.Chmod(tmp, mode); err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("could not set mode %o on %s", mode, tmp)
+	}
+	if len(gid) > 0 && gid[0] != -1 {
+		os.Lchown(tmp, -1, gid[0])
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)

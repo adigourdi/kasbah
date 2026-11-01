@@ -128,19 +128,22 @@ func Target(o Options) (string, error) {
 // check` round trip. File bodies are base64; .env holds the project's
 // secrets and acme.json private keys, so neither is ever printed.
 type ServerReport struct {
-	Project       string          `json:"project"`
-	EnvState      string          `json:"env_state"`
-	Env           string          `json:"env_b64"`
-	RegistryState string          `json:"registry_state"`
-	Registry      string          `json:"registry_b64"`
-	SharedState   string          `json:"shared_state"`
-	Shared        string          `json:"shared_b64"`
-	AcmeState     string          `json:"acme_state"`
-	Acme          string          `json:"acme_b64"`
-	HealthState   string          `json:"health_state"`
-	HealthHealth  string          `json:"health_health"`
-	DockerError   string          `json:"docker_error"`
-	Backup        backuprec.Facts `json:"backup"`
+	Project       string `json:"project"`
+	EnvState      string `json:"env_state"`
+	Env           string `json:"env_b64"`
+	RegistryState string `json:"registry_state"`
+	Registry      string `json:"registry_b64"`
+	SharedState   string `json:"shared_state"`
+	Shared        string `json:"shared_b64"`
+	// Static is traefik.yml, read for the cert resolvers it declares.
+	StaticState  string          `json:"static_state"`
+	Static       string          `json:"static_b64"`
+	AcmeState    string          `json:"acme_state"`
+	Acme         string          `json:"acme_b64"`
+	HealthState  string          `json:"health_state"`
+	HealthHealth string          `json:"health_health"`
+	DockerError  string          `json:"docker_error"`
+	Backup       backuprec.Facts `json:"backup"`
 	// GroupState is whether the server has the kasbah group; PermsCount
 	// counts the apps-tree entries Perms flags, Perms lists the first ones.
 	GroupState string   `json:"group_state"`
@@ -211,6 +214,8 @@ func CollectServer(apps, data, name, health string) *ServerReport {
 		Registry:      probe.B64(mailreg.Path(apps)),
 		SharedState:   probe.FState(apps + "/traefik/dynamic/_shared.yml"),
 		Shared:        probe.B64(apps + "/traefik/dynamic/_shared.yml"),
+		StaticState:   probe.FState(apps + "/traefik/traefik.yml"),
+		Static:        probe.B64(apps + "/traefik/traefik.yml"),
 		AcmeState:     probe.FState(acmePath),
 		Acme:          probe.B64(acmePath),
 		Backup:        backuprec.Collect(apps, data),
@@ -353,8 +358,11 @@ type server struct {
 	// dashOff is a _shared.yml read with no dashboard router: traefik.* is
 	// nobody's.
 	dashOff bool
-	note    string
-	now     time.Time
+	// resolvers is every cert resolver traefik.yml declares, true for DNS-01;
+	// nil when it could not be read.
+	resolvers map[string]bool
+	note      string
+	now       time.Time
 }
 
 func dec(s string) []byte {
@@ -368,6 +376,11 @@ func dec(s string) []byte {
 func newServer(sr *ServerRead, now time.Time) *server {
 	s := &server{target: sr.Target, apps: sr.Marker.AppsPath, data: sr.Marker.DataPath, mk: sr.Marker, r: sr.Report, now: now}
 	s.env, s.acme, s.registry = dec(s.r.Env), dec(s.r.Acme), dec(s.r.Registry)
+	if static := string(dec(s.r.Static)); s.r.StaticState == "file" {
+		if rs, err := serverinit.StaticResolvers(static); err == nil && rs != nil {
+			s.resolvers = rs
+		}
+	}
 	shared := string(dec(s.r.Shared))
 	apex, err := serverinit.DashboardApex(shared)
 	if err != nil {
@@ -720,11 +733,16 @@ func (c *checker) cert() {
 		c.warnf("the manifest names no domain, so there is no certificate to look for in %s", path)
 		return
 	}
+	resolver := acme.Resolver
 	if isFile(traefikFile) {
 		raw, err := os.ReadFile(traefikFile)
-		if f := c.load(traefikFile); err == nil && f.bad == "" && acme.PlainHTTP(raw, f.root, d) {
+		f := c.load(traefikFile)
+		if err == nil && f.bad == "" && acme.PlainHTTP(raw, f.root, d) {
 			c.passf("this checkout's fragment has no HTTPS router, so '%s' is served over plain HTTP and no certificate is expected", d)
 			return
+		}
+		if f.bad == "" {
+			resolver = acme.ResolverFor(acme.Routes(f.root), d)
 		}
 	}
 	switch s.r.AcmeState {
@@ -746,7 +764,7 @@ func (c *checker) cert() {
 		c.warnf("%s on %s did not come back as readable bytes, so the certificate for '%s' cannot be checked", path, s.target, d)
 		return
 	}
-	l := acme.Find(s.acme, d, s.now)
+	l := acme.FindIn(s.acme, resolver, d, s.now)
 	switch l.State {
 	case "found":
 	case "empty":
@@ -759,10 +777,14 @@ func (c *checker) cert() {
 		c.warnf("%s on %s does not parse as JSON, so the certificate for '%s' cannot be read (its bytes are not shown: the store holds private key material)", path, s.target, d)
 		return
 	case "noresolver":
+		if resolver != acme.Resolver {
+			c.warnf("%s on %s has no '%s' store — the resolver this checkout's router names for '%s' has issued nothing yet", path, s.target, resolver, d)
+			return
+		}
 		c.warnf("%s on %s has no '%s' store — a store filled under the resolver's former name 'letsencrypt' reads this way until Traefik issues under the new one; otherwise the schema has shifted with a Traefik upgrade", path, s.target, acme.Resolver)
 		return
 	case "notarray":
-		c.warnf("%s on %s holds a '%s' whose Certificates is a %s, not a list — the store's schema is not the one this kasbah reads", path, s.target, acme.Resolver, l.Kind)
+		c.warnf("%s on %s holds a '%s' whose Certificates is a %s, not a list — the store's schema is not the one this kasbah reads", path, s.target, resolver, l.Kind)
 		return
 	case "nocert":
 		c.warnf("the entry for '%s' in %s on %s carries no certificate field — the store's schema is not the one this kasbah reads", d, path, s.target)

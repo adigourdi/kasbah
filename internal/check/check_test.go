@@ -105,7 +105,8 @@ Traefik:
   ✓ traefik-dynamic.yml exists
   ✓ At least one router references manifest domain (demo.example.com)
   ✓ All routers declare entryPoints
-  ✓ Secure routers reference http cert resolver
+  ✓ Secure routers name a cert resolver
+  ✓ No router asks for a wildcard certificate from an HTTP-01 resolver
   ✓ A router serves demo.example.com on the web entrypoint
   ✓ No router claims reserved hostnames (traefik.*, mail.*, webmail.*)
   ✓ No router or service reaches a Traefik internal service other than noop@internal
@@ -117,7 +118,7 @@ Env:
   ✓ .env.prod.example has no obvious long secrets
   ✓ .env.prod.example leaves the KASBAH_* prefix to kasbah
 
-Summary: 27 passed, 1 warning, 0 failed
+Summary: 28 passed, 1 warning, 0 failed
 `
 	if out != want || code != 0 {
 		t.Errorf("exit %d, report:\n%s", code, out)
@@ -167,9 +168,31 @@ func TestVerdicts(t *testing.T) {
 		{"reservations: false is still a reservation",
 			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "    networks: [kasbah]\n", "    networks: [kasbah]\n    deploy: {resources: {reservations: false}}\n", 1)}, 6,
 			[]string{"  ✗ Services declare resource reservations: demo-web"}},
+		{"T04: a DNS provider's resolver warns that only --server can verify it",
+			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "certResolver: http", "certResolver: cloudflare", 1)}, 0,
+			[]string{"  ✓ Secure routers name a cert resolver",
+				"  ⚠ Routers name a cert resolver other than http: demo→cloudflare — only `check --server` can verify the server declares them (`server init --acme-dns=<provider>:<env file>` adds one)"}},
+		{"T04: letsencrypt names the rename",
+			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "certResolver: http", "certResolver: letsencrypt", 1)}, 6,
+			[]string{"  ✗ certResolver letsencrypt was renamed to http — set tls.certResolver: http on: demo"}},
+		{"T04: a websecure router without a resolver fails",
+			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "tls: {certResolver: http}, ", "", 1)}, 6,
+			[]string{"  ✗ Websecure routers without tls.certResolver: demo"}},
+		{"T10: a wildcard in tls.domains on http fails",
+			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "tls: {certResolver: http}", "tls: {certResolver: http, domains: [{main: demo.example.com, sans: [\"*.demo.example.com\"]}]}", 1)}, 6,
+			[]string{"  ✗ Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): demo→http (*.demo.example.com) — name a DNS provider's resolver (`server init --acme-dns=`)"}},
+		{"T10: a double-quoted wildcard Host() on http fails",
+			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "rule: \"Host(`demo.example.com`)\", entryPoints: [websecure]", "rule: 'Host(`demo.example.com`) || Host(\"*.demo.example.com\")', entryPoints: [websecure]", 1)}, 6,
+			[]string{"  ✗ Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): demo→http (*.demo.example.com) — name a DNS provider's resolver (`server init --acme-dns=`)"}},
+		{"T10: a wildcard in a tcp router's tls.domains on http fails",
+			map[string]string{"traefik-dynamic.yml": goodFragment + "tcp:\n  routers:\n    db: {rule: \"HostSNI(`*`)\", tls: {certResolver: http, domains: [{main: \"*.db.example.com\"}]}}\n"}, 6,
+			[]string{"  ✗ Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): tcp db→http (*.db.example.com) — name a DNS provider's resolver (`server init --acme-dns=`)"}},
+		{"T10: a wildcard on a DNS provider's resolver passes locally",
+			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "tls: {certResolver: http}", "tls: {certResolver: cloudflare, domains: [{main: \"*.demo.example.com\"}]}", 1)}, 0,
+			[]string{"  ✓ No router asks for a wildcard certificate from an HTTP-01 resolver"}},
 		{"routers: that is not a mapping skips the router rules",
 			map[string]string{"traefik-dynamic.yml": "http:\n  routers: [a]\n"}, 0,
-			[]string{"  ⚠ traefik-dynamic.yml: http.routers is a list, not a mapping — skipping T02–T05, T08 and T09",
+			[]string{"  ⚠ traefik-dynamic.yml: http.routers is a list, not a mapping — skipping T02–T05 and T08–T10",
 				"  ⚠ traefik-dynamic.yml: http.routers is a list, not a mapping — skipping C03, C07 and C11, which need the services it routes"}},
 		{"with no fragment read, C03, C07 and C11 conclude nothing",
 			map[string]string{"traefik-dynamic.yml": ""}, 0,
@@ -233,7 +256,7 @@ func TestVerdicts(t *testing.T) {
 			[]string{"  ✓ All services set json-file logging with rotation"}},
 		{"a fragment of several documents is not read",
 			map[string]string{"traefik-dynamic.yml": goodFragment + "---\n" + goodFragment}, 0,
-			[]string{"  ⚠ traefik-dynamic.yml holds 2 YAML documents, where kasbah reads one — skipping T02–T05, T08 and T09",
+			[]string{"  ⚠ traefik-dynamic.yml holds 2 YAML documents, where kasbah reads one — skipping T02–T05 and T08–T10",
 				"  ⚠ traefik-dynamic.yml holds 2 YAML documents, where kasbah reads one — skipping C03, C07 and C11, which need the services it routes"}},
 		{"entryPoints: that is not a list",
 			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "entryPoints: [web]", "entryPoints: web", 1)}, 6,

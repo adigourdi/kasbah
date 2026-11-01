@@ -51,8 +51,15 @@ The Traefik stack lives at `/apps/traefik/` on the VPS and is managed by
 `server init` re-ships any of them whose bytes differ.** A hand edit to either is reverted on the next run, with
 no backup — so treat them as generated files, not as configuration you own.
 What survives a re-run is exactly the four values init reads back out of
-them: the dashboard domain, the ACME email, the basic-auth hash, and the
-Traefik image tag.
+them — the dashboard domain, the ACME email, the basic-auth hash, and the
+Traefik image tag — and the list of DNS-01 resolvers `traefik.yml` declares
+(TLS → DNS-01).
+
+**The DNS providers' env files are installed by kasbah and supplied by the
+operator.** `<apps>/traefik/acme-dns/<provider>.env` is written only by a
+`server init --acme-dns=<provider>:<file>` that names it, from the file the
+operator passed; no other run rewrites, re-modes or backs it up, and init
+reads nothing of it back but the fact that it exists.
 
 The image tag is the newest of the four and is there for one reason:
 `kasbah server upgrade-traefik` changes it, and an init that re-rendered
@@ -266,9 +273,10 @@ Project-specific middlewares go in the same project fragment under
 
 ## TLS
 
-- ACME via HTTP-01 challenge (port 80 must be reachable), through one resolver
-  named `http` after the challenge it answers — a frozen name, which every
-  `websecure` router references as `tls.certResolver: http` (T04).
+- ACME via HTTP-01 challenge (port 80 must be reachable) by default, through
+  one resolver named `http` after the challenge it answers — a frozen name.
+  Every `websecure` router names a resolver as `tls.certResolver` (T04):
+  `http`, or a DNS provider's resolver it opts into (DNS-01, below).
 - HTTPS is per router. A fragment whose routers sit on `web` alone serves plain
   HTTP and asks for no certificate; `kasbah check` passes it (T08 asks only
   for a `web` router). `check --server` passes such a domain without looking
@@ -286,9 +294,14 @@ Project-specific middlewares go in the same project fragment under
   seen, nor is a configuration Traefik kept live after refusing a fragment
   for a field it does not know. The `http-to-https` and www redirect middlewares in `_shared.yml` are
   for projects that serve HTTPS, not required.
-- Traefik keys `acme.json` by resolver name. A store filled under the
-  resolver's former name, `letsencrypt`, is not read: `check --server` and
-  `server status` report it as holding no `http` store.
+- Traefik keys `acme.json` by resolver name: each DNS resolver's certificates
+  sit under its own top-level key beside `http`. `check --server` and `server
+  status` look a host up under the resolver its router names (`http` when no
+  router names one). A store filled under the resolver's former name,
+  `letsencrypt`, is not read for an `http` router: `check --server` reports
+  no `http` store and names the former name, and `server status` counts
+  every resolver's entries, then says the store holds `letsencrypt` and
+  nothing under `http` yet.
 - A server rendered under `letsencrypt` moves to `http` in two steps: re-run
   `server init` (with `--with-mail` where the mail stack runs, so `_mail.yml`
   is re-rendered too), then redeploy every project from a fragment edited to
@@ -300,6 +313,75 @@ Project-specific middlewares go in the same project fragment under
   `letsencrypt`: its dry run boots against them (with its own `_shared.yml`
   in place of the server's) and refuses on any that does.
 - Stored in `/apps/data/traefik/letsencrypt/acme.json`, `chmod 600`.
+
+### DNS-01: one resolver per DNS provider
+
+HTTP-01 cannot issue a wildcard, and cannot issue at all while `:80` is
+proxied or blocked. DNS-01 can, and it is opted into **per router**. `server
+init --acme-dns=<provider>:<env file>` adds a resolver named after the
+provider — lego's name: `cloudflare`, `ovh`, `route53`, `gandiv5`,
+`digitalocean`; lowercase letters and digits opening with a letter, never
+`http` or `letsencrypt`, nor a word YAML reads as a boolean or null (`yes`,
+`no`, `on`, `off`, `true`, `false`, `null`) — beside `http`,
+with the same ACME address, endpoint (so `--acme-staging` covers every
+resolver) and store, a `dnsChallenge` for that provider, and propagation
+checked against public resolvers (`1.1.1.1:53`, `8.8.8.8:53`), not the host's.
+The env file holds the provider's credentials as `KEY=value` lines under
+lego's variable names (`CF_DNS_API_TOKEN=…`); Traefik's `compose.yml` reads it
+through `env_file:`. Docker Compose quotes a value back in its parse errors,
+which reach the workstation, and interpolates `$`, so the file is held to a
+shape it reads as written: blank lines, full-line `#` comments and
+`KEY=value` lines, the key `[A-Z_][A-Z0-9_]*` with no space around `=`, the
+value non-empty printable ASCII with none of `"` `'` `` ` `` `$` `\` `#` and
+no space at either end; CRs are stripped. Anything else is refused on the
+workstation, naming the line and the key, never the value. A router opts in
+by naming the resolver:
+
+```yaml
+http:
+  routers:
+    tenants:
+      rule: "HostRegexp(`^[a-z0-9-]+\\.tenants\\.example\\.com$`) || Host(`tenants.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: cloudflare
+        domains:
+          - main: tenants.example.com
+            sans: ["*.tenants.example.com"]
+      service: tenants
+```
+
+Every other router keeps `certResolver: http`. A wildcard (`*.` in
+`tls.domains` of an `http` or `tcp` router, or in an `http` router's
+`Host()`) asked of a resolver without `dnsChallenge`
+fails `kasbah check` (T10): locally for `http`, under `--server` for any
+resolver the server's `traefik.yml` declares without one.
+
+- **One credential per provider per server.** The credentials are the
+  Traefik container's environment, and one container holds one value per
+  variable, so two accounts at one provider cannot both be configured.
+  Scope the token at the provider to the zones this server holds.
+- `--acme-dns=` again replaces a provider's env file; a re-run without it
+  keeps every DNS resolver `traefik.yml` declares, and refuses, naming
+  `--acme-dns=<provider>:` and `--no-acme-dns=<provider>`, when a declared
+  provider's env file is missing; a `traefik.yml` that is absent or cannot be
+  read keeps every provider whose env file is there. `--no-acme-dns=<provider>`
+  removes the resolver and, once Traefik is up without it, its env file —
+  refused, listing them, while any file under `dynamic/` holds the provider's
+  name as a whole word in any case: every file at any depth, any extension,
+  `_mail.yml` included, comments too. A file kasbah cannot read as Traefik
+  would counts as naming every provider: one that is not a regular file (a
+  link, a FIFO), over 4 MiB or unreadable, or one that is not plain — not
+  UTF-8, or holding a control character, a YAML-only line break or BOM, a
+  backslash, a `!` (a YAML tag, or a negated rule) or a Go template (`{{`).
+  Only `_shared.yml` is skipped — kasbah renders it and its one
+  `certResolver` is `http`. Traefik matches keys in any case and
+  renders Go templates, so a narrower read could miss a router; a false
+  refusal costs an edit, a missed one a router that stops renewing. The same
+  rule keeps, with a warning, any env file the post-start sweep would remove.
+- `kasbah check` cannot see a server: it warns on a resolver name other than
+  `http` that only `check --server` can verify, which fails a name the
+  server's `traefik.yml` does not declare.
 - TLS options default to TLS 1.2–1.3 with modern cipher suites
   (declared in `_shared.yml`).
 - **Never compute a certificate's age from `notBefore`.** Let's Encrypt
@@ -462,7 +544,7 @@ server status` surfaces it.
   network (or the legacy `kasbah-net`) — internal services stay on a
   project-internal network.
 
-`kasbah check` enforces these (rules T01–T09, C03, C04, C07, C09).
+`kasbah check` enforces these (rules T01–T10, C03, C04, C07, C09).
 
 ## Upgrading Traefik
 
@@ -474,7 +556,7 @@ Two halves, and the second one is the point.
 
 **Backup before overwrite.** The three kasbah-owned files are re-rendered
 from this kasbah's templates, with the new tag in `compose.yml` and the
-four recovered values reproduced verbatim, and the bytes already on the
+four recovered values and the DNS resolvers reproduced verbatim, and the bytes already on the
 server are copied to `<apps>/traefik/backups/<UTC timestamp>/` before any
 of them is replaced. Backups are never deleted and never land in
 `dynamic/`, which Traefik watches.
@@ -490,7 +572,13 @@ the deliberately unreachable CA the dry run points it at
 (`https://127.0.0.1:1/…`), which is how it contacts no CA, registers no
 account, answers no challenge and spends no rate-limit budget. Warnings
 are reported and are never fatal — a version bump is exactly when Traefik
-starts announcing deprecations.
+starts announcing deprecations. Every resolver, the DNS ones included, is
+pointed at that CA and at a throwaway store, and the throwaway gets no env
+file: a DNS resolver without credentials logs nothing at boot, and its
+routers' certificates fail on the unreachable CA like `http`'s. A DNS
+resolver whose env file is missing on the server refuses the upgrade before
+the dry run, naming `server init --acme-dns=`/`--no-acme-dns=`: the upgraded
+stack would not start without it, and upgrade never writes credentials.
 
 Those excluded lines are also the proof the dry run read anything: the file
 provider emits one per TLS router it built out of the mounted fragments,

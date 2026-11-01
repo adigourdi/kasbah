@@ -306,7 +306,7 @@ func scanFixture() *Scan {
 }
 
 const okAct = `started=yes
-{"bk_down":"skipped","bk_down_detail":"","bk_container":"absent","bk_volume":"absent","bk_network":"absent","bk_files":"absent","projects":[{"name":"demo","vlog":"removed","vlog_gz":"absent","scripts":"absent","lock":"removed","client":"absent","env":"stripped","seeds":"removed"}],"mail_env":"absent","mail_env_n":0,"mail_registry":"absent","layers_map":"absent","marker":"removed"}
+{"bk_down":"skipped","bk_down_detail":"","bk_container":"absent","bk_volume":"absent","bk_network":"absent","bk_files":"absent","projects":[{"name":"demo","vlog":"removed","vlog_gz":"absent","scripts":"absent","lock":"removed","client":"absent","env":"stripped","seeds":"removed"}],"mail_env":"absent","mail_env_n":0,"mail_registry":"absent","layers_map":"absent","acme_dns":"absent","marker":"removed"}
 `
 
 const okTail = "pointer=removed\npointer_dir=removed\nbinary=removed\nbin_dir=removed\nkasbah_dir=removed\ndone=yes\n"
@@ -809,5 +809,30 @@ func testPointerScript(t *testing.T, sh shtest.Shell) {
 			t.Errorf("behind a wall: %q", got)
 		}
 		os.Chmod(dir, 0o755)
+	}
+}
+
+// The DNS providers' credentials leave with kasbah, and compose.yml stops
+// naming them so the stack still comes up from its own files.
+func TestRemoveAcmeDNS(t *testing.T) {
+	apps := t.TempDir()
+	if got := removeAcmeDNS(apps); got != "absent" {
+		t.Errorf("no credentials: %s", got)
+	}
+	os.MkdirAll(apps+"/traefik/acme-dns", 0o755)
+	os.WriteFile(apps+"/traefik/acme-dns/cloudflare.env", []byte("CF_DNS_API_TOKEN=x\n"), 0o640)
+	compose := "services:\n  traefik:\n    volumes:\n      - \"/a:/b\"\n" +
+		"    # Each DNS provider's credentials, installed by `kasbah server init --acme-dns=`.\n" +
+		"    env_file:\n      - acme-dns/cloudflare.env\n    networks:\n      - kasbah-net\n"
+	os.WriteFile(apps+"/traefik/compose.yml", []byte(compose), 0o644)
+	if got := removeAcmeDNS(apps); got != "removed" {
+		t.Errorf("removal: %s", got)
+	}
+	b, _ := os.ReadFile(apps + "/traefik/compose.yml")
+	if string(b) != "services:\n  traefik:\n    volumes:\n      - \"/a:/b\"\n    networks:\n      - kasbah-net\n" {
+		t.Errorf("compose.yml:\n%s", b)
+	}
+	if _, err := os.Stat(apps + "/traefik/acme-dns"); !os.IsNotExist(err) {
+		t.Errorf("still there: %v", err)
 	}
 }

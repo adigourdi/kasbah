@@ -113,3 +113,23 @@ func TestFind(t *testing.T) {
 		}
 	}
 }
+
+func TestFindIn(t *testing.T) {
+	store := []byte(`{"http":{"Certificates":[{"domain":{"main":"a.example.com"}}]},"cloudflare":{"Certificates":[{"domain":{"main":"b.example.com"}},{"domain":{"main":"c.example.com"}}]}}`)
+	now := time.Now()
+	if l := FindIn(store, "cloudflare", "b.example.com", now); l.State != "nocert" || l.Count != 2 {
+		t.Errorf("cloudflare: %+v", l)
+	}
+	if l := FindIn(store, "cloudflare", "a.example.com", now); l.State != "nomatch" {
+		t.Errorf("another resolver's certificate matched: %+v", l)
+	}
+	if l := FindIn(store, "ovh", "a.example.com", now); l.State != "noresolver" {
+		t.Errorf("ovh: %+v", l)
+	}
+	if l := FindIn(store, "", "", now); l.Count != 3 {
+		t.Errorf("every store: %+v", l)
+	}
+	if l := FindIn([]byte(`{}`), "", "", now); l.State != "noresolver" {
+		t.Errorf("no store at all: %+v", l)
+	}
+}

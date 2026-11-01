@@ -327,6 +327,8 @@ type Values struct {
 	// is "flag", "kept" or "prompt".
 	Dashboard  bool
 	DashOrigin string
+	// DNS is the DNS providers' resolvers, sorted.
+	DNS []string
 }
 
 func unreadableStack(o Options, file, flag string) error {
@@ -566,6 +568,15 @@ func Render(fsys fs.FS, o Options, v Values) (map[string]string, error) {
 			return nil, cli.Fail("internal: this kasbah build carries no traefik/%s template", rel)
 		}
 		tpl, err := tmpl.Section(string(raw), rel, "dashboard", v.Dashboard)
+		if err != nil {
+			return nil, err
+		}
+		switch rel {
+		case "traefik.yml":
+			tpl, err = expandLine(tpl, rel, "ACME_DNS_RESOLVERS", dnsResolverBlock(v.DNS))
+		case "compose.yml":
+			tpl, err = expandLine(tpl, rel, "ACME_DNS_ENV_FILES", dnsEnvBlock(v.DNS))
+		}
 		if err != nil {
 			return nil, err
 		}

@@ -4,8 +4,9 @@
 # The apps and data paths below are substituted on the workstation before this
 # file is shipped. Traefik expands environment variables in neither its static
 # nor its dynamic configuration, so every value it needs is baked at render
-# time; nothing here is left for compose to interpolate, which is why the stack
-# carries no `.env`.
+# time, a DNS provider's credentials aside (compose reads them from their own
+# files); nothing here is left for compose to interpolate, which is why the
+# stack carries no `.env`.
 #
 # Run by hand as: docker compose -p traefik up -d
 # The `-p` is not optional — `name:` below is the weakest source of the project
@@ -38,6 +39,7 @@ services:
       # `kasbah server init` creates it as a *file* first — Docker materialises
       # a missing bind-mount source as a directory.
       - "__DATA_PATH__/traefik/letsencrypt/acme.json:/letsencrypt/acme.json"
+__ACME_DNS_ENV_FILES__
     networks:
       - kasbah-net
     healthcheck:

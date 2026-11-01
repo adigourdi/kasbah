@@ -36,6 +36,10 @@ type Options struct {
 	// Postmaster is --postmaster-password=, \r stripped. A secret: never echoed.
 	Postmaster string
 	Bk         BackupFlags
+	// AcmeDNS is each --acme-dns=, its env file read; NoAcmeDNS each
+	// --no-acme-dns= provider.
+	AcmeDNS   []AcmeDNS
+	NoAcmeDNS []string
 	// Help is --help: the usage, and nothing else.
 	Help bool
 }
@@ -51,7 +55,7 @@ type BackupFlags struct {
 	Pass []string
 }
 
-const unknownFlags = "--apps-path=, --data-path=, --domain=, --email=, --with-dashboard/--no-dashboard, --traefik-auth=, --acme-staging, --reset-acme/--keep-acme, --with-mail/--no-mail, --postmaster-password=, --with-backup/--no-backup, --backup-repo-base=, --backup-env=/--no-backup-env, --backup-password=, --backup-at=, --backup-jitter=, --backup-keep-daily=/-weekly=/-monthly=, --backup-timeout=, --yes"
+const unknownFlags = "--apps-path=, --data-path=, --domain=, --email=, --with-dashboard/--no-dashboard, --traefik-auth=, --acme-staging, --reset-acme/--keep-acme, --acme-dns=/--no-acme-dns=, --with-mail/--no-mail, --postmaster-password=, --with-backup/--no-backup, --backup-repo-base=, --backup-env=/--no-backup-env, --backup-password=, --backup-at=, --backup-jitter=, --backup-keep-daily=/-weekly=/-monthly=, --backup-timeout=, --yes"
 
 // Parse is the command line, every value checked before anything is opened.
 func Parse(args []string) (Options, error) {
@@ -83,6 +87,18 @@ func Parse(args []string) (Options, error) {
 			err = o.Dashboard.Set(prompt.No, prompt.Feature("dashboard"), "server init")
 		case a == "--acme-staging":
 			o.Staging = true
+		case hasVal && name == "--acme-dns":
+			var d AcmeDNS
+			if d, err = parseAcmeDNS(val); err == nil {
+				o.AcmeDNS = append(o.AcmeDNS, d)
+			}
+		case hasVal && name == "--no-acme-dns":
+			p := strings.TrimSuffix(val, "\r")
+			if err = CheckProvider("--no-acme-dns=", p); err == nil {
+				o.NoAcmeDNS = append(o.NoAcmeDNS, p)
+			}
+		case a == "--acme-dns", a == "--no-acme-dns":
+			return o, cli.Fail("server init: %s takes a value — --acme-dns=<provider>:<env file>, --no-acme-dns=<provider>", a)
 		case a == "--reset-acme":
 			err = o.AcmeChoice.Set(prompt.Yes, acme, "server init")
 		case a == "--keep-acme":
@@ -149,6 +165,9 @@ func Parse(args []string) (Options, error) {
 		if err != nil {
 			return o, err
 		}
+	}
+	if err := checkDNSFlags(o); err != nil {
+		return o, err
 	}
 	if o.Target == "" {
 		return o, cli.Fail("server init: USER@HOST is required (the user kasbah deploys as is not optional)")

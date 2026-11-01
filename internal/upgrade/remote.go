@@ -23,6 +23,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/serverinit"
 	"github.com/adigourdi/kasbah/internal/traefiknet"
 )
 
@@ -34,10 +35,12 @@ const Project = "traefik"
 // files, the fragments the file provider reads, the certificate store's
 // digest and the live container — read-only.
 type Stack struct {
-	Compose      string   `json:"compose_b64"`
-	Static       string   `json:"static_b64"`
-	Shared       string   `json:"shared_b64"`
-	Fragments    []string `json:"fragments"`
+	Compose   string   `json:"compose_b64"`
+	Static    string   `json:"static_b64"`
+	Shared    string   `json:"shared_b64"`
+	Fragments []string `json:"fragments"`
+	// AcmeDNS is the providers with an env file under traefik/acme-dns.
+	AcmeDNS      []string `json:"acme_dns"`
 	AcmeState    string   `json:"acme_state"`
 	AcmeDigest   string   `json:"acme_digest"`
 	Docker       bool     `json:"docker"`
@@ -134,6 +137,7 @@ func readStack(apps, data string) Stack {
 		Static:    b64(dir + "/traefik.yml"),
 		Shared:    b64(dir + "/dynamic/_shared.yml"),
 		Fragments: []string{},
+		AcmeDNS:   serverinit.PresentDNS(dir + "/" + serverinit.DNSDir),
 		State:     "absent",
 		Health:    "none",
 	}

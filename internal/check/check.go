@@ -812,13 +812,13 @@ func (c *checker) r05(block tree.Value) {
 	c.passf("resources: %s — resolved on the server at deploy (a %% is a share of the host) and held to its 90%% ceiling", strings.Join(set, ", "))
 }
 
-// --- Traefik (T01–T09) ------------------------------------------------------
+// --- Traefik (T01–T10) ------------------------------------------------------
 
 func (c *checker) traefikSection() {
 	c.section("Traefik")
 	routers, unread := c.fragment()
 	if unread != "" {
-		c.warnf("%s — skipping T02–T05, T08 and T09", unread)
+		c.warnf("%s — skipping T02–T05 and T08–T10", unread)
 	} else {
 		c.passf("traefik-dynamic.yml exists")
 	}
@@ -832,6 +832,7 @@ func (c *checker) traefikSection() {
 		}
 		c.t03(routers)
 		c.t04(routers)
+		c.t10(routers)
 		if domain != "" {
 			c.t08(routers, domain)
 		}
@@ -902,28 +903,98 @@ func (c *checker) t03(routers []string) {
 	}
 }
 
+// t04: every websecure router names a cert resolver. A name other than http
+// is a DNS provider's resolver, which only the server's traefik.yml declares.
 func (c *checker) t04(routers []string) {
-	var bad, legacy []string
+	var bad, legacy, other, undeclared []string
 	for _, r := range routers {
 		if !listHas(c.router(r, "entryPoints"), "websecure") {
 			continue
 		}
-		switch scalar(c.router(r, "tls", "certResolver")) {
-		case acme.Resolver:
-		case "letsencrypt":
+		name := scalar(c.router(r, "tls", "certResolver"))
+		switch {
+		case name == acme.Resolver:
+		case name == "letsencrypt":
 			legacy = append(legacy, r)
-		default:
+		case name == "":
 			bad = append(bad, r)
+		case c.srv != nil && c.srv.resolvers != nil:
+			if _, ok := c.srv.resolvers[name]; !ok {
+				undeclared = append(undeclared, r+"→"+name)
+			}
+		default:
+			other = append(other, r+"→"+name)
 		}
 	}
-	if len(bad) == 0 && len(legacy) == 0 {
-		c.passf("Secure routers reference %s cert resolver", acme.Resolver)
+	if len(bad)+len(legacy)+len(undeclared) == 0 {
+		c.passf("Secure routers name a cert resolver")
+	}
+	if len(other) > 0 {
+		where := "only `check --server` can verify the server declares them"
+		if c.srv != nil {
+			where = "traefik.yml on " + c.srv.target + " could not be read, so whether it declares them is unknown"
+		}
+		c.warnf("Routers name a cert resolver other than %s: %s — %s (`server init --acme-dns=<provider>:<env file>` adds one)", acme.Resolver, strings.Join(other, " "), where)
+	}
+	if len(undeclared) > 0 {
+		c.failf("Routers name a cert resolver %s does not declare: %s — `kasbah server init --acme-dns=<provider>:<env file>` adds one", c.srv.target, strings.Join(undeclared, " "))
 	}
 	if len(legacy) > 0 {
 		c.failf("certResolver letsencrypt was renamed to %s — set tls.certResolver: %s on: %s", acme.Resolver, acme.Resolver, strings.Join(legacy, " "))
 	}
 	if len(bad) > 0 {
-		c.failf("Websecure routers without tls.certResolver=%s: %s", acme.Resolver, strings.Join(bad, " "))
+		c.failf("Websecure routers without tls.certResolver: %s", strings.Join(bad, " "))
+	}
+}
+
+// t10: a wildcard certificate takes DNS-01. http always answers HTTP-01; any
+// other resolver is judged against the server's traefik.yml under --server.
+func (c *checker) t10(routers []string) {
+	root := c.load(traefikFile).root
+	var bad []string
+	judge := func(label string, router tree.Value, rule string) {
+		name := scalar(opt(router, "tls", "certResolver"))
+		var wild []string
+		for _, h := range acme.RuleHosts(rule) {
+			if strings.HasPrefix(h, "*.") {
+				wild = append(wild, h)
+			}
+		}
+		for _, d := range asList(opt(router, "tls", "domains")) {
+			names := append([]tree.Value{opt(d, "main")}, asList(opt(d, "sans"))...)
+			for _, n := range names {
+				if s := scalar(n); strings.HasPrefix(s, "*.") {
+					wild = append(wild, s)
+				}
+			}
+		}
+		if len(wild) == 0 || name == "" {
+			return
+		}
+		dns, declared := false, false
+		switch {
+		case name == acme.Resolver || name == "letsencrypt":
+			declared = true
+		case c.srv != nil && c.srv.resolvers != nil:
+			dns, declared = c.srv.resolvers[name]
+		default:
+			return
+		}
+		if declared && !dns {
+			bad = append(bad, label+"→"+name+" ("+strings.Join(wild, " ")+")")
+		}
+	}
+	for _, r := range routers {
+		judge(r, c.router(r), c.rule(r))
+	}
+	tcp := opt(root, "tcp", "routers")
+	for _, r := range keysOf(tcp) {
+		judge("tcp "+r, opt(tcp, r), "")
+	}
+	if len(bad) > 0 {
+		c.failf("Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): %s — name a DNS provider's resolver (`server init --acme-dns=`)", strings.Join(bad, " "))
+	} else {
+		c.passf("No router asks for a wildcard certificate from an HTTP-01 resolver")
 	}
 }
 

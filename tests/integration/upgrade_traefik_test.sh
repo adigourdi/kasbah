@@ -329,6 +329,33 @@ assert '[ "$(rig_ssh "cat $apps/traefik/dynamic/_shared.yml" 2>/dev/null)" = "$o
     "and _shared.yml is still the off one — the anchor never shipped"
 assert '[ "$(dry_leftovers)" = 0 ]' "the throwaway left nothing behind (got '$(dry_leftovers)')"
 
+# --- Direction four: a server with a DNS-01 resolver ----------------------------------
+# The throwaway gets the resolver, its own CA and store, and no credentials; a
+# router naming it is built and exempted like any other the unreachable CA refuses.
+printf 'CF_DNS_API_TOKEN=rig-dummy-token\n' > "$work/cf.env"
+chmod 600 "$work/cf.env"
+dns_init=$(kasbah_cli server init "$RIG_TARGET" --acme-dns=cloudflare:"$work/cf.env" \
+    --no-mail --no-backup --acme-staging --yes 2>&1 </dev/null)
+assert '[ "$?" = 0 ]' "server init --acme-dns= adds the resolver
+$dns_init"
+sed -e 's/gallery/wild/g' -e 's/certResolver: http/certResolver: cloudflare/' "$work/gallery.yml" |
+    rig_ssh "cat > $apps/traefik/dynamic/wild.yml" >/dev/null 2>&1
+env_before=$(rig_ssh "stat -c '%Y %a' $apps/traefik/acme-dns/cloudflare.env" 2>/dev/null)
+dns_up=$(kasbah_cli server upgrade-traefik "$RIG_TARGET" --version="$target_a" 2>&1 </dev/null)
+dns_rc=$?
+assert '[ "$dns_rc" = 0 ]' "the upgrade to $target_a passes with a DNS resolver present (rc=$dns_rc)
+$dns_up"
+assert 'grep -qF "dry run passed" <<<"$dns_up" && grep -qF "wild@file" <<<"$dns_up"' \
+    "its dry run built the router that names the DNS resolver (said: $dns_up)"
+assert '! grep -qF "rig-dummy-token" <<<"$dns_up"' "and no credential reached the output"
+assert '[ "$(inspected_image)" = "traefik:$target_a" ]' "the container runs the new tag (got '$(inspected_image)')"
+assert '[ "$(rig_ssh "docker exec traefik printenv CF_DNS_API_TOKEN" 2>/dev/null | tr -d "\r")" = "rig-dummy-token" ]' \
+    "the recreated Traefik still has the provider's credentials in its environment"
+assert '[ "$(rig_ssh "stat -c '\''%Y %a'\'' $apps/traefik/acme-dns/cloudflare.env" 2>/dev/null)" = "$env_before" ]' \
+    "and the env file was neither rewritten nor re-moded (was '$env_before')"
+assert '[ "$(dry_leftovers)" = 0 ]' "the throwaway left nothing behind (got '$(dry_leftovers)')"
+rig_ssh "rm -f $apps/traefik/dynamic/wild.yml" >/dev/null 2>&1
+
 # A failure's state is left on the rig for inspection; a pass tidies up after
 # itself, the same contract every integration suite here follows.
 [ "$fail" != 0 ] || rig_clean >/dev/null 2>&1

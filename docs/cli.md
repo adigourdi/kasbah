@@ -104,6 +104,24 @@ Flags:
   and the whole deploy flow are green, then re-run without the flag — failed
   challenges count against the production rate limits too, so the rehearsal is
   what keeps a misconfigured DNS from costing a week.
+- `--acme-dns=<provider>:<env file>` (repeatable) — add or replace a DNS-01
+  resolver named after the provider (lego's name: lowercase letters and
+  digits opening with a letter, never `http`, `letsencrypt` or a word YAML
+  reads as a boolean or null), its credentials read here from the file's
+  `KEY=value` lines and installed at `<apps>/traefik/acme-dns/<provider>.env`
+  (mode `640`, group `kasbah`). The file is refused before anything connects
+  when it is missing, not a regular file, readable by group or others, or not
+  in the plain shape compose reads as written (`traefik.md` → DNS-01: unquoted
+  printable-ASCII values without `"` `'` `` ` `` `$` `\` `#`); a refusal names
+  the line and the key, and the values are never printed.
+  `--no-acme-dns=<provider>` removes the resolver and its env file — refused,
+  naming each file, while any file under `dynamic/` but `_shared.yml` holds
+  the provider's name as a whole word in any case, comments included, or is a
+  file kasbah cannot read as Traefik would (`traefik.md` → DNS-01). Unset
+  keeps every DNS resolver the server's `traefik.yml` declares, without asking — like `--acme-staging`, the status quo is the
+  default, and asking on every run would make the common one worse; a
+  declared provider whose env file is missing is a hard fail naming both
+  flags. `traefik.md` → DNS-01.
 - `--yes` — answer the `acme.json` reset **confirmation** below: the case where
   the server records a CA, this run renders a different one, and declining
   simply aborts. Destructive, hence a confirmation; two outcomes only, hence
@@ -134,7 +152,10 @@ What it does:
    `_shared.yml`. No `.env`: Traefik interpolates no environment variables,
    so `--domain`, `--email`, the `--traefik-auth` hash and the ACME `caServer`
    are baked into the
-   rendered files (see `server-setup.md`).
+   rendered files (see `server-setup.md`). The container's one environment is
+   each DNS provider's credentials (`--acme-dns=`), whose env files are
+   installed under `acme-dns/` before `compose.yml`, which names them in
+   `env_file:`, ships.
 5. Reconcile the certificate store with the CA now configured. `acme.json`
    holds certificates issued by one CA; changing `caServer` does not
    invalidate them, so Traefik goes on serving certificates from the old
@@ -158,6 +179,9 @@ What it does:
    See `traefik.md` → "Which CA".
 6. `docker compose -p traefik up -d` in `/apps/traefik/`, restarting only
    when the static config changed and the container was not just recreated.
+   Once Traefik is healthy, the env files of providers it no longer reads are
+   removed — save one a file under `dynamic/` still names, which is kept with
+   a warning naming those files.
 7. Health-check Traefik, print the dashboard URL. Plain HTTP redirects to
    HTTPS, and the dashboard carries HSTS on its 401 (`traefik.md` → Dashboard).
 8. If `--with-mail`: this is spread across steps 5-7 rather than sitting
@@ -335,8 +359,13 @@ fails while the live proxy is still untouched, and the pull cannot fail
 later, mid-switch.
 
 The values are recovered off the server and reproduced verbatim: the ACME
-address and endpoint, and — when the dashboard is on — its apex and basic-auth
-entry; a stack with no dashboard router upgrades as one without a dashboard. A
+address and endpoint, the DNS-01 resolvers, and — when the dashboard is on —
+its apex and basic-auth entry; a stack with no dashboard router upgrades as one
+without a dashboard. Every resolver, the DNS ones included, points at the dry
+run's loopback CA and a throwaway store, and the throwaway gets no provider
+credentials. A DNS resolver whose env file is missing on the server is refused
+before the dry run (the stack would not start without it); the env files are
+never backed up or written. A
 stack that will not yield them is refused, naming the one
 that is missing and pointing at `server init` — repairing a stack is init's
 job, and a version bump must not move a server's CA or its dashboard
@@ -406,6 +435,13 @@ Mail, if the stack is there:
 - `<apps>/mail/kasbah.yml`, the registry — read by kasbah and nothing else.
 - **`postfix-accounts.cf` stays.** Removing the postmaster would leave
   containers running that nobody can authenticate to.
+
+Traefik, if `server init --acme-dns=` gave it DNS providers:
+- `<apps>/traefik/acme-dns/`, every provider's credentials, after their
+  `env_file:` lines are dropped from `<apps>/traefik/compose.yml` so the stack
+  still comes up from its own files. The running Traefik keeps the values until
+  it is recreated; the resolvers stay in `traefik.yml`, for the new owner to
+  give credentials of their own or remove.
 
 Kept: every container and image, Traefik and its fragments, `data/`,
 `<apps>/backups/` and every `<apps>/<project>/backups/`, named volumes, and the projects' compose files and `.env`
@@ -629,13 +665,15 @@ every manifest shape — is a named failure (6).
 `--server USER@HOST` also asks that VPS: whether the project is deployed there,
 whether its `.env` still matches this checkout's `.env.prod.example`, whether
 the mail stack knows the claimed domain (M03), whether `health.container` is
-healthy, what Traefik's `acme.json` holds for the project's domain, and whether
+healthy, what Traefik's `acme.json` holds for the project's domain (under the
+resolver its router names), and whether
 the effective resource limits are within the host's ceiling (R04), whether
 the projects' own limits fit the host together (R06), whether
 every mail domain on it can sign (M04), whether the backup stack ran (B01) and
 whether the apps tree is the operators' group's. It also
 tightens T05 from a first-label heuristic to the hostnames that server really
-owns. It changes nothing on the server but kasbah's own binary, brought up to
+owns, and reads the server's `traefik.yml` so T04 and T10 judge a resolver
+other than `http` against the ones it declares. It changes nothing on the server but kasbah's own binary, brought up to
 date first. Given without a `USER@HOST`
 it asks `last_server`, and a run that reaches the server records it — the same
 rule every other server-targeting command follows (`project-manifest.md`).

@@ -209,13 +209,14 @@ func TestBackupAndStartRemote(t *testing.T) {
 }
 
 type fake struct {
-	stack   Stack
-	dry     Dry
-	overlay string
-	up      Up
-	upRC    int
-	calls   []string
-	written map[string]string
+	stack     Stack
+	dry       Dry
+	overlay   string
+	dryStatic string
+	up        Up
+	upRC      int
+	calls     []string
+	written   map[string]string
 }
 
 func (f *fake) Marker() (*marker.Marker, error) {
@@ -236,7 +237,7 @@ func (f *fake) Call(stdin []byte, bounded bool, args ...string) ([]byte, int) {
 		if json.Unmarshal(stdin, &p) != nil || !strings.Contains(p.Static, DryCA) {
 			return nil, 1
 		}
-		f.overlay = p.Shared
+		f.overlay, f.dryStatic = p.Shared, p.Static
 		return j(f.dry), 0
 	case "traefik backup":
 		return j(map[string]string{"backup_dir": "/apps/traefik/backups/S"}), 0
@@ -472,5 +473,46 @@ func TestDryShared(t *testing.T) {
 	}
 	if _, err := DryShared("http: [1\n"); err == nil {
 		t.Error("an unparseable _shared.yml makes an overlay")
+	}
+}
+
+// DNS resolvers are read back off traefik.yml and kept, their env files
+// required and never written; the dry run sends every resolver to its own CA.
+func TestRecoverDNS(t *testing.T) {
+	f := newFake(t, "traefik:v3.7.10")
+	o := serverinit.Options{Apps: "/apps", Data: "/apps/data", Target: "deploy@vps"}
+	v := serverinit.Values{Image: "traefik:v3.7.10", Domain: "example.com", Email: "ops@example.com",
+		AuthEntry: "admin:$2y$05$abcdefghijklmnopqrstuuOKS6tiVYGv2Cm5Q4PJBTzH9xvOGHT6e", Dashboard: true, DNS: []string{"cloudflare", "ovh"}}
+	v.Acme.CA = serverinit.CAStaging
+	cur, err := serverinit.Render(templates.FS, o, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.stack.Compose, f.stack.Static = enc(cur["compose.yml"]), enc(cur["traefik.yml"])
+	f.stack.AcmeDNS = []string{"cloudflare", "ovh"}
+	if se, code := runUp(t, f, "v3.7.11"); code != 0 {
+		t.Fatalf("%d\n%s", code, se)
+	}
+	if w := f.written["/apps/traefik/compose.yml"]; !strings.Contains(w, "      - acme-dns/cloudflare.env\n      - acme-dns/ovh.env\n") || !strings.Contains(w, "traefik:v3.7.11") {
+		t.Errorf("compose.yml lost its env_file:\n%s", w)
+	}
+	if _, ok := f.written["/apps/traefik/traefik.yml"]; ok {
+		t.Error("traefik.yml re-rendered differently")
+	}
+	for k := range f.written {
+		if strings.Contains(k, "acme-dns") {
+			t.Errorf("upgrade wrote %s", k)
+		}
+	}
+	if strings.Count(f.dryStatic, DryCA) != 3 || strings.Count(f.dryStatic, "/tmp/kasbah-dry-run-acme.json") != 3 || strings.Contains(f.dryStatic, "acme-staging") {
+		t.Errorf("a resolver kept its CA or store in the dry run:\n%s", f.dryStatic)
+	}
+
+	f = newFake(t, "traefik:v3.7.10")
+	f.stack.Static = enc(cur["traefik.yml"])
+	f.stack.AcmeDNS = []string{"cloudflare"}
+	se, code := runUp(t, f, "v3.7.11")
+	if code != 1 || len(f.calls) != 1 || !strings.Contains(se, "declares the DNS resolver 'ovh'") || !strings.Contains(se, "--acme-dns=ovh:<env file>") {
+		t.Errorf("missing env file: %d %q\n%s", code, f.calls, se)
 	}
 }

@@ -347,7 +347,7 @@ func (x *run) print() {
 	x.printCerts()
 	if x.dash != "" {
 		x.p("  Dashboard: %s\n", x.dash)
-		x.certLine(x.dash, "      ")
+		x.certLine(x.dash, acme.Resolver, "      ")
 	} else if x.dashOff {
 		x.p("  Dashboard: off (no dashboard router in dynamic/_shared.yml)\n")
 	}
@@ -465,35 +465,52 @@ func (x *run) printCerts() {
 		x.p("  Certificates: %s did not come back as readable bytes\n", path)
 		return
 	}
-	l := acme.Find(x.acme, "", x.now)
+	l := acme.FindIn(x.acme, "", "", x.now)
 	switch l.State {
 	case "notjson":
 		x.p("  Certificates: %s does not parse as JSON (its bytes are not shown — it holds private key material)\n", path)
 	case "noresolver":
-		x.p("  Certificates: %s has no '%s' store — filled under the former name 'letsencrypt', or the schema has shifted\n", path, acme.Resolver)
+		x.p("  Certificates: %s holds no resolver's store — nothing has been issued yet\n", path)
 	case "notarray":
-		x.p("  Certificates: %s holds a '%s' whose Certificates is a %s, not a list\n", path, acme.Resolver, l.Kind)
+		x.p("  Certificates: %s holds a resolver whose Certificates is a %s, not a list\n", path, l.Kind)
 	case "empty":
 		x.p("  Certificates: none issued yet (the store at %s is empty)\n", path)
 	default:
 		x.p("  Certificates: %d in %s\n", l.Count, path)
 		x.acmeReady = true
 	}
+	if x.formerOnly() {
+		x.p("    filled under the resolver's former name 'letsencrypt', with nothing under '%s' yet — Traefik issues anew under '%s' for each router naming it\n", acme.Resolver, acme.Resolver)
+	}
 }
 
-func (x *run) certLine(host, indent string) {
+// formerOnly is a store holding a 'letsencrypt' entry and no http one.
+func (x *run) formerOnly() bool {
+	return acme.FindIn(x.acme, "letsencrypt", "", x.now).State != "noresolver" &&
+		acme.FindIn(x.acme, acme.Resolver, "", x.now).State == "noresolver"
+}
+
+// certLine looks host up in the store of the resolver its router names.
+func (x *run) certLine(host, resolver, indent string) {
 	if !x.acmeReady {
 		return
 	}
-	l := acme.Find(x.acme, host, x.now)
+	l := acme.FindIn(x.acme, resolver, host, x.now)
 	via := ""
 	if l.Main != host {
 		via = " (as a SAN of " + l.Main + ")"
 	}
 	switch l.State {
 	case "found":
-	case "nomatch":
+	case "nomatch", "empty":
 		x.p("%sno certificate — Traefik issues one when the hostname resolves here\n", indent)
+		return
+	case "noresolver":
+		if resolver == acme.Resolver && x.formerOnly() {
+			x.p("%sno certificate — nothing under '%s' yet; the store's 'letsencrypt' entry is the resolver's former name\n", indent, resolver)
+			return
+		}
+		x.p("%sno certificate — nothing in the store under its resolver '%s' yet\n", indent, resolver)
 		return
 	case "nocert":
 		x.p("%sthe store entry carries no certificate field\n", indent)
@@ -562,7 +579,7 @@ func (x *run) printMail() {
 	x.p("  Primary: %s   Domains: %s\n", reg.Primary, strings.Join(reg.Domains, " "))
 	for _, d := range []string{"mail." + reg.Primary, "webmail." + reg.Primary} {
 		x.p("  %s\n", d)
-		x.certLine(d, "      ")
+		x.certLine(d, acme.Resolver, "      ")
 	}
 }
 
@@ -836,7 +853,8 @@ func (x *run) printHosts(p Project) {
 	}
 	raw := b64(p.Frag)
 	root, ok := ParseFragment(raw)
-	hosts := acme.Hosts(acme.Routes(root))
+	routes := acme.Routes(root)
+	hosts := acme.Hosts(routes)
 	if !ok {
 		x.p("      %s does not parse as YAML, so this project's domain cannot be read\n", path)
 		return
@@ -851,7 +869,7 @@ func (x *run) printHosts(p Project) {
 			x.p("          plain HTTP — its fragment has no HTTPS router, so no certificate is expected\n")
 			continue
 		}
-		x.certLine(h, "          ")
+		x.certLine(h, acme.ResolverFor(routes, h), "          ")
 	}
 }
 

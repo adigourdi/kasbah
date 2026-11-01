@@ -376,7 +376,8 @@ func Run(c Ctx, o Options) (err error) {
 	var existing []byte
 	present := false
 	cur := map[string]string{}
-	var hosts map[string][]string
+	var hosts, named map[string][]string
+	var dnsPresent []string
 	if !elevate {
 		if ensured, err = s.ensure(c, o.Apps); err != nil {
 			return err
@@ -391,6 +392,7 @@ func Run(c Ctx, o Options) (err error) {
 				"the step was truncated, or the server's kasbah rejected it — raw output:", "| "+strings.TrimSpace(body))
 		}
 		present, hosts = r.Marker == "present", r.Hosts
+		dnsPresent, named = r.AcmeDNS, r.Named
 		if existing, err = base64.StdEncoding.DecodeString(r.Body); err != nil {
 			return cli.Fail("the read of %s on %s returned a marker that does not decode", markerPath, target)
 		}
@@ -466,6 +468,11 @@ func Run(c Ctx, o Options) (err error) {
 		return err
 	}
 	DashboardClaims(out, o, v, hosts)
+	dns, err := SettleDNS(out, o, cur["traefik.yml"], dnsPresent, named)
+	if err != nil {
+		return err
+	}
+	v.DNS = dns.List
 	var mv MailValues
 	var mrendered map[string]string
 	if mailOn {
@@ -566,6 +573,18 @@ func Run(c Ctx, o Options) (err error) {
 		return err
 	}
 
+	// Ahead of compose.yml, whose env_file entries name them.
+	var dnsWritten []string
+	for _, d := range dns.Install {
+		res, rc := s.send(d.Body, "acme-dns", o.Apps, d.Provider)
+		if rc != 0 {
+			return cli.Fail("could not install the %s credentials at %s:%s/traefik/%s (the remote step exited %d, see above)", d.Provider, target, o.Apps, DNSEnvRel(d.Provider), rc)
+		}
+		if remote.KV([]byte(res))["acme_dns"] == "written" {
+			dnsWritten = append(dnsWritten, d.Provider)
+		}
+	}
+
 	var changed []string
 	restart := false
 	for _, rel := range Files {
@@ -620,6 +639,23 @@ func Run(c Ctx, o Options) (err error) {
 		"traefik_action", "traefik_health", "traefik_started_at", "traefik_image", "traefik_container")
 	if err != nil {
 		return err
+	}
+	// Once the running Traefik no longer reads them; the server keeps any a
+	// file under dynamic/ still names.
+	var dnsRemoved []string
+	if len(dns.Remove) > 0 {
+		res, rc := s.call(nil, true, append([]string{"acme-dns-rm", o.Apps}, dns.Remove...)...)
+		if rc != 0 {
+			return stepFailed("remove the credentials of "+strings.Join(dns.Remove, " "), target, rc)
+		}
+		kv := remote.KV([]byte(res))
+		for _, p := range dns.Remove {
+			if files, ok := kv["acme_dns_kept_"+p]; ok {
+				out.Warn("kept %s/traefik/%s: %s may still name '%s' (the word, or characters kasbah cannot read past — traefik.md → DNS-01); the credentials stay until nothing under dynamic/ does", o.Apps, DNSEnvRel(p), files, p)
+				continue
+			}
+			dnsRemoved = append(dnsRemoved, p)
+		}
 	}
 
 	// After Traefik is healthy: DMS reads mail.<primary>'s certificate out of
@@ -776,6 +812,30 @@ func Run(c Ctx, o Options) (err error) {
 		out.Info("        acme.json reset, previous store archived as %s", reset["acme_archive"])
 	} else if v.Acme.KeptUnknown {
 		out.Info("        acme.json kept and NOT reset — nothing records which CA issued what is in it")
+	}
+	if len(dns.List)+len(dns.Remove) > 0 {
+		var l []string
+		for _, p := range dns.List {
+			switch {
+			case contains(dnsWritten, p):
+				l = append(l, p+" (credentials installed)")
+			case contains(dns.Kept, p):
+				l = append(l, p+" (kept)")
+			default:
+				l = append(l, p+" (credentials unchanged)")
+			}
+		}
+		line := "none"
+		if len(l) > 0 {
+			line = strings.Join(l, ", ")
+		}
+		if len(dnsRemoved) > 0 {
+			line += "; removed " + strings.Join(dnsRemoved, " ")
+		}
+		if kept := len(dns.Remove) - len(dnsRemoved); kept > 0 {
+			line += fmt.Sprintf("; %d kept, still named under dynamic/", kept)
+		}
+		out.Info("  acme-dns: %s", line)
 	}
 	if v.Dashboard {
 		out.Info("  dashboard: https://traefik.%s (basic auth, credentials %s)", v.Domain, v.AuthOrigin)

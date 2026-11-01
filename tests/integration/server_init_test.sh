@@ -609,6 +609,55 @@ assert 'grep -qF "Dashboard: $dash_host" <<<"$status_out"' "server status names 
 # The hash is fresh (bcrypt salts), so the tree's baseline moves with it.
 before=$(apps_checksum)
 
+# --- DNS-01 resolvers, one per provider ---------------------------------------
+static_plain=$(rig_ssh "cat $apps/traefik/traefik.yml" 2>/dev/null)
+# A dummy token: the rig has no public DNS, so this proves the plumbing — the
+# file, its mode and group, the rendered resolver, Traefik's environment — and
+# the rules around it, never an issued certificate.
+printf '# cloudflare\r\nCF_DNS_API_TOKEN=rig-dummy-token\r\n' > "$tmpdir/cf.env"
+chmod 600 "$tmpdir/cf.env"
+dns_env=$apps/traefik/acme-dns/cloudflare.env
+dns_facts() {
+    rig_ssh "stat -c '%a %G' $dns_env 2>/dev/null || echo absent
+             grep -c 'provider: cloudflare' $apps/traefik/traefik.yml
+             grep -c 'acme-dns/cloudflare.env' $apps/traefik/compose.yml
+             docker inspect -f '{{.State.Health.Status}}' traefik
+             docker exec traefik printenv CF_DNS_API_TOKEN || echo unset" 2>/dev/null | tr -d '\r' | tr '\n' ' '
+}
+init --no-mail --no-backup --acme-dns=cloudflare:"$tmpdir/cf.env"; rc=$?
+assert '[ "$rc" = "0" ]' "--acme-dns=cloudflare: adds the resolver (exit $rc: $(init_err))"
+facts=$(dns_facts)
+assert '[ "$facts" = "640 kasbah 1 1 healthy rig-dummy-token " ]' \
+    "its env file is 640 group kasbah, traefik.yml declares it, compose.yml reads it, and Traefik is healthy with the token (got '$facts')"
+assert '! grep -qF "rig-dummy-token" "$tmpdir/err" "$tmpdir/out"' "the token is never printed"
+assert 'grep -qF "acme-dns: cloudflare (credentials installed)" "$tmpdir/err"' "the summary names it (said '$(init_err)')"
+assert '[ "$(rig_ssh "cat $dns_env" 2>/dev/null)" = "$(printf "# cloudflare\nCF_DNS_API_TOKEN=rig-dummy-token")" ]' \
+    "and the installed file has its CRs stripped"
+
+dns_started=$(traefik_started_at)
+init --no-mail --no-backup; rc=$?
+assert '[ "$rc" = "0" ] && [ "$(dns_facts)" = "$facts" ]' "a re-run without the flag keeps the resolver (exit $rc, got '$(dns_facts)')"
+assert 'grep -qF "acme-dns: cloudflare (kept)" "$tmpdir/err"' "saying so (said '$(init_err)')"
+assert '[ "$(traefik_started_at)" = "$dns_started" ]' "and does not restart Traefik"
+
+rig_ssh "printf 'http:\n  routers:\n    wild:\n      rule: \"Host(\x60w.$rig_domain\x60)\"\n      entryPoints: [websecure]\n      tls:\n        certResolver: cloudflare\n      service: noop@internal\n' > $apps/traefik/dynamic/dnsuser.yml" >/dev/null 2>&1
+init --no-mail --no-backup --no-acme-dns=cloudflare; rc=$?
+assert '[ "$rc" != "0" ] && grep -qF "dynamic/dnsuser.yml" "$tmpdir/err"' \
+    "--no-acme-dns= is refused while a deployed fragment names the resolver, naming it (exit $rc: $(init_err))"
+assert '[ "$(dns_facts)" = "$facts" ]' "and nothing changed"
+rig_ssh "rm -f $apps/traefik/dynamic/dnsuser.yml; printf '# CloudFlare token rotated\n' > $apps/traefik/dynamic/notes.toml" >/dev/null 2>&1
+init --no-mail --no-backup --no-acme-dns=cloudflare; rc=$?
+assert '[ "$rc" != "0" ] && grep -qF "dynamic/notes.toml" "$tmpdir/err" && [ "$(dns_facts)" = "$facts" ]' \
+    "so is any file there holding the name as a whole word, in any case and any extension (exit $rc: $(init_err))"
+rig_ssh "rm -f $apps/traefik/dynamic/notes.toml" >/dev/null 2>&1
+
+init --no-mail --no-backup --no-acme-dns=cloudflare; rc=$?
+assert '[ "$rc" = "0" ]' "--no-acme-dns= succeeds once no fragment names it (exit $rc: $(init_err))"
+gone=$(dns_facts)
+assert '[ "$gone" = "absent 0 0 healthy unset " ]' "the env file, the resolver and the env_file entry are gone, Traefik healthy without the token (got '$gone')"
+assert '[ "$(rig_ssh "cat $apps/traefik/traefik.yml" 2>/dev/null)" = "$static_plain" ]' "traefik.yml is back to its bytes before the resolver"
+before=$(apps_checksum)
+
 # --- Every compose call carries -p, and it has to be -p that does the work ----
 # `name: traefik` in the compose file would produce the same project label on
 # its own, so asserting the label proves nothing until the environment disagrees

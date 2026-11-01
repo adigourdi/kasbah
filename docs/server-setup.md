@@ -73,6 +73,7 @@ Default paths (override with `--apps-path`, `--data-path`):
 └── traefik/
     ├── compose.yml                  the shared Traefik stack
     ├── traefik.yml                  static config
+    ├── acme-dns/<provider>.env      mode 640, group kasbah — a DNS provider's credentials (only with --acme-dns)
     └── dynamic/                     file-provider watch dir
         ├── _shared.yml              middlewares + TLS options + dashboard routers (--with-dashboard)
         ├── _mail.yml                cert-trigger + webmail routers (only with --with-mail)
@@ -86,7 +87,9 @@ mode 600) and the Rspamd DKIM override
 (`mail/dms/config/rspamd/override.d/dkim_signing.conf`) are seeded there before
 DMS first starts, and never written over afterwards.
 
-**The Traefik stack has no `.env`, deliberately.** Traefik expands
+**The Traefik stack has no `.env`, deliberately** — its one environment is
+each DNS provider's credentials, read through `env_file:` from
+`acme-dns/<provider>.env` (`traefik.md` → DNS-01). Traefik expands
 environment variables in neither its static nor its dynamic configuration,
 so the ACME email, the dashboard domain and basic-auth hash (when there is a
 dashboard) and the ACME `caServer` are baked into the rendered files at init time. The rendered `compose.yml` then
@@ -99,7 +102,12 @@ different CA than the one in effect. The email and `caServer` are read from
 the `http` resolver, or from one still named `letsencrypt` (its former name)
 when `http` has none, so a re-run over a server rendered under that name keeps
 both and re-renders the resolver as `http` — the first of the two steps
-`traefik.md` → TLS describes for such a server.
+`traefik.md` → TLS describes for such a server. The DNS resolvers are read
+back the same way: every `certificatesResolvers` entry with a `dnsChallenge`,
+under a provider name, is kept and re-rendered; one whose
+`acme-dns/<provider>.env` is not on the server is a hard fail naming
+`--acme-dns=<provider>:` and `--no-acme-dns=<provider>`. A `traefik.yml` that
+is absent or cannot be read keeps every provider whose env file is there.
 
 `acme.json` is touched as an empty file before `docker compose up`. If Docker
 sees a missing path on a bind mount, it silently creates a **directory**,
@@ -245,6 +253,25 @@ prerequisite, which this document's "checked, not installed" philosophy
 leans toward — was considered and rejected: one manual step before every
 fresh VPS costs more than a sudo the prerequisites table can simply name.
 
+## DNS-01 resolvers (`--acme-dns`)
+
+`--acme-dns=<provider>:<env file>` (repeatable) adds or replaces a DNS-01
+resolver named `<provider>` beside `http`; `--no-acme-dns=<provider>` removes
+one. The env file is read on the workstation and refused before anything
+connects when it is missing, not a regular file, readable by group or others,
+over 64 KiB, or sets no key, and unless every line is blank, a full-line `#`
+comment or `KEY=value` in a shape Docker Compose's `env_file` reads as
+written: the key `[A-Z_][A-Z0-9_]*` with no space around `=`, the value
+non-empty printable ASCII without `"` `'` `` ` `` `$` `\` `#` and with no
+space at either end (CR stripped). Compose quotes a value back in its parse
+errors and interpolates `$`, so anything it might misread is refused here,
+naming the line and the key, never the value. The file never rides on argv,
+and its contents appear in no output or error. It is installed
+with its size and sha256 at `<apps>/traefik/acme-dns/<provider>.env`, before
+the Traefik files ship. A provider given twice, or both added and removed, is
+refused at parse. What the resolver renders, how a router opts in and the one
+credential per provider: `traefik.md` → DNS-01.
+
 ## Operators
 
 Several people can run one server, each as their own Unix user over SSH. Every
@@ -257,6 +284,9 @@ the shared binary (`775`). Every `kasbah remote …` step runs at umask `002`;
 setgid does not make a file group-writable, so kasbah also writes those modes
 explicitly. Secrets that are not the operators' stay outside the group:
 `acme.json`, `mail/.env` and the backup stack's directory keep `600`/`700`.
+A DNS provider's env file (`traefik/acme-dns/<provider>.env`) is `640` and
+the group's — every operator's `server init` restarts Traefik through compose,
+which reads it — and is rewritten only by a run whose `--acme-dns=` names it.
 Every operator reads every project's `.env` — the group is one trust domain.
 It is no wider than the one operators are already in: access to a rootful
 Docker daemon is root on the host, so what the group grants an operator is
@@ -342,6 +372,15 @@ certificatesResolvers:
       storage: /letsencrypt/acme.json
       httpChallenge:
         entryPoint: web
+  # one per --acme-dns provider, sorted, named after it:
+  cloudflare:
+    acme:
+      email: <as above>
+      caServer: <as above>
+      storage: /letsencrypt/acme.json
+      dnsChallenge:
+        provider: cloudflare
+        resolvers: ["1.1.1.1:53", "8.8.8.8:53"]
 
 api:
   dashboard: true
@@ -757,7 +796,12 @@ Traefik's own store, read by the same `internal/acme` that answers
 `check --server`. The store holds the ACME account key and every certificate's
 private key: it is never written to disk, echoed, or quoted in a message, and
 the diagnostic that echoes a truncated probe back reports that one line by name
-and length only. `notBefore` is deliberately not read — Let's Encrypt backdates
+and length only. Traefik keys the store by resolver name: the `Certificates:`
+count covers every resolver's entry, and each host is looked up under the
+resolver its router names (`http` when none does). A store holding a
+`letsencrypt` entry and no `http` one — filled under the resolver's former
+name — says so on the line after the count. `notBefore` is deliberately not
+read — Let's Encrypt backdates
 it by roughly an hour, so it is not issuance time.
 
 **Disk is `df`, not `du`.** The question is whether the host is about to run out
@@ -796,6 +840,14 @@ server binary reads it out of the marker.
 - Traefik is restarted only when the static config actually changed *and*
   `compose up -d` did not already create or recreate the container — a
   container two seconds old has read the new config on its way up.
+- A re-run without `--acme-dns` keeps every DNS resolver and never rewrites
+  its env file; `--acme-dns=` with the bytes already there leaves the file
+  alone. A changed env file recreates Traefik through `compose up -d`.
+  `--no-acme-dns=` removes the env file after Traefik is up without the
+  resolver, and so does a re-run for any env file whose provider
+  `traefik.yml` no longer declares — save one that a file under `dynamic/`
+  still names (the rule `--no-acme-dns=` refuses on, `traefik.md` → DNS-01),
+  which is kept with a warning naming those files.
 - Adding `--with-mail` on re-run scaffolds mail without touching Traefik.
 - With mail on, a re-run: re-ships `mail/compose.yml`, `mail/kasbah.yml` and
   `dynamic/_mail.yml` only when their bytes differ; **rewrites `.env`'s three
@@ -841,6 +893,13 @@ kasbah's management layer:
   comments** — the `KASBAH_*` values between them stay, or compose loses the
   interpolation every service's `cpus:`/`mem_limit:` depends on. Not
   `kasbah.yml` — the manifest is never synced to a server (`project-manifest.md`)
+- each DNS provider's credentials, `<apps>/traefik/acme-dns/` — agency-owned
+  secrets never transfer — after their `env_file:` lines are dropped from
+  `<apps>/traefik/compose.yml`, so the stack still comes up from its own
+  files. The running Traefik keeps the values until it is recreated; the DNS
+  resolvers stay in `traefik.yml`, and the new owner supplies credentials of
+  their own or drops the resolvers (a `server init` on the server refuses
+  until `--acme-dns=` or `--no-acme-dns=` says which)
 - mail, if present: the operator's relay block in `<apps>/mail/.env` (kasbah's
   three keys stay so the stack still starts) and the registry
   `<apps>/mail/kasbah.yml`. The postmaster account stays

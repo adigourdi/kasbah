@@ -310,6 +310,24 @@ func TestCertsAndMail(t *testing.T) {
 	if strings.Contains(out, "SECRET-KEY") {
 		t.Error("the store's key material was printed")
 	}
+	// A host is looked up under the resolver its router names.
+	dns := r
+	dns.Acme = b64s(`{"http":{"Certificates":[]},"cloudflare":{"Certificates":[{"domain":{"main":"demo.test"},"certificate":"` + pemCert(t, "demo.test", now.Add(80*24*time.Hour+time.Hour)) + `"}]}}`)
+	dns.Projects = []Project{{Name: "demo", LogState: "ok", Log: r.Projects[0].Log, FragState: "ok", Total: 1, Running: 1,
+		Frag: b64s("http:\n  routers:\n    a: {rule: \"Host(`demo.test`)\", tls: {certResolver: cloudflare}}\n    b: {rule: \"Host(`other.test`)\", tls: {certResolver: ovh}}\n")}}
+	out, _, _ = runStatus(t, dns)
+	has(t, out, "  Certificates: 1 in /apps/data/traefik/letsencrypt/acme.json",
+		"      demo.test\n          certificate valid for 80 more day(s)",
+		"      other.test\n          no certificate — nothing in the store under its resolver 'ovh' yet")
+	if strings.Contains(out, "former name") {
+		t.Error("a store with an http entry got the rename hint")
+	}
+	// A store filled under the former name says so.
+	dns.Acme = b64s(`{"letsencrypt":{"Certificates":[{"domain":{"main":"demo.test"},"certificate":"` + pemCert(t, "demo.test", now.Add(80*24*time.Hour)) + `"}]}}`)
+	dns.Projects[0].Frag = b64s("http:\n  routers:\n    a: {rule: \"Host(`demo.test`)\", tls: {certResolver: http}}\n")
+	out, _, _ = runStatus(t, dns)
+	has(t, out, "  Certificates: 1 in /apps/data/traefik/letsencrypt/acme.json\n    filled under the resolver's former name 'letsencrypt', with nothing under 'http' yet",
+		"      demo.test\n          no certificate — nothing under 'http' yet; the store's 'letsencrypt' entry is the resolver's former name")
 	for reg, want := range map[string]string{
 		"domains: [x.test]\n": "  registry /apps/mail/kasbah.yml has no primary_domain:",
 		"a: [\n":              "  registry /apps/mail/kasbah.yml could not be read as YAML",
@@ -333,7 +351,7 @@ func TestCertsAndMail(t *testing.T) {
 	r.AcmeState = "file"
 	for body, want := range map[string]string{
 		"{x":                            "does not parse as JSON (its bytes are not shown",
-		`{"a":1}`:                       "has no 'http' store",
+		`{"a":1}`:                       "holds no resolver's store",
 		`{"http":{"Certificates":"x"}}`: "whose Certificates is a string, not a list",
 		`{"http":{}}`:                   "none issued yet",
 	} {

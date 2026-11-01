@@ -171,6 +171,30 @@ assert '[ "$rc" = "3" ] && [ -s "$si_ssh_log" ]' "--no-dashboard goes on to the 
 run server init --help
 assert 'grep -qF -- "--with-dashboard|--no-dashboard" "$tmpdir/out"' "the usage names the dashboard pair"
 
+# --acme-dns: the provider and the env file are judged before anything opens,
+# and the file's contents never reach output.
+: > "$si_ssh_log"
+printf 'CF_DNS_API_TOKEN=s3cr3t-do-not-print\n' > "$tmpdir/cf.env"
+chmod 644 "$tmpdir/cf.env"
+run server init deploy@kasbah-unit-test.invalid --no-mail --no-backup --acme-dns=cloudflare:"$tmpdir/cf.env"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "is open to its group or others (mode 0644)" "$tmpdir/err" && ! grep -qF "s3cr3t" "$tmpdir/err"' \
+    "a readable env file is refused, its contents not shown (exit $rc: $(cat "$tmpdir/err"))"
+printf '# cf\nCF_DNS_API_TOKEN="s3cr3t-do-not-print\n' > "$tmpdir/cf-bad.env"
+chmod 600 "$tmpdir/cf-bad.env"
+run server init deploy@kasbah-unit-test.invalid --no-mail --no-backup --acme-dns=cloudflare:"$tmpdir/cf-bad.env"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "line 2 (CF_DNS_API_TOKEN): the value holds a quote" "$tmpdir/err" && ! grep -qF "s3cr3t" "$tmpdir/err" "$tmpdir/out"' \
+    "a value compose would misread is refused by line and key, never shown (exit $rc: $(cat "$tmpdir/err"))"
+chmod 600 "$tmpdir/cf.env"
+run server init deploy@kasbah-unit-test.invalid --no-mail --no-backup --acme-dns=http:"$tmpdir/cf.env"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "HTTP-01 resolver" "$tmpdir/err"' "http is no provider name (exit $rc: $(cat "$tmpdir/err"))"
+run server init deploy@kasbah-unit-test.invalid --no-mail --no-backup --acme-dns=cloudflare:"$tmpdir/cf.env" --no-acme-dns=cloudflare; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "contradict each other" "$tmpdir/err"' "adding and removing one provider is refused (exit $rc: $(cat "$tmpdir/err"))"
+run server init deploy@kasbah-unit-test.invalid --no-mail --no-backup --acme-dns=cloudflare:"$tmpdir/nope.env"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "no such file" "$tmpdir/err"' "a missing env file is refused (exit $rc: $(cat "$tmpdir/err"))"
+assert '[ ! -s "$si_ssh_log" ]' "and nothing was opened (ssh saw: $(cat "$si_ssh_log"))"
+run server init --help
+assert 'grep -qF -- "--acme-dns=<provider>:<env file>" "$tmpdir/out"' "the usage names --acme-dns"
+
 run server backup-prune; rc=$?
 assert '[ "$rc" = "1" ] && grep -qF "USER@HOST is required" "$tmpdir/err"' "backup-prune wants a target (exit $rc: $(cat "$tmpdir/err"))"
 run server backup-prune deploy@kasbah-unit-test.invalid --envy=s3cr3t-do-not-print; rc=$?

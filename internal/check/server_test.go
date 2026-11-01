@@ -941,3 +941,63 @@ func TestServerB01BackupNotAnObject(t *testing.T) {
 		}
 	}
 }
+
+func TestServerT04T10(t *testing.T) {
+	static := "certificatesResolvers:\n  http:\n    acme: {httpChallenge: {entryPoint: web}}\n" +
+		"  cloudflare:\n    acme: {dnsChallenge: {provider: cloudflare}}\n  plain:\n    acme: {httpChallenge: {entryPoint: web}}\n"
+	wild := func(resolver string) string {
+		return strings.Replace(goodFragment, "tls: {certResolver: http}", "tls: {certResolver: "+resolver+", domains: [{main: demo.example.com, sans: [\"*.demo.example.com\"]}]}", 1)
+	}
+	for _, tc := range []struct {
+		name, frag, static, want, not string
+		code                          int
+	}{
+		{"declared DNS resolver", wild("cloudflare"), static, "✓ Secure routers name a cert resolver", "Routers name a cert resolver", 0},
+		{"undeclared resolver", wild("ovh"), static, "✗ Routers name a cert resolver deploy@vps does not declare: demo→ovh", "wildcard certificate from a resolver", 6},
+		{"declared without dnsChallenge", wild("plain"), static, "✗ Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): demo→plain (*.demo.example.com)", "does not declare", 6},
+		{"a Host() wildcard on http", strings.Replace(goodFragment, "demo: {rule: \"Host(`demo.example.com`)", "demo: {rule: \"Host(`*.demo.example.com`)", 1), static, "demo→http (*.demo.example.com)", "does not declare", 6},
+		{"unreadable traefik.yml warns", wild("cloudflare"), "{nope", "traefik.yml on deploy@vps could not be read, so whether it declares them is unknown", "does not declare", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srvProject(t, "")
+			if err := os.WriteFile("traefik-dynamic.yml", []byte(tc.frag), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			s := newSrv(t)
+			s.r.StaticState, s.r.Static = "file", b64s(tc.static)
+			out, code := s.run()
+			contains(t, out, tc.want)
+			hasNot(t, out, tc.not)
+			if code != tc.code {
+				t.Errorf("exit %d, want %d:\n%s", code, tc.code, out)
+			}
+		})
+	}
+}
+
+func TestServerCertResolver(t *testing.T) {
+	srvProject(t, "")
+	frag := strings.Replace(goodFragment, "certResolver: http", "certResolver: cloudflare", 1)
+	if err := os.WriteFile("traefik-dynamic.yml", []byte(frag), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cert := b64s(certPEM(t, "demo.example.com", nil, testNow.Add(100*24*time.Hour+time.Hour)))
+	s := newSrv(t)
+	// The http store has nothing for the host; the resolver its router names does.
+	s.r.Acme = b64s(`{"http":{"Certificates":[]},"cloudflare":` + strings.TrimPrefix(strings.TrimSuffix(store("demo.example.com", nil, cert), "}"), `{"http":`) + `}`)
+	out, _ := s.run()
+	contains(t, out, "✓ certificate for 'demo.example.com' valid for 100 more day(s)")
+	s.r.Acme = b64s(store("demo.example.com", nil, cert))
+	out, _ = s.run()
+	contains(t, out, "has no 'cloudflare' store — the resolver this checkout's router names for 'demo.example.com' has issued nothing yet")
+}
+
+func TestCollectServerStatic(t *testing.T) {
+	apps := t.TempDir()
+	os.MkdirAll(apps+"/traefik", 0o755)
+	os.WriteFile(apps+"/traefik/traefik.yml", []byte("certificatesResolvers: {}\n"), 0o644)
+	r := CollectServer(apps, apps+"/data", "demo", "")
+	if r.StaticState != "file" || string(dec(r.Static)) != "certificatesResolvers: {}\n" {
+		t.Errorf("traefik.yml not collected: %q %q", r.StaticState, r.Static)
+	}
+}

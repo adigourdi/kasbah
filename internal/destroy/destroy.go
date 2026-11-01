@@ -502,6 +502,10 @@ func (p *Plan) Report(w io.Writer) {
 	if s.LayersMap != "missing" && s.LayersMap != "" {
 		fmt.Fprintf(w, "  layer map   %s/.kasbah/layers.map (%s) — the layer names build-push learned\n", p.Apps, s.LayersMap)
 	}
+	if len(s.AcmeDNS) > 0 {
+		fmt.Fprintf(w, "  acme-dns    %s/traefik/acme-dns/ (%s) — DNS providers' credentials, and their\n", p.Apps, strings.Join(s.AcmeDNS, " "))
+		fmt.Fprintf(w, "              env_file lines in traefik/compose.yml; the running Traefik keeps them until recreated\n")
+	}
 	sudo := s.Sudo == "root" || s.Sudo == "yes"
 	fmt.Fprintf(w, "  pointer     %s (%s)", serverbin.Pointer, s.PointerState)
 	if sudo || s.PointerState == "missing" {
@@ -532,7 +536,11 @@ func (p *Plan) Report(w io.Writer) {
 		fmt.Fprintf(w, "  %s under %s — not a project name, so not kasbah's to touch\n", strings.Join(s.Skipped, " "), p.Apps)
 	}
 	fmt.Fprintf(w, "  every container but the backup scheduler's, projects and Traefik alike — the sites stay up\n")
-	fmt.Fprintf(w, "  every compose.yml, .env value, and Traefik fragment\n")
+	if len(s.AcmeDNS) > 0 {
+		fmt.Fprintf(w, "  every compose.yml (Traefik's less its env_file lines), .env value, and Traefik fragment\n")
+	} else {
+		fmt.Fprintf(w, "  every compose.yml, .env value, and Traefik fragment\n")
+	}
 	fmt.Fprintf(w, "  %s/, %s/<project>/backups/, named volumes and images\n", p.Data, p.Apps)
 	if s.MailDir == "dir" {
 		fmt.Fprintf(w, "  the postmaster account in %s/mail/dms/config/postfix-accounts.cf\n", p.Data)
@@ -612,6 +620,11 @@ func (p *Plan) act(o *cli.Output, pr *prompt.Prompter, s Session) error {
 	if a.LayersMap != "absent" {
 		r.step(a.LayersMap, "removed "+p.Apps+"/.kasbah/layers.map — the layer names build-push learned",
 			"", "could not remove "+p.Apps+"/.kasbah/layers.map on "+p.Target)
+	}
+
+	if a.AcmeDNS != "absent" && a.AcmeDNS != "" {
+		r.step(a.AcmeDNS, "removed "+p.Apps+"/traefik/acme-dns/ and its env_file lines in traefik/compose.yml — the DNS providers' credentials",
+			"", "could not remove the DNS providers' credentials under "+p.Apps+"/traefik/acme-dns on "+p.Target)
 	}
 
 	var tail map[string]string

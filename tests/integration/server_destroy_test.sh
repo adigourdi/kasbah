@@ -174,7 +174,9 @@ sampler_stop_and_read() {
 }
 
 # --- A prepared server, with mail and with backups --------------------------------
-init "${traefik_flags[@]}" --with-mail --postmaster-password="$postmaster_pw" \
+# And a DNS provider's credentials, which leave with kasbah (a dummy token).
+printf 'CF_DNS_API_TOKEN=rig-dummy-token\n' > "$tmpdir/cf.env" && chmod 600 "$tmpdir/cf.env"
+init "${traefik_flags[@]}" --acme-dns=cloudflare:"$tmpdir/cf.env" --with-mail --postmaster-password="$postmaster_pw" \
      --with-backup --no-backup-env --backup-repo-base="$vps_base" \
      --backup-password="$project=rig-$project-password" \
      --backup-password="mail=$mail_pass"; rc=$?
@@ -370,7 +372,7 @@ assert '[ "$web_before" = "$(stamp $project-web)" ]' \
         after:  $(stamp $project-web)"
 
 # --- Everything on the list is gone ------------------------------------------------------
-for path in "$marker" "$apps/.kasbah" "$bdir" "$apps/mail/kasbah.yml" \
+for path in "$marker" "$apps/.kasbah" "$bdir" "$apps/mail/kasbah.yml" "$apps/traefik/acme-dns" \
             "$projdir_remote/versions.log" "$projdir_remote/versions.log.gz" \
             "$projdir_remote/scripts" "$projdir_remote/.deploy.lock" \
             "$projdir_remote/.kasbah-client" \
@@ -454,6 +456,8 @@ assert '[ -n "$(labelled traefik)" ]' "and Traefik's (got '$(labelled traefik)')
 assert '[ -n "$(labelled mail)" ]' "and the mail stack's (got '$(labelled mail)')"
 serve=$(wait_http "$project_host" 200)
 assert '[ "$serve" = 200 ]' "and the site still answers 200 (got '$serve')"
+assert '[ "$(rig_ssh "grep -c acme-dns $apps/traefik/compose.yml; cd $apps/traefik && docker compose -p traefik config -q && echo valid" 2>/dev/null | tr -d "\r" | tr "\n" " ")" = "0 valid " ]' \
+    "Traefik's compose.yml no longer names the removed credentials, and still loads"
 
 # --- The restart, which is when a stripped limit would bite ------------------------------------
 #
@@ -511,7 +515,13 @@ assert '[ "$(labelled $project)" = "$project-web " ]' "and the site is still up 
 # could not strip it must not print the handover sentence: the same run removes
 # the marker, and a second destroy would then report the server clean while the
 # password is still on it.
+#
+# traefik.yml still declares the resolver whose credentials left, and init
+# refuses to keep it without them: the first re-prepare is that refusal.
 init "${traefik_flags[@]}" --with-mail --postmaster-password="$postmaster_pw" --no-backup; rc=$?
+assert '[ "$rc" = 1 ] && grep -qF -- "--no-acme-dns=cloudflare" "$tmpdir/err"' \
+    "re-preparing a destroyed server names the resolver whose credentials are gone (exit $rc: $(cat "$tmpdir/err"))"
+init "${traefik_flags[@]}" --no-acme-dns=cloudflare --with-mail --postmaster-password="$postmaster_pw" --no-backup; rc=$?
 if [ "$rc" != "0" ]; then
     echo "error: could not re-prepare the rig for the unwritable-.env case (exit $rc)" >&2
     sed 's/^/       | /' "$tmpdir/err" >&2

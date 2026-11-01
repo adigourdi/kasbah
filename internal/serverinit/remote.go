@@ -29,7 +29,7 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	usage := func() int {
-		return fail("usage: kasbah remote init read APPS | layout APPS DATA | write PATH SIZE SHA256 | acme-reset ACME STAMP | start APPS RESTART TIMEOUT [ACME STAMP] | marker APPS SIZE SHA256")
+		return fail("usage: kasbah remote init read APPS | layout APPS DATA | write PATH SIZE SHA256 | acme-dns APPS PROVIDER SIZE SHA256 | acme-dns-rm APPS PROVIDER... | acme-reset ACME STAMP | start APPS RESTART TIMEOUT [ACME STAMP] | marker APPS SIZE SHA256")
 	}
 	if len(args) == 0 {
 		return usage()
@@ -47,6 +47,10 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		err = remoteLayout(args[1], args[2], stdout)
 	case args[0] == "write" && len(args) == 4:
 		err = remoteWrite(args[1], args[2], args[3], stdin, stdout)
+	case args[0] == "acme-dns" && len(args) == 5:
+		err = remoteAcmeDNS(args[1], args[2], args[3], args[4], stdin, stdout)
+	case args[0] == "acme-dns-rm" && len(args) >= 3:
+		err = remoteAcmeDNSRemove(args[1], args[2:], stdout)
 	case args[0] == "acme-reset" && len(args) == 3:
 		// Kept for 1.0.0 workstations, which reset before `start`.
 		err = remoteAcmeReset(args[1], args[2], stdout)
@@ -81,6 +85,10 @@ type ReadReport struct {
 	Traefik map[string]string `json:"traefik_b64"`
 	// Hosts are each project fragment's Host(`…`) names, by file name.
 	Hosts map[string][]string `json:"fragment_hosts"`
+	// AcmeDNS is the providers with an env file under traefik/acme-dns;
+	// Named which of those, or of traefik.yml's, each file in dynamic/ names.
+	AcmeDNS []string            `json:"acme_dns"`
+	Named   map[string][]string `json:"dns_named"`
 }
 
 // b64 is a file's bytes, "" for one that is absent, not regular or
@@ -114,6 +122,8 @@ func remoteRead(apps string, stdout io.Writer) error {
 		r.Traefik[rel] = b64(apps + "/traefik/" + rel)
 	}
 	r.Hosts = fragmentHosts(apps + "/traefik/dynamic")
+	r.AcmeDNS = PresentDNS(apps + "/traefik/" + DNSDir)
+	r.Named = DNSNamed(apps+"/traefik/dynamic", dnsCandidates(apps+"/traefik"))
 	return json.NewEncoder(stdout).Encode(r)
 }
 
