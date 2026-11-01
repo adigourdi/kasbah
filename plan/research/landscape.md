@@ -94,7 +94,7 @@ If kasbah is published, lead with the constraint list, not the feature list.
 - **Positioning copy**, if kasbah is ever published: constraints first, and
   name Kamal as the neighbour rather than Coolify as the target.
 - Nothing here changes a spec decision. Every "worse" item above is either
-  already an explicit non-goal in `docs/overview.md` / `docs/roadmap.md` or
+  already an explicit non-goal in `docs/overview.md` (Scope → Out) or
   already an open question. That is a good sign: the field found no surprise.
 
 ## Sources

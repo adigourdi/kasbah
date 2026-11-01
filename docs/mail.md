@@ -216,9 +216,8 @@ registry entry alone buys nothing. Verified in the image and against the real
 host, whose `vhost` holds exactly the one domain it serves. DMS watches both
 files and reloads; no restart.
 
-*(The file is `postfix-virtual.cf`, and this document said `postmaster-aliases.cf`
-until 7.1b went looking for it: docker-mailserver 15.1.0 has no such file.
-`setup alias add` writes `postfix-virtual.cf`, space-delimited, one
+*(The file is `postfix-virtual.cf`; docker-mailserver 15.1.0 has no
+`postmaster-aliases.cf`. `setup alias add` writes `postfix-virtual.cf`, space-delimited, one
 `alias recipient` per line, and that is what kasbah appends to.)*
 
 **Additional domains get no routers.** `_mail.yml`'s four routers claim

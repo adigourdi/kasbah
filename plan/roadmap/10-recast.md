@@ -9,7 +9,7 @@
 not onto one about to be replaced.
 **Specs:** every file in `docs/` — this phase re-implements all of them. Owners
 per task below; `docs/overview.md` (Key decisions: Language, Distribution,
-Version compatibility), `docs/roadmap.md` (Phases 4–5, superseded here),
+Version compatibility), the original roadmap's Phases 4–5 (superseded here; the file is in git history, its scope now in `docs/overview.md`),
 `docs/project-manifest.md` (state file, `kasbah_version`), `docs/server-setup.md`
 (layout, discovery pointer), `docs/cli.md` (the whole surface and its exit codes)
 **Retires:** the Bash maintainability ceiling the roadmap predicted, and the
@@ -31,7 +31,7 @@ predicate ×3, path normalisation ×4)
   server binary therefore serves every older workstation of its major.
 - **Local build, no releases.** `install.sh` builds the host binary plus
   `linux/amd64` and `linux/arm64` server binaries and installs them side by side.
-  GitHub Releases stay out until publishing is decided (`docs/research/landscape.md`).
+  GitHub Releases stay out until publishing is decided (`plan/research/landscape.md`).
 - **The Go toolchain is containerised** — a root `compose.yml` in the shape of
   the operator's other Go projects: a pinned `golang` image,
   the bind-mounted tree, `run --rm` services for anything whose result matters

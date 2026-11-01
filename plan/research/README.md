@@ -1,12 +1,12 @@
 # Research — not spec
 
 Competitive and background research. **Nothing in this folder is normative.**
-`docs/*.md` is the spec and `docs/phases/` is the progress tracker; these notes
+`docs/` describes kasbah as it stands and `plan/roadmap/` is the progress tracker; these notes
 are dated observations about the outside world, gathered to decide what kasbah
 should and should not become. They go stale. Where a note contradicts a spec
 file, the spec wins — or the note becomes a change to the spec, deliberately.
 
-Findings that get acted on should be lifted into the relevant spec doc, the
+Findings that get acted on should be lifted into the relevant doc, the
 roadmap, or the backlog, and the note left as-is with a pointer. Do not edit a
 note to match a decision made later; write the decision where decisions live.
 

@@ -183,7 +183,7 @@ fi
 
 # One session for every fact about the result. The control at the end is the
 # point of the acme rows: a directory answers -e and -r exactly like a file
-# does (docs/phases/01-rig.md), so the assertion has to be shown capable of
+# does (plan/roadmap/01-rig.md), so the assertion has to be shown capable of
 # telling them apart before it is worth anything.
 probe_out=$(rig_ssh "bash -s '$apps' '$data'" 2>"$tmpdir/probe.err" <<'REMOTE'
 set -uo pipefail
@@ -240,7 +240,7 @@ fi
 
 # The probe output is a protocol: parsed once and checked complete before any
 # assertion reads it, so a fact that went missing cannot produce a green
-# assertion (docs/phases/01-rig.md, from 1.3).
+# assertion (plan/roadmap/01-rig.md, from 1.3).
 declare -A fact=()
 while IFS= read -r line; do
     case $line in *=*) fact[${line%%=*}]=${line#*=} ;; esac
@@ -614,7 +614,7 @@ before=$(apps_checksum)
 # its own, so asserting the label proves nothing until the environment disagrees
 # with it. COMPOSE_PROJECT_NAME outranks `name:` and `down` removes by project
 # label, which is what put nine unrelated containers in range on this
-# workstation (docs/phases/01-rig.md).
+# workstation (plan/roadmap/01-rig.md).
 if rig_ssh "cp ~/.bashrc ~/.bashrc.kasbah-unit-c && printf 'export COMPOSE_PROJECT_NAME=%s\n%s' kasbah-not-traefik \"\$(cat ~/.bashrc)\" > ~/.bashrc.new && mv ~/.bashrc.new ~/.bashrc" >/dev/null 2>&1; then
     bashrc_planted=yes
     planted=$(rig_ssh "bash -s" <<<'echo "${COMPOSE_PROJECT_NAME:-unset}"' 2>/dev/null)

@@ -4,8 +4,8 @@ Go CLI that turns a plain VPS into a multi-project Docker host
 (Traefik file-provider routing, registry-less image shipping over SSH).
 The same binary runs on the VPS: kasbah ships it to
 `<apps>/.kasbah/bin/kasbah` and drives the server through `kasbah remote …`.
-`docs/` is the spec and the source of truth; `docs/phases/` is the build
-plan and the only progress tracker (the roadmap is scope, not status).
+`docs/` describes kasbah as it stands and how to run it, and is the source of
+truth; `plan/` holds what is intended and queued (roadmap, backlog, research).
 
 ## Commands
 
@@ -100,5 +100,9 @@ prefix (reserved, injected at deploy, exempt from drift); the manifest schema
 - `docs/` — the spec, indexed by `docs/README.md`; `compliance.md` is the rule
   catalog, `files.md` lists every file kasbah writes, and `install.md` owns
   every install path.
-- `docs/phases/` — build plan; phase Findings sections are the project's memory of traps. Read the relevant phase file before touching its area.
-- `docs/research/` — dated competitive/background notes. **Not spec, not normative**; acted on by lifting findings into a spec doc, the roadmap, or the backlog.
+- `plan/` — intent, not state: `plan/roadmap/` is the build plan and the only
+  progress tracker (phase Findings sections are the project's memory of traps;
+  read the relevant phase file before touching its area), `plan/backlog/` holds
+  work not yet planned, one item per file, and `plan/research/` dated background
+  notes — **not spec, not normative**, acted on by lifting a finding into a doc,
+  the roadmap or the backlog.

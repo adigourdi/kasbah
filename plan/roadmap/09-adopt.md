@@ -13,7 +13,7 @@ migration uses Phase 7's `--with-mail` path).
 its half.** Both halves touch live production — checklist-first, same
 discipline throughout.
 
-**Spec:** `docs/roadmap.md` (both Phase-1 and Phase-2 exit criteria land here), `docs/mail.md`, `docs/traefik.md`, the homelab repo's `CLAUDE.md` (the model being replaced)
+**Spec:** the original roadmap's Phase-1 and Phase-2 exit criteria (both land here; the roadmap file is in git history, its scope now in `docs/overview.md`), `docs/mail.md`, `docs/traefik.md`, the homelab repo's `CLAUDE.md` (the model being replaced)
 
 ## Carried in from Phase 10
 

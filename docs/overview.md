@@ -37,12 +37,20 @@ the same battle-tested workflow without copying scripts between repos.
 - **Off-VPS backup (optional)** — restic push from each VPS to S3-compatible
   storage; per-client repos, append-only credentials.
 
-### Out (for v1)
-- Private container registry.
+### Out
+- Private container registry — no Harbor, Zot or Distribution to manage.
 - Git/CI integration (kasbah expects `git push` and local builds — no webhooks,
   no remote triggers).
-- Metrics, log aggregation, uptime monitoring (backlog: a Gatus stack with
-  endpoint config generated from manifests — see roadmap).
+- Metrics, log aggregation, uptime monitoring.
+- A web UI.
+- Swarm and Kubernetes.
+- Automated DNS management (no Cloudflare API integration).
+- Multi-user access control on a VPS. Several operators share one server as one
+  trust domain, the `kasbah` group (`server-setup.md` → Operators); no
+  per-project permissions.
+- One project deployed to many servers: each project targets exactly one VPS. A
+  fleet is many projects × many VPSes, which per-project `user@host` targeting
+  already covers.
 - Automated SSH hardening / firewall (`kasbah server init` does not run `ufw`
   or edit sshd_config).
 - Cross-project shared databases or caches. Every project owns its own.
@@ -52,7 +60,7 @@ the same battle-tested workflow without copying scripts between repos.
 
 | Decision | Choice |
 |---|---|
-| Language | Go — one statically linked binary, built in a pinned `golang` container (`compose.yml`), no Go on the host. Every file kasbah writes records its version, so a later major can migrate older projects. (Bash through 0.x; ported in Phase 10.) |
+| Language | Go — one statically linked binary, built in a pinned `golang` container (`compose.yml`), no Go on the host. Every file kasbah writes records its version, so a later major can migrate older projects. (Bash through 0.x.) |
 | Distribution | Every install path is in `install.md`. Versioned install on the dev machine: each build lives under `~/.local/share/kasbah/<version>/` (the workstation binary and its linux/amd64 and linux/arm64 server builds) and the `~/.local/bin/kasbah` symlink points at the newest installed version that runs. Releases come in through `kasbah self-update` and all stay installed; `install-dev.sh` builds a checkout and installs it as the one dev build, replacing the previous one, or, given `vN | vN.M | vN.M.P`, builds that tag in a temporary clone with the tag's own toolchain — byte-identical to the release. Both place a build through the same Go routine (`internal/install`). The VPS receives only the kasbah binary itself, at `<apps>/.kasbah/bin/kasbah` — shipped when absent or older — a dev build asks before it replaces a release (`--ship-dev` / `--keep-server`) — kept when the same build, and the workstation refuses a server whose build is newer (same-build rule: both ends always run one build). No `git clone` on the VPS, no scripts shipped, nothing else installed. Releases are GitHub Releases cut locally by `release.sh`: tag `vMAJOR.MINOR.PATCH`, assets `kasbah_<ver>_linux_amd64` and `kasbah_<ver>_linux_arm64` (one file per arch, a Linux workstation and every server alike), `kasbah_<ver>_darwin_amd64` and `kasbah_<ver>_darwin_arm64` (macOS workstations, which install both Linux builds beside their own to ship), `get.sh` (the `curl | sh` installer, its version stamped in), `checksums.txt` over all five, in name order, and its minisign signature, "Latest" only on the highest final version; the public key is `release.pub` in the repo and in the binary. Release builds are reproducible — a clean checkout at the tag `v<VERSION>` is stamped as the tag itself (`-rc.N` included), with no build time in it; any other tree gets a pre-release stamp of the line's next version: `<next patch>-dev.<commits>.<time>+g<sha>[.dirty]` once `v<VERSION>` exists, `<VERSION>-dev.<commits>.<time>…` before it does, and `<VERSION>.<commits>.<time>…` whenever `VERSION` is an rc. A later build therefore outranks an earlier one and a release outranks every dev build of its line; `release.sh` proves the reproducibility by building twice. `kasbah self-update` resolves versions from the published releases (a GitHub token optional — required while the repo is private) and verifies the signed checksums against the key in the binary before anything is installed; a downloaded release binary asked for its own version installs its own verified bytes (`cli.md`). |
 | Project boundary | Each project is an independent directory under `/apps/<name>/` with its own compose.yml and .env. They only share the Traefik network. |
 | Project shape | Derived from compose: services with a `build:` key are built+shipped locally; services with only `image:` are pulled on the VPS. No `type` field in the manifest — the compose file is the source of truth. |

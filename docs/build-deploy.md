@@ -720,7 +720,7 @@ Does NOT restore:
 `kasbah deploy` and `kasbah rollback` run the VPS side in the kasbah binary
 itself — `kasbah remote deploy run`, the manifest's data (from the working tree,
 or from the `v<target>` tag) passed as JSON on stdin — and ship no script.
-Servers deployed before Phase 10 may still hold `scripts/setup-env.sh` and
+Servers deployed by kasbah 0.x may still hold `scripts/setup-env.sh` and
 `scripts/remote-deploy.sh`; nothing runs them, and `server destroy` removes them.
 The engine has two modes:
   - `deploy <version>`  — backup → pre-deploy → retag :current → up → health → post-deploy.

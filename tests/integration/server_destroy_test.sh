@@ -186,7 +186,7 @@ fi
 
 # The rig cannot apply cgroup limits (nested cgroup v2 in threaded mode), so the
 # marker is rewritten to 0/0 — Docker's "no limit" — exactly as the other rig
-# suites do (docs/phases/02-spine.md → Findings). The **values still travel**
+# suites do (plan/roadmap/02-spine.md → Findings). The **values still travel**
 # into every .env, which is what this suite needs: `cpus: ${KASBAH_CPU_LIMIT}`
 # with nothing behind it is a compose file that will not come up.
 marker_json=$(rig_ssh "cat $marker" 2>/dev/null)

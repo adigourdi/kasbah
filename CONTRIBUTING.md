@@ -60,8 +60,9 @@ KASBAH_RIG_TESTS=1 ./test.sh
 - Tests land in the same change as the code they cover.
 - The conventions every change follows, and the names that are frozen, are in
   [CLAUDE.md](CLAUDE.md).
-- Planned work is in [docs/phases/](docs/phases/README.md); ideas not yet
-  planned are in [docs/backlog/](docs/backlog/).
+- `docs/` describes kasbah as it stands; what is intended lives in `plan/`:
+  the build plan in [plan/roadmap/](plan/roadmap/README.md), ideas not yet
+  planned in [plan/backlog/](plan/backlog/).
 
 ## Releasing
 

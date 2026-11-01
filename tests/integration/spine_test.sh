@@ -9,7 +9,7 @@
 #
 # Anything downstream of a fragment write is polled, never asserted straight
 # after the sync returns: Traefik's providersThrottleDuration puts a ~2 s floor
-# under every reload (docs/phases/02-spine.md → Findings).
+# under every reload (plan/roadmap/02-spine.md → Findings).
 #
 # The rig is treated as given: this suite never starts, resets or stops it. It
 # does call rig_clean, which establishes a known starting state.
@@ -309,7 +309,7 @@ assert '[ "$(rig_ssh "[ -e $apps/$project/.env.prod.example ] && echo present ||
 #   cannot enter cgroupv2 "/sys/fs/cgroup/docker" with domain controllers
 #   -- it is in threaded mode
 # and the container never starts. That is a property of the rig, not of kasbah
-# (docs/phases/02-spine.md → Findings), and the fix is the standard docker:dind
+# (plan/roadmap/02-spine.md → Findings), and the fix is the standard docker:dind
 # cgroup-nesting step in the rig's entrypoint.
 #
 # Nothing here special-cases kasbah. What changes is the *server marker*: on a
@@ -624,7 +624,7 @@ fi
 # own, so the label proves nothing until the environment disagrees with it.
 # COMPOSE_PROJECT_NAME outranks `name:` and `down` removes by project label —
 # which is what put nine unrelated containers in range on this workstation
-# (docs/phases/01-rig.md).
+# (plan/roadmap/01-rig.md).
 if rig_ssh "cp ~/.bashrc ~/.bashrc.kasbah-unit-d && printf 'export COMPOSE_PROJECT_NAME=%s\n%s' kasbah-not-demo \"\$(cat ~/.bashrc)\" > ~/.bashrc.new && mv ~/.bashrc.new ~/.bashrc" >/dev/null 2>&1; then
     bashrc_planted=yes
     planted=$(rig_ssh "bash -s" <<<'echo "${COMPOSE_PROJECT_NAME:-unset}"' 2>/dev/null)

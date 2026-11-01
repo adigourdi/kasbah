@@ -5,9 +5,9 @@
 # restic. The schedule is a compose stack rather than cron because cron is not
 # on the prerequisites table (docs/server-setup.md) and kasbah installs no
 # packages: restic itself runs as a container, so the thing that invokes it may
-# as well be the same container (docs/backup.md, docs/phases/08-keep.md D1/D3).
+# as well be the same container (docs/backup.md, plan/roadmap/08-keep.md D1/D3).
 # The scheduler is kasbah's own static binary, <apps>/.kasbah/bin/kasbah, run
-# from the read-only apps mount (docs/phases/10-recast.md D2): a newer binary
+# from the read-only apps mount (plan/roadmap/10-recast.md D2): a newer binary
 # reaches the container at its next restart.
 #
 # The apps and data paths below are substituted on the workstation before this

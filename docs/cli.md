@@ -375,7 +375,7 @@ Server-wide:
   kasbah-backup down`, then the container, the `kasbah-backup-cache` volume, the
   `kasbah-backup_default` network, then `<apps>/.kasbah/backup/` entire —
   `compose.yml`, `env`, `repos/*.pass`, `state/` (and a `backup.sh` left by a
-  kasbah from before Phase 10). A schedule left
+  kasbah 0.x). A schedule left
   running would go on pushing the new owner's data into the departing agency's
   storage. **The restic repositories are never touched**: operator property, and
   an append-only credential could not delete them anyway.
@@ -903,7 +903,7 @@ asks "does this stack serve X"** — `deploy`, `drop`, `server init`,
 `add-mail-domain`, `check --server`, `server status` — reads through that one
 reader. A
 **hand-edited** registry with no `primary_domain`, a non-domain entry or a
-non-list `domains:` is refused by name (decision D4): `check --server` reports it
+non-list `domains:` is refused by name: `check --server` reports it
 as M03's failure, `server status` as a line. Two deliberate exclusions — a project claiming the
 registry's `primary_domain` is refused (releasing it would unmake the stack for
 every other project), and docker-mailserver's own `postfix-virtual.cf` alias is

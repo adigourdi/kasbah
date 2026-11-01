@@ -221,7 +221,7 @@ func Prune(c PruneCtx, o PruneOptions) error {
 	restic := c.Restic
 	if restic == nil {
 		if _, err := exec.LookPath("docker"); err != nil {
-			return cli.Fail("docker is required: kasbah installs no packages, so restic runs as a container here exactly as it does on the VPS (docs/phases/08-keep.md D1)")
+			return cli.Fail("docker is required: kasbah installs no packages, so restic runs as a container here exactly as it does on the VPS (plan/roadmap/08-keep.md D1)")
 		}
 		restic = DockerRestic
 	}

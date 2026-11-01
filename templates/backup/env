@@ -13,7 +13,7 @@
 # re-run init with --backup-repo-base= instead. kasbah never parses it: it is
 # handed to restic as RESTIC_REPOSITORY with the repository name appended, so
 # `s3:`, `rest:`, `sftp:` and a local path are all the same to kasbah
-# (docs/phases/08-keep.md D5). It is also recorded in the server marker, which
+# (plan/roadmap/08-keep.md D5). It is also recorded in the server marker, which
 # is mode 644 — so a credential belongs in the block below, not in this URL.
 KASBAH_BACKUP_REPO_BASE=__BACKUP_REPO_BASE__
 

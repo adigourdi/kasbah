@@ -1,7 +1,7 @@
 # Synced to <apps>/built-app/compose.yml on deploy, and brought up there as
 # `docker compose -p built-app up -d`. The `-p` is what fixes the project name;
 # `name:` below is the weakest source of it and COMPOSE_PROJECT_NAME in the
-# server's login shell outranks it (docs/phases/01-rig.md).
+# server's login shell outranks it (plan/roadmap/01-rig.md).
 #
 # Three services on purpose: two built here and shipped by `kasbah build-push`,
 # one stock image pulled on the server by `compose up`. A project is mixed far

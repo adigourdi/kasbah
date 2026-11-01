@@ -350,8 +350,8 @@ to the VPS. Tracks:
 |---|---|---|
 | `kasbah_version` | `init-project` (set once, when the file is created) | `kasbah migrate` |
 | `last_server` | every project command that targets a server, once kasbah's own work on it succeeded (see Write rules) | every project command — used as default when `USER@HOST` is omitted |
-| `last_deploy` | `deploy`, `rollback` on success | nothing yet — recorded for a future deployed-vs-local diff |
-| `last_version` | `deploy`, `rollback` on success | nothing yet |
+| `last_deploy` | `deploy`, `rollback` on success | nothing — recorded so a deployed-vs-local diff can read it |
+| `last_version` | `deploy`, `rollback` on success | nothing |
 | `schema_migrations_applied` | `kasbah migrate` | `kasbah migrate` (idempotency) |
 | `dirty_build`, `dirty_server`, `dirty_tree` | `build-push --dirty` once the images shipped and only when the tree did not change during the build: the label, the target, and a digest of the working tree it built | `deploy --dirty`, which deploys that label only to that server from that same tree (`build-deploy.md` → Versioning contract) |
 
@@ -385,6 +385,5 @@ for defaults, not a source of truth for what's actually running.
 
 - Default `USER@HOST` so users don't repeat it every command in the same project.
 - Anchor the source-tree schema migration story: `kasbah_version` says which
-  kasbah last wrote the project's files, for a future `kasbah migrate`.
-- Record the last deploy, for a future deployed-vs-local diff (nothing reads it
-  yet).
+  kasbah last wrote the project's files, the anchor `kasbah migrate` works from.
+- Record the last deploy, so a deployed-vs-local diff can read it (nothing does).

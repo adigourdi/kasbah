@@ -278,7 +278,7 @@ assert '[ "$p_rc" = "0" ] && [ "$(readlink "$pin_bin/kasbah")" = "$pin_lib/$stam
 # --- Case 7: a version argument ----------------------------------------------------
 # Refused before anything is built or installed; resolution itself is
 # internal/version's (Pick) and cmd/kasbah's (__pick-tag) to test, and a real
-# tag build is install-dev.sh v1.0.0 run by hand (docs/phases/11-open.md).
+# tag build is install-dev.sh v1.0.0 run by hand (plan/roadmap/11-open.md).
 args_run() { # args… — sets a_rc, a_err
     a_err=$(env -u XDG_DATA_HOME KASBAH_SKIP_BUILD=1 KASBAH_BIN_DIR="$tmpdir/args/bin" KASBAH_LIB_DIR="$tmpdir/args/lib" \
                 "$repo/install-dev.sh" "$@" 2>&1 >/dev/null); a_rc=$?

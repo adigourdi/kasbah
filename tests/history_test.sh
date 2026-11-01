@@ -451,7 +451,7 @@ assert 'grep -qF "ends in a truncated gzip member" <<<"$OUT"' \
 assert '! grep -qF "is not gzip" <<<"$OUT"' "and not the other one (got '$OUT')"
 
 # A damaged last line is not the same thing as no history — calling it a first
-# deploy is the defect this codebase has shipped once (docs/phases/05-undo.md).
+# deploy is the defect this codebase has shipped once (plan/roadmap/05-undo.md).
 { printf '%s deploy 1.0.0 no-backup kasbah=0.1.0 digest=-\n' 2026-08-01T00:00:00+00:00
   printf '%s deploy 1.1\n' 2026-08-02T00:00:00+00:00; } > "$act"
 drive pending

@@ -165,7 +165,7 @@ assert 'grep -qF "no '"'"'origin'"'"' remote" "$tmpdir/err"' \
 # --- What the rig's own daemon holds ----------------------------------------------------
 # One session for every fact, validated as a complete key set before any
 # assertion reads a value: a fact that never arrived must not produce a green
-# assertion (docs/phases/01-rig.md, from 1.3).
+# assertion (plan/roadmap/01-rig.md, from 1.3).
 read_out=$(rig_ssh "bash -s '$web' '$worker' '$project'" 2>"$tmpdir/read.err" <<'REMOTE'
 set -uo pipefail
 export LC_ALL=C

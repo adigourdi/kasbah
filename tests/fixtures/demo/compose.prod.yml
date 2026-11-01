@@ -1,7 +1,7 @@
 # Synced to <apps>/demo/compose.yml on deploy, and brought up there as
 # `docker compose -p demo up -d`. The `-p` is what fixes the project name;
 # `name:` below is the weakest source of it and COMPOSE_PROJECT_NAME in the
-# server's login shell outranks it (docs/phases/01-rig.md).
+# server's login shell outranks it (plan/roadmap/01-rig.md).
 name: demo
 
 services:

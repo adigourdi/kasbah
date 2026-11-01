@@ -103,7 +103,8 @@ The full documentation is in [docs/](docs/README.md).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). The build plan and the backlog are in
+[plan/](plan/roadmap/README.md).
 
 ## License
 

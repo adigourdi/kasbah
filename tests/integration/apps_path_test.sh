@@ -182,7 +182,7 @@ fi
 # The rig cannot apply cgroup limits (nested cgroup v2 in threaded mode), so the
 # marker is rewritten to 0/0 — Docker's "no limit" — exactly as the other rig
 # suites do. What changes is the server's own marker; nothing here special-cases
-# kasbah (docs/phases/02-spine.md → Findings).
+# kasbah (plan/roadmap/02-spine.md → Findings).
 limit_probe=$(rig_ssh "docker run --rm --cpus 0.5 --memory 64m nginx:alpine /bin/true 2>&1" 2>/dev/null); probe_rc=$?
 if [ "$probe_rc" -ne 0 ]; then
     if ! grep -qF "threaded mode" <<<"$limit_probe"; then

@@ -1671,7 +1671,7 @@ assert 'grep -qF -- "--server USER@HOST" <<<"$out"' "--help documents the flag (
 # Whole files are compared with `cmp`, never through `$(cat …)`: command
 # substitution strips trailing newlines, so a fix that appended one per run
 # would compare equal for ever — which is exactly how 8.3 shipped a file that
-# grew a newline every time (docs/phases/08-keep.md → 8.3).
+# grew a newline every time (plan/roadmap/08-keep.md → 8.3).
 #
 # And each `before` carries comments above, inside and below the block being
 # edited, blank lines, and hand-spacing, because the whole reason --fix is a

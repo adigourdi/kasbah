@@ -271,8 +271,8 @@ Project-specific middlewares go in the same project fragment under
   (declared in `_shared.yml`).
 - **Never compute a certificate's age from `notBefore`.** Let's Encrypt
   backdates it by roughly an hour — measured twice against Traefik's own log
-  on synchronised clocks, both UTC: 58m32s and 58m31s, and a third time in
-  Phase 7. A certificate issued twelve seconds ago reads as an hour old, so
+  on synchronised clocks, both UTC: 58m32s, 58m31s and a third measurement
+  agreeing. A certificate issued twelve seconds ago reads as an hour old, so
   anything deciding "is this fresh" must use the log, or treat anything under
   ~2 h as just issued. `check --server`'s cert rule sidesteps the question
   entirely: it reports `notAfter` and the days remaining, which is what an

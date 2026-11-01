@@ -145,7 +145,7 @@ fi
 
 # The rig cannot apply cgroup limits (nested cgroup v2 in threaded mode), so the
 # marker is rewritten to 0/0 — Docker's "no limit" — exactly as the other rig
-# suites do (docs/phases/02-spine.md → Findings).
+# suites do (plan/roadmap/02-spine.md → Findings).
 marker_json=$(rig_ssh "cat $marker" 2>/dev/null)
 limit_probe=$(rig_ssh "docker run --rm --cpus 0.5 --memory 64m nginx:alpine /bin/true 2>&1" 2>/dev/null); probe_rc=$?
 if [ "$probe_rc" -ne 0 ]; then

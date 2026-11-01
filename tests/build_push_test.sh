@@ -14,7 +14,7 @@
 # The stub logs are read both ways: a case asserts what was asked for, and the
 # cases about refusals assert the logs are *empty*, which is only evidence when
 # something else in the same run proves the stubs are really being used
-# (docs/phases/02-spine.md — a "hermetic" block with no stub on PATH once passed
+# (plan/roadmap/02-spine.md — a "hermetic" block with no stub on PATH once passed
 # on a DNS lookup failing).
 
 set -uo pipefail
@@ -349,7 +349,7 @@ assert '[ ! -e "$projdir/.kasbah/state.json" ]' \
 # --- Every compose invocation carries -p -------------------------------------------------
 # `name:` in a compose file is the weakest source of the project name and
 # COMPOSE_PROJECT_NAME outranks it, which once put nine unrelated containers in
-# range (docs/phases/01-rig.md).
+# range (plan/roadmap/01-rig.md).
 
 calls="$(compose_calls)"
 assert '[ -n "$calls" ]' "build-push runs docker compose at all (log: $(cat "$DOCKER_LOG"))"

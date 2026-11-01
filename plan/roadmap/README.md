@@ -2,7 +2,9 @@
 
 Phased plan for taking kasbah from "local half done" (scaffold, manifest,
 check) to both real consumers migrated (the original PHP project, the homelab). Produced by
-`/phase-out` from `docs/*.md`; executed by `/tackle`. Each phase file is
+`/phase-out` from `docs/*.md`; executed by `/tackle`. `docs/` describes the
+project as it stands; this folder, with `../backlog/` and `../research/`, is
+what is intended. Each phase file is
 self-contained: deliverables verbatim, spec links inline, findings filled
 during execution.
 

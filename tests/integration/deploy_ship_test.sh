@@ -16,7 +16,7 @@
 #     real pipe;
 #   * versions.log's `digest=` matching what the rig's own daemon calls the
 #     images after the retag — an id computed on the workstation is a different
-#     number entirely (docs/phases/04-ship.md → Findings);
+#     number entirely (plan/roadmap/04-ship.md → Findings);
 #   * two concurrent runs of the shipped script over ssh, one flock;
 #   * the script on the server being this kasbah's template, rendered.
 #
@@ -122,7 +122,7 @@ deploy() (
 # syncs without --delete, so a file a hook appends to inside a bind mount
 # outlives the run that made it. Every assertion below therefore truncates first
 # rather than assuming a fresh file — otherwise the suite's second run reads the
-# first run's order (docs/phases/04-ship.md → carried into 4.2).
+# first run's order (plan/roadmap/04-ship.md → carried into 4.2).
 #
 # It is written by root inside the container, so removing it needs the sudo the
 # rig's ssh user has.
@@ -146,7 +146,7 @@ fi
 # marker is rewritten to 0/0 — Docker's "no limit" — exactly as spine_test.sh
 # does. Nothing here special-cases kasbah: what changes is the server's own
 # marker, and a rig that later grows cgroup nesting needs no edit
-# (docs/phases/02-spine.md → Findings).
+# (plan/roadmap/02-spine.md → Findings).
 marker_json=$(rig_ssh "cat $marker" 2>/dev/null)
 limit_probe=$(rig_ssh "docker run --rm --cpus 0.5 --memory 64m nginx:alpine /bin/true 2>&1" 2>/dev/null); probe_rc=$?
 if [ "$probe_rc" -ne 0 ]; then
@@ -316,7 +316,7 @@ assert '[ "$f_extra" = "by=stevedore" ]' "then by=<ssh user>, and nothing after 
 # One session, one line per fact, validated as a complete key set before any
 # assertion reads a value. Each image is inspected on its own: `docker image
 # inspect A B` exits 1 when *either* is missing, so a combined call collapses two
-# facts into one (docs/phases/04-ship.md).
+# facts into one (plan/roadmap/04-ship.md).
 read_out=$(rig_ssh "bash -s '$image_web' '$image_worker' '$project'" 2>"$tmpdir/read.err" <<'REMOTE'
 set -uo pipefail
 export LC_ALL=C
@@ -368,7 +368,7 @@ fi
 
 # Shape first, then identity: `!= absent` passes on an empty value, and an
 # arrived-but-empty fact is exactly what a readback can hand back
-# (docs/phases/04-ship.md → a fix round is where unreviewed assertions get in).
+# (plan/roadmap/04-ship.md → a fix round is where unreviewed assertions get in).
 assert '[[ "${got[web_current]}" =~ ^sha256:[0-9a-f]{64}$ ]]' \
     "$image_web:current exists on the rig after the deploy (docker said '${got[web_current]}')"
 assert '[[ "${got[worker_current]}" =~ ^sha256:[0-9a-f]{64}$ ]]' \
@@ -699,7 +699,7 @@ assert 'grep -qF "kasbah server add-mail-domain $RIG_TARGET mail.built-app.test"
 assert '! grep -qF "is served by the stack" "$tmpdir/err"' "not met (said '$(cli_err)')"
 
 # A hand-edited registry with no primary_domain is refused, naming the file
-# and the key, before anything is written (docs/phases/10-recast.md, D4).
+# and the key, before anything is written (plan/roadmap/10-recast.md, D4).
 rig_ssh "printf 'name: mail\ndomains:\n  - mail.built-app.test\n' > $apps/mail/kasbah.yml" >/dev/null 2>&1
 log_before="$(versions_log)"
 deploy "$RIG_TARGET"; rc=$?

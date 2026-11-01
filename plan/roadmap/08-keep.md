@@ -837,7 +837,7 @@ and the new cases run at *exactly* the suite's pre-existing per-case rate, so th
 cost is not in this change and cannot be fixed there. A plain `kasbah check` on a
 **one-service** project forks a Python `yq` **41 times** at ~87 ms each — about
 3.5 s of process startup for a linter reading two files. Filed with its
-measurements and four options as `docs/backlog/20260826-check-yq-fork-per-rule.md`;
+measurements and four options as `plan/backlog/20260826-check-yq-fork-per-rule.md`;
 8.4's own reviewer recommended against holding this task for it.
 
 **I was wrong about the docs and the implementer caught it.** The brief asserted
@@ -933,7 +933,7 @@ cost a false failure while ordering the integration states, which is how it was
 noticed. The readers report it honestly rather than guessing, because a reader
 cannot invent a fact the writer discarded; the consequence is an expected warning
 for up to a day after any reboot. Documented in `backup.md`, and filed as
-`docs/backlog/20260827-backup-record-survives-restart.md` with three options —
+`plan/backlog/20260827-backup-record-survives-restart.md` with three options —
 the writer was explicitly off-limits to this task.
 
 The implementer also caught my documentation outrunning the code again: the
@@ -1011,10 +1011,10 @@ under a comment saying it is unreachable rather than one implying otherwise. Tel
 dominant cost of the unit gate. The new cases run at *exactly* the suite's pre-existing
 per-case rate, so the cost is not in this phase's work; a plain `kasbah check` on a
 **one-service** project forks a Python `yq` **41 times** at ~87 ms each. Filed with four
-options as `docs/backlog/20260826-check-yq-fork-per-rule.md`.
+options as `plan/backlog/20260826-check-yq-fork-per-rule.md`.
 
 **Two backlog items, both found by the rig and both out of scope by construction:** the
-`yq` fork cost above, and `docs/backlog/20260827-backup-record-survives-restart.md` — the
+`yq` fork cost above, and `plan/backlog/20260827-backup-record-survives-restart.md` — the
 backup runner holds the last run's facts in shell variables, so a container restart makes
 a stack that has run for months read as one that has never fired, until its next run.
 The readers report that honestly rather than guessing, because a reader cannot invent a
@@ -1025,7 +1025,7 @@ fact the writer discarded.
 Both items this phase filed were picked up in one run, after the close and before Phase 9
 opens. Scope as approved: the `yq` fork cost first (it makes every later suite run
 cheaper), then the backup runner's amnesia. One commit each; the backlog files are deleted
-in their unit's commit and the outcome recorded here, so `docs/phases/` stays the only
+in their unit's commit and the outcome recorded here, so `plan/roadmap/` stays the only
 tracker.
 
 Three decisions settled before the first agent:
