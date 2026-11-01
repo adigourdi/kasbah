@@ -59,6 +59,13 @@ func Load(data []byte) ([]tree.Value, error) {
 }
 
 // LoadFile is Load over a file's content.
+// Strict is whether data decodes as one mapping under yaml.v3's own map
+// decoder, which refuses a duplicate key where Load keeps the last value.
+func Strict(data []byte) bool {
+	var m map[string]any
+	return yaml.Unmarshal(data, &m) == nil
+}
+
 func LoadFile(path string) ([]tree.Value, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

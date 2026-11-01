@@ -1,6 +1,7 @@
 // Package acme reads Traefik's certificate store, acme.json, for the one
 // thing kasbah reports out of it: which certificate covers a hostname, its
-// issuer and its expiry. It never returns a key, and reports no age —
+// issuer and its expiry — and, from a fragment's routers, whether a hostname
+// is expected to have one. It never returns a key, and reports no age —
 // Let's Encrypt backdates notBefore by about an hour.
 package acme
 

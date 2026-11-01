@@ -685,6 +685,13 @@ func (c *checker) cert() {
 		c.warnf("the manifest names no domain, so there is no certificate to look for in %s", path)
 		return
 	}
+	if isFile(traefikFile) {
+		raw, err := os.ReadFile(traefikFile)
+		if f := c.load(traefikFile); err == nil && f.bad == "" && acme.PlainHTTP(raw, f.root, d) {
+			c.passf("this checkout's fragment has no HTTPS router, so '%s' is served over plain HTTP and no certificate is expected", d)
+			return
+		}
+	}
 	switch s.r.AcmeState {
 	case "file":
 	case "absent":

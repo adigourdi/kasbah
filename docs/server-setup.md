@@ -717,8 +717,11 @@ answers the same question as a rule (B01) through the same parser.
 
 **The per-project domain comes from `<apps>/traefik/dynamic/<name>.yml`**,
 returned by the server binary in the same round trip and parsed by kasbah on the
-workstation. The VPS needs no `yq`, `jq` or `python3`. Every `Host()` in the
-fragment's rules is listed, once, in the order they appear.
+workstation. The VPS needs no `yq`, `jq` or `python3`. Every host the
+fragment's rules name in a `Host()`, negated ones aside, is listed, once, in
+the order they appear. When the fragment has no router that could serve HTTPS
+(`traefik.md` → TLS), each host says `plain HTTP — its fragment has no HTTPS
+router, so no certificate is expected` instead of a certificate line.
 
 **Certificate expiry comes from `<data>/traefik/letsencrypt/acme.json`**,
 Traefik's own store, read by the same `internal/acme` that answers

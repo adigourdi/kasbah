@@ -271,9 +271,21 @@ Project-specific middlewares go in the same project fragment under
   `websecure` router references as `tls.certResolver: http` (T04).
 - HTTPS is per router. A fragment whose routers sit on `web` alone serves plain
   HTTP and asks for no certificate; `kasbah check` passes it (T08 asks only
-  for a `web` router), though `check --server` warns that its domain has no
-  certificate. The `http-to-https` and www redirect middlewares in
-  `_shared.yml` are for projects that serve HTTPS, not required.
+  for a `web` router). `check --server` passes such a domain without looking
+  for a certificate, and `server status` lists it as plain HTTP, only when the
+  verdict is certain: the fragment holds nothing but `http`, every router in
+  it lists exactly `[web]` as its entrypoints and carries no `tls` key, an
+  `http` router names the host in a `Host()`, the file holds no `{{` (Traefik
+  renders a fragment as a Go template first), no key repeats (Traefik refuses
+  such a file and keeps its last good configuration live), and no key spells
+  `routers`, `entryPoints` or `tls` in another case (Traefik matches keys
+  case-insensitively). Every other host is looked up in the certificate
+  store, so a fragment mixing HTTPS and plain-HTTP hosts gets a "no
+  certificate" warning for its plain-HTTP ones. Only the project's own
+  fragment is read: another fragment routing the same host over HTTPS is not
+  seen, nor is a configuration Traefik kept live after refusing a fragment
+  for a field it does not know. The `http-to-https` and www redirect middlewares in `_shared.yml` are
+  for projects that serve HTTPS, not required.
 - Traefik keys `acme.json` by resolver name. A store filled under the
   resolver's former name, `letsencrypt`, is not read: `check --server` and
   `server status` report it as holding no `http` store.

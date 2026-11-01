@@ -793,44 +793,23 @@ func (x *run) printProjects() {
 	}
 }
 
-var reHost = regexp.MustCompile("Host\\(`([^`]+)`\\)")
-
-// FragmentHosts is every Host() a fragment's routers claim, each once, in
-// router order; ok is false when the fragment does not parse, or it or its
-// http: is not a mapping.
-func FragmentHosts(content []byte) (hosts []string, ok bool) {
+// ParseFragment is a fragment's tree; ok is false when the fragment does not
+// parse, or it or its http: is not a mapping.
+func ParseFragment(content []byte) (root tree.Value, ok bool) {
 	docs, err := yamlx.Load(content)
 	if err != nil || len(docs) > 1 {
 		return nil, false
 	}
-	var doc tree.Value
 	if len(docs) == 1 {
-		doc = docs[0]
+		root = docs[0]
 	}
-	http, _ := tree.Lookup(doc, "http")
-	for _, v := range []tree.Value{doc, http} {
+	http, _ := tree.Lookup(root, "http")
+	for _, v := range []tree.Value{root, http} {
 		if _, isMap := v.(*tree.Map); !isMap && v != nil {
 			return nil, false
 		}
 	}
-	rv, _ := tree.Lookup(http, "routers")
-	routers, isMap := rv.(*tree.Map)
-	if !isMap {
-		return nil, true
-	}
-	seen := map[string]bool{}
-	for _, k := range routers.Keys() {
-		v, _ := routers.Get(k)
-		rv, _ := tree.Lookup(v, "rule")
-		rule, _ := tree.String(rv)
-		for _, m := range reHost.FindAllStringSubmatch(rule, -1) {
-			if !seen[m[1]] {
-				seen[m[1]] = true
-				hosts = append(hosts, m[1])
-			}
-		}
-	}
-	return hosts, true
+	return root, true
 }
 
 func (x *run) printHosts(p Project) {
@@ -855,7 +834,9 @@ func (x *run) printHosts(p Project) {
 		x.p("      unknown fragment state %s\n", p.FragState)
 		return
 	}
-	hosts, ok := FragmentHosts(b64(p.Frag))
+	raw := b64(p.Frag)
+	root, ok := ParseFragment(raw)
+	hosts := acme.Hosts(acme.Routes(root))
 	if !ok {
 		x.p("      %s does not parse as YAML, so this project's domain cannot be read\n", path)
 		return
@@ -866,6 +847,10 @@ func (x *run) printHosts(p Project) {
 	}
 	for _, h := range hosts {
 		x.p("      %s\n", h)
+		if acme.PlainHTTP(raw, root, h) {
+			x.p("          plain HTTP — its fragment has no HTTPS router, so no certificate is expected\n")
+			continue
+		}
 		x.certLine(h, "          ")
 	}
 }

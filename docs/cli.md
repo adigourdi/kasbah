@@ -479,9 +479,10 @@ Prints:
 - Projects under the apps path — name, running/total containers, the
   last `versions.log` entry (action, version, timestamp, kasbah version), **the
   domains its Traefik fragment claims**, what the certificate store says about
-  each of them, and each container's state and health. A project whose
-  containers are all running and none unhealthy gets one line saying so; one
-  that is not gets a line per container, because that is the case a count
+  each of them (or, when the fragment has no HTTPS router, that no
+  certificate is expected), and each container's state and health. A project
+  whose containers are all running and none unhealthy gets one line saying so;
+  one that is not gets a line per container, because that is the case a count
   cannot show.
 
 **Certificate expiry comes from Traefik's own `acme.json`**, read by the same

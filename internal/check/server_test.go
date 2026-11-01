@@ -430,6 +430,40 @@ func TestServerCert(t *testing.T) {
 	}
 }
 
+func TestServerCertPlainHTTP(t *testing.T) {
+	webOnly := "http:\n  routers:\n" +
+		"    demo: {rule: \"Host(`demo.example.com`)\", entryPoints: [web], service: demo}\n" +
+		"  services:\n    demo: {loadBalancer: {servers: [{url: \"http://demo-web:80\"}]}}\n"
+	other := "    other: {rule: \"Host(`other.example.com`)\", entryPoints: [websecure], tls: {certResolver: http}, service: demo}\n  services:"
+	for _, tc := range []struct {
+		name, frag, want, not string
+		code                  int
+	}{
+		{"web only", webOnly, "✓ this checkout's fragment has no HTTPS router, so 'demo.example.com' is served over plain HTTP and no certificate is expected", "no certificate for", 0},
+		// Any router that could serve HTTPS, for whichever host, sends the domain to the store.
+		{"https for another host", strings.Replace(webOnly, "  services:", other, 1), "⚠ no certificate for 'demo.example.com'", "plain HTTP", 0},
+		{"tcp router", webOnly + "tcp:\n  routers:\n    t: {rule: \"HostSNI(`demo.example.com`)\", entryPoints: [websecure], tls: {}, service: t}\n", "⚠ no certificate for 'demo.example.com'", "plain HTTP", 0},
+		{"websecure too", goodFragment, "⚠ no certificate for 'demo.example.com' in /apps/data/traefik/letsencrypt/acme.json on deploy@vps (1 in the store)", "plain HTTP", 0},
+		// T03 fails it; Traefik puts such a router on every entrypoint.
+		{"no entryPoints", strings.ReplaceAll(goodFragment, "entryPoints: [websecure], ", ""), "⚠ no certificate for 'demo.example.com'", "plain HTTP", 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srvProject(t, "")
+			if err := os.WriteFile("traefik-dynamic.yml", []byte(tc.frag), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			s := newSrv(t)
+			s.r.AcmeState, s.r.Acme = "file", b64s(store("other.example.com", nil, b64s(certPEM(t, "other.example.com", nil, testNow.Add(100*24*time.Hour)))))
+			out, code := s.run()
+			contains(t, out, tc.want)
+			hasNot(t, out, tc.not)
+			if code != tc.code {
+				t.Errorf("exit %d, want %d:\n%s", code, tc.code, out)
+			}
+		})
+	}
+}
+
 func TestServerR04(t *testing.T) {
 	for _, tc := range []struct {
 		env, want string

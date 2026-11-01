@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/acme"
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/remote"
@@ -76,18 +77,19 @@ func TestDisk(t *testing.T) {
 	}
 }
 
-func TestFragmentHosts(t *testing.T) {
+func TestParseFragment(t *testing.T) {
 	for in, want := range map[string]string{
 		"http:\n  routers:\n    a: {rule: \"Host(`a.test`) || Host(`b.test`)\"}\n    b: {rule: \"Host(`a.test`)\"}\n": "a.test b.test",
-		"http:\n  routers: {}\n":                "",
+		"http:\n  routers: {}\n": "",
+		"http:\n  routers:\n    a: {rule: 'Host( \"a.test\" ) && !Host(`b.test`)'}\n": "a.test",
 		"# only a comment\n":                    "",
 		"http:\n  routers: [1]\n":               "",
 		"http: x\n":                             "!",
 		"a: [\n":                                "!",
 		"http:\n  routers:\n    a: {rule: 5}\n": "",
 	} {
-		hosts, ok := FragmentHosts([]byte(in))
-		got := strings.Join(hosts, " ")
+		root, ok := ParseFragment([]byte(in))
+		got := strings.Join(acme.Hosts(acme.Routes(root)), " ")
 		if !ok {
 			got = "!"
 		}
@@ -291,8 +293,11 @@ func TestCertsAndMail(t *testing.T) {
 	r.MailDMS = Stack{State: "running", Health: "healthy", Restarts: "3"}
 	r.MailWeb = Stack{State: "absent"}
 	r.Projects = []Project{{Name: "demo", LogState: "ok", Log: "2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0", FragState: "ok", Total: 1, Running: 1,
-		Frag:       b64s("http:\n  routers:\n    a: {rule: \"Host(`demo.test`) || Host(`bad.test`) || Host(`none.test`)\"}\n"),
-		Containers: []Container{{"demo-web", "running", "healthy"}}}}
+		Frag:       b64s("http:\n  routers:\n    a: {rule: \"Host(`demo.test`) || Host(`bad.test`) || Host(`none.test`)\"}\n    b: {rule: \"Host(`plain.test`) || Host(`demo.test`)\", entryPoints: [web]}\n"),
+		Containers: []Container{{"demo-web", "running", "healthy"}}},
+		{Name: "site", LogState: "ok", Log: "2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0", FragState: "ok", Total: 1, Running: 1,
+			Frag:       b64s("http:\n  routers:\n    a: {rule: \"Host(`site.test`)\", entryPoints: [web]}\n"),
+			Containers: []Container{{"site-web", "running", "healthy"}}}}
 	out, _, _ := runStatus(t, r)
 	has(t, out,
 		"  Certificates: 4 in /apps/data/traefik/letsencrypt/acme.json\n  Dashboard: traefik.rig.test\n      certificate EXPIRED 2 day(s) ago (",
@@ -300,7 +305,8 @@ func TestCertsAndMail(t *testing.T) {
 		"  webmail.rig.test\n      certificate (as a SAN of mail.rig.test) valid for 50 more day(s)",
 		"  demo           1/1 running    1.0.0      deploy 2026-08-13T22:30:37+00:00 (kasbah 0.1.0)\n      demo.test\n          certificate expires in 10 day(s) (",
 		"Traefik renews at 30, so renewal has missed its window",
-		"      bad.test\n          the store entry is not base64\n      none.test\n          no certificate — Traefik issues one when the hostname resolves here\n      1 container(s), all running and none unhealthy")
+		"      bad.test\n          the store entry is not base64\n      none.test\n          no certificate — Traefik issues one when the hostname resolves here\n      plain.test\n          no certificate — Traefik issues one when the hostname resolves here\n      1 container(s), all running and none unhealthy",
+		"      site.test\n          plain HTTP — its fragment has no HTTPS router, so no certificate is expected\n      1 container(s), all running and none unhealthy")
 	if strings.Contains(out, "SECRET-KEY") {
 		t.Error("the store's key material was printed")
 	}
