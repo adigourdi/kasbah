@@ -266,7 +266,7 @@ func TestRemoteDispatch(t *testing.T) {
 		t.Errorf("unknown: %d %s", code, se.String())
 	}
 	body, _ := json.Marshal(DryPayload{Shared: "a", Static: "b"})
-	args := []string{"dry-run", "/apps", "traefik:v3", DryLabel, "S", DryACMEError, DryCA, "5", fmt.Sprint(len(body) + 1), "00"}
+	args := []string{"dry-run", "/apps", "traefik:v3", DryLabel, "S", DryACMEError, DryCA, "5", fmt.Sprint(len(body) + 1), strings.Repeat("0", 64)}
 	se.Reset()
 	if code := Remote(args, bytes.NewReader(body), &so, &se); code != 1 || !strings.Contains(se.String(), "nothing was installed") {
 		t.Errorf("a cut payload: %d %s", code, se.String())

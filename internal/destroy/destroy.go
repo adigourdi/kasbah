@@ -400,7 +400,7 @@ func (p *Plan) check() error {
 
 func hasWork(r Row) bool {
 	return r.Vlog != "missing" || r.VlogGz != "missing" || r.Helpers != 0 ||
-		r.Lock != "missing" || r.Client != "missing" || r.Sentinels != 0 || (r.Prev != "absent" && r.Prev != "")
+		r.Lock != "missing" || r.Client != "missing" || r.Sentinels != 0 || (r.Prev != "absent" && r.Prev != "") || r.Seeds != 0
 }
 
 func (p *Plan) anything() bool {
@@ -441,6 +441,9 @@ func planProject(r Row) string {
 	}
 	if r.Prev != "absent" && r.Prev != "" {
 		parts = append(parts, ".kasbah-prev/ (a failed deploy's snapshot, with a copy of .env)")
+	}
+	if r.Seeds != 0 {
+		parts = append(parts, fmt.Sprintf(".kasbah-env-seed (%d staged --env-seed file(s), with .env values)", r.Seeds))
 	}
 	if r.Sentinels != 0 {
 		parts = append(parts, fmt.Sprintf(".env: %d managed-block sentinel comment(s), values kept", r.Sentinels))
@@ -830,6 +833,9 @@ func (p *Plan) reportProject(r *reporter, pr ProjectResult) {
 	file(".kasbah-client", pr.Client)
 	if pr.Prev != "absent" && pr.Prev != "" {
 		file(".kasbah-prev/", pr.Prev)
+	}
+	if pr.Seeds != "absent" && pr.Seeds != "" {
+		file("the staged .kasbah-env-seed files", pr.Seeds)
 	}
 	switch pr.Env {
 	case "stripped":

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/remote"
@@ -11,11 +12,11 @@ import (
 )
 
 // RemoteUsage names the server half's modes: `kasbah remote setup-env MODE …`.
-const RemoteUsage = "usage: kasbah remote setup-env prepare DIR | drift DIR | setup DIR [--color=yes|no] | inject DIR KASBAH_NAME=value… | limits CPUS MEMORY | key DIR KEY | set DIR KEY [--up=NAME] (size, sha256 and value on stdin)"
+const RemoteUsage = "usage: kasbah remote setup-env prepare DIR | drift DIR | setup DIR [--color=yes|no] [--seed=TOKEN | --headless [--seed]] | seed DIR TOKEN | inject DIR KASBAH_NAME=value… | limits CPUS MEMORY | key DIR KEY | set DIR KEY [--up=NAME] (size, sha256 and value on stdin)"
 
 // Remote is `kasbah remote setup-env` on a server. stdout is a protocol in
-// every mode but setup, whose prompts are the operator's over ssh -t;
-// diagnostics go to stderr.
+// every mode but setup, whose prompts are the operator's over ssh -t (or a
+// headless run's progress); diagnostics go to stderr.
 func Remote(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	if len(args) < 2 || args[1] == "" {
 		fmt.Fprintln(stderr, RemoteUsage)
@@ -25,8 +26,10 @@ func Remote(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	if dir == "" {
 		dir = "/"
 	}
-	// setup is interactive: a hangup abandons it, its staging removed.
-	if mode == "prepare" || mode == "inject" || mode == "set" {
+	// An interactive setup is the operator's: a hangup abandons it, its
+	// staging removed. A headless one changes state unattended, as these do.
+	headless := mode == "setup" && slices.Contains(args[2:], "--headless")
+	if mode == "prepare" || mode == "inject" || mode == "set" || mode == "seed" || headless {
 		w, done := remote.Outlive(stderr)
 		defer done()
 		stderr = w
@@ -46,6 +49,8 @@ func Remote(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "prepared=yes")
 		return 0
 	case mode == "drift" && len(args) == 2:
+		// Seeds a dropped run left behind are removed before anything else.
+		removeSeeds(dir)
 		r, err := Report(dir)
 		if err != nil {
 			fmt.Fprintf(stderr, "ERROR: %v\n", err)
@@ -53,14 +58,48 @@ func Remote(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprint(stdout, r)
 		return 0
-	case mode == "setup" && (len(args) == 2 || len(args) == 3 && strings.HasPrefix(args[2], "--color=")):
+	case mode == "setup":
 		// The workstation decides colour: NO_COLOR does not cross ssh.
-		color := term.IsTerminal(1) && os.Getenv("NO_COLOR") == ""
-		if len(args) == 3 {
-			color = args[2] == "--color=yes"
+		s := &Setup{Dir: dir, In: stdin, Out: stdout, Err: stderr, TTY: term.IsTerminal(0), TermFD: 0,
+			Color: term.IsTerminal(1) && os.Getenv("NO_COLOR") == ""}
+		seed, token, bad := false, "", false
+		for _, a := range args[2:] {
+			switch {
+			case strings.HasPrefix(a, "--color="):
+				s.Color = a == "--color=yes"
+			case a == "--seed":
+				seed = true
+			case strings.HasPrefix(a, "--seed="):
+				token = strings.TrimPrefix(a, "--seed=")
+				bad = bad || token == ""
+			case a == "--headless":
+				s.Headless = true
+			default:
+				bad = true
+			}
 		}
-		s := &Setup{Dir: dir, In: stdin, Out: stdout, Err: stderr, TTY: term.IsTerminal(0), TermFD: 0, Color: color}
+		// A bare --seed reads stdin, which only a headless run leaves free.
+		if bad || seed && (!s.Headless || token != "") {
+			if reToken.MatchString(token) {
+				os.Remove(seedPath(dir, token))
+			}
+			fmt.Fprintln(stderr, RemoteUsage)
+			return 1
+		}
+		var err error
+		switch {
+		case seed:
+			_, s.Seed, err = readSeed(stdin)
+		case token != "":
+			s.Seed, err = takeSeed(dir, token)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "ERROR: env seed: %v — .env left untouched\n", err)
+			return SetupFail
+		}
 		return s.Run()
+	case mode == "seed" && len(args) == 3:
+		return stageSeed(dir, args[2], stdin, stdout, stderr)
 	case mode == "inject" && len(args) >= 2:
 		return Inject(dir+"/.env", args[2:], stderr)
 	case mode == "limits" && len(args) == 3:

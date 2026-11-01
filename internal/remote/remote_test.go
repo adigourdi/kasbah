@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 	"testing"
@@ -192,5 +193,23 @@ func TestKept(t *testing.T) {
 	var e *cli.Error
 	if !errors.As(err, &e) || e.Code != cli.ExitFailure || !strings.Contains(err.Error(), "keeps its kasbah 1.1.0") {
 		t.Errorf("Kept says %q", err)
+	}
+}
+
+func TestPayload(t *testing.T) {
+	body := []byte("DB_PASSWORD=my secret\n")
+	size, sum := Digest(body)
+	if got, err := Payload(bytes.NewReader(body), size, sum); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("Payload: %q %v", got, err)
+	}
+	// A missing header leaves the first line where the header goes: never quoted.
+	for _, h := range [][2]string{{"DB_PASSWORD=my", "secret"}, {"0", sum}, {size, "s3cret"}, {size, strings.ToUpper(sum)}} {
+		_, err := Payload(bytes.NewReader(body), h[0], h[1])
+		if err == nil || !strings.Contains(err.Error(), "malformed") || strings.Contains(err.Error(), "my") || strings.Contains(err.Error(), "s3cret") {
+			t.Errorf("header %q: %v", h, err)
+		}
+	}
+	if _, err := Payload(bytes.NewReader(body[:5]), size, sum); err == nil || !strings.Contains(err.Error(), "cut short") {
+		t.Errorf("a cut payload: %v", err)
 	}
 }

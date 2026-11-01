@@ -69,6 +69,8 @@ type Row struct {
 	Sentinels int    `json:"sentinels"`
 	// Prev is .kasbah-prev/, a failed deploy's snapshot (fsstate.Dir).
 	Prev string `json:"prev"`
+	// Seeds counts the staged --env-seed files, .kasbah-env-seed*.
+	Seeds int `json:"seeds"`
 }
 
 // Scan is `kasbah remote destroy scan APPS POINTER`.
@@ -321,7 +323,7 @@ func scan(apps, pointer string) Scan {
 			Scripts: fsstate.Dir(filepath.Join(d, "scripts")),
 			Lock:    fsstate.File(filepath.Join(d, ".deploy.lock")), Client: fsstate.File(filepath.Join(d, ".kasbah-client")),
 			Env: fsstate.File(filepath.Join(d, ".env")), Sentinels: countSentinels(filepath.Join(d, ".env")),
-			Prev: prevState(filepath.Join(d, ".kasbah-prev"))}
+			Prev: prevState(filepath.Join(d, ".kasbah-prev")), Seeds: len(seeds(d))}
 		for _, f := range entries(filepath.Join(d, "scripts")) {
 			if helper(f) {
 				r.Helpers++
@@ -354,6 +356,7 @@ type ProjectResult struct {
 	Client  string `json:"client"`
 	Env     string `json:"env"`
 	Prev    string `json:"prev"`
+	Seeds   string `json:"seeds"`
 }
 
 // ActReport is what `kasbah remote destroy act` did. A `started=yes` line
@@ -526,10 +529,11 @@ func act(apps string, names []string, stdout io.Writer) error {
 		p.Lock = fsstate.Remove(filepath.Join(d, ".deploy.lock"))
 		p.Client = fsstate.Remove(filepath.Join(d, ".kasbah-client"))
 		p.Prev = removePrev(filepath.Join(d, ".kasbah-prev"))
+		p.Seeds = removeSeeds(d)
 		// The sentinel comments go; KASBAH_CPU_LIMIT and KASBAH_MEM_LIMIT
 		// stay, because compose interpolates them into every service.
 		p.Env = rewrite(filepath.Join(d, ".env"), func(l string) bool { return !sentinel(l) }, 0)
-		for _, v := range []string{p.Vlog, p.VlogGz, p.Scripts, p.Lock, p.Client, p.Prev} {
+		for _, v := range []string{p.Vlog, p.VlogGz, p.Scripts, p.Lock, p.Client, p.Prev, p.Seeds} {
 			if v == "failed" {
 				bad = true
 			}
@@ -605,6 +609,32 @@ func prevState(p string) string {
 		return "notdir"
 	}
 	return fsstate.Dir(p)
+}
+
+// seedPrefix names a staged --env-seed and its staging files (env.SeedName).
+const seedPrefix = ".kasbah-env-seed"
+
+// seeds is d's staged --env-seed files: they hold .env values.
+func seeds(d string) []string {
+	var out []string
+	for _, n := range entries(d) {
+		if strings.HasPrefix(n, seedPrefix+".") {
+			out = append(out, filepath.Join(d, n))
+		}
+	}
+	return out
+}
+
+// removeSeeds removes every staged --env-seed in d.
+func removeSeeds(d string) string {
+	v := "absent"
+	for _, p := range seeds(d) {
+		v = "removed"
+		if os.Remove(p) != nil && fsstate.Exists(p) {
+			return "failed"
+		}
+	}
+	return v
 }
 
 // removePrev removes a failed deploy's snapshot: it holds a copy of .env.

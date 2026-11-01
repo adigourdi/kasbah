@@ -27,6 +27,8 @@ type fakeServer struct {
 	injectRC  int
 	injected  []string
 	limitsRC  int
+	staged    []byte
+	token     string
 }
 
 func report(tmpl, env, missing, extra string) string {
@@ -53,9 +55,28 @@ func (f *fakeServer) Drift(dir string) (string, int) {
 	}
 	return r, 0
 }
-func (f *fakeServer) Setup(dir string, color bool) int {
-	f.calls = append(f.calls, "setup "+dir)
+func (f *fakeServer) Setup(dir string, fl SetupFlags) int {
+	c := "setup " + dir
+	switch {
+	case fl.Seed != nil:
+		c += " --seed"
+		f.staged = fl.Seed
+	case fl.Token != "":
+		c += " --seed=" + fl.Token
+		if fl.Token != f.token {
+			c += " (not the staged token)"
+		}
+	}
+	if !fl.TTY {
+		c += " --headless"
+	}
+	f.calls = append(f.calls, c)
 	return f.setupRC
+}
+func (f *fakeServer) StageSeed(dir, token string, data []byte) error {
+	f.calls = append(f.calls, "seed "+dir+" "+token)
+	f.staged, f.token = data, token
+	return nil
 }
 func (f *fakeServer) Inject(dir string, pairs []string) int {
 	f.calls = append(f.calls, "inject "+dir)
@@ -224,10 +245,17 @@ func TestHeadless(t *testing.T) {
 		"the remedy is one that reaches this branch: %q", r.stderr)
 	expect(t, lastServer(t) == "", "a failed run records no last_server")
 
-	srv = &fakeServer{reports: []string{report("yes", "no", "", "")}}
+	srv = &fakeServer{reports: []string{report("yes", "no", "A", "")}}
 	r = runEnv(t, srv, false, "", "deploy@vps", "--on-drift=continue")
 	expect(t, r.code == cli.ExitEnvSetup && strings.Contains(r.stderr, "does not exist yet") && strings.Contains(r.stderr, "cp /apps/demo/.env.prod.example"),
 		"a missing .env is not answered by --on-drift: %d %q", r.code, r.stderr)
+
+	// A template that asks nothing renders headless.
+	srv = &fakeServer{reports: []string{report("yes", "no", "", ""), report("yes", "yes", "", "")}}
+	r = runEnv(t, srv, false, "", "deploy@vps")
+	expect(t, r.code == 0 && srv.called("setup /apps/demo --headless") >= 0 && srv.called("seed") < 0,
+		"a template with no keys needs no terminal: %d %q %v", r.code, r.stderr, srv.calls)
+	os.RemoveAll(".kasbah")
 
 	srv = drifted()
 	r = runEnv(t, srv, false, "", "deploy@vps", "--on-drift=continue")
@@ -459,4 +487,148 @@ func TestStdoutRedirected(t *testing.T) {
 	code := out.Report(err)
 	expect(t, code == cli.ExitEnvSetup && strings.Contains(stderr.String(), "no terminal"), "stdout redirected: %d %q", code, stderr.String())
 	expect(t, srv.called("setup") < 0 && srv.called("inject") < 0, "runs nothing: %v", srv.calls)
+}
+
+func seedFile(t *testing.T, body string, perm os.FileMode) string {
+	t.Helper()
+	p := t.TempDir() + "/seed"
+	if err := os.WriteFile(p, []byte(body), perm); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(p, perm)
+	return p
+}
+
+func TestSeedRefusals(t *testing.T) {
+	project(t, true)
+	dir := t.TempDir()
+	long := "A=" + strings.Repeat("x", maxValue+1) + "\n"
+	for _, c := range []struct {
+		name string
+		arg  string
+		want string
+	}{
+		{"missing", "--env-seed=" + dir + "/nope", "no such file"},
+		{"a directory", "--env-seed=" + dir, "not a regular file"},
+		{"group readable", "--env-seed=" + seedFile(t, "A=1\n", 0o640), "open to others (mode 0640)"},
+		{"world readable", "--env-seed=" + seedFile(t, "A=1\n", 0o604), "chmod 600"},
+		{"reserved", "--env-seed=" + seedFile(t, "A=1\nKASBAH_CPU_LIMIT=2\n", 0o600), "line 2 sets KASBAH_CPU_LIMIT"},
+		{"malformed", "--env-seed=" + seedFile(t, "# c\n\nA=1\nnot a pair s3cret\n", 0o600), "line 4 is not KEY=value"},
+		{"empty", "--env-seed=" + seedFile(t, "", 0o600), "empty"},
+		{"comments only", "--env-seed=" + seedFile(t, "# s3cret\n\n", 0o600), "sets no key"},
+		{"a value over 64 KiB", "--env-seed=" + seedFile(t, long, 0o600), "over 64 KiB"},
+		{"no value", "--env-seed=", "names no file"},
+		{"no '='", "--env-seed", "takes its file with '='"},
+		{"a typo", "--env-seeds=x", "unknown flag '--env-seeds'"},
+	} {
+		r := runEnv(t, inSync(), true, "", "deploy@vps", c.arg)
+		expect(t, r.code == 1 && strings.Contains(r.stderr, c.want) && !r.dialed, "%s: %d %q", c.name, r.code, r.stderr)
+		expect(t, !strings.Contains(r.stderr, "s3cret"), "%s: a seed line is never printed: %q", c.name, r.stderr)
+	}
+	big := seedFile(t, "", 0o600)
+	os.WriteFile(big, []byte(strings.Repeat("# filler\n", MaxSeed/9+1)), 0o600)
+	r := runEnv(t, inSync(), true, "", "deploy@vps", "--env-seed="+big)
+	expect(t, r.code == 1 && strings.Contains(r.stderr, "over 256 KiB") && !r.dialed, "over the bound: %d %q", r.code, r.stderr)
+
+	o, err := Parse([]string{"--env-seed=x\r", "a@b"})
+	expect(t, err == nil && o.EnvSeed == "x" && o.Target == "a@b", "parsed: %+v %v", o, err)
+	if v, err := ParseSeed([]byte("export A='x y' # c\r\nB=1\nB=2\n")); err != nil || v["A"] != "'x y' # c" || v["B"] != "2" {
+		t.Errorf("ParseSeed: %q %v", v, err)
+	}
+}
+
+func TestSeedStep(t *testing.T) {
+	project(t, true)
+	full := "--env-seed=" + seedFile(t, "A=s3cret-a\nB=s3cret-b\nUNUSED=1\n", 0o600)
+	half := "--env-seed=" + seedFile(t, "A=s3cret-a\n", 0o600)
+	noValues := func(r run) {
+		t.Helper()
+		expect(t, !strings.Contains(r.stderr, "s3cret"), "no seeded value is printed: %q", r.stderr)
+	}
+
+	srv := &fakeServer{reports: []string{report("yes", "no", "A B", ""), report("yes", "yes", "", "")}}
+	r := runEnv(t, srv, false, "", "deploy@vps", full)
+	d, su, i := srv.called("drift"), srv.called("setup /apps/demo --seed --headless"), srv.called("inject")
+	expect(t, r.code == 0 && 0 <= d && d < su && su < i && srv.called("seed") < 0,
+		"a first run the seed answers needs no terminal, and stages nothing: %d %q %v", r.code, r.stderr, srv.calls)
+	expect(t, strings.Contains(string(srv.staged), "B=s3cret-b"), "the seed rides on the setup as written: %q", srv.staged)
+	noValues(r)
+	os.RemoveAll(".kasbah")
+
+	srv = &fakeServer{reports: []string{report("yes", "no", "A B", "")}}
+	r = runEnv(t, srv, false, "", "deploy@vps", half)
+	expect(t, r.code == cli.ExitEnvSetup && strings.Contains(r.stderr, "does not answer: B\n") && srv.called("seed") < 0 && srv.called("setup") < 0,
+		"a partial seed without a terminal names what it lacks, staging nothing: %d %q %v", r.code, r.stderr, srv.calls)
+	noValues(r)
+
+	srv = &fakeServer{reports: []string{report("yes", "no", "A B", ""), report("yes", "yes", "", "")}}
+	r = runEnv(t, srv, true, "", "deploy@vps", half)
+	st, su := srv.called("seed /apps/demo "), srv.called("setup /apps/demo --seed=")
+	expect(t, r.code == 0 && 0 <= st && st < su && srv.calls[su] == "setup /apps/demo --seed="+srv.token && len(srv.token) == 16,
+		"a partial seed on a terminal is staged under a token the setup names, and asks the rest: %d %q %v", r.code, r.stderr, srv.calls)
+	tok := srv.token
+	os.RemoveAll(".kasbah")
+
+	srv = &fakeServer{reports: []string{report("yes", "yes", "B", ""), report("yes", "yes", "", "")}}
+	r = runEnv(t, srv, false, "", "deploy@vps", full)
+	expect(t, r.code == 0 && !strings.Contains(r.stderr, "setup/continue/abort") && strings.Contains(r.stderr, "the seed answers every key") &&
+		srv.called("setup /apps/demo --seed --headless") >= 0, "drift the seed covers asks nothing: %d %q %v", r.code, r.stderr, srv.calls)
+	os.RemoveAll(".kasbah")
+
+	srv = &fakeServer{reports: []string{report("yes", "yes", "B", "")}}
+	r = runEnv(t, srv, false, "", "deploy@vps", full, "--on-drift=continue")
+	expect(t, r.code == 0 && srv.called("setup") < 0 && srv.called("seed") < 0 && strings.Contains(r.stderr, "the seed was not used: the drift was answered continue"),
+		"an explicit --on-drift=continue wins over the seed: %d %q %v", r.code, r.stderr, srv.calls)
+	os.RemoveAll(".kasbah")
+
+	srv = &fakeServer{reports: []string{report("yes", "yes", "B C", ""), report("yes", "yes", "", "")}}
+	r = runEnv(t, srv, true, "setup\n", "deploy@vps", full)
+	expect(t, r.code == 0 && strings.Contains(r.stderr, "setup/continue/abort") && srv.called("setup /apps/demo --seed="+srv.token) >= 0 && srv.token != tok,
+		"drift the seed half covers is asked about, under a token of its own: %d %q %v", r.code, r.stderr, srv.calls)
+	os.RemoveAll(".kasbah")
+
+	srv = &fakeServer{reports: []string{report("yes", "yes", "B C", "")}}
+	r = runEnv(t, srv, false, "", "deploy@vps", full)
+	expect(t, r.code == cli.ExitEnvSetup && strings.Contains(r.stderr, "does not answer: C\n") && srv.called("setup") < 0,
+		"headless drift the seed half covers names the rest: %d %q", r.code, r.stderr)
+
+	srv = &fakeServer{reports: []string{report("yes", "yes", "B", "OLD")}}
+	r = runEnv(t, srv, false, "", "deploy@vps", full)
+	expect(t, r.code == cli.ExitEnvSetup && strings.Contains(r.stderr, "keys the template dropped"), "dropped keys keep the question: %d %q", r.code, r.stderr)
+
+	srv = &fakeServer{reports: []string{report("yes", "yes", "B C", ""), report("yes", "yes", "C", "")}}
+	r = runEnv(t, srv, false, "", "deploy@vps", full, "--on-drift=setup")
+	expect(t, r.code == cli.ExitEnvSetup && strings.Contains(r.stderr, "does not answer: C") && srv.called("setup") < 0,
+		"--on-drift=setup without a terminal still needs one for the menu: %d %q", r.code, r.stderr)
+
+	srv = inSync()
+	r = runEnv(t, srv, false, "", "deploy@vps", full)
+	expect(t, r.code == 0 && srv.called("setup") < 0 && srv.called("seed") < 0 && strings.Contains(r.stderr, "none of its 3 key(s)"),
+		"an .env in sync is left alone: %d %q %v", r.code, r.stderr, srv.calls)
+	os.RemoveAll(".kasbah")
+
+	srv = &fakeServer{reports: []string{report("yes", "no", "A B", "")}, setupRC: SetupUnanswered}
+	r = runEnv(t, srv, false, "", "deploy@vps", full)
+	su = srv.called("setup")
+	expect(t, r.code == cli.ExitEnvSetup && strings.Contains(r.stderr, "without a terminal") && strings.Contains(r.stderr, "the seed does not answer") &&
+		su == len(srv.calls)-1 && srv.called("inject") < 0,
+		"a failed headless setup had nothing staged to remove: %d %q %v", r.code, r.stderr, srv.calls)
+
+	srv = &fakeServer{reports: []string{report("yes", "no", "A B", "")}, setupRC: SetupFail}
+	r = runEnv(t, srv, true, "", "deploy@vps", half)
+	su = srv.called("setup")
+	expect(t, r.code == cli.ExitEnvSetup && su >= 0 && len(srv.calls) > su+1 && strings.HasPrefix(srv.calls[su+1], "drift") && srv.called("inject") < 0,
+		"a failed interactive setup removes its staged seed through the drift step: %d %q %v", r.code, r.stderr, srv.calls)
+
+	srv = &fakeServer{reports: []string{report("yes", "no", "", "")}, setupRC: SetupUnanswered}
+	r = runEnv(t, srv, false, "", "deploy@vps")
+	expect(t, r.code == cli.ExitEnvSetup && !strings.Contains(r.stderr, "seed does not answer") && strings.Contains(r.stderr, "a question to ask after all"),
+		"a failed headless setup without a seed says nothing of one: %d %q", r.code, r.stderr)
+
+	dollar := "--env-seed=" + seedFile(t, "A=s3cret$x\nB='lit$eral'\nC=$$ok\nD=s3cret${Y}\n", 0o600)
+	srv = &fakeServer{reports: []string{report("yes", "no", "A B C D", ""), report("yes", "yes", "", "")}}
+	r = runEnv(t, srv, false, "", "deploy@vps", dollar)
+	expect(t, r.code == 0 && strings.Contains(r.stderr, "line 1 (A) has a bare $") && strings.Contains(r.stderr, "line 4 (D) has a bare $") &&
+		!strings.Contains(r.stderr, "(B)") && !strings.Contains(r.stderr, "(C)"), "a bare $ is warned of by key and line: %d %q", r.code, r.stderr)
+	noValues(r)
 }

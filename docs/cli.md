@@ -386,6 +386,7 @@ Per project:
   then `rmdir`. The directory survives if it holds anything else, because
   destroy cannot tell an operator's file from kasbah's except by name
 - `.kasbah-prev/`, a failed deploy's snapshot, which holds a copy of `.env`
+- every staged `--env-seed` (`.kasbah-env-seed.*`), which holds `.env` values
 - `.deploy.lock`, and `.kasbah-client` (written by `deploy`, read by the backup
   run — see `project-manifest.md`)
 - the **managed-block sentinel comments** in `.env`. The `KASBAH_CPU_LIMIT` and
@@ -789,6 +790,9 @@ Flags:
 - `--on-drift=setup|continue|abort` — what step 6 does when the server's `.env`
   has drifted from `.env.prod.example`. Unset it asks; with no terminal to ask
   on the run stops with exit `5`. See `kasbah env` below.
+- `--env-seed=FILE` — answer the keys step 6 would ask from `FILE`'s
+  `KEY=value` lines: every key on a first deploy, the keys `.env` lacks on
+  drift. See `kasbah env` below.
 - `--skip-hooks` — skip the pre/post hooks (dry-run style). **The backup still
   runs**: a flag for a dry-run-ish deploy must not also discard the data safety
   net.
@@ -856,6 +860,8 @@ Flags:
   v<target>'s `.env.prod.example` may declare different keys from the one
   the server was last set up against. Unset it asks; with no terminal, the
   run stops with exit `5`. See `kasbah env`.
+- `--env-seed=FILE` — answers that env step's keys from a file, as on
+  `deploy`. See `kasbah env`.
 - `--skip-hooks` — skip the pre-/post-rollback hooks. Unlike `deploy`, there
   is no backup for this flag to preserve: a rollback never takes one.
 - `--no-health-wait` — don't block on healthcheck.
@@ -1035,7 +1041,7 @@ describing a version the server is not running would be answering a
 different question. An inverted or empty range is reported as such, in the
 same words `deploy` uses for it.
 
-### `kasbah env [USER@HOST] [--on-drift=setup|continue|abort]`
+### `kasbah env [USER@HOST] [--on-drift=setup|continue|abort] [--env-seed=FILE]`
 
 Drift-aware env setup. Ships the kasbah binary if the server's is absent or
 older, syncs `.env.prod.example` to `<apps>/<name>/`, runs the interactive setup
@@ -1054,7 +1060,43 @@ makes `compose up` fail outright, so a command whose job is producing a usable
 The setup is interactive and needs a terminal at both ends. Without one the run
 stops with exit `5` rather than feeding the generator EOF, which its
 non-interactive contract would turn into every default silently accepted,
-secrets included.
+secrets included — unless the setup would ask nothing: every key it asks is
+answered by `--env-seed=`, or the template has no key at all. It then runs
+without a terminal (plain `ssh`, no `-t`). When a key would still be asked,
+the run stops with exit `5` naming the keys the seed lacks, before the seed
+is sent.
+
+`--env-seed=FILE` answers the setup from a file the operator writes and keeps
+out of git (`env-template.md` → Seeding the setup): `KEY=value` lines, blank
+lines and `#` comments, read as the setup reads a `.env`. Whenever the setup
+would ask a key `.env` does not already set, the seed answers first — on a
+missing `.env` that is every key, on drift the keys `.env` lacks — and a key
+it does not cover is asked as usual. A key `.env` already sets is never
+touched, and a `! command` key it answers never runs its generator. Drift
+made only of keys `.env` lacks, all of them in the seed, is filled without the
+drift question (an explicit `--on-drift=continue` or `abort` still wins); any
+other drift asks it as usual (or needs `--on-drift=`).
+An `.env` already in sync is left alone: the setup does not run. The output
+names the keys it answered and counts those it did not use; it never prints a
+value. Refused on the workstation, before anything connects (exit `1`): a file
+that is missing, not a regular file, open to group or others (any bit of
+`0o077`), over 256 KiB, empty or with no key (comments only), with a value
+over 64 KiB (named by key), with a line that is not `KEY=value` (named by line
+number), or setting a `KASBAH_*` key (named by line number and key); no
+refusal quotes a value. A value with a bare `$` (not `$$`, outside single
+quotes) is warned of by line number and key, not refused: compose reads it as
+a variable. Keys the template does not have are ignored. The file always
+travels on stdin with its size and sha256, never on a command line. A setup
+without a terminal reads it on its own stdin, and nothing is written to the
+server but the `.env`; like every unattended server step, it ignores a
+dropped session and finishes. A setup over `ssh -t` cannot read it there —
+its stdin is the operator's terminal — so a `kasbah remote setup-env seed` step first stages
+it as `<apps>/<name>/.kasbah-env-seed.<token>`, mode `600` (`files.md`), the
+token random and fresh each run; the setup reads the file its token names
+and removes it before anything else. A workstation stopped between the two
+steps leaves the file there; the first call of the next env step for that
+project removes every staged seed, as does `server destroy`. `deploy`,
+`deploy X.Y.Z` and `rollback` take the same flag for the same step.
 
 Flags, which apply only when `.env` **has** drifted:
 - `--on-drift=setup` — re-run the setup. What this command does anyway.
@@ -1068,7 +1110,8 @@ Enter must not be able to re-run the generator over a live `.env`.
 
 `--on-drift=` is not a way to run `kasbah env` headlessly in general. With
 `.env` missing, or in sync, the flag is never consulted and the run still needs
-a terminal (exit `5`); only the drift case has a question for it to answer.
+a terminal (exit `5`) — or, for a missing `.env`, a seed answering every key;
+only the drift case has a question for it to answer.
 
 `deploy` carries the same flag for the same step (`build-deploy.md` step 6) —
 the difference is that `deploy` runs the setup only when the `.env` is missing
@@ -1398,10 +1441,11 @@ Nothing — every command the docs name exists.
   the project's `.env` on the server is not in a state kasbah will deploy
   against, and nothing was deployed: drift the user declined to fix
   (`--on-drift=abort`, or an aborted setup), a `.env` that is missing or
-  unrenderable with no terminal to render it on, **and** the setup not
-  finishing on the far side — including when it could not be run at all. One
-  code rather than several, because the operator's next move is the same in
-  every case: run `kasbah env` from a terminal, or pass `--on-drift=`.
+  unrenderable with no terminal to render it on (or with keys `--env-seed=`
+  does not answer), **and** the setup not finishing on the far side —
+  including when it could not be run at all. One code rather than several,
+  because the operator's next move is the same in every case: run
+  `kasbah env` from a terminal, or pass `--on-drift=` or `--env-seed=`.
 - `6` compliance check failed
 - `128+N` kasbah was stopped by signal N — `130` for Ctrl-C, `143` for
   `SIGTERM`, `129` for `SIGHUP`. Its own temp files and ssh connection are

@@ -27,7 +27,7 @@ import (
 // a deploy's own sync: `git archive | tar -x` cannot honour sync renames.
 
 const rollbackUsage = `Usage: kasbah rollback [USER@HOST] [VERSION] [--on-drift=setup|continue|abort]
-                       [--skip-hooks] [--no-health-wait] [--allow-stopped]
+                       [--env-seed=FILE] [--skip-hooks] [--no-health-wait] [--allow-stopped]
 
 Puts a server back on a version it has already run. Run from the project root.
 An argument containing '@' is the server, anything else is the version.
@@ -58,6 +58,9 @@ Flags:
   --on-drift=continue   roll back against the .env as it stands
   --on-drift=abort      stop, changing nothing
 Unset, a drifting .env asks; with no terminal to ask on, the run stops (exit 5).
+
+  --env-seed=FILE       answer the keys .env lacks from FILE's KEY=value lines
+                        (mode 600 or tighter), as deploy does (kasbah deploy --help)
 
 For the server's side of the run:
   --skip-hooks          skip the pre- and post-rollback hooks
@@ -104,6 +107,9 @@ func RunTagged(c Ctx, o Options, mode string) error {
 	}
 	r := &run{c: c, o: o, m: m, target: o.Target, version: o.Version, mode: mode, tagged: true}
 	if r.target, _, err = state.Server(o.Target, mode, "kasbah "+mode+" user@vps"); err != nil {
+		return err
+	}
+	if r.seed, err = env.ReadSeed(c.Out, mode, o.EnvSeed); err != nil {
 		return err
 	}
 	t := &tagged{}
@@ -171,7 +177,7 @@ func RunTagged(c Ctx, o Options, mode string) error {
 	if err != nil {
 		return err
 	}
-	st := &env.Step{Out: c.Out, Prompter: c.Prompter, S: r.s, Target: r.target, TTYIn: c.TTYIn, TTYOut: c.TTYOut, Color: c.Color}
+	st := &env.Step{Out: c.Out, Prompter: c.Prompter, S: r.s, Target: r.target, TTYIn: c.TTYIn, TTYOut: c.TTYOut, Color: c.Color, Seed: r.seed}
 	if err := st.Run(r.dir, r.lim.CPU, r.lim.Mem, o.OnDrift, false); err != nil {
 		return err
 	}

@@ -261,6 +261,8 @@ func describe(argv []string) string {
 			return "env set"
 		case rest[0] == "setup-env" && len(rest) > 1 && rest[1] == "setup":
 			return "kasbah env"
+		case rest[0] == "setup-env" && len(rest) > 1 && rest[1] == "seed":
+			return "the --env-seed staging of kasbah env, a deploy or a rollback"
 		case rest[0] == "setup-env" && len(rest) > 1 && rest[1] == "inject":
 			return "the managed-block refresh of kasbah env or a deploy"
 		case rest[0] == "deploy" && len(rest) > 1 && (rest[1] == "run" || rest[1] == "snapshot"):

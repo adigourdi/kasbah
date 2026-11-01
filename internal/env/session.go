@@ -105,14 +105,45 @@ func (s *SSH) Drift(dir string) (string, int) {
 	return string(out), ssh.ExitCode(err)
 }
 
-// Setup hands this terminal to the server's setup over ssh -t; it waits on
-// the operator, so it has no time limit.
-func (s *SSH) Setup(dir string, color bool) int {
-	c := "--color=no"
-	if color {
-		c = "--color=yes"
+// Setup hands this terminal to the server's setup over ssh -t, unbounded since
+// it waits on the operator. A headless one asks nothing and is bounded; its
+// seed rides on stdin, never argv, and its progress goes to stderr.
+func (s *SSH) Setup(dir string, f SetupFlags) int {
+	args := []string{"setup-env", "setup", dir, "--color=no"}
+	if f.Color {
+		args[3] = "--color=yes"
 	}
-	return ssh.ExitCode(s.Conn.TTY(s.bin, "remote", "setup-env", "setup", dir, c).Run())
+	if f.TTY {
+		if f.Token != "" {
+			args = append(args, "--seed="+f.Token)
+		}
+		return ssh.ExitCode(s.Conn.TTY(append([]string{s.bin, "remote"}, args...)...).Run())
+	}
+	args = append(args, "--headless")
+	var stdin string
+	if f.Seed != nil {
+		args = append(args, "--seed")
+		stdin = SetHeader(string(f.Seed)) + string(f.Seed)
+	}
+	cmd := s.Conn.Command(s.bounded(args...)...)
+	cmd.Stdin = strings.NewReader(stdin)
+	cmd.Stdout = os.Stderr
+	return ssh.ExitCode(cmd.Run())
+}
+
+// StageSeed sends SetHeader and the seed on stdin, never on argv.
+func (s *SSH) StageSeed(dir, token string, data []byte) error {
+	cmd := s.Conn.Command(s.bounded("setup-env", "seed", dir, token)...)
+	cmd.Stdin = strings.NewReader(SetHeader(string(data)) + string(data))
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return cli.Fail("could not stage the env seed in %s on %s (%s, see above)", dir, s.target(), exitText(ssh.ExitCode(err)))
+	}
+	if !strings.Contains(out.String(), "staged=yes") {
+		return cli.Fail("the seed step on %s reported no staged (raw output: %s)", s.target(), strings.TrimSpace(out.String()))
+	}
+	return nil
 }
 
 func (s *SSH) Inject(dir string, pairs []string) int {

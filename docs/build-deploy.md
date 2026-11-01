@@ -331,6 +331,11 @@ below). The only differences:
      MISSING .env         → run interactive setup
      DRIFT from template  → prompt: re-run setup / continue / abort
      OK                   → continue
+   `--env-seed=FILE` answers the setup's keys first — every key on a
+   missing .env, the keys .env lacks on drift (filled without the prompt
+   when the seed has them all) — and the setup runs without a terminal when
+   it would ask nothing else (`cli.md` → `kasbah env`, `env-template.md` →
+   Seeding the setup).
    Then refresh the kasbah-managed `KASBAH_*` keys in `.env` (resource
    limits read from the server marker, or `kasbah.yml`'s `resources:`
    resolved on the server — once step 1's tag exists and the server lock is
@@ -673,8 +678,9 @@ small without sacrificing history.
    (resolved before step 8, so nothing has shipped when it warns).
    v<target>'s .env.prod.example is what just landed in
    step 8, so this is the step that notices a template whose keys have
-   changed since. --on-drift= answers it without a terminal; exit 5 when
-   there is no answer to be had.
+   changed since. --on-drift= answers it without a terminal, and so does
+   --env-seed= for the keys .env lacks; exit 5 when there is no answer to
+   be had.
 10. Run the engine on the VPS in rollback mode (`kasbah remote deploy run`):
      a. Run pre-rollback hooks against currently-running containers.
      b. Retag :<target> as :current for each v<target>-era built image.

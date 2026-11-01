@@ -21,12 +21,14 @@ var ErrHelp = errors.New("help")
 // Options are `kasbah env`'s arguments; Set is `kasbah env set KEY`.
 type Options struct {
 	Target, OnDrift string
-	Set             bool
-	Key             string
-	Restart         prompt.Given
+	// EnvSeed is --env-seed=FILE's path.
+	EnvSeed string
+	Set     bool
+	Key     string
+	Restart prompt.Given
 }
 
-const usage = `Usage: kasbah env [USER@HOST] [--on-drift=setup|continue|abort]
+const usage = `Usage: kasbah env [USER@HOST] [--on-drift=setup|continue|abort] [--env-seed=FILE]
 
 Renders <apps>/<name>/.env on the server from this project's .env.prod.example,
 interactively, and refreshes the kasbah-managed KASBAH_* block in it from the
@@ -36,9 +38,15 @@ to the last server this project deployed to (.kasbah/state.json).
 The setup is interactive and needs a terminal at both ends. Without one the run
 stops (exit 5) rather than accepting every default silently — including when
 --on-drift= is passed, since this command runs the setup whether or not .env has
-drifted.
+drifted — unless every key it would ask is one --env-seed= answers.
 
-Flags, for when it has:
+  --env-seed=FILE       answer the keys .env lacks from FILE's KEY=value lines
+                        (mode 600 or tighter; values never printed). A key
+                        .env already sets is never touched; a drift made only
+                        of keys FILE answers is filled without a question, and
+                        an .env already in sync is left alone
+
+Flags, for when it has drifted:
   --on-drift=setup      re-run the setup. What the command does anyway; there
                         is no default answer, an empty one is asked again
   --on-drift=continue   leave .env alone; only refresh the KASBAH_* block
@@ -62,6 +70,22 @@ func CheckOnDrift(cmd, v string) error {
 	return cli.Fail("%s: --on-drift='%s' is not one of setup, continue or abort", cmd, strings.TrimSuffix(v, "\r"))
 }
 
+// ParseSeedFlag is --env-seed=FILE's path, for every command that takes it.
+func ParseSeedFlag(cmd, a string) (string, error) {
+	a = strings.TrimSuffix(a, "\r")
+	v, ok := strings.CutPrefix(a, "--env-seed=")
+	switch {
+	case a == "--env-seed":
+		return "", cli.Fail("%s: --env-seed takes its file with '=' — --env-seed=FILE", cmd)
+	case !ok:
+		name, _, _ := strings.Cut(a, "=")
+		return "", cli.Fail("%s: unknown flag '%s' — did you mean --env-seed=FILE?", cmd, name)
+	case v == "":
+		return "", cli.Fail("%s: --env-seed= names no file — --env-seed=FILE", cmd)
+	}
+	return v, nil
+}
+
 // Parse reads `kasbah env`'s arguments.
 func Parse(args []string) (Options, error) {
 	if len(args) > 0 && strings.TrimSuffix(args[0], "\r") == "set" {
@@ -79,9 +103,14 @@ func Parse(args []string) (Options, error) {
 			}
 		case a == "--on-drift":
 			return o, cli.Fail("env: --on-drift takes its value with '=' — --on-drift=setup, --on-drift=continue or --on-drift=abort")
+		case strings.HasPrefix(a, "--env-seed"):
+			var err error
+			if o.EnvSeed, err = ParseSeedFlag("env", a); err != nil {
+				return o, err
+			}
 		case strings.HasPrefix(a, "-"):
 			name, _, _ := strings.Cut(a, "=")
-			return o, cli.Fail("env: unknown flag '%s' (env takes USER@HOST and --on-drift=)", name)
+			return o, cli.Fail("env: unknown flag '%s' (env takes USER@HOST, --on-drift= and --env-seed=)", name)
 		case o.Target == "":
 			o.Target = strings.TrimSuffix(a, "\r")
 		default:
@@ -99,14 +128,26 @@ type Session interface {
 	Prepare(dir string) error
 	ShipTemplate(local, dir string) error
 	// Drift, Setup and Inject return the server's exit status; Setup runs
-	// over a terminal.
+	// over a terminal, or headless (SetupFlags).
 	Drift(dir string) (out string, rc int)
-	Setup(dir string, color bool) int
+	Setup(dir string, f SetupFlags) int
+	// StageSeed installs an --env-seed beside .env, named by token, for an
+	// interactive Setup.
+	StageSeed(dir, token string, data []byte) error
 	Inject(dir string, pairs []string) int
 	// Limits resolves kasbah.yml's resources: halves ("-" for unset) on the
 	// server: setup-env limits' key=value lines.
 	Limits(cpus, memory string) (out string, rc int)
 	Close()
+}
+
+// SetupFlags are a Setup's. With TTY it runs over a terminal and reads the
+// seed StageSeed staged under Token; without, it runs headless, asking
+// nothing, and Seed rides on its stdin.
+type SetupFlags struct {
+	Color, TTY bool
+	Token      string
+	Seed       []byte
 }
 
 // Ctx is what a run needs from its process.
@@ -148,6 +189,10 @@ func Run(c Ctx, o Options) error {
 	if err != nil {
 		return cli.Fail("kasbah.yml: %v", err)
 	}
+	seed, err := ReadSeed(c.Out, "env", o.EnvSeed)
+	if err != nil {
+		return err
+	}
 
 	s, err := c.Dial(target)
 	if err != nil {
@@ -170,7 +215,7 @@ func Run(c Ctx, o Options) error {
 	if err := s.ShipTemplate(tmpl, dir); err != nil {
 		return err
 	}
-	st := &Step{Out: c.Out, Prompter: c.Prompter, S: s, Target: target, TTYIn: c.TTYIn, TTYOut: c.TTYOut, Color: c.Color}
+	st := &Step{Out: c.Out, Prompter: c.Prompter, S: s, Target: target, TTYIn: c.TTYIn, TTYOut: c.TTYOut, Color: c.Color, Seed: seed}
 	if err := st.Run(dir, lim.CPU, lim.Mem, o.OnDrift, true); err != nil {
 		return err
 	}
@@ -192,6 +237,8 @@ type Step struct {
 	Target        string
 	TTYIn, TTYOut bool
 	Color         bool
+	// Seed is --env-seed's, nil when unset.
+	Seed *Seed
 }
 
 // exitText says how a bounded server call ended, from ssh.ExitCode's status.
@@ -232,6 +279,7 @@ func (st *Step) remedies(reason, dir string) []string {
 	case "missing":
 		return []string{
 			"  * run `kasbah env " + t + "` from a terminal, or",
+			"  * answer every key from a file: --env-seed=FILE (docs/env-template.md), or",
 			"  * write the file on the server yourself, from the template that is",
 			"    already beside it:",
 			"      ssh " + t + " 'cp " + dir + "/.env.prod.example " + dir + "/.env'   # then edit it there",
@@ -255,30 +303,75 @@ func (st *Step) remedies(reason, dir string) []string {
 }
 
 // setup runs the server's setup over ssh -t; it needs a terminal on stdin and
-// stdout (the prompts go to stdout), else every default would be taken silently.
-func (st *Step) setup(dir, why, reason string) error {
-	if !st.TTYIn || !st.TTYOut {
-		return cli.Failf(cli.ExitEnvSetup, "%s on %s, and there is no terminal here to render it on", why, st.Target).Cont(
+// stdout (the prompts go to stdout), else every default would be taken
+// silently — unless it asks nothing: no menu (menu) and no key the seed does
+// not answer (ask). Then it runs headless.
+func (st *Step) setup(dir, why, reason string, ask []string, menu bool) error {
+	tty := st.TTYIn && st.TTYOut
+	if !tty && (menu || len(ask) > 0) {
+		e := cli.Failf(cli.ExitEnvSetup, "%s on %s, and there is no terminal here to render it on", why, st.Target)
+		if st.Seed != nil && len(ask) > 0 {
+			e.Cont("the seed (--env-seed=) does not answer: " + strings.Join(ask, " "))
+		}
+		return e.Cont(
 			"the setup is interactive — it prompts per variable, masks the secret ones and",
 			"runs the template's generators (docs/env-template.md). Either:").Cont(
 			st.remedies(reason, dir)...).Cont("Nothing was deployed.")
 	}
-	st.Out.Info("%s — running the interactive env setup on %s", why, st.Target)
-	if rc := st.S.Setup(dir, st.Color); rc != 0 {
-		return cli.Failf(cli.ExitEnvSetup, "the env setup on %s did not finish (%s, see above)", st.Target, setupText(rc)).Cont(
-			"it was aborted, answered with nothing, or could not run at all — all three",
-			"leave the .env unwritten, which is what exit 5 says. Nothing was deployed.",
-			"Re-run and answer it through, or:").Cont(st.remedies(reason, dir)...)
+	f := SetupFlags{Color: st.Color, TTY: tty}
+	if st.Seed != nil && tty {
+		f.Token = newToken()
+		if err := st.S.StageSeed(dir, f.Token, st.Seed.Data); err != nil {
+			return err
+		}
+	} else if st.Seed != nil {
+		f.Seed = st.Seed.Data
 	}
-	return nil
+	switch {
+	case tty:
+		st.Out.Info("%s — running the interactive env setup on %s", why, st.Target)
+	case st.Seed != nil:
+		st.Out.Info("%s — rendering it on %s from the seed, without a terminal", why, st.Target)
+	default:
+		st.Out.Info("%s — the template asks nothing; rendering it on %s without a terminal", why, st.Target)
+	}
+	rc := st.S.Setup(dir, f)
+	if rc == 0 {
+		return nil
+	}
+	if f.Token != "" {
+		// The drift step removes a staged seed the setup never got to read.
+		st.S.Drift(dir)
+	}
+	if !tty {
+		had := "it had a question to ask after all"
+		if st.Seed != nil {
+			had = "it had a question the seed does not answer"
+		}
+		return cli.Failf(cli.ExitEnvSetup, "the env setup on %s did not finish without a terminal (%s, see above)", st.Target, exitText(rc)).Cont(
+			had+", or could not run at all — both",
+			"leave the .env unwritten, which is what exit 5 says. Nothing was deployed.",
+			"Either:").Cont(st.remedies(reason, dir)...)
+	}
+	return cli.Failf(cli.ExitEnvSetup, "the env setup on %s did not finish (%s, see above)", st.Target, setupText(rc)).Cont(
+		"it was aborted, answered with nothing, or could not run at all — all three",
+		"leave the .env unwritten, which is what exit 5 says. Nothing was deployed.",
+		"Re-run and answer it through, or:").Cont(st.remedies(reason, dir)...)
 }
 
 // chooseOnDrift is the tri-state: the flag wins, else a terminal is asked,
 // else the run stops naming the flag. No default: Enter must not re-run the
 // generator over a live .env.
-func (st *Step) chooseOnDrift(given string) (string, error) {
+func (st *Step) chooseOnDrift(given string, unseeded []string) (string, error) {
 	if given == "" && !st.Prompter.TTY {
-		return "", cli.Failf(cli.ExitEnvSetup, "cannot ask what to do about the drift: there is no terminal to ask on").Cont(
+		e := cli.Failf(cli.ExitEnvSetup, "cannot ask what to do about the drift: there is no terminal to ask on")
+		switch {
+		case st.Seed != nil && len(unseeded) > 0:
+			e.Cont("the seed (--env-seed=) does not answer: " + strings.Join(unseeded, " "))
+		case st.Seed != nil:
+			e.Cont("the seed answers every key .env lacks, but .env also has keys the template dropped.")
+		}
+		return "", e.Cont(
 			"pass --on-drift=setup (re-run the interactive setup), --on-drift=continue",
 			"(deploy against the .env as it stands) or --on-drift=abort.",
 			"Nothing was deployed.")
@@ -307,6 +400,10 @@ func (st *Step) Run(dir, cpu, mem, onDrift string, always bool) error {
 		return err
 	}
 	action, why, reason := "continue", dir+"/.env is being reconfigured", "reconfigure"
+	// ask is the keys the setup would ask that the seed does not answer; menu,
+	// whether it would ask what to do with the .env there.
+	var ask []string
+	menu := true
 	switch {
 	case !s.EnvExists:
 		if !s.TemplateExists {
@@ -316,6 +413,7 @@ func (st *Step) Run(dir, cpu, mem, onDrift string, always bool) error {
 				"(docs/project-manifest.md, docs/env-template.md). Nothing was deployed.")
 		}
 		action, why, reason = "setup", dir+"/.env does not exist yet", "missing"
+		ask, menu = st.Seed.unseeded(s.Missing), false
 	case !s.TemplateExists:
 		// No template: every key would read as extra against an empty set.
 		st.Out.Warn("%s has no %s/.env.prod.example, so its .env cannot be checked for drift", t, dir)
@@ -331,17 +429,22 @@ func (st *Step) Run(dir, cpu, mem, onDrift string, always bool) error {
 		if s.Extra != "" {
 			st.Out.Warn("  in .env, not in the template: %s", s.Extra)
 		}
-		if action, err = st.chooseOnDrift(onDrift); err != nil {
+		why, reason = dir+"/.env has drifted from .env.prod.example", "drift"
+		ask = st.Seed.unseeded(s.Missing)
+		// An explicit continue or abort still wins over the seed.
+		if st.Seed != nil && s.Extra == "" && len(ask) == 0 && (onDrift == "" || onDrift == "setup") {
+			st.Out.Info("the seed answers every key .env lacks — filling those, every other line kept")
+			action, menu = "setup", false
+		} else if action, err = st.chooseOnDrift(onDrift, ask); err != nil {
 			return err
 		}
-		why, reason = dir+"/.env has drifted from .env.prod.example", "drift"
-	case always:
+	case always && st.Seed == nil:
 		action = "setup"
 	}
 
 	switch action {
 	case "setup":
-		if err := st.setup(dir, why, reason); err != nil {
+		if err := st.setup(dir, why, reason, ask, menu); err != nil {
 			return err
 		}
 		// Re-read: `q` and the EOF path both return having written nothing.
@@ -360,6 +463,13 @@ func (st *Step) Run(dir, cpu, mem, onDrift string, always bool) error {
 		return cli.Failf(cli.ExitEnvSetup, "aborted: %s/.env on %s has drifted from .env.prod.example", dir, t).Cont(
 			"nothing was deployed. `kasbah env "+t+"` re-runs the setup, or pass",
 			"--on-drift=continue to deploy against the .env as it stands.")
+	default:
+		switch {
+		case st.Seed != nil && reason == "drift":
+			st.Out.Info("the seed was not used: the drift was answered continue — %s/.env is left as it stands", dir)
+		case st.Seed != nil:
+			st.Out.Info("the seed was not used: none of its %d key(s) was asked — %s/.env is left as it stands", len(st.Seed.Keys), dir)
+		}
 	}
 
 	// Exit 1, not 5: injection takes no answer from anyone.

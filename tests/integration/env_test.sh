@@ -323,4 +323,57 @@ assert '[ "$rc" = 1 ] && grep -qF "resources.memory '"'"'95%'"'"' comes to" <<<"
 assert '[ "$(remote "cat $pdir/.env")" = "$got" ]' "and the .env is untouched"
 cp "$tmpdir/kasbah.yml.before" "$proj/kasbah.yml"
 
+
+# --- Case 9: --env-seed — a first env with no terminal, then drift it covers -------
+seed() { printf '%s' "$1" >"$tmpdir/seed"; chmod 600 "$tmpdir/seed"; }
+remote "rm -f $pdir/.env" >/dev/null
+seed $'APP_NAME=seeded\nAPP_PORT=7070\nDB_PASSWORD=seeded-pw\nAPI_SECRET=\'s3ed secret\'\nEXPORTED=y\nNEW_KEY=nk2\nUNUSED=1\n'
+headless "$RIG_TARGET" --env-seed="$tmpdir/seed"; rc=$?
+assert '[ "$rc" = 5 ] && grep -qF "does not answer: MAIL_HOST" <<<"$(err)"' "a partial seed with no terminal is exit 5 naming the key (rc $rc: $(err))"
+assert '! grep -qF "s3ed" <<<"$(err)"' "and no value"
+assert 'remote_empty "ls -A $pdir | grep -x .env || true"' "no .env written"
+assert 'no_staging' "nothing staged left"
+
+seed "$(cat "$tmpdir/seed")"$'\nMAIL_HOST=smtp.seed\n'
+headless "$RIG_TARGET" --env-seed="$tmpdir/seed"; rc=$?
+want_seed="# --- App ---
+APP_NAME=seeded
+APP_PORT=7070
+DB_PASSWORD=seeded-pw
+API_SECRET='s3ed secret'
+MAIL_HOST=smtp.seed
+EXPORTED=y
+NEW_KEY=nk2
+$block"
+assert '[ "$rc" = 0 ]' "a first env the seed answers needs no terminal (rc $rc: $(err))"
+assert '[ "$(remote "cat $pdir/.env")" = "$want_seed" ]' "the .env holds the seeded values as written
+        got: $(remote "cat $pdir/.env")"
+assert 'grep -qF "seed: 7 answered, 1 not used" <<<"$(err)" && ! grep -qF "s3ed" <<<"$(err)$(nocr <"$tmpdir/out")"' \
+    "the counts are printed, never a value (said '$(err)')"
+assert '[ "$(remote "stat -c %a $pdir/.env")" = 660 ]' "the .env is 660"
+assert 'no_staging' "the staged seed is gone"
+
+printf 'LATE_KEY=x\n' >> "$proj/.env.prod.example"
+seed $'LATE_KEY=late\nAPP_NAME=not-this\n'
+headless "$RIG_TARGET" --env-seed="$tmpdir/seed"; rc=$?
+assert '[ "$rc" = 0 ] && ! grep -qF "setup/continue/abort" <<<"$(err)"' "drift the seed covers is filled without a question (rc $rc: $(err))"
+got=$(remote "cat $pdir/.env")
+assert 'grep -qx "LATE_KEY=late" <<<"$got" && grep -qx "APP_NAME=seeded" <<<"$got"' "the new key seeded, a set key untouched (got: $got)"
+assert 'no_staging' "the staged seed is gone"
+
+# On a terminal, a partial seed is staged under the run's token and the rest asked.
+printf 'TTY_SEEDED=x\nTTY_TYPED=x\n' >> "$proj/.env.prod.example"
+seed $'TTY_SEEDED=s3ed-tty\n'
+tty $'setup\n\ntyped-b\n' "$RIG_TARGET" --env-seed="$tmpdir/seed"
+got=$(remote "cat $pdir/.env")
+assert '[ "$tty_rc" = 0 ] && grep -qx "TTY_SEEDED=s3ed-tty" <<<"$got" && grep -qx "TTY_TYPED=typed-b" <<<"$got"' \
+    "a partial seed on a terminal fills its key and asks the rest (rc $tty_rc: $tty_out; got: $got)"
+assert '! grep -qF "s3ed-tty" <<<"$tty_out"' "and prints no seeded value"
+assert 'no_staging' "the staged seed is gone"
+
+# A seed a crashed run left behind goes at the next env step's first call.
+remote "printf 'A=1\n' > $pdir/.kasbah-env-seed.0123456789abcdef && chmod 600 $pdir/.kasbah-env-seed.0123456789abcdef" >/dev/null
+headless "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = 5 ] && no_staging' "the next env step removes a stale seed (rc $rc, left: $(remote "ls -A $pdir"))"
+
 exit "$fail"

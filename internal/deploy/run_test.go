@@ -16,6 +16,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/buildpush"
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/release"
@@ -65,10 +66,16 @@ func (f *fake) mark(s string) {
 		fmt.Fprint(f.marks, s)
 	}
 }
-func (f *fake) Prepare(string) error              { return nil }
-func (f *fake) ShipTemplate(string, string) error { return nil }
-func (f *fake) Setup(string, bool) int            { return 0 }
-func (f *fake) Close()                            { f.closed++; f.mark("<closed>") }
+func (f *fake) Prepare(string) error                   { return nil }
+func (f *fake) ShipTemplate(string, string) error      { return nil }
+func (f *fake) StageSeed(string, string, []byte) error { f.log("seed"); return nil }
+func (f *fake) Setup(_ string, fl env.SetupFlags) int {
+	if fl.Seed != nil {
+		f.log("setup --seed --headless")
+	}
+	return 0
+}
+func (f *fake) Close() { f.closed++; f.mark("<closed>") }
 func (f *fake) Sync(e Entry, base string) error {
 	f.log("sync " + e.Src)
 	if fi, err := os.Lstat(e.Src); err == nil && f.mtimes != nil {
@@ -724,5 +731,35 @@ func TestRunSendsRoutedHosts(t *testing.T) {
 	}
 	if got := strings.Join(f.spec.Routed, ","); got != "demo-web,demo-alt" {
 		t.Errorf("routed %q", got)
+	}
+}
+
+func TestEnvSeedFlag(t *testing.T) {
+	for _, parse := range []func([]string) (Options, error){Parse, ParseRollback} {
+		o, err := parse([]string{"d@h", "--env-seed=/tmp/seed", "--on-drift=continue"})
+		if err != nil || o.EnvSeed != "/tmp/seed" || o.OnDrift != "continue" {
+			t.Errorf("--env-seed=: %+v %v", o, err)
+		}
+		if _, err := parse([]string{"--env-seed"}); err == nil || !strings.Contains(err.Error(), "--env-seed=FILE") {
+			t.Errorf("bare --env-seed: %v", err)
+		}
+	}
+	if !strings.Contains(Usage(), "--env-seed=FILE") || !strings.Contains(RollbackUsage(), "--env-seed=FILE") {
+		t.Error("--env-seed is missing from a usage")
+	}
+
+	project(t, "")
+	f := &fake{}
+	err, out := deployWith(t, f, Options{Target: "d@h", EnvSeed: t.TempDir() + "/nope"})
+	if err == nil || !strings.Contains(out, "deploy: --env-seed=") || len(f.calls) != 0 {
+		t.Errorf("a missing seed is refused before anything connects: %v %q %v", err, out, f.calls)
+	}
+
+	seed := t.TempDir() + "/seed"
+	os.WriteFile(seed, []byte("B=s3cret\n"), 0o600)
+	f = &fake{drift: "template_exists=yes\nenv_exists=yes\nmissing=B\nextra=\n"}
+	err, out = deployWith(t, f, Options{Target: "d@h", EnvSeed: seed})
+	if err != nil || !f.called("setup --seed --headless") || f.called("seed") || strings.Contains(out, "s3cret") || strings.Contains(out, "setup/continue/abort") {
+		t.Errorf("a seeded drift without a terminal: %v %q %v", err, out, f.calls)
 	}
 }

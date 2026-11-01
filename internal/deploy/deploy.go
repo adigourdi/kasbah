@@ -37,7 +37,9 @@ var ErrHelp = errors.New("help")
 // Options are a deploy's or a rollback's arguments. A Version is the tagged
 // path (tagged.go).
 type Options struct {
-	Target, Version, OnDrift              string
+	Target, Version, OnDrift string
+	// EnvSeed is --env-seed=FILE's path (env.ReadSeed).
+	EnvSeed                               string
 	SkipHooks, NoHealthWait, AllowStopped bool
 	Dirty                                 bool
 	// The working-tree deploy's: Bump answers the untagged-HEAD question.
@@ -45,7 +47,7 @@ type Options struct {
 }
 
 const usage = `Usage: kasbah deploy [USER@HOST] [VERSION] [--on-drift=setup|continue|abort]
-                     [--skip-hooks] [--no-health-wait] [--allow-stopped] [--dirty]
+                     [--env-seed=FILE] [--skip-hooks] [--no-health-wait] [--allow-stopped] [--dirty]
                      [--bump=patch|minor|major]
 
 Ships the working tree to a prepared server and brings the project up there.
@@ -95,6 +97,12 @@ Flags:
   --on-drift=continue   deploy against the .env as it stands
   --on-drift=abort      stop, changing nothing
 Unset, a drifting .env asks; with no terminal to ask on, the run stops (exit 5).
+
+  --env-seed=FILE       answer the keys .env lacks from FILE's KEY=value lines
+                        (mode 600 or tighter; values never printed): on a first
+                        deploy every key, on drift the new ones — then without
+                        a question, and without a terminal when FILE answers
+                        them all. A key .env already sets is never touched
 
 For the server's side of the run:
   --skip-hooks          skip the pre- and post-deploy hooks. The backup still
@@ -185,6 +193,11 @@ func parse(cmd string, args []string) (Options, error) {
 			}
 		case a == "--on-drift":
 			return o, cli.Fail("%s: --on-drift takes its value with '=' — --on-drift=setup, --on-drift=continue or --on-drift=abort", cmd)
+		case strings.HasPrefix(a, "--env-seed"):
+			var err error
+			if o.EnvSeed, err = env.ParseSeedFlag(cmd, a); err != nil {
+				return o, err
+			}
 		case strings.HasPrefix(a, "-"):
 			name, _, _ := strings.Cut(a, "=")
 			return o, cli.Fail("%s: unknown flag '%s' (%s takes %s)", cmd, name, cmd, takes(cmd))
@@ -213,9 +226,9 @@ func parse(cmd string, args []string) (Options, error) {
 
 func takes(cmd string) string {
 	if cmd == "deploy" {
-		return "USER@HOST, VERSION, --on-drift=, --skip-hooks, --no-health-wait, --allow-stopped, --dirty and --bump="
+		return "USER@HOST, VERSION, --on-drift=, --env-seed=, --skip-hooks, --no-health-wait, --allow-stopped, --dirty and --bump="
 	}
-	return "USER@HOST, VERSION, --on-drift=, --skip-hooks, --no-health-wait and --allow-stopped"
+	return "USER@HOST, VERSION, --on-drift=, --env-seed=, --skip-hooks, --no-health-wait and --allow-stopped"
 }
 
 // Server is one server as a deploy needs it: the env step's session plus the
@@ -273,6 +286,7 @@ type run struct {
 	// the Traefik fragment, after a report or a failed post-hook.
 	snap  string
 	route func() (bool, error)
+	seed  *env.Seed
 }
 
 // Run is the command.
@@ -283,6 +297,9 @@ func Run(c Ctx, o Options) error {
 	}
 	r := &run{c: c, o: o, m: m, target: o.Target, mode: "deploy", frag: Fragment}
 	if r.target, _, err = state.Server(o.Target, "deploy", "kasbah deploy user@vps"); err != nil {
+		return err
+	}
+	if r.seed, err = env.ReadSeed(c.Out, "deploy", o.EnvSeed); err != nil {
 		return err
 	}
 	// The plan's images do not depend on the version: they say whether an
@@ -340,7 +357,7 @@ func Run(c Ctx, o Options) error {
 	}
 	// After the sync (the setup prompts from the template it shipped) and
 	// before the engine (compose reads what it writes).
-	st := &env.Step{Out: c.Out, Prompter: c.Prompter, S: r.s, Target: r.target, TTYIn: c.TTYIn, TTYOut: c.TTYOut, Color: c.Color}
+	st := &env.Step{Out: c.Out, Prompter: c.Prompter, S: r.s, Target: r.target, TTYIn: c.TTYIn, TTYOut: c.TTYOut, Color: c.Color, Seed: r.seed}
 	if err := st.Run(r.dir, r.lim.CPU, r.lim.Mem, o.OnDrift, false); err != nil {
 		return err
 	}

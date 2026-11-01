@@ -8,7 +8,8 @@ the server as `kasbah remote setup-env`); projects own the template.
 
 Per project:
 - `.env.prod.example` — committed, template.
-- `.env` — **not** committed, generated interactively.
+- `.env` — **not** committed, generated interactively (or from a seed file,
+  below).
 
 `kasbah env` syncs `.env.prod.example` to the VPS itself. `kasbah deploy`
 does not: the template reaches the server through the manifest's `sync:` list
@@ -111,6 +112,10 @@ Outcomes:
 - `.env` missing → launch interactive setup.
 - Any drift → warn, prompt: *"re-run setup" / "continue with current .env" /
   "abort"* — scriptable as `--on-drift=setup|continue|abort`.
+- Drift made only of missing keys, every one of them in `--env-seed=`'s file →
+  no prompt: the setup fills those keys from the seed, every other line kept
+  (below, Seeding the setup). An explicit `--on-drift=continue` or `abort`
+  still wins.
 
 One implementation serves `kasbah check` (E02/E03), `kasbah env`, `kasbah env set` and `deploy`:
 the Go engine, on the workstation and as `kasbah remote setup-env` on the server.
@@ -173,6 +178,58 @@ When `.env` exists, setup offers three modes:
 If there's no drift (i.e. user ran setup just for the sake of it), a shortcut
 prompt asks whether to re-configure anyway; default is no.
 
+With a seed that answers every new key, and no key the template dropped, the
+menu is not shown: the run is *Configure new vars only*, from the seed.
+
+## Seeding the setup
+
+`--env-seed=FILE` (`kasbah env`, `deploy`, `deploy X.Y.Z`, `rollback`) answers
+the setup from a file the operator writes — one-off, never committed and never
+written by kasbah:
+
+```bash
+# seed.env — chmod 600
+DB_PASSWORD='an existing secret'
+MAIL_HOST=smtp.example.com
+export API_KEY=abc$$def
+```
+
+- Read as the setup reads a `.env`: `KEY=value` lines, optional leading blanks
+  and `export `, blank lines and `#` comments skipped, a trailing CR stripped,
+  the last assignment of a key winning. A value is **compose syntax**, written
+  into `.env` as it stands — quote it, and write `$` as `$$`, as in `.env`
+  itself: compose blanks a `$VAR` or `${VAR}` it cannot resolve, without a
+  word. A value holding a bare `$` (not `$$`, outside single quotes) gets a
+  warning naming its line number and key, never its value; the run goes on.
+- Whenever the setup would ask a key `.env` does not set, the seed answers
+  first: on a missing `.env` every key, on drift the keys `.env` lacks. A key it
+  does not have is asked as usual. A key `.env` already sets is never touched
+  — *Reconfigure all* still asks it. A `! command` key the seed answers does not
+  run its generator.
+- When nothing is left to ask, the setup needs no terminal (and runs over plain
+  `ssh`); when something is, a run without a terminal stops with exit `5`
+  naming the keys the seed lacks, and writes nothing. An `.env` already in sync
+  is left alone. The same holds for a template with no key at all, seed or not.
+- The setup names each key it answered from the seed and counts the seed's keys
+  it did not use (already set, or not in the template); no value is ever
+  printed.
+- Refused on the workstation before anything connects: a file that is missing,
+  not a regular file, open to group or others (mode `& 077`), empty or setting
+  no key (comments only), over 256 KiB, with a value over 64 KiB (named by its
+  key), with a line that is not `KEY=value` (named by its line number), or
+  setting a `KASBAH_*` key (named by line number and key) — no refusal quotes
+  a value.
+- It reaches the server on stdin with its size and sha256, never on a command
+  line. A setup without a terminal reads it on its own stdin: nothing but
+  `.env` is written. A setup over `ssh -t` has the operator's terminal on its
+  stdin, so the seed is first staged as
+  `<apps>/<name>/.kasbah-env-seed.<token>` at mode `600` (`files.md`), under a
+  token fresh to the run; the setup reads the file its token names, and only
+  that one, and removes it before anything else. A workstation stopped
+  between the staging and the setup leaves the file on the server until the
+  first call of the next env step for that project, which removes every
+  staged seed there, or `server destroy`.
+
 ## Sensitive value handling
 
 **The template is required even when it declares nothing.** `S04` is a hard
@@ -180,11 +237,10 @@ fail: a project with no `.env.prod.example` does not pass `kasbah check`, and
 there is no opt-out. For a project with no configuration at all — a static
 bundle, say — the conforming shape is a **comment-only file**, which passes
 E01, E04 and E05 (the key extractor yields nothing, so E05 has nothing to
-object to). Note what that does not buy you: the first deploy still runs the
-interactive env setup over `ssh -t` to render `.env` from it, and
-`--on-drift=` does not reach the missing-`.env` case — so a first deploy needs
-a terminal even for a project with zero variables. Deploys come from a
-developer's laptop by design (`overview.md` → No CI).
+object to). Its first deploy renders `.env` from it without a terminal, since
+the setup has nothing to ask — as it does for any project whose every key
+`--env-seed=` answers (Seeding the setup). Deploys come from a developer's
+laptop by design (`overview.md` → No CI).
 
 - `*_PASSWORD`, `*_SECRET`, `*_KEY` are masked in displays and read via
   `read -rs` (no echo).

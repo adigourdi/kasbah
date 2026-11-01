@@ -227,6 +227,7 @@ rig_ssh "mkdir -p $planted_remote/scripts $planted_remote/backups
          printf 'gz\n' > $planted_remote/versions.log.gz
          : > $planted_remote/.deploy.lock
          printf '$planted\n' > $planted_remote/.kasbah-client
+         printf 'BETA_SECRET=s\n' > $planted_remote/.kasbah-env-seed.0123456789abcdef
          printf '#!/bin/sh\n' > $planted_remote/scripts/remote-deploy.sh
          printf '#!/bin/sh\n' > $planted_remote/scripts/setup-env.sh
          printf 'operator notes\n' > $planted_remote/scripts/operator-notes.txt
@@ -255,7 +256,8 @@ rig_ssh "printf '%s\n%s\n%s\n' 'DEFAULT_RELAY_HOST=[smtp-relay.example.com]:587'
 for path in "$marker" "$bdir/env" "$bdir/compose.yml" \
             "$bdir/repos/mail.pass" "$apps/mail/kasbah.yml" \
             "$projdir_remote/versions.log" "$projdir_remote/.kasbah-client" \
-            "$planted_remote/versions.log.gz" "$planted_remote/.deploy.lock"; do
+            "$planted_remote/versions.log.gz" "$planted_remote/.deploy.lock" \
+            "$planted_remote/.kasbah-env-seed.0123456789abcdef"; do
     assert '[ "$(remote_exists "$path")" = yes ]' "before the destroy, $path is on the server"
 done
 assert '[ "$(remote_exists "$pointer")" = yes ]' "and so is the discovery pointer $pointer"
@@ -374,6 +376,7 @@ for path in "$marker" "$apps/.kasbah" "$bdir" "$apps/mail/kasbah.yml" \
             "$projdir_remote/.kasbah-client" \
             "$planted_remote/versions.log" "$planted_remote/versions.log.gz" \
             "$planted_remote/.deploy.lock" "$planted_remote/.kasbah-client" \
+            "$planted_remote/.kasbah-env-seed.0123456789abcdef" \
             "$planted_remote/scripts/remote-deploy.sh" "$planted_remote/scripts/setup-env.sh"; do
     assert '[ "$(remote_exists "$path")" = no ]' "after the destroy, $path is gone"
 done

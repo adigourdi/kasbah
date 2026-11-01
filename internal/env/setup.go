@@ -21,6 +21,8 @@ import (
 const (
 	SetupOK   = 0
 	SetupFail = 1
+	// SetupUnanswered is a headless run with a question the seed does not answer.
+	SetupUnanswered = 5
 )
 
 // Setup is one interactive run against Dir's .env.prod.example.
@@ -37,6 +39,12 @@ type Setup struct {
 	// TermFD is In's descriptor number, for the terminal mode calls.
 	TermFD uintptr
 	Color  bool
+	// Seed answers, ahead of In, each key the run asks that .env does not
+	// already set; nil without --env-seed.
+	Seed map[string]string
+	// Headless never reads In: a question the seed does not answer ends the
+	// run before anything is written.
+	Headless bool
 }
 
 type palette struct{ bold, dim, cyan, yellow, green, red, reset string }
@@ -212,17 +220,17 @@ func (s *Setup) Run() int {
 		}
 	}
 
+	var tkeys []string
+	tset := map[string]bool{}
+	for _, l := range template {
+		if k, _, ok := envtpl.Assign(l); ok && !reserved(k) {
+			tkeys = append(tkeys, k)
+			tset[k] = true
+		}
+	}
 	updateOnly := false
 	var newKeys []string
 	if len(existing) > 0 {
-		var tkeys []string
-		tset := map[string]bool{}
-		for _, l := range template {
-			if k, _, ok := envtpl.Assign(l); ok && !reserved(k) {
-				tkeys = append(tkeys, k)
-				tset[k] = true
-			}
-		}
 		for _, k := range tkeys {
 			if _, ok := existing[k]; !ok {
 				newKeys = append(newKeys, k)
@@ -253,7 +261,18 @@ func (s *Setup) Run() int {
 			}
 		}
 		out("\n")
-		if len(newKeys) == 0 && len(dropped) == 0 {
+		// Drift the seed fills whole asks nothing: only the new keys are written.
+		fill := len(newKeys) > 0 && len(dropped) == 0 && len(s.unseeded(newKeys)) == 0
+		switch {
+		case s.Headless && !fill:
+			if ask := s.unseeded(newKeys); len(ask) > 0 {
+				return s.unanswered(strings.Join(ask, " "))
+			}
+			return s.unanswered("what to do with the existing .env")
+		case fill:
+			updateOnly = true
+			out("    Filling %d new variable(s) from the seed...\n", len(newKeys))
+		case len(newKeys) == 0 && len(dropped) == 0:
 			out("    No changes detected — .env is in sync with template.\n\n")
 			// bash's `read -p` shows its prompt on stderr, and only to a terminal.
 			if s.TTY {
@@ -268,7 +287,7 @@ func (s *Setup) Run() int {
 				out("\n%s%s==> .env is up to date%s\n", c.green, c.bold, c.reset)
 				return SetupOK
 			}
-		} else {
+		default:
 			out("    %s[Enter]%s Configure new vars only  %s|%s  %sa%s Reconfigure all  %s|%s  %sq%s Abort: ",
 				c.bold, c.reset, c.dim, c.reset, c.bold, c.reset, c.dim, c.reset, c.bold, c.reset)
 			choice, err := s.readKey()
@@ -294,7 +313,20 @@ func (s *Setup) Run() int {
 		out("\n")
 	}
 
+	if s.Headless {
+		var ask []string
+		for _, k := range tkeys {
+			if _, has := existing[k]; !(updateOnly && has) && !slices.Contains(ask, k) {
+				ask = append(ask, k)
+			}
+		}
+		if ask = s.unseeded(ask); len(ask) > 0 {
+			return s.unanswered(strings.Join(ask, " "))
+		}
+	}
+
 	suppress := updateOnly && len(newKeys) == 0
+	seeded := map[string]bool{}
 	var lines []string
 	for _, line := range template {
 		switch {
@@ -325,6 +357,12 @@ func (s *Setup) Run() int {
 		current, has := existing[key]
 		if updateOnly && has {
 			lines = append(lines, key+"="+current)
+			continue
+		}
+		if v, ok := s.Seed[key]; ok && !has {
+			out("%s%s%s %s(seed)%s\n", c.bold, key, c.reset, c.dim, c.reset)
+			lines = append(lines, key+"="+v)
+			seeded[key] = true
 			continue
 		}
 		masked := sensitive(key)
@@ -417,6 +455,9 @@ func (s *Setup) Run() int {
 	}
 
 	out("\n")
+	if s.Seed != nil {
+		out("    seed: %d answered, %d not used (already set in .env, or not in the template)\n\n", len(seeded), len(s.Seed)-len(seeded))
+	}
 	if err := writeEnv(output, lines); err != nil {
 		out("ERROR: could not write %s: %v\n", output, err)
 		return SetupFail
@@ -434,6 +475,27 @@ func (s *Setup) answer(masked bool, typed *string) string {
 		fmt.Fprint(s.Out, "\n")
 	}
 	return v
+}
+
+// unseeded is the keys the seed does not answer.
+func (s *Setup) unseeded(keys []string) []string {
+	var out []string
+	for _, k := range keys {
+		if _, ok := s.Seed[k]; !ok {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// unanswered ends a headless run that would have to ask: names only.
+func (s *Setup) unanswered(what string) int {
+	if s.Seed == nil {
+		fmt.Fprintf(s.Err, "ERROR: no terminal to ask on, and no seed to answer: %s — .env left untouched\n", what)
+	} else {
+		fmt.Fprintf(s.Err, "ERROR: no terminal to ask on, and the seed does not answer: %s — .env left untouched\n", what)
+	}
+	return SetupUnanswered
 }
 
 // menuEOF is EOF at a menu: exit 1, .env untouched.

@@ -115,7 +115,7 @@ func TestActGuards(t *testing.T) {
 		{func(a *ActArgs) { a.Apps = "apps" }, "apps path 'apps' is not an absolute path"},
 		{func(a *ActArgs) { a.Data = "/" }, "data path '/' is not an absolute path"},
 		{func(a *ActArgs) { a.Tags = []string{"-f"} }, "'-f' is not an image tag"},
-		{func(a *ActArgs) { a.Prune, a.RegSize, a.RegSum = true, "5", "00" }, "the mail registry: the payload is 0 bytes"},
+		{func(a *ActArgs) { a.Prune, a.RegSize, a.RegSum = true, "5", strings.Repeat("0", 64) }, "the mail registry: the payload is 0 bytes"},
 	} {
 		a := base
 		c.mut(&a)
