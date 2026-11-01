@@ -111,6 +111,8 @@ assert 'grep -qF "✓ The kasbah network is the project'"'"'s own (snip_kasbah)"
     "and C04 names the network deploy connects Traefik to"
 assert 'grep -qF "✓ A router serves snip.example.com on the web entrypoint" <<<"$check_out"' \
     "and T08, which is why the fragment prints two routers"
+assert 'grep -qF "✓ All routed services can roll on deploy" <<<"$check_out"' \
+    "and C11, which is why the service carries a healthcheck"
 
 # --- Case 2: refuses to overwrite existing manifest ---------------------------
 if "$kasbah" init-project --name=demo >/dev/null 2>&1; then

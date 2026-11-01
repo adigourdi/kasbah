@@ -220,6 +220,9 @@ const snippet = "Next step: author compose.prod.yml. Starter snippet:\n" +
 	"        options:\n" +
 	"          max-size: \"10m\"\n" +
 	"          max-file: \"3\"\n" +
+	"      healthcheck:\n" +
+	"        test: [\"CMD\", \"wget\", \"-q\", \"--spider\", \"http://127.0.0.1/\"]\n" +
+	"        interval: 10s\n" +
 	"      networks: [kasbah]\n" +
 	"\n" +
 	"  networks:\n" +
@@ -231,6 +234,9 @@ const snippet = "Next step: author compose.prod.yml. Starter snippet:\n" +
 	"  second, project-internal network the moment there is a service nothing\n" +
 	"  routes to, and keep that service off kasbah (see docs/traefik.md in the\n" +
 	"  kasbah repository). The KASBAH_* limits are injected into .env at deploy.\n" +
+	"  The healthcheck lets a deploy start the new container beside the old one\n" +
+	"  and swap once it is healthy; without one it is recreated in place. Adapt\n" +
+	"  its test to your image (nginx:alpine has wget).\n" +
 	"\n" +
 	"Routing is declared in traefik-dynamic.yml at the project root (see\n" +
 	"docs/traefik.md in the kasbah repository). Starter:\n" +

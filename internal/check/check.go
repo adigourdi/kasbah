@@ -250,7 +250,7 @@ func (c *checker) s08() {
 	}
 }
 
-// --- Compose (C01–C05, C07–C09) ---------------------------------------------
+// --- Compose (C01–C05, C07–C11) ---------------------------------------------
 
 var restartOK = regexp.MustCompile(`^(unless-stopped|always|on-failure(:[0-9]+)?)$`)
 
@@ -316,6 +316,7 @@ func (c *checker) composeSection() {
 	if c.anyBuilt() {
 		c.c08()
 	}
+	c.c11()
 }
 
 func (c *checker) c05() {
@@ -357,6 +358,96 @@ func (c *checker) c08() {
 	} else {
 		c.failf("Built services whose image: is not tagged :current: %s — deploy moves <image>:current, so a pinned tag keeps the old image running", strings.Join(bad, " "))
 	}
+}
+
+// c11: every routed service rolls on deploy as far as compose and the
+// fragment show; live state and the image's own HEALTHCHECK are the deploy's.
+func (c *checker) c11() {
+	routed := c.routedHosts()
+	if _, unread := c.fragment(); unread != "" || len(routed) == 0 {
+		return
+	}
+	n, warned := 0, false
+	for _, svc := range c.services {
+		if !c.routes(svc, routed) {
+			continue
+		}
+		n++
+		r := c.rollShape(svc, routed)
+		stays := r.Stays(false)
+		if len(stays) == 0 {
+			continue
+		}
+		warned = true
+		st := stays[0]
+		if st == deploy.StayNoHealthcheck && r.Health == deploy.HealthUnset {
+			if len(stays) == 1 {
+				c.warnf("%s rolls on deploy only if its image declares a HEALTHCHECK — compose gives it none, and without one it is recreated in place, briefly unrouted", svc)
+				continue
+			}
+			st = stays[1]
+		}
+		c.warnf("%s will not roll on deploy — %s, so it is recreated in place, briefly unrouted", svc, r.Why(st))
+	}
+	if n > 0 && !warned {
+		c.passf("All routed services can roll on deploy")
+	}
+}
+
+// rollShape is what compose.prod.yml and the fragment's hosts say of svc's
+// roll, read as `docker compose config` would normalise it.
+func (c *checker) rollShape(svc string, routed []string) deploy.RollShape {
+	cn := scalar(c.svc(svc, "container_name"))
+	r := deploy.RollShape{ByContainerName: cn != "" && inList(routed, cn), ContainerName: cn != ""}
+	r.OffNet = !r.ByContainerName && !joinsNet(c.svc(svc, "networks"), projectNet)
+	for _, p := range asList(c.svc(svc, "ports")) {
+		if published(p) {
+			r.Published = true
+		}
+	}
+	hc := c.svc(svc, "healthcheck")
+	test := asList(opt(hc, "test"))
+	shell, _ := opt(hc, "test").(string)
+	switch {
+	case opt(hc, "disable") == true, len(test) > 0 && test[0] == "NONE":
+		r.Health = deploy.HealthOff
+	case len(test) > 0 || shell != "":
+		r.Health = deploy.HealthDeclared
+	case scalar(c.svc(svc, "image")) == "":
+		r.Health = deploy.HealthOff
+	}
+	deps := c.svc(svc, "depends_on")
+	for _, d := range keysOf(deps) {
+		if cond := scalar(opt(deps, d, "condition")); cond != "" && cond != "service_started" {
+			r.Gated = d + " (" + cond + ")"
+			break
+		}
+	}
+	return r
+}
+
+// published is whether a ports: entry binds a host port: the long form's
+// published:, or the host side of "[ip:]host:container[/proto]".
+func published(p tree.Value) bool {
+	if m, ok := p.(*tree.Map); ok {
+		return scalar(opt(m, "published")) != ""
+	}
+	s, ok := p.(string)
+	if !ok {
+		return false
+	}
+	s, _, _ = strings.Cut(s, "/")
+	i := strings.LastIndex(s, ":")
+	if i < 0 {
+		return false
+	}
+	host := s[:i]
+	if j := strings.LastIndex(host, ":"); j >= 0 && !strings.HasSuffix(host, "]") {
+		host = host[j+1:]
+	} else if strings.HasPrefix(host, "[") {
+		host = ""
+	}
+	return host != ""
 }
 
 // projectNet is the compose network key a project's routed services join:
@@ -406,9 +497,9 @@ func (c *checker) networks() (on, own []string, defaultAliases bool) {
 
 	switch {
 	case unread != "" && (defaultAliases || len(on)+len(own) == 0):
-		c.warnf("%s — skipping C03, which needs the services it routes", unread)
+		c.warnf("%s — skipping C03 and C11, which need the services it routes", unread)
 	case unread != "":
-		c.warnf("%s — skipping C03 and C07, which need the services it routes", unread)
+		c.warnf("%s — skipping C03, C07 and C11, which need the services it routes", unread)
 	case len(badC03) > 0:
 		c.failf("Routed services on neither the project's kasbah network nor kasbah-net: %s", strings.Join(badC03, " "))
 	case nRouted > 0 && len(legacy) == 0:

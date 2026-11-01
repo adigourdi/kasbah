@@ -95,6 +95,7 @@ Compose:
   ✓ No internal services on the kasbah network or kasbah-net
   ✓ Names on the kasbah network are project-prefixed
   ✓ No deprecated 'version:' field
+  ⚠ demo-web will not roll on deploy — the fragment targets its container_name, so it is recreated in place, briefly unrouted
 
 Resources:
   ✓ All services set cpus/mem_limit via KASBAH_* vars
@@ -116,7 +117,7 @@ Env:
   ✓ .env.prod.example has no obvious long secrets
   ✓ .env.prod.example leaves the KASBAH_* prefix to kasbah
 
-Summary: 27 passed, 0 warning, 0 failed
+Summary: 27 passed, 1 warning, 0 failed
 `
 	if out != want || code != 0 {
 		t.Errorf("exit %d, report:\n%s", code, out)
@@ -160,16 +161,16 @@ func TestVerdicts(t *testing.T) {
 		{"routers: that is not a mapping skips the router rules",
 			map[string]string{"traefik-dynamic.yml": "http:\n  routers: [a]\n"}, 0,
 			[]string{"  ⚠ traefik-dynamic.yml: http.routers is a list, not a mapping — skipping T02–T05, T08 and T09",
-				"  ⚠ traefik-dynamic.yml: http.routers is a list, not a mapping — skipping C03 and C07, which need the services it routes"}},
-		{"with no fragment read, C03 and C07 conclude nothing",
+				"  ⚠ traefik-dynamic.yml: http.routers is a list, not a mapping — skipping C03, C07 and C11, which need the services it routes"}},
+		{"with no fragment read, C03, C07 and C11 conclude nothing",
 			map[string]string{"traefik-dynamic.yml": ""}, 0,
-			[]string{"  ⚠ traefik-dynamic.yml missing — skipping C03 and C07, which need the services it routes", "  ✓ The kasbah network is the project's own (demo_kasbah)"}},
+			[]string{"  ⚠ traefik-dynamic.yml missing — skipping C03, C07 and C11, which need the services it routes", "  ✓ The kasbah network is the project's own (demo_kasbah)"}},
 		{"with no fragment read and nothing on kasbah-net, C07 still passes",
 			map[string]string{"traefik-dynamic.yml": "", "compose.prod.yml": strings.Replace(goodCompose, "networks: [kasbah]", "networks: [internal]", 1)}, 0,
-			[]string{"  ⚠ traefik-dynamic.yml missing — skipping C03, which needs the services it routes", "  ✓ No internal services on the kasbah network or kasbah-net"}},
+			[]string{"  ⚠ traefik-dynamic.yml missing — skipping C03 and C11, which need the services it routes", "  ✓ No internal services on the kasbah network or kasbah-net"}},
 		{"with no fragment read, the default-alias shape still fails C07",
 			map[string]string{"traefik-dynamic.yml": "", "compose.prod.yml": legacyCompose + "  default: {name: kasbah-net}\n"}, 6,
-			[]string{"  ⚠ traefik-dynamic.yml missing — skipping C03, which needs the services it routes", "  ✗ default network aliases kasbah-net — every service joins the shared network; join it explicitly per routed service and keep the rest on a project-internal network"}},
+			[]string{"  ⚠ traefik-dynamic.yml missing — skipping C03 and C11, which need the services it routes", "  ✗ default network aliases kasbah-net — every service joins the shared network; join it explicitly per routed service and keep the rest on a project-internal network"}},
 		{"a legacy project on kasbah-net passes C03 and is warned to move",
 			map[string]string{"compose.prod.yml": legacyCompose}, 0,
 			[]string{"  ✓ All routed services join kasbah-net", "  ⚠ Routed through the shared kasbah-net: demo-web — every project's routed containers reach each other there; move them to a project network under the key kasbah (docs/traefik.md → Network)",
@@ -224,7 +225,7 @@ func TestVerdicts(t *testing.T) {
 		{"a fragment of several documents is not read",
 			map[string]string{"traefik-dynamic.yml": goodFragment + "---\n" + goodFragment}, 0,
 			[]string{"  ⚠ traefik-dynamic.yml holds 2 YAML documents, where kasbah reads one — skipping T02–T05, T08 and T09",
-				"  ⚠ traefik-dynamic.yml holds 2 YAML documents, where kasbah reads one — skipping C03 and C07, which need the services it routes"}},
+				"  ⚠ traefik-dynamic.yml holds 2 YAML documents, where kasbah reads one — skipping C03, C07 and C11, which need the services it routes"}},
 		{"entryPoints: that is not a list",
 			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "entryPoints: [web]", "entryPoints: web", 1)}, 6,
 			[]string{"  ✗ Routers without entryPoints: demo-http (entryPoints is a string, not a list)"}},
@@ -369,6 +370,80 @@ func TestUnanswerable(t *testing.T) {
 		if code != 1 || errs != tc.want || strings.Contains(out, "Summary:") {
 			t.Errorf("exit %d, stderr %q, want %q:\n%s", code, errs, tc.want, out)
 		}
+	}
+}
+
+// rollCompose is a routed service that rolls: no container_name, no host
+// port, a healthcheck, no gating depends_on.
+const rollCompose = `services:
+  demo-web:
+    image: nginx:alpine
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+    healthcheck: {test: [CMD, wget, -q, --spider, "http://127.0.0.1/"]}
+    networks: [kasbah, internal]
+  db:
+    image: postgres
+    restart: always
+    cpus: 1
+    mem_limit: 1g
+    logging: {driver: json-file, options: {max-size: 1m, max-file: 1}}
+    networks: [internal]
+networks:
+  kasbah: {}
+  internal: {}
+`
+
+func TestC11(t *testing.T) {
+	web := "    networks: [kasbah, internal]\n  db:"
+	with := func(lines string) string { return strings.Replace(rollCompose, web, lines+web, 1) }
+	noHC := strings.Replace(rollCompose, "    healthcheck: {test: [CMD, wget, -q, --spider, \"http://127.0.0.1/\"]}\n", "", 1)
+	const unrouted = ", so it is recreated in place, briefly unrouted"
+	for _, tc := range []struct{ name, compose, want string }{
+		{"a rollable service passes", rollCompose, "  ✓ All routed services can roll on deploy"},
+		{"a container_name the fragment does not target", with("    container_name: demo-web-1\n"),
+			"  ⚠ demo-web will not roll on deploy — it sets container_name" + unrouted},
+		{"a host port", with("    ports: [\"127.0.0.1:8080:80\"]\n"),
+			"  ⚠ demo-web will not roll on deploy — it publishes a host port a second replica cannot bind" + unrouted},
+		{"a host port in the long form", with("    ports: [{target: 80, published: 8080}]\n"),
+			"  ⚠ demo-web will not roll on deploy — it publishes a host port a second replica cannot bind" + unrouted},
+		{"an ephemeral port binds nothing", with("    ports: [\"80\", \"127.0.0.1::81\", 82]\n"), "  ✓ All routed services can roll on deploy"},
+		{"no compose healthcheck leaves it to the image", noHC,
+			"  ⚠ demo-web rolls on deploy only if its image declares a HEALTHCHECK — compose gives it none, and without one it is recreated in place, briefly unrouted"},
+		{"a shell-string healthcheck is one", strings.Replace(rollCompose, "{test: [CMD, wget, -q, --spider, \"http://127.0.0.1/\"]}", "{test: \"wget -q --spider http://127.0.0.1/\"}", 1),
+			"  ✓ All routed services can roll on deploy"},
+		{"a disabled healthcheck", strings.Replace(rollCompose, "{test: [CMD", "{disable: true, test: [CMD", 1),
+			"  ⚠ demo-web will not roll on deploy — it declares no healthcheck to swap on" + unrouted},
+		{"a gating depends_on", with("    depends_on: {db: {condition: service_healthy}}\n"),
+			"  ⚠ demo-web will not roll on deploy — it depends_on db (service_healthy), a condition only a plain up waits for" + unrouted},
+		{"a plain depends_on list does not gate", with("    depends_on: [db]\n"), "  ✓ All routed services can roll on deploy"},
+		{"a definite reason outranks the image's healthcheck",
+			strings.Replace(noHC, web, "    depends_on: {db: {condition: service_completed_successfully}}\n"+web, 1),
+			"  ⚠ demo-web will not roll on deploy — it depends_on db (service_completed_successfully), a condition only a plain up waits for" + unrouted},
+		{"the fragment targeting its container_name", goodCompose,
+			"  ⚠ demo-web will not roll on deploy — the fragment targets its container_name" + unrouted},
+		{"reached by name off the project network", strings.Replace(legacyCompose, "    container_name: demo-web\n", "", 1),
+			"  ⚠ demo-web will not roll on deploy — the fragment reaches it by a name it answers only off the project's kasbah network" + unrouted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			project(t, map[string]string{"compose.prod.yml": tc.compose})
+			out, _, _ := check(t)
+			if !strings.Contains(out, tc.want+"\n") {
+				t.Errorf("no line %q in:\n%s", tc.want, out)
+			}
+			if n := strings.Count(out, "roll on deploy") + strings.Count(out, "rolls on deploy"); n != 1 {
+				t.Errorf("%d roll lines, want one:\n%s", n, out)
+			}
+			if strings.Contains(out, "db will not roll") || strings.Contains(out, "db rolls") {
+				t.Errorf("an unrouted service is reported:\n%s", out)
+			}
+		})
+	}
+	project(t, map[string]string{"traefik-dynamic.yml": "", "compose.prod.yml": noHC})
+	if out, _, _ := check(t); strings.Contains(out, "roll") {
+		t.Errorf("with no fragment read, nothing is said of rolling:\n%s", out)
 	}
 }
 

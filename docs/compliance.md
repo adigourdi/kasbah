@@ -24,6 +24,7 @@ Compose:
   ✓ Names on the kasbah network are project-prefixed
   ✓ No `version:` field (deprecated)
   ✓ All built services reference their image as :current
+  ✓ All routed services can roll on deploy
 
 Resources:
   ✓ All services set cpus/mem_limit via KASBAH_* vars
@@ -51,7 +52,7 @@ Mail (if manifest has `mail:`):
   ✓ Mail claim names domain 'shop.example.com'
     (M03 — the stack on the VPS knows this domain — only runs with --server)
 
-Summary: 21 passed, 1 warning, 0 failed
+Summary: 22 passed, 1 warning, 0 failed
 ```
 
 Exit code 0 if no failures (warnings are informational).
@@ -84,11 +85,11 @@ hosts) are in byte order.
 | C03 | Every Traefik-routed service (targeted by a fragment `loadBalancer` URL) joins the project's `kasbah` network — or the legacy shared `kasbah-net`, which warns: every project's routed containers reach each other there (`traefik.md` → Network) | fail / warn | yes (adds the `kasbah` network where neither is joined) |
 | C04 | The `kasbah` network is declared as exactly `kasbah: {}` (or empty) — compose names it `<project>_kasbah`, the network deploy attaches Traefik to, and any setting (`driver`, `labels`, `name`, `external`, …) would make compose try to recreate it under Traefik and fail every later deploy. No `external` network but the legacy `kasbah-net` (itself `external: true`): joining `mail_kasbah` or another project's network is refused, naming the network | fail | yes (adds a missing `kasbah: {}` only) |
 | C05 | No deprecated `version:` top-level field | warn | yes |
-| C06 | Every service has `container_name` OR project uses compose's default naming | info | no |
 | C07 | No non-routed service joins the `kasbah` network or `kasbah-net` — internal services use a project-internal network (Traefik joins the `kasbah` network, and service-name aliases on a shared network round-robin across projects) | fail | no |
 | C08 | Every service with a `build:` key names an `image:` tagged `:current`. Deploy moves `<image>:current` and never rewrites compose, so a service pinned to `:1.2.3` keeps running the old image while the deploy reports success and changes nothing — the quietest failure in the tool. Silent on projects that build nothing | fail | yes |
 | C09 | On the project's `kasbah` network, every service name, every `networks.kasbah.aliases` entry and every `container_name` is `<manifest.name>` or `<manifest.name>-*` — **fail**. Traefik is on every project's network and resolves names across all of them, so a service named, or aliased, like another project's container answers for it: Traefik would send that project's traffic here (measured: 3 of 3 lookups). A prefix shared by two names (`shop` and `shop-admin`) is not caught. On the legacy `kasbah-net` the same naming is a warning, as compose registers service names as aliases there and two projects' `web` round-robin; silent on a project with nothing on `kasbah-net` | fail / warn | no |
 | C10 | Neither `compose.prod.yml` nor `.env.prod.example` names `mail-dms` outside a `#` comment line: no project shares a network with the mail server, so an app sends through `mail.<domain>:587` with a mailbox login (`mail.md` → SMTP access from apps). Silent when neither does | warn | no |
+| C11 | Every routed service (as C03 resolves them) can **roll** on deploy rather than be recreated in place, briefly unrouted (`build-deploy.md` → What this intentionally skips): the fragment does not reach it by its `container_name` nor by a name it answers only off the project's `kasbah` network, it sets no `container_name`, publishes no host port (`"80"` and `"127.0.0.1::80"` bind none), declares a compose `healthcheck:` that is not disabled, and has no `depends_on` condition but `service_started`. A service that fails one warns once, naming the first in that order — the deploy's own order, from the same predicate — except that a missing compose healthcheck is passed over when a later reason applies, since the image cannot cure that one; a service whose only gap is the compose healthcheck warns that it rolls only if its image declares a `HEALTHCHECK`, which kasbah cannot see from a checkout. One pass line when every routed service can roll; silent with nothing routed or no fragment read. What only the server knows — `--no-health-wait`, the running containers, the live fragment — stays the deploy's to judge, and it names each in-place recreate with why | warn | no |
 
 ### Resources
 
@@ -118,7 +119,7 @@ docker provider is not wired in.
 
 | ID | Rule | Level |
 |---|---|---|
-| T01 | `traefik-dynamic.yml` exists and parses as one YAML document whose `http.routers` is a mapping; otherwise T02–T05, T08 and T09 are skipped, and so are C03 and C07, which need the services it routes | warn |
+| T01 | `traefik-dynamic.yml` exists and parses as one YAML document whose `http.routers` is a mapping; otherwise T02–T05, T08 and T09 are skipped, and so are C03 and C11, which need the services it routes, and C07 too unless no service joins a Traefik network or the default network aliases `kasbah-net` | warn |
 | T02 | At least one router's `rule` references `manifest.domain` | fail |
 | T03 | Every router declares `entryPoints` (non-empty list) | fail |
 | T04 | Routers on `websecure` reference `tls.certResolver: http`, the resolver kasbah configures (`traefik.md` → TLS). A router still naming `letsencrypt`, the resolver's former name, fails on its own line saying it was renamed to `http`; any other value, or none, fails as a router without the resolver | fail |
@@ -210,6 +211,8 @@ Unfixable (must be done by hand):
 - C07 (moving services between networks is topology — kasbah won't guess)
 - C09 (renaming a service drags `depends_on`, profiles and every in-project
   hostname with it — same reason)
+- C11 (dropping a `container_name` or a host port changes how the project is
+  reached, and a healthcheck is the app's to write)
 - Anything under Traefik (routing is policy, kasbah can't guess)
 - Hooks (kasbah can't invent commands)
 - Mail claims

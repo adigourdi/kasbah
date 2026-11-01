@@ -604,7 +604,8 @@ has no opinion on which service is "primary", what ports to expose, etc. After
 running, kasbah prints a minimal starter compose snippet and a matching Traefik
 fragment to stdout so the user can paste and adapt if useful. Both are shapes
 `kasbah check` passes clean: one routed service named for the project (C09) on
-the project's own `kasbah` network, and two routers for the domain so plain HTTP
+the project's own `kasbah` network, with a healthcheck so a deploy rolls it
+(C11), and two routers for the domain so plain HTTP
 redirects rather than 404s (T08).
 
 Flags:
@@ -663,8 +664,8 @@ under the banned default-alias shape, where declaring the default network
 external would entrench exactly what C07 is failing on.
 
 `--fix` runs **before** the report, so the lines you read and the exit code you
-get describe the project as it now is. Traefik rules, C07, C09, hooks and mail
-claims are never auto-fixed — routing and topology are policy, and kasbah cannot
+get describe the project as it now is. Traefik rules, C07, C09, C11, hooks and
+mail claims are never auto-fixed — routing and topology are policy, and kasbah cannot
 invent a command.
 
 ### `kasbah build-push [USER@HOST]`

@@ -25,7 +25,8 @@ assert() {
 # The routed service joins the project's own kasbah network and keeps an
 # internal one (C03/C04/C07); it is named for the project; limits reference the KASBAH_*
 # vars (R01/R02); the fragment's loadBalancer targets the service name, with
-# no container_name (T07), and carries both routers for the domain, the redirect on `web` and
+# no container_name (T07), and the service declares a healthcheck, so it rolls
+# on deploy (C11); the fragment carries both routers for the domain, the redirect on `web` and
 # the TLS one on `websecure` (T08). Healthchecks and Hooks sections are
 # silent — manifest has no health/hooks/backup blocks, and the only service
 # has no build:.
@@ -54,6 +55,8 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
     networks: [kasbah, internal]
 
 networks:
@@ -122,7 +125,8 @@ assert '! grep -q "Healthchecks:" <<<"$out"'  "Healthchecks: header suppressed (
 assert '! grep -q "Hooks:" <<<"$out"'         "Hooks: header suppressed (no hooks/backup in manifest)"
 assert '! grep -qF "built services" <<<"$out"' \
     "C08 says nothing about a project that builds nothing — there is no :current to move"
-assert 'grep -qF "27 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
+assert 'grep -qF "✓ All routed services can roll on deploy" <<<"$out"' "C11 pass line"
+assert 'grep -qF "28 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
 
 # --- Case 2: missing compose.prod.yml — fail, exit 6 -------------------------
 # Exit 6 is the documented "compliance check failed" code (docs/cli.md).
@@ -388,7 +392,37 @@ assert 'grep -qF "✓ All routed services join kasbah-net" <<<"$out"'           
 assert 'grep -qF "✓ No internal services on the kasbah network or kasbah-net" <<<"$out"'             "as is C07"
 assert 'grep -qF "⚠ Routed through the shared kasbah-net: web — every project'"'"'s routed containers reach each other there; move them to a project network under the key kasbah (docs/traefik.md → Network)" <<<"$out"' \
        "and, routed through the shared kasbah-net, it is warned to move (C03)"
-assert 'grep -qF "26 passed, 2 warning, 0 failed" <<<"$out"'                    "one line either way (said '$(tail -1 <<<"$out")')"
+assert 'grep -qF "⚠ web will not roll on deploy — the fragment targets its container_name, so it is recreated in place, briefly unrouted" <<<"$out"' \
+       "and, routed by container_name, it is told it will not roll (C11)"
+assert 'grep -qF "26 passed, 3 warning, 0 failed" <<<"$out"'                    "one line either way (said '$(tail -1 <<<"$out")')"
+
+# --- Case 16c: C11 — a routed service that will not roll → warn -------------
+# One line per routed service, naming the first thing that stops the deploy
+# swapping it zero-downtime; the exit stays 0.
+proj16c="$tmpdir/no-roll"
+make_project "$proj16c"
+sed -i 's/^    restart: unless-stopped$/    container_name: demo-web-1\n&/' "$proj16c/compose.prod.yml"
+out="$(cd "$proj16c" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]' "C11 is a warning, so exit stays 0 (got $rc)"
+assert 'grep -qF "⚠ demo-web will not roll on deploy — it sets container_name, so it is recreated in place, briefly unrouted" <<<"$out"' \
+       "a container_name stops the roll even when the fragment targets the service (said '$out')"
+assert '! grep -qF "can roll on deploy" <<<"$out"' "and C11 prints no pass line beside it"
+assert 'grep -qF "27 passed, 1 warning, 0 failed" <<<"$out"' "the warn replaces the pass line (said '$(tail -1 <<<"$out")')"
+sed -i '/^    container_name: demo-web-1$/d; s/^    restart: unless-stopped$/    ports: ["8080:80"]\n&/' "$proj16c/compose.prod.yml"
+out="$(cd "$proj16c" && "$kasbah" check 2>&1)"
+assert 'grep -qF "⚠ demo-web will not roll on deploy — it publishes a host port a second replica cannot bind, so it is recreated in place, briefly unrouted" <<<"$out"' \
+       "a published host port stops the roll (said '$out')"
+sed -i 's/^    ports: \["8080:80"\]$/    ports: ["80"]/' "$proj16c/compose.prod.yml"
+out="$(cd "$proj16c" && "$kasbah" check 2>&1)"
+assert 'grep -qF "✓ All routed services can roll on deploy" <<<"$out"' \
+       "a container port with no host side binds nothing a second replica would clash on (said '$out')"
+sed -i '/^    healthcheck:$/,/^      test:/d' "$proj16c/compose.prod.yml"
+out="$(cd "$proj16c" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]' "no compose healthcheck is a warning too (got $rc)"
+assert 'grep -qF "⚠ demo-web rolls on deploy only if its image declares a HEALTHCHECK — compose gives it none, and without one it is recreated in place, briefly unrouted" <<<"$out"' \
+       "with no compose healthcheck, rolling is the image's to decide (said '$out')"
+out="$(cd "$proj16c" && "$kasbah" check --fix --yes 2>&1)"
+assert 'grep -qF "nothing --fix can change" <<<"$out"' "and --fix leaves C11 alone (said '$out')"
 
 # The exact project name is as acceptable as a prefixed one, and a service that
 # never joins the shared network is no business of C09's — the alias only
@@ -696,7 +730,7 @@ assert 'grep -qF "⚠ No router serves demo.example.com on the web entrypoint" <
        "T08 warn line (said '$out')"
 assert 'grep -qF "http-to-https@file" <<<"$out"'                                   "and says what to add (said '$out')"
 assert 'grep -qF "✓ All routers declare entryPoints" <<<"$out"'                   "T03 passes on the same fragment — it is not the rule that catches this"
-assert 'grep -qF "26 passed, 1 warning, 0 failed" <<<"$out"'                       "one line either way (said '$(tail -1 <<<"$out")')"
+assert 'grep -qF "27 passed, 1 warning, 0 failed" <<<"$out"'                       "one line either way (said '$(tail -1 <<<"$out")')"
 
 # A `web` router for an unrelated host does not answer for this one: the
 # entrypoint has to be declared by a router whose rule mentions the manifest
@@ -759,7 +793,7 @@ assert 'grep -qF "✓ A router serves demo.example.com on the web entrypoint" <<
        "a web router whose host contains the manifest domain satisfies T08 (said '$out')"
 assert 'grep -qF "✓ At least one router references manifest domain (demo.example.com)" <<<"$out"' \
        "on the same reading T02 already gives it (said '$out')"
-assert 'grep -qF "27 passed, 0 warning, 0 failed" <<<"$out"'                             "and nothing warns (said '$(tail -1 <<<"$out")')"
+assert 'grep -qF "28 passed, 0 warning, 0 failed" <<<"$out"'                             "and nothing warns (said '$(tail -1 <<<"$out")')"
 
 # --- Case 23c: T09 — a router or service reaches api@internal → fail --------
 # Routing a hostname to Traefik's own API publishes it with no auth, whatever
@@ -1061,7 +1095,7 @@ assert 'grep -qF "✓ .env.prod.example exists" <<<"$out"'                      
 assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'              "E01 passes on comments alone"
 assert 'grep -qF "✓ .env.prod.example has no obvious long secrets" <<<"$out"'  "E04 has nothing to measure"
 assert 'grep -qF "✓ .env.prod.example leaves the KASBAH_* prefix to kasbah" <<<"$out"' "E05 has no key to object to"
-assert 'grep -qF "27 passed, 0 warning, 0 failed" <<<"$out"'                   "and nothing warns about it (said '$(tail -1 <<<"$out")')"
+assert 'grep -qF "28 passed, 0 warning, 0 failed" <<<"$out"'                   "and nothing warns about it (said '$(tail -1 <<<"$out")')"
 
 # --- Case 28: E01 — invalid line → fail --------------------------------------
 proj28="$tmpdir/env-bad-syntax"
@@ -1188,7 +1222,7 @@ out="$(cd "$proj30e" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                     "E05 is a warning, so exit stays 0 (got $rc)"
 assert 'grep -qF "⚠ .env.prod.example defines reserved KASBAH_* keys (kasbah injects these): KASBAH_CPU_LIMIT KASBAH_MEM_LIMIT" <<<"$out"' \
        "E05 warn line names every reserved key, not just the first (said '$out')"
-assert 'grep -qF "26 passed, 1 warning, 0 failed" <<<"$out"'                 "E05 warns instead of passing, one line either way (said '$out')"
+assert 'grep -qF "27 passed, 1 warning, 0 failed" <<<"$out"'                 "E05 warns instead of passing, one line either way (said '$out')"
 
 # The prefix is matched anchored: MY_KASBAH_URL is the user's key. A substring
 # match here would warn about a key kasbah neither injects nor skips.

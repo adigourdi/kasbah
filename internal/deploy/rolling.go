@@ -174,24 +174,17 @@ func (e *engine) rolls() (*composeModel, []roll) {
 		inPlace := func(why string) {
 			e.note("%s is recreated in place, %s — its route answers 502 until the new container is up", svc, why)
 		}
-		switch {
-		case byCN:
-			inPlace("as the fragment targets its container_name")
-			continue
-		case s.ContainerName != "":
-			inPlace("as it sets container_name")
-			continue
-		case e.sp.NoHealthWait:
-			inPlace("as --no-health-wait leaves nothing to swap on")
-			continue
-		case published(s):
-			inPlace("as it publishes a host port a second replica cannot bind")
-			continue
-		case !e.healthchecked(s):
-			inPlace("as it declares no healthcheck to swap on")
-			continue
-		case gated(s) != "":
-			inPlace("as it depends_on " + gated(s) + ", a condition only a plain up waits for")
+		shape := shapeOf(s, byCN)
+		why := ""
+		for _, st := range shape.Stays(e.sp.NoHealthWait) {
+			if st == StayNoHealthcheck && shape.Health == HealthUnset && e.imageHealthchecked(s.Image) {
+				continue
+			}
+			why = shape.Why(st)
+			break
+		}
+		if why != "" {
+			inPlace("as " + why)
 			continue
 		}
 		old := e.serviceContainers(svc)
@@ -259,17 +252,23 @@ func published(s composeService) bool {
 	return false
 }
 
-// healthchecked is compose's healthcheck, else the image's.
-func (e *engine) healthchecked(s composeService) bool {
-	if h := s.Healthcheck; h != nil && (h.Disable || (len(h.Test) > 0 && h.Test[0] == "NONE")) {
-		return false
-	} else if h != nil && len(h.Test) > 0 {
-		return true
+// shapeOf is the static half of the roll predicate, read off the compose model.
+func shapeOf(s composeService, byCN bool) RollShape {
+	r := RollShape{ByContainerName: byCN, ContainerName: s.ContainerName != "", Published: published(s), Gated: gated(s)}
+	switch h := s.Healthcheck; {
+	case h != nil && (h.Disable || (len(h.Test) > 0 && h.Test[0] == "NONE")):
+		r.Health = HealthOff
+	case h != nil && len(h.Test) > 0:
+		r.Health = HealthDeclared
+	case s.Image == "":
+		r.Health = HealthOff
 	}
-	if s.Image == "" {
-		return false
-	}
-	out, err := e.query("image", "inspect", "-f", "{{if .Config.Healthcheck}}{{json .Config.Healthcheck.Test}}{{end}}", s.Image)
+	return r
+}
+
+// imageHealthchecked is whether the image declares a HEALTHCHECK of its own.
+func (e *engine) imageHealthchecked(image string) bool {
+	out, err := e.query("image", "inspect", "-f", "{{if .Config.Healthcheck}}{{json .Config.Healthcheck.Test}}{{end}}", image)
 	if err != nil || out == "" || out == "null" {
 		return false
 	}

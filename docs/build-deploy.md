@@ -866,7 +866,10 @@ directory is listed in `files.md`).
   2–7 502s per in-place recreate, 0 per roll. A replica that never turns
   healthy is removed and the deploy reverts, the old container untouched. Every
   other service — and a routed one that cannot roll, which the deploy names
-  with why — is recreated in place, briefly unrouted. A process that exits on SIGTERM without draining can still drop its
+  with why — is recreated in place, briefly unrouted. `kasbah check` warns
+  beforehand about each routed service compose or the fragment keep from
+  rolling (C11, `compliance.md`); live state stays the deploy's to judge. A
+  process that exits on SIGTERM without draining can still drop its
   in-flight requests as the old container stops.
   Acceptable for the homelab / small-business target.
 - **No pre-flight image scan** — assume local security scanning.
