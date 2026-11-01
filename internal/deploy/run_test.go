@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,10 +39,13 @@ type fake struct {
 
 	calls            []string
 	unlocked, closed int
-	client           string
-	injects          [][]string
-	spec             *Spec
-	token            string
+	// marks, when set, receives "<unlocked>" and "<closed>" as they happen, so a
+	// test can order them against the run's own output.
+	marks   io.Writer
+	client  string
+	injects [][]string
+	spec    *Spec
+	token   string
 }
 
 func (f *fake) log(c string) { f.calls = append(f.calls, c) }
@@ -49,11 +54,18 @@ func (f *fake) Marker() (*marker.Marker, error) {
 	f.log("marker")
 	return &marker.Marker{AppsPath: "/apps", DataPath: "/data", CPULimit: "1", MemLimit: "1g"}, nil
 }
-func (f *fake) HoldServer(string, string) (func(), error) { return func() { f.unlocked++ }, nil }
-func (f *fake) Prepare(string) error                      { return nil }
-func (f *fake) ShipTemplate(string, string) error         { return nil }
-func (f *fake) Setup(string, bool) int                    { return 0 }
-func (f *fake) Close()                                    { f.closed++ }
+func (f *fake) HoldServer(string, string) (func(), error) {
+	return func() { f.unlocked++; f.mark("<unlocked>") }, nil
+}
+func (f *fake) mark(s string) {
+	if f.marks != nil {
+		fmt.Fprint(f.marks, s)
+	}
+}
+func (f *fake) Prepare(string) error              { return nil }
+func (f *fake) ShipTemplate(string, string) error { return nil }
+func (f *fake) Setup(string, bool) int            { return 0 }
+func (f *fake) Close()                            { f.closed++; f.mark("<closed>") }
 func (f *fake) Sync(e Entry, base string) error {
 	f.log("sync " + e.Src)
 	if fi, err := os.Lstat(e.Src); err == nil && f.mtimes != nil {
@@ -151,6 +163,9 @@ func deployWith(t *testing.T, f *fake, o Options) (error, string) {
 	t.Helper()
 	var errb bytes.Buffer
 	out := &cli.Output{Stdout: &errb, Stderr: &errb}
+	if f.marks != nil {
+		f.marks = &errb
+	}
 	pwd, _ := os.Getwd()
 	err := Run(Ctx{
 		Out: out, Prompter: &prompt.Prompter{In: strings.NewReader(""), Out: out},
@@ -326,7 +341,7 @@ func TestMailClaim(t *testing.T) {
 func TestMailUnknownKeyIgnored(t *testing.T) {
 	project(t, "mail:\n  domain: demo.test\n  snappymail_domain: ./x.json\n")
 	f := &fake{mail: facts("primary_domain: demo.test\n", "running")}
-	err, out := deployWith(t, f, Options{Target: "d@h", NoGitPush: true})
+	err, out := deployWith(t, f, Options{Target: "d@h"})
 	if err != nil || !strings.Contains(out, "is served by the stack") || strings.Contains(out, "warning:") || strings.Contains(out, "x.json") {
 		t.Errorf("%v\n%s", err, out)
 	}
@@ -489,19 +504,17 @@ func TestChangelogDirtyEndpoints(t *testing.T) {
 	}
 }
 
-func TestParseBumpAndPush(t *testing.T) {
+func TestParseBump(t *testing.T) {
 	for in, want := range map[string]string{
-		"--bump=major d@h":     "bump=major push=true",
-		"--no-git-push":        "bump= push=false",
+		"--bump=major d@h":     "bump=major",
 		"--bump=x":             "error: deploy: --bump=x is not a bump",
 		"--bump":               "error: deploy: --bump takes its value with '='",
-		"--no-git-push=1":      "error: deploy: --no-git-push takes no value",
+		"--no-git-push":        "error: deploy: unknown flag '--no-git-push'",
 		"--bump=patch --dirty": "error: deploy: --dirty ships under no tag",
 		"--bump=patch 1.0.0":   "error: deploy: 1.0.0 names a tag that exists",
-		"--no-git-push 1.0.0":  "error: deploy: --no-git-push is the working-tree deploy's",
 	} {
 		o, err := Parse(strings.Split(in, " "))
-		got := "bump=" + o.Bump + " push=" + map[bool]string{true: "false", false: "true"}[o.NoGitPush]
+		got := "bump=" + o.Bump
 		if err != nil {
 			got = "error: " + err.Error()
 		}
@@ -509,10 +522,8 @@ func TestParseBumpAndPush(t *testing.T) {
 			t.Errorf("Parse(%q) = %q, want %q", in, got, want)
 		}
 	}
-	for _, a := range []string{"--bump=patch", "--no-git-push"} {
-		if _, err := ParseRollback([]string{a}); err == nil || !strings.Contains(err.Error(), "unknown flag") {
-			t.Errorf("rollback %s: %v", a, err)
-		}
+	if _, err := ParseRollback([]string{"--bump=patch"}); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("rollback --bump=patch: %v", err)
 	}
 }
 
@@ -543,16 +554,16 @@ func TestRunUntaggedBumps(t *testing.T) {
 	if f.spec.Version != "1.0.1" || gitc(t, "tag", "--points-at", "HEAD") != "v1.0.1" {
 		t.Errorf("spec %q, HEAD %q", f.spec.Version, gitc(t, "tag", "--points-at", "HEAD"))
 	}
-	if got := gitc(t, "--git-dir="+origin, "tag"); got != "v1.0.1" {
+	if got := gitc(t, "--git-dir="+origin, "tag"); got != "" {
 		t.Errorf("origin's tags %q", got)
 	}
-	tagged, pushed := strings.Index(out, "Tagged HEAD v1.0.1"), strings.Index(out, "git:     pushed v1.0.1 to origin")
-	if tagged < 0 || pushed < tagged || !strings.Contains(out, "the tag stays") {
+	tagged, told := strings.Index(out, "Tagged HEAD v1.0.1"), strings.Index(out, "git:     v1.0.1 is not on origin")
+	if tagged < 0 || told < tagged || !strings.Contains(out, "the tag stays") || !strings.Contains(out, "git push origin v1.0.1") {
 		t.Errorf("output\n%s", out)
 	}
 }
 
-// A run that fails after the tag leaves it here, unpushed, for the next run.
+// A run that fails after the tag leaves it here for the next run.
 func TestRunUntaggedFailureKeepsTag(t *testing.T) {
 	origin := untagged(t)
 	f := &fake{rc: 1}
@@ -564,7 +575,7 @@ func TestRunUntaggedFailureKeepsTag(t *testing.T) {
 	}
 	noState(t, "failed")
 	f = &fake{}
-	if err, out := deployWith(t, f, Options{Target: "d@h", NoGitPush: true}); err != nil || f.spec.Version != "1.1.0" || !strings.Contains(out, "v1.1.0 left where it is") {
+	if err, out := deployWith(t, f, Options{Target: "d@h"}); err != nil || f.spec.Version != "1.1.0" || !strings.Contains(out, "v1.1.0 is not on origin") {
 		t.Errorf("the rerun: %v\n%s", err, out)
 	}
 }
@@ -597,44 +608,54 @@ func TestRunUntaggedBuiltRefused(t *testing.T) {
 	}
 }
 
-// A tagged HEAD is pushed too, once; again is "already there"; the server is
-// let go of before origin is asked.
-func TestRunPushesTag(t *testing.T) {
+// releasedFirst is whether the server's lock and session were both let go
+// before origin was asked about the tag.
+func releasedFirst(out string) bool {
+	ask := strings.Index(out, "asking origin whether")
+	u, c := strings.Index(out, "<unlocked>"), strings.Index(out, "<closed>")
+	return ask > 0 && u >= 0 && c >= 0 && u < ask && c < ask
+}
+
+// Origin lacking the tag is one summary line, and the tag stays off it; origin
+// having it, or there being none, is silence. The server is let go of before
+// origin is asked.
+func TestRunUnpublishedTag(t *testing.T) {
 	project(t, "")
 	origin := t.TempDir()
 	gitc(t, "init", "-q", "--bare", origin)
 	gitc(t, "remote", "add", "origin", origin)
-	f := &fake{}
+	f := &fake{marks: io.Discard}
 	err, out := deployWith(t, f, Options{Target: "d@h"})
-	if err != nil || !strings.Contains(out, "git:     pushed v1.0.0 to origin") || gitc(t, "--git-dir="+origin, "tag") != "v1.0.0" {
+	want := "git:     v1.0.0 is not on origin — the server runs a version origin cannot fetch; publish it:  git push origin v1.0.0"
+	if err != nil || strings.Count(out, "git:") != 1 || !strings.Contains(out, want) || gitc(t, "--git-dir="+origin, "tag") != "" {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if f.unlocked != 1 || f.closed != 1 {
-		t.Errorf("unlocked %d, closed %d", f.unlocked, f.closed)
+	if f.unlocked != 1 || f.closed != 1 || !releasedFirst(out) {
+		t.Errorf("unlocked %d, closed %d, released before asking origin %v\n%s", f.unlocked, f.closed, releasedFirst(out), out)
 	}
-	if err, out := deployWith(t, &fake{}, Options{Target: "d@h"}); err != nil || !strings.Contains(out, "git:     v1.0.0 is already on origin") {
-		t.Errorf("again: %v\n%s", err, out)
+	gitc(t, "push", "-q", "origin", "v1.0.0")
+	if err, out := deployWith(t, &fake{}, Options{Target: "d@h"}); err != nil || strings.Contains(out, "git:") {
+		t.Errorf("on origin: %v\n%s", err, out)
 	}
 }
 
-func TestRunPushFails(t *testing.T) {
+func TestRunOriginUnreachable(t *testing.T) {
 	project(t, "")
 	gitc(t, "remote", "add", "origin", filepath.Join(t.TempDir(), "gone.git"))
 	err, out := deployWith(t, &fake{}, Options{Target: "d@h"})
-	var ce *cli.Error
-	if !errors.As(err, &ce) || ce.Code != 1 || !strings.Contains(out, "git:     v1.0.0 NOT pushed") || !strings.Contains(out, "could not push v1.0.0") || !strings.Contains(out, "the deploy to d@h succeeded") {
-		t.Errorf("%#v\n%s", err, out)
+	if err != nil || strings.Count(out, "git:") != 1 || !strings.Contains(out, "git:     could not ask origin whether it has v1.0.0, so that went unchecked") || strings.Contains(out, "warning:") {
+		t.Errorf("%v\n%s", err, out)
 	}
 	if v, _ := state.Get(state.File, "last_version"); v != "1.0.0" {
-		t.Errorf("the deploy itself is recorded: last_version %q", v)
+		t.Errorf("last_version %q", v)
 	}
 }
 
-func TestRunNoOriginWarnsOnce(t *testing.T) {
+func TestRunNoOriginSilent(t *testing.T) {
 	project(t, "")
 	err, out := deployWith(t, &fake{}, Options{Target: "d@h"})
-	if n := strings.Count(out, "warning: this repository has no 'origin' remote"); err != nil || n != 1 || strings.Count(out, "warning:") != 1 {
-		t.Errorf("%d warnings: %v\n%s", n, err, out)
+	if err != nil || strings.Contains(out, "git:") || strings.Contains(out, "origin") || strings.Contains(out, "warning:") {
+		t.Errorf("%v\n%s", err, out)
 	}
 }
 

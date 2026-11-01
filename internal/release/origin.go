@@ -123,29 +123,20 @@ func onOrigin(out *cli.Output, tag string) (bool, originResult) {
 	return r.rc == 0, r
 }
 
-// Push pushes the version tag last, once what it names is on the server
-// (landed says what is). What it did is returned for the summary under the
-// headline, a failed push included.
-func Push(out *cli.Output, version string, push bool, landed string) (string, error) {
+// Unpublished is the summary's word on v<version> when origin cannot hand it
+// out: missing there, or origin could not be asked. "" when origin has it or
+// there is no origin.
+func Unpublished(out *cli.Output, version string) string {
 	tag := "v" + version
-	if !push {
-		return tag + " left where it is (--no-git-push)", nil
-	}
 	if !HasOrigin() {
-		out.Warn("this repository has no 'origin' remote, so %s was not pushed — %s regardless; push the tag wherever this project lives", tag, landed)
-		return tag + " not pushed — this repository has no 'origin' remote", nil
+		return ""
 	}
 	there, r := onOrigin(out, tag)
-	if there {
-		return tag + " is already on origin", nil
+	switch {
+	case there:
+		return ""
+	case r.rc == 2:
+		return tag + " is not on origin — the server runs a version origin cannot fetch; publish it:  git push origin " + tag
 	}
-	if r.rc == 2 {
-		out.Info("pushing %s to origin…", tag)
-		if r = origin("push", "origin", "refs/tags/"+tag); r.rc == 0 {
-			return "pushed " + tag + " to origin", nil
-		}
-	}
-	return tag + " NOT pushed — origin could not be reached or refused it (see below)", cli.Fail("could not push %s to origin:", tag).Cont(r.failure()...).Cont(
-		landed+" and none of that needs redoing —",
-		"push the tag once the remote is reachable:  git push origin "+tag)
+	return "could not ask origin whether it has " + tag + ", so that went unchecked"
 }

@@ -18,25 +18,32 @@ Versions come from git tags on the project repo, formatted `vX.Y.Z` (semver).
   requires the same clean tree — so the tag names exactly what runs.
 - **An untagged HEAD is a release in waiting**: build-push — and deploy, for a
   project that builds no images (one that does is sent to build-push, since
-  that version was never built) — offer three tags — patch, minor and major bumps of the highest final `vX.Y.Z`
-  merged into HEAD (rc and dirty-shaped tags ignored; `0.0.0` when there is
-  none) — cut the chosen one at HEAD as a lightweight tag, and carry on as a
-  tagged run. `--bump=patch|minor|major` answers without a terminal; without
-  either the run fails naming it. A computed tag that already exists locally —
-  or on origin, when the run will push — is refused; an untagged dirty HEAD is
-  refused ("commit first"); a shallow clone, or one with no tag merged into
+  that version was never built) — offer three tags — patch, minor and major
+  bumps of the highest final `vX.Y.Z` merged into HEAD (rc and dirty-shaped
+  tags ignored; `0.0.0` when there is none) — cut the chosen one at HEAD as a
+  lightweight tag, and carry on as a tagged run. `--bump=patch|minor|major`
+  answers without a terminal; without either the run fails naming it. A
+  computed tag that already exists locally or on origin is refused (an origin
+  that cannot be asked warns, and the run carries on); an untagged dirty HEAD
+  is refused ("commit first"); a shallow clone, or one with no tag merged into
   HEAD while origin has v-tags this clone lacks, is refused (`git fetch
-  --unshallow --tags`), so a CI checkout never counts from `0.0.0`. The tag is lightweight
-  (`tag.gpgSign` is overridden) and cut before anything reaches the server — a
-  run that fails later keeps it, and says how to drop it (`git tag -d`). Every
-  call to origin says what it is asking. Without a terminal it is bounded (60 s,
-  its whole process group killed) and runs with `GIT_TERMINAL_PROMPT=0`, plus
-  `BatchMode=yes` when the ssh command is `ssh` itself — so nothing waits on a
-  prompt nobody can answer. With a terminal git may prompt, and nothing is
-  killed; only ssh's connect is bounded (15 s). A wrapper in `GIT_SSH_COMMAND`
-  or `GIT_SSH` is never given options. `deploy` pushes the
-  tag to origin once the deploy succeeded, as build-push does once the images
-  shipped; `--no-git-push` skips that, and no `origin` warns.
+  --unshallow --tags`), so a CI checkout never counts from `0.0.0`. The tag is
+  lightweight (`tag.gpgSign` is overridden) and cut before anything reaches
+  the server — a run that fails later keeps it, and says how to drop it (`git
+  tag -d`). Every call to origin says what it is asking. Without a terminal it
+  is bounded (60 s, its whole process group killed) and runs with
+  `GIT_TERMINAL_PROMPT=0`, plus `BatchMode=yes` when the ssh command is `ssh`
+  itself — so nothing waits on a prompt nobody can answer. With a terminal git
+  may prompt, and nothing is killed; only ssh's connect is bounded (15 s). A
+  wrapper in `GIT_SSH_COMMAND` or `GIT_SSH` is never given options. kasbah
+  reads origin and never writes to it: publishing a tag is `git push origin
+  v<version>`, the operator's. Once a deploy (of HEAD or of a named version)
+  or a rollback succeeded, or build-push shipped the images, a missing tag is
+  one `git:` line under the summary — the server runs a version origin cannot
+  fetch, and the push that publishes it; an origin that cannot be asked is
+  one line saying the tag went unchecked; a tag origin has, or no `origin` at
+  all, says nothing. Origin is asked only once kasbah has let go of the
+  server (its lock, its ssh session).
 - `--dirty`, on either, is the quick-test path: no commit, no tag. The build is
   labelled `<base>-dirty.<UTC yyyymmddhhmmss>` — base is the highest `v*` tag
   merged into HEAD, else `0.0.0` — in the image tag, `versions.log` and the
@@ -136,8 +143,8 @@ from compose itself.
    the ssh master into
      <apps>/.kasbah/bin/kasbah remote load <apps> <images>   # gunzip → docker load,
                                                       # then inspect each image
-6. git push origin v<version>   # if tag not on origin yet; a repo with no
-                                # 'origin' warns and continues, tag stays local
+6. Ask origin for v<version>   # read-only; a missing tag is one line under the
+                               # summary (Versioning contract)
 ```
 
 Three details in that flow are load-bearing.
@@ -275,7 +282,7 @@ released before the sync — and that run says so and records `deploy-failed`.
 have run, and old code on a new schema is worse than new code with a failed
 hook. The run appends `deploy-failed … reason=post-hook` — the new version is
 the one running — ships the Traefik fragment, which now matches the live
-containers, pushes no tag, and fails. A run whose stack came up but whose
+containers, and fails. A run whose stack came up but whose
 `versions.log` line could not be written says exactly that: the new version is
 live and unrecorded, and its fragment is not shipped.
 
@@ -350,9 +357,10 @@ below). The only differences:
    a symlinked fragment ships what it points to, mode 644). Done by the
    *local* side once the engine has returned 0 with a valid report — the file
    is on the workstation, and the ordering is the point (see below).
-10. Compute changelog (git log <prev-deploy>..<new>) and print it locally.
-11. git push origin v<version> if origin lacks it (--no-git-push skips), once
-    the server lock and the ssh session are released.
+10. Ask origin for v<version>, read-only, once the server lock and the ssh
+    session are released; a missing tag is one line under the summary
+    (Versioning contract). Then compute the changelog
+    (git log <prev-deploy>..<new>) and print it locally.
 ```
 
 ### Why the fragment ships last
@@ -670,6 +678,10 @@ small without sacrificing history.
     `compose up` must not have already pointed the live route at
     v<target>'s container names. A project with no fragment at v<target>
     is warned about and rolled back anyway; nothing is ever deleted.
+12. Ask origin for v<target>, read-only, once the server lock and the ssh
+    session are released; a missing tag is one line under the summary
+    (Versioning contract) — a version that reached the server through
+    `deploy X.Y.Z` may never have been published.
 ```
 
 ### Invariant

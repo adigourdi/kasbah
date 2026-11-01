@@ -8,7 +8,7 @@
 # the one under test, and `kasbah remote load` for real, against the same docker
 # stub — so what a case asserts is what crossed the wire and what the far side
 # did with it. git is real, against throwaway repositories under a temp
-# directory — including the `origin` the push cases use, which is a bare repo
+# directory — including the `origin` the tag cases use, which is a bare repo
 # two directories away and never a network.
 #
 # The stub logs are read both ways: a case asserts what was asked for, and the
@@ -378,7 +378,7 @@ services:
 COMPOSE
 recommit v1.4.2
 
-run --no-git-push "deploy@vps"; rc=$?
+run "deploy@vps"; rc=$?
 assert '[ "$rc" = "0" ]' "a two-image project ships (exit $rc: $err)"
 assert '[ "$(grep -c "^save " "$DOCKER_LOG")" = "1" ]' \
     "in exactly one docker save (log: $(cat "$DOCKER_LOG"))"
@@ -436,7 +436,7 @@ printf '["sha256:%s"]\n' "$hb" > "$lay/rootfs/srv-base"
 printf 'srv-base\nsrv-base\n' > "$lay/rootfs/ids"
 loaded_names() { tar -tf "${1:-$LOADED}" 2>/dev/null; }
 
-STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs" run --no-git-push "deploy@vps"; rc=$?
+STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs" run "deploy@vps"; rc=$?
 assert '[ "$rc" = "0" ]' "a ship over layers the server holds succeeds (exit $rc: $err)"
 ssh_cmds="$(grep -oF -e "'remote' 'layers'" -e "'remote' 'load'" "$SSH_LOG")"
 assert '[ "$ssh_cmds" = "'"'"'remote'"'"' '"'"'layers'"'"'
@@ -452,7 +452,7 @@ assert 'grep -qF "1 of 3 layers (200.0 kB) already on the server, not sent" <<<"
 
 # Under the containerd store a load whose layer is missing exits 0 and leaves
 # the image unpacked: the far side says so, and the images go again, whole.
-STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs" STUB_UNPACK_FAIL="$hb" run --no-git-push "deploy@vps"; rc=$?
+STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs" STUB_UNPACK_FAIL="$hb" run "deploy@vps"; rc=$?
 assert '[ "$rc" = "0" ]' "an image the server cannot unpack on its own layers is re-sent whole (exit $rc: $err)"
 assert '[ "$(grep -cF "'"'"'remote'"'"' '"'"'load'"'"'" "$SSH_LOG")" = "2" ]' \
     "in a second remote load (ssh log: $(cat "$SSH_LOG"))"
@@ -462,7 +462,7 @@ assert 'grep -qF "could not load the images on the layers it reported" <<<"$err"
     "saying why, and what each stream sent (said '$err')"
 
 # An overlay2 server that lost the layer since it answered: the load fails.
-STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs" STUB_LOAD_FAIL="$hb" run --no-git-push "deploy@vps"; rc=$?
+STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs" STUB_LOAD_FAIL="$hb" run "deploy@vps"; rc=$?
 assert '[ "$rc" = "0" ]' "a load that fails without the skipped layers is retried whole (exit $rc: $err)"
 assert '[ "$(grep -cF "'"'"'remote'"'"' '"'"'load'"'"'" "$SSH_LOG")" = "2" ] && grep -qF "$hb" <<<"$(loaded_names)"' \
     "in a second remote load carrying every layer (ssh log: $(cat "$SSH_LOG"))"
@@ -473,7 +473,7 @@ zid() { printf 'sha256:%s' "$(printf '%s' "$1" | sha256sum | cut -d' ' -f1)"; }
 printf '["%s","%s"]\n' "$(zid b)" "$(zid a)" > "$lay/rootfs-c/built-app-web_1.4.2"
 printf '["%s","%s"]\n' "$(zid b)" "$(zid w)" > "$lay/rootfs-c/built-app-worker_1.4.2"
 printf '["%s"]\n' "$(zid b)" > "$lay/rootfs-c/srv-base"
-STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs-c" run --no-git-push "deploy@vps"; rc=$?
+STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs-c" run "deploy@vps"; rc=$?
 assert '[ "$rc" = "0" ] && grep -qF "$hb" <<<"$(loaded_names)"' "a save that names no layer by diffID ships whole (exit $rc: $err)"
 assert 'grep -qF "saves compressed layers — nothing could be left out" <<<"$err" && ! grep -qF "already on the server, not sent" <<<"$err"' \
     "and says why nothing was left out, not that nothing was there (said '$err')"
@@ -496,7 +496,7 @@ map="$FAKE_APPS/.kasbah/layers.map"
 rm -f "$map"
 cinfo='[["driver-type","io.containerd.snapshotter.v1"]]'
 
-STUB_SAVE_TAR="$c/save.tar" STUB_ROOTFS="$lay/rootfs-c" STUB_INFO="$cinfo" run --no-git-push "deploy@vps"; rc=$?
+STUB_SAVE_TAR="$c/save.tar" STUB_ROOTFS="$lay/rootfs-c" STUB_INFO="$cinfo" run "deploy@vps"; rc=$?
 assert '[ "$rc" = "0" ]' "a containerd-store workstation ships (exit $rc: $err)"
 assert 'grep -qxF "learning this workstation'"'"'s layer names: one extra local export, nothing sent" <<<"$err"' \
     "announcing one learning export (said '$err')"
@@ -512,7 +512,7 @@ assert 'grep -qxF "sha256:$cb $(zid b)" <<<"$mapc" && grep -qxF "sha256:$ca $(zi
     "the server recorded every layer's name from the stream, the one left out included (map: $mapc)"
 assert '[ "$(stat -c %a "$map" 2>/dev/null)" = "664" ]' "at mode 664 ($(stat -c %a "$map" 2>/dev/null))"
 
-STUB_SAVE_TAR="$c/save.tar" STUB_ROOTFS="$lay/rootfs-c" STUB_INFO="$cinfo" run --no-git-push "deploy@vps"; rc=$?
+STUB_SAVE_TAR="$c/save.tar" STUB_ROOTFS="$lay/rootfs-c" STUB_INFO="$cinfo" run "deploy@vps"; rc=$?
 assert '[ "$rc" = "0" ] && [ "$(grep -c "^save " "$DOCKER_LOG")" = "1" ] && ! grep -qF "learning" <<<"$err"' \
     "the next push learns nothing: the server named the layer (exit $rc, docker log: $(cat "$DOCKER_LOG"), said '$err')"
 assert '! grep -qF "$cb" <<<"$(loaded_names)" && grep -qF "1 of 3 layers" <<<"$err"' \
@@ -526,7 +526,7 @@ STUB_ROOTFS="$lay/rootfs-c" PATH="$stub_dir:$PATH" DOCKER_LOG="$DOCKER_LOG" "$FA
 assert '[ "$(cat "$map" 2>/dev/null)" = "sha256:$cb $(zid b)" ]' \
     "remote layers prunes the names of layers no image on the server holds (map: $(cat "$map" 2>/dev/null); $(cat "$tmpdir/layers.err"))"
 printf 'not a map\n' > "$map"
-STUB_SAVE_TAR="$c/save.tar" STUB_ROOTFS="$lay/rootfs-c" STUB_INFO="$cinfo" run --no-git-push "deploy@vps"; rc=$?
+STUB_SAVE_TAR="$c/save.tar" STUB_ROOTFS="$lay/rootfs-c" STUB_INFO="$cinfo" run "deploy@vps"; rc=$?
 assert '[ "$rc" = "0" ] && [ "$(grep -c "^save " "$DOCKER_LOG")" = "2" ] && [ "$(grep -c . "$map")" = "3" ]' \
     "an unreadable map is started over, never fatal (exit $rc, map: $(cat "$map"))"
 rm -f "$map"
@@ -551,7 +551,7 @@ printf '["sha256:%s","%s"]\n' "$ub" "$(zid w)" > "$u/rootfs/built-app-worker_1.4
 printf '["sha256:%s"]\n' "$ub" > "$u/rootfs/srv-base"
 printf 'srv-base\n' > "$u/rootfs/ids"
 for i in 1 2; do
-    STUB_SAVE_TAR="$u/save.tar" STUB_ROOTFS="$u/rootfs" STUB_INFO="$cinfo" run --no-git-push "deploy@vps"; rc=$?
+    STUB_SAVE_TAR="$u/save.tar" STUB_ROOTFS="$u/rootfs" STUB_INFO="$cinfo" run "deploy@vps"; rc=$?
     assert '[ "$rc" = "0" ] && ! grep -qF "$ub" <<<"$(loaded_names)"' "push $i leaves the uncompressed base out (exit $rc: $err)"
     saves[i]="$(grep -c "^save " "$DOCKER_LOG")"
 done
@@ -559,7 +559,7 @@ assert '[ "${saves[1]}" = "2" ] && [ "${saves[2]}" = "1" ]' \
     "the first push learns, the second needs no export: the map names the base by its diffID (saves ${saves[1]}, ${saves[2]}; map: $(cat "$map"))"
 rm -f "$map"
 
-STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs" STUB_SERVER_INSPECT_RC=1 run --no-git-push "deploy@vps"; rc=$?
+STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs" STUB_SERVER_INSPECT_RC=1 run "deploy@vps"; rc=$?
 assert '[ "$rc" = "0" ]' "a server that cannot list its layers still gets the images (exit $rc: $err)"
 assert 'grep -qF "$hb" <<<"$(loaded_names)"' "every layer of them (loaded: $(loaded_names))"
 assert 'grep -qF "which layers it holds" <<<"$err"' "with a note that nothing was skipped (said '$err')"
@@ -570,17 +570,17 @@ rm -rf "$projdir/.kasbah"
 
 # The load report is a protocol, not a courtesy: a step that answered nothing
 # must not read as a successful load.
-SSH_LOAD_OUT="" run --no-git-push "deploy@vps"; rc=$?
+SSH_LOAD_OUT="" run "deploy@vps"; rc=$?
 assert '[ "$rc" != "0" ]' "a remote step that reports no loaded= count is a failure (exit $rc)"
 assert 'grep -qF "loaded=2" <<<"$err"' "naming what it wanted (said '$err')"
 
-SSH_LOAD_OUT="loaded=1" run --no-git-push "deploy@vps"; rc=$?
+SSH_LOAD_OUT="loaded=1" run "deploy@vps"; rc=$?
 assert '[ "$rc" != "0" ]' \
     "and a count that does not match the images sent is a failure too (exit $rc)"
 
 # --- A stream that breaks, from either end ---------------------------------------------------
 
-DOCKER_LOAD_RC=1 run --no-git-push "deploy@vps"; rc=$?
+DOCKER_LOAD_RC=1 run "deploy@vps"; rc=$?
 assert '[ "$rc" = "1" ]' "a docker load the server refuses fails the run (exit $rc)"
 assert 'grep -qF "docker load exited 1" <<<"$err"' "the far side saying why (said '$err')"
 assert 'grep -qF "could not load the images onto deploy@vps" <<<"$err"' "and this side which step (said '$err')"
@@ -589,7 +589,7 @@ assert '[ ! -e "$projdir/.kasbah/state.json" ]' \
 
 # A save that fails after writing part of its stream must not reach the server
 # as a short but valid one: the gzip trailer is never written.
-DOCKER_SAVE_RC=1 run --no-git-push "deploy@vps"; rc=$?
+DOCKER_SAVE_RC=1 run "deploy@vps"; rc=$?
 assert '[ "$rc" = "1" ]' "a docker save that fails fails the run (exit $rc)"
 assert 'grep -qF "docker save" <<<"$err" && grep -qF "failed" <<<"$err"' "naming docker save (said '$err')"
 assert 'grep -qF "cut short" <<<"$err"' "while the far side abandoned the load (said '$err')"
@@ -600,26 +600,26 @@ assert '! grep -qxF "image inspect built-app-web:1.4.2" "$DOCKER_LOG"' \
     "and it got no further than the load (log: $(cat "$DOCKER_LOG"))"
 assert '[ ! -e "$projdir/.kasbah/state.json" ]' "recording no server"
 
-SSH_TRUNCATE=12 run --no-git-push "deploy@vps"; rc=$?
+SSH_TRUNCATE=12 run "deploy@vps"; rc=$?
 assert '[ "$rc" = "1" ]' "a connection that drops mid-stream fails the run (exit $rc)"
 assert 'grep -qF "cut short" <<<"$err"' "the far side refusing the partial stream (said '$err')"
 assert '[ ! -e "$projdir/.kasbah/state.json" ]' "recording no server"
 
 # --- A server kasbah cannot reach, or never prepared ------------------------------------------
 
-SSH_RC=255 run --no-git-push "deploy@vps"; rc=$?
+SSH_RC=255 run "deploy@vps"; rc=$?
 assert '[ "$rc" = "3" ]' "an unreachable server is exit 3, as docs/cli.md has it (exit $rc: $err)"
 assert '[ ! -s "$DOCKER_LOG" ]' \
     "and nothing was built or saved before the connection was proved (log: $(cat "$DOCKER_LOG"))"
 
-FAKE_NO_MARKER=1 run --no-git-push "deploy@vps"; rc=$?
+FAKE_NO_MARKER=1 run "deploy@vps"; rc=$?
 assert '[ "$rc" = "4" ]' "a server with no marker is exit 4 — the load runs in a binary under <apps> (exit $rc: $err)"
 assert 'grep -qF "server.json" <<<"$err"' "naming the marker it looked for (said '$err')"
 assert '[ ! -s "$DOCKER_LOG" ]' "before anything was built or saved (log: $(cat "$DOCKER_LOG"))"
 
-# --- The git tag ------------------------------------------------------------------------------
+# --- The git tag -----------------------------------------------------------------------------
 # A bare repository two directories away plays origin. Nothing here can reach a
-# network, and the assertion is what actually landed in it.
+# network, and the assertion is what actually landed in it: nothing, ever.
 
 origin="$tmpdir/origin.git"
 git init -q --bare "$origin" >/dev/null 2>&1
@@ -627,14 +627,13 @@ projdir="$(make gitpush built-app v3.1.0 nightly)"
 ( cd "$projdir" && git remote add origin "$origin" ) || exit 2
 
 origin_tags() { git --git-dir="$origin" tag | tr '\n' ' '; }
+notice="git:     v3.1.0 is not on origin — the server runs a version origin cannot fetch; publish it:  git push origin v3.1.0"
 
 run "deploy@vps"; rc=$?
 assert '[ "$rc" = "0" ]' "a ship with an origin succeeds (exit $rc: $err)"
-assert '[ "$(cd "$projdir" && git tag | tr "\n" " ")" = "nightly v3.1.0 " ]' \
-    "the fixture carries a second, unrelated tag — else 'pushes this tag' cannot be
-     told from 'pushes every tag' (local tags: $(cd "$projdir" && git tag | tr '\n' ' '))"
-assert '[ "$(origin_tags)" = "v3.1.0 " ]' \
-    "and it is the version tag alone that lands on origin (origin has: '$(origin_tags)')"
+assert '[ "$(origin_tags)" = "" ]' \
+    "and writes nothing to origin — kasbah never pushes a tag (origin has: '$(origin_tags)')"
+assert '[ "$(grep -c "^save " "$DOCKER_LOG")" = "1" ]' "the images went (log: $(cat "$DOCKER_LOG"))"
 
 # The `git:` line is an indented continuation of the `Shipped …` headline, so it
 # has to come after it — the order `kasbah deploy` and `kasbah server init` both
@@ -647,60 +646,42 @@ assert '[ "$n_head" -lt "$n_git" ]' \
     "and the headline comes first, with the git: line indented under it
         (headline on line $n_head, git: on line $n_git)
         said: $err"
-assert 'grep -qF "git:     pushed v3.1.0 to origin" <<<"$err"' \
-    "which says what it did with the tag (said '$err')"
+assert 'grep -qF "$notice" <<<"$err"' \
+    "which says origin cannot hand out the version and how to publish it (said '$err')"
+assert '[ "$(grep -c "git:" <<<"$err")" = "1" ]' "in exactly one line (said '$err')"
 
-# Idempotent: a tag already on origin is not pushed again, and that is not an error.
+# A tag origin has already is not worth a line.
+( cd "$projdir" && git push -q origin refs/tags/v3.1.0 ) >/dev/null 2>&1
+assert '[ "$(origin_tags)" = "v3.1.0 " ]' "origin now has v3.1.0 — else the case below proves nothing"
 run "deploy@vps"; rc=$?
-assert '[ "$rc" = "0" ]' "shipping the same version again succeeds (exit $rc: $err)"
-assert 'grep -qF "already on origin" <<<"$out$err"' \
-    "and says the tag was already there (said '$out$err')"
-assert '[ "$(grep -n -m1 -F "Shipped built-app" <<<"$err" | cut -d: -f1)" -lt "$(grep -n -m1 -F "  git:" <<<"$err" | cut -d: -f1)" ]' \
-    "under the headline here too, not above it (said '$err')"
+assert '[ "$rc" = "0" ]' "shipping a version origin has succeeds (exit $rc: $err)"
+assert '! grep -qF "git:" <<<"$err"' "and says nothing about the tag (said '$err')"
 
-# --build-only is the whole short circuit: no transfer and no push either.
+# --build-only ships nothing, so there is no server version to speak of.
 git --git-dir="$origin" tag -d v3.1.0 >/dev/null 2>&1
-assert '[ "$(origin_tags)" = "" ]' "origin is back to no tags — else --build-only proves nothing"
 run --build-only; rc=$?
 assert '[ "$rc" = "0" ]' "--build-only succeeds with an origin present (exit $rc: $err)"
-assert '[ "$(origin_tags)" = "" ]' \
-    "and pushes nothing — it ships nothing, so there is nothing to point a tag at (origin has: '$(origin_tags)')"
+assert '[ "$(origin_tags)" = "" ] && ! grep -qF "git:" <<<"$err"' \
+    "pushes nothing and says nothing about origin (origin has: '$(origin_tags)', said '$err')"
 
-git --git-dir="$origin" tag -d v3.1.0 >/dev/null 2>&1
-assert '[ "$(origin_tags)" = "" ]' "origin is back to no tags — else --no-git-push proves nothing"
-run --no-git-push "deploy@vps"; rc=$?
-assert '[ "$rc" = "0" ]' "--no-git-push still ships (exit $rc: $err)"
-assert '[ "$(origin_tags)" = "" ]' \
-    "and leaves the tag exactly where it was (origin has: '$(origin_tags)')"
-assert 'grep -qF "git:     v3.1.0 left where it is (--no-git-push)" <<<"$err"' \
-    "saying so under the headline rather than staying silent about the tag (said '$err')"
-assert '[ "$(grep -c "^save " "$DOCKER_LOG")" = "1" ]' \
-    "the images went all the same (log: $(cat "$DOCKER_LOG"))"
+# An origin that cannot be asked is one line too, and never fails the ship.
+( cd "$projdir" && git remote set-url origin "$tmpdir/gone.git" ) || exit 2
+run "deploy@vps"; rc=$?
+assert '[ "$rc" = "0" ]' "a ship whose origin cannot be reached still exits 0 (exit $rc: $err)"
+assert 'grep -qF "git:     could not ask origin whether it has v3.1.0, so that went unchecked" <<<"$err"' \
+    "saying the tag went unchecked (said '$err')"
+assert '[ "$(grep -c "git:" <<<"$err")" = "1" ]' "in exactly one line (said '$err')"
 
-# The ordering the push depends on, from the only side that can show it: a
-# transfer that fails must leave origin exactly as it was. A tag on origin
-# naming images no server has is the worse of the two messes, which is why the
-# push is the last step rather than an early one.
-git --git-dir="$origin" tag -d v3.1.0 >/dev/null 2>&1
-assert '[ "$(origin_tags)" = "" ]' "origin is back to no tags — else the case below proves nothing"
-DOCKER_LOAD_RC=1 run "deploy@vps"; rc=$?
-assert '[ "$rc" != "0" ]' "a ship whose load fails is a failed run (exit $rc)"
-assert '[ "$(origin_tags)" = "" ]' \
-    "and pushed no tag — the tag follows the images (origin has: '$(origin_tags)')"
-
-# No origin at all: the images have already shipped by then, so failing there
-# would be perverse. Warn and finish.
+# No origin at all: nothing to say.
 projdir="$(make noorigin built-app v3.1.0)"
 run "deploy@vps"; rc=$?
-assert '[ "$rc" = "0" ]' "a repository with no origin still exits 0 (exit $rc: $err)"
-assert 'grep -qF "no '"'"'origin'"'"' remote" <<<"$err"' "with a warning that says why (said '$err')"
-assert 'grep -qF "git:     v3.1.0 not pushed" <<<"$err"' \
-    "and the summary line under the headline agrees with the warning (said '$err')"
+assert '[ "$rc" = "0" ]' "a repository with no origin exits 0 (exit $rc: $err)"
+assert '! grep -qF "origin" <<<"$err"' "and says nothing about origin (said '$err')"
 assert '[ "$(grep -c "^save " "$DOCKER_LOG")" = "1" ]' "and the images did ship (log: $(cat "$DOCKER_LOG"))"
 
 # --- An untagged HEAD is tagged first -------------------------------------------------------
 # HEAD one commit past v3.1.0: --bump=minor makes it v3.2.0, which is what the
-# images carry and what reaches origin.
+# images carry; the tag stays local.
 
 bump_origin="$tmpdir/bump-origin.git"
 git init -q --bare "$bump_origin" >/dev/null 2>&1
@@ -714,8 +695,9 @@ assert '[ "$(head_tags)" = "v3.2.0 " ]' "having tagged HEAD v3.2.0 (HEAD has: '$
 assert 'grep -qF "Tagged HEAD v3.2.0" <<<"$err"' "and said so (said '$err')"
 assert 'grep -qF "Shipped built-app 3.2.0 to deploy@vps" <<<"$err"' "under that version (said '$err')"
 assert 'grep -qF ":3.2.0" "$DOCKER_LOG"' "which is the images' tag (log: $(cat "$DOCKER_LOG"))"
-assert '[ "$(git --git-dir="$bump_origin" tag | tr "\n" " ")" = "v3.2.0 " ]' \
-    "and the tag reached origin (origin has: '$(git --git-dir="$bump_origin" tag | tr '\n' ' ')')"
+assert '[ -z "$(git --git-dir="$bump_origin" tag)" ]' \
+    "and the tag stays off origin (origin has: '$(git --git-dir="$bump_origin" tag | tr '\n' ' ')')"
+assert 'grep -qF "git push origin v3.2.0" <<<"$err"' "which the run points out (said '$err')"
 
 # A server that cannot be reached: the tag was already cut, and stays — local.
 projdir="$(make bumpfail built-app v3.1.0)"
@@ -774,10 +756,15 @@ assert 'grep -qF "unknown flag" <<<"$err"' "by name (said '$err')"
 assert 'grep -qF -- "--nope" <<<"$err"' "quoting it (said '$err')"
 assert '[ ! -s "$DOCKER_LOG" ]' "before anything runs (log: $(cat "$DOCKER_LOG"))"
 
+# kasbah writes to no git remote, so there is no push to opt out of.
+run --no-git-push "deploy@vps"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "unknown flag '"'"'--no-git-push'"'"'" <<<"$err"' \
+    "--no-git-push is an unknown flag (exit $rc: $err)"
+
 # A boolean flag handed a value is its own mistake, refused by name rather than
 # as an unknown flag — the mirror image of the branch deploy has for --on-drift
 # without one.
-for pair in --build-only=yes --no-git-push=true; do
+for pair in --build-only=yes --dirty=1; do
     run "$pair"; rc=$?
     assert '[ "$rc" = "1" ]' "'$pair' is refused (exit $rc)"
     assert 'grep -qF "takes no value" <<<"$err"' "for taking no value (said '$err')"
@@ -833,7 +820,7 @@ assert '[ ! -s "$DOCKER_LOG" ]' \
 projdir="$(make remembered built-app v1.4.2)"
 mkdir -p "$projdir/.kasbah"
 printf '{"last_server":"stored@vps"}\n' > "$projdir/.kasbah/state.json"
-run --no-git-push; rc=$?
+run; rc=$?
 assert '[ "$rc" = "0" ]' "a project with a last_server ships without being told (exit $rc: $err)"
 assert 'grep -qF "stored@vps" <<<"$(grep -F "'"'"'remote'"'"' '"'"'load'"'"'" "$SSH_LOG")"' \
     "to that server (ssh log: $(cat "$SSH_LOG"))"
@@ -854,36 +841,36 @@ case "$(uname -m)" in
     *) srv_arch=arm64 other=amd64 ;;
 esac
 projdir="$(make platform built-app v1.4.2)"
-STUB_ENGINE="linux/$other" run --no-git-push "deploy@vps"; rc=$?
+STUB_ENGINE="linux/$other" run "deploy@vps"; rc=$?
 plat="$(cat "$DOCKER_LOG.platform")"
 assert '[ "$rc" = "0" ]' "a server of another arch than the engine ships (exit $rc: $err)"
 assert '[ "$plat" = "linux/$srv_arch" ]' "the build is asked for the server's platform, linux/$srv_arch (got: $plat)"
 assert 'grep -qF "building for linux/$srv_arch, the platform of deploy@vps — this docker engine is linux/$other" <<<"$err"' \
     "and says so, naming both (said '$err')"
 
-STUB_ENGINE="linux/$srv_arch" run --no-git-push "deploy@vps"; rc=$?
+STUB_ENGINE="linux/$srv_arch" run "deploy@vps"; rc=$?
 plat="$(cat "$DOCKER_LOG.platform")"
 assert '[ "$rc" = "0" ] && [ "$plat" = "linux/$srv_arch" ]' "an engine of the server's own platform builds for it too (exit $rc, got: $plat)"
 assert '! grep -qF "building for" <<<"$err"' "without a word about it (said '$err')"
 
-STUB_ENGINE="linux/$other" DOCKER_DEFAULT_PLATFORM="linux/$other" run --no-git-push "deploy@vps"; rc=$?
+STUB_ENGINE="linux/$other" DOCKER_DEFAULT_PLATFORM="linux/$other" run "deploy@vps"; rc=$?
 plat="$(cat "$DOCKER_LOG.platform")"
 assert '[ "$rc" = "0" ] && [ "$plat" = "linux/$srv_arch" ]' "a DOCKER_DEFAULT_PLATFORM of another arch is overridden (exit $rc, got: $plat)"
 assert 'grep -qF "DOCKER_DEFAULT_PLATFORM=linux/$other is overridden" <<<"$err"' "and that is said (said '$err')"
 
-STUB_ENGINE="linux/$other" DOCKER_RC=1 run --no-git-push "deploy@vps"; rc=$?
+STUB_ENGINE="linux/$other" DOCKER_RC=1 run "deploy@vps"; rc=$?
 assert '[ "$rc" = "1" ] && grep -qF "needs emulation" <<<"$err" && grep -qF "tonistiigi/binfmt --install $srv_arch" <<<"$err"' \
     "a cross build that fails points at emulation (exit $rc, said '$err')"
 
 STUB_ENGINE="linux/$other" STUB_COMPOSE_ERR="service \"web\" build.platforms does not support value set by DOCKER_DEFAULT_PLATFORM: linux/$srv_arch" \
-    run --no-git-push "deploy@vps"; rc=$?
+    run "deploy@vps"; rc=$?
 assert '[ "$rc" = 1 ] && grep -qF "build.platforms must include linux/$srv_arch" <<<"$err" && ! grep -qF "emulation" <<<"$err"' \
     "compose refusing the platform for build.platforms says so, not emulation (exit $rc, said '$err')"
 
 # A service pinned to another platform builds an image the server cannot run.
 sed -i "s|^    image: built-app-web:current|&\n    platform: linux/$other|" "$projdir/compose.prod.yml"
 recommit v1.4.2
-STUB_ENGINE="linux/$srv_arch" run --no-git-push "deploy@vps"; rc=$?
+STUB_ENGINE="linux/$srv_arch" run "deploy@vps"; rc=$?
 assert '[ "$rc" = 0 ] && grep -qF "service '"'"'built-app-web'"'"' sets platform: linux/$other, and deploy@vps is linux/$srv_arch" <<<"$err"' \
     "a service platform: other than the server's is warned about (exit $rc, said '$err')"
 assert '! grep -qF "service '"'"'worker'"'"' sets platform" <<<"$err"' "and only that service (said '$err')"
@@ -897,7 +884,7 @@ assert '[ "$rc" = "0" ] && [ "$plat" = "linux/$other" ]' "or the one DOCKER_DEFA
 
 # --- A working tree that is not HEAD's -------------------------------------------------------------
 # Without --dirty it is refused before anything is built; with it, it ships
-# under <base>-dirty.<UTC time>, pushes no tag, and leaves deploy --dirty the
+# under <base>-dirty.<UTC time>, has no tag, and leaves deploy --dirty the
 # label, the server and the tree it built.
 
 projdir="$(make dirty built-app v1.4.2)"
@@ -931,7 +918,7 @@ assert 'grep -qF "built-app-web:$label" <<<"$(grep -F "'"'"'remote'"'"' '"'"'loa
     "and loaded on the server under it (ssh log: $(cat "$SSH_LOG"))"
 assert 'grep -qF "Shipped built-app $label to deploy@vps" <<<"$err"' "reporting the label (said '$err')"
 assert '[ -z "$(git --git-dir="$dirty_origin" tag)" ]' "pushing no tag (origin has: '$(git --git-dir="$dirty_origin" tag)')"
-assert 'grep -qF "nothing pushed" <<<"$err"' "and saying so (said '$err')"
+assert '! grep -qF "git:" <<<"$err"' "and saying nothing of origin — a dirty build has no tag (said '$err')"
 state="$(cat "$projdir/.kasbah/state.json" 2>/dev/null)"
 assert '[ "$(jq -r .dirty_build <<<"$state")" = "$label" ] && [ "$(jq -r .dirty_server <<<"$state")" = "deploy@vps" ]' \
     "recording the label and the server for deploy --dirty (state: $state)"

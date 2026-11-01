@@ -925,7 +925,7 @@ else
     assert 'false' "could not plant a second prepared tree at $alt_apps on the rig"
 fi
 
-# --- An untagged HEAD: deploy --bump=patch tags it, deploys it, pushes it -----------------
+# --- An untagged HEAD: deploy --bump=patch tags it and deploys it, origin untouched --------
 # A commit past v$project_version, and a bare repository standing in for origin.
 bump_origin="$tmpdir/bump-origin.git"
 bumped=$(printf '%s' "$project_version" | awk -F. '{ printf "%d.%d.%d", $1, $2, $3 + 1 }')
@@ -942,8 +942,9 @@ assert '[ "$head_tags" = "v$bumped " ]' "having tagged HEAD v$bumped (HEAD has: 
 last_line=$(rig_ssh "tail -n 1 $apps/$project/versions.log" 2>/dev/null | tr -d '\r')
 assert '[[ "$last_line" == *" deploy $bumped "* ]]' "and deployed it under that version (line: $last_line)"
 origin_tags=$(git --git-dir="$bump_origin" tag | tr '\n' ' ')
-assert '[ "$origin_tags" = "v$bumped " ]' "and pushed the tag to origin (origin has: '$origin_tags')"
-assert 'grep -qF "git:     pushed v$bumped to origin" "$tmpdir/err"' "saying so (said '$(cli_err)')"
+assert '[ -z "$origin_tags" ]' "and left origin untouched (origin has: '$origin_tags')"
+assert 'grep -qF "git:     v$bumped is not on origin" "$tmpdir/err" && grep -qF "git push origin v$bumped" "$tmpdir/err"' \
+    "saying the server runs a version origin cannot fetch (said '$(cli_err)')"
 
 # --- Leave the rig as it was found, but only on success ------------------------------------
 if [ "$fail" -eq 0 ]; then

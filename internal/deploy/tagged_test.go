@@ -3,6 +3,7 @@ package deploy
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,6 +90,9 @@ func runTagged(t *testing.T, f *fake, o Options, mode string) (error, string) {
 	t.Helper()
 	var errb bytes.Buffer
 	out := &cli.Output{Stdout: &errb, Stderr: &errb}
+	if f.marks != nil {
+		f.marks = &errb
+	}
 	pwd, _ := os.Getwd()
 	err := RunTagged(Ctx{
 		Out: out, Prompter: &prompt.Prompter{In: strings.NewReader(""), Out: out},
@@ -173,6 +177,44 @@ func TestDeployVersion(t *testing.T) {
 	if !strings.Contains(out, "Deployed demo 1.0.0 to d@h") {
 		t.Errorf("banner\n%s", out)
 	}
+}
+
+// A named deploy and a rollback end like a deploy of HEAD: a tag origin lacks
+// is one summary line, asked once the server is let go; one it has is silence.
+func TestTaggedUnpublishedTag(t *testing.T) {
+	history(t, "")
+	origin := t.TempDir()
+	git(t, "init", "-q", "--bare", origin)
+	git(t, "remote", "add", "origin", origin)
+	prev := "{\"" + ReportKey + "\":1,\"version\":\"1.0.0\",\"prev_version\":\"2.0.0\",\"deployed_before\":true,\"backup\":\"no-backup\",\"digest\":\"-\"}\n"
+	runs := func(t *testing.T, published bool) {
+		for _, mode := range []string{"deploy", "rollback"} {
+			f := &fake{marks: io.Discard}
+			if mode == "rollback" {
+				p := prev
+				f = &fake{record: record(twoDeploys, "", true), out: &p, marks: io.Discard}
+			}
+			err, out := runTagged(t, f, Options{Target: "d@h", Version: "1.0.0"}, mode)
+			want := "git:     v1.0.0 is not on origin — the server runs a version origin cannot fetch; publish it:  git push origin v1.0.0"
+			switch {
+			case err != nil:
+				t.Errorf("%s: %v\n%s", mode, err, out)
+			case published && strings.Contains(out, "git:"):
+				t.Errorf("%s, on origin: %s", mode, out)
+			case !published && (strings.Count(out, "git:") != 1 || !strings.Contains(out, want)):
+				t.Errorf("%s, not on origin: %s", mode, out)
+			}
+			if f.unlocked != 1 || f.closed != 1 || !releasedFirst(out) {
+				t.Errorf("%s: unlocked %d, closed %d, released before asking origin %v\n%s", mode, f.unlocked, f.closed, releasedFirst(out), out)
+			}
+		}
+	}
+	runs(t, false)
+	if gitc(t, "--git-dir="+origin, "tag") != "" {
+		t.Fatal("a tag reached origin")
+	}
+	git(t, "push", "-q", "origin", "v1.0.0")
+	runs(t, true)
 }
 
 func TestRollbackRefusals(t *testing.T) {

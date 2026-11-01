@@ -16,12 +16,14 @@ one wall, reached through one gate.
 
 ## How to use it
 
-From a project's directory, every release is a git tag and two commands:
+From a project's directory, every release is a git tag, two
+commands and a push of the tag:
 
 ```sh
 git tag v1.2.0
-kasbah build-push deploy@vps.example.com   # build the images, stream them to the server, push the tag
+kasbah build-push deploy@vps.example.com   # build the images, stream them to the server
 kasbah deploy                              # ship the files, start the new version, route it
+git push origin v1.2.0                     # publish the tag: kasbah never pushes it
 ```
 
 And when something goes wrong:

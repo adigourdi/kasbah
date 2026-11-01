@@ -40,15 +40,13 @@ type Options struct {
 	Target, Version, OnDrift              string
 	SkipHooks, NoHealthWait, AllowStopped bool
 	Dirty                                 bool
-	// The working-tree deploy's: Bump answers the untagged-HEAD question,
-	// NoGitPush keeps the tag off origin.
-	Bump      string
-	NoGitPush bool
+	// The working-tree deploy's: Bump answers the untagged-HEAD question.
+	Bump string
 }
 
 const usage = `Usage: kasbah deploy [USER@HOST] [VERSION] [--on-drift=setup|continue|abort]
                      [--skip-hooks] [--no-health-wait] [--allow-stopped] [--dirty]
-                     [--bump=patch|minor|major] [--no-git-push]
+                     [--bump=patch|minor|major]
 
 Ships the working tree to a prepared server and brings the project up there.
 Run from the project root. The version is HEAD's v-tag, and a working tree with
@@ -80,8 +78,8 @@ What it does:
     is not reverted, and records a deploy-failed entry
   * ships traefik-dynamic.yml to <apps>/traefik/dynamic/<name>.yml, last
   * prints the commits between the version the server was running and this one
-  * git push origin v<version>, when the tag is not on origin yet — last, once
-    the deploy succeeded; a repository with no origin warns and carries on
+  * a line under the summary when origin lacks v<version>, which kasbah
+    never pushes
 
 Flags:
   --dirty               ship the working tree as it stands, labelled as the
@@ -93,7 +91,6 @@ Flags:
   --bump=patch|minor|major
                         answers the untagged-HEAD question; without a terminal
                         and without --bump, an untagged HEAD is a failure
-  --no-git-push         deploy, and leave the tag where it is
   --on-drift=setup      re-run the interactive setup when .env has drifted
   --on-drift=continue   deploy against the .env as it stands
   --on-drift=abort      stop, changing nothing
@@ -166,8 +163,6 @@ func parse(cmd string, args []string) (Options, error) {
 			o.AllowStopped = true
 		case a == "--dirty" && cmd == "deploy":
 			o.Dirty = true
-		case a == "--no-git-push" && cmd == "deploy":
-			o.NoGitPush = true
 		case strings.HasPrefix(a, "--bump=") && cmd == "deploy":
 			o.Bump = strings.TrimSuffix(strings.TrimPrefix(a, "--bump="), "\r")
 			if err := release.CheckBump(cmd, o.Bump); err != nil {
@@ -175,8 +170,6 @@ func parse(cmd string, args []string) (Options, error) {
 			}
 		case a == "--bump" && cmd == "deploy":
 			return o, cli.Fail("deploy: --bump takes its value with '=' — --bump=patch, --bump=minor or --bump=major")
-		case strings.HasPrefix(a, "--no-git-push=") && cmd == "deploy":
-			return o, cli.Fail("deploy: --no-git-push takes no value — pass it on its own")
 		case a == "--dirty" || strings.HasPrefix(a, "--dirty="):
 			if cmd == "rollback" {
 				return o, cli.Fail("rollback: --dirty is not a rollback flag — a rollback ships a version's tag, never the working tree, and a --dirty build is never a rollback target")
@@ -214,15 +207,13 @@ func parse(cmd string, args []string) (Options, error) {
 		return o, cli.Fail("deploy: --dirty ships under no tag, and --bump=%s cuts one — pass one or the other", o.Bump)
 	case o.Bump != "" && o.Version != "":
 		return o, cli.Fail("deploy: %s names a tag that exists, and --bump=%s cuts a new one on HEAD — pass one or the other", o.Version, o.Bump)
-	case o.NoGitPush && o.Version != "":
-		return o, cli.Fail("deploy: --no-git-push is the working-tree deploy's — deploying %s pushes no tag", o.Version)
 	}
 	return o, nil
 }
 
 func takes(cmd string) string {
 	if cmd == "deploy" {
-		return "USER@HOST, VERSION, --on-drift=, --skip-hooks, --no-health-wait, --allow-stopped, --dirty, --bump= and --no-git-push"
+		return "USER@HOST, VERSION, --on-drift=, --skip-hooks, --no-health-wait, --allow-stopped, --dirty and --bump="
 	}
 	return "USER@HOST, VERSION, --on-drift=, --skip-hooks, --no-health-wait and --allow-stopped"
 }
@@ -301,7 +292,7 @@ func Run(c Ctx, o Options) error {
 	fresh := false
 	if !o.Dirty {
 		if r.version, fresh, err = release.Head(c.PWD, release.Tagging{Cmd: "deploy", Retry: "kasbah deploy --dirty",
-			Bump: o.Bump, Push: !o.NoGitPush, P: c.Prompter, Untagged: r.unbuilt}); err != nil {
+			Bump: o.Bump, P: c.Prompter, Untagged: r.unbuilt}); err != nil {
 			return err
 		}
 	} else if err := release.Repo(c.PWD); err != nil {
@@ -367,23 +358,22 @@ func Run(c Ctx, o Options) error {
 		"last_version", r.version); err != nil {
 		return err
 	}
-	// The tag goes to origin last, with the server let go: a slow origin must
-	// not hold the server lock, and a tag naming a failed deploy is the worse mess.
-	var gitResult string
-	var pushErr error
+	// Origin is asked with the server let go: a slow origin must not hold the
+	// server lock.
+	var unpublished string
 	if !o.Dirty {
 		unlock()
 		closeSession()
-		gitResult, pushErr = release.Push(c.Out, r.version, !o.NoGitPush, "the deploy to "+r.target+" succeeded")
+		unpublished = release.Unpublished(c.Out, r.version)
 	}
 	r.banner("Deployed "+m.Name+" "+r.version+" to "+r.target, rep, clientState, shipped)
 	if o.Dirty {
 		c.Out.Info("  dirty:   the working tree as it stood, under no tag — never a rollback target")
-	} else {
-		c.Out.Info("  git:     %s", gitResult)
+	} else if unpublished != "" {
+		c.Out.Info("  git:     %s", unpublished)
 	}
 	r.changelog(rep)
-	return pushErr
+	return nil
 }
 
 // unbuilt refuses an untagged HEAD of a project that builds images: a deploy

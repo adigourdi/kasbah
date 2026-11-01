@@ -35,7 +35,7 @@ func TestFinalBaseAndBump(t *testing.T) {
 func tagging(in string, tty bool, bump string) (Tagging, *bytes.Buffer) {
 	var b bytes.Buffer
 	out := &cli.Output{Stdout: &b, Stderr: &b}
-	return Tagging{Cmd: "deploy", Retry: "kasbah deploy --dirty", Bump: bump, Push: true,
+	return Tagging{Cmd: "deploy", Retry: "kasbah deploy --dirty", Bump: bump,
 		P: &prompt.Prompter{In: strings.NewReader(in), Out: out, TTY: tty}}, &b
 }
 
@@ -91,9 +91,9 @@ func TestHead(t *testing.T) {
 	git(t, "push", "-q", "origin", "HEAD~1:refs/tags/v1.2.4")
 	_, _, err = Head(pwd, tg)
 	failed(t, err, "v1.2.4 already exists on origin")
-	tg.Push = false
+	git(t, "push", "-q", "origin", ":refs/tags/v1.2.4")
 	if v, _, err := Head(pwd, tg); v != "1.2.4" || err != nil {
-		t.Errorf("origin not consulted without a push: %q %v", v, err)
+		t.Errorf("free on origin: %q %v", v, err)
 	}
 
 	// Nothing was tagged by any of it; Cut is what tags.

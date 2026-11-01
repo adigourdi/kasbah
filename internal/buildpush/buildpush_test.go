@@ -14,22 +14,21 @@ import (
 
 func TestParse(t *testing.T) {
 	for in, want := range map[string]string{
-		"":                     "target= build=false nopush=false",
-		"u@h":                  "target=u@h build=false nopush=false",
-		"u@h\r":                "target=u@h build=false nopush=false",
-		"--build-only":         "target= build=true nopush=false",
-		"--no-git-push u@h":    "target=u@h build=false nopush=true",
+		"":                     "target= build=false",
+		"u@h":                  "target=u@h build=false",
+		"u@h\r":                "target=u@h build=false",
+		"--build-only":         "target= build=true",
+		"--no-git-push u@h":    "error: build-push: unknown flag '--no-git-push'",
 		"--help":               "help",
 		"-h --nope":            "help",
 		"--nope --help":        "error: build-push: unknown flag '--nope'",
 		"--nope=1":             "error: build-push: unknown flag '--nope'",
 		"--build-only=yes":     "error: build-push: --build-only takes no value",
-		"--no-git-push=true":   "error: build-push: --no-git-push takes no value",
 		"u@h 1.4.2":            "error: build-push: too many arguments ('1.4.2')",
-		"--dirty u@h":          "target=u@h build=false nopush=false dirty=true",
+		"--dirty u@h":          "target=u@h build=false dirty=true",
 		"--dirty=1":            "error: build-push: --dirty takes no value",
-		"--bump=minor u@h":     "target=u@h build=false nopush=false dirty=false bump=minor",
-		"--bump=minor\r":       "target= build=false nopush=false dirty=false bump=minor",
+		"--bump=minor u@h":     "target=u@h build=false dirty=false bump=minor",
+		"--bump=minor\r":       "target= build=false dirty=false bump=minor",
 		"--bump=huge":          "error: build-push: --bump=huge is not a bump",
 		"--bump":               "error: build-push: --bump takes its value with '='",
 		"--bump=patch --dirty": "error: build-push: --dirty ships under no tag",
@@ -46,7 +45,7 @@ func TestParse(t *testing.T) {
 		case err != nil:
 			got = "error: " + err.Error()
 		default:
-			got = "target=" + o.Target + " build=" + bstr(o.BuildOnly) + " nopush=" + bstr(o.NoGitPush) + " dirty=" + bstr(o.Dirty) + " bump=" + o.Bump
+			got = "target=" + o.Target + " build=" + bstr(o.BuildOnly) + " dirty=" + bstr(o.Dirty) + " bump=" + o.Bump
 		}
 		if !strings.HasPrefix(got, want) {
 			t.Errorf("Parse(%q) = %q, want %q", in, got, want)

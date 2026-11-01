@@ -47,11 +47,10 @@ func finalBase(names []string) version.Version {
 }
 
 // Tagging is what an untagged HEAD needs to be given a tag: Bump is --bump's
-// answer, P asks without one, Push says origin's tags count as taken too, and
-// Untagged, when set, may refuse the run before anything is asked.
+// answer, P asks without one, and Untagged, when set, may refuse the run
+// before anything is asked.
 type Tagging struct {
 	Cmd, Retry, Bump string
-	Push             bool
 	P                *prompt.Prompter
 	Untagged         func() error
 }
@@ -201,15 +200,14 @@ func choose(t Tagging, base version.Version) (string, error) {
 }
 
 // taken refuses a tag that exists already — on another commit here, or on
-// origin when the run will push there. An origin that cannot be asked is
-// warned about, and the push at the end tells.
+// origin. An origin that cannot be asked is warned about, not failed on.
 func taken(t Tagging, tag string) error {
 	if exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/"+tag).Run() == nil {
 		at, _ := gitIn(".", "rev-parse", "--short", tag+"^{commit}")
 		return cli.Fail("%s: %s already exists, on commit %s — kasbah will not move or reuse a release tag", t.Cmd, tag, strings.TrimSpace(string(at))).Cont(
 			"tag HEAD yourself with an unused version and retry:  git tag v<version>")
 	}
-	if !t.Push || !HasOrigin() {
+	if !HasOrigin() {
 		return nil
 	}
 	there, r := onOrigin(t.P.Out, tag)
@@ -218,7 +216,7 @@ func taken(t Tagging, tag string) error {
 		return cli.Fail("%s: %s already exists on origin, though not here — kasbah will not move or reuse a release tag", t.Cmd, tag).Cont(
 			"fetch the tags (git fetch --tags) and retry, or tag HEAD yourself with an unused version")
 	case r.rc != 2:
-		t.P.Out.Warn("could not ask origin whether %s exists, so tagging it regardless — the push at the end will tell:", tag)
+		t.P.Out.Warn("could not ask origin whether %s exists, so tagging it regardless:", tag)
 		for _, l := range r.failure() {
 			t.P.Out.Warn("%s", l)
 		}

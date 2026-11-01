@@ -157,10 +157,10 @@ if [ "$rc" != "0" ]; then
 fi
 echo "note: build, save|gzip, transfer and load took ${ship_ms}ms for $project $project_version" >&2
 
-# The fixture repo has no origin, which is the shape every fixture repo has —
-# so no run of this suite can push a tag anywhere.
-assert 'grep -qF "no '"'"'origin'"'"' remote" "$tmpdir/err"' \
-    "a repository with no origin is warned about, not failed on (said '$(cli_err)')"
+# The fixture repo has no origin, which is the shape every fixture repo has:
+# nothing to say about the tag.
+assert '! grep -qF "origin" "$tmpdir/err"' \
+    "a repository with no origin gets no word about it (said '$(cli_err)')"
 
 # --- What the rig's own daemon holds ----------------------------------------------------
 # One session for every fact, validated as a complete key set before any

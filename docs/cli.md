@@ -689,9 +689,12 @@ invent a command.
    many layers, and how many bytes, were not sent. On a containerd-store
    workstation an unknown layer name first costs one local learning export,
    announced in a line (`build-deploy.md`).
-6. `git push origin v<version>` if the tag isn't yet on origin. A repository
-   with no `origin` remote at all warns and exits 0: the image has already
-   shipped by then, and a local-only project is a real shape.
+6. Ask origin whether it has `v<version>` — read-only: kasbah never pushes a
+   tag. When it lacks it, one `git:` line under the summary says the server
+   runs a version origin cannot fetch, and how to publish it (`git push
+   origin v<version>`); an origin that cannot be asked is one line saying the
+   tag went unchecked, never a failure. A tag origin has, or a repository with
+   no `origin` remote, says nothing.
 
 `build-push` does **not** set `:current` and does **not** run `compose up`.
 Moving `:current` is `deploy`'s responsibility. `:latest` is never set. It does
@@ -702,8 +705,7 @@ else `last_server` from `.kasbah/state.json`, which is written on success.
 `--build-only` needs neither, since it never reaches a server.
 
 Flags:
-- `--build-only` — skip transfer/load/push (local build + tag only).
-- `--no-git-push` — don't push the git tag.
+- `--build-only` — skip transfer and load (local build + tag only).
 
 Images are built for the **server's** platform, `linux/<arch>` from the
 bootstrap probe, through `DOCKER_DEFAULT_PLATFORM` — so an arm64 Mac or an arm64
@@ -716,9 +718,9 @@ so too). A cross build needs the engine's emulation (`tonistiigi/binfmt
 - `--bump=patch|minor|major` — on an untagged HEAD, which tag to cut
   (`build-deploy.md` → Versioning contract); unset means ask.
 - `--dirty` — build the working tree as it stands, as a test build labelled
-  `<base>-dirty.<UTC stamp>`; no tag is needed or pushed. The label, target and
-  the tree's digest are recorded in `.kasbah/state.json` for `deploy --dirty`
-  (not when the tree changed during the build);
+  `<base>-dirty.<UTC stamp>`; no tag is needed, and origin is not asked. The
+  label, target and the tree's digest are recorded in `.kasbah/state.json`
+  for `deploy --dirty` (not when the tree changed during the build);
   `--dirty --build-only` records nothing.
 
 ### `kasbah deploy [USER@HOST] [VERSION] [flags]`
@@ -739,7 +741,8 @@ Two modes:
   only three things differ — the log entry is `action=deploy`, the hook pair
   is `pre-/post-deploy`, and there is no "must already be in versions.log"
   precondition, since deploying a version here for the first time is exactly
-  what this mode is for.
+  what this mode is for. Its summary carries the same origin check as a
+  rollback's: a tag origin lacks is one `git:` line under it.
 
 Flow (no-args / working-tree path):
 1. Open SSH ControlMaster for the whole deploy (reused by every ssh session and file transfer).
@@ -766,14 +769,13 @@ Flow (no-args / working-tree path):
    - Append to `versions.log`, then rotate it (`build-deploy.md` → Rotation).
 9. Sync `traefik-dynamic.yml` to `/apps/traefik/dynamic/<name>.yml` — locally
    driven, after the stack is up, so a failed deploy leaves no live route.
-10. Print local changelog (`git log <prev>..<new>`).
-11. `git push origin v<version>` if origin lacks it — a failed push is reported
-    after the banner and makes the run exit non-zero; no `origin` warns.
+10. Ask origin whether it has `v<version>`, once the server is let go — the
+    same read-only check and one `git:` line as `build-push` step 6; it never
+    fails the run. Then print the local changelog (`git log <prev>..<new>`).
 
 Flags:
 - `--bump=patch|minor|major` — on an untagged HEAD, which tag to cut; unset
   means ask.
-- `--no-git-push` — don't push the tag.
 - `--on-drift=setup|continue|abort` — what step 6 does when the server's `.env`
   has drifted from `.env.prod.example`. Unset it asks; with no terminal to ask
   on the run stops with exit `5`. See `kasbah env` below.
@@ -831,6 +833,9 @@ Flow (see `build-deploy.md` for full detail):
    returned 0, for the same reason `deploy` ships it last. A version carrying
    no fragment is rolled back anyway and warned about; the fragment already
    there is never deleted.
+10. Ask origin whether it has `v<target>`, once the server is let go — the
+    same read-only check and one `git:` line as `build-push` step 6; it never
+    fails the run.
 
 Flags:
 - `--on-drift=setup|continue|abort` — rollback runs the same env step

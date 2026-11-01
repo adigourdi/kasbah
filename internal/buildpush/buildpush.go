@@ -30,9 +30,8 @@ var ErrHelp = errors.New("help")
 
 // Options are build-push's arguments.
 type Options struct {
-	Target               string
-	BuildOnly, NoGitPush bool
-	Dirty                bool
+	Target           string
+	BuildOnly, Dirty bool
 	// Bump answers the question an untagged HEAD asks: patch, minor or major.
 	Bump string
 }
@@ -45,7 +44,7 @@ const (
 	DirtyTree   = "dirty_tree"
 )
 
-const usage = `Usage: kasbah build-push [USER@HOST] [--build-only] [--no-git-push] [--dirty]
+const usage = `Usage: kasbah build-push [USER@HOST] [--build-only] [--dirty]
                          [--bump=patch|minor|major]
 
 Builds this project's images, tags them with HEAD's version, and loads them onto
@@ -63,7 +62,8 @@ What it does:
   * docker save (one stream, all images) | gzip, streamed over ssh into
     docker load on the server — no tarball is written on either end, and the
     layers the server already holds are left out of the stream
-  * git push origin v<version>, when the tag is not on origin yet
+  * a line under the summary when origin lacks v<version>, which kasbah
+    never pushes
 
 A project whose compose file builds nothing exits 0 having done nothing: stock
 images are pulled on the server by ` + "`kasbah deploy`" + `.
@@ -71,11 +71,10 @@ images are pulled on the server by ` + "`kasbah deploy`" + `.
 It does not move :current and does not run ` + "`compose up`" + `. Both are ` + "`kasbah deploy`" + `'s.
 
 Flags:
-  --build-only    build and tag locally; ship nothing, push nothing
-  --no-git-push   ship the images, leave the git tag where it is
+  --build-only    build and tag locally; ship nothing
   --dirty         build the working tree as it stands, labelled
                   <base>-dirty.<UTC yyyymmddhhmmss> (base: the highest v-tag
-                  reachable from HEAD, else 0.0.0). Pushes no tag, is never a
+                  reachable from HEAD, else 0.0.0). Has no tag, is never a
                   rollback target, and is what ` + "`kasbah deploy --dirty`" + ` deploys
   --bump=patch|minor|major
                   answers the untagged-HEAD question; without a terminal and
@@ -96,8 +95,6 @@ func Parse(args []string) (Options, error) {
 			return o, ErrHelp
 		case "--build-only":
 			o.BuildOnly = true
-		case "--no-git-push":
-			o.NoGitPush = true
 		case "--dirty":
 			o.Dirty = true
 		default:
@@ -110,10 +107,10 @@ func Parse(args []string) (Options, error) {
 				}
 			case name == "--bump":
 				return o, cli.Fail("build-push: --bump takes its value with '=' — --bump=patch, --bump=minor or --bump=major")
-			case name == "--build-only" || name == "--no-git-push" || name == "--dirty":
+			case name == "--build-only" || name == "--dirty":
 				return o, cli.Fail("build-push: %s takes no value — pass it on its own", name)
 			case strings.HasPrefix(a, "-"):
-				return o, cli.Fail("build-push: unknown flag '%s' (build-push takes USER@HOST, --build-only, --no-git-push, --dirty and --bump=)", name)
+				return o, cli.Fail("build-push: unknown flag '%s' (build-push takes USER@HOST, --build-only, --dirty and --bump=)", name)
 			case o.Target == "":
 				o.Target = strings.TrimSuffix(a, "\r")
 			default:
@@ -146,7 +143,7 @@ type Ctx struct {
 func label(c Ctx, o Options) (v, tree string, fresh bool, err error) {
 	if !o.Dirty {
 		v, fresh, err = release.Head(c.PWD, release.Tagging{Cmd: "build-push", Retry: "kasbah build-push --dirty",
-			Bump: o.Bump, Push: !o.NoGitPush && !o.BuildOnly, P: c.Prompter})
+			Bump: o.Bump, P: c.Prompter})
 		return v, "", fresh, err
 	}
 	if err = release.Repo(c.PWD); err != nil {
@@ -267,15 +264,19 @@ func Run(c Ctx, o Options) error {
 		}
 	}
 	kv := []string{"last_server", target}
-	gitResult := "nothing pushed — a --dirty build has no tag"
 	if o.Dirty {
 		kv = append(kv, DirtyBuild, version, DirtyServer, target, DirtyTree, tree)
-	} else if gitResult, err = release.Push(c.Out, version, !o.NoGitPush, "the images are on "+target); err != nil {
-		return err
 	}
 	// Only now: a failed command leaves the state file untouched.
 	if err := state.Record(state.File, c.Version, kv...); err != nil {
 		return err
+	}
+
+	// Origin is asked with the ssh master closed; Close is idempotent.
+	conn.Close()
+	unpublished := ""
+	if !o.Dirty {
+		unpublished = release.Unpublished(c.Out, version)
 	}
 
 	c.Out.Info("Shipped %s %s to %s", m.Name, version, target)
@@ -295,7 +296,9 @@ func Run(c Ctx, o Options) error {
 	} else {
 		c.Out.Info("  current: unmoved — `kasbah deploy` is what cuts over to %s", version)
 	}
-	c.Out.Info("  git:     %s", gitResult)
+	if unpublished != "" {
+		c.Out.Info("  git:     %s", unpublished)
+	}
 	return nil
 }
 

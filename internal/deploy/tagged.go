@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
@@ -16,6 +17,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/manifest"
+	"github.com/adigourdi/kasbah/internal/release"
 	"github.com/adigourdi/kasbah/internal/state"
 	"github.com/adigourdi/kasbah/internal/version"
 	"github.com/adigourdi/kasbah/internal/vlog"
@@ -118,15 +120,17 @@ func RunTagged(c Ctx, o Options, mode string) error {
 	if r.s, err = c.Dial(r.target); err != nil {
 		return err
 	}
-	defer r.s.Close()
+	closeSession := sync.OnceFunc(r.s.Close)
+	defer closeSession()
 	if r.mk, err = r.s.Marker(); err != nil {
 		return err
 	}
-	release, err := r.s.HoldServer(r.mk.AppsPath, mode)
+	hold, err := r.s.HoldServer(r.mk.AppsPath, mode)
 	if err != nil {
 		return err
 	}
-	defer release()
+	unlock := sync.OnceFunc(hold)
+	defer unlock()
 	r.dir = r.mk.AppsPath + "/" + m.Name
 
 	var rec *vlog.Record
@@ -193,11 +197,22 @@ func RunTagged(c Ctx, o Options, mode string) error {
 		"last_version", r.version); err != nil {
 		return err
 	}
+	// Origin is asked with the server let go: a slow origin must not hold the
+	// server lock.
+	unlock()
+	closeSession()
+	unpublished := release.Unpublished(c.Out, r.version)
 	if mode == "rollback" {
 		r.banner("Rolled "+m.Name+" back to "+r.version+" on "+r.target, rep, clientState, shipped)
-		r.gaveUp(rep)
 	} else {
 		r.banner("Deployed "+m.Name+" "+r.version+" to "+r.target, rep, clientState, shipped)
+	}
+	if unpublished != "" {
+		c.Out.Info("  git:     %s", unpublished)
+	}
+	if mode == "rollback" {
+		r.gaveUp(rep)
+	} else {
 		r.changelog(rep)
 	}
 	return nil
