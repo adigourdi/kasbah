@@ -92,6 +92,12 @@ func main() {
 			if len(args) > 1 && args[1] == "mail" {
 				os.Exit(mail.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
 			}
+			if len(args) > 2 && args[1] == "backup" && args[2] == "host" {
+				// The nightly job on the host, started by the launcher: a
+				// signal cleans up a backup in flight and its hook's group.
+				atexit.HandleSignals()
+				atexit.Exit(deploy.HostBackup(args[3:], os.Stdout, os.Stderr))
+			}
 			if len(args) > 1 && args[1] == "backup" {
 				// The kasbah-backup container's process (D2): restic's image,
 				// this binary mounted from the apps path; push is the host's

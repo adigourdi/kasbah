@@ -1,11 +1,13 @@
 # The backup stack — one instance per VPS, installed at
 # <apps>/.kasbah/backup/compose.yml by `kasbah server init --with-backup`.
 #
-# One always-on container that sleeps until the daily slot and then runs
-# restic. The schedule is a compose stack rather than cron because cron is not
-# on the prerequisites table (docs/server-setup.md) and kasbah installs no
-# packages: restic itself runs as a container, so the thing that invokes it may
-# as well be the same container (docs/backup.md, plan/roadmap/08-keep.md D1/D3).
+# One always-on container that sleeps until the daily slot, has every
+# project's backup hook run on the host through a short-lived launcher
+# container, and then runs restic. The schedule is a compose stack rather
+# than cron because cron is not on the prerequisites table
+# (docs/server-setup.md) and kasbah installs no packages: restic itself runs
+# as a container, so the thing that invokes it may as well be the same
+# container (docs/backup.md, plan/roadmap/08-keep.md D1/D3).
 # The scheduler is kasbah's own static binary, <apps>/.kasbah/bin/kasbah, run
 # from the read-only apps mount (plan/roadmap/10-recast.md D2): a newer binary
 # reaches the container at its next restart.
@@ -15,8 +17,9 @@
 # are therefore the server's real paths, which is what makes
 # `restic restore --target /` put a project's backups and .env back where they
 # came from. The data path is mounted for mail's data (projects ship only their
-# backups/), and for a backups/ that links into it. Both mounts are read-only:
-# this stack reads the server and writes only to the repository.
+# backups/), and for a backups/ that links into it. Both are read-only; the
+# scheduler writes only its state window and the repository. The Docker socket
+# it holds is root on the host (docs/backup.md → Credentials).
 #
 # No `.env`, deliberately, and no `env_file:`. The repository base and the
 # operator's credentials live in <apps>/.kasbah/backup/env at mode 600, which
@@ -49,6 +52,11 @@ services:
       KASBAH_BACKUP_AT: __BACKUP_AT__
       KASBAH_BACKUP_JITTER: __BACKUP_JITTER__
       KASBAH_BACKUP_TIMEOUT: __BACKUP_TIMEOUT__
+      # The nightly job: the launcher's image (this one), the user its hooks
+      # run as on the host, and the deadline of the whole job.
+      KASBAH_BACKUP_IMAGE: __RESTIC_IMAGE__
+      KASBAH_BACKUP_USER: __BACKUP_USER__
+      KASBAH_BACKUP_HOOK_TIMEOUT: __BACKUP_HOOK_TIMEOUT__
     volumes:
       - "__APPS_PATH__:__APPS_PATH__:ro"
       # The one writable window in an otherwise read-only tree, and it is
@@ -59,6 +67,9 @@ services:
       # has to go on.
       - "__APPS_PATH__/.kasbah/backup/state:__APPS_PATH__/.kasbah/backup/state"
 __BACKUP_DATA_MOUNT__
+      # The launcher is started through the Engine API: the image has no
+      # docker CLI. Root-equivalent, as the deploy user's docker group is.
+      - "/var/run/docker.sock:/var/run/docker.sock"
       # So __BACKUP_AT__ is the server's local time and not UTC.
       - "/etc/localtime:/etc/localtime:ro"
       # restic's cache. A named volume rather than the container's own layer,

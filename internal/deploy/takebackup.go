@@ -39,7 +39,19 @@ func liveVersion(entries []vlog.Entry) string {
 // as a deploy keeps one, under .deploy.lock and the shared server lock,
 // versions.log unwritten. stdout: backup=<backups/…tar.gz> and version=<live>.
 func takeBackup(dir string, now func() time.Time, stdout, stderr io.Writer) int {
-	e := &engine{dir: strings.TrimSuffix(dir, "/"), stderr: stderr, now: now, sp: Spec{Mode: "backup"}}
+	name, version, err := backupOne(&engine{dir: strings.TrimSuffix(dir, "/"), stderr: stderr, now: now})
+	if err != nil {
+		fmt.Fprintf(stderr, "remote: backup: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "backup=%s\nversion=%s\n", name, version)
+	return 0
+}
+
+// backupOne is e's project backed up, its locks and root released after:
+// the tarball under the project directory and the live version it holds.
+func backupOne(e *engine) (string, string, error) {
+	e.sp = Spec{Mode: "backup"}
 	name, err := e.backupLive()
 	for _, f := range []*os.File{e.lockFile, e.serverLock} {
 		if f != nil {
@@ -49,12 +61,7 @@ func takeBackup(dir string, now func() time.Time, stdout, stderr io.Writer) int 
 	if e.broot != nil {
 		e.broot.Close()
 	}
-	if err != nil {
-		fmt.Fprintf(stderr, "remote: backup: %v\n", err)
-		return 1
-	}
-	fmt.Fprintf(stdout, "backup=%s\nversion=%s\n", name, e.sp.Version)
-	return 0
+	return name, e.sp.Version, err
 }
 
 // backupLive takes the backup: the live .env and the recorded targets into
@@ -142,7 +149,26 @@ func (e *engine) inFlight(entries []vlog.Entry) error {
 	if n := len(entries); n > 0 && entries[n-1].IsFailed() && entries[n-1].Reason == "revert" {
 		return failf("%s is the snapshot a failed revert kept (versions.log ends '%s'): the project's files may be part %s's, part the version before it. Nothing was changed; fix what the revert reported and deploy or roll back again — once a run leaves a version live, back up", at, entries[n-1].Raw, entries[n-1].Version)
 	}
+	if went, stale := e.staleManifest(); stale {
+		return failf("%s holds a deploy's snapshot taken no later than the last run that went live (%s), so no deploy or rollback is using it: it is left over. Nothing was changed; remove %s by hand, then back up", at, went, at)
+	}
 	return failf("%s holds a deploy's snapshot: a deploy or rollback is under way, or one stopped before it finished, and the project's files may already be the next version's. Nothing was changed; let it finish, or re-run it, then back up", at)
+}
+
+// staleManifest is staleSnapshot over e's manifest: one it cannot read is
+// not stale.
+func (e *engine) staleManifest() (string, bool) {
+	root, err := os.OpenRoot(e.dir)
+	if err != nil {
+		return "", false
+	}
+	defer root.Close()
+	b, err := root.ReadFile(snapManifest)
+	var s snapshot
+	if err != nil || json.Unmarshal(b, &s) != nil {
+		return "", false
+	}
+	return staleSnapshot(root, &s)
 }
 
 // loadHooks is HooksFile: what the deploy or rollback that left the live

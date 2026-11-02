@@ -25,11 +25,17 @@ const (
 	// ProbePassword is not a secret: the probe repository holds one probe file.
 	ProbePassword = "kasbah-probe"
 
-	DefaultAt      = "02:00"
-	DefaultTimeout = 900
-	DefaultDaily   = 7
-	DefaultWeekly  = 4
-	DefaultMonthly = 3
+	// Launcher and LauncherLabel are the nightly job's short-lived container
+	// and the label a scheduler finds a leftover one by.
+	Launcher      = "kasbah-backup-launcher"
+	LauncherLabel = "kasbah.backup.launcher"
+
+	DefaultAt          = "02:00"
+	DefaultTimeout     = 900
+	DefaultHookTimeout = 1800
+	DefaultDaily       = 7
+	DefaultWeekly      = 4
+	DefaultMonthly     = 3
 )
 
 // Owned are the restic variables kasbah sets per repository: an operator
@@ -143,6 +149,28 @@ func CheckTimeout(cmd, v string) (int, error) {
 		return 0, cli.Fail(`%s: --backup-timeout=%s is under 30 seconds — that is a bound restic could not finish an empty repository inside, and timeout(1) reads 0 as "kill it now"`, cmd, v)
 	}
 	return n, nil
+}
+
+// CheckHookTimeout is --backup-hook-timeout=: whole seconds, 30 or more.
+func CheckHookTimeout(cmd, v string) (int, error) {
+	if !reDigits.MatchString(v) {
+		return 0, cli.Fail("%s: --backup-hook-timeout=%s is not a whole number of seconds", cmd, v)
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 30 || n > 86400 {
+		return 0, cli.Fail("%s: --backup-hook-timeout=%s is outside 30 to 86400 seconds — the nightly job's whole run, every project's backup hook in it, has to fit inside a day", cmd, v)
+	}
+	return n, nil
+}
+
+var reUser = regexp.MustCompile(`^[a-z_][a-z0-9_.-]{0,31}$`)
+
+// CheckUser is --backup-user=: a user name as useradd accepts one.
+func CheckUser(cmd, v string) error {
+	if !reUser.MatchString(v) {
+		return cli.Fail("%s: --backup-user=%s is not a user name (expected ^[a-z_][a-z0-9_.-]{0,31}$)", cmd, v)
+	}
+	return nil
 }
 
 // CheckRepoName: a project name's charset; the names kasbah owns under

@@ -64,7 +64,8 @@ func runner(apps, data string, at time.Time) (*Runner, *bytes.Buffer, *bytes.Buf
 	c := &clock{at}
 	return &Runner{Apps: apps, Data: data, At: "02:00", Jitter: 0, Timeout: 900,
 		Stdout: &out, Stderr: &errb, Environ: []string{"PATH=" + os.Getenv("PATH")}, Restic: "restic",
-		Now: c.now, Sleep: func(time.Duration) {}, Pid: 4242}, &out, &errb, c
+		Now: c.now, Sleep: func(time.Duration) {}, Pid: 4242,
+		User: "deploy", HookTimeout: 1800, Image: ResticImage, Socket: testSocket(), Docker: &fakeEngine{}}, &out, &errb, c
 }
 
 func TestPlan(t *testing.T) {
@@ -210,7 +211,7 @@ func TestOnce(t *testing.T) {
 	for _, l := range lines {
 		keys = append(keys, strings.SplitN(l, "=", 2)[0])
 	}
-	if strings.Join(keys, " ") != "state since deadline next_run last_run_started last_run_finished last_run_status last_run_repos timeout at jitter" {
+	if strings.Join(keys, " ") != "state since deadline next_run last_run_started last_run_finished last_run_status last_run_repos timeout at jitter hook_timeout" {
 		t.Errorf("record keys: %v", keys)
 	}
 	for _, want := range []string{"state=sleeping", "last_run_status=failed", "last_run_repos= mail acme", "last_run_started=1700000000", "timeout=900", "at=02:00", "jitter=0"} {

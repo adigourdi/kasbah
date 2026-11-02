@@ -48,6 +48,7 @@ type Options struct {
 type BackupFlags struct {
 	RepoBase               string
 	At, Jitter, Timeout    string
+	User, HookTimeout      string
 	Daily, Weekly, Monthly string
 	Env                    []string
 	NoEnv                  bool
@@ -55,7 +56,7 @@ type BackupFlags struct {
 	Pass []string
 }
 
-const unknownFlags = "--apps-path=, --data-path=, --domain=, --email=, --with-dashboard/--no-dashboard, --traefik-auth=, --acme-staging, --reset-acme/--keep-acme, --acme-dns=/--no-acme-dns=, --with-mail/--no-mail, --postmaster-password=, --with-backup/--no-backup, --backup-repo-base=, --backup-env=/--no-backup-env, --backup-password=, --backup-at=, --backup-jitter=, --backup-keep-daily=/-weekly=/-monthly=, --backup-timeout=, --yes"
+const unknownFlags = "--apps-path=, --data-path=, --domain=, --email=, --with-dashboard/--no-dashboard, --traefik-auth=, --acme-staging, --reset-acme/--keep-acme, --acme-dns=/--no-acme-dns=, --with-mail/--no-mail, --postmaster-password=, --with-backup/--no-backup, --backup-repo-base=, --backup-env=/--no-backup-env, --backup-password=, --backup-at=, --backup-jitter=, --backup-keep-daily=/-weekly=/-monthly=, --backup-timeout=, --backup-user=, --backup-hook-timeout=, --yes"
 
 // Parse is the command line, every value checked before anything is opened.
 func Parse(args []string) (Options, error) {
@@ -149,6 +150,12 @@ func Parse(args []string) (Options, error) {
 		case hasVal && name == "--backup-timeout":
 			o.Bk.Timeout = strings.TrimSuffix(val, "\r")
 			_, err = backup.CheckTimeout("server init", o.Bk.Timeout)
+		case hasVal && name == "--backup-user":
+			o.Bk.User = strings.TrimSuffix(val, "\r")
+			err = backup.CheckUser("server init", o.Bk.User)
+		case hasVal && name == "--backup-hook-timeout":
+			o.Bk.HookTimeout = strings.TrimSuffix(val, "\r")
+			_, err = backup.CheckHookTimeout("server init", o.Bk.HookTimeout)
 		case a == "-h", a == "--help":
 			o.Help = true
 			return o, nil

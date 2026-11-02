@@ -663,6 +663,150 @@ assert '[ -n "$record_before" ] && [ "$record_after" = "$record_before" ]' \
     "the push left the scheduler's record alone (before '$(tr "\n" " " <<<"$record_before")', after '$(tr "\n" " " <<<"$record_after")')"
 
 # ==================================================================================
+# The nightly run: every project's backup hook on the host, then the push
+# ==================================================================================
+# `once` is the scheduled run: the scheduler starts a launcher container through
+# the Docker socket, which enters the host as the backup user and backs every
+# project up, before restic ships backups/.
+launcher=kasbah-backup-launcher
+deploy_uid=$(nocr "$(rig_ssh 'id -u stevedore' 2>/dev/null)")
+kasbah_gid=$(nocr "$(rig_ssh 'getent group kasbah | cut -d: -f3' 2>/dev/null)")
+tarballs() { rig_ssh "ls -1 $apps/$project/backups/ | grep '\.tar\.gz\$'" 2>/dev/null | tr -d '\r' | sort; }
+no_launcher() {
+    local names
+    names=$(rig_ssh "docker ps -a --filter label=kasbah.backup.launcher --format '{{.Names}}'" 2>/dev/null | tr -d '\r')
+    assert '[ -z "$names" ]' "and no launcher container is left behind $1 (docker ps -a: '$names')"
+}
+
+marker_json=$(rig_ssh "cat $marker" 2>/dev/null)
+assert '[ "$(jq -r .backup.user <<<"$marker_json")" = "stevedore" ]' \
+    "the marker records the backup user, the ssh user by default (got '$(jq -c .backup <<<"$marker_json")')"
+assert '[ "$(jq -r .backup.hook_timeout <<<"$marker_json")" = "1800" ]' "and the job's deadline"
+composed=$(rig_ssh "cat $bdir/compose.yml" 2>/dev/null)
+assert 'grep -qF -- "- \"/var/run/docker.sock:/var/run/docker.sock\"" <<<"$composed"' \
+    "the scheduler holds the Docker socket"
+
+# For this run the hook also writes down who it ran as and in what: the
+# credentials, the environment, the umask, the capabilities, and docker.
+hooks_json=$(rig_ssh "cat $apps/$project/.kasbah-hooks.json" 2>/dev/null)
+probe_hook='{ id -u; id -g; id -G; umask; grep "^Cap" /proc/self/status; if docker ps -q >/dev/null; then echo docker=ok; else echo docker=failed; fi; env; } > "$KASBAH_BACKUP_DIR/probe.txt" 2>&1'
+probing=$(jq -c --arg p "$probe_hook" '.backup = [$p] + .backup' <<<"$hooks_json")
+rig_ssh "cat > $apps/$project/.kasbah-hooks.json" <<<"$probing" >/dev/null 2>&1
+before_tars=$(tarballs)
+count_before=$(snapshot_ids "${server_base}$client/" "$client_pass" | wc -l)
+night_out=$(RIG_WORK_TIMEOUT=300 backup_now); rc=$?
+rig_ssh "cat > $apps/$project/.kasbah-hooks.json" <<<"$hooks_json" >/dev/null 2>&1
+assert '[ "$rc" = "0" ]' "the nightly run succeeds (exit $rc)
+        output: $night_out"
+assert 'grep -qF "launcher started: every project'"'"'s backup hook, on the host as stevedore" <<<"$night_out"' \
+    "starting the launcher as the backup user (said '$night_out')"
+assert 'grep -qF "launcher entering the host as stevedore: uid $deploy_uid," <<<"$night_out" &&
+        grep -qF "resolved through the host'"'"'s id" <<<"$night_out"' \
+    "which resolves the user through the host's own id"
+assert 'grep -qF "$project: backed up on the host: backups/$project_version-" <<<"$night_out"' \
+    "which backs the deployed project up"
+assert 'grep -qF "orphan: no backup taken: no .kasbah-hooks.json" <<<"$night_out"' \
+    "and names the project no deploy recorded hooks for"
+new_tar=$(comm -13 <(printf '%s\n' "$before_tars") <(tarballs) | tail -1)
+assert '[ -n "$new_tar" ]' "a new tarball is in backups/ (before '$before_tars', after '$(tarballs)')"
+owner=$(nocr "$(rig_ssh "stat -c '%U:%G' $apps/$project/backups/$new_tar" 2>/dev/null)")
+assert '[ "$owner" = "stevedore:kasbah" ]' "owned by the backup user and the kasbah group (got '$owner')"
+members=$(rig_ssh "tar --numeric-owner -tvzf $apps/$project/backups/$new_tar" 2>/dev/null | tr -d '\r')
+dump_line=$(grep ' db.dump$' <<<"$members")
+assert '[[ "$dump_line" == *" $deploy_uid/$kasbah_gid "* ]]' \
+    "the hook ran as that user: its dump is $deploy_uid/$kasbah_gid's (got '$dump_line')"
+probe=$(rig_ssh "tar -xzOf $apps/$project/backups/$new_tar probe.txt" 2>/dev/null | tr -d '\r')
+want_gid=$(nocr "$(rig_ssh 'id -g stevedore' 2>/dev/null)")
+want_groups=$(rig_ssh 'id -G stevedore' 2>/dev/null | tr -d '\r' | tr ' ' '\n' | sort -n | tr '\n' ' ')
+docker_gid=$(nocr "$(rig_ssh 'getent group docker | cut -d: -f3' 2>/dev/null)")
+got_groups=$(sed -n 3p <<<"$probe" | tr ' ' '\n' | sort -n | tr '\n' ' ')
+assert '[ "$(sed -n 1p <<<"$probe")" = "$deploy_uid" ] && [ "$(sed -n 2p <<<"$probe")" = "$want_gid" ]' \
+    "the hook ran as the user's uid and primary gid, $deploy_uid/$want_gid (probe: $(head -3 <<<"$probe" | tr "\n" " "))"
+assert '[ -n "$want_groups" ] && [ "$got_groups" = "$want_groups" ] &&
+        [[ " $got_groups" == *" $docker_gid "* ]] && [[ " $got_groups" == *" $kasbah_gid "* ]]' \
+    "with exactly the user's groups, docker and kasbah among them (want '$want_groups', got '$got_groups')"
+assert '[ "$(sed -n 4p <<<"$probe")" = "0002" ]' "under umask 0002 (got '$(sed -n 4p <<<"$probe")')"
+assert 'grep -qxE "CapEff:[[:space:]]+0+" <<<"$probe" && grep -qxE "CapPrm:[[:space:]]+0+" <<<"$probe"' \
+    "with no effective or permitted capability ($(grep -E "^Cap(Eff|Prm)" <<<"$probe" | tr "\n" " "))"
+assert 'grep -qxF "docker=ok" <<<"$probe"' "reaching docker ($(grep -E "^docker=" <<<"$probe"))"
+leaked=$(grep -E "^KASBAH_BACKUP_" <<<"$probe" | grep -v "^KASBAH_BACKUP_DIR=")
+assert '[ -z "$leaked" ] && grep -qx "PATH=/usr/local/bin:/usr/bin:/bin" <<<"$probe"' \
+    "in an environment of its own: none of the scheduler's KASBAH_BACKUP_* (leaked: '$leaked')"
+mapfile -t ids < <(snapshot_ids "${server_base}$client/" "$client_pass")
+assert '[ "${#ids[@]}" = "$((count_before + 1))" ]' "the push follows ($count_before snapshots before, ${#ids[@]} after)"
+listed=$(RIG_RESTIC_PASSWORD="$client_pass" rig_restic "${server_base}$client/" ls "${ids[${#ids[@]}-1]}" 2>/dev/null | tr -d '\r')
+assert 'grep -qxF "$apps/$project/backups/$new_tar" <<<"$listed"' "and its snapshot holds the new tarball"
+status=$(rig_ssh "cat $bdir/state/status" 2>/dev/null)
+assert 'grep -qxF "last_run_status=ok" <<<"$status" && ! grep -q "^last_run_failed=" <<<"$status"' \
+    "the run is recorded ok (got '$(tr "\n" " " <<<"$status")')"
+no_launcher "after a clean run"
+
+# A hook that hangs is killed at the job's deadline, its project recorded
+# failed, and the push still runs for everything.
+init "${traefik_flags[@]}" --no-mail "${backup_flags[@]}" \
+     --backup-repo-base="$vps_base" --backup-at=04:17 --backup-jitter=42 --backup-hook-timeout=30; rc=$?
+if [ "$rc" != "0" ]; then
+    echo "error: could not put the nightly job on a short deadline (exit $rc)" >&2
+    sed 's/^/       | /' "$tmpdir/err" >&2
+    exit 2
+fi
+hung=$(jq -c '.backup = ["sleep 600 & sleep 601"]' <<<"$hooks_json")
+rig_ssh "cat > $apps/$project/.kasbah-hooks.json" <<<"$hung" >/dev/null 2>&1
+before_tars=$(tarballs)
+count_before=$(snapshot_ids "${server_base}$client/" "$client_pass" | wc -l)
+started=$(date +%s)
+hang_out=$(RIG_WORK_TIMEOUT=300 backup_now); hang_rc=$?
+elapsed=$(( $(date +%s) - started ))
+assert '[ "$hang_rc" != "0" ]' "a run whose hook hangs fails (exit $hang_rc)"
+assert '[ "$elapsed" -lt 150 ]' "inside the 30s deadline and its grace, not the hook's 600s (took ${elapsed}s)
+        output: $hang_out"
+assert 'grep -qF "$project: backup FAILED: the backup hook was still running at the job'"'"'s deadline" <<<"$hang_out"' \
+    "naming the project and why (said '$hang_out')"
+assert 'grep -qF "$client: backing up" <<<"$hang_out"' "and the push still runs"
+mapfile -t ids < <(snapshot_ids "${server_base}$client/" "$client_pass")
+assert '[ "${#ids[@]}" = "$((count_before + 1))" ]' "taking a snapshot ($count_before before, ${#ids[@]} after)"
+assert '[ "$(tarballs)" = "$before_tars" ]' "with no tarball from the killed hook"
+left=$(rig_ssh 'ps -eo args' 2>/dev/null | tr -d '\r')
+assert '! grep -qE "^sleep 60[01]$" <<<"$left"' "the hook's process group is gone (ps: $(grep -E 'sleep 60' <<<"$left"))"
+status=$(rig_ssh "cat $bdir/state/status" 2>/dev/null)
+assert 'grep -qxF "last_run_status=failed" <<<"$status"' "the run is recorded failed (got '$(tr "\n" " " <<<"$status")')"
+assert 'grep -qF "last_run_failed=$project the backup hook was still running at the job'"'"'s deadline" <<<"$status"' \
+    "with the project and the reason"
+kasbah_cli server status "$RIG_TARGET" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
+assert 'grep -qE "backup failed +$project: the backup hook was still running" "$tmpdir/out"' \
+    "which server status shows (said '$(cli_out)')"
+no_launcher "after a hook was killed"
+rig_ssh "cat > $apps/$project/.kasbah-hooks.json" <<<"$hooks_json" >/dev/null 2>&1
+
+# A labelled launcher still running is another run's: a run beside it
+# launches nothing, says so, and still pushes.
+rig_ssh "docker run -d --name $launcher --label kasbah.backup.launcher=1 --entrypoint sleep $RIG_RESTIC_IMAGE 600" >/dev/null 2>&1
+stale=$(nocr "$(rig_ssh "docker inspect -f '{{.State.Status}}' $launcher" 2>/dev/null)")
+assert '[ "$stale" = "running" ]' "a live launcher is planted (got '$stale')"
+count_before=$(snapshot_ids "${server_base}$client/" "$client_pass" | wc -l)
+beside_out=$(RIG_WORK_TIMEOUT=300 backup_now); rc=$?
+assert '[ "$rc" != "0" ]' "a run beside it fails (exit $rc)"
+assert 'grep -qF "a nightly job is already running ($launcher, created " <<<"$beside_out" &&
+        ! grep -qF "launcher started" <<<"$beside_out"' "launching nothing, and saying why (said '$beside_out')"
+stale=$(nocr "$(rig_ssh "docker inspect -f '{{.State.Status}}' $launcher" 2>/dev/null)")
+assert '[ "$stale" = "running" ]' "leaving the other run's launcher running (got '$stale')"
+mapfile -t ids < <(snapshot_ids "${server_base}$client/" "$client_pass")
+assert '[ "${#ids[@]}" = "$((count_before + 1))" ]' "and pushing all the same ($count_before snapshots before, ${#ids[@]} after)"
+status=$(rig_ssh "cat $bdir/state/status" 2>/dev/null)
+assert 'grep -qF "last_run_launcher=a nightly job is already running" <<<"$status"' \
+    "which the record says (got '$(tr "\n" " " <<<"$status")')"
+
+# One that has exited is a leftover, removed by the next run.
+rig_ssh "docker stop -t 1 $launcher" >/dev/null 2>&1
+left_out=$(RIG_WORK_TIMEOUT=300 backup_now); rc=$?
+assert '[ "$rc" = "0" ]' "the next run succeeds over it (exit $rc)
+        output: $left_out"
+assert 'grep -qF "removed a leftover launcher, $launcher (exited" <<<"$left_out"' \
+    "having removed it (said '$left_out')"
+assert 'grep -qF "$project: backed up on the host" <<<"$left_out"' "before launching its own"
+no_launcher "after a leftover"
+
+# ==================================================================================
 # The restore drill — docs/backup.md → Restore
 # ==================================================================================
 # rig_clean reaches the nested daemon and /apps and nothing else; the snapshot

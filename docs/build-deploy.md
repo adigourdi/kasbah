@@ -366,12 +366,17 @@ holds `.deploy.lock` only within each of its steps (the snapshot, each env
 step, the engine), not across them, so a snapshot on disk
 means the project's files may already be the next version's — a deploy under
 way, one that died on the workstation, or a failed revert's kept snapshot,
-which the refusal names as such. A deploy, rollback, `drop` or `.env` writer
+which the refusal names as such. A manifest taken no later than the last run
+in `versions.log` that went live — the comparison a deploy's snapshot step
+makes — is left over from a run that ended, and the refusal says to remove
+`.kasbah-prev/` by hand rather than to let a run finish. A deploy, rollback, `drop` or `.env` writer
 that starts while a backup holds `.deploy.lock` is refused by the same lock
-rules, naming `kasbah backup` as the holder; nothing waits.
+rules, naming `kasbah backup` as the holder; nothing waits. The nightly
+backup on a server with off-box backups takes the same backup of every
+project, in the same code (`backup.md` → The backup hooks, nightly).
 
-**Retention** runs at the end of every successful deploy, rollback and
-`kasbah backup`, on the server's clock: of the files in `backups/` named `<version>-<stamp>.tar.gz`,
+**Retention** runs at the end of every successful deploy, rollback,
+`kasbah backup` and nightly backup, on the server's clock: of the files in `backups/` named `<version>-<stamp>.tar.gz`,
 every one stamped within the last 24 hours is kept, and of the older ones only
 the newest; the rest are removed, each said on stderr. Nothing else in
 `backups/` is touched — a directory a failed tarball left, a file an operator

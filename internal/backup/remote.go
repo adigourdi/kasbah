@@ -34,7 +34,7 @@ func RemoteInit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	usage := func() int {
-		return fail("usage: kasbah remote backup-init read APPS DATA | layout APPS SIZE SHA256 | probe APPS IMAGE TIMEOUT | start APPS RESTART | repos APPS")
+		return fail("usage: kasbah remote backup-init read APPS DATA | user NAME APPS | layout APPS SIZE SHA256 | probe APPS IMAGE TIMEOUT | start APPS RESTART | repos APPS")
 	}
 	if len(args) == 0 {
 		return usage()
@@ -43,6 +43,8 @@ func RemoteInit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	switch {
 	case args[0] == "read" && len(args) == 3:
 		err = json.NewEncoder(stdout).Encode(Read(args[1], args[2]))
+	case args[0] == "user" && len(args) == 3:
+		err = UserCheck(args[1], args[2], stdout)
 	case args[0] == "layout" && len(args) == 4:
 		err = remoteLayout(args[1], args[2], args[3], stdin, stdout)
 	case args[0] == "probe" && len(args) == 4:

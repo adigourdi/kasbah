@@ -37,12 +37,19 @@ type Record struct {
 
 	State, Status, Repos                        string
 	Since, Deadline, NextRun, Started, Finished int64
+	// Failed is each project the last run's backup hooks did not back up,
+	// with why; Launcher why the nightly job failed as a whole.
+	Failed   []Failure
+	Launcher string
 
 	Overdue, Age, Now int64
 	// Clock is "server" when judged against the server's clock, "local" when
 	// the probe's was unusable and this machine's was used.
 	Clock string
 }
+
+// Failure is one project the nightly job did not back up.
+type Failure struct{ Project, Reason string }
 
 // Epoch admits a unix time arithmetic can be done on: digits, no leading zero
 // (`0` itself excepted), at most eighteen of them.
@@ -130,6 +137,11 @@ func Read(dir, file, content, now string) *Record {
 			r.Status = v
 		case "last_run_repos":
 			r.Repos = v
+		case "last_run_failed":
+			name, why, _ := strings.Cut(v, " ")
+			r.Failed = append(r.Failed, Failure{name, why})
+		case "last_run_launcher":
+			r.Launcher = v
 		}
 	}
 	r.Deadline, _ = Epoch(deadline)
@@ -175,6 +187,19 @@ func Read(dir, file, content, now string) *Record {
 		r.Reason = fmt.Sprintf("records last_run_status='%s', which this kasbah does not know", r.Status)
 	}
 	return r
+}
+
+// Why is what made the last run fail besides restic, one clause per cause,
+// "" for nothing recorded.
+func (r *Record) Why() []string {
+	var l []string
+	if r.Launcher != "" {
+		l = append(l, "the nightly backup job failed: "+r.Launcher)
+	}
+	for _, f := range r.Failed {
+		l = append(l, f.Project+"'s backup failed: "+f.Reason)
+	}
+	return l
 }
 
 // Ago is a duration in seconds in one unit; "unknown" for a negative one.

@@ -14,6 +14,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/rootsteps"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/tmpl"
 	"github.com/adigourdi/kasbah/internal/tree"
@@ -33,7 +34,8 @@ func FlagsUnused(out *cli.Output, o Options) {
 		{o.Bk.Jitter != "", "--backup-jitter="}, {o.Bk.Daily != "", "--backup-keep-daily="},
 		{o.Bk.Weekly != "", "--backup-keep-weekly="}, {o.Bk.Monthly != "", "--backup-keep-monthly="},
 		{len(o.Bk.Env) > 0, "--backup-env="}, {len(o.Bk.Pass) > 0, "--backup-password="},
-		{o.Bk.NoEnv, "--no-backup-env"},
+		{o.Bk.NoEnv, "--no-backup-env"}, {o.Bk.User != "", "--backup-user="},
+		{o.Bk.HookTimeout != "", "--backup-hook-timeout="},
 	} {
 		if f.set {
 			named = append(named, f.name)
@@ -46,9 +48,13 @@ func FlagsUnused(out *cli.Output, o Options) {
 
 // BackupValues is what --with-backup settled, and where each came from.
 type BackupValues struct {
-	RepoBase, BaseOrigin   string
-	At                     string
-	Jitter, Timeout        int
+	RepoBase, BaseOrigin string
+	At                   string
+	Jitter, Timeout      int
+	// User is who the nightly job runs as on the host, and UserOrigin where
+	// that came from; HookTimeout the job's deadline.
+	User, UserOrigin       string
+	HookTimeout            int
 	Daily, Weekly, Monthly int
 	EnvOrigin              string
 	Env                    []string
@@ -61,7 +67,8 @@ type BackupValues struct {
 // Marker is the marker's `backup` object for these values.
 func (v *BackupValues) Marker() *marker.Backup {
 	return &marker.Backup{RepoBase: v.RepoBase, At: v.At, Jitter: v.Jitter, Timeout: v.Timeout,
-		Retention: marker.Retention{Daily: v.Daily, Weekly: v.Weekly, Monthly: v.Monthly}}
+		Retention: marker.Retention{Daily: v.Daily, Weekly: v.Weekly, Monthly: v.Monthly},
+		User:      v.User, HookTimeout: v.HookTimeout}
 }
 
 // recorded is an existing marker's backup.<path> as text, "" for none or null.
@@ -83,8 +90,9 @@ func in(ss []string, s string) bool {
 
 // BackupResolve reproduces what the marker records, asks for what nothing
 // says, and asks for a password only for a repository without one: a
-// password on the server is never rewritten.
-func BackupResolve(out *cli.Output, p *prompt.Prompter, o Options, r *backup.ReadReport, existing *tree.Map) (*BackupValues, error) {
+// password on the server is never rewritten. sshUser is the user init runs
+// as, the nightly job's when nothing else names one.
+func BackupResolve(out *cli.Output, p *prompt.Prompter, o Options, r *backup.ReadReport, existing *tree.Map, sshUser string) (*BackupValues, error) {
 	b := o.Bk
 	v := &BackupValues{RepoBase: b.RepoBase, BaseOrigin: "flag", Pass: map[string]string{}, HasPass: r.HasPass}
 	switch r.Dir {
@@ -109,6 +117,18 @@ func BackupResolve(out *cli.Output, p *prompt.Prompter, o Options, r *backup.Rea
 		}
 	}
 	at, jitter, timeout := or(b.At, "at"), or(b.Jitter, "jitter"), or(b.Timeout, "timeout")
+	hookTimeout := or(b.HookTimeout, "hook_timeout")
+	v.User, v.UserOrigin = b.User, "flag"
+	if v.User == "" {
+		if v.User = recorded(existing, "user"); v.User != "" {
+			v.UserOrigin = "marker"
+		} else {
+			v.User, v.UserOrigin = sshUser, "the ssh user"
+		}
+	}
+	if err := backup.CheckUser(bkCmd, v.User); err != nil {
+		return nil, err
+	}
 	keeps := []string{or(b.Daily, "retention", "daily"), or(b.Weekly, "retention", "weekly"), or(b.Monthly, "retention", "monthly")}
 
 	var err error
@@ -146,6 +166,12 @@ func BackupResolve(out *cli.Output, p *prompt.Prompter, o Options, r *backup.Rea
 		timeout = strconv.Itoa(backup.DefaultTimeout)
 	}
 	if v.Timeout, err = backup.CheckTimeout(bkCmd, timeout); err != nil {
+		return nil, err
+	}
+	if hookTimeout == "" {
+		hookTimeout = strconv.Itoa(backup.DefaultHookTimeout)
+	}
+	if v.HookTimeout, err = backup.CheckHookTimeout(bkCmd, hookTimeout); err != nil {
 		return nil, err
 	}
 	defs := []int{backup.DefaultDaily, backup.DefaultWeekly, backup.DefaultMonthly}
@@ -262,7 +288,7 @@ func BackupRender(fsys fs.FS, o Options, v *BackupValues, r *backup.ReadReport) 
 	if compose, err = tmpl.Render(tpl, "backup compose.yml", map[string]string{
 		"APPS_PATH": o.Apps, "DATA_PATH": o.Data, "RESTIC_IMAGE": backup.ResticImage,
 		"BACKUP_AT": v.At, "BACKUP_JITTER": strconv.Itoa(v.Jitter), "BACKUP_TIMEOUT": strconv.Itoa(v.Timeout),
-		"BACKUP_DATA_MOUNT": dataMount,
+		"BACKUP_DATA_MOUNT": dataMount, "BACKUP_USER": v.User, "BACKUP_HOOK_TIMEOUT": strconv.Itoa(v.HookTimeout),
 	}); err != nil {
 		return "", "", err
 	}
@@ -297,6 +323,49 @@ func (s *session) backupRead(o Options) (*backup.ReadReport, error) {
 		return nil, serverlock.PrivateRefusal("--with-backup", r.Owner, o.Apps+"/.kasbah/backup")
 	}
 	return &r, nil
+}
+
+// UserVerdict refuses a backup user the host has not, or root, and warns
+// about one the nightly job will run short as: outside kasbah without owning
+// the apps tree, or outside docker. The warnings carry the root commands.
+func UserVerdict(out *cli.Output, kv map[string]string, v *BackupValues, target, apps string) error {
+	from := "--backup-user="
+	if v.UserOrigin != "flag" {
+		from = "the server marker"
+		if v.UserOrigin != "marker" {
+			from = "the ssh user, as no --backup-user= was given"
+		}
+	}
+	via := "the host's id"
+	if kv["backup_user_via"] == backup.ViaFiles {
+		via = "its /etc/passwd, as it has no id"
+	}
+	switch kv["backup_user"] {
+	case "ok":
+	case "absent":
+		return cli.Fail("the backup user %s (%s) does not exist on %s (looked up through %s) — the nightly job runs every project's backup hook as that user on the host", v.User, from, target, via).Cont(
+			"name an existing deploy user with --backup-user=NAME. No backup stack was started.")
+	case "root":
+		return cli.Fail("the backup user %s (%s) is root on %s, and the nightly job never runs the projects' backup hooks as root", v.User, from, target).Cont(
+			"name a deploy user with --backup-user=NAME. No backup stack was started.")
+	default:
+		return cli.Fail("the backup user check on %s reported backup_user='%s', which this kasbah does not know", target, kv["backup_user"])
+	}
+	b := &rootsteps.Block{Target: target}
+	q := rootsteps.Quote(v.User)
+	if kv["backup_user_kasbah"] != "yes" && kv["backup_user_owner"] != "yes" {
+		out.Warn("the backup user %s (%s) is not in the '%s' group on %s and does not own %s", v.User, from, serverlock.Group, target, apps)
+		out.Warn("the nightly job runs as %s and cannot write the backups/ of a project another operator deployed, so those backups fail until it joins", v.User)
+		b.Add("sudo groupadd -f "+serverlock.Group, "sudo usermod -aG "+serverlock.Group+" "+q)
+	}
+	if kv["backup_user_docker"] != "yes" {
+		out.Warn("the backup user %s (%s) is not in the 'docker' group on %s, so a backup hook that runs docker or compose fails", v.User, from, target)
+		b.Add("sudo usermod -aG docker " + q)
+	}
+	if !b.Empty() {
+		printBlock(out, b)
+	}
+	return nil
 }
 
 // backupStackNote is what a probe refusal says about the stack: the
@@ -378,15 +447,22 @@ func ProbeVerdict(f Facts, target, apps string, v *BackupValues, hadStack bool) 
 // backupInstall lays out the stack and its secrets, proves the credential,
 // ships the compose file and starts the stack — in that order, so only a
 // credential that could write and could not delete gets a scheduler.
-func (s *session) backupInstall(o Options, v *BackupValues, r *backup.ReadReport, compose, envDefault string, restart bool) (bkReport, error) {
+func (s *session) backupInstall(out *cli.Output, o Options, v *BackupValues, r *backup.ReadReport, compose, envDefault string, restart bool) (bkReport, error) {
 	var rep bkReport
+	res, rc := s.remote(nil, true, "backup-init", "user", v.User, o.Apps)
+	if rc != 0 {
+		return rep, cli.Fail("could not look up the backup user %s on %s (the remote step exited %d, see above)", v.User, s.target, rc)
+	}
+	if err := UserVerdict(out, remote.KV([]byte(res)), v, s.target, o.Apps); err != nil {
+		return rep, err
+	}
 	body := backup.LayoutBody{Default: envDefault, RepoBase: v.RepoBase, Env: v.Env, Passwords: []backup.Password{}}
 	for _, repo := range v.New {
 		body.Passwords = append(body.Passwords, backup.Password{Repo: repo, Pass: v.Pass[repo]})
 	}
 	raw, _ := json.Marshal(body)
 	size, sum := remote.Digest(raw)
-	res, rc := s.remote(raw, true, "backup-init", "layout", o.Apps, size, sum)
+	res, rc = s.remote(raw, true, "backup-init", "layout", o.Apps, size, sum)
 	if rc != 0 {
 		return rep, stepFailed("lay out "+o.Apps+"/.kasbah/backup", s.target, rc)
 	}
@@ -461,6 +537,7 @@ func reportBackup(out *cli.Output, o Options, v *BackupValues, rep bkReport) {
 	default:
 		out.Info(ind+"restic environment: whatever %s/.kasbah/backup/env holds — kasbah copies it through untouched", o.Apps)
 	}
+	out.Info(ind+"backup hooks: nightly on the host as %s (%s), the whole job within %ds", v.User, v.UserOrigin, v.HookTimeout)
 	out.Info(ind+"retention %d daily / %d weekly / %d monthly, applied by `kasbah server backup-prune %s`", v.Daily, v.Weekly, v.Monthly, o.Target)
 	out.Info(ind+"credentials: append-only (probed against %s)", backup.Redact(rep.Probed))
 	st := rep.Start

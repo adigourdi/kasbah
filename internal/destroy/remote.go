@@ -31,7 +31,11 @@ const (
 	BackupProject   = "kasbah-backup"
 	BackupContainer = "kasbah-backup"
 	BackupVolume    = "kasbah-backup-cache"
-	BackupNetwork   = "kasbah-backup_default"
+	// BackupLauncher is the nightly job's container, outside the compose
+	// project, and BackupLauncherLabel the label every launcher carries.
+	BackupLauncher      = "kasbah-backup-launcher"
+	BackupLauncherLabel = "kasbah.backup.launcher"
+	BackupNetwork       = "kasbah-backup_default"
 )
 
 // Helpers are the two scripts a deploy installed in <project>/scripts/
@@ -376,9 +380,11 @@ type ProjectResult struct {
 // ActReport is what `kasbah remote destroy act` did. A `started=yes` line
 // precedes it: every guard is above that line.
 type ActReport struct {
-	BkDown       string          `json:"bk_down"`
-	BkDownDetail string          `json:"bk_down_detail"`
-	BkContainer  string          `json:"bk_container"`
+	BkDown       string `json:"bk_down"`
+	BkDownDetail string `json:"bk_down_detail"`
+	BkContainer  string `json:"bk_container"`
+	// BkLaunchers is the labelled launchers: removed, absent or failed.
+	BkLaunchers  string          `json:"bk_launchers"`
 	BkVolume     string          `json:"bk_volume"`
 	BkNetwork    string          `json:"bk_network"`
 	BkFiles      string          `json:"bk_files"`
@@ -394,7 +400,7 @@ type ActReport struct {
 	Marker string `json:"marker"`
 }
 
-var actKeys = []string{"bk_down", "bk_down_detail", "bk_container", "bk_volume", "bk_network", "bk_files",
+var actKeys = []string{"bk_down", "bk_down_detail", "bk_container", "bk_launchers", "bk_volume", "bk_network", "bk_files",
 	"projects", "mail_env", "mail_env_n", "mail_registry", "layers_map", "acme_dns", "marker"}
 
 // rewrite replaces a file's lines through keep, beside the file it resolves
@@ -512,6 +518,16 @@ func act(apps string, names []string, stdout io.Writer) error {
 		return "removed"
 	}
 	r.BkContainer = obj([]string{"container", "inspect", BackupContainer}, []string{"rm", "-f", BackupContainer})
+	// A launcher a stopped scheduler left holds the host's / mounted.
+	r.BkLaunchers = "absent"
+	if ids, err := docker("", "ps", "-aq", "--filter", "label="+BackupLauncherLabel); err != nil {
+		r.BkLaunchers, bad = "failed", true
+	} else if l := strings.Fields(ids); len(l) > 0 {
+		r.BkLaunchers = "removed"
+		if _, err := docker("", append([]string{"rm", "-f"}, l...)...); err != nil {
+			r.BkLaunchers, bad = "failed", true
+		}
+	}
 	r.BkVolume = obj([]string{"volume", "inspect", BackupVolume}, []string{"volume", "rm", BackupVolume})
 	r.BkNetwork = obj([]string{"network", "inspect", BackupNetwork}, []string{"network", "rm", BackupNetwork})
 	r.BkFiles = "absent"

@@ -160,6 +160,19 @@ func TestTakeBackupRefusesBesideASnapshot(t *testing.T) {
 			}
 		})
 	}
+	// One taken no later than the live run's entry is left over: removing it
+	// by hand is the remedy, not waiting for a run that is not there.
+	r0 := liveRig(t)
+	os.MkdirAll(filepath.Join(r0.dir, PrevDir), 0o770)
+	os.WriteFile(filepath.Join(r0.dir, snapManifest), []byte(`{"token":"t","targets":[],"taken":"2026-10-01T00:00:00+00:00"}`), 0o660)
+	if rc, _, errs := r0.take(at10); rc != 1 || !strings.Contains(errs, "taken no later than the last run that went live (2026-10-01T00:00:00+00:00)") ||
+		!strings.Contains(errs, "remove "+r0.dir+"/"+PrevDir+" by hand") || strings.Contains(errs, "let it finish") {
+		t.Errorf("a stale manifest: rc %d %s", rc, errs)
+	}
+	os.WriteFile(filepath.Join(r0.dir, snapManifest), []byte(`{"token":"t","targets":[],"taken":"2026-10-01T00:00:01+00:00"}`), 0o660)
+	if _, _, errs := r0.take(at10); !strings.Contains(errs, "let it finish, or re-run it") {
+		t.Errorf("a manifest newer than the live run: %s", errs)
+	}
 	// A snapshot directory without its manifest is none: a drop cut short.
 	r := liveRig(t)
 	os.MkdirAll(filepath.Join(r.dir, PrevDir, "t"), 0o770)

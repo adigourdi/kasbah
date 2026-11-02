@@ -488,6 +488,7 @@ when the proxy's image tag does, and the marker's presence is init's
   "mem_limit": "7g",
   "backup": { "enabled": true, "repo_base": "s3:https://…/kasbah-backups/",
               "at": "02:00", "jitter": 1847, "timeout": 900,
+              "user": "deploy", "hook_timeout": 1800,
               "retention": { "daily": 7, "weekly": 4, "monthly": 3 } }
 }
 ```
@@ -597,11 +598,40 @@ left out of the sum.
 Optional. Scaffolds a kasbah-owned scheduler stack that pushes restic
 snapshots off-box daily: each project's backup tarballs (`backups/`, which
 hold what its `backup` hooks dump) and `.env` — never its data bind mounts —
-plus the shared mail stack's data into a repository of its own. The container
-mounts the apps path, and the data path when it differs, read-only: mail's
-data is under the latter. `kasbah backup` pushes one project's repository
-on demand through the same container. Full design — repository layout, the
-two-secret credential model, restore and pruning — in `backup.md`.
+plus the shared mail stack's data into a repository of its own. Before each
+push it has every project's `backup` hook run on the host, as the backup user,
+through a short-lived launcher container (`backup.md` → The backup hooks,
+nightly). The container mounts the apps path, and the data path when it
+differs, read-only: mail's data is under the latter. It also mounts the Docker
+socket, `/var/run/docker.sock`, to start the launcher — which is root on the
+host, as membership of `docker` is; anyone able to replace
+`<apps>/.kasbah/bin/kasbah` becomes root through it, and every operator is
+already in `docker`, so no operator gains access they lack (`backup.md` →
+Credentials). `kasbah backup` pushes one project's repository on demand
+through the same container.
+
+Two settings are the nightly job's, both recorded in the marker's `backup`
+object and read back on a re-run:
+
+- `--backup-user=NAME` — who the hooks run as on the host. Default: the ssh
+  user running init. Init looks the user up through the host's `id`, so a
+  user from LDAP or sssd counts (its `/etc/passwd` and `/etc/group` only on a
+  host without `id`), and refuses one the host does not have, or root. A user
+  outside the `kasbah` group who does not own the apps path, or outside
+  `docker`, is a warning naming what the nightly job will lack, with the root
+  commands that fix it — the same way the group block at the end of init
+  works without `sudo -n` — and init goes on and records the user.
+- `--backup-hook-timeout=<seconds>` — the deadline of the whole job, every
+  project's hooks together. Default 1800, 30 to 86400.
+
+Full design — repository layout, the two-secret credential model, restore and
+pruning — in `backup.md`.
+
+**After upgrading kasbah, re-run `kasbah server init --with-backup`** on a
+server whose backup stack an older kasbah installed: that is what gives the
+stack the Docker socket mount and the backup user. Until then every nightly
+run fails and its record names the remedy — no socket in the container, or no
+backup user configured — while the push still ships what `backups/` holds.
 
 **It installs nothing.** restic runs as a container
 (`restic/restic:<pinned>`), so this section does not weaken the promise at
@@ -617,10 +647,13 @@ What lands under the apps path:
 | `.kasbah/backup/repos/` | 700 | kasbah | — |
 | `.kasbah/backup/repos/<repo>.pass` | 600 | operator | **Written once, never rewritten.** A password kasbah could overwrite is a repository kasbah could orphan |
 | `.kasbah/backup/state/` | 700 | kasbah | The one writable path in an otherwise read-only tree |
-| `.kasbah/backup/state/status` | 644 | kasbah | The last-run record — when the run started and finished, how it went, which repositories, and the deadline. Three readers: the container's own healthcheck, `kasbah server status`, and `check --server`'s B01, the last two through one shared parser |
+| `.kasbah/backup/state/status` | 644 | kasbah | The last-run record — when the run started and finished, how it went, which repositories, the deadline, the backup hooks' deadline, each project whose backup failed on the host with why, and why the nightly job failed as a whole when it did. Three readers: the container's own healthcheck, `kasbah server status`, and `check --server`'s B01, the last two through one shared parser |
 
 Docker objects: compose project and container `kasbah-backup`, network
-`kasbah-backup_default`, and the named volume `kasbah-backup-cache`.
+`kasbah-backup_default`, the named volume `kasbah-backup-cache`, and during a
+run the launcher container `kasbah-backup-launcher` (label
+`kasbah.backup.launcher`), removed when the run ends; `server destroy` removes
+any left over, by label.
 
 The idempotency rules mirror mail's, and for the same reasons:
 
@@ -631,8 +664,9 @@ The idempotency rules mirror mail's, and for the same reasons:
 - The repository base is asked only when the marker does not already record
   one; the environment block is asked only on the run that creates the
   file; a password is asked only for a repository that has none. Everything
-  with a documented default — the time, the jitter, the retention counts —
-  is read back off the marker rather than re-asked, the same rule the
+  with a documented default — the time, the jitter, the retention counts,
+  the backup user and the hooks' deadline — is read back off the marker
+  rather than re-asked, the same rule the
   dashboard credentials follow.
 - The marker's `backup` object **merges**, it never replaces — including
   `backup.retention`. This is the field the compatibility rule above

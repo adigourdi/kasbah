@@ -54,9 +54,9 @@ health:
 # backup runs first on every deploy but a project's first, while the previous
 # version is still running, and writes into $KASBAH_BACKUP_DIR: what it
 # writes is kept with the previous version's .env and synced files, as one
-# tarball under ./backups/; `kasbah backup` runs it against the live version
-# too. Bound what it runs in a service (timeout 600): a killed hook does not
-# stop it there. restore is the way back: a rollback to this
+# tarball under ./backups/; `kasbah backup` and the nightly backup run it
+# against the live version too. Bound what it runs in a service (timeout
+# 600): a killed hook does not stop it there. restore is the way back: a rollback to this
 # version runs it, when the operator says so, reading that tarball unpacked
 # at $KASBAH_BACKUP_DIR before this version comes up.
 # pre-deploy runs BEFORE `compose up -d`, while the previous version is
@@ -247,7 +247,10 @@ container by its compose service name, since the folder holds the project's
 `compose.yml` and kasbah sets `COMPOSE_PROJECT_NAME` to the project's name for
 the hook — `-T`, because a hook has no terminal. The hooks run under `LC_ALL=C`,
 with no stdin; what a hook prints, on stdout or stderr, reaches the operator on
-stderr, because the engine's stdout is the report the workstation reads. The
+stderr, because the engine's stdout is the report the workstation reads. Run
+nightly, the last 64 KB of the `backup` hook's output after a failed run stays
+in `docker logs kasbah-backup`, readable by root and the `docker` group
+(`backup.md` → The schedule), so a hook should not print secrets. The
 entries of a list run in order; one that exits non-zero fails the list, unless
 the operator carries on past it (below), and then the next entry runs.
 
@@ -261,7 +264,7 @@ Supported hooks and when they run:
 
 | Hook | Runs |
 |---|---|
-| `backup` | on a deploy, after env/sync, before the `pre-deploy` hooks, the previous version still running; on `kasbah backup`, against the live version (the live version's list, from `.kasbah-hooks.json`); writes into `$KASBAH_BACKUP_DIR` |
+| `backup` | on a deploy, after env/sync, before the `pre-deploy` hooks, the previous version still running; on `kasbah backup` and every night before the off-box push (on a server with `--with-backup`), against the live version (the live version's list, from `.kasbah-hooks.json`); writes into `$KASBAH_BACKUP_DIR` |
 | `pre-deploy` | after the `backup` hooks, before `compose up -d`, the previous version still running |
 | `post-deploy` | after `compose up -d` + health wait, against the new version |
 | `pre-rollback` | after the target tag's files are synced, before `compose up -d` |
@@ -282,6 +285,20 @@ not backed up. **Bound what it runs inside a service** — `docker compose exec
 -T db timeout 600 pg_dump …`, not a bare `pg_dump`: a process a hook starts in
 a container through `compose exec` keeps running when the hook itself is
 killed, and nothing on the server's side of the hook can reach it.
+
+**Every night**, on a server with off-box backups, the scheduler runs each
+project's `backup` hooks against its live version before it pushes, as
+`kasbah backup` would (`backup.md` → The backup hooks, nightly). There the
+hooks run on the host as the backup user (`server init --backup-user=`), from
+the project directory, with `umask 002` and an environment of their own:
+`PATH=/usr/local/bin:/usr/bin:/bin`, `LC_ALL=C`, the user's `HOME`, `USER` and
+`LOGNAME`, and the variables below — no login profile, nothing else. They run
+in a pid namespace of their own, so **`ps` and `pgrep` do not work** in a
+nightly hook (procps cannot look itself up); `docker` and `docker compose` do.
+All of a server's nightly hooks share one deadline,
+`--backup-hook-timeout=` (default 1800 seconds): a hook still running at it is
+killed with its process group, and its project is recorded as failed while
+the push goes on.
 
 The `restore` hook that runs is the **target's**: a rollback reads every hook
 from the target tag's manifest, and asks for data only when that manifest has

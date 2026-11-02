@@ -96,8 +96,8 @@ you whether the project is ready to deploy. More in
 - Deploys start from your machine; nothing deploys on a `git push`.
 - A rollback restores code and configuration; it restores data only through
   the project's own `restore` hook, from the newest backup of that version
-  — a deploy's, a rollback's or a `kasbah backup`'s. kasbah dumps and loads
-  no database itself.
+  — a deploy's, a rollback's, a `kasbah backup`'s or the nightly backup's.
+  kasbah dumps and loads no database itself.
 - Secrets live in a plain `.env` file on the server, readable by every operator
   in the server's `kasbah` group and nobody else.
 

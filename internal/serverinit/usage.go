@@ -39,6 +39,10 @@ Flags:
   --backup-keep-weekly=N
   --backup-keep-monthly=N
   --backup-timeout=<s>   bound on one restic invocation (default 900)
+  --backup-user=NAME     who the nightly backup hooks run as on the server
+                         (default: the ssh user)
+  --backup-hook-timeout=<s>  the nightly backup hooks' deadline, every
+                         project's together (default 1800)
   --yes                  confirm a switch away from a stated endpoint
 
 Every *feature* flag is tri-state: leaving one off asks. The dashboard is

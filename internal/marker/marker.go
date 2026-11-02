@@ -30,6 +30,9 @@ type Backup struct {
 	Jitter    int
 	Timeout   int
 	Retention Retention
+	// User and HookTimeout are the nightly job's; "" and 0 record nothing.
+	User        string
+	HookTimeout int
 }
 
 func num(i int) tree.Number { return tree.Number(fmt.Sprint(i)) }
@@ -41,6 +44,12 @@ func (b *Backup) object() *tree.Map {
 	m.Set("at", b.At)
 	m.Set("jitter", num(b.Jitter))
 	m.Set("timeout", num(b.Timeout))
+	if b.User != "" {
+		m.Set("user", b.User)
+	}
+	if b.HookTimeout != 0 {
+		m.Set("hook_timeout", num(b.HookTimeout))
+	}
 	return m
 }
 

@@ -3,6 +3,7 @@ package destroy
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -168,6 +169,45 @@ func actOn(t *testing.T, apps string, names ...string) (ActReport, string) {
 	return r, se.String()
 }
 
+// Every labelled launcher is removed, by label, whatever its name.
+func TestActLaunchers(t *testing.T) {
+	for _, c := range []struct {
+		fail, want string
+	}{{"", "removed"}, {"rm", "failed"}, {"ps", "failed"}} {
+		apps := tree(t)
+		calls := stubDocker(t, func(a []string) (string, error) {
+			if a[0] == c.fail {
+				return "", errors.New("daemon says no")
+			}
+			if a[0] == "ps" {
+				return "abc123\ndef456\n", nil
+			}
+			return "", nil
+		})
+		var so, se bytes.Buffer
+		Remote([]string{"act", apps, "demo"}, &so, &se)
+		_, body, _ := strings.Cut(so.String(), "\n")
+		var r ActReport
+		json.Unmarshal([]byte(body), &r)
+		if r.BkLaunchers != c.want || r.Marker == "removed" && c.want == "failed" {
+			t.Errorf("%s: %+v", c.fail, r)
+		}
+		var got []string
+		for _, a := range *calls {
+			if a[0] == "ps" || a[0] == "rm" && a[1] == "-f" && a[2] != BackupContainer {
+				got = append(got, strings.Join(a, " "))
+			}
+		}
+		want := "ps -aq --filter label=" + BackupLauncherLabel + ",rm -f abc123 def456"
+		if c.fail == "ps" {
+			want = "ps -aq --filter label=" + BackupLauncherLabel
+		}
+		if strings.Join(got, ",") != want {
+			t.Errorf("%s: %v", c.fail, got)
+		}
+	}
+}
+
 func TestAct(t *testing.T) {
 	apps := tree(t)
 	calls := stubDocker(t, func(a []string) (string, error) { return "", nil })
@@ -179,6 +219,9 @@ func TestAct(t *testing.T) {
 	}
 	if strings.Join((*calls)[1], " ") != "compose -p kasbah-backup down --remove-orphans" {
 		t.Errorf("calls %v", *calls)
+	}
+	if r.BkLaunchers != "absent" {
+		t.Errorf("no launcher read as %s", r.BkLaunchers)
 	}
 	want := []ProjectResult{
 		{"beta", "absent", "absent", "kept", "absent", "absent", "absent", "absent", "absent", "absent", "absent"},
@@ -313,7 +356,7 @@ func scanFixture() *Scan {
 }
 
 const okAct = `started=yes
-{"bk_down":"skipped","bk_down_detail":"","bk_container":"absent","bk_volume":"absent","bk_network":"absent","bk_files":"absent","projects":[{"name":"demo","vlog":"removed","vlog_gz":"absent","scripts":"absent","lock":"removed","client":"absent","env":"stripped","seeds":"removed","kept":"removed"}],"mail_env":"absent","mail_env_n":0,"mail_registry":"absent","layers_map":"absent","acme_dns":"absent","marker":"removed"}
+{"bk_down":"skipped","bk_down_detail":"","bk_container":"absent","bk_launchers":"absent","bk_volume":"absent","bk_network":"absent","bk_files":"absent","projects":[{"name":"demo","vlog":"removed","vlog_gz":"absent","scripts":"absent","lock":"removed","client":"absent","env":"stripped","seeds":"removed","kept":"removed"}],"mail_env":"absent","mail_env_n":0,"mail_registry":"absent","layers_map":"absent","acme_dns":"absent","marker":"removed"}
 `
 
 const okTail = "pointer=removed\npointer_dir=removed\nbinary=removed\nbin_dir=removed\nkasbah_dir=removed\ndone=yes\n"

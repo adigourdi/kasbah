@@ -182,6 +182,10 @@ type engine struct {
 	rpop func()
 	// unpackFailed: the extraction failed, so the restore hook never runs.
 	unpackFailed bool
+	// env, when set, is the hooks' whole environment instead of the
+	// process's; deadline, when set, kills a hook's process group at it.
+	env      []string
+	deadline time.Time
 }
 
 func (e *engine) note(format string, a ...any) {
@@ -832,6 +836,9 @@ func blank(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }
 func (e *engine) sh(script string) *exec.Cmd {
 	c := exec.Command("sh", "-c", script)
 	c.Env = append(os.Environ(), "LC_ALL=C")
+	if e.env != nil {
+		c.Env = append([]string{}, e.env...)
+	}
 	c.Dir = e.dir
 	c.Stdout, c.Stderr = e.stderr, e.stderr
 	return c
@@ -868,8 +875,12 @@ func (e *engine) hooks(what string, list []string, onFail func(error) error) err
 		}
 		c.Env = append(c.Env, "KASBAH_VERSION="+e.sp.Version, "KASBAH_PREV_VERSION="+e.prev, "KASBAH_PROJECT="+e.project,
 			"KASBAH_BACKUP_DIR="+bdir, "COMPOSE_PROJECT_NAME="+e.project)
-		if err := c.Run(); err != nil {
-			err = failf("the %s hook failed (exit %d): %s", what, exitStatus(err), h)
+		if err := e.runHook(c); err != nil {
+			if errors.Is(err, errDeadline) {
+				err = failf("the %s hook was still running at the job's deadline (%s) and was killed with its process group: %s", what, e.deadline.Format(time.RFC3339), h)
+			} else {
+				err = failf("the %s hook failed (exit %d): %s", what, exitStatus(err), h)
+			}
 			if onFail == nil {
 				return err
 			}

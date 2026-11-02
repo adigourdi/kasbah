@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/backuprec"
+	"github.com/adigourdi/kasbah/internal/dockerapi"
 )
 
 // Grace is added to a state's own bound before the healthcheck calls it
@@ -29,9 +30,20 @@ type Runner struct {
 	Now     func() time.Time
 	Sleep   func(time.Duration)
 	Pid     int
+	// The nightly job: the user it runs as on the host, its deadline, the
+	// launcher's image, and the daemon it is started through.
+	User        string
+	HookTimeout int
+	Image       string
+	Socket      string
+	Docker      Engine
 
 	started, finished int64
 	status, repos     string
+	// failed is each project the last run's job did not back up; launcher
+	// why the job did not run, "" when it did.
+	failed   []Failure
+	launcher string
 }
 
 // NewRunner is the runner the container's environment describes.
@@ -47,11 +59,17 @@ func NewRunner(stdout, stderr io.Writer) *Runner {
 	if err != nil || timeout <= 0 {
 		timeout = DefaultTimeout
 	}
+	hooks, err := strconv.Atoi(env("KASBAH_BACKUP_HOOK_TIMEOUT", strconv.Itoa(DefaultHookTimeout)))
+	if err != nil || hooks <= 0 {
+		hooks = DefaultHookTimeout
+	}
 	return &Runner{
 		Apps: os.Getenv("KASBAH_BACKUP_APPS"), Data: os.Getenv("KASBAH_BACKUP_DATA"),
 		At: env("KASBAH_BACKUP_AT", DefaultAt), Jitter: jitter, Timeout: timeout,
 		Stdout: stdout, Stderr: stderr, Environ: os.Environ(), Restic: "restic",
 		Now: time.Now, Sleep: time.Sleep, Pid: os.Getpid(),
+		User: os.Getenv("KASBAH_BACKUP_USER"), HookTimeout: hooks, Image: env("KASBAH_BACKUP_IMAGE", ResticImage),
+		Socket: dockerapi.Socket, Docker: dockerapi.New(dockerapi.Socket),
 	}
 }
 
@@ -69,7 +87,8 @@ func (r *Runner) passdir() string   { return r.dir() + "/repos" }
 func (r *Runner) statedir() string  { return r.dir() + "/state" }
 func (r *Runner) statefile() string { return r.statedir() + "/status" }
 
-// Run is the entry point: schedule (the default), once, plan, next, health.
+// Run is the entry point: schedule (the default), once, plan, next, health;
+// launch is the launcher container's.
 func (r *Runner) Run(args []string) int {
 	mode := "schedule"
 	if len(args) > 0 {
@@ -114,11 +133,13 @@ func (r *Runner) Run(args []string) int {
 		return Push(args[1], args[2], r.Stdout, r.Stderr)
 	case "health":
 		return r.health()
+	case "launch":
+		return Launch(args[1:], r.Stdout, r.Stderr)
 	case "schedule":
 		r.schedule()
 		return 0
 	}
-	r.warn("unknown mode '%s' (expected: schedule, once, plan, next, health, push)", mode)
+	r.warn("unknown mode '%s' (expected: schedule, once, plan, next, health, push, launch, host)", mode)
 	return 1
 }
 
@@ -130,8 +151,14 @@ func (r *Runner) writeStatus(state string, deadline, next int64) {
 	if fi, err := os.Stat(r.statedir()); err != nil || !fi.IsDir() {
 		return
 	}
-	body := fmt.Sprintf("state=%s\nsince=%d\ndeadline=%d\nnext_run=%d\nlast_run_started=%d\nlast_run_finished=%d\nlast_run_status=%s\nlast_run_repos=%s\ntimeout=%d\nat=%s\njitter=%d\n",
-		state, r.Now().Unix(), deadline, next, r.started, r.finished, r.status, r.repos, r.Timeout, r.At, r.Jitter)
+	body := fmt.Sprintf("state=%s\nsince=%d\ndeadline=%d\nnext_run=%d\nlast_run_started=%d\nlast_run_finished=%d\nlast_run_status=%s\nlast_run_repos=%s\ntimeout=%d\nat=%s\njitter=%d\nhook_timeout=%d\n",
+		state, r.Now().Unix(), deadline, next, r.started, r.finished, r.status, r.repos, r.Timeout, r.At, r.Jitter, r.HookTimeout)
+	for _, f := range r.failed {
+		body += "last_run_failed=" + f.Project + " " + oneLine(f.Reason) + "\n"
+	}
+	if r.launcher != "" {
+		body += "last_run_launcher=" + oneLine(r.launcher) + "\n"
+	}
 	tmp := fmt.Sprintf("%s.tmp.%d", r.statefile(), r.Pid)
 	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
 		os.Remove(tmp)
@@ -143,19 +170,31 @@ func (r *Runner) writeStatus(state string, deadline, next int64) {
 	}
 }
 
+// oneLine is s fit for a record line.
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
 // field is one field of the record, the last line naming it; "" without.
 func (r *Runner) field(key string) string {
-	b, err := os.ReadFile(r.statefile())
-	if err != nil {
-		return ""
-	}
 	v := ""
-	for _, l := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
-		if rest, ok := strings.CutPrefix(l, key+"="); ok {
-			v = rest
-		}
+	if all := r.fields(key); len(all) > 0 {
+		v = all[len(all)-1]
 	}
 	return v
+}
+
+// fields is every line of the record naming key, in order.
+func (r *Runner) fields(key string) []string {
+	b, err := os.ReadFile(r.statefile())
+	if err != nil {
+		return nil
+	}
+	var vs []string
+	for _, l := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
+		if rest, ok := strings.CutPrefix(l, key+"="); ok {
+			vs = append(vs, rest)
+		}
+	}
+	return vs
 }
 
 // loadLastRun carries the last run's facts out of the record — all four or
@@ -165,10 +204,16 @@ func (r *Runner) loadLastRun() {
 	started, finished := r.field("last_run_started"), r.field("last_run_finished")
 	status, repos := r.field("last_run_status"), r.field("last_run_repos")
 	r.started, r.finished, r.status, r.repos = 0, 0, "-", "-"
+	r.failed, r.launcher = nil, ""
 	s, ok1 := backuprec.Epoch(started)
 	f, ok2 := backuprec.Epoch(finished)
 	if ok1 && ok2 && (status == "ok" || status == "failed") && repos != "" {
 		r.started, r.finished, r.status, r.repos = s, f, status, repos
+		for _, l := range r.fields("last_run_failed") {
+			name, why, _ := strings.Cut(l, " ")
+			r.failed = append(r.failed, Failure{name, why})
+		}
+		r.launcher = r.field("last_run_launcher")
 	}
 }
 
@@ -208,8 +253,14 @@ func (r *Runner) writeSleeping() {
 func (r *Runner) schedule() {
 	r.say("scheduled daily at %s plus %ds jitter; apps %s, data %s", r.At, r.Jitter, r.Apps, r.Data)
 	r.say("one restic call may take %ds (kasbah server init --backup-timeout=)", r.Timeout)
+	r.say("the backup hooks run on the host as %s, within %ds (kasbah server init --backup-user= --backup-hook-timeout=)", r.User, r.HookTimeout)
 	r.loadLastRun()
 	r.writeStatus("starting", r.Now().Unix()+Grace, 0)
+	if fi, err := os.Stat(r.Socket); err == nil && fi.Mode()&os.ModeSocket != 0 {
+		if _, err := r.sweepLaunchers(true); err != nil {
+			r.warn("%v", err)
+		}
+	}
 	for {
 		d := r.delay(r.Now())
 		r.say("sleeping %ds until the next run", d)
@@ -397,6 +448,15 @@ func (r *Runner) once(only string) int {
 	r.loadLastRun()
 	r.started = r.Now().Unix()
 	r.say("run started %s", r.Now().Local().Format("2006-01-02T15:04:05-0700"))
+	// The backups first, so the push ships what they took; a failed one
+	// still pushes everything else (and what backups/ already holds).
+	if only == "" {
+		r.writeStatus("running", r.Now().Unix()+int64(r.HookTimeout+LaunchGrace+r.Timeout*(len(backuprec.RepoSet(backuprec.Projects(r.Apps, r.Data), true))*2+1)+Grace), 0)
+		r.failed, r.launcher = r.hostRun()
+		if r.launcher != "" {
+			r.warn("no project was backed up on the host: %s", r.launcher)
+		}
+	}
 	sleeping := func() {
 		if only == "" {
 			r.writeSleeping()
@@ -482,6 +542,16 @@ func (r *Runner) once(only string) int {
 	}
 	r.say("run finished, repositories backed up:%s", done)
 	r.finished, r.repos, r.status = r.Now().Unix(), done, "ok"
+	if only == "" && (len(r.failed) > 0 || r.launcher != "") {
+		var names []string
+		for _, f := range r.failed {
+			names = append(names, f.Project)
+		}
+		if len(names) > 0 {
+			r.warn("backups that failed on the host, whose older backups were shipped instead: %s", strings.Join(names, " "))
+		}
+		status = 1
+	}
 	if status != 0 {
 		r.status = "failed"
 	}

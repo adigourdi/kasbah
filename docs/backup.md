@@ -37,7 +37,8 @@ The VPS already has Docker; that is the whole dependency.
 
 A kasbah-owned compose stack at `<apps>/.kasbah/backup/` — one always-on
 container, `restart: unless-stopped`, sleeping until the configured time
-plus a per-VPS jitter, then invoking restic, then sleeping again. Not cron:
+plus a per-VPS jitter, then having every project's `backup` hook run on the
+host (below), then invoking restic, then sleeping again. Not cron:
 cron is not in the prerequisites table, and adding a row for it would be a
 second thing a VPS must have. This is the same "kasbah owns a compose
 stack" pattern as Traefik and mail, and it survives a reboot for the same
@@ -51,12 +52,116 @@ indistinguishable from a working one until something gives up, and without a
 bound the run never reaches its next sleep at all — the container stays
 "running" and backs nothing up, permanently.
 
+### The backup hooks, nightly
+
+Each run first takes a fresh backup of every project's live version, so the
+newest dump off-box is last night's and not the last deploy's. The scheduler
+cannot run a hook itself — the restic image has no shell tools, compose or
+`docker` — so it starts a **launcher container** through the Docker Engine API
+on the socket it mounts, `kasbah-backup-launcher`, from the same pinned restic
+image:
+
+- the host's `/` mounted at `/host`, read-write, for the job's lifetime only;
+- the server's `<apps>/.kasbah/bin/kasbah` mounted read-only at `/kasbah`,
+  its entrypoint. Docker resolves a mount's source on the host, so a
+  symlinked apps path reaches the right binary;
+- the host's network, so a hook reaching `127.0.0.1` reaches the host;
+- a pid namespace of its own, never the host's: with the host's, stopping a
+  hung job wedged dockerd; an init, no privilege and Docker's default
+  capabilities;
+- a `json-file` log with the scheduler's own limits (10 MB, 3 files), so the
+  scheduler can read the job's report back whatever the daemon's default
+  driver is;
+- the label `kasbah.backup.launcher`.
+
+As root in the launcher, `kasbah remote backup launch` resolves the user with
+the host's own tools, run chrooted into `/host`: `id -u <user>`, `id -g
+<user>` and `id -G <user>` give the uid, the primary group and every
+supplementary group, all as numbers — never the names, which sssd or Active
+Directory may give with spaces — and `getent passwd <user>` the home. They go
+through the host's NSS, so a user from LDAP or sssd resolves as it does on the
+host (the sockets those use come through the `/` mount). A host without `id`
+is read from its `/etc/passwd` and `/etc/group`.
+The launcher then chroots into `/host`, drops to that user with its groups,
+and runs `kasbah remote backup host <apps> <seconds>`. So the nightly job runs
+on the host, with the server's own shell, `docker` and compose — the host
+needs no `setpriv` or `sudo` for it. A user the host does not have, or root,
+is refused, and the run record says so and how the user was looked up.
+
+**The user** is the backup user `server init --with-backup` records in the
+marker's `backup.user`: the ssh user init runs as, unless `--backup-user=`
+names another. Init looks it up the same way, through the host's `id`, and
+refuses one the host does not have, or root. Membership is by number: the gid
+`getent group kasbah` and `getent group docker` give (the host's `/etc/group`
+without `getent`) among the user's groups. It warns, and goes on, about one
+the job will run short as: not in the `kasbah` group and not the owner of the
+apps path (the job cannot write the `backups/` of a project another operator
+deployed), or not in `docker` (a hook that runs `docker` or compose fails).
+Each warning comes with the root commands that fix it.
+
+**What the job does**, for every project under the apps path — a directory
+with a project's name, not one kasbah reserves — that has a
+`.kasbah-hooks.json` and a live version: the same backup `kasbah backup`
+takes (`kasbah remote deploy backup`, in-process), under the project's deploy
+lock and the shared server lock, its `backup` hooks run from the project
+directory. A project without either is skipped and said so. The job's
+environment is its own: `umask 002`, `PATH=/usr/local/bin:/usr/bin:/bin`,
+`LC_ALL=C`, the user's `HOME`, `USER` and `LOGNAME`, and nothing of the
+scheduler's (`project-manifest.md` → Hooks).
+
+**One deadline bounds the whole job**, `--backup-hook-timeout=` (default 1800
+seconds, recorded in the marker), in two layers. Inside the job, kasbah itself
+runs each hook as a process group of its own and, at the deadline, sends the
+group SIGTERM and SIGKILL 30 seconds later; a project whose turn comes after
+the deadline is not backed up and is named. From the scheduler, a launcher
+still running 60 seconds past the deadline is stopped through the API (10
+seconds' grace) and removed — the second layer, because the launcher outlives
+a scheduler restart. A process a hook started inside a service with `docker
+compose exec` survives both kills, which is why hooks bound what they run
+there.
+
+**Launchers left over.** A launcher is removed whatever happens to its run.
+When the scheduler starts, it stops and removes every labelled launcher: none
+can belong to a run then. Before each launch it removes only the ones that
+have exited and the ones older than a whole job (the deadline and its 60
+seconds); a younger one still running is another run's — a hand-run `once`
+beside the nightly one, say — and is left alone. That run then launches
+nothing: its record says a nightly job is already running, and the push goes
+on, shipping what `backups/` holds.
+
+**The results.** The job prints one line per project on its stdout, and the
+launcher one line naming who it entered the host as, or why the job did not
+start; the scheduler reads that stdout back from the launcher's log — its
+last 4 MB, where the result lines are — into `docker logs kasbah-backup`. The
+hooks' own output is on the job's stderr; the scheduler reads its last 64 KB
+too, and when a project failed or the job did, writes it into `docker logs
+kasbah-backup` after the results, between a line naming it the launcher's
+stderr tail (saying it was cut, and to how many bytes, when it ran past
+64 KB) and an end line. A run that worked shows none of it, and the rest
+goes with the launcher's log. That tail stays in the scheduler's own log
+(json-file, 10 MB × 3), which root and anyone in `docker` can read with
+`docker logs`: a hook that prints a secret on failure leaves it there.
+
+A project whose hook failed or ran past the deadline, or whose backup was
+refused — under a deploy's lock, or beside a `.kasbah-prev/` snapshot a
+deploy left (whose message says whether to let a run finish or to remove a
+stale one by hand) — is recorded in the run record by name with its
+reason. **The push runs regardless**, shipping what `backups/` holds, the
+project's older backups included, and the run is recorded as failed: `kasbah
+server status` and B01 name each project and why. A launcher that could not
+start — no socket in the container, the image missing, no backup user, a user
+the host does not have — or a job that failed as a whole — it ran past its
+deadline, exited without naming a project, or its log could not be read back —
+fails the run the same way, with that reason, and the push still runs.
+
 The stack declares a **healthcheck** asking one question: has the state the
 scheduler last recorded outlived its own deadline? A wedged run and a sleep that
 never woke both fail it, so `docker ps` and `restart: unless-stopped` can both
 see what `docker logs` alone would hide. Each run writes a record to
 `<apps>/.kasbah/backup/state/status` — when it started and finished, how it
-went, which repositories it touched.
+went, which repositories it touched, each project whose backup failed on the
+host, and why the nightly job failed as a whole when it did. A running
+run's deadline covers the hooks' deadline as well as restic's.
 
 **Three readers, one rule, one implementation.** `kasbah server status` prints the
 record — the schedule, the container's state and health, when the last run was
@@ -104,12 +209,13 @@ docker exec kasbah-backup <apps>/.kasbah/bin/kasbah remote backup next
 docker exec kasbah-backup <apps>/.kasbah/bin/kasbah remote backup health
 ```
 
-`once` backs up now, `plan` prints what would be included without writing,
+`once` backs up now — the hooks on the host first, then the push — `plan`
+prints what would be included without writing,
 `next` says when the next run is due, and `health` is what the healthcheck runs.
 `once` writes the same record a scheduled run does, so a hand-driven backup
 cannot leave the healthcheck believing something stale. `once --project`
-backs up only the repository that project files into — every project of that
-client with it, so the repository's newest snapshot still holds them all — and
+runs no hook and backs up only the repository that project files into —
+every project of that client with it, so the repository's newest snapshot still holds them all — and
 writes no record: it is not the scheduled run. Only that project's own
 unshipped `backups/` or `.env` (Scope) fails it; a sibling's is warned of. A
 `once --project` and the nightly run that race on a repository that does not
@@ -170,6 +276,15 @@ copy is on the machine you are backing up is unrecoverable in the exact
 scenario the feature exists for. Repositories are the offboarding unit, so
 one password per repository means a departing client's repository can be
 handed over with its password without exposing any other.
+
+**The scheduler holds the Docker socket, which is root on the host.** It is
+what lets the nightly job reach the host at all, and anyone who can start a
+container through it can mount `/` and become root. Through it, so can anyone
+able to replace `<apps>/.kasbah/bin/kasbah` (`deploy:kasbah`, mode `775`): the
+launcher runs that binary as root before it drops to the backup user. Every
+operator is already in the `docker` group (`server-setup.md` → Operators),
+which is the same root, so this gives no operator any access they lack — but
+it is root, and a member of `kasbah` who is not in `docker` would gain it.
 
 **Never embed a credential in the repository URL.** `repo_base` is recorded
 in the server marker, which is mode **664** by contract — a URL carrying a

@@ -655,6 +655,12 @@ func (x *run) printBackup() {
 		}
 	case backuprec.Failed:
 		x.p("  %-16s FAILED %s ago — repositories backed up: %s (docker logs %s says why)\n", "last run", ago, or(ran, "-"), "kasbah-backup")
+		if r.Launcher != "" {
+			x.p("  %-16s failed: %s\n", "backup job", r.Launcher)
+		}
+		for _, f := range r.Failed {
+			x.p("  %-16s %s: %s\n", "backup failed", f.Project, f.Reason)
+		}
 		if r.Overdue != 0 {
 			x.p("  %-16s %s past its own deadline in state '%s' — nothing has run since\n", "scheduler", due, r.State)
 		}

@@ -82,7 +82,7 @@ func TestBackupResolve(t *testing.T) {
 	r.Mail = true
 	r.Projects = []backuprec.Project{{Name: "alpha", Client: "acme"}, {Name: "beta", Client: ""}}
 	p, said := bkPrompter("")
-	v, err := BackupResolve(p.Out, p, o, r, nil)
+	v, err := BackupResolve(p.Out, p, o, r, nil, "deploy")
 	if err != nil {
 		t.Fatal(err, said)
 	}
@@ -98,13 +98,13 @@ func TestBackupResolve(t *testing.T) {
 	// A password already there is never asked for nor rewritten.
 	r.HasPass = []string{"acme"}
 	p, said = bkPrompter("")
-	v, err = BackupResolve(p.Out, p, o, r, nil)
+	v, err = BackupResolve(p.Out, p, o, r, nil, "deploy")
 	if err != nil || strings.Join(v.New, " ") != "beta mail" || !strings.Contains(said.String(), "--backup-password=acme= had no effect") {
 		t.Errorf("%+v %v %s", v, err, said)
 	}
 	// A password for a repository nothing claims yet joins the set.
 	o2, _ := Parse([]string{"deploy@vps", "--with-backup", "--backup-repo-base=b/", "--no-backup-env", "--backup-password=future=x"})
-	v, err = BackupResolve(p.Out, p, o2, fresh(), nil)
+	v, err = BackupResolve(p.Out, p, o2, fresh(), nil, "deploy")
 	if err != nil || strings.Join(v.Repos, " ") != "future" {
 		t.Errorf("%+v %v", v, err)
 	}
@@ -123,7 +123,7 @@ func TestBackupResolve(t *testing.T) {
 	} {
 		o, _ := Parse(c.args)
 		p, _ := bkPrompter("")
-		if _, err := BackupResolve(p.Out, p, o, c.r, nil); !strings.Contains(errText(err), c.want) {
+		if _, err := BackupResolve(p.Out, p, o, c.r, nil, "deploy"); !strings.Contains(errText(err), c.want) {
 			t.Errorf("%v: %v", c.args, err)
 		}
 	}
@@ -131,16 +131,114 @@ func TestBackupResolve(t *testing.T) {
 	existing := marker.Backup{RepoBase: "s3:https://old/", At: "04:17", Jitter: 42, Timeout: 120, Retention: marker.Retention{Daily: 1, Weekly: 2, Monthly: 3}}
 	m, _ := marker.Build(marker.Fields{KasbahVersion: "1", AppsPath: "/apps", DataPath: "/apps/data", CPULimit: "1", MemLimit: "1g"}, nil, &existing)
 	o3, _ := Parse([]string{"a@b", "--with-backup"})
-	v, err = BackupResolve(p.Out, p, o3, &backup.ReadReport{Dir: "dir", Env: "present"}, m)
+	v, err = BackupResolve(p.Out, p, o3, &backup.ReadReport{Dir: "dir", Env: "present"}, m, "deploy")
 	if err != nil || v.RepoBase != "s3:https://old/" || v.BaseOrigin != "marker" || v.At != "04:17" || v.Jitter != 42 ||
 		v.Timeout != 120 || v.Daily != 1 || v.EnvOrigin != "file" {
 		t.Errorf("%+v %v", v, err)
 	}
 	// Asked on a terminal: base, environment, one password.
 	p, said = bkPrompter("rest:http://h/b/\ny\nAWS_KEY\nsecret\n\nhunter2\n")
-	v, err = BackupResolve(p.Out, p, o3, &backup.ReadReport{Dir: "absent", Env: "absent", Projects: []backuprec.Project{{Name: "x"}}}, nil)
+	v, err = BackupResolve(p.Out, p, o3, &backup.ReadReport{Dir: "absent", Env: "absent", Projects: []backuprec.Project{{Name: "x"}}}, nil, "deploy")
 	if err != nil || v.BaseOrigin != "prompt" || v.EnvOrigin != "prompt" || strings.Join(v.Env, " ") != "AWS_KEY=secret" || v.Pass["x"] != "hunter2" {
 		t.Errorf("%+v %v %s", v, err, said)
+	}
+}
+
+// The nightly job's user and deadline: a flag, else the marker, else the
+// ssh user and the default; each refusal names its flag.
+func TestBackupUserAndHookTimeout(t *testing.T) {
+	o, err := Parse([]string{"a@b", "--with-backup", "--backup-user=stevedore\r", "--backup-hook-timeout=600"})
+	if err != nil || o.Bk.User != "stevedore" || o.Bk.HookTimeout != "600" {
+		t.Fatalf("%+v %v", o.Bk, err)
+	}
+	for _, c := range []struct{ args, want string }{
+		{"a@b|--backup-user=Root!", "--backup-user=Root! is not a user name"},
+		{"a@b|--backup-hook-timeout=10", "--backup-hook-timeout=10 is outside 30 to 86400 seconds"},
+		{"a@b|--backup-hook-timeout=soon", "--backup-hook-timeout=soon is not a whole number"},
+	} {
+		if _, err := Parse(strings.Split(c.args, "|")); !strings.Contains(errText(err), c.want) {
+			t.Errorf("%q: %v", c.args, err)
+		}
+	}
+	base := []string{"deploy@vps", "--with-backup", "--backup-repo-base=b/", "--no-backup-env"}
+	p, _ := bkPrompter("")
+	o, _ = Parse(base)
+	v, err := BackupResolve(p.Out, p, o, fresh(), nil, "deploy")
+	if err != nil || v.User != "deploy" || v.UserOrigin != "the ssh user" || v.HookTimeout != backup.DefaultHookTimeout {
+		t.Errorf("defaults: %+v %v", v, err)
+	}
+	existing := marker.Backup{RepoBase: "b/", At: "04:17", Timeout: 120, User: "stevedore", HookTimeout: 900}
+	m, _ := marker.Build(marker.Fields{KasbahVersion: "1", AppsPath: "/apps", DataPath: "/apps/data", CPULimit: "1", MemLimit: "1g"}, nil, &existing)
+	if got := string(marker.Render(m)); !strings.Contains(got, `"user": "stevedore"`) || !strings.Contains(got, `"hook_timeout": 900`) {
+		t.Errorf("marker:\n%s", got)
+	}
+	v, err = BackupResolve(p.Out, p, o, &backup.ReadReport{Dir: "dir", Env: "present"}, m, "deploy")
+	if err != nil || v.User != "stevedore" || v.UserOrigin != "marker" || v.HookTimeout != 900 {
+		t.Errorf("read back: %+v %v", v, err)
+	}
+	o, _ = Parse(append(base, "--backup-user=ops", "--backup-hook-timeout=60"))
+	v, err = BackupResolve(p.Out, p, o, &backup.ReadReport{Dir: "dir", Env: "present"}, m, "deploy")
+	if err != nil || v.User != "ops" || v.UserOrigin != "flag" || v.HookTimeout != 60 {
+		t.Errorf("flags over the marker: %+v %v", v, err)
+	}
+	// A value the marker holds that is no user name is refused, not shipped.
+	bad := marker.Backup{RepoBase: "b/", At: "04:17", Timeout: 120, User: "x y"}
+	mb, _ := marker.Build(marker.Fields{KasbahVersion: "1", AppsPath: "/apps", DataPath: "/apps/data", CPULimit: "1", MemLimit: "1g"}, nil, &bad)
+	o, _ = Parse(base)
+	if _, err := BackupResolve(p.Out, p, o, &backup.ReadReport{Dir: "dir", Env: "present"}, mb, "deploy"); !strings.Contains(errText(err), "--backup-user=x y is not a user name") {
+		t.Errorf("a bad recorded user: %v", err)
+	}
+	for _, c := range []struct{ state, via, origin, want string }{
+		{"absent", "id", "flag", "the backup user ops (--backup-user=) does not exist on deploy@vps (looked up through the host's id)"},
+		{"absent", "files", "marker", "(the server marker) does not exist on deploy@vps (looked up through its /etc/passwd, as it has no id)"},
+		{"root", "id", "the ssh user", "the backup user ops (the ssh user, as no --backup-user= was given) is root on deploy@vps"},
+		{"weird", "id", "flag", "backup_user='weird'"},
+	} {
+		var b bytes.Buffer
+		err := UserVerdict(&cli.Output{Stdout: &b, Stderr: &b}, map[string]string{"backup_user": c.state, "backup_user_via": c.via},
+			&BackupValues{User: "ops", UserOrigin: c.origin}, "deploy@vps", "/srv/apps")
+		if !strings.Contains(errText(err), c.want) || !strings.Contains(errText(err)+c.state, "--backup-user=") && c.state != "weird" {
+			t.Errorf("%s: %v", c.state, err)
+		}
+	}
+	// A user the job runs short as is warned about, with the commands to run,
+	// and init goes on.
+	for _, c := range []struct {
+		kasbah, owner, docker string
+		warns, cmds           []string
+	}{
+		{"yes", "no", "yes", nil, nil},
+		{"no", "yes", "yes", nil, nil},
+		{"no", "no", "yes", []string{"is not in the 'kasbah' group on deploy@vps and does not own /srv/apps",
+			"cannot write the backups/ of a project another operator deployed"},
+			[]string{"sudo groupadd -f kasbah", "sudo usermod -aG kasbah ops"}},
+		{"yes", "no", "no", []string{"is not in the 'docker' group on deploy@vps, so a backup hook that runs docker or compose fails"},
+			[]string{"sudo usermod -aG docker ops"}},
+	} {
+		var b bytes.Buffer
+		err := UserVerdict(&cli.Output{Stdout: &b, Stderr: &b}, map[string]string{"backup_user": "ok", "backup_user_via": "id",
+			"backup_user_kasbah": c.kasbah, "backup_user_owner": c.owner, "backup_user_docker": c.docker},
+			&BackupValues{User: "ops", UserOrigin: "flag"}, "deploy@vps", "/srv/apps")
+		if err != nil {
+			t.Errorf("%+v refused: %v", c, err)
+		}
+		if len(c.warns) == 0 && b.Len() != 0 {
+			t.Errorf("%+v: %s", c, b.String())
+		}
+		for _, w := range append(c.warns, c.cmds...) {
+			if !strings.Contains(b.String(), w) {
+				t.Errorf("%+v lacks %q:\n%s", c, w, b.String())
+			}
+		}
+		if strings.Contains(b.String(), "groupadd") != (c.kasbah == "no" && c.owner == "no") {
+			t.Errorf("%+v:\n%s", c, b.String())
+		}
+	}
+	var errb bytes.Buffer
+	o, _ = Parse([]string{"a@b", "--no-backup", "--backup-user=ops", "--backup-hook-timeout=60"})
+	FlagsUnused(&cli.Output{Stdout: &errb, Stderr: &errb}, o)
+	if !strings.Contains(errb.String(), "--backup-user= --backup-hook-timeout= had no effect") {
+		t.Errorf("%q", errb.String())
 	}
 }
 
@@ -165,7 +263,7 @@ func TestBackupMarker(t *testing.T) {
 
 func TestBackupRender(t *testing.T) {
 	o, _ := Parse([]string{"a@b", "--with-backup"})
-	v := &BackupValues{RepoBase: "rest:http://u:p@h/b/", At: "02:00", Jitter: 1234, Timeout: 900}
+	v := &BackupValues{RepoBase: "rest:http://u:p@h/b/", At: "02:00", Jitter: 1234, Timeout: 900, User: "stevedore", HookTimeout: 600}
 	compose, env, err := BackupRender(repoTemplates(t), o, v, fresh())
 	if err != nil {
 		t.Fatal(err)
@@ -176,7 +274,8 @@ func TestBackupRender(t *testing.T) {
 	for _, want := range []string{"image: " + backup.ResticImage, "KASBAH_BACKUP_JITTER: 1234", "KASBAH_BACKUP_AT: 02:00", "KASBAH_BACKUP_TIMEOUT: 900",
 		`entrypoint: ["/apps/.kasbah/bin/kasbah", "remote", "backup"]`, `"/apps/.kasbah/bin/kasbah", "remote", "backup", "health"]`,
 		`"/apps/.kasbah/backup/state:/apps/.kasbah/backup/state"`, `"/apps:/apps:ro"`, `"/apps/data:/apps/data:ro"`,
-		"container_name: kasbah-backup", "name: kasbah-backup-cache"} {
+		"container_name: kasbah-backup", "name: kasbah-backup-cache", "KASBAH_BACKUP_USER: stevedore", "KASBAH_BACKUP_HOOK_TIMEOUT: 600",
+		"KASBAH_BACKUP_IMAGE: " + backup.ResticImage, `- "/var/run/docker.sock:/var/run/docker.sock"`} {
 		if !strings.Contains(compose, want) {
 			t.Errorf("compose lacks %s", want)
 		}

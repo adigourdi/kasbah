@@ -1144,6 +1144,14 @@ func (c *checker) b01Verdict(r *backuprec.Record, b backuprec.Facts, clock strin
 		if r.Overdue != 0 {
 			past = ", and the scheduler is " + due + " past its own deadline"
 		}
+		if why := r.Why(); len(why) > 0 {
+			logs := "docker logs kasbah-backup says why"
+			if r.Launcher == "" {
+				logs = "docker logs kasbah-backup has each project's result and the last 64 KB of the backup hooks' stderr"
+			}
+			c.failf("the last backup on %s FAILED %s ago (repositories backed up: %s) — %s; %s%s%s", s.target, ago, or(repos, "-"), strings.Join(why, "; "), logs, past, clock)
+			break
+		}
 		c.failf("the last backup on %s FAILED %s ago (repositories backed up: %s) — nothing new has been shipped off-box since; docker logs kasbah-backup says which repository and why%s%s", s.target, ago, or(repos, "-"), past, clock)
 	case backuprec.Overdue:
 		finished := ""

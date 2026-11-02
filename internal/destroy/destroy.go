@@ -810,6 +810,9 @@ func (p *Plan) reportBackup(r *reporter, a *ActReport) {
 		"the "+BackupContainer+" container went down with the stack",
 		"there was no "+BackupContainer+" container",
 		"could not remove the "+BackupContainer+" container on "+p.Target)
+	r.step(a.BkLaunchers, "removed the "+BackupLauncher+" container a stopped scheduler left (label "+BackupLauncherLabel+")",
+		"there was no "+BackupLauncher+" container",
+		"could not remove the "+BackupLauncher+" containers (label "+BackupLauncherLabel+") on "+p.Target+" — each holds the host's / mounted")
 	r.step(a.BkVolume, "removed the "+BackupVolume+" volume", "there was no "+BackupVolume+" volume",
 		"could not remove the "+BackupVolume+" volume on "+p.Target)
 	stack(a.BkNetwork, "removed the "+BackupNetwork+" network, which survived `down`",

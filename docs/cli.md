@@ -77,6 +77,16 @@ Flags:
   a storage endpoint that accepts a connection and then answers nothing from
   wedging the scheduler forever: without a bound the run never returns to its
   sleep, so the container stays "running" and backs nothing up.
+- `--backup-user=NAME` — who the nightly job runs every project's `backup`
+  hooks as on the server. Default: the ssh user running init; recorded in the
+  marker and read back on a re-run. Looked up through the server's `id`, so a
+  user from LDAP or sssd counts; init refuses one the server does not have,
+  or root, and warns — with the root commands to run — about one outside
+  `kasbah` who does not own the apps path, or outside `docker`.
+- `--backup-hook-timeout=<seconds>` — the deadline of that whole job, every
+  project's hooks together: a hook still running at it is killed with its
+  process group, and its project recorded failed. Default 1800, 30 to 86400,
+  recorded in the marker.
 - `--backup-at=HH:MM`, `--backup-jitter=<seconds>` — when the daily run fires.
   The jitter defaults to a value derived from the server's own identity, so it
   is stable across re-runs and spreads load across hosts.
@@ -401,7 +411,8 @@ Server-wide:
   marker but still has its pointer, and destroy says so on a re-run rather than
   claiming there is nothing to remove.
 - the **backup stack**, stopped rather than merely unlinked: `docker compose -p
-  kasbah-backup down`, then the container, the `kasbah-backup-cache` volume, the
+  kasbah-backup down`, then the container, every launcher a run left behind
+  (by its label, `kasbah.backup.launcher`), the `kasbah-backup-cache` volume, the
   `kasbah-backup_default` network, then `<apps>/.kasbah/backup/` entire —
   `compose.yml`, `env`, `repos/*.pass`, `state/` (and a `backup.sh` left by a
   kasbah 0.x). A schedule left
@@ -502,7 +513,10 @@ Prints:
 - The backup stack, when the marker records one: the repository base with any
   credential **redacted**, the schedule and its jitter, the `kasbah-backup`
   container's state, health and restart count, when the last run happened and
-  how it went, the repositories this server has, and any that lack a password
+  how it went — a failed one with a `backup job` line saying why the nightly
+  job failed as a whole, when it did, and a `backup failed` line per project
+  whose backup failed on the host, with why — the repositories this server
+  has, and any that lack a password
   and are therefore not being backed up, and any **orphan password** — a
   repository file left behind when its last project was dropped, which kasbah
   reports and never deletes, because deleting it would make that client's
@@ -1011,7 +1025,9 @@ now). It takes no flags and asks nothing.
      mid-way, so the project's files may already be the next version's — let
      it finish or re-run it. When `versions.log` ends on a `… reason=revert`
      line, it names the snapshot as the one a failed revert kept: fix what
-     the revert reported and deploy or roll back again.
+     the revert reported and deploy or roll back again. When the manifest was
+     taken no later than the last run that went live, no run is using it: it
+     says to remove `.kasbah-prev/` by hand.
    - Create `backups/<live version>-<stamp>/`, copy the live `.env` and each
      path `.kasbah-hooks.json` lists that exists into `kasbah-snapshot/<path>`
      in it, and run the recorded `backup` hooks with `$KASBAH_BACKUP_DIR` that

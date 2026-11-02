@@ -486,7 +486,7 @@ func Run(c Ctx, o Options) (err error) {
 	}
 	var bv *BackupValues
 	if backupOn {
-		if bv, err = BackupResolve(out, c.Prompter, o, br, existingMap); err != nil {
+		if bv, err = BackupResolve(out, c.Prompter, o, br, existingMap, f["user"]); err != nil {
 			return err
 		}
 	}
@@ -670,7 +670,7 @@ func Run(c Ctx, o Options) (err error) {
 	// and no marker, which is still the last thing init writes.
 	var brep bkReport
 	if backupOn {
-		if brep, err = s.backupInstall(o, bv, br, bcompose, benv, ensured.Action != remote.Keep); err != nil {
+		if brep, err = s.backupInstall(out, o, bv, br, bcompose, benv, ensured.Action != remote.Keep); err != nil {
 			return err
 		}
 	}
