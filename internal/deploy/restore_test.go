@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,11 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
-	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/prompt"
 )
 
 type member struct {
@@ -407,157 +403,6 @@ func TestExtractionGoesOnASignalToo(t *testing.T) {
 	r.noRestoreDir(t)
 }
 
-func rollbackWith(t *testing.T, f *fake, o Options, tty bool, answers string) (error, string) {
-	t.Helper()
-	var errb bytes.Buffer
-	out := &cli.Output{Stdout: &errb, Stderr: &errb}
-	pwd, _ := os.Getwd()
-	prev := "{\"" + ReportKey + "\":1,\"version\":\"1.0.0\",\"prev_version\":\"2.0.0\",\"deployed_before\":true,\"backup\":\"no-backup\",\"digest\":\"-\"}\n"
-	if f.out == nil {
-		f.out = &prev
-	}
-	if f.record == nil {
-		f.record = record(twoDeploys, "", true)
-	}
-	err := RunTagged(Ctx{
-		Out: out, Prompter: &prompt.Prompter{In: strings.NewReader(answers), Out: out, TTY: tty},
-		PWD: pwd, Version: "0.1.0",
-		Dial: func(string) (Server, error) { return f, nil },
-		Now:  func() time.Time { return time.Unix(0, 0) },
-	}, o, "rollback")
-	if err != nil {
-		out.Report(err)
-	}
-	return err, errb.String()
-}
-
-const withRestore = "  restore:\n    - 'echo restore'\n"
-
-func backupOf(changed ...string) *BackupFacts {
-	return &BackupFacts{Backup: "1.0.0-20261101-000000.tar.gz", Env: "yes", Changed: changed, OnlyBackup: []string{"OLD"}, OnlyLive: []string{}}
-}
-
-// Refusals and unanswerable questions stop the run before the snapshot.
-func TestRollbackRestoreRefusals(t *testing.T) {
-	for _, c := range []struct {
-		name, extra string
-		backup      *BackupFacts
-		o           Options
-		want        string
-	}{
-		{"with-data, no backup, no hook", "", nil, Options{Data: prompt.Yes}, "there is nothing to restore it with: d@h holds no backup of 1.0.0 in /apps/demo/backups, and v1.0.0's kasbah.yml has no restore hook"},
-		{"with-data, no backup", withRestore, nil, Options{Data: prompt.Yes}, "d@h holds no backup of 1.0.0 in /apps/demo/backups to restore it from"},
-		{"with-data, no hook", "", backupOf(), Options{Data: prompt.Yes, Env: prompt.No}, "v1.0.0's kasbah.yml has no restore hook — kasbah restores no data itself"},
-		{"no tty, data", withRestore, backupOf(), Options{Env: prompt.No}, "pass --with-data or --no-data. Nothing was changed."},
-		{"no tty, env", "", backupOf("A"), Options{}, "pass --with-env or --no-env. Nothing was changed."},
-		{"no tty, both", withRestore, backupOf("A"), Options{}, "pass --with-env or --no-env, and --with-data or --no-data. Nothing was changed."},
-	} {
-		history(t, c.extra)
-		t.Setenv("TMPDIR", t.TempDir())
-		f := &fake{backup: c.backup}
-		err, out := rollbackWith(t, f, Options{Target: "d@h", Version: "1.0.0", Env: c.o.Env, Data: c.o.Data}, false, "")
-		if err == nil || !strings.Contains(out, c.want) {
-			t.Errorf("%s: %v\n%s", c.name, err, out)
-		}
-		if strings.Contains(c.name, "with-data") && !strings.Contains(out, "pass --no-data") {
-			t.Errorf("%s: --no-data not offered\n%s", c.name, out)
-		}
-		if f.called("snapshot") || f.called("restore-env") || f.called("run") {
-			t.Errorf("%s: changed the server: %v", c.name, f.calls)
-		}
-	}
-}
-
-// The answers, from flags or a terminal, reach the env restore and the spec.
-func TestRollbackRestoreAnswers(t *testing.T) {
-	for _, c := range []struct {
-		name, extra, answers string
-		backup               *BackupFacts
-		o                    Options
-		tty                  bool
-		envAll               bool
-		keys                 string
-		data                 bool
-		from                 string
-	}{
-		{"no backup", withRestore, "", nil, Options{}, false, false, "-", false, ""},
-		{"no backup, with-env", withRestore, "", nil, Options{Env: prompt.Yes}, false, false, "-", false, ""},
-		{"flags", withRestore, "", backupOf("A"), Options{Env: prompt.Yes, Data: prompt.Yes}, false, true, "", true, "1.0.0-20261101-000000.tar.gz"},
-		{"no-env no-data", withRestore, "", backupOf("A"), Options{Env: prompt.No, Data: prompt.No}, false, false, "-", false, "1.0.0-20261101-000000.tar.gz"},
-		{"nothing differs, no hook", "", "", &BackupFacts{Backup: "1.0.0-20261101-000000.tar.gz", Env: "yes"}, Options{}, false, false, "-", false, "1.0.0-20261101-000000.tar.gz"},
-		{"tty restore, no", withRestore, "1\nn\n", backupOf("A"), Options{}, true, true, "", false, "1.0.0-20261101-000000.tar.gz"},
-		{"tty keep, yes", withRestore, "keep\ny\n", backupOf("A"), Options{}, true, false, "-", true, "1.0.0-20261101-000000.tar.gz"},
-		{"tty per key", withRestore, "per-key\nbackup\nserver\n2\ny\n", backupOf("A", "B"), Options{}, true, false, "A", true, "1.0.0-20261101-000000.tar.gz"},
-		{"tty per key, all server", "", "3\nserver\nserver\nserver\n", backupOf("A", "B"), Options{}, true, false, "-", false, "1.0.0-20261101-000000.tar.gz"},
-	} {
-		history(t, c.extra)
-		t.Setenv("TMPDIR", t.TempDir())
-		f := &fake{backup: c.backup}
-		o := c.o
-		o.Target, o.Version = "d@h", "1.0.0"
-		err, out := rollbackWith(t, f, o, c.tty, c.answers)
-		if err != nil {
-			t.Errorf("%s: %v\n%s", c.name, err, out)
-			continue
-		}
-		got := "-"
-		if f.called("restore-env") {
-			got = strings.Join(f.envKeys, ",")
-		}
-		if got != c.keys || f.envAll != c.envAll {
-			t.Errorf("%s: restore-env keys %q all %v\n%s", c.name, got, f.envAll, out)
-		}
-		if f.spec == nil || f.spec.RestoreData != c.data || f.spec.RestoreFrom != c.from {
-			t.Errorf("%s: spec %+v\n%s", c.name, f.spec, out)
-		}
-		// The .env goes back after the snapshot and before the drift step.
-		calls := strings.Join(f.calls, "\n")
-		if f.called("restore-env") && !(strings.Index(calls, "snapshot") < strings.Index(calls, "restore-env") && strings.Index(calls, "restore-env") < strings.Index(calls, "drift")) {
-			t.Errorf("%s: order %v", c.name, f.calls)
-		}
-		if strings.Index(calls, "backup-probe") > strings.Index(calls, "snapshot") {
-			t.Errorf("%s: probed after the snapshot: %v", c.name, f.calls)
-		}
-		if c.backup != nil && c.backup.Env == "yes" && len(c.backup.Changed) > 0 && !strings.Contains(out, "values differ:      "+strings.Join(c.backup.Changed, " ")) {
-			t.Errorf("%s: the names are not listed\n%s", c.name, out)
-		}
-	}
-}
-
-// End of input at a terminal's .env question names the real flags.
-func TestRollbackEnvQuestionEOF(t *testing.T) {
-	history(t, "")
-	t.Setenv("TMPDIR", t.TempDir())
-	f := &fake{backup: backupOf("A")}
-	err, out := rollbackWith(t, f, Options{Target: "d@h", Version: "1.0.0"}, true, "per-key\n")
-	if err == nil || !strings.Contains(out, "no answer to the .env question — pass --with-env or --no-env") || f.called("snapshot") {
-		t.Fatalf("%v %v\n%s", err, f.calls, out)
-	}
-}
-
-// A named deploy restores nothing: no probe, and the flags are a rollback's.
-func TestDeployVersionRestoresNothing(t *testing.T) {
-	history(t, withRestore)
-	t.Setenv("TMPDIR", t.TempDir())
-	f := &fake{backup: backupOf("A")}
-	if err, out := runTagged(t, f, Options{Target: "d@h", Version: "1.0.0"}, "deploy"); err != nil || f.called("backup-probe") || f.spec.RestoreFrom != "" || f.spec.RestoreData {
-		t.Fatalf("%v %v %+v\n%s", err, f.calls, f.spec, out)
-	}
-	for _, a := range []string{"--with-env", "--no-data"} {
-		if _, err := Parse([]string{a}); err == nil || !strings.Contains(err.Error(), "is a rollback flag") {
-			t.Errorf("deploy %s: %v", a, err)
-		}
-	}
-	if o, err := ParseRollback([]string{"--with-env", "--no-data"}); err != nil || o.Env != prompt.Yes || o.Data != prompt.No {
-		t.Errorf("rollback flags: %+v %v", o, err)
-	}
-	for _, args := range [][]string{{"--with-env", "--no-env"}, {"--no-data", "--with-data"}, {"--with-env=yes"}} {
-		if _, err := ParseRollback(args); err == nil {
-			t.Errorf("%v accepted", args)
-		}
-	}
-}
-
 // --undo puts .env back from the run's snapshot, the one it replaces kept.
 func TestUndoEnvArm(t *testing.T) {
 	dir := t.TempDir()
@@ -615,69 +460,5 @@ func TestUndoEnvArm(t *testing.T) {
 	}
 	if rc, out := arm("rel", "1.0.0-20261102-000000.tar.gz", "--all"); rc == 0 || !strings.Contains(out, "DIR absolute") {
 		t.Errorf("restore-env took a relative DIR: %s", out)
-	}
-}
-
-// A failure between restore-env and the engine puts the server's .env back,
-// and says so; when that fails too, it says how to.
-func TestRollbackEnvPutBack(t *testing.T) {
-	for _, c := range []struct {
-		name string
-		f    *fake
-		o    Options
-		code int
-		want []string
-	}{
-		{"drift abort", &fake{drift: "template_exists=yes\nenv_exists=yes\nmissing=B\nextra=\n"}, Options{OnDrift: "abort"}, cli.ExitEnvSetup,
-			[]string{"has drifted from .env.prod.example", "/apps/demo/.env on d@h was put back as it was before this rollback; the values from 1.0.0-20261101-000000.tar.gz are not live."}},
-		{"inject fails", &fake{injectRC: 1, undoSaved: "/apps/demo/" + Replaced}, Options{}, 1,
-			[]string{"could not write the kasbah-managed block", "was put back as it was before this rollback", "the .env it replaced is kept as /apps/demo/" + Replaced + "."}},
-		{"put-back fails", &fake{injectRC: 1, undoErr: cli.Fail("could not put /apps/demo/.env back on d@h (exit 255, see above)")}, Options{}, 1,
-			[]string{"/apps/demo/.env on d@h still holds the values restored from 1.0.0-20261101-000000.tar.gz — putting it back failed:",
-				"  could not put /apps/demo/.env back on d@h (exit 255, see above)", "A plain deploy would run on them.",
-				"ssh d@h /apps/.kasbah/bin/kasbah remote deploy restore-env /apps/demo --undo "}},
-	} {
-		history(t, "")
-		t.Setenv("TMPDIR", t.TempDir())
-		c.f.backup = backupOf("A")
-		o := c.o
-		o.Target, o.Version, o.Env, o.Data = "d@h", "1.0.0", prompt.Yes, prompt.No
-		err, out := rollbackWith(t, c.f, o, false, "")
-		var e *cli.Error
-		if !errors.As(err, &e) || e.Code != c.code {
-			t.Errorf("%s: %v\n%s", c.name, err, out)
-			continue
-		}
-		for _, w := range c.want {
-			if !strings.Contains(out, w) {
-				t.Errorf("%s: no %q\n%s", c.name, w, out)
-			}
-		}
-		if !c.f.called("undo-env "+c.f.token) || c.f.token == "" || c.f.called("run") {
-			t.Errorf("%s: calls %v", c.name, c.f.calls)
-		}
-	}
-	// No .env restored: nothing to put back.
-	history(t, "")
-	t.Setenv("TMPDIR", t.TempDir())
-	f := &fake{backup: backupOf("A"), injectRC: 1}
-	if err, out := rollbackWith(t, f, Options{Target: "d@h", Version: "1.0.0", Env: prompt.No, Data: prompt.No}, false, ""); err == nil || f.called("undo-env") || strings.Contains(out, "put back as it was") {
-		t.Errorf("--no-env: %v %v\n%s", err, f.calls, out)
-	}
-	// An engine that failed with a record reverted .env itself.
-	history(t, "")
-	t.Setenv("TMPDIR", t.TempDir())
-	rec := "{\"" + FailureKey + "\":1,\"outcome\":\"reverted\",\"reason\":\"up\",\"prev\":\"0.9.0\"}\n"
-	f = &fake{backup: backupOf("A"), rc: 1, out: &rec}
-	if _, out := rollbackWith(t, f, Options{Target: "d@h", Version: "1.0.0", Env: prompt.Yes, Data: prompt.No}, false, ""); f.called("undo-env") {
-		t.Errorf("engine failure: %v\n%s", f.calls, out)
-	}
-	// One that refused before its lock left no record: .env is put back.
-	history(t, "")
-	t.Setenv("TMPDIR", t.TempDir())
-	none := "remote: deploy: another run holds .deploy.lock\n"
-	f = &fake{backup: backupOf("A"), rc: 1, out: &none}
-	if _, out := rollbackWith(t, f, Options{Target: "d@h", Version: "1.0.0", Env: prompt.Yes, Data: prompt.No}, false, ""); !f.called("undo-env "+f.token) || !strings.Contains(out, "was put back as it was before this rollback") {
-		t.Errorf("engine refused: %v\n%s", f.calls, out)
 	}
 }

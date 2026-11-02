@@ -16,16 +16,22 @@ import (
 func fakeRunSSH(t *testing.T) (*SSH, string) {
 	t.Helper()
 	dir := t.TempDir()
-	script := `#!/bin/bash
+	script := `#!/bin/sh
+set -u
 d=$(dirname "$0")
 IFS= read -r spec; printf '%s\n' "$spec" > "$d/spec"
 if [ -n "${ASK:-}" ]; then
 	printf '{"kasbah_deploy_question":1,"step":"pre-deploy hook","error":"e"}\n'
 	IFS= read -r ans; printf '%s\n' "$ans" > "$d/answer"
 fi
-if IFS= read -r -t 0.5 more; then echo "more:$more" > "$d/rest"
-elif [ $? -gt 128 ]; then echo open > "$d/rest"
-else echo eof > "$d/rest"; fi
+# A read still blocked after half a second means stdin is open.
+exec 3<&0
+{ more=; if IFS= read -r more <&3 || [ -n "$more" ]; then printf 'more:%s\n' "$more"; else echo eof; fi > "$d/got.tmp"; mv "$d/got.tmp" "$d/got"; } >/dev/null 2>&1 &
+i=0
+while [ ! -e "$d/got" ] && [ "$i" -lt 10 ]; do sleep 0.05; i=$((i + 1)); done
+if [ -e "$d/got" ]; then cat "$d/got"; else echo open; fi > "$d/rest"
+kill "$!" 2>/dev/null
+exit 0
 `
 	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)

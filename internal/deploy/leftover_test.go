@@ -73,8 +73,9 @@ func TestScanLeftoversUnlistable(t *testing.T) {
 
 func TestScanAgainstLock(t *testing.T) {
 	d := t.TempDir()
-	own := UnpackedPrefix + strconv.Itoa(os.Getpid())
-	for _, p := range []string{"backups/1.0.0-20261102-100000", own, UnpackedPrefix + "1", KeptPrefix + "0.9.0-20261102-090000"} {
+	// Another pid's extraction: never the test's own, which may be pid 1.
+	own, other := UnpackedPrefix+strconv.Itoa(os.Getpid()), UnpackedPrefix+strconv.Itoa(os.Getpid()+1)
+	for _, p := range []string{"backups/1.0.0-20261102-100000", own, other, KeptPrefix + "0.9.0-20261102-090000"} {
 		os.MkdirAll(filepath.Join(d, p), 0o755)
 	}
 	if l := ScanAgainstLock(d); l.Holder != "" || len(l.Unpacked) != 2 || l.Running().Any() || len(l.Settled().Paths(d)) != 4 {
@@ -90,10 +91,10 @@ func TestScanAgainstLock(t *testing.T) {
 		t.Fatalf("holder not seen (needs /proc/locks): %+v", l)
 	}
 	// The holder's own extraction is left out; another's stays.
-	if strings.Join(l.Unpacked, ",") != UnpackedPrefix+"1" {
+	if strings.Join(l.Unpacked, ",") != other {
 		t.Errorf("unpacked: %v", l.Unpacked)
 	}
-	if got := strings.Join(l.Running().Paths(d), " "); got != d+"/backups/1.0.0-20261102-100000 "+d+"/"+UnpackedPrefix+"1" {
+	if got := strings.Join(l.Running().Paths(d), " "); got != d+"/backups/1.0.0-20261102-100000 "+d+"/"+other {
 		t.Errorf("running: %s", got)
 	}
 	if got := strings.Join(l.Settled().Paths(d), " "); got != d+"/"+KeptPrefix+"0.9.0-20261102-090000" {
