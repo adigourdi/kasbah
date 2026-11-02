@@ -72,6 +72,10 @@ type Row struct {
 	Prev string `json:"prev"`
 	// Seeds counts the staged --env-seed files, .kasbah-env-seed*.
 	Seeds int `json:"seeds"`
+	// Kept counts the snapshots a backup could not take in, .kasbah-prev.kept-*.
+	Kept int `json:"kept"`
+	// Hooks is .kasbah-hooks.json (fsstate.File).
+	Hooks string `json:"hooks"`
 }
 
 // Scan is `kasbah remote destroy scan APPS POINTER`.
@@ -327,7 +331,7 @@ func scan(apps, pointer string) Scan {
 			Scripts: fsstate.Dir(filepath.Join(d, "scripts")),
 			Lock:    fsstate.File(filepath.Join(d, ".deploy.lock")), Client: fsstate.File(filepath.Join(d, ".kasbah-client")),
 			Env: fsstate.File(filepath.Join(d, ".env")), Sentinels: countSentinels(filepath.Join(d, ".env")),
-			Prev: prevState(filepath.Join(d, ".kasbah-prev")), Seeds: len(seeds(d))}
+			Prev: prevState(filepath.Join(d, ".kasbah-prev")), Seeds: len(seeds(d)), Kept: len(kept(d)), Hooks: fsstate.File(filepath.Join(d, ".kasbah-hooks.json"))}
 		for _, f := range entries(filepath.Join(d, "scripts")) {
 			if helper(f) {
 				r.Helpers++
@@ -361,6 +365,8 @@ type ProjectResult struct {
 	Env     string `json:"env"`
 	Prev    string `json:"prev"`
 	Seeds   string `json:"seeds"`
+	Kept    string `json:"kept"`
+	Hooks   string `json:"hooks"`
 }
 
 // ActReport is what `kasbah remote destroy act` did. A `started=yes` line
@@ -534,12 +540,14 @@ func act(apps string, names []string, stdout io.Writer) error {
 		}
 		p.Lock = fsstate.Remove(filepath.Join(d, ".deploy.lock"))
 		p.Client = fsstate.Remove(filepath.Join(d, ".kasbah-client"))
+		p.Hooks = fsstate.Remove(filepath.Join(d, ".kasbah-hooks.json"))
 		p.Prev = removePrev(filepath.Join(d, ".kasbah-prev"))
 		p.Seeds = removeSeeds(d)
+		p.Kept = removeKept(d)
 		// The sentinel comments go; KASBAH_CPU_LIMIT and KASBAH_MEM_LIMIT
 		// stay, because compose interpolates them into every service.
 		p.Env = rewrite(filepath.Join(d, ".env"), func(l string) bool { return !sentinel(l) }, 0)
-		for _, v := range []string{p.Vlog, p.VlogGz, p.Scripts, p.Lock, p.Client, p.Prev, p.Seeds} {
+		for _, v := range []string{p.Vlog, p.VlogGz, p.Scripts, p.Lock, p.Client, p.Hooks, p.Prev, p.Seeds, p.Kept} {
 			if v == "failed" {
 				bad = true
 			}
@@ -665,6 +673,32 @@ func removeSeeds(d string) string {
 	for _, p := range seeds(d) {
 		v = "removed"
 		if os.Remove(p) != nil && fsstate.Exists(p) {
+			return "failed"
+		}
+	}
+	return v
+}
+
+// keptPrefix names a snapshot a backup could not take in (deploy.KeptPrefix).
+const keptPrefix = ".kasbah-prev.kept-"
+
+// kept is d's kept-aside snapshots: they hold a copy of .env.
+func kept(d string) []string {
+	var out []string
+	for _, n := range entries(d) {
+		if strings.HasPrefix(n, keptPrefix) {
+			out = append(out, filepath.Join(d, n))
+		}
+	}
+	return out
+}
+
+// removeKept removes every kept-aside snapshot in d.
+func removeKept(d string) string {
+	v := "absent"
+	for _, p := range kept(d) {
+		v = "removed"
+		if os.RemoveAll(p) != nil {
 			return "failed"
 		}
 	}

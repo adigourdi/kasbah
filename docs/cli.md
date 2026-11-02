@@ -415,9 +415,11 @@ Per project:
   then `rmdir`. The directory survives if it holds anything else, because
   destroy cannot tell an operator's file from kasbah's except by name
 - `.kasbah-prev/`, a failed deploy's snapshot, which holds a copy of `.env`
+- every snapshot a backup could not take in (`.kasbah-prev.kept-*/`), each
+  likely holding a copy of `.env`
 - every staged `--env-seed` (`.kasbah-env-seed.*`), which holds `.env` values
 - `.deploy.lock`, and `.kasbah-client` (written by `deploy`, read by the backup
-  run — see `project-manifest.md`)
+  run — see `project-manifest.md`), and `.kasbah-hooks.json`
 - the **managed-block sentinel comments** in `.env`. The `KASBAH_CPU_LIMIT` and
   `KASBAH_MEM_LIMIT` lines between them **stay**, as ordinary lines: compose
   interpolates them into every service's `cpus:` and `mem_limit:`, so removing
@@ -808,17 +810,26 @@ Flow (no-args / working-tree path):
    local repository) — reserved prefix, exempt from drift. The summary's `limits:` line says where each came from.
 7. Mail claim check (if manifest has `mail:`).
 8. Run the engine on the VPS, `kasbah remote deploy run`:
-   - If `backup:` configured and its `check` exits 0 → run backup (against
-     previous version's still-running containers), rotate.
+   - Create `backups/<outgoing version>-<stamp>/` and run the `backup` hooks
+     into it (`$KASBAH_BACKUP_DIR`), against the previous version's
+     still-running containers; `--skip-hooks` does not skip them.
    - Run `pre-deploy` hooks — shell, on the server, from the project folder —
-     while the previous version still runs. On a first deploy this and the
-     backup are skipped; otherwise a failure of either asks whether to carry
-     on (`--on-hook-failure=`).
+     while the previous version still runs. On a first deploy these and the
+     `backup` hooks are skipped; otherwise a failure of either asks whether to
+     carry on (`--on-hook-failure=`).
    - Retag `:<version>` as `:current` for every built image.
    - `docker compose up -d --remove-orphans`.
    - Wait for `health.container` to be healthy.
    - Run `post-deploy` hooks, against the new containers.
-   - Append to `versions.log`, then rotate it (`build-deploy.md` → Rotation).
+   - Keep the outgoing version's backup: the snapshot of step 4 and what the
+     `backup` hooks wrote, as `backups/<outgoing version>-<stamp>.tar.gz`
+     (also when only a `post-deploy` hook failed); render
+     `.kasbah-hooks.json`.
+   - Append to `versions.log`, field 4 naming that tarball, then rotate it
+     (`build-deploy.md` → Rotation), then remove the backups older than 24
+     hours but the newest of them (`build-deploy.md` → A deploy that fails …
+     reverts). The summary's `backup:` line names the tarball, or says none
+     was taken.
 9. Sync `traefik-dynamic.yml` to `/apps/traefik/dynamic/<name>.yml` — locally
    driven, after the stack is up, so a failed deploy leaves no live route.
 10. Ask origin whether it has `v<version>`, once the server is let go — the
@@ -834,9 +845,9 @@ Flags:
 - `--env-seed=FILE` — answer the keys step 6 would ask from `FILE`'s
   `KEY=value` lines: every key on a first deploy, the keys `.env` lacks on
   drift. See `kasbah env` below.
-- `--skip-hooks` — skip the pre/post hooks (dry-run style). **The backup still
-  runs**: a flag for a dry-run-ish deploy must not also discard the data safety
-  net.
+- `--skip-hooks` — skip the pre/post hooks (dry-run style). **The `backup`
+  hooks still run**: a flag for a dry-run-ish deploy must not also discard the
+  data safety net.
 - `--no-health-wait` — don't block on healthcheck.
 - `--on-hook-failure=continue|stop` — what the engine does when the backup or a
   `pre-deploy` hook fails, before any container has moved.
@@ -889,7 +900,11 @@ Flow (see `build-deploy.md` for full detail):
    - `docker compose up -d --remove-orphans`.
    - Wait for health.
    - Run `post-rollback` hooks, against the rolled-back containers.
-   - Append rollback entry to `versions.log`, rotate.
+   - Keep the snapshot of what the run overwrote as the backup of the version
+     it left, `backups/<outgoing version>-<stamp>.tar.gz`; render
+     `.kasbah-hooks.json` from v<target>'s manifest.
+   - Append rollback entry to `versions.log`, field 4 naming that backup,
+     rotate, apply backup retention (as `deploy`).
 9. Sync v<target>'s `traefik-dynamic.yml` to
    `/apps/traefik/dynamic/<name>.yml` — **last**, once the remote step has
    returned 0, for the same reason `deploy` ships it last. A version carrying
@@ -908,7 +923,8 @@ Flags:
 - `--env-seed=FILE` — answers that env step's keys from a file, as on
   `deploy`. See `kasbah env`.
 - `--skip-hooks` — skip the pre-/post-rollback hooks. Unlike `deploy`, there
-  is no backup for this flag to preserve: a rollback never takes one.
+  is no backup hook for this flag to preserve: a rollback never runs one, and
+  keeps its snapshot as the backup either way.
 - `--no-health-wait` — don't block on healthcheck.
 - `--on-hook-failure=continue|stop` — what the engine does when a
   `pre-rollback` hook fails, as on `deploy`: unset it asks, and with no
@@ -951,10 +967,10 @@ same cliff `server prune` stands on, and for the same reason: a wrong deletion
 here takes another project's image with it.
 
 A later `kasbah deploy` brings the project back; the images must be re-shipped
-with `build-push` first. **A project that declares `backup:` or a `pre-deploy`
+with `build-push` first. **A project that declares a `backup` or a `pre-deploy`
 hook may need `kasbah deploy --on-hook-failure=continue` for that first return
 trip** (a post-deploy hook alone does not) — `versions.log` survives a plain
-drop, so the engine runs the backup and the `pre-deploy` hooks, and the
+drop, so the engine runs the `backup` and `pre-deploy` hooks, and the
 containers they may reach for no longer exist; without a terminal, a failure
 there stops the deploy. `drop` prints the return command, flag included when
 the manifest declares either. (`--prune` removes the record, so that
@@ -962,7 +978,8 @@ path is an ordinary first deploy and needs nothing.)
 
 `--prune` additionally deletes `/apps/<name>/`, `/apps/data/<name>/`, and the
 project's on-VPS backups (`/apps/<name>/backups/` — **not** the server's
-top-level `/apps/backups/`) — everything except the off-VPS restic repo, which
+top-level `/apps/backups/` — and any snapshot a backup could not take in,
+kept aside as `/apps/<name>/.kasbah-prev.kept-*/`) — everything except the off-VPS restic repo, which
 is operator property (see `backup.md`). It also **releases the project's claim on
 the shared mail stack**: the domain leaves `<apps>/mail/kasbah.yml`, read and
 re-rendered through `internal/mailreg`, which folds `primary_domain` into the

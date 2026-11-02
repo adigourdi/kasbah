@@ -51,12 +51,21 @@ health:
 # folder <apps>/<name>/ — so `docker compose exec -T <service>` reaches a
 # container by its service name.
 #
+# backup runs first on every deploy but a project's first, while the previous
+# version is still running, and writes into $KASBAH_BACKUP_DIR: what it
+# writes is kept with the previous version's .env and synced files, as one
+# tarball under ./backups/. restore is the way back: checked, and recorded on
+# the server in .kasbah-hooks.json, but no deploy or rollback runs it.
 # pre-deploy runs BEFORE `compose up -d`, while the previous version is
 # still running. Use for: schema precheck, draining workers, anything that
 # requires the old version still live.
 # post-deploy runs AFTER `compose up -d` + healthcheck, against the new
 # containers. Use for: migrations, cache warmup, cache rebuild.
 hooks:
+  backup:
+    - docker compose exec -T postgres pg_dump -U shop shop | gzip > "$KASBAH_BACKUP_DIR/db.sql.gz"
+  restore:
+    - gunzip -c "$KASBAH_BACKUP_DIR/db.sql.gz" | docker compose exec -T postgres psql -U shop shop
   pre-deploy:
     - docker compose exec -T php-fpm php artisan migrate:status   # fail fast if DB unreachable
   post-deploy:
@@ -71,25 +80,6 @@ hooks:
 
   post-rollback:
     - docker compose exec -T php-fpm php artisan config:cache
-
-# Backup — runs BEFORE pre-deploy hooks (so against the still-running
-# previous version's containers), IF the `check` command exits 0. This
-# ordering means a backup always exists before any pre-deploy work
-# touches live state. Output goes to ./backups/ relative to the project
-# dir on the VPS. Kasbah rotates these (keeps last `retain` by default).
-backup:
-  container: shop-postgres
-  # Any command, run in the VPS's shell with cwd = the project directory.
-  # Exit 0 = take a backup. Exit non-zero = skip. Reaching into a container
-  # means writing the `docker exec` yourself — `check` is not scoped to
-  # `container:` above, which is the thing being backed up, not the thing
-  # deciding. Other examples: `[ -f ./.force-backup ]`; `true` to always
-  # back up.
-  check: docker exec shop-php-fpm php artisan migrate:status | grep -q pending
-  command: pg_dump -U $DB_USERNAME $DB_DATABASE
-  extension: sql.gz
-  pipe: gzip
-  retain: 10
 
 # Per-project limits, each container's own ceiling instead of the server's
 # 90%. Either half may be left out. A % is a share of the whole host, worked
@@ -112,9 +102,11 @@ mail:
 Types are what the YAML says, not what it can be printed as. A text field
 (`name`, `domain`, `client`, `kasbah_version`, every command, container and
 domain below) takes a string — a number reads as its text — and refuses a
-boolean, a list or a block; a block (`health`, `hooks`, `backup`, `resources`,
-`mail`) that is not a mapping is refused, and an absent or null one means none
-(`false` too, for `health`, `backup` and `mail`); `sync` must be a list. The one boolean a text field takes is `backup.check`'s, below.
+boolean, a list or a block; a block (`health`, `hooks`, `resources`, `mail`)
+that is not a mapping is refused, and an absent or null one means none
+(`false` too, for `health` and `mail`); `sync` must be a list. A top-level
+`backup:` key, whatever it holds, is refused by `kasbah check` (HK02) and by
+every deploy and rollback, pointing at `hooks.backup` (below).
 
 ### `schema` *(required)*
 
@@ -171,7 +163,7 @@ as `name`. See `backup.md`.
 `name` when absent) to `<apps>/<name>/.kasbah-client` on the server. The
 manifest itself is never synced, so that record is how the VPS-side backup run
 learns which repository a project belongs to — the same "render, never copy"
-rule the deploy engine follows for hooks, backup and health. The value must
+rule the deploy engine follows for hooks and health. The value must
 match `^[a-z][a-z0-9-]*$` and may not be one of the reserved names kasbah owns
 under `<apps>/` (`traefik`, `mail`, `data`, `backups`): a project claiming
 `mail` would put every mailbox on the host into one client's handover. A
@@ -232,8 +224,8 @@ guarded form is `{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}
 
 ### `hooks` *(optional)*
 
-`hooks:` holds up to four lists — `pre-deploy`, `post-deploy`, `pre-rollback`
-and `post-rollback` — and nothing else: any other key (a typo such as
+`hooks:` holds up to six lists — `backup`, `pre-deploy`, `post-deploy`,
+`restore`, `pre-rollback` and `post-rollback` — and nothing else: any other key (a typo such as
 `pre_deploy`) is refused, except in a tag's manifest (`rollback`,
 `deploy X.Y.Z`), where it is a warning and ignored, so a version a server has
 run stays rollable.
@@ -266,16 +258,20 @@ Supported hooks and when they run:
 
 | Hook | Runs |
 |---|---|
-| `pre-deploy` | after env/sync + backup, before `compose up -d`, the previous version still running |
+| `backup` | on a deploy, after env/sync, before the `pre-deploy` hooks, the previous version still running; writes into `$KASBAH_BACKUP_DIR` |
+| `pre-deploy` | after the `backup` hooks, before `compose up -d`, the previous version still running |
 | `post-deploy` | after `compose up -d` + health wait, against the new version |
 | `pre-rollback` | after the target tag's files are synced, before `compose up -d` |
 | `post-rollback` | after `compose up -d` + health wait, against the rolled-back version |
+| `restore` | never by a deploy or a rollback: it is read and checked as the others are, and recorded on the server with `backup` (below) |
 
 On a **first deploy** — `versions.log` holds no entry for the project, active or
 archived, a `deploy-failed` line counting as one — there is no outgoing
-version, so the backup and the `pre-*` hooks do not run, and the run says so.
+version, so the `backup` and `pre-*` hooks do not run, and the run says so.
 Otherwise they always run: kasbah does not look at the containers first, and a
-hook that needs the outgoing stack up tests for that itself. When the backup or
+hook that needs the outgoing stack up, or that wants to skip a dump, tests for
+that itself. `--skip-hooks` skips the `pre-*` and `post-*` hooks, never `backup`.
+A rollback never runs `backup`. When a `backup` or
 a `pre-*` hook fails, no container has moved yet, and kasbah asks whether to
 carry on (`--on-hook-failure=continue|stop`, `cli.md`): stopping puts the synced
 files back and leaves whatever the hooks already did, continuing runs on to the
@@ -286,6 +282,20 @@ Environment variables available to hook commands (set by kasbah):
 - `$KASBAH_PREV_VERSION` — the version previously current (empty on a first
   deploy).
 - `$KASBAH_PROJECT` — the project's name.
+- `$KASBAH_BACKUP_DIR` — on a deploy that is not a first, the absolute path of
+  the backup directory this run fills, `<apps>/<name>/backups/<version>-<stamp>/`
+  (`<version>` the outgoing one): the `backup` hooks write their dumps there, and
+  the `pre-deploy` and `post-deploy` hooks see the same path. `none` on a first
+  deploy, in the rollback hooks, and on a deploy carried past a backup
+  directory that could not be created. Once the new version is live, the directory
+  — what the hooks wrote, beside the snapshot kasbah took of the outgoing `.env`
+  and synced files — becomes `backups/<version>-<stamp>.tar.gz`
+  (`build-deploy.md` → A deploy that fails … reverts). The name
+  `kasbah-snapshot` in it is kasbah's.
+
+The manifest never reaches the server, so every deploy and rollback that
+leaves its version live records the `backup` and `restore` lists, and the paths
+its snapshot copies, in `<apps>/<name>/.kasbah-hooks.json` (`files.md`).
 
 The project's `.env` is not loaded into the hooks' environment; `docker compose`
 reads it as it always does.
@@ -293,39 +303,6 @@ reads it as it always does.
 Kasbah does **not** generalize migration accounting. Projects that need to
 count migrations (Laravel, Rails, Django, etc.) do that inside their hook
 by querying their framework's migration table.
-
-### `backup` *(optional)*
-
-If present, kasbah may take a backup as the **first** step of the VPS-side
-deploy — before the `pre-deploy` hooks, and therefore against the still-running
-previous version's containers. That ordering is the point: a backup always
-exists before any hook touches live state. A first deploy has no previous
-version and skips it; any other deploy runs it — `--skip-hooks` does not skip
-it — and a backup that fails, a stopped `container` included, asks whether to
-carry on, as a failed `pre-deploy` hook does (`hooks` above). A `check` that
-fails skips the backup instead, whatever made it fail: a check that reaches
-into a container that is down skips the backup, with a note and no question.
-
-- `container` — the container `command` runs in: a `container_name` or a
-  compose service name, resolved as `health.container` is (HK03).
-
-- `check` — any command. Exit code 0 triggers the backup; non-zero skips
-  it. Projects decide their own trigger: pending migrations, a sentinel
-  file, config change detection, or simply `true` to back up every deploy
-  (a YAML boolean is the command of that name: `true` always, `false` never).
-  It runs in the **VPS's own shell**, with the working directory set to the
-  project directory — so `[ -f ./.force-backup ]` reads a file next to the
-  compose file, and reaching into a container means writing the `docker exec`
-  yourself. It is deliberately not scoped to `backup.container`: the thing
-  that decides whether to back up is often not the thing being backed up.
-- `command` — command that writes the backup to stdout. Unlike `check`, this
-  runs *inside* `backup.container`, as `docker exec <container> sh -c
-  '<command>'` — so `$DB_USERNAME` resolves to the container's environment.
-- `pipe` — optional stdout pipe (e.g. `gzip`). Runs on the VPS, not in the
-  container.
-- `extension` — filename extension (resulting file:
-  `backups/pre-deploy-<timestamp>.<extension>`).
-- `retain` — number of backups to keep (oldest are deleted on success).
 
 ### `resources` *(optional)*
 

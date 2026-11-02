@@ -383,7 +383,8 @@ require vps "$snap_dir/vps" \
     '<apps>/backups' \
     '<apps>/<project>' '<apps>/<project>/compose.yml' '<apps>/<project>/.env' \
     '<apps>/<project>/.env.prod.example' '<apps>/<project>/versions.log' \
-    '<apps>/<project>/.kasbah-client' '<apps>/<project>/backups/pre-deploy-*' '<data>/<project>'
+    '<apps>/<project>/.kasbah-client' '<apps>/<project>/.kasbah-hooks.json' \
+    '<apps>/<project>/backups/<version>-<stamp>.tar.gz' '<data>/<project>'
 require ws "$snap_dir/ws.project" '<project-dir>/.kasbah' '<project-dir>/.kasbah/state.json'
 
 # --- Docker objects -----------------------------------------------------------

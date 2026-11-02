@@ -1212,7 +1212,7 @@ func (c *checker) routedHosts() []string {
 	return deploy.RoutedHosts(d.root)
 }
 
-// targets is what health.container or backup.container may name: a
+// targets is what health.container may name: a
 // container_name or a service, which a deploy resolves to its first running
 // replica.
 func (c *checker) targets() []string {
@@ -1356,20 +1356,20 @@ var (
 	inlineHint = regexp.MustCompile(envtpl.Space + `+#.*$`)
 )
 
-// --- Hooks (HK01–HK03) ------------------------------------------------------
+// --- Hooks (HK01, HK02) -----------------------------------------------------
 
 func (c *checker) hooksSection() {
 	hv, _ := c.m.Get("hooks")
-	hooks, backup := hv != nil, c.block("backup")
-	if !hooks && !backup {
+	_, backup := c.m.Get("backup")
+	if hv == nil && !backup {
 		return
 	}
 	c.section("Hooks")
-	if hooks {
+	if hv != nil {
 		c.hk01()
 	}
 	if backup {
-		c.hk02hk03(c.targets())
+		c.hk02()
 	}
 }
 
@@ -1391,54 +1391,10 @@ func (c *checker) hk01() {
 	c.passf("Every hook is one line of shell")
 }
 
-// hk02hk03: the backup block's fields, each read as a deploy reads it; with
-// all of them there, whatever else a deploy refuses in the block fails too.
-func (c *checker) hk02hk03(names []string) {
-	if bv, _ := c.m.Get("backup"); kind(bv) != "a mapping" {
-		if _, err := deploy.ReadBackup(c.m); err != nil {
-			c.failErr(err)
-		}
-		return
-	}
-	read := func(f string) (string, error) {
-		if v, _ := c.m.Get("backup", f); f == "check" && (v == true || v == false) {
-			return tree.Compact(v), nil
-		}
-		return deploy.Field(c.m, "a string", "backup", f)
-	}
-	var missing []string
-	wrong := false
-	for _, f := range []string{"check", "command", "extension"} {
-		switch v, err := read(f); {
-		case err != nil:
-			c.failErr(err)
-			wrong = true
-		case v == "":
-			missing = append(missing, f)
-		}
-	}
-	switch {
-	case len(missing) > 0:
-		c.failf("Backup hook missing required field(s): %s", strings.Join(missing, " "))
-	case !wrong:
-		c.passf("Backup hook has check, command, and extension")
-	}
-
-	ctr, err := read("container")
-	switch {
-	case err != nil:
+// hk02: a top-level backup: is refused, as a deploy refuses it.
+func (c *checker) hk02() {
+	if err := deploy.ReadBackup(c.m, ""); err != nil {
 		c.failErr(err)
-	case ctr == "":
-		c.failf("Backup hook missing 'container' field")
-	case inList(names, ctr):
-		c.passf("Backup hook container '%s' exists in compose", ctr)
-	default:
-		c.failf("Backup hook container '%s' is neither a container_name nor a service in compose", ctr)
-	}
-	if err == nil && ctr != "" && len(missing) == 0 && !wrong {
-		if _, err := deploy.ReadBackup(c.m); err != nil {
-			c.failErr(err)
-		}
 	}
 }
 

@@ -258,6 +258,7 @@ rig_ssh "printf '%s\n%s\n%s\n' 'DEFAULT_RELAY_HOST=[smtp-relay.example.com]:587'
 for path in "$marker" "$bdir/env" "$bdir/compose.yml" \
             "$bdir/repos/mail.pass" "$apps/mail/kasbah.yml" \
             "$projdir_remote/versions.log" "$projdir_remote/.kasbah-client" \
+            "$projdir_remote/.kasbah-hooks.json" \
             "$planted_remote/versions.log.gz" "$planted_remote/.deploy.lock" \
             "$planted_remote/.kasbah-env-seed.0123456789abcdef"; do
     assert '[ "$(remote_exists "$path")" = yes ]' "before the destroy, $path is on the server"
@@ -375,7 +376,7 @@ assert '[ "$web_before" = "$(stamp $project-web)" ]' \
 for path in "$marker" "$apps/.kasbah" "$bdir" "$apps/mail/kasbah.yml" "$apps/traefik/acme-dns" \
             "$projdir_remote/versions.log" "$projdir_remote/versions.log.gz" \
             "$projdir_remote/scripts" "$projdir_remote/.deploy.lock" \
-            "$projdir_remote/.kasbah-client" \
+            "$projdir_remote/.kasbah-client" "$projdir_remote/.kasbah-hooks.json" \
             "$planted_remote/versions.log" "$planted_remote/versions.log.gz" \
             "$planted_remote/.deploy.lock" "$planted_remote/.kasbah-client" \
             "$planted_remote/.kasbah-env-seed.0123456789abcdef" \

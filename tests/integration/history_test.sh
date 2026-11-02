@@ -52,7 +52,7 @@ plant_ts1="$(date -u -d '10 months ago' +%Y-%m-%dT%H:%M:%S+00:00 2>/dev/null)"
 plant_ts2="$(date -u -d '9 months ago' +%Y-%m-%dT%H:%M:%S+00:00 2>/dev/null)"
 plant_v1=0.0.1
 plant_v2=0.0.2
-plant_backup=backups/pre-deploy-00000000-000000.sql.gz
+plant_backup=backups/0.0.1-00000000-000000.tar.gz
 # A truncated append, which is what a `printf >>` killed partway leaves. Dated
 # this month so rotation keeps it in the active log — a line no version can be
 # read out of has to be visible in the table plain `history` prints.

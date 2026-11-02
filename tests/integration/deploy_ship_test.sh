@@ -133,6 +133,13 @@ versions_log() { rig_ssh "cat $projdir_remote/versions.log 2>/dev/null" 2>/dev/n
 backup_names() {
     rig_ssh "cd $projdir_remote/backups 2>/dev/null && ls -1 2>/dev/null | sort | tr '\n' ' '" 2>/dev/null | tr -d '\r'
 }
+# The newest backup tarball, and one member of it, read on the server.
+newest_backup() {
+    rig_ssh "cd $projdir_remote/backups 2>/dev/null && ls -1t *.tar.gz 2>/dev/null | head -n1" 2>/dev/null | tr -d '\r'
+}
+backup_member() {
+    rig_ssh "tar -xzOf $projdir_remote/backups/$1 $2 2>/dev/null" 2>/dev/null | tr -d '\r'
+}
 
 # --- A prepared server ----------------------------------------------------------
 init --no-mail --no-backup "${traefik_flags[@]}"; rc=$?
@@ -204,23 +211,31 @@ fi
 # ==================================================================================
 # The backup and the pre-deploy hooks act on the *outgoing* state, and there is
 # none — so both are skipped, out loud, and the deploy goes through. Refusing
-# here would make a first deploy impossible for every project that declares a
-# hook or a backup.
+# here would make a first deploy impossible for every project that declares
+# either.
 crumbs_reset
 deploy "$RIG_TARGET"; rc=$?
-assert '[ "$rc" = "0" ]' "a first deploy of a project with hooks and a backup succeeds (exit $rc)
+assert '[ "$rc" = "0" ]' "a first deploy of a project with backup and pre-deploy hooks succeeds (exit $rc)
         stderr: $(cli_err)"
 if [ "$rc" != "0" ]; then
     sed 's/^/       | /' "$tmpdir/err" >&2
     echo "error: the first deploy failed — nothing below can be judged" >&2
     exit 1
 fi
-assert 'grep -qF "first deploy — versions.log has no entry for this project, so the backup and the pre-deploy hooks will not run" "$tmpdir/err"' \
+assert 'grep -qF "first deploy — versions.log has no entry for this project, so the backup hooks and the pre-deploy hooks will not run" "$tmpdir/err"' \
     "and it says so on the evidence that distinguishes it — an empty versions.log,
         not a container list, which cannot tell a first deploy from a crashed one
         (said '$(cli_err)')"
 assert '[ "$(backup_names)" = "" ]' \
-    "with no backup file written (found '$(backup_names)')"
+    "with no backup written (found '$(backup_names)')"
+assert '[[ "$(tail -n1 <<<"$(versions_log)")" == *" deploy $project_version no-backup "* ]]' \
+    "and no-backup in versions.log's field 4 (log: $(versions_log))"
+hooks_json=$(rig_ssh "cat $projdir_remote/.kasbah-hooks.json" 2>/dev/null | tr -d '\r')
+hooks_seen=$(jq -r '(.backup | length), .backup[0], .restore[0], (.targets | join(" "))' <<<"$hooks_json" 2>/dev/null | tr '\n' '|')
+assert '[[ "$hooks_seen" == "1|docker compose exec -T built-app-web echo kasbah-built-app-backup-payload > "*"/payload.txt\"|cat "*"|.env .env.prod.example compose.yml state|" ]]' \
+    "the deploy rendered the manifest's backup and restore hooks and the snapshot's targets into .kasbah-hooks.json (got '$hooks_json')"
+hooks_mode=$(rig_ssh "stat -c %a $projdir_remote/.kasbah-hooks.json" 2>/dev/null | tr -d '\r')
+assert '[ "$hooks_mode" = "644" ]' "mode 644, as .kasbah-client (got '$hooks_mode')"
 first_crumbs="$(crumbs)"
 assert '[ "$(grep -c . <<<"$first_crumbs")" = "1" ]' \
     "and exactly one breadcrumb — the post-deploy hook's, against what compose just started
@@ -293,13 +308,25 @@ assert 'grep -qF "version=9.9.9-from-the-hook" "$tmpdir/err"' \
 assert '! grep -qF "9.9.9" "$tmpdir/out"' \
     "and nowhere else (stdout: $(cat "$tmpdir/out"))"
 
-# --- The backup, taken because its check said so --------------------------------------
+# --- The backup: the outgoing version's snapshot and what its hook wrote ----------------
 names="$(backup_names)"
-assert '[[ "$names" =~ ^pre-deploy-[0-9]{8}-[0-9]{6}\.txt\.gz\ $ ]]' \
-    "exactly one backup file, named as docs/project-manifest.md says (found '$names')"
-backup_body=$(rig_ssh "gzip -dc $projdir_remote/backups/pre-deploy-*.txt.gz 2>/dev/null" 2>/dev/null | tr -d '\r\n')
-assert '[ "$backup_body" = "$backup_payload" ]' \
-    "carrying the payload backup.command emits, through the gzip pipe (got '$backup_body')"
+assert '[[ "$names" =~ ^${project_version//./\\.}-[0-9]{8}-[0-9]{6}\.tar\.gz\ $ ]]' \
+    "exactly one backup, the tarball of the version it replaced, named as docs/build-deploy.md says (found '$names')"
+tarball="${names% }"
+members=$(rig_ssh "tar -tzf $projdir_remote/backups/$tarball" 2>/dev/null | tr -d '\r' | sort | tr '\n' ' ')
+echo "note: the backup holds: $members" >&2
+assert '[ "$(backup_member "$tarball" payload.txt)" = "$backup_payload" ]' \
+    "holding the file the backup hook wrote into \$KASBAH_BACKUP_DIR through the outgoing container (members: $members)"
+env_now=$(rig_ssh "cat $projdir_remote/.env" 2>/dev/null | tr -d '\r')
+assert '[ "$(backup_member "$tarball" kasbah-snapshot/.env)" = "$env_now" ] && grep -qF "BUILT_APP_GREETING=" <<<"$env_now"' \
+    "and the outgoing .env, byte for byte (members: $members)"
+assert '[ -n "$(backup_member "$tarball" kasbah-snapshot/compose.yml)" ] && grep -qF "kasbah-snapshot/state/" <<<"$members" && grep -qF "kasbah-snapshot/.env.prod.example" <<<"$members"' \
+    "and every sync target (members: $members)"
+tar_mode=$(rig_ssh "stat -c %a $projdir_remote/backups/$tarball" 2>/dev/null | tr -d '\r')
+assert '[ "$tar_mode" = "660" ]' "mode 660, since it holds .env (got '$tar_mode')"
+left=$(rig_ssh "cd $projdir_remote && ls -A backups; [ -e .kasbah-prev ] && echo kasbah-prev-left" 2>/dev/null | tr -d '\r' | tr '\n' ' ')
+assert '[ "$left" = "$tarball " ]' \
+    "with no backup directory, partial file or snapshot left behind (found '$left')"
 
 # --- versions.log, and the digests the rig's own daemon computed -------------------------
 log="$(versions_log)"
@@ -309,8 +336,8 @@ assert '[[ "$f_ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+00
     "field 1 is a UTC ISO-8601 timestamp (got '$f_ts')"
 assert '[ "$f_action" = "deploy" ]'   "field 2 is the action (got '$f_action')"
 assert '[ "$f_version" = "$project_version" ]' "field 3 is the version (got '$f_version')"
-assert '[[ "$f_backup" =~ ^backups/pre-deploy-[0-9]{8}-[0-9]{6}\.txt\.gz$ ]]' \
-    "field 4 is the backup path (got '$f_backup')"
+assert '[ "$f_backup" = "backups/$tarball" ]' \
+    "field 4 is the backup tarball (got '$f_backup')"
 assert '[ "$f_kasbah" = "kasbah=$kasbah_version" ]' \
     "then kasbah=<version>, which is the kasbah that drove it (got '$f_kasbah')"
 assert '[ "$f_extra" = "by=stevedore" ]' "then by=<ssh user>, and nothing after it yet (got '$f_extra')"
@@ -397,8 +424,8 @@ assert '[ "${got[containers]}" = "3" ]' \
 # script — so what is worth showing here is that they arrive and that the far
 # side acts on each one differently.
 
-# --skip-hooks skips the hooks and *keeps* the backup: a dry-run-ish deploy must
-# not also throw away the data safety net (docs/build-deploy.md → helper scripts).
+# --skip-hooks skips the pre- and post-deploy hooks and *keeps* the backup hooks:
+# a dry-run-ish deploy must not also throw away the data safety net.
 backups_before="$(backup_names)"
 crumbs_reset
 deploy "$RIG_TARGET" --skip-hooks; rc=$?
@@ -408,8 +435,8 @@ assert '[ "$(crumbs)" = "" ]' \
     "and neither hook ran — nothing was written to the breadcrumb file (crumbs: $(tr '\n' '/' <<<"$(crumbs)"))"
 assert 'grep -qF "pre-deploy hooks skipped (--skip-hooks)" "$tmpdir/err"' \
     "the far side says which flag skipped them (said '$(cli_err)')"
-assert '[ "$(backup_names)" != "$backups_before" ]' \
-    "while the backup still ran
+assert '[ "$(backup_names)" != "$backups_before" ] && [ "$(backup_member "$(newest_backup)" payload.txt)" = "$backup_payload" ]' \
+    "while the backup hook still ran
         before: $backups_before
         after:  $(backup_names)"
 
@@ -427,9 +454,9 @@ assert '[ "$(grep -c . <<<"$(crumbs)")" = "2" ]' \
     "with the hooks still running, because this flag is not that one (crumbs: $(tr '\n' '/' <<<"$(crumbs)"))"
 
 # No preflight: with history, the backup and the pre-deploy hooks always run, and
-# a stopped outgoing stack is their own failure. built-app-web is the backup
-# container, so its backup fails, and with no terminal the question it asks
-# stops the run, puts the files back and names the flag.
+# a stopped outgoing stack is their own failure. The backup hook execs into
+# built-app-web, so it fails, and with no terminal the question it asks stops
+# the run, puts the files back and names the flag.
 rig_ssh "docker stop $image_web" >/dev/null 2>&1
 stopped_state=$(rig_ssh "docker inspect -f '{{.State.Status}}' $image_web" 2>/dev/null | tr -d '\r')
 assert '[ "$stopped_state" = "exited" ]' \
@@ -438,8 +465,8 @@ log_before="$(versions_log)"
 backups_before="$(backup_names)"
 crumbs_reset
 deploy "$RIG_TARGET"; rc=$?
-assert '[ "$rc" != "0" ]' "a deploy whose backup fails, with no terminal to ask on, fails (exit $rc)"
-assert 'grep -qF "the backup failed in $image_web" "$tmpdir/err"' \
+assert '[ "$rc" != "0" ]' "a deploy whose backup hook fails, with no terminal to ask on, fails (exit $rc)"
+assert 'grep -qF "the backup hook failed (exit" "$tmpdir/err"' \
     "naming the step that failed (said '$(cli_err)')"
 assert 'grep -qF "pass --on-hook-failure=continue or --on-hook-failure=stop" "$tmpdir/err"' \
     "and the flag that answers the question (said '$(cli_err)')"
@@ -448,9 +475,13 @@ assert 'grep -qF "the files it had shipped were put back" "$tmpdir/err"' \
 assert '[ "$(versions_log)" = "$log_before" ]' \
     "and versions.log untouched (log: $(versions_log))"
 assert '[ "$(crumbs)" = "" ]' "and no hook ran (crumbs: $(tr '\n' '/' <<<"$(crumbs)"))"
+assert '[ "$(backup_names)" = "$backups_before" ]' \
+    "and the backup directory removed, no backup kept
+        before: $backups_before
+        after:  $(backup_names)"
 
 deploy "$RIG_TARGET" --on-hook-failure=stop; rc=$?
-assert '[ "$rc" != "0" ] && grep -qF "the backup failed in $image_web" "$tmpdir/err"' \
+assert '[ "$rc" != "0" ] && grep -qF "the backup hook failed (exit" "$tmpdir/err"' \
     "--on-hook-failure=stop stops on the same failure (exit $rc: $(cli_err))"
 assert '! grep -qF "pass --on-hook-failure" "$tmpdir/err"' \
     "without asking (said '$(cli_err)')"
@@ -460,20 +491,21 @@ assert '[ "$(versions_log)" = "$log_before" ] && [ "$(crumbs)" = "" ]' \
 deploy "$RIG_TARGET" --on-hook-failure=continue; rc=$?
 assert '[ "$rc" = "0" ]' "--on-hook-failure=continue deploys past it (exit $rc)
         stderr: $(cli_err)"
-assert 'grep -qF "continuing past the failed backup (--on-hook-failure=continue)" "$tmpdir/err"' \
+assert 'grep -qF "continuing past the failed backup hook (--on-hook-failure=continue)" "$tmpdir/err"' \
     "the server says it carried on, and why (said '$(cli_err)')"
-assert 'grep -qF "the deploy $project_version carried on past a failed backup" "$tmpdir/err"' \
+assert 'grep -qF "the deploy $project_version carried on past a failed backup hook" "$tmpdir/err"' \
     "and so does the workstation (said '$(cli_err)')"
-assert '[ "$(backup_names)" = "$backups_before" ]' \
-    "with no backup taken
+cont_backup="$(newest_backup)"
+assert '[ "$(backup_names)" != "$backups_before" ] && [ -z "$(backup_member "$cont_backup" payload.txt)" ] && [ -n "$(backup_member "$cont_backup" kasbah-snapshot/.env)" ]' \
+    "with the backup still kept — the snapshot, and the empty file the failed hook left
         before: $backups_before
         after:  $(backup_names)"
 cont_crumbs="$(crumbs)"
 assert '[ "$(grep -c . <<<"$cont_crumbs")" = "2" ] && [[ "$(sed -n 1p <<<"$cont_crumbs")" == pre-deploy\ * ]]' \
     "and both hooks ran, the pre-deploy one in the server's shell with the stack down
         (crumbs: $(tr '\n' '/' <<<"$cont_crumbs"))"
-assert '[[ "$(tail -n1 <<<"$(versions_log)")" == *" deploy $project_version no-backup "* ]]' \
-    "recorded with no-backup (log: $(tail -n1 <<<"$(versions_log)"))"
+assert '[[ "$(tail -n1 <<<"$(versions_log)")" == *" deploy $project_version backups/$cont_backup "* ]]' \
+    "recorded with that backup (log: $(tail -n1 <<<"$(versions_log)"))"
 web_after=$(rig_ssh "docker inspect -f '{{.State.Running}}' $image_web" 2>/dev/null | tr -d '\r')
 assert '[ "$web_after" = "true" ]' "with the stack running again afterwards (docker says '$web_after')"
 # The control for the --no-health-wait case above: this deploy passed no flag, so
@@ -483,21 +515,21 @@ assert 'grep -qF "$image_web is healthy" "$tmpdir/err"' \
     "and this one, with no flag, did wait on health (said '$(cli_err)')"
 
 # ==================================================================================
-# The backup gate says no — and two runs race the lock
+# A backup hook that writes nothing — and two runs race the lock
 # ==================================================================================
-# One redeploy carries both: the manifest's backup.check is flipped to a command
-# that exits non-zero, and a second pre-deploy hook is added that sleeps. The
-# first is the deliverable; the second is what makes the concurrency case a
-# property of this fixture rather than a race against wall-clock.
+# One redeploy carries both: the manifest's backup hook is replaced by one that
+# writes nothing, and a second pre-deploy hook is added that sleeps. The first is
+# the deliverable; the second is what makes the concurrency case a property of
+# this fixture rather than a race against wall-clock.
 #
 # `kasbah deploy` with no version refuses a working tree that is not HEAD's, so
 # the edit is committed and v$project_version moved onto it: the images it
 # labels are unchanged (docs/build-deploy.md → two modes).
 hook_sleep=8
-sed -i 's|^  check: test -f ./compose.yml$|  check: "false"|' "$projdir/kasbah.yml"
+sed -i "s|^    - 'docker compose exec -T built-app-web echo kasbah-built-app-backup-payload.*|    - 'true'|" "$projdir/kasbah.yml"
 sed -i "/^  post-deploy:\$/i\\    - 'sleep $hook_sleep'" "$projdir/kasbah.yml"
-assert 'grep -qF "check: \"false\"" "$projdir/kasbah.yml"' \
-    "the fixture copy's backup.check now exits non-zero"
+assert '! grep -qF "kasbah-built-app-backup-payload" "$projdir/kasbah.yml"' \
+    "the fixture copy's backup hook now writes nothing"
 assert 'grep -qF "    - '"'"'sleep $hook_sleep'"'"'" "$projdir/kasbah.yml"' \
     "and its pre-deploy hooks end with one that sleeps"
 recommit() {
@@ -507,23 +539,25 @@ recommit() {
         exit 2
     fi
 }
-recommit "$project_version" "the backup gate says no"
+recommit "$project_version" "the backup hook writes nothing"
 
 backups_before="$(backup_names)"
 crumbs_reset
 deploy "$RIG_TARGET"; rc=$?
-assert '[ "$rc" = "0" ]' "a deploy whose backup.check exits non-zero still succeeds (exit $rc)
+assert '[ "$rc" = "0" ]' "a deploy whose backup hook writes nothing succeeds (exit $rc)
         stderr: $(cli_err)"
-assert '[ "$(backup_names)" = "$backups_before" ]' \
-    "and takes no backup at all
+quiet_backup="$(newest_backup)"
+quiet_members=$(rig_ssh "tar -tzf $projdir_remote/backups/$quiet_backup" 2>/dev/null | tr -d '\r' | grep -v '^kasbah-snapshot/' | tr '\n' ' ')
+assert '[ "$(backup_names)" != "$backups_before" ] && [ -z "$quiet_members" ] && [ -n "$(backup_member "$quiet_backup" kasbah-snapshot/.env)" ]' \
+    "and keeps a backup that is the snapshot alone (outside kasbah-snapshot/: '$quiet_members')
         before: $backups_before
         after:  $(backup_names)"
 # Two deploys here, three in the flag section above, and two stopped that wrote
 # nothing: six lines, of which this is the sixth.
 log2="$(versions_log)"
 assert '[ "$(wc -l <<<"$log2")" = "6" ]' "a sixth line was appended (log: $log2)"
-assert '[[ "$(sed -n 6p <<<"$log2")" == *" $project_version no-backup kasbah="* ]]' \
-    "recording no-backup in the frozen fourth field (line: $(sed -n 6p <<<"$log2"))"
+assert '[[ "$(sed -n 6p <<<"$log2")" == *" $project_version backups/$quiet_backup kasbah="* ]]' \
+    "recording it in the frozen fourth field (line: $(sed -n 6p <<<"$log2"))"
 assert '[ "$(sed -n "1,2p" <<<"$log2")" = "$log" ]' \
     "and the earlier entries are untouched — the log is appended to, never rewritten"
 
@@ -535,7 +569,7 @@ pre_hook=$(sed -n "s/^    - '\(echo \"pre-deploy.*\)'\$/\1/p" "$projdir/kasbah.y
 spec=$(jq -cn --arg v "$project_version" --arg k "$kasbah_version" --arg pre "$pre_hook" \
     --arg sleep "sleep $hook_sleep" --arg web "$image_web" --arg worker "$image_worker" \
     '{mode:"deploy",version:$v,kasbah:$k,images:[$web,$worker],pre:[$pre,$sleep],post:[],
-      health:{container:$web,timeout:60},backup:null}')
+      health:{container:$web,timeout:60},backup:[]}')
 assert '[ -n "$pre_hook" ] && [ -n "$spec" ]' "the engine spec for the race was built (hook '$pre_hook')"
 crumbs_reset
 launch_rc=0
@@ -790,7 +824,7 @@ assert 'grep -qxE "${next_version//./\\.}-dirty\.[0-9]{14}" <<<"$label"' \
     "labelled from the reachable v$next_version (label '$label')"
 deploy "$RIG_TARGET" --dirty; rc=$?
 assert '[ "$rc" = "0" ]' "deploy --dirty retags what it shipped (exit $rc: $(cli_err))"
-assert '[[ "$(versions_log | tail -n 1)" == *" deploy $label no-backup "* ]]' \
+assert '[[ "$(versions_log | tail -n 1)" == *" deploy $label backups/"* ]]' \
     "versions.log carries the label (line: $(versions_log | tail -n 1))"
 served=$(rig_ssh "docker exec \$(docker ps -q --filter label=com.docker.compose.project=$project --filter label=com.docker.compose.service=built-app-web) wget -qO- http://127.0.0.1/dirty.txt" 2>/dev/null | tr -d '\r')
 assert '[ "$served" = "dirty-build" ]' "and the running container serves the dirty build (got '$served')"

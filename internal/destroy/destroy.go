@@ -46,7 +46,8 @@ restart. What leaves is kasbah's management layer, its backup scheduler first:
   removed   <apps>/.kasbah/ (the server marker, the backup stack and its
             credentials, the server's kasbah binary), ` + serverbin.Pointer + `, and per
             project: versions.log(.gz), the scripts/ helpers, .deploy.lock,
-            .kasbah-client, and the .env managed-block sentinel comments
+            .kasbah-client, .kasbah-hooks.json, and the .env managed-block
+            sentinel comments
   mail      the operator's relay block in <apps>/mail/.env — every line that is
             not MAIL_HOSTNAME, DOMAIN or DATA_PATH — and <apps>/mail/kasbah.yml
   kept      every other container, every compose.yml, every .env value, the
@@ -400,7 +401,7 @@ func (p *Plan) check() error {
 
 func hasWork(r Row) bool {
 	return r.Vlog != "missing" || r.VlogGz != "missing" || r.Helpers != 0 ||
-		r.Lock != "missing" || r.Client != "missing" || r.Sentinels != 0 || (r.Prev != "absent" && r.Prev != "") || r.Seeds != 0
+		r.Lock != "missing" || r.Client != "missing" || (r.Hooks != "missing" && r.Hooks != "") || r.Sentinels != 0 || (r.Prev != "absent" && r.Prev != "") || r.Seeds != 0 || r.Kept != 0
 }
 
 func (p *Plan) anything() bool {
@@ -439,11 +440,17 @@ func planProject(r Row) string {
 	if r.Client != "missing" {
 		parts = append(parts, ".kasbah-client")
 	}
+	if r.Hooks != "missing" && r.Hooks != "" {
+		parts = append(parts, ".kasbah-hooks.json")
+	}
 	if r.Prev != "absent" && r.Prev != "" {
 		parts = append(parts, ".kasbah-prev/ (a failed deploy's snapshot, with a copy of .env)")
 	}
 	if r.Seeds != 0 {
 		parts = append(parts, fmt.Sprintf(".kasbah-env-seed (%d staged --env-seed file(s), with .env values)", r.Seeds))
+	}
+	if r.Kept != 0 {
+		parts = append(parts, fmt.Sprintf(".kasbah-prev.kept-* (%d snapshot(s) a backup could not take in, each with a copy of .env)", r.Kept))
 	}
 	if r.Sentinels != 0 {
 		parts = append(parts, fmt.Sprintf(".env: %d managed-block sentinel comment(s), values kept", r.Sentinels))
@@ -844,11 +851,17 @@ func (p *Plan) reportProject(r *reporter, pr ProjectResult) {
 	}
 	file(".deploy.lock", pr.Lock)
 	file(".kasbah-client", pr.Client)
+	if pr.Hooks != "" {
+		file(".kasbah-hooks.json", pr.Hooks)
+	}
 	if pr.Prev != "absent" && pr.Prev != "" {
 		file(".kasbah-prev/", pr.Prev)
 	}
 	if pr.Seeds != "absent" && pr.Seeds != "" {
 		file("the staged .kasbah-env-seed files", pr.Seeds)
+	}
+	if pr.Kept != "absent" && pr.Kept != "" {
+		file("the kept-aside .kasbah-prev.kept-* snapshots", pr.Kept)
 	}
 	switch pr.Env {
 	case "stripped":

@@ -33,11 +33,11 @@ type Plan struct {
 	// HookNotes name the keys under a tag's hooks: that are not hooks, ignored.
 	HookNotes  []string
 	MailDomain string
-	// Hooks holds all four lists; the engine is sent its mode's pair.
+	// Hooks holds all six lists; the engine is sent its mode's pair, backup
+	// and restore.
 	Hooks  map[string][]string
 	Images []string
 	Health Health
-	Backup *Backup
 	// Resources is resources: as written; ResourcesNote why a tag's was
 	// unusable.
 	Resources     resources.Spec
@@ -243,9 +243,11 @@ func readResources(m *manifest.Manifest, p *Plan, historical bool) error {
 	return nil
 }
 
-var hookNames = []string{"pre-deploy", "post-deploy", "pre-rollback", "post-rollback"}
+var hookNames = []string{"backup", "pre-deploy", "post-deploy", "restore", "pre-rollback", "post-rollback"}
 
-// ReadHooks is the manifest's four hook lists as a deploy reads them.
+const hookList = "backup:, pre-deploy:, post-deploy:, restore:, pre-rollback: and post-rollback:"
+
+// ReadHooks is the manifest's six hook lists as a deploy reads them.
 func ReadHooks(m *manifest.Manifest) (map[string][]string, error) {
 	var p Plan
 	err := readHooks(m, &p, false)
@@ -260,7 +262,7 @@ func readHooks(m *manifest.Manifest, p *Plan, historical bool) error {
 	if h, _ := m.Get("hooks"); h != nil {
 		hm, ok := h.(*tree.Map)
 		if !ok {
-			return cli.Fail("kasbah.yml: hooks: is not a block — it holds the lists pre-deploy:, post-deploy:, pre-rollback: and post-rollback: (docs/project-manifest.md)")
+			return cli.Fail("kasbah.yml: hooks: is not a block — it holds the lists %s (docs/project-manifest.md)", hookList)
 		}
 		for _, k := range hm.Keys() {
 			if slices.Contains(hookNames, k) {
@@ -270,7 +272,7 @@ func readHooks(m *manifest.Manifest, p *Plan, historical bool) error {
 				p.HookNotes = append(p.HookNotes, k)
 				continue
 			}
-			return cli.Fail("kasbah.yml: hooks.%s is not a hook kasbah runs — hooks: holds the lists pre-deploy:, post-deploy:, pre-rollback: and post-rollback: (docs/project-manifest.md)", k)
+			return cli.Fail("kasbah.yml: hooks.%s is not a hook kasbah runs — hooks: holds the lists %s (docs/project-manifest.md)", k, hookList)
 		}
 	}
 	for _, which := range hookNames {
@@ -359,69 +361,18 @@ func readHealth(m *manifest.Manifest, p *Plan) error {
 	return nil
 }
 
-// ReadBackup is the manifest's backup: block as a deploy reads it, nil for
-// none.
-func ReadBackup(m *manifest.Manifest) (*Backup, error) {
-	var p Plan
-	err := readBackup(m, &p)
-	return p.Backup, err
-}
-
-func readBackup(m *manifest.Manifest, p *Plan) error {
-	if v, _ := m.Get("backup"); v == nil || v == false {
+// ReadBackup refuses a top-level backup: block: the backup is a hook.
+// version names a tag's manifest, "" the working tree's.
+func ReadBackup(m *manifest.Manifest, version string) error {
+	if _, ok := m.Get("backup"); !ok {
 		return nil
-	} else if _, ok := v.(*tree.Map); !ok {
-		return cli.Fail("kasbah.yml: backup: is not a block — it holds check:, command:, extension: and container: (docs/project-manifest.md)")
 	}
-	b := &Backup{}
-	// check is a command, and a boolean is the command of that name.
-	if c, _ := m.Get("backup", "check"); c == true || c == false {
-		b.Check = tree.Compact(c)
+	const why = "backup: is not a key kasbah reads — a backup is the hooks.backup list, plain shell that writes into $KASBAH_BACKUP_DIR (docs/project-manifest.md → hooks)"
+	if version == "" {
+		return cli.Fail("kasbah.yml: %s", why)
 	}
-	for _, f := range []struct {
-		key string
-		to  *string
-	}{{"container", &b.Container}, {"command", &b.Command}, {"pipe", &b.Pipe}, {"extension", &b.Extension}} {
-		var err error
-		if *f.to, err = Field(m, "a string", "backup", f.key); err != nil {
-			return err
-		}
-	}
-	if b.Check == "" {
-		var err error
-		if b.Check, err = Field(m, "a string", "backup", "check"); err != nil {
-			return err
-		}
-	}
-	switch {
-	case b.Check == "":
-		return cli.Fail("kasbah.yml: backup: has no check: — it is the command whose exit status decides whether a backup is taken (docs/project-manifest.md)")
-	case b.Command == "":
-		return cli.Fail("kasbah.yml: backup: has no command: — it is what writes the backup to stdout")
-	case b.Extension == "":
-		return cli.Fail("kasbah.yml: backup: has no extension: — it names the file backups/pre-deploy-<timestamp>.<extension>")
-	case b.Container == "":
-		return cli.Fail("kasbah.yml: backup: has no container: — backup.command runs inside it, as `docker exec <container> sh -c`")
-	case strings.IndexFunc(b.Extension, func(r rune) bool { return r == '/' || unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0:
-		return cli.Fail("kasbah.yml: backup.extension '%s' must be a plain filename extension — it lands in backups/pre-deploy-<timestamp>.<extension>, and versions.log's fields are space-delimited", b.Extension)
-	}
-	raw, err := Field(m, "a whole number", "backup", "retain")
-	if err != nil {
-		return err
-	}
-	if raw == "" {
-		raw = "10"
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 0 || strings.ContainsAny(raw, "+-") {
-		return cli.Fail("kasbah.yml: backup.retain '%s' is not a whole number of backups to keep", raw)
-	}
-	if n == 0 {
-		return cli.Fail("kasbah.yml: backup.retain is 0 — rotation would delete the backup it just took")
-	}
-	b.Retain = n
-	p.Backup = b
-	return nil
+	return cli.Fail("kasbah.yml in v%s: %s", version, why).Cont(
+		"a version is deployed or rolled back with the manifest it was tagged with, so this one cannot be: deploy a version whose kasbah.yml has no backup: key.")
 }
 
 // readImages is what build-push tagged, untagged: the server appends the
@@ -494,10 +445,15 @@ func readPlan(m *manifest.Manifest, pwd, version string, historical bool) (*Plan
 	if err := readResources(m, p, historical); err != nil {
 		return nil, err
 	}
-	for _, f := range []func(*manifest.Manifest, *Plan) error{readHealth, readBackup} {
-		if err := f(m, p); err != nil {
-			return nil, err
-		}
+	if err := readHealth(m, p); err != nil {
+		return nil, err
+	}
+	tagged := ""
+	if historical {
+		tagged = version
+	}
+	if err := ReadBackup(m, tagged); err != nil {
+		return nil, err
 	}
 	if err := readImages(pwd, m.Name, version, p); err != nil {
 		return nil, err

@@ -317,7 +317,7 @@ assert '[ "$gone_serve" = 404 ]' \
     "while the dropped host is unrouted rather than 502 — it served 200 before this drop (got '$gone_serve')"
 
 # --- The redeploy that resurrects it ----------------------------------------------
-# built-app declares both a backup: container and pre-deploy hooks, so the drop
+# built-app declares both a backup hook and pre-deploy hooks, so the drop
 # above has to have named the flag the return trip needs — read off the
 # manifest, not hedged.
 assert 'grep -qF "kasbah deploy $RIG_TARGET --on-hook-failure=continue" "$tmpdir/out"' \
@@ -325,13 +325,13 @@ assert 'grep -qF "kasbah deploy $RIG_TARGET --on-hook-failure=continue" "$tmpdir
 
 build_push "$RIG_TARGET"; rc=$?
 assert '[ "$rc" = 0 ]' "the images ship again (exit $rc: $(cli_err))"
-# versions.log survived the drop, so the backup runs, against a container the
-# drop removed: it fails, and the flag drop printed carries the deploy past it.
+# versions.log survived the drop, so the backup hook runs, against a container
+# the drop removed: it fails, and the flag drop printed carries the deploy past it.
 deploy "$RIG_TARGET" --on-hook-failure=continue; rc=$?
 assert '[ "$rc" = 0 ]' "and the redeploy succeeds (exit $rc)
         stderr: $(cli_err)"
-assert 'grep -qF "continuing past the failed backup (--on-hook-failure=continue)" "$tmpdir/err"' \
-    "past the backup that had no container to run in (said: $(cli_err))"
+assert 'grep -qF "continuing past the failed backup hook (--on-hook-failure=continue)" "$tmpdir/err"' \
+    "past the backup hook that had no container to run in (said: $(cli_err))"
 assert '[ "$(labelled $project)" = "built-app-cache built-app-web built-app-worker " ]' \
     "the containers are back (got '$(labelled $project)')"
 crumbs_after="$(rig_ssh "cat $projdir_remote/state/breadcrumbs.log" 2>/dev/null | tr -d '\r')"

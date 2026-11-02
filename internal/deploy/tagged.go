@@ -49,7 +49,9 @@ tree, which is neither read nor touched:
     <image>:current, docker compose -p <name> up -d --remove-orphans, health
     wait, post-rollback hooks, one versions.log entry — a failed pre-rollback
     hook asks whether to carry on, and a failed up or health wait is put back,
-    as a deploy's are (kasbah deploy --help)
+    as a deploy's are (kasbah deploy --help). Once <VERSION> is up, the copies
+    of what the run overwrote become the outgoing version's backup,
+    backups/<outgoing version>-<stamp>.tar.gz
   * <VERSION>'s traefik-dynamic.yml, last, once the stack is up
 
 Not restored: .env values (not in git — drift is prompted for as usual), data

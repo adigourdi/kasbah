@@ -140,9 +140,11 @@ func main() {
 				os.Exit(migrate.Remote(args[2:], os.Stdout, os.Stderr))
 			}
 			if len(args) > 1 && args[1] == "deploy" {
-				// run and prepare outlive a dropped session (SIGHUP and
-				// SIGPIPE ignored, remote.Outlive); SIGINT and SIGTERM still
-				// remove a partial backup. The lock goes with the process.
+				// run and prepare outlive a dropped session (remote.Outlive).
+				// Keeping a backup holds SIGINT and SIGTERM; a second exits,
+				// removing the tarball's .part, or mid-move setting the rest of
+				// the snapshot aside.
+				// The lock goes with the process.
 				atexit.HandleSignals()
 				atexit.Exit(deploy.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
 			}

@@ -27,7 +27,7 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case args[0] == "run" && len(args) == 2:
 		w, done := remote.Outlive(stderr)
 		defer done()
-		return Engine(args[1], stdin, stdout, w)
+		return Engine(args[1], stdin, stdout, w, stderr)
 	case args[0] == "snapshot" && len(args) >= 3:
 		w, done := remote.Outlive(stderr)
 		defer done()
@@ -58,6 +58,9 @@ func prepare(apps, data, name, client string, parents []string, stdout, stderr i
 	}
 	if fi, err := os.Stat(apps + "/traefik/dynamic"); err != nil || !fi.IsDir() {
 		return fail("%s/traefik/dynamic is not a directory", apps)
+	}
+	if err := checkBackups(apps + "/" + name); err != nil {
+		return fail("%v", err)
 	}
 	for _, d := range append([]string{apps + "/" + name, apps + "/" + name + "/backups", data + "/" + name}, parents...) {
 		if os.MkdirAll(d, 0o777) != nil {

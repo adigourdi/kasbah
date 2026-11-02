@@ -96,6 +96,7 @@ func TestDecideRemovesEveryTagOfOwnRepos(t *testing.T) {
 		"    built-app-web:3.4.0       built by built-app, claimed by no other project\n",
 		"    built-app-worker:3.4.0    untags only, the image also carries other:keep\n",
 		"\nto keep\n  config      /apps/built-app/ (dir)\n",
+		"  backups     /apps/built-app/backups/ (dir, 0 entr(ies) — the tarballs deploys and rollbacks keep, each of the version it replaced, and any backup directory a run left)\n",
 		"a later `kasbah deploy` resurrects",
 	} {
 		if !strings.Contains(out, w) {
@@ -306,14 +307,14 @@ func TestRunConfirmations(t *testing.T) {
 }
 
 func TestRunOnHookFailureFromManifest(t *testing.T) {
-	project(t, "backup:\n  container: db\n")
+	project(t, "hooks:\n  backup: [\"pg_dump > $KASBAH_BACKUP_DIR/db.sql\"]\n")
 	f := &fake{scan: fixture(), actOut: okAct}
 	so, _, code := run(t, f, Options{Target: "deploy@vps", Yes: true}, false, "")
 	if code != 0 || !strings.Contains(so, "kasbah deploy deploy@vps --on-hook-failure=continue") {
 		t.Fatalf("%d\n%s", code, so)
 	}
 	m := map[string]bool{"": false, "hooks:\n  pre-deploy: []\n": false, "hooks:\n  pre-deploy: [\"docker compose exec -T db pg_dump\"]\n": true,
-		"hooks:\n  post-deploy: [\"x\"]\n": false, "backup:\n  container: \"\"\n": false}
+		"hooks:\n  post-deploy: [\"x\"]\n": false, "hooks:\n  restore: [\"x\"]\n": false, "hooks:\n  backup: []\n": false}
 	for extra, want := range m {
 		project(t, extra)
 		f := &fake{scan: fixture(), actOut: okAct}

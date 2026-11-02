@@ -446,6 +446,16 @@ func TestTaggedResources(t *testing.T) {
 		t.Errorf("a refused deploy recorded last_version %q", v)
 	}
 
+	// A tag whose manifest has a top-level backup: is refused by its version.
+	history(t, "backup: {container: c}\n")
+	f = &fake{}
+	f.record, f.out = record(twoDeploys, "", true), &prev
+	err, out = runTagged(t, f, Options{Target: "d@h"}, "rollback")
+	if exitOf(err) != 1 || !strings.Contains(out, "kasbah.yml in v1.0.0: backup: is not a key kasbah reads") ||
+		!strings.Contains(out, "so this one cannot be") || f.called("run") || f.called("sync") {
+		t.Errorf("a rollback to a tag with backup: %v %v\n%s", err, f.calls, out)
+	}
+
 	history(t, "resources:\n  memory: 512\n")
 	f = &fake{}
 	err, out = runTagged(t, f, Options{Target: "d@h", Version: "1.0.0"}, "deploy")

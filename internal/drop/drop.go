@@ -52,8 +52,10 @@ its data, once its images have been re-shipped with ` + "`kasbah build-push`" + 
 
   removed   the Traefik fragment, the containers (` + "`docker compose down`" + `), and
             every tag of the images this project builds
-  kept      <apps>/<name>/ (compose.yml, .env, versions.log, scripts, backups),
-            <data>/<name>/, and the project's mail-domain claim
+  kept      <apps>/<name>/ (compose.yml, .env, versions.log, scripts, backups,
+            any snapshot a backup could not take in, kept aside as
+            .kasbah-prev.kept-*), <data>/<name>/, and the project's
+            mail-domain claim
 
   --prune   delete the kept things too: <apps>/<name>/ with the on-VPS backups
             inside it, <data>/<name>/, and the project's entry in the mail
@@ -449,7 +451,7 @@ func (p *Plan) Report(w io.Writer) {
 	}
 	fmt.Fprintf(w, "  config      %s/%s/ (%s)\n", p.Apps, p.Name, p.Scan.ProjectState)
 	fmt.Fprintf(w, "  data        %s/%s/ (%s)\n", p.Data, p.Name, p.Scan.DataState)
-	fmt.Fprintf(w, "  backups     %s/%s/backups/ (%s, %d file(s))\n", p.Apps, p.Name, p.Scan.BackupsState, p.Scan.BackupsCount)
+	fmt.Fprintf(w, "  backups     %s/%s/backups/ (%s, %d entr(ies) — the tarballs deploys and rollbacks keep, each of the version it replaced, and any backup directory a run left)\n", p.Apps, p.Name, p.Scan.BackupsState, p.Scan.BackupsCount)
 	if p.MailVerdict != "" {
 		fmt.Fprintf(w, "  mail        %s — %s\n", p.MailDomain, p.MailVerdict)
 	}
@@ -507,24 +509,29 @@ func (p *Plan) pruneCliff(out *cli.Output) error {
 	return nil
 }
 
-// needsContinue is whether a redeploy runs outgoing steps — backup:, or a
+// needsContinue is whether a redeploy runs outgoing steps — a backup or
 // pre-deploy hook — that may need the containers a drop removes.
 func needsContinue(m *manifest.Manifest) bool {
-	if v, _ := m.Get("backup", "container"); v != nil && v != false {
-		if s := strings.TrimSuffix(tree.Text(v), "\r"); s != "" && s != "null" {
-			return true
+	for _, k := range []string{"backup", "pre-deploy"} {
+		v, _ := m.Get("hooks", k)
+		switch h := v.(type) {
+		case []tree.Value:
+			if len(h) > 0 {
+				return true
+			}
+		case *tree.Map:
+			if h.Len() > 0 {
+				return true
+			}
+		case string:
+			if h != "" {
+				return true
+			}
+		case tree.Number:
+			if h != "0" {
+				return true
+			}
 		}
-	}
-	v, _ := m.Get("hooks", "pre-deploy")
-	switch h := v.(type) {
-	case []tree.Value:
-		return len(h) > 0
-	case *tree.Map:
-		return h.Len() > 0
-	case string:
-		return h != ""
-	case tree.Number:
-		return h != "0"
 	}
 	return false
 }
@@ -837,7 +844,7 @@ func (p *Plan) reportAct(o *cli.Output, r *ActReport) error {
 		if p.NeedsContinue {
 			say("  kasbah deploy %s --on-hook-failure=continue", p.Target)
 			say("     --on-hook-failure=continue because versions.log still records the deploys, so")
-			say("     this project's backup: and pre-deploy hooks run, and the containers they may")
+			say("     this project's backup and pre-deploy hooks run, and the containers they may")
 			say("     reach for are gone with this drop")
 		} else {
 			say("  kasbah deploy %s", p.Target)

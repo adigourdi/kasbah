@@ -98,6 +98,9 @@ v1_env=$(remote "sha256sum < $pdir/.env" | cut -d' ' -f1)
 assert '[ "$(wc -l <<<"$v1_log")" = 1 ] && grep -qF " deploy 1.0.0 " <<<"$v1_log"' "v1.0.0 is recorded ($v1_log)"
 assert '[ "$(remote "[ -e $pdir/.kasbah-prev ] && echo yes || echo no")" = no ]' \
     "a successful deploy leaves no snapshot behind"
+backups() { remote "ls -A $pdir/backups 2>/dev/null" | tr '\n' ' '; }
+assert '[ "$(backups)" = "" ] && grep -qF " deploy 1.0.0 no-backup " <<<"$v1_log"' \
+    "and a first deploy keeps no backup, recording no-backup (backups/: '$(backups)')"
 
 # --- (a)+(d) compose up fails, and the run had added a synced file ------------------
 cd "$projdir" || exit 2
@@ -119,6 +122,8 @@ assert '[[ "$state" == running* ]] && ! grep -qF "kasbah-no-such-entrypoint" <<<
     "demo-web runs v1.0.0's container again (got '$state')"
 assert '[ "$(remote "[ -e $pdir/.kasbah-prev ] && echo yes || echo no")" = no ]' \
     "a revert that worked removes its snapshot — the files on disk are the live stack's again"
+assert '[ "$(backups)" = "" ]' \
+    "and its backup directory: a reverted run keeps no backup (backups/: '$(backups)')"
 
 # --- (b) the health wait fails ------------------------------------------------------
 cd "$projdir" || exit 2
@@ -146,14 +151,21 @@ log=$(vlog)
 assert '[ "$rc" != 0 ] && grep -qF "4.0.0 is live and was not reverted" "$tmpdir/err"' \
     "a failed post-deploy hook fails the deploy without reverting (rc $rc: $(cli_err))"
 assert '[ "$(compose_sum)" = "$v4_sum" ]' "v4.0.0's compose.yml stays"
-assert '[ "$(wc -l <<<"$log")" = 2 ] && grep -qE " deploy-failed 4\.0\.0 no-backup kasbah=[^ ]+ digest=- by=[^ ]+ reason=post-hook$" <<<"$log"' \
-    "versions.log records deploy-failed (got '$(tr '\n' '|' <<<"$log")')"
+assert '[ "$(wc -l <<<"$log")" = 2 ] && grep -qE " deploy-failed 4\.0\.0 backups/1\.0\.0-[0-9]{8}-[0-9]{6}\.tar\.gz kasbah=[^ ]+ digest=- by=[^ ]+ reason=post-hook$" <<<"$log"' \
+    "versions.log records deploy-failed, naming the backup of the 1.0.0 it left (got '$(tr '\n' '|' <<<"$log")')"
+post_backup=$(remote "cd $pdir/backups && ls -1 1.0.0-*.tar.gz")
+assert '[ -n "$post_backup" ] && [ "$(backups)" = "$post_backup " ] && [ "$(remote "tar -xzOf $pdir/backups/$post_backup kasbah-snapshot/.env | sha256sum" | cut -d" " -f1)" = "$v1_env" ]' \
+    "a post-hook failure left 4.0.0 live, so 1.0.0's backup is kept, holding its .env (backups/: '$(backups)')"
 run history "$RIG_TARGET"; rc=$?
 assert '[ "$rc" = 0 ] && grep -qE "deploy-failed +4\.0\.0" "$tmpdir/out"' "history shows it ($(tr '\n' '|' <"$tmpdir/out"))"
 run rollback "$RIG_TARGET"; rc=$?
 assert '[ "$rc" = 0 ] && grep -qF "rolling back to 1.0.0" "$tmpdir/err"' \
     "an implicit rollback goes past the failed version to 1.0.0 (rc $rc: $(cli_err))"
 assert '[ "$(compose_sum)" = "$v1_sum" ] && grep -qF " rollback 1.0.0 " <<<"$(vlog)"' "and lands there"
+rb_backup=$(remote "cd $pdir/backups && ls -1 4.0.0-*.tar.gz")
+rb_members=$(remote "tar -tzf $pdir/backups/$rb_backup" | grep -v '^kasbah-snapshot/' | tr '\n' ' ')
+assert '[ -n "$rb_backup" ] && grep -qE " rollback 1\.0\.0 backups/$rb_backup " <<<"$(vlog)" && [ -z "$rb_members" ]' \
+    "the rollback kept the 4.0.0 it left as a backup, the snapshot alone, named in field 4 ('$rb_backup', other members '$rb_members')"
 run rollback "$RIG_TARGET" 4.0.0; rc=$?
 assert '[ "$rc" != 0 ] && grep -qF "was never deployed to this VPS" "$tmpdir/err"' \
     "a version that only ever failed is not a rollback target (rc $rc: $(cli_err))"

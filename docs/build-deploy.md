@@ -236,10 +236,20 @@ files, so a revert has to put back both. Before the sync, `kasbah remote deploy
 snapshot` — under `.deploy.lock`, refused when another run holds it — copies
 every path the run will overwrite — the sync targets after their renames,
 directories whole, and `.env` — into `<apps>/<name>/.kasbah-prev/`, noting which
-did not exist, under a token the engine is handed. **A snapshot that exists
+did not exist, under a token the engine is handed, and stamps its manifest
+with the time (`taken`, UTC, to the second). **A snapshot that exists
 always holds the files the live stack started from**: one left by a run that
 died on the workstation (the env step, the sync, an interrupt) is kept, and the
-next run copies only the targets it does not cover. The first engine run a snapshot
+next run copies only the targets it does not cover. One taken no later than
+the second of the last run the active `versions.log` records as live — a
+success, a rollback, or a `deploy-failed … reason=post-hook` — is that run's
+own, left behind when it could be neither moved into a backup nor removed:
+it holds an earlier version's files, so the snapshot step refuses it, changing
+nothing, and names `.kasbah-prev/` for the operator to remove by hand. A
+manifest without `taken` is as old as its mtime; with no readable such entry
+(a first deploy, a log only the archive holds, or a run whose own
+`versions.log` line could not be written), a snapshot is kept as above.
+The first engine run a snapshot
 serves records in it each built image's `:current` id — the ids the live stack
 started from, kept with a kept snapshot — and every run records the running
 containers before retagging. Any
@@ -264,11 +274,82 @@ still has mounted — and the run names it, to remove once that container is
 recreated. Whether an entry already matches is rsync's quick check (type,
 mode, size, mtime, a symlink's target); no file is read to decide.
 A reconcile cut short leaves its target part one version, part the other, and
-the run says that rather than listing it as put back. A first deploy has nothing to revert to and is left as it failed. The
-snapshot is removed whenever the disk matches the live stack again: a
-successful run, a revert or restore that worked, a post-hook failure — its
-manifest first, so a removal cut short leaves no snapshot rather than half of
-one (a manifest whose copies are missing counts as none).
+the run says that rather than listing it as put back. A first deploy has nothing to revert to and is left as it failed. A
+revert or restore that worked removes the snapshot — its manifest first, so a
+removal cut short leaves no snapshot rather than half of one (a manifest whose
+copies are missing counts as none) — and a run that leaves its version live
+keeps it, as the backup below.
+
+**A run that leaves its version live keeps a backup of the one it replaced.**
+The *outgoing* version is the one live at the run's start: the version
+`versions.log`'s last entry names when that entry is a success or a
+`deploy-failed … reason=post-hook` (that version went live); after any other
+`deploy-failed` — a failed revert — the last entry that is not a failed run's,
+since the snapshot that run kept is that version's files; and `unknown` when
+neither names one (a damaged line, or a log only the archive holds). On every
+deploy that is not a first, the engine creates
+`<apps>/<name>/backups/<outgoing>-<stamp>/` (`<stamp>` UTC `YYYYMMDD-HHMMSS`,
+mode `770`) before the `backup` hooks run, and every deploy hook gets its path
+as `$KASBAH_BACKUP_DIR` — `none` on a first deploy and in the rollback hooks.
+Once the new version is live — the run succeeded, or only a `post-*` hook
+failed — the snapshot's copies move into it, each at its path under
+`kasbah-snapshot/` (manifest removed first), beside what the hooks wrote; the
+directory is tar-gzipped into `backups/<outgoing>-<stamp>.tar.gz` (names
+relative to it; each directory a copy holds with the mode it had on disk, and
+`kasbah-snapshot/` and the directories leading to a copy `770`; mode `660`,
+since it holds `.env`; written as `.part`, synced, then renamed, with SIGHUP
+and SIGPIPE ignored and SIGINT and SIGTERM held — a second one exits,
+removing the `.part` on its way out and keeping the backup directory, which
+then holds the only copy of the outgoing `.env`, for the operator) and the
+directory removed. A second signal while the copies move exits keeping the
+backup directory with what reached it and setting what is left of
+`.kasbah-prev/` aside as `.kasbah-prev.kept-<outgoing>-<stamp>/`, as a failed
+move does (its fallback included), and writes one line to stderr naming both.
+`versions.log` field 4 and the report's `backup` name the tarball. A
+rollback keeps its snapshot the same way: its backup, of the version it left,
+holds `kasbah-snapshot/` alone, because no hook writes into it. A first deploy
+keeps none (`no-backup`). A run that stops at the question or reverts uses the
+snapshot up and removes the backup directory; one whose restore or revert
+fails keeps the directory beside the snapshot it keeps, and names it. A tarball
+that cannot be written — a file a hook left unreadable, a full disk — is a
+warning, never the run's failure: the directory, which by then holds the
+snapshot's copies, is left where it is for the operator, and `versions.log`
+records `no-backup`. A snapshot that cannot be moved into the backup
+directory, or a backup directory that cannot be created, is the same warning:
+what is left of `.kasbah-prev/` is renamed to
+`.kasbah-prev.kept-<outgoing>-<stamp>/` beside it, which no run reads or
+removes, the warning names it and the backup directory, and `versions.log`
+records `no-backup`. Moved within a filesystem, each copy is in one of the
+two; copied across filesystems, the backup directory's last copy may be
+partial and the renamed directory holds the whole snapshot — or, once every
+copy is whole and only the originals' removal failed, the backup directory
+holds every copy and the renamed directory what is left of the originals.
+When that rename
+fails, the outgoing version's files are dropped rather than left for the next
+run to merge as its own: `.kasbah-prev/` loses its manifest, so the next run's
+snapshot removes it, `.env` copy and all; when the manifest cannot be removed
+either, `.kasbah-prev/` is removed at once; when neither can be removed, the
+warning says to remove `.kasbah-prev/` by hand, and the next run's snapshot
+step refuses it until then (above). The
+warning names the step that failed and what became of `.kasbah-prev/`.
+
+`backups/` may be a directory, a symlink to one, or a mount point. The engine
+opens it once and does every backup step — the directory, the snapshot's move,
+the tarball, retention — through that one handle; when the move crosses
+filesystems, every copy is copied (modes and mtimes kept) before any is
+removed from the project, so a copy that fails leaves the snapshot whole. A
+`backups/` that is anything else, or a symlink to nothing, is refused by
+`prepare`, naming it, before anything is synced; the engine checks again,
+and should it ever find one, it refuses before the backup hooks and puts the
+synced files back.
+
+**Retention** runs at the end of every successful deploy and rollback, on the
+server's clock: of the files in `backups/` named `<version>-<stamp>.tar.gz`,
+every one stamped within the last 24 hours is kept, and of the older ones only
+the newest; the rest are removed, each said on stderr. Nothing else in
+`backups/` is touched — a directory a failed tarball left, a file an operator
+put there. There is no setting: these backups are for getting back from a bad
+deploy, and the off-box history is restic's (`backup.md`).
 
 **Nothing typed is lost to a restore.** An operator told to fix `.env` on the
 server after a failed env step may have done so before the next run fails too;
@@ -284,13 +365,19 @@ workstation whether to carry on: a question line on its stdout, one answer line
 read back on its stdin, after the spec's own line. The workstation answers from
 `--on-hook-failure=continue|stop` — which travels in the spec, so no question is
 asked — or else from its terminal. *continue* runs on to the retag and `compose
-up` as if the step had passed, a backup that failed recording `no-backup`, and
+up` as if the step had passed — a failed `backup` hook still leaves the
+backup kept, the snapshot and whatever the hooks wrote — and
 both ends say the run carried on past the failure; *stop* puts the files back as
 above and starts nothing — what the hooks that already ran did (an `artisan
 down`, half a hook) is not undone. With no terminal the workstation answers so,
 and the run stops and fails naming the flag. A session that drops while the
 question waits, an answer that is neither *continue* nor *stop* (the engine
 says what came back), and no answer within 10 minutes all read as *stop*.
+A backup directory that cannot be created is asked about the same way (the
+step is `backup`): carried past it, the backup hooks do not run and the
+`pre-deploy` and `post-deploy` hooks get `$KASBAH_BACKUP_DIR=none`; once the
+version is live the engine tries to create the directory again for the
+snapshot, and keeps no backup (`no-backup`) when that fails too.
 
 **A `post-deploy` hook that fails is not reverted**: a migration may already
 have run, and old code on a new schema is worse than new code with a failed
@@ -360,10 +447,11 @@ below). The only differences:
 7. Mail claim (if manifest has `mail:`):
      look for a mail stack on the server   # today: warn and continue when absent
      verify claimed domain is listed in /apps/mail/kasbah.yml   # warns, never stops
-8. Run `kasbah remote deploy run` on the VPS, the manifest's hooks, backup,
-   health and built-image list passed as JSON on stdin:
-     a. If manifest has `backup:` AND `backup.check` exits 0 → run backup
-        against currently-running (previous version) containers. Rotate.
+8. Run `kasbah remote deploy run` on the VPS, the manifest's hooks, health,
+   snapshot targets and built-image list passed as JSON on stdin:
+     a. Create backups/<outgoing version>-<stamp>/ and run the backup hooks
+        into it ($KASBAH_BACKUP_DIR), against the currently-running (previous
+        version) containers — --skip-hooks does not skip them.
      b. Run pre-deploy hooks, in the server's shell from <apps>/<name>/,
         while the previous version is still running.
      a–b are skipped on a first deploy (no versions.log entry, active or
@@ -381,8 +469,11 @@ below). The only differences:
         retag :current back, up the old stack — or, when that cannot work,
         append `deploy-failed`. f failing: append `deploy-failed …
         reason=post-hook`, no revert; the fragment still ships (step 9).
-     g. Append deploy entry to versions.log, then rotate it (see Rotation
-        below), and remove the snapshot.
+     g. Render .kasbah-hooks.json; move the snapshot into the backup
+        directory and tar-gzip it to backups/<outgoing version>-<stamp>.tar.gz
+        (also after f failing). Append the deploy entry, field 4 naming that
+        tarball, to versions.log, then rotate it (see Rotation below), then
+        apply backup retention.
      h. Print the run's report on stdout — see "The remote report" below.
 9. Sync traefik-dynamic.yml → /apps/traefik/dynamic/<name>.yml (its content —
    a symlinked fragment ships what it points to, mode 644). Done by the
@@ -511,8 +602,8 @@ Example:
 
 ```
 2026-04-12T01:00:00+00:00 deploy 1.2.0 no-backup kasbah=0.1.0 digest=sha256:9f2a…
-2026-04-15T14:30:00+00:00 deploy 1.3.0 backups/pre-deploy-20260415-143000.sql.gz kasbah=0.1.0 digest=sha256:c81b…
-2026-04-17T09:15:00+00:00 rollback 1.2.0 no-backup kasbah=0.1.0 digest=sha256:9f2a…
+2026-04-15T14:30:00+00:00 deploy 1.3.0 backups/1.2.0-20260415-143000.tar.gz kasbah=0.1.0 digest=sha256:c81b…
+2026-04-17T09:15:00+00:00 rollback 1.2.0 backups/1.3.0-20260417-091500.tar.gz kasbah=0.1.0 digest=sha256:9f2a…
 ```
 
 Fields:
@@ -524,7 +615,11 @@ Fields:
   deployed here" and prune's last three all step over it — a newest failed
   deploy still counts as what is running when the implicit target is picked.
 - `version` — the semver that ran.
-- `backup` — relative path to backup file, or `no-backup`.
+- `backup` — the backup this run kept of the version it replaced,
+  `backups/<version>-<stamp>.tar.gz` relative to the project directory, or
+  `no-backup`: a first deploy, a run that reverted, or a tarball that could not
+  be written (A deploy that fails … reverts). Retention may since have removed
+  the file it names.
 - `kasbah=...` — version of kasbah that wrote the entry.
 - `digest=...` — the image id the server's docker reports
   (`docker image inspect {{.Id}}`) for each built image that went live,
@@ -668,7 +763,10 @@ small without sacrificing history.
           git checkout v<target> && kasbah build-push <user@host>
         Then retry:
           kasbah rollback <user@host> <target>"
-7. Parse v<target>'s manifest for its `sync:` list.
+7. Parse v<target>'s manifest for its `sync:` list. A v<target> whose
+   kasbah.yml has a top-level `backup:` key is refused, naming the version:
+   a tag is read with the manifest it was tagged with, so it cannot be
+   rolled back to.
 8. Extract v<target> into a temp directory, then sync it entry by entry
    into /apps/<name>/, exactly as a deploy ships the working tree.
    (Overwrites whatever the last deploy's sync produced.)
@@ -708,7 +806,10 @@ small without sacrificing history.
         <name>_kasbah.
      d. Wait for health.container.
      e. Run post-rollback hooks, against the rolled-back containers.
-     f. Append rollback entry to versions.log, rotate.
+     f. Render .kasbah-hooks.json from v<target>'s manifest, and keep the
+        snapshot as the backup of the version left behind,
+        backups/<outgoing version>-<stamp>.tar.gz. Append the rollback entry,
+        field 4 naming it, to versions.log, rotate, apply backup retention.
 11. Restore v<target>'s Traefik fragment: <apps>/traefik/dynamic/<name>.yml,
     synced from the same extraction. **Last**, once the remote step has
     returned 0 — the same ordering, and the same reason, as a deploy's
@@ -773,11 +874,11 @@ or from the `v<target>` tag) passed as JSON on stdin — and ship no script.
 Servers deployed by kasbah 0.x may still hold `scripts/setup-env.sh` and
 `scripts/remote-deploy.sh`; nothing runs them, and `server destroy` removes them.
 The engine has two modes:
-  - `deploy <version>`  — backup → pre-deploy → retag :current → up → health → post-deploy.
-  - `rollback <version>` — pre-rollback → retag :current → up → health → post-rollback.
+  - `deploy <version>`  — backup hooks → pre-deploy → retag :current → up → health → post-deploy → backup kept.
+  - `rollback <version>` — pre-rollback → retag :current → up → health → post-rollback → backup kept.
 
-  Flags: `--skip-hooks` (pre/post hooks only — the backup still runs, because a
-  dry-run-ish deploy must not also discard the data safety net),
+  Flags: `--skip-hooks` (pre/post hooks only — the backup hooks still run,
+  because a dry-run-ish deploy must not also discard the data safety net),
   `--no-health-wait`, and `--on-hook-failure=continue|stop`.
 
 ### A dropped session
@@ -807,7 +908,7 @@ stdout carries the report, printed as the run's last act — *after* the
 a failed backup or pre-hook adds `"continued":[…]`, naming each step.
 
 ```
-{"version":"1.3.0","prev_version":"1.2.0","deployed_before":true,"backup":"backups/pre-deploy-20260419-101500.sql.gz","digest":"sha256:9f2a…,sha256:c81b…"}
+{"version":"1.3.0","prev_version":"1.2.0","deployed_before":true,"backup":"backups/1.2.0-20260419-101500.tar.gz","digest":"sha256:9f2a…,sha256:c81b…"}
 ```
 
 Before it, stdout may carry the one question a run asks,
@@ -862,12 +963,11 @@ cannot tell a first deploy from a crashed stack:
   declares either.
 - **Anything else** — the project has deployed here before, so both steps run.
   kasbah does not inspect the containers first: a hook that needs the outgoing
-  stack up says so by failing, and a stopped backup container fails the backup's
-  `command`. Either failure asks whether to carry on (`--on-hook-failure=`,
-  above), and an operator who knows the stack is meant to be down answers
-  *continue*. `backup.check` runs before the backup, though, and a check that
-  fails skips the backup whatever the reason — one that reaches into a
-  container that is down skips it, with a note and no question.
+  stack up says so by failing — a `docker compose exec` into a stopped
+  container fails the `backup` hook that runs it. Either failure asks whether
+  to carry on (`--on-hook-failure=`, above), and an operator who knows the
+  stack is meant to be down answers *continue*. A `backup` hook that should
+  skip its dump in some state tests for it and exits 0.
 
   Both modes hold an exclusive `flock` for the whole run, so a second
   concurrent deploy or rollback fails fast instead of interleaving hooks and

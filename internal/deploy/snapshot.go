@@ -17,12 +17,17 @@ import (
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/treesync"
+	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
 // PrevDir holds, inside the project, the files the live stack started from
 // wherever a run overwrote them; the engine's revert puts them back. It is
 // removed whenever the files on disk are the live stack's again.
 const PrevDir = ".kasbah-prev"
+
+// KeptPrefix names, inside the project, a snapshot a backup could not take
+// in, set aside with its outgoing version and stamp: no run reads it.
+const KeptPrefix = PrevDir + ".kept-"
 
 const snapManifest = PrevDir + "/snapshot.json"
 
@@ -31,6 +36,9 @@ const snapManifest = PrevDir + "/snapshot.json"
 type snapshot struct {
 	Token   string       `json:"token"`
 	Targets []snapTarget `json:"targets"`
+	// Taken is when the snapshot was last written for a run, vlog.Stamp's
+	// format; a manifest without it is as old as its mtime.
+	Taken string `json:"taken,omitempty"`
 	// IDs are each built image's :current id the live stack started from,
 	// "" for none: recorded by the first engine run the snapshot serves.
 	IDs map[string]string `json:"ids,omitempty"`
@@ -74,7 +82,7 @@ func SnapshotTargets(entries []Entry) []string {
 }
 
 func validTarget(p string) bool {
-	if under(p, PrevDir) {
+	if under(p, PrevDir) || strings.HasPrefix(p, KeptPrefix) {
 		return false
 	}
 	for _, seg := range strings.Split(p, "/") {
@@ -114,7 +122,9 @@ func loadSnapshot(root *os.Root) *snapshot {
 // .deploy.lock. A snapshot already there is the live stack's files — a run
 // that failed on the workstation left it — so its entries stay and only
 // targets it lacks are copied from disk; snapshot.json is written last, so
-// one cut short reverts nothing. A missing DIR is a first deploy.
+// one cut short reverts nothing; a snapshot kept aside (KeptPrefix) is never
+// merged, and one older than the last run that went live is refused (stale).
+// A missing DIR is a first deploy.
 func takeSnapshot(dir, token string, targets []string, stdout, stderr io.Writer) int {
 	fail := func(format string, a ...any) int {
 		fmt.Fprintf(stderr, "remote: snapshot: "+format+"\n", a...)
@@ -149,6 +159,11 @@ func takeSnapshot(dir, token string, targets []string, stdout, stderr io.Writer)
 	defer root.Close()
 
 	old := loadSnapshot(root)
+	if old != nil {
+		if went, ok := staleSnapshot(root, old); ok {
+			return fail("%s/%s is older than the last run versions.log records as live (%s): it holds an earlier version's files, not the running stack's. Nothing was changed; remove %s/%s by hand, then re-run.", dir, PrevDir, went, dir, PrevDir)
+		}
+	}
 	fresh := old == nil
 	if fresh {
 		if err := removeTree(root, PrevDir); err != nil {
@@ -159,7 +174,7 @@ func takeSnapshot(dir, token string, targets []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "remote: snapshot: kept %s/%s — a run that did not finish left it, and it holds the files the running stack started from\n", dir, PrevDir)
 	}
 	err = root.MkdirAll(PrevDir+"/"+token, 0o770)
-	snap := snapshot{Token: token, IDs: old.IDs}
+	snap := snapshot{Token: token, IDs: old.IDs, Taken: vlog.Stamp(snapNow())}
 	var added []snapTarget
 	for _, t := range targets {
 		if err != nil {
@@ -216,6 +231,40 @@ func takeSnapshot(dir, token string, targets []string, stdout, stderr io.Writer)
 	}
 	fmt.Fprintln(stdout, "snapshot=written")
 	return 0
+}
+
+// snapNow is the clock a snapshot is stamped with, a seam for the tests.
+var snapNow = time.Now
+
+// staleSnapshot is whether s was taken no later than the second of the
+// active versions.log's last run that went live (a success, or a post-hook
+// failure), and that entry's time. Without a readable entry or time it is not.
+func staleSnapshot(root *os.Root, s *snapshot) (string, bool) {
+	b, err := root.ReadFile(vlog.Log)
+	if err != nil {
+		return "", false
+	}
+	entries := vlog.Entries(strings.ReplaceAll(string(b), "\r", ""))
+	for i := len(entries) - 1; i >= 0; i-- {
+		en := entries[i]
+		if !en.OK || en.IsFailed() && en.Reason != "post-hook" {
+			continue
+		}
+		went, err := time.Parse(time.RFC3339, en.Time)
+		if err != nil {
+			return "", false
+		}
+		taken, err := time.Parse(time.RFC3339, s.Taken)
+		if err != nil {
+			fi, serr := root.Stat(snapManifest)
+			if serr != nil {
+				return "", false
+			}
+			taken = fi.ModTime()
+		}
+		return en.Time, taken.Unix() <= went.Unix()
+	}
+	return "", false
 }
 
 // copyTarget copies t from disk under PrevDir/gen, then lays over it the old
@@ -318,21 +367,26 @@ func removeTree(root *os.Root, p string) error {
 // set, a directory lacking owner rwx is written with it and its mode recorded
 // at rel, so the copy can always be removed.
 func copyEntry(root *os.Root, src, dst string, dirs map[string]uint32, rel string) error {
-	fi, err := root.Lstat(src)
+	return copyBetween(root, src, root, dst, dirs, rel)
+}
+
+// copyBetween is copyEntry from src in sr to dst in dr.
+func copyBetween(sr *os.Root, src string, dr *os.Root, dst string, dirs map[string]uint32, rel string) error {
+	fi, err := sr.Lstat(src)
 	if err != nil {
 		return err
 	}
 	mode := fi.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
 	switch {
 	case fi.Mode()&fs.ModeSymlink != 0:
-		target, err := root.Readlink(src)
+		target, err := sr.Readlink(src)
 		if err != nil {
 			return err
 		}
-		if err := root.Symlink(target, dst); err != nil {
+		if err := dr.Symlink(target, dst); err != nil {
 			return err
 		}
-		d, err := root.Open(path.Dir(dst))
+		d, err := dr.Open(path.Dir(dst))
 		if err != nil {
 			return err
 		}
@@ -340,10 +394,10 @@ func copyEntry(root *os.Root, src, dst string, dirs map[string]uint32, rel strin
 		mt := fi.ModTime()
 		return treesync.Lutimes(d, path.Base(dst), mt.Unix(), int64(mt.Nanosecond()))
 	case fi.IsDir():
-		if err := root.Mkdir(dst, 0o700); err != nil {
+		if err := dr.Mkdir(dst, 0o700); err != nil {
 			return err
 		}
-		d, err := root.Open(src)
+		d, err := sr.Open(src)
 		if err != nil {
 			return err
 		}
@@ -357,7 +411,7 @@ func copyEntry(root *os.Root, src, dst string, dirs map[string]uint32, rel strin
 			if rel != "" {
 				sub = rel + "/" + n
 			}
-			if err := copyEntry(root, src+"/"+n, dst+"/"+n, dirs, sub); err != nil {
+			if err := copyBetween(sr, src+"/"+n, dr, dst+"/"+n, dirs, sub); err != nil {
 				return err
 			}
 		}
@@ -366,12 +420,12 @@ func copyEntry(root *os.Root, src, dst string, dirs map[string]uint32, rel strin
 			mode |= 0o700
 		}
 	case fi.Mode().IsRegular():
-		in, err := root.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+		in, err := sr.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 		if err != nil {
 			return err
 		}
 		defer in.Close()
-		out, err := root.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		out, err := dr.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			return err
 		}
@@ -385,10 +439,10 @@ func copyEntry(root *os.Root, src, dst string, dirs map[string]uint32, rel strin
 	default:
 		return nil
 	}
-	if err := root.Chmod(dst, mode); err != nil {
+	if err := dr.Chmod(dst, mode); err != nil {
 		return err
 	}
-	return root.Chtimes(dst, fi.ModTime(), fi.ModTime())
+	return dr.Chtimes(dst, fi.ModTime(), fi.ModTime())
 }
 
 // dropSnapshot removes PrevDir, its manifest first and through a signal:

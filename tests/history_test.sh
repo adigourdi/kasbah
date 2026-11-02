@@ -174,13 +174,13 @@ not_warned() { grep -v '^warning: ' <<<"$ERR" || true; }
 # `rollback`, a five-character version against an eleven-character one, and
 # `no-backup` against a real backup path. A table printed at fixed widths, or at
 # the header labels' widths, disagrees with every expected line below.
-backup_path=backups/pre-deploy-20260204-100000.sql.gz
+backup_path=backups/0.9.0-20260204-100000.tar.gz
 { printf '%s deploy 0.9.0 no-backup kasbah=0.1.0 digest=-\n' 2026-01-04T10:00:00+00:00
   printf '%s deploy 1.0.0 %s kasbah=0.1.0 digest=-\n' 2026-02-04T10:00:00+00:00 "$backup_path"; } > "$arch"
 { printf '%s deploy 1.10.0-rc.1 no-backup kasbah=0.1.0 digest=-\n' 2026-08-01T00:00:00+00:00
   printf '%s rollback 1.0.0 no-backup kasbah=0.2.0-dev digest=- by=alice\n' 2026-08-02T00:00:00+00:00; } > "$act"
 
-assert '[ "${#backup_path}" = "41" ] && [ "${#backup_path}" -gt "$(printf %s no-backup | wc -c)" ]' \
+assert '[ "${#backup_path}" = "36" ] && [ "${#backup_path}" -gt "$(printf %s no-backup | wc -c)" ]' \
     "the archive's backup column really is wider than the active log's (${#backup_path} vs 9)"
 
 # Plain: the active log only, so the backup column is nine wide and not
@@ -206,10 +206,10 @@ assert '[ -z "$ERR" ]' "and nothing at all goes to stderr — the report is the 
 # --all: the archive in front, the rotation point marked, and the columns
 # re-measured against the wider data.
 drive history yes
-head_all="$(printf '%-25s  %-8s  %-11s  %-41s  %-9s  %s' TIMESTAMP ACTION VERSION BACKUP KASBAH BY)"
-row_g1="$(printf '%-25s  %-8s  %-11s  %-41s  %-9s  %s' 2026-01-04T10:00:00+00:00 deploy 0.9.0 no-backup 0.1.0 -)"
-row_g2="$(printf '%-25s  %-8s  %-11s  %-41s  %-9s  %s' 2026-02-04T10:00:00+00:00 deploy 1.0.0 "$backup_path" 0.1.0 -)"
-row_b1="$(printf '%-25s  %-8s  %-11s  %-41s  %-9s  %s' 2026-08-01T00:00:00+00:00 deploy 1.10.0-rc.1 no-backup 0.1.0 -)"
+head_all="$(printf '%-25s  %-8s  %-11s  %-36s  %-9s  %s' TIMESTAMP ACTION VERSION BACKUP KASBAH BY)"
+row_g1="$(printf '%-25s  %-8s  %-11s  %-36s  %-9s  %s' 2026-01-04T10:00:00+00:00 deploy 0.9.0 no-backup 0.1.0 -)"
+row_g2="$(printf '%-25s  %-8s  %-11s  %-36s  %-9s  %s' 2026-02-04T10:00:00+00:00 deploy 1.0.0 "$backup_path" 0.1.0 -)"
+row_b1="$(printf '%-25s  %-8s  %-11s  %-36s  %-9s  %s' 2026-08-01T00:00:00+00:00 deploy 1.10.0-rc.1 no-backup 0.1.0 -)"
 assert '[ "$DRC" = 0 ]'                    "--all renders (rc $DRC: $OUT / $ERR)"
 assert 'grep -qxF "$head_all" <<<"$OUT"'   "its header is measured against the archived backup path too (got '$(head -1 "$tmpdir/o")')"
 assert 'grep -qxF "$row_g1" <<<"$OUT"'     "the archived deploy is a row (got '$OUT')"

@@ -128,6 +128,11 @@ func TestEngineRevertThatFailsIsLogged(t *testing.T) {
 	if f := ParseFailure(out); f == nil || f.Outcome != RevertFailed {
 		t.Fatalf("failure line %q", out)
 	}
+	// The backup directory is kept beside the snapshot, and named.
+	b := r.backups()
+	if len(b) != 1 || !strings.HasPrefix(b[0], "0.9.0-") || !strings.Contains(errs, "The backup directory "+filepath.Join(r.dir, Backups, b[0])+" is kept for the operator") {
+		t.Errorf("backups/ %v\n%s", b, errs)
+	}
 	lines := strings.Split(strings.TrimSpace(r.logText()), "\n")
 	if len(lines) != 2 || !strings.Contains(lines[1], " deploy-failed 1.0.0 no-backup kasbah=0.1.0 digest=sha256:id-of-demo-web:current by=") || !strings.HasSuffix(lines[1], " reason=revert") {
 		t.Errorf("versions.log:\n%s", r.logText())
@@ -162,7 +167,10 @@ func TestEnginePostHookFailureIsLoggedNotReverted(t *testing.T) {
 		if f := ParseFailure(out); f == nil || f.Outcome != PostHook || f.Reason != "post-hook" {
 			t.Fatalf("%s: failure line %q", mode, out)
 		}
-		want := " deploy-failed 1.0.0 no-backup kasbah=0.1.0 digest=sha256:id-of-demo-web:current by="
+		want := " kasbah=0.1.0 digest=sha256:id-of-demo-web:current by="
+		if !strings.Contains(r.logText(), " deploy-failed 1.0.0 backups/0.9.0-") {
+			t.Errorf("%s: field 4 does not name the outgoing version's backup:\n%s", mode, r.logText())
+		}
 		last := strings.Split(strings.TrimSpace(r.logText()), "\n")[1]
 		suffix := " reason=post-hook"
 		if mode == "rollback" {

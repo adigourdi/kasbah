@@ -90,8 +90,9 @@ func TestReadPlan(t *testing.T) {
 	p, err := plan(t, `hooks:
   pre-deploy: ['  docker compose exec -T web php artisan down  ']
   post-rollback: ["echo \"$KASBAH_VERSION\" | tee -a deployed.txt"]
+  backup: ['docker compose exec -T db pg_dump app > "$KASBAH_BACKUP_DIR/db.sql"']
+  restore: ['docker compose exec -T db psql app < "$KASBAH_BACKUP_DIR/db.sql"']
 health: {timeout: 2m}
-backup: {container: demo-db, check: 'true', command: dump, extension: sql.gz}
 mail: {domain: demo.test}
 client: acme
 `)
@@ -104,41 +105,37 @@ client: acme
 	if p.Hooks["pre-deploy"][0] != "docker compose exec -T web php artisan down" || p.Hooks["post-rollback"][0] != `echo "$KASBAH_VERSION" | tee -a deployed.txt` {
 		t.Fatalf("hooks %v", p.Hooks)
 	}
-	if p.Backup == nil || p.Backup.Retain != 10 || p.MailDomain != "demo.test" || p.Client != "acme" {
-		t.Fatalf("plan %+v %+v", p, p.Backup)
+	if p.Hooks["backup"][0] != `docker compose exec -T db pg_dump app > "$KASBAH_BACKUP_DIR/db.sql"` || len(p.Hooks["restore"]) != 1 || p.MailDomain != "demo.test" || p.Client != "acme" {
+		t.Fatalf("plan %+v", p)
 	}
 
 	for yml, want := range map[string]string{
-		"hooks: {pre-deploy: ['  ']}\n":                                  "hooks.pre-deploy holds an empty entry",
-		"hooks: {pre-deploy: [~]}\n":                                     "hooks.pre-deploy holds null — each entry must be a string",
-		"hooks: {pre-deploy: [42]}\n":                                    "hooks.pre-deploy holds 42 — each entry must be a string, one shell command",
-		"hooks: {pre-deploy: [\"a\\nb\"]}\n":                             "the pre-deploy hook 'a…' spans more than one line",
-		"hooks: {post-deploy: [\"a\\r\\nb\"]}\n":                         "the post-deploy hook 'a…' spans more than one line",
-		"hooks: {pre-deploy: demo-web x}\n":                              "is not a list",
-		"hooks: {pre-deploy: false}\n":                                   "is not a list",
-		"hooks: {pre-deploy: [false]}\n":                                 "hooks.pre-deploy holds false — each entry must be a string",
-		"hooks: x\n":                                                     "hooks: is not a block",
-		"hooks: false\n":                                                 "hooks: is not a block",
-		"hooks: ['demo-web a']\n":                                        "hooks: is not a block",
-		"hooks: {pre_deploy: ['demo-web a']}\n":                          "hooks.pre_deploy is not a hook kasbah runs — hooks: holds the lists pre-deploy:",
-		"backup: yes\n":                                                  "backup: is not a block",
-		"backup: {container: c, check: [a], command: c, extension: x}\n": "backup.check must be a string, not [\"a\"]",
-		"health: x\n":                                                    "health: is not a block",
-		"health: [a]\n":                                                  "health: is not a block",
-		"backup: {container: c, check: c, command: c, extension: x, pipe: false}":  "backup.pipe must be a string, not false",
-		"backup: {container: c, check: c, command: c, extension: x, retain: true}": "backup.retain must be a whole number, not true",
-		"health: {timeout: false}\n":                                              "health.timeout must be a duration like 120s, 5m or 2h, not false",
-		"health: {container: [a]}\n":                                              "health.container must be a string, not [\"a\"]",
-		"client: false\n":                                                         "client must be a string, not false",
-		"mail: {domain: false}\n":                                                 "mail.domain must be a string, not false",
-		"health: {timeout: 0s}\n":                                                 "is zero",
-		"backup: {container: c, check: c, command: c}\n":                          "has no extension:",
-		"backup: {container: c, check: c, command: c, extension: a/b}\n":          "plain filename extension",
-		"backup: {container: c, check: c, command: c, extension: \"sql\\a\"}\n":   "plain filename extension",
-		"backup: {container: c, check: c, command: c, extension: \"a\u00a0b\"}\n": "plain filename extension",
-		"backup: {container: c, check: c, command: c, extension: x, retain: 0}":   "retain is 0",
-		"mail: example.test\n":                                                    "mail: is not a block",
-		"mail: {}\n":                                                              "has no domain:",
+		"hooks: {pre-deploy: ['  ']}\n":                                "hooks.pre-deploy holds an empty entry",
+		"hooks: {pre-deploy: [~]}\n":                                   "hooks.pre-deploy holds null — each entry must be a string",
+		"hooks: {pre-deploy: [42]}\n":                                  "hooks.pre-deploy holds 42 — each entry must be a string, one shell command",
+		"hooks: {pre-deploy: [\"a\\nb\"]}\n":                           "the pre-deploy hook 'a…' spans more than one line",
+		"hooks: {post-deploy: [\"a\\r\\nb\"]}\n":                       "the post-deploy hook 'a…' spans more than one line",
+		"hooks: {pre-deploy: demo-web x}\n":                            "is not a list",
+		"hooks: {pre-deploy: false}\n":                                 "is not a list",
+		"hooks: {pre-deploy: [false]}\n":                               "hooks.pre-deploy holds false — each entry must be a string",
+		"hooks: x\n":                                                   "hooks: is not a block",
+		"hooks: false\n":                                               "hooks: is not a block",
+		"hooks: ['demo-web a']\n":                                      "hooks: is not a block",
+		"hooks: {pre_deploy: ['demo-web a']}\n":                        "hooks.pre_deploy is not a hook kasbah runs — hooks: holds the lists backup:, pre-deploy:, post-deploy:, restore:, pre-rollback: and post-rollback:",
+		"hooks: {restore: ['a', '']}\n":                                "hooks.restore holds an empty entry",
+		"hooks: {backup: \"pg_dump\"}\n":                               "hooks.backup is not a list",
+		"backup: {container: c, check: c, command: c, extension: x}\n": "backup: is not a key kasbah reads — a backup is the hooks.backup list",
+		"backup: false\n":                                              "backup: is not a key kasbah reads",
+		"backup: ~\n":                                                  "backup: is not a key kasbah reads",
+		"health: x\n":                                                  "health: is not a block",
+		"health: [a]\n":                                                "health: is not a block",
+		"health: {timeout: false}\n":                                   "health.timeout must be a duration like 120s, 5m or 2h, not false",
+		"health: {container: [a]}\n":                                   "health.container must be a string, not [\"a\"]",
+		"client: false\n":                                              "client must be a string, not false",
+		"mail: {domain: false}\n":                                      "mail.domain must be a string, not false",
+		"health: {timeout: 0s}\n":                                      "is zero",
+		"mail: example.test\n":                                         "mail: is not a block",
+		"mail: {}\n":                                                   "has no domain:",
 	} {
 		if _, err := plan(t, yml); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: %v; want %q", yml, err, want)
@@ -147,16 +144,11 @@ client: acme
 	if _, err := plan(t, ""); err != nil {
 		t.Fatal(err)
 	}
-	if p, err := plan(t, "health: false\nbackup: false\nmail: false\n"); err != nil || p.Backup != nil || p.MailDomain != "" || p.Health.Timeout != 120 {
+	if p, err := plan(t, "health: false\nmail: false\n"); err != nil || p.MailDomain != "" || p.Health.Timeout != 120 {
 		t.Errorf("false turns a block off: %+v %v", p, err)
 	}
-	if p, err := plan(t, "backup: {container: c, check: c, command: c, extension: x, retain: 3}\nhealth: {timeout: 30}\nhooks: ~\n"); err != nil || p.Backup.Retain != 3 || p.Health.Timeout != 30 {
+	if p, err := plan(t, "health: {timeout: 30}\nhooks: ~\n"); err != nil || p.Health.Timeout != 30 {
 		t.Errorf("numbers: %+v %v", p, err)
-	}
-	for yml, want := range map[string]string{"true": "true", "false": "false"} {
-		if p, err := plan(t, "backup: {container: c, check: "+yml+", command: c, extension: x}\n"); err != nil || p.Backup.Check != want {
-			t.Errorf("check: %s: %+v %v", yml, p, err)
-		}
 	}
 	for _, sync := range []string{"sync: {a: compose.yml}\n", "sync: compose.yml\n"} {
 		docs, _ := yamlx.Load([]byte("schema: 1\nname: demo\n" + sync))

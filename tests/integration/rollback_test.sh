@@ -298,8 +298,13 @@ assert '[ "$(wc -l <<<"$log")" = "3" ]' "two deploys and a rollback have appende
 read -r r_ts r_action r_version r_backup r_kasbah r_digest r_extra <<<"$(sed -n 3p <<<"$log")"
 assert '[ "$r_action" = "rollback" ]' "field 2 of the new entry is the action (got '$r_action')"
 assert '[ "$r_version" = "$v1" ]'     "field 3 is the target version (got '$r_version')"
-assert '[ "$r_backup" = "no-backup" ]' \
-    "field 4 is always no-backup — a rollback takes none (got '$r_backup')"
+assert '[[ "$r_backup" =~ ^backups/${v2//./\\.}-[0-9]{8}-[0-9]{6}\.tar\.gz$ ]]' \
+    "field 4 is the backup of the v$v2 it left (got '$r_backup')"
+rb_members=$(rig_ssh "tar -tzf $projdir_remote/$r_backup" 2>/dev/null | tr -d '\r' | sort | tr '\n' ' ')
+assert 'grep -qF "kasbah-snapshot/.env " <<<"$rb_members" && grep -qF "kasbah-snapshot/compose.yml " <<<"$rb_members" && ! grep -qF "payload.txt" <<<"$rb_members"' \
+    "holding the snapshot alone — no backup hook runs on a rollback (members: $rb_members)"
+rb_mode=$(rig_ssh "stat -c %a $projdir_remote/$r_backup" 2>/dev/null | tr -d '\r')
+assert '[ "$rb_mode" = "660" ]' "mode 660 (got '$rb_mode')"
 assert '[ "$r_kasbah" = "kasbah=$kasbah_version" ]' \
     "and kasbah= is the kasbah that drove it (got '$r_kasbah')"
 assert '[ "$r_digest" = "digest=$v1_web_id,$v1_worker_id" ]' \

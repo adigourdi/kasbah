@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -34,8 +36,13 @@ type Spec struct {
 	Images        []string `json:"images"`
 	Pre           []string `json:"pre"`
 	Post          []string `json:"post"`
-	Health        Health   `json:"health"`
-	Backup        *Backup  `json:"backup"`
+	// Backup and Restore are the manifest's backup and restore hooks: a
+	// deploy runs Backup; both are rendered into HooksFile.
+	Backup  []string `json:"backup"`
+	Restore []string `json:"restore"`
+	// Targets is the snapshot's target list, for HooksFile.
+	Targets []string `json:"targets"`
+	Health  Health   `json:"health"`
 	// Routed is the loadBalancer hosts of the fragment this run ships, which
 	// name the routed services a deploy may roll rather than recreate.
 	Routed []string `json:"routed"`
@@ -49,16 +56,6 @@ type Spec struct {
 type Health struct {
 	Container string `json:"container"`
 	Timeout   int    `json:"timeout"`
-}
-
-// Backup is the manifest's backup: block.
-type Backup struct {
-	Check     string `json:"check"`
-	Container string `json:"container"`
-	Command   string `json:"command"`
-	Pipe      string `json:"pipe"`
-	Extension string `json:"extension"`
-	Retain    int    `json:"retain"`
 }
 
 // Report is the run's last act, printed only after the versions.log append:
@@ -155,18 +152,39 @@ type engine struct {
 	// What a failure needs to say and undo.
 	logRead, history, retagged bool
 	prev, lastFail             string
-	backupPath                 string
-	digest                     string
-	prevIDs                    map[string]string
-	liveBefore                 []string
+	// outgoing names the backup: the version live at the run's start. bdir
+	// is the backup directory's name in broot, backups/, "" for none; modes
+	// are the real modes of the directories its snapshot copies widened.
+	outgoing, bdir string
+	broot          *os.Root
+	modes          map[string]fs.FileMode
+	backupPath     string
+	digest         string
+	prevIDs        map[string]string
+	liveBefore     []string
 	// liveSvc is each live container's service, so a revert waits on the
 	// replica that replaced a rolled one.
 	liveSvc map[string]string
 	failure *Failure
+	// move is the snapshot's move's state (moveRenaming…); a signal's
+	// cleanup freezes it at moveStopped.
+	move atomic.Int32
+	// raw is the process's own stderr, stderr's unwrapped: os.Exit does not
+	// wait for stderr to drain, so a signal's cleanup writes here.
+	raw io.Writer
 }
 
 func (e *engine) note(format string, a ...any) {
 	fmt.Fprintf(e.stderr, "remote: "+format+"\n", a...)
+}
+
+// noteRaw is note on raw, in one write, for a line written on the way out.
+func (e *engine) noteRaw(format string, a ...any) {
+	w := e.raw
+	if w == nil {
+		w = e.stderr
+	}
+	fmt.Fprintf(w, "remote: "+format+"\n", a...)
 }
 
 // docker runs with its stdout on stderr: stdout is the report's.
@@ -186,12 +204,13 @@ func (e *engine) query(args ...string) (string, error) {
 	return strings.TrimRight(strings.ReplaceAll(string(out), "\r", ""), "\n"), err
 }
 
-// Engine is `kasbah remote deploy run DIR`, the Spec on stdin.
-func Engine(dir string, stdin io.Reader, stdout, stderr io.Writer) int {
-	return engineMain(dir, stdin, stdout, stderr, AnswerWait)
+// Engine is `kasbah remote deploy run DIR`, the Spec on stdin; raw is the
+// process's stderr that stderr wraps.
+func Engine(dir string, stdin io.Reader, stdout, stderr, raw io.Writer) int {
+	return engineMain(dir, stdin, stdout, stderr, raw, AnswerWait)
 }
 
-func engineMain(dir string, stdin io.Reader, stdout, stderr io.Writer, answerWait time.Duration) int {
+func engineMain(dir string, stdin io.Reader, stdout, stderr, raw io.Writer, answerWait time.Duration) int {
 	// The spec is one line, read whole: what follows it is the answer channel.
 	var sp Spec
 	in := bufio.NewReader(stdin)
@@ -203,9 +222,12 @@ func engineMain(dir string, stdin io.Reader, stdout, stderr io.Writer, answerWai
 		fmt.Fprintf(stderr, "remote: deploy: no readable deploy spec on stdin (%v) — nothing was changed\n", err)
 		return 1
 	}
-	e := &engine{dir: strings.TrimSuffix(dir, "/"), sp: sp, stderr: stderr, stdout: stdout,
+	e := &engine{dir: strings.TrimSuffix(dir, "/"), sp: sp, stderr: stderr, raw: raw, stdout: stdout,
 		in: in, answerWait: answerWait, now: time.Now, sleep: time.Sleep}
 	r, err := e.run()
+	if e.broot != nil {
+		defer e.broot.Close()
+	}
 	if e.lockFile != nil {
 		defer e.lockFile.Close()
 	}
@@ -297,18 +319,36 @@ func (e *engine) locked(composeMissing error) (*Report, error) {
 	}
 	before = before || e.archiveOnly
 	e.prev, e.history = prev, len(entries) > 0 || e.archiveOnly
+	// A failed run left its version live only past its post-hook; after a
+	// failed revert, the snapshot is the version before it.
+	e.outgoing = "unknown"
+	if n := len(entries); n > 0 {
+		v := prev
+		if last := entries[n-1]; last.OK && (!last.IsFailed() || last.Reason == "post-hook") {
+			v = last.Version
+		}
+		if safeName(v) {
+			e.outgoing = v
+		}
+	}
 	if err := e.preflight(); err != nil {
 		return nil, err
 	}
-	// Any entry, a failed run's included, means an outgoing stack to act on.
-	backup := "no-backup"
 	if e.history {
-		if sp.Mode == "deploy" && sp.Backup != nil {
-			if backup, err = e.backup(); err != nil {
+		if err := checkBackups(e.dir); err != nil {
+			return nil, err
+		}
+	}
+	e.backupPath, e.digest = "no-backup", "-"
+	// Any entry, a failed run's included, means an outgoing stack to act on.
+	if e.history {
+		if sp.Mode == "deploy" {
+			if err := e.backupDir(); err != nil {
 				if err = e.pastFailure("backup", err); err != nil {
 					return nil, err
 				}
-				backup = "no-backup"
+			} else if err := e.hooks("backup", sp.Backup, func(err error) error { return e.pastFailure("backup hook", err) }); err != nil {
+				return nil, err
 			}
 		}
 	} else if skipped := e.firstSkips(); skipped != "" {
@@ -318,7 +358,6 @@ func (e *engine) locked(composeMissing error) (*Report, error) {
 			e.note("versions.log has no entry for this project, so %s will not run", skipped)
 		}
 	}
-	e.backupPath, e.digest = backup, "-"
 	if sp.SkipHooks {
 		e.note("%s hooks skipped (--skip-hooks)", e.preName)
 	} else if e.history {
@@ -364,12 +403,13 @@ func (e *engine) locked(composeMissing error) (*Report, error) {
 		return nil, e.postFailed(err)
 	}
 
-	dropSnapshot(e.dir)
+	e.keep()
 	if err := e.record(sp.Mode); err != nil {
 		e.failure = &Failure{Outcome: Unrecorded, Reason: "record", Prev: e.prev}
 		return nil, failf("%v — %s %s is live: its containers are up and healthy and its hooks ran, and versions.log does not record it", err, e.project, sp.Version)
 	}
-	return &Report{Version: sp.Version, PrevVersion: prev, DeployedBefore: before, Backup: backup, Digest: digest,
+	e.prune()
+	return &Report{Version: sp.Version, PrevVersion: prev, DeployedBefore: before, Backup: e.backupPath, Digest: digest,
 		ArchiveOnly: e.archiveOnly, FailedOnly: e.history && !before, Continued: e.continued}, nil
 }
 
@@ -465,12 +505,13 @@ func (e *engine) unchanged(cause error) error {
 	switch {
 	case errors.Is(err, errForeign):
 		e.note("%v", err)
-		return failf("the %s of %s stopped before anything was started; its files are on the server beside the running stack", e.sp.Mode, e.sp.Version)
+		return failf("the %s of %s stopped before anything was started; its files are on the server beside the running stack%s", e.sp.Mode, e.sp.Version, e.leftDir())
 	case err != nil:
 		e.failure = &Failure{Outcome: Unrestored, Reason: "start", Prev: e.prev, Saved: res.Saved}
-		return failf("the %s of %s stopped before anything was started, and putting back the files it had shipped failed: %v (%s%s) — %s/%s is kept, and the next run starts from it%s", e.sp.Mode, e.sp.Version, err, res.what(), e.mixed(res), e.dir, PrevDir, saved)
+		return failf("the %s of %s stopped before anything was started, and putting back the files it had shipped failed: %v (%s%s) — %s/%s is kept, and the next run starts from it%s%s", e.sp.Mode, e.sp.Version, err, res.what(), e.mixed(res), e.dir, PrevDir, saved, e.leftDir())
 	}
 	dropSnapshot(e.dir)
+	e.dropDir()
 	e.failure = &Failure{Outcome: Restored, Reason: "start", Prev: e.prev, Saved: res.Saved}
 	return failf("the %s of %s stopped before anything was started, and the files it had shipped were put back%s", e.sp.Mode, e.sp.Version, saved)
 }
@@ -517,6 +558,7 @@ func (e *engine) failed(reason string, cause error) error {
 	saved := e.saved(res)
 	if err == nil {
 		dropSnapshot(e.dir)
+		e.dropDir()
 		e.failure = &Failure{Outcome: Reverted, Reason: reason, Prev: e.prev, Saved: res.Saved}
 		return failf("the %s of %s failed (%s) and was reverted — the server is back on %s: its files, its images and its containers. versions.log records nothing for %s%s", e.sp.Mode, v, reason, e.was(), v, saved)
 	}
@@ -529,7 +571,7 @@ func (e *engine) failed(reason string, cause error) error {
 	if res != nil {
 		e.failure.Saved = res.Saved
 	}
-	return failf("the %s of %s failed (%s), and so did the revert to %s — %s. %s%s", e.sp.Mode, v, reason, e.was(), state, logged, saved)
+	return failf("the %s of %s failed (%s), and so did the revert to %s — %s. %s%s%s", e.sp.Mode, v, reason, e.was(), state, logged, saved, e.leftDir())
 }
 
 // revert returns what the restore did and, on failure, the state it left
@@ -608,7 +650,7 @@ func (e *engine) beforeTargets() []string {
 // nothing is reverted; deploy-failed records it.
 func (e *engine) postFailed(cause error) error {
 	e.note("%v", cause)
-	dropSnapshot(e.dir)
+	e.keep()
 	logged := "versions.log records it as deploy-failed (reason=post-hook)"
 	if !e.recordFailed("post-hook") {
 		logged = "versions.log could not record it"
@@ -692,8 +734,8 @@ func (e *engine) preflight() error {
 // firstSkips names the outgoing steps a run with no history leaves out.
 func (e *engine) firstSkips() string {
 	var steps []string
-	if e.sp.Mode == "deploy" && e.sp.Backup != nil {
-		steps = append(steps, "the backup")
+	if e.sp.Mode == "deploy" && len(e.sp.Backup) > 0 {
+		steps = append(steps, "the backup hooks")
 	}
 	if !e.sp.SkipHooks && len(e.sp.Pre) > 0 {
 		steps = append(steps, "the "+e.preName+" hooks")
@@ -772,89 +814,6 @@ func (e *engine) sh(script string) *exec.Cmd {
 	return c
 }
 
-// backup runs against the still-running outgoing version, so a backup exists
-// before any hook touches live state. It returns versions.log's field 4.
-func (e *engine) backup() (string, error) {
-	b := e.sp.Backup
-	if b == nil {
-		return "no-backup", nil
-	}
-	in, _ := e.target(b.Container)
-	if e.sh(b.Check).Run() != nil {
-		e.note("backup.check exited non-zero — no backup taken, the deploy continues")
-		return "no-backup", nil
-	}
-	file := "backups/pre-deploy-" + e.now().UTC().Format("20060102-150405") + "." + b.Extension
-	if err := os.MkdirAll(filepath.Join(e.dir, "backups"), 0o777); err != nil {
-		return "", failf("could not create %s/backups", e.dir)
-	}
-	// A name the rotation glob cannot match until the dump is whole.
-	tmp := filepath.Join(e.dir, file+".partial")
-	// 660: a dump holds the project's data, the operators' group's and no one else's.
-	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o660)
-	if err == nil {
-		err = out.Chmod(0o660)
-	}
-	if err != nil {
-		return "", failf("could not write %s", tmp)
-	}
-	pop := atexit.Push(func() { os.Remove(tmp) })
-	defer pop()
-	rc := e.dump(b, in, out)
-	if cerr := out.Close(); cerr != nil && rc == 0 {
-		rc = 1
-	}
-	if rc != 0 {
-		os.Remove(tmp)
-		return "", failf("the backup failed in %s (exit %d) — nothing has been deployed", b.Container, rc)
-	}
-	if os.Rename(tmp, filepath.Join(e.dir, file)) != nil {
-		return "", failf("could not write %s/%s", e.dir, file)
-	}
-	e.note("backup written to %s", file)
-	if err := e.rotateBackups(); err != nil {
-		return "", err
-	}
-	return file, nil
-}
-
-// dump is `docker exec C sh -c CMD [| sh -c PIPE] > out`, with pipefail's
-// status: the last non-zero one.
-func (e *engine) dump(b *Backup, in string, out *os.File) int {
-	ex := exec.Command("docker", "exec", in, "sh", "-c", b.Command)
-	ex.Env = append(os.Environ(), "LC_ALL=C")
-	ex.Dir, ex.Stderr = e.dir, e.stderr
-	if b.Pipe == "" {
-		ex.Stdout = out
-		return exitStatus(ex.Run())
-	}
-	pr, pw, err := os.Pipe()
-	if err != nil {
-		return 1
-	}
-	ex.Stdout = pw
-	p := e.sh(b.Pipe)
-	p.Stdin, p.Stdout = pr, out
-	if err := ex.Start(); err != nil {
-		pr.Close()
-		pw.Close()
-		return 127
-	}
-	pw.Close()
-	if err := p.Start(); err != nil {
-		pr.Close()
-		ex.Process.Kill()
-		ex.Wait()
-		return 127
-	}
-	pr.Close()
-	exErr, pErr := ex.Wait(), p.Wait()
-	if rc := exitStatus(pErr); rc != 0 {
-		return rc
-	}
-	return exitStatus(exErr)
-}
-
 func exitStatus(err error) int {
 	if err == nil {
 		return 0
@@ -866,49 +825,20 @@ func exitStatus(err error) int {
 	return 1
 }
 
-// rotateBackups keeps the newest retain; names sort by their fixed-width
-// timestamp.
-func (e *engine) rotateBackups() error {
-	b := e.sp.Backup
-	files, _ := filepath.Glob(filepath.Join(e.dir, "backups", "pre-deploy-*."+globEscape(b.Extension)))
-	var regular []string
-	for _, f := range files {
-		if fi, err := os.Stat(f); err == nil && fi.Mode().IsRegular() {
-			regular = append(regular, f)
-		}
-	}
-	if len(regular) <= b.Retain {
-		return nil
-	}
-	for _, f := range regular[:len(regular)-b.Retain] {
-		if os.Remove(f) != nil {
-			return failf("could not remove the rotated-out backup %s", f)
-		}
-		e.note("rotated out %s (backup.retain is %d)", f, b.Retain)
-	}
-	return nil
-}
-
-func globEscape(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if strings.ContainsRune(`*?[\`, r) {
-			b.WriteByte('\\')
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
 // hooks run each entry as `sh -c` from the project directory, with no stdin
-// (the engine's is the answer channel) and COMPOSE_PROJECT_NAME set.
+// (the engine's is the answer channel), COMPOSE_PROJECT_NAME set and
+// KASBAH_BACKUP_DIR the deploy's backup directory or none.
 // A failure goes to onFail, whose nil runs the next entry; none ends the list.
 func (e *engine) hooks(what string, list []string, onFail func(error) error) error {
 	for _, h := range list {
 		e.note("%s hook: %s", what, h)
 		c := e.sh(h)
+		bdir := "none"
+		if e.bdir != "" {
+			bdir = e.bdirPath()
+		}
 		c.Env = append(c.Env, "KASBAH_VERSION="+e.sp.Version, "KASBAH_PREV_VERSION="+e.prev, "KASBAH_PROJECT="+e.project,
-			"COMPOSE_PROJECT_NAME="+e.project)
+			"KASBAH_BACKUP_DIR="+bdir, "COMPOSE_PROJECT_NAME="+e.project)
 		if err := c.Run(); err != nil {
 			err = failf("the %s hook failed (exit %d): %s", what, exitStatus(err), h)
 			if onFail == nil {

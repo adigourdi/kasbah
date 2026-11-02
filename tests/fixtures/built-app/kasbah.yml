@@ -3,7 +3,7 @@
 # tests/integration/ship_test.sh copies this directory somewhere writable,
 # gives it a git repo with a v-tag, and runs `kasbah build-push` from the copy.
 #
-# The health:, hooks: and backup: blocks below are what makes this the deploy
+# The health: and hooks: blocks below are what makes this the deploy
 # fixture as well as the ship one: `kasbah deploy` sends them to the server's
 # engine, and tests/integration/deploy_ship_test.sh reads the breadcrumbs they
 # leave.
@@ -29,13 +29,21 @@ health:
   timeout: 60s
 
 # Each entry is one line of shell, run as `sh -c` on the server in
-# <apps>/built-app/, with KASBAH_VERSION, KASBAH_PREV_VERSION and KASBAH_PROJECT
-# set — so `state/breadcrumbs.log` is the file the web container sees at
+# <apps>/built-app/, with KASBAH_VERSION, KASBAH_PREV_VERSION, KASBAH_PROJECT and
+# KASBAH_BACKUP_DIR set — so `state/breadcrumbs.log` is the file the web container sees at
 # /var/kasbah, and a suite reads back that the hooks ran, in what order, and
 # with which variables. The pre-deploy hook also writes to stdout, which kasbah
 # must keep off the report channel; the post-deploy one reaches the new
 # container by service name through `docker compose exec -T`.
 hooks:
+  # Writes into the backup directory through the outgoing container, so a
+  # suite finds payload.txt in the tarball beside the snapshot: a fixed string,
+  # so it asserts on the bytes rather than on a file appearing.
+  backup:
+    - 'docker compose exec -T built-app-web echo kasbah-built-app-backup-payload > "$KASBAH_BACKUP_DIR/payload.txt"'
+  # Parsed and rendered into .kasbah-hooks.json; no deploy or rollback runs it.
+  restore:
+    - 'cat "$KASBAH_BACKUP_DIR/payload.txt"'
   pre-deploy:
     - 'echo "pre-deploy version=$KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT cwd=$PWD" >> state/breadcrumbs.log; echo version=9.9.9-from-the-hook'
   post-deploy:
@@ -47,16 +55,3 @@ hooks:
     - 'echo "pre-rollback version=$KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT" >> state/breadcrumbs.log'
   post-rollback:
     - 'echo "post-rollback version=$KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT" >> state/breadcrumbs.log'
-
-# `check` runs in the VPS host shell with cwd at the project directory, and its
-# exit status decides whether a backup is taken at all; `command` runs through
-# `sh -c` inside `container`, with its stdout piped through `pipe`. The payload
-# is a fixed string so a suite can assert on the decompressed file rather than
-# on the fact that some file appeared.
-backup:
-  container: built-app-web
-  check: test -f ./compose.yml
-  command: echo kasbah-built-app-backup-payload
-  extension: txt.gz
-  pipe: gzip
-  retain: 3

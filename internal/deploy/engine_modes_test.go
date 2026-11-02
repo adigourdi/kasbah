@@ -22,8 +22,8 @@ func TestEngineRollbackMode(t *testing.T) {
 	r.running("demo-web=running", "demo-db=exited")
 	sp := r.spec()
 	sp.Mode, sp.Version = "rollback", "0.9.0"
-	sp.Pre = []string{`echo "pre-rb $KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT" >> "$LOG"`}
-	sp.Post = []string{`echo "post-rb $KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT" >> "$LOG"`}
+	sp.Pre = []string{`echo "pre-rb $KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT backup=$KASBAH_BACKUP_DIR" >> "$LOG"`}
+	sp.Post = []string{`echo "post-rb $KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT backup=$KASBAH_BACKUP_DIR" >> "$LOG"`}
 	rc, out, errs := r.run(sp)
 	if rc != 0 {
 		t.Fatalf("rc %d: %s", rc, errs)
@@ -31,19 +31,19 @@ func TestEngineRollbackMode(t *testing.T) {
 	if !strings.Contains(errs, "pre-rollback hook: echo \"pre-rb") || !strings.Contains(errs, "post-rollback hook: echo \"post-rb") {
 		t.Errorf("narration: %s", errs)
 	}
-	if c := r.calls(); index(c, "pre-rb 0.9.0 prev=1.0.0 project=demo") < 0 || c[len(c)-1] != "post-rb 0.9.0 prev=1.0.0 project=demo" {
+	if c := r.calls(); index(c, "pre-rb 0.9.0 prev=1.0.0 project=demo backup=none") < 0 || c[len(c)-1] != "post-rb 0.9.0 prev=1.0.0 project=demo backup=none" {
 		t.Errorf("the rollback hooks' variables: %v", c)
 	}
-	if index(r.calls(), "check") >= 0 || index(r.calls(), "exec demo-db") >= 0 {
-		t.Errorf("a rollback ran the backup: %v", r.calls())
+	if index(r.calls(), "hook backup") >= 0 {
+		t.Errorf("a rollback ran the backup hooks: %v", r.calls())
 	}
 	rep, _, _ := ParseReport(out)
-	if rep == nil || rep.Backup != "no-backup" || rep.PrevVersion != "1.0.0" || !rep.DeployedBefore {
+	if rep == nil || !strings.HasPrefix(rep.Backup, "backups/1.0.0-") || rep.PrevVersion != "1.0.0" || !rep.DeployedBefore {
 		t.Fatalf("report %q", out)
 	}
 	b, _ := os.ReadFile(filepath.Join(r.dir, "versions.log"))
 	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-	if len(lines) != 3 || !strings.HasSuffix(lines[2], " rollback 0.9.0 no-backup kasbah=0.1.0 digest=sha256:id-of-demo-web:current by="+serverlock.Who()) {
+	if len(lines) != 3 || !strings.HasSuffix(lines[2], " rollback 0.9.0 "+rep.Backup+" kasbah=0.1.0 digest=sha256:id-of-demo-web:current by="+serverlock.Who()) {
 		t.Errorf("versions.log %q", b)
 	}
 }
@@ -74,7 +74,7 @@ func TestEngineTruncatedLastLine(t *testing.T) {
 	if rc != 0 || rep == nil || rep.PrevVersion != "" || !rep.DeployedBefore || !strings.Contains(errs, "had no newline") {
 		t.Fatalf("proceeding: rc %d %q %s", rc, out, errs)
 	}
-	if index(r.calls(), "exec demo-db") < 0 || index(r.calls(), "hook pre 1.0.0 prev= ") < 0 {
+	if index(r.calls(), "hook backup dir="+r.dir+"/backups/unknown-") < 0 || index(r.calls(), "hook pre 1.0.0 prev= ") < 0 {
 		t.Errorf("the outgoing steps did not run: %v", r.calls())
 	}
 	if b, _ := os.ReadFile(log); !strings.HasPrefix(string(b), "2026-10-01T00:00:00+00:00 dep\n2026-") {
@@ -91,7 +91,7 @@ func TestEngineArchiveOnly(t *testing.T) {
 	if rep, _, _ := ParseReport(out); rc != 0 || rep == nil || !rep.DeployedBefore || !rep.ArchiveOnly || rep.FailedOnly || strings.Contains(errs, "first deploy") {
 		t.Fatalf("rc %d %q %s", rc, out, errs)
 	}
-	if index(r.calls(), "exec demo-db") < 0 || index(r.calls(), "hook pre") < 0 {
+	if index(r.calls(), "hook backup dir="+r.dir+"/backups/unknown-") < 0 || index(r.calls(), "hook pre") < 0 {
 		t.Errorf("the outgoing steps did not run: %v", r.calls())
 	}
 }
@@ -146,6 +146,17 @@ func TestPrepare(t *testing.T) {
 	if got := call("beta"); got != "client=written\nprepared=yes\n" {
 		t.Errorf("changed: %q", got)
 	}
+	// A backups/ linked to a directory is one; linked to nothing, it is refused.
+	bk := filepath.Join(apps, "demo", "backups")
+	os.Remove(bk)
+	os.Symlink(t.TempDir(), bk)
+	call("beta")
+	os.Remove(bk)
+	os.Symlink(filepath.Join(apps, "nowhere"), bk)
+	errb.Reset()
+	if rc := prepare(apps, data, "demo", "beta", nil, &out, &errb); rc != 1 || !strings.Contains(errb.String(), bk+" is a symlink to nothing") {
+		t.Fatalf("a dangling backups/: rc %d %s", rc, errb.String())
+	}
 }
 
 // converse runs the engine with its stdin held open after the bytes SSH.Run
@@ -158,7 +169,7 @@ func (r *rig) converse(sp Spec, ask func(Question) string) (int, string, string)
 	var errb bytes.Buffer
 	done := make(chan int)
 	go func() {
-		rc := Engine(r.dir, inR, outW, &errb)
+		rc := Engine(r.dir, inR, outW, &errb, &errb)
 		outW.Close()
 		done <- rc
 	}()
@@ -177,7 +188,7 @@ func TestEngineQuestionTimesOut(t *testing.T) {
 	defer inW.Close()
 	go inW.Write(append(b, '\n'))
 	var out, errb bytes.Buffer
-	rc := engineMain(r.dir, inR, &out, &errb, 50*time.Millisecond)
+	rc := engineMain(r.dir, inR, &out, &errb, &errb, 50*time.Millisecond)
 	if rc != 1 || !strings.Contains(out.String(), `{"kasbah_deploy_question":1,`) || !strings.Contains(errb.String(), "no answer came back within 50ms to whether to deploy past the failed pre-deploy hook — stopping") {
 		t.Fatalf("rc %d %q\n%s", rc, out.String(), errb.String())
 	}
@@ -199,7 +210,8 @@ func TestEnginePreFailureAsks(t *testing.T) {
 		{"hook, continue", "", AnswerContinue, "pre-deploy hook", false, 0, "continuing past the failed pre-deploy hook (answered continue)"},
 		{"hook, stop", "", AnswerStop, "pre-deploy hook", false, 1, "the files it had shipped were put back"},
 		{"hook, no terminal", "", AnswerNoTTY, "pre-deploy hook", false, 1, "there was no terminal to ask whether to deploy anyway; pass --on-hook-failure=continue or --on-hook-failure=stop"},
-		{"backup, continue", "", AnswerContinue, "backup", true, 0, "continuing past the failed backup (answered continue)"},
+		{"backup, continue", "", AnswerContinue, "backup hook", true, 0, "continuing past the failed backup hook (answered continue)"},
+		{"backup, stop", "", AnswerStop, "backup hook", true, 1, "the files it had shipped were put back"},
 		{"flag continue", AnswerContinue, "", "pre-deploy hook", false, 0, "continuing past the failed pre-deploy hook (--on-hook-failure=continue)"},
 		{"flag stop", AnswerStop, "", "pre-deploy hook", false, 1, "the pre-deploy hook failed (exit 7)"},
 		{"unrecognised answer", "", "maybe", "pre-deploy hook", false, 1, `the answer to whether to deploy past the failed pre-deploy hook was "maybe", not continue or stop — stopping`},
@@ -211,7 +223,7 @@ func TestEnginePreFailureAsks(t *testing.T) {
 			sp.Pre = []string{"exit 7", `echo second-pre >> "$LOG"`}
 			if tc.backupFails {
 				sp.Pre = []string{preHook}
-				sp.Backup.Pipe = "cat >/dev/null; exit 3"
+				sp.Backup = []string{`echo part > "$KASBAH_BACKUP_DIR/part.sql"; exit 3`}
 			}
 			var asked []Question
 			rc, out, errs := r.converse(sp, func(q Question) string { asked = append(asked, q); return tc.answer })
@@ -239,9 +251,13 @@ func TestEnginePreFailureAsks(t *testing.T) {
 				if rep == nil || len(rep.Continued) != 1 || rep.Continued[0] != tc.step {
 					t.Fatalf("report %+v", rep)
 				}
-				if tc.backupFails && rep.Backup != "no-backup" {
-					t.Fatalf("a failed backup reported %s", rep.Backup)
+				// Carried on past, the backup is still kept: the snapshot and
+				// what the hook wrote.
+				if got := readTar(t, filepath.Join(r.dir, rep.Backup)); tc.backupFails && (got["part.sql"] != "part\n" || got[SnapDir+"/.env"] != "A=old\n") {
+					t.Fatalf("a failed backup hook carried past kept %v", got)
 				}
+			} else if es, _ := os.ReadDir(filepath.Join(r.dir, "backups")); len(es) != 0 {
+				t.Fatalf("a stopped run left %v in backups/", es)
 			}
 		})
 	}

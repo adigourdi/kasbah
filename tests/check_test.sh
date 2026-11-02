@@ -28,7 +28,7 @@ assert() {
 # no container_name (T07), and the service declares a healthcheck, so it rolls
 # on deploy (C11); the fragment carries both routers for the domain, the redirect on `web` and
 # the TLS one on `websecure` (T08). Healthchecks and Hooks sections are
-# silent — manifest has no health/hooks/backup blocks, and the only service
+# silent — manifest has no health/hooks blocks, and the only service
 # has no build:.
 #
 # Every case below starts from this, so anything it stops satisfying shows up
@@ -122,7 +122,7 @@ assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'             
 assert 'grep -qF "✓ .env.prod.example has no obvious long secrets" <<<"$out"'                  "E04 pass line"
 assert 'grep -qF "✓ .env.prod.example leaves the KASBAH_* prefix to kasbah" <<<"$out"'       "E05 pass line"
 assert '! grep -q "Healthchecks:" <<<"$out"'  "Healthchecks: header suppressed (nothing to check)"
-assert '! grep -q "Hooks:" <<<"$out"'         "Hooks: header suppressed (no hooks/backup in manifest)"
+assert '! grep -q "Hooks:" <<<"$out"'         "Hooks: header suppressed (no hooks in manifest)"
 assert '! grep -qF "built services" <<<"$out"' \
     "C08 says nothing about a project that builds nothing — there is no :current to move"
 assert 'grep -qF "✓ All routed services can roll on deploy" <<<"$out"' "C11 pass line"
@@ -1333,69 +1333,31 @@ out="$(cd "$proj32b" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                              "HK01 empty fails exits 6 (got $rc)"
 assert 'grep -qF "✗ kasbah.yml: hooks.pre-deploy holds an empty entry" <<<"$out"'     "HK01 empty fail line"
 
-# --- Case 33: HK02 — backup missing required field → fail --------------------
-proj33="$tmpdir/hk02-missing-field"
+# --- Case 33: HK02 — a top-level backup: block is refused --------------------
+# The backup is a hook now; the old block gets one clear refusal pointing there.
+proj33="$tmpdir/hk02-backup-block"
 make_project "$proj33"
-cat > "$proj33/compose.prod.yml" <<'YAML'
-services:
-  db:
-    image: postgres:16
-    container_name: demo-db
-    restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-networks:
-  default:
-    name: kasbah-net
-    external: true
-YAML
 cat >> "$proj33/kasbah.yml" <<'YAML'
 
 backup:
-  container: demo-db
-  check: "true"
-  command: "pg_dump -U u d"
-  # extension intentionally omitted
-YAML
-out="$(cd "$proj33" && "$kasbah" check 2>&1)"; rc=$?
-assert '[ "$rc" = "6" ]'                                                            "HK02 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Backup hook missing required field(s): extension" <<<"$out"'   "HK02 fail line"
-
-# --- Case 34: HK03 — backup container not in compose → fail ------------------
-proj34="$tmpdir/hk03-bad-container"
-make_project "$proj34"
-cat > "$proj34/compose.prod.yml" <<'YAML'
-services:
-  db:
-    image: postgres:16
-    container_name: demo-db
-    restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-networks:
-  default:
-    name: kasbah-net
-    external: true
-YAML
-cat >> "$proj34/kasbah.yml" <<'YAML'
-
-backup:
-  container: not-in-compose
+  container: demo-web
   check: "true"
   command: "pg_dump -U u d"
   extension: sql.gz
 YAML
-out="$(cd "$proj34" && "$kasbah" check 2>&1)"; rc=$?
-assert '[ "$rc" = "6" ]'                                                                                            "HK03 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Backup hook container '"'"'not-in-compose'"'"' is neither a container_name nor a service in compose" <<<"$out"' "HK03 fail line"
+out="$(cd "$proj33" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                            "HK02 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ kasbah.yml: backup: is not a key kasbah reads — a backup is the hooks.backup list" <<<"$out"' "HK02 fail line names hooks.backup"
 
-# --- Case 35: HK01–03 — full valid hooks + backup → pass --------------------
+# --- Case 34: HK02 — even an empty backup: is refused ------------------------
+proj34="$tmpdir/hk02-backup-null"
+make_project "$proj34"
+printf '\nbackup:\n' >> "$proj34/kasbah.yml"
+out="$(cd "$proj34" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]' "a null backup: fails too (got $rc)"
+assert 'grep -qF "✗ kasbah.yml: backup: is not a key kasbah reads" <<<"$out"' "HK02 fail line for a null block"
+
+# --- Case 35: HK01 — all six hook lists → pass --------------------------------
 # Regression guard for the hooks extraction and the container_name set assembly.
 proj35="$tmpdir/hk-all-pass"
 make_project "$proj35"
@@ -1450,28 +1412,25 @@ YAML
 cat >> "$proj35/kasbah.yml" <<'YAML'
 
 hooks:
+  backup:
+    - docker compose exec -T db pg_dump -U u d > "$KASBAH_BACKUP_DIR/db.sql"
   pre-deploy:
     - docker compose exec -T demo-api echo before
   post-deploy:
     - echo "after $KASBAH_VERSION" >> deployed.txt
+  restore:
+    - docker compose exec -T db psql -U u d < "$KASBAH_BACKUP_DIR/db.sql"
   pre-rollback:
     - docker compose exec -T demo-api echo rollback-before
   post-rollback:
     - echo rollback-after
-
-backup:
-  container: demo-db
-  check: "true"
-  command: "pg_dump -U u d"
-  extension: sql.gz
 YAML
 out="$(cd "$proj35" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                       "HK pass exits 0 (got $rc)"
 assert 'grep -qF "✓ Every hook is one line of shell" <<<"$out"' "HK01 pass line"
-assert 'grep -qF "✓ Backup hook has check, command, and extension" <<<"$out"'  "HK02 pass line"
-assert 'grep -qF "✓ Backup hook container '"'"'demo-db'"'"' exists in compose" <<<"$out"' "HK03 pass line"
+assert '! grep -qF "backup:" <<<"$out"' "and no HK02 line without a top-level backup:"
 
-# --- Case 35b: health and backup name services, not container_names --------
+# --- Case 35b: health names a service, not a container_name -----------------
 # A hook names no container at all: a first word compose does not know is fine.
 proj35b="$tmpdir/hk-services"
 make_project "$proj35b"
@@ -1482,17 +1441,11 @@ health:
 hooks:
   post-deploy:
     - ghost-container echo after
-backup:
-  container: demo-web
-  check: "true"
-  command: "echo dump"
-  extension: txt
 YAML
 out="$(cd "$proj35b" && "$kasbah" check 2>&1)"; rc=$?
-assert '[ "$rc" = "0" ]' "service names as health and backup targets pass (got $rc: $out)"
+assert '[ "$rc" = "0" ]' "a service name as the health target passes (got $rc: $out)"
 assert 'grep -qF "✓ Every hook is one line of shell" <<<"$out"' "HK01 does not read a hook's first word"
 assert 'grep -qF "✓ manifest health.container '"'"'demo-web'"'"' exists in compose" <<<"$out"' "health.container takes a service name"
-assert 'grep -qF "✓ Backup hook container '"'"'demo-web'"'"' exists in compose" <<<"$out"' "HK03 takes a service name"
 
 # --- Case 36: T01 — malformed traefik-dynamic.yml → warn, exit 0 ------------
 # T01 was downgraded to warn (worker-only projects). A malformed file is the

@@ -3,7 +3,8 @@
 Optional (`kasbah server init --with-backup`). Everything else in kasbah
 survives a lost VPS via git plus a redeploy — except two things that exist
 only on the VPS: **`.env` secret values** and **data bind mounts** (plus
-the hook-produced dumps in `backups/`). This feature ships those off-box.
+the backup tarballs in `backups/`, which hold the hooks' dumps). This feature
+ships those off-box.
 
 ## Model
 
@@ -193,7 +194,12 @@ Two further repos exist beside the per-client ones:
 Per project, each snapshot includes:
 
 - `/apps/data/<name>/` — bind mounts (DB state, uploads, configs)
-- `/apps/<name>/backups/` — hook-produced dumps
+- `/apps/<name>/backups/` — the deploys' backup tarballs, each holding the
+  hooks' dumps beside the outgoing `.env` and synced files. The backup
+  container mounts only the apps and data paths, and the runner hands restic
+  only the paths that exist inside it: a `backups/` that resolves outside
+  those is not visible there and is not shipped off-box, so back it up on
+  its own
 - `/apps/<name>/.env` — the only copy of the project's secrets
 
 And, when the host runs the shared mail stack, into the `mail` repo:
@@ -205,9 +211,10 @@ Mail gets a repository of its own rather than riding in the primary
 domain's client repo: folding the whole host's mail into one client's
 repository is exactly what the per-client split exists to prevent.
 
-The manifest's `backup:` hook and this feature are complementary: the hook
-produces *consistent* dumps (e.g. `pg_dump` before deploys); restic ships
-*everything*, including those dumps, off the box. For databases, the dump
+The manifest's `backup` hooks and this feature are complementary: the hooks
+produce *consistent* dumps (e.g. `pg_dump` before each deploy), kept in the
+tarballs under `backups/` with the outgoing `.env` and synced files; restic
+ships *everything*, including those tarballs, off the box. For databases, the dump
 is the restorable artifact — a live bind-mount copy of a running Postgres
 is crash-consistent at best.
 
@@ -233,8 +240,9 @@ field written by a newer kasbah survives a re-run by an older one.
    server's paths, so this lands `/apps/data/<name>/`, `/apps/<name>/.env`
    and `backups/` where they belong.
 3. `kasbah deploy` from the project repo.
-4. Database projects: restore from the newest dump in `backups/` rather
-   than trusting the live-file copy.
+4. Database projects: extract the newest tarball in `backups/`
+   (`tar -xzf <version>-<stamp>.tar.gz -C <dir>`) and restore from the dump
+   in it rather than trusting the live-file copy.
 
 Step 2 is what makes step 3 possible: without `.env` back on the box, the
 deploy's env step has nothing to deploy against and exits 5.

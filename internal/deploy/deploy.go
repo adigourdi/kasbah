@@ -74,14 +74,16 @@ What it does:
   * renders <apps>/<name>/.env when it is missing, checks it for drift against
     .env.prod.example otherwise, and refreshes the KASBAH_* block in it from
     the server marker's resource limits
-  * runs ` + "`kasbah remote deploy`" + ` on the server: backup, pre-deploy hooks
-    (both skipped on a first deploy), retag <image>:current, docker compose
-    -p <name> up -d --remove-orphans, health wait, post-deploy hooks, one
-    versions.log entry. A failed backup or pre-deploy hook asks whether to
-    carry on; stopping puts the files back. A failed up or health wait is
-    reverted — those files back, each :current on its old image, that stack
-    up — and records nothing; a failed post-deploy hook is not reverted, and
-    records a deploy-failed entry
+  * runs ` + "`kasbah remote deploy`" + ` on the server: backup hooks into
+    backups/<outgoing version>-<stamp>/, pre-deploy hooks (both skipped on a
+    first deploy), retag <image>:current, docker compose -p <name> up -d
+    --remove-orphans, health wait, post-deploy hooks, one versions.log entry.
+    A failed backup or pre-deploy hook asks whether to carry on; stopping puts
+    the files back. A failed up or health wait is reverted — those files back,
+    each :current on its old image, that stack up — and records nothing; a
+    failed post-deploy hook is not reverted, and records a deploy-failed entry.
+    With the new version live, the copies from the first step and what the
+    backup hooks wrote become backups/<outgoing version>-<stamp>.tar.gz
   * ships traefik-dynamic.yml to <apps>/traefik/dynamic/<name>.yml, last
   * prints the commits between the version the server was running and this one
   * a line under the summary when origin lacks v<version>, which kasbah
@@ -110,7 +112,7 @@ Unset, a drifting .env asks; with no terminal to ask on, the run stops (exit 5).
 
 For the server's side of the run:
   --on-hook-failure=continue
-                        when the backup or a pre-deploy hook fails, carry on to
+                        when a backup or pre-deploy hook fails, carry on to
                         the retag and ` + "`compose up`" + ` as if it had passed
   --on-hook-failure=stop
                         when one fails, put back the files this run shipped and
@@ -118,9 +120,9 @@ For the server's side of the run:
 Unset, a failed backup or pre-deploy hook asks; with no terminal to ask on, the
 run stops as with stop, and fails naming the flag.
 
-  --skip-hooks          skip the pre- and post-deploy hooks. The backup still
-                        runs — a dry-run-ish deploy must not also throw away
-                        the data safety net
+  --skip-hooks          skip the pre- and post-deploy hooks. The backup hooks
+                        still run — a dry-run-ish deploy must not also throw
+                        away the data safety net
   --no-health-wait      bring the stack up without blocking on its health
 
 See docs/build-deploy.md and docs/env-template.md.
@@ -525,7 +527,8 @@ func (r *run) remote() (*Report, error) {
 		Mode: r.mode, Version: r.version, Kasbah: r.c.Version,
 		SkipHooks: r.o.SkipHooks, NoHealthWait: r.o.NoHealthWait, OnHookFailure: r.o.OnHookFailure,
 		Images: b.Images, Pre: b.Hooks["pre-"+r.mode], Post: b.Hooks["post-"+r.mode],
-		Health: b.Health, Backup: b.Backup, Snapshot: r.snap,
+		Backup: b.Hooks["backup"], Restore: b.Hooks["restore"], Targets: SnapshotTargets(b.Sync),
+		Health: b.Health, Snapshot: r.snap,
 		Routed: fragmentHosts(r.frag),
 	}
 	// Held: the engine finishes on the server whatever happens to this end,

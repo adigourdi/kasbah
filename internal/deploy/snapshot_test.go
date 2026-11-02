@@ -120,7 +120,7 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 func TestSnapshotRefusals(t *testing.T) {
 	dir := t.TempDir()
 	var out, errb bytes.Buffer
-	for _, bad := range []string{"../x", PrevDir + "/a", "a//b", "/abs"} {
+	for _, bad := range []string{"../x", PrevDir + "/a", KeptPrefix + "1.0.0-20261102-100000", "a//b", "/abs"} {
 		if rc := takeSnapshot(dir, "tok", []string{bad}, &out, &errb); rc != 1 {
 			t.Errorf("%q accepted", bad)
 		}
@@ -537,5 +537,72 @@ func TestRestoreDirectoryModesInPlace(t *testing.T) {
 	res, err := restore(dir, "tok")
 	if err != nil || len(res.Done) != 1 || len(res.Notes) != 1 || !strings.Contains(res.Notes[0], "state/cache is back, and kept its mode -rwx------ rather than -rwxr-xr-x") {
 		t.Errorf("err %v, %+v", err, res)
+	}
+}
+
+// A snapshot older than the last run versions.log records as live is that
+// run's own, left behind: the next run refuses it, changing nothing. One a
+// run that died on the workstation left after that entry still merges.
+func TestSnapshotRefusesAStaleOne(t *testing.T) {
+	defer func(f func() time.Time) { snapNow = f }(snapNow)
+	t0 := time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)
+	entry := func(at time.Time, action, extra string) string {
+		return at.Format("2006-01-02T15:04:05+00:00") + " " + action + " 1.0.0 no-backup kasbah=0.1.0 digest=-" + extra + "\n"
+	}
+	for name, tc := range map[string]struct {
+		log     string
+		noTaken bool
+		refused bool
+	}{
+		"a later success":           {entry(t0.Add(5*time.Second), "deploy", ""), false, true},
+		"a success the same second": {entry(t0, "deploy", ""), false, true},
+		"a later rollback":          {entry(t0.Add(time.Minute), "rollback", ""), false, true},
+		"a later post-hook failure": {entry(t0.Add(time.Minute), "deploy-failed", " by=al reason=post-hook"), false, true},
+		"a later failed revert":     {entry(t0.Add(-time.Hour), "deploy", "") + entry(t0.Add(time.Minute), "deploy-failed", " by=al reason=revert"), false, false},
+		"an earlier success":        {entry(t0.Add(-5*time.Second), "deploy", ""), false, false},
+		"no field, an older mtime":  {entry(t0.Add(5*time.Second), "deploy", ""), true, true},
+		"no field, a younger mtime": {entry(t0.Add(-5*time.Second), "deploy", ""), true, false},
+		"no versions.log":           {"", false, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			os.WriteFile(filepath.Join(dir, ".env"), []byte("A=live\n"), 0o644)
+			snapNow = func() time.Time { return t0 }
+			var out, errb bytes.Buffer
+			if rc := takeSnapshot(dir, "one", []string{".env"}, &out, &errb); rc != 0 {
+				t.Fatal(errb.String())
+			}
+			man := filepath.Join(dir, PrevDir, "snapshot.json")
+			if tc.noTaken {
+				b, _ := os.ReadFile(man)
+				os.WriteFile(man, []byte(strings.Replace(string(b), `,"taken":"2026-11-02T10:00:00+00:00"`, "", 1)), 0o664)
+				os.Chtimes(man, t0, t0)
+			}
+			if tc.log != "" {
+				os.WriteFile(filepath.Join(dir, "versions.log"), []byte(tc.log), 0o664)
+			}
+			before, _ := os.ReadFile(man)
+			snapNow = func() time.Time { return t0.Add(time.Hour) }
+			errb.Reset()
+			rc := takeSnapshot(dir, "two", []string{".env", "compose.yml"}, &out, &errb)
+			after, _ := os.ReadFile(man)
+			_, twoErr := os.Lstat(filepath.Join(dir, PrevDir, "two"))
+			if tc.refused {
+				want := "remote: snapshot: " + dir + "/" + PrevDir + " is older than the last run versions.log records as live"
+				if rc != 1 || !strings.Contains(errb.String(), want) || !strings.Contains(errb.String(), "remove "+dir+"/"+PrevDir+" by hand") {
+					t.Fatalf("rc %d %s", rc, errb.String())
+				}
+				if string(after) != string(before) || twoErr == nil {
+					t.Fatalf("the refusal changed the snapshot: %s", after)
+				}
+				return
+			}
+			if rc != 0 || !strings.Contains(errb.String(), "kept "+dir+"/"+PrevDir) {
+				t.Fatalf("rc %d %s", rc, errb.String())
+			}
+			if !strings.Contains(string(after), `"token":"two"`) || !strings.Contains(string(after), `"taken":"2026-11-02T11:00:00+00:00"`) {
+				t.Fatalf("manifest %s", after)
+			}
+		})
 	}
 }

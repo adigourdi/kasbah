@@ -95,9 +95,12 @@ func tree(t *testing.T) string {
 	w("mail/kasbah.yml", "primary_domain: a.test\n", 0o644)
 	w("demo/versions.log", "x\n", 0o644)
 	w("demo/.kasbah-client", "demo\n", 0o644)
+	w("demo/.kasbah-hooks.json", "{}\n", 0o644)
+	w("demo/backups/1.0.0-20261102-100000.tar.gz", "tgz", 0o660)
 	w("demo/.env", "A=1\n"+B+"\nKASBAH_CPU_LIMIT=0\n"+E+"\n", 0o640)
 	w("demo/compose.yml", "services: {}\n", 0o644)
 	w("demo/.kasbah-prev/v1/.env", "A=0\n", 0o660)
+	w("demo/.kasbah-prev.kept-0.9.0-20261102-100000/v1/.env", "A=0\n", 0o660)
 	w("demo/.kasbah-env-seed.0123456789abcdef", "A=s\n", 0o600)
 	w("demo/.kasbah-env-seed.0123456789abcdef.42", "A=s\n", 0o600)
 	w("beta/scripts/remote-deploy.sh", "#!/bin/sh\n", 0o755)
@@ -141,7 +144,9 @@ func TestScan(t *testing.T) {
 	}
 	if s.Count != 3 || s.Projects[0].Name != "beta" || s.Projects[0].Helpers != 2 || s.Projects[0].Other != 1 ||
 		s.Projects[1].Name != "demo" || s.Projects[1].Sentinels != 2 || s.Projects[1].Vlog != "ok" ||
-		s.Projects[1].Prev != "dir" || s.Projects[0].Prev != "absent" || s.Projects[1].Seeds != 2 || s.Projects[0].Seeds != 0 {
+		s.Projects[1].Prev != "dir" || s.Projects[0].Prev != "absent" || s.Projects[1].Seeds != 2 || s.Projects[0].Seeds != 0 ||
+		s.Projects[1].Kept != 1 || s.Projects[0].Kept != 0 ||
+		s.Projects[1].Hooks != "ok" || s.Projects[0].Hooks != "missing" {
 		t.Errorf("rows: %v", rows)
 	}
 }
@@ -175,9 +180,9 @@ func TestAct(t *testing.T) {
 		t.Errorf("calls %v", *calls)
 	}
 	want := []ProjectResult{
-		{"beta", "absent", "absent", "kept", "absent", "absent", "absent", "absent", "absent"},
-		{"demo", "removed", "absent", "absent", "absent", "removed", "stripped", "removed", "removed"},
-		{"gamma", "absent", "absent", "removed", "absent", "absent", "absent", "absent", "absent"},
+		{"beta", "absent", "absent", "kept", "absent", "absent", "absent", "absent", "absent", "absent", "absent"},
+		{"demo", "removed", "absent", "absent", "absent", "removed", "stripped", "removed", "removed", "removed", "removed"},
+		{"gamma", "absent", "absent", "removed", "absent", "absent", "absent", "absent", "absent", "absent", "absent"},
 	}
 	for i, w := range want {
 		if r.Projects[i] != w {
@@ -198,13 +203,14 @@ func TestAct(t *testing.T) {
 	if fi, _ := os.Stat(filepath.Join(apps, "mail", ".env")); fi.Mode().Perm() != 0o600 {
 		t.Errorf("mail mode %o", fi.Mode().Perm())
 	}
-	for _, p := range []string{"beta/scripts/notes.txt", ".kasbah/bin/kasbah", "demo/compose.yml", "traefik/dynamic/demo.yml", "README.md"} {
+	for _, p := range []string{"beta/scripts/notes.txt", ".kasbah/bin/kasbah", "demo/compose.yml", "demo/backups/1.0.0-20261102-100000.tar.gz", "traefik/dynamic/demo.yml", "README.md"} {
 		if _, err := os.Stat(filepath.Join(apps, p)); err != nil {
 			t.Errorf("act removed %s", p)
 		}
 	}
 	for _, p := range []string{".kasbah/server.json", ".kasbah/backup", "gamma/scripts", "beta/scripts/setup-env.sh",
-		"demo/.kasbah-env-seed.0123456789abcdef", "demo/.kasbah-env-seed.0123456789abcdef.42"} {
+		"demo/.kasbah-env-seed.0123456789abcdef", "demo/.kasbah-env-seed.0123456789abcdef.42", "demo/.kasbah-hooks.json",
+		"demo/.kasbah-prev", "demo/.kasbah-prev.kept-0.9.0-20261102-100000"} {
 		if _, err := os.Stat(filepath.Join(apps, p)); err == nil {
 			t.Errorf("act left %s", p)
 		}
@@ -301,12 +307,12 @@ func scanFixture() *Scan {
 		BinState: "ok", BackupDir: "absent", BackupContainer: "absent", BackupVolume: "absent", BackupNetwork: "absent",
 		PointerState: "ok", PointerDir: "dir", Sudo: "yes", MailDir: "absent", MailEnvState: "missing", RegistryState: "missing", LayersMap: "missing",
 		Projects: []Row{{Name: "data", Dir: "dir", Vlog: "missing", VlogGz: "missing", Lock: "missing", Client: "missing"},
-			{Name: "demo", Dir: "dir", Vlog: "ok", VlogGz: "missing", Lock: "ok", Client: "missing", Env: "ok", Sentinels: 2, Seeds: 1}},
+			{Name: "demo", Dir: "dir", Vlog: "ok", VlogGz: "missing", Lock: "ok", Client: "missing", Env: "ok", Sentinels: 2, Seeds: 1, Kept: 1}},
 		Count: 2, Skipped: []string{"README.md"}}
 }
 
 const okAct = `started=yes
-{"bk_down":"skipped","bk_down_detail":"","bk_container":"absent","bk_volume":"absent","bk_network":"absent","bk_files":"absent","projects":[{"name":"demo","vlog":"removed","vlog_gz":"absent","scripts":"absent","lock":"removed","client":"absent","env":"stripped","seeds":"removed"}],"mail_env":"absent","mail_env_n":0,"mail_registry":"absent","layers_map":"absent","acme_dns":"absent","marker":"removed"}
+{"bk_down":"skipped","bk_down_detail":"","bk_container":"absent","bk_volume":"absent","bk_network":"absent","bk_files":"absent","projects":[{"name":"demo","vlog":"removed","vlog_gz":"absent","scripts":"absent","lock":"removed","client":"absent","env":"stripped","seeds":"removed","kept":"removed"}],"mail_env":"absent","mail_env_n":0,"mail_registry":"absent","layers_map":"absent","acme_dns":"absent","marker":"removed"}
 `
 
 const okTail = "pointer=removed\npointer_dir=removed\nbinary=removed\nbin_dir=removed\nkasbah_dir=removed\ndone=yes\n"
@@ -330,7 +336,7 @@ func TestRun(t *testing.T) {
 	if !strings.Contains(so, "\n              /apps/.kasbah/bin/ and /apps/.kasbah/, which hold nothing else\n") {
 		t.Errorf("a plan with no lock names one:\n%s", so)
 	}
-	if !strings.Contains(so, "    demo  versions.log, .deploy.lock, .kasbah-env-seed (1 staged --env-seed file(s), with .env values), .env: 2 managed-block sentinel comment(s), values kept\n") ||
+	if !strings.Contains(so, "    demo  versions.log, .deploy.lock, .kasbah-env-seed (1 staged --env-seed file(s), with .env values), .kasbah-prev.kept-* (1 snapshot(s) a backup could not take in, each with a copy of .env), .env: 2 managed-block sentinel comment(s), values kept\n") ||
 		strings.Contains(so, "    data ") || !strings.Contains(so, "  binary      /apps/.kasbah/bin/kasbah (ok)") ||
 		!strings.Contains(so, "README.md under /apps — not a project name") {
 		t.Errorf("plan:\n%s", so)
@@ -345,7 +351,7 @@ func TestRun(t *testing.T) {
 		t.Fatalf("%d %s %v", code, se, f.calls)
 	}
 	for _, w := range []string{"  removed the server marker /apps/.kasbah/server.json\n  removed /etc/kasbah/apps-path\n  removed /etc/kasbah/\n  removed the server's kasbah binary /apps/.kasbah/bin/kasbah\n  removed /apps/.kasbah/bin/\n  removed /apps/.kasbah/\n",
-		"  removed the staged .kasbah-env-seed files\n", "plain Docker Compose host now"} {
+		"  removed the staged .kasbah-env-seed files\n", "  removed the kept-aside .kasbah-prev.kept-* snapshots\n", "plain Docker Compose host now"} {
 		if !strings.Contains(so, w) {
 			t.Errorf("lacks %q:\n%s", w, so)
 		}
@@ -547,7 +553,7 @@ func TestRunFinishesTheTail(t *testing.T) {
 func TestRunRefusesAMismatchedReport(t *testing.T) {
 	for act, want := range map[string]string{
 		strings.Replace(okAct, `"name":"demo"`, `"name":"beta"`, 1): "reported 'beta' where the plan named 'demo'",
-		strings.Replace(okAct, `[{"name":"demo","vlog":"removed","vlog_gz":"absent","scripts":"absent","lock":"removed","client":"absent","env":"stripped","seeds":"removed"}]`, `[]`, 1): "reported 0 of 1 projects",
+		strings.Replace(okAct, `[{"name":"demo","vlog":"removed","vlog_gz":"absent","scripts":"absent","lock":"removed","client":"absent","env":"stripped","seeds":"removed","kept":"removed"}]`, `[]`, 1): "reported 0 of 1 projects",
 		"started=yes\n{}": "the destroy step on deploy@vps.example reported no",
 		"":                "it refused before changing anything",
 	} {

@@ -47,7 +47,6 @@ Env:
 
 Hooks:
   ✓ Every hook is one line of shell
-  ✓ Backup hook: check + command + extension all set
 
 Mail (if manifest has `mail:`):
   ✓ Mail claim names domain 'shop.example.com'
@@ -178,9 +177,8 @@ ever printed.
 
 | ID | Rule | Level |
 |---|---|---|
-| HK01 | `hooks:` holds only the four lists deploy runs, and each entry is a single-line, non-empty string — one shell command, run on the server from the project folder, its words not read by kasbah | fail |
-| HK02 | Backup hook has all required subfields (`check`, `command`, `extension`) | fail |
-| HK03 | Backup hook's container names a service — its `container_name` or its service name, which resolves to the service's first running replica (a `container_name` wins on a clash) | fail |
+| HK01 | `hooks:` holds only the six lists kasbah reads (`backup`, `pre-deploy`, `post-deploy`, `restore`, `pre-rollback`, `post-rollback`), and each entry is a single-line, non-empty string — one shell command, run on the server from the project folder, its words not read by kasbah | fail |
+| HK02 | The manifest has no top-level `backup:` key, whatever it holds — a backup is `hooks.backup`, and deploy and rollback refuse the key with the same message | fail |
 
 ### Mail (M01–M03 only if `mail:` present in manifest)
 

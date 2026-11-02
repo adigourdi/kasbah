@@ -12,12 +12,12 @@ _KASBAH_RIG_FILES_LOADED=1
 RIG_SNAPSHOT_ROOTS=(/apps /etc/kasbah)
 
 # Run-varying names in the path field, as the placeholders docs/files.md uses:
-# backup and ACME-archive stamps, upgrade-traefik's backup directory, mktemp
+# a project backup's and the ACME archive's stamps, upgrade-traefik's backup directory, mktemp
 # suffixes (XXXXXX), pid suffixes (`.tmp.<pid>`, `.kasbah-inject.<pid>`) and the
 # build ids docker's buildx files its refs under.
 rig_files_normalize() {
     sed -E \
-        -e 's#^([^ ]*/backups/pre-deploy-)[0-9]{8}-[0-9]{6}#\1<stamp>#' \
+        -e 's#^([^ ]*/[^/ ]+/backups/[^/ ]+-)[0-9]{8}-[0-9]{6}(\.tar\.gz )#\1<stamp>\2#' \
         -e 's#^([^ ]*/acme\.json\.)[0-9]{8}T[0-9]{6}Z#\1<stamp>#' \
         -e 's#^([^ ]*/traefik/backups/)[^/ ]+#\1<stamp>#' \
         -e 's#^([^ ]*/(kasbah-[a-z-]+|tmp))\.[A-Za-z0-9]{6,10}([/ ])#\1.XXXXXX\3#' \
