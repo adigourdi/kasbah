@@ -320,18 +320,18 @@ assert '[ "$gone_serve" = 404 ]' \
 # built-app declares both a backup: container and pre-deploy hooks, so the drop
 # above has to have named the flag the return trip needs — read off the
 # manifest, not hedged.
-assert 'grep -qF "kasbah deploy $RIG_TARGET --allow-stopped" "$tmpdir/out"' \
-    "the drop printed the return command with --allow-stopped (stdout: $(cli_out))"
+assert 'grep -qF "kasbah deploy $RIG_TARGET --on-hook-failure=continue" "$tmpdir/out"' \
+    "the drop printed the return command with --on-hook-failure=continue (stdout: $(cli_out))"
 
 build_push "$RIG_TARGET"; rc=$?
 assert '[ "$rc" = 0 ]' "the images ship again (exit $rc: $(cli_err))"
-# --allow-stopped, because versions.log survived the drop and the containers its
-# pre-deploy hooks and backup would run against did not: the deploy engine
-# refuses to deploy over a stack with history and no containers unless told they
-# are meant to be down. It is the command drop printed, asserted above.
-deploy "$RIG_TARGET" --allow-stopped; rc=$?
+# versions.log survived the drop, so the backup runs, against a container the
+# drop removed: it fails, and the flag drop printed carries the deploy past it.
+deploy "$RIG_TARGET" --on-hook-failure=continue; rc=$?
 assert '[ "$rc" = 0 ]' "and the redeploy succeeds (exit $rc)
         stderr: $(cli_err)"
+assert 'grep -qF "continuing past the failed backup (--on-hook-failure=continue)" "$tmpdir/err"' \
+    "past the backup that had no container to run in (said: $(cli_err))"
 assert '[ "$(labelled $project)" = "built-app-cache built-app-web built-app-worker " ]' \
     "the containers are back (got '$(labelled $project)')"
 crumbs_after="$(rig_ssh "cat $projdir_remote/state/breadcrumbs.log" 2>/dev/null | tr -d '\r')"

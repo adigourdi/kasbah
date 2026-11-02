@@ -159,7 +159,7 @@ type Plan struct {
 	Name, Target, Apps, Data string
 	Prune, FromState         bool
 	MailDomain               string
-	NeedsAllowStopped        bool
+	NeedsContinue            bool
 
 	Scan         *Scan
 	Containers   string
@@ -507,9 +507,9 @@ func (p *Plan) pruneCliff(out *cli.Output) error {
 	return nil
 }
 
-// needsAllowStopped is whether the manifest names a container a deploy's
-// outgoing steps need: backup:'s, or a pre-deploy hook. A drop removes both.
-func needsAllowStopped(m *manifest.Manifest) bool {
+// needsContinue is whether a redeploy runs outgoing steps — backup:, or a
+// pre-deploy hook — that may need the containers a drop removes.
+func needsContinue(m *manifest.Manifest) bool {
 	if v, _ := m.Get("backup", "container"); v != nil && v != false {
 		if s := strings.TrimSuffix(tree.Text(v), "\r"); s != "" && s != "null" {
 			return true
@@ -539,7 +539,7 @@ func Run(c Ctx, o Options) error {
 	if err != nil {
 		return err
 	}
-	p := &Plan{Name: m.Name, Prune: o.Prune, MailDomain: md, NeedsAllowStopped: needsAllowStopped(m), Target: o.Target}
+	p := &Plan{Name: m.Name, Prune: o.Prune, MailDomain: md, NeedsContinue: needsContinue(m), Target: o.Target}
 	if p.Target, p.FromState, err = state.Server(o.Target, "drop", "kasbah drop user@vps"); err != nil {
 		return err
 	}
@@ -834,10 +834,11 @@ func (p *Plan) reportAct(o *cli.Output, r *ActReport) error {
 		} else {
 			say("  kasbah build-push %s   # if this project's images are not on the server", p.Target)
 		}
-		if p.NeedsAllowStopped {
-			say("  kasbah deploy %s --allow-stopped", p.Target)
-			say("     --allow-stopped because versions.log still records the deploys, and this")
-			say("     project's backup: / pre-deploy hooks name containers this drop removed")
+		if p.NeedsContinue {
+			say("  kasbah deploy %s --on-hook-failure=continue", p.Target)
+			say("     --on-hook-failure=continue because versions.log still records the deploys, so")
+			say("     this project's backup: and pre-deploy hooks run, and the containers they may")
+			say("     reach for are gone with this drop")
 		} else {
 			say("  kasbah deploy %s", p.Target)
 		}

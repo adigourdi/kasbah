@@ -52,9 +52,9 @@ sync:
   - .env.prod.example
 hooks:
   pre-rollback:
-    - 'demo-web echo v1-pre-rollback'
+    - 'echo v1-pre-rollback'
   post-rollback:
-    - 'demo-web echo v1-post-rollback'
+    - 'echo v1-post-rollback'
 YML
     cat > "$project/compose.prod.yml" <<'YML'
 name: demo
@@ -89,9 +89,9 @@ sync:
   - site/
 hooks:
   pre-rollback:
-    - 'demo-web echo v2-pre-rollback'
+    - 'echo v2-pre-rollback'
   post-rollback:
-    - 'demo-web echo v2-post-rollback'
+    - 'echo v2-post-rollback'
 YML
     cat > "$project/compose.prod.yml" <<'YML'
 name: demo
@@ -244,10 +244,20 @@ case "${1:-} ${2:-}" in
         en=false; [ "${MAIL_ENV:-no}" = yes ] && en=true
         printf '{"stack":%s,"env":%s,"registry_b64":"%s","dms":"%s","registry":%s}\n' \
             "$st" "$en" "${MAIL_REGISTRY_B64:-}" "${MAIL_DMS:-running}" "$reg" ;;
-    # The engine: the spec it was sent is kept, and the report answers the
-    # version it was actually asked for.
+    # The engine: the spec it was sent — one line, stdin held open after it
+    # for an answer — is kept, and the report answers the version it was
+    # actually asked for. REMOTE_ASK asks the failed-pre-hook question first
+    # and keeps the answer; anything but continue stops, as the engine does.
     "deploy run")
-        cat > "$SPEC_COPY"
+        IFS= read -r spec; printf '%s\n' "$spec" > "$SPEC_COPY"
+        if [ -n "${REMOTE_ASK:-}" ]; then
+            printf '{"kasbah_deploy_question":1,"step":"pre-rollback hook","error":"the pre-rollback hook failed (exit 1): %s"}\n' "$REMOTE_ASK"
+            IFS= read -r answer; printf '%s\n' "$answer" > "$SPEC_COPY.answer"
+            if [ "$answer" != continue ]; then
+                printf '{"kasbah_deploy_failed":1,"outcome":"restored","reason":"start","prev":"2.0.0"}\n'
+                exit 1
+            fi
+        fi
         if [ "${REMOTE_RC:-0}" != 0 ]; then
             [ -z "${REMOTE_FAILURE:-}" ] ||
                 printf '{"kasbah_deploy_failed":1,"outcome":"%s","reason":"up","prev":"2.0.0"}\n' "$REMOTE_FAILURE"
@@ -297,7 +307,7 @@ log_two=$'2026-08-01T00:00:00+00:00 deploy 1.0.0 no-backup kasbah=0.1.0 digest=-
 
 kasbah_run() {
     : > "$ssh_log"; : > "$call_log"
-    rm -f "$spec_copy" "$spec_copy.token"
+    rm -f "$spec_copy" "$spec_copy.token" "$spec_copy.answer"
     rm -rf "$sync_root"
     env -u KASBAH_LIB_DIR \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$run_tmp" \
@@ -335,7 +345,7 @@ assert '[ -f "$frag_copy" ] && grep -qF "fragment at v1.0.0" "$frag_copy"' \
     "so is the Traefik fragment (got '$(cat "$frag_copy" 2>/dev/null)')"
 assert '! grep -qF "v2.0.0" "$frag_copy" 2>/dev/null' \
     "and not the working tree's, which says v2.0.0"
-assert '[ "$(jq -c "[.pre, .post]" "$spec_copy")" = "[[\"demo-web echo v1-pre-rollback\"],[\"demo-web echo v1-post-rollback\"]]" ]' \
+assert '[ "$(jq -c "[.pre, .post]" "$spec_copy")" = "[[\"echo v1-pre-rollback\"],[\"echo v1-post-rollback\"]]" ]' \
     "the hooks sent to the engine are v1.0.0's rollback pair ($(jq -c "[.pre, .post]" "$spec_copy" 2>/dev/null))"
 assert '[ "$(jq -c .images "$spec_copy")" = "[\"demo-cache\",\"demo-web\"]" ]' \
     "and so is the image list it retags ($(jq -c .images "$spec_copy" 2>/dev/null))"
@@ -961,14 +971,16 @@ assert 'grep -qF "1.2" <<<"$out"' "quoting it back (said '$out')"
 
 out="$( rollback --help )"; rc=$?
 assert '[ "$rc" = "0" ]' "\`kasbah rollback --help\` exits 0 (rc $rc)"
-for flag in --on-drift --skip-hooks --no-health-wait --allow-stopped; do
+for flag in --on-drift --on-hook-failure --skip-hooks --no-health-wait; do
     assert 'grep -qF -- "$flag" <<<"$out"' "and lists $flag (said '$out')"
 done
+assert '! grep -qF -- "--allow-stopped" <<<"$out"' "and no --allow-stopped (said '$out')"
+out="$( rollback deploy@vps 1.0.0 --allow-stopped )"; rc=$?
+assert '[ "$rc" != "0" ] && grep -qF "unknown flag '"'"'--allow-stopped'"'"'" <<<"$out"' \
+    "--allow-stopped is an unknown flag (rc $rc: $out)"
 
-# The three passthrough flags, which the engine takes in rollback mode
-# too — `--allow-stopped` above all, since its own refusal is the one an operator
-# meets when the stack they are rolling back is the stack that fell over.
-for flag in --skip-hooks --no-health-wait --allow-stopped; do
+# The passthrough flags, which the engine takes in rollback mode too.
+for flag in --skip-hooks --no-health-wait; do
     out="$( rollback deploy@vps 1.0.0 "$flag" )"; rc=$?
     calls="$(<"$call_log")"
     assert '[ "$rc" = "0" ]' "\`kasbah rollback $flag\` succeeds (rc $rc: $out)"
@@ -978,8 +990,28 @@ for flag in --skip-hooks --no-health-wait --allow-stopped; do
     rm -rf "$project/.kasbah"
 done
 out="$( rollback deploy@vps 1.0.0 )"; calls="$(<"$call_log")"
-assert '[ "$(jq -c "[.skip_hooks, .no_health_wait, .allow_stopped]" "$spec_copy")" = "[false,false,false]" ]' \
+assert '[ "$(jq -c "[.skip_hooks, .no_health_wait, .on_hook_failure]" "$spec_copy")" = "[false,false,\"\"]" ]' \
     "and none of them travels when none was asked for (spec: $(cat "$spec_copy" 2>/dev/null))"
+rm -rf "$project/.kasbah"
+for v in continue stop; do
+    out="$( rollback deploy@vps 1.0.0 --on-hook-failure=$v )"; rc=$?
+    assert '[ "$rc" = "0" ] && [ "$(jq -r .on_hook_failure "$spec_copy")" = "$v" ]' \
+        "--on-hook-failure=$v reaches the engine's spec (rc $rc, spec: $(cat "$spec_copy" 2>/dev/null))"
+    rm -rf "$project/.kasbah"
+done
+out="$( rollback deploy@vps 1.0.0 --on-hook-failure=abort )"; rc=$?
+assert '[ "$rc" != "0" ] && grep -qF "rollback: --on-hook-failure='"'"'abort'"'"' is not one of continue or stop" <<<"$out"' \
+    "a value that is neither is refused (rc $rc: $out)"
+assert '[ ! -s "$spec_copy" ]' "before the engine runs (ran: $(ran))"
+
+# A failed pre-rollback hook asks; with no terminal the workstation answers
+# no-tty, the engine stops, and the failure names the flag.
+out="$( REMOTE_ASK=false rollback deploy@vps 1.0.0 )"; rc=$?
+assert '[ "$rc" = "1" ] && [ "$(cat "$spec_copy.answer" 2>/dev/null)" = no-tty ]' \
+    "the question with no terminal is answered no-tty, and the run fails (rc $rc, answer: $(cat "$spec_copy.answer" 2>/dev/null): $out)"
+assert 'grep -qF "pass --on-hook-failure=continue or --on-hook-failure=stop" <<<"$out"' \
+    "naming the flag (said '$out')"
+assert 'grep -qF "the files it had shipped were put back" <<<"$out"' "and the files went back (said '$out')"
 rm -rf "$project/.kasbah"
 
 out="$( cd "$tmpdir" && kasbah_run rollback deploy@vps 1.0.0 )"; rc=$?

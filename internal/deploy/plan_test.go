@@ -59,11 +59,11 @@ func TestArgs(t *testing.T) {
 			t.Errorf("ParseRollback(%q) = %v", bad, err)
 		}
 	}
-	o, err := Parse([]string{"--allow-stopped", "d@h", "--on-drift=continue", "--no-health-wait", "--skip-hooks"})
-	if err != nil || o.Target != "d@h" || o.OnDrift != "continue" || !o.SkipHooks || !o.NoHealthWait || !o.AllowStopped {
+	o, err := Parse([]string{"--on-hook-failure=stop", "d@h", "--on-drift=continue", "--no-health-wait", "--skip-hooks"})
+	if err != nil || o.Target != "d@h" || o.OnDrift != "continue" || !o.SkipHooks || !o.NoHealthWait || o.OnHookFailure != "stop" {
 		t.Fatalf("Parse = %+v %v", o, err)
 	}
-	for _, bad := range [][]string{{"--skip-hooks=yes"}, {"--on-drift"}, {"--on-drift=x"}, {"--nope"}, {"a@b", "c@d"}} {
+	for _, bad := range [][]string{{"--skip-hooks=yes"}, {"--on-drift"}, {"--on-drift=x"}, {"--on-hook-failure"}, {"--on-hook-failure=abort"}, {"--on-hook-failure="}, {"--allow-stopped"}, {"--nope"}, {"a@b", "c@d"}} {
 		if _, err := Parse(bad); err == nil {
 			t.Errorf("Parse(%q) accepted", bad)
 		}
@@ -88,8 +88,8 @@ func plan(t *testing.T, yml string) (*Plan, error) {
 
 func TestReadPlan(t *testing.T) {
 	p, err := plan(t, `hooks:
-  pre-deploy: ['demo-web  php artisan down']
-  post-rollback: [demo-web echo]
+  pre-deploy: ['  docker compose exec -T web php artisan down  ']
+  post-rollback: ["echo \"$KASBAH_VERSION\" | tee -a deployed.txt"]
 health: {timeout: 2m}
 backup: {container: demo-db, check: 'true', command: dump, extension: sql.gz}
 mail: {domain: demo.test}
@@ -101,7 +101,7 @@ client: acme
 	if strings.Join(p.Images, " ") != "reg:5000/demo-web" || p.Health.Timeout != 120 || p.Health.Container != "" {
 		t.Fatalf("images %v health %+v", p.Images, p.Health)
 	}
-	if p.Hooks["pre-deploy"][0] != "demo-web  php artisan down" || len(p.Hooks["post-rollback"]) != 1 {
+	if p.Hooks["pre-deploy"][0] != "docker compose exec -T web php artisan down" || p.Hooks["post-rollback"][0] != `echo "$KASBAH_VERSION" | tee -a deployed.txt` {
 		t.Fatalf("hooks %v", p.Hooks)
 	}
 	if p.Backup == nil || p.Backup.Retain != 10 || p.MailDomain != "demo.test" || p.Client != "acme" {
@@ -109,8 +109,11 @@ client: acme
 	}
 
 	for yml, want := range map[string]string{
-		"hooks: {pre-deploy: ['demo-web']}\n":                            "names a container and no command",
-		"hooks: {pre-deploy: [\"demo-web a\\nb\"]}\n":                    "spans more than one line",
+		"hooks: {pre-deploy: ['  ']}\n":                                  "hooks.pre-deploy holds an empty entry",
+		"hooks: {pre-deploy: [~]}\n":                                     "hooks.pre-deploy holds null — each entry must be a string",
+		"hooks: {pre-deploy: [42]}\n":                                    "hooks.pre-deploy holds 42 — each entry must be a string, one shell command",
+		"hooks: {pre-deploy: [\"a\\nb\"]}\n":                             "the pre-deploy hook 'a…' spans more than one line",
+		"hooks: {post-deploy: [\"a\\r\\nb\"]}\n":                         "the post-deploy hook 'a…' spans more than one line",
 		"hooks: {pre-deploy: demo-web x}\n":                              "is not a list",
 		"hooks: {pre-deploy: false}\n":                                   "is not a list",
 		"hooks: {pre-deploy: [false]}\n":                                 "hooks.pre-deploy holds false — each entry must be a string",

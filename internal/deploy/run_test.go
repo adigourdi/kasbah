@@ -50,6 +50,11 @@ type fake struct {
 	// limits is setup-env limits' answer, when set; limitsRC its exit.
 	limits   string
 	limitsRC int
+	// question, when set, is asked through Run's ask; answer is the reply.
+	question *Question
+	answer   string
+	// beforeAsk, when set, runs just before the question is asked.
+	beforeAsk func()
 }
 
 func (f *fake) log(c string) { f.calls = append(f.calls, c) }
@@ -120,9 +125,15 @@ func (f *fake) Snapshot(dir, token string, targets []string) error {
 	f.token = token
 	return nil
 }
-func (f *fake) Run(dir string, sp Spec) (string, int) {
+func (f *fake) Run(dir string, sp Spec, ask func(Question) string) (string, int) {
 	f.log("run")
 	f.spec = &sp
+	if f.question != nil {
+		if f.beforeAsk != nil {
+			f.beforeAsk()
+		}
+		f.answer = ask(*f.question)
+	}
 	if f.out != nil {
 		return *f.out, f.rc
 	}
@@ -287,7 +298,7 @@ func exitOf(err error) int {
 func TestRunResources(t *testing.T) {
 	project(t, "resources:\n  cpus: 25%\n  memory: 512m\n")
 	f := &fake{}
-	err, out := deployWith(t, f, Options{Target: "d@h", SkipHooks: true, NoHealthWait: true, AllowStopped: true})
+	err, out := deployWith(t, f, Options{Target: "d@h", SkipHooks: true, NoHealthWait: true})
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -301,7 +312,7 @@ func TestRunResources(t *testing.T) {
 
 	project(t, "resources:\n  memory: 2g\n")
 	f = &fake{limits: "host_cores=2\nhost_mem_kb=2097152\nmem=2g\n"}
-	err, out = deployWith(t, f, Options{Target: "d@h", SkipHooks: true, NoHealthWait: true, AllowStopped: true})
+	err, out = deployWith(t, f, Options{Target: "d@h", SkipHooks: true, NoHealthWait: true})
 	if exitOf(err) != 1 || !strings.Contains(out, "resources.memory '2g' comes to 2g on d@h") || !strings.Contains(out, "ceiling of 1g") ||
 		f.called("sync") || f.called("inject") || f.called("run") {
 		t.Errorf("above the ceiling: %v %v\n%s", err, f.calls, out)
@@ -322,7 +333,7 @@ func TestRunSuccess(t *testing.T) {
 	gitc(t, "commit", "-qam", "no fragment")
 	gitc(t, "tag", "-f", "v1.0.0")
 	f := &fake{drift: "template_exists=no\nenv_exists=yes\nmissing=\nextra=\n"}
-	err, out := deployWith(t, f, Options{Target: "d@h", SkipHooks: true, NoHealthWait: true, AllowStopped: true})
+	err, out := deployWith(t, f, Options{Target: "d@h", SkipHooks: true, NoHealthWait: true})
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -335,7 +346,7 @@ func TestRunSuccess(t *testing.T) {
 	if f.called("fragment") || !strings.Contains(out, "no traefik-dynamic.yml") || strings.Contains(out, "routing:") {
 		t.Errorf("no fragment: warns, ships nothing\n%s", out)
 	}
-	if s := f.spec; !s.SkipHooks || !s.NoHealthWait || !s.AllowStopped || s.Mode != "deploy" || s.Kasbah != "0.1.0" {
+	if s := f.spec; !s.SkipHooks || !s.NoHealthWait || s.OnHookFailure != "" || s.Mode != "deploy" || s.Kasbah != "0.1.0" {
 		t.Errorf("spec %+v", s)
 	}
 	if v, _ := state.Get(state.File, "last_version"); v != "1.0.0" {
@@ -564,6 +575,23 @@ func TestChangelogDirtyEndpoints(t *testing.T) {
 	}
 }
 
+func TestChangelogFirstDeployWording(t *testing.T) {
+	for _, c := range []struct {
+		rep  Report
+		want string
+	}{
+		{Report{}, "first deploy to d@h"},
+		{Report{FailedOnly: true}, "no earlier deploy to d@h succeeded"},
+	} {
+		var b strings.Builder
+		r := &run{c: Ctx{Out: &cli.Output{Stdout: &b, Stderr: &b}}, version: "1.0.0", target: "d@h", mode: "deploy"}
+		r.changelog(&c.rep)
+		if !strings.Contains(b.String(), c.want) {
+			t.Errorf("%+v:\n%s", c.rep, b.String())
+		}
+	}
+}
+
 func TestParseBump(t *testing.T) {
 	for in, want := range map[string]string{
 		"--bump=major d@h":     "bump=major",
@@ -726,7 +754,7 @@ func TestRunSendsRoutedHosts(t *testing.T) {
 	gitc(t, "commit", "-qam", "route")
 	gitc(t, "tag", "-f", "v1.0.0")
 	f := &fake{drift: "template_exists=yes\nenv_exists=yes\nmissing=\nextra=\n"}
-	if err, out := deployWith(t, f, Options{Target: "d@h", SkipHooks: true, NoHealthWait: true, AllowStopped: true}); err != nil {
+	if err, out := deployWith(t, f, Options{Target: "d@h", SkipHooks: true, NoHealthWait: true}); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	if got := strings.Join(f.spec.Routed, ","); got != "demo-web,demo-alt" {
@@ -761,5 +789,108 @@ func TestEnvSeedFlag(t *testing.T) {
 	err, out = deployWith(t, f, Options{Target: "d@h", EnvSeed: seed})
 	if err != nil || !f.called("setup --seed --headless") || f.called("seed") || strings.Contains(out, "s3cret") || strings.Contains(out, "setup/continue/abort") {
 		t.Errorf("a seeded drift without a terminal: %v %q %v", err, out, f.calls)
+	}
+}
+
+// The engine's question after a failed pre-step: a terminal answers it; with
+// none the answer is no-tty and the failure names the flag.
+func TestRunAnswersTheEnginesQuestion(t *testing.T) {
+	q := &Question{Step: "pre-deploy hook", Error: "the pre-deploy hook failed (exit 1): false"}
+	restored := "{\"" + FailureKey + "\":1,\"outcome\":\"restored\",\"reason\":\"start\",\"prev\":\"0.9.0\"}\n"
+	for _, tc := range []struct {
+		name, typed, want string
+		tty               bool
+	}{
+		{"continue", "continue\n", AnswerContinue, true},
+		{"by number", "1\n", AnswerContinue, true},
+		{"stop", "stop\n", AnswerStop, true},
+		{"q", "q\n", AnswerStop, true},
+		{"no terminal", "", AnswerNoTTY, false},
+	} {
+		project(t, "")
+		f := &fake{question: q, rc: 1, out: &restored}
+		var errb bytes.Buffer
+		out := &cli.Output{Stdout: &errb, Stderr: &errb}
+		pwd, _ := os.Getwd()
+		err := Run(Ctx{
+			Out: out, Prompter: &prompt.Prompter{In: strings.NewReader(tc.typed), Out: out, TTY: tc.tty},
+			PWD: pwd, Version: "0.1.0",
+			Dial: func(string) (Server, error) { return f, nil },
+			Now:  func() time.Time { return time.Unix(0, 0) },
+		}, Options{Target: "d@h"})
+		if err != nil {
+			out.Report(err)
+		}
+		if f.answer != tc.want {
+			t.Errorf("%s: answered %q, want %q\n%s", tc.name, f.answer, tc.want, errb.String())
+		}
+		names := strings.Contains(errb.String(), "pass --on-hook-failure=continue or --on-hook-failure=stop")
+		if names != !tc.tty {
+			t.Errorf("%s: the flag named = %v\n%s", tc.name, names, errb.String())
+		}
+		if tc.tty && !strings.Contains(errb.String(), "the pre-deploy hook failed — carry on with the deploy of 1.0.0 anyway?") {
+			t.Errorf("%s: no question\n%s", tc.name, errb.String())
+		}
+	}
+}
+
+// signalIn is a terminal that delivers a signal on its first read, then never
+// types anything.
+type signalIn struct{ sig func() }
+
+func (s signalIn) Read([]byte) (int, error) { s.sig(); select {} }
+
+// A signal, before the question or while it is on screen, answers stop: no
+// prompt after it, and the message says the files are put back.
+func TestRunSignalAtTheQuestionStops(t *testing.T) {
+	q := &Question{Step: "pre-deploy hook", Error: "the pre-deploy hook failed (exit 1): false"}
+	restored := "{\"" + FailureKey + "\":1,\"outcome\":\"restored\",\"reason\":\"start\",\"prev\":\"0.9.0\"}\n"
+	for _, during := range []bool{false, true} {
+		project(t, "")
+		var held func(os.Signal)
+		signal := func() { held(os.Interrupt) }
+		f := &fake{question: q, rc: 1, out: &restored}
+		var in io.Reader = strings.NewReader("continue\n")
+		if during {
+			in = signalIn{signal}
+		} else {
+			f.beforeAsk = signal
+		}
+		var errb bytes.Buffer
+		out := &cli.Output{Stdout: &errb, Stderr: &errb}
+		pwd, _ := os.Getwd()
+		err := Run(Ctx{
+			Out: out, Prompter: &prompt.Prompter{In: in, Out: out, TTY: true},
+			PWD: pwd, Version: "0.1.0",
+			Dial:        func(string) (Server, error) { return f, nil },
+			Now:         func() time.Time { return time.Unix(0, 0) },
+			Interrupted: func() int { return 130 },
+			Hold:        func(fn func(os.Signal)) func() { held = fn; return func() {} },
+		}, Options{Target: "d@h"})
+		if exitOf(err) != 130 {
+			t.Fatalf("during=%v: not an interrupt: %v", during, err)
+		}
+		out.Report(err)
+		s := errb.String()
+		if f.answer != AnswerStop || !strings.Contains(s, "the interrupt answered stop") || !strings.Contains(s, "puts back the files this run shipped") || strings.Contains(s, "carries on without this end") {
+			t.Errorf("during=%v: answered %q\n%s", during, f.answer, s)
+		}
+		if prompted := strings.Contains(s, "carry on with the deploy of 1.0.0 anyway?"); prompted != during {
+			t.Errorf("during=%v: prompted=%v\n%s", during, prompted, s)
+		}
+		if f.called("fragment") {
+			t.Errorf("during=%v: the fragment was shipped", during)
+		}
+	}
+}
+
+func TestRunSaysItContinued(t *testing.T) {
+	project(t, "")
+	b, _ := json.Marshal(Report{Version: "1.0.0", Backup: "no-backup", Digest: "-", Continued: []string{"backup"}})
+	rep := "{\"" + ReportKey + "\":1," + string(b[1:]) + "\n"
+	f := &fake{out: &rep}
+	err, out := deployWith(t, f, Options{Target: "d@h", OnHookFailure: "continue"})
+	if err != nil || !strings.Contains(out, "the deploy 1.0.0 carried on past a failed backup") || f.spec.OnHookFailure != "continue" {
+		t.Fatalf("%v\n%s", err, out)
 	}
 }

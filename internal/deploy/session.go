@@ -1,7 +1,6 @@
 package deploy
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"strconv"
@@ -119,17 +118,29 @@ func parseMailFacts(out []byte, target string) (*MailFacts, error) {
 	return &f, nil
 }
 
-// Run is the engine, unbounded by the 30 s limit: the health wait is bounded
-// by health.timeout on the server, a dead link by ssh's keepalives, and hooks,
-// backups and `compose up` by nothing kasbah sets.
-func (s *SSH) Run(dir string, sp Spec) (string, int) {
+// Run is the engine, free of the 30 s limit: hooks, backups and `compose up`
+// have no bound kasbah sets. Stdin stays open after the Spec line for the
+// answer to the engine's question, unless --on-hook-failure= gave it.
+func (s *SSH) Run(dir string, sp Spec, ask func(Question) string) (string, int) {
 	spec, _ := json.Marshal(sp)
 	cmd := s.Conn.Command(s.Bin(), "remote", "deploy", "run", dir)
-	cmd.Stdin = bytes.NewReader(spec)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	err := cmd.Run()
-	return out.String(), ssh.ExitCode(err)
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		return "", -1
+	}
+	outp, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", -1
+	}
+	if err := cmd.Start(); err != nil {
+		return "", -1
+	}
+	in.Write(append(spec, '\n'))
+	if sp.OnHookFailure != "" {
+		in.Close()
+	}
+	out := Converse(outp, in, ask)
+	return out, ssh.ExitCode(cmd.Wait())
 }
 
 // Fragment is a temp file renamed over dest, never written in place: Traefik's

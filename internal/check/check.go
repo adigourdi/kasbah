@@ -1212,7 +1212,7 @@ func (c *checker) routedHosts() []string {
 	return deploy.RoutedHosts(d.root)
 }
 
-// targets is what a hook, health.container or backup.container may name: a
+// targets is what health.container or backup.container may name: a
 // container_name or a service, which a deploy resolves to its first running
 // replica.
 func (c *checker) targets() []string {
@@ -1365,49 +1365,30 @@ func (c *checker) hooksSection() {
 		return
 	}
 	c.section("Hooks")
-	names := c.targets()
 	if hooks {
-		c.hk01(hv, names)
+		c.hk01()
 	}
 	if backup {
-		c.hk02hk03(names)
+		c.hk02hk03(c.targets())
 	}
 }
 
-// hk01: each hook deploy would run names a container compose names, read in
-// the manifest's own order.
-func (c *checker) hk01(hv tree.Value, names []string) {
+// hk01: each hook is one non-empty line of shell, read as a deploy reads it.
+func (c *checker) hk01() {
 	lists, err := deploy.ReadHooks(c.m)
 	if err != nil {
 		c.failErr(err)
 		return
 	}
-	var hs []string
-	for _, k := range keysInOrder(hv) {
-		hs = append(hs, lists[k]...)
+	n := 0
+	for _, l := range lists {
+		n += len(l)
 	}
-	if len(hs) == 0 {
+	if n == 0 {
 		c.passf("Hooks block is empty")
 		return
 	}
-	var bad []string
-	for _, h := range hs {
-		if ctr := deploy.HookContainer(h); !inList(names, ctr) {
-			bad = append(bad, ctr)
-		}
-	}
-	if len(bad) == 0 {
-		c.passf("All hook commands target a container_name or service in compose")
-	} else {
-		c.failf("Hooks reference names that are neither a container_name nor a service: %s (start each hook with a service name or container_name from compose.prod.yml)", strings.Join(bad, " "))
-	}
-}
-
-func keysInOrder(v tree.Value) []string {
-	if m, ok := v.(*tree.Map); ok && m != nil {
-		return m.Keys()
-	}
-	return nil
+	c.passf("Every hook is one line of shell")
 }
 
 // hk02hk03: the backup block's fields, each read as a deploy reads it; with

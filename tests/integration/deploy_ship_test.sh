@@ -52,8 +52,8 @@ worker="$image_worker:$project_version"
 projdir_remote="$apps/$project"
 script_remote="$projdir_remote/scripts/remote-deploy.sh"
 srvbin="$apps/.kasbah/bin/kasbah"
-# Bind-mounted at /var/kasbah in built-app-web (tests/fixtures/built-app), so the
-# hooks write inside the container and this side reads the same bytes off disk.
+# The hooks run in the server's shell from the project directory and append to
+# state/breadcrumbs.log (tests/fixtures/built-app), bind-mounted at /var/kasbah.
 crumbs_remote="$projdir_remote/state/breadcrumbs.log"
 backup_payload=kasbah-built-app-backup-payload
 
@@ -67,7 +67,7 @@ assert() {
 
 tmpdir="$(mktemp -d)"
 cleanup() {
-    rig_ssh "docker image rm -f $web $worker $image_web:$next_version $image_worker:$next_version $image_web:current $image_worker:current; rm -rf $apps/mail; rm -f /tmp/$project-*.tar.gz /tmp/rd-first.out /tmp/rd-first.rc /tmp/rd-spec.json" >/dev/null 2>&1
+    rig_ssh "docker image rm -f $web $worker $image_web:$next_version $image_worker:$next_version $image_web:current $image_worker:current; rm -rf $apps/mail; rm -f /tmp/$project-*.tar.gz /tmp/rd-first.out /tmp/rd-first.err /tmp/rd-first.rc /tmp/rd-spec.json" >/dev/null 2>&1
     docker image rm -f "$web" "$worker" "$image_web:$next_version" "$image_worker:$next_version" "$image_web:current" "$image_worker:current" >/dev/null 2>&1
     rm -f "${TMPDIR:-/tmp}/$project-"*.tar.gz
     rm -rf "$tmpdir"
@@ -124,8 +124,8 @@ deploy() (
 # rather than assuming a fresh file — otherwise the suite's second run reads the
 # first run's order (plan/roadmap/04-ship.md → carried into 4.2).
 #
-# It is written by root inside the container, so removing it needs the sudo the
-# rig's ssh user has.
+# The container may have written into state/ as root, so removing it takes the
+# sudo the rig's ssh user has.
 crumbs_reset() { rig_ssh "sudo rm -f $crumbs_remote" >/dev/null 2>&1; }
 crumbs()       { rig_ssh "cat $crumbs_remote 2>/dev/null" 2>/dev/null | tr -d '\r'; }
 
@@ -215,14 +215,10 @@ if [ "$rc" != "0" ]; then
     echo "error: the first deploy failed — nothing below can be judged" >&2
     exit 1
 fi
-assert 'grep -qF "first deploy — versions.log has no entry" "$tmpdir/err"' \
+assert 'grep -qF "first deploy — versions.log has no entry for this project, so the backup and the pre-deploy hooks will not run" "$tmpdir/err"' \
     "and it says so on the evidence that distinguishes it — an empty versions.log,
         not a container list, which cannot tell a first deploy from a crashed one
         (said '$(cli_err)')"
-assert 'grep -qF "nothing to back up" "$tmpdir/err"' \
-    "saying why it took no backup (said '$(cli_err)')"
-assert 'grep -qF "pre-deploy hook skipped" "$tmpdir/err"' \
-    "and why the pre-deploy hook did not run (said '$(cli_err)')"
 assert '[ "$(backup_names)" = "" ]' \
     "with no backup file written (found '$(backup_names)')"
 first_crumbs="$(crumbs)"
@@ -232,7 +228,7 @@ assert '[ "$(grep -c . <<<"$first_crumbs")" = "1" ]' \
 assert '[[ "$first_crumbs" == post-deploy\ * ]]' \
     "which is the post-deploy one (line: '$first_crumbs')"
 assert '[[ "$first_crumbs" == *" prev= "* ]]' \
-    "with \$PREV_VERSION empty on a first deploy rather than absent (line: '$first_crumbs')"
+    "with \$KASBAH_PREV_VERSION empty on a first deploy rather than absent (line: '$first_crumbs')"
 # The changelog (docs/build-deploy.md step 10) is driven by the previous version
 # in the shipped script's report, which on a first deploy is empty — so there is
 # no range to compute and the local side says that instead of inventing one.
@@ -267,7 +263,7 @@ assert 'grep -qF "run DIR" <<<"$(rig_ssh "$srvbin remote deploy 2>&1")"' \
 assert '[ "$(rig_ssh "[ -e $projdir_remote/kasbah.yml ] && echo present || echo absent" 2>/dev/null | tr -d "\r")" = "absent" ]' \
     "and kasbah.yml was not shipped beside it"
 
-# --- The hook order, and the three variables each hook was given ---------------------
+# --- The hook order, and the variables each hook was given ---------------------------
 crumb_text="$(crumbs)"
 assert '[ "$(wc -l <<<"$crumb_text")" = "2" ]' \
     "the two hooks each left exactly one breadcrumb (got: $(tr '\n' '/' <<<"$crumb_text"))"
@@ -279,17 +275,23 @@ assert '[[ "$pre_line" == pre-deploy\ * ]]' \
 assert '[[ "$post_line" == post-deploy\ * ]]' \
     "and the post-deploy hook after it (line 2: '$post_line')"
 assert '[[ "$pre_line" == *"version=$project_version "* ]]' \
-    "\$VERSION reached the pre-deploy hook (line: '$pre_line')"
+    "\$KASBAH_VERSION reached the pre-deploy hook (line: '$pre_line')"
 assert '[[ "$post_line" == *"version=$project_version "* ]]' \
     "and the post-deploy hook (line: '$post_line')"
 assert '[[ "$pre_line" == *" prev=$project_version "* ]]' \
-    "\$PREV_VERSION is the version the last versions.log entry recorded (line: '$pre_line')"
+    "\$KASBAH_PREV_VERSION is the version the last versions.log entry recorded (line: '$pre_line')"
 assert '[[ "$post_line" == *" prev=$project_version "* ]]' \
     "and the post-deploy hook is handed the same (line: '$post_line')"
-assert '[[ "$pre_line" == *" backup=backups/pre-deploy-"*.txt.gz ]]' \
-    "and \$DEPLOY_BACKUP already names the file the backup step wrote (line: '$pre_line')"
-assert '[[ "$post_line" == *" backup=backups/pre-deploy-"*.txt.gz ]]' \
-    "which the post-deploy hook is handed too (line: '$post_line')"
+assert '[[ "$pre_line" == *" project=$project cwd=$projdir_remote" ]]' \
+    "\$KASBAH_PROJECT is the project's name, and the hook ran in its folder on the server (line: '$pre_line')"
+assert '[[ "$post_line" == *" project=$project" ]]' \
+    "and the post-deploy hook, whose \`docker compose exec -T built-app-web\` found the new container by service name (line: '$post_line')"
+# The pre-deploy hook writes to stdout too: the server's stdout is the report
+# channel, so the line must arrive on stderr and the report still read.
+assert 'grep -qF "version=9.9.9-from-the-hook" "$tmpdir/err"' \
+    "a hook's stdout reaches the operator on stderr (said '$(cli_err)')"
+assert '! grep -qF "9.9.9" "$tmpdir/out"' \
+    "and nowhere else (stdout: $(cat "$tmpdir/out"))"
 
 # --- The backup, taken because its check said so --------------------------------------
 names="$(backup_names)"
@@ -424,41 +426,54 @@ assert '! grep -qF "is healthy" "$tmpdir/err"' \
 assert '[ "$(grep -c . <<<"$(crumbs)")" = "2" ]' \
     "with the hooks still running, because this flag is not that one (crumbs: $(tr '\n' '/' <<<"$(crumbs)"))"
 
-# --allow-stopped is the refusal's override, so the refusal is what makes it
-# mean anything: built-app-web is both the backup container and the pre-deploy
-# hook's, and a project that has deployed here before must not be deployed over
-# while it is down (docs/build-deploy.md → the outgoing stack).
+# No preflight: with history, the backup and the pre-deploy hooks always run, and
+# a stopped outgoing stack is their own failure. built-app-web is the backup
+# container, so its backup fails, and with no terminal the question it asks
+# stops the run, puts the files back and names the flag.
 rig_ssh "docker stop $image_web" >/dev/null 2>&1
 stopped_state=$(rig_ssh "docker inspect -f '{{.State.Status}}' $image_web" 2>/dev/null | tr -d '\r')
 assert '[ "$stopped_state" = "exited" ]' \
     "the outgoing container is stopped (docker says '$stopped_state')"
 log_before="$(versions_log)"
+backups_before="$(backup_names)"
 crumbs_reset
 deploy "$RIG_TARGET"; rc=$?
-assert '[ "$rc" != "0" ]' "a deploy over a stopped stack that has deployed here before is refused (exit $rc)"
-assert 'grep -qF "$image_web is exited" "$tmpdir/err"' \
-    "naming the container and the state docker reports for it (said '$(cli_err)')"
-assert 'grep -qF -- "--allow-stopped" "$tmpdir/err"' "and the flag that overrides it (said '$(cli_err)')"
+assert '[ "$rc" != "0" ]' "a deploy whose backup fails, with no terminal to ask on, fails (exit $rc)"
+assert 'grep -qF "the backup failed in $image_web" "$tmpdir/err"' \
+    "naming the step that failed (said '$(cli_err)')"
+assert 'grep -qF "pass --on-hook-failure=continue or --on-hook-failure=stop" "$tmpdir/err"' \
+    "and the flag that answers the question (said '$(cli_err)')"
+assert 'grep -qF "the files it had shipped were put back" "$tmpdir/err"' \
+    "with the files put back (said '$(cli_err)')"
 assert '[ "$(versions_log)" = "$log_before" ]' \
-    "before any side effect — versions.log is untouched (log: $(versions_log))"
+    "and versions.log untouched (log: $(versions_log))"
 assert '[ "$(crumbs)" = "" ]' "and no hook ran (crumbs: $(tr '\n' '/' <<<"$(crumbs)"))"
 
-backups_before="$(backup_names)"
-deploy "$RIG_TARGET" --allow-stopped; rc=$?
-assert '[ "$rc" = "0" ]' "--allow-stopped deploys over it (exit $rc)
+deploy "$RIG_TARGET" --on-hook-failure=stop; rc=$?
+assert '[ "$rc" != "0" ] && grep -qF "the backup failed in $image_web" "$tmpdir/err"' \
+    "--on-hook-failure=stop stops on the same failure (exit $rc: $(cli_err))"
+assert '! grep -qF "pass --on-hook-failure" "$tmpdir/err"' \
+    "without asking (said '$(cli_err)')"
+assert '[ "$(versions_log)" = "$log_before" ] && [ "$(crumbs)" = "" ]' \
+    "changing nothing (log: $(versions_log); crumbs: $(crumbs))"
+
+deploy "$RIG_TARGET" --on-hook-failure=continue; rc=$?
+assert '[ "$rc" = "0" ]' "--on-hook-failure=continue deploys past it (exit $rc)
         stderr: $(cli_err)"
-assert 'grep -qF -- "--allow-stopped:" "$tmpdir/err"' \
-    "saying which flag let it through (said '$(cli_err)')"
+assert 'grep -qF "continuing past the failed backup (--on-hook-failure=continue)" "$tmpdir/err"' \
+    "the server says it carried on, and why (said '$(cli_err)')"
+assert 'grep -qF "the deploy $project_version carried on past a failed backup" "$tmpdir/err"' \
+    "and so does the workstation (said '$(cli_err)')"
 assert '[ "$(backup_names)" = "$backups_before" ]' \
-    "and took no backup, because there was nothing running to take one from
+    "with no backup taken
         before: $backups_before
         after:  $(backup_names)"
-allow_crumbs="$(crumbs)"
-assert '[ "$(grep -c . <<<"$allow_crumbs")" = "1" ]' \
-    "the pre-deploy hook had nothing to run against either, so exactly one breadcrumb
-        was left (crumbs: $(tr '\n' '/' <<<"$allow_crumbs"))"
-assert '[[ "$allow_crumbs" == post-deploy\ * ]]' \
-    "and it is the post-deploy one, against what compose just started (line: '$allow_crumbs')"
+cont_crumbs="$(crumbs)"
+assert '[ "$(grep -c . <<<"$cont_crumbs")" = "2" ] && [[ "$(sed -n 1p <<<"$cont_crumbs")" == pre-deploy\ * ]]' \
+    "and both hooks ran, the pre-deploy one in the server's shell with the stack down
+        (crumbs: $(tr '\n' '/' <<<"$cont_crumbs"))"
+assert '[[ "$(tail -n1 <<<"$(versions_log)")" == *" deploy $project_version no-backup "* ]]' \
+    "recorded with no-backup (log: $(tail -n1 <<<"$(versions_log)"))"
 web_after=$(rig_ssh "docker inspect -f '{{.State.Running}}' $image_web" 2>/dev/null | tr -d '\r')
 assert '[ "$web_after" = "true" ]' "with the stack running again afterwards (docker says '$web_after')"
 # The control for the --no-health-wait case above: this deploy passed no flag, so
@@ -480,10 +495,10 @@ assert 'grep -qF "$image_web is healthy" "$tmpdir/err"' \
 # labels are unchanged (docs/build-deploy.md → two modes).
 hook_sleep=8
 sed -i 's|^  check: test -f ./compose.yml$|  check: "false"|' "$projdir/kasbah.yml"
-sed -i "/^  post-deploy:\$/i\\    - 'built-app-web sleep $hook_sleep'" "$projdir/kasbah.yml"
+sed -i "/^  post-deploy:\$/i\\    - 'sleep $hook_sleep'" "$projdir/kasbah.yml"
 assert 'grep -qF "check: \"false\"" "$projdir/kasbah.yml"' \
     "the fixture copy's backup.check now exits non-zero"
-assert 'grep -qF "built-app-web sleep $hook_sleep" "$projdir/kasbah.yml"' \
+assert 'grep -qF "    - '"'"'sleep $hook_sleep'"'"'" "$projdir/kasbah.yml"' \
     "and its pre-deploy hooks end with one that sleeps"
 recommit() {
     if ! ( cd "$projdir" && git add -A && git commit -qm "$2" && git tag -f "v$1" ) >"$tmpdir/git.log" 2>&1; then
@@ -503,11 +518,7 @@ assert '[ "$(backup_names)" = "$backups_before" ]' \
     "and takes no backup at all
         before: $backups_before
         after:  $(backup_names)"
-gate_crumbs="$(crumbs)"
-assert 'grep -qF "backup=no-backup" <<<"$gate_crumbs"' \
-    "the hooks are told there is none, through \$DEPLOY_BACKUP
-        crumbs: $(tr '\n' '/' <<<"$gate_crumbs")"
-# Two deploys here, three in the flag section above, and one refused that wrote
+# Two deploys here, three in the flag section above, and two stopped that wrote
 # nothing: six lines, of which this is the sixth.
 log2="$(versions_log)"
 assert '[ "$(wc -l <<<"$log2")" = "6" ]' "a sixth line was appended (log: $log2)"
@@ -520,9 +531,9 @@ assert '[ "$(sed -n "1,2p" <<<"$log2")" = "$log" ]' \
 # Driven by running the server binary's engine itself over ssh, with the spec a
 # deploy would send, rather than by racing two `kasbah deploy` invocations: the
 # workstation half of the second would spend the window on the sync and the env step.
-pre_hook=$(sed -n "s/^    - '\(built-app-web echo \"pre-deploy.*\)'\$/\1/p" "$projdir/kasbah.yml")
+pre_hook=$(sed -n "s/^    - '\(echo \"pre-deploy.*\)'\$/\1/p" "$projdir/kasbah.yml")
 spec=$(jq -cn --arg v "$project_version" --arg k "$kasbah_version" --arg pre "$pre_hook" \
-    --arg sleep "built-app-web sleep $hook_sleep" --arg web "$image_web" --arg worker "$image_worker" \
+    --arg sleep "sleep $hook_sleep" --arg web "$image_web" --arg worker "$image_worker" \
     '{mode:"deploy",version:$v,kasbah:$k,images:[$web,$worker],pre:[$pre,$sleep],post:[],
       health:{container:$web,timeout:60},backup:null}')
 assert '[ -n "$pre_hook" ] && [ -n "$spec" ]' "the engine spec for the race was built (hook '$pre_hook')"
@@ -531,10 +542,10 @@ launch_rc=0
 launch_out=$(rig_ssh "bash -s '$projdir_remote' '$srvbin'" <<REMOTE
 set -uo pipefail
 dir=\$1; bin=\$2
-rm -f /tmp/rd-first.out /tmp/rd-first.rc
+rm -f /tmp/rd-first.out /tmp/rd-first.err /tmp/rd-first.rc
 printf '%s\n' '$spec' > /tmp/rd-spec.json
 nohup bash -c '
-    "\$2" remote deploy run "\$1" < /tmp/rd-spec.json > /tmp/rd-first.out 2>&1
+    "\$2" remote deploy run "\$1" < /tmp/rd-spec.json > /tmp/rd-first.out 2> /tmp/rd-first.err
     printf "%s\n" "\$?" > /tmp/rd-first.rc
 ' _ "\$dir" "\$bin" >/dev/null 2>&1 </dev/null &
 printf 'launched=yes\n'
@@ -583,7 +594,14 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
 done
 assert '[ "$first_rc" = "0" ]' \
     "while the first run finishes untouched (exit '$first_rc')
-        said: $(rig_ssh "cat /tmp/rd-first.out 2>/dev/null" 2>/dev/null)"
+        said: $(rig_ssh "cat /tmp/rd-first.err /tmp/rd-first.out 2>/dev/null" 2>/dev/null)"
+# Run straight, with its two streams apart: the hook that echoes to stdout
+# shows on stderr, and stdout is the report line alone.
+first_stdout=$(rig_ssh "cat /tmp/rd-first.out 2>/dev/null" 2>/dev/null | tr -d '\r')
+assert '[ "$(grep -c . <<<"$first_stdout")" = "1" ] && [[ "$first_stdout" == "{\"kasbah_deploy_report\":1,"* ]]' \
+    "the engine's stdout is its report and nothing else (stdout: $first_stdout)"
+assert 'grep -qF "version=9.9.9-from-the-hook" <<<"$(rig_ssh "cat /tmp/rd-first.err" 2>/dev/null)"' \
+    "while the hook's stdout went to stderr"
 log3="$(versions_log)"
 assert '[ "$(wc -l <<<"$log3")" = "7" ]' \
     "and exactly one of the two wrote a versions.log entry ($(wc -l <<<"$log3") lines in all)
@@ -600,8 +618,8 @@ assert '[ "$(wc -l <<<"$log3")" = "7" ]' \
 #
 # The sleeping hook goes first — it was the concurrency section's instrument and
 # costs every later deploy eight seconds.
-sed -i "/- 'built-app-web sleep $hook_sleep'/d" "$projdir/kasbah.yml"
-assert '! grep -qF "built-app-web sleep" "$projdir/kasbah.yml"' \
+sed -i "/- 'sleep $hook_sleep'/d" "$projdir/kasbah.yml"
+assert '! grep -qF "'"'"'sleep $hook_sleep'"'"'" "$projdir/kasbah.yml"' \
     "the concurrency section's sleeping hook is out of the manifest again"
 
 # The mail claim rides the same deploy: this server has no $apps/mail yet, which

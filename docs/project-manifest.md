@@ -47,32 +47,32 @@ health:
   container: shop-php-fpm
   timeout: 120s
 
-# Hooks run via `docker exec` on the VPS. Each entry is:
-#   "<container-or-service> <cmd...>"
-# A service name resolves to the service's first running replica.
+# Hooks are lines of shell, each run with `sh -c` on the VPS, in the project
+# folder <apps>/<name>/ — so `docker compose exec -T <service>` reaches a
+# container by its service name.
 #
-# pre-deploy runs BEFORE `compose up -d` — against the currently-running
-# (previous version) containers. Use for: schema precheck, draining
-# workers, anything that requires the old version still live.
-# post-deploy runs AFTER `compose up -d` + healthcheck — against the new
+# pre-deploy runs BEFORE `compose up -d`, while the previous version is
+# still running. Use for: schema precheck, draining workers, anything that
+# requires the old version still live.
+# post-deploy runs AFTER `compose up -d` + healthcheck, against the new
 # containers. Use for: migrations, cache warmup, cache rebuild.
 hooks:
   pre-deploy:
-    - shop-php-fpm php artisan migrate:status   # fail fast if DB unreachable
+    - docker compose exec -T php-fpm php artisan migrate:status   # fail fast if DB unreachable
   post-deploy:
-    - shop-php-fpm php artisan migrate --force
-    - shop-php-fpm php artisan config:cache
-    - shop-php-fpm php artisan route:cache
+    - docker compose exec -T php-fpm php artisan migrate --force
+    - docker compose exec -T php-fpm php artisan config:cache
+    - docker compose exec -T php-fpm php artisan route:cache
 
   # Projects that need migration rollback count their own migrations in
   # the hook (kasbah doesn't track migration counts).
   pre-rollback:
-    - shop-php-fpm php artisan migrate:rollback --force
+    - docker compose exec -T php-fpm php artisan migrate:rollback --force
 
   post-rollback:
-    - shop-php-fpm php artisan config:cache
+    - docker compose exec -T php-fpm php artisan config:cache
 
-# Backup hook — runs BEFORE pre-deploy hooks (so against the still-running
+# Backup — runs BEFORE pre-deploy hooks (so against the still-running
 # previous version's containers), IF the `check` command exits 0. This
 # ordering means a backup always exists before any pre-deploy work
 # touches live state. Output goes to ./backups/ relative to the project
@@ -214,7 +214,12 @@ health:
 ```
 
 **Both keys are optional, and the block may carry either alone.** With
-`container:` set, the deploy waits on that one container. Without it — no
+`container:` set, the deploy waits on that one container: a `container_name`,
+or a compose service name, which resolves on the server to that service's
+lowest-numbered running replica (or its first container when none runs) — what
+lets it name a service compose names `<project>-<service>-N` and a rolling
+deploy renames. An exact `container_name` wins on a clash; `kasbah check`
+holds the name to the compose file. Without it — no
 `health:` block at all, or a block naming only `timeout:` — the deploy waits on
 every container in the project that declares a healthcheck, which is what lets
 a project raise the timeout without singling out one container.
@@ -227,62 +232,63 @@ guarded form is `{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}
 
 ### `hooks` *(optional)*
 
-Each hook is a list of strings. Each string starts with a **target** —
-a service's `container_name`, or its compose service name — followed by the
-command to run inside it. A service name resolves on the server to that
-service's lowest-numbered running replica (or its first container when none
-runs), which is what lets a hook target a service compose names
-`<project>-<service>-N` and a rolling deploy renames; an exact `container_name`
-wins on a clash. `kasbah check` (HK01) enforces that the target is one of the
-two. The same applies to `health.container` and the `backup` block's container. `hooks:` holds only `pre-deploy`, `post-deploy`,
-`pre-rollback` and `post-rollback`; any other key (a typo such as `pre_deploy`)
-is refused — except in a tag's manifest (`rollback`, `deploy X.Y.Z`), where it is
-a warning and ignored, so a version a server has run stays rollable.
+`hooks:` holds up to four lists — `pre-deploy`, `post-deploy`, `pre-rollback`
+and `post-rollback` — and nothing else: any other key (a typo such as
+`pre_deploy`) is refused, except in a tag's manifest (`rollback`,
+`deploy X.Y.Z`), where it is a warning and ignored, so a version a server has
+run stays rollable.
 
-The rest of the string is a **shell command**, not an argument vector. Kasbah
-runs it as:
+Each entry is one **shell command**, run on the server as
 
 ```
-docker exec -e VERSION -e PREV_VERSION -e DEPLOY_BACKUP <container> sh -c '<rest>'
+sh -c '<entry>'
 ```
 
-so a pipeline, a redirection, a quoted argument and `$VERSION` all mean what
-they look like. There is no `-T`: that is `docker compose exec`'s flag, and
-`docker exec` rejects it outright (`unknown shorthand flag: 'T'`). Plain
-`docker exec` allocates no pty unless asked with `-t`, so it already is the
-form a non-interactive hook wants.
+in the server's own shell, with the working directory set to the project folder
+`<apps>/<name>/`. A pipeline, a redirection, a quoted argument and
+`$KASBAH_VERSION` all mean what they look like. Reaching into a container is the
+hook's own business: `docker compose exec -T <service> …` finds the project's
+container by its compose service name, since the folder holds the project's
+`compose.yml` and kasbah sets `COMPOSE_PROJECT_NAME` to the project's name for
+the hook — `-T`, because a hook has no terminal. The hooks run under `LC_ALL=C`,
+with no stdin; what a hook prints, on stdout or stderr, reaches the operator on
+stderr, because the engine's stdout is the report the workstation reads. The
+entries of a list run in order; one that exits non-zero fails the list, unless
+the operator carries on past it (below), and then the next entry runs.
 
 **A hook is one line.** A multi-line value — a `|` block scalar, or a string
-with an embedded newline — is refused, because "the first word is the
-container" has no meaning on the second line. Chain with `&&` on one line
-instead, or put the sequence in a script inside the image and call that. This
-is refused rather than accepted because the failure it prevents is silent: read
-as several hooks, the first line would run and the rest would be discarded as
-hooks naming containers that do not exist. The cost is that the target container must have a `/bin/sh` —
-a distroless or scratch image cannot be a hook target. That is the deliberate
-trade: hooks are written by the project's author in the shell they already
-think in, and every base image a kasbah project has ever used has a shell.
+with an embedded newline — is refused, and so is an empty entry or one that is
+not a string. Chain with `&&` on one line instead, or put the sequence in a
+script and call that. Refused rather than accepted, because a value read as
+several hooks would run the first line and fail or skip the rest silently.
 
 Supported hooks and when they run:
 
-| Hook | Runs | Containers it exec's into |
-|---|---|---|
-| `pre-deploy` | after env/sync + backup, before `compose up -d` | currently-running (previous version) |
-| `post-deploy` | after `compose up -d` + health wait | new version |
-| `pre-rollback` | after git-archive sync, before `compose up -d` | currently-running (pre-rollback) |
-| `post-rollback` | after `compose up -d` + health wait | rolled-back version |
+| Hook | Runs |
+|---|---|
+| `pre-deploy` | after env/sync + backup, before `compose up -d`, the previous version still running |
+| `post-deploy` | after `compose up -d` + health wait, against the new version |
+| `pre-rollback` | after the target tag's files are synced, before `compose up -d` |
+| `post-rollback` | after `compose up -d` + health wait, against the rolled-back version |
 
-The `pre-*` hooks exec against containers from the *outgoing* state; the
-`post-*` hooks exec against containers from the *incoming* state. Container
-names are the same across versions (compose project name is stable), so
-the hook commands look identical — it's the timing that picks the target.
+On a **first deploy** — `versions.log` holds no entry for the project, active or
+archived, a `deploy-failed` line counting as one — there is no outgoing
+version, so the backup and the `pre-*` hooks do not run, and the run says so.
+Otherwise they always run: kasbah does not look at the containers first, and a
+hook that needs the outgoing stack up tests for that itself. When the backup or
+a `pre-*` hook fails, no container has moved yet, and kasbah asks whether to
+carry on (`--on-hook-failure=continue|stop`, `cli.md`): stopping puts the synced
+files back and leaves whatever the hooks already did, continuing runs on to the
+retag and `compose up` as if the step had passed, and says so. A failed `post-*` hook is not reverted (`build-deploy.md`).
 
 Environment variables available to hook commands (set by kasbah):
-- `$VERSION` — the version being deployed/rolled to.
-- `$PREV_VERSION` — the version previously current (may be empty on first deploy).
-- `$DEPLOY_BACKUP` — path to the backup file, or `no-backup`. Available to
-  **both** `pre-deploy` and `post-deploy`: the backup step runs before either,
-  so a pre-deploy hook can already name the file that was just written.
+- `$KASBAH_VERSION` — the version being deployed or rolled back to.
+- `$KASBAH_PREV_VERSION` — the version previously current (empty on a first
+  deploy).
+- `$KASBAH_PROJECT` — the project's name.
+
+The project's `.env` is not loaded into the hooks' environment; `docker compose`
+reads it as it always does.
 
 Kasbah does **not** generalize migration accounting. Projects that need to
 count migrations (Laravel, Rails, Django, etc.) do that inside their hook
@@ -293,7 +299,15 @@ by querying their framework's migration table.
 If present, kasbah may take a backup as the **first** step of the VPS-side
 deploy — before the `pre-deploy` hooks, and therefore against the still-running
 previous version's containers. That ordering is the point: a backup always
-exists before any hook touches live state.
+exists before any hook touches live state. A first deploy has no previous
+version and skips it; any other deploy runs it — `--skip-hooks` does not skip
+it — and a backup that fails, a stopped `container` included, asks whether to
+carry on, as a failed `pre-deploy` hook does (`hooks` above). A `check` that
+fails skips the backup instead, whatever made it fail: a check that reaches
+into a container that is down skips the backup, with a note and no question.
+
+- `container` — the container `command` runs in: a `container_name` or a
+  compose service name, resolved as `health.container` is (HK03).
 
 - `check` — any command. Exit code 0 triggers the backup; non-zero skips
   it. Projects decide their own trigger: pending migrations, a sentinel

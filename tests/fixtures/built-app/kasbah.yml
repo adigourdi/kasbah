@@ -4,9 +4,9 @@
 # gives it a git repo with a v-tag, and runs `kasbah build-push` from the copy.
 #
 # The health:, hooks: and backup: blocks below are what makes this the deploy
-# fixture as well as the ship one: `kasbah deploy` pre-renders them into the
-# copy of templates/remote-deploy.sh it installs on the server, and
-# tests/integration/deploy_ship_test.sh reads the breadcrumbs they leave.
+# fixture as well as the ship one: `kasbah deploy` sends them to the server's
+# engine, and tests/integration/deploy_ship_test.sh reads the breadcrumbs they
+# leave.
 schema: 1
 kasbah_version: 0.1.0
 
@@ -28,26 +28,25 @@ health:
   container: built-app-web
   timeout: 60s
 
-# Each entry is "<container_name> <command…>", run as
-# `docker exec -e VERSION -e PREV_VERSION -e DEPLOY_BACKUP <container>
-#  sh -c '<command…>'` — no -t, and no -T either, which is `docker compose
-# exec`'s flag and not a `docker exec` one at all. The redirection therefore
-# happens inside the container, into the bind mount compose declares — which is
-# how a suite reads back that the hooks ran, in what order, and with which
-# variables set.
+# Each entry is one line of shell, run as `sh -c` on the server in
+# <apps>/built-app/, with KASBAH_VERSION, KASBAH_PREV_VERSION and KASBAH_PROJECT
+# set — so `state/breadcrumbs.log` is the file the web container sees at
+# /var/kasbah, and a suite reads back that the hooks ran, in what order, and
+# with which variables. The pre-deploy hook also writes to stdout, which kasbah
+# must keep off the report channel; the post-deploy one reaches the new
+# container by service name through `docker compose exec -T`.
 hooks:
   pre-deploy:
-    - 'built-app-web echo "pre-deploy version=$VERSION prev=$PREV_VERSION backup=$DEPLOY_BACKUP" >> /var/kasbah/breadcrumbs.log'
+    - 'echo "pre-deploy version=$KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT cwd=$PWD" >> state/breadcrumbs.log; echo version=9.9.9-from-the-hook'
   post-deploy:
-    - 'built-app-web echo "post-deploy version=$VERSION prev=$PREV_VERSION backup=$DEPLOY_BACKUP" >> /var/kasbah/breadcrumbs.log'
-  # The other pair, which only `kasbah rollback` runs. Both pairs are rendered
-  # into the shipped script on every deploy and rollback alike — the mode picks
-  # one — so tests/integration/rollback_test.sh reads these breadcrumbs back out
-  # of the same bind mount, and $PREV_VERSION is the version being left behind.
+    - 'docker compose exec -T built-app-web true && echo "post-deploy version=$KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT" >> state/breadcrumbs.log'
+  # The other pair, which only `kasbah rollback` runs, read back by
+  # tests/integration/rollback_test.sh from the same file; $KASBAH_PREV_VERSION
+  # is the version being left behind.
   pre-rollback:
-    - 'built-app-web echo "pre-rollback version=$VERSION prev=$PREV_VERSION backup=$DEPLOY_BACKUP" >> /var/kasbah/breadcrumbs.log'
+    - 'echo "pre-rollback version=$KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT" >> state/breadcrumbs.log'
   post-rollback:
-    - 'built-app-web echo "post-rollback version=$VERSION prev=$PREV_VERSION backup=$DEPLOY_BACKUP" >> /var/kasbah/breadcrumbs.log'
+    - 'echo "post-rollback version=$KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT" >> state/breadcrumbs.log'
 
 # `check` runs in the VPS host shell with cwd at the project directory, and its
 # exit status decides whether a backup is taken at all; `command` runs through

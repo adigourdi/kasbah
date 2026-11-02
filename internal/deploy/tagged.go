@@ -27,7 +27,8 @@ import (
 // a deploy's own sync: `git archive | tar -x` cannot honour sync renames.
 
 const rollbackUsage = `Usage: kasbah rollback [USER@HOST] [VERSION] [--on-drift=setup|continue|abort]
-                       [--env-seed=FILE] [--skip-hooks] [--no-health-wait] [--allow-stopped]
+                       [--env-seed=FILE] [--on-hook-failure=continue|stop] [--skip-hooks]
+                       [--no-health-wait]
 
 Puts a server back on a version it has already run. Run from the project root.
 An argument containing '@' is the server, anything else is the version.
@@ -46,8 +47,9 @@ tree, which is neither read nor touched:
     never re-ships one (docs/build-deploy.md → Retention)
   * ` + "`kasbah remote deploy`" + ` on the server: pre-rollback hooks, retag
     <image>:current, docker compose -p <name> up -d --remove-orphans, health
-    wait, post-rollback hooks, one versions.log entry — a failed up or health
-    wait put back as a deploy's is (kasbah deploy --help)
+    wait, post-rollback hooks, one versions.log entry — a failed pre-rollback
+    hook asks whether to carry on, and a failed up or health wait is put back,
+    as a deploy's are (kasbah deploy --help)
   * <VERSION>'s traefik-dynamic.yml, last, once the stack is up
 
 Not restored: .env values (not in git — drift is prompted for as usual), data
@@ -63,10 +65,16 @@ Unset, a drifting .env asks; with no terminal to ask on, the run stops (exit 5).
                         (mode 600 or tighter), as deploy does (kasbah deploy --help)
 
 For the server's side of the run:
+  --on-hook-failure=continue
+                        when a pre-rollback hook fails, carry on as if it had
+                        passed
+  --on-hook-failure=stop
+                        when one fails, put back the files and stop
+Unset, a failed pre-rollback hook asks; with no terminal to ask on, the run
+stops, and fails naming the flag.
+
   --skip-hooks          skip the pre- and post-rollback hooks
   --no-health-wait      bring the stack up without blocking on its health
-  --allow-stopped       roll back over a stack that is not running, which is
-                        otherwise refused
 
 See docs/build-deploy.md.
 `

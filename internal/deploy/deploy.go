@@ -38,17 +38,19 @@ var ErrHelp = errors.New("help")
 // path (tagged.go).
 type Options struct {
 	Target, Version, OnDrift string
+	// OnHookFailure answers a failed backup or pre-hook: continue or stop.
+	OnHookFailure string
 	// EnvSeed is --env-seed=FILE's path (env.ReadSeed).
-	EnvSeed                               string
-	SkipHooks, NoHealthWait, AllowStopped bool
-	Dirty                                 bool
+	EnvSeed                 string
+	SkipHooks, NoHealthWait bool
+	Dirty                   bool
 	// The working-tree deploy's: Bump answers the untagged-HEAD question.
 	Bump string
 }
 
 const usage = `Usage: kasbah deploy [USER@HOST] [VERSION] [--on-drift=setup|continue|abort]
-                     [--env-seed=FILE] [--skip-hooks] [--no-health-wait] [--allow-stopped] [--dirty]
-                     [--bump=patch|minor|major]
+                     [--env-seed=FILE] [--on-hook-failure=continue|stop] [--skip-hooks]
+                     [--no-health-wait] [--dirty] [--bump=patch|minor|major]
 
 Ships the working tree to a prepared server and brings the project up there.
 Run from the project root. The version is HEAD's v-tag, and a working tree with
@@ -72,12 +74,14 @@ What it does:
   * renders <apps>/<name>/.env when it is missing, checks it for drift against
     .env.prod.example otherwise, and refreshes the KASBAH_* block in it from
     the server marker's resource limits
-  * runs ` + "`kasbah remote deploy`" + ` on the server: backup, pre-deploy hooks,
-    retag <image>:current, docker compose -p <name> up -d --remove-orphans,
-    health wait, post-deploy hooks, one versions.log entry. A failed up or
-    health wait is reverted — those files back, each :current on its old
-    image, that stack up — and records nothing; a failed post-deploy hook
-    is not reverted, and records a deploy-failed entry
+  * runs ` + "`kasbah remote deploy`" + ` on the server: backup, pre-deploy hooks
+    (both skipped on a first deploy), retag <image>:current, docker compose
+    -p <name> up -d --remove-orphans, health wait, post-deploy hooks, one
+    versions.log entry. A failed backup or pre-deploy hook asks whether to
+    carry on; stopping puts the files back. A failed up or health wait is
+    reverted — those files back, each :current on its old image, that stack
+    up — and records nothing; a failed post-deploy hook is not reverted, and
+    records a deploy-failed entry
   * ships traefik-dynamic.yml to <apps>/traefik/dynamic/<name>.yml, last
   * prints the commits between the version the server was running and this one
   * a line under the summary when origin lacks v<version>, which kasbah
@@ -105,15 +109,19 @@ Unset, a drifting .env asks; with no terminal to ask on, the run stops (exit 5).
                         them all. A key .env already sets is never touched
 
 For the server's side of the run:
+  --on-hook-failure=continue
+                        when the backup or a pre-deploy hook fails, carry on to
+                        the retag and ` + "`compose up`" + ` as if it had passed
+  --on-hook-failure=stop
+                        when one fails, put back the files this run shipped and
+                        stop; what the hooks already did stays
+Unset, a failed backup or pre-deploy hook asks; with no terminal to ask on, the
+run stops as with stop, and fails naming the flag.
+
   --skip-hooks          skip the pre- and post-deploy hooks. The backup still
                         runs — a dry-run-ish deploy must not also throw away
                         the data safety net
   --no-health-wait      bring the stack up without blocking on its health
-  --allow-stopped       deploy over a stack that has deployed here before and
-                        is not running, which is otherwise refused. Each step
-                        whose own container is down is then skipped — the backup
-                        if that is backup.container, a pre-deploy hook if it is
-                        that hook's — and the run says which
 
 See docs/build-deploy.md and docs/env-template.md.
 `
@@ -167,8 +175,6 @@ func parse(cmd string, args []string) (Options, error) {
 			o.SkipHooks = true
 		case a == "--no-health-wait":
 			o.NoHealthWait = true
-		case a == "--allow-stopped":
-			o.AllowStopped = true
 		case a == "--dirty" && cmd == "deploy":
 			o.Dirty = true
 		case strings.HasPrefix(a, "--bump=") && cmd == "deploy":
@@ -183,7 +189,7 @@ func parse(cmd string, args []string) (Options, error) {
 				return o, cli.Fail("rollback: --dirty is not a rollback flag — a rollback ships a version's tag, never the working tree, and a --dirty build is never a rollback target")
 			}
 			return o, cli.Fail("deploy: --dirty takes no value — pass it on its own (`kasbah deploy USER@HOST --dirty`)")
-		case strings.HasPrefix(a, "--skip-hooks=") || strings.HasPrefix(a, "--no-health-wait=") || strings.HasPrefix(a, "--allow-stopped="):
+		case strings.HasPrefix(a, "--skip-hooks=") || strings.HasPrefix(a, "--no-health-wait="):
 			name, _, _ := strings.Cut(a, "=")
 			return o, cli.Fail("%s: %s takes no value — pass it on its own (`kasbah %s USER@HOST %s`)", cmd, name, cmd, name)
 		case strings.HasPrefix(a, "--on-drift="):
@@ -193,6 +199,13 @@ func parse(cmd string, args []string) (Options, error) {
 			}
 		case a == "--on-drift":
 			return o, cli.Fail("%s: --on-drift takes its value with '=' — --on-drift=setup, --on-drift=continue or --on-drift=abort", cmd)
+		case strings.HasPrefix(a, "--on-hook-failure="):
+			o.OnHookFailure = strings.TrimSuffix(strings.TrimPrefix(a, "--on-hook-failure="), "\r")
+			if err := CheckOnHookFailure(cmd, o.OnHookFailure); err != nil {
+				return o, err
+			}
+		case a == "--on-hook-failure":
+			return o, cli.Fail("%s: --on-hook-failure takes its value with '=' — --on-hook-failure=continue or --on-hook-failure=stop", cmd)
 		case strings.HasPrefix(a, "--env-seed"):
 			var err error
 			if o.EnvSeed, err = env.ParseSeedFlag(cmd, a); err != nil {
@@ -226,9 +239,18 @@ func parse(cmd string, args []string) (Options, error) {
 
 func takes(cmd string) string {
 	if cmd == "deploy" {
-		return "USER@HOST, VERSION, --on-drift=, --env-seed=, --skip-hooks, --no-health-wait, --allow-stopped, --dirty and --bump="
+		return "USER@HOST, VERSION, --on-drift=, --env-seed=, --on-hook-failure=, --skip-hooks, --no-health-wait, --dirty and --bump="
 	}
-	return "USER@HOST, VERSION, --on-drift=, --env-seed=, --skip-hooks, --no-health-wait and --allow-stopped"
+	return "USER@HOST, VERSION, --on-drift=, --env-seed=, --on-hook-failure=, --skip-hooks and --no-health-wait"
+}
+
+// CheckOnHookFailure validates the flag where it is parsed, as --on-drift= is.
+func CheckOnHookFailure(cmd, v string) error {
+	switch v = strings.TrimSuffix(v, "\r"); v {
+	case AnswerContinue, AnswerStop:
+		return nil
+	}
+	return cli.Fail("%s: --on-hook-failure='%s' is not one of continue or stop", cmd, v)
 }
 
 // Server is one server as a deploy needs it: the env step's session plus the
@@ -240,7 +262,8 @@ type Server interface {
 	Snapshot(dir, token string, targets []string) error
 	Sync(e Entry, base string) error
 	Mail(apps string) (*MailFacts, error)
-	Run(dir string, sp Spec) (stdout string, rc int)
+	// Run is the engine; ask answers its question after a failed pre-step.
+	Run(dir string, sp Spec, ask func(Question) string) (stdout string, rc int)
 	Fragment(local, dest string) error
 	// Images and Record are the tagged path's: which :<version> images are
 	// gone, and the deploy record.
@@ -259,8 +282,9 @@ type Ctx struct {
 	Color         bool
 	Dial          func(target string) (Server, error)
 	Now           func() time.Time
-	// Interrupted is atexit.Interrupted when nil.
+	// Interrupted is atexit.Interrupted when nil; Hold, atexit.Hold.
 	Interrupted func() int
+	Hold        func(fn func(os.Signal)) (release func())
 }
 
 // Fragment is the project's Traefik file; kasbah owns where it lands.
@@ -287,6 +311,10 @@ type run struct {
 	snap  string
 	route func() (bool, error)
 	seed  *env.Seed
+	// unasked: the engine's question came with no terminal to ask it on.
+	unasked bool
+	// sigStop: a signal answered stop to the engine's question.
+	sigStop bool
 }
 
 // Run is the command.
@@ -495,28 +523,47 @@ func (r *run) remote() (*Report, error) {
 	b := r.p
 	sp := Spec{
 		Mode: r.mode, Version: r.version, Kasbah: r.c.Version,
-		SkipHooks: r.o.SkipHooks, NoHealthWait: r.o.NoHealthWait, AllowStopped: r.o.AllowStopped,
+		SkipHooks: r.o.SkipHooks, NoHealthWait: r.o.NoHealthWait, OnHookFailure: r.o.OnHookFailure,
 		Images: b.Images, Pre: b.Hooks["pre-"+r.mode], Post: b.Hooks["post-"+r.mode],
 		Health: b.Health, Backup: b.Backup, Snapshot: r.snap,
 		Routed: fragmentHosts(r.frag),
 	}
 	// Held: the engine finishes on the server whatever happens to this end,
 	// so a signal waits for ssh rather than tearing the master down under it.
-	release := atexit.Hold(func(os.Signal) {})
-	out, rc := r.s.Run(r.dir, sp)
+	sig := make(chan struct{}, 1)
+	hold := r.c.Hold
+	if hold == nil {
+		hold = atexit.Hold
+	}
+	release := hold(func(os.Signal) {
+		select {
+		case sig <- struct{}{}:
+		default:
+		}
+	})
+	out, rc := r.s.Run(r.dir, sp, func(q Question) string { return r.answer(q, sig) })
 	release()
 	interrupted := r.c.Interrupted
 	if interrupted == nil {
 		interrupted = atexit.Interrupted
 	}
 	if c := interrupted(); c != 0 && rc != 0 {
+		if r.sigStop {
+			return nil, cli.Failf(c, "interrupted during the %s on %s", r.mode, r.target).Cont(
+				"a failed step was asking whether to carry on, and the interrupt answered stop:",
+				"the server puts back the files this run shipped (its output above says whether",
+				"that worked), starts nothing and records nothing in versions.log; what the",
+				"hooks that ran already did stays done. The Traefik fragment was not shipped.",
+				"Re-running `"+r.rerun()+"` is safe.")
+		}
 		return nil, cli.Failf(c, "interrupted during the %s on %s", r.mode, r.target).Cont(
 			"the server carries on without this end. Finished, it records the "+r.mode+" in",
 			"versions.log; failing before `compose up` or at it or the health wait, it puts",
 			"back what ran before and records nothing; a failed post-"+r.mode+" hook or a",
-			"revert that failed it records as deploy-failed. `kasbah history "+r.target+"`",
-			"shows the record. The Traefik fragment was not shipped. Re-running",
-			"`"+r.rerun()+"` is safe.")
+			"revert that failed it records as deploy-failed; a failed backup or pre-"+r.mode,
+			"hook reads stop, as no one is left to answer whether to carry on, and puts the",
+			"files back. `kasbah history "+r.target+"` shows the record. The Traefik fragment",
+			"was not shipped. Re-running `"+r.rerun()+"` is safe.")
 	}
 	if rc == 255 || rc == -1 {
 		// ssh's own failure: the engine may have run to its end regardless.
@@ -552,7 +599,48 @@ func (r *run) remote() (*Report, error) {
 	if rep.Version != r.version {
 		return nil, cli.Fail("the %s step on %s reported version '%s', not the %s it was asked for", r.mode, r.target, rep.Version, r.version)
 	}
+	for _, step := range rep.Continued {
+		r.c.Out.Warn("the %s %s carried on past a failed %s (see above)", r.mode, r.version, step)
+	}
 	return rep, nil
+}
+
+// answer is the operator's reply to the engine's question. Without a terminal
+// it is AnswerNoTTY, which the engine stops on; a signal, before or during the
+// prompt, is stop.
+func (r *run) answer(q Question, sig <-chan struct{}) string {
+	select {
+	case <-sig:
+		r.sigStop = true
+		return AnswerStop
+	default:
+	}
+	p := r.c.Prompter
+	if p == nil || !p.TTY {
+		r.unasked = true
+		return AnswerNoTTY
+	}
+	o := r.c.Out
+	o.Warn("%s on %s: %s", r.mode, r.target, q.Error)
+	o.Warn("no container has moved yet; the files this run synced are on the server, and what the hooks that ran did stays done")
+	got := make(chan string, 1)
+	go func() {
+		choice, ok, err := p.Select("on-hook-failure", "the "+q.Step+" failed — carry on with the "+r.mode+" of "+r.version+" anyway?",
+			[]string{AnswerContinue, AnswerStop},
+			[]string{"continue — retag and bring " + r.version + " up as if it had passed",
+				"stop — put back the files this run shipped and start nothing; what the hooks already did is not undone"}, "")
+		if err != nil || !ok || choice != AnswerContinue {
+			choice = AnswerStop
+		}
+		got <- choice
+	}()
+	select {
+	case a := <-got:
+		return a
+	case <-sig:
+		r.sigStop = true
+		return AnswerStop
+	}
 }
 
 // engineFailed says what the failed engine left the server as, read from
@@ -560,6 +648,10 @@ func (r *run) remote() (*Report, error) {
 func (r *run) engineFailed(out string, rc int) error {
 	e := cli.Fail("the %s failed on %s (the server's kasbah exited %d, see above)", r.mode, r.target, rc)
 	v, t, again := r.version, r.target, "fix what it reported and re-run `"+r.rerun()+"`."
+	if r.unasked {
+		e.Cont("a failed step asked whether to carry on, and there was no terminal to ask on:",
+			"pass --on-hook-failure=continue or --on-hook-failure=stop.")
+	}
 	f := ParseFailure(out)
 	if f == nil {
 		return e.Cont("nothing was started — the containers and :current are what they were,",
@@ -571,8 +663,8 @@ func (r *run) engineFailed(out string, rc int) error {
 	}
 	switch f.Outcome {
 	case Restored:
-		return e.Cont("nothing was started, and the files it had shipped were put back: the",
-			"server is as it was before this run — "+again)
+		return e.Cont("nothing was started, and the files it had shipped were put back — what",
+			"a hook that ran already did stays done — "+again)
 	case Unrestored:
 		return e.Cont("nothing was started, and putting back the files it had shipped failed —",
 			"some of "+v+"'s files are on the server beside the running stack. Its snapshot",
@@ -683,6 +775,10 @@ func (r *run) changelog(rep *Report) {
 			o.Warn("versions.log is not one a version can be read out of — so there is no range to")
 			o.Warn("compare against and no changelog. The deploy itself is done.")
 			o.Warn("look at %s/versions.log, then `git log v<prev>..v%s`", r.dir, v)
+			return
+		}
+		if rep.FailedOnly {
+			o.Info("  changes: no earlier deploy to %s succeeded — no previous version to compare against", r.target)
 			return
 		}
 		o.Info("  changes: first deploy to %s — no previous version to compare against", r.target)

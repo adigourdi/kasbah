@@ -153,9 +153,8 @@ func TestEngineNoSnapshotIsARevertFailure(t *testing.T) {
 func TestEnginePostHookFailureIsLoggedNotReverted(t *testing.T) {
 	for _, mode := range []string{"deploy", "rollback"} {
 		r := revertRig(t, "")
-		t.Setenv("EXEC_RC", "1")
 		sp := r.revertSpec()
-		sp.Mode = mode
+		sp.Mode, sp.Post = mode, []string{"exit 1"}
 		rc, out, errs := r.run(sp)
 		if rc != 1 || !strings.Contains(errs, "1.0.0 is live and was not reverted") {
 			t.Fatalf("%s: rc %d\n%s", mode, rc, errs)
@@ -212,7 +211,7 @@ func TestEnginePrevSkipsFailedLines(t *testing.T) {
 	if rep, _, _ := ParseReport(out); rep == nil || rep.PrevVersion != "0.9.0" || !rep.DeployedBefore {
 		t.Errorf("report %q", out)
 	}
-	if index(r.calls(), "exec -e VERSION=1.0.0 -e PREV_VERSION=0.9.0 ") < 0 {
+	if index(r.calls(), "hook post 1.0.0 prev=0.9.0 project=demo") < 0 {
 		t.Errorf("calls:\n%s", strings.Join(r.calls(), "\n"))
 	}
 	if _, err := os.Lstat(filepath.Join(r.dir, PrevDir)); err == nil {
@@ -224,7 +223,7 @@ func TestEnginePrevSkipsFailedLines(t *testing.T) {
 // snapshot with them.
 func TestEnginePreRetagFailureRestoresTheFiles(t *testing.T) {
 	for name, set := range map[string]func(t *testing.T, sp *Spec){
-		"pre-hook":     func(t *testing.T, sp *Spec) { t.Setenv("EXEC_RC", "1"); sp.Pre = []string{"demo-web echo pre"} },
+		"pre-hook":     func(t *testing.T, sp *Spec) { sp.Pre = []string{"exit 1"} },
 		"image lookup": func(t *testing.T, sp *Spec) { t.Setenv("IMAGE_ERR", "Cannot connect to the Docker daemon") },
 	} {
 		t.Run(name, func(t *testing.T) {

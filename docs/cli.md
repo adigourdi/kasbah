@@ -810,11 +810,14 @@ Flow (no-args / working-tree path):
 8. Run the engine on the VPS, `kasbah remote deploy run`:
    - If `backup:` configured and its `check` exits 0 → run backup (against
      previous version's still-running containers), rotate.
-   - Run `pre-deploy` hooks against previous version's containers.
+   - Run `pre-deploy` hooks — shell, on the server, from the project folder —
+     while the previous version still runs. On a first deploy this and the
+     backup are skipped; otherwise a failure of either asks whether to carry
+     on (`--on-hook-failure=`).
    - Retag `:<version>` as `:current` for every built image.
    - `docker compose up -d --remove-orphans`.
    - Wait for `health.container` to be healthy.
-   - Run `post-deploy` hooks against new containers.
+   - Run `post-deploy` hooks, against the new containers.
    - Append to `versions.log`, then rotate it (`build-deploy.md` → Rotation).
 9. Sync `traefik-dynamic.yml` to `/apps/traefik/dynamic/<name>.yml` — locally
    driven, after the stack is up, so a failed deploy leaves no live route.
@@ -835,14 +838,16 @@ Flags:
   runs**: a flag for a dry-run-ish deploy must not also discard the data safety
   net.
 - `--no-health-wait` — don't block on healthcheck.
-- `--allow-stopped` — deploy over a stack that has deployed here before but
-  whose outgoing containers are not running. Without it that is a refusal,
-  because the backup and the `pre-deploy` hooks act on those containers and
-  skipping them silently is how a backup goes missing exactly when it was worth
-  having. The refusal, and this flag, are **per container**: a stopped hook
-  container does not excuse skipping a backup whose own container is up, and
-  kasbah names which of the two it is talking about. See `build-deploy.md` §
-  the outgoing stack.
+- `--on-hook-failure=continue|stop` — what the engine does when the backup or a
+  `pre-deploy` hook fails, before any container has moved.
+  `continue` runs on to the retag and `compose up` as if it had passed, and both
+  the server's output and the summary say the run carried on past it; `stop`
+  puts back the files the run shipped, starts nothing and fails — what the
+  hooks that already ran did is not undone. Unset it asks on the terminal; with
+  no terminal to ask on the run stops as with `stop` and fails naming the flag.
+  The server waits 10 minutes for the answer, holding the project's and the
+  server's locks, then stops; a signal at the workstation answers `stop`. Any
+  other value is refused before anything connects. See `build-deploy.md` → A deploy that fails … reverts.
 
 ### `kasbah rollback [USER@HOST] [VERSION]`
 
@@ -877,11 +882,13 @@ Flow (see `build-deploy.md` for full detail):
    warns and takes the marker's ceiling for that half, and a block this
    kasbah refuses or a resolve that fails takes it for both.
 8. On VPS: run the engine in rollback mode, `kasbah remote deploy run`:
-   - Run `pre-rollback` hooks against currently-running containers.
+   - Run `pre-rollback` hooks — shell, on the server, from the project folder —
+     while the outgoing version still runs; a failure asks whether to carry
+     on (`--on-hook-failure=`).
    - Retag `:<target>` as `:current` for each built image.
    - `docker compose up -d --remove-orphans`.
    - Wait for health.
-   - Run `post-rollback` hooks against rolled-back containers.
+   - Run `post-rollback` hooks, against the rolled-back containers.
    - Append rollback entry to `versions.log`, rotate.
 9. Sync v<target>'s `traefik-dynamic.yml` to
    `/apps/traefik/dynamic/<name>.yml` — **last**, once the remote step has
@@ -903,9 +910,9 @@ Flags:
 - `--skip-hooks` — skip the pre-/post-rollback hooks. Unlike `deploy`, there
   is no backup for this flag to preserve: a rollback never takes one.
 - `--no-health-wait` — don't block on healthcheck.
-- `--allow-stopped` — roll back over a stack that is not running. Per
-  container, and for the same reason as `deploy`'s — except that here only
-  the `pre-rollback` hooks are at stake.
+- `--on-hook-failure=continue|stop` — what the engine does when a
+  `pre-rollback` hook fails, as on `deploy`: unset it asks, and with no
+  terminal it stops and fails naming the flag.
 
 Rollback restores image + sync'd config only. It does **not** restore
 data bind mounts or `.env` secret values. For schema rollback, use
@@ -944,13 +951,13 @@ same cliff `server prune` stands on, and for the same reason: a wrong deletion
 here takes another project's image with it.
 
 A later `kasbah deploy` brings the project back; the images must be re-shipped
-with `build-push` first. **A project that declares `backup:` or a `pre-deploy` hook needs
-`kasbah deploy --allow-stopped` for that first return trip** (a post-deploy
-hook alone does not) — `versions.log`
-survives a plain drop, so the remote preflight sees a project that has deployed
-here before while the containers those steps need no longer exist, and refuses
-rather than skipping them silently. `drop` prints the exact return command,
-flag included when the manifest needs it. (`--prune` removes the record, so that
+with `build-push` first. **A project that declares `backup:` or a `pre-deploy`
+hook may need `kasbah deploy --on-hook-failure=continue` for that first return
+trip** (a post-deploy hook alone does not) — `versions.log` survives a plain
+drop, so the engine runs the backup and the `pre-deploy` hooks, and the
+containers they may reach for no longer exist; without a terminal, a failure
+there stops the deploy. `drop` prints the return command, flag included when
+the manifest declares either. (`--prune` removes the record, so that
 path is an ordinary first deploy and needs nothing.)
 
 `--prune` additionally deletes `/apps/<name>/`, `/apps/data/<name>/`, and the

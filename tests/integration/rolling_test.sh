@@ -152,8 +152,9 @@ ids=$(web_ids)
 assert '[ "$(grep -c . <<<"$ids")" = 1 ]' "one built-app-web is left ($ids)"
 name=$(remote "docker inspect -f '{{.Name}}' $ids")
 assert '[ "$name" != /built-app-web ]' "and it is compose's replica, not the old container_name ($name)"
-assert 'grep -qF "post-deploy hook: built-app-web (${name#/}): " "$tmpdir/err"' \
-    "the post-deploy hook ran in the new replica, named by its service ($(cli_err))"
+crumb=$(remote "tail -n1 $pdir/state/breadcrumbs.log")
+assert 'grep -qF "post-deploy hook: docker compose exec -T built-app-web true" "$tmpdir/err" && [[ "$crumb" == "post-deploy version=1.2.0 "* ]]' \
+    "the post-deploy hook reached the new replica through \`docker compose exec\` by its service name (crumb '$crumb': $(cli_err))"
 
 # --- v1.3.0: rolled — two replicas, the old one removed by id -------------------
 old=$(web_ids)

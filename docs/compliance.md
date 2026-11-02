@@ -46,7 +46,7 @@ Env:
   ✓ .env (if present) matches .env.prod.example keys
 
 Hooks:
-  ✓ Every hook references a container defined in compose
+  ✓ Every hook is one line of shell
   ✓ Backup hook: check + command + extension all set
 
 Mail (if manifest has `mail:`):
@@ -178,9 +178,9 @@ ever printed.
 
 | ID | Rule | Level |
 |---|---|---|
-| HK01 | `hooks:` holds only the four lists deploy runs, and every hook's first word names a service of compose.prod.yml — its `container_name`, or its service name, which resolves to the service's first running replica (a `container_name` wins on a clash) | fail |
+| HK01 | `hooks:` holds only the four lists deploy runs, and each entry is a single-line, non-empty string — one shell command, run on the server from the project folder, its words not read by kasbah | fail |
 | HK02 | Backup hook has all required subfields (`check`, `command`, `extension`) | fail |
-| HK03 | Backup hook's container names a service — its `container_name` or its service name | fail |
+| HK03 | Backup hook's container names a service — its `container_name` or its service name, which resolves to the service's first running replica (a `container_name` wins on a clash) | fail |
 
 ### Mail (M01–M03 only if `mail:` present in manifest)
 

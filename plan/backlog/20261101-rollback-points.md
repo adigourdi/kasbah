@@ -75,11 +75,24 @@ Three corrections from the user shaped it:
      directory being written (the `backup` hook writes there). On a rollback, it is
      the target's backup, unpacked, or `none` when the target has none.
    - The project's `.env` is not loaded into the hooks' environment.
-5. **A failed pre-hook prompts.** When `pre-deploy` or `pre-rollback` fails, nothing
-   has changed yet. The files are put back and the old stack keeps running, so kasbah
-   asks whether to continue anyway. A `--with-x/--no-x` flag pair answers it (the name
-   is chosen at implementation), and without a TTY the prompt fails naming the flag.
-   A failed post-hook stays as today: no revert, `deploy-failed reason=post-hook`.
+5. **A failed pre-hook prompts.** When `backup`, `pre-deploy` or `pre-rollback` fails,
+   nothing has changed yet. The files are put back and the old stack keeps running, so
+   kasbah asks whether to continue anyway. `--on-hook-failure=continue|stop` answers it
+   (after `--on-drift=`), and without a TTY the prompt fails naming the flag. A failed
+   post-hook stays as today: no revert, `deploy-failed reason=post-hook`.
+5a. **No preflight.** The outgoing-stack check that read a container out of each hook
+   is gone, and so is `--allow-stopped`. On a first deploy (no `versions.log` entry,
+   active or archived), the `backup` and pre-* hooks are skipped and the run says so.
+   Otherwise they always run, and a failure goes to the prompt above. `--skip-hooks`
+   skips the four lifecycle hooks only, never `backup` or `restore`.
+5b. **Nothing to migrate.** No project uses hooks yet: no compatibility with the
+   `<container> <command>` form, no special case for old `backups/pre-deploy-*` files,
+   no leniency for a tag's manifest written in the old form.
+5c. **The server knows the hooks.** The manifest never reaches a server, so every
+   deploy and rollback renders the `backup` and `restore` hooks and the snapshot's
+   target list into `<apps>/<name>/.kasbah-hooks.json`, the same way it writes
+   `.kasbah-client`. Host-side `kasbah backup` and `kasbah restore`
+   ([[restic-backup-hooks]]) read that file.
 6. **Retention:** every backup from the last rolling 24 hours, plus the single newest
    backup older than that, and nothing else. No cap and no setting. restic covers
    longer history; these backups exist for recovering from a broken deploy.
@@ -96,10 +109,13 @@ Three corrections from the user shaped it:
    - Order: `pre-rollback`, then `restore`, then retag and `compose up` the target,
      then `post-rollback`. The database is still reachable through the outgoing
      containers when the restore runs.
+   - The `restore` hook comes from the target tag's manifest, like everything else a
+     rollback reads.
    - A restore throws away every write made since that backup, so rollback asks first.
      It asks when the target has a backup and the project has a `restore` hook.
      `--with-data` / `--no-data` answer the prompt, and without a TTY it fails naming
-     the flag.
+     the flag. `--with-data` when the target has no backup or no `restore` hook is
+     refused before anything changes, naming what is missing.
    - A hook that needs a dump that isn't there fails the rollback itself.
    - A rollback writes nothing into the outgoing version's backup: no safety dump.
 9. **Off-box work is not here.** The nightly restic run, the manual

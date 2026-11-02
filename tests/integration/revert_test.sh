@@ -137,7 +137,7 @@ assert '[ "$state" = "running none" ]' "demo-web is v1.0.0's container, running,
 # --- (c) a post-deploy hook fails ----------------------------------------------------
 cd "$projdir" || exit 2
 sed -i '/healthcheck:/,/retries: 1/d' compose.prod.yml
-printf 'hooks:\n  post-deploy:\n    - demo-web false\n' >> kasbah.yml
+printf 'hooks:\n  post-deploy:\n    - "false"\n' >> kasbah.yml
 cd - >/dev/null || exit 2
 commit_tag 4.0.0
 v4_sum=$(cd "$projdir" && sha256sum < compose.prod.yml | cut -d' ' -f1)

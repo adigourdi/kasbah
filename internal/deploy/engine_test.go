@@ -51,11 +51,17 @@ network)
     esac
     exit 0 ;;
 exec)
-    if [ "$2" = -e ]; then exit "${EXEC_RC:-0}"; fi
     shift 2; exec "$@" ;;
 esac
 exit 0
 `
+
+// The hooks log what they ran with, and write to stdout, which the engine must
+// keep off the report channel.
+const (
+	preHook  = `echo "hook pre $KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT dir=$(pwd) compose=$COMPOSE_PROJECT_NAME" >> "$LOG"; echo version=9.9.9-from-the-hook`
+	postHook = `echo "hook post $KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT" >> "$LOG"`
+)
 
 type rig struct {
 	t                         *testing.T
@@ -94,8 +100,8 @@ func (r *rig) running(names ...string) {
 func (r *rig) spec() Spec {
 	return Spec{
 		Mode: "deploy", Version: "1.0.0", Kasbah: "0.1.0", Images: []string{"demo-web"},
-		Pre:    []string{"demo-web echo pre"},
-		Post:   []string{"demo-web echo post"},
+		Pre:    []string{preHook},
+		Post:   []string{postHook},
 		Health: Health{Container: "demo-web", Timeout: 5},
 		Backup: &Backup{Check: "echo check >> \"$LOG\"", Container: "demo-db", Command: "echo dump", Extension: "sql", Retain: 2},
 	}
@@ -105,7 +111,7 @@ func (r *rig) run(sp Spec) (int, string, string) {
 	r.t.Helper()
 	b, _ := json.Marshal(sp)
 	var out, errb bytes.Buffer
-	rc := Engine(r.dir, bytes.NewReader(b), &out, &errb)
+	rc := Engine(r.dir, bytes.NewReader(append(b, '\n')), &out, &errb)
 	return rc, out.String(), errb.String()
 }
 
@@ -127,26 +133,27 @@ func TestEngineOrder(t *testing.T) {
 	r := newRig(t)
 	os.WriteFile(filepath.Join(r.dir, "versions.log"), []byte("2026-10-01T00:00:00+00:00 deploy 0.9.0 no-backup kasbah=0.1.0 digest=-\n"), 0o640)
 	r.running("demo-web=running", "demo-db=running")
+	t.Setenv("COMPOSE_PROJECT_NAME", "somebody-else")
 	rc, out, errs := r.run(r.spec())
 	if rc != 0 {
 		t.Fatalf("rc %d: %s", rc, errs)
 	}
 	c := r.calls()
-	order := []int{index(c, "check"), index(c, "exec demo-db sh -c echo dump"), index(c, "exec -e VERSION=1.0.0 -e PREV_VERSION=0.9.0 -e DEPLOY_BACKUP=backups/pre-deploy-"),
+	order := []int{index(c, "check"), index(c, "exec demo-db sh -c echo dump"), index(c, "hook pre 1.0.0 prev=0.9.0 project=demo dir="+r.dir+" compose=demo"),
 		index(c, "tag demo-web:1.0.0 demo-web:current"), index(c, "compose -p demo up -d --remove-orphans"), index(c, "inspect --format")}
 	for i := 1; i < len(order); i++ {
 		if order[i-1] < 0 || order[i] <= order[i-1] {
 			t.Fatalf("out of order %v:\n%s", order, strings.Join(c, "\n"))
 		}
 	}
-	if last := c[len(c)-1]; !strings.Contains(last, "sh -c echo post") {
+	if last := c[len(c)-1]; last != "hook post 1.0.0 prev=0.9.0 project=demo" {
 		t.Fatalf("the post-deploy hook is not last: %q", last)
 	}
 	rep, missing, found := ParseReport(out)
 	if rep == nil || !found || missing != nil {
 		t.Fatalf("report %q", out)
 	}
-	if rep.PrevVersion != "0.9.0" || !rep.DeployedBefore || !strings.HasPrefix(rep.Backup, "backups/pre-deploy-") || rep.Digest != "sha256:id-of-demo-web:current" {
+	if rep.PrevVersion != "0.9.0" || !rep.DeployedBefore || rep.FailedOnly || !strings.HasPrefix(rep.Backup, "backups/pre-deploy-") || rep.Digest != "sha256:id-of-demo-web:current" {
 		t.Fatalf("report %+v", rep)
 	}
 	if b, _ := os.ReadFile(filepath.Join(r.dir, rep.Backup)); string(b) != "dump\n" {
@@ -163,48 +170,67 @@ func TestEngineOrder(t *testing.T) {
 	if fi, _ := os.Stat(filepath.Join(r.dir, ".deploy.lock")); fi.Mode().Perm() != serverlock.Mode {
 		t.Errorf(".deploy.lock mode %o, want %o", fi.Mode().Perm(), serverlock.Mode)
 	}
-	if strings.Contains(out, "echo") || strings.Count(strings.TrimSpace(out), "\n") != 0 {
+	if !strings.Contains(errs, "version=9.9.9-from-the-hook") {
+		t.Errorf("the hook's stdout did not reach stderr: %s", errs)
+	}
+	if strings.Contains(out, "from-the-hook") || strings.Count(strings.TrimSpace(out), "\n") != 0 {
 		t.Errorf("stdout carries more than the report: %q", out)
 	}
 }
 
-func TestEngineFirstDeployAndRefusals(t *testing.T) {
+func TestEngineFirstDeploySkipsTheOutgoingSteps(t *testing.T) {
 	r := newRig(t)
 	r.running("demo-web=created")
 	rc, out, errs := r.run(r.spec())
-	if rc != 0 || !strings.Contains(errs, "first deploy — versions.log has no entry") {
+	if rc != 0 || !strings.Contains(errs, "first deploy — versions.log has no entry for this project, so the backup and the pre-deploy hooks will not run") {
 		t.Fatalf("first deploy: rc %d %s", rc, errs)
 	}
 	if rep, _, _ := ParseReport(out); rep.DeployedBefore || rep.Backup != "no-backup" || rep.PrevVersion != "" {
 		t.Fatalf("first report %+v", rep)
 	}
+	c := r.calls()
+	if index(c, "check") >= 0 || index(c, "exec") >= 0 || index(c, "hook pre") >= 0 {
+		t.Fatalf("a first deploy ran an outgoing step:\n%s", strings.Join(c, "\n"))
+	}
+	if c[len(c)-1] != "hook post 1.0.0 prev= project=demo" {
+		t.Fatalf("the post-deploy hook: %q", c[len(c)-1])
+	}
+}
 
-	// History, and the stack down: refused before any side effect.
-	os.Remove(r.log)
+// A log of failed runs only is history: a first deploy whose post-deploy hook
+// failed left a live stack, so the next one backs it up and runs its hooks.
+func TestEngineFailedEntriesAreHistory(t *testing.T) {
+	r := newRig(t)
+	os.WriteFile(filepath.Join(r.dir, "versions.log"), []byte("2026-10-01T00:00:00+00:00 deploy-failed 0.9.0 no-backup kasbah=0.1.0 digest=- by=al reason=post-hook\n"), 0o640)
+	r.running("demo-web=running", "demo-db=running")
+	rc, out, errs := r.run(r.spec())
+	if rc != 0 || strings.Contains(errs, "no entry") {
+		t.Fatalf("rc %d %s", rc, errs)
+	}
+	if c := r.calls(); index(c, "check") < 0 || index(c, "hook pre 1.0.0") < 0 {
+		t.Fatalf("the outgoing steps did not run:\n%s", strings.Join(c, "\n"))
+	}
+	if rep, _, _ := ParseReport(out); rep == nil || !strings.HasPrefix(rep.Backup, "backups/pre-deploy-") || !rep.FailedOnly || rep.DeployedBefore {
+		t.Fatalf("report %+v", rep)
+	}
+}
+
+// With history, the outgoing steps always run: no container is looked at
+// first, and a stopped one is the step's own failure.
+func TestEngineBackupAndRotation(t *testing.T) {
+	r := newRig(t)
+	os.WriteFile(filepath.Join(r.dir, "versions.log"), []byte("2026-10-01T00:00:00+00:00 deploy 0.9.0 no-backup kasbah=0.1.0 digest=-\n"), 0o640)
 	r.running("demo-web=exited")
-	before, _ := os.ReadFile(filepath.Join(r.dir, "versions.log"))
-	rc, _, errs = r.run(r.spec())
-	if rc != 1 || !strings.Contains(errs, "demo-web is exited") || !strings.Contains(errs, "demo-db does not exist on this server") || !strings.Contains(errs, "HK01") {
-		t.Fatalf("stopped + absent: rc %d %s", rc, errs)
-	}
-	if after, _ := os.ReadFile(filepath.Join(r.dir, "versions.log")); !bytes.Equal(before, after) || index(r.calls(), "tag") >= 0 {
-		t.Fatal("a refused run changed something")
-	}
-	r.running("demo-web=exited", "demo-db=running")
-	if rc, _, errs = r.run(r.spec()); rc != 1 || !strings.Contains(errs, "--allow-stopped if it is meant to be down") || !strings.Contains(errs, "the pre-deploy hooks in demo-web") || strings.Contains(errs, "the backup and") {
-		t.Fatalf("stopped hook container: rc %d %s", rc, errs)
-	}
-	sp := r.spec()
-	sp.AllowStopped = true
-	if rc, _, errs = r.run(sp); rc != 0 || !strings.Contains(errs, "--allow-stopped:") || !strings.Contains(errs, "pre-deploy hook skipped: no demo-web is running") {
-		t.Fatalf("--allow-stopped: rc %d %s", rc, errs)
+	if rc, _, errs := r.run(r.spec()); rc != 0 || index(r.calls(), "inspect -f {{.State.Running}}") >= 0 || index(r.calls(), "hook pre 1.0.0") < 0 {
+		t.Fatalf("history and a stopped stack: rc %d %s\n%v", rc, errs, r.calls())
 	}
 
 	// The backup gate says no; the backups rotate to retain.
 	r.running("demo-web=running", "demo-db=running")
-	sp = r.spec()
+	sp := r.spec()
 	sp.Backup.Check = "false"
-	if rc, out, errs = r.run(sp); rc != 0 || !strings.Contains(errs, "backup.check exited non-zero") {
+	rc, out, errs := r.run(sp)
+	if rc != 0 || !strings.Contains(errs, "backup.check exited non-zero") {
 		t.Fatalf("gate: rc %d %s", rc, errs)
 	}
 	if rep, _, _ := ParseReport(out); rep.Backup != "no-backup" {
@@ -300,6 +326,7 @@ func TestRunHelper(t *testing.T) {
 
 func TestRunOutlivesSession(t *testing.T) {
 	r := newRig(t)
+	os.WriteFile(filepath.Join(r.dir, "versions.log"), []byte("2026-10-01T00:00:00+00:00 deploy 0.9.0 no-backup kasbah=0.1.0 digest=-\n"), 0o640)
 	r.running("demo-web=running", "demo-db=running")
 	b, _ := json.Marshal(r.spec())
 	specFile := filepath.Join(t.TempDir(), "spec")
@@ -315,7 +342,7 @@ func TestRunOutlivesSession(t *testing.T) {
 	if code := cmd.ProcessState.ExitCode(); code != 0 || !strings.Contains(string(log), " deploy 1.0.0 backups/pre-deploy-") {
 		t.Fatalf("exit %d (%v), versions.log %q", code, cmd.ProcessState, log)
 	}
-	if c := r.calls(); !strings.Contains(c[len(c)-1], "sh -c echo post") {
+	if c := r.calls(); !strings.HasPrefix(c[len(c)-1], "hook post 1.0.0") {
 		t.Errorf("the run stopped before its post-deploy hook: %q", c[len(c)-1])
 	}
 	if left, _ := filepath.Glob(filepath.Join(r.dir, "backups", "*.partial")); len(left) != 0 {
@@ -337,13 +364,15 @@ func TestEngineRefusesABadVersion(t *testing.T) {
 	}
 }
 
-func TestBackupShellsRunUnderCLocale(t *testing.T) {
+func TestShellsRunUnderCLocale(t *testing.T) {
 	r := newRig(t)
+	os.WriteFile(filepath.Join(r.dir, "versions.log"), []byte("2026-10-01T00:00:00+00:00 deploy 0.9.0 no-backup kasbah=0.1.0 digest=-\n"), 0o640)
 	r.running("demo-web=running", "demo-db=running")
 	t.Setenv("LC_ALL", "fr_FR.UTF-8")
 	sp := r.spec()
 	sp.Backup.Check = `[ "$LC_ALL" = C ]`
 	sp.Backup.Pipe = `[ "$LC_ALL" = C ] && cat`
+	sp.Pre = []string{`[ "$LC_ALL" = C ]`}
 	if rc, out, errs := r.run(sp); rc != 0 {
 		t.Fatalf("rc %d %s", rc, errs)
 	} else if rep, _, _ := ParseReport(out); rep.Backup == "no-backup" {

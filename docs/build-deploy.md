@@ -243,8 +243,8 @@ next run copies only the targets it does not cover. The first engine run a snaps
 serves records in it each built image's `:current` id — the ids the live stack
 started from, kept with a kept snapshot — and every run records the running
 containers before retagging. Any
-failure before the retag (preflight, the backup, a `pre-deploy` hook) puts the
-files back; any failure from the retag through the health wait also puts every
+failure before the retag (the image preflight, a backup or `pre-deploy` hook
+the operator chose to stop on) puts the files back; any failure from the retag through the health wait also puts every
 `:current` back on its old id (untagging one that did not exist), runs `compose
 up -d --remove-orphans` on the restored files, attaches Traefik to the
 project's network again, and waits on the containers that were running before. A revert that works writes nothing to `versions.log` —
@@ -277,6 +277,20 @@ it as `.env.kasbah-replaced` (`660`) and the run names it. If it cannot be
 saved, `.env` is not put back. Two operators deploying the same project at the
 same moment can still cost one of them its revert — the snapshot's lock is
 released before the sync — and that run says so and records `deploy-failed`.
+
+**A failed backup or `pre-deploy` hook asks first.** No container has moved
+yet, so instead of putting the synced files back at once the engine asks the
+workstation whether to carry on: a question line on its stdout, one answer line
+read back on its stdin, after the spec's own line. The workstation answers from
+`--on-hook-failure=continue|stop` — which travels in the spec, so no question is
+asked — or else from its terminal. *continue* runs on to the retag and `compose
+up` as if the step had passed, a backup that failed recording `no-backup`, and
+both ends say the run carried on past the failure; *stop* puts the files back as
+above and starts nothing — what the hooks that already ran did (an `artisan
+down`, half a hook) is not undone. With no terminal the workstation answers so,
+and the run stops and fails naming the flag. A session that drops while the
+question waits, an answer that is neither *continue* nor *stop* (the engine
+says what came back), and no answer within 10 minutes all read as *stop*.
 
 **A `post-deploy` hook that fails is not reverted**: a migration may already
 have run, and old code on a new schema is worse than new code with a failed
@@ -350,7 +364,10 @@ below). The only differences:
    health and built-image list passed as JSON on stdin:
      a. If manifest has `backup:` AND `backup.check` exits 0 → run backup
         against currently-running (previous version) containers. Rotate.
-     b. Run pre-deploy hooks against currently-running containers.
+     b. Run pre-deploy hooks, in the server's shell from <apps>/<name>/,
+        while the previous version is still running.
+     a–b are skipped on a first deploy (no versions.log entry, active or
+        archived, a deploy-failed line counting as one), and the run says so.
      c. Retag :<version> as :current for each built image.
      d. docker compose up -d --remove-orphans — a routed service that can roll
         instead gets a new replica beside the old one, waited healthy, then the
@@ -358,8 +375,9 @@ below). The only differences:
         attach Traefik to <name>_kasbah (`docker network connect`, live;
         traefik.md → Network).
      e. Wait for manifest's health.container to be healthy.
-     f. Run post-deploy hooks against new containers.
-     a–b failing: put the files back. c–e failing: put the files back,
+     f. Run post-deploy hooks, once the new containers are up and healthy.
+     a–b failing: ask whether to carry on (--on-hook-failure=); stop puts the
+        files back. c–e failing: put the files back,
         retag :current back, up the old stack — or, when that cannot work,
         append `deploy-failed`. f failing: append `deploy-failed …
         reason=post-hook`, no revert; the fragment still ships (step 9).
@@ -502,7 +520,7 @@ Fields:
   not finish or revert; it carries `reason=up|health|post-hook|revert`, and
   `mode=rollback` when the run was a rollback). A `deploy-failed` line is
   history, never a rollback target and never a "previous version": the hooks'
-  `PREV_VERSION`, the implicit rollback target, `rollback X`'s "was it
+  `KASBAH_PREV_VERSION`, the implicit rollback target, `rollback X`'s "was it
   deployed here" and prune's last three all step over it — a newest failed
   deploy still counts as what is running when the implicit target is picked.
 - `version` — the semver that ran.
@@ -528,7 +546,7 @@ it: four non-empty positional fields, and a first field beginning
 they disagreeing is a run that warns a line has no readable version and then
 names the version the other reader took out of it. A line that fails the
 test still **counts as history** — it is evidence the project has deployed
-here — but yields no version, so `PREV_VERSION` is empty for the hooks and
+here — but yields no version, so `KASBAH_PREV_VERSION` is empty for the hooks and
 the readers show the line's own bytes rather than inventing fields for it.
 "Has this project deployed here" and "what version was it" are two questions
 throughout, and collapsing them has produced defects in this codebase twice.
@@ -682,12 +700,14 @@ small without sacrificing history.
    --env-seed= for the keys .env lacks; exit 5 when there is no answer to
    be had.
 10. Run the engine on the VPS in rollback mode (`kasbah remote deploy run`):
-     a. Run pre-rollback hooks against currently-running containers.
+     a. Run pre-rollback hooks, in the server's shell from <apps>/<name>/,
+        while the outgoing version is still running. A failure asks whether
+        to carry on (--on-hook-failure=), as a deploy's pre-deploy hook does.
      b. Retag :<target> as :current for each v<target>-era built image.
      c. docker compose up -d --remove-orphans, then attach Traefik to
         <name>_kasbah.
      d. Wait for health.container.
-     e. Run post-rollback hooks against rolled-back containers.
+     e. Run post-rollback hooks, against the rolled-back containers.
      f. Append rollback entry to versions.log, rotate.
 11. Restore v<target>'s Traefik fragment: <apps>/traefik/dynamic/<name>.yml,
     synced from the same extraction. **Last**, once the remote step has
@@ -758,30 +778,43 @@ The engine has two modes:
 
   Flags: `--skip-hooks` (pre/post hooks only — the backup still runs, because a
   dry-run-ish deploy must not also discard the data safety net),
-  `--no-health-wait`, and `--allow-stopped`.
+  `--no-health-wait`, and `--on-hook-failure=continue|stop`.
 
 ### A dropped session
 
 The engine ignores `SIGHUP` and `SIGPIPE` and keeps draining its own output, so a
 session that drops — a closed laptop, Ctrl-C at the workstation — never leaves a
 deploy or rollback half-done: it runs to its `versions.log` line, or through its
-revert, on the server.
+revert, on the server. A failed backup or pre-hook it reaches afterwards has no
+one to ask, and reads *stop*: the synced files are put back.
 The workstation says it was interrupted, that the server carries on, and to look
 at `kasbah history USER@HOST`; the Traefik fragment, which ships only after a
 report, has not moved, so the next deploy ships it. A `SIGTERM` sent to kasbah
 alone, with the session still up, waits for the run instead: a run that then
 succeeds ships the fragment and exits 0 like any other.
 
+A signal while the question is pending — on screen, or still to come once the
+signal has arrived — answers it *stop*, and no prompt is shown after a signal:
+the engine puts the synced files back, starts nothing and records nothing, and
+the workstation says so instead of saying the server carries on.
+
 ### The remote report
 
-The engine writes nothing to stdout for a human. Its progress, its warnings
-and every command it runs narrate on **stderr**, and stdout carries exactly
-one thing: the report, printed as the run's last act — *after* the
-`versions.log` entry is appended, as one JSON line.
+The engine writes nothing to stdout for a human. Its progress, its warnings,
+every command it runs and everything a hook prints narrate on **stderr**, and
+stdout carries the report, printed as the run's last act — *after* the
+`versions.log` entry is appended, as one JSON line. A run that carried on past
+a failed backup or pre-hook adds `"continued":[…]`, naming each step.
 
 ```
 {"version":"1.3.0","prev_version":"1.2.0","deployed_before":true,"backup":"backups/pre-deploy-20260419-101500.sql.gz","digest":"sha256:9f2a…,sha256:c81b…"}
 ```
+
+Before it, stdout may carry the one question a run asks,
+`{"kasbah_deploy_question":1,"step":…,"error":…}`, after a failed backup or
+pre-hook; the workstation answers it with one line on the engine's stdin
+(`continue`, `stop`, or `no-tty`; anything else is *stop*, and the engine
+says what it read).
 
 A run that fails prints a failure line there instead,
 `{"kasbah_deploy_failed":1,"outcome":…,"reason":…,"prev":…}`, and the
@@ -802,7 +835,11 @@ mistake this file has already made once. `prev_version` is empty both on a
 genuine first deploy **and** when the log's last line is not one a version can
 be read out of; only `deployed_before` separates those, and calling the second
 one a first deploy would print "no previous version to compare against" about a
-server that plainly has history. And it is the run's **completion marker**: an exit 0 with no
+server that plainly has history. A log whose every entry is a `deploy-failed`
+line adds `failed_only` (an optional key, not part of the required set): such a
+server has run the project, so the backup and the `pre-*` hooks are not skipped
+as on a first deploy, and the changelog says no earlier deploy succeeded rather
+than calling it a first deploy. And it is the run's **completion marker**: an exit 0 with no
 report, or with a report missing a key, means the script did not reach its end,
 so the local side treats that as a failed deploy and **stops before shipping the
 Traefik fragment**. A truncated run therefore leaves no route and no state, which
@@ -812,43 +849,25 @@ The local side validates the complete key set as a protocol before reading any
 value, and checks the reported `version` against the one it asked for — the one
 field in the report that can be verified rather than believed.
 
-### The outgoing stack, and when a stopped one is a refusal
+### The outgoing stack
 
-The backup and the `pre-*` hooks act on the **outgoing** version's containers.
-When those are not running there is nothing for them to act on, and there are
-two quite different reasons for that:
+The backup and the `pre-*` hooks act on the **outgoing** version, and whether
+there is one is read off `versions.log`, never off a container list, which
+cannot tell a first deploy from a crashed stack:
 
-- **A first deploy** — `versions.log` has no entry for this project. Both steps
-  are skipped, said out loud, and the deploy proceeds. Refusing here would make
-  a first deploy impossible for every project that declares either.
-- **Anything else** — the project has deployed here before, so a stopped stack
-  means a crash, a manual `down`, or a host that rebooted. The deploy
-  **refuses**, before any side effect, naming each container and the state
-  docker reports for it. Deploying over it would skip the backup at exactly the
-  moment it is worth having, and silently.
-
-`--allow-stopped` is the override for an operator who knows the stack is meant
-to be down. Both the refusal and the flag work **per container**: a stopped
-hook container does not excuse skipping a backup whose own container is up, and
-kasbah names which of the two it is talking about rather than announcing a
-blanket skip it is not performing.
-
-Two shapes need the flag that arguably should not: a `pre-deploy` hook
-targeting a container that is deliberately `restart: "no"`, and a project whose
-`backup.check` would have declined anyway while its backup container happens to
-be stopped. The refusal is computed from static manifest data on purpose —
-consulting `backup.check` first would mean running project-authored shell
-*before* deciding whether the deploy may proceed at all.
-
-**A container that no longer exists is a different thing from one that is
-stopped**, and kasbah says so. Rename a `container_name:` in
-`compose.prod.yml` without updating the hook that targets it, and the old name
-is not down — it is gone. Telling the operator to start it would be advice they
-cannot follow, and `--allow-stopped` would silently disable that hook on every
-deploy from then on, which is the exact silent skip this guard exists to
-prevent. The refusal therefore names the manifest/compose mismatch and points
-at `kasbah check`'s HK01, which catches it locally before a deploy is
-attempted.
+- **A first deploy** — `versions.log` has no entry for this project, active or
+  archived; a `deploy-failed` line is an entry, since a first deploy whose
+  `post-deploy` hook failed left its stack live. Both steps are skipped, said out loud, and the deploy proceeds.
+  Running them would make a first deploy impossible for every project that
+  declares either.
+- **Anything else** — the project has deployed here before, so both steps run.
+  kasbah does not inspect the containers first: a hook that needs the outgoing
+  stack up says so by failing, and a stopped backup container fails the backup's
+  `command`. Either failure asks whether to carry on (`--on-hook-failure=`,
+  above), and an operator who knows the stack is meant to be down answers
+  *continue*. `backup.check` runs before the backup, though, and a check that
+  fails skips the backup whatever the reason — one that reaches into a
+  container that is down skips it, with a note and no question.
 
   Both modes hold an exclusive `flock` for the whole run, so a second
   concurrent deploy or rollback fails fast instead of interleaving hooks and
@@ -858,7 +877,9 @@ attempted.
   `server init`, `upgrade-traefik`, `server prune` or `server destroy`, which
   take it exclusively; either refusal names every holder — command, user, pid. The lock is a dedicated file,
   `<project>/.deploy.lock`, held on its own file descriptor — flocking the
-  directory path itself is not portable.
+  directory path itself is not portable. Both are held while the engine waits
+  on its question, so that wait is bounded: no answer within 10 minutes is
+  *stop*, and the engine says it waited that long.
 
 The manifest never reaches the server: the engine receives its data on stdin.
 `.deploy.lock` is kasbah's — created, never shipped, its contents never read —

@@ -252,10 +252,9 @@ func ReadHooks(m *manifest.Manifest) (map[string][]string, error) {
 	return p.Hooks, err
 }
 
-// readHooks validates every hook here: a hook with no command found on the
-// server would be found after the backup and the retag.
-// historical is a tag's manifest, where a key that is not a hook is noted and
-// ignored: a version a server has run stays rollable.
+// readHooks validates every hook before anything reaches a server: one
+// non-empty line of shell each. In a historical (tag's) manifest a key that is
+// not a hook is noted and ignored, so a version a server ran stays rollable.
 func readHooks(m *manifest.Manifest, p *Plan, historical bool) error {
 	p.Hooks = map[string][]string{}
 	if h, _ := m.Get("hooks"); h != nil {
@@ -285,23 +284,17 @@ func readHooks(m *manifest.Manifest, p *Plan, historical bool) error {
 			return cli.Fail("kasbah.yml: hooks.%s is not a list of strings", which)
 		}
 		for _, x := range list {
-			switch x.(type) {
-			case nil, string, tree.Number:
-			default:
-				return cli.Fail("kasbah.yml: hooks.%s holds %s — each entry must be a string, \"<container> <command…>\"", which, tree.Compact(x))
+			line, ok := x.(string)
+			if !ok {
+				return cli.Fail("kasbah.yml: hooks.%s holds %s — each entry must be a string, one shell command", which, tree.Compact(x))
 			}
-			line := tree.Text(x)
 			line = strings.TrimRight(line, "\n")
 			if first, _, ok := strings.Cut(line, "\n"); ok {
-				return cli.Fail("kasbah.yml: the %s hook '%s…' spans more than one line — a hook is one line whose first word is the container name, and a multi-line value would be run as several hooks (docs/project-manifest.md)", which, first)
+				return cli.Fail("kasbah.yml: the %s hook '%s…' spans more than one line — a hook is one line of shell, and a multi-line value would be run as several hooks; chain with && or call a script (docs/project-manifest.md)", which, strings.TrimSuffix(first, "\r"))
 			}
 			line = trim(strings.TrimSuffix(line, "\r"))
-			if line == "" || line == "null" {
-				continue
-			}
-			c := HookContainer(line)
-			if trim(strings.TrimPrefix(line, c)) == "" {
-				return cli.Fail("kasbah.yml: the %s hook '%s' names a container and no command — each entry is \"<container> <command…>\" (docs/project-manifest.md)", which, line)
+			if line == "" {
+				return cli.Fail("kasbah.yml: hooks.%s holds an empty entry — each entry is one shell command (docs/project-manifest.md)", which)
 			}
 			p.Hooks[which] = append(p.Hooks[which], line)
 		}

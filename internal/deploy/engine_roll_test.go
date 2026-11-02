@@ -97,7 +97,7 @@ func (r *rollRig) containers(rows ...string) {
 
 func (r *rollRig) spec() Spec {
 	return Spec{Mode: "deploy", Version: "1.0.0", Kasbah: "0.1.0", Routed: []string{"demo-web"},
-		Pre: []string{"demo-web echo pre"}, Post: []string{"demo-web echo post"},
+		Pre: []string{preHook}, Post: []string{postHook},
 		Health: Health{Container: "demo-web", Timeout: 1}}
 }
 
@@ -125,12 +125,12 @@ func TestEngineRollsARoutedService(t *testing.T) {
 	}
 	c := r.calls()
 	order := []int{
-		index(c, "exec -e VERSION=1.0.0 -e PREV_VERSION=0.9.0 -e DEPLOY_BACKUP=no-backup demo-demo-web-1 sh -c echo pre"),
+		index(c, "hook pre 1.0.0 prev=0.9.0 project=demo"),
 		index(c, "compose -p demo up -d --no-deps --remove-orphans demo-db"),
 		index(c, "compose -p demo up -d --no-deps --no-recreate --remove-orphans --scale demo-web=2 demo-web"),
 		index(c, "inspect --format {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} new1"),
 		index(c, "stop old1"), index(c, "rm old1"),
-		index(c, "exec -e VERSION=1.0.0 -e PREV_VERSION=0.9.0 -e DEPLOY_BACKUP=no-backup demo-demo-web-2 sh -c echo post"),
+		index(c, "hook post 1.0.0 prev=0.9.0 project=demo"),
 	}
 	for i := 1; i < len(order); i++ {
 		if order[i-1] < 0 || order[i] <= order[i-1] {
@@ -263,23 +263,5 @@ func TestEngineTargets(t *testing.T) {
 	r.containers("b\tdemo-demo-web-10\tdemo-web\t10\trunning", "a\tdemo-demo-web-2\tdemo-web\t2\trunning")
 	if got, isSvc := e.target("demo-web"); got != "demo-demo-web-2" || !isSvc {
 		t.Errorf("target(demo-web) = %s %v, want the lowest-numbered running replica", got, isSvc)
-	}
-}
-
-// The outgoing stack: a service with no running replica is stopped, a name
-// that is neither container nor service is gone.
-func TestEngineOutgoingServices(t *testing.T) {
-	r := newRollRig(t, rollModel)
-	os.WriteFile(filepath.Join(r.dir, "versions.log"), []byte(v1line), 0o664)
-	r.containers("old1\tdemo-demo-web-1\tdemo-web\t1\texited")
-	rc, _, errs := r.run(r.spec())
-	if rc != 1 || !strings.Contains(errs, "service demo-web has no running container (demo-demo-web-1 is exited)") || !strings.Contains(errs, "--allow-stopped if it is meant to be down") {
-		t.Fatalf("stopped service: rc %d\n%s", rc, errs)
-	}
-	sp := r.spec()
-	sp.Pre = []string{"ghost echo"}
-	rc, _, errs = r.run(sp)
-	if rc != 1 || !strings.Contains(errs, "ghost does not exist on this server") || !strings.Contains(errs, "no container of this compose project carries that name or belongs to a service of that name") || !strings.Contains(errs, "HK01") {
-		t.Fatalf("gone: rc %d\n%s", rc, errs)
 	}
 }

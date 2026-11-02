@@ -305,21 +305,21 @@ func TestRunConfirmations(t *testing.T) {
 	}
 }
 
-func TestRunAllowStoppedFromManifest(t *testing.T) {
+func TestRunOnHookFailureFromManifest(t *testing.T) {
 	project(t, "backup:\n  container: db\n")
 	f := &fake{scan: fixture(), actOut: okAct}
 	so, _, code := run(t, f, Options{Target: "deploy@vps", Yes: true}, false, "")
-	if code != 0 || !strings.Contains(so, "kasbah deploy deploy@vps --allow-stopped") {
+	if code != 0 || !strings.Contains(so, "kasbah deploy deploy@vps --on-hook-failure=continue") {
 		t.Fatalf("%d\n%s", code, so)
 	}
-	m := map[string]bool{"": false, "hooks:\n  pre-deploy: []\n": false, "hooks:\n  pre-deploy: [\"db pg_dump\"]\n": true,
+	m := map[string]bool{"": false, "hooks:\n  pre-deploy: []\n": false, "hooks:\n  pre-deploy: [\"docker compose exec -T db pg_dump\"]\n": true,
 		"hooks:\n  post-deploy: [\"x\"]\n": false, "backup:\n  container: \"\"\n": false}
 	for extra, want := range m {
 		project(t, extra)
 		f := &fake{scan: fixture(), actOut: okAct}
 		so, _, _ := run(t, f, Options{Target: "deploy@vps", Yes: true}, false, "")
-		if got := strings.Contains(so, "--allow-stopped"); got != want {
-			t.Errorf("%q: allow-stopped=%v", extra, got)
+		if got := strings.Contains(so, "--on-hook-failure=continue"); got != want {
+			t.Errorf("%q: on-hook-failure=%v", extra, got)
 		}
 	}
 }

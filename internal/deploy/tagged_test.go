@@ -44,7 +44,7 @@ func history(t *testing.T, v1extra string) {
 	t.Chdir(t.TempDir())
 	write(t, map[string]string{
 		"kasbah.yml": "schema: 1\nname: demo\nsync:\n  - compose.prod.yml -> compose.yml\n  - .env.prod.example\n  - conf/\n" +
-			"hooks:\n  pre-rollback:\n    - 'demo-web echo v1-pre-rollback'\n  pre-deploy:\n    - 'demo-web echo v1-pre-deploy'\n" + v1extra,
+			"hooks:\n  pre-rollback:\n    - 'echo v1-pre-rollback'\n  pre-deploy:\n    - 'echo v1-pre-deploy'\n" + v1extra,
 		"compose.prod.yml":    "services:\n  web:\n    build: .\n    image: demo-web:current\n  cache:\n    build: .\n    image: demo-cache:current\n",
 		".env.prod.example":   "A=1\n",
 		"conf/app.conf":       "v1\n",
@@ -56,7 +56,7 @@ func history(t *testing.T, v1extra string) {
 	git(t, "tag", "v1.0.0")
 	os.RemoveAll("conf")
 	write(t, map[string]string{
-		"kasbah.yml":          "schema: 1\nname: demo\nclient: acme\nsync:\n  - compose.prod.yml -> compose.yml\n  - .env.prod.example\n  - extra.txt\nhooks:\n  pre-rollback:\n    - 'demo-web echo HEAD'\n",
+		"kasbah.yml":          "schema: 1\nname: demo\nclient: acme\nsync:\n  - compose.prod.yml -> compose.yml\n  - .env.prod.example\n  - extra.txt\nhooks:\n  pre-rollback:\n    - 'echo HEAD'\n",
 		"compose.prod.yml":    "services:\n  web:\n    build: .\n    image: demo-web:current\n  worker:\n    build: .\n    image: demo-worker:current\n",
 		"extra.txt":           "x\n",
 		"traefik-dynamic.yml": "# HEAD\n",
@@ -120,7 +120,7 @@ func TestRollbackShipsTheTag(t *testing.T) {
 		t.Errorf("implicit target not announced\n%s", out)
 	}
 	sp := f.spec
-	if sp.Mode != "rollback" || sp.Version != "1.0.0" || strings.Join(sp.Pre, "|") != "demo-web echo v1-pre-rollback" {
+	if sp.Mode != "rollback" || sp.Version != "1.0.0" || strings.Join(sp.Pre, "|") != "echo v1-pre-rollback" {
 		t.Errorf("spec from v1.0.0's manifest: %+v", sp)
 	}
 	if strings.Join(sp.Images, ",") != "demo-cache,demo-web" {
@@ -168,7 +168,7 @@ func TestDeployVersion(t *testing.T) {
 	if f.called("record") {
 		t.Error("a tagged deploy read the record")
 	}
-	if f.spec.Mode != "deploy" || strings.Join(f.spec.Pre, "|") != "demo-web echo v1-pre-deploy" {
+	if f.spec.Mode != "deploy" || strings.Join(f.spec.Pre, "|") != "echo v1-pre-deploy" {
 		t.Errorf("spec %+v", f.spec)
 	}
 	if f.client != "demo" || !strings.Contains(out, "falling back to 'demo'") {
@@ -378,7 +378,7 @@ func TestDeployVersionUnknownHook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if strings.Join(f.spec.Pre, "|") != "demo-web echo v1-pre-deploy" {
+	if strings.Join(f.spec.Pre, "|") != "echo v1-pre-deploy" {
 		t.Errorf("spec %+v", f.spec)
 	}
 	if !strings.Contains(out, "the manifest in this version has hooks.pre_deploy, which is not a hook kasbah runs — ignored") {

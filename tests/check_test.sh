@@ -1294,8 +1294,8 @@ out="$(cd "$proj31" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                                          "E04 warn exits 0 (got $rc)"
 assert 'grep -qF "⚠ .env.prod.example has values >64 chars (possibly leaked secrets): API_TOKEN" <<<"$out"' "E04 warn line"
 
-# --- Case 32: HK01 — hook references unknown container → fail ----------------
-proj32="$tmpdir/hk01-unknown"
+# --- Case 32: HK01 — a hook on two lines → fail -----------------------------
+proj32="$tmpdir/hk01-multiline"
 make_project "$proj32"
 cat > "$proj32/compose.prod.yml" <<'YAML'
 services:
@@ -1317,11 +1317,21 @@ cat >> "$proj32/kasbah.yml" <<'YAML'
 
 hooks:
   post-deploy:
-    - ghost-container echo hi
+    - |
+      php artisan down
+      php artisan migrate
 YAML
 out="$(cd "$proj32" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                              "HK01 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Hooks reference names that are neither a container_name nor a service: ghost-container" <<<"$out"' "HK01 fail line"
+assert 'grep -qF "✗ kasbah.yml: the post-deploy hook '"'"'php artisan down…'"'"' spans more than one line" <<<"$out"' "HK01 fail line"
+
+# --- Case 32b: HK01 — an empty hook → fail -----------------------------------
+proj32b="$tmpdir/hk01-empty"
+make_project "$proj32b"
+printf '\nhooks:\n  pre-deploy:\n    - ""\n' >> "$proj32b/kasbah.yml"
+out="$(cd "$proj32b" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]'                                                              "HK01 empty fails exits 6 (got $rc)"
+assert 'grep -qF "✗ kasbah.yml: hooks.pre-deploy holds an empty entry" <<<"$out"'     "HK01 empty fail line"
 
 # --- Case 33: HK02 — backup missing required field → fail --------------------
 proj33="$tmpdir/hk02-missing-field"
@@ -1441,13 +1451,13 @@ cat >> "$proj35/kasbah.yml" <<'YAML'
 
 hooks:
   pre-deploy:
-    - demo-api echo before
+    - docker compose exec -T demo-api echo before
   post-deploy:
-    - demo-api echo after
+    - echo "after $KASBAH_VERSION" >> deployed.txt
   pre-rollback:
-    - demo-api echo rollback-before
+    - docker compose exec -T demo-api echo rollback-before
   post-rollback:
-    - demo-api echo rollback-after
+    - echo rollback-after
 
 backup:
   container: demo-db
@@ -1457,11 +1467,12 @@ backup:
 YAML
 out="$(cd "$proj35" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                       "HK pass exits 0 (got $rc)"
-assert 'grep -qF "✓ All hook commands target a container_name or service in compose" <<<"$out"' "HK01 pass line"
+assert 'grep -qF "✓ Every hook is one line of shell" <<<"$out"' "HK01 pass line"
 assert 'grep -qF "✓ Backup hook has check, command, and extension" <<<"$out"'  "HK02 pass line"
 assert 'grep -qF "✓ Backup hook container '"'"'demo-db'"'"' exists in compose" <<<"$out"' "HK03 pass line"
 
-# --- Case 35b: hooks, health and backup name services, not container_names --
+# --- Case 35b: health and backup name services, not container_names --------
+# A hook names no container at all: a first word compose does not know is fine.
 proj35b="$tmpdir/hk-services"
 make_project "$proj35b"
 cat >> "$proj35b/kasbah.yml" <<'YAML'
@@ -1470,7 +1481,7 @@ health:
   container: demo-web
 hooks:
   post-deploy:
-    - demo-web echo after
+    - ghost-container echo after
 backup:
   container: demo-web
   check: "true"
@@ -1478,8 +1489,8 @@ backup:
   extension: txt
 YAML
 out="$(cd "$proj35b" && "$kasbah" check 2>&1)"; rc=$?
-assert '[ "$rc" = "0" ]' "service names as hook, health and backup targets pass (got $rc: $out)"
-assert 'grep -qF "✓ All hook commands target a container_name or service in compose" <<<"$out"' "HK01 takes a service name"
+assert '[ "$rc" = "0" ]' "service names as health and backup targets pass (got $rc: $out)"
+assert 'grep -qF "✓ Every hook is one line of shell" <<<"$out"' "HK01 does not read a hook's first word"
 assert 'grep -qF "✓ manifest health.container '"'"'demo-web'"'"' exists in compose" <<<"$out"' "health.container takes a service name"
 assert 'grep -qF "✓ Backup hook container '"'"'demo-web'"'"' exists in compose" <<<"$out"' "HK03 takes a service name"
 
@@ -2297,7 +2308,7 @@ YAML
     printf '      service: demo\n  services:\n    demo:\n      loadBalancer:\n'
     printf '        servers:\n          - url: "http://demo-web:80"\n'
 } > "$f8/traefik-dynamic.yml"
-printf 'hooks:\n  post-deploy:\n    - "nope echo hi"\n' >> "$f8/kasbah.yml"
+printf 'hooks:\n  post-deploy:\n    - "nope echo hi\\n  echo two"\n' >> "$f8/kasbah.yml"
 out="$(fx_run "$f8")"; rc=$?
 assert '[ "$rc" = "6" ]' "F8: the unfixable failures still fail the run (rc $rc)
 $out"
@@ -2310,7 +2321,7 @@ assert 'grep -qF "Services on kasbah-net whose name is not" <<<"$out"'      "F8:
 assert 'grep -qF "✗ No router rule references manifest domain" <<<"$out"'   "F8: T02 still reported"
 assert 'grep -qF "✗ Routers without entryPoints: demo" <<<"$out"'           "F8: T03 still reported"
 assert 'grep -qF "✗ Routers claim reserved hostnames" <<<"$out"'            "F8: T05 still reported"
-assert 'grep -qF "✗ Hooks reference names that are neither a container_name nor a service: nope" <<<"$out"' "F8: HK01 still reported"
+assert 'grep -qF "✗ kasbah.yml: the post-deploy hook '"'"'nope echo hi…'"'"' spans more than one line" <<<"$out"' "F8: HK01 still reported"
 # The paired positive: those rules were not merely *reported* untouched, the
 # file really is untouched where they live. A --fix that had renamed `cache` or
 # rewritten the fragment would satisfy every grep above by making them pass.

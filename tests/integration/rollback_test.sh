@@ -13,8 +13,9 @@
 #     — and the page inside the running container, which is the v1 build's.
 #
 # What only the rig can show beyond that: the pre-/post-rollback hooks running in
-# that order with $VERSION at the target and $PREV_VERSION at the version being
-# left, read out of the file the hooks wrote inside a container; and the two
+# that order with $KASBAH_VERSION at the target and $KASBAH_PREV_VERSION at the
+# version being left, read out of the file the hooks wrote from the project
+# folder in the server's shell; and the two
 # refusals, against a real `docker image inspect` and a real versions.log.
 #
 # The rig is treated as given: this suite never starts, resets or stops it. It
@@ -319,14 +320,14 @@ assert '[[ "$post_line" == post-rollback\ * ]]' \
 assert '! grep -qF "pre-deploy" <<<"$crumb_text"' \
     "the deploy pair did not run — the mode picks one pair (crumbs: $(tr '\n' '/' <<<"$crumb_text"))"
 assert '[[ "$pre_line" == *"version=$v1 "* ]]' \
-    "\$VERSION is the version rolled back to (line: '$pre_line')"
+    "\$KASBAH_VERSION is the version rolled back to (line: '$pre_line')"
 assert '[[ "$pre_line" == *" prev=$v2 "* ]]' \
-    "and \$PREV_VERSION the one being left behind (line: '$pre_line')"
+    "and \$KASBAH_PREV_VERSION the one being left behind (line: '$pre_line')"
 assert '[[ "$post_line" == *"version=$v1 "* ]]' \
-    "the post-rollback hook is handed the same \$VERSION (line: '$post_line')"
-assert '[[ "$post_line" == *" prev=$v2 "* ]]' "and the same \$PREV_VERSION (line: '$post_line')"
-assert '[[ "$pre_line" == *" backup=no-backup" ]]' \
-    "with \$DEPLOY_BACKUP saying there is none (line: '$pre_line')"
+    "the post-rollback hook is handed the same \$KASBAH_VERSION (line: '$post_line')"
+assert '[[ "$post_line" == *" prev=$v2 "* ]]' "and the same \$KASBAH_PREV_VERSION (line: '$post_line')"
+assert '[[ "$pre_line" == *" project=$project" ]] && [[ "$post_line" == *" project=$project" ]]' \
+    "and \$KASBAH_PROJECT the project's name (lines: '$pre_line' / '$post_line')"
 
 assert '[ "$(jq -r .last_version "$projdir/.kasbah/state.json" 2>/dev/null)" = "$v1" ]' \
     "and the project's state file, in the project root, records the version rolled back to"
