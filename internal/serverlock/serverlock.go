@@ -148,6 +148,24 @@ func ProjectHolder(dir string) string {
 	return "another kasbah run"
 }
 
+// Holder is one process holding a flock: what it is, as ProjectHolder words
+// it, and its pid.
+type Holder struct {
+	What string
+	PID  int
+}
+
+// ProjectWriters is every run holding dir's .deploy.lock, read from
+// /proc/locks without taking the lock; none when it cannot tell.
+func ProjectWriters(dir string) []Holder {
+	f, err := os.Open(strings.TrimSuffix(dir, "/") + "/.deploy.lock")
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	return procLocks(f, "WRITE")
+}
+
 // Owned is whether this process's user owns the file: only the owner may
 // chmod it, whatever its group bits allow.
 func Owned(fi os.FileInfo) bool {
@@ -210,6 +228,15 @@ func holder(f *os.File, path string) string {
 // procHolders is every flock of kind (READ or WRITE) on f's inode in
 // /proc/locks, as "server init by alice (pid 123)".
 func procHolders(f *os.File, kind string) []string {
+	var out []string
+	for _, h := range procLocks(f, kind) {
+		out = append(out, h.What)
+	}
+	return out
+}
+
+// procLocks is every flock of kind on f's inode in /proc/locks.
+func procLocks(f *os.File, kind string) []Holder {
 	fi, err := f.Stat()
 	if err != nil {
 		return nil
@@ -223,7 +250,7 @@ func procHolders(f *os.File, kind string) []string {
 		return nil
 	}
 	ino := ":" + strconv.FormatUint(st.Ino, 10)
-	var out []string
+	var out []Holder
 	for _, l := range strings.Split(string(b), "\n") {
 		w := strings.Fields(l)
 		// 1: FLOCK  ADVISORY  WRITE 1234 08:01:5678 0 EOF
@@ -238,7 +265,8 @@ func procHolders(f *os.File, kind string) []string {
 		if p, err := os.Stat("/proc/" + pid); err == nil {
 			what += " by " + OwnerName(p)
 		}
-		out = append(out, fmt.Sprintf("%s (pid %s)", what, pid))
+		n, _ := strconv.Atoi(pid)
+		out = append(out, Holder{What: fmt.Sprintf("%s (pid %s)", what, pid), PID: n})
 	}
 	return out
 }

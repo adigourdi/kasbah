@@ -22,6 +22,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/acme"
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/remote"
 )
 
@@ -612,5 +613,97 @@ func TestDashboardOff(t *testing.T) {
 		if out, _, _ := runStatus(t, r); strings.Contains(out, "Dashboard:") {
 			t.Errorf("an unread _shared.yml reports a dashboard state:\n%s", out)
 		}
+	}
+}
+
+func TestLeftovers(t *testing.T) {
+	r := base()
+	r.Projects = []Project{
+		{Name: "clean", LogState: "missing", FragState: "absent"},
+		{Name: "shop", LogState: "missing", FragState: "absent", Leftovers: deploy.Leftovers{
+			Backups:  []string{"1.2.0-20330517-000000", "1.10.0-20330518-000000"},
+			Kept:     []string{deploy.KeptPrefix + "1.1.0-20330510-033320"},
+			Unpacked: []string{deploy.UnpackedPrefix + "4242", deploy.UnpackedPrefix + "77"}}},
+		{Name: "blog", LogState: "missing", FragState: "absent", Leftovers: deploy.Leftovers{
+			Kept: []string{deploy.KeptPrefix + "0.9.0-20330518-021320", deploy.KeptPrefix + "0.8.0-20330101-000000"}}},
+	}
+	out, _, _ := runStatus(t, r)
+	// The server's clock is 2000000000, 2033-05-18T03:33:20Z.
+	has(t, out,
+		"  shop           no containers  -          no versions.log — never deployed by kasbah, or dropped\n"+
+			"      backups/: 2 backup directories whose tarball was never written, newest 1.10.0-20330518-000000 (3h ago) — each may hold a copy of .env\n"+
+			"      .kasbah-prev.kept-*: 1 snapshot a backup could not take in, newest 1.1.0-20330510-033320 (8 day(s) ago) — each may hold a copy of .env\n"+
+			"      .kasbah-unpacked.*: 2 extractions killed rollbacks left — each may hold a copy of .env\n"+
+			"      inspect each, then remove it by hand — kasbah check --server names every path\n",
+		"  blog           no containers  -          no versions.log — never deployed by kasbah, or dropped\n"+
+			"      .kasbah-prev.kept-*: 2 snapshots a backup could not take in, newest 0.9.0-20330518-021320 (1h ago) — each may hold a copy of .env\n"+
+			"      inspect each, then remove it by hand")
+	if !strings.Contains(out, "  clean          no containers  -          no versions.log — never deployed by kasbah, or dropped\n  shop ") {
+		t.Errorf("a project with no leftovers printed some:\n%s", out)
+	}
+	if strings.Count(out, "inspect each") != 2 || strings.Contains(out, "blog           no containers  -          no versions.log — never deployed by kasbah, or dropped\n      backups/") {
+		t.Errorf("leftover lines:\n%s", out)
+	}
+
+	// No server clock: the newest is named, unaged.
+	r.Backup.Now = ""
+	out, _, _ = runStatus(t, r)
+	has(t, out, "newest 1.10.0-20330518-000000 — each may hold")
+
+	// A run holds the lock: its backup directory and extraction are not called
+	// leftovers; a kept-aside snapshot still is. One that cannot be listed says so.
+	r = base()
+	r.Projects = []Project{
+		{Name: "shop", LogState: "missing", FragState: "absent", Leftovers: deploy.Leftovers{
+			Backups: []string{"1.2.0-20330518-030000"}, Kept: []string{deploy.KeptPrefix + "1.1.0-20330510-033320"},
+			Holder: "a deploy or rollback by alice (pid 12)"}},
+		{Name: "blog", LogState: "missing", FragState: "absent", Leftovers: deploy.Leftovers{
+			Unpacked: []string{deploy.UnpackedPrefix + "9"}, Holder: "a deploy or rollback by bob (pid 3)"}},
+		{Name: "dark", LogState: "missing", FragState: "absent", Leftovers: deploy.Leftovers{Error: "backups/ could not be listed: permission denied"}},
+	}
+	out, _, _ = runStatus(t, r)
+	has(t, out,
+		"      backups/: 1 backup directory whose tarball was never written, newest 1.2.0-20330518-030000 (33m ago) — each may hold a copy of .env\n"+
+			"      a run holds the lock now (a deploy or rollback by alice (pid 12)); a backup directory or extraction may be its own\n"+
+			"      .kasbah-prev.kept-*: 1 snapshot a backup could not take in, newest 1.1.0-20330510-033320 (8 day(s) ago) — each may hold a copy of .env\n"+
+			"      inspect each, then remove it by hand — kasbah check --server names every path\n",
+		"      .kasbah-unpacked.*: 1 extraction a killed rollback left — each may hold a copy of .env\n"+
+			"      a run holds the lock now (a deploy or rollback by bob (pid 3)); a backup directory or extraction may be its own\n  dark ",
+		"  dark           no containers  -          no versions.log — never deployed by kasbah, or dropped\n"+
+			"      leftovers cannot be checked: backups/ could not be listed: permission denied\n")
+	if strings.Count(out, "inspect each") != 1 {
+		t.Errorf("remove-by-hand advice for a run's own:\n%s", out)
+	}
+}
+
+func TestCollectLeftovers(t *testing.T) {
+	apps := t.TempDir()
+	mk := func(p string) { os.MkdirAll(filepath.Join(apps, p), 0o755) }
+	mk("demo/backups/1.0.0-20261102-100000/kasbah-snapshot")
+	mk("demo/backups/notabackup")
+	mk("demo/" + deploy.KeptPrefix + "0.9.0-20261102-090000")
+	mk("demo/" + deploy.UnpackedPrefix + "4242")
+	mk("tidy/backups")
+	mk("Caps/" + deploy.UnpackedPrefix + "1")
+	elsewhere := t.TempDir()
+	os.Mkdir(filepath.Join(elsewhere, deploy.UnpackedPrefix+"2"), 0o755)
+	os.Symlink(elsewhere, filepath.Join(apps, "linked"))
+	os.WriteFile(filepath.Join(apps, "demo/backups/1.0.0-20261101-100000.tar.gz"), nil, 0o644)
+	os.WriteFile(filepath.Join(apps, "demo/backups/1.0.0-20261101-110000.tar.gz.part"), nil, 0o644)
+	os.WriteFile(filepath.Join(apps, "demo/backups/2.0.0-20261101-110000"), nil, 0o644)
+	t.Setenv("PATH", t.TempDir())
+	got := map[string]deploy.Leftovers{}
+	for _, p := range Collect(apps).Projects {
+		got[p.Name] = p.Leftovers
+	}
+	d := got["demo"]
+	if strings.Join(d.Backups, ",") != "1.0.0-20261102-100000" || strings.Join(d.Kept, ",") != deploy.KeptPrefix+"0.9.0-20261102-090000" ||
+		strings.Join(d.Unpacked, ",") != deploy.UnpackedPrefix+"4242" || got["tidy"].Any() {
+		t.Errorf("leftovers: %+v", got)
+	}
+	// The scanner's rule for a project: a symlinked directory is one, a name
+	// no manifest allows is not — listed, but not scanned.
+	if len(got["linked"].Unpacked) != 1 || got["Caps"].Any() || got["Caps"].Unpacked == nil {
+		t.Errorf("project rule: %+v", got)
 	}
 }

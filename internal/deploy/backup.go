@@ -37,7 +37,13 @@ const HooksFile = ".kasbah-hooks.json"
 // stampLayout is a backup's UTC stamp: fixed width, so names sort by time.
 const stampLayout = "20060102-150405"
 
-var reBackup = regexp.MustCompile(`^([0-9A-Za-z][0-9A-Za-z.+_-]*)-([0-9]{8}-[0-9]{6})\.tar\.gz$`)
+// backupName is a backup's name less its suffix: the version, then the stamp.
+const backupName = `^([0-9A-Za-z][0-9A-Za-z.+_-]*)-([0-9]{8}-[0-9]{6})`
+
+var (
+	reBackup    = regexp.MustCompile(backupName + `\.tar\.gz$`)
+	reBackupDir = regexp.MustCompile(backupName + `$`)
+)
 
 // KeepFor is how far back every backup is kept; of the older ones, only the
 // newest stays.

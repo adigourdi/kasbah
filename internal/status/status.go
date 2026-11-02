@@ -19,6 +19,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/acme"
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/mailreg"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/remote"
@@ -57,7 +58,8 @@ Flags:
 
 It also prints the filesystem behind the apps and data paths, the mail stack,
 the backup stack with its last run, each project's domain out of its Traefik
-fragment, and what Traefik's ACME store says about every hostname on the server.
+fragment and what its deploys or rollbacks left that may hold a copy of .env,
+and what Traefik's ACME store says about every hostname on the server.
 `
 }
 
@@ -807,7 +809,50 @@ func (x *run) printProjects() {
 		x.p("  %-*s %-14s %-10s %s\n", width, p.Name, state, version, or(deployed, note))
 		x.printHosts(p)
 		x.printContainers(p)
+		x.printLeftovers(p)
 	}
+}
+
+// printLeftovers is each kind of leftover a project holds, newest by the
+// stamp in its name, aged against the server's clock.
+func (x *run) printLeftovers(p Project) {
+	l := p.Leftovers
+	if l.Error != "" {
+		x.p("      leftovers cannot be checked: %s\n", l.Error)
+	}
+	now, nowOK := backuprec.Epoch(x.r.Backup.Now)
+	kinds := func(l deploy.Leftovers) {
+		x.leftoverKind(l.Backups, deploy.Backups+"/", "backup directory whose tarball was never written", "backup directories whose tarball was never written", "", now, nowOK)
+		x.leftoverKind(l.Kept, deploy.KeptPrefix+"*", "snapshot a backup could not take in", "snapshots a backup could not take in", deploy.KeptPrefix, now, nowOK)
+		x.leftoverKind(l.Unpacked, deploy.UnpackedPrefix+"*", "extraction a killed rollback left", "extractions killed rollbacks left", "", now, nowOK)
+	}
+	if r := l.Running(); r.Any() {
+		kinds(r)
+		x.p("      a run holds the lock now (%s); a backup directory or extraction may be its own\n", l.Holder)
+	}
+	if s := l.Settled(); s.Any() {
+		kinds(s)
+		x.p("      inspect each, then remove it by hand — kasbah check --server names every path\n")
+	}
+}
+
+// leftoverKind is one kind's line: how many, and the newest by its stamp.
+func (x *run) leftoverKind(names []string, label, one, many, prefix string, now int64, nowOK bool) {
+	if len(names) == 0 {
+		return
+	}
+	what := many
+	if len(names) == 1 {
+		what = one
+	}
+	newest := ""
+	if n, at, ok := deploy.NewestStamp(names); ok {
+		newest = ", newest " + strings.TrimPrefix(n, prefix)
+		if nowOK {
+			newest += " (" + backuprec.Ago(max(now-at, 0)) + " ago)"
+		}
+	}
+	x.p("      %s: %d %s%s — each may hold a copy of .env\n", label, len(names), what, newest)
 }
 
 // ParseFragment is a fragment's tree; ok is false when the fragment does not

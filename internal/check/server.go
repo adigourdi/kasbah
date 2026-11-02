@@ -58,10 +58,13 @@ Flags:
                       domain it serves (M04), is health.container healthy, is
                       there a certificate for the domain, are the effective
                       resource limits within the host's ceiling (R04), do the
-                      projects' own limits fit the host together (R06), and — on
-                      a server with backups configured — has the backup stack
-                      run, and did the last run work (B01). It also
-                      tightens T05 to the hostnames this server really owns.
+                      projects' own limits fit the host together (R06), on
+                      a server with backups configured has the backup stack
+                      run and did the last run work (B01), and does any
+                      project hold a leftover backup directory, kept-aside
+                      snapshot or rollback extraction, each perhaps with a
+                      copy of .env (B02). It also tightens T05 to the
+                      hostnames this server really owns.
                       Read-only: --server changes nothing on the server but
                       kasbah's own binary, installed when absent or older.
                       Without USER@HOST it asks the server this project last
@@ -160,6 +163,32 @@ type ServerReport struct {
 	Limits    []ProjectLimits `json:"limits"`
 	HostCores int64           `json:"host_cores"`
 	HostMemKB int64           `json:"host_mem_kb"`
+	// Leftovers is every project under apps with something a run left that
+	// may hold .env (B02).
+	Leftovers []ProjectLeftovers `json:"leftovers"`
+}
+
+// ProjectLeftovers is one project's leftovers.
+type ProjectLeftovers struct {
+	Name string `json:"name"`
+	deploy.Leftovers
+}
+
+// projectLeftovers scans every project directory under apps.
+func projectLeftovers(apps string) []ProjectLeftovers {
+	out := []ProjectLeftovers{}
+	ents, err := os.ReadDir(apps)
+	if err != nil {
+		return out
+	}
+	for _, e := range ents {
+		if n := e.Name(); deploy.IsProject(apps, n) {
+			if l := deploy.ScanAgainstLock(apps + "/" + n); l.Report() {
+				out = append(out, ProjectLeftovers{Name: n, Leftovers: l})
+			}
+		}
+	}
+	return out
 }
 
 // ProjectLimits is one project's managed limits.
@@ -222,6 +251,7 @@ func CollectServer(apps, data, name, health string) *ServerReport {
 	}
 	r.GroupState, r.PermsCount, r.Perms = Perms(apps, data, Group)
 	r.Limits = projectLimits(apps)
+	r.Leftovers = projectLeftovers(apps)
 	r.HostCores, r.HostMemKB, _ = resources.Host()
 	r.DKIMState, r.DKIMKeys = dkimKeys(mail.DKIMDir(data))
 	if r.DKIMConfState = stated(mail.DKIMConf(data), probe.FState); r.DKIMConfState == "file" {
@@ -487,6 +517,7 @@ func (c *checker) serverSection() {
 	c.r04()
 	c.r06()
 	c.b01()
+	c.b02()
 	c.groupPerms()
 }
 
@@ -1049,6 +1080,40 @@ func (c *checker) b01() {
 		c.warnf("backup repository passwords on %s that no project files into any more: %s — the last project of that client was dropped and its password stayed behind at mode 600. Keep it: it is what decrypts the snapshots already off-box, and kasbah never deletes one. Take it off by hand once that repository has been handed over or emptied (docs/backup.md → Handover).", s.target, strings.Join(orphan, " "))
 	}
 }
+
+// b02: what runs left in any project's directory that may hold .env, named
+// path by path. Removing it is the operator's call, so it only warns.
+func (c *checker) b02() {
+	s := c.srv
+	for _, p := range s.r.Leftovers {
+		dir := s.apps + "/" + p.Name
+		if p.Error != "" {
+			c.warnf("whether %s on %s holds a leftover that may hold a copy of .env cannot be checked: %s", p.Name, s.target, p.Error)
+		}
+		if paths := p.Running().Paths(dir); len(paths) > 0 {
+			c.warnf("%s on %s: a run holds the lock now (%s); a backup directory or extraction may be its own — each may hold a copy of .env:", p.Name, s.target, p.Holder)
+			c.paths(paths)
+		}
+		if paths := p.Settled().Paths(dir); len(paths) > 0 {
+			c.warnf("%s on %s holds %d leftover(s) a deploy or rollback did not finish with — a backup directory whose tarball was never written, a snapshot a backup could not take in, or a killed rollback's extraction — and each may hold a copy of .env; inspect each, then remove it by hand:", p.Name, s.target, len(paths))
+			c.paths(paths)
+		}
+	}
+}
+
+// paths prints the first maxLeftovers of paths, then how many more.
+func (c *checker) paths(paths []string) {
+	for i, l := range paths {
+		if i == maxLeftovers {
+			fmt.Fprintf(c.w, "      and %d more\n", len(paths)-i)
+			return
+		}
+		fmt.Fprintf(c.w, "      %s\n", l)
+	}
+}
+
+// maxLeftovers is how many of a project's leftover paths B02 names.
+const maxLeftovers = 20
 
 func (c *checker) b01Verdict(r *backuprec.Record, b backuprec.Facts, clock string) {
 	s := c.srv

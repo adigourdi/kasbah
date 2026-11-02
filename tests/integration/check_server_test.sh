@@ -61,9 +61,11 @@ assert() {
 tmpdir="$(mktemp -d)"
 acme_locked=""
 marker_saved=""
+leftovers_planted=""
 cleanup() {
     [ -z "$acme_locked" ] || rig_ssh "chmod 600 '$acme'" >/dev/null 2>&1
     [ -z "$marker_saved" ] || rig_ssh "cat > $marker" <<<"$marker_saved" >/dev/null 2>&1
+    [ -z "$leftovers_planted" ] || rig_ssh "$leftovers_rm" >/dev/null 2>&1
     rm -rf "$tmpdir"
 }
 trap cleanup EXIT
@@ -327,6 +329,64 @@ assert '! grep -qF "effective resource limits on $RIG_TARGET" <<<"$out"' \
     "and the .env is not compared for limits no service takes from it (said '$out')"
 cp "$tmpdir/compose.before" "$projdir/compose.prod.yml"
 rig_ssh "cat > $marker" <<<"$marker_saved" >/dev/null 2>&1 && marker_saved=""
+
+# --- Leftovers a run left, each with a copy of .env (B02) ---------------------------------
+# Planted the shape deploy leaves them: a backup directory whose tarball was
+# never written, a kept-aside snapshot, a killed rollback's extraction — and a
+# second project with one, which B02 reports though it is not this checkout's.
+other_dir="$apps/kasbah-suite-other"
+left_bdir="$project_dir/backups/0.9.0-20261101-120000"
+left_kept="$project_dir/.kasbah-prev.kept-0.8.0-20261101-110000"
+left_unp="$project_dir/.kasbah-unpacked.424242"
+other_kept="$other_dir/.kasbah-prev.kept-2.0.0-20261102-080000"
+leftovers_rm="rm -rf '$left_bdir' '$left_kept' '$left_unp' '$other_dir'"
+leftovers_planted=yes
+rig_ssh "mkdir -p '$left_bdir/kasbah-snapshot' '$left_kept/v1' '$left_unp/kasbah-snapshot' '$other_kept/v1' &&
+    for d in '$left_bdir/kasbah-snapshot' '$left_kept/v1' '$left_unp/kasbah-snapshot' '$other_kept/v1'; do echo A=1 > \$d/.env; done" >/dev/null 2>&1
+check --server "$RIG_TARGET"; rc=$?
+out="$(cli_out)"
+assert '[ "$rc" = "0" ]' "leftovers warn and never fail check --server (exit $rc)
+$out"
+assert 'grep -qF "⚠ $project on $RIG_TARGET holds 3 leftover(s)" <<<"$out" && grep -qF "may hold a copy of .env; inspect each, then remove it by hand:" <<<"$out"' \
+    "B02 warns for this project's leftovers, and what to do (said '$out')"
+assert 'grep -qxF "      $left_bdir" <<<"$out" && grep -qxF "      $left_kept" <<<"$out" && grep -qxF "      $left_unp" <<<"$out"' \
+    "naming each path (said '$out')"
+assert 'grep -qF "⚠ kasbah-suite-other on $RIG_TARGET holds 1 leftover(s)" <<<"$out" && grep -qxF "      $other_kept" <<<"$out"' \
+    "and another project's (said '$out')"
+kasbah_cli server status "$RIG_TARGET" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; rc=$?
+out="$(cli_out)"
+assert '[ "$rc" = "0" ]' "server status reads a server holding leftovers (exit $rc)
+$out
+$(cli_err)"
+assert 'grep -qF "      backups/: 1 backup directory whose tarball was never written, newest 0.9.0-20261101-120000 (" <<<"$out" &&
+        grep -qF "      .kasbah-prev.kept-*: 1 snapshot a backup could not take in, newest 0.8.0-20261101-110000 (" <<<"$out" &&
+        grep -qF "      .kasbah-unpacked.*: 1 extraction a killed rollback left — each may hold a copy of .env" <<<"$out"' \
+    "server status counts each kind, the newest named and aged against the server's clock (said '$out')"
+assert '[ "$(grep -c "inspect each, then remove it by hand" <<<"$out")" = "2" ]' \
+    "once per project holding any (said '$out')"
+rig_ssh "$leftovers_rm" >/dev/null 2>&1 && leftovers_planted=""
+check --server "$RIG_TARGET"; rc=$?
+out="$(cli_out)"
+assert '! grep -qF "leftover(s)" <<<"$out"' "removed by hand, they are no longer reported (said '$out')"
+
+# A run holding another project's .deploy.lock: its backup directory is named
+# apart, as perhaps that run's own. A backups/ that cannot be listed warns.
+other_bdir="$other_dir/backups/2.1.0-20261102-090000"
+leftovers_rm="rm -rf '$other_dir'; rm -f '$project_dir/backups' && mv '$project_dir/backups.b02.saved' '$project_dir/backups'"
+leftovers_planted=yes
+rig_ssh "mkdir -p '$other_bdir' && : > '$project_dir/backups.b02' && mv '$project_dir/backups' '$project_dir/backups.b02.saved' && mv '$project_dir/backups.b02' '$project_dir/backups' &&
+    (nohup timeout 20 flock '$other_dir/.deploy.lock' sleep 20 >/dev/null 2>&1 </dev/null &); sleep 1" >/dev/null 2>&1
+check --server "$RIG_TARGET"; rc=$?
+out="$(cli_out)"
+rig_ssh "$leftovers_rm" >/dev/null 2>&1 && leftovers_planted=""
+assert '[ "$rc" = "0" ]' "a held lock and an unlistable backups/ only warn (exit $rc)
+$out"
+assert 'grep -qF "⚠ kasbah-suite-other on $RIG_TARGET: a run holds the lock now (" <<<"$out" && grep -qxF "      $other_bdir" <<<"$out"' \
+    "a held lock names the run, and the backup directory apart (said '$out')"
+assert '! grep -qF "kasbah-suite-other on $RIG_TARGET holds" <<<"$out"' \
+    "and does not call it a leftover (said '$out')"
+assert 'grep -qF "⚠ whether $project on $RIG_TARGET holds a leftover that may hold a copy of .env cannot be checked: backups/ could not be listed: not a directory" <<<"$out"' \
+    "an unlistable backups/ cannot be checked (said '$out')"
 
 # --- A project that has not been deployed ------------------------------------------------
 notdir="$tmpdir/not-deployed"

@@ -15,6 +15,7 @@ import (
 	"syscall"
 
 	"github.com/adigourdi/kasbah/internal/buildpush"
+	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/fsstate"
 	"github.com/adigourdi/kasbah/internal/manifest"
@@ -328,12 +329,13 @@ func scan(apps, pointer string) Scan {
 			continue
 		}
 		d := filepath.Join(apps, n)
+		left := leftovers(d)
 		r := Row{Name: n, Dir: fsstate.Dir(d),
 			Vlog: fsstate.File(filepath.Join(d, "versions.log")), VlogGz: fsstate.File(filepath.Join(d, "versions.log.gz")),
 			Scripts: fsstate.Dir(filepath.Join(d, "scripts")),
 			Lock:    fsstate.File(filepath.Join(d, ".deploy.lock")), Client: fsstate.File(filepath.Join(d, ".kasbah-client")),
 			Env: fsstate.File(filepath.Join(d, ".env")), Sentinels: countSentinels(filepath.Join(d, ".env")),
-			Prev: prevState(filepath.Join(d, ".kasbah-prev")), Seeds: len(seeds(d)), Kept: count(d, keptPrefix), Unpacked: count(d, unpackedPrefix), Hooks: fsstate.File(filepath.Join(d, ".kasbah-hooks.json"))}
+			Prev: prevState(filepath.Join(d, ".kasbah-prev")), Seeds: len(seeds(d)), Kept: len(left.Kept), Unpacked: len(left.Unpacked), Hooks: fsstate.File(filepath.Join(d, ".kasbah-hooks.json"))}
 		for _, f := range entries(filepath.Join(d, "scripts")) {
 			if helper(f) {
 				r.Helpers++
@@ -681,34 +683,20 @@ func removeSeeds(d string) string {
 	return v
 }
 
-// keptPrefix names a snapshot a backup could not take in (deploy.KeptPrefix),
-// unpackedPrefix a backup an interrupted rollback extracted (deploy.UnpackedPrefix).
-const (
-	keptPrefix     = ".kasbah-prev.kept-"
-	unpackedPrefix = ".kasbah-unpacked."
-)
-
 // kept is d's kept-aside snapshots and leftover extractions: they hold a copy
 // of .env.
 func kept(d string) []string {
-	var out []string
-	for _, n := range entries(d) {
-		if strings.HasPrefix(n, keptPrefix) || strings.HasPrefix(n, unpackedPrefix) {
-			out = append(out, filepath.Join(d, n))
-		}
-	}
-	return out
+	l := leftovers(d)
+	l.Backups = nil
+	return l.Paths(d)
 }
 
-// count is how many of d's entries start with prefix.
-func count(d, prefix string) int {
-	n := 0
-	for _, e := range entries(d) {
-		if strings.HasPrefix(e, prefix) {
-			n++
-		}
+// leftovers is deploy's scan of d, nothing when d is not a directory.
+func leftovers(d string) deploy.Leftovers {
+	if fsstate.Dir(d) != "dir" {
+		return deploy.Leftovers{}
 	}
-	return n
+	return deploy.ScanLeftovers(d)
 }
 
 // removeKept removes every kept-aside snapshot in d.

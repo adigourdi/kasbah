@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/backuprec"
+	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/probe"
 	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/vlog"
@@ -51,6 +52,8 @@ type Project struct {
 	FragState  string      `json:"frag_state"`
 	Frag       string      `json:"frag_b64"`
 	Containers []Container `json:"containers"`
+	// Leftovers is what runs left in the directory that may hold .env.
+	Leftovers deploy.Leftovers `json:"leftovers"`
 }
 
 // Disk is `df -Pk`'s last line for a path: State ok, absent, nopath or error.
@@ -269,7 +272,7 @@ func projects(apps string, docker bool) []Project {
 			continue
 		}
 		path := apps + "/" + name
-		p := Project{Name: name, LogState: "missing", FragState: "absent", Containers: []Container{}}
+		p := Project{Name: name, LogState: "missing", FragState: "absent", Containers: []Container{}, Leftovers: deploy.NoLeftovers()}
 
 		frag := apps + "/traefik/dynamic/" + name + ".yml"
 		if fi, err := os.Stat(frag); err == nil {
@@ -291,6 +294,9 @@ func projects(apps string, docker bool) []Project {
 			p.LogState = "notdir"
 			out = append(out, p)
 			continue
+		}
+		if deploy.IsProject(apps, name) {
+			p.Leftovers = deploy.ScanAgainstLock(path)
 		}
 		if docker {
 			label := "label=com.docker.compose.project=" + name

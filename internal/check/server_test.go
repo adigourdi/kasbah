@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/tree"
@@ -999,5 +1001,93 @@ func TestCollectServerStatic(t *testing.T) {
 	r := CollectServer(apps, apps+"/data", "demo", "")
 	if r.StaticState != "file" || string(dec(r.Static)) != "certificatesResolvers: {}\n" {
 		t.Errorf("traefik.yml not collected: %q %q", r.StaticState, r.Static)
+	}
+}
+
+func TestServerB02(t *testing.T) {
+	t.Run("none: silent", func(t *testing.T) {
+		srvProject(t, "")
+		out, code := newSrv(t).run()
+		hasNot(t, out, "leftover")
+		if code != 0 {
+			t.Errorf("exit %d", code)
+		}
+	})
+	t.Run("several projects, each kind", func(t *testing.T) {
+		srvProject(t, "")
+		s := newSrv(t)
+		var many []string
+		for i := range 22 {
+			many = append(many, fmt.Sprintf("1.0.%d-20261102-1000%02d", i, i))
+		}
+		s.r.Leftovers = []ProjectLeftovers{
+			{Name: "demo", Leftovers: deploy.Leftovers{Backups: []string{"1.2.0-20261102-100000"},
+				Kept: []string{deploy.KeptPrefix + "1.1.0-20261101-090000"}, Unpacked: []string{deploy.UnpackedPrefix + "4242"}}},
+			{Name: "blog", Leftovers: deploy.Leftovers{Backups: many}},
+			{Name: "empty"},
+		}
+		out, code := s.run()
+		if code != 0 {
+			t.Errorf("B02 failed the run, exit %d:\n%s", code, out)
+		}
+		contains(t, out,
+			"  ⚠ demo on deploy@vps holds 3 leftover(s) a deploy or rollback did not finish with — a backup directory whose tarball was never written, a snapshot a backup could not take in, or a killed rollback's extraction — and each may hold a copy of .env; inspect each, then remove it by hand:\n"+
+				"      /apps/demo/backups/1.2.0-20261102-100000\n      /apps/demo/.kasbah-prev.kept-1.1.0-20261101-090000\n      /apps/demo/.kasbah-unpacked.4242\n",
+			"  ⚠ blog on deploy@vps holds 22 leftover(s)",
+			"      /apps/blog/backups/1.0.19-20261102-100019\n      and 2 more\n")
+		hasNot(t, out, "1.0.20-", "empty on deploy@vps", "holds the lock")
+	})
+	t.Run("a run holds the lock", func(t *testing.T) {
+		srvProject(t, "")
+		s := newSrv(t)
+		s.r.Leftovers = []ProjectLeftovers{
+			{Name: "demo", Leftovers: deploy.Leftovers{Backups: []string{"1.2.0-20261102-100000"},
+				Kept: []string{deploy.KeptPrefix + "1.1.0-20261101-090000"}, Unpacked: []string{deploy.UnpackedPrefix + "77"},
+				Holder: "a deploy or rollback by alice (pid 4242)"}},
+			{Name: "blog", Leftovers: deploy.Leftovers{Backups: []string{"1.0.0-20261102-100000"}, Holder: "a deploy or rollback by bob (pid 9)"}},
+		}
+		out, code := s.run()
+		if code != 0 {
+			t.Errorf("exit %d:\n%s", code, out)
+		}
+		contains(t, out,
+			"  ⚠ demo on deploy@vps: a run holds the lock now (a deploy or rollback by alice (pid 4242)); a backup directory or extraction may be its own — each may hold a copy of .env:\n"+
+				"      /apps/demo/backups/1.2.0-20261102-100000\n      /apps/demo/.kasbah-unpacked.77\n"+
+				"  ⚠ demo on deploy@vps holds 1 leftover(s) a deploy or rollback did not finish with",
+			"inspect each, then remove it by hand:\n      /apps/demo/.kasbah-prev.kept-1.1.0-20261101-090000\n",
+			"  ⚠ blog on deploy@vps: a run holds the lock now (a deploy or rollback by bob (pid 9))")
+		hasNot(t, out, "blog on deploy@vps holds")
+	})
+	t.Run("cannot be checked", func(t *testing.T) {
+		srvProject(t, "")
+		s := newSrv(t)
+		s.r.Leftovers = []ProjectLeftovers{{Name: "demo", Leftovers: deploy.Leftovers{Error: "backups/ could not be listed: permission denied"}}}
+		out, code := s.run()
+		contains(t, out, "  ⚠ whether demo on deploy@vps holds a leftover that may hold a copy of .env cannot be checked: backups/ could not be listed: permission denied\n")
+		hasNot(t, out, "leftover(s)", "✓ demo")
+		if code != 0 {
+			t.Errorf("exit %d", code)
+		}
+	})
+}
+
+func TestCollectServerLeftovers(t *testing.T) {
+	apps := t.TempDir()
+	for _, d := range []string{"demo/backups/1.0.0-20261102-100000", "demo/" + deploy.UnpackedPrefix + "7", "tidy/backups",
+		"traefik/backups/20261102-100000", ".hidden/" + deploy.UnpackedPrefix + "1", "Caps/" + deploy.UnpackedPrefix + "2"} {
+		os.MkdirAll(filepath.Join(apps, d), 0o755)
+	}
+	os.WriteFile(filepath.Join(apps, "demo/backups/1.0.0-20261101-100000.tar.gz"), nil, 0o644)
+	// A project directory symlinked elsewhere is a project, as status and destroy see it.
+	elsewhere := t.TempDir()
+	os.Mkdir(filepath.Join(elsewhere, deploy.KeptPrefix+"1.0.0-20261102-100000"), 0o755)
+	os.Symlink(elsewhere, filepath.Join(apps, "linked"))
+	r := CollectServer(apps, apps+"/data", "demo", "")
+	if len(r.Leftovers) != 2 || r.Leftovers[0].Name != "demo" || r.Leftovers[1].Name != "linked" ||
+		strings.Join(r.Leftovers[0].Paths(apps+"/demo"), " ") != apps+"/demo/backups/1.0.0-20261102-100000 "+apps+"/demo/"+deploy.UnpackedPrefix+"7" {
+		t.Errorf("leftovers: %+v", r.Leftovers)
+	}
+	if b, _ := json.Marshal(r); !strings.Contains(string(b), `"leftovers":[{"name":"demo","backups":["1.0.0-20261102-100000"],"kept":[],"unpacked":[".kasbah-unpacked.7"],"holder":"","error":""},`) {
+		t.Errorf("wire form: %s", b)
 	}
 }

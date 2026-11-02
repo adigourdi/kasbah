@@ -333,6 +333,10 @@ either, `.kasbah-prev/` is removed at once; when neither can be removed, the
 warning says to remove `.kasbah-prev/` by hand, and the next run's snapshot
 step refuses it until then (above). The
 warning names the step that failed and what became of `.kasbah-prev/`.
+A backup directory left behind — its tarball unwritten, or beside a snapshot
+that could not move into it — and a kept-aside snapshot stay until the
+operator removes them: `server status` counts them and `check --server` names
+each by path (B02).
 
 `backups/` may be a directory, a symlink to one, or a mount point. The engine
 opens it once and does every backup step — the directory, the snapshot's move,

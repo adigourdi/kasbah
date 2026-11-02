@@ -524,6 +524,24 @@ Prints:
   whose containers are all running and none unhealthy gets one line saying so;
   one that is not gets a line per container, because that is the case a count
   cannot show.
+  Then, for a project holding any, each kind of leftover a deploy or rollback
+  left in its directory — backup directories under `backups/` whose tarball
+  was never written, `.kasbah-prev.kept-*` snapshots a backup could not take
+  in, `.kasbah-unpacked.*` extractions a killed rollback left — with its count,
+  the newest by the stamp in its name aged against the server's clock (an
+  extraction's name carries none), and that each may hold a copy of `.env`,
+  then to inspect each and remove it by hand. While a run holds the project's
+  `.deploy.lock` — read from `/proc/locks`, without taking it — its backup
+  directories and extractions are not called leftovers: they are followed by
+  a line saying a run holds the lock now, naming it, and that a backup directory or
+  extraction may be its own; the extraction named by the holder's pid is left
+  out. Kept-aside snapshots are leftovers whatever holds the lock. A project
+  whose directory or `backups/` cannot be listed gets a line saying its
+  leftovers cannot be checked, and why. Nothing is printed for a project with
+  none, and nothing inside them is read; `check --server` names every path
+  (B02). The projects scanned are B02's: an entry under the apps path with a
+  project's name, not one kasbah reserves, that is a directory or a symlink to
+  one.
 
 **Certificate expiry comes from Traefik's own `acme.json`**, read by the same
 `internal/acme` that answers `check --server` — one store, one reader. The file
@@ -672,7 +690,9 @@ healthy, what Traefik's `acme.json` holds for the project's domain (under the
 resolver its router names), and whether
 the effective resource limits are within the host's ceiling (R04), whether
 the projects' own limits fit the host together (R06), whether
-every mail domain on it can sign (M04), whether the backup stack ran (B01) and
+every mail domain on it can sign (M04), whether the backup stack ran (B01),
+whether any project holds a leftover backup directory, kept-aside snapshot or
+rollback extraction that may hold a copy of `.env` (B02) and
 whether the apps tree is the operators' group's. It also
 tightens T05 from a first-label heuristic to the hostnames that server really
 owns, and reads the server's `traefik.yml` so T04 and T10 judge a resolver
