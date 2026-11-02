@@ -4,12 +4,11 @@ cause: restic ships mount points as they are; dumps only come from deploys
 where: internal/backup, docs/backup.md, docs/cli.md, docs/server-setup.md
 state: ready
 priority: medium
-after: rollback-points
 ---
 
 ## Prompted by
 
-The /interview that settled [[rollback-points]] (2026-11-01/02). Two findings came out
+The /interview that designed rollback backups (2026-11-01/02, now in `docs/build-deploy.md`). Two findings came out
 of it:
 - The user, on a media project: "in a selfhosted jellyfin it can be whole movies, so
   copying data can be dangerous". restic copies every project's data/ whole, movies
@@ -33,8 +32,8 @@ and not deployment, needs a separate backlog item".
 
 ## Decisions (settled, do not re-propose)
 
-1. **restic ships only backups.** A project's repo gets `backups/` (the
-   [[rollback-points]] tarballs) and the current `.env`, and no longer
+1. **restic ships only backups.** A project's repo gets `backups/` (the per-version
+   backup tarballs) and the current `.env`, and no longer
    `/apps/data/<name>/`. Whatever a project wants kept off-box, its `backup` hook
    writes.
 2. **The mail repo is unchanged.** Mailboxes are kasbah's own stack and can't be
@@ -43,8 +42,8 @@ and not deployment, needs a separate backlog item".
    and loading your own dumps (through the `restore` hook), not restoring `data/`
    wholesale.
 4. **Fresh dumps come from the `backup` hook.** Each nightly run first runs every
-   project's `backup` hook into a fresh backup of the live version, under the
-   [[rollback-points]] retention rule, and then pushes.
+   project's `backup` hook into a fresh backup of the live version, under the backups'
+   retention rule (`docs/build-deploy.md`), and then pushes.
 5. **The container keeps the clock; the host runs the job.** The user would rather not
    use a systemd unit, and cron isn't a prerequisite.
    - The `kasbah-backup` scheduler keeps everything it has today: the schedule and
@@ -60,8 +59,8 @@ and not deployment, needs a separate backlog item".
      from an operator machine (`backup.md` rejected that already), and no nightly
      hooks (the freshness gap).
 6. **`kasbah backup <user@host>`** takes a backup of the live version (the snapshot
-   plus the `backup` hook, read from `.kasbah-hooks.json`), applies the
-   [[rollback-points]] retention, then pushes with restic when the server has
+   plus the `backup` hook, read from `.kasbah-hooks.json`), applies the backups'
+   retention, then pushes with restic when the server has
    `--with-backup`; without it the backup stays local. The nightly job runs exactly
    this on the host.
 7. **`kasbah restore <user@host>`** pulls the project's backups from the newest restic
@@ -124,4 +123,4 @@ chosen.
 - `docs/backup.md` → The schedule, Scope, Restore
 - `docs/server-setup.md` → With backup
 - `internal/backup/`
-- [[rollback-points]] — the hooks, the backup tarballs, retention
+- `docs/build-deploy.md` and `docs/project-manifest.md` — the hooks, the backup tarballs, retention

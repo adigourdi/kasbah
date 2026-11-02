@@ -54,7 +54,8 @@ its data, once its images have been re-shipped with ` + "`kasbah build-push`" + 
             every tag of the images this project builds
   kept      <apps>/<name>/ (compose.yml, .env, versions.log, scripts, backups,
             any snapshot a backup could not take in, kept aside as
-            .kasbah-prev.kept-*), <data>/<name>/, and the project's
+            .kasbah-prev.kept-*, and any backup an interrupted rollback
+            extracted, .kasbah-unpacked.*), <data>/<name>/, and the project's
             mail-domain claim
 
   --prune   delete the kept things too: <apps>/<name>/ with the on-VPS backups

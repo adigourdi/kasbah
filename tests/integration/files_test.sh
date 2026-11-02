@@ -321,7 +321,7 @@ sed -i "s|served-by-built-app-from-an-image-shipped-over-ssh|served-by-built-app
 step "cutting $v2" bash -c "cd '$projdir' && git commit -qam 'edition two' && git tag v$v2"
 step "build-push $v2" run build-push "$RIG_TARGET"
 step "deploy $v2" run deploy "$RIG_TARGET"
-step "rollback" run rollback "$RIG_TARGET"
+step "rollback" run rollback "$RIG_TARGET" --no-env --no-data
 
 # --- Snapshots ----------------------------------------------------------------
 # Container-filled trees are listed down to the directory kasbah made: what DMS,

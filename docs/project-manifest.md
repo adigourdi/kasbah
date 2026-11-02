@@ -54,8 +54,9 @@ health:
 # backup runs first on every deploy but a project's first, while the previous
 # version is still running, and writes into $KASBAH_BACKUP_DIR: what it
 # writes is kept with the previous version's .env and synced files, as one
-# tarball under ./backups/. restore is the way back: checked, and recorded on
-# the server in .kasbah-hooks.json, but no deploy or rollback runs it.
+# tarball under ./backups/. restore is the way back: a rollback to this
+# version runs it, when the operator says so, reading that tarball unpacked
+# at $KASBAH_BACKUP_DIR before this version comes up.
 # pre-deploy runs BEFORE `compose up -d`, while the previous version is
 # still running. Use for: schema precheck, draining workers, anything that
 # requires the old version still live.
@@ -262,20 +263,29 @@ Supported hooks and when they run:
 | `pre-deploy` | after the `backup` hooks, before `compose up -d`, the previous version still running |
 | `post-deploy` | after `compose up -d` + health wait, against the new version |
 | `pre-rollback` | after the target tag's files are synced, before `compose up -d` |
+| `restore` | on a rollback to this version answered `--with-data` (or yes), after the `pre-rollback` hooks and before `compose up -d`, the outgoing version still running; reads `$KASBAH_BACKUP_DIR`. Never on a deploy |
 | `post-rollback` | after `compose up -d` + health wait, against the rolled-back version |
-| `restore` | never by a deploy or a rollback: it is read and checked as the others are, and recorded on the server with `backup` (below) |
 
 On a **first deploy** — `versions.log` holds no entry for the project, active or
 archived, a `deploy-failed` line counting as one — there is no outgoing
 version, so the `backup` and `pre-*` hooks do not run, and the run says so.
 Otherwise they always run: kasbah does not look at the containers first, and a
 hook that needs the outgoing stack up, or that wants to skip a dump, tests for
-that itself. `--skip-hooks` skips the `pre-*` and `post-*` hooks, never `backup`.
-A rollback never runs `backup`. When a `backup` or
-a `pre-*` hook fails, no container has moved yet, and kasbah asks whether to
+that itself. `--skip-hooks` skips the `pre-*` and `post-*` hooks, never `backup`
+or `restore`. A rollback never runs `backup`.
+
+The `restore` hook that runs is the **target's**: a rollback reads every hook
+from the target tag's manifest, and asks for data only when that manifest has
+one and the server holds a backup of that version, the newest
+`backups/<version>-<stamp>.tar.gz` — a restore replaces everything written
+since that backup, so it never runs unasked (`cli.md` → `kasbah rollback`,
+`--with-data`/`--no-data`). kasbah restores no data itself, and a hook that
+needs a dump the backup does not hold fails the rollback by failing. When a `backup`,
+a `pre-*` or the `restore` hook fails, no container has moved yet, and kasbah asks whether to
 carry on (`--on-hook-failure=continue|stop`, `cli.md`): stopping puts the synced
 files back and leaves whatever the hooks already did, continuing runs on to the
-retag and `compose up` as if the step had passed, and says so. A failed `post-*` hook is not reverted (`build-deploy.md`).
+retag and `compose up` as if the step had passed, and says so. Stopping after a
+`restore` hook that ran leaves the data as the hook left it. A failed `post-*` hook is not reverted (`build-deploy.md`).
 
 Environment variables available to hook commands (set by kasbah):
 - `$KASBAH_VERSION` — the version being deployed or rolled back to.
@@ -286,12 +296,22 @@ Environment variables available to hook commands (set by kasbah):
   the backup directory this run fills, `<apps>/<name>/backups/<version>-<stamp>/`
   (`<version>` the outgoing one): the `backup` hooks write their dumps there, and
   the `pre-deploy` and `post-deploy` hooks see the same path. `none` on a first
-  deploy, in the rollback hooks, and on a deploy carried past a backup
+  deploy, and on a deploy carried past a backup
   directory that could not be created. Once the new version is live, the directory
   — what the hooks wrote, beside the snapshot kasbah took of the outgoing `.env`
   and synced files — becomes `backups/<version>-<stamp>.tar.gz`
   (`build-deploy.md` → A deploy that fails … reverts). The name
   `kasbah-snapshot` in it is kasbah's.
+  On a rollback, the `pre-rollback`, `restore` and `post-rollback` hooks get the
+  target version's newest backup, unpacked into a directory of its own,
+  `<apps>/<name>/.kasbah-unpacked.<pid>/` (mode `770` to the `kasbah` group,
+  as `.env` is `660`, removed when the run ends), laid out as it was written: the `backup` hooks' files at the top level,
+  and the outgoing `.env` and synced files of that time under
+  `kasbah-snapshot/<path>` — `kasbah-snapshot/.env`, `kasbah-snapshot/compose.yml`.
+  `none` when the server holds no backup of the target. After a failed
+  extraction carried past, the `pre-rollback` and `post-rollback` hooks get
+  `none` and the `restore` hook does not run at all: the data is left as it
+  is, and the run says so.
 
 The manifest never reaches the server, so every deploy and rollback that
 leaves its version live records the `backup` and `restore` lists, and the paths

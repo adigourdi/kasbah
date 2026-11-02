@@ -415,7 +415,8 @@ Per project:
   then `rmdir`. The directory survives if it holds anything else, because
   destroy cannot tell an operator's file from kasbah's except by name
 - `.kasbah-prev/`, a failed deploy's snapshot, which holds a copy of `.env`
-- every snapshot a backup could not take in (`.kasbah-prev.kept-*/`), each
+- every snapshot a backup could not take in (`.kasbah-prev.kept-*/`), and
+  every backup a killed rollback left extracted (`.kasbah-unpacked.*/`), each
   likely holding a copy of `.env`
 - every staged `--env-seed` (`.kasbah-env-seed.*`), which holds `.env` values
 - `.deploy.lock`, and `.kasbah-client` (written by `deploy`, read by the backup
@@ -782,8 +783,10 @@ Two modes:
 - **Explicit `VERSION`** — deploys that tagged version exactly as it was,
   read out of the `v<VERSION>` ref (no checkout, working tree untouched).
   See the rollback flow in `build-deploy.md`: it is the same code path, and
-  only four things differ — the log entry is `action=deploy`, the hook pair
-  is `pre-/post-deploy`, there is no "must already be in versions.log"
+  only five things differ — the log entry is `action=deploy`, the hook pair
+  is `pre-/post-deploy` and the `backup` hook runs, nothing is restored from
+  a backup (no `.env` or data question, no `--with-env`/`--with-data`),
+  there is no "must already be in versions.log"
   precondition, since deploying a version here for the first time is
   exactly what this mode is for, and the tag's `resources:` is held to a
   plain deploy's rules (refused when malformed, unresolvable or above the
@@ -880,22 +883,39 @@ Flow (see `build-deploy.md` for full detail):
    rebuild-from-tag guidance. The extraction comes first because the check
    reads the ref's compose out of it; what matters is that **nothing
    reaches the server** before the check passes.
+   Then the run looks for v<target>'s newest backup on the server,
+   `backups/<target>-<stamp>.tar.gz`, and settles what it restores from it:
+   `.env` — the names of the keys its `.env` and the server's disagree on are
+   listed, never a value, and the answer is restore, keep, or per key — and
+   the data, when v<target>'s manifest has a `restore` hook. Flags below;
+   without them and without a terminal, the run fails here naming them,
+   nothing changed.
 6. Sync the extracted sync list into
    `/apps/<name>/` — not `git archive | tar -x`, which cannot honour the
    `src -> dst` renames every sync list has (`build-deploy.md` → rollback flow).
    The extracted tree is then checked to hold every source the list names:
    `git archive` drops anything marked `export-ignore`, which `git ls-tree`
    still reports, so the tree that will actually ship is what gets validated.
-7. Env drift check, as `deploy` runs it — v<target>'s
+7. The `.env` chosen above written on the server (after the snapshot, so a
+   revert puts the server's back; a failure before the engine runs puts it
+   back too, and says so), then the env drift check, as `deploy` runs
+   it — v<target>'s
    `.env.prod.example` has just landed, and its keys may differ from the ones
    the server was last set up against. `--on-drift=` answers it headlessly.
    v<target>'s `resources:` never stops it: a value above today's ceiling
    warns and takes the marker's ceiling for that half, and a block this
    kasbah refuses or a resolve that fails takes it for both.
 8. On VPS: run the engine in rollback mode, `kasbah remote deploy run`:
+   - Extract the backup into `<apps>/<name>/.kasbah-unpacked.<pid>/`, handed
+     to the hooks below as `$KASBAH_BACKUP_DIR` (`none` without a backup),
+     and removed however the run ends.
    - Run `pre-rollback` hooks — shell, on the server, from the project folder —
-     while the outgoing version still runs; a failure asks whether to carry
-     on (`--on-hook-failure=`).
+     while the outgoing version still runs.
+   - Run v<target>'s `restore` hook, when the data answer was yes.
+   - A failed extraction, `pre-rollback` or `restore` hook asks whether to
+     carry on (`--on-hook-failure=`); stop puts the files and `.env` back and
+     leaves whatever the `restore` hook already did to the data. Carried past
+     a failed extraction, the `restore` hook does not run.
    - Retag `:<target>` as `:current` for each built image.
    - `docker compose up -d --remove-orphans`.
    - Wait for health.
@@ -922,17 +942,32 @@ Flags:
   run stops with exit `5`. See `kasbah env`.
 - `--env-seed=FILE` — answers that env step's keys from a file, as on
   `deploy`. See `kasbah env`.
-- `--skip-hooks` — skip the pre-/post-rollback hooks. Unlike `deploy`, there
+- `--with-env` / `--no-env` — restore the `.env` held in v<target>'s backup,
+  whole, or keep the server's. Unset, differing keys ask — restore, keep, or
+  one question per key (backup's or server's), which only a terminal can
+  answer; with no terminal the run fails naming the pair. No backup, or no
+  key that differs, asks nothing.
+- `--with-data` / `--no-data` — restore the data with v<target>'s `restore`
+  hook, from that backup — it replaces everything written since the backup
+  was taken — or leave it. Unset, a backup and a `restore` hook ask; with no
+  terminal the run fails naming the pair. `--with-data` when v<target> has no
+  backup on the server, or its manifest no `restore` hook, is refused before
+  anything changes, naming which and pointing at `--no-data`.
+  Both pairs are a rollback's: `deploy` refuses them.
+- `--skip-hooks` — skip the pre-/post-rollback hooks, never the `restore`
+  hook. Unlike `deploy`, there
   is no backup hook for this flag to preserve: a rollback never runs one, and
   keeps its snapshot as the backup either way.
 - `--no-health-wait` — don't block on healthcheck.
-- `--on-hook-failure=continue|stop` — what the engine does when a
-  `pre-rollback` hook fails, as on `deploy`: unset it asks, and with no
-  terminal it stops and fails naming the flag.
+- `--on-hook-failure=continue|stop` — what the engine does when the
+  backup's extraction, a `pre-rollback` hook or the `restore` hook fails, as
+  on `deploy`: unset it asks, and with no terminal it stops and fails naming
+  the flag.
 
-Rollback restores image + sync'd config only. It does **not** restore
-data bind mounts or `.env` secret values. For schema rollback, use
-`pre-rollback` hooks.
+Rollback restores the image and the synced config, and, from v<target>'s
+newest backup on the server, its `.env` and — through its own `restore`
+hook — its data, when answered so. Without such a backup it restores neither
+(`build-deploy.md` → What rollback restores).
 
 ### `kasbah drop [USER@HOST] [--prune] [--yes]`
 
@@ -979,7 +1014,8 @@ path is an ordinary first deploy and needs nothing.)
 `--prune` additionally deletes `/apps/<name>/`, `/apps/data/<name>/`, and the
 project's on-VPS backups (`/apps/<name>/backups/` — **not** the server's
 top-level `/apps/backups/` — and any snapshot a backup could not take in,
-kept aside as `/apps/<name>/.kasbah-prev.kept-*/`) — everything except the off-VPS restic repo, which
+kept aside as `/apps/<name>/.kasbah-prev.kept-*/`, and any backup a killed
+rollback left extracted, `.kasbah-unpacked.*/`) — everything except the off-VPS restic repo, which
 is operator property (see `backup.md`). It also **releases the project's claim on
 the shared mail stack**: the domain leaves `<apps>/mail/kasbah.yml`, read and
 re-rendered through `internal/mailreg`, which folds `primary_domain` into the

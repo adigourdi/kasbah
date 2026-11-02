@@ -55,6 +55,8 @@ hooks:
     - 'echo v1-pre-rollback'
   post-rollback:
     - 'echo v1-post-rollback'
+  restore:
+    - 'echo v1-restore'
 YML
     cat > "$project/compose.prod.yml" <<'YML'
 name: demo
@@ -272,6 +274,15 @@ case "${1:-} ${2:-}" in
         [ "${REPORT_OMIT:-}" = backup ]          || r+=",\"backup\":\"${REPORT_BACKUP-no-backup}\""
         [ "${REPORT_OMIT:-}" = digest ]          || r+=",\"digest\":\"${REPORT_DIGEST--}\""
         printf '%s}\n' "$r" ;;
+    # The target's backup: none unless FAKE_PROBE says otherwise. Key names
+    # only; the .env restore keeps what it was asked for.
+    "deploy backup-probe")
+        probe="${FAKE_PROBE:-}"
+        [ -n "$probe" ] || probe='{"backup":"","env":"no","changed":[],"only_backup":[],"only_live":[]}'
+        printf '%s\n' "$probe" ;;
+    "deploy restore-env")
+        shift 2; printf '%s\n' "$*" > "$SPEC_COPY.envrestore"
+        printf 'env=restored\n' ;;
     "setup-env drift")
         printf 'template_exists=%s\n' "${ENV_TEMPLATE:-yes}"
         printf 'env_exists=%s\n' "${ENV_EXISTS:-yes}"
@@ -307,7 +318,7 @@ log_two=$'2026-08-01T00:00:00+00:00 deploy 1.0.0 no-backup kasbah=0.1.0 digest=-
 
 kasbah_run() {
     : > "$ssh_log"; : > "$call_log"
-    rm -f "$spec_copy" "$spec_copy.token" "$spec_copy.answer"
+    rm -f "$spec_copy" "$spec_copy.token" "$spec_copy.answer" "$spec_copy.envrestore"
     rm -rf "$sync_root"
     env -u KASBAH_LIB_DIR \
         HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$run_tmp" \
@@ -1171,6 +1182,66 @@ out="$( FAKE_ACTIVE=$'2026-08-01T00:00:00+00:00 deploy 1.0.0 no-backup kasbah=0.
 assert '[ "$rc" = "0" ]' "a record with a --dirty deploy in it still rolls back (rc $rc: $out)"
 assert '[ "$(ran)" = "rollback 1.0.0" ]' "to the clean deploy before it (ran: $(ran))"
 assert 'grep -qF "stepped over 1 --dirty deploy(s)" <<<"$out"' "saying what it stepped over (said '$out')"
+rm -rf "$project/.kasbah"
+
+# --- The target's backup: .env and data ----------------------------------------------
+probe_with='{"backup":"1.0.0-20261101-000000.tar.gz","env":"yes","changed":["DEMO_GREETING"],"only_backup":["DEMO_OLD"],"only_live":[]}'
+snapshotted() { grep -qF "'deploy' 'snapshot'" "$call_log"; }
+
+out="$( rollback deploy@vps 1.0.0 )"; rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ] && [ "$(jq -r ".restore_from // \"\"" "$spec_copy")" = "" ] && [ "$(jq -r ".restore_data // false" "$spec_copy")" = "false" ]' \
+    "with no backup of the target, nothing is restored and nothing is asked (rc $rc: $out)"
+assert 'grep -qF "no backup of 1.0.0 in /apps/demo/backups on deploy@vps" <<<"$out" && [ ! -e "$spec_copy.envrestore" ]' \
+    "and it says so (said '$out')"
+n_probe=$(n_of "'deploy' 'backup-probe' '/apps/demo' '1.0.0'"); n_snap=$(n_of "'deploy' 'snapshot'")
+assert '[ -n "$n_probe" ] && [ -n "$n_snap" ] && [ "$n_probe" -lt "$n_snap" ]' \
+    "the backup is looked for before the snapshot (probe ${n_probe:-none}, snapshot ${n_snap:-none})"
+rm -rf "$project/.kasbah"
+
+out="$( rollback deploy@vps 1.0.0 --with-data )"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "deploy@vps holds no backup of 1.0.0 in /apps/demo/backups to restore it from" <<<"$out" && grep -qF -- "--no-data" <<<"$out"' \
+    "--with-data with no backup is refused, pointing at --no-data (rc $rc: $out)"
+assert '! snapshotted && [ ! -s "$spec_copy" ]' "before anything changes ($(<"$call_log"))"
+
+out="$( FAKE_PROBE="$probe_with" rollback deploy@vps 2.0.0 --with-data --no-env )"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "v2.0.0'"'"'s kasbah.yml has no restore hook" <<<"$out" && grep -qF -- "--no-data" <<<"$out"' \
+    "--with-data with no restore hook in the target's manifest is refused (rc $rc: $out)"
+assert '! snapshotted' "before anything changes"
+
+out="$( FAKE_PROBE="$probe_with" rollback deploy@vps 1.0.0 )"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "pass --with-env or --no-env, and --with-data or --no-data. Nothing was changed." <<<"$out"' \
+    "unanswered without a terminal, the questions fail naming both pairs (rc $rc: $out)"
+assert 'grep -qF "values differ:      DEMO_GREETING" <<<"$out" && grep -qF "only in the backup: DEMO_OLD" <<<"$out"' \
+    "after listing the keys by name (said '$out')"
+assert '! snapshotted' "before anything changes"
+
+out="$( FAKE_PROBE="$probe_with" rollback deploy@vps 1.0.0 --with-env --with-data )"; rc=$?
+calls=$(<"$call_log")
+assert '[ "$rc" = "0" ] && [ "$(cat "$spec_copy.envrestore" 2>/dev/null)" = "/apps/demo 1.0.0-20261101-000000.tar.gz --all" ]' \
+    "--with-env writes the backup's .env whole (rc $rc, asked: $(cat "$spec_copy.envrestore" 2>/dev/null): $out)"
+assert '[ "$(jq -r .restore_from "$spec_copy")" = "1.0.0-20261101-000000.tar.gz" ] && [ "$(jq -r .restore_data "$spec_copy")" = "true" ] && [ "$(jq -c .restore "$spec_copy")" = "[\"echo v1-restore\"]" ]' \
+    "--with-data hands the engine the backup and v1.0.0's restore hook ($(jq -c "[.restore_from, .restore_data, .restore]" "$spec_copy" 2>/dev/null))"
+n_snap=$(n_of "'deploy' 'snapshot'"); n_env=$(n_of "'deploy' 'restore-env'"); n_drift=$(n_of "'setup-env' 'drift'")
+assert '[ -n "$n_env" ] && [ "$n_snap" -lt "$n_env" ] && [ "$n_env" -lt "$n_drift" ]' \
+    "the .env is written after the snapshot and before the drift check (snapshot $n_snap, env ${n_env:-none}, drift $n_drift)"
+rm -rf "$project/.kasbah"
+
+out="$( FAKE_PROBE="$probe_with" rollback deploy@vps 1.0.0 --no-env --no-data )"; rc=$?
+assert '[ "$rc" = "0" ] && [ ! -e "$spec_copy.envrestore" ] && [ "$(jq -r ".restore_data // false" "$spec_copy")" = "false" ] && [ "$(jq -r .restore_from "$spec_copy")" = "1.0.0-20261101-000000.tar.gz" ]' \
+    "--no-env --no-data restore neither, the backup still handed to the hooks (rc $rc: $out)"
+rm -rf "$project/.kasbah"
+
+for args in "--with-env --no-env" "--no-data --with-data" "--with-data=yes"; do
+    : > "$call_log"
+    out="$( rollback deploy@vps 1.0.0 $args )"; rc=$?
+    assert '[ "$rc" = "1" ] && [ ! -s "$call_log" ]' "rollback $args is refused before any connection (rc $rc: $out)"
+done
+out="$( deploy deploy@vps 1.0.0 --with-env )"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "is a rollback flag" <<<"$out"' "a deploy takes no --with-env (rc $rc: $out)"
+out="$( FAKE_PROBE="$probe_with" deploy deploy@vps 1.0.0 )"; rc=$?
+assert '[ "$rc" = "0" ] && ! grep -qF "backup-probe" "$call_log" && [ "$(jq -r ".restore_from // \"\"" "$spec_copy")" = "" ]' \
+    "deploy X.Y.Z restores nothing and never looks for a backup (rc $rc: $out)"
 rm -rf "$project/.kasbah"
 
 exit "$fail"

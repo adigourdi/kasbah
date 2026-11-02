@@ -16,8 +16,11 @@ import (
 	"github.com/adigourdi/kasbah/internal/buildpush"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/env"
+	"github.com/adigourdi/kasbah/internal/envtpl"
 	"github.com/adigourdi/kasbah/internal/manifest"
+	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/release"
+	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/state"
 	"github.com/adigourdi/kasbah/internal/version"
 	"github.com/adigourdi/kasbah/internal/vlog"
@@ -27,7 +30,8 @@ import (
 // a deploy's own sync: `git archive | tar -x` cannot honour sync renames.
 
 const rollbackUsage = `Usage: kasbah rollback [USER@HOST] [VERSION] [--on-drift=setup|continue|abort]
-                       [--env-seed=FILE] [--on-hook-failure=continue|stop] [--skip-hooks]
+                       [--env-seed=FILE] [--on-hook-failure=continue|stop]
+                       [--with-env|--no-env] [--with-data|--no-data] [--skip-hooks]
                        [--no-health-wait]
 
 Puts a server back on a version it has already run. Run from the project root.
@@ -45,17 +49,26 @@ tree, which is neither read nor touched:
     part of this rollback
   * each of those images must still be on the server as :<VERSION>; kasbah
     never re-ships one (docs/build-deploy.md → Retention)
-  * ` + "`kasbah remote deploy`" + ` on the server: pre-rollback hooks, retag
-    <image>:current, docker compose -p <name> up -d --remove-orphans, health
-    wait, post-rollback hooks, one versions.log entry — a failed pre-rollback
-    hook asks whether to carry on, and a failed up or health wait is put back,
-    as a deploy's are (kasbah deploy --help). Once <VERSION> is up, the copies
-    of what the run overwrote become the outgoing version's backup,
-    backups/<outgoing version>-<stamp>.tar.gz
+  * <VERSION>'s newest backup on the server, backups/<VERSION>-<stamp>.tar.gz,
+    when there is one: the names of the keys its .env and the server's
+    disagree on are listed (never a value), and the rollback asks whether to
+    restore that .env, keep the server's, or decide per key; and, when
+    <VERSION>'s kasbah.yml has a restore hook, whether to restore the data
+    with it — which replaces everything written since that backup
+  * the chosen .env written on the server, then the env drift check
+  * ` + "`kasbah remote deploy`" + ` on the server: the backup extracted for the hooks
+    ($KASBAH_BACKUP_DIR), pre-rollback hooks, the restore hook when the
+    answer was yes, retag <image>:current, docker compose -p <name> up -d
+    --remove-orphans, health wait, post-rollback hooks, one versions.log
+    entry — a failed pre-rollback or restore hook asks whether to carry on,
+    and a failed up or health wait is put back, as a deploy's are (kasbah
+    deploy --help); .env goes back with the files, the data does not. Once
+    <VERSION> is up, the copies of what the run overwrote become the
+    outgoing version's backup, backups/<outgoing version>-<stamp>.tar.gz
   * <VERSION>'s traefik-dynamic.yml, last, once the stack is up
 
-Not restored: .env values (not in git — drift is prompted for as usual), data
-bind mounts, and anything provisioned outside this project.
+Without a backup of <VERSION>, .env and data are left as they are (drift is
+prompted for as usual); anything provisioned outside this project never is.
 
 Flags:
   --on-drift=setup      re-run the interactive setup when .env has drifted
@@ -66,16 +79,27 @@ Unset, a drifting .env asks; with no terminal to ask on, the run stops (exit 5).
   --env-seed=FILE       answer the keys .env lacks from FILE's KEY=value lines
                         (mode 600 or tighter), as deploy does (kasbah deploy --help)
 
+  --with-env            restore the backup's .env whole
+  --no-env              keep the server's .env
+Unset, differing keys ask: restore, keep, or one question per key.
+  --with-data           run <VERSION>'s restore hook on the backup — refused,
+                        changing nothing, when there is no backup or no hook
+  --no-data             leave the data as it is
+Unset, a backup and a restore hook ask. With no terminal to ask on, an
+unanswered question fails before anything changes, naming its flags.
+
 For the server's side of the run:
   --on-hook-failure=continue
-                        when a pre-rollback hook fails, carry on as if it had
-                        passed
+                        when the extraction, a pre-rollback or the restore
+                        hook fails, carry on as if it had passed
   --on-hook-failure=stop
-                        when one fails, put back the files and stop
-Unset, a failed pre-rollback hook asks; with no terminal to ask on, the run
-stops, and fails naming the flag.
+                        when one fails, put back the files and .env, and stop;
+                        what the hooks already did to the data stays
+Unset, such a failure asks; with no terminal to ask on, the run stops, and
+fails naming the flag.
 
-  --skip-hooks          skip the pre- and post-rollback hooks
+  --skip-hooks          skip the pre- and post-rollback hooks; the restore
+                        hook still runs
   --no-health-wait      bring the stack up without blocking on its health
 
 See docs/build-deploy.md.
@@ -174,6 +198,11 @@ func RunTagged(c Ctx, o Options, mode string) error {
 	if err := r.checkImages(); err != nil {
 		return err
 	}
+	if mode == "rollback" {
+		if err := r.restoreChoices(); err != nil {
+			return err
+		}
+	}
 
 	if r.lim, err = env.Resolve(c.Out, r.s, r.target, r.p.Resources, r.mk, mode == "rollback"); err != nil {
 		return err
@@ -187,13 +216,19 @@ func RunTagged(c Ctx, o Options, mode string) error {
 	if err != nil {
 		return err
 	}
+	if err := r.restoreEnv(); err != nil {
+		return err
+	}
 	st := &env.Step{Out: c.Out, Prompter: c.Prompter, S: r.s, Target: r.target, TTYIn: c.TTYIn, TTYOut: c.TTYOut, Color: c.Color, Seed: r.seed}
 	if err := st.Run(r.dir, r.lim.CPU, r.lim.Mem, o.OnDrift, false); err != nil {
-		return err
+		return r.envBack(err)
 	}
 	if claim != nil {
 		r.mailClaim(claim)
 	}
+	// From here the engine's revert puts .env back; an engine that stops
+	// without a failure record leaves it to engineFailed.
+	r.envHeld()
 	r.route = func() (bool, error) {
 		if t.hasFrag {
 			return r.fragment()
@@ -770,5 +805,244 @@ func (r *run) gaveUp(rep *Report) {
 		if l != "" {
 			fmt.Fprintf(o.Stderr, "    %s\n", l)
 		}
+	}
+}
+
+// restoreChoices settles what a rollback restores from its target's newest
+// backup before anything on the server changes: a flag answers, else the
+// terminal is asked, else the run fails naming the flags.
+func (r *run) restoreChoices() error {
+	f, err := r.s.BackupProbe(r.dir, r.version)
+	if err != nil {
+		return err
+	}
+	o, v, t := r.c.Out, r.version, r.target
+	hook := len(r.p.Hooks["restore"]) > 0
+	if r.o.Data == prompt.Yes && (f.Backup == "" || !hook) {
+		var e *cli.Error
+		switch {
+		case f.Backup == "" && !hook:
+			e = cli.Fail("rollback: --with-data, and there is nothing to restore it with: %s holds no backup of %s in %s/%s, and v%s's kasbah.yml has no restore hook", t, v, r.dir, Backups, v)
+		case f.Backup == "":
+			e = cli.Fail("rollback: --with-data, and %s holds no backup of %s in %s/%s to restore it from", t, v, r.dir, Backups)
+		default:
+			e = cli.Fail("rollback: --with-data, and v%s's kasbah.yml has no restore hook — kasbah restores no data itself", v)
+		}
+		return e.Cont("Nothing was changed. To roll back without restoring data, pass --no-data.")
+	}
+	if f.Backup == "" {
+		o.Info("no backup of %s in %s/%s on %s — .env and data are left as they are", v, r.dir, Backups, t)
+		if r.o.Env == prompt.Yes {
+			o.Warn("--with-env: there is no backup of %s to restore .env from", v)
+		}
+		return nil
+	}
+	r.restoreFrom = f.Backup
+	at := r.dir + "/" + Backups + "/" + f.Backup
+	o.Info("the newest backup of %s on %s is %s", v, t, at)
+	differ := len(f.Changed)+len(f.OnlyBackup)+len(f.OnlyLive) > 0
+	switch {
+	case f.Env == "unreadable":
+		o.Warn("its .env could not be read (see above) — %s/.env is left as it is", r.dir)
+	case f.Env != "yes" && r.o.Env == prompt.Yes:
+		o.Warn("--with-env: %s holds no .env to restore — %s/.env is left as it is", f.Backup, r.dir)
+	case f.Env != "yes":
+		o.Info("  it holds no .env — %s/.env is left as it is", r.dir)
+	case !differ:
+		o.Info("  its .env and %s/.env agree on every key — nothing to restore", r.dir)
+	default:
+		o.Info("  its .env and %s/.env differ on these keys (names only):", r.dir)
+		for _, l := range [][2]string{{"values differ:     ", strings.Join(f.Changed, " ")},
+			{"only in the backup:", strings.Join(f.OnlyBackup, " ")}, {"only on the server:", strings.Join(f.OnlyLive, " ")}} {
+			if l[1] != "" {
+				o.Info("    %s %s", l[0], l[1])
+			}
+		}
+	}
+	envAsk := f.Env == "yes" && differ && r.o.Env == prompt.Unset
+	dataAsk := hook && r.o.Data == prompt.Unset
+	if (envAsk || dataAsk) && (r.c.Prompter == nil || !r.c.Prompter.TTY) {
+		var flags []string
+		if envAsk {
+			flags = append(flags, "--with-env or --no-env")
+		}
+		if dataAsk {
+			flags = append(flags, "--with-data or --no-data")
+		}
+		return cli.Fail("cannot ask what to restore from %s: stdin is not a terminal", at).Cont(
+			"pass " + strings.Join(flags, ", and ") + ". Nothing was changed.")
+	}
+	if f.Env == "yes" && differ {
+		if err := r.chooseEnv(f); err != nil {
+			return err
+		}
+	}
+	if !hook {
+		o.Info("  v%s's kasbah.yml has no restore hook — data is left as it is", v)
+		return nil
+	}
+	switch r.o.Data {
+	case prompt.Yes:
+		r.restoreData = true
+	case prompt.Unset:
+		yes, err := r.c.Prompter.Bool("data", "restore data from "+f.Backup+" with v"+v+"'s restore hook? It replaces everything written since that backup was taken", prompt.Unset)
+		if err != nil {
+			return err
+		}
+		r.restoreData = yes
+	}
+	if r.restoreData {
+		o.Info("  data: restored by v%s's restore hook, before %s comes up — everything written since %s is replaced", v, v, f.Backup)
+	} else {
+		o.Info("  data: left as it is")
+	}
+	return nil
+}
+
+// chooseEnv is the .env answer: the backup's whole, the server's, or — on a
+// terminal only — one answer per differing key.
+func (r *run) chooseEnv(f *BackupFacts) error {
+	o, v := r.c.Out, r.version
+	switch r.o.Env {
+	case prompt.Yes:
+		r.envRestore = true
+		o.Info("  .env: the backup's (--with-env)")
+		return nil
+	case prompt.No:
+		o.Info("  .env: the server's, kept (--no-env)")
+		return nil
+	}
+	p := r.c.Prompter
+	stopped := cli.Fail("rollback stopped at the .env question — nothing was changed")
+	// Select's own refusal would name a flag that does not exist.
+	unanswered := cli.Fail("no answer to the .env question — pass --with-env or --no-env. Nothing was changed.")
+	choice, ok, err := p.Select("env", "restore .env from "+v+"'s backup, keep the server's, or decide per key?",
+		[]string{"restore", "keep", "per-key"},
+		[]string{"restore — the backup's .env replaces the server's whole",
+			"keep — the server's .env stays as it is",
+			"per-key — one question per key that differs"}, "")
+	if err != nil {
+		return unanswered
+	}
+	if !ok {
+		return stopped
+	}
+	switch choice {
+	case "restore":
+		r.envRestore = true
+	case "per-key":
+		labels := map[string][]string{}
+		for _, k := range f.Changed {
+			labels[k] = []string{"backup — the value it had in " + v + "'s backup", "server — the value it has now"}
+		}
+		for _, k := range f.OnlyBackup {
+			labels[k] = []string{"backup — set it, as the backup does", "server — leave it unset, as it is now"}
+		}
+		for _, k := range f.OnlyLive {
+			labels[k] = []string{"backup — remove it, as the backup has none", "server — keep it"}
+		}
+		keys := []string{}
+		for _, k := range envtpl.SortUniq(append(append(append([]string{}, f.Changed...), f.OnlyBackup...), f.OnlyLive...)) {
+			c, ok, err := p.Select("env", k+": the backup's or the server's?", []string{"backup", "server"}, labels[k], "")
+			if err != nil {
+				return unanswered
+			}
+			if !ok {
+				return stopped
+			}
+			if c == "backup" {
+				keys = append(keys, k)
+			}
+		}
+		if len(keys) > 0 {
+			r.envRestore, r.envKeys = true, keys
+		}
+	}
+	switch {
+	case !r.envRestore:
+		o.Info("  .env: the server's, kept")
+	case r.envKeys == nil:
+		o.Info("  .env: the backup's")
+	default:
+		o.Info("  .env: the backup's values for %s", strings.Join(r.envKeys, " "))
+	}
+	return nil
+}
+
+// restoreEnv writes the chosen .env, after the snapshot holds the server's
+// and before the env step reads it.
+func (r *run) restoreEnv() error {
+	if !r.envRestore {
+		return nil
+	}
+	if err := r.s.RestoreEnv(r.dir, r.restoreFrom, r.envKeys); err != nil {
+		var e *cli.Error
+		if errors.As(err, &e) {
+			return e.Cont("nothing was started: "+r.version+"'s files are on the server beside the running stack,",
+				"and its snapshot is kept for the next run. Re-running `"+r.rerun()+"` is safe.")
+		}
+		return err
+	}
+	what := "the whole of it"
+	if r.envKeys != nil {
+		what = strings.Join(r.envKeys, " ")
+	}
+	r.c.Out.Info("%s/.env on %s restored from %s: %s", r.dir, r.target, r.restoreFrom, what)
+	r.envLive = true
+	r.envPop = atexit.Push(func() {
+		for _, l := range r.putEnvBack() {
+			r.c.Out.Warn("%s", l)
+		}
+	})
+	return nil
+}
+
+// envHeld drops the signal cleanup putEnvBack runs from.
+func (r *run) envHeld() {
+	if r.envPop != nil {
+		r.envPop()
+		r.envPop = nil
+	}
+}
+
+// envBack is err, a failure between restore-env and the engine, with the
+// server's .env put back first and what became of it said.
+func (r *run) envBack(err error) error {
+	if r.envPop == nil {
+		return err
+	}
+	r.envHeld()
+	l := r.putEnvBack()
+	var e *cli.Error
+	if errors.As(err, &e) {
+		return e.Cont(l...)
+	}
+	for _, x := range l {
+		r.c.Out.Warn("%s", x)
+	}
+	return err
+}
+
+// putEnvBack puts the server's .env back from this run's snapshot, and says
+// so — or, when it cannot, that the backup's values are live and the fix.
+func (r *run) putEnvBack() []string {
+	at := r.dir + "/.env"
+	saved, err := r.s.UndoEnv(r.dir, r.snap)
+	if err == nil {
+		l := []string{at + " on " + r.target + " was put back as it was before this rollback; the values from " + r.restoreFrom + " are not live."}
+		if saved != "" {
+			l = append(l, "the .env it replaced is kept as "+saved+".")
+		}
+		return l
+	}
+	why := err.Error()
+	if i := strings.IndexByte(why, '\n'); i >= 0 {
+		why = why[:i]
+	}
+	return []string{
+		at + " on " + r.target + " still holds the values restored from " + r.restoreFrom + " — putting it back failed:",
+		"  " + why,
+		"A plain deploy would run on them. Before any other deploy or rollback of " + r.m.Name + ", put it back with",
+		"  ssh " + r.target + " " + serverbin.Path(r.mk.AppsPath) + " remote deploy restore-env " + r.dir + " --undo " + r.snap,
 	}
 }

@@ -232,7 +232,7 @@ assert '[[ "$(tail -n1 <<<"$(versions_log)")" == *" deploy $project_version no-b
     "and no-backup in versions.log's field 4 (log: $(versions_log))"
 hooks_json=$(rig_ssh "cat $projdir_remote/.kasbah-hooks.json" 2>/dev/null | tr -d '\r')
 hooks_seen=$(jq -r '(.backup | length), .backup[0], .restore[0], (.targets | join(" "))' <<<"$hooks_json" 2>/dev/null | tr '\n' '|')
-assert '[[ "$hooks_seen" == "1|docker compose exec -T built-app-web echo kasbah-built-app-backup-payload > "*"/payload.txt\"|cat "*"|.env .env.prod.example compose.yml state|" ]]' \
+assert '[[ "$hooks_seen" == "1|docker compose exec -T built-app-web echo kasbah-built-app-backup-payload > "*"/payload.txt\" && "*"|cp "*"|.env .env.prod.example compose.yml state|" ]]' \
     "the deploy rendered the manifest's backup and restore hooks and the snapshot's targets into .kasbah-hooks.json (got '$hooks_json')"
 hooks_mode=$(rig_ssh "stat -c %a $projdir_remote/.kasbah-hooks.json" 2>/dev/null | tr -d '\r')
 assert '[ "$hooks_mode" = "644" ]' "mode 644, as .kasbah-client (got '$hooks_mode')"
@@ -839,7 +839,8 @@ assert '[ "$rc" = "1" ] && grep -qF "never a rollback target" "$tmpdir/err"' \
 ( cd "$projdir" && git checkout -q -- Dockerfile ) || exit 2
 deploy "$RIG_TARGET"; rc=$?
 assert '[ "$rc" = "0" ]' "the clean tree deploys v$next_version over it (exit $rc: $(cli_err))"
-kx rollback "$RIG_TARGET"; rc=$?
+# The fixture's restore hook makes a target with a backup ask about data.
+kx rollback "$RIG_TARGET" --no-env --no-data; rc=$?
 assert '[ "$rc" = "0" ] && grep -qF "stepped over 1 --dirty deploy(s)" "$tmpdir/err"' \
     "the implicit rollback steps over the dirty deploy (exit $rc: $(cli_err))"
 assert '[[ "$(versions_log | tail -n 1)" == *" rollback $next_version "* ]]' \

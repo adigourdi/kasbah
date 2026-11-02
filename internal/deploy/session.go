@@ -187,3 +187,50 @@ func FetchRecord(s *env.SSH, apps, name string) (*vlog.Record, error) {
 	}
 	return vlog.ReadProbe(out, s.Conn.Target.String(), path)
 }
+
+// BackupProbe is unbounded, as the snapshot is: it reads through a backup
+// tarball whose size kasbah does not set. Only key names come back.
+func (s *SSH) BackupProbe(dir, version string) (*BackupFacts, error) {
+	out, err := s.Conn.Run(s.Bin(), "remote", "deploy", "backup-probe", dir, version)
+	if err != nil {
+		return nil, cli.Fail("could not look for a backup of %s in %s/%s on %s (%s, see above) — nothing was changed", version, dir, Backups, s.target(), serverbin.ExitText(ssh.ExitCode(err), 0))
+	}
+	var f BackupFacts
+	if err := remote.Decode(out, &f, []string{"backup", "env", "changed", "only_backup", "only_live"}, "the backup probe", s.target()); err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+// RestoreEnv names keys on argv, never a value: the server reads the values
+// out of the backup itself.
+func (s *SSH) RestoreEnv(dir, backup string, keys []string) error {
+	args := []string{s.Bin(), "remote", "deploy", "restore-env", dir, backup}
+	if keys == nil {
+		args = append(args, "--all")
+	}
+	out, err := s.Conn.Run(append(args, keys...)...)
+	if err != nil {
+		return cli.Fail("could not write %s/.env on %s from the backup %s (%s, see above)", dir, s.target(), backup, serverbin.ExitText(ssh.ExitCode(err), 0))
+	}
+	if lines(out)["env"] != "restored" {
+		return rawOutput(cli.Fail("the .env restore on %s reported no env", s.target()).Cont(
+			"the step was truncated, or the server's kasbah rejected it — raw output:"), out)
+	}
+	return nil
+}
+
+// UndoEnv puts the server's .env back from the snapshot of token's run; saved
+// is where the .env it replaced is kept, "" when it was the snapshot's.
+func (s *SSH) UndoEnv(dir, token string) (string, error) {
+	out, err := s.Conn.Run(s.Bin(), "remote", "deploy", "restore-env", dir, "--undo", token)
+	if err != nil {
+		return "", cli.Fail("could not put %s/.env back on %s (%s, see above)", dir, s.target(), serverbin.ExitText(ssh.ExitCode(err), 0))
+	}
+	l := lines(out)
+	if l["env"] != "put-back" {
+		return "", rawOutput(cli.Fail("putting %s/.env back on %s reported nothing", dir, s.target()).Cont(
+			"the step was truncated, or the server's kasbah rejected it — raw output:"), out)
+	}
+	return l["saved"], nil
+}

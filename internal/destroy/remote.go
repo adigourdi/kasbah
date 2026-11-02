@@ -72,8 +72,10 @@ type Row struct {
 	Prev string `json:"prev"`
 	// Seeds counts the staged --env-seed files, .kasbah-env-seed*.
 	Seeds int `json:"seeds"`
-	// Kept counts the snapshots a backup could not take in, .kasbah-prev.kept-*.
-	Kept int `json:"kept"`
+	// Kept counts the snapshots a backup could not take in, .kasbah-prev.kept-*;
+	// Unpacked the backups an interrupted rollback extracted, .kasbah-unpacked.*.
+	Kept     int `json:"kept"`
+	Unpacked int `json:"unpacked"`
 	// Hooks is .kasbah-hooks.json (fsstate.File).
 	Hooks string `json:"hooks"`
 }
@@ -331,7 +333,7 @@ func scan(apps, pointer string) Scan {
 			Scripts: fsstate.Dir(filepath.Join(d, "scripts")),
 			Lock:    fsstate.File(filepath.Join(d, ".deploy.lock")), Client: fsstate.File(filepath.Join(d, ".kasbah-client")),
 			Env: fsstate.File(filepath.Join(d, ".env")), Sentinels: countSentinels(filepath.Join(d, ".env")),
-			Prev: prevState(filepath.Join(d, ".kasbah-prev")), Seeds: len(seeds(d)), Kept: len(kept(d)), Hooks: fsstate.File(filepath.Join(d, ".kasbah-hooks.json"))}
+			Prev: prevState(filepath.Join(d, ".kasbah-prev")), Seeds: len(seeds(d)), Kept: count(d, keptPrefix), Unpacked: count(d, unpackedPrefix), Hooks: fsstate.File(filepath.Join(d, ".kasbah-hooks.json"))}
 		for _, f := range entries(filepath.Join(d, "scripts")) {
 			if helper(f) {
 				r.Helpers++
@@ -679,18 +681,34 @@ func removeSeeds(d string) string {
 	return v
 }
 
-// keptPrefix names a snapshot a backup could not take in (deploy.KeptPrefix).
-const keptPrefix = ".kasbah-prev.kept-"
+// keptPrefix names a snapshot a backup could not take in (deploy.KeptPrefix),
+// unpackedPrefix a backup an interrupted rollback extracted (deploy.UnpackedPrefix).
+const (
+	keptPrefix     = ".kasbah-prev.kept-"
+	unpackedPrefix = ".kasbah-unpacked."
+)
 
-// kept is d's kept-aside snapshots: they hold a copy of .env.
+// kept is d's kept-aside snapshots and leftover extractions: they hold a copy
+// of .env.
 func kept(d string) []string {
 	var out []string
 	for _, n := range entries(d) {
-		if strings.HasPrefix(n, keptPrefix) {
+		if strings.HasPrefix(n, keptPrefix) || strings.HasPrefix(n, unpackedPrefix) {
 			out = append(out, filepath.Join(d, n))
 		}
 	}
 	return out
+}
+
+// count is how many of d's entries start with prefix.
+func count(d, prefix string) int {
+	n := 0
+	for _, e := range entries(d) {
+		if strings.HasPrefix(e, prefix) {
+			n++
+		}
+	}
+	return n
 }
 
 // removeKept removes every kept-aside snapshot in d.

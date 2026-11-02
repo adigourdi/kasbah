@@ -401,7 +401,7 @@ func (p *Plan) check() error {
 
 func hasWork(r Row) bool {
 	return r.Vlog != "missing" || r.VlogGz != "missing" || r.Helpers != 0 ||
-		r.Lock != "missing" || r.Client != "missing" || (r.Hooks != "missing" && r.Hooks != "") || r.Sentinels != 0 || (r.Prev != "absent" && r.Prev != "") || r.Seeds != 0 || r.Kept != 0
+		r.Lock != "missing" || r.Client != "missing" || (r.Hooks != "missing" && r.Hooks != "") || r.Sentinels != 0 || (r.Prev != "absent" && r.Prev != "") || r.Seeds != 0 || r.Kept != 0 || r.Unpacked != 0
 }
 
 func (p *Plan) anything() bool {
@@ -451,6 +451,9 @@ func planProject(r Row) string {
 	}
 	if r.Kept != 0 {
 		parts = append(parts, fmt.Sprintf(".kasbah-prev.kept-* (%d snapshot(s) a backup could not take in, each with a copy of .env)", r.Kept))
+	}
+	if r.Unpacked != 0 {
+		parts = append(parts, fmt.Sprintf(".kasbah-unpacked.* (%d backup(s) an interrupted rollback extracted, each with a copy of .env)", r.Unpacked))
 	}
 	if r.Sentinels != 0 {
 		parts = append(parts, fmt.Sprintf(".env: %d managed-block sentinel comment(s), values kept", r.Sentinels))
@@ -861,7 +864,7 @@ func (p *Plan) reportProject(r *reporter, pr ProjectResult) {
 		file("the staged .kasbah-env-seed files", pr.Seeds)
 	}
 	if pr.Kept != "absent" && pr.Kept != "" {
-		file("the kept-aside .kasbah-prev.kept-* snapshots", pr.Kept)
+		file("the kept-aside .kasbah-prev.kept-* snapshots and leftover .kasbah-unpacked.* extractions", pr.Kept)
 	}
 	switch pr.Env {
 	case "stripped":

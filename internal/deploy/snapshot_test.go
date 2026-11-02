@@ -120,7 +120,7 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 func TestSnapshotRefusals(t *testing.T) {
 	dir := t.TempDir()
 	var out, errb bytes.Buffer
-	for _, bad := range []string{"../x", PrevDir + "/a", KeptPrefix + "1.0.0-20261102-100000", "a//b", "/abs"} {
+	for _, bad := range []string{"../x", PrevDir + "/a", KeptPrefix + "1.0.0-20261102-100000", UnpackedPrefix + "1", UnpackedPrefix + "1/kasbah-snapshot", "a//b", "/abs"} {
 		if rc := takeSnapshot(dir, "tok", []string{bad}, &out, &errb); rc != 1 {
 			t.Errorf("%q accepted", bad)
 		}

@@ -183,6 +183,20 @@ if [ "$rc" != "0" ]; then
     exit 2
 fi
 
+# What v1 ran with: a value typed into its .env on the server, and its data,
+# notes.txt in <data>/built-app/ — both kept in v1's backup by the v2 deploy.
+env_remote="$projdir_remote/.env"
+notes_remote="$apps/data/$project/notes.txt"
+set_ttl()   { rig_ssh "sed -i 's/^BUILT_APP_CACHE_TTL=.*/BUILT_APP_CACHE_TTL=$1/' $env_remote" >/dev/null 2>&1; }
+ttl()       { rig_ssh "sed -n 's/^BUILT_APP_CACHE_TTL=//p' $env_remote" 2>/dev/null | tr -d '\r'; }
+set_notes() { rig_ssh "mkdir -p $apps/data/$project && printf '%s\n' '$1' > $notes_remote" >/dev/null 2>&1; }
+notes()     { rig_ssh "cat $notes_remote 2>/dev/null" 2>/dev/null | tr -d '\r'; }
+leftovers() { rig_ssh "ls -d $projdir_remote/.kasbah-unpacked.* 2>/dev/null" 2>/dev/null | tr -d '\r'; }
+set_ttl ttl-typed-on-v1
+set_notes notes-of-v1
+assert '[ "$(ttl)" = "ttl-typed-on-v1" ] && [ "$(notes)" = "notes-of-v1" ]' \
+    "v$v1 runs with a typed .env value and data of its own (ttl '$(ttl)', notes '$(notes)')"
+
 # What the rollback will have to restore, captured while it is true.
 v1_compose_sha="$(ref_sha "v$v1:compose.prod.yml")"
 v1_frag_sha="$(ref_sha "v$v1:traefik-dynamic.yml")"
@@ -226,6 +240,10 @@ if [ "$rc" != "0" ]; then
     exit 2
 fi
 
+# What v2 changes while it runs, and the rollback --with-env --with-data undoes.
+set_ttl ttl-typed-on-v2
+set_notes notes-of-v2
+
 v2_web_id="$(image_id "$image_web:$v2")"
 assert '[ "$v2_web_id" != "$v1_web_id" ]' \
     "the two versions really are different images ($v1 $v1_web_id, $v2 $v2_web_id)"
@@ -244,7 +262,7 @@ assert '[ "$edition" = "1" ]' \
 # $v1 — read off the server's own versions.log, since nothing in this checkout
 # knows what this server has run.
 crumbs_reset
-rollback "$RIG_TARGET"; rc=$?
+rollback "$RIG_TARGET" --with-env --with-data; rc=$?
 assert '[ "$rc" = "0" ]' "a rollback with no version named succeeds (exit $rc)
         stderr: $(cli_err)"
 if [ "$rc" != "0" ]; then
@@ -254,6 +272,24 @@ if [ "$rc" != "0" ]; then
 fi
 assert 'grep -qF "rolling back to $v1" "$tmpdir/err"' \
     "having picked the deploy before the current one (said '$(cli_err)')"
+
+# --- .env and data, from v1's backup ------------------------------------------------
+assert 'grep -qF "the newest backup of $v1 on $RIG_TARGET is $projdir_remote/backups/$v1-" "$tmpdir/err"' \
+    "it restores from v$v1's newest backup (said '$(cli_err)')"
+assert 'grep -qE "values differ: +BUILT_APP_CACHE_TTL$" "$tmpdir/err"' \
+    "naming the key whose value differs (said '$(cli_err)')"
+assert '! grep -qF "ttl-typed" "$tmpdir/err" && ! grep -qF "ttl-typed" "$tmpdir/out"' \
+    "and never a value"
+assert '[ "$(ttl)" = "ttl-typed-on-v1" ]' \
+    "the .env value is v$v1's again (got '$(ttl)')"
+assert '[ "$(rig_ssh "grep -c ^KASBAH_CPU_LIMIT= $env_remote" 2>/dev/null | tr -d "\r")" = "1" ]' \
+    "with the managed block refreshed after it"
+assert '[ "$(rig_ssh "stat -c %a $env_remote" 2>/dev/null | tr -d "\r")" = "660" ]' \
+    ".env stays mode 660"
+assert '[ "$(notes)" = "notes-of-v1" ]' \
+    "and the restore hook put v$v1's data back (got '$(notes)')"
+assert '[ -z "$(leftovers)" ]' \
+    "the extraction of the backup is gone once the run ends (found '$(leftovers)')"
 
 # --- Surface 1: the compose file on the server -------------------------------------
 server_compose_sha="$(remote_sha "$projdir_remote/compose.yml")"
@@ -314,14 +350,19 @@ assert '[ "$r_digest" = "digest=$v1_web_id,$v1_worker_id" ]' \
 assert '[ "$r_extra" = "by=stevedore" ]' "then by=<ssh user>, and nothing after it (got '$r_extra')"
 
 crumb_text="$(crumbs)"
-assert '[ "$(grep -c . <<<"$crumb_text")" = "2" ]' \
-    "the rollback ran two hooks and no more (crumbs: $(tr '\n' '/' <<<"$crumb_text"))"
+assert '[ "$(grep -c . <<<"$crumb_text")" = "3" ]' \
+    "the rollback ran three hooks and no more (crumbs: $(tr '\n' '/' <<<"$crumb_text"))"
 pre_line="$(sed -n 1p <<<"$crumb_text")"
-post_line="$(sed -n 2p <<<"$crumb_text")"
+restore_line="$(sed -n 2p <<<"$crumb_text")"
+post_line="$(sed -n 3p <<<"$crumb_text")"
 assert '[[ "$pre_line" == pre-rollback\ * ]]' \
     "the pre-rollback hook ran first (line 1: '$pre_line')"
+assert '[ "$restore_line" = "restore version=$v1" ]' \
+    "then the restore hook, before v$v1 came up (line 2: '$restore_line')"
 assert '[[ "$post_line" == post-rollback\ * ]]' \
-    "and the post-rollback hook after it (line 2: '$post_line')"
+    "and the post-rollback hook after it (line 3: '$post_line')"
+assert '[[ "$pre_line" =~ \ backup=$projdir_remote/\.kasbah-unpacked\.[0-9]+\  ]] && [[ "$post_line" =~ \ backup=$projdir_remote/\.kasbah-unpacked\.[0-9]+\  ]]' \
+    "both handed the extraction as \$KASBAH_BACKUP_DIR (lines: '$pre_line' / '$post_line')"
 assert '! grep -qF "pre-deploy" <<<"$crumb_text"' \
     "the deploy pair did not run — the mode picks one pair (crumbs: $(tr '\n' '/' <<<"$crumb_text"))"
 assert '[[ "$pre_line" == *"version=$v1 "* ]]' \
@@ -336,6 +377,28 @@ assert '[[ "$pre_line" == *" project=$project" ]] && [[ "$post_line" == *" proje
 
 assert '[ "$(jq -r .last_version "$projdir/.kasbah/state.json" 2>/dev/null)" = "$v1" ]' \
     "and the project's state file, in the project root, records the version rolled back to"
+
+# ==================================================================================
+# The other answers
+# ==================================================================================
+# v1 is running again; what is typed now is not in v1's newest backup.
+set_ttl ttl-typed-later
+set_notes notes-written-later
+log_before="$(versions_log)"
+rollback "$RIG_TARGET" "$v1"; rc=$?
+assert '[ "$rc" != "0" ] && grep -qF "pass --with-env or --no-env, and --with-data or --no-data. Nothing was changed." "$tmpdir/err"' \
+    "unanswered, without a terminal, the questions fail naming their flags (exit $rc: $(cli_err))"
+assert '[ "$(versions_log)" = "$log_before" ] && [ "$(ttl)" = "ttl-typed-later" ]' \
+    "before anything changed"
+
+crumbs_reset
+rollback "$RIG_TARGET" "$v1" --no-env --no-data; rc=$?
+assert '[ "$rc" = "0" ]' "a rollback answered --no-env --no-data succeeds (exit $rc: $(cli_err))"
+assert '[ "$(ttl)" = "ttl-typed-later" ] && [ "$(notes)" = "notes-written-later" ]' \
+    "and leaves .env and the data as they were (ttl '$(ttl)', notes '$(notes)')"
+assert '[ "$(grep -c . <<<"$(crumbs)")" = "2" ] && ! grep -qF "restore" <<<"$(crumbs)"' \
+    "running no restore hook (crumbs: $(crumbs | tr '\n' '/'))"
+assert '[ -z "$(leftovers)" ]' "and leaving no extraction behind (found '$(leftovers)')"
 
 # ==================================================================================
 # The two refusals

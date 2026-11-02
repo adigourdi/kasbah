@@ -46,6 +46,9 @@ type Options struct {
 	Dirty                   bool
 	// The working-tree deploy's: Bump answers the untagged-HEAD question.
 	Bump string
+	// A rollback's: Env answers whether to restore the target backup's .env,
+	// Data whether to run the target's restore hook.
+	Env, Data prompt.Given
 }
 
 const usage = `Usage: kasbah deploy [USER@HOST] [VERSION] [--on-drift=setup|continue|abort]
@@ -63,7 +66,8 @@ what tags and ships those). USER@HOST defaults to the last server this project
 deployed to (.kasbah/state.json).
 
 With a VERSION, it ships that tag instead — every file out of ` + "`git archive\nv<VERSION>`" + `, the working tree neither read nor touched. That is the rollback
-path with a ` + "`deploy`" + ` log entry and the pre-/post-deploy hooks, and it is
+path with a ` + "`deploy`" + ` log entry, the backup and pre-/post-deploy hooks, and
+nothing restored from a backup — no .env or data question — and it is
 allowed to be the first time that version reaches this server.
 An argument containing '@' is the server, anything else is the version.
 
@@ -213,6 +217,23 @@ func parse(cmd string, args []string) (Options, error) {
 			if o.EnvSeed, err = env.ParseSeedFlag(cmd, a); err != nil {
 				return o, err
 			}
+		case a == "--with-env" || a == "--no-env" || a == "--with-data" || a == "--no-data":
+			if cmd != "rollback" {
+				return o, cli.Fail("%s: %s is a rollback flag — a deploy restores no backup: it takes one, through the backup hooks", cmd, a)
+			}
+			g, v, p := &o.Env, prompt.Yes, prompt.Feature("env")
+			if strings.HasSuffix(a, "-data") {
+				g, p = &o.Data, prompt.Feature("data")
+			}
+			if strings.HasPrefix(a, "--no-") {
+				v = prompt.No
+			}
+			if err := g.Set(v, p, cmd); err != nil {
+				return o, err
+			}
+		case strings.HasPrefix(a, "--with-env=") || strings.HasPrefix(a, "--no-env=") || strings.HasPrefix(a, "--with-data=") || strings.HasPrefix(a, "--no-data="):
+			name, _, _ := strings.Cut(a, "=")
+			return o, cli.Fail("%s: %s takes no value — pass it on its own (`kasbah %s USER@HOST %s`)", cmd, name, cmd, name)
 		case strings.HasPrefix(a, "-"):
 			name, _, _ := strings.Cut(a, "=")
 			return o, cli.Fail("%s: unknown flag '%s' (%s takes %s)", cmd, name, cmd, takes(cmd))
@@ -243,7 +264,7 @@ func takes(cmd string) string {
 	if cmd == "deploy" {
 		return "USER@HOST, VERSION, --on-drift=, --env-seed=, --on-hook-failure=, --skip-hooks, --no-health-wait, --dirty and --bump="
 	}
-	return "USER@HOST, VERSION, --on-drift=, --env-seed=, --on-hook-failure=, --skip-hooks and --no-health-wait"
+	return "USER@HOST, VERSION, --on-drift=, --env-seed=, --on-hook-failure=, --with-env/--no-env, --with-data/--no-data, --skip-hooks and --no-health-wait"
 }
 
 // CheckOnHookFailure validates the flag where it is parsed, as --on-drift= is.
@@ -271,6 +292,13 @@ type Server interface {
 	// gone, and the deploy record.
 	Images(version string, images []string) (checked int, missing []string, err error)
 	Record(apps, name string) (*vlog.Record, error)
+	// BackupProbe and RestoreEnv are a rollback's: the target's newest
+	// backup and its .env's differing keys, then that .env written over the
+	// server's, whole (nil keys) or for keys.
+	BackupProbe(dir, version string) (*BackupFacts, error)
+	RestoreEnv(dir, backup string, keys []string) error
+	// UndoEnv puts .env back from the snapshot of token's run.
+	UndoEnv(dir, token string) (saved string, err error)
 	HoldServer(apps, what string) (release func(), err error)
 }
 
@@ -317,6 +345,17 @@ type run struct {
 	unasked bool
 	// sigStop: a signal answered stop to the engine's question.
 	sigStop bool
+	// A rollback's restore: the target's backup ("" for none), the .env
+	// answer (envKeys nil with envRestore the whole file), and the data one.
+	restoreFrom string
+	envRestore  bool
+	envKeys     []string
+	restoreData bool
+	// envPop, while the backup's .env is live ahead of the engine, unregisters
+	// the signal cleanup that puts the server's back.
+	envPop func()
+	// envLive: this run wrote the backup's .env on the server.
+	envLive bool
 }
 
 // Run is the command.
@@ -529,7 +568,8 @@ func (r *run) remote() (*Report, error) {
 		Images: b.Images, Pre: b.Hooks["pre-"+r.mode], Post: b.Hooks["post-"+r.mode],
 		Backup: b.Hooks["backup"], Restore: b.Hooks["restore"], Targets: SnapshotTargets(b.Sync),
 		Health: b.Health, Snapshot: r.snap,
-		Routed: fragmentHosts(r.frag),
+		Routed:      fragmentHosts(r.frag),
+		RestoreFrom: r.restoreFrom, RestoreData: r.restoreData,
 	}
 	// Held: the engine finishes on the server whatever happens to this end,
 	// so a signal waits for ssh rather than tearing the master down under it.
@@ -657,8 +697,12 @@ func (r *run) engineFailed(out string, rc int) error {
 	}
 	f := ParseFailure(out)
 	if f == nil {
-		return e.Cont("nothing was started — the containers and :current are what they were,",
+		e.Cont("nothing was started — the containers and :current are what they were,",
 			"and "+v+"'s files are on the server beside them — "+again)
+		if r.envLive {
+			e.Cont(r.putEnvBack()...)
+		}
+		return e
 	}
 	if f.Saved != "" {
 		e.Cont("the .env the server had differed from the running stack's: it is kept as",

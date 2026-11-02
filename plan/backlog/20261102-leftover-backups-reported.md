@@ -4,12 +4,11 @@ cause: server status and check --server report neither kind of directory
 where: internal/status, internal/check/server.go, docs/compliance.md
 state: ready
 priority: normal
-after: rollback-points
 ---
 
 ## Prompted by
 
-A confirming review in the [[rollback-points]] run (2026-11-02): "`server status`
+A confirming review in the rollback-backups run (2026-11-02): "`server status`
 and `check --server` report neither kept-aside directories nor leftover backup
 directories. Only the deploy warning and destroy's plan mention them, so they pile
 up (each with `.env`) until destroy or `drop --prune`."

@@ -267,7 +267,9 @@ assert 'grep -qF "nothing pending" <<<"$out"' \
     "HEAD at the deployed tag has nothing pending (got '$out')"
 
 # --- After a rollback the rig really performed --------------------------------------
-rollback "$RIG_TARGET"; rc=$?
+# The fixture has a restore hook, so a rollback to a version with a backup asks
+# about .env and data; this suite is about the record, and answers no to both.
+rollback "$RIG_TARGET" --no-env --no-data; rc=$?
 if [ "$rc" != "0" ]; then
     echo "error: the rollback failed (exit $rc) — the changelog case below cannot be judged" >&2
     sed 's/^/       | /' "$tmpdir/err" >&2

@@ -888,7 +888,8 @@ kasbah's management layer:
   append-only credential could not delete them in any case
 - per project: `versions.log(.gz)`, the `scripts/` helpers by name,
   `.deploy.lock`, `.kasbah-client`, `.kasbah-hooks.json`, a failed deploy's snapshot `.kasbah-prev/`
-  and every snapshot a backup kept aside, `.kasbah-prev.kept-*/` (each may hold a
+  and every snapshot a backup kept aside, `.kasbah-prev.kept-*/`, and every
+  backup a killed rollback left extracted, `.kasbah-unpacked.*/` (each may hold a
   copy of `.env`), every staged `--env-seed`
   `.kasbah-env-seed.*` (it holds `.env` values), and the `.env` managed-block **sentinel
   comments** — the `KASBAH_*` values between them stay, or compose loses the

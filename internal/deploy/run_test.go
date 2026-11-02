@@ -55,6 +55,16 @@ type fake struct {
 	answer   string
 	// beforeAsk, when set, runs just before the question is asked.
 	beforeAsk func()
+	// backup is BackupProbe's answer (nil: no backup); envKeys and envAll
+	// what RestoreEnv was asked for; envErr its failure.
+	backup  *BackupFacts
+	envKeys []string
+	envAll  bool
+	envErr  error
+	// injectRC is Inject's exit; undoErr UndoEnv's failure, undoSaved its saved.
+	injectRC  int
+	undoErr   error
+	undoSaved string
 }
 
 func (f *fake) log(c string) { f.calls = append(f.calls, c) }
@@ -92,7 +102,7 @@ func (f *fake) Fragment(local, dest string) error { f.log("fragment " + dest); r
 func (f *fake) Inject(dir string, pairs []string) int {
 	f.log("inject")
 	f.injects = append(f.injects, pairs)
-	return 0
+	return f.injectRC
 }
 func (f *fake) Limits(cpus, memory string) (string, int) {
 	f.log("limits " + cpus + " " + memory)
@@ -151,6 +161,24 @@ func (f *fake) Record(apps, name string) (*vlog.Record, error) {
 		return &vlog.Record{ActivePath: apps + "/" + name + "/versions.log", ArchivePath: apps + "/" + name + "/versions.log.gz", ActiveState: "missing", ArchiveState: "missing"}, nil
 	}
 	return f.record, nil
+}
+
+func (f *fake) BackupProbe(dir, version string) (*BackupFacts, error) {
+	f.log("backup-probe " + version)
+	if f.backup == nil {
+		return &BackupFacts{Env: "no"}, nil
+	}
+	return f.backup, nil
+}
+func (f *fake) RestoreEnv(dir, backup string, keys []string) error {
+	f.log("restore-env " + backup + " " + strings.Join(keys, ","))
+	f.envKeys, f.envAll = keys, keys == nil
+	return f.envErr
+}
+
+func (f *fake) UndoEnv(dir, token string) (string, error) {
+	f.log("undo-env " + token)
+	return f.undoSaved, f.undoErr
 }
 
 func (f *fake) called(prefix string) bool {

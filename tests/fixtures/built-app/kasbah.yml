@@ -38,20 +38,24 @@ health:
 hooks:
   # Writes into the backup directory through the outgoing container, so a
   # suite finds payload.txt in the tarball beside the snapshot: a fixed string,
-  # so it asserts on the bytes rather than on a file appearing.
+  # so it asserts on the bytes rather than on a file appearing. The project's
+  # data is notes.txt in <data>/built-app/ (../data/built-app from the project
+  # folder on a server set up with the default paths), dumped when present.
   backup:
-    - 'docker compose exec -T built-app-web echo kasbah-built-app-backup-payload > "$KASBAH_BACKUP_DIR/payload.txt"'
-  # Parsed and rendered into .kasbah-hooks.json; no deploy or rollback runs it.
+    - 'docker compose exec -T built-app-web echo kasbah-built-app-backup-payload > "$KASBAH_BACKUP_DIR/payload.txt" && { [ ! -f ../data/built-app/notes.txt ] || cp ../data/built-app/notes.txt "$KASBAH_BACKUP_DIR/notes.txt"; }'
+  # Loads the dump back, on a rollback answered --with-data: a backup without
+  # one fails the hook, as a restore with nothing to restore should.
   restore:
-    - 'cat "$KASBAH_BACKUP_DIR/payload.txt"'
+    - 'cp "$KASBAH_BACKUP_DIR/notes.txt" ../data/built-app/notes.txt && echo "restore version=$KASBAH_VERSION" >> state/breadcrumbs.log'
   pre-deploy:
     - 'echo "pre-deploy version=$KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT cwd=$PWD" >> state/breadcrumbs.log; echo version=9.9.9-from-the-hook'
   post-deploy:
     - 'docker compose exec -T built-app-web true && echo "post-deploy version=$KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT" >> state/breadcrumbs.log'
   # The other pair, which only `kasbah rollback` runs, read back by
   # tests/integration/rollback_test.sh from the same file; $KASBAH_PREV_VERSION
-  # is the version being left behind.
+  # is the version being left behind, $KASBAH_BACKUP_DIR the target's backup,
+  # extracted.
   pre-rollback:
-    - 'echo "pre-rollback version=$KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT" >> state/breadcrumbs.log'
+    - 'echo "pre-rollback version=$KASBAH_VERSION prev=$KASBAH_PREV_VERSION backup=$KASBAH_BACKUP_DIR project=$KASBAH_PROJECT" >> state/breadcrumbs.log'
   post-rollback:
-    - 'echo "post-rollback version=$KASBAH_VERSION prev=$KASBAH_PREV_VERSION project=$KASBAH_PROJECT" >> state/breadcrumbs.log'
+    - 'echo "post-rollback version=$KASBAH_VERSION prev=$KASBAH_PREV_VERSION backup=$KASBAH_BACKUP_DIR project=$KASBAH_PROJECT" >> state/breadcrumbs.log'

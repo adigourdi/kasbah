@@ -49,6 +49,10 @@ type Spec struct {
 	// Snapshot is the token of this run's `deploy snapshot`; a revert
 	// restores only the snapshot carrying it.
 	Snapshot string `json:"snapshot"`
+	// RestoreFrom is a rollback's target backup in backups/, "" for none:
+	// extracted for the rollback hooks. RestoreData runs the Restore hooks.
+	RestoreFrom string `json:"restore_from,omitempty"`
+	RestoreData bool   `json:"restore_data,omitempty"`
 }
 
 // Health is the manifest's health: block; an empty Container waits on every
@@ -172,6 +176,12 @@ type engine struct {
 	// raw is the process's own stderr, stderr's unwrapped: os.Exit does not
 	// wait for stderr to drain, so a signal's cleanup writes here.
 	raw io.Writer
+	// rdir is a rollback's extraction of its target's backup, "" for none;
+	// rpop unregisters its signal cleanup.
+	rdir string
+	rpop func()
+	// unpackFailed: the extraction failed, so the restore hook never runs.
+	unpackFailed bool
 }
 
 func (e *engine) note(format string, a ...any) {
@@ -275,6 +285,7 @@ func (e *engine) run() (*Report, error) {
 	if err := e.lock(); err != nil {
 		return nil, err
 	}
+	defer e.dropRestore()
 	rep, err := e.locked(composeMissing)
 	if err != nil && !e.retagged && e.failure == nil {
 		err = e.unchanged(err)
@@ -285,6 +296,7 @@ func (e *engine) run() (*Report, error) {
 // locked is the run under .deploy.lock.
 func (e *engine) locked(composeMissing error) (*Report, error) {
 	sp := e.sp
+	e.clearRestores()
 	if fi, err := os.Stat(filepath.Join(e.dir, "compose.yml")); err != nil || fi.IsDir() {
 		return nil, composeMissing
 	}
@@ -358,10 +370,27 @@ func (e *engine) locked(composeMissing error) (*Report, error) {
 			e.note("versions.log has no entry for this project, so %s will not run", skipped)
 		}
 	}
+	rollback := sp.Mode == "rollback"
+	if rollback && e.needsRestoreDir() {
+		if err := e.extract(); err != nil {
+			e.unpackFailed = true
+			if err = e.pastFailure("backup extraction", err); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if sp.SkipHooks {
 		e.note("%s hooks skipped (--skip-hooks)", e.preName)
 	} else if e.history {
 		if err := e.hooks(e.preName, sp.Pre, func(err error) error { return e.pastFailure(e.preName+" hook", err) }); err != nil {
+			return nil, err
+		}
+	}
+	// The data goes back while the outgoing containers still serve it.
+	if rollback && sp.RestoreData && e.unpackFailed {
+		e.note("data not restored: the backup could not be extracted")
+	} else if rollback && sp.RestoreData {
+		if err := e.hooks("restore", sp.Restore, func(err error) error { return e.pastFailure("restore hook", err) }); err != nil {
 			return nil, err
 		}
 	}
@@ -827,14 +856,20 @@ func exitStatus(err error) int {
 
 // hooks run each entry as `sh -c` from the project directory, with no stdin
 // (the engine's is the answer channel), COMPOSE_PROJECT_NAME set and
-// KASBAH_BACKUP_DIR the deploy's backup directory or none.
+// KASBAH_BACKUP_DIR a deploy's backup directory, a rollback's extraction of
+// its target's backup, or none.
 // A failure goes to onFail, whose nil runs the next entry; none ends the list.
 func (e *engine) hooks(what string, list []string, onFail func(error) error) error {
 	for _, h := range list {
 		e.note("%s hook: %s", what, h)
 		c := e.sh(h)
 		bdir := "none"
-		if e.bdir != "" {
+		switch {
+		case e.sp.Mode == "rollback":
+			if e.rdir != "" {
+				bdir = e.rdir
+			}
+		case e.bdir != "":
 			bdir = e.bdirPath()
 		}
 		c.Env = append(c.Env, "KASBAH_VERSION="+e.sp.Version, "KASBAH_PREV_VERSION="+e.prev, "KASBAH_PROJECT="+e.project,

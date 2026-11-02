@@ -181,6 +181,21 @@ prompt asks whether to re-configure anyway; default is no.
 With a seed that answers every new key, and no key the template dropped, the
 menu is not shown: the run is *Configure new vars only*, from the seed.
 
+## Restored from a backup
+
+A `kasbah rollback` to a version the server holds a backup of can put that
+version's `.env` back (`build-deploy.md` → rollback flow). The comparison is by
+key, the last assignment of each winning, `\r` stripped from both files, the
+`KASBAH_*` keys left out, values compared as written; only key names reach the
+workstation. A whole restore writes the backup's `.env` byte for byte; a
+per-key one keeps the server's file and, for each chosen key, replaces its
+assignments with the backup's line, written as the backup holds it — in the
+form a kasbah writer gave it then — adds that line at the end when the
+server's file has none, or removes the key when the backup has none. Either is
+written as the setup writes (staged beside the file and renamed, the mode kept
+or `660` for a new file, under `.deploy.lock`), before the drift check against
+the version's template and the managed block's refresh.
+
 ## Seeding the setup
 
 `--env-seed=FILE` (`kasbah env`, `deploy`, `deploy X.Y.Z`, `rollback`) answers

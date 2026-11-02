@@ -82,7 +82,7 @@ func SnapshotTargets(entries []Entry) []string {
 }
 
 func validTarget(p string) bool {
-	if under(p, PrevDir) || strings.HasPrefix(p, KeptPrefix) {
+	if under(p, PrevDir) || strings.HasPrefix(p, KeptPrefix) || strings.HasPrefix(p, UnpackedPrefix) {
 		return false
 	}
 	for _, seg := range strings.Split(p, "/") {
