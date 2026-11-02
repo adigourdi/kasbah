@@ -13,9 +13,10 @@
 # The apps and data paths below are substituted on the workstation before this
 # file is shipped, and they are mounted at their own names — a snapshot's paths
 # are therefore the server's real paths, which is what makes
-# `restic restore --target /` put a project's data back where it came from.
-# Both mounts are read-only: this stack reads the server and writes only to the
-# repository.
+# `restic restore --target /` put a project's backups and .env back where they
+# came from. The data path is mounted for mail's data (projects ship only their
+# backups/), and for a backups/ that links into it. Both mounts are read-only:
+# this stack reads the server and writes only to the repository.
 #
 # No `.env`, deliberately, and no `env_file:`. The repository base and the
 # operator's credentials live in <apps>/.kasbah/backup/env at mode 600, which

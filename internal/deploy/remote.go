@@ -8,12 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/adigourdi/kasbah/internal/remote"
 )
 
 // RemoteUsage names `kasbah remote deploy`'s modes.
-const RemoteUsage = "usage: kasbah remote deploy prepare APPS DATA NAME CLIENT [DIR…] | snapshot DIR TOKEN TARGET… | run DIR (spec on stdin) | mail APPS | images VERSION IMAGE… | backup-probe DIR VERSION | restore-env DIR BACKUP --all|KEY… | restore-env DIR --undo TOKEN"
+const RemoteUsage = "usage: kasbah remote deploy prepare APPS DATA NAME CLIENT [DIR…] | snapshot DIR TOKEN TARGET… | run DIR (spec on stdin) | mail APPS | images VERSION IMAGE… | backup DIR | backup-probe DIR VERSION | restore-env DIR BACKUP --all|KEY… | restore-env DIR --undo TOKEN"
 
 // Remote is `kasbah remote deploy …` on a server. stdout is a protocol in
 // every mode; narration and docker's output go to stderr.
@@ -36,6 +37,10 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		w, done := remote.Outlive(stderr)
 		defer done()
 		return prepare(args[1], args[2], args[3], args[4], args[5:], stdout, w)
+	case args[0] == "backup" && len(args) == 2:
+		w, done := remote.Outlive(stderr)
+		defer done()
+		return takeBackup(args[1], time.Now, stdout, w)
 	case args[0] == "restore-env" && len(args) == 4 && args[2] == "--undo":
 		w, done := remote.Outlive(stderr)
 		defer done()

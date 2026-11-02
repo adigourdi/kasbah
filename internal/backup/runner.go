@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -97,14 +98,27 @@ func (r *Runner) Run(args []string) int {
 			d, d/3600, d%3600/60, d%60, r.At, r.Jitter)
 		return 0
 	case "once":
-		return r.once()
+		switch {
+		case len(args) == 1:
+			return r.once("")
+		case len(args) == 3 && args[1] == "--project" && args[2] != "":
+			return r.once(args[2])
+		}
+		r.warn("usage: once [--project NAME]")
+		return 1
+	case "push":
+		if len(args) != 3 {
+			r.warn("usage: push APPS NAME")
+			return 1
+		}
+		return Push(args[1], args[2], r.Stdout, r.Stderr)
 	case "health":
 		return r.health()
 	case "schedule":
 		r.schedule()
 		return 0
 	}
-	r.warn("unknown mode '%s' (expected: schedule, once, plan, next, health)", mode)
+	r.warn("unknown mode '%s' (expected: schedule, once, plan, next, health, push)", mode)
 	return 1
 }
 
@@ -201,7 +215,7 @@ func (r *Runner) schedule() {
 		r.say("sleeping %ds until the next run", d)
 		r.writeSleeping()
 		r.Sleep(time.Duration(d) * time.Second)
-		if r.once() != 0 {
+		if r.once("") != 0 {
 			r.warn("the run did not finish cleanly — the next one is still scheduled")
 		}
 	}
@@ -215,7 +229,13 @@ type planRepo struct {
 	name  string
 	have  bool
 	paths []string
+	// unshipped is each backups/ or .env resolving outside the container's
+	// mounts, with the project it is of ("" for mail).
+	unshipped []unshippedPath
 }
+
+// unshippedPath is "<path> -> <where it resolves>", and its project.
+type unshippedPath struct{ project, desc string }
 
 type plan struct {
 	projects []planProject
@@ -251,21 +271,57 @@ func (r *Runner) plan() plan {
 	for _, name := range order {
 		fi, err := os.Stat(r.passdir() + "/" + name + ".pass")
 		repo := planRepo{name: name, have: err == nil && fi.Mode().IsRegular()}
-		cands := []string{r.Data + "/mail", r.Apps + "/mail/.env"}
+		type cand struct{ project, path string }
+		cands := []cand{{"", r.Data + "/mail"}, {"", r.Apps + "/mail/.env"}}
 		if name != "mail" {
 			cands = nil
 			for _, n := range byClient[name] {
-				cands = append(cands, r.Data+"/"+n, r.Apps+"/"+n+"/backups", r.Apps+"/"+n+"/.env")
+				cands = append(cands, cand{n, r.Apps + "/" + n + "/backups"}, cand{n, r.Apps + "/" + n + "/.env"})
 			}
 		}
 		for _, c := range cands {
-			if exists(c) {
-				repo.paths = append(repo.paths, c)
+			if !strings.HasSuffix(c.path, "/backups") && !strings.HasSuffix(c.path, "/.env") {
+				if exists(c.path) {
+					repo.paths = append(repo.paths, c.path)
+				}
+				continue
+			}
+			if _, err := os.Lstat(c.path); err != nil {
+				continue
+			}
+			// restic stores a symlink as the link: it gets what it resolves to.
+			if real, ok := r.resolve(c.path); ok {
+				repo.paths = append(repo.paths, real)
+			} else {
+				repo.unshipped = append(repo.unshipped, unshippedPath{c.project, c.path + " -> " + real})
 			}
 		}
 		p.repos = append(p.repos, repo)
 	}
 	return p
+}
+
+// resolve is p with every symlink resolved, and whether that is inside the
+// container's mounts, the apps and data paths; what it links to when it
+// resolves to nothing here.
+func (r *Runner) resolve(p string) (string, bool) {
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		l, lerr := os.Readlink(p)
+		if lerr != nil {
+			return p, false
+		}
+		if !filepath.IsAbs(l) {
+			l = filepath.Join(filepath.Dir(p), l)
+		}
+		return l, false
+	}
+	for _, m := range []string{r.Apps, r.Data} {
+		if m = strings.TrimSuffix(m, "/"); m != "" && (real == m || strings.HasPrefix(real, m+"/")) {
+			return real, true
+		}
+	}
+	return real, false
 }
 
 func (r *Runner) printPlan(p plan) {
@@ -280,6 +336,9 @@ func (r *Runner) printPlan(p plan) {
 		fmt.Fprintf(r.Stdout, "repo %s %s\n", repo.name, have)
 		for _, path := range repo.paths {
 			fmt.Fprintf(r.Stdout, "path %s\n", path)
+		}
+		for _, u := range repo.unshipped {
+			fmt.Fprintf(r.Stdout, "unshipped %s\n", u.desc)
 		}
 	}
 }
@@ -330,15 +389,22 @@ func (r *Runner) restic(env []string, base, repo string, out, errw io.Writer, ar
 	return bounded(time.Duration(r.Timeout)*time.Second, out, errw, env, r.Restic, args...)
 }
 
-func (r *Runner) once() int {
+// once backs up every repository, or with only set the one that project
+// files into, leaving the record alone: it is not the scheduled run.
+func (r *Runner) once(only string) int {
 	// The record, not this process's memory: a scheduler and a hand-run
 	// `once` are two writers of one file.
 	r.loadLastRun()
 	r.started = r.Now().Unix()
 	r.say("run started %s", r.Now().Local().Format("2006-01-02T15:04:05-0700"))
+	sleeping := func() {
+		if only == "" {
+			r.writeSleeping()
+		}
+	}
 	failed := func() int {
 		r.finished, r.status, r.repos = r.Now().Unix(), "failed", "-"
-		r.writeSleeping()
+		sleeping()
 		return 1
 	}
 	env, base, ok := r.loadEnv()
@@ -351,7 +417,15 @@ func (r *Runner) once() int {
 	}
 
 	p := r.plan()
-	r.writeStatus("running", r.Now().Unix()+int64(r.Timeout*(len(p.repos)*2+1)+Grace), 0)
+	if only != "" {
+		var ok bool
+		if p, ok = p.only(only); !ok {
+			r.warn("no project '%s' under %s — nothing backed up", only, r.Apps)
+			return 1
+		}
+	} else {
+		r.writeStatus("running", r.Now().Unix()+int64(r.Timeout*(len(p.repos)*2+1)+Grace), 0)
+	}
 
 	var fallbacks, nopass, done string
 	for _, pr := range p.projects {
@@ -361,6 +435,16 @@ func (r *Runner) once() int {
 	}
 	status := 0
 	for _, repo := range p.repos {
+		for _, u := range repo.unshipped {
+			why := ""
+			// A sibling's fails the nightly run, not this project's push.
+			if only == "" || u.project == only {
+				status = 1
+			} else {
+				why = " (" + u.project + "'s, not " + only + "'s: this run does not fail on it)"
+			}
+			r.warn("%s: %s resolves outside this container's mounts (%s, %s) — NOT shipped off-box%s", repo.name, u.desc, r.Apps, r.Data, why)
+		}
 		switch {
 		case !repo.have:
 			nopass += " " + repo.name
@@ -401,8 +485,34 @@ func (r *Runner) once() int {
 	if status != 0 {
 		r.status = "failed"
 	}
-	r.writeSleeping()
+	sleeping()
 	return status
+}
+
+// only is p cut to the repository project files into, and that repository's
+// projects; false when project is not in p.
+func (p plan) only(project string) (plan, bool) {
+	var out plan
+	client := ""
+	for _, pr := range p.projects {
+		if pr.name == project {
+			client = pr.client
+		}
+	}
+	if client == "" {
+		return out, false
+	}
+	for _, pr := range p.projects {
+		if pr.client == client {
+			out.projects = append(out.projects, pr)
+		}
+	}
+	for _, repo := range p.repos {
+		if repo.name == client {
+			out.repos = append(out.repos, repo)
+		}
+	}
+	return out, true
 }
 
 // health is the healthcheck's one question: has the recorded state outlived

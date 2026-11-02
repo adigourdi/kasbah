@@ -94,7 +94,8 @@ func main() {
 			}
 			if len(args) > 1 && args[1] == "backup" {
 				// The kasbah-backup container's process (D2): restic's image,
-				// this binary mounted from the apps path.
+				// this binary mounted from the apps path; push is the host's
+				// way into it, outliving a dropped session.
 				os.Exit(backup.NewRunner(os.Stdout, os.Stderr).Run(args[2:]))
 			}
 			if len(args) > 1 && args[1] == "backup-init" {
@@ -140,11 +141,9 @@ func main() {
 				os.Exit(migrate.Remote(args[2:], os.Stdout, os.Stderr))
 			}
 			if len(args) > 1 && args[1] == "deploy" {
-				// run and prepare outlive a dropped session (remote.Outlive).
-				// Keeping a backup holds SIGINT and SIGTERM; a second exits,
-				// removing the tarball's .part, or mid-move setting the rest of
-				// the snapshot aside.
-				// The lock goes with the process.
+				// run, prepare and backup outlive a dropped session; a signal
+				// cleans up its .part and backup directory (a run's keeping of a
+				// backup holds the first). The lock goes with the process.
 				atexit.HandleSignals()
 				atexit.Exit(deploy.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
 			}
@@ -161,6 +160,10 @@ func main() {
 			o, err := deploy.ParseRollback(args[1:])
 			atexit.HandleSignals()
 			atexit.Exit(deployCmd("rollback", o, err))
+		case "backup":
+			o, err := deploy.ParseBackup(args[1:])
+			atexit.HandleSignals()
+			atexit.Exit(backupCmd(o, err))
 		case "history", "pending", "changelog":
 			o, err := history.Parse(args[0], args[1:])
 			atexit.HandleSignals()
@@ -657,6 +660,35 @@ func deployCmd(cmd string, o deploy.Options, err error) int {
 		rerr = deploy.Run(c, o)
 	}
 	code := report(out, rerr)
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
+}
+
+// backupCmd is `kasbah backup`.
+func backupCmd(o deploy.BackupOptions, err error) int {
+	out := cli.Std()
+	if err == deploy.ErrHelp {
+		fmt.Fprint(out.Stdout, deploy.BackupUsage())
+		return cli.ExitOK
+	}
+	if err != nil {
+		return report(out, err)
+	}
+	v, err := kasbahVersion(true)
+	if err != nil {
+		return report(out, err)
+	}
+	local, err := localBinary()
+	if err != nil {
+		return report(out, err)
+	}
+	code := report(out, deploy.RunBackup(deploy.BackupCtx{
+		Out:     out,
+		Version: v,
+		Dial:    deploy.DialBackup(remote.Self(build), local),
+	}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c
 	}

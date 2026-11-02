@@ -989,6 +989,51 @@ newest backup on the server, its `.env` and — through its own `restore`
 hook — its data, when answered so. Without such a backup it restores neither
 (`build-deploy.md` → What rollback restores).
 
+### `kasbah backup [USER@HOST]`
+
+Take a backup of the version live on the server now, outside any deploy, and
+push it off-box when the server has off-box backups (`backup.md` → A backup
+now). It takes no flags and asks nothing.
+
+1. Read `kasbah.yml` for the project's name; reach the server, shipping this
+   build's binary when the server's is absent or older (as `deploy` does), and
+   hold the server lock shared.
+2. On VPS: `kasbah remote deploy backup <apps>/<name>`, under the project's
+   `.deploy.lock` and the shared server lock, ignoring SIGHUP and SIGPIPE:
+   - The live version is the one a deploy would name its backup after
+     (`build-deploy.md` → A deploy that fails … reverts). With none —
+     `versions.log` records no run that went live — it refuses, nothing made;
+     so it does without `.kasbah-hooks.json`, the live version's `backup`
+     hooks and snapshot paths, which every deploy or rollback that goes live
+     writes (`files.md`): deploy once, then back up.
+   - While `.kasbah-prev/` holds a snapshot manifest it refuses, nothing made:
+     a deploy or rollback is between its snapshot and its end, or one stopped
+     mid-way, so the project's files may already be the next version's — let
+     it finish or re-run it. When `versions.log` ends on a `… reason=revert`
+     line, it names the snapshot as the one a failed revert kept: fix what
+     the revert reported and deploy or roll back again.
+   - Create `backups/<live version>-<stamp>/`, copy the live `.env` and each
+     path `.kasbah-hooks.json` lists that exists into `kasbah-snapshot/<path>`
+     in it, and run the recorded `backup` hooks with `$KASBAH_BACKUP_DIR` that
+     directory, `$KASBAH_VERSION` the live version and `$KASBAH_PREV_VERSION`
+     empty — no version is going out.
+   - Tar it into `backups/<live version>-<stamp>.tar.gz` — the layout, the
+     modes and the `.part` of a deploy's backup — remove the directory, and
+     apply backup retention. Nothing is written to `versions.log`.
+   - A failed hook, copy or tarball keeps nothing: the directory and any
+     `.part` are removed and the run fails, asking nothing — no stack is
+     moving, so there is nothing to carry on to. A signal does the same.
+3. Off-box, when the marker records `backup.enabled`: `kasbah remote backup
+   push <apps> <name>` runs `once --project <name>` in the `kasbah-backup`
+   container, its output on stderr, so the project's restic repository gains a
+   snapshot holding the new tarball. A container that is not running, or a
+   push that fails, fails the run (exit 1), naming the backup kept on the
+   server; another project's `backups/` or `.env` in that repository that
+   cannot be shipped is warned of and does not fail it. Without off-box
+   backups the run says the backup stays on the server, and succeeds.
+
+`last_server` is written once the run succeeds.
+
 ### `kasbah drop [USER@HOST] [--prune] [--yes]`
 
 Remove the project from the VPS. Plain `drop` is reversible:

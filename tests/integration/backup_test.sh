@@ -13,13 +13,16 @@
 #   * the **VPS credential is refused a delete** of that snapshot, with the
 #     operator credential succeeding against the same snapshot in the same
 #     repository, so the refusal cannot be "restic never tried";
-#   * a project's data, its backups/ and its .env are all in the snapshot, the
-#     mail stack is in a repository of its own, and a project with no client
-#     record is reported;
+#   * a project's backups/ and its .env are in the snapshot and its data
+#     directory is not, the mail stack is in a repository of its own, and a
+#     project with no client record is reported;
+#   * `kasbah backup` takes a tarball of the live version, its backup hook's
+#     dump in it, and pushes it through the scheduler so the client repository
+#     gains a snapshot holding it — and says it stays local without backups;
 #   * `server backup-prune` prunes from *this* machine;
 #   * and the restore drill of docs/backup.md, executed for real: snapshot,
 #     rig_clean, server init, restore, `kasbah deploy`, project back with its
-#     data. That is phase 8's exit criterion 3.
+#     .env and the backups holding its dump, loaded by step 4 as written.
 #
 # Every repository is named under a per-run prefix, because rest-server answers
 # 405 to a DELETE on a repository path and there is no way to remove one over
@@ -330,8 +333,10 @@ if ! fixture_repo_make "$projdir" "$repo_dir/tests/fixtures/$project" "v$project
     exit 2
 fi
 printf '\nclient: %s\n' "$client" >> "$projdir/kasbah.yml"
+# The dump `kasbah backup` must carry: what reaches off-box is what this writes.
+printf 'hooks:\n  backup:\n    - echo dumped > "$KASBAH_BACKUP_DIR/db.dump"\n' >> "$projdir/kasbah.yml"
 ( cd "$projdir" && git -c user.email=f@k.test -c user.name=f -c commit.gpgsign=false \
-    commit -aqm "declare a client" && git tag -f "v$project_version" >/dev/null ) 2>/dev/null
+    commit -aqm "declare a client and a backup hook" && git tag -f "v$project_version" >/dev/null ) 2>/dev/null
 
 # The .env the deploy would otherwise stop to ask for. Written on the server, so
 # the env step finds one and the drift check passes — and so the restore drill
@@ -357,7 +362,7 @@ assert '[ "$(nocr "$record")" = "$client" ]' \
     "deploy rendered the effective client onto the server (got '$record')"
 
 # Something under the data bind mount and something under backups/, so the scope
-# assertions below have all three of docs/backup.md's paths to find.
+# assertions below can find the one shipped and miss the other.
 rig_ssh "printf 'the database\n' > $data/$project/db.txt &&
          printf 'a dump\n' > $apps/$project/backups/pre-deploy-test.sql" >/dev/null 2>&1
 
@@ -396,8 +401,8 @@ if [ "${#ids[@]}" -lt 1 ]; then
 fi
 
 paths=$(snapshot_paths "$client_repo" "$client_pass")
-assert 'grep -qxF "$data/$project" <<<"$paths"'          "the data bind mount is in it (got '$paths')"
-assert 'grep -qxF "$apps/$project/backups" <<<"$paths"'  "the hook-produced dumps are"
+assert '! grep -qF "$data/$project" <<<"$paths"'         "the data bind mount is not in it — restic ships only backups (got '$paths')"
+assert 'grep -qxF "$apps/$project/backups" <<<"$paths"'  "the backups are"
 assert 'grep -qxF "$apps/$project/.env" <<<"$paths"'     "and the .env — the only copy of the project's secrets"
 assert '! grep -qF "$data/mail" <<<"$paths"' \
     "and the mail stack's data is not (got '$paths')"
@@ -410,8 +415,8 @@ assert '! grep -qF "$apps/$project" <<<"$mail_paths"' "and no client's files"
 # The contents, not just the paths: a snapshot that recorded a path and stored
 # nothing would satisfy everything above.
 restored=$(RIG_RESTIC_PASSWORD="$client_pass" rig_restic "$client_repo" \
-    dump "${ids[0]}" "$data/$project/db.txt" 2>/dev/null)
-assert '[ "$(nocr "$restored")" = "the database" ]' \
+    dump "${ids[0]}" "$apps/$project/backups/pre-deploy-test.sql" 2>/dev/null)
+assert '[ "$(nocr "$restored")" = "a dump" ]' \
     "and the bytes are really in it (got '$restored')"
 
 # ==================================================================================
@@ -623,7 +628,42 @@ if [ "$rc" != "0" ]; then
 fi
 
 # ==================================================================================
-# The restore drill — docs/backup.md → Restore, phase 8's exit criterion 3
+# kasbah backup: the live version's backup, pushed now
+# ==================================================================================
+kbackup() (
+    cd "$projdir" || return 2
+    kasbah_cli backup "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
+)
+count_before=$(snapshot_ids "${server_base}$client/" "$client_pass" | wc -l)
+record_before=$(rig_ssh "cat $bdir/state/status" 2>/dev/null)
+kbackup "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "0" ]' "kasbah backup runs (exit $rc: $(cli_err))"
+tarball=$(sed -n 's/^  backup: *//p' "$tmpdir/err" | tr -d '\r')
+assert '[[ "$tarball" == "$apps/$project/backups/$project_version-"*.tar.gz ]]' \
+    "naming a tarball of the live version (said '$(cli_err)')"
+members=$(rig_ssh "tar -tzf '$tarball'" 2>/dev/null | tr -d '\r')
+assert 'grep -qxF "db.dump" <<<"$members"' "holding the backup hook's dump (got '$members')"
+assert 'grep -qxF "kasbah-snapshot/.env" <<<"$members"' "and the live .env"
+dumped=$(rig_ssh "tar -xzOf '$tarball' db.dump" 2>/dev/null)
+assert '[ "$(nocr "$dumped")" = "dumped" ]' "the dump is the hook's (got '$dumped')"
+left=$(rig_ssh "find $apps/$project/backups -mindepth 1 -maxdepth 1 -type d" 2>/dev/null)
+assert '[ -z "$(nocr "$left")" ]' "and no backup directory is left (got '$left')"
+assert 'grep -qF "off-box: pushed through kasbah-backup" "$tmpdir/err"' \
+    "pushed through the scheduler (said '$(cli_err)')"
+assert 'grep -qF "$client: backing up" "$tmpdir/err"' "whose run is the client repository's alone"
+assert '! grep -qF "mail: backing up" "$tmpdir/err"' "and not mail's"
+mapfile -t ids < <(snapshot_ids "${server_base}$client/" "$client_pass")
+assert '[ "${#ids[@]}" = "$((count_before + 1))" ]' \
+    "the client repository gained one snapshot ($count_before before, ${#ids[@]} after)"
+listed=$(RIG_RESTIC_PASSWORD="$client_pass" rig_restic "${server_base}$client/" ls "${ids[${#ids[@]}-1]}" 2>/dev/null | tr -d '\r')
+assert 'grep -qxF "$tarball" <<<"$listed"' "and that snapshot holds the new tarball"
+assert '! grep -qF "$data/$project" <<<"$listed"' "and not the data directory"
+record_after=$(rig_ssh "cat $bdir/state/status" 2>/dev/null)
+assert '[ -n "$record_before" ] && [ "$record_after" = "$record_before" ]' \
+    "the push left the scheduler's record alone (before '$(tr "\n" " " <<<"$record_before")', after '$(tr "\n" " " <<<"$record_after")')"
+
+# ==================================================================================
+# The restore drill — docs/backup.md → Restore
 # ==================================================================================
 # rig_clean reaches the nested daemon and /apps and nothing else; the snapshot
 # store is a volume on this machine's Docker. So what follows is a fresh VPS with
@@ -660,13 +700,15 @@ restore_out=$(rig_ssh "docker run --rm -e RESTIC_PASSWORD='$client_pass' -v $app
 assert '[ "$rc" = "0" ]' "the snapshot restores onto the fresh rig (exit $rc)
         output: $restore_out"
 
-back=$(rig_ssh "cat $data/$project/db.txt 2>&1" 2>/dev/null)
-assert '[ "$(nocr "$back")" = "the database" ]' "the data came back (got '$back')"
+back=$(rig_ssh "test -e $data/$project/db.txt && echo present || echo absent" 2>/dev/null)
+assert '[ "$(nocr "$back")" = "absent" ]' "the data directory is not restored — it was never shipped (got '$back')"
 back=$(rig_ssh "cat $apps/$project/.env 2>&1" 2>/dev/null)
 assert 'grep -qF "DEMO_GREETING=only-on-this-vps" <<<"$back"' \
     "and the .env, whose value existed nowhere but that VPS (got '$back')"
 back=$(rig_ssh "cat $apps/$project/backups/pre-deploy-test.sql 2>&1" 2>/dev/null)
-assert '[ "$(nocr "$back")" = "a dump" ]' "and the hook-produced dump (got '$back')"
+assert '[ "$(nocr "$back")" = "a dump" ]' "and the backups (got '$back')"
+back=$(rig_ssh "tar -xzOf '$tarball' db.dump 2>&1" 2>/dev/null)
+assert '[ "$(nocr "$back")" = "dumped" ]' "with kasbah backup's tarball, the dump to load (got '$back')"
 
 # The restore is only worth anything if the project comes back up on it. The
 # .env is what makes this deploy possible at all: without one, the env step has
@@ -681,6 +723,24 @@ if [ "$rc" = "0" ]; then
     greeting=$(rig_ssh "docker exec $project-web printenv DEMO_GREETING" 2>/dev/null)
     assert '[ "$(nocr "$greeting")" = "only-on-this-vps" ]' \
         "with the restored secret in its environment — the whole point of backing .env up (got '$greeting')"
+    # docs/backup.md → Restore, step 4, as written: the tarball extracted into
+    # a directory of its own, a restore line run from the project directory
+    # with every variable a hook gets.
+    line='echo "$KASBAH_VERSION [$KASBAH_PREV_VERSION] $KASBAH_PROJECT $COMPOSE_PROJECT_NAME $LC_ALL $(cat "$KASBAH_BACKUP_DIR/db.dump") $(cat "$KASBAH_BACKUP_DIR/kasbah-snapshot/.env" | grep -c DEMO_GREETING=only-on-this-vps) $(pwd)" > "$HOME/restored.txt"'
+    rig_ssh "rm -f \$HOME/restored.txt; cd $apps/$project &&
+             dir=\$(mktemp -d \"\$HOME/restore.XXXXXX\") &&
+             tar -xzf backups/${tarball##*/} -C \"\$dir\" &&
+             export LC_ALL=C KASBAH_VERSION=$project_version KASBAH_PREV_VERSION= \
+                 KASBAH_PROJECT=$project COMPOSE_PROJECT_NAME=$project KASBAH_BACKUP_DIR=\"\$dir\" &&
+             sh -c '$line' && rm -rf \"\$dir\"" >/dev/null 2>&1; rc=$?
+    loaded=$(rig_ssh 'cat "$HOME/restored.txt"' 2>/dev/null)
+    assert '[ "$rc" = "0" ] && [ "$(nocr "$loaded")" = "$project_version [] $project $project C dumped 1 $apps/$project" ]' \
+        "the documented restore step runs as written, the hook seeing the dump and the backup's .env (exit $rc, got '$loaded')"
+    # A server without off-box backups keeps the backup local, and says so.
+    kbackup "$RIG_TARGET"; rc=$?
+    assert '[ "$rc" = "0" ]' "kasbah backup on a server without backups (exit $rc: $(cli_err))"
+    assert 'grep -qF "has no off-box backups, so this one stays on the server" "$tmpdir/err"' \
+        "keeps it on the server and says so (said '$(cli_err)')"
 fi
 
 exit "$fail"

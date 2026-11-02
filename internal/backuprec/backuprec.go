@@ -363,8 +363,11 @@ func client(path string) string {
 	return c
 }
 
+// Scheduler is the kasbah-backup container as this server's docker sees it.
+func Scheduler() Container { return container() }
+
 // container is the scheduler by name and by compose project: a container
-// merely named kasbah-backup is notours. A failed inspect is followed by
+// merely named kasbah-backup is not ours. A failed inspect is followed by
 // `docker version` to tell a missing container from a daemon not answering.
 func container() Container {
 	c := Container{State: "absent", Health: "none"}

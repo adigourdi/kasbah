@@ -101,6 +101,7 @@ func TestDescribe(t *testing.T) {
 		"/apps/.kasbah/bin/kasbah remote destroy act /apps":                "server destroy",
 		"/apps/.kasbah/bin/kasbah remote deploy run /apps/x":               "a deploy or rollback",
 		"/apps/.kasbah/bin/kasbah remote deploy images 1.0":                "kasbah remote deploy",
+		"/apps/.kasbah/bin/kasbah remote deploy backup /apps/x":            "kasbah backup",
 		"/apps/.kasbah/bin/kasbah remote setup-env set /apps/x K":          "env set",
 		"/apps/.kasbah/bin/kasbah remote setup-env setup /apps/x":          "kasbah env",
 		"/apps/.kasbah/bin/kasbah remote setup-env seed /apps/x 0123":      "the --env-seed staging of kasbah env, a deploy or a rollback",

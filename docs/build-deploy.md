@@ -338,7 +338,12 @@ that could not move into it — and a kept-aside snapshot stay until the
 operator removes them: `server status` counts them and `check --server` names
 each by path (B02).
 
-`backups/` may be a directory, a symlink to one, or a mount point. The engine
+`backups/` may be a directory, a symlink to one, or a mount point. On a
+server with off-box backups, a symlink or mount that resolves outside the apps
+and data paths is not shipped — the `kasbah-backup` container mounts only
+those — and fails every nightly run and that project's `kasbah backup` push,
+naming it (`backup.md` → Scope): keep `backups/` inside the apps or data path, or ship
+it off the box by other means. The engine
 opens it once and does every backup step — the directory, the snapshot's move,
 the tarball, retention — through that one handle; when the move crosses
 filesystems, every copy is copied (modes and mtimes kept) before any is
@@ -348,8 +353,25 @@ removed from the project, so a copy that fails leaves the snapshot whole. A
 and should it ever find one, it refuses before the backup hooks and puts the
 synced files back.
 
-**Retention** runs at the end of every successful deploy and rollback, on the
-server's clock: of the files in `backups/` named `<version>-<stamp>.tar.gz`,
+**`kasbah backup` takes one of the live version outside any run**, by the same
+rule — the version the next run would call outgoing, refused when there is
+none — and lays it out the same way: the live `.env` and the paths
+`.kasbah-hooks.json` lists under `kasbah-snapshot/`, copied rather than moved,
+beside what the recorded `backup` hooks write; tarred to
+`backups/<live>-<stamp>.tar.gz` through a `.part`. It writes nothing to
+`versions.log`, and anything that fails — a hook above all — removes the
+directory and keeps nothing (`cli.md` → `kasbah backup`). It refuses, before
+anything is made, while `.kasbah-prev/` holds a snapshot manifest: a deploy
+holds `.deploy.lock` only within each of its steps (the snapshot, each env
+step, the engine), not across them, so a snapshot on disk
+means the project's files may already be the next version's — a deploy under
+way, one that died on the workstation, or a failed revert's kept snapshot,
+which the refusal names as such. A deploy, rollback, `drop` or `.env` writer
+that starts while a backup holds `.deploy.lock` is refused by the same lock
+rules, naming `kasbah backup` as the holder; nothing waits.
+
+**Retention** runs at the end of every successful deploy, rollback and
+`kasbah backup`, on the server's clock: of the files in `backups/` named `<version>-<stamp>.tar.gz`,
 every one stamped within the last 24 hours is kept, and of the older ones only
 the newest; the rest are removed, each said on stderr. Nothing else in
 `backups/` is touched — a directory a failed tarball left, a file an operator

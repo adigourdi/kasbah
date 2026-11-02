@@ -334,14 +334,8 @@ func (e *engine) locked(composeMissing error) (*Report, error) {
 	// A failed run left its version live only past its post-hook; after a
 	// failed revert, the snapshot is the version before it.
 	e.outgoing = "unknown"
-	if n := len(entries); n > 0 {
-		v := prev
-		if last := entries[n-1]; last.OK && (!last.IsFailed() || last.Reason == "post-hook") {
-			v = last.Version
-		}
-		if safeName(v) {
-			e.outgoing = v
-		}
+	if v := liveVersion(entries); safeName(v) {
+		e.outgoing = v
 	}
 	if err := e.preflight(); err != nil {
 		return nil, err

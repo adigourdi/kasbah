@@ -1,10 +1,11 @@
 # Backup — Off-VPS Disaster Recovery
 
 Optional (`kasbah server init --with-backup`). Everything else in kasbah
-survives a lost VPS via git plus a redeploy — except two things that exist
-only on the VPS: **`.env` secret values** and **data bind mounts** (plus
-the backup tarballs in `backups/`, which hold the hooks' dumps). This feature
-ships those off-box.
+survives a lost VPS via git plus a redeploy — except what exists only on the
+VPS: **`.env` secret values** and the project's data. The data travels as the
+backup tarballs in `backups/`, which hold what the project's `backup` hooks
+dump; this feature ships those and `.env` off-box, never the data bind mounts
+themselves.
 
 ## Model
 
@@ -92,11 +93,12 @@ A safety mechanism nothing reads is indistinguishable from no safety mechanism,
 which is why these readers exist at all — the healthcheck alone would have left
 a stopped backup visible only in `docker logs`.
 
-The runner takes three verbs, and they are the operator's interface to it
+The runner takes these verbs, and they are the operator's interface to it
 rather than a test hook:
 
 ```
 docker exec kasbah-backup <apps>/.kasbah/bin/kasbah remote backup once
+docker exec kasbah-backup <apps>/.kasbah/bin/kasbah remote backup once --project <name>
 docker exec kasbah-backup <apps>/.kasbah/bin/kasbah remote backup plan
 docker exec kasbah-backup <apps>/.kasbah/bin/kasbah remote backup next
 docker exec kasbah-backup <apps>/.kasbah/bin/kasbah remote backup health
@@ -105,7 +107,30 @@ docker exec kasbah-backup <apps>/.kasbah/bin/kasbah remote backup health
 `once` backs up now, `plan` prints what would be included without writing,
 `next` says when the next run is due, and `health` is what the healthcheck runs.
 `once` writes the same record a scheduled run does, so a hand-driven backup
-cannot leave the healthcheck believing something stale.
+cannot leave the healthcheck believing something stale. `once --project`
+backs up only the repository that project files into — every project of that
+client with it, so the repository's newest snapshot still holds them all — and
+writes no record: it is not the scheduled run. Only that project's own
+unshipped `backups/` or `.env` (Scope) fails it; a sibling's is warned of. A
+`once --project` and the nightly run that race on a repository that does not
+exist yet may both try `restic init`; a run whose `init` fails warns ("could
+not initialise the repository") and fails that repository. What restic makes
+of two overlapping inits is not established here: after that warning, run
+`restic check` against the repository before trusting its next snapshot.
+
+## A backup now: `kasbah backup`
+
+`kasbah backup USER@HOST`, from a project's root, takes a fresh backup of the
+version live on the server — its `.env` and synced files, and what its `backup`
+hooks dump, as a deploy keeps one (`build-deploy.md` → A deploy that fails …
+reverts) — and, on a server with off-box backups, pushes that project's
+repository at once. The push goes through the scheduler: on the server,
+`kasbah remote backup push` runs `once --project <name>` in the `kasbah-backup`
+container, which alone reads the credentials and passwords (mode `600`, owned
+by whoever ran init). Without off-box backups the backup stays on the server,
+and the run says so; with them, a scheduler container that is not running, or
+a push that fails, fails the run, naming the backup it kept (`cli.md` →
+`kasbah backup`).
 
 ## Credentials
 
@@ -191,32 +216,46 @@ Two further repos exist beside the per-client ones:
 
 ## Scope
 
-Per project, each snapshot includes:
+restic ships only backups. Per project, each snapshot includes:
 
-- `/apps/data/<name>/` — bind mounts (DB state, uploads, configs)
-- `/apps/<name>/backups/` — the deploys' backup tarballs, each holding the
-  hooks' dumps beside the outgoing `.env` and synced files. The backup
-  container mounts only the apps and data paths, and the runner hands restic
-  only the paths that exist inside it: a `backups/` that resolves outside
-  those is not visible there and is not shipped off-box, so back it up on
-  its own
-- `/apps/<name>/.env` — the only copy of the project's secrets
+- `/apps/<name>/backups/` — the backup tarballs, each holding the `backup`
+  hooks' dumps beside that version's `.env` and synced files: one per deploy
+  and rollback, of the version it replaced, and one per `kasbah backup`, of
+  the live one. restic stores a symlink as the link, so the runner resolves
+  `backups/` first and hands restic the directory it leads to, which the
+  snapshot then holds at that path. The backup container mounts only the
+  apps and data paths: a `backups/` that resolves outside those (or to
+  nothing there) is not shipped, and the run names it — `NOT shipped
+  off-box` — and records itself as failed, the rest of the repository
+  backed up all the same. So it fails every nightly run until it is fixed:
+  keep `backups/` inside the apps or data path, or ship it off the box by
+  other means
+- `/apps/<name>/.env` — the only copy of the project's secrets; a symlinked
+  `.env` is resolved the same way and, outside the mounts, named and failed
+  the same way
+
+`/apps/data/<name>/` — the bind mounts, which may be a media library — is
+not shipped. Whatever a project wants kept off-box, its `backup` hook writes
+into the backup (`project-manifest.md` → `hooks`); a project without one has
+only its `.env` and synced files backed up.
 
 And, when the host runs the shared mail stack, into the `mail` repo:
 
 - `/apps/data/mail/` — every mailbox on the host
-- `/apps/mail/.env` — the stack's configuration and relay block
+- `/apps/mail/.env` — the stack's configuration and relay block, resolved
+  like a project's `.env`: a symlink is followed, and one that resolves
+  outside the mounts, or to nothing, is named and fails the run
 
 Mail gets a repository of its own rather than riding in the primary
 domain's client repo: folding the whole host's mail into one client's
 repository is exactly what the per-client split exists to prevent.
 
 The manifest's `backup` hooks and this feature are complementary: the hooks
-produce *consistent* dumps (e.g. `pg_dump` before each deploy), kept in the
-tarballs under `backups/` with the outgoing `.env` and synced files; restic
-ships *everything*, including those tarballs, off the box. For databases, the dump
-is the restorable artifact — a live bind-mount copy of a running Postgres
-is crash-consistent at best.
+produce *consistent* dumps (e.g. `pg_dump`), kept in the tarballs under
+`backups/` with the `.env` and synced files of their time; restic ships those
+tarballs off the box. The dump is the restorable artifact — a live
+bind-mount copy of a running Postgres is crash-consistent at best. The newest
+dump off-box is the last backup's: a deploy's, or a `kasbah backup`'s.
 
 **A repository with no password is not backed up** until init is re-run and
 one is supplied. The run says so rather than skipping quietly.
@@ -235,14 +274,38 @@ field written by a newer kasbah survives a re-run by an older one.
 
 ## Restore
 
+After a lost server, recovery is the backups and your own dumps, not the data
+directories:
+
 1. Fresh VPS: `kasbah server init` (same flags as before).
 2. `restic restore <snapshot> --target /` — the snapshot's paths are the
-   server's paths, so this lands `/apps/data/<name>/`, `/apps/<name>/.env`
-   and `backups/` where they belong.
-3. `kasbah deploy` from the project repo.
-4. Database projects: extract the newest tarball in `backups/`
-   (`tar -xzf <version>-<stamp>.tar.gz -C <dir>`) and restore from the dump
-   in it rather than trusting the live-file copy.
+   server's paths, so this lands `/apps/<name>/.env` and `backups/` where
+   they were (a `backups/` that was a symlink lands at the directory it led
+   to: re-create the link, or move it into place).
+3. `kasbah deploy` from the project repo. The project's data directories
+   start empty.
+4. Load the dumps, on the server as the deploy user, the way a rollback's
+   `restore` hooks run (`project-manifest.md` → hooks): extract the newest
+   tarball in `backups/` into a directory of its own, then run each line of
+   the project's `restore` list — `hooks.restore` in `kasbah.yml`, recorded
+   on the server under `restore` in `/apps/<name>/.kasbah-hooks.json` — from
+   the project directory, with every variable a hook gets:
+
+   ```sh
+   cd /apps/<name>
+   dir=$(mktemp -d "$HOME/restore.XXXXXX")
+   tar -xzf backups/<version>-<stamp>.tar.gz -C "$dir"
+   export LC_ALL=C KASBAH_VERSION=<version> KASBAH_PREV_VERSION= \
+       KASBAH_PROJECT=<name> COMPOSE_PROJECT_NAME=<name> KASBAH_BACKUP_DIR="$dir"
+   sh -c '<the first restore line>'   # then each further line, in order
+   rm -rf "$dir"
+   ```
+
+   `<version>` is the tarball's, and `KASBAH_PREV_VERSION` is empty, as on
+   `kasbah backup`: no version is going out. A project without a `restore`
+   hook loads its dump, at `$dir/<file>`, however it restores one. kasbah
+   has no restore command: these steps are the whole of a restore, and
+   nothing after them assumes one.
 
 Step 2 is what makes step 3 possible: without `.env` back on the box, the
 deploy's env step has nothing to deploy against and exits 5.

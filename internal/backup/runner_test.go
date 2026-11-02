@@ -73,7 +73,7 @@ func TestPlan(t *testing.T) {
 	want := strings.Join([]string{
 		"project alpha acme record", "project beta acme record", "project gamma gamma invalid",
 		"repo mail no", "path " + data + "/mail", "path " + apps + "/mail/.env",
-		"repo acme yes", "path " + data + "/alpha", "path " + apps + "/alpha/backups", "path " + apps + "/alpha/.env",
+		"repo acme yes", "path " + apps + "/alpha/backups", "path " + apps + "/alpha/.env",
 		"path " + apps + "/beta/.env",
 		"repo gamma no", "path " + apps + "/gamma/.env",
 	}, "\n") + "\n"
@@ -189,7 +189,7 @@ func TestOnce(t *testing.T) {
 	}
 	o := out.String()
 	for _, want := range []string{"mail: initialising the repository", "mail: backing up " + data + "/mail " + apps + "/mail/.env",
-		"acme: backing up " + data + "/alpha", "no .kasbah-client record, filed under their own name: gamma",
+		"acme: backing up " + apps + "/alpha/backups " + apps + "/alpha/.env " + apps + "/beta/.env\n", "no .kasbah-client record, filed under their own name: gamma",
 		"run finished, repositories backed up: mail acme"} {
 		if !strings.Contains(o, want) {
 			t.Errorf("missing %q in\n%s", want, o)
@@ -445,5 +445,185 @@ func TestOnceRunningRecord(t *testing.T) {
 		"last_run_started=1700005000\nlast_run_finished=1700000123\nlast_run_status=ok\nlast_run_repos= zeta\n"
 	if !strings.HasPrefix(mid, want) {
 		t.Errorf("the running record:\n%s\nwant it to begin\n%s", mid, want)
+	}
+}
+
+// A project's backups/ ships as what it resolves to — restic stores a link as
+// the link — and one resolving outside the container's mounts is named, never
+// dropped in silence. The data path itself is no project's scope.
+func TestPlanResolvesBackups(t *testing.T) {
+	apps, data := appsTree(t)
+	outside := t.TempDir()
+	os.MkdirAll(data+"/alpha-backups", 0o755)
+	os.RemoveAll(apps + "/alpha/backups")
+	os.Symlink(data+"/alpha-backups", apps+"/alpha/backups")
+	os.MkdirAll(apps+"/beta", 0o755)
+	os.Symlink(outside, apps+"/beta/backups")
+	os.MkdirAll(apps+"/gamma", 0o755)
+	os.Symlink("/nowhere/in/here", apps+"/gamma/backups")
+	r, out, errb, _ := runner(apps, data, time.Now())
+	if rc := r.Run([]string{"plan"}); rc != 0 {
+		t.Fatal(rc, errb)
+	}
+	o := out.String()
+	for _, want := range []string{
+		"repo acme yes\npath " + data + "/alpha-backups\npath " + apps + "/alpha/.env\npath " + apps + "/beta/.env\nunshipped " + apps + "/beta/backups -> " + outside + "\n",
+		"repo gamma no\nunshipped " + apps + "/gamma/backups -> /nowhere/in/here\n",
+	} {
+		if !strings.Contains(o, want) {
+			t.Errorf("plan lacks %q:\n%s", want, o)
+		}
+	}
+	if strings.Contains(o, "path "+data+"/alpha\n") {
+		t.Errorf("the data path is in the plan:\n%s", o)
+	}
+
+	write(t, apps+"/.kasbah/backup/env", "KASBAH_BACKUP_REPO_BASE=b/\n")
+	write(t, apps+"/.kasbah/backup/repos/mail.pass", "pw\n")
+	os.RemoveAll(apps + "/gamma")
+	logf := t.TempDir() + "/log"
+	r.Restic = stub(t, resticStub)
+	r.Environ = append(r.Environ, "STUB_LOG="+logf)
+	out.Reset()
+	if rc := r.Run([]string{"once"}); rc != 1 {
+		t.Fatalf("a backups/ not shipped fails the run: %d\n%s%s", rc, out, errb)
+	}
+	if want := "acme: " + apps + "/beta/backups -> " + outside + " resolves outside this container's mounts (" + apps + ", " + data + ") — NOT shipped off-box"; !strings.Contains(errb.String(), want) {
+		t.Errorf("missing %q in\n%s", want, errb)
+	}
+	if calls := read(t, logf); !strings.Contains(calls, "backup --tag kasbah "+data+"/alpha-backups "+apps+"/alpha/.env "+apps+"/beta/.env\n") {
+		t.Errorf("the rest still ships:\n%s", calls)
+	}
+	if rec := read(t, apps+"/.kasbah/backup/state/status"); !strings.Contains(rec, "last_run_status=failed\n") {
+		t.Errorf("record:\n%s", rec)
+	}
+}
+
+// A symlinked .env ships as what it resolves to, as backups/ does, and one
+// resolving outside the mounts is named.
+func TestPlanResolvesEnv(t *testing.T) {
+	apps, data := appsTree(t)
+	outside := t.TempDir()
+	write(t, data+"/alpha-env", "A=1\n")
+	write(t, outside+"/beta-env", "B=1\n")
+	os.Remove(apps + "/alpha/.env")
+	os.Symlink(data+"/alpha-env", apps+"/alpha/.env")
+	os.Remove(apps + "/beta/.env")
+	os.Symlink(outside+"/beta-env", apps+"/beta/.env")
+	r, out, errb, _ := runner(apps, data, time.Now())
+	if rc := r.Run([]string{"plan"}); rc != 0 {
+		t.Fatal(rc, errb)
+	}
+	want := "repo acme yes\npath " + apps + "/alpha/backups\npath " + data + "/alpha-env\nunshipped " + apps + "/beta/.env -> " + outside + "/beta-env\n"
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("plan lacks %q:\n%s", want, out)
+	}
+}
+
+// With --project, only that project's unshipped path fails the run; a
+// sibling's in the same repository is named and the run goes on.
+func TestOnceProjectSiblingUnshipped(t *testing.T) {
+	apps, data := appsTree(t)
+	outside := t.TempDir()
+	os.Symlink(outside, apps+"/beta/backups")
+	write(t, apps+"/.kasbah/backup/env", "KASBAH_BACKUP_REPO_BASE=b/\n")
+	r, out, errb, _ := runner(apps, data, time.Unix(1700000000, 0))
+	r.Restic = stub(t, resticStub)
+	r.Environ = append(r.Environ, "STUB_LOG="+t.TempDir()+"/log")
+	notShipped := "acme: " + apps + "/beta/backups -> " + outside + " resolves outside this container's mounts (" + apps + ", " + data + ") — NOT shipped off-box"
+	if rc := r.Run([]string{"once", "--project", "alpha"}); rc != 0 ||
+		!strings.Contains(errb.String(), notShipped+" (beta's, not alpha's: this run does not fail on it)") ||
+		!strings.Contains(out.String(), "repositories backed up: acme\n") {
+		t.Errorf("alpha's push: %d\n%s%s", rc, out, errb)
+	}
+	errb.Reset()
+	if rc := r.Run([]string{"once", "--project", "beta"}); rc != 1 || !strings.Contains(errb.String(), notShipped+"\n") {
+		t.Errorf("beta's push: %d\n%s", rc, errb)
+	}
+}
+
+// once --project backs up the one repository the project files into, its
+// sibling projects with it, and leaves the scheduler's record alone.
+func TestOnceProject(t *testing.T) {
+	apps, data := appsTree(t)
+	write(t, apps+"/.kasbah/backup/env", "KASBAH_BACKUP_REPO_BASE=b/\n")
+	r, out, errb, _ := runner(apps, data, time.Unix(1700000000, 0))
+	logf := t.TempDir() + "/log"
+	r.Restic = stub(t, resticStub)
+	r.Environ = append(r.Environ, "STUB_LOG="+logf)
+	rec := apps + "/.kasbah/backup/state/status"
+	write(t, rec, "state=sleeping\n")
+	if rc := r.Run([]string{"once", "--project", "beta"}); rc != 0 {
+		t.Fatalf("%d\n%s%s", rc, out, errb)
+	}
+	calls := read(t, logf)
+	if strings.Contains(calls, "b/mail") || strings.Contains(calls, "b/gamma") ||
+		!strings.Contains(calls, "b/acme "+apps+"/.kasbah/backup/repos/acme.pass backup --tag kasbah "+apps+"/alpha/backups "+apps+"/alpha/.env "+apps+"/beta/.env\n") {
+		t.Errorf("calls:\n%s", calls)
+	}
+	if !strings.Contains(out.String(), "run finished, repositories backed up: acme\n") {
+		t.Errorf("out:\n%s", out)
+	}
+	if got := read(t, rec); got != "state=sleeping\n" {
+		t.Errorf("the record was written:\n%s", got)
+	}
+	errb.Reset()
+	if rc := r.Run([]string{"once", "--project", "nosuch"}); rc != 1 || !strings.Contains(errb.String(), "no project 'nosuch' under "+apps) {
+		t.Errorf("%d %s", rc, errb)
+	}
+	for _, args := range [][]string{{"once", "--project"}, {"once", "beta"}, {"push", "/apps"}} {
+		if rc := r.Run(args); rc != 1 {
+			t.Errorf("%v ran", args)
+		}
+	}
+}
+
+// push runs once --project in the scheduler container, and reports a
+// container that is not running rather than pushing nothing quietly.
+func TestPush(t *testing.T) {
+	bin := t.TempDir()
+	logf := bin + "/log"
+	write(t, bin+"/docker", `#!/bin/sh
+printf '%s\n' "$*" >> "$LOG"
+case "$1" in
+inspect) [ -n "$STATE" ] || exit 1; echo "$STATE healthy 0 kasbah-backup" ;;
+version) echo 27 ;;
+exec) echo pushing; echo restic-said >&2; exit "${EXEC_RC:-0}" ;;
+esac
+`)
+	os.Chmod(bin+"/docker", 0o755)
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	t.Setenv("LOG", logf)
+	for _, tc := range []struct{ state, rc, want string }{
+		{"running", "0", "push=ok\n"},
+		{"running", "3", "push=failed\nrc=3\n"},
+		{"exited", "0", "push=no-container\nstate=exited\n"},
+		{"", "0", "push=no-container\nstate=absent\n"},
+	} {
+		t.Setenv("STATE", tc.state)
+		t.Setenv("EXEC_RC", tc.rc)
+		os.Remove(logf)
+		var out, errb bytes.Buffer
+		if rc := Push("/apps", "demo", &out, &errb); rc != 0 || out.String() != tc.want {
+			t.Errorf("%s/%s: %d %q %q", tc.state, tc.rc, rc, out.String(), errb.String())
+		}
+		ran := strings.Contains(read(t, logf), "exec kasbah-backup /apps/.kasbah/bin/kasbah remote backup once --project demo\n")
+		if ran != (tc.state == "running") {
+			t.Errorf("%s: exec ran %v:\n%s", tc.state, ran, read(t, logf))
+		}
+		if ran && errb.String() != "pushing\nrestic-said\n" {
+			t.Errorf("the run's output is not on stderr: %q", errb.String())
+		}
+	}
+	os.Remove(logf)
+	for _, a := range [][2]string{{"/apps", "-x"}, {"/apps", "a/b"}, {"/apps", "../x"}, {"/apps", "de\x00mo"}, {"/apps", ""}, {"/apps", "Demo"},
+		{"apps", "demo"}, {"", "demo"}, {"/ap\x00ps", "demo"}} {
+		var out, errb bytes.Buffer
+		if rc := Push(a[0], a[1], &out, &errb); rc != 1 || out.Len() != 0 || !strings.Contains(errb.String(), "usage: kasbah remote backup push APPS NAME") {
+			t.Errorf("%q ran: %d %q %q", a, rc, out.String(), errb.String())
+		}
+	}
+	if _, err := os.Stat(logf); err == nil {
+		t.Errorf("docker ran on a refused argument:\n%s", read(t, logf))
 	}
 }

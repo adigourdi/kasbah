@@ -595,10 +595,13 @@ left out of the sum.
 ## With backup (`--with-backup`)
 
 Optional. Scaffolds a kasbah-owned scheduler stack that pushes restic
-snapshots off-box daily: each project's data bind mounts, hook-produced
-backups and `.env`, plus the shared mail stack's data into a repository of
-its own. Full design — repository layout, the two-secret credential model,
-restore and pruning — in `backup.md`.
+snapshots off-box daily: each project's backup tarballs (`backups/`, which
+hold what its `backup` hooks dump) and `.env` — never its data bind mounts —
+plus the shared mail stack's data into a repository of its own. The container
+mounts the apps path, and the data path when it differs, read-only: mail's
+data is under the latter. `kasbah backup` pushes one project's repository
+on demand through the same container. Full design — repository layout, the
+two-secret credential model, restore and pruning — in `backup.md`.
 
 **It installs nothing.** restic runs as a container
 (`restic/restic:<pinned>`), so this section does not weaken the promise at

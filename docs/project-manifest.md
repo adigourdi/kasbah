@@ -54,7 +54,9 @@ health:
 # backup runs first on every deploy but a project's first, while the previous
 # version is still running, and writes into $KASBAH_BACKUP_DIR: what it
 # writes is kept with the previous version's .env and synced files, as one
-# tarball under ./backups/. restore is the way back: a rollback to this
+# tarball under ./backups/; `kasbah backup` runs it against the live version
+# too. Bound what it runs in a service (timeout 600): a killed hook does not
+# stop it there. restore is the way back: a rollback to this
 # version runs it, when the operator says so, reading that tarball unpacked
 # at $KASBAH_BACKUP_DIR before this version comes up.
 # pre-deploy runs BEFORE `compose up -d`, while the previous version is
@@ -64,7 +66,7 @@ health:
 # containers. Use for: migrations, cache warmup, cache rebuild.
 hooks:
   backup:
-    - docker compose exec -T postgres pg_dump -U shop shop | gzip > "$KASBAH_BACKUP_DIR/db.sql.gz"
+    - docker compose exec -T postgres timeout 600 pg_dump -U shop shop | gzip > "$KASBAH_BACKUP_DIR/db.sql.gz"
   restore:
     - gunzip -c "$KASBAH_BACKUP_DIR/db.sql.gz" | docker compose exec -T postgres psql -U shop shop
   pre-deploy:
@@ -259,7 +261,7 @@ Supported hooks and when they run:
 
 | Hook | Runs |
 |---|---|
-| `backup` | on a deploy, after env/sync, before the `pre-deploy` hooks, the previous version still running; writes into `$KASBAH_BACKUP_DIR` |
+| `backup` | on a deploy, after env/sync, before the `pre-deploy` hooks, the previous version still running; on `kasbah backup`, against the live version (the live version's list, from `.kasbah-hooks.json`); writes into `$KASBAH_BACKUP_DIR` |
 | `pre-deploy` | after the `backup` hooks, before `compose up -d`, the previous version still running |
 | `post-deploy` | after `compose up -d` + health wait, against the new version |
 | `pre-rollback` | after the target tag's files are synced, before `compose up -d` |
@@ -273,6 +275,13 @@ Otherwise they always run: kasbah does not look at the containers first, and a
 hook that needs the outgoing stack up, or that wants to skip a dump, tests for
 that itself. `--skip-hooks` skips the `pre-*` and `post-*` hooks, never `backup`
 or `restore`. A rollback never runs `backup`.
+
+A `backup` hook is what reaches off-box: restic ships the backups, not the
+data directories (`backup.md` → Scope), so a dump the hook does not write is
+not backed up. **Bound what it runs inside a service** — `docker compose exec
+-T db timeout 600 pg_dump …`, not a bare `pg_dump`: a process a hook starts in
+a container through `compose exec` keeps running when the hook itself is
+killed, and nothing on the server's side of the hook can reach it.
 
 The `restore` hook that runs is the **target's**: a rollback reads every hook
 from the target tag's manifest, and asks for data only when that manifest has
@@ -288,14 +297,17 @@ retag and `compose up` as if the step had passed, and says so. Stopping after a
 `restore` hook that ran leaves the data as the hook left it. A failed `post-*` hook is not reverted (`build-deploy.md`).
 
 Environment variables available to hook commands (set by kasbah):
-- `$KASBAH_VERSION` — the version being deployed or rolled back to.
+- `$KASBAH_VERSION` — the version being deployed or rolled back to; on
+  `kasbah backup`, the live version.
 - `$KASBAH_PREV_VERSION` — the version previously current (empty on a first
-  deploy).
+  deploy, and on `kasbah backup`, where no version is going out).
 - `$KASBAH_PROJECT` — the project's name.
 - `$KASBAH_BACKUP_DIR` — on a deploy that is not a first, the absolute path of
   the backup directory this run fills, `<apps>/<name>/backups/<version>-<stamp>/`
   (`<version>` the outgoing one): the `backup` hooks write their dumps there, and
-  the `pre-deploy` and `post-deploy` hooks see the same path. `none` on a first
+  the `pre-deploy` and `post-deploy` hooks see the same path; on `kasbah
+  backup`, `backups/<live version>-<stamp>/`, tarred the same way unless a
+  hook fails, which keeps nothing. `none` on a first
   deploy, and on a deploy carried past a backup
   directory that could not be created. Once the new version is live, the directory
   — what the hooks wrote, beside the snapshot kasbah took of the outgoing `.env`

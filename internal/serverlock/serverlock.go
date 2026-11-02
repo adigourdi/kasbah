@@ -295,6 +295,8 @@ func describe(argv []string) string {
 			return "the managed-block refresh of kasbah env or a deploy"
 		case rest[0] == "deploy" && len(rest) > 1 && (rest[1] == "run" || rest[1] == "snapshot"):
 			return "a deploy or rollback"
+		case rest[0] == "deploy" && len(rest) > 1 && rest[1] == "backup":
+			return "kasbah backup"
 		case rest[0] == "drop":
 			return "drop"
 		}
