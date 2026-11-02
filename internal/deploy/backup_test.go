@@ -122,13 +122,13 @@ func TestEngineKeepsTheSnapshotAsABackup(t *testing.T) {
 	if fi, _ := os.Stat(filepath.Join(r.dir, HooksFile)); fi.Mode().Perm() != 0o644 {
 		t.Errorf("%s mode %o", HooksFile, fi.Mode().Perm())
 	}
-	// None declared is an empty list, never null.
+	// None declared is an empty list, never null; the health block is kept.
 	sp = r.spec()
 	sp.Backup = nil
 	if rc, _, errs := r.run(sp); rc != 0 {
 		t.Fatalf("rc %d %s", rc, errs)
 	}
-	if b, _ := os.ReadFile(filepath.Join(r.dir, HooksFile)); string(b) != "{\"backup\":[],\"restore\":[],\"targets\":[]}\n" {
+	if b, _ := os.ReadFile(filepath.Join(r.dir, HooksFile)); string(b) != "{\"backup\":[],\"restore\":[],\"targets\":[],\"health\":{\"container\":\"demo-web\",\"timeout\":5}}\n" {
 		t.Fatalf("%s: %s", HooksFile, b)
 	}
 }
@@ -683,7 +683,7 @@ func TestWriteHooks(t *testing.T) {
 	var errb bytes.Buffer
 	e := &engine{dir: dir, sp: Spec{Version: "1.0.0", Backup: []string{`pg_dump > "$KASBAH_BACKUP_DIR/db.sql"`}}, stderr: &errb}
 	e.writeHooks()
-	if b, _ := os.ReadFile(at); string(b) != `{"backup":["pg_dump > \"$KASBAH_BACKUP_DIR/db.sql\""],"restore":[],"targets":[]}`+"\n" {
+	if b, _ := os.ReadFile(at); string(b) != `{"backup":["pg_dump > \"$KASBAH_BACKUP_DIR/db.sql\""],"restore":[],"targets":[],"health":{"container":"","timeout":0}}`+"\n" {
 		t.Fatalf("%s", b)
 	}
 	old := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)

@@ -375,6 +375,14 @@ rules, naming `kasbah backup` as the holder; nothing waits. The nightly
 backup on a server with off-box backups takes the same backup of every
 project, in the same code (`backup.md` → The backup hooks, nightly).
 
+**`kasbah restore` brings a backup back from off the box** onto the live
+version: the chosen tarball is copied out of a restic snapshot into
+`backups/` under its own name, and is from then on a backup like the others,
+retention included. Its `.env` write, the live version's `restore` hook and
+the recreate of the stack run in one step under `.deploy.lock`, refused while
+`.kasbah-prev/` holds a snapshot manifest, as `kasbah backup` is
+(`cli.md` → `kasbah restore`).
+
 **Retention** runs at the end of every successful deploy, rollback,
 `kasbah backup` and nightly backup, on the server's clock: of the files in `backups/` named `<version>-<stamp>.tar.gz`,
 every one stamped within the last 24 hours is kept, and of the older ones only

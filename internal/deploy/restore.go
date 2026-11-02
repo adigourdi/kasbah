@@ -130,9 +130,18 @@ func backupEnv(root *os.Root, name string) ([]byte, error) {
 
 // backupProbe is `deploy backup-probe DIR VERSION`, read-only: which backup
 // a rollback to VERSION restores from, and how its .env differs from DIR's.
+// `backup-probe DIR --backup NAME` (version "", name set) probes NAME itself.
 func backupProbe(dir, version string, stdout, stderr io.Writer) int {
+	return probeBackup(dir, version, "", stdout, stderr)
+}
+
+func probeBackup(dir, version, named string, stdout, stderr io.Writer) int {
 	if !strings.HasPrefix(dir, "/") {
-		fmt.Fprintln(stderr, "remote: usage: backup-probe DIR VERSION (DIR absolute)")
+		fmt.Fprintln(stderr, "remote: usage: backup-probe DIR VERSION | DIR --backup NAME (DIR absolute)")
+		return 1
+	}
+	if named != "" && !reBackup.MatchString(named) {
+		fmt.Fprintf(stderr, "remote: '%s' is not a backup's name\n", named)
 		return 1
 	}
 	f := BackupFacts{Env: "no", Changed: []string{}, OnlyBackup: []string{}, OnlyLive: []string{}}
@@ -151,6 +160,12 @@ func backupProbe(dir, version string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		f.Backup = newestBackup(names, version)
+		if named != "" {
+			f.Backup = ""
+			if fi, err := root.Lstat(named); err == nil && fi.Mode().IsRegular() {
+				f.Backup = named
+			}
+		}
 	}
 	if f.Backup != "" {
 		old, err := backupEnv(root, f.Backup)
@@ -313,7 +328,8 @@ func (e *engine) needsRestoreDir() bool {
 // 770 to the group, for the rollback hooks; it is removed on every way out.
 func (e *engine) extract() error {
 	name := e.sp.RestoreFrom
-	if g := reBackup.FindStringSubmatch(name); g == nil || g[1] != e.sp.Version {
+	// kasbah restore may load another version's backup; a rollback, its own.
+	if g := reBackup.FindStringSubmatch(name); g == nil || g[1] != e.sp.Version && e.sp.Mode != "restore" {
 		return failf("'%s' is not a backup of %s, so there is nothing to extract", name, e.sp.Version)
 	}
 	if err := e.openBackups(); err != nil {
@@ -345,7 +361,11 @@ func (e *engine) extract() error {
 		e.dropRestore()
 		return failf("could not extract the backup %s into %s: %v", src, at, err)
 	}
-	e.note("extracted %s into %s for the rollback hooks ($KASBAH_BACKUP_DIR)", src, at)
+	what := "the rollback hooks"
+	if e.sp.Mode == "restore" {
+		what = "the restore hook"
+	}
+	e.note("extracted %s into %s for %s ($KASBAH_BACKUP_DIR)", src, at, what)
 	return nil
 }
 

@@ -28,6 +28,7 @@ Commands:
   deploy [USER@HOST] [VERSION]               Ship the working tree, or a tagged version, and bring it up.
   rollback [USER@HOST] [VERSION]             Put a server back on a version it has already run.
   backup [USER@HOST]                         Back up the live version on a server, and push it off-box.
+  restore [USER@HOST]                        Bring .env and data back from the off-box backups.
   drop [USER@HOST] [--prune]                 Remove this project from a server.
   history [USER@HOST] [--all]                Show a server's deploy record for this project.
   pending [USER@HOST] [VERSION]              Show the commits a deploy would ship.

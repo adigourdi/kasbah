@@ -88,7 +88,8 @@ func (r *Runner) statedir() string  { return r.dir() + "/state" }
 func (r *Runner) statefile() string { return r.statedir() + "/status" }
 
 // Run is the entry point: schedule (the default), once, plan, next, health;
-// launch is the launcher container's.
+// launch is the launcher container's; restore-list and restore-dump are
+// `kasbah restore`'s way into the repository.
 func (r *Runner) Run(args []string) int {
 	mode := "schedule"
 	if len(args) > 0 {
@@ -131,6 +132,10 @@ func (r *Runner) Run(args []string) int {
 			return 1
 		}
 		return Push(args[1], args[2], r.Stdout, r.Stderr)
+	case "restore-list":
+		return r.restoreList(args[1:])
+	case "restore-dump":
+		return r.restoreDump(args[1:])
 	case "health":
 		return r.health()
 	case "launch":
@@ -139,7 +144,7 @@ func (r *Runner) Run(args []string) int {
 		r.schedule()
 		return 0
 	}
-	r.warn("unknown mode '%s' (expected: schedule, once, plan, next, health, push, launch, host)", mode)
+	r.warn("unknown mode '%s' (expected: schedule, once, plan, next, health, push, restore-list, restore-dump, launch, host)", mode)
 	return 1
 }
 

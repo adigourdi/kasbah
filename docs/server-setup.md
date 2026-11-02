@@ -608,7 +608,8 @@ host, as membership of `docker` is; anyone able to replace
 `<apps>/.kasbah/bin/kasbah` becomes root through it, and every operator is
 already in `docker`, so no operator gains access they lack (`backup.md` →
 Credentials). `kasbah backup` pushes one project's repository on demand
-through the same container.
+through the same container, and `kasbah restore` reads a project's backups
+back out of it the same way, the credentials never leaving the container.
 
 Two settings are the nightly job's, both recorded in the marker's `backup`
 object and read back on a re-run:

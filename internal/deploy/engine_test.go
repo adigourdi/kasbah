@@ -33,7 +33,9 @@ inspect)
     [ -n "$st" ] || exit 1
     case "$3" in
     *Running*) [ "$st" = running ] && echo true || echo false ;;
-    *Health*) cat "$HEALTH" 2>/dev/null || echo none ;;
+    # HEALTH_SIGNAL: a file whose presence sends one SIGTERM to the caller.
+    *Health*) [ ! -e "${HEALTH_SIGNAL:-/nonexistent}" ] || { rm -f "$HEALTH_SIGNAL"; kill -TERM "$PPID"; }
+        cat "$HEALTH" 2>/dev/null || echo none ;;
     *Status*) echo "$st" ;;
     *Name*) echo "/$last" ;;
     esac

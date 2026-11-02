@@ -390,7 +390,44 @@ field written by a newer kasbah survives a re-run by an older one.
 ## Restore
 
 After a lost server, recovery is the backups and your own dumps, not the data
-directories:
+directories: `kasbah server init` the fresh VPS, `kasbah deploy`, then
+`kasbah restore`.
+
+1. Fresh VPS: `kasbah server init USER@HOST --with-backup`, with the same
+   repository base and each repository's password (`--backup-password=`) — the
+   passwords kept off the VPS (Credentials).
+2. `kasbah deploy` from the project repo. The fresh server has no `.env`, so
+   the deploy's env step asks for its keys, or takes them from
+   `--env-seed=FILE`; any value will do when `restore` brings the backup's
+   `.env` back. The project's
+   data directories start empty.
+3. `kasbah restore USER@HOST` from the project repo (`cli.md` →
+   `kasbah restore`). Through the `kasbah-backup` container, which alone
+   holds the credentials, it lists the repository's snapshots holding the
+   project's `backups/`, copies the newest backup of the live version out of
+   the newest one into `backups/` (`--snapshot=`, `--backup=` choose another;
+   `--list` shows them), verified by size and sha256 before it is kept. The
+   container stages the whole tarball before streaming it, so its `/tmp`
+   needs the tarball's size free. Snapshots are found by the path of
+   `backups/` (as it resolves, or `<apps>/<name>/backups`): keep the apps
+   path the old server had, and re-create a `backups/` that was a symlink
+   (into the data path) as the same link before restoring; otherwise the
+   refusal lists the paths in the snapshots that hold backups, and
+   `--from-path=<path>` restores from one. It
+   then asks, as a rollback does, whether to restore the backup's `.env` — the
+   names of the keys that differ are listed, never a value — and whether to
+   load the data with the live version's `restore` hook
+   (`--with-env`/`--no-env`, `--with-data`/`--no-data`). The hook runs on the
+   extracted tarball (`$KASBAH_BACKUP_DIR`), and a changed `.env` recreates the
+   stack so its containers read it. A failure after the `.env` write, or a
+   SIGINT or SIGTERM, puts the previous one back, and the report says whether
+   the data is already the backup's.
+
+A project without a `restore` hook gets its `.env` back from `kasbah
+restore`, and loads its dump from the tarball however it restores one.
+
+**When kasbah cannot be used** — no workstation with the project, or a
+server that cannot run the scheduler — the same restore is done by hand:
 
 1. Fresh VPS: `kasbah server init` (same flags as before).
 2. `restic restore <snapshot> --target /` — the snapshot's paths are the
@@ -398,9 +435,10 @@ directories:
    they were (a `backups/` that was a symlink lands at the directory it led
    to: re-create the link, or move it into place).
 3. `kasbah deploy` from the project repo. The project's data directories
-   start empty.
-4. Load the dumps, on the server as the deploy user, the way a rollback's
-   `restore` hooks run (`project-manifest.md` → hooks): extract the newest
+   start empty. Without `.env` back on the box, the deploy's env step has
+   nothing to deploy against and exits 5.
+4. Load the dumps, on the server as the deploy user, the way the `restore`
+   hooks run (`project-manifest.md` → hooks): extract the newest
    tarball in `backups/` into a directory of its own, then run each line of
    the project's `restore` list — `hooks.restore` in `kasbah.yml`, recorded
    on the server under `restore` in `/apps/<name>/.kasbah-hooks.json` — from
@@ -417,13 +455,8 @@ directories:
    ```
 
    `<version>` is the tarball's, and `KASBAH_PREV_VERSION` is empty, as on
-   `kasbah backup`: no version is going out. A project without a `restore`
-   hook loads its dump, at `$dir/<file>`, however it restores one. kasbah
-   has no restore command: these steps are the whole of a restore, and
-   nothing after them assumes one.
-
-Step 2 is what makes step 3 possible: without `.env` back on the box, the
-deploy's env step has nothing to deploy against and exits 5.
+   `kasbah restore`: no version is going out. A project without a `restore`
+   hook loads its dump, at `$dir/<file>`, however it restores one.
 
 ## Handover
 

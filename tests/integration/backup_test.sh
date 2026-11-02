@@ -19,10 +19,14 @@
 #   * `kasbah backup` takes a tarball of the live version, its backup hook's
 #     dump in it, and pushes it through the scheduler so the client repository
 #     gains a snapshot holding it — and says it stays local without backups;
+#   * `kasbah restore` lists the snapshots, fetches a tarball lost from the
+#     server back out of one, and brings back its .env, live in the recreated
+#     container, and its data through the restore hook;
 #   * `server backup-prune` prunes from *this* machine;
 #   * and the restore drill of docs/backup.md, executed for real: snapshot,
 #     rig_clean, server init, restore, `kasbah deploy`, project back with its
-#     .env and the backups holding its dump, loaded by step 4 as written.
+#     .env and the backups holding its dump, loaded by step 4 as written; then
+#     the lost-server drill kasbah runs itself: init, deploy, kasbah restore.
 #
 # Every repository is named under a per-run prefix, because rest-server answers
 # 405 to a DELETE on a repository path and there is no way to remove one over
@@ -335,8 +339,10 @@ fi
 printf '\nclient: %s\n' "$client" >> "$projdir/kasbah.yml"
 # The dump `kasbah backup` must carry: what reaches off-box is what this writes.
 printf 'hooks:\n  backup:\n    - echo dumped > "$KASBAH_BACKUP_DIR/db.dump"\n' >> "$projdir/kasbah.yml"
+# And what `kasbah restore --with-data` loads it with: the dump back into data/.
+printf '  restore:\n    - cp "$KASBAH_BACKUP_DIR/db.dump" %s/%s/restored.txt\n' "$data" "$project" >> "$projdir/kasbah.yml"
 ( cd "$projdir" && git -c user.email=f@k.test -c user.name=f -c commit.gpgsign=false \
-    commit -aqm "declare a client and a backup hook" && git tag -f "v$project_version" >/dev/null ) 2>/dev/null
+    commit -aqm "declare a client, a backup hook and a restore hook" && git tag -f "v$project_version" >/dev/null ) 2>/dev/null
 
 # The .env the deploy would otherwise stop to ask for. Written on the server, so
 # the env step finds one and the drift check passes — and so the restore drill
@@ -663,6 +669,51 @@ assert '[ -n "$record_before" ] && [ "$record_after" = "$record_before" ]' \
     "the push left the scheduler's record alone (before '$(tr "\n" " " <<<"$record_before")', after '$(tr "\n" " " <<<"$record_after")')"
 
 # ==================================================================================
+# kasbah restore: the pushed backup back from the repository
+# ==================================================================================
+krestore() (
+    cd "$projdir" || return 2
+    kasbah_cli restore "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null
+)
+newest_id=$(snapshot_ids "${server_base}$client/" "$client_pass" | tail -1)
+krestore "$RIG_TARGET" --list; rc=$?
+assert '[ "$rc" = "0" ]' "kasbah restore --list runs (exit $rc: $(cli_err))"
+assert 'grep -qE "^  $newest_id  [0-9T:-]+Z  \(listed below\)$" "$tmpdir/out"' \
+    "listing the newest snapshot, $newest_id, as the one it reads (said '$(cli_out)')"
+assert 'grep -qF "  ${tarball##*/}  " "$tmpdir/out" && grep -qF "(the default: newest of the live version $project_version; already on $RIG_TARGET)" "$tmpdir/out"' \
+    "and kasbah backup's tarball in it, the default (said '$(cli_out)')"
+
+# Lose the tarball, and change the .env and the data since it was taken.
+rig_ssh "rm -f '$tarball' &&
+         sed -i 's/^DEMO_GREETING=.*/DEMO_GREETING=changed-since/' $apps/$project/.env &&
+         printf 'written since\n' > $data/$project/restored.txt" >/dev/null 2>&1
+krestore "$RIG_TARGET"; rc=$?
+assert '[ "$rc" != "0" ] && grep -qF -- "pass --with-env or --no-env, and --with-data or --no-data." "$tmpdir/err"' \
+    "with no terminal, the unanswered questions fail naming their flags (exit $rc: $(cli_err))"
+krestore "$RIG_TARGET" --with-env --with-data; rc=$?
+assert '[ "$rc" = "0" ]' "kasbah restore --with-env --with-data runs (exit $rc: $(cli_err))"
+assert 'grep -qF "fetched into $tarball, size and sha256 checked" "$tmpdir/err"' \
+    "fetching the tarball back out of the snapshot (said '$(cli_err)')"
+assert 'grep -qF "values differ:      DEMO_GREETING" "$tmpdir/err" && ! grep -qF "changed-since" "$tmpdir/err"' \
+    "naming the key that differs, never its value"
+back=$(rig_ssh "stat -c %a '$tarball'" 2>/dev/null)
+assert '[ "$(nocr "$back")" = "660" ]' "the fetched tarball is in backups/, 660 (got '$back')"
+back=$(rig_ssh "ls -A $apps/$project/backups | grep -c '\.part\$'" 2>/dev/null)
+assert '[ "$(nocr "$back")" = "0" ]' "with no .part left (got '$back')"
+back=$(rig_ssh "grep '^DEMO_GREETING=' $apps/$project/.env" 2>/dev/null)
+assert '[ "$(nocr "$back")" = "DEMO_GREETING=only-on-this-vps" ]' "the .env value is the backup's again (got '$back')"
+greeting=$(rig_ssh "docker exec $project-web printenv DEMO_GREETING" 2>/dev/null)
+assert '[ "$(nocr "$greeting")" = "only-on-this-vps" ]' \
+    "and the recreated container reads it (got '$greeting')"
+back=$(rig_ssh "cat $data/$project/restored.txt" 2>/dev/null)
+assert '[ "$(nocr "$back")" = "dumped" ]' "the restore hook loaded the dump into the data (got '$back')"
+back=$(rig_ssh "ls -A $apps/$project | grep -c '^\.kasbah-unpacked\.'" 2>/dev/null)
+assert '[ "$(nocr "$back")" = "0" ]' "and the extraction is gone (got '$back')"
+krestore "$RIG_TARGET" --no-env --no-data; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "is already on the server — used as it is" "$tmpdir/err" && grep -qF "Nothing to restore" "$tmpdir/err"' \
+    "a second restore uses the tarball already there, and restores nothing unasked (exit $rc: $(cli_err))"
+
+# ==================================================================================
 # The nightly run: every project's backup hook on the host, then the push
 # ==================================================================================
 # `once` is the scheduled run: the scheduler starts a launcher container through
@@ -886,5 +937,42 @@ if [ "$rc" = "0" ]; then
     assert 'grep -qF "has no off-box backups, so this one stays on the server" "$tmpdir/err"' \
         "keeps it on the server and says so (said '$(cli_err)')"
 fi
+
+# ==================================================================================
+# The lost-server drill — init, deploy, kasbah restore
+# ==================================================================================
+# docs/backup.md → Restore as kasbah does it: a fresh VPS given the same
+# repository base and passwords, the project deployed on a stand-in .env, then
+# its .env and data brought back from the newest snapshot.
+if ! rig_clean; then
+    echo "error: rig_clean failed before the lost-server drill" >&2
+    exit 2
+fi
+init "${traefik_flags[@]}" --no-mail "${backup_flags[@]}" --backup-repo-base="$vps_base"; rc=$?
+if [ "$rc" != "0" ]; then
+    echo "error: server init --with-backup failed on the fresh rig (exit $rc)" >&2
+    sed 's/^/       | /' "$tmpdir/err" >&2
+    exit 2
+fi
+if ! relax_limits; then
+    echo "error: could not make the rig's resource limits applicable" >&2
+    exit 2
+fi
+rig_ssh "mkdir -p $apps/$project && printf 'DEMO_GREETING=stand-in\n' > $apps/$project/.env" >/dev/null 2>&1
+deploy "$RIG_TARGET"; rc=$?
+if [ "$rc" != "0" ]; then
+    echo "error: kasbah deploy failed on the fresh rig (exit $rc)" >&2
+    sed 's/^/       | /' "$tmpdir/err" >&2
+    exit 2
+fi
+krestore "$RIG_TARGET" --with-env --with-data; rc=$?
+assert '[ "$rc" = "0" ]' "kasbah restore on the fresh server (exit $rc: $(cli_err))"
+greeting=$(rig_ssh "docker exec $project-web printenv DEMO_GREETING" 2>/dev/null)
+assert '[ "$(nocr "$greeting")" = "only-on-this-vps" ]' \
+    "brings back the secret only the lost VPS knew, live in the container (got '$greeting')"
+back=$(rig_ssh "cat $data/$project/restored.txt" 2>/dev/null)
+assert '[ "$(nocr "$back")" = "dumped" ]' "and loads the dump through the restore hook (got '$back')"
+back=$(rig_ssh "grep -c '^KASBAH_' $apps/$project/.env" 2>/dev/null)
+assert '[ "$(nocr "$back")" -gt 0 ]' "keeping the fresh server's KASBAH_* block (got '$back')"
 
 exit "$fail"

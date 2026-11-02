@@ -14,7 +14,7 @@ import (
 )
 
 // RemoteUsage names `kasbah remote deploy`'s modes.
-const RemoteUsage = "usage: kasbah remote deploy prepare APPS DATA NAME CLIENT [DIR…] | snapshot DIR TOKEN TARGET… | run DIR (spec on stdin) | mail APPS | images VERSION IMAGE… | backup DIR | backup-probe DIR VERSION | restore-env DIR BACKUP --all|KEY… | restore-env DIR --undo TOKEN"
+const RemoteUsage = "usage: kasbah remote deploy prepare APPS DATA NAME CLIENT [DIR…] | snapshot DIR TOKEN TARGET… | run DIR (spec on stdin) | mail APPS | images VERSION IMAGE… | backup DIR | backup-probe DIR VERSION | restore-env DIR BACKUP --all|KEY… | restore-env DIR --undo TOKEN | backup-probe DIR --backup NAME | restore-list APPS NAME [SNAPSHOT] [--from-path=PATH] | fetch DIR SNAPSHOT BACKUP [--from-path=PATH] | restore DIR BACKUP LIVE [--env=all|--env=KEY,…] [--data]"
 
 // Remote is `kasbah remote deploy …` on a server. stdout is a protocol in
 // every mode; narration and docker's output go to stderr.
@@ -49,8 +49,24 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		w, done := remote.Outlive(stderr)
 		defer done()
 		return restoreEnv(args[1], args[2], args[3:], stdout, w)
+	case args[0] == "backup-probe" && len(args) == 4 && args[2] == "--backup":
+		return probeBackup(args[1], "", args[3], stdout, stderr)
 	case args[0] == "backup-probe" && len(args) == 3:
 		return backupProbe(args[1], args[2], stdout, stderr)
+	case args[0] == "restore-list" && len(args) >= 3:
+		if rest, from, ok := fromPathArg(args[3:]); ok && len(rest) <= 1 {
+			return restoreList(args[1], args[2], strings.Join(rest, ""), from, stdout, stderr)
+		}
+	case args[0] == "fetch" && len(args) >= 4:
+		if rest, from, ok := fromPathArg(args[4:]); ok && len(rest) == 0 {
+			w, done := remote.Outlive(stderr)
+			defer done()
+			return fetchBackup(args[1], args[2], args[3], from, stdout, w)
+		}
+	case args[0] == "restore" && len(args) >= 4:
+		w, done := remote.Outlive(stderr)
+		defer done()
+		return restoreArm(args[1], args[2], args[3], args[4:], stdout, w, stderr)
 	case args[0] == "mail" && len(args) == 2:
 		return mailFacts(args[1], stdout)
 	case args[0] == "images" && len(args) >= 2:

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/backup"
 	"github.com/adigourdi/kasbah/internal/remote"
 )
 
@@ -37,12 +38,9 @@ const HooksFile = ".kasbah-hooks.json"
 // stampLayout is a backup's UTC stamp: fixed width, so names sort by time.
 const stampLayout = "20060102-150405"
 
-// backupName is a backup's name less its suffix: the version, then the stamp.
-const backupName = `^([0-9A-Za-z][0-9A-Za-z.+_-]*)-([0-9]{8}-[0-9]{6})`
-
 var (
-	reBackup    = regexp.MustCompile(backupName + `\.tar\.gz$`)
-	reBackupDir = regexp.MustCompile(backupName + `$`)
+	reBackup    = backup.ReTarball
+	reBackupDir = regexp.MustCompile(backup.TarballStem + `$`)
 )
 
 // KeepFor is how far back every backup is kept; of the older ones, only the
@@ -59,6 +57,9 @@ type Hooks struct {
 	Backup  []string `json:"backup"`
 	Restore []string `json:"restore"`
 	Targets []string `json:"targets"`
+	// Health is the live version's health: block, for `kasbah restore`'s
+	// recreate; absent in a file an older kasbah wrote.
+	Health *Health `json:"health,omitempty"`
 }
 
 // checkBackups refuses a backups/ that is there and is not a directory, or
@@ -551,7 +552,8 @@ func pruneBackups(root *os.Root, at string, now time.Time) ([]string, []error) {
 // writeHooks renders HooksFile as .kasbah-client is written: temp and
 // rename, 644, only when it changed. A failure is said, never the run's.
 func (e *engine) writeHooks() {
-	h := Hooks{Backup: e.sp.Backup, Restore: e.sp.Restore, Targets: e.sp.Targets}
+	hl := e.sp.Health
+	h := Hooks{Backup: e.sp.Backup, Restore: e.sp.Restore, Targets: e.sp.Targets, Health: &hl}
 	for _, l := range []*[]string{&h.Backup, &h.Restore, &h.Targets} {
 		if *l == nil {
 			*l = []string{}

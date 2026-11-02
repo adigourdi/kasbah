@@ -83,7 +83,7 @@ func (e *engine) backupLive() (string, error) {
 		return "", failf("could not read %s/%s: %v — nothing was changed", e.dir, vlog.Log, err)
 	}
 	entries := vlog.Entries(strings.ReplaceAll(string(data), "\r", ""))
-	if err := e.inFlight(entries); err != nil {
+	if err := e.inFlight(entries, "back up"); err != nil {
 		return "", err
 	}
 	live := liveVersion(entries)
@@ -139,7 +139,7 @@ func (e *engine) backupLive() (string, error) {
 // inFlight refuses while PrevDir holds a manifest: a deploy is between its
 // snapshot and its end, or one died or failed its revert, so the project's
 // files may be part another version's.
-func (e *engine) inFlight(entries []vlog.Entry) error {
+func (e *engine) inFlight(entries []vlog.Entry, then string) error {
 	at := e.dir + "/" + PrevDir
 	if _, err := os.Lstat(filepath.Join(e.dir, snapManifest)); errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -147,12 +147,12 @@ func (e *engine) inFlight(entries []vlog.Entry) error {
 		return failf("could not read %s/%s: %v — nothing was changed", e.dir, snapManifest, err)
 	}
 	if n := len(entries); n > 0 && entries[n-1].IsFailed() && entries[n-1].Reason == "revert" {
-		return failf("%s is the snapshot a failed revert kept (versions.log ends '%s'): the project's files may be part %s's, part the version before it. Nothing was changed; fix what the revert reported and deploy or roll back again — once a run leaves a version live, back up", at, entries[n-1].Raw, entries[n-1].Version)
+		return failf("%s is the snapshot a failed revert kept (versions.log ends '%s'): the project's files may be part %s's, part the version before it. Nothing was changed; fix what the revert reported and deploy or roll back again — once a run leaves a version live, %s", at, entries[n-1].Raw, entries[n-1].Version, then)
 	}
 	if went, stale := e.staleManifest(); stale {
-		return failf("%s holds a deploy's snapshot taken no later than the last run that went live (%s), so no deploy or rollback is using it: it is left over. Nothing was changed; remove %s by hand, then back up", at, went, at)
+		return failf("%s holds a deploy's snapshot taken no later than the last run that went live (%s), so no deploy or rollback is using it: it is left over. Nothing was changed; remove %s by hand, then %s", at, went, at, then)
 	}
-	return failf("%s holds a deploy's snapshot: a deploy or rollback is under way, or one stopped before it finished, and the project's files may already be the next version's. Nothing was changed; let it finish, or re-run it, then back up", at)
+	return failf("%s holds a deploy's snapshot: a deploy or rollback is under way, or one stopped before it finished, and the project's files may already be the next version's. Nothing was changed; let it finish, or re-run it, then %s", at, then)
 }
 
 // staleManifest is staleSnapshot over e's manifest: one it cannot read is

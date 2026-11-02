@@ -98,6 +98,11 @@ func main() {
 				atexit.HandleSignals()
 				atexit.Exit(deploy.HostBackup(args[3:], os.Stdout, os.Stderr))
 			}
+			if len(args) > 2 && args[1] == "backup" && args[2] == "restore-dump" {
+				// In the scheduler container: a signal removes the dump's temp file.
+				atexit.HandleSignals()
+				atexit.Exit(backup.NewRunner(os.Stdout, os.Stderr).Run(args[2:]))
+			}
 			if len(args) > 1 && args[1] == "backup" {
 				// The kasbah-backup container's process (D2): restic's image,
 				// this binary mounted from the apps path; push is the host's
@@ -170,6 +175,10 @@ func main() {
 			o, err := deploy.ParseBackup(args[1:])
 			atexit.HandleSignals()
 			atexit.Exit(backupCmd(o, err))
+		case "restore":
+			o, err := deploy.ParseRestore(args[1:])
+			atexit.HandleSignals()
+			atexit.Exit(restoreCmd(o, err))
 		case "history", "pending", "changelog":
 			o, err := history.Parse(args[0], args[1:])
 			atexit.HandleSignals()
@@ -694,6 +703,36 @@ func backupCmd(o deploy.BackupOptions, err error) int {
 		Out:     out,
 		Version: v,
 		Dial:    deploy.DialBackup(remote.Self(build), local),
+	}, o))
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
+}
+
+// restoreCmd is `kasbah restore`.
+func restoreCmd(o deploy.RestoreOptions, err error) int {
+	out := cli.Std()
+	if err == deploy.ErrHelp {
+		fmt.Fprint(out.Stdout, deploy.RestoreUsage())
+		return cli.ExitOK
+	}
+	if err != nil {
+		return report(out, err)
+	}
+	v, err := kasbahVersion(true)
+	if err != nil {
+		return report(out, err)
+	}
+	local, err := localBinary()
+	if err != nil {
+		return report(out, err)
+	}
+	code := report(out, deploy.RunRestore(deploy.RestoreCtx{
+		Out:      out,
+		Prompter: prompt.Std(out),
+		Version:  v,
+		Dial:     deploy.DialRestore(remote.Self(build), local),
 	}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c

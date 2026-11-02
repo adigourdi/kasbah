@@ -1050,6 +1050,123 @@ now). It takes no flags and asks nothing.
 
 `last_server` is written once the run succeeds.
 
+### `kasbah restore [USER@HOST] [flags]`
+
+Bring a project's `.env` and data back from its off-box backups onto the
+version live on the server: after a lost server, `server init` it (with the
+same `--with-backup` repository base and passwords), `deploy`, then
+`restore` (`backup.md` → Restore). It never takes a backup and never writes
+`versions.log`.
+
+1. Read `kasbah.yml` for the project's name; reach the server, shipping this
+   build's binary when the server's is absent or older (as `deploy` does). A
+   server whose marker records no `backup.enabled` is refused, nothing
+   changed, pointing at `server init --with-backup`, and saying that a backup
+   already on the server comes back through `kasbah rollback` (an earlier
+   version's) or by hand (the live version's, `backup.md` → Restore). Hold the
+   server lock shared.
+2. On VPS: `kasbah remote deploy restore-list <apps> <name> [<snapshot>]
+   [--from-path=<path>]` reads the live version from `versions.log`, whether
+   the live version has a `restore` hook (`.kasbah-hooks.json`) and the
+   tarballs already in `backups/`, and, through `docker exec kasbah-backup …
+   remote backup restore-list`, the repository's snapshots that hold the
+   project's `backups/` (as resolved now, or at `<apps>/<name>/backups`; with
+   `--from-path=`, at that path alone) and the `backups/*.tar.gz` directly in
+   the chosen one (`restic snapshots --json`, `restic ls --json`). The
+   credentials never leave the container. A scheduler container that is not
+   running is refused like no off-box backups, pointing at `server status`
+   and `server init --with-backup`.
+3. Choose: the newest such snapshot, or `--snapshot=`; in it, the newest
+   backup of the live version (`backups/<version>-<stamp>.tar.gz`, by stamp),
+   or `--backup=`. A named backup of another version is allowed, warned that
+   its data may not fit the live version's schema. With no live version, no
+   `.kasbah-hooks.json`, no snapshot, a `--backup=` the snapshot does not hold
+   or no backup of the live version in it, the run is refused, nothing
+   changed, listing what the snapshot holds. With no snapshot holding
+   `backups/` at a path looked at — a server with another apps path, or a
+   `backups/` that was a symlink into the data path — the refusal names the
+   paths looked at and every path the repository's snapshots were given that
+   holds backup tarballs directly (by name, `<version>-<stamp>.tar.gz`), and
+   `--from-path=<path>` restores from one of them. `--with-data` when the live
+   version has no `restore` hook is refused here, before anything changes.
+4. On VPS: `kasbah remote deploy fetch <apps>/<name> <snapshot> <backup>
+   [--from-path=<path>]`, under the project's `.deploy.lock`, ignoring SIGHUP
+   and SIGPIPE. A tarball
+   of that name already in `backups/` is used as it is, and the run says so.
+   Otherwise `docker exec kasbah-backup … remote backup restore-dump` runs
+   `restic dump` into a temp file in the container — unlinked as soon as it
+   is created, so it needs the tarball's size free in the container's `/tmp`
+   and no exit leaves it — and writes one line —
+   `kasbah_dump size=<bytes> sha256=<hex>` — then the bytes on stdout, which
+   the host side writes to `backups/.<backup>.part` and keeps only when they
+   are the size and sha256 announced and read through as a gzip'd tar: then
+   it is renamed to `backups/<backup>` (`660`). A short, padded or corrupted
+   stream, or a dump that failed, removes the `.part` and fails the run. The
+   name must be a backup's; nothing is written outside `backups/`. The
+   fetched tarball is a backup like the others: the next run's retention
+   applies to it.
+5. `kasbah remote deploy backup-probe <apps>/<name> --backup <backup>`: the
+   names of the keys its `.env` and the server's disagree on, never a value
+   (`KASBAH_*` keys never differ). The questions, as on `rollback`:
+   `--with-env` / `--no-env`, unset asking restore, keep or per key; and,
+   when the live version has a `restore` hook, `--with-data` / `--no-data`,
+   unset asking. With no terminal an unanswered question fails naming its
+   pair — the data question before the fetch, the `.env` one after it, saying
+   that the fetched tarball was added to `backups/` and nothing else was
+   changed. Nothing chosen ends the run there, changing nothing more.
+6. On VPS: `kasbah remote deploy restore <apps>/<name> <backup> <live>
+   [--env=all|--env=KEY,…] [--data]` (key names on argv, never a value), under
+   `.deploy.lock` and the shared server lock, ignoring SIGHUP and SIGPIPE. It
+   refuses, nothing changed, when the live version is no longer the one the
+   questions were asked for, while `.kasbah-prev/` holds a deploy's snapshot
+   (as `kasbah backup` does), or with `--data` and no `restore` hook. Then:
+   - the chosen `.env` written from the backup's `kasbah-snapshot/.env`:
+     whole — every key the two disagree on takes the backup's line, or goes
+     when the backup has none — or for the chosen keys alone; the server's
+     own `KASBAH_*` block stays as it is, as every other line does;
+   - with `--data`: the backup extracted into
+     `<apps>/<name>/.kasbah-unpacked.<pid>/` (removed on every way out), and
+     the live version's `restore` hooks run from the project directory with
+     `$KASBAH_BACKUP_DIR` that directory, `$KASBAH_VERSION` the live version,
+     `$KASBAH_PREV_VERSION` empty, `$KASBAH_PROJECT` and
+     `$COMPOSE_PROJECT_NAME` the project's name;
+   - when `.env` changed: `docker compose -p <name> up -d --remove-orphans`
+     from the project directory, Traefik joined to the project's network, and
+     the health wait of the live version's `health:` block (recorded in
+     `.kasbah-hooks.json`; 120 seconds on every container without one). No
+     image is retagged. An unchanged `.env` recreates nothing.
+   A failure after the `.env` write — the extraction, a `restore` hook, the
+   up or the health wait — puts the previous `.env` back, held in memory
+   since the step began (a `.env` the step created is removed). After a
+   failed up or health wait the stack is brought up on it again
+   (`docker compose -p <name> up -d --remove-orphans`, not waited on). The
+   first SIGINT or SIGTERM is held and leaves the same way: the running
+   `restore` hook's process group gets the signal, the health wait stops,
+   and the failure is reported; a second one exits at once, its cleanup
+   putting the previous `.env` back and bringing nothing up. The report
+   says where it stopped and what became of the data — the backup's,
+   loaded by the hook, and now running under the server's previous `.env`;
+   whatever a failed `restore` hook left, as it is; or untouched — of
+   `.env`, and of the stack: brought up again on the previous `.env`, or
+   not, with the `docker compose -p <name> up -d` that brings it up.
+
+`last_server` is written once the run succeeds.
+
+Flags:
+- `--snapshot=ID` — a restic snapshot id, or a prefix of one, as `--list`
+  prints; default the newest holding the project's backups.
+- `--backup=NAME` — `<version>-<YYYYMMDD-HHMMSS>.tar.gz`; default the newest
+  backup of the live version in the snapshot.
+- `--from-path=PATH` — the absolute path in the snapshots that holds the
+  project's backups, as the no-snapshot refusal lists them; a snapshot that
+  does not hold it is not listed, and none holding it fails the listing.
+- `--list` — print, on stdout, the snapshots (id, UTC time, oldest first) and
+  the backups in the chosen one, with their sizes, the default and those
+  already on the server marked — or, with no snapshot, the paths looked at
+  and those holding backups — and change nothing. It needs no live version,
+  and takes only `USER@HOST`, `--snapshot=` and `--from-path=`.
+- `--with-env` / `--no-env`, `--with-data` / `--no-data` — as above.
+
 ### `kasbah drop [USER@HOST] [--prune] [--yes]`
 
 Remove the project from the VPS. Plain `drop` is reversible:

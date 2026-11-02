@@ -541,7 +541,11 @@ func Encode(v string) (string, error) {
 // writeEnv renames a staging file over .env (over a symlink's target), so a
 // dropped session never leaves it half-written. A .env this creates is 600 —
 // it holds secrets; an existing one keeps its mode.
-func writeEnv(path string, lines []string) error {
+func writeEnv(path string, lines []string) error { return writeEnvFile(path, lines, true) }
+
+// writeEnvFile is writeEnv; cleanup false registers no atexit cleanup for the
+// staging file, for a caller that is one.
+func writeEnvFile(path string, lines []string, cleanup bool) error {
 	var b strings.Builder
 	for _, l := range lines {
 		b.WriteString(l)
@@ -561,14 +565,20 @@ func writeEnv(path string, lines []string) error {
 	if fi, err := os.Stat(target); err == nil {
 		mode = GroupMode(fi.Mode().Perm())
 	}
-	tmp := target + ".kasbah-setup." + strconv.Itoa(os.Getpid())
+	// A cleanup's write stages apart, so it never shares a file with the write it interrupts.
+	stage := ".kasbah-setup."
+	if !cleanup {
+		stage = ".kasbah-putback."
+	}
+	tmp := target + stage + strconv.Itoa(os.Getpid())
 	os.Remove(tmp)
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
-	pop := atexit.Push(func() { os.Remove(tmp) })
-	defer pop()
+	if cleanup {
+		defer atexit.Push(func() { os.Remove(tmp) })()
+	}
 	_, err = io.WriteString(f, b.String())
 	if cerr := f.Close(); err == nil {
 		err = cerr

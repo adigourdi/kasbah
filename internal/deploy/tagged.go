@@ -840,39 +840,11 @@ func (r *run) restoreChoices() error {
 	r.restoreFrom = f.Backup
 	at := r.dir + "/" + Backups + "/" + f.Backup
 	o.Info("the newest backup of %s on %s is %s", v, t, at)
-	differ := len(f.Changed)+len(f.OnlyBackup)+len(f.OnlyLive) > 0
-	switch {
-	case f.Env == "unreadable":
-		o.Warn("its .env could not be read (see above) — %s/.env is left as it is", r.dir)
-	case f.Env != "yes" && r.o.Env == prompt.Yes:
-		o.Warn("--with-env: %s holds no .env to restore — %s/.env is left as it is", f.Backup, r.dir)
-	case f.Env != "yes":
-		o.Info("  it holds no .env — %s/.env is left as it is", r.dir)
-	case !differ:
-		o.Info("  its .env and %s/.env agree on every key — nothing to restore", r.dir)
-	default:
-		o.Info("  its .env and %s/.env differ on these keys (names only):", r.dir)
-		for _, l := range [][2]string{{"values differ:     ", strings.Join(f.Changed, " ")},
-			{"only in the backup:", strings.Join(f.OnlyBackup, " ")}, {"only on the server:", strings.Join(f.OnlyLive, " ")}} {
-			if l[1] != "" {
-				o.Info("    %s %s", l[0], l[1])
-			}
-		}
+	differ := showEnvDiff(o, r.dir, f.Backup, r.o.Env, f)
+	if err := needTTY(r.c.Prompter, at, differ && r.o.Env == prompt.Unset, hook && r.o.Data == prompt.Unset); err != nil {
+		return err
 	}
-	envAsk := f.Env == "yes" && differ && r.o.Env == prompt.Unset
-	dataAsk := hook && r.o.Data == prompt.Unset
-	if (envAsk || dataAsk) && (r.c.Prompter == nil || !r.c.Prompter.TTY) {
-		var flags []string
-		if envAsk {
-			flags = append(flags, "--with-env or --no-env")
-		}
-		if dataAsk {
-			flags = append(flags, "--with-data or --no-data")
-		}
-		return cli.Fail("cannot ask what to restore from %s: stdin is not a terminal", at).Cont(
-			"pass " + strings.Join(flags, ", and ") + ". Nothing was changed.")
-	}
-	if f.Env == "yes" && differ {
+	if differ {
 		if err := r.chooseEnv(f); err != nil {
 			return err
 		}
@@ -902,38 +874,44 @@ func (r *run) restoreChoices() error {
 // chooseEnv is the .env answer: the backup's whole, the server's, or — on a
 // terminal only — one answer per differing key.
 func (r *run) chooseEnv(f *BackupFacts) error {
-	o, v := r.c.Out, r.version
-	switch r.o.Env {
+	var err error
+	r.envRestore, r.envKeys, err = envAnswer(r.c.Out, r.c.Prompter, r.o.Env, "rollback", r.version+"'s backup", f)
+	return err
+}
+
+// envAnswer settles the .env question on f: given answers it, else the
+// terminal. restore false keeps the server's .env; keys nil restores from's
+// whole.
+func envAnswer(o *cli.Output, p *prompt.Prompter, given prompt.Given, cmd, from string, f *BackupFacts) (restore bool, keys []string, err error) {
+	switch given {
 	case prompt.Yes:
-		r.envRestore = true
 		o.Info("  .env: the backup's (--with-env)")
-		return nil
+		return true, nil, nil
 	case prompt.No:
 		o.Info("  .env: the server's, kept (--no-env)")
-		return nil
+		return false, nil, nil
 	}
-	p := r.c.Prompter
-	stopped := cli.Fail("rollback stopped at the .env question — nothing was changed")
+	stopped := cli.Fail("%s stopped at the .env question — nothing was changed", cmd)
 	// Select's own refusal would name a flag that does not exist.
 	unanswered := cli.Fail("no answer to the .env question — pass --with-env or --no-env. Nothing was changed.")
-	choice, ok, err := p.Select("env", "restore .env from "+v+"'s backup, keep the server's, or decide per key?",
+	choice, ok, err := p.Select("env", "restore .env from "+from+", keep the server's, or decide per key?",
 		[]string{"restore", "keep", "per-key"},
 		[]string{"restore — the backup's .env replaces the server's whole",
 			"keep — the server's .env stays as it is",
 			"per-key — one question per key that differs"}, "")
 	if err != nil {
-		return unanswered
+		return false, nil, unanswered
 	}
 	if !ok {
-		return stopped
+		return false, nil, stopped
 	}
 	switch choice {
 	case "restore":
-		r.envRestore = true
+		restore = true
 	case "per-key":
 		labels := map[string][]string{}
 		for _, k := range f.Changed {
-			labels[k] = []string{"backup — the value it had in " + v + "'s backup", "server — the value it has now"}
+			labels[k] = []string{"backup — the value it had in " + from, "server — the value it has now"}
 		}
 		for _, k := range f.OnlyBackup {
 			labels[k] = []string{"backup — set it, as the backup does", "server — leave it unset, as it is now"}
@@ -941,32 +919,78 @@ func (r *run) chooseEnv(f *BackupFacts) error {
 		for _, k := range f.OnlyLive {
 			labels[k] = []string{"backup — remove it, as the backup has none", "server — keep it"}
 		}
-		keys := []string{}
+		picked := []string{}
 		for _, k := range envtpl.SortUniq(append(append(append([]string{}, f.Changed...), f.OnlyBackup...), f.OnlyLive...)) {
 			c, ok, err := p.Select("env", k+": the backup's or the server's?", []string{"backup", "server"}, labels[k], "")
 			if err != nil {
-				return unanswered
+				return false, nil, unanswered
 			}
 			if !ok {
-				return stopped
+				return false, nil, stopped
 			}
 			if c == "backup" {
-				keys = append(keys, k)
+				picked = append(picked, k)
 			}
 		}
-		if len(keys) > 0 {
-			r.envRestore, r.envKeys = true, keys
+		if len(picked) > 0 {
+			restore, keys = true, picked
 		}
 	}
 	switch {
-	case !r.envRestore:
+	case !restore:
 		o.Info("  .env: the server's, kept")
-	case r.envKeys == nil:
+	case keys == nil:
 		o.Info("  .env: the backup's")
 	default:
-		o.Info("  .env: the backup's values for %s", strings.Join(r.envKeys, " "))
+		o.Info("  .env: the backup's values for %s", strings.Join(keys, " "))
 	}
-	return nil
+	return restore, keys, nil
+}
+
+// showEnvDiff says what f's .env and the server's disagree on, names only;
+// differ is whether there is a question to ask.
+func showEnvDiff(o *cli.Output, dir, backup string, given prompt.Given, f *BackupFacts) (differ bool) {
+	differ = len(f.Changed)+len(f.OnlyBackup)+len(f.OnlyLive) > 0
+	switch {
+	case f.Env == "unreadable":
+		o.Warn("its .env could not be read (see above) — %s/.env is left as it is", dir)
+	case f.Env != "yes" && given == prompt.Yes:
+		o.Warn("--with-env: %s holds no .env to restore — %s/.env is left as it is", backup, dir)
+	case f.Env != "yes":
+		o.Info("  it holds no .env — %s/.env is left as it is", dir)
+	case !differ:
+		o.Info("  its .env and %s/.env agree on every key — nothing to restore", dir)
+	default:
+		o.Info("  its .env and %s/.env differ on these keys (names only):", dir)
+		for _, l := range [][2]string{{"values differ:     ", strings.Join(f.Changed, " ")},
+			{"only in the backup:", strings.Join(f.OnlyBackup, " ")}, {"only on the server:", strings.Join(f.OnlyLive, " ")}} {
+			if l[1] != "" {
+				o.Info("    %s %s", l[0], l[1])
+			}
+		}
+	}
+	return f.Env == "yes" && differ
+}
+
+// needTTY refuses, naming the flags, a question with no terminal to ask it on.
+func needTTY(p *prompt.Prompter, at string, envAsk, dataAsk bool) error {
+	return askable(p, at, envAsk, dataAsk, "Nothing was changed.")
+}
+
+// askable is needTTY, its refusal ending with changed: what the run changed.
+func askable(p *prompt.Prompter, at string, envAsk, dataAsk bool, changed string) error {
+	if !envAsk && !dataAsk || p != nil && p.TTY {
+		return nil
+	}
+	var flags []string
+	if envAsk {
+		flags = append(flags, "--with-env or --no-env")
+	}
+	if dataAsk {
+		flags = append(flags, "--with-data or --no-data")
+	}
+	return cli.Fail("cannot ask what to restore from %s: stdin is not a terminal", at).Cont(
+		"pass " + strings.Join(flags, ", and ") + ". " + changed)
 }
 
 // restoreEnv writes the chosen .env, after the snapshot holds the server's

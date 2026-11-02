@@ -79,6 +79,21 @@ func RestoreEnv(dir string, old []byte, keys []string) error {
 		return err
 	}
 	defer lock.Close()
+	return RestoreEnvLocked(dir, old, keys)
+}
+
+// RestoreEnvLocked is RestoreEnv for a caller already holding .deploy.lock.
+func RestoreEnvLocked(dir string, old []byte, keys []string) error {
+	return restoreEnvLocked(dir, old, keys, true)
+}
+
+// PutBackLocked writes prev as dir's whole .env, as RestoreEnvLocked does but
+// registering no cleanup, so an atexit cleanup can run it.
+func PutBackLocked(dir string, prev []byte) error {
+	return restoreEnvLocked(dir, prev, nil, false)
+}
+
+func restoreEnvLocked(dir string, old []byte, keys []string, cleanup bool) error {
 	path := dir + "/.env"
 	if fi, err := os.Stat(path); err == nil && !fi.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file — .env left untouched", path)
@@ -93,7 +108,7 @@ func RestoreEnv(dir string, old []byte, keys []string) error {
 		}
 		lines = MergeEnv(cur, old, keys)
 	}
-	if err := writeEnv(path, lines); err != nil {
+	if err := writeEnvFile(path, lines, cleanup); err != nil {
 		return fmt.Errorf("could not write %s: %v", path, err)
 	}
 	return nil

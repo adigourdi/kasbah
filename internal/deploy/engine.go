@@ -186,6 +186,11 @@ type engine struct {
 	// process's; deadline, when set, kills a hook's process group at it.
 	env      []string
 	deadline time.Time
+	// forward runs each hook as its own process group, which a restore's
+	// held signal reaches through hookPG; stop is that signal's exit code.
+	forward bool
+	hookPG  atomic.Int32
+	stop    atomic.Int32
 }
 
 func (e *engine) note(format string, a ...any) {
@@ -858,7 +863,7 @@ func exitStatus(err error) int {
 // hooks run each entry as `sh -c` from the project directory, with no stdin
 // (the engine's is the answer channel), COMPOSE_PROJECT_NAME set and
 // KASBAH_BACKUP_DIR a deploy's backup directory, a rollback's extraction of
-// its target's backup, or none.
+// its target's backup (a restore's, of the chosen one), or none.
 // A failure goes to onFail, whose nil runs the next entry; none ends the list.
 func (e *engine) hooks(what string, list []string, onFail func(error) error) error {
 	for _, h := range list {
@@ -866,7 +871,7 @@ func (e *engine) hooks(what string, list []string, onFail func(error) error) err
 		c := e.sh(h)
 		bdir := "none"
 		switch {
-		case e.sp.Mode == "rollback":
+		case e.sp.Mode == "rollback" || e.sp.Mode == "restore":
 			if e.rdir != "" {
 				bdir = e.rdir
 			}
@@ -957,6 +962,9 @@ func (e *engine) healthWait(targets []string) error {
 	deadline := e.now().Add(time.Duration(e.sp.Health.Timeout) * time.Second)
 	for _, t := range targets {
 		for {
+			if e.stop.Load() != 0 {
+				return failf("a signal stopped the wait for %s to become healthy", e.name(t))
+			}
 			status, err := e.query("inspect", "--format", "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}", t)
 			if err != nil {
 				status = "missing"

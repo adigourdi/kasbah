@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -17,14 +18,18 @@ var errDeadline = errors.New("the deadline passed")
 // at the deadline, SIGKILL this long after. A seam for the tests.
 var killGrace = 30 * time.Second
 
-// runHook runs c, and with a deadline set runs it as its own process group,
-// killed whole at the deadline: a hook's children go with it.
+// runHook runs c, and with a deadline set or forward on runs it as its own
+// process group, killed whole at the deadline: a hook's children go with it.
 func (e *engine) runHook(c *exec.Cmd) error {
-	if e.deadline.IsZero() {
+	if e.deadline.IsZero() && !e.forward {
 		return c.Run()
 	}
-	ctx, cancel := context.WithDeadline(context.Background(), e.deadline)
-	defer cancel()
+	ctx := context.Background()
+	if !e.deadline.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, e.deadline)
+		defer cancel()
+	}
 	if ctx.Err() != nil {
 		return errDeadline
 	}
@@ -37,6 +42,14 @@ func (e *engine) runHook(c *exec.Cmd) error {
 	pgid := c.Process.Pid
 	pop := atexit.Push(func() { syscall.Kill(-pgid, syscall.SIGKILL) })
 	defer pop()
+	if e.forward {
+		e.hookPG.Store(int32(pgid))
+		defer e.hookPG.Store(0)
+		// A signal held before the group existed reaches it now.
+		if e.stop.Load() != 0 {
+			syscall.Kill(-pgid, syscall.SIGTERM)
+		}
+	}
 	done := make(chan error, 1)
 	go func() { done <- c.Wait() }()
 	select {
@@ -53,4 +66,14 @@ func (e *engine) runHook(c *exec.Cmd) error {
 		<-done
 	}
 	return errDeadline
+}
+
+// interrupt is a restore's hold: the first SIGINT or SIGTERM is recorded for
+// the steps to stop at, and forwarded to the running hook's process group.
+func (e *engine) interrupt(s os.Signal) {
+	sig, _ := s.(syscall.Signal)
+	e.stop.CompareAndSwap(0, 128+int32(sig))
+	if pg := e.hookPG.Load(); pg != 0 {
+		syscall.Kill(-int(pg), sig)
+	}
 }
