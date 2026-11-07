@@ -82,7 +82,7 @@ For a verification that does not rest on the script or on the binary checking
 itself — `release.pub`'s key obtained separately (the repository, this page):
 
 ```sh
-ver=1.1.0 arch=amd64                       # arm64 on an arm64 machine
+ver=1.0.0 arch=amd64                       # arm64 on an arm64 machine
 gh release download "v$ver" --repo adigourdi/kasbah \
   -p "kasbah_${ver}_linux_${arch}" -p checksums.txt -p checksums.txt.minisig
 minisign -Vm checksums.txt -P RWS3pRJJwM6L/B8Sp/FgiS4cUxJlSnceHOFLZIKsXPaE7LYtWA4ROLt8
