@@ -5,6 +5,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/adigourdi/kasbah/internal/backup"
+	"github.com/adigourdi/kasbah/internal/mail"
+	"github.com/adigourdi/kasbah/internal/manifest"
+	"github.com/adigourdi/kasbah/internal/traefiknet"
 )
 
 func TestParseShortPort(t *testing.T) {
@@ -113,8 +118,6 @@ func TestCollisions(t *testing.T) {
 		}, "a compose project named demo already exists outside /apps/demo: demo-db-1, demo-web-1, started from /home/u/demo (/home/u/demo/compose.yml) — Docker keys compose projects by name, so this project's up would take its containers for its own; run `docker compose -p demo down` in /home/u/demo, or rename this project"},
 		{"demo", []Holder{{Name: "demo-web-1", Project: "demo"}},
 			"a compose project named demo already exists outside /apps/demo: demo-web-1, started with no working directory recorded — Docker keys compose projects by name, so this project's up would take its containers for its own; run `docker compose -p demo down` where it was started, or rename this project"},
-		{"kasbah-backup", []Holder{{Name: "kasbah-backup", Project: "kasbah-backup", Dir: "/srv/kasbah-data/backup", Config: "/srv/kasbah-data/backup/compose.yml"}},
-			"a compose project named kasbah-backup already exists outside /apps/kasbah-backup: kasbah-backup, started from /srv/kasbah-data/backup (/srv/kasbah-data/backup/compose.yml) — it is kasbah's own backup stack, and Docker keys compose projects by name, so this project's up would take its containers for its own; rename this project"},
 	} {
 		c := Collisions(tc.name, "/apps/"+tc.name, nil, tc.hs)
 		if len(c) != 1 || c[0] != tc.want {
@@ -148,5 +151,15 @@ func TestOutsiders(t *testing.T) {
 	}
 	if strings.Join(names, " ") != "old zed" {
 		t.Errorf("outsiders: %v", names)
+	}
+}
+
+// The compose project names of kasbah's own stacks are refused as project
+// names when a manifest loads, so Collisions never meets one.
+func TestOwnStacksReserved(t *testing.T) {
+	for _, p := range []string{traefiknet.Project, mail.Project, backup.Project} {
+		if !manifest.NameReserved(p) {
+			t.Errorf("%s, a stack of kasbah's own, is not a reserved project name", p)
+		}
 	}
 }

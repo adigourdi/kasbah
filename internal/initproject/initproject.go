@@ -93,7 +93,7 @@ func Run(out *cli.Output, o Options, pwd, version string) error {
 		return cli.Fail("invalid project name '%s' (must match ^[a-z][a-z0-9-]*$)", name)
 	}
 	if manifest.NameReserved(name) {
-		return cli.Fail("project name '%s' is reserved — kasbah owns <apps>/%s on every server (reserved: %s). Pass --name=<other>.", name, name, strings.Join(manifest.Reserved, " "))
+		return cli.Fail("project name %s. Pass --name=<other>.", manifest.ReservedWhy(name))
 	}
 	if o.DomainGiven && !IsFQDN(o.Domain) {
 		return cli.Fail("invalid domain '%s' (expected FQDN like app.example.com)", o.Domain)

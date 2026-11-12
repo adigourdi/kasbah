@@ -8,10 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/adigourdi/kasbah/internal/backup"
-	"github.com/adigourdi/kasbah/internal/mail"
 	kprobe "github.com/adigourdi/kasbah/internal/probe"
-	"github.com/adigourdi/kasbah/internal/traefiknet"
 )
 
 // Bind is a host port range published on an address: "" for every address
@@ -199,9 +196,6 @@ func dockerPorts(s string) []Bind {
 	return bs
 }
 
-// ownStacks is kasbah's own compose projects on every server, by name.
-var ownStacks = map[string]string{traefiknet.Project: "Traefik", mail.Project: "mail", backup.Project: "backup"}
-
 // Collisions is why the project name at dir, publishing binds, cannot come
 // up beside the holders: each other compose project of its name, then each
 // port a holder already publishes. Empty when it can.
@@ -232,10 +226,6 @@ func Collisions(name, dir string, binds []Bind, hs []Holder) []string {
 			from += " (" + s.config + ")"
 		}
 		head := fmt.Sprintf("a compose project named %s already exists outside %s: %s, started %s — ", name, dir, strings.Join(s.names, ", "), from)
-		if own, ok := ownStacks[name]; ok {
-			out = append(out, head+fmt.Sprintf("it is kasbah's own %s stack, and Docker keys compose projects by name, so this project's up would take its containers for its own; rename this project", own))
-			continue
-		}
 		out = append(out, head+fmt.Sprintf("Docker keys compose projects by name, so this project's up would take its containers for its own; run `docker compose -p %s down` %s, or rename this project", name, down))
 	}
 	for _, b := range binds {

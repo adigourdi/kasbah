@@ -103,8 +103,10 @@ func TestRefusals(t *testing.T) {
 	refused(t, write(t, "name: demo\nrouted: maybe\n"), 1, "missing required field 'schema'")
 	for _, r := range Reserved {
 		p := write(t, "schema: 1\nkasbah_version: 0.1.0\nname: "+r+"\ndomain: \"r.test\"\nsync: []\n")
-		refused(t, p, 1, "is reserved — kasbah owns <apps>/"+r+" on every server (reserved: traefik mail data backups)")
+		refused(t, p, 1, "is reserved — kasbah owns <apps>/"+r+" on every server (reserved: traefik mail data backups kasbah-backup)")
 	}
+	refused(t, write(t, "schema: 1\nname: kasbah-backup\n"), 1,
+		"'kasbah-backup' is reserved — it is the compose project of kasbah's own backup stack, on any server that runs backups (reserved: traefik mail data backups kasbah-backup). Rename the project.")
 }
 
 func TestAccepted(t *testing.T) {
@@ -162,6 +164,10 @@ func TestClientCheck(t *testing.T) {
 	}
 	if r, ok := ClientCheck("Acme"); ok || !strings.Contains(r, "must match ^[a-z][a-z0-9-]*$") {
 		t.Errorf("Acme: %q", r)
+	}
+	// A client names a repository, and no repository is called kasbah-backup.
+	if r, ok := ClientCheck("kasbah-backup"); !ok {
+		t.Errorf("kasbah-backup refused as a client: %s", r)
 	}
 	if r, ok := ClientCheck("mail"); ok || r != "client 'mail' is reserved — kasbah owns the backup repository of that name (reserved: traefik mail data backups)" {
 		t.Errorf("mail: %q", r)

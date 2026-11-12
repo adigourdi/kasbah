@@ -141,7 +141,7 @@ fi
 # shared proxy's own stack and then `compose -p traefik up -d --remove-orphans`
 # in that directory, removing the proxy. Refused at the moment the name is
 # chosen, and again wherever a manifest is read (tests/manifest_test.sh).
-for reserved in traefik mail data backups; do
+for reserved in traefik mail data backups kasbah-backup; do
     projr="$tmpdir/reserved-$reserved"
     mkdir -p "$projr"
     cd "$projr"

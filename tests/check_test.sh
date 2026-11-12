@@ -1685,7 +1685,7 @@ assert '! grep -qF "kasbah-net by name" <<<"$out"' "and does not talk of kasbah-
 # over the shared Traefik stack and then removes it as an orphan. It is a
 # manifest rule, so it arrives the same way a bad schema does: the manifest reader
 # refuses and the report short-circuits.
-for reserved in traefik mail data backups; do
+for reserved in traefik mail data backups kasbah-backup; do
     proj42="$tmpdir/reserved-$reserved"
     mkdir -p "$proj42"
     cat > "$proj42/kasbah.yml" <<EOF

@@ -137,16 +137,23 @@ still need moving.
 Directory name on the VPS (`/apps/<name>/`) and basis for container names.
 Must match `^[a-z][a-z0-9-]*$`.
 
-**Reserved: `traefik`, `mail`, `data`, `backups`.** Those directories under
-`/apps/` belong to kasbah, and a project claiming one is not a naming collision
-but a live hazard: a project named `traefik` would sync its compose file over
+**Reserved: `traefik`, `mail`, `data`, `backups`, `kasbah-backup`.** The first
+four are directories under `/apps/` that belong to kasbah, and a project
+claiming one is not a naming collision but a live hazard: a project named `traefik` would sync its compose file over
 the shared stack's, then run `docker compose -p traefik up -d
 --remove-orphans` in that directory — and since Traefik is not a service in
 the project's file, `--remove-orphans` removes the reverse proxy every site
 on the box is behind. `mail` is the same hazard one directory over: `/apps/mail/`
 holds the shared mail stack, and `--remove-orphans` there takes mail off the
-whole server. `kasbah check` and `kasbah deploy` both refuse these names, and
-`init-project` will not scaffold one.
+whole server. **`kasbah-backup` is reserved too**, though it is no directory
+under `/apps/`: it is the compose project name of kasbah's own backup stack
+(`<apps>/.kasbah/backup`), and Docker keys compose projects by name, so a
+project of that name would take the scheduler's containers for its own.
+`kasbah check` and `kasbah deploy` both refuse these names, and
+`init-project` will not scaffold one. A project an older kasbah deployed as
+`kasbah-backup` can no longer be loaded, so no kasbah command drops it: rename
+it, deploy it under the new name, then run `docker compose -p kasbah-backup
+down` in `<apps>/kasbah-backup` and remove that directory by hand.
 
 ### `domain` *(optional)*
 

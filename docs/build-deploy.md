@@ -1101,9 +1101,9 @@ exit 1 with nothing started, when either holds:
   would take that stack's containers for this project's — recreating those
   whose service names match, removing the rest as orphans. The refusal names its containers, its
   working directory and config files, and says to run `docker compose -p
-  <name> down` there, or to rename this project. When `<name>` is one of
-  kasbah's own stacks (`traefik`, `mail`, `kasbah-backup`), it says the stack
-  is kasbah's own and to rename this project — never to take it down.
+  <name> down` there, or to rename this project. It never meets one of
+  kasbah's own stacks (`traefik`, `mail`, `kasbah-backup`): those names are
+  reserved, refused when the manifest loads (`project-manifest.md`).
 
 The project's own containers — its name, started from `<apps>/<name>` (or the
 path that resolves to) — never count, so a redeploy whose running containers

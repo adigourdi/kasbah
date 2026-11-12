@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -27,19 +28,29 @@ const Schema = 1
 // would be deployed over the shared stack of that name.
 var Reserved = []string{"traefik", "mail", "data", "backups"}
 
+// Stacks are the compose project names of kasbah's own stacks that are not a
+// directory under <apps> (traefik's and mail's are): a project may not take
+// one, or its up would take that stack's containers for its own.
+var Stacks = []string{"kasbah-backup"}
+
 var reName = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // ValidName is whether name matches the name: field's charset.
 func ValidName(name string) bool { return reName.MatchString(name) }
 
-// NameReserved reports whether a name is one kasbah owns.
+// NameReserved reports whether a project name is one kasbah owns.
 func NameReserved(name string) bool {
-	for _, r := range Reserved {
-		if name == r {
-			return true
-		}
+	return slices.Contains(Reserved, name) || slices.Contains(Stacks, name)
+}
+
+// ReservedWhy is why a reserved project name is refused, in the words every
+// reader prints: "'<name>' is reserved — <why> (reserved: <all>)".
+func ReservedWhy(name string) string {
+	why := fmt.Sprintf("kasbah owns <apps>/%s on every server", name)
+	if slices.Contains(Stacks, name) {
+		why = "it is the compose project of kasbah's own backup stack, on any server that runs backups"
 	}
-	return false
+	return fmt.Sprintf("'%s' is reserved — %s (reserved: %s)", name, why, strings.Join(append(slices.Clone(Reserved), Stacks...), " "))
 }
 
 // ClientCheck judges a `client:` value. ok is false with the reason in the
@@ -49,7 +60,7 @@ func ClientCheck(raw string) (reason string, ok bool) {
 	if !reName.MatchString(raw) {
 		return fmt.Sprintf("client '%s' must match ^[a-z][a-z0-9-]*$ — it names a backup repository, the same charset as name (docs/project-manifest.md)", raw), false
 	}
-	if NameReserved(raw) {
+	if slices.Contains(Reserved, raw) {
 		return fmt.Sprintf("client '%s' is reserved — kasbah owns the backup repository of that name (reserved: %s)", raw, strings.Join(Reserved, " ")), false
 	}
 	return "", true
@@ -146,7 +157,7 @@ func Require(path, version string) (*Manifest, error) {
 		return nil, cli.Fail("%s: invalid name '%s' (must match ^[a-z][a-z0-9-]*$)", path, name)
 	}
 	if NameReserved(name) {
-		return nil, cli.Fail("%s: '%s' is reserved — kasbah owns <apps>/%s on every server (reserved: %s). Rename the project.", path, name, name, strings.Join(Reserved, " "))
+		return nil, cli.Fail("%s: %s. Rename the project.", path, ReservedWhy(name))
 	}
 	return &Manifest{Path: path, Schema: schema, KasbahVersion: kv, Name: name, Domain: domain, Unrouted: routed == false, Doc: docs[0]}, nil
 }
