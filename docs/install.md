@@ -59,8 +59,8 @@ Downloads try, in order, and a failure lists what each said:
    to the storage host is followed without it) and never onto a command line;
 3. `gh release download`.
 
-The second and third serve a private repository; on a public one the first
-always answers.
+The second and third serve a private fork or mirror; on the public repository
+the first answers.
 
 It refuses, running nothing:
 
@@ -97,15 +97,15 @@ On a Mac, download `kasbah_${ver}_darwin_${arch}` and both
 "v$ver" --from .` so it installs the two server builds from the same directory.
 
 `curl -fLO https://github.com/adigourdi/kasbah/releases/download/v$ver/<asset>`
-fetches the same files without `gh` once the repository is public. The last line
+fetches the same files without `gh`. The last line
 installs the binary's own bytes, verified once more against the signed checksums.
 
 ## Updating: `kasbah self-update`
 
 `kasbah self-update [vN | vN.M | vN.M.P] [--pre] [--yes]` installs a release
 beside the others; no argument is the newest of the running kasbah's major.
-Up to date, it downloads nothing and exits 0. A token is optional — required only
-while the repository is private (`cli.md` → `kasbah self-update`).
+Up to date, it downloads nothing and exits 0. A token is optional: it only
+raises the API rate limit (`cli.md` → `kasbah self-update`).
 
 ## From source: `install-dev.sh`
 
