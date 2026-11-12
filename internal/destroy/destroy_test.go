@@ -64,7 +64,8 @@ func TestMailKeep(t *testing.T) {
 	for l, want := range map[string]bool{
 		"MAIL_HOSTNAME=mail.a.test": true, "DOMAIN=a.test\r": true, "  export DATA_PATH=/apps/data": true,
 		"\texport\tDOMAIN=x": true, "exportDOMAIN=x": false, "RELAY_PASSWORD=s": false, "# DOMAIN=x": false,
-		"": false, "DOMAINS=x": false,
+		"": false, "DOMAINS=x": false, "DOMAIN = x": true, "MAIL_HOSTNAME: m": true, "\u00a0DATA_PATH\t=/d": true,
+		"DOMAIN.X=1": false, "DOMAIN=\xff": false,
 	} {
 		if mailKeep(l) != want {
 			t.Errorf("%q: %v", l, !want)

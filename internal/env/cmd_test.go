@@ -514,7 +514,7 @@ func TestSeedRefusals(t *testing.T) {
 		{"group readable", "--env-seed=" + seedFile(t, "A=1\n", 0o640), "open to others (mode 0640)"},
 		{"world readable", "--env-seed=" + seedFile(t, "A=1\n", 0o604), "chmod 600"},
 		{"reserved", "--env-seed=" + seedFile(t, "A=1\nKASBAH_CPU_LIMIT=2\n", 0o600), "line 2 sets KASBAH_CPU_LIMIT"},
-		{"malformed", "--env-seed=" + seedFile(t, "# c\n\nA=1\nnot a pair s3cret\n", 0o600), "line 4 is not KEY=value"},
+		{"malformed", "--env-seed=" + seedFile(t, "# c\n\nA=1\nnot a pair s3cret\n", 0o600), "line 4 is not an assignment"},
 		{"empty", "--env-seed=" + seedFile(t, "", 0o600), "empty"},
 		{"comments only", "--env-seed=" + seedFile(t, "# s3cret\n\n", 0o600), "sets no key"},
 		{"a value over 64 KiB", "--env-seed=" + seedFile(t, long, 0o600), "over 64 KiB"},
@@ -535,6 +535,9 @@ func TestSeedRefusals(t *testing.T) {
 	expect(t, err == nil && o.EnvSeed == "x" && o.Target == "a@b", "parsed: %+v %v", o, err)
 	if v, err := ParseSeed([]byte("export A='x y' # c\r\nB=1\nB=2\n")); err != nil || v["A"] != "'x y' # c" || v["B"] != "2" {
 		t.Errorf("ParseSeed: %q %v", v, err)
+	}
+	if v, err := ParseSeed([]byte("A = x\nB: 'y'\n\u00a0C\t=z\n")); err != nil || v["A"] != "x" || v["B"] != "'y'" || v["C"] != "z" {
+		t.Errorf("ParseSeed, compose's other forms: %q %v", v, err)
 	}
 }
 

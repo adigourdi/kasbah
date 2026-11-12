@@ -59,9 +59,9 @@ type Seed struct {
 	Keys map[string]bool
 }
 
-// ParseSeed reads KEY=value lines as the setup reads a .env: CR stripped,
-// blank and `#` lines skipped, an `export ` prefix allowed, the last
-// assignment winning. A value is compose syntax, written to .env as it stands.
+// ParseSeed reads assignments as the setup reads a .env (envtpl.Assign): CR
+// stripped, blank and `#` lines skipped, the last assignment winning. A value
+// is compose syntax, written to .env as it stands.
 func ParseSeed(data []byte) (map[string]string, error) {
 	if len(data) > MaxSeed {
 		return nil, fmt.Errorf("it is over %d KiB", MaxSeed>>10)
@@ -73,7 +73,7 @@ func ParseSeed(data []byte) (map[string]string, error) {
 		}
 		k, v, ok := envtpl.Assign(l)
 		if !ok {
-			return nil, fmt.Errorf("line %d is not KEY=value (blank lines and # comments aside)", i+1)
+			return nil, fmt.Errorf("line %d is not an assignment (KEY=value, KEY = value or KEY: value; blank lines and # comments aside)", i+1)
 		}
 		if reserved(k) {
 			return nil, fmt.Errorf("line %d sets %s — the %s* keys are kasbah's own, injected at deploy", i+1, k, envtpl.ReservedPrefix)

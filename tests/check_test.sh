@@ -1184,17 +1184,20 @@ assert '[ "$rc" = "6" ]'                                                        
 assert 'grep -qF "✗ .env.prod.example has invalid lines" <<<"$out"'                 "E01 fail line"
 
 # --- Case 28b: the four env rules read a line the way Compose does -----------
-# internal/env sees leading blanks and an `export ` prefix as an assignment
-# (ENV_ASSIGN_RE), and every rule here shares that reader: E01 must not call
-# valid lines invalid, and E02–E05 must see the keys behind the prefix. All
-# four in one run, so a rule that quietly fell back to the anchored shape shows
-# up as its own failed assertion.
+# internal/envtpl sees leading blanks (no-break ones too), an `export `
+# prefix, `KEY = v` and `KEY: v` as an assignment, and every rule here shares
+# that reader: E01 must not call valid lines invalid, and E02–E05 must see the
+# keys behind the prefix. All four in one run, so a rule that quietly fell back
+# to the anchored shape shows up as its own failed assertion.
 proj28b="$tmpdir/env-export-shapes"
 make_project "$proj28b"
 {
     printf 'export EXPORTED=1\n'
     printf '  INDENTED=2\n'
     printf '\tTABBED=3\n'
+    printf 'SPACED = 4\n'
+    printf 'YAMLISH: 5\n'
+    printf '\xc2\xa0NBLED=6\n'
     printf 'export KASBAH_CPU_LIMIT=0\n'
     printf 'export API_TOKEN=%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 } >> "$proj28b/.env.prod.example"
@@ -1204,7 +1207,10 @@ export EXPORTED=x
   INDENTED=y
 	TABBED=z
 export API_TOKEN=short
+SPACED=x
+YAMLISH = y
 ENV
+printf '\xc2\xa0NBLED: w\n\xc2\xa0\n\xc2\xa0# c\n' >> "$proj28b/.env"
 out="$(cd "$proj28b" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                     "an exported or indented template line is not an E01 failure (got $rc)"
 assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'            "E01 accepts what the env setup accepts (said '$out')"

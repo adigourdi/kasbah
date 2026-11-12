@@ -1128,8 +1128,11 @@ func TestServerOutsiders(t *testing.T) {
 		{"WEB_PORT=8080 # dev\n", []deploy.Holder{other}, "", []string{"  ✗ on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
 		{"WEB_PORT=\"8080\"\n", []deploy.Holder{other}, "", []string{"  ✗ on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
 		{"WEB_PORT=${OTHER:-8081}\n", []deploy.Holder{other}, "", []string{"  ✓ no container outside"}, nil, 0},
-		// Compose reads `KEY = v`; kasbah does not, so the port cannot pass on its default.
-		{"WEB_PORT = 8080\n", []deploy.Holder{other}, "", []string{"cannot be checked: the server's .env has a line kasbah cannot read as compose does: line 4 is not KEY=value as kasbah reads it"}, []string{"✓ no container outside"}, 0},
+		// `KEY = v` and `KEY: v` set the port, as compose reads them.
+		{"WEB_PORT = 8080\n", []deploy.Holder{other}, "", []string{"  ✗ on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
+		{"\u00a0\nWEB_PORT: 8080 # dev\n", []deploy.Holder{other}, "", []string{"  ✗ on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
+		// A key compose would take with other characters: unread, so the port cannot pass on its default.
+		{"WEB.PORT=1\n", []deploy.Holder{other}, "", []string{"cannot be checked: the server's .env has a line kasbah cannot read as compose does: line 4 is not an assignment kasbah reads"}, []string{"✓ no container outside"}, 0},
 		{"", []deploy.Holder{named}, "", []string{
 			"  ✗ on deploy@vps, a compose project named demo already exists outside /apps/demo: demo-web-1, started from /home/u/demo (/home/u/demo/compose.yml) — Docker keys compose projects by name, so this project's up would take its containers for its own; run `docker compose -p demo down` in /home/u/demo, or rename this project — a deploy refuses this"}, nil, 6},
 		{"", nil, "there is no docker on the server", []string{

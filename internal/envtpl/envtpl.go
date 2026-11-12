@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -17,17 +18,21 @@ import (
 const ReservedPrefix = "KASBAH_"
 
 // Space is `[[:space:]]` as glibc's C.UTF-8 classes it: ASCII's six and the
-// Unicode spaces, but not the no-break ones. kasbah reads every file the same
-// way whatever the caller's locale.
+// Unicode spaces, not the no-break ones — check's template hints and line scan,
+// whatever the caller's locale. Assign reads blanks as compose does instead.
 const Space = `[\t\n\v\f\r \x{1680}\x{2000}-\x{2006}\x{2008}-\x{200A}\x{2028}\x{2029}\x{205F}\x{3000}]`
 
 var (
-	// "a line that assigns a variable": leading blanks trimmed, an optional
-	// `export `, the last assignment wins.
-	assign  = regexp.MustCompile(`^` + Space + `*(export` + Space + `+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
-	blank   = regexp.MustCompile(`^` + Space + `*$`)
-	comment = regexp.MustCompile(`^` + Space + `*#`)
+	// What follows compose's leading blanks: an optional `export `, the key,
+	// the blanks compose allows before `=` or `:` (YAML style), the value.
+	exportPrefix = regexp.MustCompile(`^export[\t\n\f\r ]+`)
+	assign       = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)[\t\v\f\r \x{85}\x{A0}]*[=:](.*)$`)
 )
+
+// dotenvSpace is compose's dotenv isSpace: what it trims after `export `,
+// around the key and ahead of a value. Line starts and value ends trim
+// unicode.IsSpace, no-break spaces included.
+func dotenvSpace(r rune) bool { return strings.ContainsRune("\t\v\f\r \u0085\u00a0", r) }
 
 // Len is `${#s}` in a UTF-8 locale: characters, a bad byte counting one.
 func Len(s string) int { return utf8.RuneCountInString(s) }
@@ -49,22 +54,30 @@ func Lines(data []byte) []string {
 	return lines
 }
 
-// Assign parses one line (CR already stripped) as an assignment. A line with
-// an invalid UTF-8 byte is none: a UTF-8 regex engine cannot match across it.
+// Assign reads one line (CR stripped) as compose's dotenv does: `KEY=v`,
+// `KEY = v`, `KEY: v`, an optional `export `, the value past compose's blanks.
+// A key with other characters (`A.B`, `1A`) or a byte not UTF-8 is none.
 func Assign(line string) (key, value string, ok bool) {
 	if !utf8.ValidString(line) {
 		return "", "", false
 	}
-	m := assign.FindStringSubmatch(line)
+	s := strings.TrimLeftFunc(line, unicode.IsSpace)
+	if p := exportPrefix.FindString(s); p != "" {
+		s = strings.TrimLeftFunc(s[len(p):], dotenvSpace)
+	}
+	m := assign.FindStringSubmatch(s)
 	if m == nil {
 		return "", "", false
 	}
-	return m[2], m[3], true
+	return m[1], strings.TrimLeftFunc(m[2], dotenvSpace), true
 }
 
-// Blank reports a line of whitespace only; Comment one opening with `#`.
-func Blank(line string) bool   { return blank.MatchString(line) }
-func Comment(line string) bool { return comment.MatchString(line) }
+// Blank reports a line of whitespace only, no-break spaces included, as
+// compose skips it; Comment one opening with `#` past such whitespace.
+func Blank(line string) bool { return strings.TrimLeftFunc(line, unicode.IsSpace) == "" }
+func Comment(line string) bool {
+	return strings.HasPrefix(strings.TrimLeftFunc(line, unicode.IsSpace), "#")
+}
 
 // Keys is every key a file assigns, in file order, duplicates kept. An
 // unreadable path or a directory has none.
@@ -134,7 +147,7 @@ func SortUniq(ss []string) []string {
 
 // ValuesOf is each key's last value in a .env as compose reads it: quotes,
 // " #" comments, interpolation from the keys above. A line it cannot read
-// (KEY = v, a multi-line quote) sets nothing; err is the first.
+// (a multi-line quote, a key Assign refuses) sets nothing; err is the first.
 func ValuesOf(data []byte) (vals map[string]string, err error) {
 	vals = map[string]string{}
 	lookup := func(k string) (string, bool) { v, ok := vals[k]; return v, ok }
@@ -142,11 +155,11 @@ func ValuesOf(data []byte) (vals map[string]string, err error) {
 		k, raw, ok := Assign(l)
 		if !ok {
 			if !Blank(l) && !Comment(l) && err == nil {
-				err = fmt.Errorf("line %d is not KEY=value as kasbah reads it", i+1)
+				err = fmt.Errorf("line %d is not an assignment kasbah reads", i+1)
 			}
 			continue
 		}
-		v, verr := dotenvValue(strings.TrimLeft(raw, " \t"), lookup)
+		v, verr := dotenvValue(raw, lookup)
 		if verr != nil {
 			delete(vals, k)
 			if err == nil {
@@ -195,7 +208,7 @@ func dotenvValue(s string, lookup func(string) (string, bool)) (string, error) {
 		return "", errors.New("the double quote is not closed on its line")
 	}
 	s, _, _ = strings.Cut(s, " #")
-	return Interpolate(strings.TrimRight(s, " \t"), lookup)
+	return Interpolate(strings.TrimRightFunc(s, unicode.IsSpace), lookup)
 }
 
 // Interpolate is s as compose interpolates it: `$$` is `$`; $VAR, ${VAR},

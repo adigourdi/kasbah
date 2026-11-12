@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Test: --env-seed=FILE on env, deploy and rollback is refused on the
 # workstation before anything connects — missing, not a regular file, open to
-# others, a KASBAH_* key, a line that is not KEY=value — and never prints a
+# others, a KASBAH_* key, a line that is not an assignment — and never prints a
 # seed line. Then the server half, run here as `kasbah remote setup-env`: a
 # seed on a headless setup's stdin renders .env, staging nothing; a staged one
 # is read only by the setup naming its token and is gone afterwards.
@@ -56,7 +56,7 @@ KASBAH_MEM_LIMIT=1g
     "malformed|$(seed malformed 600 '# comment
 
 this is not a pair s3cret
-')|line 3 is not KEY=value"
+')|line 3 is not an assignment"
     "CRLF reserved|$(seed crlf 600 $'A=1\r\nKASBAH_X=1\r\n')|line 2 sets KASBAH_X"
 )
 for cmd in "env" "deploy" "rollback 1.0.0"; do

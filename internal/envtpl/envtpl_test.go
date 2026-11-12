@@ -34,13 +34,42 @@ func TestAssign(t *testing.T) {
 		{"FOO=bar", "FOO", "bar", true},
 		{"export FOO=1", "FOO", "1", true},
 		{"  \tBAR=a=b # c", "BAR", "a=b # c", true},
-		{" EM=1", "EM", "1", true}, // glibc counts the em space as space
-		{" NB=1", "", "", false},   // and not the no-break one
-		{"K=\xff", "", "", false},  // nor matches across a bad byte
+		// What `docker compose config` reads (compose-go's dotenv parser).
+		{"A = 1", "A", "1", true},
+		{"A =1", "A", "1", true},
+		{"A= 1", "A", "1", true},
+		{"A: 1", "A", "1", true},
+		{"A:1", "A", "1", true},
+		{"A :1", "A", "1", true},
+		{"A\t:\t1", "A", "1", true},
+		{"export  A : 1", "A", "1", true},
+		{"export\tA=1", "A", "1", true},
+		{"A = \"x y\" # c", "A", "\"x y\" # c", true},
+		{"A = ", "A", "", true},
+		{"A:", "A", "", true},
+		{"A==1", "A", "=1", true},
+		{"A=:1", "A", ":1", true},
+		{"A:=1", "A", "=1", true},
+		{"A : b : c", "A", "b : c", true},
+		{"A\v=\f1", "A", "1", true},
+		{"A\u0085=1", "A", "1", true},
+		{"\u00a0NB=\u00a01", "NB", "1", true}, // no-break spaces too
+		{"\u2007NB=1", "NB", "1", true},
+		{" EM=1", "EM", "1", true},
 		{"export=1", "export", "1", true},
+		{"exportA=1", "exportA", "1", true},
+		// Refused by compose, or read with a key kasbah does not take: none.
+		{"A\u2007=1", "", "", false},
 		{"FOO BAR=baz", "", "", false},
+		{"A/B=1", "", "", false},
+		{"export =1", "", "", false}, // compose's key is ""
+		{"export\u00a0A=1", "", "", false},
+		{"A-B=1", "", "", false},
+		{"A.B=1", "", "", false},
 		{"=v", "", "", false},
 		{"1FOO=x", "", "", false},
+		{"A", "", "", false},
+		{"K=\xff", "", "", false}, // nor matches across a bad byte
 		{"_a=", "_a", "", true},
 	} {
 		k, v, ok := Assign(tc.line)
@@ -48,7 +77,8 @@ func TestAssign(t *testing.T) {
 			t.Errorf("Assign(%q) = %q, %q, %v; want %q, %q, %v", tc.line, k, v, ok, tc.key, tc.val, tc.ok)
 		}
 	}
-	if !Blank(" \t") || Blank(" x") || !Comment("  # x") || Comment("x#") {
+	if !Blank(" \t") || Blank(" x") || !Comment("  # x") || Comment("x#") ||
+		!Blank("\u00a0") || !Blank("\u2007\u202f\u0085") || !Comment("\u00a0#c") || !Comment("\u202f#x") || Comment("\u00a0x#") {
 		t.Error("Blank/Comment misread")
 	}
 	if Len("é") != 1 || Len("\xff") != 1 {
@@ -101,13 +131,13 @@ func TestValuesOf(t *testing.T) {
 }
 
 func TestValuesOfUnreadLine(t *testing.T) {
-	for _, in := range []string{"WEB_PORT = 8080\n", "WEB_PORT: 8080\n", "A=\"line1\nline2\"\n"} {
+	for _, in := range []string{"WEB.PORT=8080\n", "WEB_PORT\u2007= 8080\n", "A=\"line1\nline2\"\n"} {
 		if _, err := ValuesOf([]byte("OK=1\n" + in)); err == nil {
 			t.Errorf("%q: no error for a line kasbah cannot read", in)
 		}
 	}
-	if _, err := ValuesOf([]byte("\n  \n# c\n  # c\nA=1\n")); err != nil {
-		t.Errorf("blank and comment lines: %v", err)
+	if vals, err := ValuesOf([]byte("\n  \n# c\n  # c\n\u00a0\n\u00a0# c\nA=1\nB = 2 # c\nC: '3'\nD=4\u00a0\n")); err != nil || !reflect.DeepEqual(vals, map[string]string{"A": "1", "B": "2", "C": "3", "D": "4"}) {
+		t.Errorf("blank, comment and compose's other forms: %q %v", vals, err)
 	}
 }
 

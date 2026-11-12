@@ -32,6 +32,11 @@ Any line in `.env.prod.example` is one of:
 | `# === Section ===` | Section header | rendered bold during prompts, preserved in output |
 | `# free-form comment` | Preserved in output | shown dimly during prompt |
 
+A key may also be written in any form compose reads (`VAR = value`,
+`VAR: value`, below in Drift detection); the setup writes it back as `VAR=`.
+Blanks after `=` are skipped before the form is matched, so `VAR= ! command`
+is a generator and `VAR= # hint` a hint.
+
 A template default taken with Enter is compose syntax already: it is written as
 it stands, with `$` as `$$` so docker-compose does not interpolate it. A kept
 value (untouched by an update) is written as it stands, since it was written
@@ -96,14 +101,23 @@ Run on every `kasbah deploy` by the env engine's drift report (`internal/env`,
 It reports two key lists: the keys the template has and `.env` lacks (missing),
 and the keys `.env` has and the template lacks (extra).
 
-A line counts as setting a key if Compose would read it as one: optional
-leading blanks and an optional `export ` prefix, which `docker compose config`
-honours and which kasbah therefore honours everywhere it reads a `.env` or a
-template. The consequence is accepted rather than worked around — regenerating
-`.env` rewrites `export FOO=x` as `FOO=x`, since the file is rebuilt from the
-template wholesale. A reader that only matched column 0 would report a live
-`export APP_KEY=…` as *missing*, and the setup would then overwrite it with the
-template default.
+A line counts as setting a key if Compose would read it as one, as
+`docker compose config` does and kasbah therefore does everywhere it reads a
+`.env` or a template: optional leading blanks (no-break spaces included), an
+optional `export ` prefix, the key, blanks allowed on either side of `=`, and
+`:` (YAML style) as good as `=`: `KEY=v`, `KEY = v`, `KEY: v`. The
+consequence is accepted rather than worked around: regenerating `.env`
+rewrites `export FOO=x` and `FOO = x` as `FOO=x`, since the file is rebuilt
+from the template wholesale. A reader that only matched column 0 would report
+a live `export APP_KEY=…` as *missing*, and the setup would then overwrite it
+with the template default.
+
+A line of blanks only, no-break spaces included, is blank, and one whose first
+non-blank is `#` a comment, as compose skips both. A key is letters, digits
+and `_`, not opening with a digit. A line compose reads with another key
+(`A.B=1`, `1A=1`), or refuses (`A B=1`, a figure space U+2007 after the key),
+or one with a byte that is not UTF-8, sets no key for kasbah; where kasbah
+needs the value (check C12) it says it cannot read the line rather than guess.
 
 Both lists are empty when in sync.
 
@@ -146,7 +160,8 @@ Rules, all of them load-bearing:
   `KASBAH_*` variable is removed.** Compose honours a leading-whitespace
   assignment and an `export ` prefix, and takes the *last* assignment — so a
   stray below the block would silently outrank the server marker. The match is
-  anchored (optional blanks, optional `export `) and never a substring: a
+  anchored (optional blanks, optional `export `, `=` or `:` after the key, as
+  in Drift detection) and never a substring: a
   user's own `MY_KASBAH_URL` is not kasbah's to delete.
 - The values are the server marker's ceilings, or the project's own from
   `kasbah.yml`'s `resources:`, resolved on the server before the env step and
@@ -209,8 +224,9 @@ MAIL_HOST=smtp.example.com
 export API_KEY=abc$$def
 ```
 
-- Read as the setup reads a `.env`: `KEY=value` lines, optional leading blanks
-  and `export `, blank lines and `#` comments skipped, a trailing CR stripped,
+- Read as the setup reads a `.env`: `KEY=value` lines in any form compose
+  reads (Drift detection: leading blanks, `export `, `KEY = value`,
+  `KEY: value`), blank lines and `#` comments skipped, a trailing CR stripped,
   the last assignment of a key winning. A value is **compose syntax**, written
   into `.env` as it stands — quote it, and write `$` as `$$`, as in `.env`
   itself: compose blanks a `$VAR` or `${VAR}` it cannot resolve, without a
@@ -231,7 +247,7 @@ export API_KEY=abc$$def
 - Refused on the workstation before anything connects: a file that is missing,
   not a regular file, open to group or others (mode `& 077`), empty or setting
   no key (comments only), over 256 KiB, with a value over 64 KiB (named by its
-  key), with a line that is not `KEY=value` (named by its line number), or
+  key), with a line that is not such an assignment (named by its line number), or
   setting a `KASBAH_*` key (named by line number and key) — no refusal quotes
   a value.
 - It reaches the server on stdin with its size and sha256, never on a command

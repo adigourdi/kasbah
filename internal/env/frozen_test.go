@@ -167,7 +167,9 @@ var setupCases = []setupCase{
 	{name: "empty template", tmpl: str(""), in: "", want: str("\n")},
 	{name: "comment-only template", tmpl: str("# nothing\n"), in: "", want: str("# nothing\n")},
 	{name: "a key twice", tmpl: str("A=1\nA=2\n"), env: str("B=1\n"), in: "\n\n\n"},
-	{name: "unicode spaces (R1)", tmpl: str(" A=1\n B=2\n"), in: "\n\n"},
+	{name: "leading unicode spaces, no-break ones too", tmpl: str(" A=1\n B=2\n"), in: "\n\n"},
+	{name: "compose's other forms written back as KEY=", tmpl: str("A = 1\nB: 2\nC= ! echo g\nD= # hint\n"), in: "\ntyped\n\nhh\n",
+		want: str("A=1\nB=typed\nC=g\nD=hh\n")},
 	{name: "invalid UTF-8 line", tmpl: str("A=\xff\nB=1\n"), in: "\n\n"},
 	{name: "existing .env with no assignments", tmpl: str("A=1\n"), env: str("# only a comment\n\n"), in: "\n", want: str("A=1\n")},
 	{name: "a commented live key", tmpl: str("A=1\n"), env: str("  # A=gone\nA=live\n"), in: "n", want: str("  # A=gone\nA=live\n")},
@@ -235,7 +237,7 @@ func TestDriftFrozen(t *testing.T) {
 		{name: "CRLF and no final newline", tmpl: str("A=1\r\nB=2"), env: str("A=1\r\n")},
 		{name: "MY_KASBAH is the user's", tmpl: str("MY_KASBAH_URL=1\n"), env: str("KASBAH_A=1\n")},
 		{name: ".env is a directory", tmpl: str("A=1\n"), envDir: true},
-		{name: "unicode spaces (R1)", tmpl: str(" A=1\n B=2\nb=1\nB=1\n"), env: str("")},
+		{name: "leading unicode spaces, no-break ones too", tmpl: str(" A=1\n B=2\nb=1\nB=1\n"), env: str("")},
 	}
 	got := map[string]string{}
 	for _, tc := range cases {
@@ -272,6 +274,7 @@ func TestInjectFrozen(t *testing.T) {
 		{name: "two blocks collapse", env: str(block + "A=1\n" + block + "B=2\n")},
 		{name: "a begin with no end", env: str("A=1\n" + ManagedBegin + "\nB=2\n")},
 		{name: "strays removed, MY_KASBAH kept", env: str("export KASBAH_CPU_LIMIT=9\n  KASBAH_MEM_LIMIT=1\nMY_KASBAH_URL=u\n# KASBAH_X=c\nKASBAH_=e\n")},
+		{name: "strays in compose's other forms removed", env: str("A=1\nKASBAH_CPU_LIMIT = 0\nKASBAH_X: 1\n\u00a0KASBAH_Y\t=2\nMY_KASBAH: k\n")},
 		{name: "CRLF sentinels and lines kept", env: str("A=1\r\n" + strings.ReplaceAll(block, "\n", "\r\n") + "B=2\r\n")},
 		{name: "no final newline", env: str("A=1")},
 		{name: "idempotent input", env: str("A=1\n" + ManagedBegin + "\n" + strings.Join(pairs, "\n") + "\n" + ManagedEnd + "\n")},

@@ -299,7 +299,7 @@ func SetKey(dir, key, value string) (verb string, err error) {
 		k, _, ok := envtpl.Assign(strings.TrimSuffix(l, "\r"))
 		if !ok {
 			if readsAs(strings.TrimSuffix(l, "\r"), key) {
-				return "", fmt.Errorf("%s line %d sets %s in a form kasbah does not rewrite (KEY=value, one line, UTF-8) — fix that line by hand", epath, i+1, key)
+				return "", fmt.Errorf("%s line %d sets %s with a byte that is not UTF-8, which kasbah does not rewrite — fix that line by hand", epath, i+1, key)
 			}
 			continue
 		}
@@ -328,18 +328,10 @@ func SetKey(dir, key, value string) (verb string, err error) {
 }
 
 // readsAs is whether compose would read line as setting key though Assign
-// does not: `KEY =v`, `KEY: v`, a byte that is not UTF-8.
+// does not: a byte that is not UTF-8.
 func readsAs(line, key string) bool {
-	t := strings.TrimLeft(line, " \t")
-	if rest, ok := strings.CutPrefix(t, "export"); ok && strings.TrimLeft(rest, " \t") != rest {
-		t = strings.TrimLeft(rest, " \t")
-	}
-	rest, ok := strings.CutPrefix(t, key)
-	if !ok {
-		return false
-	}
-	rest = strings.TrimLeft(rest, " \t")
-	return strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, ":")
+	k, _, ok := envtpl.Assign(strings.ToValidUTF8(line, "\uFFFD"))
+	return ok && k == key
 }
 
 // insertAt is where the template's tkeys[at] goes: after the last line of the

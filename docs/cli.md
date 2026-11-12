@@ -1485,8 +1485,9 @@ the run stops with exit `5` naming the keys the seed lacks, before the seed
 is sent.
 
 `--env-seed=FILE` answers the setup from a file the operator writes and keeps
-out of git (`env-template.md` → Seeding the setup): `KEY=value` lines, blank
-lines and `#` comments, read as the setup reads a `.env`. Whenever the setup
+out of git (`env-template.md` → Seeding the setup): `KEY=value` lines (or
+`KEY = value`, `KEY: value`, as compose reads them), blank lines and `#`
+comments, read as the setup reads a `.env`. Whenever the setup
 would ask a key `.env` does not already set, the seed answers first — on a
 missing `.env` that is every key, on drift the keys `.env` lacks — and a key
 it does not cover is asked as usual. A key `.env` already sets is never
@@ -1499,7 +1500,7 @@ names the keys it answered and counts those it did not use; it never prints a
 value. Refused on the workstation, before anything connects (exit `1`): a file
 that is missing, not a regular file, open to group or others (any bit of
 `0o077`), over 256 KiB, empty or with no key (comments only), with a value
-over 64 KiB (named by key), with a line that is not `KEY=value` (named by line
+over 64 KiB (named by key), with a line that is not such an assignment (named by line
 number), or setting a `KASBAH_*` key (named by line number and key); no
 refusal quotes a value. A value with a bare `$` (not `$$`, outside single
 quotes) is warned of by line number and key, not refused: compose reads it as
@@ -1546,10 +1547,10 @@ refused), so it never reaches argv or shell history, and no output names it.
 
 The value is taken exactly as typed or piped and written in the form compose
 reads back exactly (`env-template.md`); its size and sha256 travel on stdin with
-it, never on a command line. Every assignment of KEY is replaced (`export KEY=`
-becomes `KEY=`), a key not yet in `.env` is placed beside its template
+it, never on a command line. Every assignment of KEY is replaced (`export KEY=`,
+`KEY = ` and `KEY: ` become `KEY=`), a key not yet in `.env` is placed beside its template
 neighbours, every other line is kept byte for byte, mode `660`. A line compose
-would read as KEY but kasbah cannot rewrite (`KEY =v`, `KEY: v`, invalid UTF-8)
+would read as KEY but kasbah cannot rewrite (a byte that is not UTF-8)
 and a key inside the `KASBAH_*` managed block are refused, naming the line. `--restart` then runs `docker compose -p <name> up -d`, which
 recreates what reads the key — except on a project whose `compose.yml`
 declares no service, where the key is written and the run says there is

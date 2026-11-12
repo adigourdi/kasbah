@@ -11,12 +11,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 
 	"github.com/adigourdi/kasbah/internal/buildpush"
 	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/env"
+	"github.com/adigourdi/kasbah/internal/envtpl"
 	"github.com/adigourdi/kasbah/internal/fsstate"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/remote"
@@ -196,19 +198,11 @@ func countSentinels(path string) int {
 	return n
 }
 
-// mailKeep is whether a mail .env line is one of kasbah's three keys, read
-// as compose reads it: leading blanks and an `export ` off.
+// mailKeep is whether a mail .env line sets one of kasbah's three keys, read
+// as compose reads it (envtpl.Assign).
 func mailKeep(line string) bool {
-	s := strings.TrimLeft(strings.TrimSuffix(line, "\r"), " \t")
-	if r, ok := strings.CutPrefix(s, "export"); ok && r != "" && (r[0] == ' ' || r[0] == '\t') {
-		s = strings.TrimLeft(r, " \t")
-	}
-	for _, k := range MailKeys {
-		if strings.HasPrefix(s, k+"=") {
-			return true
-		}
-	}
-	return false
+	k, _, ok := envtpl.Assign(strings.TrimSuffix(line, "\r"))
+	return ok && slices.Contains(MailKeys, k)
 }
 
 // splitKeep is a file's lines with the final fragment marked: a last line

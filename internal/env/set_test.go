@@ -100,8 +100,23 @@ func TestSetKeyEdges(t *testing.T) {
 		t.Errorf("crlf template, commented key: %q", got)
 	}
 
-	// Lines compose reads as the key but Assign does not, and a key in the block.
-	for _, env := range []string{"API_SECRET =x\n", "API_SECRET: x\n", "export API_SECRET =x\n", "API_SECRET=\xff\n",
+	// Every form compose reads is replaced in place, never doubled.
+	for _, env := range []string{"API_SECRET = old\n", "API_SECRET: old\n", "export API_SECRET =old\r\n", "\u00a0API_SECRET\t= old\n"} {
+		dir := setDir(t, env+"X=1\n")
+		want := "API_SECRET=v\n"
+		if strings.HasSuffix(env, "\r\n") {
+			want = "API_SECRET=v\r\n"
+		}
+		if verb, err := SetKey(dir, "API_SECRET", "v"); err != nil || verb != "changed" {
+			t.Errorf("%q: %q %v", env, verb, err)
+		}
+		if got := readFile(t, dir+"/.env"); got != want+"X=1\n" {
+			t.Errorf("%q: .env is %q", env, got)
+		}
+	}
+
+	// A line compose reads as the key but kasbah cannot rewrite, and a key in the block.
+	for _, env := range []string{"API_SECRET=\xff\n", "API_SECRET :\xff\n",
 		ManagedBegin + "\nAPI_SECRET=x\n" + ManagedEnd + "\n"} {
 		dir := setDir(t, env)
 		want := "line 1 sets"
@@ -116,7 +131,7 @@ func TestSetKeyEdges(t *testing.T) {
 		}
 	}
 	// A longer key that merely starts with this one is no conflict.
-	if !readsAs("API_SECRET =1", "API_SECRET") || readsAs("API_SECRETS =1", "API_SECRET") || readsAs("# API_SECRET=1", "API_SECRET") {
+	if !readsAs("API_SECRET =\xff", "API_SECRET") || readsAs("API_SECRETS =\xff", "API_SECRET") || readsAs("# API_SECRET=\xff", "API_SECRET") || readsAs("API\xffSECRET=1", "API_SECRET") {
 		t.Error("readsAs")
 	}
 }
