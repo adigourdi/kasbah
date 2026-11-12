@@ -531,7 +531,9 @@ Prints:
   `check` cannot disagree about whether a backup is healthy, and its timestamps
   are read against the **server's** clock, in the same round trip, since a
   verdict computed against the workstation's would be a function of clock skew.
-- Projects under the apps path — name, running/total containers, the
+- Projects under the apps path — name, running/total containers (`no
+  services` for a project whose `compose.yml` declares none and that has no
+  container, a redirect-only project's ordinary state), the
   last `versions.log` entry (action, version, timestamp, kasbah version), **the
   domains its Traefik fragment claims**, what the certificate store says about
   each of them (or, when the fragment has no HTTPS router, that no
@@ -856,7 +858,11 @@ Flow (no-args / working-tree path):
      `backup` hooks are skipped; otherwise a failure of either asks whether to
      carry on (`--on-hook-failure=`).
    - Retag `:<version>` as `:current` for every built image.
-   - `docker compose up -d --remove-orphans`.
+   - `docker compose up -d --remove-orphans`. A `compose.yml` with no service
+     (`services: {}`, a redirect-only project's) starts nothing — compose
+     would refuse it — and joins Traefik to no network; containers an earlier
+     version left are removed (Traefik detached from `<name>_kasbah`, then
+     `docker compose down --remove-orphans`, which removes the network too).
    - Wait for `health.container` to be healthy.
    - Run `post-deploy` hooks, against the new containers.
    - Keep the outgoing version's backup: the snapshot of step 4 and what the
@@ -955,7 +961,8 @@ Flow (see `build-deploy.md` for full detail):
      leaves whatever the `restore` hook already did to the data. Carried past
      a failed extraction, the `restore` hook does not run.
    - Retag `:<target>` as `:current` for each built image.
-   - `docker compose up -d --remove-orphans`.
+   - `docker compose up -d --remove-orphans` — or nothing started for a
+     v<target> whose compose declares no service, as on `deploy`.
    - Wait for health.
    - Run `post-rollback` hooks, against the rolled-back containers.
    - Keep the snapshot of what the run overwrote as the backup of the version
@@ -1139,7 +1146,9 @@ same `--with-backup` repository base and passwords), `deploy`, then
      from the project directory, Traefik joined to the project's network, and
      the health wait of the live version's `health:` block (recorded in
      `.kasbah-hooks.json`; 120 seconds on every container without one). No
-     image is retagged. An unchanged `.env` recreates nothing.
+     image is retagged. An unchanged `.env` recreates nothing, and neither
+     does a `compose.yml` with no service — the summary's `stack:` line says
+     there is none to recreate.
    A failure after the `.env` write — the extraction, a `restore` hook, the
    up or the health wait — puts the previous `.env` back, held in memory
    since the step began (a `.env` the step created is removed). After a
@@ -1434,7 +1443,9 @@ becomes `KEY=`), a key not yet in `.env` is placed beside its template
 neighbours, every other line is kept byte for byte, mode `660`. A line compose
 would read as KEY but kasbah cannot rewrite (`KEY =v`, `KEY: v`, invalid UTF-8)
 and a key inside the `KASBAH_*` managed block are refused, naming the line. `--restart` then runs `docker compose -p <name> up -d`, which
-recreates what reads the key; `--no-restart` leaves the containers on the old
+recreates what reads the key — except on a project whose `compose.yml`
+declares no service, where the key is written and the run says there is
+nothing to restart; `--no-restart` leaves the containers on the old
 value. Unset means ask; without a terminal and without either, the run fails
 naming both. The set holds `.deploy.lock` and the server lock shared (both never
 waited on), so it never lands inside a deploy whose revert would put the old

@@ -376,9 +376,14 @@ func TestProjects(t *testing.T) {
 		{Name: "stopped", LogState: "unreadable", FragState: "absent", Total: 2},
 		{Name: "weird", LogState: "notfile", FragState: "ok", Frag: b64s("a: [\n")},
 		{Name: "nohost", LogState: "missing", FragState: "ok", Frag: b64s("http: {}\n")},
+		{Name: "redirect", LogState: "ok", Log: "2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0", FragState: "absent", Serviceless: true},
+		{Name: "leftover", LogState: "empty", FragState: "absent", Serviceless: true, Total: 1, Running: 1,
+			Containers: []Container{{"leftover-web", "running", "none"}}},
 	}
 	out, _, _ := runStatus(t, r)
 	has(t, out,
+		"  redirect                 no services    1.0.0      deploy 2026-08-13T22:30:37+00:00 (kasbah 0.1.0)\n",
+		"  leftover                 1/1 running    -          versions.log is empty\n",
 		"  a-very-long-project-name no containers  -          versions.log is empty\n",
 		"  odd                      1/2 partial    ?          versions.log's last line is not a kasbah entry: just a note\n      /apps/traefik/dynamic/odd.yml is empty — nothing routes to this project\n      odd-web                  running (unhealthy)\n      odd-db                   exited (none)\n",
 		"  file                     -              -          not a directory — kasbah deploys into directories only\n      /apps/traefik/dynamic/file.yml exists and is not a regular file\n",

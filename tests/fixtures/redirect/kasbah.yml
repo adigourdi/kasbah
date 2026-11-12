@@ -1,0 +1,12 @@
+# The redirect-only fixture: a project with no container at all, whose fragment
+# answers every request with a redirect. Deployed to the rig by
+# tests/integration/redirect_only_test.sh.
+schema: 1
+kasbah_version: 0.1.0
+
+name: redirect
+domain: redirect.test
+
+sync:
+  - compose.prod.yml -> compose.yml
+  - .env.prod.example

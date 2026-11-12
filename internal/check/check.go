@@ -18,6 +18,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/acme"
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/composefile"
 	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/envtpl"
 	"github.com/adigourdi/kasbah/internal/manifest"
@@ -279,7 +280,13 @@ func (c *checker) composeSection() {
 		return
 	}
 	if len(c.services) == 0 {
-		c.warnf("compose.prod.yml declares no services — skipping Compose checks")
+		// Only the shape deploy brings up without compose up passes; an empty file
+		// or one whose services come through include: does not.
+		if composefile.ServicelessDoc(c.compose.root) {
+			c.passf("compose.prod.yml declares no services — a redirect-only project; Compose checks skipped")
+		} else {
+			c.warnf("compose.prod.yml declares no services — skipping Compose checks")
+		}
 		c.c05()
 		return
 	}

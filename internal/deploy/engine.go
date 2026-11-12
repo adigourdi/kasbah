@@ -17,6 +17,7 @@ import (
 	"unicode"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/composefile"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/traefiknet"
 	"github.com/adigourdi/kasbah/internal/vlog"
@@ -137,8 +138,10 @@ func failf(format string, a ...any) error { return fatal{fmt.Sprintf(format, a..
 type engine struct {
 	archiveOnly  bool
 	dir, project string
-	sp           Spec
-	stderr       io.Writer
+	// noSvc: compose.yml declares no service, decided at each bring-up.
+	noSvc  bool
+	sp     Spec
+	stderr io.Writer
 	// stdout carries the report and the question; in, the answer.
 	stdout io.Writer
 	in     *bufio.Reader
@@ -474,13 +477,42 @@ func (e *engine) record(action string, extra ...string) error {
 	return nil
 }
 
+// up brings the stack up. With no service (noSvc, decided by the caller once
+// per bring-up) there is nothing to start: only an earlier version's containers
+// to remove, Traefik first leaving their network so down can remove it, as on drop.
 func (e *engine) up() error {
-	return e.docker("compose", "-p", e.project, "up", "-d", "--remove-orphans").Run()
+	if !e.noSvc {
+		return e.docker("compose", "-p", e.project, "up", "-d", "--remove-orphans").Run()
+	}
+	if len(e.projectContainers()) == 0 {
+		e.note("compose.yml declares no services — nothing to start")
+		return nil
+	}
+	e.note("compose.yml declares no services — removing the containers an earlier version left")
+	d := traefiknet.Docker(traefiknet.Exec)
+	nets, err := d.Networks(e.project)
+	if err == nil {
+		var done []string
+		done, err = d.Leave(nets)
+		for _, n := range done {
+			e.note("disconnected traefik from %s", n)
+		}
+	}
+	if err != nil {
+		e.note("could not disconnect traefik from %s's kasbah network (%v) — down leaves that network in place", e.project, err)
+	}
+	if e.docker("compose", "-p", e.project, "down", "--remove-orphans").Run() != nil {
+		return failf("docker compose -p %s down --remove-orphans failed in %s", e.project, e.dir)
+	}
+	return nil
 }
 
 // joinTraefik connects Traefik to the project's kasbah network, which the up
-// may just have created; a project still on kasbah-net has none.
+// may just have created; a project still on kasbah-net, or with no service, has none.
 func (e *engine) joinTraefik() error {
+	if e.noSvc {
+		return nil
+	}
 	d := traefiknet.Docker(traefiknet.Exec)
 	nets, err := d.Networks(e.project)
 	if err == nil {
@@ -639,7 +671,11 @@ func (e *engine) retagBack() (string, error) {
 		}
 		e.note("retagged %s:current back to %s", img, id)
 	}
-	if e.up() != nil {
+	// The restored compose.yml may declare services this run's did not, or none.
+	if e.noSvc = composefile.Serviceless(e.dir); e.up() != nil {
+		if e.noSvc {
+			return "the files and :current are back, and compose down of what this run started failed — its containers may still run", fmt.Errorf("docker compose -p %s down --remove-orphans failed in %s", e.project, e.dir)
+		}
 		return "the files and :current are back, and compose up of them failed — the stack may be down or partial", fmt.Errorf("docker compose -p %s up -d --remove-orphans failed in %s", e.project, e.dir)
 	}
 	if err := e.joinTraefik(); err != nil {

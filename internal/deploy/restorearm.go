@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/composefile"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
@@ -241,6 +242,11 @@ func (e *engine) restore(name, live string, envSet bool, keys []string, data boo
 		e.dropRestore()
 	}
 	if !changed {
+		return res, nil
+	}
+	if composefile.Serviceless(e.dir) {
+		e.note("compose.yml declares no services — nothing to recreate on the restored .env")
+		res.recreated = "no-services"
 		return res, nil
 	}
 	if e.stop.Load() != 0 {

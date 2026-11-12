@@ -590,15 +590,23 @@ out="$(cd "$proj17" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                                "C05 warn exits 0 (got $rc)"
 assert 'grep -qF "⚠ compose.prod.yml uses deprecated '"'"'version:'"'"' field" <<<"$out"' "C05 warn line"
 
-# --- Case 18: empty compose (no services) → warn, exit 0 --------------------
-# Compose checks beyond C05 have nothing to bite on; emit one warn and run C05.
+# --- Case 18: no services → pass for services: {}, warn for an empty file ---
+# `services: {}` is a redirect-only project's shape: one pass line, then C05.
+# An empty file is not (deploy would run compose up on it): a warning.
 proj18="$tmpdir/empty-compose"
 make_project "$proj18"
+printf 'services: {}\n' > "$proj18/compose.prod.yml"
+out="$(cd "$proj18" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                                       "services: {} exits 0 (got $rc)"
+assert 'grep -qF "✓ compose.prod.yml declares no services — a redirect-only project; Compose checks skipped" <<<"$out"' "no-services pass line"
+assert 'grep -qF "✓ No deprecated '"'"'version:'"'"' field" <<<"$out"'                          "C05 still runs"
 : > "$proj18/compose.prod.yml"
 out="$(cd "$proj18" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                                       "empty compose exits 0 (got $rc)"
-assert 'grep -qF "⚠ compose.prod.yml declares no services — skipping Compose checks" <<<"$out"' "no-services warn line"
-assert 'grep -qF "✓ No deprecated '"'"'version:'"'"' field" <<<"$out"'                          "C05 still runs"
+assert 'grep -qF "⚠ compose.prod.yml declares no services — skipping Compose checks" <<<"$out"' "empty file warns, not a redirect-only pass"
+printf 'include: [web.yml]\n' > "$proj18/compose.prod.yml"
+out="$(cd "$proj18" && "$kasbah" check 2>&1)"; rc=$?
+assert 'grep -qF "⚠ compose.prod.yml declares no services — skipping Compose checks" <<<"$out"' "include-only file warns, not a redirect-only pass"
 
 # --- Case 19: T01 — traefik-dynamic.yml missing → warn, exit 0 ---------------
 # Worker-only projects without web routing should not fail the whole check.

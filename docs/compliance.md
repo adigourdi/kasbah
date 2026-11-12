@@ -78,6 +78,11 @@ hosts) are in byte order.
 
 ### Compose
 
+A `compose.prod.yml` that declares no service (`services: {}`, a redirect-only
+project's — `traefik.md` → Redirect-only router) passes with one line saying so, and only
+C05 is asked of it. An empty file, or one whose services come through `include:`, is not
+that shape — deploy runs `compose up` on it — and warns that the Compose checks are skipped.
+
 | ID | Rule | Level | Auto-fixable |
 |---|---|---|---|
 | C01 | Every service sets `restart: unless-stopped` (or stronger) | fail | yes |

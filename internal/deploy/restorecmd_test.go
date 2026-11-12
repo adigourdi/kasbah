@@ -314,3 +314,13 @@ func TestParseRestore(t *testing.T) {
 		}
 	}
 }
+
+// A project with no service has no stack to recreate, and the summary says so.
+func TestRestoreServicelessSummary(t *testing.T) {
+	f := newFakeRestore()
+	f.kv["recreated"] = "no-services"
+	_, se, err := runRestore(t, f, RestoreOptions{Env: prompt.Yes, Data: prompt.No}, false, "")
+	if err != nil || !strings.Contains(se, "stack:  none to recreate — compose.yml declares no services") || strings.Contains(se, "recreated on the restored .env") {
+		t.Fatalf("%v\n%s", err, se)
+	}
+}

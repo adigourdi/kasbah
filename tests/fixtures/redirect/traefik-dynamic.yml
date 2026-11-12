@@ -1,0 +1,29 @@
+# Both routers redirect, with a middleware the fragment defines itself; neither
+# has a backend. The :80 one redirects to the target directly rather than to
+# :443, so a plain curl on the rig reads the redirect in one hop.
+http:
+  routers:
+    redirect-http:
+      rule: "Host(`redirect.test`)"
+      entryPoints:
+        - web
+      middlewares:
+        - redirect-away
+      service: noop@internal
+
+    redirect:
+      rule: "Host(`redirect.test`)"
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: http
+      middlewares:
+        - redirect-away
+      service: noop@internal
+
+  middlewares:
+    redirect-away:
+      redirectRegex:
+        regex: "^https?://[^/]+/(.*)"
+        replacement: "https://target.example/${1}"
+        permanent: true

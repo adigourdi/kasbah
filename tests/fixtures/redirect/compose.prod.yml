@@ -1,0 +1,5 @@
+# No service: the fragment's routers end on noop@internal, so there is nothing
+# for compose to start and kasbah starts nothing (docs/traefik.md).
+name: redirect
+
+services: {}

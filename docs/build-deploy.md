@@ -257,7 +257,9 @@ failure before the retag (the image preflight, a backup or `pre-deploy` hook
 the operator chose to stop on) puts the files back; any failure from the retag through the health wait also puts every
 `:current` back on its old id (untagging one that did not exist), runs `compose
 up -d --remove-orphans` on the restored files, attaches Traefik to the
-project's network again, and waits on the containers that were running before. A revert that works writes nothing to `versions.log` —
+project's network again, and waits on the containers that were running before
+— restored files declaring no service skip the up and the attach, as step 8d
+does. A revert that works writes nothing to `versions.log` —
 the server is where it was — and the run still fails, saying it is back on the
 previous version. A revert that cannot work (no matching snapshot, the old
 stack will not come up) appends a `deploy-failed` line naming why and keeps the
@@ -508,7 +510,13 @@ below). The only differences:
         instead gets a new replica beside the old one, waited healthy, then the
         old one removed by id (see "What this intentionally skips") — then
         attach Traefik to <name>_kasbah (`docker network connect`, live;
-        traefik.md → Network).
+        traefik.md → Network). A compose.yml with no service (`services: {}`,
+        a redirect-only project's) has nothing to start, and compose up would
+        refuse it: neither runs. When containers of an earlier version are
+        still there, Traefik leaves <name>_kasbah and `docker compose down
+        --remove-orphans` removes them and the network. e has no container to
+        wait on: check's H02 refuses a service-less project that sets
+        health.container (deploy does not run check).
      e. Wait for manifest's health.container to be healthy.
      f. Run post-deploy hooks, once the new containers are up and healthy.
      a–b failing: ask whether to carry on (--on-hook-failure=); stop puts the
@@ -918,7 +926,8 @@ small without sacrificing history.
         "data not restored: the backup could not be extracted".
      d. Retag :<target> as :current for each v<target>-era built image.
      e. docker compose up -d --remove-orphans, then attach Traefik to
-        <name>_kasbah.
+        <name>_kasbah — neither for a compose.yml with no service, as in
+        deploy step 8d.
      f. Wait for health.container.
      g. Run post-rollback hooks, against the rolled-back containers.
      h. Render .kasbah-hooks.json from v<target>'s manifest, and keep the

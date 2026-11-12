@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/backuprec"
+	"github.com/adigourdi/kasbah/internal/composefile"
 	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/probe"
 	"github.com/adigourdi/kasbah/internal/tree"
@@ -54,6 +55,8 @@ type Project struct {
 	Containers []Container `json:"containers"`
 	// Leftovers is what runs left in the directory that may hold .env.
 	Leftovers deploy.Leftovers `json:"leftovers"`
+	// Serviceless: compose.yml declares no service, so no container is expected.
+	Serviceless bool `json:"serviceless"`
 }
 
 // Disk is `df -Pk`'s last line for a path: State ok, absent, nopath or error.
@@ -298,6 +301,7 @@ func projects(apps string, docker bool) []Project {
 		if deploy.IsProject(apps, name) {
 			p.Leftovers = deploy.ScanAgainstLock(path)
 		}
+		p.Serviceless = composefile.Serviceless(path)
 		if docker {
 			label := "label=com.docker.compose.project=" + name
 			all, _ := probe.Docker("ps", "-a", "--filter", label, "-q")

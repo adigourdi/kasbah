@@ -803,6 +803,8 @@ func (x *run) printProjects() {
 			state = "-"
 		case !x.dockerOK():
 			state = "?"
+		case p.Total == 0 && p.Serviceless:
+			state = "no services"
 		case p.Total == 0:
 			state = "no containers"
 		case p.Running == p.Total:

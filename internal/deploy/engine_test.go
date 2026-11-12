@@ -43,7 +43,7 @@ inspect)
 compose) case "$*" in *" up "*) [ -z "$HUP_PARENT" ] || { kill -HUP "$PPID"; sleep 0.2; echo "Container demo-web Started" >&2; }
         # UPS: one "rc [health]" line per up, the health written for the wait after it.
         if [ -s "${UPS:-/nonexistent}" ]; then set -- $(head -n1 "$UPS"); sed -i 1d "$UPS"; [ -z "${2:-}" ] || echo "$2" > "$HEALTH"; exit "$1"; fi
-        exit "${UP_RC:-0}" ;; *" ps "*) echo cid; exit 0 ;; esac ;;
+        exit "${UP_RC:-0}" ;; *" ps "*) echo cid; exit 0 ;; *" down "*) exit "${DOWN_RC:-0}" ;; esac ;;
 network)
     # NETS: what network ls answers; CONNECTS: one rc per connect; TNETS: what traefik is on.
     case "$2" in
@@ -52,6 +52,8 @@ network)
         echo "$3" >> "${TNETS:-/dev/null}" ;;
     esac
     exit 0 ;;
+# PS: what ps -a answers, one tab-separated container per line.
+ps) cat "${PS:-/dev/null}" 2>/dev/null; exit 0 ;;
 exec)
     shift 2; exec "$@" ;;
 esac

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/adigourdi/kasbah/internal/composefile"
 	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
@@ -391,6 +392,9 @@ func (e *engine) target(name string) (c string, isSvc bool) {
 // upStack brings the stack up: every service but the rolled ones in place, then
 // each rolled one beside its old containers. The reason names the failure.
 func (e *engine) upStack() (string, error) {
+	if e.noSvc = composefile.Serviceless(e.dir); e.noSvc {
+		return "up", e.up()
+	}
 	m, rs := e.rolls()
 	if len(rs) == 0 {
 		if e.up() != nil {

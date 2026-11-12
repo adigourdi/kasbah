@@ -239,6 +239,17 @@ func TestRemoteSet(t *testing.T) {
 		t.Errorf("no compose.yml: rc %d %s", rc, errs)
 	}
 
+	// --up on a compose.yml with no service writes and starts nothing.
+	os.WriteFile(dir+"/compose.yml", []byte("services: {}\n"), 0o644)
+	if rc, out, errs := remoteSetRun(dir, "redirect", "demo"); rc != 0 || out != "set=changed\nrestarted=no-services\n" || !strings.Contains(errs, "nothing to restart") {
+		t.Errorf("no services: rc %d %q %s", rc, out, errs)
+	}
+	if got := readFile(t, dir+"/.env"); got != "API_SECRET=redirect\n" {
+		t.Errorf("no services: .env %q", got)
+	}
+	os.Remove(dir + "/compose.yml")
+	remoteSetRun(dir, "new", "")
+
 	held, _, err := serverlock.Project(dir)
 	if err != nil || held == nil {
 		t.Fatal(err)
@@ -340,6 +351,13 @@ func TestRunSet(t *testing.T) {
 	code, errs, _ = runSetCmd(t, f, true, "typed-pw\ny\n", "API_SECRET", "deploy@vps")
 	if code != 0 || f.value != "typed-pw" || f.up != "demo" || strings.Contains(errs, "typed-pw") || !strings.Contains(errs, "restarted") {
 		t.Errorf("tty: %d %q value %q up %q", code, errs, f.value, f.up)
+	}
+
+	// A project with no service has nothing to restart, and says so.
+	f = &fakeSet{keyOut: known, setOut: "set=changed\nrestarted=no-services\n"}
+	code, errs, _ = runSetCmd(t, f, false, "v", "API_SECRET", "deploy@vps", "--restart")
+	if code != 0 || !strings.Contains(errs, "not restarted: compose.yml declares no services") {
+		t.Errorf("no services: %d %q", code, errs)
 	}
 
 	// The write landed and compose up did not: said so, not "nothing changed".

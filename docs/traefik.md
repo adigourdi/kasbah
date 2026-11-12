@@ -110,7 +110,11 @@ Compose names it `<project>_kasbah`. At every deploy and rollback, right after
 `compose up`, kasbah attaches the running Traefik to it (`docker network
 connect`, live — no restart, nothing changes in Traefik's compose file) before
 the health wait; `drop` detaches it before `compose down`, which could not
-remove a network a foreign container is still on. A compromised container
+remove a network a foreign container is still on. A version whose compose
+declares no service (Redirect-only router, below) runs no `compose up` and
+attaches nothing; when an earlier version's containers are still there,
+Traefik is detached from `<project>_kasbah` before the `compose down
+--remove-orphans` that removes them, as on `drop`, so the network goes too. A compromised container
 therefore reaches its own project and nothing else: no other project shares a
 network with it. Traefik reaches everything, which is its job.
 
@@ -255,6 +259,16 @@ http:
 
 `noop@internal` is Traefik's built-in placeholder for routers whose
 middleware fully handles the response (a redirect, in this case).
+
+A project whose routers all end on `noop@internal` needs no container, and no
+placeholder service to give compose something to start: its
+`compose.prod.yml` declares `services: {}`. Deploy, rollback and restore then
+start nothing and attach Traefik to no network (moving to such a version
+detaches it from the project's network and removes the old containers —
+Network, above), and still sync the files, render `.env`, run the hooks,
+record `versions.log` and ship the fragment (`build-deploy.md`); `env set
+--restart` has nothing to restart, and `server status` shows the project as
+`no services`.
 
 ## Middlewares provided by kasbah
 
@@ -523,7 +537,10 @@ server status` surfaces it.
   `git archive v<target>` and syncs it to the same destination.
 - **Deploy / rollback, before the fragment** — after `compose up`, Traefik is
   attached to `<project>_kasbah` (a failed attach fails the run, which reverts);
-  a revert's own `up` attaches it again.
+  a revert's own `up` attaches it again. A version with no service attaches
+  nothing: Traefik leaves `<project>_kasbah`, and `compose down --remove-orphans`
+  removes the containers and network an earlier version left (a failed detach
+  is said, and leaves that network in place).
 - **Deploy / rollback of an unrouted version** (`routed: false`) — kasbah
   removes `/apps/traefik/dynamic/<manifest.name>.yml` when an earlier version
   left one there, and says so; with none there it says nothing of routes.

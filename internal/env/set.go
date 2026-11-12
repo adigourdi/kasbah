@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/composefile"
 	"github.com/adigourdi/kasbah/internal/envtpl"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/marker"
@@ -218,16 +219,19 @@ func runSet(c Ctx, o Options) error {
 		}
 		return cli.Fail("could not set %s in %s/.env on %s", o.Key, dir, target).Cont(why, "Nothing was changed.")
 	}
-	if kv["set"] == "" || restart && kv["restarted"] != "yes" {
+	if kv["set"] == "" || restart && kv["restarted"] != "yes" && kv["restarted"] != "no-services" {
 		return cli.Fail("the set step on %s reported no outcome (raw output: %s)", target, strings.TrimSpace(out))
 	}
 	if err := state.Record(state.File, c.Version, "last_server", target); err != nil {
 		return err
 	}
 	c.Out.Info("%s %s in %s/.env on %s", o.Key, kv["set"], dir, target)
-	if restart {
+	switch {
+	case restart && kv["restarted"] == "no-services":
+		c.Out.Info("  not restarted: compose.yml declares no services, so there is nothing to restart")
+	case restart:
 		c.Out.Info("  restarted: docker compose -p %s up -d", m.Name)
-	} else {
+	default:
 		c.Out.Info("  not restarted: the containers keep the old value until the next deploy")
 	}
 	return nil
@@ -405,6 +409,11 @@ func remoteSet(dir, key, up string, stdin io.Reader, stdout, stderr io.Writer) i
 	}
 	fmt.Fprintf(stdout, "set=%s\n", verb)
 	if up == "" {
+		return 0
+	}
+	if composefile.Serviceless(dir) {
+		fmt.Fprintln(stderr, "remote: env set: compose.yml declares no services — nothing to restart")
+		fmt.Fprintln(stdout, "restarted=no-services")
 		return 0
 	}
 	c := exec.Command("docker", "compose", "-p", up, "up", "-d")

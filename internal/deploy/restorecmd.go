@@ -351,9 +351,12 @@ func RunRestore(c RestoreCtx, o RestoreOptions) error {
 	} else {
 		c.Out.Info("  data:   left as it is")
 	}
-	if kv["recreated"] == "yes" {
+	switch kv["recreated"] {
+	case "yes":
 		c.Out.Info("  stack:  recreated on the restored .env (docker compose up -d), health waited on")
-	} else {
+	case "no-services":
+		c.Out.Info("  stack:  none to recreate — compose.yml declares no services")
+	default:
 		c.Out.Info("  stack:  left running — .env did not change")
 	}
 	return record()
