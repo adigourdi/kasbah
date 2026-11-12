@@ -234,9 +234,10 @@ repository at once. The push goes through the scheduler: on the server,
 `kasbah remote backup push` runs `once --project <name>` in the `kasbah-backup`
 container, which alone reads the credentials and passwords (mode `600`, owned
 by whoever ran init). Without off-box backups the backup stays on the server,
-and the run says so; with them, a scheduler container that is not running, or
-a push that fails, fails the run, naming the backup it kept (`cli.md` →
-`kasbah backup`).
+and the run says so; with them, a scheduler container that is not running or
+not kasbah's (the `kasbah-backup` compose project started from
+`<apps>/.kasbah/backup`), or a push that fails, fails the run, naming the
+backup it kept (`cli.md` → `kasbah backup`).
 
 ## Credentials
 

@@ -21,7 +21,7 @@ func Push(apps, name string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "remote: usage: kasbah remote backup push APPS NAME (APPS absolute, NAME a project's name)")
 		return 1
 	}
-	if st := backuprec.Scheduler().State; st != "running" {
+	if st := backuprec.Scheduler(apps).State; st != "running" {
 		fmt.Fprintf(stdout, "push=no-container\nstate=%s\n", st)
 		return 0
 	}

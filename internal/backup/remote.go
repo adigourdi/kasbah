@@ -370,7 +370,7 @@ func runProbe(apps, image string, limit time.Duration) (string, error) {
 		var out bytes.Buffer
 		name := fmt.Sprintf("kasbah-probe-%d-%d", os.Getpid(), len(names)+1)
 		names = append(names, name)
-		rc := bounded(limit, &out, &out, nil, "docker", append([]string{"run", "--rm", "--name", name, "--hostname", "kasbah-probe",
+		rc := bounded(limit, &out, &out, nil, "docker", append([]string{"run", "--rm", "--name", name, "--label", ProbeLabel, "--hostname", "kasbah-probe",
 			"--env-file", d + "/env", "-v", d + ":/probe:ro", "-v", d + "/src:/probe-src:ro", image, "--no-cache"}, args...)...)
 		log.WriteString(out.String() + "\n")
 		return out.String(), rc

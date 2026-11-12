@@ -25,7 +25,11 @@
 #   * the repositories a real `server init --with-backup` created passwords for,
 #     against the project tree a real server has;
 #   * the container's own healthcheck verdict beside the record it reads;
-#   * **that both readers write nothing**, digested off the rig.
+#   * **that both readers write nothing**, digested off the rig;
+#   * `server status`'s "Not kasbah's" section beside real kasbah stacks: a
+#     healthy, an exited and a compose-labelled foreign container listed with
+#     their state and health, and neither the Traefik nor the backup stack nor
+#     the backup run's launcher among them.
 #
 # What it deliberately does not show: a scheduler past its own deadline. That
 # needs a slot to come and go, which is a day away on a real stack; it is
@@ -74,8 +78,11 @@ assert() {
     fi
 }
 
+# Containers kasbah does not manage, removed by name on the way out.
+foreign=(kasbah-status-up kasbah-status-exited kasbah-status-traefik)
+
 tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
+trap 'rig_ssh "docker rm -f ${foreign[*]}" >/dev/null 2>&1; rm -rf "$tmpdir"' EXIT
 
 # --- Preconditions --------------------------------------------------------------
 if [ ! -f "$RIG_SSH_CONFIG" ]; then
@@ -107,6 +114,18 @@ if ! rig_clean; then
 fi
 if ! rig_ssh "docker pull $RIG_RESTIC_IMAGE" >/dev/null 2>&1; then
     echo "error: the rig could not pull $RIG_RESTIC_IMAGE" >&2
+    exit 2
+fi
+
+# Started before init so the healthcheck has long passed when status reads it.
+# The third carries the Traefik stack's compose project from another directory:
+# deploy's pre-flight calls that not kasbah's, and so does status.
+if ! rig_ssh "docker rm -f ${foreign[*]} >/dev/null 2>&1;
+        docker run -d --name kasbah-status-up --health-cmd true --health-interval 1s busybox:latest sleep 3600 &&
+        docker run --name kasbah-status-exited busybox:latest true &&
+        docker run -d --name kasbah-status-traefik --label com.docker.compose.project=traefik \
+            --label com.docker.compose.project.working_dir=/srv/traefik busybox:latest sleep 3600" >/dev/null 2>&1; then
+    echo "error: could not start the foreign containers on the rig" >&2
     exit 2
 fi
 
@@ -242,6 +261,20 @@ assert 'grep -qE "last run         ok [0-9]+s ago — repositories: $project" <<
     "the run that just happened, its age off the server's own clock, and what it reached (said '$out')"
 assert 'grep -qE "next run         in [0-9]+" <<<"$out"' \
     "and when the next one is due (said '$out')"
+
+foreign_out="$(sed -n "/^Not kasbah's:\$/,\$p" <<<"$out")"
+assert 'grep -qE "^  kasbah-status-exited +busybox:latest +exited +-$" <<<"$foreign_out"' \
+    "status lists an exited foreign container, no healthcheck as - (section: '$foreign_out')"
+assert 'grep -qE "^  kasbah-status-up +busybox:latest +running +healthy$" <<<"$foreign_out"' \
+    "and a running one with its health (section: '$foreign_out')"
+assert 'grep -qE "^  kasbah-status-traefik +busybox:latest +running +-$" <<<"$foreign_out"' \
+    "and one labelled with the Traefik stack's project from another directory (section: '$foreign_out')"
+names="$(awk 'NR > 1 { print $1 }' <<<"$foreign_out" | tr '\n' ' ')"
+# A cleaned rig runs nothing else, so these three are the whole section.
+assert '[ "$names" = "kasbah-status-exited kasbah-status-traefik kasbah-status-up " ]' \
+    "exactly these, in byte order of name (got '$names')"
+assert '! grep -qE "^  (traefik|kasbah-backup|kasbah-backup-launcher) " <<<"$foreign_out"' \
+    "and none of kasbah's own stacks or the run's launcher (section: '$foreign_out')"
 assert '! grep -qF "none yet" <<<"$out"' \
     "the never-fired sentence is gone, so the two states are told apart (said '$out')"
 

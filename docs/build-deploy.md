@@ -105,7 +105,8 @@ prune` states them with the command: the image `:current` resolves to
 (whatever the record says), a tag any container was created from, and
 every tag of a repository more than one project declares — or that a
 project whose `compose.yml` kasbah could not read *might* declare, which
-stops the run outright.
+stops version-tag removal outright, and the removal of kasbah's retired stock
+images with it.
 
 The retention window **is** the rollback window. Anything older is a
 roll-forward (ship a fix), not a rollback. Kasbah does not promise to

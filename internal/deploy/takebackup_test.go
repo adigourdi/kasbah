@@ -310,6 +310,7 @@ func TestRunBackup(t *testing.T) {
 		{"not configured", &fakeBackup{}, 0, false, "off-box: none — deploy@vps has no off-box backups", true},
 		{"pushed", &fakeBackup{enabled: true, push: map[string]string{"push": "ok"}}, 0, true, "off-box: pushed through kasbah-backup", true},
 		{"no container", &fakeBackup{enabled: true, push: map[string]string{"push": "no-container", "state": "exited"}}, 1, true, "the kasbah-backup container is exited there", false},
+		{"not kasbah's", &fakeBackup{enabled: true, push: map[string]string{"push": "no-container", "state": "notours"}}, 1, true, "the container named kasbah-backup there is not kasbah's: it is not the kasbah-backup compose project started from /apps/.kasbah/backup — nothing was pushed", false},
 		{"push failed", &fakeBackup{enabled: true, push: map[string]string{"push": "failed", "rc": "1"}}, 1, true, "failed (exit 1", false},
 		{"no backup", &fakeBackup{enabled: true, takeErr: cli.Fail("nothing live")}, 1, false, "nothing live", false},
 	} {

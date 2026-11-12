@@ -296,6 +296,20 @@ server: every service with a `build:` key, and the repository its
 projects both declare is left alone — no single project's record is
 evidence about it.
 
+The one exception is kasbah's own stock images, listed after the projects
+under `kasbah's retired images` and removed in the same answer: a tag an
+earlier kasbah's templates named and this one no longer does (the list is
+kept in `internal/prune`: SnappyMail, the webmail before Cypht), and
+`server init`'s Traefik tag once the `traefik` container was created from
+another image — what `upgrade-traefik` leaves behind. Each goes only when no
+container, running or stopped, was created from it and no project's
+`compose.yml` names it in an `image:` (with docker's defaults applied —
+`docker.io/`, `library/`, `:latest` — and a `${VAR}` in it taken to match
+anything), and by its own tag, never by repository: an image that carries
+another tag is only untagged. Selection is by tag alone, so a listed tag is
+offered whoever pulled it; the plan names each one before the question, and
+the operator can answer no.
+
 "Last 3 deployed" comes from `versions.log`, never from an image's tags
 or dates: a re-tagged image lies about its age. An image's age is its own
 `Created`, which a `docker load` preserves. A tag a container holds is
@@ -309,15 +323,14 @@ entries at all, or a `compose.yml` it cannot read **or cannot parse**.
 Deleting on the absence of a record is deleting on no evidence.
 
 A project whose `compose.yml` cannot be read or parsed is a stronger
-condition than that, and it stops the whole run: kasbah cannot enumerate
-what images that project declares, so it cannot rule it out as a second
-claimant of *any* repository on the host, and nothing on the server is
-provably single-owner. Prune removes nothing anywhere, says so in its own
-sentence, and names the project to fix. Reading such a project as
-"declares nothing" would defeat the multi-owner guard with the very
-condition that triggers the skip, and there is no honest narrowing — the
-file that would say which repositories it might have claimed is the file
-kasbah could not read.
+condition than that, and it holds back every candidate on the server:
+kasbah cannot enumerate what images that project declares, so it cannot rule
+it out as a second claimant of *any* repository on the host, nor as a user of
+any stock image. Prune removes no version tag and no retired stock image
+anywhere — each is listed as kept, and why — says so in its own sentence, and
+names the project to fix. Reading such a project as "declares nothing" would
+defeat both guards with the very condition that triggers the skip: the file
+that would say which images it names is the file kasbah could not read.
 
 The bind-mount root is not a project: `--data-path` can put it under the
 apps path with any name, so prune reads `data_path` out of the server
@@ -522,7 +535,8 @@ Prints:
   repository file left behind when its last project was dropped, which kasbah
   reports and never deletes, because deleting it would make that client's
   off-box snapshots unrecoverable. The container is found by name **and**
-  compose-project label, the same query `check --server` uses, so a foreign
+  compose-project label **and** the directory compose ran from
+  (`<apps>/.kasbah/backup`), the same query `check --server` uses, so a foreign
   container holding the name reads as one (`notours`) rather than as an absence.
   A server prepared without
   `--with-backup` gets one line saying so, and a verdict measured against the
@@ -559,6 +573,18 @@ Prints:
   (B02). The projects scanned are B02's: an entry under the apps path with a
   project's name, not one kasbah reserves, that is a directory or a symlink to
   one.
+- Not kasbah's: every container kasbah does not manage, running or not, one
+  line each in byte order of name — name, image, state and health (`-` without
+  a healthcheck) — so an unhealthy or long-exited one shows. kasbah's are the
+  containers of its compose projects — the Traefik, mail and backup stacks and
+  each project under the apps path — started from that stack's own directory,
+  the line `deploy`'s pre-flight draws, so a compose project of a kasbah name
+  run from elsewhere is listed; and its own short-lived containers, which carry
+  the `kasbah.backup.launcher` or a `kasbah.role` label. The Traefik, mail and
+  project sections pick their containers by the same test, so no container is
+  in both. A report only: kasbah never touches them. The section is left out
+  when there are none; when `docker ps` fails it is one line saying the
+  containers could not be listed, with docker's answer.
 
 **Certificate expiry comes from Traefik's own `acme.json`**, read by the same
 `internal/acme` that answers `check --server` — one store, one reader. The file
@@ -1077,11 +1103,14 @@ now). It takes no flags and asks nothing.
 3. Off-box, when the marker records `backup.enabled`: `kasbah remote backup
    push <apps> <name>` runs `once --project <name>` in the `kasbah-backup`
    container, its output on stderr, so the project's restic repository gains a
-   snapshot holding the new tarball. A container that is not running, or a
-   push that fails, fails the run (exit 1), naming the backup kept on the
-   server; another project's `backups/` or `.env` in that repository that
-   cannot be shipped is warned of and does not fail it. Without off-box
-   backups the run says the backup stays on the server, and succeeds.
+   snapshot holding the new tarball. The container is found as `server status`
+   finds it — the `kasbah-backup` compose project started from
+   `<apps>/.kasbah/backup`; one of that name started elsewhere is not kasbah's.
+   A container that is not running or not kasbah's, or a push that fails, fails
+   the run (exit 1), naming the backup kept on the server; another project's
+   `backups/` or `.env` in that repository that cannot be shipped is warned of
+   and does not fail it. Without off-box backups the run says the backup stays
+   on the server, and succeeds.
 
 `last_server` is written once the run succeeds.
 
@@ -1109,7 +1138,8 @@ same `--with-backup` repository base and passwords), `deploy`, then
    `--from-path=`, at that path alone) and the `backups/*.tar.gz` directly in
    the chosen one (`restic snapshots --json`, `restic ls --json`). The
    credentials never leave the container. A scheduler container that is not
-   running is refused like no off-box backups, pointing at `server status`
+   running, or not kasbah's (found as for `kasbah backup`), is refused like no
+   off-box backups, pointing at `server status`
    and `server init --with-backup`.
 3. Choose: the newest such snapshot, or `--snapshot=`; in it, the newest
    backup of the live version (`backups/<version>-<stamp>.tar.gz`, by stamp),

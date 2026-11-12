@@ -24,6 +24,8 @@ const (
 	ProbeRepo = "kasbah.probe"
 	// ProbePassword is not a secret: the probe repository holds one probe file.
 	ProbePassword = "kasbah-probe"
+	// ProbeLabel marks the credential probe's restic containers.
+	ProbeLabel = "kasbah.role=backup-probe"
 
 	// Launcher and LauncherLabel are the nightly job's short-lived container
 	// and the label a scheduler finds a leftover one by.

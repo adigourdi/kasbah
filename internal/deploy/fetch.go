@@ -43,7 +43,7 @@ var inContainer = func(apps string, args ...string) *exec.Cmd {
 }
 
 // schedulerState is the kasbah-backup container's state, a seam for the tests.
-var schedulerState = func() string { return backuprec.Scheduler().State }
+var schedulerState = func(apps string) string { return backuprec.Scheduler(apps).State }
 
 // fromPathArg is args less one `--from-path=P`, and P; false for a P that
 // cannot name a directory in a snapshot, or a second one.
@@ -83,7 +83,7 @@ func restoreList(apps, name, snapshot, from string, stdout, stderr io.Writer) in
 		return fail("usage: restore-list APPS NAME [SNAPSHOT] [--from-path=PATH] (APPS absolute)")
 	}
 	dir := apps + "/" + name
-	f := RestoreFacts{State: schedulerState(), Local: []string{}}
+	f := RestoreFacts{State: schedulerState(apps), Local: []string{}}
 	data, _ := os.ReadFile(filepath.Join(dir, vlog.Log))
 	f.Live = liveVersion(vlog.Entries(strings.ReplaceAll(string(data), "\r", "")))
 	if h, err := loadHooks(dir); err == nil {

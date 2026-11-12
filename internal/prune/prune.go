@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 
@@ -41,6 +42,13 @@ Image retention cleanup across every project on the server. Removes
 project's last 3 deployed versions — the version :current points at counts as
 the first of the 3, a --dirty build never counts, and :current itself is never
 pruned. The time window is the same one versions.log rotation uses.
+
+Also removes, by their own tags, the stock images an earlier kasbah ran and
+kasbah no longer names (the webmail before Cypht), and the Traefik server init
+installs once upgrade-traefik moved off it — each only when no container,
+running or stopped, was created from it and no project's compose.yml names
+it, and none while a project's compose.yml cannot be read. No other image is
+ever a candidate.
 
 Prints the plan and asks once before removing anything.
 
@@ -86,12 +94,18 @@ func Parse(args []string) (Options, error) {
 // key, and its image: with the tag off. ok is false when the file does not
 // parse, which is unknown and not empty.
 func Repos(compose string) (repos []string, ok bool) {
+	repos, _, ok = declared(compose)
+	return repos, ok
+}
+
+// declared is Repos from one parse, and every service's image: as written.
+func declared(compose string) (repos, images []string, ok bool) {
 	if compose == "" {
-		return nil, false
+		return nil, nil, false
 	}
 	docs, err := yamlx.Load([]byte(compose))
 	if err != nil {
-		return nil, false
+		return nil, nil, false
 	}
 	seen := map[string]bool{}
 	for _, d := range docs {
@@ -102,7 +116,7 @@ func Repos(compose string) (repos []string, ok bool) {
 		case *tree.Map:
 			sv, _ = d.Get("services")
 		default:
-			return nil, false
+			return nil, nil, false
 		}
 		switch s := sv.(type) {
 		case nil:
@@ -114,11 +128,11 @@ func Repos(compose string) (repos []string, ok bool) {
 		case []tree.Value:
 			svcs = s
 		default:
-			return nil, false
+			return nil, nil, false
 		}
 		for _, v := range svcs {
 			m, isMap := v.(*tree.Map)
-			if !isMap || !m.Has("build") {
+			if !isMap {
 				continue
 			}
 			img, _ := m.Get("image")
@@ -126,13 +140,14 @@ func Repos(compose string) (repos []string, ok bool) {
 			if ref = strings.TrimSuffix(ref, "\r"); ref == "" {
 				continue
 			}
-			if b := buildpush.Base(ref); !seen[b] {
+			images = append(images, ref)
+			if b := buildpush.Base(ref); m.Has("build") && !seen[b] {
 				seen[b] = true
 				repos = append(repos, b)
 			}
 		}
 	}
-	return repos, true
+	return repos, images, true
 }
 
 // Keep is the last three distinct versions the record names, newest first,
@@ -167,10 +182,12 @@ type Line struct {
 // Skip is a project left alone whole, and why.
 type Skip struct{ Name, Why string }
 
-// Plan is the decision: every candidate in report order, the removal set in
-// that same order, the skips and the projects whose declarations are unknown.
+// Plan is the decision: every candidate in report order, kasbah's own
+// retired stock images, the removal set in that same order, the skips and the
+// projects whose declarations are unknown.
 type Plan struct {
 	Lines   []Line
+	Stock   []Line
 	Remove  []string
 	Skips   []Skip
 	Unknown []string
@@ -212,10 +229,13 @@ func Decide(s *Scan, target, apps, dataDir string) (*Plan, error) {
 	repos := make([][]string, len(projects))
 	reposOK := make([]bool, len(projects))
 	owners := map[string][]string{}
+	var named []string
 	for i, p := range projects {
 		if p.ComposeState == "ok" {
 			if b, err := base64.StdEncoding.DecodeString(p.ComposeB64); err == nil {
-				repos[i], reposOK[i] = Repos(string(b))
+				var images []string
+				repos[i], images, reposOK[i] = declared(string(b))
+				named = append(named, images...)
 			}
 		}
 		if !reposOK[i] {
@@ -323,7 +343,8 @@ func Decide(s *Scan, target, apps, dataDir string) (*Plan, error) {
 		}
 		return pl.Lines[a].Tag < pl.Lines[b].Tag
 	})
-	for _, l := range pl.Lines {
+	pl.Stock = stock(s, pl, named, tagID, idTags, held)
+	for _, l := range append(slices.Clone(pl.Lines), pl.Stock...) {
 		if l.Verdict == "remove" {
 			pl.Remove = append(pl.Remove, l.Tag)
 		}
@@ -335,7 +356,7 @@ func Decide(s *Scan, target, apps, dataDir string) (*Plan, error) {
 func (pl *Plan) Report(w io.Writer, target, apps string) {
 	fmt.Fprintf(w, "kasbah server prune — %s (%s)\n", target, apps)
 	width := 0
-	for _, l := range pl.Lines {
+	for _, l := range append(slices.Clone(pl.Lines), pl.Stock...) {
 		if len(l.Tag) > width {
 			width = len(l.Tag)
 		}
@@ -348,6 +369,12 @@ func (pl *Plan) Report(w io.Writer, target, apps string) {
 		}
 		fmt.Fprintf(w, "  %-6s %-*s  %s\n", l.Verdict, width, l.Tag, l.Why)
 	}
+	if len(pl.Stock) > 0 {
+		fmt.Fprintf(w, "\nkasbah's retired images\n")
+		for _, l := range pl.Stock {
+			fmt.Fprintf(w, "  %-6s %-*s  %s\n", l.Verdict, width, l.Tag, l.Why)
+		}
+	}
 	if len(pl.Skips) > 0 {
 		fmt.Fprintf(w, "\nskipped — nothing of these was removed\n")
 		for _, s := range pl.Skips {
@@ -357,7 +384,8 @@ func (pl *Plan) Report(w io.Writer, target, apps string) {
 	if len(pl.Unknown) > 0 {
 		fmt.Fprintf(w, "\nno repository on %s is provably single-owner: kasbah could not read what\n", target)
 		fmt.Fprintf(w, "images %d project(s) declare (%s), and such a file could name any\n", len(pl.Unknown), strings.Join(pl.Unknown, " "))
-		fmt.Fprintf(w, "repository on this host. Nothing is removed anywhere until that is fixed.\n")
+		fmt.Fprintf(w, "repository or stock image on this host. No version tag and no retired stock\n")
+		fmt.Fprintf(w, "image is removed anywhere until that is fixed.\n")
 	}
 	fmt.Fprintln(w)
 	if len(pl.Remove) == 0 {
@@ -497,8 +525,8 @@ func Run(c Ctx, o Options) error {
 		c.Out.Warn("  kasbah does not remove images on a record it could not read")
 	}
 	if len(pl.Unknown) > 0 {
-		c.Out.Warn("nothing was removed anywhere: %s declare images kasbah could", strings.Join(pl.Unknown, " "))
-		c.Out.Warn("  not read, so no repository on this server is provably single-owner")
+		c.Out.Warn("no version tag or retired stock image is removed anywhere: %s declare images", strings.Join(pl.Unknown, " "))
+		c.Out.Warn("  kasbah could not read, so no image on this server is provably unnamed")
 	}
 	if len(pl.Remove) == 0 {
 		return nil

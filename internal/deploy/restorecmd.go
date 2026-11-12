@@ -213,6 +213,10 @@ func RunRestore(c RestoreCtx, o RestoreOptions) error {
 	if err != nil {
 		return err
 	}
+	if f.State == "notours" {
+		return cli.Fail("restore: %s records off-box backups, and the container named %s there is not kasbah's: it is not the kasbah-backup compose project started from %s/.kasbah/backup, and only kasbah's reads the repository. Nothing was changed", target, backup.Container, mk.AppsPath).Cont(
+			notOurs(target)+".", local)
+	}
 	if f.State != "running" || f.List == nil {
 		return cli.Fail("restore: %s records off-box backups, and the %s container is %s there — it alone reads the repository. Nothing was changed", target, backup.Container, f.State).Cont(
 			"`kasbah server status "+target+"` shows the stack; `kasbah server init "+target+" --with-backup` reinstalls it.", local)

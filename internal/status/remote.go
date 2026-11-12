@@ -8,10 +8,13 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/adigourdi/kasbah/internal/backup"
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/composefile"
 	"github.com/adigourdi/kasbah/internal/deploy"
+	"github.com/adigourdi/kasbah/internal/mail"
 	"github.com/adigourdi/kasbah/internal/probe"
+	"github.com/adigourdi/kasbah/internal/traefiknet"
 	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
@@ -59,6 +62,15 @@ type Project struct {
 	Serviceless bool `json:"serviceless"`
 }
 
+// Foreign is a container kasbah does not manage; Health is none without a
+// healthcheck.
+type Foreign struct {
+	Name   string `json:"name"`
+	Image  string `json:"image"`
+	State  string `json:"state"`
+	Health string `json:"health"`
+}
+
 // Disk is `df -Pk`'s last line for a path: State ok, absent, nopath or error.
 type Disk struct {
 	State string `json:"state"`
@@ -95,6 +107,9 @@ type Report struct {
 	Backup   backuprec.Facts `json:"backup"`
 	Traefik  Traefik         `json:"traefik"`
 	Projects []Project       `json:"projects"`
+	Foreign  []Foreign       `json:"foreign"`
+	// ForeignError is docker's answer when it could not list the containers.
+	ForeignError string `json:"foreign_error,omitempty"`
 }
 
 // Remote is `kasbah remote status APPS`, run by the server binary.
@@ -112,7 +127,7 @@ func Remote(args []string, stdout, stderr io.Writer) int {
 
 // Collect reads the server it runs on.
 func Collect(apps string) *Report {
-	r := &Report{HaveDocker: probe.HaveDocker(), Projects: []Project{}}
+	r := &Report{HaveDocker: probe.HaveDocker(), Projects: []Project{}, Foreign: []Foreign{}}
 	out, rc := probe.DockerAll("version", "--format", "{{.Server.Version}}")
 	docker := rc == 0
 	if docker {
@@ -169,15 +184,105 @@ func Collect(apps string) *Report {
 	r.MailDir = probe.DirState(apps + "/mail")
 	reg := apps + "/mail/kasbah.yml"
 	r.RegistryState, r.Registry = probe.FState(reg), probe.B64(reg)
-	r.MailDMS = stack(docker, "mail", "mail-dms")
-	r.MailWeb = stack(docker, "mail", "mail-cypht")
+	stacks := Stacks(apps, data)
+	r.MailDMS = stack(docker, stacks[mail.Project], mail.Project, "mail-dms")
+	r.MailWeb = stack(docker, stacks[mail.Project], mail.Project, "mail-cypht")
 
 	r.Backup = backuprec.Collect(apps, data)
-	r.Traefik = traefik(docker)
+	r.Traefik = traefik(docker, stacks[traefiknet.Project])
 	if r.AppsState == "dir" {
 		r.Projects = projects(apps, docker)
 	}
+	if docker {
+		r.Foreign, r.ForeignError = foreign(stacks, probe.DockerAll)
+	}
 	return r
+}
+
+// RoleLabel is the label key kasbah's own short-lived containers carry.
+const RoleLabel = "kasbah.role"
+
+// Stacks is every compose project kasbah runs under apps, by name: the
+// Traefik, mail and backup stacks and each entry that is not reserved or the
+// data path, each run from its own directory.
+func Stacks(apps, data string) map[string]func(project, wdir string) bool {
+	st := map[string]func(string, string) bool{
+		traefiknet.Project: probe.Owns(traefiknet.Project, apps+"/traefik"),
+		mail.Project:       probe.Owns(mail.Project, apps+"/mail"),
+		backup.Project:     probe.Owns(backup.Project, apps+"/.kasbah/backup"),
+	}
+	ents, _ := os.ReadDir(apps)
+	for _, e := range ents {
+		if n := e.Name(); !probe.IsReserved(n) && apps+"/"+n != data {
+			st[n] = probe.Owns(n, apps+"/"+n)
+		}
+	}
+	return st
+}
+
+const foreignFormat = `{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.project.working_dir"}}\t{{.Label "` +
+	backup.LauncherLabel + `"}}\t{{.Label "` + RoleLabel + `"}}`
+
+// foreign is every container, in any state, that is neither of a stack
+// kasbah runs nor one of its labelled short-lived ones.
+func foreign(stacks map[string]func(string, string) bool, docker func(...string) (string, int)) ([]Foreign, string) {
+	out, rc := docker("ps", "-a", "--no-trunc", "--format", foreignFormat)
+	if rc != 0 {
+		return []Foreign{}, or(probe.Flat(out), fmt.Sprintf("docker ps exited %d", rc))
+	}
+	var ids []string
+	byID := map[string]*Foreign{}
+	for _, l := range probe.Lines(strings.ReplaceAll(out, "\r", "")) {
+		f := strings.Split(l, "\t")
+		if len(f) != 8 || f[0] == "" {
+			continue
+		}
+		if own, ok := stacks[f[4]]; f[4] != "" && ok && own(f[4], f[5]) || f[6] != "" || f[7] != "" {
+			continue
+		}
+		ids = append(ids, f[0])
+		byID[f[0]] = &Foreign{Name: f[1], Image: f[2], State: f[3], Health: "none"}
+	}
+	fs := []Foreign{}
+	if len(ids) == 0 {
+		return fs, ""
+	}
+	info, _ := docker(append([]string{"inspect", "-f", "{{.Id}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}"}, ids...)...)
+	for _, l := range probe.Lines(strings.ReplaceAll(info, "\r", "")) {
+		if id, h, ok := strings.Cut(l, " "); ok && byID[id] != nil && h != "" {
+			byID[id].Health = h
+		}
+	}
+	for _, id := range ids {
+		fs = append(fs, *byID[id])
+	}
+	return fs, ""
+}
+
+// owned is project's containers (of service, when given) in any state, newest
+// first, that own says are kasbah's stack and not one sharing its label, and
+// how many of them run.
+func owned(project string, own func(string, string) bool, service string) (ids []string, running int) {
+	svc := "label=com.docker.compose.service"
+	if service != "" {
+		svc += "=" + service
+	}
+	out, rc := probe.Docker("ps", "-a", "--no-trunc", "--filter", "label=com.docker.compose.project="+project, "--filter", svc,
+		"--format", `{{.ID}}\t{{.State}}\t{{.Label "com.docker.compose.project.working_dir"}}`)
+	if rc != 0 || own == nil {
+		return nil, 0
+	}
+	for _, l := range probe.Lines(strings.ReplaceAll(out, "\r", "")) {
+		f := strings.Split(l, "\t")
+		if len(f) != 3 || f[0] == "" || !own(project, f[2]) {
+			continue
+		}
+		ids = append(ids, f[0])
+		if f[1] == "running" || f[1] == "paused" || f[1] == "restarting" {
+			running++
+		}
+	}
+	return ids, running
 }
 
 func disk(path string) Disk {
@@ -202,20 +307,14 @@ func disk(path string) Disk {
 	return Disk{State: "ok", Line: last}
 }
 
-func first(ids string) string {
-	id, _, _ := strings.Cut(ids, "\n")
-	return id
-}
-
-func stack(docker bool, project, service string) Stack {
+func stack(docker bool, own func(string, string) bool, project, service string) Stack {
 	if !docker {
 		return Stack{State: "nodocker"}
 	}
-	ids, rc := probe.Docker("ps", "-a", "--filter", "label=com.docker.compose.project="+project,
-		"--filter", "label=com.docker.compose.service="+service, "--format", "{{.ID}}")
+	ids, _ := owned(project, own, service)
 	id := ""
-	if rc == 0 {
-		id = first(ids)
+	if len(ids) > 0 {
+		id = ids[0]
 	}
 	if id == "" {
 		return Stack{State: "absent"}
@@ -236,15 +335,14 @@ func stack(docker bool, project, service string) Stack {
 	return s
 }
 
-func traefik(docker bool) Traefik {
+func traefik(docker bool, own func(string, string) bool) Traefik {
 	if !docker {
 		return Traefik{}
 	}
-	ids, rc := probe.Docker("ps", "-a", "--filter", "label=com.docker.compose.project=traefik",
-		"--filter", "label=com.docker.compose.service=traefik", "--format", "{{.ID}}")
+	ids, _ := owned(traefiknet.Project, own, "traefik")
 	cid := ""
-	if rc == 0 {
-		cid = first(ids)
+	if len(ids) > 0 {
+		cid = ids[0]
 	}
 	if cid == "" {
 		return Traefik{}
@@ -303,10 +401,8 @@ func projects(apps string, docker bool) []Project {
 		}
 		p.Serviceless = composefile.Serviceless(path)
 		if docker {
-			label := "label=com.docker.compose.project=" + name
-			all, _ := probe.Docker("ps", "-a", "--filter", label, "-q")
-			ids := probe.Lines(all)
-			p.Total = len(ids)
+			ids, running := owned(name, probe.Owns(name, path), "")
+			p.Total, p.Running = len(ids), running
 			if len(ids) > 0 {
 				info, _ := probe.Docker(append([]string{"inspect", "-f",
 					"{{.Name}} {{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}"}, ids...)...)
@@ -325,8 +421,6 @@ func projects(apps string, docker bool) []Project {
 					p.Containers = append(p.Containers, c)
 				}
 			}
-			running, _ := probe.Docker("ps", "--filter", label, "-q")
-			p.Running = len(probe.Lines(running))
 		}
 
 		log := path + "/versions.log"

@@ -10,7 +10,10 @@
 #   * a project directory whose versions.log this ssh user cannot read, which is
 #     a filesystem state and not a protocol string;
 #   * every other tag on the host — the rig's stock image cache included — still
-#     being there afterwards.
+#     being there afterwards;
+#   * a stock image kasbah retired (a tag of alpine's here, named as the former
+#     webmail) kept while a stopped container was created from it, then untagged
+#     by its own tag once none is, its other tag left alone.
 #
 # The image ages are real too. `SOURCE_DATE_EPOCH` makes BuildKit stamp the
 # image config with a date of the suite's choosing, so an image genuinely built
@@ -41,6 +44,9 @@ tags=(ripe-web:current ripe-web:3.0.0 ripe-web:0.3.0 ripe-web:0.2.0 ripe-web:0.1
       held-web:current held-web:2.0.0 held-web:0.2.0 held-web:0.1.0
       sealed-web:current sealed-web:2.0.0 sealed-web:0.1.0)
 container=kasbah-prune-held
+# The retired ref is internal/prune's Retired list; tagged onto alpine:3.20 here.
+retired=djmaze/snappymail:v2.38.2
+webmail=kasbah-prune-webmail
 
 fail=0
 assert() {
@@ -52,7 +58,7 @@ assert() {
 
 tmpdir="$(mktemp -d)"
 cleanup() {
-    rig_ssh "docker rm -f $container >/dev/null 2>&1; docker image rm -f ${tags[*]} >/dev/null 2>&1; rm -rf /tmp/kasbah-prune-build; true" >/dev/null 2>&1
+    rig_ssh "docker rm -f $container $webmail >/dev/null 2>&1; docker image rm -f ${tags[*]} $retired >/dev/null 2>&1; rm -rf /tmp/kasbah-prune-build; true" >/dev/null 2>&1
     rm -rf "$tmpdir"
 }
 trap cleanup EXIT
@@ -77,7 +83,7 @@ if ! rig_clean; then
     exit 2
 fi
 # A previous interrupted run's leavings, before anything is measured.
-rig_ssh "docker rm -f $container >/dev/null 2>&1; docker image rm -f ${tags[*]} >/dev/null 2>&1; true" >/dev/null 2>&1
+rig_ssh "docker rm -f $container $webmail >/dev/null 2>&1; docker image rm -f ${tags[*]} $retired >/dev/null 2>&1; true" >/dev/null 2>&1
 
 prune()   { kasbah_cli server prune "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; }
 cli_out() { cat "$tmpdir/out"; }
@@ -104,11 +110,13 @@ if [ -z "$month1" ] || [ -z "$month0" ]; then
     exit 2
 fi
 setup_rc=0
-rig_ssh "bash -s '$old_epoch' '$month1' '$month0'" <<'REMOTE' >"$tmpdir/setup" 2>&1 || setup_rc=$?
+rig_ssh "bash -s '$old_epoch' '$month1' '$month0' '$retired' '$webmail'" <<'REMOTE' >"$tmpdir/setup" 2>&1 || setup_rc=$?
 set -uo pipefail
 old=$1
 month1=$2
 month0=$3
+retired=$4
+webmail=$5
 root=/tmp/kasbah-prune-build
 rm -rf "$root"; mkdir -p "$root"
 
@@ -152,6 +160,12 @@ build sealed-web:0.1.0 "$old" || exit 1
 # try.
 docker rm -f kasbah-prune-held >/dev/null 2>&1 || true
 docker run -d --name kasbah-prune-held held-web:0.1.0 sleep 3600 >/dev/null || exit 1
+
+# The retired webmail tag, on an image that carries another, and a container
+# created from it and never started: a stopped one holds it too.
+docker tag alpine:3.20 "$retired" || exit 1
+docker rm -f "$webmail" >/dev/null 2>&1 || true
+docker create --name "$webmail" "$retired" true >/dev/null || exit 1
 
 # The apps tree. /apps is root-owned on a rig whose ssh user is unprivileged;
 # stevedore has passwordless sudo, and rig_clean removes the tree the same way.
@@ -294,6 +308,11 @@ for stock in alpine:3.20 alpine:latest nginx:alpine redis:7-alpine traefik:v3.7.
     assert 'has_tag "$stock"' "$stock is untouched — a stock image is in nobody's build:"
 done
 
+# The retired image, while a stopped container was created from it.
+assert 'has_tag "$retired"' "$retired, which a stopped container was created from, is still here"
+assert 'grep -qE "^kasbah.s retired images$" "$tmpdir/out" && grep -qE "keep +djmaze/snappymail:v2.38.2 +held by container $webmail\(created\)" "$tmpdir/out"' \
+    "the report lists it among kasbah's retired images and names the container (stdout: $(cli_out))"
+
 # --- Idempotence ----------------------------------------------------------------------------
 prune "$RIG_TARGET" --yes; rc=$?
 assert '[ "$rc" = 0 ]' "a second run exits 0 (exit $rc: $(cli_err))"
@@ -303,9 +322,30 @@ again="$(rig_tags | LC_ALL=C sort)"
 assert '[ "$now_tags" = "$again" ]' "and removes nothing the second time
         $(diff <(printf '%s\n' "$now_tags") <(printf '%s\n' "$again"))"
 
+# --- The retired image, once no container uses it ------------------------------------------
+rig_ssh "docker rm $webmail" >/dev/null 2>&1
+alpine_id="$(rig_ssh "docker image inspect --format '{{.Id}}' alpine:3.20" 2>/dev/null | tr -d '\r')"
+prune "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = 1 ] && grep -qF -- "--yes" "$tmpdir/err"' "the retired image is asked about like a version tag (exit $rc: $(cli_err))"
+assert 'grep -qE "remove +djmaze/snappymail:v2.38.2 +a stock image an earlier kasbah ran.*untags only, the image also carries alpine:3.20" "$tmpdir/out"' \
+    "and offered by its own tag, untagging only (stdout: $(cli_out))"
+assert 'grep -qF "1 tag(s) to remove" "$tmpdir/out"' "it is the one thing to remove (stdout: $(cli_out))"
+prune "$RIG_TARGET" --yes; rc=$?
+assert '[ "$rc" = 0 ]' "--yes removes it (exit $rc: $(cli_err))"
+final="$(rig_tags | LC_ALL=C sort)"
+gone="$(comm -23 <(printf '%s\n' "$now_tags") <(printf '%s\n' "$final") | tr '\n' ' ')"
+assert '[ "$gone" = "$retired " ]' "exactly the retired tag left the rig (got: $gone)"
+still="$(rig_ssh "docker image inspect --format '{{.Id}}' alpine:3.20" 2>/dev/null | tr -d '\r')"
+assert '[ -n "$alpine_id" ] && [ "$still" = "$alpine_id" ]' "the image's other tag, alpine:3.20, is untouched"
+for stock in traefik:v3.7.10 traefik:v3.6.7 traefik:v3.5.3; do
+    if grep -qxF "$stock" <<<"$now_tags"; then
+        assert 'has_tag "$stock"' "$stock is untouched — no kasbah traefik container runs another image here"
+    fi
+done
+
 # --- Leave the rig as it was found, but only on success -----------------------------------------
 if [ "$fail" -eq 0 ]; then
-    rig_ssh "docker rm -f $container >/dev/null 2>&1; docker image rm -f ${tags[*]} >/dev/null 2>&1; rm -rf /tmp/kasbah-prune-build; sudo chmod 0644 /apps/sealed/versions.log 2>/dev/null; true" >/dev/null 2>&1
+    rig_ssh "docker rm -f $container $webmail >/dev/null 2>&1; docker image rm -f ${tags[*]} >/dev/null 2>&1; rm -rf /tmp/kasbah-prune-build; sudo chmod 0644 /apps/sealed/versions.log 2>/dev/null; true" >/dev/null 2>&1
     left="$(rig_tags | grep -E '^(ripe|held|sealed)-web:' | tr '\n' ' ')"
     assert '[ -z "$left" ]' "every tag this suite made is gone from the rig (left: $left)"
     rig_clean || fail=1

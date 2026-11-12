@@ -311,7 +311,7 @@ func Collect(apps, data string) Facts {
 		Dir:       probe.DirState(bdir),
 		Record:    probe.FState(rec),
 		RecordB64: probe.B64(rec),
-		Container: container(),
+		Container: container(bdir),
 		Mail:      probe.DirState(apps+"/mail") == "dir",
 		HasPass:   HasPass(bdir + "/repos"),
 		Projects:  Projects(apps, data),
@@ -388,19 +388,20 @@ func client(path string) string {
 	return c
 }
 
-// Scheduler is the kasbah-backup container as this server's docker sees it.
-func Scheduler() Container { return container() }
+// Scheduler is the kasbah-backup container as this server's docker sees it:
+// ours only when started from <apps>/.kasbah/backup, as status judges it.
+func Scheduler(apps string) Container { return container(apps + "/.kasbah/backup") }
 
-// container is the scheduler by name and by compose project: a container
-// merely named kasbah-backup is not ours. A failed inspect is followed by
-// `docker version` to tell a missing container from a daemon not answering.
-func container() Container {
+// container is the scheduler by name, compose project and the directory bdir
+// it was started from: anything else is not ours. A failed inspect is followed
+// by `docker version` to tell missing from no daemon.
+func container(bdir string) Container {
 	c := Container{State: "absent", Health: "none"}
 	if !probe.HaveDocker() {
 		return Container{State: "nodocker", Health: "nodocker"}
 	}
 	info, rc := probe.Docker("inspect", "-f",
-		`{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}} {{index .Config.Labels "com.docker.compose.project"}}`,
+		`{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}} {{index .Config.Labels "com.docker.compose.project"}} {{index .Config.Labels "com.docker.compose.project.working_dir"}}`,
 		"kasbah-backup")
 	if rc != 0 {
 		info = ""
@@ -418,7 +419,7 @@ func container() Container {
 		}
 		return def
 	}
-	if at(3, "") != "kasbah-backup" {
+	if at(3, "") != "kasbah-backup" || !probe.Owns("kasbah-backup", bdir)("kasbah-backup", at(4, "")) {
 		c.State = "notours"
 		return c
 	}

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -152,4 +154,14 @@ func IsReserved(name string) bool {
 		}
 	}
 	return false
+}
+
+// Owns is whether a container of compose project project, started from
+// wdir, is the stack name's at dir: its name, and dir as given or resolved.
+func Owns(name, dir string) func(project, wdir string) bool {
+	ours := []string{dir}
+	if real, err := filepath.EvalSymlinks(dir); err == nil && real != dir {
+		ours = append(ours, real)
+	}
+	return func(project, wdir string) bool { return project == name && slices.Contains(ours, wdir) }
 }

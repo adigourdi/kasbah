@@ -114,3 +114,24 @@ func TestCollect(t *testing.T) {
 		t.Errorf("projects %v, want %v", f.Projects, want)
 	}
 }
+
+// The scheduler is ours only as the kasbah-backup project started from the
+// apps path's backup directory; a same-named container from elsewhere is not.
+func TestSchedulerOwnership(t *testing.T) {
+	apps := t.TempDir()
+	os.MkdirAll(filepath.Join(apps, ".kasbah", "backup"), 0o755)
+	bin := t.TempDir()
+	os.WriteFile(filepath.Join(bin, "docker"), []byte("#!/bin/sh\n[ \"$1\" = version ] && { echo 27.0.1; exit 0; }\n[ \"$1\" = inspect ] && { printf 'running healthy 0 %s %s\\n' \"$PROJ\" \"$WD\"; exit 0; }\nexit 1\n"), 0o755)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, tc := range []struct{ proj, wd, want string }{
+		{"kasbah-backup", filepath.Join(apps, ".kasbah", "backup"), "running"},
+		{"kasbah-backup", "/opt/backup-copy", "notours"},
+		{"other", filepath.Join(apps, ".kasbah", "backup"), "notours"},
+	} {
+		t.Setenv("PROJ", tc.proj)
+		t.Setenv("WD", tc.wd)
+		if got := Scheduler(apps).State; got != tc.want {
+			t.Errorf("project %s from %s: %s, want %s", tc.proj, tc.wd, got, tc.want)
+		}
+	}
+}

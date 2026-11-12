@@ -3,7 +3,6 @@ package deploy
 import (
 	"fmt"
 	"net/netip"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/backup"
 	"github.com/adigourdi/kasbah/internal/mail"
+	kprobe "github.com/adigourdi/kasbah/internal/probe"
 	"github.com/adigourdi/kasbah/internal/traefiknet"
 )
 
@@ -144,10 +144,7 @@ func Outsiders(name, dir string, query func(...string) (string, error)) ([]Holde
 	if err != nil {
 		return nil, err
 	}
-	ours := []string{dir}
-	if real, err := filepath.EvalSymlinks(dir); err == nil && real != dir {
-		ours = append(ours, real)
-	}
+	owns := kprobe.Owns(name, dir)
 	hs := []Holder{}
 	for _, l := range strings.Split(strings.ReplaceAll(out, "\r", ""), "\n") {
 		f := strings.Split(l, "\t")
@@ -155,7 +152,7 @@ func Outsiders(name, dir string, query func(...string) (string, error)) ([]Holde
 			continue
 		}
 		h := Holder{Name: f[0], Project: f[2], Dir: f[3], Config: f[4]}
-		if h.Project == name && slices.Contains(ours, h.Dir) {
+		if owns(h.Project, h.Dir) {
 			continue
 		}
 		if f[1] == "running" || f[1] == "paused" || f[1] == "restarting" {

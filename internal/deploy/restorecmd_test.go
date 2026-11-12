@@ -169,6 +169,7 @@ func TestRestoreRefusals(t *testing.T) {
 	}{
 		{"no off-box", func(f *fakeRestore) { f.disabled = true }, RestoreOptions{}, []string{"has no off-box backups", "--with-backup", "kasbah rollback deploy@vps <version>", "by hand"}, false},
 		{"no container", func(f *fakeRestore) { f.facts = &RestoreFacts{State: "exited"} }, RestoreOptions{}, []string{"the kasbah-backup container is exited there", "--with-backup", "kasbah rollback"}, false},
+		{"not kasbah's", func(f *fakeRestore) { f.facts = &RestoreFacts{State: "notours"} }, RestoreOptions{}, []string{"the container named kasbah-backup there is not kasbah's: it is not the kasbah-backup compose project started from /apps/.kasbah/backup", "remove or rename that container", "Nothing was changed"}, false},
 		{"nothing live", func(f *fakeRestore) { f.facts.Live = "" }, RestoreOptions{}, []string{"has no live version", "Deploy first"}, false},
 		{"no snapshot", func(f *fakeRestore) { f.facts.List.Snapshot, f.facts.List.Snapshots = "", nil }, RestoreOptions{}, []string{"holds no snapshot of built-app's backups"}, false},
 		{"with-data, no hook", func(f *fakeRestore) { f.facts.RestoreHook = false }, RestoreOptions{Data: prompt.Yes}, []string{"--with-data, and built-app 1.0.0 has no restore hook", "pass --no-data"}, false},

@@ -267,7 +267,7 @@ neither.
 |---|---|---|---|---|---|---|---|
 | `/tmp/kasbah-apps-path.<pid>` | `server init`: the pointer's unprivileged stage | `sudo cp` | one path | umask | `deploy` | *transient*: removed after the copy | `internal/serverinit/run.go:142` |
 | `$TMPDIR/kasbah-dry-run.*/**` (default `/tmp`) | `server upgrade-traefik`, in the server binary: the candidate `traefik.yml` and `_shared.yml` for the dry-run container, the latter carrying the dry run's own `kasbah-dry-run-anchor` router | the dry-run container | JSON, which Traefik reads as YAML | dir `700`; files `644` | `deploy` | *transient*: removed on return and on HUP/INT/TERM | `internal/upgrade/remote.go:220` |
-| `/tmp/kasbah-backup-probe.*/**` | `server init --with-backup`: the delete-probe's scratch — `src/probe.txt`, `pass`, `env` (the storage credential) — in the server binary's `$TMPDIR` | the probe's restic containers | restic environment → `backup.md` (Credentials) | dir `700`; `pass`, `env` `600` | `deploy` | *transient*: removed when the probe returns and by the signal handlers (SIGHUP and SIGPIPE are ignored), with every probe container it named (`kasbah-probe-<pid>-<n>`, `docker rm -f`); SIGKILL leaves it | `internal/backup/remote.go:317`, cleanup `:330` |
+| `/tmp/kasbah-backup-probe.*/**` | `server init --with-backup`: the delete-probe's scratch — `src/probe.txt`, `pass`, `env` (the storage credential) — in the server binary's `$TMPDIR` | the probe's restic containers (`docker run --rm`, label `kasbah.role=backup-probe`) | restic environment → `backup.md` (Credentials) | dir `700`; `pass`, `env` `600` | `deploy` | *transient*: removed when the probe returns and by the signal handlers (SIGHUP and SIGPIPE are ignored), with every probe container it named (`kasbah-probe-<pid>-<n>`, `docker rm -f`); SIGKILL leaves it | `internal/backup/remote.go:317`, cleanup `:330` |
 | `/tmp/kasbah-restore-dump.*`, inside the `kasbah-backup` container | `kasbah remote backup restore-dump` (`kasbah restore`'s fetch): `restic dump` of the chosen tarball, read whole so its size and sha256 can be announced before its bytes | the same process, streaming it to the host | gzip'd tar | `600` | root (the container's) | *transient*: never on disk under a name — unlinked as soon as it is created, the dump reading and writing it through its open descriptor, so its space is freed however the process ends | `internal/backup/restore.go` |
 
 ## Docker objects
@@ -289,5 +289,8 @@ neither.
 Containers are compose's, named by the projects' own compose files, and so are
 a project's own networks (`<project>_<name>`) and the anonymous volumes its
 images declare. Stock
-images (`traefik:<tag>`, the mail images, `restic/restic`) are pulled, never
-removed.
+images (`traefik:<tag>`, the mail images, `restic/restic`) are pulled, and
+removed only by `server prune`: one an earlier kasbah named and this one no
+longer does, and `server init`'s Traefik once `upgrade-traefik` moved off it,
+each when no container uses it and no project's `compose.yml` names it
+(`cli.md` → `kasbah server prune`).

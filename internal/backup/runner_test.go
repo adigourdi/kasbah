@@ -587,7 +587,7 @@ func TestPush(t *testing.T) {
 	write(t, bin+"/docker", `#!/bin/sh
 printf '%s\n' "$*" >> "$LOG"
 case "$1" in
-inspect) [ -n "$STATE" ] || exit 1; echo "$STATE healthy 0 kasbah-backup" ;;
+inspect) [ -n "$STATE" ] || exit 1; echo "$STATE healthy 0 kasbah-backup ${WD:-/apps/.kasbah/backup}" ;;
 version) echo 27 ;;
 exec) echo pushing; echo restic-said >&2; exit "${EXEC_RC:-0}" ;;
 esac
@@ -597,11 +597,18 @@ esac
 	t.Setenv("LOG", logf)
 	for _, tc := range []struct{ state, rc, want string }{
 		{"running", "0", "push=ok\n"},
+		// A kasbah-backup container started from anywhere else is not the scheduler.
+		{"elsewhere", "0", "push=no-container\nstate=notours\n"},
 		{"running", "3", "push=failed\nrc=3\n"},
 		{"exited", "0", "push=no-container\nstate=exited\n"},
 		{"", "0", "push=no-container\nstate=absent\n"},
 	} {
 		t.Setenv("STATE", tc.state)
+		t.Setenv("WD", "")
+		if tc.state == "elsewhere" {
+			t.Setenv("STATE", "running")
+			t.Setenv("WD", "/opt/backup-copy")
+		}
 		t.Setenv("EXEC_RC", tc.rc)
 		os.Remove(logf)
 		var out, errb bytes.Buffer

@@ -140,6 +140,10 @@ func RunBackup(c BackupCtx, o BackupOptions) error {
 	case "ok":
 		c.Out.Info("  off-box: pushed through %s (its output above)", backup.Container)
 	case "no-container":
+		if kv["state"] == "notours" {
+			return cli.Fail("%s records off-box backups, and the container named %s there is not kasbah's: it is not the kasbah-backup compose project started from %s/.kasbah/backup — nothing was pushed", target, backup.Container, mk.AppsPath).Cont(
+				kept+".", notOurs(target))
+		}
 		return cli.Fail("%s records off-box backups, and the %s container is %s there — nothing was pushed", target, backup.Container, kv["state"]).Cont(
 			kept+".", "`kasbah server status "+target+"` shows the stack; `kasbah server init "+target+" --with-backup` reinstalls it")
 	case "failed":
@@ -177,4 +181,10 @@ func (s *SSH) Push(apps, name string) (map[string]string, error) {
 			"the step was truncated, or the server's kasbah rejected it — raw output:"), out)
 	}
 	return kv, nil
+}
+
+// notOurs is the way out when another container holds the scheduler's name:
+// clearing the name first is what lets init start kasbah's under it.
+func notOurs(target string) string {
+	return "remove or rename that container, then `kasbah server init " + target + " --with-backup`; `kasbah server status " + target + "` shows it"
 }

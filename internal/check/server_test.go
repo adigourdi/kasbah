@@ -732,7 +732,7 @@ func TestServerB01(t *testing.T) {
 			"FAILED 4h ago (repositories backed up: demo) — the nightly backup job failed: no Docker socket at /var/run/docker.sock; docker logs kasbah-backup says why", 6},
 		{"overdue", "dir", "file", rec("state=running", "deadline=1999999000", "last_run_finished=1999983600", "last_run_status=ok"), "running", "✗ the backup scheduler on deploy@vps is 16m past its own deadline in state 'running' — a run that never returned, or a sleep that never woke, so nothing is being shipped off-box (the last run finished 4h ago)", 6},
 		{"stopped scheduler is asked first", "dir", "file", ok, "exited", "✗ the backup scheduler on deploy@vps is exited, so nothing is being shipped off-box — its record still reads 'ok', last run 4h ago", 6},
-		{"notours", "dir", "file", ok, "notours", "✗ the container named kasbah-backup on deploy@vps is not in the kasbah-backup compose project", 6},
+		{"notours", "dir", "file", ok, "notours", "✗ the container named kasbah-backup on deploy@vps was not started as the kasbah-backup compose project from /apps/.kasbah/backup", 6},
 		{"nodaemon", "dir", "file", ok, "nodaemon", "⚠ the docker daemon on deploy@vps is not answering, so whether its backup scheduler is running cannot be read", 0},
 		{"nodocker", "dir", "file", ok, "nodocker", "⚠ there is no docker on deploy@vps, so whether its backup scheduler is running cannot be read — the record says 'ok'", 0},
 	} {

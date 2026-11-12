@@ -1153,7 +1153,7 @@ func (c *checker) b01Verdict(r *backuprec.Record, b backuprec.Facts, clock strin
 		c.warnf("the docker daemon on %s is not answering, so whether its backup scheduler is running cannot be read — nothing here says it is down (docker said: %s)", s.target, or(s.r.DockerError, "nothing"))
 		return
 	case "notours":
-		c.failf("the container named kasbah-backup on %s is not in the kasbah-backup compose project, so kasbah's scheduler is not the thing running under that name and nothing is shipping this server off-box", s.target)
+		c.failf("the container named kasbah-backup on %s was not started as the kasbah-backup compose project from %s/.kasbah/backup, so it is not kasbah's scheduler and nothing is shipping this server off-box", s.target, s.apps)
 		return
 	default:
 		last := ""

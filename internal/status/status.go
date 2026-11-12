@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -59,7 +60,8 @@ Flags:
 It also prints the filesystem behind the apps and data paths, the mail stack,
 the backup stack with its last run, each project's domain out of its Traefik
 fragment and what its deploys or rollbacks left that may hold a copy of .env,
-and what Traefik's ACME store says about every hostname on the server.
+what Traefik's ACME store says about every hostname on the server, and every
+container kasbah does not manage, with its image, state and health.
 `
 }
 
@@ -359,6 +361,7 @@ func (x *run) print() {
 	x.printBackup()
 	x.p("\n")
 	x.printProjects()
+	x.printForeign()
 }
 
 // HumanKB is a df size in KiB, one decimal past K.
@@ -624,9 +627,9 @@ func (x *run) printBackup() {
 	case "nodaemon":
 		x.p("  %-16s unknown — the docker daemon did not answer\n", "kasbah-backup")
 	case "notours":
-		x.p("  %-16s a container of that name is running here and is not in the kasbah-backup\n", "kasbah-backup")
-		x.p("  %-16s compose project — kasbah's scheduler cannot take a name something else\n", "")
-		x.p("  %-16s already holds, so nothing is being shipped off-box\n", "")
+		x.p("  %-16s a container of that name is here and is not kasbah's kasbah-backup compose\n", "kasbah-backup")
+		x.p("  %-16s project run from %s/.kasbah/backup — kasbah's scheduler cannot take a name\n", "", x.apps)
+		x.p("  %-16s something else already holds, so nothing is being shipped off-box\n", "")
 	default:
 		x.p("  %-16s %s (%s)%s\n", "kasbah-backup", st.State, or(st.Health, "none"), restartsClause(st.Restarts))
 	}
@@ -734,7 +737,7 @@ func (x *run) printTraefik() {
 		if !x.r.HaveDocker || x.r.DockerError != "" || x.r.DockerServer == "" {
 			x.p("Traefik: unknown — docker did not answer\n")
 		} else {
-			x.p("Traefik: absent — no container in compose project 'traefik'\n")
+			x.p("Traefik: absent — no container in compose project 'traefik' run from %s/traefik\n", x.apps)
 		}
 		return
 	}
@@ -818,6 +821,31 @@ func (x *run) printProjects() {
 		x.printHosts(p)
 		x.printContainers(p)
 		x.printLeftovers(p)
+	}
+}
+
+// printForeign is every container kasbah does not manage, by name; nothing
+// when there is none, one line when docker could not list them.
+func (x *run) printForeign() {
+	if x.r.ForeignError != "" {
+		x.p("\nNot kasbah's: unknown — docker could not list the containers: %s\n", x.r.ForeignError)
+	}
+	if len(x.r.Foreign) == 0 {
+		return
+	}
+	fs := slices.Clone(x.r.Foreign)
+	slices.SortStableFunc(fs, func(a, b Foreign) int { return strings.Compare(a.Name, b.Name) })
+	wn, wi, ws := 14, 0, 0
+	for _, f := range fs {
+		wn, wi, ws = max(wn, len(f.Name)), max(wi, len(f.Image)), max(ws, len(f.State))
+	}
+	x.p("\nNot kasbah's:\n")
+	for _, f := range fs {
+		h := f.Health
+		if h == "" || h == "none" {
+			h = "-"
+		}
+		x.p("  %-*s %-*s %-*s %s\n", wn, f.Name, wi, f.Image, ws, or(f.State, "?"), h)
 	}
 }
 

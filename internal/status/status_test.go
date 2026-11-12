@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -20,10 +21,12 @@ import (
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/acme"
+	"github.com/adigourdi/kasbah/internal/backup"
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/upgrade"
 )
 
 func TestParse(t *testing.T) {
@@ -247,7 +250,7 @@ func TestDocker(t *testing.T) {
 	r = base()
 	r.Traefik = Traefik{}
 	out, _, _ = runStatus(t, r)
-	has(t, out, "Traefik: absent — no container in compose project 'traefik'")
+	has(t, out, "Traefik: absent — no container in compose project 'traefik' run from /apps/traefik")
 	r.Traefik = Traefik{Present: true, State: "running"}
 	out, _, _ = runStatus(t, r)
 	has(t, out, "Traefik: unknown — docker named a container and then did not describe it\n  state running / health <none> / image <none>")
@@ -436,7 +439,7 @@ func TestBackupLines(t *testing.T) {
 		{"unreadable", backuprec.Facts{Dir: "dir", Record: "unreadable", Container: backuprec.Container{State: "nodocker"}},
 			[]string{"  kasbah-backup    unknown — there is no docker on this server\n  last run         unknown — /apps/.kasbah/backup/state/status cannot be read by the ssh user\n"}},
 		{"unparsed", backuprec.Facts{Dir: "dir", Record: "file", RecordB64: rec("deadline=1"), Container: backuprec.Container{State: "notours"}},
-			[]string{"  kasbah-backup    a container of that name is running here and is not in the kasbah-backup\n                   compose project — kasbah's scheduler cannot take a name something else\n                   already holds, so nothing is being shipped off-box\n",
+			[]string{"  kasbah-backup    a container of that name is here and is not kasbah's kasbah-backup compose\n                   project run from /apps/.kasbah/backup — kasbah's scheduler cannot take a name\n                   something else already holds, so nothing is being shipped off-box\n",
 				"  last run         unknown — /apps/.kasbah/backup/state/status is not a record this kasbah reads (it carries no scheduler state)\n"}},
 		{"another clock", backuprec.Facts{Dir: "dir", Record: "file", RecordB64: rec("state=sleeping", "deadline=99999999999"), Now: "x", Container: backuprec.Container{State: "running"}},
 			[]string{"plus 42s jitter (judged against this machine's clock: the probe did not report the server's)\n"}},
@@ -715,4 +718,137 @@ func TestCollectLeftovers(t *testing.T) {
 	if len(got["linked"].Unpacked) != 1 || got["Caps"].Any() || got["Caps"].Unpacked == nil {
 		t.Errorf("project rule: %+v", got)
 	}
+}
+
+func TestForeignSection(t *testing.T) {
+	r := base()
+	r.Foreign = []Foreign{
+		{Name: "zed", Image: "nginx:alpine", State: "exited", Health: "none"},
+		{Name: "a-long-container-name", Image: "postgres:16", State: "running", Health: "unhealthy"},
+		{Name: "Upper", Image: "redis:7", State: "running", Health: "healthy"},
+	}
+	out, _, _ := runStatus(t, r)
+	has(t, out, "  none — no project directory under /apps\n\nNot kasbah's:\n"+
+		"  Upper                 redis:7      running healthy\n"+
+		"  a-long-container-name postgres:16  running unhealthy\n"+
+		"  zed                   nginx:alpine exited  -\n")
+	if !strings.HasSuffix(out, "exited  -\n") {
+		t.Errorf("the section is not the last:\n%s", out)
+	}
+	if out, _, _ := runStatus(t, base()); strings.Contains(out, "Not kasbah's") {
+		t.Errorf("an empty section was printed:\n%s", out)
+	}
+}
+
+func TestForeign(t *testing.T) {
+	apps := t.TempDir()
+	for _, d := range []string{"demo", "data", "traefik", "mail", ".kasbah/backup"} {
+		os.MkdirAll(filepath.Join(apps, d), 0o755)
+	}
+	link := filepath.Join(t.TempDir(), "apps")
+	os.Symlink(apps, link)
+	row := func(id, name, image, state, project, wdir, launcher, role string) string {
+		return strings.Join([]string{id, name, image, state, project, wdir, launcher, role}, "\t")
+	}
+	ps := strings.Join([]string{
+		row("1", "demo-web-1", "demo-web:current", "running", "demo", apps+"/demo", "", ""),
+		row("2", "traefik", "traefik:v3.7.10", "running", "traefik", apps+"/traefik", "", ""),
+		row("3", "mail-dms", "dms", "running", "mail", apps+"/mail", "", ""),
+		row("4", "kasbah-backup", "restic", "running", "kasbah-backup", apps+"/.kasbah/backup", "", ""),
+		row("5", "kasbah-backup-launcher", "restic", "exited", "", "", "1", ""),
+		row("6", "kasbah-traefik-dry-run-x", "traefik:v3.8", "running", "", "", "", "traefik-dry-run"),
+		row("7", "elsewhere-demo", "demo-web:current", "running", "demo", "/srv/demo", "", ""),
+		row("8", "plain", "busybox", "exited", "", "", "", ""),
+		row("9", "data-db", "postgres:16", "running", "data", apps+"/data", "", ""),
+		row("10", "mail-other", "dms", "running", "mail", "/opt/mail", "", ""),
+		row("11", "other-1", "nginx", "restarting", "other", "/opt/other", "", ""),
+	}, "\r\n") + "\n"
+	var inspected []string
+	docker := func(args ...string) (string, int) {
+		if args[0] == "ps" {
+			return ps, 0
+		}
+		inspected = args[3:]
+		return "7 none\n8 unhealthy\n11 starting\n", 0
+	}
+	got, _ := foreign(Stacks(link, link+"/data"), docker)
+	want := []Foreign{
+		{"elsewhere-demo", "demo-web:current", "running", "none"},
+		{"plain", "busybox", "exited", "unhealthy"},
+		{"data-db", "postgres:16", "running", "none"},
+		{"mail-other", "dms", "running", "none"},
+		{"other-1", "nginx", "restarting", "starting"},
+	}
+	if g, w := fmt.Sprint(got), fmt.Sprint(want); g != w {
+		t.Errorf("foreign:\n got %s\nwant %s", g, w)
+	}
+	if strings.Join(inspected, " ") != "7 8 9 10 11" {
+		t.Errorf("inspected %v", inspected)
+	}
+	for _, l := range []string{backup.ProbeLabel, upgrade.DryLabel} {
+		if !strings.HasPrefix(l, RoleLabel+"=") {
+			t.Errorf("%s is not a %s label, so status calls its container not kasbah's", l, RoleLabel)
+		}
+	}
+}
+
+// TestOwnedOnce: a container labelled demo, traefik or mail started from
+// another directory is in no section of kasbah's, only in "Not kasbah's".
+func TestOwnedOnce(t *testing.T) {
+	apps := t.TempDir()
+	for _, d := range []string{"demo", "traefik", "mail", ".kasbah/backup"} {
+		os.MkdirAll(filepath.Join(apps, d), 0o755)
+	}
+	bin := t.TempDir()
+	os.WriteFile(filepath.Join(bin, "docker"), []byte(`#!/bin/sh
+a="$*"
+case "$a" in
+version*) echo 27.0.1; exit 0 ;;
+"compose version"*) echo 2.29.0; exit 0 ;;
+esac
+if [ "$1" = ps ]; then
+	case "$a" in
+	*project=demo*) printf 'd2\trunning\t/srv/demo\nd1\texited\t%s\n' "$APPS/demo" ;;
+	*project=traefik*) printf 't2\trunning\t/opt/traefik\nt1\trunning\t%s\n' "$APPS/traefik" ;;
+	*project=mail*service=mail-dms*) printf 'm1\trunning\t/opt/mail\n' ;;
+	*project=*) ;;
+	*) printf 'd1\tdemo-web-1\tdemo-web\texited\tdemo\t%s\t\t\nd2\telsewhere-demo\tdemo-web\trunning\tdemo\t/srv/demo\t\t\nt1\ttraefik\ttraefik:v3\trunning\ttraefik\t%s\t\t\nt2\trogue\ttraefik:v3\trunning\ttraefik\t/opt/traefik\t\t\nm1\tmail-dms\tdms\trunning\tmail\t/opt/mail\t\t\n' "$APPS/demo" "$APPS/traefik" ;;
+	esac
+	exit 0
+fi
+[ "$1" = inspect ] || exit 1
+f="$3"; shift 3
+for id; do
+	case $id in d1) n=demo-web-1 ;; d2) n=elsewhere-demo ;; t1) n=traefik ;; t2) n=rogue ;; m1) n=mail-dms ;; *) n=$id ;; esac
+	case "$f" in
+	'{{.Name}}') echo "/$n" ;;
+	'{{.Name}} '*) echo "/$n exited none" ;;
+	'{{.Id}}'*) echo "$id none" ;;
+	*) echo running ;;
+	esac
+done
+`), 0o755)
+	t.Setenv("PATH", bin+":/usr/bin:/bin")
+	t.Setenv("APPS", apps)
+	r := Collect(apps)
+	if len(r.Projects) != 1 || r.Projects[0].Total != 1 || r.Projects[0].Running != 0 || fmt.Sprint(r.Projects[0].Containers) != "[{demo-web-1 exited none}]" {
+		t.Errorf("projects: %+v", r.Projects)
+	}
+	if r.Traefik.Container != "traefik" || r.MailDMS.State != "absent" {
+		t.Errorf("traefik %+v, mail %+v", r.Traefik, r.MailDMS)
+	}
+	var names []string
+	for _, f := range r.Foreign {
+		names = append(names, f.Name)
+	}
+	if strings.Join(names, " ") != "elsewhere-demo rogue mail-dms" || r.ForeignError != "" {
+		t.Errorf("foreign: %v %q", names, r.ForeignError)
+	}
+
+	// docker failing to list the containers is said, not passed over.
+	got, why := foreign(nil, func(...string) (string, int) { return "Cannot connect to the Docker daemon\n", 1 })
+	r = base()
+	r.Foreign, r.ForeignError = got, why
+	out, _, _ := runStatus(t, r)
+	has(t, out, "\nNot kasbah's: unknown — docker could not list the containers: Cannot connect to the Docker daemon\n")
 }

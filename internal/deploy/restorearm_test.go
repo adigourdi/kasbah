@@ -489,8 +489,13 @@ func TestRestoreListArm(t *testing.T) {
 			logf, strings.Join(append([]string{apps}, args...), " "))
 	}
 	state := "running"
-	schedulerState = func() string { return state }
 	apps := filepath.Dir(r.dir)
+	schedulerState = func(a string) string {
+		if a != apps {
+			t.Errorf("scheduler judged under %q, want %q", a, apps)
+		}
+		return state
+	}
 	var out, errb bytes.Buffer
 	if rc := Remote([]string{"restore-list", apps, "demo", "abcd", "--from-path=/srv/b"}, nil, &out, &errb); rc != 0 {
 		t.Fatalf("rc %d %s", rc, errb.String())
