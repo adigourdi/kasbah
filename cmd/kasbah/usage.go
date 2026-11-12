@@ -41,6 +41,7 @@ Commands:
   migrate server USER@HOST [--yes] [--undo]  Move a server to this kasbah's major, or undo the last move.
   self-update [vN | vN.M | vN.M.P] [--pre] [--yes]
                                              Install a released kasbah beside this one and repoint the symlink.
+  version                                    Print this kasbah's version.
   server init USER@HOST [flags]              Prepare a VPS to host projects.
   server status USER@HOST                    Report what a prepared VPS is running.
   server prune USER@HOST [--yes]             Remove image tags outside the retention window.
@@ -88,8 +89,14 @@ Subcommands:
 Run ` + "`kasbah server <subcommand> --help`" + ` for its flags.
 `
 
-// topLevel answers what no command handler took: usage, --version, `server`
-// with no or an unknown subcommand, and unknown commands.
+const versionUsage = `Usage: kasbah version
+
+Prints this kasbah's version and the manifest schema it writes, as --version
+does: kasbah <version> (schema <n>), or "kasbah (unstamped build)".
+`
+
+// topLevel answers what no command handler took: usage, --version and
+// `version`, `server` with no or an unknown subcommand, and unknown commands.
 func topLevel(out *cli.Output, build string, args []string) int {
 	if len(args) == 0 {
 		fmt.Fprint(out.Stdout, usage(build))
@@ -99,7 +106,19 @@ func topLevel(out *cli.Output, build string, args []string) int {
 	case "-h", "--help":
 		fmt.Fprint(out.Stdout, usage(build))
 		return cli.ExitOK
-	case "-v", "--version":
+	case "-v", "--version", "version":
+		if args[0] == "version" && len(args) > 1 {
+			a := strings.TrimSuffix(args[1], "\r")
+			switch {
+			case a == "-h" || a == "--help":
+				fmt.Fprint(out.Stdout, versionUsage)
+				return cli.ExitOK
+			case strings.HasPrefix(a, "-"):
+				f, _, _ := strings.Cut(a, "=")
+				return out.Report(cli.Fail("version: unknown flag '%s' — version takes none", f))
+			}
+			return out.Report(cli.Fail("version: unexpected argument '%s' — version takes none", a))
+		}
 		if build == "" {
 			fmt.Fprintln(out.Stdout, "kasbah (unstamped build)")
 		} else {

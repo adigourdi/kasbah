@@ -19,6 +19,11 @@ func TestTopLevel(t *testing.T) {
 		{[]string{"--help"}, 0, "init-project [--name=<n>]", ""},
 		{[]string{"--version"}, 0, "kasbah 1.0.0 (schema 1)\n", ""},
 		{[]string{"-v"}, 0, "kasbah 1.0.0 (schema 1)\n", ""},
+		{[]string{"version"}, 0, "kasbah 1.0.0 (schema 1)\n", ""},
+		{[]string{"version", "--short"}, 1, "", "version: unknown flag '--short'"},
+		{[]string{"version", "1.0"}, 1, "", "version: unexpected argument '1.0'"},
+		{[]string{"version", "--help"}, 0, "Usage: kasbah version", ""},
+		{[]string{"version", "-h"}, 0, "Usage: kasbah version", ""},
 		{[]string{"server"}, 1, "", "server: no subcommand given (expected: init, status, prune, backup-prune, destroy, upgrade-traefik, add-mail-domain, mail-setup-guide)"},
 		{[]string{"server", "--help"}, 0, "Usage: kasbah server <subcommand>", ""},
 		{[]string{"server", "-h"}, 0, "  init USER@HOST [flags]", ""},
@@ -32,9 +37,11 @@ func TestTopLevel(t *testing.T) {
 			t.Errorf("%q: exit %d, stdout %q, stderr %q", tt.args, code, so.String(), se.String())
 		}
 	}
-	var so bytes.Buffer
-	if topLevel(&cli.Output{Stdout: &so, Stderr: &so}, "", []string{"--version"}); so.String() != "kasbah (unstamped build)\n" {
-		t.Errorf("unstamped --version: %q", so.String())
+	for _, a := range []string{"--version", "version"} {
+		var so bytes.Buffer
+		if topLevel(&cli.Output{Stdout: &so, Stderr: &so}, "", []string{a}); so.String() != "kasbah (unstamped build)\n" {
+			t.Errorf("unstamped %s: %q", a, so.String())
+		}
 	}
 }
 
@@ -42,7 +49,7 @@ func TestTopLevel(t *testing.T) {
 // subcommand in both lists.
 func TestUsageListsEveryCommand(t *testing.T) {
 	u := usage("1.0.0")
-	for _, c := range []string{"init-project", "check", "build-push", "deploy", "rollback", "backup", "restore", "drop", "history", "pending", "changelog", "env", "logs", "exec", "migrate"} {
+	for _, c := range []string{"init-project", "check", "build-push", "deploy", "rollback", "backup", "restore", "drop", "history", "pending", "changelog", "env", "logs", "exec", "migrate", "version"} {
 		if !strings.Contains(u, "\n  "+c+" ") {
 			t.Errorf("usage does not list %s", c)
 		}

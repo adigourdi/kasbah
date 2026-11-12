@@ -7,9 +7,10 @@ Two levels of commands:
   root. Read `./kasbah.yml`. Error if missing.
 
 `kasbah`, `kasbah -h` and `kasbah --help` print the command list and exit 0;
-`kasbah --version` (`-v`) prints the tool and the manifest schema it writes —
-`kasbah 1.0.0 (schema 1)`. An unknown command, or `kasbah server` with a missing
-or unknown subcommand, names itself and exits 1.
+`kasbah version`, `kasbah --version` and `-v` print the tool and the manifest
+schema it writes — `kasbah 1.0.0 (schema 1)` — and exit 0; `kasbah version`
+takes no arguments other than `-h`/`--help`. An unknown command, or `kasbah server` with a missing or
+unknown subcommand, names itself and exits 1.
 
 ```
 $ cd ~/some/random/path
