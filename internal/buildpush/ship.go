@@ -15,6 +15,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
 )
@@ -68,29 +69,68 @@ type shipped struct {
 	compressed bool
 	// loadFailed: the stream arrived whole and the server's load failed.
 	loadFailed bool
+	// same is the images the server already held as this build, not sent;
+	// replaced the server's builds of the tags this stream replaced.
+	same     map[string]bool
+	replaced map[string]identity
+}
+
+// refsOf is the images' refs, each once: two services may build one image.
+func refsOf(images []Image) []string {
+	var refs []string
+	seen := map[string]bool{}
+	for _, im := range images {
+		if !seen[im.Ref] {
+			seen[im.Ref] = true
+			refs = append(refs, im.Ref)
+		}
+	}
+	return refs
 }
 
 // errIncomplete is a load the server could not unpack: under the containerd
 // store docker load exits 0 even then, so `remote load` reports it.
 var errIncomplete = errors.New("incomplete")
 
-// ship sends every image in one stream, minus the layers the server says it
-// holds; a server that cannot load the images on those gets them whole.
-func ship(out *cli.Output, conn *ssh.Conn, apps string, images []Image) (shipped, error) {
-	refs := make([]string, len(images))
-	for i, im := range images {
-		refs[i] = im.Ref
+// ship sends in one stream every image the server does not already hold as
+// this build, minus the layers it says it holds; a server that cannot load
+// the images on those gets them whole. A tag the server holds as another
+// build is replaced only when replace, or the question it asks, says so.
+func ship(out *cli.Output, conn *ssh.Conn, apps string, images []Image, p *prompt.Prompter, replace prompt.Given, again []string) (shipped, error) {
+	refs := refsOf(images)
+	local := map[string]identity{}
+	for _, r := range refs {
+		b, found, err := inspectRef(r)
+		if err == nil && !found {
+			err = fmt.Errorf("no image %s here", r)
+		}
+		if err != nil {
+			return shipped{}, cli.Fail("could not read the built image %s (%v)", r, err)
+		}
+		local[r] = b
 	}
-	skip, diffs := serverLayers(out, conn, apps, refs)
-	drop, known := dropSet(out, refs, skip, diffs)
-	st, err := stream(conn, apps, refs, drop, known)
+	v, err := askServer(out, conn, apps, refs)
+	if err != nil {
+		return shipped{}, err
+	}
+	pl, err := planTags(out, p, conn.Target.String(), refs, local, v.tags, replace, again)
+	if err != nil {
+		return shipped{}, err
+	}
+	if len(pl.send) == 0 {
+		return shipped{same: pl.same}, nil
+	}
+	skip, diffs := v.held(pl.send)
+	drop, known := dropSet(out, pl.send, skip, diffs)
+	st, err := stream(conn, apps, pl.send, drop, known)
 	if err != nil && st.loadFailed && st.skipped > 0 {
 		out.Warn("%s could not load the images on the layers it reported — sending them whole", conn.Target)
 		first := st.sent
-		st, err = stream(conn, apps, refs, nil, nil)
+		st, err = stream(conn, apps, pl.send, nil, nil)
 		st.abandoned = first
 	}
 	st.layers = len(diffs)
+	st.same, st.replaced = pl.same, pl.replaced
 	if errors.Is(err, errIncomplete) {
 		err = cli.Fail("%s could not unpack the images it loaded (see docker's error above)", conn.Target)
 	}
@@ -104,41 +144,84 @@ type serverHeld struct {
 	names map[string][]string
 }
 
-// serverLayers is what the server already holds — skippable diffIDs and their
-// names — asked in one bounded round trip, and every diffID the images carry.
-// Any answer that cannot be trusted means nothing is skipped.
-func serverLayers(out *cli.Output, conn *ssh.Conn, apps string, refs []string) (skip serverHeld, known map[string]bool) {
+// serverView is the server's one answer before the stream: the build each tag
+// holds there, and what it holds of the images' layers.
+type serverView struct {
+	tags map[string]identity
+	// diffs is each image's diffIDs; nil when they could not be read here.
+	diffs map[string][]string
+	// have is the layer answer, nil when it cannot be trusted.
+	have *answer
+}
+
+// held is the skippable diffIDs and their names for the images in refs, and
+// every diffID those images carry.
+func (v serverView) held(refs []string) (serverHeld, map[string]bool) {
+	if v.diffs == nil {
+		return serverHeld{}, nil
+	}
+	var images [][]string
+	known := map[string]bool{}
+	for _, r := range refs {
+		images = append(images, v.diffs[r])
+		for _, d := range v.diffs[r] {
+			known[d] = true
+		}
+	}
+	if v.have == nil {
+		return serverHeld{}, known
+	}
+	return serverHeld{ids: skippable(images, v.have.have), names: v.have.names}, known
+}
+
+// askServer is one bounded round trip: the build each of refs tags on the
+// server, which must be answered, and its skippable layers and their names.
+// A layer answer that cannot be trusted means nothing is skipped.
+func askServer(out *cli.Output, conn *ssh.Conn, apps string, refs []string) (serverView, error) {
+	var v serverView
 	diffs, err := rootFS(refs)
 	if err != nil {
 		out.Warn("could not read the built images' layers (%v) — sending them whole", err)
-		return serverHeld{}, nil
+	}
+	args := []string{"layers", apps}
+	for _, r := range refs {
+		args = append(args, "--image="+r)
 	}
 	var chains []string
 	known, asked := map[string]bool{}, map[string]bool{}
-	for _, d := range diffs {
-		for i, c := range chainIDs(d) {
-			known[d[i]] = true
-			if !asked[c] {
-				asked[c] = true
-				chains = append(chains, c)
+	if diffs != nil {
+		v.diffs = map[string][]string{}
+		for i, d := range diffs {
+			v.diffs[refs[i]] = d
+			for j, c := range chainIDs(d) {
+				known[d[j]] = true
+				if !asked[c] {
+					asked[c] = true
+					chains = append(chains, c)
+				}
 			}
 		}
 	}
-	if len(chains) == 0 {
-		return serverHeld{}, known
-	}
-	bin := serverbin.Path(apps)
-	raw, err := conn.Run(serverbin.Bounded(bin, serverbin.RunTimeout, append([]string{"layers", apps}, chains...)...)...)
-	if err != nil {
-		out.Warn("could not ask %s which layers it holds (the remote step exited %d) — sending the images whole", conn.Target, ssh.ExitCode(err))
-		return serverHeld{}, known
+	raw, rerr := conn.Run(serverbin.Bounded(serverbin.Path(apps), serverbin.RunTimeout, append(args, chains...)...)...)
+	v.tags, err = parseTags(raw, refs)
+	switch {
+	case err != nil && rerr != nil:
+		return v, cli.Fail("could not ask %s which builds it holds under these tags (the remote step exited %d) — nothing was sent", conn.Target, ssh.ExitCode(rerr))
+	case err != nil:
+		return v, cli.Fail("%s's answer about the tags it holds was not usable (%v) — nothing was sent", conn.Target, err)
+	case diffs == nil || len(chains) == 0:
+		return v, nil
+	case rerr != nil:
+		out.Warn("could not ask %s which layers it holds (the remote step exited %d) — sending the images whole", conn.Target, ssh.ExitCode(rerr))
+		return v, nil
 	}
 	a, err := parseHave(raw, chains, known)
 	if err != nil {
 		out.Warn("%s's layer list was not usable (%v) — sending the images whole", conn.Target, err)
-		return serverHeld{}, known
+		return v, nil
 	}
-	return serverHeld{ids: skippable(diffs, a.have), names: a.names}, known
+	v.have = &a
+	return v, nil
 }
 
 // dropSet is the blob names the filter leaves out, and every name known for a

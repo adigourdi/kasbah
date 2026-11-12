@@ -85,6 +85,17 @@ case "${1:-}" in
     # Layer lists, by image name or id, from $STUB_ROOTFS; the server's own
     # images are the srv-* ids its image ls lists.
     image)
+        # An image's build: here, one derived from its name; on the server,
+        # the tags $STUB_SERVER_TAGS holds, else none.
+        if [ "${2:-} ${3:-} ${4:-}" = "inspect --format {{json .}}" ]; then
+            if [ -n "${STUB_ON_SERVER:-}" ]; then
+                cat "${STUB_SERVER_TAGS:-/nonexistent}/${5//:/_}" 2>/dev/null && exit 0
+                echo "Error response from daemon: No such image: $5" >&2; exit 1
+            fi
+            printf '{"Id":"sha256:%s","Created":"2026-11-12T10:00:00Z","Config":{"Cmd":["%s"]}}\n' \
+                "$(printf '%s' "$5" | sha256sum | cut -d' ' -f1)" "$5"
+            exit 0
+        fi
         if [ -n "${STUB_ROOTFS:-}" ] && [ "${2:-}" = ls ]; then cat "$STUB_ROOTFS/ids"; exit 0; fi
         if [ -n "${STUB_ROOTFS:-}" ] && [ "${2:-} ${3:-}" = "inspect --format" ]; then
             shift 4
@@ -114,6 +125,7 @@ for a; do [ "$a" = -n ] && exec </dev/null; done
 [ "${SSH_RC:-0}" = 0 ] || exit "$SSH_RC"
 last="${!#}"
 [ "$last" = true ] && exit 0
+export STUB_ON_SERVER=1
 eval "set -- $last"
 if [ "$1 $2" = "sh -s" ]; then
     # The bootstrap probe: answered from the scratch tree, with no pointer.
@@ -182,7 +194,7 @@ bp() (
     env PATH="$stub_dir:$PATH" HOME="$fakehome" TMPDIR="$scratch" \
         DOCKER_LOG="$DOCKER_LOG" SSH_LOG="$SSH_LOG" SSH_STDIN_LOG="$SSH_STDIN_LOG" \
         RSYNC_LOG="$RSYNC_LOG" LOADED="$LOADED" FAKE_APPS="$FAKE_APPS" \
-        "$KASBAH_BIN" build-push "$@" </dev/null
+        STUB_ON_SERVER= "$KASBAH_BIN" build-push "$@" </dev/null
 )
 
 run() {
@@ -563,6 +575,80 @@ STUB_SAVE_TAR="$lay/save.tar" STUB_ROOTFS="$lay/rootfs" STUB_SERVER_INSPECT_RC=1
 assert '[ "$rc" = "0" ]' "a server that cannot list its layers still gets the images (exit $rc: $err)"
 assert 'grep -qF "$hb" <<<"$(loaded_names)"' "every layer of them (loaded: $(loaded_names))"
 assert 'grep -qF "which layers it holds" <<<"$err"' "with a note that nothing was skipped (said '$err')"
+
+# --- A tag the server already holds -------------------------------------------------------
+# Same build: not sent. Another build: replaced only when asked to, and nothing
+# is sent before the answer.
+tags="$tmpdir/server-tags"
+mkdir -p "$tags"
+local_build() {
+    printf '{"Id":"sha256:%s","Created":"2026-11-12T10:00:00Z","Config":{"Cmd":["%s"]}}\n' \
+        "$(printf '%s' "$1" | sha256sum | cut -d' ' -f1)" "$1"
+}
+other_id="sha256:$(printf other | sha256sum | cut -d' ' -f1)"
+local_build built-app-web:1.4.2 > "$tags/built-app-web_1.4.2"
+local_build built-app-worker:1.4.2 > "$tags/built-app-worker_1.4.2"
+web_id="$(printf '%s' built-app-web:1.4.2 | sha256sum | cut -c1-12)"
+
+STUB_SERVER_TAGS="$tags" run "deploy@vps"; rc=$?
+assert '[ "$rc" = "0" ]' "a server holding both tags as this build is not an error (exit $rc: $err)"
+assert '! grep -qF "'"'"'remote'"'"' '"'"'load'"'"'" "$SSH_LOG" && ! grep -q "^save " "$DOCKER_LOG"' \
+    "and nothing is saved or loaded (ssh log: $(cat "$SSH_LOG"))"
+assert 'grep -qF "built-app 1.4.2 is already on deploy@vps, the same build — nothing was sent" <<<"$err" && grep -qF "stream:  none" <<<"$err"' \
+    "the summary says so ($err)"
+assert '[ "$(grep -c "^image inspect --format {{json .}}" "$DOCKER_LOG")" = "4" ]' \
+    "one inspect per image on each end (log: $(cat "$DOCKER_LOG"))"
+
+rm "$tags/built-app-worker_1.4.2"
+STUB_SERVER_TAGS="$tags" run "deploy@vps"; rc=$?
+saveline="$(grep '^save ' "$DOCKER_LOG")"
+assert '[ "$rc" = "0" ] && [ "$saveline" = "save built-app-worker:1.4.2" ]' \
+    "a tag the server lacks is shipped alone (exit $rc, save '$saveline': $err)"
+assert 'grep -qF "built-app-web:1.4.2 (service built-app-web) — already on the server, the same build, not sent" <<<"$err"' \
+    "and the one it holds is named as not sent ($err)"
+
+printf '{"Id":"%s","Created":"2026-10-01T09:00:00Z","Config":{"Cmd":["old"]}}\n' "$other_id" > "$tags/built-app-web_1.4.2"
+STUB_SERVER_TAGS="$tags" run "deploy@vps"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF -- "--replace-tag or --no-replace-tag" <<<"$err"' \
+    "another build under the tag, without a terminal or a flag, fails naming both flags (exit $rc: $err)"
+assert 'grep -qF "deploy@vps has ${other_id:7:12} (created 2026-10-01T09:00:00Z), this build is $web_id" <<<"$err"' \
+    "naming the server's image and this one ($err)"
+assert '! grep -qF "'"'"'remote'"'"' '"'"'load'"'"'" "$SSH_LOG" && ! grep -q "^save " "$DOCKER_LOG"' \
+    "having sent nothing (ssh log: $(cat "$SSH_LOG"))"
+
+STUB_SERVER_TAGS="$tags" run "deploy@vps" --no-replace-tag; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "deploy@vps already holds built-app-web:1.4.2 as another build — nothing was sent" <<<"$err"' \
+    "--no-replace-tag stops with exit 1 (exit $rc: $err)"
+assert 'grep -qF "${other_id:7:12}" <<<"$err" && grep -qF "$web_id" <<<"$err" && ! grep -qF "'"'"'remote'"'"' '"'"'load'"'"'" "$SSH_LOG"' \
+    "naming both images and sending nothing ($err)"
+
+STUB_SERVER_TAGS="$tags" run "deploy@vps" --replace-tag; rc=$?
+saveline="$(grep '^save ' "$DOCKER_LOG")"
+assert '[ "$rc" = "0" ] && [ "$saveline" = "save built-app-web:1.4.2 built-app-worker:1.4.2" ]' \
+    "--replace-tag ships both images (exit $rc, save '$saveline': $err)"
+assert 'grep -qF "built-app-web:1.4.2 (service built-app-web) — replaced the server'"'"'s ${other_id:7:12}" <<<"$err"' \
+    "and says whose tag it replaced ($err)"
+
+# Two services building one image: asked about, sent and counted once.
+keep="$projdir"
+projdir="$(make shared built-app v1.4.2)"
+sed -i 's/^    image: built-app-worker:current$/    image: built-app-web:current/' "$projdir/compose.prod.yml"
+recommit v1.4.2
+assert '[ "$(grep -c "image: built-app-web:current" "$projdir/compose.prod.yml")" = "2" ]' \
+    "both built services name one image — else the cases below prove nothing"
+shared_tags="$tmpdir/shared-tags"
+mkdir -p "$shared_tags"
+STUB_SERVER_TAGS="$shared_tags" run "deploy@vps"; rc=$?
+saveline="$(grep '^save ' "$DOCKER_LOG")"
+assert '[ "$rc" = "0" ] && [ "$saveline" = "save built-app-web:1.4.2" ]' \
+    "an image two services build ships once (exit $rc, save '$saveline': $err)"
+assert '[ "$(grep -o -- "--image=built-app-web:1.4.2" "$SSH_LOG" | wc -l)" = "1" ]' \
+    "and the server is asked about it once (ssh log: $(cat "$SSH_LOG"))"
+local_build built-app-web:1.4.2 > "$shared_tags/built-app-web_1.4.2"
+STUB_SERVER_TAGS="$shared_tags" run "deploy@vps"; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "built-app 1.4.2 is already on deploy@vps, the same build — nothing was sent" <<<"$err"' \
+    "held there as this build, it is not sent, and the summary says so (exit $rc: $err)"
+projdir="$keep"
 
 # Nothing below this line ships successfully, so the state file the run above
 # wrote is cleared: what the failure cases assert is that none of them writes one.

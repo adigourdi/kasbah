@@ -165,6 +165,9 @@ whole=$(wsd save "$web2" "$worker2" 2>/dev/null | gzip | wc -c)
 echo "note: a whole save of the re-pushed images gzips to $whole bytes" >&2
 page2=$(rig_ssh "docker run --rm --entrypoint cat $web2 /usr/share/nginx/html/index.html" 2>&1 | tr -d '\r\n')
 assert 'grep -qF "re-pushed" <<<"$page2"' "and the new page runs on the rig (read '$page2')"
+build_push; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "the same build — nothing was sent" "$tmpdir/err"' \
+    "pushing 1.5.1 again unchanged, containerd store to containerd store, sends nothing (exit $rc: $(cat "$tmpdir/err"))"
 
 # --- The map follows the rig's images -----------------------------------------------------
 m2="$(map_lines)"

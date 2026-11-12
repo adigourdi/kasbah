@@ -130,11 +130,12 @@ func parseHave(out []byte, asked []string, diffIDs map[string]bool) (answer, err
 	return a, nil
 }
 
-const layersUsage = "usage: kasbah remote layers APPS CHAINID... (prints have=<id> for each one this server's image store holds, name=<diffID> <blob> for the names it knows them by, then layers=<n>)"
+const layersUsage = "usage: kasbah remote layers APPS [--image=REF]... CHAINID... (prints image=<ref> <sum> <id> <created>, or image=<ref> absent, for each REF and then images=<n>; have=<id> for each chain this server's image store holds, name=<diffID> <blob> for the names it knows them by, then layers=<n>)"
 
-// Layers is `kasbah remote layers APPS CHAINID...` on the server: which of
-// those chains its images hold (one image ls, one inspect) and the names
-// layers.map knows them by; then the map loses names no image's layer has.
+// Layers is `kasbah remote layers APPS [--image=REF]... CHAINID...` on the
+// server: the build each REF tags here, which of those chains its images hold
+// (one image ls, one inspect) and the names layers.map knows them by; then the
+// map loses names no image's layer has.
 func Layers(args []string, stdout, stderr io.Writer) int {
 	fail := func(format string, a ...any) int {
 		fmt.Fprintf(stderr, "remote: layers: "+format+"\n", a...)
@@ -147,11 +148,31 @@ func Layers(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || !strings.HasPrefix(args[0], "/") {
 		return fail("no absolute apps path first — %s", layersUsage)
 	}
-	apps, chains := args[0], args[1:]
-	for _, a := range chains {
+	apps := args[0]
+	var refs, chains []string
+	for _, a := range args[1:] {
+		if r, ok := strings.CutPrefix(a, "--image="); ok {
+			if r = strings.TrimSuffix(r, "\r"); r == "" || strings.ContainsAny(r, " \t\n") {
+				return fail("'%s' names no image — %s", a, layersUsage)
+			}
+			refs = append(refs, r)
+			continue
+		}
 		if !validID(a) {
 			return fail("'%s' is not a sha256: layer chain id — %s", a, layersUsage)
 		}
+		chains = append(chains, a)
+	}
+	// The tags first: a layer question that fails still answers them.
+	for _, r := range refs {
+		b, found, err := inspectRef(r)
+		if err != nil {
+			return fail("%v", err)
+		}
+		fmt.Fprint(stdout, printTag(r, b, found))
+	}
+	if len(refs) > 0 {
+		fmt.Fprintf(stdout, "images=%d\n", len(refs))
 	}
 	ls := exec.Command("docker", "image", "ls", "-aq", "--no-trunc")
 	ls.Env = append(os.Environ(), "LC_ALL=C")

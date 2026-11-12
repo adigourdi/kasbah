@@ -72,8 +72,9 @@ tags on the VPS. Semver tags are both human-meaningful and machine-sortable.
 
 ## Image tags on the VPS
 
-- `:<version>` — permanent. Written by `build-push`, one per shipped version.
-  Multiple live on the VPS at any time — enough to roll back to.
+- `:<version>` — permanent. Written by `build-push`, one per shipped version,
+  and replaced by another build of that version only when asked to
+  (`--replace-tag`). Multiple live on the VPS at any time — enough to roll back to.
 - `:current` — the tag that every built service in `compose.prod.yml`
   references. Moved on every `deploy` / `rollback`. Never moved by
   `build-push`.
@@ -137,9 +138,13 @@ from compose itself.
      DOCKER_DEFAULT_PLATFORM=linux/<server arch> in the environment
 4. Tag each built image:
      <image>:<version>
-5. kasbah remote layers <apps> <chain ids>   # which layers the server holds,
-                                             # and their known blob names
-   docker save <all built images> | (drop those layers) | gzip, streamed over
+5. kasbah remote layers <apps> --image=<image>:<version>... <chain ids>
+                                   # the build each tag holds there, which
+                                   # layers the server holds, and their
+                                   # known blob names
+   an image held there as this build is not sent; one held as another build
+   asks whether to replace it (--replace-tag / --no-replace-tag)
+   docker save <the images to send> | (drop those layers) | gzip, streamed over
    the ssh master into
      <apps>/.kasbah/bin/kasbah remote load <apps> <images>   # gunzip → docker load,
                                                       # then inspect each image
@@ -147,7 +152,7 @@ from compose itself.
                                # summary (Versioning contract)
 ```
 
-Three details in that flow are load-bearing.
+Four details in that flow are load-bearing.
 
 **The build needs the resource-limit variables set to something.** A project
 on `cpus: ${KASBAH_CPU_LIMIT}` and `mem_limit: ${KASBAH_MEM_LIMIT}` (R01/R02 —
@@ -166,7 +171,38 @@ and `0` is Docker's "no limit" in the event anything ever consumed them. The
 guarantee that keeps it inert is that no `build.args` references a `KASBAH_*`
 key; nothing enforces that today.
 
-**One `docker save` invocation carries every built image.** Saving them
+**A version on a server means one build.** The same `kasbah remote layers` call
+answers, for each `<image>:<version>` about to ship, which build the server
+holds under that tag, if any. A tag the server lacks ships. One it holds as
+this same build is left out of the stream — when every image is, nothing is
+sent and the summary says the version is already there. One it holds as another
+build — a version shipped from a build that was discarded, then cut again —
+asks once, naming every such image with the server's image ID and creation time
+beside this build's, whether to replace them; `--replace-tag` and
+`--no-replace-tag` answer it, and without a terminal one of them is required. A
+no stops before anything is sent, exit 1, and says how to ship the build under
+another version instead (delete HEAD's tag, then tag a higher version or re-run
+with a `--bump` that reaches one; a tag already pushed must go from origin too,
+or the next fetch brings it back beside the new one) — for a `--dirty` build, a
+re-run, which labels it anew. A yes loads this build under the tag; the
+server's former build keeps only its other tags — untagged (dangling) when it
+had none, `:current` still on it when it was deployed. Two services building
+one `image:` are one image, asked about and sent once. Whether two builds are
+the same cannot rest on image IDs alone: an overlay2 store's ID is the config
+digest and a containerd store's the manifest's, so one image saved on one store
+and loaded on the other comes back under another ID. Two builds are the same
+when the IDs match, or when these fields of `docker image inspect` match, as
+save and load carry the config byte for byte: the creation time; the platform
+(architecture, OS, variant, OS version); the config's user, exposed ports, env,
+entrypoint, cmd, healthcheck (test, interval, timeout, start period, retries —
+not the start interval, which a Docker 24 server does not report), args-escaped
+flag, volumes, working directory, labels, stop signal, on-build triggers and
+shell; and the layer IDs. The history, author, comment and every other field
+are not compared: they change nothing that runs. An answer about the tags that
+fails or is incomplete stops the run before anything is sent: unlike the
+layers, it cannot fall back to sending everything.
+
+**One `docker save` invocation carries every image it sends.** Saving them
 separately throws away the layer dedup a single stream gives you across
 images that share a base.
 
@@ -179,9 +215,9 @@ entries (and docker 25's `<id>/layer.tar` links to them) from `docker save`'s
 output, constant memory, `manifest.json` and the configs untouched. Measured on
 the rig: a re-push after changing one page sent 6.4 kB where the whole images
 gzip to 28.7 MB. Anything kasbah cannot trust — its own layer lists unreadable,
-an answer that fails, times out or names an ID it did not ask about — ships the
-whole images, with a warning. A `docker save` in the pre-25 format ships whole:
-nothing in it can be matched.
+a layer answer that fails or times out after the tags were answered, or that
+names an ID it did not ask about — ships the whole images, with a warning. A
+`docker save` in the pre-25 format ships whole: nothing in it can be matched.
 
 **A containerd-store workstation** — Docker Desktop, a fresh Docker Engine 29 —
 saves each layer compressed, under its compressed digest, and no Docker API

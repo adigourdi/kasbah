@@ -295,6 +295,45 @@ page2=$(rig_ssh "docker run --rm --entrypoint cat $web2 /usr/share/nginx/html/in
 assert 'grep -qF "re-pushed" <<<"$page2" && grep -qF "$web_marker" <<<"$page2" && grep -qF "$worker_marker" <<<"$page2"' \
     "and both images run on the rig, the web one with the new page (read '$page2')"
 
+# --- A version the server already holds --------------------------------------------------
+# Across the two stores the ids differ (above), so "the same build" is the
+# image config the two daemons agree on: an unchanged re-push sends nothing,
+# and another build under the same tag is replaced only when asked to.
+rig_id() { rig_ssh "docker image inspect -f '{{.Id}}' $1" 2>/dev/null | tr -d '\r'; }
+web2_id="$(rig_id "$web2")"
+build_push "$projdir" "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "is already on $RIG_TARGET, the same build — nothing was sent" "$tmpdir/err"' \
+    "re-pushing $project 1.5.1 unchanged sends nothing and says so (exit $rc: $(cli_err))"
+assert '[ -n "$web2_id" ] && [ "$(rig_id "$web2")" = "$web2_id" ]' \
+    "and the rig's $web2 is untouched (was '$web2_id', is '$(rig_id "$web2")')"
+
+old_local_web2="$(docker image inspect -f '{{.Id}}' "$web2" 2>/dev/null)"
+sed -i 's|<p id="v2">re-pushed</p>|<p id="v2">rebuilt-under-the-same-tag</p>|' "$projdir/Dockerfile"
+if ! ( cd "$projdir" && git add -A && git -c user.name=t -c user.email=t@t commit -qm v2b && git tag -f v1.5.1 ) >/dev/null 2>&1; then
+    echo "error: could not commit the rebuild's edit in $projdir" >&2
+    exit 2
+fi
+build_push "$projdir" "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF -- "--replace-tag or --no-replace-tag" "$tmpdir/err" && grep -qF "already holds $web2 as another build" "$tmpdir/err"' \
+    "another build of 1.5.1 without a terminal fails naming both flags (exit $rc: $(cli_err))"
+assert '! grep -qF "$worker2 as another build" "$tmpdir/err"' \
+    "the worker, built the same, is not asked about ($(cli_err))"
+build_push "$projdir" "$RIG_TARGET" --no-replace-tag; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "nothing was sent" "$tmpdir/err" && grep -qF "${web2_id:7:12}" "$tmpdir/err"' \
+    "--no-replace-tag exits 1 naming the rig's image (exit $rc: $(cli_err))"
+assert '[ "$(rig_id "$web2")" = "$web2_id" ]' \
+    "and the rig's $web2 is still the first build (is '$(rig_id "$web2")')"
+build_push "$projdir" "$RIG_TARGET" --replace-tag; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "replaced the server'"'"'s ${web2_id:7:12}" "$tmpdir/err" && grep -qF "$worker2 (service worker) — already on the server" "$tmpdir/err"' \
+    "--replace-tag replaces the web image and leaves the worker home (exit $rc: $(cli_err))"
+new_web2_id="$(rig_id "$web2")"
+page3=$(rig_ssh "docker run --rm --entrypoint cat $web2 /usr/share/nginx/html/index.html" 2>&1 | tr -d '\r\n')
+assert '[ -n "$new_web2_id" ] && [ "$new_web2_id" != "$web2_id" ] && grep -qF "rebuilt-under-the-same-tag" <<<"$page3"' \
+    "the rig's $web2 is now the rebuild (id '$web2_id' → '$new_web2_id', page '$page3')"
+# The builds the tag no longer names, removed here and on the rig.
+[ -n "$web2_id" ] && rig_ssh "docker image rm $web2_id" >/dev/null 2>&1
+[ -n "$old_local_web2" ] && docker image rm "$old_local_web2" >/dev/null 2>&1
+
 # --- A stock-only project ships nothing --------------------------------------------------
 # The other half of the deliverable, and the reason it is measured rather than
 # read off stdout: "nothing was shipped" is a claim about two /tmp directories

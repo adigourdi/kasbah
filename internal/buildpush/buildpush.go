@@ -34,6 +34,9 @@ type Options struct {
 	BuildOnly, Dirty bool
 	// Bump answers the question an untagged HEAD asks: patch, minor or major.
 	Bump string
+	// ReplaceTag answers whether a tag the server holds as another build is
+	// replaced (--replace-tag / --no-replace-tag).
+	ReplaceTag prompt.Given
 }
 
 // The state fields a --dirty build-push leaves for `kasbah deploy --dirty`:
@@ -46,6 +49,7 @@ const (
 
 const usage = `Usage: kasbah build-push [USER@HOST] [--build-only] [--dirty]
                          [--bump=patch|minor|major]
+                         [--replace-tag|--no-replace-tag]
 
 Builds this project's images, tags them with HEAD's version, and loads them onto
 a server over ssh — no registry involved. Run from the project root. USER@HOST
@@ -59,9 +63,12 @@ What it does:
     tags HEAD before anything is built
   * builds every service in compose.prod.yml that has a build: key, and tags
     each one <image>:<version> from the image: that service names
-  * docker save (one stream, all images) | gzip, streamed over ssh into
+  * docker save (one stream, every image the server does not already hold
+    as this build) | gzip, streamed over ssh into
     docker load on the server — no tarball is written on either end, and the
     layers the server already holds are left out of the stream
+  * an image the server already holds under its tag as this same build is
+    not sent; one it holds as another build asks whether to replace it
   * a line under the summary when origin lacks v<version>, which kasbah
     never pushes
 
@@ -79,6 +86,10 @@ Flags:
   --bump=patch|minor|major
                   answers the untagged-HEAD question; without a terminal and
                   without --bump, an untagged HEAD is a failure
+  --replace-tag, --no-replace-tag
+                  answer whether to replace <image>:<version> on the server
+                  when it holds another build of it; no is exit 1 with nothing
+                  sent, and without a terminal one of them is required
 
 See docs/build-deploy.md and docs/cli.md.
 `
@@ -97,6 +108,14 @@ func Parse(args []string) (Options, error) {
 			o.BuildOnly = true
 		case "--dirty":
 			o.Dirty = true
+		case "--replace-tag":
+			if err := o.ReplaceTag.Set(prompt.Yes, replacePair, "build-push"); err != nil {
+				return o, err
+			}
+		case "--no-replace-tag":
+			if err := o.ReplaceTag.Set(prompt.No, replacePair, "build-push"); err != nil {
+				return o, err
+			}
 		default:
 			name, val, _ := strings.Cut(a, "=")
 			switch {
@@ -107,10 +126,10 @@ func Parse(args []string) (Options, error) {
 				}
 			case name == "--bump":
 				return o, cli.Fail("build-push: --bump takes its value with '=' — --bump=patch, --bump=minor or --bump=major")
-			case name == "--build-only" || name == "--dirty":
+			case name == "--build-only" || name == "--dirty" || name == "--replace-tag" || name == "--no-replace-tag":
 				return o, cli.Fail("build-push: %s takes no value — pass it on its own", name)
 			case strings.HasPrefix(a, "-"):
-				return o, cli.Fail("build-push: unknown flag '%s' (build-push takes USER@HOST, --build-only, --dirty and --bump=)", name)
+				return o, cli.Fail("build-push: unknown flag '%s' (build-push takes USER@HOST, --build-only, --dirty, --bump= and --replace-tag/--no-replace-tag)", name)
 			case o.Target == "":
 				o.Target = strings.TrimSuffix(a, "\r")
 			default:
@@ -248,7 +267,13 @@ func Run(c Ctx, o Options) error {
 	if err := build(m.Name, images, platform, engine); err != nil {
 		return err
 	}
-	st, err := ship(c.Out, conn, res.Apps, images)
+	again := []string{"to ship it under another label instead, re-run: each --dirty run labels its build anew;"}
+	if !o.Dirty {
+		again = []string{"to ship this build under another version instead: git tag -d v" + version + ", then tag",
+			"HEAD a higher version yourself, or re-run with a --bump that reaches one",
+			"(a tag already pushed: delete it on origin too);"}
+	}
+	st, err := ship(c.Out, conn, res.Apps, images, c.Prompter, o.ReplaceTag, again)
 	if err != nil {
 		return err
 	}
@@ -279,9 +304,25 @@ func Run(c Ctx, o Options) error {
 		unpublished = release.Unpublished(c.Out, version)
 	}
 
-	c.Out.Info("Shipped %s %s to %s", m.Name, version, target)
-	listImages(c.Out, images)
+	unsent := len(st.same) == len(refsOf(images))
+	if unsent {
+		c.Out.Info("%s %s is already on %s, the same build — nothing was sent", m.Name, version, target)
+	} else {
+		c.Out.Info("Shipped %s %s to %s", m.Name, version, target)
+	}
+	for _, im := range images {
+		switch b, ok := st.replaced[im.Ref]; {
+		case st.same[im.Ref]:
+			c.Out.Info("  image:   %s (service %s) — already on the server, the same build, not sent", im.Ref, im.Service)
+		case ok:
+			c.Out.Info("  image:   %s (service %s) — replaced the server's %s, left untagged there unless another tag names it", im.Ref, im.Service, short(b.ID))
+		default:
+			c.Out.Info("  image:   %s (service %s)", im.Ref, im.Service)
+		}
+	}
 	switch {
+	case unsent:
+		c.Out.Info("  stream:  none — the server holds every image as this build")
 	case st.abandoned > 0:
 		c.Out.Info("  stream:  %s sent whole, after %s in a stream without the server's layers that it could not load", mb(st.sent), mb(st.abandoned))
 	case st.compressed:

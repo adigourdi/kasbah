@@ -765,8 +765,12 @@ invent a command.
    interpolate without them and a build has no server to read them from
    (`build-deploy.md`).
 4. Tag each built image: `<image>:<version>`.
-5. Ask the server which layers it already holds (`kasbah remote layers`), then
-   one `docker save` of every built image with those layers left out, gzipped
+5. Ask the server which build each `<image>:<version>` holds there and which
+   layers it already holds (`kasbah remote layers`, one round trip). An image
+   it holds as this build is not sent, and the summary says so; one it holds as
+   another build asks whether to replace it (`--replace-tag`/`--no-replace-tag`;
+   a no is exit 1 with nothing sent). Then
+   one `docker save` of every image to send with those layers left out, gzipped
    and streamed over ssh into the server's `kasbah remote load`, which feeds
    `docker load` and confirms each image (`build-deploy.md`). Nothing is written
    to disk on either end; a stream cut short is refused. The summary says how
@@ -801,6 +805,11 @@ so too). A cross build needs the engine's emulation (`tonistiigi/binfmt
 `--build-only` reaches no server and builds for the local engine.
 - `--bump=patch|minor|major` — on an untagged HEAD, which tag to cut
   (`build-deploy.md` → Versioning contract); unset means ask.
+- `--replace-tag` / `--no-replace-tag` — when the server holds
+  `<image>:<version>` as another build than this one, whether to replace it;
+  unset means ask, and without a terminal is a failure naming both. No stops
+  before anything is sent, exit 1, naming the server's image ID and this
+  build's (`build-deploy.md` → A version on a server means one build).
 - `--dirty` — build the working tree as it stands, as a test build labelled
   `<base>-dirty.<UTC stamp>`; no tag is needed, and origin is not asked. The
   label, target and the tree's digest are recorded in `.kasbah/state.json`
