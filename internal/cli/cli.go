@@ -116,6 +116,18 @@ func (e *Error) Cont(lines ...string) *Error {
 	return e
 }
 
+// Cause puts err's first line on the headline after ": ", trailing period
+// dropped, and appends its further lines after any continuation lines already
+// present, \r stripped.
+func (e *Error) Cause(err error) *Error {
+	head, more, _ := strings.Cut(strings.ReplaceAll(err.Error(), "\r", ""), "\n")
+	e.Lines[0] += ": " + strings.TrimSuffix(head, ".")
+	if more = strings.TrimRight(more, "\n"); more != "" {
+		e.Lines = append(e.Lines, strings.Split(more, "\n")...)
+	}
+	return e
+}
+
 // Report prints err and returns the exit
 // code to leave with: an *Error with its own lines and code, anything else as
 // one error: line and exit 1. A nil err is exit 0, silently.

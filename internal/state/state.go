@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/tree"
 )
 
@@ -158,11 +159,11 @@ func update(path, version string, apply func(m *tree.Map)) error {
 	tmp := path + ".tmp." + strconv.Itoa(os.Getpid())
 	if err := os.WriteFile(tmp, render(current...), 0o666); err != nil {
 		os.Remove(tmp)
-		return cli.Fail("could not write %s", tmp)
+		return cli.Fail("could not write %s", tmp).Cause(remote.OSCause(err))
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
-		return cli.Fail("could not install %s", path)
+		return cli.Fail("could not install %s", path).Cause(remote.OSCause(err))
 	}
 	return nil
 }

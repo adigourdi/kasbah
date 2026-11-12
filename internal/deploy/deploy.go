@@ -778,7 +778,8 @@ func (r *run) fragment() (bool, error) {
 		return false, nil
 	}
 	if err := r.s.Fragment(r.frag, dest); err != nil {
-		e := cli.Fail("could not ship %s to %s:%s", Fragment, r.target, dest).Cont(
+		// The cause goes on the headline, which the post-hook path shows alone.
+		e := cli.Fail("could not ship %s to %s:%s", Fragment, r.target, dest).Cause(err).Cont(
 			"the "+r.mode+" itself succeeded — the new containers are up and versions.log",
 			"already records "+r.version+". Only the Traefik route is missing, so this")
 		// A rollback cannot be a first deploy: its target was in the record.

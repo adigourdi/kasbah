@@ -578,7 +578,7 @@ func Run(c Ctx, o Options) (err error) {
 	for _, d := range dns.Install {
 		res, rc := s.send(d.Body, "acme-dns", o.Apps, d.Provider)
 		if rc != 0 {
-			return cli.Fail("could not install the %s credentials at %s:%s/traefik/%s (the remote step exited %d, see above)", d.Provider, target, o.Apps, DNSEnvRel(d.Provider), rc)
+			return cli.Fail("could not install the %s credentials at %s:%s/traefik/%s (%s, see above)", d.Provider, target, o.Apps, DNSEnvRel(d.Provider), serverbin.ExitText(rc, serverbin.RunTimeout))
 		}
 		if remote.KV([]byte(res))["acme_dns"] == "written" {
 			dnsWritten = append(dnsWritten, d.Provider)
@@ -593,7 +593,7 @@ func Run(c Ctx, o Options) (err error) {
 		}
 		dest := o.Apps + "/traefik/" + rel
 		if _, rc := s.send([]byte(rendered[rel]), "write", dest); rc != 0 {
-			return cli.Fail("could not ship the Traefik %s to %s:%s", rel, target, dest)
+			return cli.Fail("could not ship the Traefik %s to %s:%s (%s, see above)", rel, target, dest, serverbin.ExitText(rc, serverbin.RunTimeout))
 		}
 		changed = append(changed, rel)
 		restart = restart || rel == "traefik.yml"

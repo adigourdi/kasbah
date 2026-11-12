@@ -16,6 +16,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/mailreg"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/tmpl"
 )
 
@@ -245,7 +246,7 @@ func (s *session) mailSync(o Options, rendered, cur map[string]string) ([]string
 	for _, rel := range changed {
 		dest := MailDest(o, rel)
 		if _, rc := s.send([]byte(rendered[rel]), "write", dest); rc != 0 {
-			return nil, cli.Fail("could not ship the mail %s to %s:%s", rel, s.target, dest)
+			return nil, cli.Fail("could not ship the mail %s to %s:%s (%s, see above)", rel, s.target, dest, serverbin.ExitText(rc, serverbin.RunTimeout))
 		}
 	}
 	return changed, nil

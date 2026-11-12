@@ -243,8 +243,12 @@ func dryRun(apps, image, label, stamp, acmeMsg, dryCA string, timeout time.Durat
 	}
 	for _, f := range []struct{ name, body string }{{"traefik.yml", p.Static}, {"_shared.yml", p.Shared}} {
 		path := filepath.Join(work, f.name)
-		if err := os.WriteFile(path, []byte(f.body), 0o644); err != nil || os.Chmod(path, 0o644) != nil {
-			return d, fmt.Errorf("could not write %s", path)
+		err := os.WriteFile(path, []byte(f.body), 0o644)
+		if err == nil {
+			err = os.Chmod(path, 0o644)
+		}
+		if err != nil {
+			return d, fmt.Errorf("could not write %s: %v", path, remote.OSCause(err))
 		}
 	}
 	// Pulled before anything on the server is overwritten.
@@ -311,15 +315,15 @@ func backup(apps, stamp, from, to string) (string, error) {
 		return "", fmt.Errorf("%s is already there — kasbah will not write over a backup", dest)
 	}
 	if err := os.MkdirAll(dest, 0o777); err != nil {
-		return "", fmt.Errorf("could not create %s", dest)
+		return "", fmt.Errorf("could not create %s: %v", dest, remote.OSCause(err))
 	}
 	for _, rel := range []string{"compose.yml", "traefik.yml", "dynamic/_shared.yml"} {
 		if err := copyFile(dir+"/"+rel, dest+"/"+filepath.Base(rel)); err != nil {
-			return "", fmt.Errorf("could not copy %s/%s to %s", dir, rel, dest)
+			return "", fmt.Errorf("could not copy %s/%s to %s: %v", dir, rel, dest, remote.OSCause(err))
 		}
 	}
 	if err := os.WriteFile(dest+"/kasbah-upgrade", []byte(from+" -> "+to+"\n"), 0o666); err != nil {
-		return "", fmt.Errorf("could not write %s/kasbah-upgrade", dest)
+		return "", fmt.Errorf("could not write %s/kasbah-upgrade: %v", dest, remote.OSCause(err))
 	}
 	return dest, nil
 }

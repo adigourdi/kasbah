@@ -77,3 +77,12 @@ func TestReport(t *testing.T) {
 		t.Error("Fail is exit 1")
 	}
 }
+
+// A cause's first line joins the headline; the rest follow it, \r stripped.
+func TestCause(t *testing.T) {
+	e := Fail("could not ship f to d@h:/x").Cause(errors.New("sync exited 3.\r\nfirst\r\nsecond\n")).Cont("after")
+	want := []string{"could not ship f to d@h:/x: sync exited 3", "first", "second", "after"}
+	if fmt.Sprint(e.Lines) != fmt.Sprint(want) {
+		t.Errorf("%q, want %q", e.Lines, want)
+	}
+}

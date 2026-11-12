@@ -271,7 +271,7 @@ func TestRunFailuresLeaveNoState(t *testing.T) {
 		{"engine reverted", &fake{rc: 1, out: &reverted}, "it was reverted: d@h runs what it ran before", false},
 		{"first deploy failed", &fake{rc: 1, out: &first}, "a first deploy has nothing to revert to", false},
 		{"post-hook failed", &fake{rc: 1, out: &post}, "The Traefik fragment was shipped, so the route names the live containers", true},
-		{"post-hook failed, fragment fails", &fake{rc: 1, out: &post, fragErr: errors.New("x")}, "The Traefik route was not updated either: could not ship traefik-dynamic.yml to d@h:", true},
+		{"post-hook failed, fragment fails", &fake{rc: 1, out: &post, fragErr: errors.New("the server's sync exited 3")}, "The Traefik route was not updated either: could not ship traefik-dynamic.yml to d@h:/apps/traefik/dynamic/demo.yml: the server's sync exited 3.", true},
 		{"revert failed", &fake{rc: 1, out: &revFailed}, "the revert to what ran before failed too", false},
 		{"restored", &fake{rc: 1, out: &restored}, "the files it had shipped were put back", false},
 		{"unrestored", &fake{rc: 1, out: &unrestored}, "putting back the files it had shipped failed", false},
@@ -280,7 +280,8 @@ func TestRunFailuresLeaveNoState(t *testing.T) {
 		{"connection lost", &fake{rc: 255, out: &none}, "kasbah history", false},
 		{"no report", &fake{out: &none}, "reported no report", false},
 		{"another version", &fake{out: &other}, "reported version '9.9.9', not the 1.0.0", false},
-		{"fragment fails", &fake{fragErr: errors.New("x")}, "the deploy itself succeeded", true},
+		{"fragment fails", &fake{fragErr: errors.New("the server's sync exited 3")}, "the deploy itself succeeded", true},
+		{"fragment fails, cause shown", &fake{fragErr: errors.New("cannot run ssh: broken pipe")}, "could not ship traefik-dynamic.yml to d@h:/apps/traefik/dynamic/demo.yml: cannot run ssh: broken pipe", true},
 	}
 	for _, c := range cases {
 		project(t, "")

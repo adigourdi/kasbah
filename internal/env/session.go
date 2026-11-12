@@ -95,7 +95,7 @@ func (s *SSH) ShipTemplate(local, dir string) error {
 		err = treesync.Push(s.Conn, s.bin, src, dir+"/.env.prod.example")
 	}
 	if err != nil {
-		return cli.Fail("could not ship .env.prod.example to %s:%s/", s.target(), dir).Cont(err.Error())
+		return cli.Fail("could not ship .env.prod.example to %s:%s/", s.target(), dir).Cause(err)
 	}
 	return nil
 }

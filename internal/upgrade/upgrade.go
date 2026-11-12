@@ -23,6 +23,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/serverinit"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/ssh"
@@ -652,7 +653,11 @@ func (x *run) ship() error {
 		size, sum := remote.Digest(body)
 		out, rc := x.s.Call(body, true, "init", "write", dest, size, sum)
 		if rc != 0 || !strings.Contains(string(out), "written=yes") {
-			return cli.Fail("could not ship the Traefik %s to %s:%s — the backup is at %s", rel, x.o.Target, dest, x.backupDir)
+			why := serverbin.ExitText(rc, serverbin.RunTimeout) + ", see above"
+			if rc == 0 {
+				why = "it did not report written=yes"
+			}
+			return cli.Fail("could not ship the Traefik %s to %s:%s (%s) — the backup is at %s", rel, x.o.Target, dest, why, x.backupDir)
 		}
 	}
 	return nil

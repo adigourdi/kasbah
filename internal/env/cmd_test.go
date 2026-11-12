@@ -12,6 +12,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/resources"
+	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/state"
 )
 
@@ -631,4 +632,13 @@ func TestSeedStep(t *testing.T) {
 	expect(t, r.code == 0 && strings.Contains(r.stderr, "line 1 (A) has a bare $") && strings.Contains(r.stderr, "line 4 (D) has a bare $") &&
 		!strings.Contains(r.stderr, "(B)") && !strings.Contains(r.stderr, "(C)"), "a bare $ is warned of by key and line: %d %q", r.code, r.stderr)
 	noValues(r)
+}
+
+// A template that cannot be shipped names why on the headline.
+func TestShipTemplateCause(t *testing.T) {
+	s := &SSH{Conn: &ssh.Conn{Target: ssh.Target{User: "deploy", Host: "vps"}}}
+	err := s.ShipTemplate(t.TempDir()+"/.env.prod.example", "/apps/demo")
+	if err == nil || !strings.HasPrefix(err.Error(), "could not ship .env.prod.example to deploy@vps:/apps/demo/: cannot read ") || strings.Contains(err.Error(), "\n") {
+		t.Errorf("%v", err)
+	}
 }

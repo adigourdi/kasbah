@@ -15,6 +15,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/rootsteps"
+	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/tmpl"
 	"github.com/adigourdi/kasbah/internal/tree"
@@ -491,7 +492,7 @@ func (s *session) backupInstall(out *cli.Output, o Options, v *BackupValues, r *
 	if compose != string(cur) {
 		dest := o.Apps + "/.kasbah/backup/compose.yml"
 		if _, rc := s.send([]byte(compose), "write", dest); rc != 0 {
-			return rep, cli.Fail("could not ship the backup compose.yml to %s:%s", s.target, dest)
+			return rep, cli.Fail("could not ship the backup compose.yml to %s:%s (%s, see above)", s.target, dest, serverbin.ExitText(rc, serverbin.RunTimeout))
 		}
 		rep.Changed = append(rep.Changed, "compose.yml")
 	}

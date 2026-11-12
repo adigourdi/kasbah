@@ -213,3 +213,11 @@ func TestPayload(t *testing.T) {
 		t.Errorf("a cut payload: %v", err)
 	}
 }
+
+// The OS's reason rides on the message, which `kasbah remote` prints for the workstation.
+func TestInstallCause(t *testing.T) {
+	err := Install(t.TempDir()+"/missing/f.yml", []byte("a"), 0o644)
+	if err == nil || !strings.Contains(err.Error(), "/missing/f.yml.tmp.") || !strings.HasSuffix(err.Error(), ": no such file or directory") {
+		t.Errorf("%v", err)
+	}
+}

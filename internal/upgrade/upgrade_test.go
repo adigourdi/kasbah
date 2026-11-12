@@ -215,6 +215,8 @@ type fake struct {
 	dryStatic string
 	up        Up
 	upRC      int
+	writeRC   int
+	writeMute bool // init write exits 0 without written=yes
 	calls     []string
 	written   map[string]string
 }
@@ -242,7 +244,13 @@ func (f *fake) Call(stdin []byte, bounded bool, args ...string) ([]byte, int) {
 	case "traefik backup":
 		return j(map[string]string{"backup_dir": "/apps/traefik/backups/S"}), 0
 	case "init write":
+		if f.writeRC != 0 {
+			return nil, f.writeRC
+		}
 		f.written[args[2]] = string(stdin)
+		if f.writeMute {
+			return nil, 0
+		}
 		return []byte("written=yes\n"), 0
 	case "traefik start":
 		return j(f.up), f.upRC
@@ -367,6 +375,16 @@ func TestRun(t *testing.T) {
 	if se, code = runUp(t, f, "v3.7.11"); code != 1 || !strings.Contains(se, "rolled back to traefik:v3.7.10") ||
 		!strings.Contains(se, "the restored Traefik could not rejoin the project networks: docker network connect b_kasbah traefik failed: boom") {
 		t.Errorf("rolled back, join failed: %d\n%s", code, se)
+	}
+	f = newFake(t, "traefik:v3.7.10")
+	f.writeRC = 3
+	if se, code = runUp(t, f, "v3.7.11"); code != 1 || !strings.Contains(se, "could not ship the Traefik compose.yml to deploy@vps:/apps/traefik/compose.yml (it exited 3, see above) — the backup is at /apps/traefik/backups/S") {
+		t.Errorf("write failed: %d\n%s", code, se)
+	}
+	f = newFake(t, "traefik:v3.7.10")
+	f.writeMute = true
+	if se, code = runUp(t, f, "v3.7.11"); code != 1 || !strings.Contains(se, "could not ship the Traefik compose.yml to deploy@vps:/apps/traefik/compose.yml (it did not report written=yes) — the backup is at /apps/traefik/backups/S") {
+		t.Errorf("write unconfirmed: %d\n%s", code, se)
 	}
 	f = newFake(t, "traefik:v3.7.10")
 	f.up, f.upRC = Up{RolledBack: "failed", Health: "none"}, 3
