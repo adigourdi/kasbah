@@ -15,6 +15,7 @@ assumes.
 | The SSH user can run `docker` without sudo | Avoids mixed sudo/non-sudo ownership in `/apps/data/` | Hard fail, suggest `usermod -aG docker` |
 | A POSIX `sh` on the remote — no `bash` | The bootstrap probe and the `sudo` steps of `server init` and `server destroy` run as POSIX shell scripts over the SSH master (tested under dash and busybox ash, linted with shellcheck); everything else runs the kasbah binary there, shipped to `<apps>/.kasbah/bin/kasbah` (which in turn runs some images' own tools in their containers, e.g. the mail image's `rspamadm` for DKIM keys) | Hard fail |
 | A POSIX userland — `uname`, `id`, `stat`, `od`, `timeout`, `sed`, `head`, `tr`, `wc`, `find`, `cat`, `mkdir`, `mv`, `rm`, `nproc`, `df` | The remaining shell steps (the bootstrap probe and the `sudo` steps) assume these rather than check them, because a box without them cannot run a shell step usefully in the first place. The rule kasbah's remote shell follows is **POSIX `sh` builtins and the coreutils that busybox also provides, nothing separately packaged** (GNU coreutils and busybox are both exercised); the deploy engine and the env setup are the kasbah binary and need none of it | Not checked; failure surfaces as the step's own error |
+| The kernel's memory cgroup controller | Docker enforces `mem_limit` through it; without it Docker starts every container and discards the limit (Resource limits, below) | Warning at init, in `server status` and in `check --server`; not refused |
 | **`:80` and `:443` free, and reachable from the internet** | Traefik binds both, and ACME's HTTP-01 challenge is answered on `:80` from outside. **Not probed** — init does not look at what is listening or at any firewall, so a port already held, or a `ufw` rule, surfaces as Traefik failing to start or as a challenge that never validates | Not checked |
 | **DNS in place before the first certificate** — `traefik.<apex>`, plus every project domain | A challenge for a name that does not resolve to this host fails, and **failed challenges count against Let's Encrypt's rate limits**. Rehearse with `--acme-staging` until DNS is right. **Not probed** — kasbah never resolves a name for you | Not checked |
 | Passwordless `sudo`, **or** an operator who runs the printed root commands by hand — when the apps path does not exist yet, **and** to write the discovery pointer | `/apps` lives outside the deploy user's home, so nobody but root can create it; `/etc/kasbah/apps-path` is root-owned for the same reason it is machine-wide. Once both exist, init needs root again only to repair `/etc/kasbah` if its mode has drifted from `755` — re-runs otherwise only read the pointer | With `sudo -n` refused and a terminal: init prints the exact commands, waits for Enter, re-checks, and carries on once they are done (`q` gives up). Without a terminal: apps path — hard fail naming the commands; pointer — hard fail at a non-default apps path (the server would be undiscoverable), a warning at `/apps` (the fallback covers it) |
@@ -490,6 +491,7 @@ when the proxy's image tag does, and the marker's presence is init's
   "data_path": "/apps/data",
   "cpu_limit": "3.6",
   "mem_limit": "7g",
+  "memory_controller": true,
   "backup": { "enabled": true, "repo_base": "s3:https://…/kasbah-backups/",
               "at": "02:00", "jitter": 1847, "timeout": 900,
               "user": "deploy", "hook_timeout": 1800,
@@ -539,6 +541,24 @@ anti-takeover ceilings (one runaway project can't lock out SSH, Traefik,
 or its neighbors), not fair-share slices; idle capacity stays fully
 burstable. Each is a ceiling **per container**: fifteen containers on the
 default may each take 90%, so together they can still exhaust the host.
+
+A memory limit holds only on a kernel that offers the memory cgroup
+controller: without it Docker prints "Limitation discarded", starts the
+container anyway, and every `mem_limit` kasbah writes is inert while R02, R04
+and R06 still pass. Raspberry Pi OS kernels leave the memory controller off
+unless the kernel command line turns it on. `server init` probes the
+controller (listed in `/sys/fs/cgroup/cgroup.controllers` on cgroup v2,
+mounted as its own `memory` hierarchy on v1) and records the answer in the
+marker as `memory_controller`; when it is missing, init, `server status` and
+`check --server` warn, naming the fix. On Raspberry Pi OS, append
+`cgroup_enable=memory` to the single line of `/boot/firmware/cmdline.txt`
+(`/boot/cmdline.txt` before Bookworm). Elsewhere, remove
+`cgroup_disable=memory` from the kernel command line if it is there; a
+container VPS that does not delegate the memory controller, or a kernel built
+without `CONFIG_MEMCG`, needs the host to provide it. Then reboot and re-run
+`server init` so the marker records it. Nothing is refused — the host still
+runs, unprotected. A marker written before kasbah probed the controller has no
+`memory_controller`, and nothing is said about it.
 
 ### How the numbers are spelled
 
@@ -809,6 +829,11 @@ Projects:
 
 A server without a dashboard says `Dashboard: off (no dashboard router in
 dynamic/_shared.yml)` instead.
+
+The `Marker:` line's limits are the marker's ceiling. A marker that records
+`memory_controller: false` adds a warning under it: the host's kernel offers
+no memory cgroup controller, so none of the memory limits is enforced
+(Resource limits).
 
 Versions appear exactly as `versions.log` holds them — no `v` prefix, and
 the full ISO timestamp the log records rather than a truncated date, because

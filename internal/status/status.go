@@ -209,6 +209,7 @@ type run struct {
 
 	mk                                      *tree.Map
 	mkApps, mkData, mkVersion, mkCPU, mkMem string
+	mkMemCtl                                string
 	bkEnabled                               bool
 	bkBase, bkAt, bkJitter                  string
 
@@ -297,6 +298,7 @@ func (x *run) readMarker() error {
 	m := v.(*tree.Map)
 	x.mkApps, x.mkData, x.mkVersion = field(m, "apps_path"), field(m, "data_path"), field(m, "kasbah_version")
 	x.mkCPU, x.mkMem = field(m, "cpu_limit"), field(m, "mem_limit")
+	x.mkMemCtl = marker.MemoryController(m)
 	en, _ := tree.Lookup(m, "backup", "enabled")
 	x.bkEnabled = en == true
 	x.bkBase, x.bkAt, x.bkJitter = field(m, "backup", "repo_base"), field(m, "backup", "at"), field(m, "backup", "jitter")
@@ -342,6 +344,11 @@ func (x *run) print() {
 	}
 	x.p("Root: %s (%s)  Data: %s\n", x.apps, x.source, or(x.mkData, "unknown"))
 	x.p("Marker: kasbah %s, cpu %s, mem %s\n", or(x.mkVersion, "unknown"), or(x.mkCPU, "unknown"), or(x.mkMem, "unknown"))
+	if x.mkMemCtl == "no" {
+		for _, l := range marker.NoMemoryController(x.target) {
+			x.out.Warn("%s", l)
+		}
+	}
 	x.printDisk()
 	if x.mkApps != "" && x.mkApps != x.apps {
 		x.out.Warn("the marker records apps_path=%s, and this status read %s", x.mkApps, x.apps)

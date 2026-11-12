@@ -228,6 +228,13 @@ while read -r field value _; do
     if [ "$field" = "MemTotal:" ]; then memtotal_kb=$value; break; fi
 done < /proc/meminfo
 kv memtotal_kb "$memtotal_kb"
+# The memory controller as the kernel lists it on cgroup v2, read with grep
+# rather than the probe's own function, so the two can disagree.
+if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+    if grep -qw memory /sys/fs/cgroup/cgroup.controllers; then kv memory_listed yes; else kv memory_listed no; fi
+elif [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then kv memory_listed yes
+else kv memory_listed no
+fi
 exit 0
 REMOTE
 ); probe_rc=$?
@@ -248,7 +255,7 @@ done <<<"$probe_out"
 missing=()
 for key in d_apps d_kasbah d_backups d_traefik d_dynamic d_data d_letsencrypt \
            apps_owner acme_isfile acme_isdir acme_isreadable acme_mode acme_owner \
-           marker_isfile control_isfile control_isreadable nproc memtotal_kb; do
+           marker_isfile control_isfile control_isreadable nproc memtotal_kb memory_listed; do
     [ -n "${fact[$key]+set}" ] || missing+=("$key")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
@@ -311,6 +318,21 @@ if jq -e . >/dev/null 2>&1 <<<"$marker_json"; then
     assert '[ "$(jq -r .data_path <<<"$marker_json")" = "$data" ]'  "the marker records the data path"
     assert '[ "$(jq -r .backup.enabled <<<"$marker_json")" = "false" ]' \
         "backup is off — nothing was installed for it"
+
+    # The rig's kernel lists the memory controller; what it cannot do is apply
+    # limits in its threaded subtree, which Docker refuses loudly rather than
+    # discards, so this records the controller and init does not warn.
+    want_mc=false
+    [ "${fact[memory_listed]}" = yes ] && want_mc=true
+    assert '[ "$(jq -r .memory_controller <<<"$marker_json")" = "$want_mc" ]' \
+        "the marker records the memory controller as the rig's kernel lists it (wanted $want_mc, got '$(jq -r .memory_controller <<<"$marker_json")')"
+    if [ "$want_mc" = true ]; then
+        assert '! grep -qF "no memory cgroup controller" "$tmpdir/err"' \
+            "and init does not warn about it (said '$(init_err)')"
+    else
+        assert 'grep -qF "no memory cgroup controller" "$tmpdir/err"' \
+            "and init warns that the limits are not enforced (said '$(init_err)')"
+    fi
 
     # Plausible for *this* host: the rig reports the workstation's own cores and
     # RAM, so a hard-coded number would pass here and fail on another machine.

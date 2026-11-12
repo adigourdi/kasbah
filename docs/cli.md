@@ -219,7 +219,8 @@ What it does:
    the stack come up. Installs nothing: restic runs as a container
    (see `backup.md`).
 10. Write the server marker `<apps>/.kasbah/server.json` — kasbah version,
-    paths, resource limits computed as 90% of host cores/RAM (see
+    paths, resource limits computed as 90% of host cores/RAM, and whether
+    the kernel offers the memory controller that enforces them (see
     `server-setup.md`). **Last of the steps that signal completion**: its
     presence is the "init completed" signal, so a failure at any earlier step
     leaves no marker behind.

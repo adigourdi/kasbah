@@ -34,11 +34,11 @@ func TestBuild(t *testing.T) {
 		existing tree.Value
 		backup   *Backup
 	}{
-		{"fresh.json", Fields{"1.0.0", "/apps", "/data", "2", "1g"}, nil, nil},
-		{"existing.json", Fields{"1.0.0", "/srv/apps", "/srv/data", "14.4", "54g"}, existing, nil},
-		{"existing-backup.json", Fields{"1.0.0", "/srv/apps", "/srv/data", "14.4", "54g"}, existing, testBackup},
-		{"fresh-backup.json", Fields{"1.0.0", "/apps", "/data", "2", "1g"}, nil, testBackup},
-		{"null-backup.json", Fields{"1.0.0", "/apps", "/data", "2", "1g"}, nullBackup, nil},
+		{"fresh.json", Fields{"1.0.0", "/apps", "/data", "2", "1g", nil}, nil, nil},
+		{"existing.json", Fields{"1.0.0", "/srv/apps", "/srv/data", "14.4", "54g", nil}, existing, nil},
+		{"existing-backup.json", Fields{"1.0.0", "/srv/apps", "/srv/data", "14.4", "54g", nil}, existing, testBackup},
+		{"fresh-backup.json", Fields{"1.0.0", "/apps", "/data", "2", "1g", nil}, nil, testBackup},
+		{"null-backup.json", Fields{"1.0.0", "/apps", "/data", "2", "1g", nil}, nullBackup, nil},
 	}
 	for _, c := range cases {
 		var e *tree.Map
@@ -55,8 +55,8 @@ func TestBuild(t *testing.T) {
 	}
 	// A second run against its own output renders the same bytes: the marker
 	// is compared byte for byte on every re-run.
-	first, _ := Build(Fields{"1.0.0", "/apps", "/data", "2", "1g"}, nil, testBackup)
-	again, _ := Build(Fields{"1.0.0", "/apps", "/data", "2", "1g"}, first, nil)
+	first, _ := Build(Fields{"1.0.0", "/apps", "/data", "2", "1g", nil}, nil, testBackup)
+	again, _ := Build(Fields{"1.0.0", "/apps", "/data", "2", "1g", nil}, first, nil)
 	if string(Render(first)) != string(Render(again)) {
 		t.Error("a re-run changes the marker")
 	}
@@ -83,6 +83,39 @@ const (
 	target  = "deploy@vps"
 	initCmd = "kasbah server init deploy@vps --apps-path=/srv/apps"
 )
+
+// The memory controller is written after mem_limit when probed, rewritten in
+// place on a re-run, left alone when not probed, and read back tri-state.
+func TestMemoryController(t *testing.T) {
+	yes, no := true, false
+	m, _ := Build(Fields{"1.0.0", "/apps", "/data", "2", "1g", &no}, nil, nil)
+	if got := tree.Compact(m); got != `{"kasbah_version":"1.0.0","apps_path":"/apps","data_path":"/data","cpu_limit":"2","mem_limit":"1g","memory_controller":false,"backup":{"enabled":false}}` {
+		t.Errorf("fresh: %s", got)
+	}
+	again, _ := Build(Fields{"1.0.0", "/apps", "/data", "2", "1g", &yes}, m, nil)
+	if got := tree.Compact(again); got != `{"kasbah_version":"1.0.0","apps_path":"/apps","data_path":"/data","cpu_limit":"2","mem_limit":"1g","memory_controller":true,"backup":{"enabled":false}}` {
+		t.Errorf("re-run: %s", got)
+	}
+	kept, _ := Build(Fields{"1.0.0", "/apps", "/data", "2", "1g", nil}, m, nil)
+	if MemoryController(kept) != "no" {
+		t.Errorf("not probed: %s", tree.Compact(kept))
+	}
+	for in, want := range map[string]string{
+		`{"memory_controller":true}`: "yes", `{"memory_controller":false}`: "no",
+		`{}`: "", `{"memory_controller":"yes"}`: "", `{"memory_controller":null}`: "",
+	} {
+		body := `{"apps_path":"/apps","data_path":"/data","cpu_limit":"2","mem_limit":"1g",` + strings.TrimPrefix(in, "{")
+		body = strings.Replace(body, `",}`, `"}`, 1)
+		mk, err := Validate([]byte(body), "p", "t", "init")
+		if err != nil || mk.MemoryController != want {
+			t.Errorf("%s: %v %+v", in, err, mk)
+		}
+	}
+	if w := strings.Join(NoMemoryController("d@h"), "\n"); !strings.Contains(w, "cgroup_enable=memory") || !strings.Contains(w, "/boot/firmware/cmdline.txt") ||
+		!strings.Contains(w, "remove cgroup_disable=memory") || !strings.Contains(w, "kasbah server init d@h") {
+		t.Errorf("warning: %s", w)
+	}
+}
 
 func TestValidate(t *testing.T) {
 	good := `{"kasbah_version":"1.0.0","apps_path":"/apps","data_path":"/data","cpu_limit":"14.4","mem_limit":"54g","future":"kept"}`
@@ -138,7 +171,7 @@ func TestReadsJqWrittenMarker(t *testing.T) {
 	if err != nil || m.AppsPath != "/srv/apps" || m.CPULimit != "14.4" {
 		t.Fatalf("%+v %v", m, err)
 	}
-	again, err := Build(Fields{"1.0.0", "/srv/apps", "/srv/data", "14.4", "54g"}, m.JSON, nil)
+	again, err := Build(Fields{"1.0.0", "/srv/apps", "/srv/data", "14.4", "54g", nil}, m.JSON, nil)
 	if err != nil || string(Render(again)) != body {
 		t.Errorf("re-rendered\n%s\nwant\n%s", Render(again), body)
 	}

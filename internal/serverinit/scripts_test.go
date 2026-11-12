@@ -145,6 +145,9 @@ func testProbeScript(t *testing.T, sh shtest.Shell) {
 		f["sudo_nopasswd"] != "yes" || f["acme_store"] != "absent" || f["compose_version"] != "2.29.7" {
 		t.Errorf("bare host: %v", f)
 	}
+	if v := f["memory_controller"]; v != "yes" && v != "no" {
+		t.Errorf("memory_controller %q", v)
+	}
 	if f["nproc"] != strconv.Itoa(runtime.NumCPU()) {
 		t.Errorf("nproc %q, not the %d CPUs this process may run on", f["nproc"], runtime.NumCPU())
 	}
@@ -171,6 +174,36 @@ func testProbeScript(t *testing.T, sh shtest.Shell) {
 	if f["pointer_value"] != "/sp ace/x" || f["apps_owned"] != "yes" || f["apps_writable"] != "no" ||
 		!strings.Contains(f["apps_write_error"], "Permission denied") {
 		t.Errorf("stripped apps path: %v", f)
+	}
+}
+
+func TestMemoryControllerFn(t *testing.T) { eachShell(t, testMemoryControllerFn) }
+
+// testMemoryControllerFn: v2 lists the controller, or not (as a kernel that
+// leaves it off reports); v1 mounts its hierarchy, or not.
+func testMemoryControllerFn(t *testing.T, sh shtest.Shell) {
+	for _, c := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{"v2 with memory", map[string]string{"cgroup.controllers": "cpuset cpu io memory hugetlb pids\n"}, "yes"},
+		{"v2 memory last, no newline", map[string]string{"cgroup.controllers": "cpu memory"}, "yes"},
+		{"v2 without memory", map[string]string{"cgroup.controllers": "cpuset cpu io pids\n"}, "no"},
+		{"v2 memory needs a word boundary", map[string]string{"cgroup.controllers": "cpu memoryx\n"}, "no"},
+		{"v1 with memory", map[string]string{"memory/memory.limit_in_bytes": "9223372036854771712\n", "cpu/cpu.shares": "1024\n"}, "yes"},
+		{"v1 without memory", map[string]string{"cpu/cpu.shares": "1024\n", "memory/.keep": ""}, "no"},
+		{"no cgroup filesystem", nil, "no"},
+	} {
+		root := t.TempDir()
+		for rel, body := range c.files {
+			os.MkdirAll(filepath.Dir(filepath.Join(root, rel)), 0o755)
+			os.WriteFile(filepath.Join(root, rel), []byte(body), 0o644)
+		}
+		out, e, rc := runScript(t, sh, "set -u\n"+memoryControllerFn+`memory_controller "$1"`+"\n", nil, root)
+		if rc != 0 || out != c.want+"\n" {
+			t.Errorf("%s: %q %q %d, want %s", c.name, out, e, rc, c.want)
+		}
 	}
 }
 

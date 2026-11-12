@@ -509,7 +509,7 @@ func Run(c Ctx, o Options) (err error) {
 		}
 		mb = bv.Marker()
 	}
-	m, err := marker.Build(marker.Fields{KasbahVersion: c.Version, AppsPath: o.Apps, DataPath: o.Data, CPULimit: cpu, MemLimit: mem}, existingMap, mb)
+	m, err := marker.Build(markerFields(c, o, f, cpu, mem), existingMap, mb)
 	if err != nil {
 		return cli.Fail("internal: could not build the server marker: %v", err)
 	}
@@ -797,6 +797,7 @@ func Run(c Ctx, o Options) (err error) {
 	}
 	out.Info("  apps: %s   data: %s", o.Apps, o.Data)
 	out.Info("  limits: cpu %s, mem %s (90%% of %s cores, %s kB)", cpu, mem, f["nproc"], f["memtotal_kb"])
+	warnMemoryController(out, f, target)
 	if ensured.Action == remote.Keep {
 		out.Info("  kasbah: %s (kept %s)", s.bin, ensured.Now)
 	} else {
@@ -862,6 +863,23 @@ func Run(c Ctx, o Options) (err error) {
 }
 
 var dashOff = map[string]string{"flag": "--no-dashboard", "kept": "as the server had it", "prompt": "as answered"}
+
+// markerFields are the marker's own fields: the limits, and the probe's
+// memory controller as a boolean.
+func markerFields(c Ctx, o Options, f Facts, cpu, mem string) marker.Fields {
+	memCtl := f["memory_controller"] == "yes"
+	return marker.Fields{KasbahVersion: c.Version, AppsPath: o.Apps, DataPath: o.Data, CPULimit: cpu, MemLimit: mem,
+		MemoryController: &memCtl}
+}
+
+// warnMemoryController says so when the probe found no memory controller.
+func warnMemoryController(out *cli.Output, f Facts, target string) {
+	if f["memory_controller"] != "yes" {
+		for _, l := range marker.NoMemoryController(target) {
+			out.Warn("%s", l)
+		}
+	}
+}
 
 // resetNeedsRestart: an archived store is only worth it when the new
 // endpoint is loaded, which takes a traefik.yml change and its restart.

@@ -447,6 +447,23 @@ func TestProbeAcmeStore(t *testing.T) {
 	}
 }
 
+func TestProbeMemoryController(t *testing.T) {
+	var b strings.Builder
+	for k, v := range goodFacts() {
+		if k != "memory_controller" {
+			b.WriteString(k + "=" + v + "\n")
+		}
+	}
+	for _, v := range []string{"yes", "no"} {
+		if f, err := ParseProbe("a@b", b.String()+"memory_controller="+v+"\n"); err != nil || f["memory_controller"] != v {
+			t.Errorf("memory_controller=%s: %v", v, err)
+		}
+	}
+	if _, err := ParseProbe("a@b", b.String()+"memory_controller=\n"); !strings.Contains(errText(err), "memory_controller='', which this kasbah does not know") {
+		t.Errorf("an empty answer: %v", err)
+	}
+}
+
 func TestTemplatesCRLFAndLints(t *testing.T) {
 	crlf := strings.ReplaceAll(sharedDoc, "\n", "\r\n")
 	if a, err := ExtractAuth(crlf); err != nil || a != "dash:$2y$05$OURS" {

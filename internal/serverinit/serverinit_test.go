@@ -12,6 +12,7 @@ import (
 	"testing/fstest"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/templates"
@@ -132,7 +133,8 @@ func goodFacts() Facts {
 		"apps_owner": "", "apps_group": "", "apps_marker": "no", "kasbah_member": "no", "kasbah_session": "no", "apps_write_error": "", "apps_root_state": "absent", "apps_root_owner": "",
 		"apps_base": "/", "apps_base_owner": "root:root", "apps_base_mode": "755", "data_state": "absent",
 		"data_writable": "no", "data_owner": "", "data_scope": "inside", "data_base": "/",
-		"data_base_writable": "no", "acme_store": "absent", "nproc": "4", "memtotal_kb": "8000000"}
+		"data_base_writable": "no", "acme_store": "absent", "nproc": "4", "memtotal_kb": "8000000",
+		"memory_controller": "yes"}
 }
 
 func TestPreflight(t *testing.T) {
@@ -201,6 +203,27 @@ func TestCheckPointer(t *testing.T) {
 func newOut() (*cli.Output, *bytes.Buffer) {
 	var b bytes.Buffer
 	return &cli.Output{Stdout: &b, Stderr: &b}, &b
+}
+
+// The probe's memory_controller=no reaches the marker as false and warns;
+// "yes" records true and says nothing.
+func TestMemoryControllerWiring(t *testing.T) {
+	for _, have := range []bool{false, true} {
+		f := goodFacts()
+		if !have {
+			f["memory_controller"] = "no"
+		}
+		m, err := marker.Build(markerFields(Ctx{Version: "1.2.3"}, Options{Apps: "/srv/apps", Data: "/srv/apps/data"}, f, "3.6", "7g"), nil, nil)
+		if err != nil || marker.MemoryController(m) != map[bool]string{false: "no", true: "yes"}[have] {
+			t.Errorf("have %v: marker records %q (%v)", have, marker.MemoryController(m), err)
+		}
+		out, b := newOut()
+		warnMemoryController(out, f, "d@h")
+		if warned := strings.Contains(b.String(), "warning: d@h has no memory cgroup controller"); warned == have ||
+			warned && !strings.Contains(b.String(), "warning: then reboot and re-run `kasbah server init d@h`") {
+			t.Errorf("have %v: %q", have, b.String())
+		}
+	}
 }
 
 func TestPointerVerdict(t *testing.T) {

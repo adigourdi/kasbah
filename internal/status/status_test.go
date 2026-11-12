@@ -199,6 +199,21 @@ Projects:
 	}
 }
 
+// The marker's memory_controller: false warns, true and absent say nothing.
+func TestMemoryController(t *testing.T) {
+	for key, warn := range map[string]bool{`,"memory_controller":false`: true, `,"memory_controller":true`: false, "": false} {
+		r := base()
+		r.Marker = b64s(`{"kasbah_version":"1.2.0","apps_path":"/apps","data_path":"/apps/data","cpu_limit":"14.4","mem_limit":"54g"` + key + `}`)
+		out, errs, code := runStatus(t, r)
+		if code != 0 || !strings.Contains(out, "Marker: kasbah 1.2.0, cpu 14.4, mem 54g\n") {
+			t.Fatalf("%q: exit %d\n%s", key, code, out)
+		}
+		if got := strings.Contains(errs, "warning: deploy@vps has no memory cgroup controller, so Docker discards every mem_limit"); got != warn {
+			t.Errorf("%q: stderr %q", key, errs)
+		}
+	}
+}
+
 func TestMarkerStates(t *testing.T) {
 	for _, tc := range []struct {
 		set  func(r *Report)

@@ -18,6 +18,7 @@ import (
 // always exit 0; the verdicts are the workstation's.
 const probeScript = `set -u
 export LC_ALL=C
+` + memoryControllerFn + `
 apps=$1
 data=$2
 pointer=$3
@@ -209,8 +210,28 @@ while read -r field value _; do
     if [ "$field" = "MemTotal:" ]; then memtotal_kb=$value; break; fi
 done < /proc/meminfo
 kv memtotal_kb "$memtotal_kb"
+kv memory_controller "$(memory_controller /sys/fs/cgroup)"
 
 exit 0
+`
+
+// memoryControllerFn says whether the kernel offers the memory cgroup
+// controller that mem_limit needs: listed in the v2 root's cgroup.controllers,
+// or mounted as its own v1 hierarchy. Without it Docker discards every limit.
+const memoryControllerFn = `memory_controller() {
+    mc_list=""
+    if [ -f "$1/cgroup.controllers" ]; then
+        read -r mc_list < "$1/cgroup.controllers" || :
+        case " $mc_list " in
+            *' memory '*) echo yes ;;
+            *) echo no ;;
+        esac
+    elif [ -f "$1/memory/memory.limit_in_bytes" ]; then
+        echo yes
+    else
+        echo no
+    fi
+}
 `
 
 var probeKeys = []string{"user", "group", "have_docker", "docker_server", "docker_error",
@@ -219,7 +240,7 @@ var probeKeys = []string{"user", "group", "have_docker", "docker_server", "docke
 	"apps_state", "apps_owned", "apps_writable", "apps_owner", "apps_group", "apps_marker", "kasbah_member", "kasbah_session", "apps_write_error",
 	"apps_root_state", "apps_root_owner", "apps_base", "apps_base_owner", "apps_base_mode",
 	"data_state", "data_writable", "data_owner", "data_scope", "data_base", "data_base_writable",
-	"acme_store", "nproc", "memtotal_kb"}
+	"acme_store", "nproc", "memtotal_kb", "memory_controller"}
 
 // Facts is a remote step's key=value report.
 type Facts map[string]string
@@ -267,6 +288,9 @@ func ParseProbe(target, out string) (Facts, error) {
 	case "absent", "notfile", "empty", "nonempty":
 	default:
 		return nil, cli.Fail("the prerequisite probe on %s reported acme_store='%s', which this kasbah does not know", target, f["acme_store"])
+	}
+	if v := f["memory_controller"]; v != "yes" && v != "no" {
+		return nil, cli.Fail("the prerequisite probe on %s reported memory_controller='%s', which this kasbah does not know", target, v)
 	}
 	return f, nil
 }

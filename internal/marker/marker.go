@@ -61,9 +61,11 @@ func (r Retention) object() *tree.Map {
 	return m
 }
 
-// Fields are the five keys `server init` owns.
+// Fields are the keys `server init` owns. MemoryController is the probe's
+// answer, nil for none, which leaves the key as it is.
 type Fields struct {
 	KasbahVersion, AppsPath, DataPath, CPULimit, MemLimit string
+	MemoryController                                      *bool
 }
 
 // objectOr is v as an object to merge into: null is an empty one, anything
@@ -92,6 +94,9 @@ func Build(f Fields, existing *tree.Map, backup *Backup) (*tree.Map, error) {
 	own.Set("data_path", f.DataPath)
 	own.Set("cpu_limit", f.CPULimit)
 	own.Set("mem_limit", f.MemLimit)
+	if f.MemoryController != nil {
+		own.Set("memory_controller", *f.MemoryController)
+	}
 	out := tree.Merge(e, own)
 
 	if backup == nil {
@@ -144,6 +149,9 @@ type Marker struct {
 	// CPULimit and MemLimit are written through as spelled (`14.4`, `54g`).
 	CPULimit string
 	MemLimit string
+	// MemoryController is "yes" or "no" as `server init` probed it, "" for a
+	// marker that does not record it.
+	MemoryController string
 }
 
 // field is a key's value as text, "" for none or null, trailing newlines off.
@@ -161,11 +169,12 @@ func Validate(body []byte, path, target, initCmd string) (*Marker, error) {
 		return nil, cli.Fail("%s on %s is not a JSON object — re-run `%s`", path, target, initCmd)
 	}
 	mk := &Marker{
-		JSON:     m,
-		AppsPath: field(m, "apps_path"),
-		DataPath: field(m, "data_path"),
-		CPULimit: field(m, "cpu_limit"),
-		MemLimit: field(m, "mem_limit"),
+		JSON:             m,
+		AppsPath:         field(m, "apps_path"),
+		DataPath:         field(m, "data_path"),
+		CPULimit:         field(m, "cpu_limit"),
+		MemLimit:         field(m, "mem_limit"),
+		MemoryController: MemoryController(m),
 	}
 	for _, p := range []string{mk.AppsPath, mk.DataPath} {
 		if len(p) < 2 || p[0] != '/' {
@@ -184,6 +193,31 @@ func Validate(body []byte, path, target, initCmd string) (*Marker, error) {
 		}
 	}
 	return mk, nil
+}
+
+// MemoryController is the marker's memory_controller: "yes", "no", or ""
+// when it is absent or not a boolean.
+func MemoryController(m *tree.Map) string {
+	switch v, _ := m.Get("memory_controller"); v {
+	case true:
+		return "yes"
+	case false:
+		return "no"
+	}
+	return ""
+}
+
+// NoMemoryController is the warning for a host whose kernel offers no memory
+// cgroup controller, Docker starting every container and dropping its
+// mem_limit: a headline, then its continuation lines.
+func NoMemoryController(target string) []string {
+	return []string{
+		target + " has no memory cgroup controller, so Docker discards every mem_limit: the limits are written but not enforced",
+		"on Raspberry Pi OS: append cgroup_enable=memory to the single line of /boot/firmware/cmdline.txt (/boot/cmdline.txt before Bookworm)",
+		"elsewhere: remove cgroup_disable=memory from the kernel command line if it is there; a container VPS that does not " +
+			"delegate the memory controller, or a kernel built without CONFIG_MEMCG, needs the host to provide it",
+		"then reboot and re-run `kasbah server init " + target + "` to record it",
+	}
 }
 
 // Major is a version's major, as `server init` compares them: a leading `v`

@@ -530,6 +530,31 @@ func TestServerR04Resources(t *testing.T) {
 	hasNot(t, out, "mem_limit 15g < 54g")
 }
 
+// A host without the memory controller warns beside R04/R06; a marker that
+// records it, or one too old to record anything, says nothing.
+func TestServerMemoryController(t *testing.T) {
+	for _, tc := range []struct {
+		key  string
+		warn bool
+	}{{`,"memory_controller":false`, true}, {`,"memory_controller":true`, false}, {"", false}} {
+		srvProject(t, "")
+		s := newSrv(t)
+		s.marker = strings.Replace(s.marker, "}", tc.key+"}", 1)
+		s.r.Env = b64s("DOMAIN=demo.example.com\nKASBAH_CPU_LIMIT=14.4\nKASBAH_MEM_LIMIT=54g\n")
+		out, code := s.run()
+		want := "  ⚠ deploy@vps has no memory cgroup controller, so Docker discards every mem_limit: the limits are written but not enforced\n" +
+			"      on Raspberry Pi OS: append cgroup_enable=memory to the single line of /boot/firmware/cmdline.txt (/boot/cmdline.txt before Bookworm)\n      elsewhere: remove cgroup_disable=memory"
+		if tc.warn {
+			contains(t, out, "✓ effective resource limits on deploy@vps match", want, "      then reboot and re-run `kasbah server init deploy@vps` to record it\n")
+		} else {
+			hasNot(t, out, "memory cgroup controller")
+		}
+		if code != 0 {
+			t.Errorf("%q: exit %d", tc.key, code)
+		}
+	}
+}
+
 // Projects below the ceiling are shares and are summed; one on the ceiling is
 // a cap and is not.
 func TestServerR06(t *testing.T) {

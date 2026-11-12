@@ -546,6 +546,7 @@ func (c *checker) serverSection() {
 	c.cert()
 	c.r04()
 	c.r06()
+	c.memoryController()
 	c.outsiders()
 	c.b01()
 	c.b02()
@@ -996,6 +997,18 @@ func (c *checker) r06() {
 			fit = append(fit, fmt.Sprintf("%dm of %dm", memSum>>20, hostMiB))
 		}
 		c.passf("the projects on %s with limits of their own fit the host together (%s)", s.target, strings.Join(fit, ", "))
+	}
+}
+
+// memoryController: R04 and R06 judge limits the kernel may not enforce. A
+// marker that does not record the probe says nothing.
+func (c *checker) memoryController() {
+	if c.srv.mk.MemoryController == "no" {
+		w := marker.NoMemoryController(c.srv.target)
+		c.warnf("%s", w[0])
+		for _, l := range w[1:] {
+			fmt.Fprintf(c.w, "      %s\n", l)
+		}
 	}
 }
 
