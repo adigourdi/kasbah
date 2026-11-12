@@ -17,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/fsstate"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/remote"
@@ -319,7 +320,7 @@ func takeLock(dir string) (*os.File, error) {
 	path := filepath.Join(dir, ".deploy.lock")
 	f, holder, err := serverlock.Project(dir)
 	if err != nil {
-		return nil, fmt.Errorf("could not open the lock file %s. Nothing was changed.", path)
+		return nil, fmt.Errorf("could not open the lock file %s: %v. Nothing was changed.", path, cli.OSCause(err))
 	}
 	if f == nil {
 		return nil, fmt.Errorf("%s is running in %s — it holds the lock on %s. Nothing was changed.", holder, dir, path)

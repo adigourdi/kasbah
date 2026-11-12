@@ -1,6 +1,7 @@
 package check
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/udiff"
@@ -641,8 +643,13 @@ type staged struct {
 func (r *fixRun) stage(file string, root tree.Value, planner func(*fixer), verify func(a, b tree.Value) bool, version string) *staged {
 	c := r.c
 	data, err := readRegular(file)
+	if errors.Is(err, errNotRegular) {
+		c.out.Err("check --fix: %s is not a regular file — it was left alone", file)
+		r.leftf("%s — not a regular file; it was left exactly as it was", file)
+		return nil
+	}
 	if err != nil {
-		c.out.Err("check --fix: cannot read %s — it was left alone", file)
+		c.out.Err("check --fix: cannot read %s: %v — it was left alone", file, cli.OSCause(err))
 		r.leftf("%s — could not be read; it was left exactly as it was", file)
 		return nil
 	}
@@ -662,7 +669,7 @@ func (r *fixRun) stage(file string, root tree.Value, planner func(*fixer), verif
 	target := file
 	if fi, err := os.Lstat(file); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		if target, err = filepath.EvalSymlinks(file); err != nil {
-			c.out.Err("check --fix: cannot resolve the symlink %s — it was left alone", file)
+			c.out.Err("check --fix: cannot resolve the symlink %s: %v — it was left alone", file, cli.OSCause(err))
 			r.leftf("%s — its symlink could not be resolved; it was left exactly as it was", file)
 			return nil
 		}
@@ -673,7 +680,7 @@ func (r *fixRun) stage(file string, root tree.Value, planner func(*fixer), verif
 	out := x.t.render()
 	if err := writeNew(tmp, out); err != nil {
 		os.Remove(tmp)
-		c.out.Err("check --fix: cannot write beside %s — nothing was changed", file)
+		c.out.Err("check --fix: cannot write beside %s: %v — nothing was changed", file, cli.OSCause(err))
 		r.leftf("%s — nothing could be written beside it, so it was left exactly as it was", file)
 		return nil
 	}
@@ -723,10 +730,14 @@ func (r *fixRun) cleanup() {
 	}
 }
 
+var errNotRegular = errors.New("not a regular file")
+
 // readRegular reads a file that is a regular one (through a symlink).
 func readRegular(file string) ([]byte, error) {
-	if !isFile(file) {
-		return nil, os.ErrNotExist
+	if fi, err := os.Stat(file); err != nil {
+		return nil, err
+	} else if !fi.Mode().IsRegular() {
+		return nil, errNotRegular
 	}
 	return os.ReadFile(file)
 }

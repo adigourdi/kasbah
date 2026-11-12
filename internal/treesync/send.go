@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/adigourdi/kasbah/internal/cli"
 )
 
 // Source is what one sync sends: a manifest, and whether it is a tree (the
@@ -55,7 +57,7 @@ func (s *Source) walk(dir, rel string, warn io.Writer) {
 		f.Close()
 	}
 	if err != nil {
-		fmt.Fprintf(warn, "sync: cannot read the directory %s: %v\n", dir, unwrap(err))
+		fmt.Fprintf(warn, "sync: cannot read the directory %s: %v\n", dir, cli.OSCause(err))
 		s.Errs++
 		return
 	}
@@ -67,7 +69,7 @@ func (s *Source) walk(dir, rel string, warn io.Writer) {
 		}
 		fi, err := os.Lstat(path)
 		if err != nil {
-			fmt.Fprintf(warn, "sync: cannot read %s: %v\n", path, unwrap(err))
+			fmt.Fprintf(warn, "sync: cannot read %s: %v\n", path, cli.OSCause(err))
 			s.Errs++
 			continue
 		}
@@ -93,7 +95,7 @@ func (s *Source) one(path, rel string, fi os.FileInfo, links bool, warn io.Write
 	case m&os.ModeSymlink != 0 && links:
 		t, err := os.Readlink(path)
 		if err != nil {
-			fmt.Fprintf(warn, "sync: cannot read the link %s: %v\n", path, unwrap(err))
+			fmt.Fprintf(warn, "sync: cannot read the link %s: %v\n", path, cli.OSCause(err))
 			s.Errs++
 			return e, false
 		}
@@ -110,7 +112,7 @@ func (s *Source) one(path, rel string, fi os.FileInfo, links bool, warn io.Write
 func File(src string, warn io.Writer) (*Source, error) {
 	fi, err := os.Lstat(src)
 	if err != nil {
-		return nil, fmt.Errorf("cannot read %s: %v", src, unwrap(err))
+		return nil, fmt.Errorf("cannot read %s: %v", src, cli.OSCause(err))
 	}
 	if fi.IsDir() {
 		return nil, fmt.Errorf("%s is a directory", src)
@@ -127,7 +129,7 @@ func File(src string, warn io.Writer) (*Source, error) {
 func Fixed(src string, mode uint32) (*Source, error) {
 	fi, err := os.Stat(src)
 	if err != nil {
-		return nil, fmt.Errorf("cannot read %s: %v", src, unwrap(err))
+		return nil, fmt.Errorf("cannot read %s: %v", src, cli.OSCause(err))
 	}
 	if !fi.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not a regular file", src)
@@ -135,14 +137,6 @@ func Fixed(src string, mode uint32) (*Source, error) {
 	e := entryOf(src, filepath.Base(src), fi)
 	e.Kind, e.Size, e.Mode, e.follow = kindFile, fi.Size(), mode, true
 	return &Source{Ents: []Entry{e}}, nil
-}
-
-func unwrap(err error) error {
-	var pe *os.PathError
-	if errors.As(err, &pe) {
-		return pe.Err
-	}
-	return err
 }
 
 // Send drives one transfer: the manifest out, the server's need list in, the
@@ -153,7 +147,7 @@ func (s *Source) Send(w io.WriteCloser, r io.Reader, warn io.Writer) (Report, er
 	writeManifest(bw, s.Ents)
 	if err := bw.Flush(); err != nil {
 		w.Close()
-		return Report{}, fmt.Errorf("the server stopped reading the manifest (%v)", unwrap(err))
+		return Report{}, fmt.Errorf("the server stopped reading the manifest (%v)", cli.OSCause(err))
 	}
 	br := bufio.NewReader(r)
 	need, err := readNeed(br, s.Ents)
@@ -165,14 +159,14 @@ func (s *Source) Send(w io.WriteCloser, r io.Reader, warn io.Writer) (Report, er
 	for _, i := range need {
 		if err := sendFile(bw, i, s.Ents[i], buf, warn); err != nil {
 			w.Close()
-			return Report{}, fmt.Errorf("the server stopped reading at %s (%v)", s.Ents[i].local, unwrap(err))
+			return Report{}, fmt.Errorf("the server stopped reading at %s (%v)", s.Ents[i].local, cli.OSCause(err))
 		}
 	}
 	bw.WriteByte(endMark)
 	ferr := bw.Flush()
 	w.Close()
 	if ferr != nil {
-		return Report{}, fmt.Errorf("the server stopped reading before the end of the stream (%v)", unwrap(ferr))
+		return Report{}, fmt.Errorf("the server stopped reading before the end of the stream (%v)", cli.OSCause(ferr))
 	}
 	rest, _ := io.ReadAll(br)
 	rep, err := parseReport(rest)
@@ -249,7 +243,7 @@ func sendFile(w *writer, i int, e Entry, buf []byte, warn io.Writer) error {
 	}
 	w.uvarint(0)
 	if oerr != nil || rerr != nil {
-		fmt.Fprintf(warn, "sync: cannot read %s: %v — not sent\n", e.local, unwrap(errors.Join(oerr, rerr)))
+		fmt.Fprintf(warn, "sync: cannot read %s: %v — not sent\n", e.local, cli.OSCause(errors.Join(oerr, rerr)))
 		w.WriteByte(statusAbort)
 		return w.err()
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/mailreg"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/ssh"
 )
@@ -185,7 +186,7 @@ func Facts(out string) map[string]string { return remote.KV([]byte(out)) }
 func Read(s Session, target, apps, data string) (*ReadReport, error) {
 	body, rc := s.Remote(nil, "mail", "read", apps, data)
 	if rc != 0 {
-		return nil, cli.Fail("could not read the mail stack on %s (the remote step exited %d, see above)", target, rc)
+		return nil, cli.Fail("could not read the mail stack on %s (%s, see above)", target, serverbin.ExitText(rc, serverbin.RunTimeout))
 	}
 	var r ReadReport
 	if err := json.Unmarshal(body, &r); err != nil {
@@ -328,7 +329,7 @@ func rekey(c Ctx, s Session, o Options, apps, data string, r *ReadReport, reg *m
 	res, rc := s.Unbounded(append(args, d)...)
 	f := Facts(string(res))
 	if rc != 0 {
-		e := cli.Fail("could not make the DKIM keys of %s on %s (the remote step exited %d, see above)", d, o.Target, rc)
+		e := cli.Fail("could not make the DKIM keys of %s on %s (%s, see above)", d, o.Target, serverbin.ExitText(rc, 0))
 		if replace {
 			rotateFailed(out, o.Target, apps, data, d, stamp, f)
 			DKIMWarn(out, o.Target, data, []string{d}, f)
@@ -495,7 +496,7 @@ func add(c Ctx, s Session, o Options, apps, data string, r *ReadReport, reg *mai
 	size, sum := remote.Digest(body)
 	res, rc := s.Remote(body, "mail", "write", apps, data, size, sum)
 	if rc != 0 {
-		return cli.Fail("could not write the mail registry on %s (the remote step exited %d, see above) — nothing else was changed", o.Target, rc)
+		return cli.Fail("could not write the mail registry on %s (%s, see above) — nothing else was changed", o.Target, serverbin.ExitText(rc, serverbin.RunTimeout))
 	}
 	f := Facts(string(res))
 	if f["registry"] != "written" {
@@ -535,7 +536,7 @@ func add(c Ctx, s Session, o Options, apps, data string, r *ReadReport, reg *mai
 func dkim(out *cli.Output, s Session, target, apps, data, d string) error {
 	res, rc := s.Unbounded("mail", "dkim", apps, data, d)
 	if rc != 0 {
-		return cli.Fail("could not make the DKIM keys of %s on %s (the remote step exited %d, see above)", d, target, rc).Cont(
+		return cli.Fail("could not make the DKIM keys of %s on %s (%s, see above)", d, target, serverbin.ExitText(rc, 0)).Cont(
 			"the domain is in the registry and no existing key was replaced; once the cause",
 			"above is fixed, a re-run of this command makes only what is still missing")
 	}

@@ -388,7 +388,7 @@ func TestStartBranches(t *testing.T) {
 		t.Error("reset precondition")
 	}
 	got := errText(traefikStartFailed("a@b", 1, Facts{"acme_reset": "done", "acme_archive": "/d/acme.json.20261019T000000Z"}))
-	if !strings.Contains(got, "could not start Traefik on a@b (the remote step exited 1") || !strings.Contains(got, "previous store is at /d/acme.json.20261019T000000Z") {
+	if !strings.Contains(got, "could not start Traefik on a@b (it exited 1") || !strings.Contains(got, "previous store is at /d/acme.json.20261019T000000Z") {
 		t.Errorf("%q", got)
 	}
 	if got := errText(traefikStartFailed("a@b", 1, Facts{"acme_reset": "skipped"})); strings.Contains(got, "previous store") {

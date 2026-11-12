@@ -211,7 +211,7 @@ func (s *session) mailLayout(o Options, rendered map[string]string, v MailValues
 	size, sum := remote.Digest(body)
 	res, rc := s.mailCall(body, true, "layout", o.Apps, o.Data, size, sum)
 	if rc != 0 {
-		return nil, stepFailed("lay out the mail stack", s.target, rc)
+		return nil, stepFailed("lay out the mail stack", s.target, rc, serverbin.RunTimeout)
 	}
 	return checked("the mail layout step", s.target, res, "mail_layout", "mail_env", "mail_account")
 }
@@ -222,7 +222,7 @@ func (s *session) mailLayout(o Options, rendered map[string]string, v MailValues
 func (s *session) mailDKIM(o Options, v MailValues) (Facts, error) {
 	res, rc := s.mailCall(nil, false, "dkim", o.Apps, o.Data, v.Primary)
 	if rc != 0 {
-		return nil, cli.Fail("could not make the DKIM keys of %s on %s (the remote step exited %d, see above)", v.Primary, s.target, rc).Cont(
+		return nil, cli.Fail("could not make the DKIM keys of %s on %s (%s, see above)", v.Primary, s.target, serverbin.ExitText(rc, 0)).Cont(
 			"Traefik is up and no existing key was replaced; once the cause above is fixed,",
 			"a re-run makes only what is still missing and then starts the mail stack")
 	}
@@ -257,7 +257,7 @@ func (s *session) mailSync(o Options, rendered, cur map[string]string) ([]string
 func (s *session) mailStart(o Options) (Facts, error) {
 	res, rc := s.mailCall(nil, false, "start", o.Apps, strconv.Itoa(MailTimeout))
 	if rc != 0 {
-		return nil, cli.Fail("could not start the mail stack on %s (the remote step exited %d, see above)", s.target, rc)
+		return nil, cli.Fail("could not start the mail stack on %s (%s, see above)", s.target, serverbin.ExitText(rc, 0))
 	}
 	return checked("the mail start", s.target, res, "mail_cypht_health", "mail_cypht_nginx", "mail_dms_state",
 		"mail_dms_health", "mail_dms_restarts", "mail_dms_image", "mail_jail", "mail_cypht_unbanned", "mail_cypht_addr",

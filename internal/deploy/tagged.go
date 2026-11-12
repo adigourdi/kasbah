@@ -440,7 +440,7 @@ func refType(ref, path string) (string, error) {
 
 func showBlob(ref, path, dest string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o777); err != nil {
-		return cli.Fail("could not create %s", filepath.Dir(dest))
+		return cli.Fail("could not create %s", filepath.Dir(dest)).Cause(cli.OSCause(err))
 	}
 	cmd := exec.Command("git", "show", ref+":"+path)
 	cmd.Stderr = os.Stderr
@@ -475,7 +475,7 @@ func (r *run) readRef(t *tagged) error {
 	ref := "v" + r.version
 	tmp, err := os.MkdirTemp("", "kasbah-"+r.mode+".")
 	if err != nil {
-		return cli.Fail("could not create a temporary directory to extract %s into", ref)
+		return cli.Fail("could not create a temporary directory to extract %s into", ref).Cause(cli.OSCause(err))
 	}
 	t.extract = tmp
 	t.pop = atexit.Push(func() { os.RemoveAll(tmp) })
@@ -532,11 +532,11 @@ func (r *run) readRef(t *tagged) error {
 		return cli.Fail("cannot read the current directory: %v", err)
 	}
 	if err := os.Chdir(tmp); err != nil {
-		return cli.Fail("could not enter %s", tmp)
+		return cli.Fail("could not enter %s", tmp).Cause(cli.OSCause(err))
 	}
 	p, perr := readPlan(m, tmp, r.version, true)
 	if err := os.Chdir(root); err != nil {
-		return cli.Fail("could not return to %s", root)
+		return cli.Fail("could not return to %s", root).Cause(cli.OSCause(err))
 	}
 	if perr != nil {
 		return perr

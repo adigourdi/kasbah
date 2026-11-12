@@ -894,3 +894,15 @@ func TestSharedApps(t *testing.T) {
 		t.Errorf("a kasbah-group directory with no marker (a mistyped --apps-path) is accepted: %v", err)
 	}
 }
+
+// A layout directory that cannot be made says why, without its path twice.
+func TestRemoteLayoutFailureCarriesItsCause(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "f")
+	os.WriteFile(file, nil, 0o644)
+	var out bytes.Buffer
+	err := remoteLayout(file, t.TempDir(), &out)
+	want := "could not create " + file + "/.kasbah: not a directory"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}

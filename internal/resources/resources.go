@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/tree"
 )
@@ -178,7 +179,7 @@ func Resolve(s Spec, cores, memKB int64) (cpu, mem string, err error) {
 func Host() (cores, memKB int64, err error) {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
-		return 0, 0, fmt.Errorf("cannot read /proc/meminfo")
+		return 0, 0, fmt.Errorf("cannot read /proc/meminfo: %v", cli.OSCause(err))
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)

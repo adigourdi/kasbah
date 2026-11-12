@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/cli"
 	markerpkg "github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverlock"
@@ -165,7 +166,7 @@ func isFile(p string) (exists, regular bool) {
 func remoteLayout(apps, data string, stdout io.Writer) error {
 	for _, d := range []string{apps + "/.kasbah", apps + "/backups", apps + "/traefik/dynamic", data, data + "/traefik/letsencrypt"} {
 		if err := os.MkdirAll(d, 0o777); err != nil {
-			return fmt.Errorf("could not create %s", d)
+			return fmt.Errorf("could not create %s: %v", d, cli.OSCause(err))
 		}
 	}
 	acme := data + "/traefik/letsencrypt/acme.json"
@@ -177,7 +178,7 @@ func remoteLayout(apps, data string, stdout io.Writer) error {
 	if !exists {
 		f, err := os.OpenFile(acme, os.O_WRONLY|os.O_CREATE, 0o666)
 		if err != nil {
-			return fmt.Errorf("could not create %s", acme)
+			return fmt.Errorf("could not create %s: %v", acme, cli.OSCause(err))
 		}
 		f.Close()
 		state = "created"
@@ -301,7 +302,7 @@ func remoteMarker(apps, size, sum string, stdin io.Reader, stdout io.Writer) err
 	if regular {
 		cur, err := os.ReadFile(marker)
 		if err != nil {
-			return fmt.Errorf("could not read %s", marker)
+			return fmt.Errorf("could not read %s: %v", marker, cli.OSCause(err))
 		}
 		if bytes.Equal(bytes.TrimRight(cur, "\n"), bytes.TrimRight(body, "\n")) {
 			fmt.Fprintln(stdout, "marker=unchanged")
@@ -333,8 +334,10 @@ func inspect(id, format string) (string, error) {
 // the up: a running Traefik would save its in-memory store back into the file.
 func remoteStart(apps string, restart bool, timeout time.Duration, acme, stamp string, stdout, stderr io.Writer) error {
 	dir := apps + "/traefik"
-	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		return fmt.Errorf("could not enter %s", dir)
+	if fi, err := os.Stat(dir); err != nil {
+		return fmt.Errorf("could not enter %s: %v", dir, cli.OSCause(err))
+	} else if !fi.IsDir() {
+		return fmt.Errorf("could not enter %s: it is not a directory", dir)
 	}
 	const project = traefiknet.Project
 	dc := func(args ...string) error {
@@ -355,7 +358,7 @@ func remoteStart(apps string, restart bool, timeout time.Duration, acme, stamp s
 	var resetErr error
 	if acme != "" {
 		if err := dc("stop", "traefik"); err != nil {
-			resetErr = fmt.Errorf("docker compose -p %s stop traefik failed, so acme.json was not reset", project)
+			resetErr = fmt.Errorf("docker compose -p %s stop traefik failed: %v, so acme.json was not reset", project, err)
 		} else {
 			resetErr = remoteAcmeReset(acme, stamp, stdout)
 		}
@@ -370,7 +373,7 @@ func remoteStart(apps string, restart bool, timeout time.Duration, acme, stamp s
 		return resetByHand(resetErr, state, dir, acme, stamp)
 	}
 	if upErr != nil {
-		return fmt.Errorf("docker compose -p %s up -d failed in %s", project, dir)
+		return fmt.Errorf("docker compose -p %s up -d failed in %s: %v", project, dir, upErr)
 	}
 	id := cid()
 	if id == "" {
@@ -378,7 +381,7 @@ func remoteStart(apps string, restart bool, timeout time.Duration, acme, stamp s
 	}
 	if restart && before != "" && before == startedAt(id) {
 		if err := dc("restart", "traefik"); err != nil {
-			return fmt.Errorf("docker compose -p %s restart traefik failed", project)
+			return fmt.Errorf("docker compose -p %s restart traefik failed: %v", project, err)
 		}
 	}
 	// A recreated Traefik is on kasbah-net alone: every project's network and

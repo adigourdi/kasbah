@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 )
@@ -56,7 +57,7 @@ func ScanLeftovers(dir string) Leftovers {
 	l := NoLeftovers()
 	es, err := os.ReadDir(dir)
 	if err != nil {
-		l.Error = "the project directory could not be listed: " + errText(err)
+		l.Error = "the project directory could not be listed: " + cli.OSCause(err).Error()
 		return l
 	}
 	for _, e := range es {
@@ -69,7 +70,7 @@ func ScanLeftovers(dir string) Leftovers {
 	}
 	es, err = os.ReadDir(filepath.Join(dir, Backups))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		l.Error = Backups + "/ could not be listed: " + errText(err)
+		l.Error = Backups + "/ could not be listed: " + cli.OSCause(err).Error()
 	}
 	for _, e := range es {
 		if e.IsDir() && reBackupDir.MatchString(e.Name()) {
@@ -94,15 +95,6 @@ func ScanAgainstLock(dir string) Leftovers {
 	}
 	l.Holder = strings.Join(what, "; ")
 	return l
-}
-
-// errText is err without the path it names.
-func errText(err error) string {
-	var pe *fs.PathError
-	if errors.As(err, &pe) {
-		return pe.Err.Error()
-	}
-	return err.Error()
 }
 
 // Any is whether there is a leftover of any kind.

@@ -230,8 +230,11 @@ func docker(what string, args ...string) ([]byte, error) {
 func dmsImage(apps string) (string, error) {
 	f := apps + "/mail/compose.yml"
 	docs, err := yamlx.LoadFile(f)
-	if err != nil || len(docs) != 1 {
-		return "", fmt.Errorf("could not read %s, which names the docker-mailserver image the keys are made with", f)
+	if err != nil {
+		return "", fmt.Errorf("could not read %s, which names the docker-mailserver image the keys are made with: %v", f, cli.OSCause(err))
+	}
+	if len(docs) != 1 {
+		return "", fmt.Errorf("%s, which names the docker-mailserver image the keys are made with, holds %d YAML documents, not one", f, len(docs))
 	}
 	img := tree.TextAt(docs[0], "services", "mail-dms", "image")
 	if img == "" {
@@ -351,7 +354,7 @@ func (b *keyBox) prepare() error {
 		return err
 	}
 	if err := os.MkdirAll(b.dir, 0o755); err != nil {
-		return fmt.Errorf("could not create %s", b.dir)
+		return fmt.Errorf("could not create %s: %v", b.dir, cli.OSCause(err))
 	}
 	if _, err := docker("docker image inspect "+img, "image", "inspect", img); err != nil {
 		if errors.Is(err, errTimeout) {
@@ -406,7 +409,7 @@ func remoteDKIM(templates fs.FS, apps, data string, args []string, stdout, stder
 	regPath := mailreg.Path(apps)
 	body, err := os.ReadFile(regPath)
 	if err != nil {
-		return fmt.Errorf("could not read %s", regPath)
+		return fmt.Errorf("could not read %s: %v", regPath, cli.OSCause(err))
 	}
 	reg, err := mailreg.Parse(body, regPath)
 	if err != nil {
@@ -433,11 +436,7 @@ func remoteDKIM(templates fs.FS, apps, data string, args []string, stdout, stder
 				case err == nil:
 					there[f] = true
 				case !errors.Is(err, fs.ErrNotExist):
-					var pe *fs.PathError
-					if errors.As(err, &pe) {
-						err = pe.Err
-					}
-					return fmt.Errorf("could not look for %s/%s (%v), so no DKIM key was made: a key kasbah cannot see is one it could replace", dir, f, err)
+					return fmt.Errorf("could not look for %s/%s (%v), so no DKIM key was made: a key kasbah cannot see is one it could replace", dir, f, cli.OSCause(err))
 				}
 			}
 		}
@@ -659,7 +658,7 @@ func renderDKIM(templates fs.FS, data string, domains []string, changed bool, st
 	case regular:
 		cur, err := os.ReadFile(path)
 		if err != nil {
-			return fmt.Errorf("could not read %s", path)
+			return fmt.Errorf("could not read %s: %v", path, cli.OSCause(err))
 		}
 		switch {
 		case string(cur) == conf:
@@ -676,7 +675,7 @@ func renderDKIM(templates fs.FS, data string, domains []string, changed bool, st
 	}
 	if cstate != "unchanged" {
 		if err := os.MkdirAll(data+"/mail/dms/config/rspamd/override.d", 0o777); err != nil {
-			return fmt.Errorf("could not create %s", data+"/mail/dms/config/rspamd/override.d")
+			return fmt.Errorf("could not create %s: %v", data+"/mail/dms/config/rspamd/override.d", cli.OSCause(err))
 		}
 		if err := remote.Install(path, []byte(conf), 0o644); err != nil {
 			return err

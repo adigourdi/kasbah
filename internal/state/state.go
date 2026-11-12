@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
-	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/tree"
 )
 
@@ -129,7 +128,7 @@ func Append(path, version, key, value string) error {
 func update(path, version string, apply func(m *tree.Map)) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o777); err != nil {
-		return cli.Fail("could not create %s", dir)
+		return cli.Fail("could not create %s", dir).Cause(cli.OSCause(err))
 	}
 
 	current := []tree.Value{Defaults(version)}
@@ -159,11 +158,11 @@ func update(path, version string, apply func(m *tree.Map)) error {
 	tmp := path + ".tmp." + strconv.Itoa(os.Getpid())
 	if err := os.WriteFile(tmp, render(current...), 0o666); err != nil {
 		os.Remove(tmp)
-		return cli.Fail("could not write %s", tmp).Cause(remote.OSCause(err))
+		return cli.Fail("could not write %s", tmp).Cause(cli.OSCause(err))
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
-		return cli.Fail("could not install %s", path).Cause(remote.OSCause(err))
+		return cli.Fail("could not install %s", path).Cause(cli.OSCause(err))
 	}
 	return nil
 }

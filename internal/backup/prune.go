@@ -330,7 +330,7 @@ func Prune(c PruneCtx, o PruneOptions) error {
 
 	dir, err := os.MkdirTemp("", "kasbah-backup-prune.*")
 	if err != nil {
-		return cli.Fail("could not create a temp directory for the prune credentials")
+		return cli.Fail("could not create a temp directory for the prune credentials").Cause(cli.OSCause(err))
 	}
 	cleanup := func() { os.RemoveAll(dir) }
 	pop := atexit.Push(cleanup)
@@ -404,8 +404,12 @@ func Prune(c PruneCtx, o PruneOptions) error {
 // (`docker --env-file` is last-wins).
 func stage(dir, target, base string, env, repos []string, pass map[string]string) error {
 	for _, d := range []string{dir, dir + "/pw", dir + "/env"} {
-		if err := os.MkdirAll(d, 0o700); err != nil || os.Chmod(d, 0o700) != nil {
-			return cli.Fail("could not create %s", d)
+		err := os.MkdirAll(d, 0o700)
+		if err == nil {
+			err = os.Chmod(d, 0o700)
+		}
+		if err != nil {
+			return cli.Fail("could not create %s", d).Cause(cli.OSCause(err))
 		}
 	}
 	for _, r := range repos {
@@ -418,7 +422,7 @@ func stage(dir, target, base string, env, repos []string, pass map[string]string
 			p = strings.TrimSuffix(string(b), "\n")
 		}
 		if err := os.WriteFile(dir+"/pw/"+r+".pass", []byte(p+"\n"), 0o600); err != nil {
-			return cli.Fail("could not stage the password for %s", r)
+			return cli.Fail("could not stage the password for %s", r).Cause(cli.OSCause(err))
 		}
 		var b strings.Builder
 		for _, e := range env {
@@ -426,7 +430,7 @@ func stage(dir, target, base string, env, repos []string, pass map[string]string
 		}
 		fmt.Fprintf(&b, "RESTIC_REPOSITORY=%s%s\nRESTIC_PASSWORD_FILE=/pw/%s.pass\n", base, r, r)
 		if err := os.WriteFile(dir+"/env/"+r+".env", []byte(b.String()), 0o600); err != nil {
-			return cli.Fail("could not stage the environment for %s", r)
+			return cli.Fail("could not stage the environment for %s", r).Cause(cli.OSCause(err))
 		}
 	}
 	return nil

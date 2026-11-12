@@ -17,6 +17,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/backuprec"
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/probe"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverlock"
@@ -160,7 +161,7 @@ func remoteLayout(apps, size, sum string, stdin io.Reader, stdout io.Writer) err
 	}
 	for _, d := range []string{dir, dir + "/repos", dir + "/state"} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
-			return fmt.Errorf("could not create %s/repos and %s/state", dir, dir)
+			return fmt.Errorf("could not create %s: %v", d, cli.OSCause(err))
 		}
 		if err := serverlock.EnsureMode(d, 0o700); err != nil {
 			return err
@@ -329,7 +330,7 @@ func runProbe(apps, image string, limit time.Duration) (string, error) {
 	}
 	d, err := os.MkdirTemp("", "kasbah-backup-probe.*")
 	if err != nil {
-		return "", errors.New("could not create a temp directory for the probe")
+		return "", fmt.Errorf("could not create a temp directory for the probe: %v", cli.OSCause(err))
 	}
 	// The env file holds the operator's credentials, and so does the saved
 	// config of a container a signal left `Created`: both go, signal or not.
@@ -343,16 +344,16 @@ func runProbe(apps, image string, limit time.Duration) (string, error) {
 	pop := atexit.Push(cleanup)
 	defer func() { pop(); cleanup() }()
 	if err := os.Chmod(d, 0o700); err != nil {
-		return "", fmt.Errorf("could not restrict %s", d)
+		return "", fmt.Errorf("could not restrict %s: %v", d, cli.OSCause(err))
 	}
 	if err := os.Mkdir(d+"/src", 0o755); err != nil {
-		return "", fmt.Errorf("could not create %s/src", d)
+		return "", fmt.Errorf("could not create %s/src: %v", d, cli.OSCause(err))
 	}
 	if err := os.WriteFile(d+"/src/probe.txt", []byte("kasbah backup credential probe\n"), 0o644); err != nil {
-		return "", errors.New("could not write the probe object")
+		return "", fmt.Errorf("could not write the probe object %s/src/probe.txt: %v", d, cli.OSCause(err))
 	}
 	if err := os.WriteFile(d+"/pass", []byte(ProbePassword+"\n"), 0o600); err != nil {
-		return "", errors.New("could not write the probe password")
+		return "", fmt.Errorf("could not write the probe password file %s/pass: %v", d, cli.OSCause(err))
 	}
 	// The operator's lines first: `docker --env-file` is last-wins.
 	env := strings.Join(operatorLines(content), "\n")
@@ -361,7 +362,7 @@ func runProbe(apps, image string, limit time.Duration) (string, error) {
 	}
 	env += "RESTIC_REPOSITORY=" + base + ProbeRepo + "\nRESTIC_PASSWORD_FILE=/probe/pass\n"
 	if err := os.WriteFile(d+"/env", []byte(env), 0o600); err != nil {
-		return "", errors.New("could not write the probe environment")
+		return "", fmt.Errorf("could not write the probe environment %s/env: %v", d, cli.OSCause(err))
 	}
 
 	var log bytes.Buffer
@@ -415,8 +416,10 @@ func inspect(id, format string) string {
 // shell outranks `name:`.
 func remoteStart(apps string, restart bool, stdout, stderr io.Writer) error {
 	dir := apps + "/.kasbah/backup"
-	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		return fmt.Errorf("could not enter %s", dir)
+	if fi, err := os.Stat(dir); err != nil {
+		return fmt.Errorf("could not enter %s: %v", dir, cli.OSCause(err))
+	} else if !fi.IsDir() {
+		return fmt.Errorf("could not enter %s: it is not a directory", dir)
 	}
 	dc := func(args ...string) error {
 		cmd := exec.Command("docker", append([]string{"compose", "-p", Project}, args...)...)
@@ -434,7 +437,7 @@ func remoteStart(apps string, restart bool, stdout, stderr io.Writer) error {
 		before = inspect(id, "{{.State.StartedAt}}")
 	}
 	if err := dc("up", "-d"); err != nil {
-		return fmt.Errorf("docker compose -p %s up -d failed in %s", Project, dir)
+		return fmt.Errorf("docker compose -p %s up -d failed in %s: %v", Project, dir, err)
 	}
 	id := cid()
 	if id == "" {
@@ -444,13 +447,13 @@ func remoteStart(apps string, restart bool, stdout, stderr io.Writer) error {
 	legacy := "absent"
 	if fi, err := os.Lstat(dir + "/backup.sh"); err == nil && fi.Mode().IsRegular() {
 		if err := os.Remove(dir + "/backup.sh"); err != nil {
-			return fmt.Errorf("could not remove %s/backup.sh", dir)
+			return fmt.Errorf("could not remove %s/backup.sh: %v", dir, cli.OSCause(err))
 		}
 		legacy = "removed"
 	}
 	if restart && before != "" && before == inspect(id, "{{.State.StartedAt}}") {
 		if err := dc("restart", "backup"); err != nil {
-			return fmt.Errorf("docker compose -p %s restart backup failed", Project)
+			return fmt.Errorf("docker compose -p %s restart backup failed: %v", Project, err)
 		}
 	}
 	fmt.Fprintf(stdout, "backup_state=%s\nbackup_restarts=%s\nbackup_image=%s\nbackup_container=%s\nbackup_legacy=%s\n",

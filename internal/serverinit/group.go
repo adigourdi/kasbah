@@ -7,6 +7,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/rootsteps"
+	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 )
 
@@ -145,7 +146,7 @@ func (s *session) group(o Options, user string) (Facts, error) {
 	read := func() (Facts, error) {
 		res, rc := s.script(groupScript, o.Apps, o.Data, user, serverlock.Group)
 		if rc != 0 {
-			return nil, cli.Fail("could not read the group step on %s (the remote step exited %d, see above)", s.target, rc)
+			return nil, cli.Fail("could not read the group step on %s (%s, see above)", s.target, serverbin.ExitText(rc, 0))
 		}
 		return checked("the group step", s.target, res, groupKeys...)
 	}
@@ -167,7 +168,7 @@ func (s *session) group(o Options, user string) (Facts, error) {
 		body += "sudo -n " + strings.TrimPrefix(c, "sudo ") + "\n"
 	}
 	if _, rc := s.script(body); rc != 0 {
-		return nil, stepFailed("put "+o.Apps+" under the '"+serverlock.Group+"' group", s.target, rc)
+		return nil, stepFailed("put "+o.Apps+" under the '"+serverlock.Group+"' group", s.target, rc, 0)
 	}
 	if f, err = read(); err != nil {
 		return nil, err

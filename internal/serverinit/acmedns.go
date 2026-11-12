@@ -454,8 +454,11 @@ func readDynamic(path string, d fs.DirEntry) ([]byte, error) {
 		return nil, fmt.Errorf("%s is not a regular file kasbah reads", path)
 	}
 	b, err := io.ReadAll(io.LimitReader(f, maxDynamic+1))
-	if err != nil || len(b) > maxDynamic {
-		return nil, fmt.Errorf("cannot read %s", path)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read %s: %v", path, cli.OSCause(err))
+	}
+	if len(b) > maxDynamic {
+		return nil, fmt.Errorf("%s grew past %d bytes while it was read", path, maxDynamic)
 	}
 	if !plain(b) {
 		return nil, fmt.Errorf("%s may name a resolver kasbah cannot read", path)
@@ -509,7 +512,7 @@ func remoteAcmeDNS(apps, provider, size, sum string, stdin io.Reader, stdout io.
 		return fmt.Errorf("%s: %v", path, err)
 	}
 	if err := os.MkdirAll(dir, 0o777); err != nil {
-		return fmt.Errorf("could not create %s", dir)
+		return fmt.Errorf("could not create %s: %v", dir, cli.OSCause(err))
 	}
 	if fi, err := os.Lstat(path); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm() == DNSMode {
 		if cur, err := os.ReadFile(path); err == nil && string(cur) == string(body) {
@@ -546,7 +549,7 @@ func remoteAcmeDNSRemove(apps string, providers []string, stdout io.Writer) erro
 			continue
 		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("could not remove %s", path)
+			return fmt.Errorf("could not remove %s: %v", path, cli.OSCause(err))
 		}
 	}
 	fmt.Fprintln(stdout, "acme_dns_removed=yes")

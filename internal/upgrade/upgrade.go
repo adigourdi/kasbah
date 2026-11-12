@@ -305,7 +305,7 @@ func (x *run) noStack(rel string) error {
 func (x *run) readStack() error {
 	out, rc := x.s.Call(nil, true, "traefik", "read", x.apps, x.data)
 	if rc != 0 {
-		return cli.Fail("could not read the Traefik stack on %s (the remote step exited %d, see above)", x.o.Target, rc)
+		return cli.Fail("could not read the Traefik stack on %s (%s, see above)", x.o.Target, serverbin.ExitText(rc, serverbin.RunTimeout))
 	}
 	if err := remote.DecodeHidden(out, &x.stack,
 		[]string{"compose_b64", "static_b64", "shared_b64", "fragments", "acme_dns", "acme_state", "acme_digest", "docker",
@@ -523,7 +523,7 @@ func (x *run) dryRun() error {
 	out, rc := x.s.Call(body, false, "traefik", "dry-run", x.apps, x.imageNew, DryLabel, x.stamp,
 		DryACMEError, DryCA, strconv.Itoa(DryTimeout), size, sum)
 	if rc != 0 {
-		return cli.Fail("the dry run of %s on %s could not be carried out (the remote step exited %d, see above) — nothing was changed", x.imageNew, t, rc)
+		return cli.Fail("the dry run of %s on %s could not be carried out (%s, see above) — nothing was changed", x.imageNew, t, serverbin.ExitText(rc, 0))
 	}
 	var d Dry
 	if err := remote.Decode(out, &d,
@@ -629,7 +629,7 @@ func (x *run) dryRun() error {
 func (x *run) backup() error {
 	out, rc := x.s.Call(nil, true, "traefik", "backup", x.apps, x.stamp, x.imageNow, x.imageNew)
 	if rc != 0 {
-		return cli.Fail("could not back up the Traefik stack on %s (the remote step exited %d, see above) — nothing was changed", x.o.Target, rc)
+		return cli.Fail("could not back up the Traefik stack on %s (%s, see above) — nothing was changed", x.o.Target, serverbin.ExitText(rc, serverbin.RunTimeout))
 	}
 	var b struct {
 		Dir string `json:"backup_dir"`
@@ -695,7 +695,7 @@ func (x *run) start() (Up, error) {
 			"`kasbah server status "+t+"` shows where it ended.")
 	}
 	if rc != 0 && rc != 3 {
-		return up, cli.Fail("could not bring Traefik up on %s (the remote step exited %d, see above)", t, rc).Cont(
+		return up, cli.Fail("could not bring Traefik up on %s (%s, see above)", t, serverbin.ExitText(rc, 0)).Cont(
 			"the previous stack is backed up at "+x.backupDir+" — restore it with:",
 			"  cp -p "+x.backupDir+"/compose.yml "+x.apps+"/traefik/compose.yml",
 			"  cp -p "+x.backupDir+"/traefik.yml "+x.apps+"/traefik/traefik.yml",

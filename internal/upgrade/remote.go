@@ -22,6 +22,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverinit"
 	"github.com/adigourdi/kasbah/internal/traefiknet"
@@ -239,7 +240,7 @@ func dryRun(apps, image, label, stamp, acmeMsg, dryCA string, timeout time.Durat
 	}
 	var err error
 	if work, err = os.MkdirTemp("", "kasbah-dry-run."); err != nil {
-		return d, errors.New("could not create a temp directory")
+		return d, fmt.Errorf("could not create a temp directory: %v", cli.OSCause(err))
 	}
 	for _, f := range []struct{ name, body string }{{"traefik.yml", p.Static}, {"_shared.yml", p.Shared}} {
 		path := filepath.Join(work, f.name)
@@ -248,19 +249,26 @@ func dryRun(apps, image, label, stamp, acmeMsg, dryCA string, timeout time.Durat
 			err = os.Chmod(path, 0o644)
 		}
 		if err != nil {
-			return d, fmt.Errorf("could not write %s: %v", path, remote.OSCause(err))
+			return d, fmt.Errorf("could not write %s: %v", path, cli.OSCause(err))
 		}
 	}
 	// Pulled before anything on the server is overwritten.
 	if _, err := dockerCmd("", "pull", image); err != nil {
-		return d, fmt.Errorf("could not pull %s — check the tag exists (docker pull %s)", image, image)
+		hint := ""
+		if m := strings.ToLower(err.Error()); strings.Contains(m, "not found") || strings.Contains(m, "manifest unknown") {
+			hint = " — check the tag exists (docker pull " + image + ")"
+		}
+		return d, fmt.Errorf("could not pull %s: %v%s", image, err, hint)
 	}
 	if _, err := dockerCmd("", "run", "-d", "--name", name, "--label", label, "--network", "none", "--restart", "no",
 		"-v", work+"/traefik.yml:/etc/traefik/traefik.yml:ro",
 		"-v", apps+"/traefik/dynamic:/etc/traefik/dynamic:ro",
 		"-v", work+"/_shared.yml:/etc/traefik/dynamic/_shared.yml:ro",
 		image); err != nil {
-		return d, fmt.Errorf("the throwaway %s container would not start at all (docker run refused it)", image)
+		// docker's own refusal, its first line (a help line follows it); the
+		// args carry no secret.
+		why, _, _ := strings.Cut(strings.TrimSpace(err.Error()), "\n")
+		return d, fmt.Errorf("the throwaway %s container would not start at all (docker run refused it: %s)", image, why)
 	}
 	logs := func() string { return reColour.ReplaceAllString(dockerLogs(name), "") }
 	deadline := time.Now().Add(timeout)
@@ -315,15 +323,15 @@ func backup(apps, stamp, from, to string) (string, error) {
 		return "", fmt.Errorf("%s is already there — kasbah will not write over a backup", dest)
 	}
 	if err := os.MkdirAll(dest, 0o777); err != nil {
-		return "", fmt.Errorf("could not create %s: %v", dest, remote.OSCause(err))
+		return "", fmt.Errorf("could not create %s: %v", dest, cli.OSCause(err))
 	}
 	for _, rel := range []string{"compose.yml", "traefik.yml", "dynamic/_shared.yml"} {
 		if err := copyFile(dir+"/"+rel, dest+"/"+filepath.Base(rel)); err != nil {
-			return "", fmt.Errorf("could not copy %s/%s to %s: %v", dir, rel, dest, remote.OSCause(err))
+			return "", fmt.Errorf("could not copy %s/%s to %s: %v", dir, rel, dest, cli.OSCause(err))
 		}
 	}
 	if err := os.WriteFile(dest+"/kasbah-upgrade", []byte(from+" -> "+to+"\n"), 0o666); err != nil {
-		return "", fmt.Errorf("could not write %s/kasbah-upgrade: %v", dest, remote.OSCause(err))
+		return "", fmt.Errorf("could not write %s/kasbah-upgrade: %v", dest, cli.OSCause(err))
 	}
 	return dest, nil
 }

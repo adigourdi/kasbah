@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"testing"
 )
 
@@ -84,5 +85,21 @@ func TestCause(t *testing.T) {
 	want := []string{"could not ship f to d@h:/x: sync exited 3", "first", "second", "after"}
 	if fmt.Sprint(e.Lines) != fmt.Sprint(want) {
 		t.Errorf("%q, want %q", e.Lines, want)
+	}
+	if e := Fail("could not create d").Cause(nil); fmt.Sprint(e.Lines) != "[could not create d]" {
+		t.Errorf("Cause(nil): %q", e.Lines)
+	}
+}
+
+func TestOSCause(t *testing.T) {
+	_, err := os.Stat("/nonexistent/kasbah")
+	if got := OSCause(err).Error(); got != "no such file or directory" {
+		t.Errorf("PathError: %q", got)
+	}
+	if got := OSCause(os.Rename("/nonexistent/a", "/nonexistent/b")).Error(); got != "no such file or directory" {
+		t.Errorf("LinkError: %q", got)
+	}
+	if got := OSCause(errors.New("plain")).Error(); got != "plain" {
+		t.Errorf("plain: %q", got)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 
@@ -118,14 +119,30 @@ func (e *Error) Cont(lines ...string) *Error {
 
 // Cause puts err's first line on the headline after ": ", trailing period
 // dropped, and appends its further lines after any continuation lines already
-// present, \r stripped.
+// present, \r stripped. A nil err leaves e as it is.
 func (e *Error) Cause(err error) *Error {
+	if err == nil {
+		return e
+	}
 	head, more, _ := strings.Cut(strings.ReplaceAll(err.Error(), "\r", ""), "\n")
 	e.Lines[0] += ": " + strings.TrimSuffix(head, ".")
 	if more = strings.TrimRight(more, "\n"); more != "" {
 		e.Lines = append(e.Lines, strings.Split(more, "\n")...)
 	}
 	return e
+}
+
+// OSCause is err without the operation and paths the message already names.
+func OSCause(err error) error {
+	var pe *fs.PathError
+	var le *os.LinkError
+	switch {
+	case errors.As(err, &pe):
+		return pe.Err
+	case errors.As(err, &le):
+		return le.Err
+	}
+	return err
 }
 
 // Report prints err and returns the exit

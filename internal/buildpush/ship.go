@@ -206,13 +206,13 @@ func askServer(out *cli.Output, conn *ssh.Conn, apps string, refs []string) (ser
 	v.tags, err = parseTags(raw, refs)
 	switch {
 	case err != nil && rerr != nil:
-		return v, cli.Fail("could not ask %s which builds it holds under these tags (the remote step exited %d) — nothing was sent", conn.Target, ssh.ExitCode(rerr))
+		return v, cli.Fail("could not ask %s which builds it holds under these tags (%s) — nothing was sent", conn.Target, serverbin.ExitText(ssh.ExitCode(rerr), serverbin.RunTimeout))
 	case err != nil:
 		return v, cli.Fail("%s's answer about the tags it holds was not usable (%v) — nothing was sent", conn.Target, err)
 	case diffs == nil || len(chains) == 0:
 		return v, nil
 	case rerr != nil:
-		out.Warn("could not ask %s which layers it holds (the remote step exited %d) — sending the images whole", conn.Target, ssh.ExitCode(rerr))
+		out.Warn("could not ask %s which layers it holds (%s) — sending the images whole", conn.Target, serverbin.ExitText(ssh.ExitCode(rerr), serverbin.RunTimeout))
 		return v, nil
 	}
 	a, err := parseHave(raw, chains, known)
@@ -377,7 +377,7 @@ func stream(conn *ssh.Conn, apps string, refs []string, skip, known map[string]b
 	raw := strings.ReplaceAll(report.String(), "\r", "")
 	lines := strings.Split(raw, "\n")
 
-	loadFailed := cli.Fail("could not load the images onto %s (the remote step exited %d, see above)", target, ssh.ExitCode(loadErr))
+	loadFailed := cli.Fail("could not load the images onto %s (%s, see above)", target, serverbin.ExitText(ssh.ExitCode(loadErr), 0))
 	switch {
 	case out.err != nil && loadErr != nil:
 		return st, loadFailed

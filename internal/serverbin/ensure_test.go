@@ -676,6 +676,12 @@ func TestExitText(t *testing.T) {
 			t.Errorf("ExitText(%d) = %q, want %q", rc, got, want)
 		}
 	}
+	// Unbounded: no limit to have missed.
+	for rc, want := range map[int]string{124: "it exited 124", 137: "it was killed (exit 137)", 143: "it was killed (exit 143)", -1: "ssh could not run, or was killed by a signal", 3: "it exited 3"} {
+		if got := ExitText(rc, 0); got != want {
+			t.Errorf("ExitText(%d, 0) = %q, want %q", rc, got, want)
+		}
+	}
 }
 
 // A marker far past bufio's default 64 KiB line: every line after it still

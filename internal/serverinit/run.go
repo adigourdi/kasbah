@@ -248,7 +248,7 @@ func PointerBlock(pt Facts, target, apps, user string) *rootsteps.Block {
 func (s *session) probe(o Options) (Facts, error) {
 	raw, rc := s.script(probeScript, o.Apps, o.Data, pointerPath)
 	if rc != 0 {
-		return nil, cli.Fail("could not collect prerequisites from %s (the remote probe exited %d)", s.target, rc)
+		return nil, cli.Fail("could not collect prerequisites from %s (%s)", s.target, serverbin.ExitText(rc, 0))
 	}
 	return ParseProbe(s.target, raw)
 }
@@ -257,7 +257,7 @@ func (s *session) probe(o Options) (Facts, error) {
 func (s *session) pointer(o Options) (Facts, error) {
 	res, rc := s.script(pointerScript, o.Apps, pointerPath)
 	if rc != 0 {
-		return nil, cli.Fail("could not write %s on %s (the remote step exited %d, see above)", Pointer, s.target, rc)
+		return nil, cli.Fail("could not write %s on %s (%s, see above)", Pointer, s.target, serverbin.ExitText(rc, 0))
 	}
 	return checked("the pointer step", s.target, res, "pointer")
 }
@@ -300,8 +300,10 @@ func AppsWhy(f Facts, target, apps string) string {
 	return fmt.Sprintf("%s does not exist on %s, and only root can create it.", apps, target)
 }
 
-func stepFailed(what, target string, rc int) error {
-	return cli.Fail("could not %s on %s (the remote step exited %d, see above)", what, target, rc)
+// stepFailed is a remote step's failure; limit is the step's bound in seconds
+// (serverbin.ExitText), 0 when it ran unbounded.
+func stepFailed(what, target string, rc, limit int) error {
+	return cli.Fail("could not %s on %s (%s, see above)", what, target, serverbin.ExitText(rc, limit))
 }
 
 // pointerPath is Pointer, moved only by tests.
@@ -385,7 +387,7 @@ func Run(c Ctx, o Options) (err error) {
 		body, rc := s.call(nil, true, "read", o.Apps)
 		var r ReadReport
 		if rc != 0 {
-			return cli.Fail("could not read %s on %s (the remote step exited %d, see above)", markerPath, target, rc)
+			return cli.Fail("could not read %s on %s (%s, see above)", markerPath, target, serverbin.ExitText(rc, serverbin.RunTimeout))
 		}
 		if json.Unmarshal([]byte(body), &r) != nil || (r.Marker != "present" && r.Marker != "absent") || r.Traefik == nil {
 			return cli.Fail("the read of %s/traefik on %s reported nothing kasbah can use", o.Apps, target).Cont(
@@ -413,7 +415,7 @@ func Run(c Ctx, o Options) (err error) {
 		if !elevate {
 			body, rc := s.remote(nil, true, "mail", "read", o.Apps, o.Data)
 			if rc != 0 {
-				return cli.Fail("could not read the mail stack on %s (the remote step exited %d, see above)", target, rc)
+				return cli.Fail("could not read the mail stack on %s (%s, see above)", target, serverbin.ExitText(rc, serverbin.RunTimeout))
 			}
 			if json.Unmarshal([]byte(body), &mr) != nil {
 				return cli.Fail("the mail stack read on %s reported nothing kasbah can use", target).Cont(
@@ -519,7 +521,7 @@ func Run(c Ctx, o Options) (err error) {
 		if f["sudo_nopasswd"] == "yes" {
 			res, rc := s.script(elevateScript, o.Apps, f["user"]+":"+f["group"])
 			if rc != 0 {
-				return stepFailed("lay out "+o.Apps, target, rc)
+				return stepFailed("lay out "+o.Apps, target, rc, 0)
 			}
 			if _, err := checked("the apps path step", target, res, "elevated"); err != nil {
 				return err
@@ -549,7 +551,7 @@ func Run(c Ctx, o Options) (err error) {
 
 	res, rc := s.call(nil, true, "layout", o.Apps, o.Data)
 	if rc != 0 {
-		return stepFailed("lay out "+o.Apps, target, rc)
+		return stepFailed("lay out "+o.Apps, target, rc, serverbin.RunTimeout)
 	}
 	lay, err := checked("the layout step", target, res, "acme")
 	if err != nil {
@@ -646,7 +648,7 @@ func Run(c Ctx, o Options) (err error) {
 	if len(dns.Remove) > 0 {
 		res, rc := s.call(nil, true, append([]string{"acme-dns-rm", o.Apps}, dns.Remove...)...)
 		if rc != 0 {
-			return stepFailed("remove the credentials of "+strings.Join(dns.Remove, " "), target, rc)
+			return stepFailed("remove the credentials of "+strings.Join(dns.Remove, " "), target, rc, serverbin.RunTimeout)
 		}
 		kv := remote.KV([]byte(res))
 		for _, p := range dns.Remove {
@@ -682,7 +684,7 @@ func Run(c Ctx, o Options) (err error) {
 
 	res, rc = s.send(marker.Render(m), "marker", o.Apps)
 	if rc != 0 {
-		return stepFailed("write the server marker", target, rc)
+		return stepFailed("write the server marker", target, rc, serverbin.RunTimeout)
 	}
 	mk, err := checked("the marker step", target, res, "marker")
 	if err != nil {
@@ -872,7 +874,7 @@ func resetNeedsRestart(restart bool) error {
 
 // traefikStartFailed names the archived store when this run reset it.
 func traefikStartFailed(target string, rc int, reset Facts) error {
-	e := cli.Fail("could not start Traefik on %s (the remote step exited %d, see above)", target, rc)
+	e := cli.Fail("could not start Traefik on %s (%s, see above)", target, serverbin.ExitText(rc, 0))
 	if reset["acme_reset"] == "done" {
 		e.Cont("acme.json was reset before this — the previous store is at " + reset["acme_archive"])
 	}

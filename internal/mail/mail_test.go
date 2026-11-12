@@ -478,7 +478,7 @@ func TestAddMailDomain(t *testing.T) {
 		rc   int
 		want string
 	}{
-		{"x=1\n", 1, "could not make the DKIM keys of shop.test on deploy@vps (the remote step exited 1"},
+		{"x=1\n", 1, "could not make the DKIM keys of shop.test on deploy@vps (it exited 1"},
 		{"mail_dkim_shop.test=kept kept\n", 0, "reported no mail_dkim "},
 	} {
 		f = &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(one)}, result: "registry=written\nalias=added\n", dkim: c.res, dkimRC: c.rc}

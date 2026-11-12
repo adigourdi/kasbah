@@ -211,9 +211,9 @@ type Probe struct {
 	Mount            []string
 }
 
-// probeScript resolves the apps path ($3 when given, else the pointer $2, else
-// $1) and reports the marker and its bytes, `uname -m` and the existing
-// binary, run for at most $4 s. POSIX sh; exit 5/6/7 are the pointer refusals.
+// probeScript resolves the apps path ($3, else the pointer $2, else $1) and
+// reports the marker, `uname -m` and the existing binary, whose `remote
+// version` runs for at most $4 s. POSIX sh; exit 5/6/7 are pointer refusals.
 const probeScript = `set -u
 export LC_ALL=C
 apps=$1
@@ -436,7 +436,7 @@ func judgeLayout(target string, rc int, out []byte, prepared bool) (*Probe, erro
 	switch rc {
 	case 0, 5, 6, 7:
 	default:
-		return nil, cli.Fail("could not read the server layout on %s (the remote step exited %d, see above)", target, rc)
+		return nil, cli.Fail("could not read the server layout on %s (%s, see above)", target, ExitText(rc, 0))
 	}
 	p, err := ParseProbe(out)
 	if err != nil {
@@ -582,14 +582,16 @@ type Result struct {
 // -k), busybox's 143 (its TERM).
 func TimedOut(rc int) bool { return rc == 124 || rc == 137 || rc == 143 }
 
-// ExitText is a bounded remote step's exit status in words; limit is its
-// bound in seconds.
+// ExitText is a remote step's exit status in words; limit is its bound in
+// seconds, 0 for a step run unbounded.
 func ExitText(rc, limit int) string {
 	switch {
 	case rc == -1:
 		return "ssh could not run, or was killed by a signal"
-	case TimedOut(rc):
+	case TimedOut(rc) && limit > 0:
 		return fmt.Sprintf("it did not finish within %d s", limit)
+	case rc == 137 || rc == 143:
+		return fmt.Sprintf("it was killed (exit %d)", rc)
 	}
 	return fmt.Sprintf("it exited %d", rc)
 }

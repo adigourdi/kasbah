@@ -288,7 +288,7 @@ func SetKey(dir, key, value string) (verb string, err error) {
 	}
 	data, err := os.ReadFile(epath)
 	if err != nil {
-		return "", fmt.Errorf("cannot read %s", epath)
+		return "", fmt.Errorf("cannot read %s: %v", epath, cli.OSCause(err))
 	}
 	lines := rawLines(data)
 	line := key + "=" + enc

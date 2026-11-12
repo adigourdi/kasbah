@@ -243,3 +243,14 @@ func TestDecode(t *testing.T) {
 		t.Fatalf("plain text: %q", why)
 	}
 }
+
+// A failed append names the log once and says why.
+func TestAppendFailureCarriesItsCause(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "f")
+	os.WriteFile(file, nil, 0o644)
+	_, err := Append(file, "one")
+	want := "could not append to " + filepath.Join(file, Log) + ": not a directory"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}

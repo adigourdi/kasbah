@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/backuprec"
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/dockerapi"
 )
 
@@ -167,11 +168,11 @@ func (r *Runner) writeStatus(state string, deadline, next int64) {
 	tmp := fmt.Sprintf("%s.tmp.%d", r.statefile(), r.Pid)
 	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
 		os.Remove(tmp)
-		r.warn("could not write %s", r.statefile())
+		r.warn("could not write %s: %v", r.statefile(), cli.OSCause(err))
 		return
 	}
 	if err := os.Rename(tmp, r.statefile()); err != nil {
-		r.warn("could not install %s", r.statefile())
+		r.warn("could not install %s: %v", r.statefile(), cli.OSCause(err))
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/mailreg"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverlock"
@@ -315,7 +316,7 @@ func remoteLayout(apps, data, size, sum string, stdin io.Reader, stdout io.Write
 	for _, d := range []string{dir, mdata + "/dms/mail-data", mdata + "/dms/mail-state", mdata + "/dms/mail-logs",
 		mdata + "/dms/config/rspamd/override.d", mdata + "/cypht"} {
 		if err := os.MkdirAll(d, 0o777); err != nil {
-			return fmt.Errorf("could not create %s", d)
+			return fmt.Errorf("could not create %s: %v", d, cli.OSCause(err))
 		}
 	}
 	// Set before Cypht's first start, which makes the directory www-data's and
@@ -323,7 +324,7 @@ func remoteLayout(apps, data, size, sum string, stdin io.Reader, stdout io.Write
 	// still passes and every settings save fails silently.
 	if fi, err := os.Stat(mdata + "/cypht"); err != nil || fi.Mode().Perm() != 0o755 {
 		if err := os.Chmod(mdata+"/cypht", 0o755); err != nil {
-			return fmt.Errorf("could not set the mode of %s/cypht to 755 (Cypht makes it www-data's); on the server: sudo chmod 755 %s/cypht", mdata, mdata)
+			return fmt.Errorf("could not set the mode of %s/cypht to 755: %v (Cypht makes it www-data's); on the server: sudo chmod 755 %s/cypht", mdata, cli.OSCause(err), mdata)
 		}
 	}
 
@@ -340,7 +341,7 @@ func remoteLayout(apps, data, size, sum string, stdin io.Reader, stdout io.Write
 	default:
 		cur, err := os.ReadFile(env)
 		if err != nil {
-			return fmt.Errorf("could not read %s", env)
+			return fmt.Errorf("could not read %s: %v", env, cli.OSCause(err))
 		}
 		merged := MergeEnv(string(cur), b.Env)
 		if merged == string(cur) {
@@ -387,8 +388,10 @@ func inspect(id, format string) (string, error) {
 // where mail.<primary> does not resolve publicly.
 func remoteStart(apps string, timeout time.Duration, stdout, stderr io.Writer) error {
 	dir := apps + "/mail"
-	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		return fmt.Errorf("could not enter %s", dir)
+	if fi, err := os.Stat(dir); err != nil {
+		return fmt.Errorf("could not enter %s: %v", dir, cli.OSCause(err))
+	} else if !fi.IsDir() {
+		return fmt.Errorf("could not enter %s: it is not a directory", dir)
 	}
 	dc := func(args ...string) error {
 		cmd := exec.Command("docker", append([]string{"compose", "-p", Project}, args...)...)
@@ -412,7 +415,7 @@ func remoteStart(apps string, timeout time.Duration, stdout, stderr io.Writer) e
 	}
 	// --remove-orphans: a service the template no longer names is removed.
 	if err := dc("up", "-d", "--remove-orphans"); err != nil {
-		return fmt.Errorf("docker compose -p %s up -d --remove-orphans failed in %s", Project, dir)
+		return fmt.Errorf("docker compose -p %s up -d --remove-orphans failed in %s: %v", Project, dir, err)
 	}
 	// Webmail routes through Traefik, which joins the stack's own network.
 	d := traefiknet.Docker(traefiknet.Exec)
@@ -436,7 +439,7 @@ func remoteStart(apps string, timeout time.Duration, stdout, stderr io.Writer) e
 		nginx = "mounted"
 		if !bytes.Equal(got, want) {
 			if err := dc("up", "-d", "--no-deps", "--force-recreate", "mail-cypht"); err != nil {
-				return fmt.Errorf("docker compose -p %s up -d --force-recreate mail-cypht failed in %s", Project, dir)
+				return fmt.Errorf("docker compose -p %s up -d --force-recreate mail-cypht failed in %s: %v", Project, dir, err)
 			}
 			nginx = "remounted"
 			if web = cid("mail-cypht"); web == "" {

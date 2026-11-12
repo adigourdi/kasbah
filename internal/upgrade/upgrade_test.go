@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -181,6 +182,29 @@ func TestDryRunRemote(t *testing.T) {
 	d, _ = dryRun("/apps", "traefik:v3.7.10", DryLabel, "s", DryACMEError, DryCA, 0, p)
 	if len(d.Log) != 8000 {
 		t.Errorf("the log is clipped to its tail: %d", len(d.Log))
+	}
+}
+
+// A refused pull names docker's error, hinting at the tag only when docker says
+// it is unknown; a refused run names docker's first line, not its help line.
+func TestDryRunRefusals(t *testing.T) {
+	oDocker := dockerCmd
+	defer func() { dockerCmd = oDocker }()
+	for _, tc := range []struct{ verb, err, want, not string }{
+		{"pull", "manifest for traefik:v9 not found: manifest unknown", "could not pull traefik:v3.7.10: manifest for traefik:v9 not found: manifest unknown — check the tag exists", ""},
+		{"pull", "toomanyrequests: You have reached your pull rate limit", "could not pull traefik:v3.7.10: toomanyrequests", "check the tag exists"},
+		{"run", "docker: Error response from daemon: invalid container name\n\nRun 'docker run --help' for more information", "(docker run refused it: docker: Error response from daemon: invalid container name)", "--help"},
+	} {
+		dockerCmd = func(dir string, args ...string) (string, error) {
+			if args[0] == tc.verb {
+				return "", errors.New(tc.err)
+			}
+			return "", nil
+		}
+		_, err := dryRun("/apps", "traefik:v3.7.10", DryLabel, "20260825T000000Z", DryACMEError, DryCA, time.Second, DryPayload{Shared: "http: {}\n", Static: "{}\n"})
+		if err == nil || !strings.Contains(err.Error(), tc.want) || tc.not != "" && strings.Contains(err.Error(), tc.not) {
+			t.Errorf("%s %q: %v", tc.verb, tc.err, err)
+		}
 	}
 }
 

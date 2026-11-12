@@ -2,6 +2,7 @@ package check
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -344,4 +345,16 @@ func TestFixRotationAndExternal(t *testing.T) {
 		"    logging:\n      driver: json-file\n      options:\n"
 	fixed(t, head+"        max-size: false\n        max-file: 3\nnetworks:\n  kasbah-net:\n    external: \"true\"\n",
 		head+"        max-size: 10m\n        max-file: 3\nnetworks:\n  kasbah-net:\n    external: true\n")
+}
+
+// A path that is not a regular file is refused as such, not as "does not
+// exist"; a missing one keeps the OS's reason.
+func TestReadRegular(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := readRegular(dir); !errors.Is(err, errNotRegular) {
+		t.Errorf("a directory: %v", err)
+	}
+	if _, err := readRegular(dir + "/missing"); err == nil || errors.Is(err, errNotRegular) || !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a missing file: %v", err)
+	}
 }

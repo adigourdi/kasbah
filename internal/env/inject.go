@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/envtpl"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 )
@@ -103,7 +104,7 @@ func managedBlock(lines []string) []bool {
 func lockEnv(dir string) (*os.File, error) {
 	f, holder, err := serverlock.Project(dir)
 	if err != nil {
-		return nil, fmt.Errorf("could not open the lock file %s/.deploy.lock — .env left untouched", dir)
+		return nil, fmt.Errorf("could not open the lock file %s/.deploy.lock: %v — .env left untouched", dir, cli.OSCause(err))
 	}
 	if f == nil {
 		return nil, fmt.Errorf("%s is running in %s — it holds %s/.deploy.lock. .env left untouched; re-run once it has finished.", holder, dir, dir)

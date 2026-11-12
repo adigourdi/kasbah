@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/envtpl"
 )
 
@@ -104,7 +105,7 @@ func restoreEnvLocked(dir string, old []byte, keys []string, cleanup bool) error
 	} else {
 		cur, err := os.ReadFile(path)
 		if err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("cannot read %s — .env left untouched", path)
+			return fmt.Errorf("cannot read %s: %v — .env left untouched", path, cli.OSCause(err))
 		}
 		lines = MergeEnv(cur, old, keys)
 	}

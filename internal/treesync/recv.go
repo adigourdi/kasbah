@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/remote"
 )
 
@@ -133,7 +134,7 @@ func (rc *receiver) run(dest string, in *bufio.Reader, stdout io.Writer) int {
 		out.uvarint(uint64(i))
 	}
 	if err := out.Flush(); err != nil {
-		rc.errorf("the workstation stopped reading (%v)", unwrap(err))
+		rc.errorf("the workstation stopped reading (%v)", cli.OSCause(err))
 		rc.finish()
 		return 1
 	}
@@ -205,10 +206,10 @@ func (rc *receiver) openRoot(dest string) error {
 				return fmt.Errorf("the destination %s is a symlink to nothing", dest)
 			}
 			if err := os.Mkdir(dest, 0o700); err != nil {
-				return fmt.Errorf("could not create the destination %s: %v", dest, unwrap(err))
+				return fmt.Errorf("could not create the destination %s: %v", dest, cli.OSCause(err))
 			}
 		case err != nil:
-			return fmt.Errorf("cannot read the destination %s: %v", dest, unwrap(err))
+			return fmt.Errorf("cannot read the destination %s: %v", dest, cli.OSCause(err))
 		}
 		for i, e := range rc.ents {
 			rc.at[i] = e.Path
@@ -221,7 +222,7 @@ func (rc *receiver) openRoot(dest string) error {
 	}
 	r, err := os.OpenRoot(dir)
 	if err != nil {
-		return fmt.Errorf("cannot open the directory %s: %v", dir, unwrap(err))
+		return fmt.Errorf("cannot open the directory %s: %v", dir, cli.OSCause(err))
 	}
 	rc.root = r
 	return nil
@@ -242,7 +243,7 @@ func (rc *receiver) prepare(i int, e Entry) bool {
 	}
 	fi, err := rc.root.Lstat(p)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		rc.fail("cannot read %s: %v", p, unwrap(err))
+		rc.fail("cannot read %s: %v", p, cli.OSCause(err))
 		if e.Kind == kindDir {
 			rc.bad[p] = true
 		}
@@ -260,13 +261,13 @@ func (rc *receiver) prepare(i int, e Entry) bool {
 		}
 		if exists {
 			if err := rc.root.Remove(p); err != nil {
-				rc.fail("could not make way for new directory: %s (%v)", p, unwrap(err))
+				rc.fail("could not make way for new directory: %s (%v)", p, cli.OSCause(err))
 				rc.bad[p] = true
 				return false
 			}
 		}
 		if err := rc.root.Mkdir(p, 0o700); err != nil {
-			rc.fail("could not create the directory %s: %v", p, unwrap(err))
+			rc.fail("could not create the directory %s: %v", p, cli.OSCause(err))
 			rc.bad[p] = true
 			return false
 		}
@@ -280,7 +281,7 @@ func (rc *receiver) prepare(i int, e Entry) bool {
 			}
 			if unixMode(fi.Mode()) != e.Mode {
 				if err := rc.root.Chmod(p, fileMode(e.Mode)); err != nil {
-					rc.fail("could not set the mode of %s: %v", p, unwrap(err))
+					rc.fail("could not set the mode of %s: %v", p, cli.OSCause(err))
 					return false
 				}
 			}
@@ -316,7 +317,7 @@ func (rc *receiver) makeWay(p, what string) bool {
 		if errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST) {
 			rc.fail("cannot delete non-empty directory: %s — could not make way for new %s", p, what)
 		} else {
-			rc.fail("could not make way for new %s: %s (%v)", what, p, unwrap(err))
+			rc.fail("could not make way for new %s: %s (%v)", what, p, cli.OSCause(err))
 		}
 		return false
 	}
@@ -328,14 +329,14 @@ func (rc *receiver) symlink(p string, e Entry) {
 	rc.setTemp(tmp)
 	defer rc.dropTemp()
 	if err := rc.root.Symlink(e.Target, tmp); err != nil {
-		rc.fail("could not create the symlink %s: %v", p, unwrap(err))
+		rc.fail("could not create the symlink %s: %v", p, cli.OSCause(err))
 		return
 	}
 	if err := rc.linkTimes(tmp, e); err != nil {
 		return
 	}
 	if err := rc.root.Rename(tmp, p); err != nil {
-		rc.fail("could not install the symlink %s: %v", p, unwrap(err))
+		rc.fail("could not install the symlink %s: %v", p, cli.OSCause(err))
 		return
 	}
 	rc.setTemp("")
@@ -352,7 +353,7 @@ func (rc *receiver) linkTimes(p string, e Entry) error {
 		d.Close()
 	}
 	if err != nil {
-		rc.fail("could not set the mtime of the symlink %s: %v", p, unwrap(err))
+		rc.fail("could not set the mtime of the symlink %s: %v", p, cli.OSCause(err))
 	}
 	return err
 }
@@ -447,7 +448,7 @@ func (rc *receiver) file(in *bufio.Reader, i int, buf []byte) error {
 		werr = rc.root.Rename(tmp, p)
 	}
 	if werr != nil {
-		rc.fail("could not write %s: %v", p, unwrap(werr))
+		rc.fail("could not write %s: %v", p, cli.OSCause(werr))
 		return nil
 	}
 	rc.setTemp("")
@@ -475,13 +476,13 @@ func (rc *receiver) finish() {
 		}
 		if m := dirMode(e.Mode, fi.Mode()); unixMode(fi.Mode()) != m {
 			if err := rc.root.Chmod(p, fileMode(m)); err != nil {
-				rc.fail("could not set the mode of %s: %v", p, unwrap(err))
+				rc.fail("could not set the mode of %s: %v", p, cli.OSCause(err))
 			}
 		}
 		want := time.Unix(e.Sec, e.Nsec)
 		if fi.ModTime().Unix() != e.Sec {
 			if err := rc.root.Chtimes(p, time.Time{}, want); err != nil {
-				rc.fail("could not set the mtime of %s: %v", p, unwrap(err))
+				rc.fail("could not set the mtime of %s: %v", p, cli.OSCause(err))
 			}
 		}
 	}

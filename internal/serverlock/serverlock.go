@@ -56,7 +56,7 @@ func safeName(s string) bool {
 func EnsureMode(path string, m os.FileMode) error {
 	fi, err := os.Stat(path)
 	if err != nil {
-		return fmt.Errorf("could not read %s: %v", path, unwrap(err))
+		return fmt.Errorf("could not read %s: %v", path, cli.OSCause(err))
 	}
 	// Special bits count: a private directory born setgid in the group's
 	// tree is put back to the plain mode asked for.
@@ -68,7 +68,7 @@ func EnsureMode(path string, m os.FileMode) error {
 		return fmt.Errorf("%s is mode %o and belongs to %s: only its owner or root can set it to %o — ssh in as %s and run chmod %o %s", path, fi.Mode().Perm(), OwnerName(fi), m, OwnerName(fi), m, path)
 	}
 	if err := os.Chmod(path, m); err != nil {
-		return fmt.Errorf("could not set mode %o on %s: %v", m, path, unwrap(err))
+		return fmt.Errorf("could not set mode %o on %s: %v", m, path, cli.OSCause(err))
 	}
 	return nil
 }
@@ -187,7 +187,7 @@ func Take(apps, mode, what string) (*os.File, error) {
 	}
 	f, err := Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("could not open the server lock %s: %v. Nothing was changed.", path, unwrap(err))
+		return nil, fmt.Errorf("could not open the server lock %s: %v. Nothing was changed.", path, cli.OSCause(err))
 	}
 	if err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB); err != nil {
 		h := holder(f, path)
@@ -303,14 +303,6 @@ func describe(argv []string) string {
 		return "kasbah remote " + rest[0]
 	}
 	return strings.Join(argv, " ")
-}
-
-func unwrap(err error) error {
-	var pe *os.PathError
-	if errors.As(err, &pe) {
-		return pe.Err
-	}
-	return err
 }
 
 // Usage is `kasbah remote lock`'s.

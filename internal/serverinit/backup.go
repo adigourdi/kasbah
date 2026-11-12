@@ -313,7 +313,7 @@ func BackupRender(fsys fs.FS, o Options, v *BackupValues, r *backup.ReadReport) 
 func (s *session) backupRead(o Options) (*backup.ReadReport, error) {
 	body, rc := s.remote(nil, true, "backup-init", "read", o.Apps, o.Data)
 	if rc != 0 {
-		return nil, cli.Fail("could not read the backup stack on %s (the remote step exited %d, see above)", s.target, rc)
+		return nil, cli.Fail("could not read the backup stack on %s (%s, see above)", s.target, serverbin.ExitText(rc, serverbin.RunTimeout))
 	}
 	var r backup.ReadReport
 	if json.Unmarshal([]byte(body), &r) != nil || r.Dir == "" || r.Env == "" {
@@ -452,7 +452,7 @@ func (s *session) backupInstall(out *cli.Output, o Options, v *BackupValues, r *
 	var rep bkReport
 	res, rc := s.remote(nil, true, "backup-init", "user", v.User, o.Apps)
 	if rc != 0 {
-		return rep, cli.Fail("could not look up the backup user %s on %s (the remote step exited %d, see above)", v.User, s.target, rc)
+		return rep, cli.Fail("could not look up the backup user %s on %s (%s, see above)", v.User, s.target, serverbin.ExitText(rc, serverbin.RunTimeout))
 	}
 	if err := UserVerdict(out, remote.KV([]byte(res)), v, s.target, o.Apps); err != nil {
 		return rep, err
@@ -465,7 +465,7 @@ func (s *session) backupInstall(out *cli.Output, o Options, v *BackupValues, r *
 	size, sum := remote.Digest(raw)
 	res, rc = s.remote(raw, true, "backup-init", "layout", o.Apps, size, sum)
 	if rc != 0 {
-		return rep, stepFailed("lay out "+o.Apps+"/.kasbah/backup", s.target, rc)
+		return rep, stepFailed("lay out "+o.Apps+"/.kasbah/backup", s.target, rc, serverbin.RunTimeout)
 	}
 	lay, err := checked("the backup layout step", s.target, res, "backup_layout", "env_state")
 	if err != nil {
@@ -476,7 +476,7 @@ func (s *session) backupInstall(out *cli.Output, o Options, v *BackupValues, r *
 	// Unbounded here: each of its restic calls is bounded on the server.
 	res, rc = s.remote(nil, false, "backup-init", "probe", o.Apps, backup.ResticImage, strconv.Itoa(v.Timeout))
 	if rc != 0 {
-		return rep, cli.Fail("could not run the backup credential probe on %s (the remote step exited %d, see above)", s.target, rc)
+		return rep, cli.Fail("could not run the backup credential probe on %s (%s, see above)", s.target, serverbin.ExitText(rc, 0))
 	}
 	pf, err := checked("the backup credential probe", s.target, res,
 		"probe_repo", "probe_stage", "probe_mid", "probe_after", "probe_rc", "probe_when", "probe_log_b64")
@@ -502,7 +502,7 @@ func (s *session) backupInstall(out *cli.Output, o Options, v *BackupValues, r *
 	}
 	res, rc = s.remote(nil, false, "backup-init", "start", o.Apps, yn)
 	if rc != 0 {
-		return rep, cli.Fail("could not start the backup stack on %s (the remote step exited %d, see above)", s.target, rc)
+		return rep, cli.Fail("could not start the backup stack on %s (%s, see above)", s.target, serverbin.ExitText(rc, 0))
 	}
 	if rep.Start, err = checked("the backup start", s.target, res,
 		"backup_state", "backup_restarts", "backup_image", "backup_container", "backup_legacy"); err != nil {

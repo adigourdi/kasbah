@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+
+	"github.com/adigourdi/kasbah/internal/cli"
 )
 
 const (
@@ -146,27 +148,27 @@ func Append(dir, line string) (repaired bool, err error) {
 	path := filepath.Join(dir, Log)
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|os.O_CREATE, Mode)
 	if err != nil {
-		return false, fmt.Errorf("could not append to %s", path)
+		return false, fmt.Errorf("could not append to %s: %v", path, cli.OSCause(err))
 	}
 	defer f.Close()
 	fixMode(path)
 	if fi, err := f.Stat(); err == nil && fi.Size() > 0 {
 		b := make([]byte, 1)
 		if _, err := f.ReadAt(b, fi.Size()-1); err != nil {
-			return false, fmt.Errorf("could not read the end of %s", path)
+			return false, fmt.Errorf("could not read the end of %s: %v", path, cli.OSCause(err))
 		}
 		if b[0] != '\n' {
 			if _, err := f.Write([]byte{'\n'}); err != nil {
-				return false, fmt.Errorf("could not terminate the last line of %s", path)
+				return false, fmt.Errorf("could not terminate the last line of %s: %v", path, cli.OSCause(err))
 			}
 			repaired = true
 		}
 	}
 	if _, err := f.Write([]byte(line + "\n")); err != nil {
-		return repaired, fmt.Errorf("could not append to %s", path)
+		return repaired, fmt.Errorf("could not append to %s: %v", path, cli.OSCause(err))
 	}
 	if err := f.Close(); err != nil {
-		return repaired, fmt.Errorf("could not append to %s", path)
+		return repaired, fmt.Errorf("could not append to %s: %v", path, cli.OSCause(err))
 	}
 	return repaired, nil
 }
