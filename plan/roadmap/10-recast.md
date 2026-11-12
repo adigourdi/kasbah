@@ -89,7 +89,7 @@ predicate ×3, path normalisation ×4)
       is the bootstrap probe and the `sudo` steps of init (apps path, pointer) and
       destroy (pointer, binary removal last)
 - [x] `./test.sh` and `KASBAH_RIG_TESTS=1 ./test.sh` green against the Go binary,
-      no skips, nothing else writing — 2026-10-19 on `69aff70`, a reset rig, the
+      no skips, nothing else writing — 2026-10-19 on `a2b8a54`, a reset rig, the
       real build path: 32 PASS (10 unit, 22 integration), 0 FAIL, 0 SKIP, 24m45s
 - [x] Newer-binary-wins observed both ways on the rig: a newer workstation
       replaces an older server binary; an older workstation runs against a newer
@@ -642,7 +642,7 @@ removal mid-step — order the last remote call accordingly.
 "never leave this server", but init reads the whole `env` back to the
 workstation (`lib/backup.sh:452`) and re-ships it (`:824`, `:879`). With Go on the
 server the merge can happen there — make the promise true. The full-access credential never reaches the server. The
-backup record survives container restarts (commit `12e543a`).
+backup record survives container restarts (commit `f96c64e`).
 
 ### 10.14 — Cutover (M)
 **Deliverables**

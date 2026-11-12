@@ -7,7 +7,7 @@
 
 **Prerequisite:** Phase 1. (Phase 3 may run in parallel — no shared files.)
 **Spec:** `docs/server-setup.md`, `docs/traefik.md`, `docs/cli.md` (server init, deploy), `docs/build-deploy.md` (deploy flow steps 1–5, 8d, 8g)
-**Retires:** file-provider-only routing (no docker socket, `container_name` DNS on `kasbah-net`) — designed in `765972c`, never yet run anywhere.
+**Retires:** file-provider-only routing (no docker socket, `container_name` DNS on `kasbah-net`) — designed in `c4c10e2`, never yet run anywhere.
 
 ## Inherited from Phase 1 — read before starting
 
@@ -368,7 +368,7 @@ temp dir per run; the scratch `HOME` has no git identity, so the copy sets
 
 This is what the phase existed to retire: file-provider-only routing, no
 docker socket, `container_name` DNS on `kasbah-net`. It was designed in
-`765972c` and had never been run anywhere. It works, and here is what it
+`c4c10e2` and had never been run anywhere. It works, and here is what it
 actually does.
 
 - **Reload latency is a ~2 s throttle *window*, not a floor** — and the

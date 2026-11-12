@@ -86,7 +86,7 @@ a managed block in `.env` from the server marker's limits.
 **Deliverables**
 - [x] `check` E02/E03 and the deploy drift path call the same function —
       `env_drift` in `lib/env.sh`, which `check.sh` sources and which the VPS
-      runs as the same bytes. `kasbah check` diffed against `9ebf3aa` over five
+      runs as the same bytes. `kasbah check` diffed against `95b3241` over five
       fixtures: every difference is one added E05 pass line and the incremented
       total, nothing else
 - [x] Injection is idempotent (second run = no diff) and survives user edits

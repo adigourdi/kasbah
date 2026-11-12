@@ -18,19 +18,19 @@ so `/tackle` and future phases inherit its evidence and findings.
 ## Tasks
 
 ### 0.1 — Repo scaffold, install, self-version (S) ✅
-**Evidence:** commits `9e4cb16`, `e84e4f4` — `bin/kasbah`, `lib/`, `install.sh`, `test.sh`, `VERSION`.
+**Evidence:** commits `5595140`, `4826720` — `bin/kasbah`, `lib/`, `install.sh`, `test.sh`, `VERSION`.
 
 ### 0.2 — Dispatcher, init-project, state module (M) ✅
-**Evidence:** commit `1a4f8a2` — symlink-safe self-resolution, `state_init`, rollback-safe scaffold with ERR-trap cleanup.
+**Evidence:** commit `162945d` — symlink-safe self-resolution, `state_init`, rollback-safe scaffold with ERR-trap cleanup.
 
 ### 0.3 — Manifest reader with schema gate (M) ✅
-**Evidence:** commit `56e97e3` + `tests/manifest_test.sh` — refuses schemas newer than the binary.
+**Evidence:** commit `2f1409d` + `tests/manifest_test.sh` — refuses schemas newer than the binary.
 
 ### 0.4–0.6 — `kasbah check`, grown rule-group per commit (L) ✅
-**Evidence:** commits `0bbab11` (S rules), `5d98ec8` (C rules), `1c9a57c` (T/H/E/HK rules) + `tests/check_test.sh`.
+**Evidence:** commits `7a3cb42` (S rules), `fa39a62` (C rules), `d332892` (T/H/E/HK rules) + `tests/check_test.sh`.
 
 ### 0.7 — File-provider routing decision (M) ✅
-**Evidence:** commit `765972c` — docker labels rejected (T06), fragments + `_shared.yml` model in `docs/traefik.md`.
+**Evidence:** commit `c4c10e2` — docker labels rejected (T06), fragments + `_shared.yml` model in `docs/traefik.md`.
 
 ### 0.8 — Agency docs pass + check rework (L) ✅
 Network split (C03/C07, T07), resource rules (R01–R03), retention =
@@ -38,14 +38,14 @@ Network split (C03/C07, T07), resource rules (R01–R03), retention =
 server marker + same-major compat policy, off-VPS backup design
 (`docs/backup.md`), interactivity rule, roadmap de-tracked, init-project
 snippet updated. Tests reworked and green (22-rule golden path).
-**Evidence:** commits `7ea63e1` (docs), `7c5f7d1` (check rework + tests);
+**Evidence:** commits `38e5bda` (docs), `f14ce7e` (check rework + tests);
 `./test.sh` PASS ×3 in 1m52s — the baseline Phase 1 must not move.
 
 ### 0.9 — CLAUDE.md + minimal README (S) ✅
 Repo conventions for agents (yq dialect, bash discipline, frozen
 contracts, interactivity rule) and a status-honest README with install +
 what-works-today.
-**Evidence:** commit `f8fe1cf`. Roadmap 1.5's full walkthrough README
+**Evidence:** commit `19b393a`. Roadmap 1.5's full walkthrough README
 waits until there's a deploy to walk through.
 
 ## Findings

@@ -46,7 +46,7 @@ the restart. Detection reads the CA back out of
 `_SI_TRAEFIK_CURRENT[traefik.yml]`, which is already fetched — the same
 mechanism as `_si_extract_email`.
 
-*(Written before the work, against `71aab5a`. It cited line numbers, and the
+*(Written before the work, against `277b30e`. It cited line numbers, and the
 commit that consumed the guidance moved the code they pointed at — so they are
 function names now. A plan that cites lines in the file it is about to change
 is citing lines that will be wrong by the time anyone reads it.)*
@@ -251,7 +251,7 @@ The task exists to find these, and it found them. Dispositions:
    exit 5 for "no `.env` and no terminal", then renders the env by running
    `setup-env.sh` itself. The behaviour is a tested contract.
    A fix was briefed, started, and reverted before review; the tree returned to
-   `d2e2083` with nothing kept.
+   `7458bbb` with nothing kept.
    What survives is narrower and not worth a special case: for a zero-key
    template the step has nothing to ask, but deciding that on the workstation
    means predicting what the generator will ask on the server — a second

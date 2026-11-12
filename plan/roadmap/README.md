@@ -22,7 +22,7 @@ during execution.
 | 7 | [Operate](07-operate.md) | **Done.** Mail stack (`--with-mail`, `add-mail-domain`, claim reconciliation, setup guide), `logs`/`exec`, `check --server` + R04, full `server status`, `server prune`, `upgrade-traefik` |
 | 8 | [Keep](08-keep.md) | **Done.** `drop [--prune]`, `server destroy`, `--with-backup` (restic push, append-only, proved), `check --fix`, and backups visible to `server status` / `check --server` |
 | 10 | [Recast](10-recast.md) | **Done (1.0.1).** kasbah is one Go binary on the workstation and on every VPS (shipped to `<apps>/.kasbah/bin/kasbah`, newer wins); no Bash left on either side; every feature kept, proven on the rig and on `vps`. Ran before Phase 9 |
-| 11 | [Open](11-open.md) | **Done, but for the public-only check.** Anyone installs kasbah with one `curl \| sh` or from source at any tag; one Go routine places every install; `self-update` needs no token. Runs before Phase 9 |
+| 11 | [Open](11-open.md) | **Done (1.0.0, public).** Anyone installs kasbah with one `curl \| sh` or from source at any tag; one Go routine places every install; `self-update` needs no token. Runs before Phase 9 |
 | 9 | [Adopt](09-adopt.md) | Both existing consumers migrated: the original project (scripts/ deleted, mail included, live cutover) and lab (RPi stacks as kasbah projects) |
 
 ## The real milestone
@@ -293,7 +293,7 @@ has one too.
 
 ## Before starting Phase 1 ✅
 
-Phase 0's final act is committed (`7ea63e1`, `7c5f7d1`, `f8fe1cf`), so
+Phase 0's final act is committed (`38e5bda`, `f14ce7e`, `19b393a`), so
 task baselines are clean. Unit-suite baseline at the start of Phase 1:
 `./test.sh` PASS ×3 in 1m52s.
 

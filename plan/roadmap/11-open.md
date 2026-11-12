@@ -39,7 +39,7 @@ is already installed, so every fresh machine today runs a dev build of whatever
 8. **"Latest" goes only to the highest final release.** The `get.sh` asset name and
    its `releases/latest/download/get.sh` URL are frozen contracts.
 9. **Releases cut in this phase are disposable**: they are cleaned up before the
-   repo goes public, which starts again at a new v1 ([[go-public]]). The licence is
+   repo goes public, which starts again at a new v1 (done 2026-11-12). The licence is
    MIT (`LICENSE`).
 10. **The proof runs in fresh containers only** (Debian/dash, Alpine/busybox);
     nothing touches `~/.local` on the workstation.
@@ -69,11 +69,18 @@ at the close.
       — a `1.1.1-dev…dirty` install removed a planted `1.1.0-dev…` and kept `1.1.0`
 - [x] `./test.sh` and `KASBAH_RIG_TESTS=1 ./test.sh` green — `./test.sh` inside
       `release.sh v1.1.0`; on a reset rig at the released commit 37 suites passed,
-      `install_test.sh` failed on a release checkout (fixed in `6b8f57f`, both its
+      `install_test.sh` failed on a release checkout (fixed in `7628662`, both its
       branches then green) and `server_destroy_test.sh` skipped on a restic pull
       the laptop's suspend cut short (re-run alone: green)
-- [ ] *Only once the repo is public* ([[go-public]]): an anonymous `curl | sh` from
-      the public URL, and `self-update` with no token
+- [x] *Only once the repo is public*: an anonymous `curl | sh` from
+      the public URL, and `self-update` with no token — 2026-11-12, v1.0.0 on the
+      public repo, a fresh `debian:stable-slim` with no `GITHUB_TOKEN` and no `gh`:
+      the README's `curl … | sh` fetched `kasbah_1.0.0_linux_amd64` from
+      `releases/download/v1.0.0/`, matched `checksums.txt`, verified it (key
+      `FC8BCEC04912A5B7`, trusted comment "kasbah 1.0.0") and installed it;
+      `kasbah --version` → `kasbah 1.0.0 (schema 1)`; `self-update` and
+      `self-update v1` resolved 1.0.0 through the releases API anonymously and
+      exited 0, already installed
 
 ## Tasks
 
@@ -206,7 +213,7 @@ is 11.8.
 *Done:* `release.sh stage` / `release.sh flags` are the one implementation, the
 workflow calls both and `tests/release_test.sh` pins its upload list to what `stage`
 writes. "Latest" reads origin's tags, so a tag left without a release counts — the
-pre-public cleanup deletes tags with their releases ([[go-public]]). The workflow
+pre-public cleanup deleted tags with their releases. The workflow
 still lacks release.sh's stamp check and re-upload path; it stays dispatch-only.
 
 ### 11.7 — `docs/install.md` (S) — the orchestrator's, after 11.6
@@ -259,8 +266,8 @@ transport errors after the redirect drop the signed query.
 ### 11.8 — Proof (M)
 
 **Deliverables**
-- [x] `VERSION` 1.1.0 in its release commit (`779a27f`); `./release.sh v1.1.0` run by
-      the user on `10da1bb` — two identical builds, five assets, marked Latest
+- [x] `VERSION` 1.1.0 in its release commit (`288d881`); `./release.sh v1.1.0` run by
+      the user on `5ace57d` — two identical builds, five assets, marked Latest
 - [x] The exit criteria walked in fresh containers, with the commands and their output
       recorded here — above, and:
   - every rung of `get.sh` against the real private release: the API with
@@ -272,7 +279,8 @@ transport errors after the redirect drop the signed query.
   - a token GitHub refused: one warning, an anonymous retry, the private-repo 404
   - `self-update` with no token on the private repo: the may-be-private refusal, exit 1
   - not walked: arm64 (no arm64 host — the asset's hash matches the source build,
-    its first run will be the lab RPi), and the public, tokenless path ([[go-public]])
+    its first run will be the lab RPi), and the public, tokenless path (walked
+    2026-11-12 after the flip, under the exit criteria)
 
 ## Open decisions
 
@@ -288,8 +296,8 @@ is, and who asks before moving the symlink, now live in `files.md` and `install.
   its outranking release at `X.0.1`, below a `1.1.0-dev` line; `install_test.sh`
   assumed a dev build, so `./test.sh` failed on a clean checkout of a release tag —
   `release.sh` runs the suite before it tags, which is why the release passed. Both
-  derive from the stamp now (`10da1bb`, `6b8f57f`); the v1.1.0 tag predates the
-  second fix, a disposable release ([[go-public]]). A suite must pass on a dev tree
+  derive from the stamp now (`5ace57d`, `7628662`); the v1.1.0 tag predates the
+  second fix, a disposable release. A suite must pass on a dev tree
   *and* on its tag's checkout.
 - The spec claimed `self-update` checked the signature's trusted comment; the code only
   printed it (found in 11.10). A safety check a doc asserts is not one until a test

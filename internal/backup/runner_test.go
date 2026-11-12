@@ -404,7 +404,7 @@ func TestRepos(t *testing.T) {
 
 const lastRun = "state=sleeping\nsince=1700000000\ndeadline=1700000900\nnext_run=1700086400\nlast_run_started=1700000000\nlast_run_finished=1700000123\nlast_run_status=ok\nlast_run_repos= zeta\n"
 
-// A scheduler brought up by a restart carries the stack's history (12e543a).
+// A scheduler brought up by a restart carries the stack's history (f96c64e).
 func TestScheduleCarriesLastRun(t *testing.T) {
 	apps, data := appsTree(t)
 	rec := apps + "/.kasbah/backup/state/status"
