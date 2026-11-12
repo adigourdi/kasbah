@@ -104,14 +104,14 @@ dkim_facts() {
     rig_ssh "bash -s '$dkim_dir' '$dkim' '$1'" 2>/dev/null <<'DKIM_FACTS' | tr -d '\r'
 set -uo pipefail
 d=$1 conf=$2 dom=$3
-sudo find "$d" -maxdepth 1 -type f -name "*-$dom.*" -printf '%f %U:%G %m\n' | sort | paste -sd,
+sudo find "$d" -maxdepth 1 -type f -name "*-$dom.*" ! -name '*.kasbah-old-*' -printf '%f %U:%G %m\n' | sort | paste -sd,
 for k in rsa-2048-mail ed25519-ed; do
     want=$(grep -o '".*"' "$d/$k-$dom.public.txt" 2>/dev/null | tr -d '"\n')
     got=$(cat "$d/$k-$dom.public.dns.txt" 2>/dev/null)
     if [ -n "$want" ] && [ "$want" = "$got" ]; then echo same; else echo "$want / $got"; fi
 done | paste -sd,
 sed 's/\r$//' "$conf" | grep -v '^ *#' | grep -oE "path = \"/tmp/docker-mailserver/rspamd/dkim/[^\"]*-$dom\.private\.txt\";" | paste -sd,
-sudo cat "$d"/*-"$dom".* 2>/dev/null | sha256sum
+sudo find "$d" -maxdepth 1 -type f -name "*-$dom.*" ! -name '*.kasbah-old-*' | sort | sudo xargs cat 2>/dev/null | sha256sum
 DKIM_FACTS
 }
 # What dkim_facts says for a domain kasbah made both keys of.
@@ -782,6 +782,81 @@ assert '[ "$(dkim_facts "$extra_domain")" = "$extra_dkim" ]' \
     "byte for byte what rspamadm wrote, owners and modes too
         want: $(paste -sd'|' <<<"$extra_dkim")
         got:  $(dkim_facts "$extra_domain" | paste -sd'|')"
+
+# --- server mail-dkim: repair and rotate ----------------------------------------
+mail_dkim() { kasbah_cli server mail-dkim "$RIG_TARGET" "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; }
+key_names="rsa-2048-mail-$extra_domain.private.txt rsa-2048-mail-$extra_domain.public.txt rsa-2048-mail-$extra_domain.public.dns.txt ed25519-ed-$extra_domain.private.txt ed25519-ed-$extra_domain.public.txt ed25519-ed-$extra_domain.public.dns.txt"
+# Every file under the key directory and the override, as one digest.
+dkim_state() { rig_ssh "sudo find $dkim_dir -type f | sort | sudo xargs md5sum; md5sum < $dkim" 2>/dev/null | tr -d '\r' | md5sum; }
+
+# Repair: a deleted public file and a whole missing Ed25519 key; the RSA
+# private key is kept.
+rsa_private=$(rig_ssh "sudo sha256sum < $dkim_dir/rsa-2048-mail-$extra_domain.private.txt" 2>/dev/null | tr -d '\r')
+rig_ssh "sudo rm -f $dkim_dir/rsa-2048-mail-$extra_domain.public.dns.txt $dkim_dir/ed25519-ed-$extra_domain.private.txt $dkim_dir/ed25519-ed-$extra_domain.public.txt $dkim_dir/ed25519-ed-$extra_domain.public.dns.txt" >/dev/null 2>&1
+mail_dkim "$extra_domain" --keep-keys; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "dkim:     keys repaired/generated" "$tmpdir/err"' \
+    "mail-dkim repairs a deleted public file and makes a missing ed25519 key (exit $rc: $(init_err))"
+assert '[ "$(head -3 <<<"$(dkim_facts "$extra_domain")")" = "$(dkim_want "$extra_domain")" ] &&
+        [ "$(rig_ssh "sudo sha256sum < $dkim_dir/rsa-2048-mail-$extra_domain.private.txt" 2>/dev/null | tr -d "\r")" = "$rsa_private" ]' \
+    "as docker-mailserver would, the RSA private key untouched
+        want: $(dkim_want "$extra_domain" | paste -sd'|')
+        got:  $(dkim_facts "$extra_domain" | head -3 | paste -sd'|')"
+assert 'grep -qF "mail._domainkey.$extra_domain.  IN TXT  \"v=DKIM1; k=rsa; " "$tmpdir/out" && grep -qF "ed._domainkey.$extra_domain.  IN TXT  \"v=DKIM1; k=ed25519;" "$tmpdir/out"' \
+    "and prints both records to publish (said '$(cat "$tmpdir/out")')"
+
+# --keep-keys on a complete domain changes nothing.
+state_before=$(dkim_state)
+mail_dkim "$extra_domain" --keep-keys; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "dkim:     keys kept, override unchanged, rspamd unchanged" "$tmpdir/err" && [ "$(dkim_state)" = "$state_before" ]' \
+    "--keep-keys on a complete domain changes nothing (exit $rc: $(init_err))"
+
+# No terminal, no flag: refused naming both, nothing changed.
+mail_dkim "$extra_domain"; rc=$?
+assert '[ "$rc" != "0" ] && grep -qF "pass --replace-keys or --keep-keys instead" "$tmpdir/err" && [ "$(dkim_state)" = "$state_before" ]' \
+    "with no terminal and no flag mail-dkim fails naming both, changing nothing (exit $rc: $(init_err))"
+
+# A rotation whose generation fails changes nothing: a directory where the
+# Ed25519 key's temp file goes stops it after the RSA key is made.
+blocker="$dkim_dir/.kasbah-new-ed25519-ed-$extra_domain.private.txt"
+rig_ssh "sudo mkdir '$blocker'" >/dev/null 2>&1
+mail_dkim "$extra_domain" --replace-keys; rc=$?
+left=$(rig_ssh "sudo find $dkim_dir -name '*.kasbah-old-*' -o -name '.kasbah-new-*' -type f" 2>/dev/null | tr -d '\r')
+rig_ssh "sudo rmdir '$blocker'" >/dev/null 2>&1
+assert '[ "$rc" != "0" ] && grep -qF "no key was replaced, the new ones discarded" "$tmpdir/err" && grep -qF "no key file of $extra_domain was swapped" "$tmpdir/err" &&
+        [ "$(dkim_state)" = "$state_before" ] && [ -z "$left" ]' \
+    "a rotation whose generation fails changes nothing, leaving no file behind (exit $rc: '$left' $(init_err))"
+
+# --replace-keys: every old file kept aside byte for byte, all six swapped for
+# new ones placed as docker-mailserver would, the override unchanged and still
+# signing the domain.
+old_sum=$(rig_ssh "cd $dkim_dir && for f in $key_names; do sudo cat \$f; done | sha256sum" 2>/dev/null | tr -d '\r')
+old_each=$(rig_ssh "cd $dkim_dir && for f in $key_names; do sudo cat \$f | sha256sum; done" 2>/dev/null | tr -d '\r')
+conf_before=$(rig_ssh "md5sum < $dkim" 2>/dev/null | tr -d '\r')
+mail_dkim "$extra_domain" --replace-keys; rc=$?
+new_each=$(rig_ssh "cd $dkim_dir && for f in $key_names; do sudo cat \$f | sha256sum; done" 2>/dev/null | tr -d '\r')
+same=$(comm -12 <(sort <<<"$old_each") <(sort <<<"$new_each") | wc -l)
+assert '[ "$rc" = "0" ] && [ "$(wc -l <<<"$new_each")" = 6 ] && [ "$same" = 0 ] && [ "$(rig_ssh "md5sum < $dkim" 2>/dev/null | tr -d "\r")" = "$conf_before" ] &&
+        grep -qF "dkim:     keys replaced, override unchanged" "$tmpdir/err"' \
+    "--replace-keys swaps all six files, the override unchanged (exit $rc, $same unchanged: $(init_err))"
+aside=$(rig_ssh "cd $dkim_dir && for f in $key_names; do ls \$f.kasbah-old-* 2>/dev/null; done | wc -l; for f in $key_names; do sudo cat \$f.kasbah-old-*; done | sha256sum" 2>/dev/null | tr -d '\r' | paste -sd' ')
+assert '[ "$rc" = "0" ] && [ "$aside" = "6 $old_sum" ]' \
+    "--replace-keys keeps all six old files aside, byte for byte (exit $rc: '$aside' vs '6 $old_sum': $(init_err))"
+new_facts=$(dkim_facts "$extra_domain")
+assert '[ "$(head -3 <<<"$new_facts")" = "$(dkim_want "$extra_domain")" ] && [ "$(tail -1 <<<"$new_facts")" != "$(tail -1 <<<"$extra_dkim")" ]' \
+    "and places new keys the override signs with
+        want: $(dkim_want "$extra_domain" | paste -sd'|')
+        got:  $(head -3 <<<"$new_facts" | paste -sd'|')"
+new_rsa=$(rig_ssh "cat $dkim_dir/rsa-2048-mail-$extra_domain.public.dns.txt" 2>/dev/null | tr -d '\r\n')
+assert '[ -n "$new_rsa" ] && [ "$(grep -F "mail._domainkey.$extra_domain.  IN TXT" "$tmpdir/out" | sed "s/^[^\"]*//; s/\" \"//g; s/\"//g")" = "$new_rsa" ] &&
+        grep -qF "old keys: kept beside the new ones" "$tmpdir/err"' \
+    "printing the new RSA record and that the old keys are kept (said '$(cat "$tmpdir/out")' '$(init_err)')"
+
+# The guide prints the real values the server holds.
+guide; rc=$?
+new_ed=$(rig_ssh "cat $dkim_dir/ed25519-ed-$extra_domain.public.dns.txt" 2>/dev/null | tr -d '\r\n')
+assert '[ "$rc" = "0" ] && [ -n "$new_ed" ] && grep -qF "ed._domainkey.$extra_domain.      IN TXT   \"$new_ed\"" "$tmpdir/out" &&
+        grep -qF "mail._domainkey.$extra_domain.    IN TXT   \"${new_rsa:0:255}\" \"" "$tmpdir/out" && ! grep -qF "<rsa-2048-mail-$extra_domain" "$tmpdir/out"' \
+    "mail-setup-guide prints the real v=DKIM1 values (exit $rc: $(grep -F "_domainkey.$extra_domain" "$tmpdir/out"))"
 
 if [ "$fail" -eq 0 ]; then
     rig_clean >/dev/null 2>&1 || true

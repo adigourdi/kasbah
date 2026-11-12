@@ -3,6 +3,8 @@ package mail
 import (
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +26,7 @@ image) [ ! -f "$s/no_image" ] ;;
 pull) rm -f "$s/no_image" ;;
 inspect) [ -f "$s/dms_state" ] && cat "$s/dms_state" || exit 1 ;;
 exec) [ ! -f "$s/exec_fails" ] || { echo 'OCI runtime exec failed' >&2; exit 1; } ;;
-rm) ;;
+rm) [ ! -f "$s/rm_fails" ] || { echo 'Error response from daemon: cannot remove container' >&2; exit 1; } ;;
 run)
 	src= dst= ent= prev=
 	shift
@@ -45,6 +47,8 @@ run)
 		script=$2; shift 3
 		d=$1; shift
 		[ "$d" = "$dst" ] && d=$src
+		# mute drops the container's stdout; holding text, it then hangs.
+		[ ! -f "$s/mute" ] || { PATH="$s/bin:$PATH" bash -c "$script" bash "$d" "$@" >/dev/null; rc=$?; [ ! -s "$s/mute" ] || sleep 2 >/dev/null 2>&1; exit $rc; }
 		PATH="$s/bin:$PATH" exec bash -c "$script" bash "$d" "$@" ;;
 	*) exit 9 ;;
 	esac ;;
@@ -52,11 +56,13 @@ run)
 esac
 `
 	rspamadm := `#!/bin/sh
+echo keygen-ran >> ` + dir + `/log
 k= t=rsa sel=
 while [ $# -gt 0 ]; do
 	case $1 in -k) k=$2; shift ;; -t) t=$2; shift ;; -s) sel=$2; shift ;; esac
 	shift
 done
+[ ! -f ` + dir + `/ed_fails ] || [ "$t" != ed25519 ] || { echo 'rspamadm: ed boom' >&2; exit 1; }
 [ ! -f ` + dir + `/race ] || printf 'OTHER\n' > "${k%/.kasbah-new-*}/${k##*/.kasbah-new-}"
 case $t in
 ed25519)
@@ -67,8 +73,15 @@ ed25519)
 	printf '%s._domainkey IN TXT ( "v=DKIM1; k=rsa; "\n\t"p=%s"\n) ; \n' "$sel" "$(openssl pkey -in "$k" -pubout -outform DER | base64 -w0)" ;;
 esac
 `
+	// mv fails renaming onto the name mv_fails holds.
+	mv := `#!/bin/sh
+for a; do last=$a; done
+[ ! -f ` + dir + `/mv_fails ] || [ "${last##*/}" != "$(cat ` + dir + `/mv_fails)" ] || { echo 'mv: boom' >&2; exit 1; }
+PATH=${PATH#*:} exec mv "$@"
+`
 	os.MkdirAll(dir+"/bin", 0o755)
-	if os.WriteFile(dir+"/docker", []byte(script), 0o755) != nil || os.WriteFile(dir+"/bin/rspamadm", []byte(rspamadm), 0o755) != nil {
+	if os.WriteFile(dir+"/docker", []byte(script), 0o755) != nil || os.WriteFile(dir+"/bin/rspamadm", []byte(rspamadm), 0o755) != nil ||
+		os.WriteFile(dir+"/bin/mv", []byte(mv), 0o755) != nil {
 		t.Fatal("stubs")
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
@@ -247,6 +260,161 @@ func TestRemoteDKIM(t *testing.T) {
 		read(dir+"/rsa-2048-mail-a.com.public.dns.txt") != DNSRecord(read(dir+"/rsa-2048-mail-a.com.public.txt")) {
 		t.Errorf("repair rsa: %v", kv)
 	}
+
+	// The read reports the registry domains' key files and TXT values.
+	if r := readOf(t, apps, data); len(r.DKIMFiles) != 16 || r.DKIMTXT["ed._domainkey.a.com"] != strings.TrimSpace(read(dir+"/ed25519-ed-a.com.public.dns.txt")) ||
+		r.DKIMTXT["mail._domainkey.a.com"] == "" || r.DKIMTXT["mail._domainkey.c.com"] != "" {
+		t.Errorf("read: %v %v", r.DKIMFiles, r.DKIMTXT)
+	}
+
+	// A rotation makes the keys of a.com and c.com anew, then swaps each file
+	// in, the old one kept byte for byte; c.com's lone RSA public file too.
+	files := func(d string) map[string]string {
+		m := map[string]string{}
+		for _, k := range DKIMKeys {
+			for _, f := range k.Files(d) {
+				m[f] = read(dir + "/" + f)
+			}
+		}
+		return m
+	}
+	old := files("a.com")
+	kv, _, log = step("replace", "--replace=20261112T170405Z", "a.com", "c.com")
+	if kv["mail_dkim_a.com"] != "replaced replaced" || kv["mail_dkim_c.com"] != "generated replaced" || kv["mail_dkim_rspamd"] != "detector" ||
+		kv["mail_dkim_old_c.com"] != "rsa-2048-mail-c.com.public.txt.kasbah-old-20261112T170405Z ed25519-ed-c.com.public.dns.txt.kasbah-old-20261112T170405Z ed25519-ed-c.com.public.txt.kasbah-old-20261112T170405Z ed25519-ed-c.com.private.txt.kasbah-old-20261112T170405Z" ||
+		strings.Count(kv["mail_dkim_old_a.com"], ".kasbah-old-20261112T170405Z") != 6 || kv["mail_dkim_image"] != "dms:1.2.3" ||
+		kv["mail_dkim_swapped_rsa-2048-mail-a.com.private.txt"] != "rsa-2048-mail-a.com.private.txt.kasbah-old-20261112T170405Z" ||
+		kv["mail_dkim_swapped_rsa-2048-mail-c.com.private.txt"] != "" || kv["mail_dkim_conf"] != "updated" {
+		t.Errorf("replace: %v\n%s", kv, log)
+	}
+	if strings.Count(log, "--entrypoint bash") != 1 || !strings.Contains(log, " "+DKIMContainerDir+" 20261112T170405Z rsa-2048-mail-a.com 7 dkim_keygen -s mail -d a.com -b 2048 ed25519-ed-a.com 7 dkim_keygen -s ed -d a.com -t ed25519 rsa-2048-mail-c.com 7 ") {
+		t.Errorf("not one rotation container:\n%s", log)
+	}
+	for f, b := range old {
+		if read(dir+"/"+f+".kasbah-old-20261112T170405Z") != b || read(dir+"/"+f) == b || read(dir+"/"+f) == "" {
+			t.Errorf("replace: %s not kept aside, or not made anew", f)
+		}
+	}
+	c = read(conf)
+	if !strings.Contains(c, "rsa-2048-mail-a.com.private.txt") || !strings.Contains(c, "rsa-2048-mail-c.com.private.txt") || strings.Contains(c, "kasbah-old") ||
+		kv["mail_dkim_txt_mail._domainkey.a.com"] != strings.TrimSpace(read(dir+"/rsa-2048-mail-a.com.public.dns.txt")) {
+		t.Errorf("replace override or TXT:\n%s\n%v", c, kv)
+	}
+	unchanged := func(what, stamp string, o string) {
+		t.Helper()
+		if m, _ := filepath.Glob(dir + "/*.kasbah-old-" + stamp); len(m) != 0 || strings.Contains(o, "mail_dkim_swapped_") || read(conf) != c {
+			t.Errorf("%s: something changed: %v\n%s", what, m, o)
+		}
+		if m, _ := filepath.Glob(dir + "/.kasbah-new-*"); len(m) != 0 {
+			t.Errorf("%s: temp files left %v", what, m)
+		}
+		for f, b := range files("a.com") {
+			if read(dir+"/"+f) != b {
+				t.Errorf("%s: %s changed", what, f)
+			}
+		}
+	}
+	// The same stamp again would replace what is aside: refused before any key is made.
+	before := files("a.com")
+	os.Remove(d + "/log")
+	if o, e, rc := run(t, "", "dkim", apps, data, "--replace=20261112T170405Z", "a.com"); rc != 1 || !strings.Contains(e, ".kasbah-old-20261112T170405Z is taken") ||
+		!strings.Contains(e, "no key was replaced, the new ones discarded") || strings.Contains(read(d+"/log"), "keygen-ran") || strings.Contains(o, "mail_dkim_conf") {
+		t.Errorf("stamp reused: %q %q", o, e)
+	} else {
+		for f, b := range before {
+			if read(dir+"/"+f) != b {
+				t.Errorf("stamp reused: %s changed", f)
+			}
+		}
+	}
+	if _, e, rc := run(t, "", "dkim", apps, data, "--replace=x;rm", "a.com"); rc != 1 || !strings.Contains(e, "--replace takes a UTC stamp") {
+		t.Errorf("bad stamp: %q", e)
+	}
+	// A generation that fails changes nothing: the RSA key made first is discarded.
+	os.WriteFile(d+"/ed_fails", nil, 0o644)
+	os.Remove(d + "/log")
+	if o, e, rc := run(t, "", "dkim", apps, data, "--replace=20261112T180000Z", "a.com"); rc != 1 || !strings.Contains(e, "rspamadm: ed boom") ||
+		!strings.Contains(e, "no key was replaced") || strings.Contains(o, "mail_dkim_conf") || strings.Contains(read(d+"/log"), "exec ") {
+		t.Errorf("generation fails: %q %q\n%s", o, e, read(d+"/log"))
+	} else {
+		unchanged("generation fails", "20261112T180000Z", o)
+	}
+	os.Remove(d + "/ed_fails")
+	// A swap that fails partway reports exactly what it swapped, and the
+	// override is rendered and Rspamd reloaded all the same.
+	os.WriteFile(d+"/mv_fails", []byte("ed25519-ed-a.com.public.txt"), 0o644)
+	os.WriteFile(d+"/dms_state", []byte("running healthy\n"), 0o644)
+	os.Remove(d + "/exec_fails")
+	os.Remove(d + "/log")
+	o, e, rc := run(t, "", "dkim", apps, data, "--replace=20261112T190000Z", "a.com")
+	kv = remote.KV([]byte(o))
+	var got []string
+	for _, l := range strings.Split(o, "\n") {
+		if n, _, ok := strings.Cut(strings.TrimPrefix(l, "mail_dkim_swapped_"), "="); ok && strings.HasPrefix(l, "mail_dkim_swapped_") {
+			got = append(got, n)
+		}
+	}
+	if rc != 1 || !strings.Contains(e, "could not rename the new ed25519-ed-a.com.public.txt") || !strings.Contains(e, "the files swapped before it are listed above") ||
+		strings.Join(got, " ") != "rsa-2048-mail-a.com.public.dns.txt rsa-2048-mail-a.com.public.txt rsa-2048-mail-a.com.private.txt ed25519-ed-a.com.public.dns.txt" ||
+		kv["mail_dkim_a.com"] != "replaced failed" || kv["mail_dkim_conf"] != "unchanged" || kv["mail_dkim_rspamd"] != "restarted" || kv["mail_dkim"] != "" ||
+		!strings.Contains(read(d+"/log"), "exec mail-dms supervisorctl restart rspamd") {
+		t.Errorf("swap fails: %v %q\n%s", got, e, o)
+	}
+	for f, b := range before {
+		now, kept := read(dir+"/"+f), read(dir+"/"+f+".kasbah-old-20261112T190000Z")
+		if swapped := slices.Contains(got, f); swapped && (now == b || kept != b) || !swapped && (now != b || kept != "" && kept != b) {
+			t.Errorf("swap fails: %s swapped=%v but now %q kept %q", f, swapped, now, kept)
+		}
+	}
+	if m, _ := filepath.Glob(dir + "/.kasbah-new-*"); len(m) != 0 || read(conf) != c {
+		t.Errorf("swap fails: temp files left %v, or the override changed:\n%s", m, read(conf))
+	}
+	os.Remove(d + "/mv_fails")
+
+	// What was swapped is read from the disk: a rotation whose output is lost,
+	// or whose container outlives its timeout, still reports every swap.
+	for _, hang := range []string{"", "hang"} {
+		before := files("a.com")
+		stamp := "20261112T20000" + strconv.Itoa(len(hang)) + "Z"
+		os.WriteFile(d+"/mute", []byte(hang), 0o644)
+		os.Remove(d + "/log")
+		dockerTimeout = time.Minute
+		if hang != "" {
+			dockerTimeout = 500 * time.Millisecond
+		}
+		o, e, rc := run(t, "", "dkim", apps, data, "--replace="+stamp, "a.com")
+		dockerTimeout = time.Minute
+		kv = remote.KV([]byte(o))
+		why := "reported no dkim_rotate=done"
+		if hang != "" {
+			why = "did not finish within 500ms"
+		}
+		if rc != 1 || !strings.Contains(e, why) || !strings.Contains(e, "the files swapped before it are listed above") ||
+			kv["mail_dkim_a.com"] != "replaced replaced" || strings.Count(kv["mail_dkim_old_a.com"], ".kasbah-old-"+stamp) != 6 ||
+			strings.Count(o, "mail_dkim_swapped_") != 6 || kv["mail_dkim_rspamd"] != "restarted" || hang != "" && !strings.Contains(read(d+"/log"), "rm -f kasbah-dkim-") {
+			t.Errorf("muted %q: %q\n%s", hang, e, o)
+		}
+		for f, b := range before {
+			if read(dir+"/"+f) == b || read(dir+"/"+f+".kasbah-old-"+stamp) != b {
+				t.Errorf("muted %q: %s not swapped", hang, f)
+			}
+		}
+	}
+	os.Remove(d + "/mute")
+
+	// A timed-out container that cannot be removed may yet swap files: the
+	// report is the disk as last seen, and says so.
+	os.WriteFile(d+"/mute", []byte("hang"), 0o644)
+	os.WriteFile(d+"/rm_fails", nil, 0o644)
+	dockerTimeout = 500 * time.Millisecond
+	o, e, rc = run(t, "", "dkim", apps, data, "--replace=20261112T200009Z", "a.com")
+	dockerTimeout = time.Minute
+	if kv = remote.KV([]byte(o)); rc != 1 || kv["mail_dkim_unsettled"] != "yes" || !strings.Contains(e, "as kasbah last saw it") {
+		t.Errorf("unsettled: rc %d %q\n%s", rc, e, o)
+	}
+	os.Remove(d + "/rm_fails")
+	os.Remove(d + "/mute")
+	os.WriteFile(d+"/dms_state", []byte("running starting\n"), 0o644)
 
 	// A private key that appears while its key is made is kept, the new one discarded.
 	registry("a.com", "e.com")

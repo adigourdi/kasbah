@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/initproject"
 	"github.com/adigourdi/kasbah/internal/mailreg"
+	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/ssh"
@@ -30,8 +33,8 @@ only thing asked whether this stack serves a domain — and postmaster@<domain>
 is aliased to the primary mailbox in docker-mailserver's postfix-virtual.cf,
 which is also what makes Postfix accept mail for it. Its two DKIM keys (RSA
 selector mail, Ed25519 selector ed) are generated unless they exist — a key
-is never replaced, a missing public file is derived from its private key —
-and Rspamd's signing override is rendered again, with a block for every
+file is never written over, a missing public file is derived from its private
+key — and Rspamd's signing override is rendered again, with a block for every
 domain that has its keys. An override kasbah did not render is kept beside
 it as dkim_signing.conf.kasbah-prev. The run holds the server lock.
 
@@ -46,44 +49,89 @@ pointing at mail.<primary>. Run ` + "`kasbah server mail-setup-guide USER@HOST`"
 for the DNS records this domain needs.
 `
 
+const DKIMUsage = `Usage: kasbah server mail-dkim USER@HOST <domain> [--replace-keys|--keep-keys]
+
+Repairs or rotates the DKIM keys of <domain>, a domain of the mail stack's
+registry (docs/mail.md → DKIM signing). A key that is missing is made (RSA
+selector mail, Ed25519 selector ed, by the docker-mailserver image's
+rspamadm), a public file missing beside its private key is derived from it,
+Rspamd's signing override is rendered again and Rspamd reloaded onto it; a
+key file that is there is never written over. The output lists the domain's
+TXT records to publish. The run holds the server lock.
+
+When the domain already has keys, it asks whether to replace them first.
+Replacing makes both keys anew under temp names, and only once both are made
+swaps each of the six files in: the current one hard-linked to
+<name>.kasbah-old-<UTC stamp> beside it — never deleted — then the new one
+renamed over the name, the private file last. A failed generation changes
+nothing; a swap that fails partway names what it swapped and the way back.
+DNS is the operator's: mail signed with the new keys is trusted once DNS
+carries their new TXT records.
+
+Flags:
+  --replace-keys, --keep-keys
+                  answer whether to replace the domain's keys (without a
+                  terminal, one of them is required when it has keys);
+                  --keep-keys repairs only
+`
+
 const GuideUsage = `Usage: kasbah server mail-setup-guide USER@HOST
 
 Prints the mail stack's post-install walkthrough, rendered for this server:
 its primary domain, every domain in <apps>/mail/kasbah.yml, and the DNS
-records each of them needs. Ported from the original project's mail/SETUP.md.
+records each of them needs, DKIM's with the values the server's keys hold.
+Ported from the original project's mail/SETUP.md.
 
-Read-only. It reads the registry and changes nothing on the server.
+Read-only. It reads the registry and the DKIM public files, and changes
+nothing on the server.
 `
 
-// Options is either command's command line; Domain is add-mail-domain's.
+// Options is a mail command's command line; Domain is add-mail-domain's and
+// mail-dkim's, Replace mail-dkim's.
 type Options struct {
-	Cmd    string
-	Target string
-	Domain string
+	Cmd     string
+	Target  string
+	Domain  string
+	Replace prompt.Given
 }
 
-// Parse reads `server add-mail-domain` (cmd "add-mail-domain") or `server
-// mail-setup-guide` arguments.
+// replacePair answers whether mail-dkim replaces a domain's keys.
+var replacePair = prompt.Pair{Yes: "replace-keys", No: "keep-keys"}
+
+// Parse reads `server add-mail-domain` (cmd "add-mail-domain"), `server
+// mail-dkim` or `server mail-setup-guide` arguments.
 func Parse(cmd string, args []string) (Options, error) {
 	o := Options{Cmd: cmd}
-	add := cmd == "add-mail-domain"
+	add := cmd == "add-mail-domain" || cmd == "mail-dkim"
 	for _, a := range args {
+		a = strings.TrimSuffix(a, "\r")
 		switch {
 		case a == "-h" || a == "--help":
 			return o, ErrHelp
+		case cmd == "mail-dkim" && (a == "--replace-keys" || a == "--keep-keys"):
+			v := prompt.No
+			if a == "--replace-keys" {
+				v = prompt.Yes
+			}
+			if err := o.Replace.Set(v, replacePair, "server mail-dkim"); err != nil {
+				return o, err
+			}
 		case strings.HasPrefix(a, "-"):
 			name, _, _ := strings.Cut(a, "=")
 			takes := "USER@HOST"
-			if add {
+			switch {
+			case cmd == "mail-dkim":
+				takes = "USER@HOST, a domain and --replace-keys/--keep-keys"
+			case add:
 				takes = "USER@HOST and a domain"
 			}
 			return o, cli.Fail("server %s: unknown flag '%s' (this command takes %s)", cmd, name, takes)
 		case o.Target == "":
-			o.Target = strings.TrimSuffix(a, "\r")
+			o.Target = a
 		case add && o.Domain == "":
-			o.Domain = strings.TrimSuffix(a, "\r")
+			o.Domain = a
 		case add:
-			return o, cli.Fail("server add-mail-domain: unexpected argument '%s' (USER@HOST and one domain)", a)
+			return o, cli.Fail("server %s: unexpected argument '%s' (USER@HOST and one domain)", cmd, a)
 		default:
 			return o, cli.Fail("server mail-setup-guide: unexpected argument '%s' (USER@HOST is given once)", a)
 		}
@@ -97,11 +145,11 @@ func Parse(cmd string, args []string) (Options, error) {
 	}
 	if add {
 		if o.Domain == "" {
-			return o, cli.Fail("server add-mail-domain: a domain is required (kasbah server add-mail-domain %s example.com)", o.Target)
+			return o, cli.Fail("server %s: a domain is required (kasbah server %s %s example.com)", cmd, cmd, o.Target)
 		}
 		// The FQDN alphabet cannot carry a newline, quote or colon into YAML.
 		if !initproject.IsFQDN(o.Domain) {
-			return o, cli.Fail("server add-mail-domain: '%s' is not a domain name (it goes under domains: in the mail registry, and every entry there is one)", o.Domain)
+			return o, cli.Fail("server %s: '%s' is not a domain name (it goes under domains: in the mail registry, and every entry there is one)", cmd, o.Domain)
 		}
 	}
 	return o, nil
@@ -115,16 +163,19 @@ type Session interface {
 	Remote(stdin []byte, args ...string) ([]byte, int)
 	// Unbounded runs `kasbah remote ARGS…` with no time limit.
 	Unbounded(args ...string) ([]byte, int)
-	// Hold takes the server lock exclusively until release.
-	Hold(apps string) (release func(), err error)
+	// Hold takes the server lock exclusively for cmd until release.
+	Hold(apps, cmd string) (release func(), err error)
 	Close()
 }
 
-// Ctx is what a run needs from its process.
+// Ctx is what a run needs from its process. Prompter asks mail-dkim's
+// question; Now stamps the key files a rotation keeps, time.Now when nil.
 type Ctx struct {
 	Out       *cli.Output
 	Templates fs.FS
 	Dial      func(target string) (Session, error)
+	Prompter  *prompt.Prompter
+	Now       func() time.Time
 }
 
 // Facts is a step's key=value report, \r stripped.
@@ -154,13 +205,13 @@ func Decode(b64, what, target string) (string, error) {
 
 // stack is the registry of a stack that is there to act on; with lock, read
 // under the server lock, held until release.
-func stack(out *cli.Output, s Session, target string, lock bool) (apps, data string, r *ReadReport, reg *mailreg.Registry, release func(), err error) {
+func stack(out *cli.Output, s Session, target, lock string) (apps, data string, r *ReadReport, reg *mailreg.Registry, release func(), err error) {
 	release = func() {}
 	if apps, data, err = s.Paths(); err != nil {
 		return
 	}
-	if lock {
-		if release, err = s.Hold(apps); err != nil {
+	if lock != "" {
+		if release, err = s.Hold(apps, lock); err != nil {
 			release = func() {}
 			return
 		}
@@ -216,17 +267,183 @@ func Run(c Ctx, o Options) error {
 		return err
 	}
 	defer s.Close()
-	apps, data, r, reg, release, err := stack(c.Out, s, o.Target, o.Cmd == "add-mail-domain")
+	lock := ""
+	if o.Cmd != "mail-setup-guide" {
+		lock = "server " + o.Cmd
+	}
+	apps, data, r, reg, release, err := stack(c.Out, s, o.Target, lock)
 	defer release()
 	if err != nil {
 		return err
 	}
-	if o.Cmd != "add-mail-domain" {
-		Guide(c.Out.Stdout, GuideData{Target: o.Target, Apps: apps, Data: data,
-			Primary: reg.Primary, Domains: reg.Domains, HostAddr: r.HostAddr})
-		return nil
+	switch o.Cmd {
+	case "add-mail-domain":
+		return add(c, s, o, apps, data, r, reg)
+	case "mail-dkim":
+		return rekey(c, s, o, apps, data, r, reg)
 	}
-	return add(c, s, o, apps, data, r, reg)
+	Guide(c.Out.Stdout, GuideData{Target: o.Target, Apps: apps, Data: data,
+		Primary: reg.Primary, Domains: reg.Domains, HostAddr: r.HostAddr, DKIMFiles: r.DKIMFiles, TXT: r.DKIMTXT})
+	return nil
+}
+
+// rekey is mail-dkim: the dkim step for one registry domain, its keys rotated
+// when it has any and the answer is to replace them.
+func rekey(c Ctx, s Session, o Options, apps, data string, r *ReadReport, reg *mailreg.Registry) error {
+	out, d := c.Out, o.Domain
+	if !reg.Serves(d) {
+		return cli.Fail("%s is not served by the mail stack on %s: %s does not list it, so it has no DKIM keys", d, o.Target, mailreg.Path(apps)).Cont(
+			"joining it makes its keys:",
+			"  kasbah server add-mail-domain "+o.Target+" "+d)
+	}
+	var has []string
+	for _, k := range DKIMKeys {
+		for _, f := range k.Files(d) {
+			if slices.Contains(r.DKIMFiles, f) {
+				has = append(has, f)
+			}
+		}
+	}
+	replace := false
+	if len(has) > 0 {
+		p := c.Prompter
+		if p == nil {
+			p = &prompt.Prompter{Out: out}
+		}
+		var err error
+		if replace, err = p.Choice(replacePair, "replace "+d+"'s DKIM keys? DNS must then carry the new public keys before mail signed with them is trusted", o.Replace); err != nil {
+			return err
+		}
+	}
+	args := []string{"mail", "dkim", apps, data}
+	stamp := ""
+	if replace {
+		now := c.Now
+		if now == nil {
+			now = time.Now
+		}
+		stamp = now().UTC().Format("20060102T150405Z")
+		args = append(args, "--replace="+stamp)
+	}
+	res, rc := s.Unbounded(append(args, d)...)
+	f := Facts(string(res))
+	if rc != 0 {
+		e := cli.Fail("could not make the DKIM keys of %s on %s (the remote step exited %d, see above)", d, o.Target, rc)
+		if replace {
+			rotateFailed(out, o.Target, apps, data, d, stamp, f)
+			DKIMWarn(out, o.Target, data, []string{d}, f)
+			return e.Cont("no old key was deleted; once the cause above is fixed, --replace-keys rotates",
+				"both keys again and --keep-keys repairs only")
+		}
+		DKIMWarn(out, o.Target, data, []string{d}, f)
+		return e.Cont(
+			"no existing key was written over; once the cause above is fixed, a re-run with",
+			"--keep-keys makes only what is still missing")
+	}
+	want := DKIMFacts([]string{d})
+	if replace {
+		want = append(want, "mail_dkim_old_"+d)
+	}
+	for _, k := range want {
+		if _, ok := f[k]; !ok {
+			return cli.Fail("the DKIM step on %s reported no %s — the step was truncated, or the server's kasbah rejected it", o.Target, k)
+		}
+	}
+	out.Info("DKIM keys of %s on %s", d, o.Target)
+	out.Info("  dkim:     %s (%s)", DKIMSummary(f, d), DKIMDir(data))
+	if old := f["mail_dkim_old_"+d]; replace && old != "" {
+		out.Info("  old keys: kept beside the new ones, Rspamd no longer signs with them: %s", old)
+	}
+	DKIMWarn(out, o.Target, data, []string{d}, f)
+
+	txt := DKIMTXT(f)
+	w := out.Stdout
+	fmt.Fprintf(w, "\nPublish %s's DKIM TXT records — DNS, which is not kasbah's to do:\n", d)
+	for _, k := range DKIMKeys {
+		if v, ok := txt[k.Record(d)]; ok {
+			fmt.Fprintf(w, "    %s.  IN TXT  %s\n", k.Record(d), TXTStrings(v))
+		} else {
+			fmt.Fprintf(w, "    %s.  (no key: see the warnings above)\n", k.Record(d))
+		}
+	}
+	fmt.Fprintf(w, "A value over 255 characters is split into quoted strings, as a TXT string holds\n")
+	fmt.Fprintf(w, "no more; a DNS panel with one value field takes them run together, quotes dropped.\n")
+	if replace {
+		fmt.Fprintf(w, "Until DNS carries the new records, receivers fail mail signed with the new keys.\n")
+	}
+	return nil
+}
+
+// signsWith is when Rspamd signs with a rotated key, by the reload's outcome.
+func signsWith(rspamd string) string {
+	switch rspamd {
+	case "restarted":
+		return "Rspamd signs with the new ones"
+	case "atstart":
+		return "Rspamd signs with the new ones once docker-mailserver starts"
+	case "detector":
+		return "Rspamd signs with the new ones once docker-mailserver, not healthy yet, restarts it"
+	case "failed":
+		return "Rspamd, NOT restarted (see below), signs with the new ones once it restarts"
+	}
+	return "Rspamd signs with the new ones once it reloads the override (see above)"
+}
+
+// rotateFailed is what a failed rotation of d left, from the files the step
+// found swapped: which keys were rotated, which were not, and the way back.
+func rotateFailed(out *cli.Output, target, apps, data, d, stamp string, f map[string]string) {
+	var swapped, rotated, not, stale, links []string
+	for _, k := range DKIMKeys {
+		fl := k.Files(d)
+		pub := false
+		for i, n := range fl {
+			if old, ok := f["mail_dkim_swapped_"+n]; ok {
+				swapped = append(swapped, n)
+				pub = pub || i > 0
+				if old != "" {
+					links = append(links, "ln -fT "+old+" "+n)
+				}
+			}
+		}
+		if _, ok := f["mail_dkim_swapped_"+fl[0]]; ok {
+			rotated = append(rotated, k.Selector)
+		} else {
+			not = append(not, k.Selector)
+			if pub {
+				stale = append(stale, k.Selector)
+			}
+		}
+	}
+	if f["mail_dkim_unsettled"] != "" {
+		out.Warn("the rotation's container may still be running: what follows is %s as kasbah last saw it", DKIMDir(data))
+	}
+	if len(swapped) == 0 {
+		out.Warn("no key file of %s was swapped: its keys are as they were", d)
+		return
+	}
+	out.Warn("swapped in %s before the step failed: %s", DKIMDir(data), strings.Join(swapped, " "))
+	out.Warn("(each old file kept as <name>.kasbah-old-%s)", stamp)
+	if len(rotated) > 0 {
+		out.Warn("rotated: %s's %s key(s) — %s, so DNS must carry their new", d, strings.Join(rotated, " and "), signsWith(f["mail_dkim_rspamd"]))
+		out.Warn("records (kasbah server mail-setup-guide %s prints them)", target)
+	}
+	if len(not) > 0 {
+		out.Warn("not rotated: %s's %s key(s) — Rspamd still signs with the old one, which DNS carries", d, strings.Join(not, " and "))
+	}
+	if len(stale) > 0 {
+		out.Warn("%s's %s public file(s) were swapped and no longer match the old private key beside them", d, strings.Join(stale, " and "))
+	}
+	if len(links) == 0 {
+		return
+	}
+	img := f["mail_dkim_image"]
+	if img == "" {
+		img = "<the mail-dms image " + apps + "/mail/compose.yml names>"
+	}
+	out.Warn("the way back, every swapped file's old one linked back over its name (the new ones dropped):")
+	out.Warn("  ssh %s 'docker run --rm --network none --user _rspamd -v %s:%s --entrypoint sh %s -c \"cd %s && %s\"'",
+		target, DKIMDir(data), DKIMContainerDir, img, DKIMContainerDir, strings.Join(links, " && "))
+	out.Warn("then: ssh %s 'docker exec mail-dms supervisorctl restart rspamd' (a stopped docker-mailserver reads them at start)", target)
 }
 
 func add(c Ctx, s Session, o Options, apps, data string, r *ReadReport, reg *mailreg.Registry) error {
@@ -336,7 +553,7 @@ func dkim(out *cli.Output, s Session, target, apps, data, d string) error {
 // followup is what is left that is not kasbah's: DNS.
 func followup(w io.Writer, target, d string) {
 	fmt.Fprintf(w, "\nStill to do for %s — DNS, which is not kasbah's to do: publish its MX, SPF\n", d)
-	fmt.Fprintf(w, "and DMARC records and its two DKIM keys' TXT records, all listed by\n")
+	fmt.Fprintf(w, "and DMARC records and its two DKIM keys' TXT records, all listed with their values by\n")
 	fmt.Fprintf(w, "     kasbah server mail-setup-guide %s\n", target)
 }
 
@@ -382,8 +599,8 @@ func (s SSH) Unbounded(args ...string) ([]byte, int) {
 	return out.Bytes(), ssh.ExitCode(err)
 }
 
-func (s SSH) Hold(apps string) (func(), error) {
-	return serverlock.Hold(s.Conn, s.Bin(), apps, serverlock.Exclusive, "server add-mail-domain")
+func (s SSH) Hold(apps, cmd string) (func(), error) {
+	return serverlock.Hold(s.Conn, s.Bin(), apps, serverlock.Exclusive, cmd)
 }
 
 func (s SSH) Close() { s.Conn.Close() }

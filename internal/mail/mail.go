@@ -30,18 +30,10 @@ func DKIMConf(data string) string {
 	return data + "/mail/dms/config/rspamd/override.d/dkim_signing.conf"
 }
 
-// DKIMKeyNames is the pair of key files the signing override names for a
-// domain, in DKIMKeygen's order: the helper's names for those two commands.
+// DKIMKeyNames is the pair of private key files the signing override names
+// for a domain, RSA first.
 func DKIMKeyNames(domain string) [2]string {
 	return [2]string{DKIMKeys[0].Files(domain)[0], DKIMKeys[1].Files(domain)[0]}
-}
-
-// DKIMKeygen is dual signing's two keygen commands for one domain, RSA first.
-func DKIMKeygen(target, domain string) [2]string {
-	return [2]string{
-		fmt.Sprintf("ssh %s 'docker exec mail-dms setup config dkim keytype rsa     selector mail domain %s'", target, domain),
-		fmt.Sprintf("ssh %s 'docker exec mail-dms setup config dkim keytype ed25519 selector ed   domain %s'", target, domain),
-	}
 }
 
 // DKIMGaps is which of a domain's DKIMKeyNames are not among keys, the key
@@ -103,6 +95,10 @@ type GuideData struct {
 	Domains                     []string
 	// HostAddr is the address the ssh session reached, "" when unknown.
 	HostAddr string
+	// DKIMFiles are the domains' key files on the server, TXT their DKIM
+	// records' values by record name (ReadReport's).
+	DKIMFiles []string
+	TXT       map[string]string
 }
 
 // Guide prints the walkthrough, ported from the original project's mail/SETUP.md, on w:
@@ -117,11 +113,7 @@ func Guide(w io.Writer, g GuideData) {
 	r := strings.NewReplacer("{T}", g.Target, "{P}", g.Primary, "{A}", g.Apps, "{D}", g.Data,
 		"{IP}", ip, "{NOTE}", note, "{DOMAINS}", strings.Join(g.Domains, " "), "{BT}", "`")
 	var keys, dns strings.Builder
-	for _, d := range g.Domains {
-		for _, c := range DKIMKeygen(g.Target, d) {
-			fmt.Fprintf(&keys, "    %s\n", c)
-		}
-	}
+	var missing []string
 	p := g.Primary
 	fmt.Fprintf(&dns, "; ---------- %s: the stack's own names ----------\n", p)
 	fmt.Fprintf(&dns, "mail.%s.               IN A     %s\n", p, ip)
@@ -136,8 +128,30 @@ func Guide(w io.Writer, g GuideData) {
 		fmt.Fprintf(&dns, "%s.                    IN MX    10 mail.%s.\n", d, p)
 		fmt.Fprintf(&dns, "%s.                    IN TXT   \"v=spf1 mx ip4:%s ~all\"\n", d, ip)
 		fmt.Fprintf(&dns, "_dmarc.%s.             IN TXT   \"v=DMARC1; p=none; rua=mailto:postmaster@%s; fo=1\"\n", d, p)
-		fmt.Fprintf(&dns, "mail._domainkey.%s.    IN TXT   \"<rsa-2048-mail-%s.public.dns.txt>\"\n", d, d)
-		fmt.Fprintf(&dns, "ed._domainkey.%s.      IN TXT   \"<ed25519-ed-%s.public.dns.txt>\"\n", d, d)
+		for _, k := range DKIMKeys {
+			f := k.Files(d)
+			pad := strings.Repeat(" ", max(1, 20-len(k.Record(""))))
+			if v, ok := g.TXT[k.Record(d)]; ok {
+				fmt.Fprintf(&dns, "%s.%sIN TXT   %s\n", k.Record(d), pad, TXTStrings(v))
+				continue
+			}
+			fmt.Fprintf(&dns, "%s.%sIN TXT   \"<%s>\"\n", k.Record(d), pad, f[2])
+			if slices.Contains(g.DKIMFiles, f[2]) {
+				fmt.Fprintf(&dns, ";   %s holds no TXT value kasbah can print: read it on the server (step 2)\n", f[2])
+				continue
+			}
+			fmt.Fprintf(&dns, ";   no %s key yet: kasbah server mail-dkim %s %s --keep-keys\n", k.Selector, g.Target, d)
+			if !slices.Contains(missing, d) {
+				missing = append(missing, d)
+			}
+		}
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(&keys, "A domain without both keys sends unsigned or half-signed mail. Make them with:\n\n")
+		for _, d := range missing {
+			fmt.Fprintf(&keys, "    kasbah server mail-dkim %s %s --keep-keys\n", g.Target, d)
+		}
+		keys.WriteString("\n")
 	}
 	io.WriteString(w, r.Replace(guideHead))
 	io.WriteString(w, keys.String())
@@ -185,38 +199,42 @@ settles, mail.{P} does not resolve to this host from the outside.
     https://mail.{P} — answers 418 by design. Nothing is served there;
     the name exists so that Traefik asks for its certificate.
 
-2. Generate DKIM keys — dual signing, Ed25519 primary with RSA fallback
+2. DKIM keys — dual signing, Ed25519 primary with RSA fallback
 ---------------------------------------------------------------------------
-Per domain. kasbah does not generate keys and never will: they are the one
-thing here that cannot be regenerated without breaking every receiver holding
-the old one.
+kasbah makes each domain's two keys — RSA-2048 under selector mail, Ed25519
+under selector ed — as the domain joins ({BT}server init --with-mail{BT},
+{BT}server add-mail-domain{BT}), and renders Rspamd's signing override from the
+registry and the keys present. Their TXT records, values included, are in
+step 3. The keys live in {D}/mail/dms/config/rspamd/dkim/.
 
 `
 
-const guideKeys = `
-The keys land in {D}/mail/dms/config/rspamd/dkim/. The flat,
-one-line public forms are the ones to paste into DNS:
-
-    ssh {T} 'cat {D}/mail/dms/config/rspamd/dkim/*.public.dns.txt'
-
-kasbah seeded the signing override for {P} before DMS first started —
-which is what stops DMS's helper writing its own single-selector default over
-it — and never rewrites it. **A domain added later needs its own block added by
-hand** to
+const guideKeys = `{BT}kasbah server mail-dkim {T} <domain>{BT} repairs a domain's keys — makes
+a missing one, derives a missing public file, renders the override again —
+and with --replace-keys rotates them, keeping the old files beside the new.
+Do not run docker-mailserver's {BT}setup config dkim{BT} or edit the override by
+hand: the helper refuses a domain that has keys, and kasbah renders
 
     {D}/mail/dms/config/rspamd/override.d/dkim_signing.conf
 
-Rspamd reloads on its own; no restart. {BT}kasbah check --server{BT} warns for
-every domain in the registry that lacks either key or its block in that file.
+whole, keeping a hand edit only as dkim_signing.conf.kasbah-prev, which Rspamd
+never loads. {BT}kasbah check --server{BT} warns for every domain in the registry
+that lacks either key or its block in that file. The flat values, as the
+.public.dns.txt files hold them:
+
+    ssh {T} 'cat {D}/mail/dms/config/rspamd/dkim/*.public.dns.txt'
 
 3. Publish DNS, for this server's registry
 ---------------------------------------------------------------------------
 `
 
 const guideTail = `
-The two DKIM lines are placeholders — paste the matching .public.dns.txt
-contents from step 2. Apex A records are not listed: those belong to whatever
-serves each site.
+The RSA DKIM value is longer than the 255 characters one TXT string holds, so
+it is listed as quoted strings of at most 255, which a zone file takes as
+they are; a DNS panel with a single value field takes the value whole — the
+strings run together, quotes dropped, as the .public.dns.txt holds it (step
+2). A "<….public.dns.txt>" line is a key not made yet. Apex A records are not
+listed: those belong to whatever serves each site.
 
 Start DMARC at p=none, read the rua reports for a few days, then tighten to
 p=quarantine and only later to p=reject. Tighten SPF's ~all to -all once every

@@ -196,7 +196,7 @@ func TestReportMailChecklist(t *testing.T) {
 		Facts{"mail_dms_health": "starting", "mail_cypht_unbanned": "failed", "mail_jail": "failed", "mail_cypht_addr": "172.18.0.5"})
 	want := "        setup guide: kasbah server mail-setup-guide deploy@vps\n" +
 		"        before the first real send (each one a step of the guide):\n" +
-		"          DKIM  two TXT records per domain, from its keys' .public.dns.txt (step 2)\n" +
+		"          DKIM  two TXT records per domain, the guide listing their values (step 3)\n" +
 		"          PTR   the VPS IP's reverse DNS names mail.a.com, set at the provider (step 0)\n" +
 		"          SPF   a TXT record on each domain (step 3)\n"
 	if got := b.String(); !strings.HasSuffix(got, want) || !strings.Contains(got, "could not unban") || !strings.Contains(got, "healthcheck says 'starting'") ||
@@ -204,5 +204,21 @@ func TestReportMailChecklist(t *testing.T) {
 		!strings.Contains(got, "kept as /apps/data/mail/dms/config/rspamd/override.d/dkim_signing.conf.kasbah-prev") ||
 		!strings.Contains(got, "no DKIM key for b.com") {
 		t.Errorf("summary does not end with the checklist:\n%s", got)
+	}
+}
+
+// A first init's guide shows the primary's keys as the dkim step found them:
+// its records, and no "no key yet" for a key whose value cannot be printed.
+func TestReportMailGuideKeys(t *testing.T) {
+	o := Options{Target: "deploy@vps", Apps: "/apps", Data: "/apps/data"}
+	v := MailValues{Primary: "a.com", Origin: "new", Domains: []string{"a.com"}}
+	out, b := newOut()
+	dk := Facts{"mail_dkim_a.com": "generated generated", "mail_dkim_conf": "written", "mail_dkim_rspamd": "atstart",
+		"mail_dkim_txt_mail._domainkey.a.com": "v=DKIM1; k=rsa; p=RSA",
+		"mail_dkim_files_a.com":               "rsa-2048-mail-a.com.private.txt rsa-2048-mail-a.com.public.txt rsa-2048-mail-a.com.public.dns.txt ed25519-ed-a.com.private.txt ed25519-ed-a.com.public.txt ed25519-ed-a.com.public.dns.txt"}
+	reportMail(out, o, v, &mail.ReadReport{Dir: "absent"}, nil, Facts{}, dk, Facts{"mail_dms_health": "healthy"})
+	if got := b.String(); !strings.Contains(got, "mail._domainkey.a.com.    IN TXT   \"v=DKIM1; k=rsa; p=RSA\"") ||
+		!strings.Contains(got, "ed25519-ed-a.com.public.dns.txt holds no TXT value kasbah can print") || strings.Contains(got, "key yet") {
+		t.Errorf("guide:\n%s", got)
 	}
 }

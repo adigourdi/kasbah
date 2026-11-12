@@ -339,11 +339,12 @@ func reportMail(out *cli.Output, o Options, v MailValues, r *mail.ReadReport, ch
 	// without these three.
 	out.Info("        setup guide: kasbah server mail-setup-guide %s", o.Target)
 	out.Info("        before the first real send (each one a step of the guide):")
-	out.Info("          DKIM  two TXT records per domain, from its keys' .public.dns.txt (step 2)")
+	out.Info("          DKIM  two TXT records per domain, the guide listing their values (step 3)")
 	out.Info("          PTR   the VPS IP's reverse DNS names mail.%s, set at the provider (step 0)", p)
 	out.Info("          SPF   a TXT record on each domain (step 3)")
 	if r.Dir == "absent" {
 		fmt.Fprintln(out.Stdout)
-		mail.Guide(out.Stdout, mail.GuideData{Target: o.Target, Apps: o.Apps, Data: o.Data, Primary: p, Domains: v.Domains})
+		mail.Guide(out.Stdout, mail.GuideData{Target: o.Target, Apps: o.Apps, Data: o.Data, Primary: p, Domains: v.Domains,
+			DKIMFiles: mail.DKIMPresent(dk, v.Domains), TXT: mail.DKIMTXT(dk)})
 	}
 }

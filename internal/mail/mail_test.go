@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/templates"
 )
@@ -241,6 +243,10 @@ func TestParse(t *testing.T) {
 		{"add-mail-domain", "d@vps|--x=secret", "unknown flag '--x'"},
 		{"mail-setup-guide", "d@vps|e@vps", "USER@HOST is given once"},
 		{"mail-setup-guide", "", "the guide is rendered for one server's registry"},
+		{"mail-dkim", "d@vps", "server mail-dkim: a domain is required"},
+		{"mail-dkim", "d@vps|a.com|--replace-keys|--keep-keys", "--replace-keys and --keep-keys cannot both be given"},
+		{"mail-dkim", "d@vps|a.com|--replace", "unknown flag '--replace' (this command takes USER@HOST, a domain and --replace-keys/--keep-keys)"},
+		{"add-mail-domain", "d@vps|a.com|--keep-keys", "unknown flag '--keep-keys'"},
 	} {
 		var args []string
 		if c.args != "" {
@@ -252,6 +258,124 @@ func TestParse(t *testing.T) {
 	}
 	if _, err := Parse("mail-setup-guide", []string{"d@vps", "--help"}); err != ErrHelp {
 		t.Error("--help")
+	}
+	if o, err := Parse("mail-dkim", []string{"d@vps", "--replace-keys\r", "a.com", "--replace-keys"}); err != nil || o.Domain != "a.com" || o.Replace != prompt.Yes {
+		t.Errorf("mail-dkim: %+v %v", o, err)
+	}
+}
+
+func TestMailDKIM(t *testing.T) {
+	reg := "name: mail\nprimary_domain: example.test\ndomains:\n  - example.test\n  - shop.test\n"
+	rsaV := "v=DKIM1; k=rsa; p=" + strings.Repeat("A", 380)
+	full := []string{"rsa-2048-mail-shop.test.private.txt", "rsa-2048-mail-shop.test.public.txt", "rsa-2048-mail-shop.test.public.dns.txt",
+		"ed25519-ed-shop.test.private.txt", "ed25519-ed-shop.test.public.txt", "ed25519-ed-shop.test.public.dns.txt"}
+	kept := "mail_dkim_shop.test=kept kept\nmail_dkim_txt_mail._domainkey.shop.test=" + rsaV + "\nmail_dkim_txt_ed._domainkey.shop.test=v=DKIM1; k=ed25519; p=ED\n" +
+		"mail_dkim_conf=unchanged\nmail_dkim_unsigned=\nmail_dkim_rspamd=unchanged\nmail_dkim=done\n"
+	dkim := func(f *fake, stdin string, args ...string) (string, string, error) {
+		t.Helper()
+		var so, se bytes.Buffer
+		o, err := Parse("mail-dkim", append([]string{"deploy@vps", "shop.test"}, args...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := &cli.Output{Stdout: &so, Stderr: &se}
+		err = Run(Ctx{Out: out, Templates: repoTemplates(t), Dial: func(string) (Session, error) { return f, nil },
+			Prompter: &prompt.Prompter{In: strings.NewReader(stdin), Out: out, TTY: stdin != ""},
+			Now:      func() time.Time { return time.Date(2026, 11, 12, 18, 4, 5, 0, time.FixedZone("x", 3600)) }}, o)
+		return so.String(), se.String(), err
+	}
+
+	// No key there: nothing asked, the step makes them.
+	f := &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(reg)}}
+	if _, se, err := dkim(f, ""); err != nil || len(f.dkimArgs) != 5 || f.held != 1 || f.lock != "server mail-dkim" ||
+		!strings.Contains(se, "keys generated, override updated, rspamd restarted") {
+		t.Errorf("missing keys: %v %v %q", err, f.dkimArgs, se)
+	}
+	// Keys there, no terminal, no flag: refused naming both, nothing run.
+	f = &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(reg), DKIMFiles: full}}
+	if _, _, err := dkim(f, ""); !strings.Contains(errText(err), "cannot ask: replace shop.test's DKIM keys? DNS must then carry the new public keys before mail signed with them is trusted") ||
+		!strings.Contains(errText(err), "pass --replace-keys or --keep-keys instead") || len(f.dkims) != 0 {
+		t.Errorf("no tty: %v %v", err, f.dkims)
+	}
+	// --keep-keys: the repair alone, and the records to publish, the RSA one split.
+	f = &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(reg), DKIMFiles: full}, dkim: kept}
+	so, se, err := dkim(f, "", "--keep-keys")
+	if err != nil || len(f.dkimArgs) != 5 || strings.Contains(se, "old keys") ||
+		!strings.Contains(so, "    mail._domainkey.shop.test.  IN TXT  \""+rsaV[:255]+"\" \""+rsaV[255:]+"\"\n") ||
+		!strings.Contains(so, "    ed._domainkey.shop.test.  IN TXT  \"v=DKIM1; k=ed25519; p=ED\"\n") || strings.Contains(so, "Until DNS") {
+		t.Errorf("keep: %v %v\n%s%s", err, f.dkimArgs, se, so)
+	}
+	// Answered on a terminal, yes: the keys are rotated under a UTC stamp.
+	f = &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(reg), DKIMFiles: full},
+		dkim: "mail_dkim_old_shop.test=rsa-2048-mail-shop.test.private.txt.kasbah-old-20261112T170405Z\n" + strings.Replace(kept, "kept kept", "replaced replaced", 1)}
+	so, se, err = dkim(f, "maybe\ny\n")
+	if err != nil || len(f.dkimArgs) != 6 || f.dkimArgs[4] != "--replace=20261112T170405Z" || !strings.Contains(se, "answer y or n") ||
+		!strings.Contains(se, "keys replaced, override unchanged") ||
+		!strings.Contains(se, "old keys: kept beside the new ones, Rspamd no longer signs with them: rsa-2048-mail-shop.test.private.txt.kasbah-old-20261112T170405Z") ||
+		!strings.Contains(so, "Until DNS carries the new records") || !strings.Contains(so, "mail._domainkey.shop.test.  IN TXT") {
+		t.Errorf("replace: %v %v\n%s%s", err, f.dkimArgs, se, so)
+	}
+	// A replace whose step reports no old keys is truncated.
+	f = &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(reg), DKIMFiles: full}, dkim: kept}
+	if _, _, err := dkim(f, "", "--replace-keys"); !strings.Contains(errText(err), "reported no mail_dkim_old_shop.test") {
+		t.Errorf("truncated replace: %v", err)
+	}
+	// A rotation that failed before any swap says the keys are as they were.
+	f = &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(reg), DKIMFiles: full}, dkim: "mail_dkim_image=dms:9\nmail_dkim_old_shop.test=\n", dkimRC: 1}
+	if _, se, err := dkim(f, "", "--replace-keys"); !strings.Contains(errText(err), "could not make the DKIM keys of shop.test") ||
+		!strings.Contains(errText(err), "--replace-keys rotates") || !strings.Contains(se, "no key file of shop.test was swapped: its keys are as they were") ||
+		strings.Contains(se, "way back") {
+		t.Errorf("failed replace: %v %q", err, se)
+	}
+	// One that failed partway names exactly what it swapped, which key is
+	// rotated and which is not, and the way back for each swapped file.
+	f = &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(reg), DKIMFiles: full}, dkimRC: 1, dkim: "mail_dkim_image=dms:9\n" +
+		"mail_dkim_swapped_rsa-2048-mail-shop.test.public.dns.txt=rsa-2048-mail-shop.test.public.dns.txt.kasbah-old-20261112T170405Z\n" +
+		"mail_dkim_swapped_rsa-2048-mail-shop.test.public.txt=rsa-2048-mail-shop.test.public.txt.kasbah-old-20261112T170405Z\n" +
+		"mail_dkim_swapped_rsa-2048-mail-shop.test.private.txt=rsa-2048-mail-shop.test.private.txt.kasbah-old-20261112T170405Z\n" +
+		"mail_dkim_swapped_ed25519-ed-shop.test.public.dns.txt=ed25519-ed-shop.test.public.dns.txt.kasbah-old-20261112T170405Z\n" +
+		"mail_dkim_rspamd=restarted\n"}
+	_, se, err = dkim(f, "", "--replace-keys")
+	dir := "/apps/data/mail/dms/config/rspamd/dkim"
+	for _, w := range []string{
+		"swapped in " + dir + " before the step failed: rsa-2048-mail-shop.test.private.txt rsa-2048-mail-shop.test.public.txt rsa-2048-mail-shop.test.public.dns.txt ed25519-ed-shop.test.public.dns.txt\n",
+		"rotated: shop.test's mail key(s) — Rspamd signs with the new ones, so DNS must carry their new",
+		"not rotated: shop.test's ed key(s) — Rspamd still signs with the old one",
+		"shop.test's ed public file(s) were swapped and no longer match the old private key beside them",
+		"  ssh deploy@vps 'docker run --rm --network none --user _rspamd -v " + dir + ":" + DKIMContainerDir + " --entrypoint sh dms:9 -c \"cd " + DKIMContainerDir +
+			" && ln -fT rsa-2048-mail-shop.test.private.txt.kasbah-old-20261112T170405Z rsa-2048-mail-shop.test.private.txt && ln -fT rsa-2048-mail-shop.test.public.txt.kasbah-old-20261112T170405Z rsa-2048-mail-shop.test.public.txt" +
+			" && ln -fT rsa-2048-mail-shop.test.public.dns.txt.kasbah-old-20261112T170405Z rsa-2048-mail-shop.test.public.dns.txt && ln -fT ed25519-ed-shop.test.public.dns.txt.kasbah-old-20261112T170405Z ed25519-ed-shop.test.public.dns.txt\"'\n",
+		"supervisorctl restart rspamd"} {
+		if !strings.Contains(se, w) {
+			t.Errorf("partial replace: no %q in\n%s", w, se)
+		}
+	}
+	if !strings.Contains(errText(err), "no old key was deleted") || strings.Contains(se, "NOT restarted") {
+		t.Errorf("partial replace: %v", err)
+	}
+	// Its Rspamd sentence follows the reload, and the step's warnings follow:
+	// an override kept aside, a domain unsigned, an Rspamd not restarted.
+	f.dkim = "mail_dkim_swapped_rsa-2048-mail-shop.test.private.txt=\nmail_dkim_rspamd=failed\nmail_dkim_unsettled=yes\n" +
+		"mail_dkim_prev=/p/dkim_signing.conf.kasbah-prev\nmail_dkim_unsigned=other.test\n"
+	_, se, _ = dkim(f, "", "--replace-keys")
+	for _, w := range []string{
+		"the rotation's container may still be running",
+		"rotated: shop.test's mail key(s) — Rspamd, NOT restarted (see below), signs with the new ones once it restarts",
+		"the file it was is kept as /p/dkim_signing.conf.kasbah-prev",
+		"no DKIM key for other.test",
+		"Rspamd in mail-dms did not restart onto the new keys"} {
+		if !strings.Contains(se, w) {
+			t.Errorf("failed reload: no %q in\n%s", w, se)
+		}
+	}
+	if strings.Contains(se, "no longer match") || strings.Contains(se, "Rspamd signs with the new ones,") {
+		t.Errorf("failed reload:\n%s", se)
+	}
+	// A domain the registry lacks is refused before any step.
+	f = &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc("name: mail\nprimary_domain: example.test\ndomains:\n  - example.test\n")}}
+	if _, _, err := dkim(f, "", "--replace-keys"); !strings.Contains(errText(err), "shop.test is not served by the mail stack on deploy@vps") ||
+		!strings.Contains(errText(err), "kasbah server add-mail-domain deploy@vps shop.test") || len(f.dkims) != 0 {
+		t.Errorf("unlisted: %v", err)
 	}
 }
 
@@ -266,26 +390,35 @@ type fake struct {
 	dkim   string
 	dkimRC int
 	dkims  []string
-	// held counts the server lock's takings.
+	// held counts the server lock's takings, lock the last one's command.
 	held int
+	lock string
+	// dkimArgs is the dkim step's last argument list.
+	dkimArgs []string
 }
 
 func (f *fake) Unbounded(args ...string) ([]byte, int) {
 	f.calls++
-	if len(args) != 5 || args[1] != "dkim" {
+	if len(args) < 5 || args[1] != "dkim" {
 		return nil, 1
 	}
-	f.dkims = append(f.dkims, args[4])
+	f.dkimArgs = args
+	d := args[len(args)-1]
+	f.dkims = append(f.dkims, d)
 	if f.dkim == "" {
-		return []byte("mail_dkim_" + args[4] + "=generated generated\nmail_dkim_conf=updated\n" +
+		return []byte("mail_dkim_" + d + "=generated generated\nmail_dkim_conf=updated\n" +
 			"mail_dkim_unsigned=\nmail_dkim_rspamd=restarted\nmail_dkim=done\n"), f.dkimRC
 	}
 	return []byte(f.dkim), f.dkimRC
 }
 
 func (f *fake) Paths() (string, string, error) { return "/apps", "/apps/data", nil }
-func (f *fake) Hold(string) (func(), error)    { f.held++; return func() {}, nil }
-func (f *fake) Close()                         {}
+func (f *fake) Hold(_, cmd string) (func(), error) {
+	f.held++
+	f.lock = cmd
+	return func() {}, nil
+}
+func (f *fake) Close() {}
 func (f *fake) Remote(stdin []byte, args ...string) ([]byte, int) {
 	f.calls++
 	switch args[1] {
@@ -325,7 +458,7 @@ func TestAddMailDomain(t *testing.T) {
 		t.Fatalf("add: %v %+v", err, f.writes)
 	}
 	if !strings.Contains(se, "Added shop.test") || !strings.Contains(se, "dkim:     keys generated, override updated, rspamd restarted") ||
-		strings.Contains(se, "kasbah-prev") || f.held != 1 ||
+		strings.Contains(se, "kasbah-prev") || f.held != 1 || f.lock != "server add-mail-domain" ||
 		!strings.Contains(so, "kasbah server mail-setup-guide deploy@vps") || strings.Contains(so, "setup config dkim") ||
 		len(f.dkims) != 1 || f.dkims[0] != "shop.test" {
 		t.Errorf("report: %q %q %v", se, so, f.dkims)
@@ -402,7 +535,9 @@ func mustRender(t *testing.T, reg string) string {
 
 func TestGuide(t *testing.T) {
 	two := "name: mail\nprimary_domain: example.test\ndomains:\n  - example.test\n  - shop.test\n"
-	f := &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(two), HostAddr: "203.0.113.7"}}
+	f := &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(two), HostAddr: "203.0.113.7",
+		DKIMFiles: []string{"rsa-2048-mail-example.test.public.dns.txt", "ed25519-ed-example.test.public.dns.txt"},
+		DKIMTXT:   map[string]string{"mail._domainkey.example.test": "v=DKIM1; k=rsa; p=" + strings.Repeat("B", 300)}}}
 	so, _, err := runWith(t, f, "mail-setup-guide")
 	if err != nil || f.calls != 1 || len(f.writes) != 0 {
 		t.Fatalf("%v %d", err, f.calls)
@@ -415,19 +550,25 @@ func TestGuide(t *testing.T) {
 		"CLI is `docker exec mail-dms setup …`", "dms-config-$(date +%F).tar.gz",
 		"log in at https://webmail.example.test with their full address", "\"Just Logout\" discards it",
 		"webmail settings in\n/apps/data/mail/cypht/.",
-		"selector ed   domain shop.test'\n\nThe keys land",
-		"ssh deploy@vps 'docker exec mail-dms setup config dkim keytype rsa     selector mail domain example.test'\n",
-		"`kasbah check --server` warns for\nevery domain in the registry that lacks either key or its block in that file.",
+		"mail._domainkey.example.test.    IN TXT   \"v=DKIM1; k=rsa; p=" + strings.Repeat("B", 237) + "\" \"" + strings.Repeat("B", 63) + "\"\n",
+		"ed._domainkey.example.test.      IN TXT   \"<ed25519-ed-example.test.public.dns.txt>\"\n;   ed25519-ed-example.test.public.dns.txt holds no TXT value kasbah can print",
+		"mail._domainkey.shop.test.    IN TXT   \"<rsa-2048-mail-shop.test.public.dns.txt>\"\n;   no mail key yet: kasbah server mail-dkim deploy@vps shop.test --keep-keys\n",
+		"step 3. The keys live in /apps/data/mail/dms/config/rspamd/dkim/.\n\nA domain without both keys sends unsigned or half-signed mail. Make them with:\n\n    kasbah server mail-dkim deploy@vps shop.test --keep-keys\n\n`kasbah server mail-dkim",
+		"`kasbah check --server` warns for every domain in the registry\nthat lacks either key or its block in that file.",
 		"---------------------------------------------------------------------------\n\n; ---------- example.test: the stack's own names",
 	} {
 		if !strings.Contains(so, want) {
 			t.Errorf("guide lacks %q", want)
 		}
 	}
+	if strings.Contains(so, "mail-dkim deploy@vps example.test") || strings.Contains(so, "docker exec mail-dms setup config dkim") {
+		t.Error("guide tells the operator to make keys by hand, or for a domain that has them")
+	}
 	var b bytes.Buffer
-	Guide(&b, GuideData{Target: "t", Primary: "p.com", Domains: []string{"p.com"}})
-	if !strings.Contains(b.String(), "VPS address:    <VPS IP>\n") {
-		t.Error("no placeholder")
+	Guide(&b, GuideData{Target: "t", Primary: "p.com", Domains: []string{"p.com"},
+		TXT: map[string]string{"mail._domainkey.p.com": "v=DKIM1; k=rsa; p=R", "ed._domainkey.p.com": "v=DKIM1; k=ed25519; p=E"}})
+	if !strings.Contains(b.String(), "VPS address:    <VPS IP>\n") || strings.Contains(b.String(), "<rsa-") || strings.Contains(b.String(), "Make them with") {
+		t.Error("no placeholder, or a key placeholder for a domain with both")
 	}
 }
 

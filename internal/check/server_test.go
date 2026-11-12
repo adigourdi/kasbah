@@ -262,9 +262,8 @@ func TestServerM03(t *testing.T) {
 // mail, and warns rather than fails; no registry, no line.
 func TestServerM04(t *testing.T) {
 	const dir, conf = "/apps/data/mail/dms/config/rspamd/dkim", "/apps/data/mail/dms/config/rspamd/override.d/dkim_signing.conf"
-	rsa := "\n      ssh deploy@vps 'docker exec mail-dms setup config dkim keytype rsa     selector mail domain shop.rig.test'"
-	ed := "\n      ssh deploy@vps 'docker exec mail-dms setup config dkim keytype ed25519 selector ed   domain shop.rig.test'"
-	tail := " — its mail leaves unsigned and receivers file it as spam (kasbah server mail-setup-guide deploy@vps, step 2):"
+	fix := "\n      kasbah server mail-dkim deploy@vps shop.rig.test --keep-keys\n"
+	tail := " — its mail leaves unsigned and receivers file it as spam; this makes its missing keys and renders the override:"
 	cant := ", so whether the mail domains are DKIM-signed cannot be checked"
 	for _, tc := range []struct {
 		name string
@@ -273,21 +272,20 @@ func TestServerM04(t *testing.T) {
 		not  []string
 	}{
 		{"no keys for one domain", func(s *srvCase) { s.r.DKIMKeys = s.r.DKIMKeys[:2] },
-			[]string{"⚠ mail domain 'shop.rig.test' on deploy@vps is not DKIM-signed: no rsa-2048-mail-shop.rig.test.private.txt or ed25519-ed-shop.rig.test.private.txt in " + dir + "/" + tail + rsa + ed + "\n"},
-			[]string{"'rig.test' on deploy@vps is not", "every mail domain", "signing block"}},
+			[]string{"⚠ mail domain 'shop.rig.test' on deploy@vps is not DKIM-signed: no rsa-2048-mail-shop.rig.test.private.txt or ed25519-ed-shop.rig.test.private.txt in " + dir + "/" + tail + fix},
+			[]string{"'rig.test' on deploy@vps is not", "every mail domain", "signing block", "setup config dkim"}},
 		{"ed25519 only", func(s *srvCase) { s.r.DKIMKeys = []string{s.r.DKIMKeys[0], s.r.DKIMKeys[1], s.r.DKIMKeys[3]} },
-			[]string{"is not DKIM-signed: no rsa-2048-mail-shop.rig.test.private.txt in " + dir + "/" + tail + rsa + "\n"}, []string{ed}},
+			[]string{"is not DKIM-signed: no rsa-2048-mail-shop.rig.test.private.txt in " + dir + "/" + tail + fix}, []string{"ed25519-ed-shop.rig.test.private.txt in"}},
 		{"a hyphenated selector is not the domain's key", func(s *srvCase) {
 			s.r.Registry = b64s("primary_domain: rig.test\ndomains: [rig.test, a.test]\n")
 			s.r.DKIMKeys = append(s.r.DKIMKeys, "rsa-2048-mail-shop-a.test.private.txt", "ed25519-ed-shop-a.test.private.txt")
 			s.r.DKIMConf = b64s(srvConf + strings.ReplaceAll(srvConf, "shop.rig.test", "shop-a.test"))
 		}, []string{"⚠ mail domain 'a.test' on deploy@vps is not DKIM-signed: no rsa-2048-mail-a.test.private.txt or ed25519-ed-a.test.private.txt in " + dir + "/, and " +
-			conf + " does not list rsa-2048-mail-a.test.private.txt or ed25519-ed-a.test.private.txt" + tail,
-			"\n      add its signing block to " + conf + "\n"}, nil},
+			conf + " does not list rsa-2048-mail-a.test.private.txt or ed25519-ed-a.test.private.txt" + tail +
+			"\n      kasbah server mail-dkim deploy@vps a.test --keep-keys\n"}, nil},
 		{"keys, no signing block", func(s *srvCase) { s.r.DKIMConf = b64s(strings.ReplaceAll(srvConf, "shop.rig.test", "other.test")) },
-			[]string{"⚠ mail domain 'shop.rig.test' on deploy@vps is not DKIM-signed: " + conf + " does not list rsa-2048-mail-shop.rig.test.private.txt or ed25519-ed-shop.rig.test.private.txt" + tail +
-				"\n      add its signing block to " + conf + "\n"},
-			[]string{"setup config dkim keytype", "'rig.test' on deploy@vps is not"}},
+			[]string{"⚠ mail domain 'shop.rig.test' on deploy@vps is not DKIM-signed: " + conf + " does not list rsa-2048-mail-shop.rig.test.private.txt or ed25519-ed-shop.rig.test.private.txt" + tail + fix},
+			[]string{"setup config dkim keytype", "signing block", "'rig.test' on deploy@vps is not"}},
 		{"no key directory yet", func(s *srvCase) { s.r.DKIMState, s.r.DKIMKeys = "absent", nil },
 			[]string{"⚠ mail domain 'rig.test' on deploy@vps is not DKIM-signed", "⚠ mail domain 'shop.rig.test' on deploy@vps is not DKIM-signed"}, nil},
 		{"an empty override lists nothing", func(s *srvCase) { s.r.DKIMConfState, s.r.DKIMConf = "empty", "" },

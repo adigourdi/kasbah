@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/mailreg"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/traefiknet"
@@ -30,7 +31,7 @@ func Remote(templates fs.FS, args []string, stdin io.Reader, stdout, stderr io.W
 		return 1
 	}
 	usage := func() int {
-		return fail("usage: kasbah remote mail read APPS DATA | write APPS DATA SIZE SHA256 | layout APPS DATA SIZE SHA256 | dkim APPS DATA [DOMAIN...] | start APPS TIMEOUT")
+		return fail("usage: kasbah remote mail read APPS DATA | write APPS DATA SIZE SHA256 | layout APPS DATA SIZE SHA256 | dkim APPS DATA [--replace=STAMP] [DOMAIN...] | start APPS TIMEOUT")
 	}
 	if len(args) == 0 {
 		return usage()
@@ -90,20 +91,27 @@ type ReadReport struct {
 	Aliases  string `json:"aliases_b64"`
 	Nginx    string `json:"nginx_b64"`
 	Jail     string `json:"jail_b64"`
+	// DKIMFiles are which of the registry domains' key files are there, and
+	// DKIMTXT the TXT values their .public.dns.txt files hold, by record name.
+	DKIMFiles []string          `json:"dkim_files"`
+	DKIMTXT   map[string]string `json:"dkim_txt"`
 	// HostAddr is the local end of this ssh connection, "" when unknown.
 	HostAddr string `json:"host_addr"`
 }
 
-func b64(path string) string {
+func b64(path string) string { return base64.StdEncoding.EncodeToString(regular(path)) }
+
+// regular is a regular file's bytes, nil for anything else or a failed read.
+func regular(path string) []byte {
 	fi, err := os.Stat(path)
 	if err != nil || !fi.Mode().IsRegular() {
-		return ""
+		return nil
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return ""
+		return nil
 	}
-	return base64.StdEncoding.EncodeToString(b)
+	return b
 }
 
 // isFile is `[ -f ]`, symlinks followed.
@@ -152,11 +160,15 @@ func read(apps, data string) ReadReport {
 		}
 	}
 	r.Compose = b64(dir + "/compose.yml")
-	r.Registry = b64(dir + "/kasbah.yml")
+	reg := regular(dir + "/kasbah.yml")
+	r.Registry = base64.StdEncoding.EncodeToString(reg)
 	r.Fragment = b64(apps + "/traefik/dynamic/_mail.yml")
 	r.Aliases = b64(data + "/mail/dms/config/postfix-virtual.cf")
 	r.Nginx = b64(dir + "/cypht-nginx.conf")
 	r.Jail = b64(data + "/mail/dms/config/fail2ban-jail.cf")
+	if parsed, err := mailreg.Parse(reg, dir+"/kasbah.yml"); err == nil {
+		r.DKIMFiles, r.DKIMTXT = dkimRead(parsed.Domains, DKIMDir(data))
+	}
 	if f := strings.Fields(os.Getenv("SSH_CONNECTION")); len(f) >= 3 {
 		r.HostAddr = f[2]
 	}

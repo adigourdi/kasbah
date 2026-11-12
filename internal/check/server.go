@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"math/big"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -676,16 +675,8 @@ func (c *checker) m04() {
 		if len(unlisted) > 0 {
 			why = append(why, conf+" does not list "+strings.Join(unlisted, " or "))
 		}
-		c.warnf("mail domain '%s' on %s is not DKIM-signed: %s — its mail leaves unsigned and receivers file it as spam (kasbah server mail-setup-guide %s, step 2):", d, s.target, strings.Join(why, ", and "), s.target)
-		keygen := mail.DKIMKeygen(s.target, d)
-		for i, n := range mail.DKIMKeyNames(d) {
-			if slices.Contains(absent, n) {
-				fmt.Fprintf(c.w, "      %s\n", keygen[i])
-			}
-		}
-		if len(unlisted) > 0 {
-			fmt.Fprintf(c.w, "      add its signing block to %s\n", conf)
-		}
+		c.warnf("mail domain '%s' on %s is not DKIM-signed: %s — its mail leaves unsigned and receivers file it as spam; this makes its missing keys and renders the override:", d, s.target, strings.Join(why, ", and "))
+		fmt.Fprintf(c.w, "      kasbah server mail-dkim %s %s --keep-keys\n", s.target, d)
 	}
 	if missing == 0 {
 		c.passf("every mail domain on %s has both DKIM keys, listed in its signing override (%s)", s.target, strings.Join(reg.Domains, " "))

@@ -9,7 +9,7 @@ import (
 )
 
 // serverSubcommands is every `kasbah server` subcommand, in usage order.
-var serverSubcommands = []string{"init", "status", "prune", "backup-prune", "destroy", "upgrade-traefik", "add-mail-domain", "mail-setup-guide"}
+var serverSubcommands = []string{"init", "status", "prune", "backup-prune", "destroy", "upgrade-traefik", "add-mail-domain", "mail-dkim", "mail-setup-guide"}
 
 // usage is the top-level help; build "" is an unstamped build.
 func usage(build string) string {
@@ -48,6 +48,8 @@ Commands:
   server backup-prune USER@HOST              Apply the retention policy to the server's restic repositories.
   server destroy USER@HOST [--yes]           De-brand a VPS for handover; the sites keep running.
   server add-mail-domain USER@HOST DOMAIN    Join a domain to the VPS's shared mail stack.
+  server mail-dkim USER@HOST DOMAIN [--replace-keys|--keep-keys]
+                                             Repair a mail domain's DKIM keys, or rotate them.
   server mail-setup-guide USER@HOST          Print the mail stack's setup walkthrough.
   server upgrade-traefik USER@HOST --version=<tag>
                                              Dry-run the fragments against a Traefik version, then switch.
@@ -83,6 +85,10 @@ Subcommands:
                            dynamic fragment against the target version first.
   add-mail-domain USER@HOST DOMAIN
                            Join a domain to the shared mail stack (docs/mail.md).
+  mail-dkim USER@HOST DOMAIN [--replace-keys|--keep-keys]
+                           Make a mail domain's missing DKIM keys and render the
+                           signing override again; or replace its keys, the old
+                           ones kept beside the new.
   mail-setup-guide USER@HOST
                            Print the mail stack's setup walkthrough (read-only).
 

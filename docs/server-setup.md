@@ -86,10 +86,10 @@ and `mail/cypht`. Only those; Cypht builds `users/`, `attachments/` and
 mode 600) is seeded there before DMS first starts, and never written over
 afterwards. The primary domain's two DKIM keys
 (`mail/dms/config/rspamd/dkim/`) are made there before DMS first starts too,
-and never replaced; the Rspamd signing override
+and never written over; the Rspamd signing override
 (`mail/dms/config/rspamd/override.d/dkim_signing.conf`) is not a seed —
-kasbah renders it whole on every `--with-mail` run and `add-mail-domain`
-(`mail.md` → DKIM signing).
+kasbah renders it whole on every `--with-mail` run, `add-mail-domain` and
+`server mail-dkim` (`mail.md` → DKIM signing).
 
 **The Traefik stack has no `.env`, deliberately** — its one environment is
 each DNS provider's credentials, read through `env_file:` from
@@ -323,8 +323,8 @@ the directory's write bit. Directories get the group the owner's bits.
 
 **One lock orders the server.** `<apps>/.kasbah/server.lock` (`flock(2)`,
 never waited on) is taken exclusively by `server init`, `server
-upgrade-traefik` and `server add-mail-domain` — init and upgrade-traefik for every SSH step of the
-run, add-mail-domain from its mail read on, through `kasbah remote lock` — and by `server prune`, `server destroy` and `migrate server`; and shared
+upgrade-traefik`, `server add-mail-domain` and `server mail-dkim` — init and upgrade-traefik for every SSH step of the
+run, the two mail commands from their mail read on, through `kasbah remote lock` — and by `server prune`, `server destroy` and `migrate server`; and shared
 by `deploy`, `rollback`, `deploy X.Y.Z` and `drop` for their whole run, from the
 marker read to the fragment, on top of their per-project `.deploy.lock` —
 and, for a moment, by `remote load` and `remote layers` writing the layer map

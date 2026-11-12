@@ -244,7 +244,7 @@ func main() {
 				atexit.HandleSignals()
 				atexit.Exit(upgradeCmd(o, err))
 			}
-			if len(args) > 1 && (args[1] == "add-mail-domain" || args[1] == "mail-setup-guide") {
+			if len(args) > 1 && (args[1] == "add-mail-domain" || args[1] == "mail-dkim" || args[1] == "mail-setup-guide") {
 				o, err := mail.Parse(args[1], args[2:])
 				atexit.HandleSignals()
 				atexit.Exit(mailCmd(o, err))
@@ -462,13 +462,16 @@ func serverInit(out *cli.Output, p *prompt.Prompter, o serverinit.Options) error
 	}, o)
 }
 
-// mailCmd is `server add-mail-domain` and `server mail-setup-guide`.
+// mailCmd is `server add-mail-domain`, `server mail-dkim` and `server mail-setup-guide`.
 func mailCmd(o mail.Options, err error) int {
 	out := cli.Std()
 	if err == mail.ErrHelp {
-		if o.Cmd == "add-mail-domain" {
+		switch o.Cmd {
+		case "add-mail-domain":
 			fmt.Fprint(out.Stdout, mail.AddUsage)
-		} else {
+		case "mail-dkim":
+			fmt.Fprint(out.Stdout, mail.DKIMUsage)
+		default:
 			fmt.Fprint(out.Stdout, mail.GuideUsage)
 		}
 		return cli.ExitOK
@@ -484,6 +487,7 @@ func mailCmd(o mail.Options, err error) int {
 		Out:       out,
 		Templates: templates.FS,
 		Dial:      mail.DialSSH(remote.Self(build), local),
+		Prompter:  prompt.Std(out),
 	}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c

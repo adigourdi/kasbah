@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Test: `kasbah server add-mail-domain` and `kasbah server mail-setup-guide`
+# Test: `kasbah server add-mail-domain`, `kasbah server mail-dkim` and
+# `kasbah server mail-setup-guide`
 # (internal/mail), against a scratch apps tree. A stub ssh runs each remote
 # command here, so the server half is the real `kasbah remote mail` of the
 # binary under test, reading and writing planted files; /apps in its arguments
@@ -310,7 +311,49 @@ out="$( MAIL_DIR=absent run server mail-setup-guide deploy@vps )"; rc=$?
 assert '[ "$rc" != "0" ]' "and refuses on a server with no mail stack (rc $rc: $out)"
 assert 'grep -qF "there is no mail stack" <<<"$out"' "saying so (said '$out')"
 
+# The guide prints the TXT values the server holds, and a placeholder naming
+# mail-dkim for a domain without keys.
+out="$( KEYS=shop.test REGISTRY="$registry_two" run server mail-setup-guide deploy@vps )"; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "mail._domainkey.shop.test.    IN TXT   \"v=DKIM1; planted\"" <<<"$out" &&
+        grep -qF "ed._domainkey.shop.test.      IN TXT   \"v=DKIM1; planted\"" <<<"$out"' \
+    "the guide prints a domain's real DKIM values (rc $rc: $out)"
+assert 'grep -qF "\"<rsa-2048-mail-example.test.public.dns.txt>\"" <<<"$out" && grep -qF "no mail key yet: kasbah server mail-dkim deploy@vps example.test --keep-keys" <<<"$out"' \
+    "and a placeholder naming mail-dkim for a domain with none (said '$out')"
+assert '! grep -qF "setup config dkim keytype" <<<"$out" && ! grep -qF "mail-dkim deploy@vps shop.test" <<<"$out"' \
+    "with no hand keygen, and no repair for a domain that has its keys"
+assert '[ "$(grep -c "'"'"'remote'"'"' '"'"'mail'"'"'" "$call_log")" = 1 ]' "still in one mail read ($(<"$call_log"))"
+
+# --- mail-dkim --------------------------------------------------------------------
+keys_sum() { cat "$dkim_dir"/*shop.test* | sha256sum; }
+# Keys there, no terminal, no flag: refused naming both, nothing run.
+out="$( KEYS=shop.test REGISTRY="$registry_two" run server mail-dkim deploy@vps shop.test )"; rc=$?
+assert '[ "$rc" = 1 ] && grep -qF "cannot ask: replace shop.test'"'"'s DKIM keys?" <<<"$out" && grep -qF "pass --replace-keys or --keep-keys instead" <<<"$out"' \
+    "mail-dkim on a domain with keys and no terminal fails naming both flags (rc $rc: $out)"
+assert '! grep -qF "'"'"'dkim'"'"'" "$call_log" && [ "$(keys_sum)" = "$planted" ]' "before any dkim step ($(<"$call_log"))"
+# --keep-keys on a complete domain: nothing made, the records printed.
+out="$( KEYS=shop.test REGISTRY="$registry_two" run server mail-dkim deploy@vps shop.test --keep-keys )"; rc=$?
+assert '[ "$rc" = 0 ] && [ "$(keys_sum)" = "$planted" ] && ! grep -qF dkim_keygen "$call_log"' \
+    "--keep-keys on a complete domain makes nothing (rc $rc: $out)"
+assert 'grep -qF "keys kept, override written" <<<"$out" && grep -qF "mail._domainkey.shop.test.  IN TXT  \"v=DKIM1; planted\"" <<<"$out"' \
+    "renders the override and prints the records (said '$out')"
+# --replace-keys: both keys made anew, then swapped in, the old files kept byte for byte.
+out="$( KEYS=shop.test REGISTRY="$registry_two" run server mail-dkim deploy@vps shop.test --replace-keys )"; rc=$?
+olds=("$dkim_dir"/*shop.test*.kasbah-old-*)
+assert '[ "$rc" = 0 ] && [ "${#olds[@]}" = 6 ] && [ "$(cat "$dkim_dir"/*shop.test*.kasbah-old-* | sha256sum)" = "$planted" ]' \
+    "--replace-keys keeps all six old files aside, byte for byte (rc $rc: ${olds[*]}: $out)"
+assert '[ "$(cat "$dkim_dir/rsa-2048-mail-shop.test.public.dns.txt")" = "v=DKIM1; k=rsa; p=RSA1RSA2" ] && grep -qF "shop.test {" "$override"' \
+    "and makes new keys the override signs with ($(ls "$dkim_dir"))"
+assert 'grep -qF "keys replaced" <<<"$out" && grep -qF "old keys: kept beside the new ones" <<<"$out" &&
+        grep -qF "mail._domainkey.shop.test.  IN TXT  \"v=DKIM1; k=rsa; p=RSA1RSA2\"" <<<"$out" && grep -qF "Until DNS carries the new records" <<<"$out"' \
+    "printing the new records and that the old keys are kept (said '$out')"
+# A domain the registry lacks is refused.
+out="$( run server mail-dkim deploy@vps shop.test --replace-keys )"; rc=$?
+assert '[ "$rc" = 1 ] && grep -qF "shop.test is not served by the mail stack on deploy@vps" <<<"$out" && ! grep -qF "'"'"'dkim'"'"'" "$call_log"' \
+    "mail-dkim refuses a domain the registry lacks (rc $rc: $out)"
+
 # The usage texts are this binary's.
+out="$( "$kasbah" server mail-dkim --help 2>&1 )"; rc=$?
+assert '[ "$rc" = 0 ] && grep -qF "Usage: kasbah server mail-dkim USER@HOST <domain> [--replace-keys|--keep-keys]" <<<"$out"' "mail-dkim --help (said '$out')"
 out="$( "$kasbah" server add-mail-domain --help 2>&1 )"; rc=$?
 assert '[ "$rc" = 0 ] && grep -qF "Usage: kasbah server add-mail-domain USER@HOST <domain>" <<<"$out"' "add-mail-domain --help (said '$out')"
 out="$( "$kasbah" server mail-setup-guide -h 2>&1 )"; rc=$?

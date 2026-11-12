@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +45,88 @@ var DKIMKeys = [2]DKIMKey{
 func (k DKIMKey) Files(domain string) [3]string {
 	b := k.Prefix + domain
 	return [3]string{b + ".private.txt", b + ".public.txt", b + ".public.dns.txt"}
+}
+
+// Record is the name the key's TXT record is published under.
+func (k DKIMKey) Record(domain string) string { return k.Selector + "._domainkey." + domain }
+
+// TXTValue is a .public.dns.txt's record value, ok only for one line of
+// printable ASCII, no quote or backslash, opening v=DKIM1: a value the guide
+// can print inside quotes as it is.
+func TXTValue(b []byte) (string, bool) {
+	v := strings.TrimRight(string(b), " \t\r\n")
+	if !strings.HasPrefix(v, "v=DKIM1") {
+		return "", false
+	}
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; c < 0x20 || c > 0x7e || c == '"' || c == '\\' {
+			return "", false
+		}
+	}
+	return v, true
+}
+
+// TXTStrings is a value as a TXT record's quoted strings, each at most the
+// 255 bytes one string holds.
+func TXTStrings(v string) string {
+	var parts []string
+	for len(v) > 255 {
+		parts = append(parts, `"`+v[:255]+`"`)
+		v = v[255:]
+	}
+	return strings.Join(append(parts, `"`+v+`"`), " ")
+}
+
+// readTXT is the value of d's key k, from its .public.dns.txt in dir.
+func readTXT(dir, d string, k DKIMKey) (string, bool) {
+	p := dir + "/" + k.Files(d)[2]
+	if _, regular := isFile(p); !regular {
+		return "", false
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return "", false
+	}
+	return TXTValue(b)
+}
+
+// dkimRead is which of domains' key files are in dir, and the TXT values
+// their .public.dns.txt files hold, by record name.
+func dkimRead(domains []string, dir string) (files []string, txt map[string]string) {
+	txt = map[string]string{}
+	for _, d := range domains {
+		for _, k := range DKIMKeys {
+			for _, f := range k.Files(d) {
+				if _, err := os.Lstat(dir + "/" + f); err == nil {
+					files = append(files, f)
+				}
+			}
+			if v, ok := readTXT(dir, d, k); ok {
+				txt[k.Record(d)] = v
+			}
+		}
+	}
+	return files, txt
+}
+
+// DKIMTXT is the TXT values a dkim step reported, by record name.
+func DKIMTXT(f map[string]string) map[string]string {
+	txt := map[string]string{}
+	for k, v := range f {
+		if r, ok := strings.CutPrefix(k, "mail_dkim_txt_"); ok {
+			txt[r] = v
+		}
+	}
+	return txt
+}
+
+// DKIMPresent is the key files a dkim step reported there for domains.
+func DKIMPresent(f map[string]string, domains []string) []string {
+	var files []string
+	for _, d := range domains {
+		files = append(files, strings.Fields(f["mail_dkim_files_"+d])...)
+	}
+	return files
 }
 
 // DKIMPrev is where a render keeps the override it replaced.
@@ -121,7 +204,8 @@ var dockerTimeout = 2 * time.Minute
 
 var errTimeout = errors.New("timed out")
 
-// docker is one bounded docker command, its stderr the failure's text.
+// docker is one bounded docker command, its stderr the failure's text; a
+// failed one still returns what it printed, a step's record of what it did.
 func docker(what string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), dockerTimeout)
 	defer cancel()
@@ -131,13 +215,13 @@ func docker(what string, args ...string) ([]byte, error) {
 	cmd.Stdout, cmd.Stderr = &o, &e
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("%s did not finish within %s (%w)", what, dockerTimeout, errTimeout)
+			return o.Bytes(), fmt.Errorf("%s did not finish within %s (%w)", what, dockerTimeout, errTimeout)
 		}
 		msg := strings.TrimSpace(e.String())
 		if msg == "" {
 			msg = err.Error()
 		}
-		return nil, fmt.Errorf("%s failed: %s", what, msg)
+		return o.Bytes(), fmt.Errorf("%s failed: %s", what, msg)
 	}
 	return o.Bytes(), nil
 }
@@ -200,10 +284,125 @@ done
 echo "dkim_key=$mode"
 `
 
+// rotateScript makes every key in its args under temp names, then swaps each
+// file in: the current linked to <name>.kasbah-old-<stamp>, the new renamed
+// over it, private last. Args: DIR STAMP, per key BASE N and N rspamadm args.
+const rotateScript = `set -euo pipefail
+d=$1 s=$2
+shift 2
+tmp=()
+trap 'rm -f "${tmp[@]}"' EXIT
+there() { [ -e "$1" ] || [ -L "$1" ]; }
+each() {
+	local f=$1
+	shift
+	while [ $# -gt 0 ]; do
+		local b=$1 n=$2
+		shift 2
+		"$f" "$b" "${@:1:$n}"
+		shift "$n"
+	done
+}
+taken() {
+	for x in public.dns.txt public.txt private.txt; do
+		! there "$d/$1.$x.kasbah-old-$s" || { echo "$d/$1.$x.kasbah-old-$s is taken, so no key was replaced" >&2; exit 1; }
+	done
+}
+gen() {
+	local t=$d/.kasbah-new-$1
+	shift
+	tmp+=("$t.private.txt" "$t.public.txt" "$t.public.dns.txt")
+	rm -f "$t.private.txt" "$t.public.txt" "$t.public.dns.txt"
+	rspamadm "$@" -k "$t.private.txt" >"$t.public.txt"
+	{ grep -o '".*"' "$t.public.txt" | tr -d '"\n' || true; echo; } >"$t.public.dns.txt"
+	grep -q 'p=.' "$t.public.dns.txt" || { echo "no public key in $(cat "$t.public.txt")" >&2; exit 1; }
+}
+swap() {
+	for x in public.dns.txt public.txt private.txt; do
+		local f=$1.$x old=
+		if there "$d/$f"; then
+			old=$f.kasbah-old-$s
+			ln -T "$d/$f" "$d/$old" || { echo "could not keep $d/$f as $old" >&2; exit 1; }
+		fi
+		mv -T "$d/.kasbah-new-$f" "$d/$f" || { echo "could not rename the new $f over $d/$f" >&2; exit 1; }
+	done
+}
+each taken "$@"
+each gen "$@"
+each swap "$@"
+echo dkim_rotate=done
+`
+
+// keyBox runs one-off containers of the DMS image with the key directory
+// mounted where DMS mounts it, the image ensured and the directory made
+// _rspamd's before the first.
+type keyBox struct {
+	apps, dir, img string
+	stderr         io.Writer
+	seq            int
+}
+
+func (b *keyBox) prepare() error {
+	if b.img != "" {
+		return nil
+	}
+	img, err := dmsImage(b.apps)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(b.dir, 0o755); err != nil {
+		return fmt.Errorf("could not create %s", b.dir)
+	}
+	if _, err := docker("docker image inspect "+img, "image", "inspect", img); err != nil {
+		if errors.Is(err, errTimeout) {
+			return err
+		}
+		pull := exec.Command("docker", "pull", "-q", img)
+		pull.Stdout, pull.Stderr = b.stderr, b.stderr
+		if pull.Run() != nil {
+			return fmt.Errorf("could not pull %s, whose rspamadm makes the DKIM keys", img)
+		}
+	}
+	b.img = img
+	// DMS's own preflight: the key directory is _rspamd's.
+	_, err = b.run("chown _rspamd:_rspamd "+b.dir, []string{"--entrypoint", "chown"}, "_rspamd:_rspamd", DKIMContainerDir)
+	if err != nil {
+		b.img = ""
+	}
+	return err
+}
+
+// errRunning is a timed-out container that could not be removed.
+var errRunning = errors.New("may still be running")
+
+// run is a named container; a timed-out one is removed, so it cannot finish
+// writing after the step gave up.
+func (b *keyBox) run(what string, opts []string, args ...string) ([]byte, error) {
+	b.seq++
+	name := fmt.Sprintf("kasbah-dkim-%d-%d", os.Getpid(), b.seq)
+	base := []string{"run", "--rm", "--name", name, "--network", "none", "-v", b.dir + ":" + DKIMContainerDir}
+	out, err := docker(what, slices.Concat(base, opts, []string{b.img}, args)...)
+	if errors.Is(err, errTimeout) {
+		if _, rerr := docker("docker rm -f "+name, "rm", "-f", name); rerr != nil {
+			err = fmt.Errorf("%w; %v, so it %w", err, rerr, errRunning)
+		}
+	}
+	return out, err
+}
+
 // remoteDKIM makes the keys domains lack and renders the registry's override:
 // a private key is never written over, missing public files are derived from
-// it, and public files without their private key leave the key unmade.
+// it, and public files without their private key leave the key unmade. A
+// leading --replace=STAMP rotates the domains' keys instead (rotateScript).
 func remoteDKIM(templates fs.FS, apps, data string, args []string, stdout, stderr io.Writer) error {
+	stamp := ""
+	if len(args) > 0 && strings.HasPrefix(args[0], "--replace=") {
+		stamp = strings.TrimPrefix(args[0], "--replace=")
+		args = args[1:]
+		if stamp == "" || strings.Trim(stamp, "0123456789TZ") != "" {
+			return fmt.Errorf("--replace takes a UTC stamp (20060102T150405Z), not '%s'", stamp)
+		}
+	}
 	regPath := mailreg.Path(apps)
 	body, err := os.ReadFile(regPath)
 	if err != nil {
@@ -243,14 +442,94 @@ func remoteDKIM(templates fs.FS, apps, data string, args []string, stdout, stder
 			}
 		}
 	}
+	box := &keyBox{apps: apps, dir: dir, stderr: stderr}
+	run := []string{"--user", "_rspamd", "--entrypoint", "bash"}
+	state := map[string][2]string{}
+	changed := false
+	var failed error
+	if stamp != "" {
+		if err := box.prepare(); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "mail_dkim_image=%s\n", box.img)
+		var spec []string
+		for _, d := range domains {
+			for _, k := range DKIMKeys {
+				a := slices.Concat([]string{"dkim_keygen", "-s", k.Selector, "-d", d}, k.Args)
+				spec = append(append(spec, k.Prefix+d, strconv.Itoa(len(a))), a...)
+			}
+		}
+		what := "rotating the DKIM keys of " + strings.Join(domains, " ")
+		// An old name already taken is not this run's: the script refuses it.
+		taken := map[string]bool{}
+		for _, d := range domains {
+			for _, k := range DKIMKeys {
+				for _, f := range k.Files(d) {
+					_, err := os.Lstat(dir + "/" + f + ".kasbah-old-" + stamp)
+					taken[f] = err == nil
+				}
+			}
+		}
+		out, err := box.run(what, run, slices.Concat([]string{"-c", rotateScript, "bash", DKIMContainerDir, stamp}, spec)...)
+		if err == nil && remote.KV(out)["dkim_rotate"] != "done" {
+			err = fmt.Errorf("%s reported no dkim_rotate=done", what)
+		}
+		// What was swapped is read from the disk, the container gone: its
+		// output may be cut short, a timed-out one's writes unreported.
+		for _, d := range domains {
+			var st [2]string
+			var old []string
+			for i, k := range DKIMKeys {
+				f := k.Files(d)
+				for _, j := range []int{2, 1, 0} {
+					o, ok := rotated(dir, f[j], stamp, there[f[j]], taken[f[j]])
+					if !ok {
+						continue
+					}
+					changed = true
+					fmt.Fprintf(stdout, "mail_dkim_swapped_%s=%s\n", f[j], o)
+					if o != "" {
+						old = append(old, o)
+					}
+					if j == 0 {
+						st[i] = "generated"
+						if o != "" {
+							st[i] = "replaced"
+						}
+					}
+				}
+				if st[i] == "" {
+					st[i] = "failed"
+					if err == nil {
+						err = fmt.Errorf("%s did not swap in %s", what, f[0])
+					}
+				}
+			}
+			state[d] = st
+			fmt.Fprintf(stdout, "mail_dkim_old_%s=%s\n", d, strings.Join(old, " "))
+		}
+		if errors.Is(err, errRunning) {
+			fmt.Fprintln(stdout, "mail_dkim_unsettled=yes")
+			err = fmt.Errorf("%v — it may yet swap files: what is listed is the disk as kasbah last saw it", err)
+		}
+		if err != nil {
+			if changed {
+				failed = fmt.Errorf("%v — the files swapped before it are listed above, each old one kept under its .kasbah-old-%s name", err, stamp)
+			} else {
+				failed = fmt.Errorf("%v — no key was replaced, the new ones discarded", err)
+			}
+		}
+	}
 	type job struct {
 		d    string
 		i    int
 		mode string
 	}
-	state := map[string][2]string{}
 	var todo []job
 	for _, d := range domains {
+		if stamp != "" {
+			continue
+		}
 		var st [2]string
 		for i, k := range DKIMKeys {
 			f := k.Files(d)
@@ -270,43 +549,8 @@ func remoteDKIM(templates fs.FS, apps, data string, args []string, stdout, stder
 		state[d] = st
 	}
 
-	var failed error
 	if len(todo) > 0 {
-		img, err := dmsImage(apps)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("could not create %s", dir)
-		}
-		if _, err := docker("docker image inspect "+img, "image", "inspect", img); err != nil {
-			if errors.Is(err, errTimeout) {
-				return err
-			}
-			pull := exec.Command("docker", "pull", "-q", img)
-			pull.Stdout, pull.Stderr = stderr, stderr
-			if pull.Run() != nil {
-				return fmt.Errorf("could not pull %s, whose rspamadm makes the DKIM keys", img)
-			}
-		}
-		// A named one-off container of that image, the key directory mounted
-		// where DMS mounts it; a timed-out one is removed, so it cannot finish
-		// writing after the step gave up.
-		seq := 0
-		run := func(what string, opts []string, args ...string) ([]byte, error) {
-			seq++
-			name := fmt.Sprintf("kasbah-dkim-%d-%d", os.Getpid(), seq)
-			base := []string{"run", "--rm", "--name", name, "--network", "none", "-v", dir + ":" + DKIMContainerDir}
-			out, err := docker(what, slices.Concat(base, opts, []string{img}, args)...)
-			if errors.Is(err, errTimeout) {
-				if _, rerr := docker("docker rm -f "+name, "rm", "-f", name); rerr != nil {
-					err = fmt.Errorf("%v; %v, so it may still be running", err, rerr)
-				}
-			}
-			return out, err
-		}
-		// DMS's own preflight: the key directory is _rspamd's.
-		if _, err := run("chown _rspamd:_rspamd "+dir, []string{"--entrypoint", "chown"}, "_rspamd:_rspamd", DKIMContainerDir); err != nil {
+		if err := box.prepare(); err != nil {
 			return err
 		}
 		for _, j := range todo {
@@ -315,7 +559,7 @@ func remoteDKIM(templates fs.FS, apps, data string, args []string, stdout, stder
 			if j.mode == "repaired" {
 				what = fmt.Sprintf("deriving the public files of %s/%s from it", dir, k.Files(j.d)[0])
 			}
-			out, err := run(what, []string{"--user", "_rspamd", "--entrypoint", "bash"},
+			out, err := box.run(what, run,
 				slices.Concat([]string{"-c", keyScript, "bash", DKIMContainerDir, k.Prefix + j.d, j.mode, k.Selector, k.Kind,
 					"dkim_keygen", "-s", k.Selector, "-d", j.d}, k.Args)...)
 			got := remote.KV(out)["dkim_key"]
@@ -329,6 +573,9 @@ func remoteDKIM(templates fs.FS, apps, data string, args []string, stdout, stder
 				failed = err
 				break
 			}
+			if got == j.mode {
+				changed = true
+			}
 			st := state[j.d]
 			st[j.i] = got
 			state[j.d] = st
@@ -337,14 +584,59 @@ func remoteDKIM(templates fs.FS, apps, data string, args []string, stdout, stder
 	for _, d := range domains {
 		st := state[d]
 		fmt.Fprintf(stdout, "mail_dkim_%s=%s %s\n", d, st[0], st[1])
+		var files []string
+		for _, k := range DKIMKeys {
+			for _, f := range k.Files(d) {
+				if _, err := os.Lstat(dir + "/" + f); err == nil {
+					files = append(files, f)
+				}
+			}
+			if v, ok := readTXT(dir, d, k); ok {
+				fmt.Fprintf(stdout, "mail_dkim_txt_%s=%s\n", k.Record(d), v)
+			}
+		}
+		fmt.Fprintf(stdout, "mail_dkim_files_%s=%s\n", d, strings.Join(files, " "))
+	}
+	// A failure that changed a key still renders and reloads: the override
+	// then names only the private keys present.
+	if failed != nil && !changed {
+		return failed
+	}
+	if err := renderDKIM(templates, data, reg.Domains, changed, stdout, stderr); err != nil {
+		if failed != nil {
+			return fmt.Errorf("%v; and %v", failed, err)
+		}
+		return err
 	}
 	if failed != nil {
 		return failed
 	}
+	fmt.Fprintln(stdout, "mail_dkim=done")
+	return nil
+}
 
+// rotated is whether a rotation swapped name in dir, and the old file it kept
+// ("" for none): one was kept when name.kasbah-old-stamp, untaken before, is
+// not name itself; none when name is there and was not before.
+func rotated(dir, name, stamp string, before, taken bool) (string, bool) {
+	cur, err := os.Lstat(dir + "/" + name)
+	if err != nil || taken {
+		return "", false
+	}
+	old := name + ".kasbah-old-" + stamp
+	if kept, err := os.Lstat(dir + "/" + old); err == nil {
+		return old, !os.SameFile(kept, cur)
+	}
+	return "", !before
+}
+
+// renderDKIM renders the override for domains from the private keys present
+// and reloads Rspamd when it changed or changed is set.
+func renderDKIM(templates fs.FS, data string, domains []string, changed bool, stdout, stderr io.Writer) error {
+	dir := DKIMDir(data)
 	signed := map[string][]DKIMKey{}
 	var unsigned []string
-	for _, d := range reg.Domains {
+	for _, d := range domains {
 		for _, k := range DKIMKeys {
 			if _, regular := isFile(dir + "/" + k.Files(d)[0]); regular {
 				signed[d] = append(signed[d], k)
@@ -354,7 +646,7 @@ func remoteDKIM(templates fs.FS, apps, data string, args []string, stdout, stder
 			unsigned = append(unsigned, d)
 		}
 	}
-	conf, err := RenderDKIM(templates, reg.Domains, signed)
+	conf, err := RenderDKIM(templates, domains, signed)
 	if err != nil {
 		return err
 	}
@@ -391,12 +683,11 @@ func remoteDKIM(templates fs.FS, apps, data string, args []string, stdout, stder
 		}
 	}
 	fmt.Fprintf(stdout, "mail_dkim_conf=%s\nmail_dkim_unsigned=%s\n", cstate, strings.Join(unsigned, " "))
-
 	rspamd := "unchanged"
-	if cstate != "unchanged" || len(todo) > 0 {
+	if cstate != "unchanged" || changed {
 		rspamd = reloadRspamd(stderr)
 	}
-	fmt.Fprintf(stdout, "mail_dkim_rspamd=%s\nmail_dkim=done\n", rspamd)
+	fmt.Fprintf(stdout, "mail_dkim_rspamd=%s\n", rspamd)
 	return nil
 }
 
@@ -459,7 +750,9 @@ func DKIMWarn(out *cli.Output, target, data string, domains []string, f map[stri
 			if s == "partial" && i < len(DKIMKeys) {
 				fl := DKIMKeys[i].Files(d)
 				out.Warn("%s/%s is absent and %s or %s is there, so no %s key was made for %s", DKIMDir(data), fl[0], fl[1], fl[2], DKIMKeys[i].Selector, d)
-				out.Warn("(kasbah never writes over a key file); move them aside and re-run")
+				out.Warn("(kasbah never writes over a key file); this rotates both of %s's keys, all six files, the old", d)
+				out.Warn("ones kept beside them — so the healthy key's DNS record changes too:")
+				out.Warn("  kasbah server mail-dkim %s %s --replace-keys", target, d)
 			}
 		}
 	}

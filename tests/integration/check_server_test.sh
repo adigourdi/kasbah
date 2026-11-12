@@ -125,6 +125,10 @@ if [ "$rc" != "0" ]; then
     sed 's/^/       | /' "$tmpdir/err" >&2
     exit 2
 fi
+# init made the primary's DKIM keys; a second domain joins the registry with
+# none, as an older kasbah's add-mail-domain left one, for M04 to find.
+old_domain=older.rig.test
+rig_ssh "printf '  - %s\n' '$old_domain' >> '$apps/mail/kasbah.yml'" >/dev/null 2>&1
 
 # The rig cannot apply cgroup limits (nested cgroup v2 in threaded mode), so the
 # marker is rewritten to 0/0 — Docker's "no limit" — exactly as the other rig
@@ -242,13 +246,14 @@ assert 'grep -qF "✓ effective resource limits on $RIG_TARGET match the host'"'
 # router's apex and the registry's primary domain.
 assert 'grep -qF "✓ No router claims a hostname kasbah owns on $RIG_TARGET (traefik.$rig_domain mail.$rig_domain webmail.$rig_domain)" <<<"$out"' \
     "T05 tightened to hostnames read off this server (said '$out')"
-# M04: nothing on the rig has generated a DKIM key (DMS never boots here), so
-# the registry's one domain warns and names the keygen commands; the override
-# init seeded already lists both paths.
-assert 'grep -qF "⚠ mail domain '"'"'$rig_domain'"'"' on $RIG_TARGET is not DKIM-signed: no rsa-2048-mail-$rig_domain.private.txt or ed25519-ed-$rig_domain.private.txt in $dkim_dir/ — " <<<"$out"' \
-    "M04 warns for a registry domain with no DKIM key, and only for the keys (said '$out')"
-assert 'grep -qF "ssh $RIG_TARGET '"'"'docker exec mail-dms setup config dkim keytype ed25519 selector ed   domain $rig_domain'"'"'" <<<"$out"' \
-    "and names the command that generates it (said '$out')"
+# M04: the primary's keys are init's, listed in the override it rendered; the
+# domain an older kasbah joined has neither, so it alone warns and names the
+# repair, which never asks.
+conf="$data/mail/dms/config/rspamd/override.d/dkim_signing.conf"
+assert 'grep -qF "⚠ mail domain '"'"'$old_domain'"'"' on $RIG_TARGET is not DKIM-signed: no rsa-2048-mail-$old_domain.private.txt or ed25519-ed-$old_domain.private.txt in $dkim_dir/, and $conf does not list rsa-2048-mail-$old_domain.private.txt or ed25519-ed-$old_domain.private.txt — " <<<"$out"' \
+    "M04 warns for a registry domain with no DKIM key (said '$out')"
+assert 'grep -qF "      kasbah server mail-dkim $RIG_TARGET $old_domain --keep-keys" <<<"$out" && ! grep -qF "mail domain '"'"'$rig_domain'"'"' on $RIG_TARGET is not DKIM-signed" <<<"$out"' \
+    "and names the command that makes them, and not for the primary init made keys for (said '$out')"
 
 # The certificate store. There will never be a certificate for demo.test here —
 # no public DNS, so HTTP-01 cannot validate — but which of the three
@@ -281,15 +286,15 @@ assert 'grep -qF "✗ the mail stack on $RIG_TARGET does not serve '"'"'nowhere.
 sed -i "s/^  domain: nowhere.rig.test\$/  domain: $rig_domain/" "$projdir/kasbah.yml"
 
 # --- M04, with both keys in place --------------------------------------------------
-# Root's and mode 600, as DMS leaves them: the names are listed, the keys never
-# read, and the override init seeded is what lists their paths.
-dkim_keys="$dkim_dir/rsa-2048-mail-$rig_domain.private.txt $dkim_dir/ed25519-ed-$rig_domain.private.txt"
-rig_ssh "sudo mkdir -p '$dkim_dir' && sudo touch $dkim_keys && sudo chmod 600 $dkim_keys" >/dev/null 2>&1
+# The remedy M04 names, run as printed: it makes the older domain's keys and
+# renders the override, and M04 passes.
+kasbah_bounded server mail-dkim "$RIG_TARGET" "$old_domain" --keep-keys; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "dkim:     keys generated, override updated" "$tmpdir/err"' \
+    "the remedy M04 names makes the missing keys (exit $rc: $(cli_out) $(cli_err))"
 check --server "$RIG_TARGET"; rc=$?
 out="$(cli_out)"
-assert 'grep -qF "✓ every mail domain on $RIG_TARGET has both DKIM keys, listed in its signing override ($rig_domain)" <<<"$out"' \
-    "M04 passes once both key files the seeded override names are there (exit $rc, said '$out')"
-rig_ssh "sudo rm -f $dkim_keys" >/dev/null 2>&1
+assert 'grep -qF "✓ every mail domain on $RIG_TARGET has both DKIM keys, listed in its signing override ($rig_domain $old_domain)" <<<"$out"' \
+    "M04 passes once both domains' keys are there and listed (exit $rc, said '$out')"
 
 # --- R04, above the host's ceiling ------------------------------------------------------
 # The .env on the rig is edited by the suite, not by kasbah: what is being

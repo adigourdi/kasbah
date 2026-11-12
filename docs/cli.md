@@ -663,15 +663,15 @@ Three things change and nothing else does:
 - the domain's two DKIM keys (RSA selector `mail`, Ed25519 selector `ed`) are
   made unless they exist, by `rspamadm` of the DMS image the mail compose file
   pins, and the Rspamd signing override is rendered again from the registry
-  and the keys present (`mail.md` → DKIM signing). A key is never replaced,
-  and a public file missing beside its private key is derived from it; an
+  and the keys present (`mail.md` → DKIM signing). A key file is never
+  written over, and a public file missing beside its private key is derived from it; an
   override kasbah did not render (a hand edit) is kept as
   `dkim_signing.conf.kasbah-prev`, named in the output; a registry domain left
   without a key is named as sending unsigned.
 
 The run holds the server lock `<apps>/.kasbah/server.lock` exclusively, from
 the mail read to the end of the run, so it never runs inside a `server init` or
-beside another `add-mail-domain`.
+beside another `add-mail-domain` or `server mail-dkim`.
 
 **No router is added.** `mail.<primary>` and `webmail.<primary>` are the
 stack's own hostnames; an app domain needs an MX record pointing at
@@ -689,15 +689,50 @@ alias is its own mailbox, and its keys are `server init --with-mail`'s.
 What it does not do, because it is not kasbah's: DNS. It ends by pointing at
 `mail-setup-guide`, which prints the records.
 
+### `kasbah server mail-dkim USER@HOST <domain> [--replace-keys|--keep-keys]`
+
+Repairs or rotates the DKIM keys of a domain in the mail registry (`mail.md` →
+DKIM signing); a domain the registry does not list is refused, naming
+`add-mail-domain`. It is the DKIM step of `add-mail-domain` for that one
+domain: a missing key is made, a public file missing beside its private key is
+derived from it, the Rspamd signing override is rendered again (a hand edit
+kept as `dkim_signing.conf.kasbah-prev`) and Rspamd reloaded onto it. A key
+that is there is never written over. The output ends with the domain's two TXT
+records to publish, the RSA value split into quoted strings of at most 255
+characters.
+
+When the domain already has key files it asks "replace <domain>'s DKIM keys?
+DNS must then carry the new public keys before mail signed with them is
+trusted". `--replace-keys` and `--keep-keys` answer it; without a terminal one
+of them is required, and the run fails naming both. `--keep-keys`, or no, is
+the repair alone. Replacing makes both new keys under temporary names first,
+and only once both are made swaps each of the domain's six files in: the
+current one hard-linked to `<name>.kasbah-old-<UTC stamp>` beside it — never
+deleted — then the new one renamed over the name, a key's private file last.
+The output names the files kept and prints the new records. DNS is the
+operator's: until it carries the new records, receivers fail mail signed with
+the new keys. A generation that fails changes nothing; a swap that fails
+partway names exactly the files it swapped (read from the disk once its
+container is gone, so a timed-out or truncated run still names them; a
+timed-out container that cannot be removed is said to be possibly still
+running, the list then being the disk as kasbah last saw it), which
+keys are rotated and which are not, and the command that links the old files
+back, the override rendered and Rspamd reloaded all the same.
+
+The run holds the server lock `<apps>/.kasbah/server.lock` exclusively from
+the mail read on, as `add-mail-domain` does.
+
 ### `kasbah server mail-setup-guide USER@HOST`
 
 Prints the mail stack's post-install walkthrough, rendered for this server:
 its primary domain, every domain in the registry, and the DNS records each of
-them needs — MX, SPF, DMARC and both DKIM selectors — with the address the ssh
-session reached the server on filled in. Ported from the original project's
+them needs — MX, SPF, DMARC and both DKIM selectors, with the values the
+server's `.public.dns.txt` files hold (a placeholder naming `server mail-dkim`
+for a key not made yet) — with the address the ssh session reached the server
+on filled in. Ported from the original project's
 `mail/SETUP.md`.
 
-Read-only. It reads the registry and changes nothing.
+Read-only. It reads the registry and the DKIM public files, and changes nothing.
 
 It carries two prerequisites kasbah cannot check and an operator will
 otherwise miss: reverse DNS (PTR) on the VPS IP set to `mail.<primary>`, and

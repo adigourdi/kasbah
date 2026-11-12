@@ -237,7 +237,8 @@ docker-mailserver's `setup config dkim` names them:
 `rsa-2048-mail-<domain>.private.txt`, `.public.txt` and `.public.dns.txt`, and
 `ed25519-ed-<domain>.…` likewise. `server init --with-mail` makes the primary's
 and `add-mail-domain` the added domain's; a re-run of either makes only what is
-still missing.
+still missing, and `kasbah server mail-dkim USER@HOST <domain>` does the same
+for any registry domain, or rotates its keys (below).
 
 The keys come from `rspamadm dkim_keygen` of the image the mail `compose.yml`
 pins for `mail-dms`, run as `_rspamd` in named one-off containers (`docker run
@@ -251,9 +252,10 @@ minutes), and a container that outlives the bound is removed, so nothing lands
 after the step gave up. Nothing waits on DMS: this works before its first
 start, and while it crashloops for want of a certificate. The step runs under
 the server lock, which `server init` holds for its whole run and
-`add-mail-domain` exclusively for its own, so the two never make keys at once.
+`add-mail-domain` and `server mail-dkim` exclusively for their own, so no two
+of them make keys at once.
 
-**A key is never replaced.** Each key's three files are made under temporary
+**A key file is never written over.** Each key's three files are made under temporary
 names (`.kasbah-new-<name>`) inside its container and hard-linked into place,
 and a link never writes over a file: a private key that appears meanwhile is
 kept, the new one discarded, and the key reported `kept`. A private key whose
@@ -262,8 +264,10 @@ missing files are derived from it in the same image (`openssl pkey` for RSA,
 the public half of rspamd's Ed25519 key), the bytes rspamadm wrote; the run
 reports the key `repaired`, and a private key they cannot be derived from
 fails the step with that key left for the operator. One whose private file is
-missing while a public file is still there is not made, and the run says so
-(move those aside and re-run). A key file the deploy user cannot look for — a
+missing while a public file is still there is not made, and the run says so,
+naming `server mail-dkim … --replace-keys`, which rotates both of the domain's
+keys, all six files, the old ones kept — so the healthy key's record changes
+too. A key file the deploy user cannot look for — a
 key directory made `700`, say — refuses the step before any container runs,
 naming the path: a key kasbah cannot see is one it could replace.
 
@@ -289,8 +293,46 @@ detector, which copies `override.d` and restarts Rspamd on any change under
 `rspamd/`. One not running — not created yet, stopped, crashlooping — reads
 both when it starts.
 
+**Repair and rotation** are `kasbah server mail-dkim USER@HOST <domain>`, for
+a domain in the registry (any other is refused, naming `add-mail-domain`). It
+is the same step for that one domain — missing keys made, missing public files
+derived, the override rendered and Rspamd reloaded — and it prints the
+domain's two TXT records. A domain that already has key files is first asked
+"replace <domain>'s DKIM keys? DNS must then carry the new public keys before
+mail signed with them is trusted", answered by `--replace-keys` or
+`--keep-keys`; without a terminal and without either flag the run fails naming
+both. `--keep-keys` (or no) is the repair alone. Replacing **generates first,
+then swaps**, in one container of the same image as `_rspamd`: both new keys
+are made under their temporary names, and only once both are made is each of
+the six files swapped in — the current one hard-linked to
+`<name>.kasbah-old-<UTC stamp>` beside it (a link never writes over a file, so
+a stamp already taken refuses the run before any key is made), then the new
+one renamed over the name, which replaces it in one step. The override names
+the fixed key paths, so it stays valid throughout and no moment is without a
+key. Each key's public files go before its private file: until that is
+swapped, Rspamd signs with the key DNS already carries. kasbah never deletes
+an old key. The run names the files kept and prints the new records: until
+DNS carries them, receivers fail mail signed with the new keys.
+
+A generation that fails changes nothing; the new files are discarded. A swap
+that fails partway leaves the files swapped before it in place, and the run —
+having rendered the override and reloaded Rspamd all the same — names exactly
+those files, which keys are rotated (DNS must carry their new records) and
+which are not, and the way back: a `docker run` of the same image that links
+each `.kasbah-old-<stamp>` file back over its name, then an Rspamd restart.
+What was swapped is read from the disk once the container is gone (when a
+timed-out one cannot be removed, the run says it may still be running and that
+the list is the disk as kasbah last saw it) — a file
+whose `.kasbah-old-<stamp>` is no longer the file itself, or one that was
+absent — not from the container's output, so a run whose output is cut short,
+or whose container is removed at its timeout after swapping, still names every
+file swapped. A failed run also says when Rspamd signs with the rotated keys,
+by how the reload went, and gives the warnings a finished one does (an
+override kept aside, a domain unsigned, an Rspamd not restarted).
+
 Publishing each domain's two TXT records — `mail._domainkey.<domain>` and
-`ed._domainkey.<domain>`, from the `.public.dns.txt` files — is DNS, and the
+`ed._domainkey.<domain>`, the `.public.dns.txt` files' values, which
+`mail-setup-guide` and `server mail-dkim` print — is DNS, and the
 operator's. **Back up `<data>/mail/dms/config/rspamd/dkim/`**: a regenerated key
 is a different key, and every receiver holding the old one fails verification
 until its cache expires.
@@ -362,8 +404,10 @@ claim it does not carry; the deploy asks that question anyway, on every deploy,
 and only warns, because an unmet claim costs mail rather than the site. **M04**
 warns, from any project's `check --server`, for each domain of the registry
 missing either DKIM key or its block in the signing override — a key that
-could not be made, or a domain served since before kasbah made keys — and
-unsigned mail from a fresh VPS is mail in spam.
+could not be made, or a domain served since before kasbah made keys — naming
+`kasbah server mail-dkim USER@HOST <domain> --keep-keys` (the repair, which
+never asks), and unsigned mail from a fresh
+VPS is mail in spam.
 
 What kasbah does NOT do:
 - Create mailboxes.
@@ -381,7 +425,17 @@ them and probes none.
 
 The guide is rendered for the server's own registry rather than shown as an
 example: the primary domain, every domain under `domains:`, the DNS records each
-one needs, and the address the ssh session reached the host on. It carries two
+one needs, and the address the ssh session reached the host on. Its DKIM records
+carry the values the server's `.public.dns.txt` files hold, read in the same
+round trip as the registry (on the init run that creates the stack, as its
+DKIM step reported them); the RSA one, longer than the 255 characters one TXT
+string holds, is listed as quoted strings of at most 255, and the guide says a
+panel with one value field takes them run together. A key not made yet is a
+placeholder, with the `server mail-dkim … --keep-keys` command that makes it
+(the repair, which never asks). Its DKIM step
+names that command for repair and rotation, and tells the operator not to run
+DMS's `setup config dkim` (which refuses a domain that has keys) nor to edit the
+override by hand (the next render keeps the edit only as `-prev`). It carries two
 prerequisites nothing in kasbah can check — reverse DNS (PTR) on the VPS IP set
 to `mail.<primary>`, and port 25 **outbound** unblocked by the provider — and
 both are fatal to deliverability when missed.
@@ -395,8 +449,8 @@ the whole of what makes them work, and is asserted rather than assumed.
 - **DKIM dual-signing** — Ed25519 primary + RSA fallback. The primary's two
   keys are made and `override.d/dkim_signing.conf` rendered (DKIM signing,
   above) before first start, so DMS boots signing, and its `setup config dkim`
-  helper, run by hand later, finds the file and never writes its own
-  single-selector default over it.
+  helper finds the file and never writes its own single-selector default
+  over it.
 - **Postmaster account** — DMS's Dovecot panics within 120s if no account
   exists in `postfix-accounts.cf`. `kasbah server init --with-mail` prompts
   for the postmaster password, hashes it locally (SHA512-crypt, in Go), and
