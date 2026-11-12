@@ -1,5 +1,7 @@
 package mail
 
+// posix-sh: image bash — keyScript and rotateScript run in the docker-mailserver
+// image's bash, which busybox lacks; tests/posix_sh_test.sh skips this file.
 import (
 	"os"
 	"path/filepath"

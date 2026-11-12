@@ -65,6 +65,9 @@ for p in $pkgs; do
         echo "  FAIL: $p: a test file runs both git and shell, so busybox cannot run it: $shfiles" >&2
         fail=1
     fi
+    # A test file marked `posix-sh: image bash` runs a script meant for a
+    # container image's bash (busybox has none); its tests are skipped too.
+    wsfiles="$wsfiles $(cd "$repo_dir" && grep -l '^// posix-sh: image bash' "$p"/*_test.go 2>/dev/null)"
     ws="$(cd "$repo_dir" && printf '%s\n' $wsfiles | xargs -r sed -n 's/^func \(Test[A-Za-z0-9_]*\)(t \*testing\.T).*/\1/p' | paste -sd'|')"
     skip=()
     [ -z "$ws" ] || skip=(-test.skip "^($ws)\$")
