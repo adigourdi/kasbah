@@ -253,7 +253,8 @@ The first engine run a snapshot
 serves records in it each built image's `:current` id — the ids the live stack
 started from, kept with a kept snapshot — and every run records the running
 containers before retagging. Any
-failure before the retag (the image preflight, a backup or `pre-deploy` hook
+failure before the retag (the pre-flight — images, and containers outside the
+project — a backup or `pre-deploy` hook
 the operator chose to stop on) puts the files back; any failure from the retag through the health wait also puts every
 `:current` back on its old id (untagging one that did not exist), runs `compose
 up -d --remove-orphans` on the restored files, attaches Traefik to the
@@ -498,6 +499,10 @@ below). The only differences:
      verify claimed domain is listed in /apps/mail/kasbah.yml   # warns, never stops
 8. Run `kasbah remote deploy run` on the VPS, the manifest's hooks, health,
    snapshot targets and built-image list passed as JSON on stdin:
+     Pre-flight: every built image's :<version> is on the server, and no
+        container outside the project holds a host port compose.yml publishes
+        or the compose project name <name> (see "Containers outside the
+        project" below). Either failing starts nothing and puts the files back.
      a. Create backups/<outgoing version>-<stamp>/ and run the backup hooks
         into it ($KASBAH_BACKUP_DIR), against the currently-running (previous
         version) containers — --skip-hooks does not skip them.
@@ -901,7 +906,9 @@ small without sacrificing history.
    changed since. --on-drift= answers it without a terminal, and so does
    --env-seed= for the keys .env lacks; exit 5 when there is no answer to
    be had.
-10. Run the engine on the VPS in rollback mode (`kasbah remote deploy run`):
+10. Run the engine on the VPS in rollback mode (`kasbah remote deploy run`),
+    after deploy step 8's pre-flight — a host port or the project name taken
+    since v<target> last ran is refused the same way:
      a. Extract v<target>'s backup, when there is one and a hook below will
         run, into <apps>/<name>/.kasbah-unpacked.<pid>/ (mode 770 to the
         `kasbah` group like `.env`, on the project's filesystem: it holds
@@ -1018,12 +1025,64 @@ or from the `v<target>` tag) passed as JSON on stdin — and ship no script.
 Servers deployed by kasbah 0.x may still hold `scripts/setup-env.sh` and
 `scripts/remote-deploy.sh`; nothing runs them, and `server destroy` removes them.
 The engine has two modes:
-  - `deploy <version>`  — backup hooks → pre-deploy → retag :current → up → health → post-deploy → backup kept.
-  - `rollback <version>` — target's backup extracted → pre-rollback → restore (when asked for) → retag :current → up → health → post-rollback → backup kept.
+  - `deploy <version>`  — pre-flight → backup hooks → pre-deploy → retag :current → up → health → post-deploy → backup kept.
+  - `rollback <version>` — pre-flight → target's backup extracted → pre-rollback → restore (when asked for) → retag :current → up → health → post-rollback → backup kept.
 
   Flags: `--skip-hooks` (pre/post hooks only — the backup hooks still run,
   because a dry-run-ish deploy must not also discard the data safety net),
   `--no-health-wait`, and `--on-hook-failure=continue|stop`.
+
+### Containers outside the project
+
+A host port or the compose project name can already be taken on the server —
+by a stack started by hand from elsewhere, or by any other container: Traefik
+on 80 and 443, the mail and backup stacks, another kasbah project. Under the
+run's lock, once `versions.log` is read and every built image is found on the
+server, and before any backup, hook, retag or up, the engine lists every
+container on the host (`docker ps -a`: its compose project and
+working-directory labels, and the ports it publishes) and refuses the run,
+exit 1 with nothing started, when either holds:
+
+- **A port is taken.** A running container that is not this project's
+  publishes a host port and protocol `compose.yml` publishes, as `docker
+  compose config` resolves it (`.env` interpolated, ranges included).
+  Addresses collide as Docker binds them: none given is every address of both
+  families and collides with any; `0.0.0.0` is every IPv4 address and `::`
+  every IPv6 one, so those two bind side by side; any other address collides
+  with itself and with its family's wildcard — `127.0.0.1:8080` and
+  `127.0.0.2:8080` do not. A host range mapped to one container port
+  (`"18000-18002:80"`) takes whichever port of it is free, so it is refused
+  only when every port of it is taken, naming each holder; a range mapped to
+  a range is compared port by port. A bare container port (`"80"`) publishes a
+  random host port and is never compared.
+  The refusal names the container, its compose project (or that it has none),
+  the port and the service publishing it, and says to stop or move that
+  container or change the service's port.
+- **The name is taken.** A container, running or not, carries
+  `com.docker.compose.project=<name>` with a working directory other than
+  `<apps>/<name>`. Docker keys compose projects by name alone, so compose
+  would take that stack's containers for this project's — recreating those
+  whose service names match, removing the rest as orphans. The refusal names its containers, its
+  working directory and config files, and says to run `docker compose -p
+  <name> down` there, or to rename this project. When `<name>` is one of
+  kasbah's own stacks (`traefik`, `mail`, `kasbah-backup`), it says the stack
+  is kasbah's own and to rename this project — never to take it down.
+
+The project's own containers — its name, started from `<apps>/<name>` (or the
+path that resolves to) — never count, so a redeploy whose running containers
+already hold the ports it publishes goes through (a service publishing a host
+port is recreated in place, never rolled — C11). A process that is not a container
+(a system nginx on `:80`) is not looked for: compose up fails on it, naming the
+port. The check runs inside the engine, after the sync, because the ports are
+compose's reading of the files the run shipped: a first deploy refused here
+leaves those files in `<apps>/<name>/` with nothing started and nothing in
+`versions.log`; a redeploy or rollback refused here puts the files it shipped
+back in the same run, as any failure before the retag does, and records
+nothing in `versions.log` either. When docker cannot be listed the run says so
+and carries on — compose up would fail the same way; when `docker compose
+config` cannot be read it says the ports were not checked, and the name still
+is. `kasbah check --server` reports the same two (C12,
+C13 in `compliance.md`) before a deploy is tried.
 
 ### A dropped session
 

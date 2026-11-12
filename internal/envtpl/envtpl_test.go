@@ -3,6 +3,7 @@ package envtpl
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"testing"
 )
@@ -84,5 +85,54 @@ func TestKeysAndDrift(t *testing.T) {
 	}
 	if m, e := Drift(tpl, tpl); m != nil || e != nil {
 		t.Errorf("a template drifts from itself: %q %q", m, e)
+	}
+}
+
+// The values `docker compose config` reads back from the same .env.
+func TestValuesOf(t *testing.T) {
+	vals, err := ValuesOf([]byte("A= 8081 # dev\r\nB=\"80\\\"8$$2\" # x\nC='$x' trailing\nD=$$y\nE=${A}0\nF=a#b\nG=a\t#tab\nexport H=1\nQ=\"8082\"\nBAD=${NOPE:?unset}\nI=${BAD:-9}\n# A=1\n"))
+	want := map[string]string{"A": "8081", "B": `80"8$2`, "C": "$x", "D": "$y", "E": "80810", "F": "a#b", "G": "a\t#tab", "H": "1", "Q": "8082", "I": "9"}
+	if !reflect.DeepEqual(vals, want) {
+		t.Errorf("values: %q", vals)
+	}
+	if err == nil || err.Error() != "line 10 (BAD): required variable NOPE is missing a value: unset" {
+		t.Errorf("err: %v", err)
+	}
+}
+
+func TestValuesOfUnreadLine(t *testing.T) {
+	for _, in := range []string{"WEB_PORT = 8080\n", "WEB_PORT: 8080\n", "A=\"line1\nline2\"\n"} {
+		if _, err := ValuesOf([]byte("OK=1\n" + in)); err == nil {
+			t.Errorf("%q: no error for a line kasbah cannot read", in)
+		}
+	}
+	if _, err := ValuesOf([]byte("\n  \n# c\n  # c\nA=1\n")); err != nil {
+		t.Errorf("blank and comment lines: %v", err)
+	}
+}
+
+func TestInterpolate(t *testing.T) {
+	env := map[string]string{"R": "8080", "E": ""}
+	lookup := func(k string) (string, bool) { v, ok := env[k]; return v, ok }
+	for in, want := range map[string]string{
+		"plain": "plain", "$R:80": "8080:80", "${R}:80": "8080:80", "$$R": "$R", "a$": "a$", "$-": "$-",
+		"${X:-${R}}": "8080", "${X:-${Y:-7}}0": "70", "${E:-1}": "1", "${E-1}": "", "${X-1}": "1",
+		"${R:?msg}": "8080", "${E?msg}": "", "${R:+9000}": "9000", "${E:+9000}": "", "${E+9000}": "9000", "${X+1}": "",
+	} {
+		if got, err := Interpolate(in, lookup); err != nil || got != want {
+			t.Errorf("%q: %q %v, want %q", in, got, err, want)
+		}
+	}
+	for in, want := range map[string]string{
+		"${X:?no port}": "required variable X is missing a value: no port",
+		"${E:?}":        "required variable E is missing a value: ",
+		"${X?${R}}":     "required variable X is missing a value: 8080",
+		"${R":           `"${R" has a ${ that is not closed`,
+		"${}":           "${} names no variable",
+		"${R:3}":        "${R:3} is not an interpolation compose knows",
+	} {
+		if _, err := Interpolate(in, lookup); err == nil || err.Error() != want {
+			t.Errorf("%q: %v, want %q", in, err, want)
+		}
 	}
 }

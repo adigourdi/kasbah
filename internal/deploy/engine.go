@@ -796,6 +796,29 @@ func (e *engine) preflight() error {
 	if len(missing) > 0 {
 		return failf("not on this server: %s — run `kasbah build-push` for %s first. Nothing was changed.", strings.Join(missing, " "), e.sp.Version)
 	}
+	return e.outsiders()
+}
+
+// outsiders refuses a stack another one on this host would collide with: a
+// port it already publishes, or this project's compose project name.
+func (e *engine) outsiders() error {
+	hs, err := Outsiders(e.project, e.dir, e.query)
+	if err != nil {
+		e.note("could not list this host's containers (%v) — the ports and compose project name of other stacks were not checked", err)
+		return nil
+	}
+	if len(hs) == 0 {
+		return nil
+	}
+	var binds []Bind
+	if m, err := e.model(); err == nil {
+		binds = m.binds()
+	} else {
+		e.note("could not read the ports compose.yml publishes (%v) — whether a container outside the project holds one was not checked", err)
+	}
+	if c := Collisions(e.project, e.dir, binds, hs); len(c) > 0 {
+		return failf("%s. Nothing was started.", strings.Join(c, "; "))
+	}
 	return nil
 }
 

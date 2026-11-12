@@ -709,7 +709,9 @@ the effective resource limits are within the host's ceiling (R04), whether
 the projects' own limits fit the host together (R06), whether
 every mail domain on it can sign (M04), whether the backup stack ran (B01),
 whether any project holds a leftover backup directory, kept-aside snapshot or
-rollback extraction that may hold a copy of `.env` (B02) and
+rollback extraction that may hold a copy of `.env` (B02), whether a container
+outside the project holds a host port the project publishes or its compose
+project name (C12, C13 — what a deploy refuses) and
 whether the apps tree is the operators' group's. It also
 tightens T05 from a first-label heuristic to the hostnames that server really
 owns, and reads the server's `traefik.yml` so T04 and T10 judge a resolver
@@ -850,6 +852,12 @@ Flow (no-args / working-tree path):
    local repository) — reserved prefix, exempt from drift. The summary's `limits:` line says where each came from.
 7. Mail claim check (if manifest has `mail:`).
 8. Run the engine on the VPS, `kasbah remote deploy run`:
+   - Pre-flight: every built image's `:<version>` is on the server, and no
+     container outside the project publishes a host port `compose.yml`
+     publishes, nor runs under the compose project name `<name>` from
+     another directory — either refuses the run, naming the container and the
+     way out, with nothing started (`build-deploy.md` → Containers outside the
+     project). Rollback and `deploy VERSION` run the same pre-flight.
    - Create `backups/<outgoing version>-<stamp>/` and run the `backup` hooks
      into it (`$KASBAH_BACKUP_DIR`), against the previous version's
      still-running containers; `--skip-hooks` does not skip them.
@@ -950,6 +958,12 @@ Flow (see `build-deploy.md` for full detail):
    warns and takes the marker's ceiling for that half, and a block this
    kasbah refuses or a resolve that fails takes it for both.
 8. On VPS: run the engine in rollback mode, `kasbah remote deploy run`:
+   - Pre-flight, as `deploy` runs it: every built image's `:<target>` is on
+     the server, and no container outside the project publishes a host port
+     v<target>'s `compose.yml` publishes, nor runs under the compose project
+     name `<name>` from another directory — either refuses the rollback,
+     naming the container and the way out, with nothing started and the files
+     and `.env` put back.
    - Extract the backup into `<apps>/<name>/.kasbah-unpacked.<pid>/`, handed
      to the hooks below as `$KASBAH_BACKUP_DIR` (`none` without a backup),
      and removed however the run ends.

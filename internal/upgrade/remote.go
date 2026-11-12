@@ -29,7 +29,7 @@ import (
 
 // Project is the live stack's frozen compose project name: anything else
 // would bring a second proxy up beside it.
-const Project = "traefik"
+const Project = traefiknet.Project
 
 // Stack is `kasbah remote traefik read APPS DATA`: the three kasbah-owned
 // files, the fragments the file provider reads, the certificate store's

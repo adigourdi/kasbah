@@ -336,7 +336,7 @@ func remoteStart(apps string, restart bool, timeout time.Duration, acme, stamp s
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return fmt.Errorf("could not enter %s", dir)
 	}
-	const project = "traefik"
+	const project = traefiknet.Project
 	dc := func(args ...string) error {
 		return docker(stderr, dir, append([]string{"compose", "-p", project}, args...)...)
 	}

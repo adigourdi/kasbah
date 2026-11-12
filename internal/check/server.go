@@ -166,6 +166,10 @@ type ServerReport struct {
 	// Leftovers is every project under apps with something a run left that
 	// may hold .env (B02).
 	Leftovers []ProjectLeftovers `json:"leftovers"`
+	// Outsiders is the containers outside this project that could collide
+	// with it (C12, C13); OutsidersError why docker could not say.
+	Outsiders      []deploy.Holder `json:"outsiders"`
+	OutsidersError string          `json:"outsiders_error"`
 }
 
 // ProjectLeftovers is one project's leftovers.
@@ -252,6 +256,7 @@ func CollectServer(apps, data, name, health string) *ServerReport {
 	r.GroupState, r.PermsCount, r.Perms = Perms(apps, data, Group)
 	r.Limits = projectLimits(apps)
 	r.Leftovers = projectLeftovers(apps)
+	r.Outsiders, r.OutsidersError = outsiders(name, dir)
 	r.HostCores, r.HostMemKB, _ = resources.Host()
 	r.DKIMState, r.DKIMKeys = dkimKeys(mail.DKIMDir(data))
 	if r.DKIMConfState = stated(mail.DKIMConf(data), probe.FState); r.DKIMConfState == "file" {
@@ -281,6 +286,27 @@ func CollectServer(apps, data, name, health string) *ServerReport {
 		r.HealthState, r.HealthHealth = s, h
 	}
 	return r
+}
+
+// outsiders is deploy's own read of the containers outside the project.
+func outsiders(name, dir string) ([]deploy.Holder, string) {
+	if !probe.HaveDocker() {
+		return nil, "there is no docker on the server"
+	}
+	hs, err := deploy.Outsiders(name, dir, func(args ...string) (string, error) {
+		if len(args) == 0 || args[0] != "ps" {
+			return "", fmt.Errorf("docker %s is not a read", strings.Join(args, " "))
+		}
+		out, rc := probe.Docker(append([]string{"ps"}, args[1:]...)...)
+		if rc != 0 {
+			return "", fmt.Errorf("docker ps -a exited %d", rc)
+		}
+		return out, nil
+	})
+	if err != nil {
+		return nil, err.Error()
+	}
+	return hs, ""
 }
 
 // stated is state(p), except that a stat failing for any reason but a
@@ -382,6 +408,10 @@ type server struct {
 	r                  *ServerReport
 	env, acme          []byte
 	registry           []byte
+	// envVals is the server .env as compose reads it; envErr its first line
+	// kasbah cannot read as compose does.
+	envVals map[string]string
+	envErr  error
 	// T05, per family: the exact hostnames whose source was read, and the
 	// first labels whose source was not and so keep the local heuristic.
 	reserved, heuristic []string
@@ -406,6 +436,7 @@ func dec(s string) []byte {
 func newServer(sr *ServerRead, now time.Time) *server {
 	s := &server{target: sr.Target, apps: sr.Marker.AppsPath, data: sr.Marker.DataPath, mk: sr.Marker, r: sr.Report, now: now}
 	s.env, s.acme, s.registry = dec(s.r.Env), dec(s.r.Acme), dec(s.r.Registry)
+	s.envVals, s.envErr = envtpl.ValuesOf(s.env)
 	if static := string(dec(s.r.Static)); s.r.StaticState == "file" {
 		if rs, err := serverinit.StaticResolvers(static); err == nil && rs != nil {
 			s.resolvers = rs
@@ -516,6 +547,7 @@ func (c *checker) serverSection() {
 	c.cert()
 	c.r04()
 	c.r06()
+	c.outsiders()
 	c.b01()
 	c.b02()
 	c.groupPerms()
@@ -845,17 +877,6 @@ func (c *checker) cert() {
 	}
 }
 
-// envValue is the last assignment of key in content, as compose reads it.
-func envValue(content []byte, key string) string {
-	v := ""
-	for _, l := range envtpl.Lines(content) {
-		if k, val, ok := envtpl.Assign(l); ok && k == key {
-			v = val
-		}
-	}
-	return v
-}
-
 // r04: the limits the containers get, against the ceiling the host was
 // measured at. Above fails; below warns. A literal in compose.prod.yml is
 // compared as written; a KASBAH_* reference through the server's .env.
@@ -870,7 +891,7 @@ func (c *checker) r04() {
 	if s.r.Project != "dir" || (s.r.EnvState != "file" && s.r.EnvState != "empty") {
 		return
 	}
-	cpu, mem := envValue(s.env, "KASBAH_CPU_LIMIT"), envValue(s.env, "KASBAH_MEM_LIMIT")
+	cpu, mem := s.envVals["KASBAH_CPU_LIMIT"], s.envVals["KASBAH_MEM_LIMIT"]
 	if cpu == "" && mem == "" {
 		c.warnf("%s/%s/.env on %s carries no KASBAH_CPU_LIMIT or KASBAH_MEM_LIMIT, so there is no effective limit to compare with the host's %s cpus / %s — every deploy rewrites that block, so it has been edited out", s.apps, c.m.Name, s.target, hostCPU, hostMem)
 		return
@@ -1172,4 +1193,87 @@ func (c *checker) b01Verdict(r *backuprec.Record, b backuprec.Facts, clock strin
 			c.passf("the last backup on %s finished %s ago and succeeded (repositories: %s)%s", s.target, ago, repos, clock)
 		}
 	}
+}
+
+// outsiders is C12 and C13: what a deploy's pre-flight would refuse, read
+// from the same containers and judged by the same function.
+func (c *checker) outsiders() {
+	s := c.srv
+	dir := s.apps + "/" + c.m.Name
+	if s.r.OutsidersError != "" {
+		c.warnf("whether a container outside %s on %s publishes a port it publishes, or runs under its compose project name, cannot be checked: %s", dir, s.target, s.r.OutsidersError)
+		return
+	}
+	binds, unsure := c.binds()
+	cs := deploy.Collisions(c.m.Name, dir, binds, s.r.Outsiders)
+	for _, m := range cs {
+		c.failf("on %s, %s — a deploy refuses this", s.target, m)
+	}
+	for _, u := range unsure {
+		c.warnf("whether a container outside %s on %s publishes %s cannot be checked: %s", dir, s.target, u.entry, u.why)
+	}
+	if len(cs) == 0 && len(unsure) == 0 {
+		c.passf("no container outside %s on %s publishes a port it publishes or runs under its compose project name", dir, s.target)
+	}
+}
+
+type unsurePort struct{ entry, why string }
+
+// binds is every host port compose.prod.yml publishes, by service, the
+// server .env interpolated as compose would; unsure the entries that leaves
+// unread: an unresolved interpolation, an .env line kasbah cannot read, or a
+// host port that is not one.
+func (c *checker) binds() (bs []deploy.Bind, unsure []unsurePort) {
+	for _, svc := range c.services {
+		for _, p := range asList(c.svc(svc, "ports")) {
+			var b deploy.Bind
+			var ok bool
+			var err error
+			entry := ""
+			if m, isMap := p.(*tree.Map); isMap {
+				var ip, pub, proto string
+				pub = scalar(opt(m, "published"))
+				entry = fmt.Sprintf("service %s's port published %q", svc, pub)
+				if ip, err = c.interp(scalar(opt(m, "host_ip"))); err == nil {
+					if pub, err = c.interp(pub); err == nil {
+						proto, err = c.interp(scalar(opt(m, "protocol")))
+					}
+				}
+				if err == nil && strings.TrimSpace(pub) != "" {
+					if b, ok = deploy.ParseBind(ip, pub, proto); !ok {
+						err = fmt.Errorf("%q is not a host port or range", pub)
+					}
+					b.Any = b.Lo < b.Hi
+				}
+			} else if str, isStr := p.(string); isStr {
+				entry = fmt.Sprintf("service %s's port %q", svc, str)
+				if str, err = c.interp(str); err == nil {
+					b, ok, err = deploy.ParseShortPort(str)
+				}
+			}
+			switch {
+			case err != nil:
+				unsure = append(unsure, unsurePort{entry, err.Error()})
+			case ok:
+				b.Svc = svc
+				bs = append(bs, b)
+			}
+		}
+	}
+	return bs, unsure
+}
+
+// interp is s interpolated from the server's .env as compose would; a
+// variable read from an .env kasbah cannot fully read leaves s unresolved.
+func (c *checker) interp(s string) (string, error) {
+	read := false
+	v, err := envtpl.Interpolate(s, func(k string) (string, bool) {
+		read = true
+		v, ok := c.srv.envVals[k]
+		return v, ok
+	})
+	if read && c.srv.envErr != nil {
+		return "", fmt.Errorf("the server's .env has a line kasbah cannot read as compose does: %v", c.srv.envErr)
+	}
+	return v, err
 }

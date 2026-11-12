@@ -19,8 +19,9 @@ const (
 	// Key is the compose network key Traefik joins; compose names the
 	// network <project>_kasbah and labels it com.docker.compose.network=kasbah.
 	Key = "kasbah"
-	// Container is the shared Traefik's container_name.
+	// Container is the shared Traefik's container_name; Project its compose project.
 	Container = "traefik"
+	Project   = "traefik"
 )
 
 // ErrNoTraefik is a host with no traefik container to attach.

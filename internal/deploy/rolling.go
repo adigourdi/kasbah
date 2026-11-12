@@ -79,6 +79,8 @@ type composeService struct {
 	} `json:"networks"`
 	Ports []struct {
 		Published string `json:"published"`
+		HostIP    string `json:"host_ip"`
+		Protocol  string `json:"protocol"`
 	} `json:"ports"`
 	DependsOn map[string]struct {
 		Condition string `json:"condition"`
@@ -242,6 +244,22 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// binds is every host port the model's services publish, by service name.
+// compose config splits a range mapped to a range, so a range left is one
+// container port's: compose takes a free port of it.
+func (m *composeModel) binds() []Bind {
+	var bs []Bind
+	for _, name := range sortedKeys(m.Services) {
+		for _, p := range m.Services[name].Ports {
+			if b, ok := ParseBind(p.HostIP, p.Published, p.Protocol); ok {
+				b.Svc, b.Any = name, b.Lo < b.Hi
+				bs = append(bs, b)
+			}
+		}
+	}
+	return bs
 }
 
 func published(s composeService) bool {

@@ -1107,3 +1107,102 @@ func TestCollectServerLeftovers(t *testing.T) {
 		t.Errorf("wire form: %s", b)
 	}
 }
+
+func TestServerOutsiders(t *testing.T) {
+	ports := strings.Replace(goodCompose, "    networks: [kasbah]\n", "    networks: [kasbah]\n    ports: [\"${WEB_PORT:-8080}:80\", {target: 53, published: 5353, protocol: udp, host_ip: 127.0.0.1}, \"9000\"]\n", 1)
+	other := deploy.Holder{Name: "other-web-1", Project: "other", Dir: "/home/u/other", Config: "/home/u/other/compose.yml",
+		Ports: []deploy.Bind{{Lo: 8080, Hi: 8080, Proto: "tcp"}}}
+	dns := deploy.Holder{Name: "dns", Ports: []deploy.Bind{{Lo: 5353, Hi: 5353, Proto: "udp"}}}
+	named := deploy.Holder{Name: "demo-web-1", Project: "demo", Dir: "/home/u/demo", Config: "/home/u/demo/compose.yml"}
+	for _, tc := range []struct {
+		env       string
+		hs        []deploy.Holder
+		err       string
+		want, not []string
+		code      int
+	}{
+		{"", nil, "", []string{"  ✓ no container outside /apps/demo on deploy@vps publishes a port it publishes or runs under its compose project name"}, nil, 0},
+		{"", []deploy.Holder{dns, other}, "", []string{
+			"  ✗ on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp, which service demo-web of this project publishes too — stop or move that container, or change the port demo-web publishes — a deploy refuses this",
+			"  ✗ on deploy@vps, container dns (not a compose container) publishes 5353/udp, which service demo-web of this project publishes too"}, nil, 6},
+		{"WEB_PORT=8081\n", []deploy.Holder{other}, "", []string{"  ✓ no container outside"}, nil, 0},
+		// The .env as compose reads it: an inline comment and quotes are not the value.
+		{"WEB_PORT=8080 # dev\n", []deploy.Holder{other}, "", []string{"  ✗ on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
+		{"WEB_PORT=\"8080\"\n", []deploy.Holder{other}, "", []string{"  ✗ on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
+		{"WEB_PORT=${OTHER:-8081}\n", []deploy.Holder{other}, "", []string{"  ✓ no container outside"}, nil, 0},
+		// Compose reads `KEY = v`; kasbah does not, so the port cannot pass on its default.
+		{"WEB_PORT = 8080\n", []deploy.Holder{other}, "", []string{"cannot be checked: the server's .env has a line kasbah cannot read as compose does: line 4 is not KEY=value as kasbah reads it"}, []string{"✓ no container outside"}, 0},
+		{"", []deploy.Holder{named}, "", []string{
+			"  ✗ on deploy@vps, a compose project named demo already exists outside /apps/demo: demo-web-1, started from /home/u/demo (/home/u/demo/compose.yml) — Docker keys compose projects by name, so this project's up would take its containers for its own; run `docker compose -p demo down` in /home/u/demo, or rename this project — a deploy refuses this"}, nil, 6},
+		{"", nil, "there is no docker on the server", []string{
+			"  ⚠ whether a container outside /apps/demo on deploy@vps publishes a port it publishes, or runs under its compose project name, cannot be checked: there is no docker on the server"}, []string{"✓ no container outside"}, 0},
+	} {
+		srvProject(t, "")
+		os.WriteFile(composeFile, []byte(ports), 0o644)
+		s := newSrv(t)
+		s.r.Env = b64s("DOMAIN=demo.example.com\nKASBAH_CPU_LIMIT=14.4\nKASBAH_MEM_LIMIT=54g\n" + tc.env)
+		s.r.Outsiders, s.r.OutsidersError = tc.hs, tc.err
+		out, code := s.run()
+		contains(t, out, tc.want...)
+		hasNot(t, out, tc.not...)
+		if code != tc.code {
+			t.Errorf("%v: exit %d, want %d:\n%s", tc.hs, code, tc.code, out)
+		}
+	}
+}
+
+// Interpolated as compose does, nested and with ?, and a range for one
+// container port taken only when all of it is; what stays unread warns.
+func TestServerOutsidersPorts(t *testing.T) {
+	ports := strings.Replace(goodCompose, "    networks: [kasbah]\n", "    networks: [kasbah]\n    ports: [\"${A:-${B}}:80\", \"${C:?set C}:81\", \"18000-18001:82\", {target: 83, published: \"${D:+7000}\"}, \"$$x:84\"]\n", 1)
+	held := func(ps ...int) []deploy.Holder {
+		var hs []deploy.Holder
+		for _, p := range ps {
+			hs = append(hs, deploy.Holder{Name: fmt.Sprintf("h%d", p), Ports: []deploy.Bind{{Lo: p, Hi: p, Proto: "tcp"}}})
+		}
+		return hs
+	}
+	for _, tc := range []struct {
+		env       string
+		hs        []deploy.Holder
+		want, not []string
+	}{
+		{"B=9000\nC=9001\nD=1\n", held(9000, 7000, 18000), []string{
+			"  ✗ on deploy@vps, container h9000 (not a compose container) publishes 9000/tcp, which service demo-web",
+			"  ✗ on deploy@vps, container h7000 (not a compose container) publishes 7000/tcp",
+			"  ⚠ whether a container outside /apps/demo on deploy@vps publishes service demo-web's port \"$$x:84\" cannot be checked: \"$x\" is not a host port or range"},
+			[]string{"h18000", "✓ no container outside"}},
+		{"B=9000\n", held(18000, 18001), []string{
+			"  ⚠ whether a container outside /apps/demo on deploy@vps publishes service demo-web's port \"${C:?set C}:81\" cannot be checked: required variable C is missing a value: set C",
+			"every port of 18000-18001/tcp, the range service demo-web of this project publishes one port from, is taken: container h18000 (not a compose container) publishes 18000/tcp, container h18001 (not a compose container) publishes 18001/tcp"},
+			[]string{"✓ no container outside", "h9000"}},
+		{"B='unclosed\n", nil, []string{
+			"  ⚠ whether a container outside /apps/demo on deploy@vps publishes service demo-web's port \"${A:-${B}}:80\" cannot be checked: the server's .env has a line kasbah cannot read as compose does: line 4 (B): the single quote is not closed on its line",
+			"service demo-web's port \"$$x:84\" cannot be checked: \"$x\" is not a host port or range"},
+			[]string{"✓ no container outside"}},
+	} {
+		srvProject(t, "")
+		os.WriteFile(composeFile, []byte(ports), 0o644)
+		s := newSrv(t)
+		s.r.Env = b64s("DOMAIN=demo.example.com\nKASBAH_CPU_LIMIT=14.4\nKASBAH_MEM_LIMIT=54g\n" + tc.env)
+		s.r.Outsiders = tc.hs
+		out, _ := s.run()
+		contains(t, out, tc.want...)
+		hasNot(t, out, tc.not...)
+	}
+}
+
+func TestCollectServerOutsiders(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "docker"), []byte("#!/bin/sh\n[ \"$1\" = ps ] || exit 1\nprintf 'demo-web-1\\trunning\\tdemo\\t/home/u/demo\\tc\\t0.0.0.0:80->80/tcp\\n'\n"), 0o755)
+	t.Setenv("PATH", dir)
+	apps := t.TempDir()
+	r := CollectServer(apps, apps+"/data", "demo", "")
+	if len(r.Outsiders) != 1 || r.Outsiders[0].Dir != "/home/u/demo" || r.OutsidersError != "" {
+		t.Errorf("outsiders: %+v %q", r.Outsiders, r.OutsidersError)
+	}
+	t.Setenv("PATH", t.TempDir())
+	if r := CollectServer(apps, apps+"/data", "demo", ""); r.OutsidersError != "there is no docker on the server" {
+		t.Errorf("no docker: %q", r.OutsidersError)
+	}
+}
