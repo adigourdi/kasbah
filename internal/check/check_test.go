@@ -388,6 +388,113 @@ func TestVerdicts(t *testing.T) {
 	}
 }
 
+// hcCompose is goodCompose with demo-web's healthcheck set to hc, and the
+// services in more appended.
+func hcCompose(hc, more string) string {
+	return strings.Replace(goodCompose, "    networks: [kasbah]\n", "    networks: [kasbah]\n    healthcheck: "+hc+"\n"+more, 1)
+}
+
+func TestH03(t *testing.T) {
+	const late = "  ⚠ demo-web's first healthcheck probe comes "
+	const worker = "  demo-worker:\n    image: busybox\n    healthcheck: {test: [CMD, \"true\"], interval: 10m}\n"
+	for _, tc := range []struct {
+		name, compose, health string
+		line                  string // "" is no H03 line
+	}{
+		{"interval past the timeout", `{test: [CMD, "true"], interval: 60s}`, "{timeout: 30s}",
+			late + "60s after it starts, past health.timeout (30s), so a deploy that creates or recreates it fails on health — shorten healthcheck.interval or set a start_period (Docker 25 or later), or raise health.timeout"},
+		{"interval equal to the timeout", `{test: [CMD, "true"], interval: 30s}`, "{timeout: 30s}", ""},
+		{"interval unset is Docker's 30s", `{test: "true"}`, "{timeout: 20s}",
+			late + "30s after it starts, past health.timeout (20s), so a deploy that creates or recreates it fails on health — shorten healthcheck.interval or set a start_period (Docker 25 or later), or raise health.timeout"},
+		{"no health block waits 120s", `{test: [CMD, "true"], interval: 2m30s}`, "",
+			late + "150s after it starts, past health.timeout (120s), so a deploy that creates or recreates it fails on health — shorten healthcheck.interval or set a start_period (Docker 25 or later), or raise health.timeout"},
+		{"compose's compound durations", `{test: [CMD, "true"], interval: 1m30s}`, "", ""},
+		{"sub-second durations", `{test: [CMD, "true"], interval: 500ms}`, "{timeout: 1s}", ""},
+		{"start_interval inside a start_period", `{test: [CMD, "true"], interval: 60s, start_period: 30s, start_interval: 2s}`, "{timeout: 30s}", ""},
+		{"a start_period alone probes every 5s", `{test: [CMD, "true"], interval: 60s, start_period: 30s}`, "{timeout: 30s}", ""},
+		{"a start_period's default start_interval past the timeout", `{test: [CMD, "true"], interval: 60s, start_period: 30s}`, "{timeout: 4s}",
+			late + "5s after it starts, past health.timeout (4s), so a deploy that creates or recreates it fails on health — set a shorter start_interval, or raise health.timeout"},
+		{"a start_interval past the timeout", `{test: [CMD, "true"], interval: 10s, start_period: 1m, start_interval: 1500ms}`, "{timeout: 1s}",
+			late + "1.5s after it starts, past health.timeout (1s), so a deploy that creates or recreates it fails on health — shorten healthcheck.start_interval, or raise health.timeout"},
+		{"start_interval without a start_period", `{test: [CMD, "true"], interval: 60s, start_interval: 2s}`, "{timeout: 30s}",
+			late + "60s after it starts, past health.timeout (30s), so a deploy that creates or recreates it fails on health — shorten healthcheck.interval or set a start_period (Docker 25 or later), or raise health.timeout"},
+		{"days", `{test: [CMD, "true"], interval: 1d}`, "",
+			late + "86400s after it starts, past health.timeout (120s), so a deploy that creates or recreates it fails on health — shorten healthcheck.interval or set a start_period (Docker 25 or later), or raise health.timeout"},
+		{"days with Go's units", `{test: [CMD, "true"], interval: 1h1d}`, "",
+			late + "90000s after it starts, past health.timeout (120s), so a deploy that creates or recreates it fails on health — shorten healthcheck.interval or set a start_period (Docker 25 or later), or raise health.timeout"},
+		{"weeks", `{test: [CMD, "true"], interval: 1w}`, "",
+			late + "604800s after it starts, past health.timeout (120s), so a deploy that creates or recreates it fails on health — shorten healthcheck.interval or set a start_period (Docker 25 or later), or raise health.timeout"},
+		{"zero days is unset", `{test: [CMD, "true"], interval: 0d}`, "{timeout: 20s}",
+			late + "30s after it starts, past health.timeout (20s), so a deploy that creates or recreates it fails on health — shorten healthcheck.interval or set a start_period (Docker 25 or later), or raise health.timeout"},
+		{"disabled", `{disable: true, test: [CMD, "true"], interval: 10m}`, "", ""},
+		{"NONE", `{test: [NONE], interval: 10m}`, "", ""},
+		{"no test in compose", `{interval: 10m}`, "", ""},
+		{"a duration compose refuses", `{test: [CMD, "true"], interval: soon}`, "{timeout: 1s}", ""},
+		{"a bare number", `{test: [CMD, "true"], interval: 600}`, "{timeout: 1s}", ""},
+		{"a negative duration", `{test: [CMD, "true"], interval: -1m}`, "{timeout: 1s}", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := man
+			if tc.health != "" {
+				m += "health: " + tc.health + "\n"
+			}
+			project(t, map[string]string{"kasbah.yml": m, "compose.prod.yml": hcCompose(tc.compose, "")})
+			out, _, code := check(t)
+			if code != 0 {
+				t.Errorf("exit %d:\n%s", code, out)
+			}
+			if tc.line == "" && strings.Contains(out, "first healthcheck probe") {
+				t.Errorf("H03 should be silent:\n%s", out)
+			}
+			if tc.line != "" && !strings.Contains(out, "Healthchecks:\n") {
+				t.Errorf("no Healthchecks: section to carry H03:\n%s", out)
+			}
+			if tc.line != "" && !strings.Contains(out, tc.line+"\n") {
+				t.Errorf("no line %q in:\n%s", tc.line, out)
+			}
+		})
+	}
+	// The wait covers health.container alone, or every service, and every
+	// service that rolls. demo-web probes at 5s unless a case says otherwise.
+	const fast, slow = `{test: [CMD, "true"], interval: 5s}`, `{test: [CMD, "true"], interval: 60s}`
+	noCN := func(c string) string { return strings.Replace(c, "    container_name: demo-web\n", "", 1) }
+	workerCN := func(cn string) string {
+		return strings.Replace(worker, "  demo-worker:\n", "  demo-worker:\n    container_name: "+cn+"\n", 1)
+	}
+	for _, tc := range []struct {
+		name, compose, health string
+		warned                []string
+		fragment              string // "" is goodFragment
+	}{
+		{"every service", hcCompose(fast, worker), "{timeout: 30s}", []string{"demo-worker"}, ""},
+		{"health.container elsewhere", hcCompose(fast, worker), "{container: demo-web, timeout: 30s}", nil, ""},
+		{"health.container names the service", hcCompose(fast, worker), "{container: demo-worker, timeout: 30s}", []string{"demo-worker"}, ""},
+		{"health.container compose lacks", hcCompose(fast, worker), "{container: ghost, timeout: 30s}", nil, ""},
+		{"a timeout deploy refuses", hcCompose(fast, worker), "{timeout: soon}", nil, ""},
+		{"health.container names a container_name", hcCompose(fast, workerCN("wk")), "{container: wk, timeout: 30s}", []string{"demo-worker"}, ""},
+		{"a container_name wins over a service name", noCN(hcCompose(fast, workerCN("demo-web"))), "{container: demo-web, timeout: 30s}", []string{"demo-worker"}, ""},
+		{"a rolling service is waited on whatever health.container says", noCN(hcCompose(slow, worker)), "{container: demo-worker, timeout: 30s}", []string{"demo-web", "demo-worker"}, ""},
+		{"a routed service that cannot roll is not", hcCompose(slow, worker), "{container: demo-worker, timeout: 30s}", []string{"demo-worker"}, ""},
+		{"nor one the fragment does not route", noCN(hcCompose(slow, worker)), "{container: demo-worker, timeout: 30s}", []string{"demo-worker"},
+			strings.Replace(goodFragment, "http://demo-web:80", "http://elsewhere:80", 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{"kasbah.yml": man + "health: " + tc.health + "\n", "compose.prod.yml": tc.compose}
+			if tc.fragment != "" {
+				files["traefik-dynamic.yml"] = tc.fragment
+			}
+			project(t, files)
+			out, _, _ := check(t)
+			for _, svc := range []string{"demo-web", "demo-worker"} {
+				got := strings.Contains(out, "  ⚠ "+svc+"'s first healthcheck probe comes ")
+				if want := inList(tc.warned, svc); got != want {
+					t.Errorf("%s warned %v, want %v:\n%s", svc, got, want, out)
+				}
+			}
+		})
+	}
+}
+
 // A question the run cannot answer names the file and the key, in words.
 func TestUnanswerable(t *testing.T) {
 	for _, tc := range []struct{ compose, fragment, want string }{

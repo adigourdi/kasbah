@@ -1096,6 +1096,23 @@ assert '[ "$rc" = "0" ]' "a health: block with only a timeout passes (got $rc)"
 assert 'grep -qF "✓ manifest health: names no container — the deploy waits on every container with a healthcheck" <<<"$out"' \
     "and H02 says which path that is (said: $(grep -i health <<<"$out"))"
 
+# --- Case 26c: H03 — a first probe past health.timeout → warn ---------------
+# Docker runs the first probe one interval after start, so a 60s interval under
+# a 30s timeout is still 'starting' when a deploy that recreates it gives up.
+proj26c="$tmpdir/health-late-probe"
+make_project "$proj26c"
+sed -i 's|^      test: \["CMD", "wget".*|&\n      interval: 1m|' "$proj26c/compose.prod.yml"
+printf '\nhealth:\n  timeout: 30s\n' >> "$proj26c/kasbah.yml"
+out="$(cd "$proj26c" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]' "H03 is a warning, never a failure (got $rc)"
+assert 'grep -qF "⚠ demo-web'"'"'s first healthcheck probe comes 60s after it starts, past health.timeout (30s), so a deploy that creates or recreates it fails on health — shorten healthcheck.interval or set a start_period (Docker 25 or later), or raise health.timeout" <<<"$out"' \
+    "H03 names the service, both times and the fix (said: $(grep -i health <<<"$out"))"
+# A start_period probes every start_interval inside it: 2s is in time.
+sed -i 's|^      interval: 1m$|&\n      start_period: 30s\n      start_interval: 2s|' "$proj26c/compose.prod.yml"
+out="$(cd "$proj26c" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ] && ! grep -qF "first healthcheck probe" <<<"$out"' \
+    "a start_interval inside a start_period clears H03 (got $rc, said: $(grep -i health <<<"$out"))"
+
 # --- Case 27: H02 pass — health.container matches a compose container_name --
 proj27="$tmpdir/good-health-container"
 make_project "$proj27"

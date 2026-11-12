@@ -366,8 +366,8 @@ func (c *checker) c08() {
 // c11: every routed service rolls on deploy as far as compose and the
 // fragment show; live state and the image's own HEALTHCHECK are the deploy's.
 func (c *checker) c11() {
-	routed := c.routedHosts()
-	if _, unread := c.fragment(); unread != "" || len(routed) == 0 {
+	routed := c.rollHosts()
+	if len(routed) == 0 {
 		return
 	}
 	n, warned := 0, false
@@ -397,6 +397,20 @@ func (c *checker) c11() {
 	}
 }
 
+// rollHosts is the fragment's routed hosts as C11 judges rolls by: none when
+// the fragment cannot be read.
+func (c *checker) rollHosts() []string {
+	if _, unread := c.fragment(); unread != "" {
+		return nil
+	}
+	return c.routedHosts()
+}
+
+// rolls is whether svc is routed and C11 finds nothing to keep it from rolling.
+func (c *checker) rolls(svc string, routed []string) bool {
+	return c.routes(svc, routed) && len(c.rollShape(svc, routed).Stays(false)) == 0
+}
+
 // rollShape is what compose.prod.yml and the fragment's hosts say of svc's
 // roll, read as `docker compose config` would normalise it.
 func (c *checker) rollShape(svc string, routed []string) deploy.RollShape {
@@ -408,15 +422,8 @@ func (c *checker) rollShape(svc string, routed []string) deploy.RollShape {
 			r.Published = true
 		}
 	}
-	hc := c.svc(svc, "healthcheck")
-	test := asList(opt(hc, "test"))
-	shell, _ := opt(hc, "test").(string)
-	switch {
-	case opt(hc, "disable") == true, len(test) > 0 && test[0] == "NONE":
-		r.Health = deploy.HealthOff
-	case len(test) > 0 || shell != "":
-		r.Health = deploy.HealthDeclared
-	case scalar(c.svc(svc, "image")) == "":
+	r.Health = composeHealth(c.svc(svc, "healthcheck"))
+	if r.Health == deploy.HealthUnset && scalar(c.svc(svc, "image")) == "" {
 		r.Health = deploy.HealthOff
 	}
 	deps := c.svc(svc, "depends_on")
@@ -427,6 +434,20 @@ func (c *checker) rollShape(svc string, routed []string) deploy.RollShape {
 		}
 	}
 	return r
+}
+
+// composeHealth is what a compose healthcheck says alone: off when disabled or
+// NONE, declared with a test, unset without one.
+func composeHealth(hc tree.Value) deploy.Healthcheck {
+	test := asList(opt(hc, "test"))
+	shell, _ := opt(hc, "test").(string)
+	switch {
+	case opt(hc, "disable") == true, len(test) > 0 && test[0] == "NONE":
+		return deploy.HealthOff
+	case len(test) > 0 || shell != "":
+		return deploy.HealthDeclared
+	}
+	return deploy.HealthUnset
 }
 
 // published is whether a ports: entry binds a host port: the long form's
@@ -1230,7 +1251,7 @@ func (c *checker) containerNames() []string {
 	return out
 }
 
-// --- Healthchecks (H01, H02) ------------------------------------------------
+// --- Healthchecks (H01–H03) -------------------------------------------------
 
 // block is whether the manifest has a block at key, as a deploy reads it:
 // absent, null and false are none.
@@ -1242,7 +1263,12 @@ func (c *checker) block(key string) bool {
 func (c *checker) healthSection() {
 	built := isFile(composeFile) && c.anyBuilt()
 	health := c.block("health")
-	if !built && !health {
+	h, herr := deploy.ReadHealth(c.m)
+	var late []string
+	if herr == nil {
+		late = c.h03(h)
+	}
+	if !built && !health && len(late) == 0 {
 		return
 	}
 	c.section("Healthchecks")
@@ -1260,10 +1286,9 @@ func (c *checker) healthSection() {
 		}
 	}
 	if health {
-		h, err := deploy.ReadHealth(c.m)
 		switch {
-		case err != nil:
-			c.failErr(err)
+		case herr != nil:
+			c.failErr(herr)
 		case h.Container == "":
 			c.passf("manifest health: names no container — the deploy waits on every container with a healthcheck")
 		case inList(c.targets(), h.Container):
@@ -1272,6 +1297,125 @@ func (c *checker) healthSection() {
 			c.failf("manifest health.container '%s' is neither a container_name nor a service in compose", h.Container)
 		}
 	}
+	for _, l := range late {
+		c.warnf("%s", l)
+	}
+}
+
+// h03 is a line for each service a deploy waits on under health.timeout —
+// healthWaitFor's set and every rolling service — that cannot be healthy by it.
+func (c *checker) h03(h deploy.Health) []string {
+	waited := c.services
+	if h.Container != "" {
+		waited = nil
+		for _, svc := range c.services {
+			if scalar(c.svc(svc, "container_name")) == h.Container {
+				waited = []string{svc}
+				break
+			}
+		}
+		if waited == nil && inList(c.services, h.Container) {
+			waited = []string{h.Container}
+		}
+		if routed := c.rollHosts(); len(routed) > 0 {
+			for _, svc := range c.services {
+				if !inList(waited, svc) && c.rolls(svc, routed) {
+					waited = append(waited, svc)
+				}
+			}
+		}
+	}
+	timeout := time.Duration(h.Timeout) * time.Second
+	var out []string
+	for _, svc := range c.services {
+		if !inList(waited, svc) {
+			continue
+		}
+		hc := c.svc(svc, "healthcheck")
+		first, inStart, ok := firstProbe(hc)
+		if !ok || first <= timeout {
+			continue
+		}
+		fix := "shorten healthcheck.interval or set a start_period (Docker 25 or later)"
+		if inStart {
+			fix = "shorten healthcheck.start_interval"
+			if set, _ := composeDuration(opt(hc, "start_interval"), 0); set == 0 {
+				fix = "set a shorter start_interval"
+			}
+		}
+		out = append(out, fmt.Sprintf("%s's first healthcheck probe comes %s after it starts, past health.timeout (%ds), so a deploy that creates or recreates it fails on health — %s, or raise health.timeout",
+			svc, seconds(first), h.Timeout, fix))
+	}
+	return out
+}
+
+// firstProbe is when Docker 25+ first probes the compose healthcheck hc, and
+// whether inside its start_period, with Docker's defaults for unset keys; not
+// ok for a disabled, NONE or test-less healthcheck or an unreadable duration.
+func firstProbe(hc tree.Value) (first time.Duration, inStart, ok bool) {
+	if composeHealth(hc) != deploy.HealthDeclared {
+		return 0, false, false
+	}
+	interval, ok1 := composeDuration(opt(hc, "interval"), 30*time.Second)
+	period, ok2 := composeDuration(opt(hc, "start_period"), 0)
+	startInterval, ok3 := composeDuration(opt(hc, "start_interval"), 5*time.Second)
+	if !ok1 || !ok2 || !ok3 {
+		return 0, false, false
+	}
+	if period > 0 {
+		return startInterval, true, true
+	}
+	return interval, false, true
+}
+
+// longUnits is each count of days or weeks in a compose duration (1h1d, 2w).
+var longUnits = regexp.MustCompile(`([0-9]*\.?[0-9]+)([dw])`)
+
+// composeDuration is a healthcheck duration string in Go's units plus d and w
+// (1h1d, 500ms, 1w); unset or zero is Docker's default, def. A negative is
+// not read.
+func composeDuration(v tree.Value, def time.Duration) (time.Duration, bool) {
+	if v == nil {
+		return def, true
+	}
+	s, isStr := v.(string)
+	if !isStr || strings.HasPrefix(s, "-") {
+		return 0, false
+	}
+	var d time.Duration
+	ds := longUnits.FindAllStringSubmatch(s, -1)
+	for _, m := range ds {
+		n, err := time.ParseDuration(m[1] + "h")
+		if err != nil {
+			return 0, false
+		}
+		if m[2] == "w" {
+			n *= 7
+		}
+		d += 24 * n
+	}
+	if rest := longUnits.ReplaceAllString(s, ""); rest != "" || len(ds) == 0 {
+		n, err := time.ParseDuration(rest)
+		if err != nil {
+			return 0, false
+		}
+		d += n
+	}
+	switch {
+	case d < 0:
+		return 0, false
+	case d == 0:
+		return def, true
+	}
+	return d, true
+}
+
+// seconds is d in whole seconds where it is one, Go's notation otherwise.
+func seconds(d time.Duration) string {
+	if d%time.Second == 0 {
+		return fmt.Sprintf("%ds", d/time.Second)
+	}
+	return d.String()
 }
 
 // --- Env (E01–E05) ----------------------------------------------------------

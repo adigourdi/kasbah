@@ -219,6 +219,13 @@ holds the name to the compose file. Without it — no
 `health:` block at all, or a block naming only `timeout:` — the deploy waits on
 every container in the project that declares a healthcheck, which is what lets
 a project raise the timeout without singling out one container.
+The same timeout bounds a roll's wait on a routed service's new replicas,
+whatever `container:` names. It starts once the deploy's `compose up`
+returns, and Docker runs a healthcheck's first probe one `interval` after the
+container starts (on Docker 25 or later, one `start_interval` inside a
+`start_period`), so a timeout shorter than that probe fails on health any
+deploy that creates or recreates the container; `kasbah check` warns of it
+(H03 in `compliance.md`).
 
 A container that declares **no** healthcheck is an immediate pass, never a
 wait. Note that this cannot be detected by reading
