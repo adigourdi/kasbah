@@ -1,5 +1,5 @@
 // Package serverlock is <apps>/.kasbah/server.lock, the server-wide flock,
-// taken without waiting: exclusive by init, upgrade-traefik, prune, destroy
+// taken without waiting: exclusive by init, add-mail-domain, upgrade-traefik, prune, destroy
 // and migrate; shared by deploy, rollback, drop and env set.
 package serverlock
 

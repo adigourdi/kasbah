@@ -59,7 +59,7 @@ func TestMergeEnv(t *testing.T) {
 func run(t *testing.T, stdin string, args ...string) (string, string, int) {
 	t.Helper()
 	var o, e bytes.Buffer
-	rc := Remote(args, strings.NewReader(stdin), &o, &e)
+	rc := Remote(repoTemplates(t), args, strings.NewReader(stdin), &o, &e)
 	return o.String(), e.String(), rc
 }
 
@@ -107,20 +107,23 @@ func TestRemoteLayout(t *testing.T) {
 
 	env := "MAIL_HOSTNAME=mail.a.com\nDOMAIN=a.com\nDATA_PATH=" + data + "\nRELAY_USER=\n"
 	lb := func(account string) string {
-		b, _ := json.Marshal(LayoutBody{Env: env, DKIM: "dkim\n", Account: account})
+		b, _ := json.Marshal(LayoutBody{Env: env, Account: account})
 		return string(b)
 	}
 	body := lb("postmaster@a.com|{SHA512-CRYPT}$6$x$y")
 	out, e, rc := run(t, body, signed(body, "layout", apps, data)...)
-	if rc != 0 || out != "mail_env=created\nmail_account=seeded\nmail_dkim_seed=seeded\nmail_layout=done\n" {
+	if rc != 0 || out != "mail_env=created\nmail_account=seeded\nmail_layout=done\n" {
 		t.Fatalf("first layout: %q %q %d", out, e, rc)
 	}
 	acc := data + "/mail/dms/config/postfix-accounts.cf"
 	if b, _ := os.ReadFile(acc); string(b) != "postmaster@a.com|{SHA512-CRYPT}$6$x$y\n" || mode(t, acc) != 0o600 {
 		t.Errorf("accounts %q %o", b, mode(t, acc))
 	}
-	if mode(t, apps+"/mail/.env") != 0o600 || mode(t, data+"/mail/dms/config/rspamd/override.d/dkim_signing.conf") != 0o644 {
+	if mode(t, apps+"/mail/.env") != 0o600 {
 		t.Error("seed modes")
+	}
+	if fi, err := os.Stat(data + "/mail/dms/config/rspamd/override.d"); err != nil || !fi.IsDir() || func() bool { _, err := os.Lstat(DKIMConf(data)); return err == nil }() {
+		t.Error("layout makes override.d and leaves the signing override to the dkim step")
 	}
 	for _, d := range []string{"/mail/dms/mail-data", "/mail/dms/mail-state", "/mail/dms/mail-logs", "/mail/cypht"} {
 		if fi, err := os.Stat(data + d); err != nil || !fi.IsDir() {
@@ -137,7 +140,7 @@ func TestRemoteLayout(t *testing.T) {
 	os.Chmod(data+"/mail/cypht", 0o700)
 	body = lb("postmaster@a.com|{SHA512-CRYPT}$6$new$z")
 	out, _, rc = run(t, body, signed(body, "layout", apps, data)...)
-	if rc != 0 || out != "mail_env=unchanged\nmail_account=kept\nmail_dkim_seed=kept\nmail_layout=done\n" || mode(t, apps+"/mail/.env") != 0o600 {
+	if rc != 0 || out != "mail_env=unchanged\nmail_account=kept\nmail_layout=done\n" || mode(t, apps+"/mail/.env") != 0o600 {
 		t.Errorf("re-run: %q %o", out, mode(t, apps+"/mail/.env"))
 	}
 	if b, _ := os.ReadFile(acc); !strings.Contains(string(b), "$6$x$y") {
@@ -258,9 +261,30 @@ type fake struct {
 	result string
 	writes []WriteBody
 	calls  int
+	// dkim answers the dkim step, "" for the report of a domain whose keys
+	// were made; dkims are the domains it was asked for.
+	dkim   string
+	dkimRC int
+	dkims  []string
+	// held counts the server lock's takings.
+	held int
+}
+
+func (f *fake) Unbounded(args ...string) ([]byte, int) {
+	f.calls++
+	if len(args) != 5 || args[1] != "dkim" {
+		return nil, 1
+	}
+	f.dkims = append(f.dkims, args[4])
+	if f.dkim == "" {
+		return []byte("mail_dkim_" + args[4] + "=generated generated\nmail_dkim_conf=updated\n" +
+			"mail_dkim_unsigned=\nmail_dkim_rspamd=restarted\nmail_dkim=done\n"), f.dkimRC
+	}
+	return []byte(f.dkim), f.dkimRC
 }
 
 func (f *fake) Paths() (string, string, error) { return "/apps", "/apps/data", nil }
+func (f *fake) Hold(string) (func(), error)    { f.held++; return func() {}, nil }
 func (f *fake) Close()                         {}
 func (f *fake) Remote(stdin []byte, args ...string) ([]byte, int) {
 	f.calls++
@@ -300,14 +324,34 @@ func TestAddMailDomain(t *testing.T) {
 		f.writes[0].Alias != "postmaster@shop.test postmaster@example.test" {
 		t.Fatalf("add: %v %+v", err, f.writes)
 	}
-	if !strings.Contains(se, "Added shop.test") || !strings.Contains(so, "selector ed   domain shop.test") {
-		t.Errorf("report: %q %q", se, so)
+	if !strings.Contains(se, "Added shop.test") || !strings.Contains(se, "dkim:     keys generated, override updated, rspamd restarted") ||
+		strings.Contains(se, "kasbah-prev") || f.held != 1 ||
+		!strings.Contains(so, "kasbah server mail-setup-guide deploy@vps") || strings.Contains(so, "setup config dkim") ||
+		len(f.dkims) != 1 || f.dkims[0] != "shop.test" {
+		t.Errorf("report: %q %q %v", se, so, f.dkims)
 	}
 
-	// Both halves there: nothing written. Listed without the alias: converges.
-	f = &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(two), Aliases: enc("postmaster@shop.test postmaster@example.test\r\n")}}
-	if _, se, err := runWith(t, f, "add-mail-domain", "shop.test"); err != nil || len(f.writes) != 0 || !strings.Contains(se, "already served") {
+	// Both halves there: nothing written, the keys still seen to.
+	// Listed without the alias: converges.
+	f = &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(two), Aliases: enc("postmaster@shop.test postmaster@example.test\r\n")},
+		dkim: "mail_dkim_shop.test=kept kept\nmail_dkim_conf=unchanged\nmail_dkim_unsigned=\nmail_dkim_rspamd=unchanged\nmail_dkim=done\n"}
+	if _, se, err := runWith(t, f, "add-mail-domain", "shop.test"); err != nil || len(f.writes) != 0 || !strings.Contains(se, "already served") ||
+		!strings.Contains(se, "keys kept, override unchanged") || strings.Contains(se, "warning:") || len(f.dkims) != 1 {
 		t.Errorf("idempotent: %v %q", err, se)
+	}
+	// A failed or truncated dkim step fails the command, after the registry.
+	for _, c := range []struct {
+		res  string
+		rc   int
+		want string
+	}{
+		{"x=1\n", 1, "could not make the DKIM keys of shop.test on deploy@vps (the remote step exited 1"},
+		{"mail_dkim_shop.test=kept kept\n", 0, "reported no mail_dkim "},
+	} {
+		f = &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(one)}, result: "registry=written\nalias=added\n", dkim: c.res, dkimRC: c.rc}
+		if _, _, err := runWith(t, f, "add-mail-domain", "shop.test"); !strings.Contains(errText(err), c.want) || len(f.writes) != 1 {
+			t.Errorf("dkim %q: %v", c.res, err)
+		}
 	}
 	f = &fake{r: ReadReport{Dir: "dir", Env: false, Registry: enc(two)}, result: "registry=written\nalias=failed\n"}
 	_, se, err = runWith(t, f, "add-mail-domain", "shop.test")
@@ -316,10 +360,10 @@ func TestAddMailDomain(t *testing.T) {
 		t.Errorf("converge: %v %q %+v", err, se, f.writes)
 	}
 
-	// The primary itself: no self-alias, no DKIM block for a seeded domain.
+	// The primary itself: no self-alias; its keys are init's.
 	f = &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(one)}, result: "registry=written\nalias=added\n"}
 	so, se, err = runWith(t, f, "add-mail-domain", "example.test")
-	if err != nil || len(f.writes) != 0 || !strings.Contains(se, "example.test is the primary domain of the mail stack") || so != "" {
+	if err != nil || len(f.writes) != 0 || len(f.dkims) != 0 || !strings.Contains(se, "example.test is the primary domain of the mail stack") || so != "" {
 		t.Errorf("primary: %v %q %q %+v", err, se, so, f.writes)
 	}
 
@@ -388,13 +432,14 @@ func TestGuide(t *testing.T) {
 }
 
 // Both of the names the override signs with, by equality, and listed on a
-// live line of the override; the seeded template lists both for the primary.
+// live line of the override; the rendered override lists both for a domain
+// with its keys.
 func TestDKIMGaps(t *testing.T) {
-	tpl, err := fs.ReadFile(templates.FS, "mail/rspamd-dkim-signing.conf")
+	tpl, err := RenderDKIM(templates.FS, []string{"a.com"}, map[string][]DKIMKey{"a.com": DKIMKeys[:]})
 	if err != nil {
 		t.Fatal(err)
 	}
-	seeded := strings.ReplaceAll(strings.ReplaceAll(string(tpl), "__MAIL_PRIMARY_DOMAIN__", "a.com"), "\n", "\r\n")
+	seeded := strings.ReplaceAll(tpl, "\n", "\r\n")
 	both := []string{"rsa-2048-mail-a.com.private.txt", "ed25519-ed-a.com.private.txt"}
 	for _, c := range []struct {
 		name           string

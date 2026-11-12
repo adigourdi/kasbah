@@ -198,11 +198,17 @@ What it does:
 8. If `--with-mail`: this is spread across steps 5-7 rather than sitting
    after them, because the ordering is what breaks the boot deadlock.
    `/apps/mail/` (`compose.yml`, `kasbah.yml`, `.env`), the cert-trigger +
-   webmail fragment at `/apps/traefik/dynamic/_mail.yml`, and the two
-   pre-seeds land **before** Traefik starts, so Traefik requests both
-   certificates at configuration load. The mail containers start **after**
-   Traefik is healthy, because DMS reads `mail.<domain>`'s certificate out of
-   `acme.json`. Init waits for Cypht and reports DMS without waiting for
+   webmail fragment at `/apps/traefik/dynamic/_mail.yml` and the postmaster
+   account seed land **before** Traefik starts, so Traefik requests both
+   certificates at configuration load. Once Traefik is healthy, the DKIM step
+   makes the primary domain's two DKIM keys where absent and renders the
+   Rspamd signing override from the registry (`mail.md` → DKIM signing; an
+   override kasbah did not render is kept as `dkim_signing.conf.kasbah-prev`
+   and named) — after the Traefik start because a first run pulls the
+   docker-mailserver image there, alongside certificate issuance, and a
+   failed pull leaves Traefik started. The mail containers start next, after
+   the keys and override exist and Traefik is healthy, because DMS reads
+   `mail.<domain>`'s certificate out of `acme.json`. Init waits for Cypht and reports DMS without waiting for
    it — a first-run crashloop is expected while the certificate is issued.
 9. If `--with-backup`: scaffold `<apps>/.kasbah/backup/` — the scheduler stack,
    the runner, the mode-600 environment file and one encryption password per
@@ -643,7 +649,7 @@ since a closed pipe says nothing about whether the logs were readable
 ### `kasbah server add-mail-domain USER@HOST <domain>`
 
 Joins a domain to the VPS's shared mail stack (`mail.md` → Multi-domain).
-Two things change and nothing else does:
+Three things change and nothing else does:
 
 - the domain joins `domains:` in `<apps>/mail/kasbah.yml` — the registry, and
   the only thing asked whether this stack serves a domain. The file is
@@ -653,21 +659,35 @@ Two things change and nothing else does:
   docker-mailserver's `<data>/mail/dms/config/postfix-virtual.cf`, which is
   also what makes Postfix accept mail for the domain at all — DMS builds its
   accepted-domain list out of that file and `postfix-accounts.cf`. DMS watches
-  it and reloads; no restart.
+  it and reloads; no restart;
+- the domain's two DKIM keys (RSA selector `mail`, Ed25519 selector `ed`) are
+  made unless they exist, by `rspamadm` of the DMS image the mail compose file
+  pins, and the Rspamd signing override is rendered again from the registry
+  and the keys present (`mail.md` → DKIM signing). A key is never replaced,
+  and a public file missing beside its private key is derived from it; an
+  override kasbah did not render (a hand edit) is kept as
+  `dkim_signing.conf.kasbah-prev`, named in the output; a registry domain left
+  without a key is named as sending unsigned.
+
+The run holds the server lock `<apps>/.kasbah/server.lock` exclusively, from
+the mail read to the end of the run, so it never runs inside a `server init` or
+beside another `add-mail-domain`.
 
 **No router is added.** `mail.<primary>` and `webmail.<primary>` are the
 stack's own hostnames; an app domain needs an MX record pointing at
 `mail.<primary>`, not a fragment of its own.
 
-Adding a domain twice is a no-op that says so — not an error, and never a
-duplicate entry. A domain listed in the registry whose alias is missing is
-converged rather than reported as done: the two halves are what make the claim
-true, and only one of them was there.
+Adding a domain twice writes neither the registry nor the alias, and says so —
+not an error, and never a duplicate entry — while still making a key that is
+missing and rendering the override again where it differs from the render
+(saving a hand edit as `-prev`, as above). A domain listed in the registry
+whose alias is missing is converged rather than reported as done: the two
+halves are what make the claim true, and only one of them was there. Naming
+the primary domain changes nothing and exits 0, saying it is the primary: its
+alias is its own mailbox, and its keys are `server init --with-mail`'s.
 
-What it does not do, because none of it is kasbah's: DKIM keys (DMS's own
-helper generates them on the VPS), the per-domain block in Rspamd's
-`dkim_signing.conf`, and DNS. It prints all three as follow-ups, and
-`mail-setup-guide` prints the records.
+What it does not do, because it is not kasbah's: DNS. It ends by pointing at
+`mail-setup-guide`, which prints the records.
 
 ### `kasbah server mail-setup-guide USER@HOST`
 

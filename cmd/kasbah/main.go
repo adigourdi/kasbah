@@ -90,7 +90,7 @@ func main() {
 				os.Exit(serverinit.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
 			}
 			if len(args) > 1 && args[1] == "mail" {
-				os.Exit(mail.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
+				os.Exit(mail.Remote(templates.FS, args[2:], os.Stdin, os.Stdout, os.Stderr))
 			}
 			if len(args) > 2 && args[1] == "backup" && args[2] == "host" {
 				// The nightly job on the host, started by the launcher: a

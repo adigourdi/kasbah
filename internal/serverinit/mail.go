@@ -163,7 +163,7 @@ func MailResolve(out *cli.Output, p *prompt.Prompter, o Options, r *mail.ReadRep
 }
 
 // MailRender renders the shipped files (the YAML ones parsed: _mail.yml lands
-// where Traefik watches) and the two seeds, "env" and "dkim".
+// where Traefik watches) and the .env seed, "env".
 func MailRender(fsys fs.FS, o Options, v MailValues) (map[string]string, error) {
 	subst := map[string]string{
 		"APPS_PATH":           o.Apps,
@@ -175,7 +175,7 @@ func MailRender(fsys fs.FS, o Options, v MailValues) (map[string]string, error) 
 	out := map[string]string{}
 	for _, f := range [][2]string{{"compose.yml", "compose.yml"}, {"kasbah.yml", "kasbah.yml"}, {"_mail.yml", "_mail.yml"},
 		{"cypht-nginx.conf", "cypht-nginx.conf"}, {"fail2ban-jail.cf", "fail2ban-jail.cf"},
-		{"env", "env"}, {"rspamd-dkim-signing.conf", "dkim"}} {
+		{"env", "env"}} {
 		b, err := fs.ReadFile(fsys, "mail/"+f[0])
 		if err != nil {
 			return nil, cli.Fail("internal: this kasbah build carries no mail/%s template", f[0])
@@ -204,15 +204,28 @@ func (s *session) mailCall(stdin []byte, bounded bool, args ...string) (string, 
 	return s.remote(stdin, bounded, append([]string{"mail"}, args...)...)
 }
 
-// mailLayout ships the tree, .env and seeds in one checked payload.
+// mailLayout ships the tree, .env and account seed in one checked payload.
 func (s *session) mailLayout(o Options, rendered map[string]string, v MailValues) (Facts, error) {
-	body, _ := json.Marshal(mail.LayoutBody{Env: rendered["env"], DKIM: rendered["dkim"], Account: v.Account})
+	body, _ := json.Marshal(mail.LayoutBody{Env: rendered["env"], Account: v.Account})
 	size, sum := remote.Digest(body)
 	res, rc := s.mailCall(body, true, "layout", o.Apps, o.Data, size, sum)
 	if rc != 0 {
 		return nil, stepFailed("lay out the mail stack", s.target, rc)
 	}
-	return checked("the mail layout step", s.target, res, "mail_layout", "mail_env", "mail_account", "mail_dkim_seed")
+	return checked("the mail layout step", s.target, res, "mail_layout", "mail_env", "mail_account")
+}
+
+// mailDKIM makes the primary's keys and renders the signing override, after
+// Traefik starts and before the mail stack does. Unbounded by RunTimeout: a
+// first run pulls DMS's image.
+func (s *session) mailDKIM(o Options, v MailValues) (Facts, error) {
+	res, rc := s.mailCall(nil, false, "dkim", o.Apps, o.Data, v.Primary)
+	if rc != 0 {
+		return nil, cli.Fail("could not make the DKIM keys of %s on %s (the remote step exited %d, see above)", v.Primary, s.target, rc).Cont(
+			"Traefik is up and no existing key was replaced; once the cause above is fixed,",
+			"a re-run makes only what is still missing and then starts the mail stack")
+	}
+	return checked("the mail DKIM step", s.target, res, mail.DKIMFacts([]string{v.Primary})...)
 }
 
 // MailChanged is the files whose rendered bytes differ from the server's.
@@ -268,7 +281,7 @@ var (
 
 // reportMail is the stack's summary and, when DMS is not healthy yet, what
 // that most likely means; the walkthrough follows on the run that made it.
-func reportMail(out *cli.Output, o Options, v MailValues, r *mail.ReadReport, changed []string, lay, st Facts) {
+func reportMail(out *cli.Output, o Options, v MailValues, r *mail.ReadReport, changed []string, lay, dk, st Facts) {
 	shipped := "nothing re-rendered"
 	if len(changed) > 0 {
 		shipped = "shipped " + strings.Join(changed, " ")
@@ -277,7 +290,8 @@ func reportMail(out *cli.Output, o Options, v MailValues, r *mail.ReadReport, ch
 	out.Info("  mail: %s/mail (%s)", o.Apps, shipped)
 	out.Info("        domains: %s (primary %s, %s)", strings.Join(v.Domains, " "), p, v.Origin)
 	out.Info("        routers: mail.%s (cert-trigger, no backend), https://webmail.%s", p, p)
-	out.Info("        .env %s, postmaster %s, dkim override %s", lay["mail_env"], lay["mail_account"], lay["mail_dkim_seed"])
+	out.Info("        .env %s, postmaster %s", lay["mail_env"], lay["mail_account"])
+	out.Info("        dkim: %s %s", p, mail.DKIMSummary(dk, p))
 	out.Info("        cypht %s, dms %s (%s, %s restarts)", st["mail_cypht_health"], st["mail_dms_state"], st["mail_dms_health"], st["mail_dms_restarts"])
 	out.Info("        %s; %s", jailWords[st["mail_jail"]], nginxWords[st["mail_cypht_nginx"]])
 	out.Info("        network: %s, traefik joined for webmail", st["mail_networks"])
@@ -307,6 +321,7 @@ func reportMail(out *cli.Output, o Options, v MailValues, r *mail.ReadReport, ch
 		out.Warn("re-run init once mail-dms is running, or retry by hand:")
 		out.Warn("  ssh %s 'docker exec mail-dms cp %s %s && docker exec mail-dms fail2ban-client reload'", o.Target, mail.JailSource, mail.JailLive)
 	}
+	mail.DKIMWarn(out, o.Target, o.Data, []string{p}, dk)
 	if st["mail_dms_health"] != "healthy" {
 		// Inside the 60 s start_period and crashlooping on a missing
 		// certificate look alike here; restarts tell them apart only later.
@@ -324,7 +339,7 @@ func reportMail(out *cli.Output, o Options, v MailValues, r *mail.ReadReport, ch
 	// without these three.
 	out.Info("        setup guide: kasbah server mail-setup-guide %s", o.Target)
 	out.Info("        before the first real send (each one a step of the guide):")
-	out.Info("          DKIM  keys per domain: docker exec mail-dms setup config dkim ... (step 2)")
+	out.Info("          DKIM  two TXT records per domain, from its keys' .public.dns.txt (step 2)")
 	out.Info("          PTR   the VPS IP's reverse DNS names mail.%s, set at the provider (step 0)", p)
 	out.Info("          SPF   a TXT record on each domain (step 3)")
 	if r.Dir == "absent" {

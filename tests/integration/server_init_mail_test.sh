@@ -3,8 +3,9 @@
 #
 # What the hermetic suite cannot show: that Traefik really *loads* the fragment
 # (a file that parses is not a file that registers), that Cypht really
-# serves through it, that the seeds land before DMS's first start, and that the
-# whole thing is re-runnable against a stack the containers have already taken
+# serves through it, that the seeds and the DKIM keys land before DMS's first
+# start — the keys made by the pinned image's own rspamadm, with its owners and
+# modes — and that the whole thing is re-runnable against a stack the containers have already taken
 # ownership of.
 #
 # **DMS never becomes healthy here, and waiting for it would be a bug.**
@@ -34,6 +35,7 @@ mail_data="$data/mail"
 frag="$apps/traefik/dynamic/_mail.yml"
 accounts="$mail_data/dms/config/postfix-accounts.cf"
 dkim="$mail_data/dms/config/rspamd/override.d/dkim_signing.conf"
+dkim_dir="$mail_data/dms/config/rspamd/dkim"
 
 # `.test` is reserved by RFC 6761, so nothing here can name a real host — and
 # ACME cannot issue for it, which is the rig's documented limit.
@@ -89,7 +91,35 @@ for img in "$dms_image" "$cy_image"; do
     fi
 done
 
+# The owner DMS's own `setup config dkim` gives a private key, as the image names it.
+rspamd_ids=$(rig_ssh "docker run --rm --network none --entrypoint id '$dms_image' -u _rspamd; docker run --rm --network none --entrypoint id '$dms_image' -g _rspamd" 2>/dev/null | tr -d '\r' | paste -sd:)
+
 init() { kasbah_cli server init "$RIG_TARGET" "$@" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; }
+
+# A domain's key files as `name uid:gid mode`; the DMS image's own transform
+# of each public key into its TXT record (rspamd-dkim's grep | tr) against the
+# .public.dns.txt beside it, "same" or both; the override's live path lines
+# for the domain; and a digest of its key files.
+dkim_facts() {
+    rig_ssh "bash -s '$dkim_dir' '$dkim' '$1'" 2>/dev/null <<'DKIM_FACTS' | tr -d '\r'
+set -uo pipefail
+d=$1 conf=$2 dom=$3
+sudo find "$d" -maxdepth 1 -type f -name "*-$dom.*" -printf '%f %U:%G %m\n' | sort | paste -sd,
+for k in rsa-2048-mail ed25519-ed; do
+    want=$(grep -o '".*"' "$d/$k-$dom.public.txt" 2>/dev/null | tr -d '"\n')
+    got=$(cat "$d/$k-$dom.public.dns.txt" 2>/dev/null)
+    if [ -n "$want" ] && [ "$want" = "$got" ]; then echo same; else echo "$want / $got"; fi
+done | paste -sd,
+sed 's/\r$//' "$conf" | grep -v '^ *#' | grep -oE "path = \"/tmp/docker-mailserver/rspamd/dkim/[^\"]*-$dom\.private\.txt\";" | paste -sd,
+sudo cat "$d"/*-"$dom".* 2>/dev/null | sha256sum
+DKIM_FACTS
+}
+# What dkim_facts says for a domain kasbah made both keys of.
+dkim_want() {
+    printf '%s\n' "ed25519-ed-$1.private.txt $rspamd_ids 600,ed25519-ed-$1.public.dns.txt $rspamd_ids 644,ed25519-ed-$1.public.txt $rspamd_ids 644,rsa-2048-mail-$1.private.txt $rspamd_ids 600,rsa-2048-mail-$1.public.dns.txt $rspamd_ids 644,rsa-2048-mail-$1.public.txt $rspamd_ids 644" \
+        "same,same" \
+        "path = \"/tmp/docker-mailserver/rspamd/dkim/rsa-2048-mail-$1.private.txt\";,path = \"/tmp/docker-mailserver/rspamd/dkim/ed25519-ed-$1.private.txt\";"
+}
 init_err() { cat "$tmpdir/err"; }
 
 # **Exactly the surface kasbah writes, and nothing the containers do.** This is
@@ -171,9 +201,13 @@ kv accounts_line "$(head -1 "$accounts" 2>/dev/null)"
 # before DMS's container is created, or the helper that would overwrite the DKIM
 # config and the Dovecot that panics without an account have already run.
 kv t_accounts "$(stat -c '%Y' "$accounts" 2>/dev/null)"
-kv t_dkim     "$(stat -c '%Y' "$dkim" 2>/dev/null)"
 # (no cypht mtime: the container writes into that directory on boot)
 kv t_dms_created "$(date -d "$(docker inspect -f '{{.Created}}' mail-dms 2>/dev/null)" +%s 2>/dev/null)"
+# The DKIM step runs after the Traefik start and right before the mail start:
+# nanoseconds, as below.
+dkim_ns=$(stat -c '%.9Y' "$dkim" 2>/dev/null)
+kv t_dkim_ns "${dkim_ns%.*}${dkim_ns#*.}"
+kv t_dms_created_ns "$(date -d "$(docker inspect -f '{{.Created}}' mail-dms 2>/dev/null)" +%s%N 2>/dev/null)"
 
 # The other ordering, and the one the whole design is sold on: _mail.yml has to
 # be in Traefik's watch directory *before* Traefik starts, so both certificates
@@ -251,7 +285,7 @@ while IFS= read -r line; do
 done <<<"$probe_out"
 missing=()
 for key in d_mail f_compose f_env f_registry f_frag env_mode accounts_mode \
-           f_accounts f_dkim accounts_line t_accounts t_dkim \
+           f_accounts f_dkim accounts_line t_accounts t_dkim_ns t_dms_created_ns \
            t_dms_created t_frag_landed_ns t_traefik_started_ns \
            d_cy cy_owner cy_db cy_users cy_attach \
            f_nginx f_jail nginx_realip jail_ignore cy_realip \
@@ -305,13 +339,31 @@ assert '! grep -qF "$postmaster_pw" <<<"${fact[accounts_line]}"' \
 assert '[ "${fact[f_dkim]}" = "yes" ]' \
     "the Rspamd DKIM override is in override.d (got '${fact[f_dkim]}')"
 
+# The primary's two DKIM keys, made before DMS ever ran (it never boots here),
+# named, owned and moded as DMS's own `setup config dkim` leaves them, each TXT
+# record what DMS's transform makes of its public key, and both listed in the
+# rendered override.
+primary_dkim=$(dkim_facts "$rig_domain")
+assert '[ "$rspamd_ids" != "" ] && [ "$(head -3 <<<"$primary_dkim")" = "$(dkim_want "$rig_domain")" ]' \
+    "init made the primary's DKIM keys as docker-mailserver would, and the override signs with both
+        want: $(dkim_want "$rig_domain" | paste -sd'|')
+        got:  $(head -3 <<<"$primary_dkim" | paste -sd'|')"
+assert 'grep -qF "dkim: $rig_domain keys generated, override written, rspamd reads it when docker-mailserver starts" "$tmpdir/err"' \
+    "and the summary says so (said '$(init_err)')"
+assert '[ "$(rig_ssh "sudo stat -c %u:%g $dkim_dir" 2>/dev/null | tr -d "\r")" = "$rspamd_ids" ]' \
+    "the key directory is _rspamd's, as DMS's preflight leaves it"
+
 # The ordering is the whole point of pre-seeding, and it is checkable: both
 # files must predate the DMS container, or Dovecot has already panicked and the
 # dkim helper has already written its own default.
 assert '[ "${fact[t_accounts]}" -lt "${fact[t_dms_created]}" ]' \
     "postfix-accounts.cf was written before the DMS container was created (${fact[t_accounts]} < ${fact[t_dms_created]})"
-assert '[ "${fact[t_dkim]}" -lt "${fact[t_dms_created]}" ]' \
-    "and so was dkim_signing.conf (${fact[t_dkim]} < ${fact[t_dms_created]})"
+assert '[ "${fact[t_dkim_ns]}" -lt "${fact[t_dms_created_ns]}" ]' \
+    "and so was dkim_signing.conf (${fact[t_dkim_ns]} < ${fact[t_dms_created_ns]})"
+# After Traefik started, though: the DKIM step's image pull runs while the
+# certificate is issued, not ahead of the Traefik start.
+assert '[ "${fact[t_dkim_ns]}" -gt "${fact[t_traefik_started_ns]}" ]' \
+    "dkim_signing.conf was rendered after Traefik started (${fact[t_dkim_ns]} > ${fact[t_traefik_started_ns]})"
 # Both mtimes survive DMS: it reads these two files and rewrites neither, across
 # every restart of the crashloop (observed at 8). No such assertion is made
 # about cypht/, because Cypht *does* write into it on boot and its mtime is the
@@ -514,7 +566,9 @@ assert 'grep -qF "primary $rig_domain, reused" "$tmpdir/err"' \
 assert 'grep -qF "postmaster kept" "$tmpdir/err"' \
     "and the account was kept rather than reseeded (said '$(init_err)')"
 assert 'grep -qF ".env unchanged" "$tmpdir/err"' "the .env too (said '$(init_err)')"
-assert 'grep -qF "dkim override kept" "$tmpdir/err"' "and the DKIM override (said '$(init_err)')"
+assert 'grep -qF "dkim: $rig_domain keys kept, override unchanged, rspamd unchanged" "$tmpdir/err"' \
+    "and the DKIM keys and override (said '$(init_err)')"
+assert '[ "$(dkim_facts "$rig_domain")" = "$primary_dkim" ]' "the keys byte for byte"
 
 # The hand-edited relay block, which is the reason .env is merged rather than
 # re-rendered. It must survive a re-run — and it must never leave the server to
@@ -634,6 +688,15 @@ assert 'grep -qxF "postmaster@$extra_domain postmaster@$rig_domain" <<<"$aliases
 frag_after=$(rig_ssh "cat $frag" 2>/dev/null)
 assert '! grep -qF "$extra_domain" <<<"$frag_after"' \
     "and the Traefik fragment is untouched (got '$frag_after')"
+extra_dkim=$(dkim_facts "$extra_domain")
+assert '[ "$(head -3 <<<"$extra_dkim")" = "$(dkim_want "$extra_domain")" ]' \
+    "the added domain's DKIM keys are made as docker-mailserver would, and the override signs with both
+        want: $(dkim_want "$extra_domain" | paste -sd'|')
+        got:  $(head -3 <<<"$extra_dkim" | paste -sd'|')"
+assert '[ "$(dkim_facts "$rig_domain")" = "$primary_dkim" ]' "beside the primary's, untouched and still signed with"
+# The override init rendered is kasbah's own: replaced with no copy.
+assert 'grep -qF "override updated" "$tmpdir/err" && ! grep -qF "kasbah-prev" "$tmpdir/err" && ! rig_ssh "test -e $dkim.kasbah-prev" >/dev/null 2>&1' \
+    "a routine add re-renders the override and saves no -prev copy (said '$(init_err)')"
 
 # Twice. A no-op that says so, and the file is byte-identical afterwards —
 # "nothing to do" has to mean nothing was done.
@@ -644,6 +707,8 @@ assert '[ "$rc" = "0" ]' "adding the same domain again is not an error (exit $rc
 assert 'grep -qF "already served" "$tmpdir/err"' "and says so (said '$(init_err)')"
 assert '[ "$digest_before" = "$digest_after" ]' \
     "with neither file touched ($digest_before vs $digest_after)"
+assert 'grep -qF "dkim:     keys kept, override unchanged" "$tmpdir/err" && [ "$(dkim_facts "$extra_domain")" = "$extra_dkim" ]' \
+    "and its DKIM keys kept byte for byte (said '$(init_err)')"
 
 # And a re-run of init reproduces the registry add-mail-domain wrote, byte for
 # byte: two writers of one file that disagreed would lose the added domain on
@@ -653,6 +718,8 @@ registry_reinit=$(rig_ssh "cat $mail_dir/kasbah.yml" 2>/dev/null)
 assert '[ "$rc" = "0" ]' "init re-runs against the extended registry (exit $rc: $(init_err))"
 assert '[ "$registry_reinit" = "$registry_after" ]' \
     "and reproduces it unchanged — one template, one shape"
+assert '[ "$(dkim_facts "$rig_domain")" = "$primary_dkim" ] && [ "$(dkim_facts "$extra_domain")" = "$extra_dkim" ]' \
+    "keeping both domains' keys byte for byte and the override signing with both"
 
 guide; rc=$?
 guide_out=$(cat "$tmpdir/out")
@@ -669,6 +736,52 @@ guide >/dev/null 2>&1
 digest_after=$(rig_ssh "find $mail_dir -type f | sort | xargs md5sum | md5sum" 2>/dev/null | tr -d '\r')
 assert '[ "$digest_before" = "$digest_after" ]' \
     "and changed nothing on the server ($digest_before vs $digest_after)"
+
+# --- DKIM keys under hand, permissions and repair -------------------------------
+# Last, so the registry the guide and the init re-run read is the one above.
+# A domain whose keys are already there (planted as root, as a restore would):
+# kept byte for byte. A hand edit of the override is replaced once, kept
+# whole as -prev, and the run names it.
+planted_domain="planted.$rig_domain"
+rig_ssh "sudo sh -c 'for k in rsa-2048-mail ed25519-ed; do printf \"PLANTED %s\n\" \$k > $dkim_dir/\$k-$planted_domain.private.txt; printf \"planted\n\" > $dkim_dir/\$k-$planted_domain.public.txt; printf \"v=DKIM1; planted\n\" > $dkim_dir/\$k-$planted_domain.public.dns.txt; done'" >/dev/null 2>&1
+planted_keys=$(dkim_facts "$planted_domain" | tail -1)
+rig_ssh "printf '# rig-hand-edit\n' >> $dkim" >/dev/null 2>&1
+edited_dkim=$(rig_ssh "cat $dkim" 2>/dev/null)
+add_domain "$planted_domain"; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "dkim:     keys kept, override replaced" "$tmpdir/err"' \
+    "add-mail-domain keeps a domain's existing keys (exit $rc: $(init_err))"
+assert '[ "$planted_keys" != "" ] && [ "$(dkim_facts "$planted_domain" | tail -1)" = "$planted_keys" ]' \
+    "byte for byte"
+assert '[ "$(rig_ssh "cat $dkim.kasbah-prev" 2>/dev/null)" = "$edited_dkim" ] && ! rig_ssh "grep -q rig-hand-edit $dkim" >/dev/null 2>&1' \
+    "the hand-edited override was replaced, and kept whole as dkim_signing.conf.kasbah-prev"
+assert 'grep -qF "kept as $dkim.kasbah-prev (Rspamd never loads it)" "$tmpdir/err"' \
+    "and the run named it (said '$(init_err)')"
+prev_digest=$(rig_ssh "md5sum < $dkim.kasbah-prev" 2>/dev/null | tr -d '\r')
+add_domain "$planted_domain"; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "override unchanged" "$tmpdir/err" && ! grep -qF "kasbah-prev" "$tmpdir/err" &&
+        [ "$(rig_ssh "md5sum < $dkim.kasbah-prev" 2>/dev/null | tr -d "\r")" = "$prev_digest" ]' \
+    "once: the next run leaves the -prev copy alone (exit $rc: $(init_err))"
+
+# A key directory the deploy user cannot look into: the step refuses, naming
+# the path, and every key in it stays as it was.
+rig_ssh "sudo chmod 700 $dkim_dir" >/dev/null 2>&1
+add_domain "$extra_domain"; rc=$?
+rig_ssh "sudo chmod 755 $dkim_dir" >/dev/null 2>&1
+assert '[ "$rc" != "0" ] && grep -qF "could not look for $dkim_dir/" "$tmpdir/err" && grep -qF "so no DKIM key was made" "$tmpdir/err"' \
+    "an unreadable key directory refuses the DKIM step (exit $rc: $(init_err))"
+assert '[ "$(dkim_facts "$extra_domain")" = "$extra_dkim" ] && [ "$(dkim_facts "$rig_domain")" = "$primary_dkim" ]' \
+    "with every key byte for byte"
+
+# A private key without its public files: they are derived from it by the
+# image's own tools, the same bytes rspamadm wrote, the key untouched.
+rig_ssh "sudo rm -f $dkim_dir/rsa-2048-mail-$extra_domain.public.txt $dkim_dir/rsa-2048-mail-$extra_domain.public.dns.txt $dkim_dir/ed25519-ed-$extra_domain.public.dns.txt" >/dev/null 2>&1
+add_domain "$extra_domain"; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "dkim:     keys repaired, override unchanged" "$tmpdir/err"' \
+    "add-mail-domain re-derives missing public files (exit $rc: $(init_err))"
+assert '[ "$(dkim_facts "$extra_domain")" = "$extra_dkim" ]' \
+    "byte for byte what rspamadm wrote, owners and modes too
+        want: $(paste -sd'|' <<<"$extra_dkim")
+        got:  $(dkim_facts "$extra_domain" | paste -sd'|')"
 
 if [ "$fail" -eq 0 ]; then
     rig_clean >/dev/null 2>&1 || true

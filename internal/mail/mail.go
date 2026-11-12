@@ -17,13 +17,14 @@ import (
 // Project is the mail stack's compose project and directory under <apps>.
 const Project = "mail"
 
-// DKIMDir is where DMS's `setup config dkim` writes Rspamd's keys, on the
-// host; DKIMContainerDir is the same directory as Rspamd's paths name it.
+// DKIMDir is where Rspamd's keys live on the host, kasbah's and DMS's
+// `setup config dkim`'s alike; DKIMContainerDir is the same directory as
+// Rspamd's paths name it.
 func DKIMDir(data string) string { return data + "/mail/dms/config/rspamd/dkim" }
 
 const DKIMContainerDir = "/tmp/docker-mailserver/rspamd/dkim"
 
-// DKIMConf is the Rspamd signing override kasbah seeds; Rspamd signs only
+// DKIMConf is the Rspamd signing override kasbah renders; Rspamd signs only
 // with the key paths it lists.
 func DKIMConf(data string) string {
 	return data + "/mail/dms/config/rspamd/override.d/dkim_signing.conf"
@@ -32,7 +33,7 @@ func DKIMConf(data string) string {
 // DKIMKeyNames is the pair of key files the signing override names for a
 // domain, in DKIMKeygen's order: the helper's names for those two commands.
 func DKIMKeyNames(domain string) [2]string {
-	return [2]string{"rsa-2048-mail-" + domain + ".private.txt", "ed25519-ed-" + domain + ".private.txt"}
+	return [2]string{DKIMKeys[0].Files(domain)[0], DKIMKeys[1].Files(domain)[0]}
 }
 
 // DKIMKeygen is dual signing's two keygen commands for one domain, RSA first.

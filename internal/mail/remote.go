@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"slices"
@@ -21,14 +22,15 @@ import (
 
 // Remote is `kasbah remote mail <step> …`, run by the server binary: read
 // answers in one JSON object, the others in key=value lines; failures are
-// `remote: …` on stderr, exit 1.
-func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+// `remote: …` on stderr, exit 1. templates are the build's own, which dkim
+// renders the signing override from.
+func Remote(templates fs.FS, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fail := func(format string, a ...any) int {
 		fmt.Fprintf(stderr, "remote: "+format+"\n", a...)
 		return 1
 	}
 	usage := func() int {
-		return fail("usage: kasbah remote mail read APPS DATA | write APPS DATA SIZE SHA256 | layout APPS DATA SIZE SHA256 | start APPS TIMEOUT")
+		return fail("usage: kasbah remote mail read APPS DATA | write APPS DATA SIZE SHA256 | layout APPS DATA SIZE SHA256 | dkim APPS DATA [DOMAIN...] | start APPS TIMEOUT")
 	}
 	if len(args) == 0 {
 		return usage()
@@ -46,6 +48,8 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		err = remoteWrite(args[1], args[2], args[3], args[4], stdin, stdout)
 	case args[0] == "layout" && len(args) == 5:
 		err = remoteLayout(args[1], args[2], args[3], args[4], stdin, stdout)
+	case args[0] == "dkim" && len(args) >= 3:
+		err = remoteDKIM(templates, args[1], args[2], args[3:], stdout, stderr)
 	case args[0] == "start" && len(args) == 3:
 		t, perr := strconv.Atoi(args[2])
 		if perr != nil {
@@ -228,12 +232,11 @@ func appendLine(path, line string) error {
 	return err
 }
 
-// LayoutBody is init's payload to the layout step: the rendered .env and
-// Rspamd override, and the postmaster account line ("" when the server
-// already has one). The account is a hash, and travels here rather than argv.
+// LayoutBody is init's payload to the layout step: the rendered .env and the
+// postmaster account line ("" when the server already has one). The account
+// is a hash, and travels here rather than argv.
 type LayoutBody struct {
 	Env     string `json:"env"`
-	DKIM    string `json:"dkim"`
 	Account string `json:"account"`
 }
 
@@ -281,9 +284,9 @@ func MergeEnv(current, rendered string) string {
 	return b.String()
 }
 
-// remoteLayout is the mail tree, the .env, and the two seeds, before DMS can
-// ever have run: .env merged by key, the DKIM override written only where
-// absent, the account seed replacing only a file with no account line.
+// remoteLayout is the mail tree, the .env and the account seed, before DMS
+// can ever have run: .env merged by key, the account seed replacing only a
+// file with no account line.
 func remoteLayout(apps, data, size, sum string, stdin io.Reader, stdout io.Writer) error {
 	dir := apps + "/mail"
 	raw, err := remote.Payload(stdin, size, sum)
@@ -291,7 +294,7 @@ func remoteLayout(apps, data, size, sum string, stdin io.Reader, stdout io.Write
 		return fmt.Errorf("%s: %v", dir, err)
 	}
 	var b LayoutBody
-	if err := json.Unmarshal(raw, &b); err != nil || b.Env == "" || b.DKIM == "" {
+	if err := json.Unmarshal(raw, &b); err != nil || b.Env == "" {
 		return fmt.Errorf("%s: the payload is not a mail layout", dir)
 	}
 	mdata := data + "/mail"
@@ -357,25 +360,13 @@ func remoteLayout(apps, data, size, sum string, stdin io.Reader, stdout io.Write
 		fmt.Fprintln(stdout, "mail_account=seeded")
 	}
 
-	dkim := DKIMConf(data)
-	exists, regular = isFile(dkim)
-	switch {
-	case exists && !regular:
-		return fmt.Errorf("%s exists and is not a regular file", dkim)
-	case regular:
-		fmt.Fprintln(stdout, "mail_dkim_seed=kept")
-	default:
-		if err := remote.Install(dkim, []byte(b.DKIM), 0o644); err != nil {
-			return err
-		}
-		fmt.Fprintln(stdout, "mail_dkim_seed=seeded")
-	}
 	fmt.Fprintln(stdout, "mail_layout=done")
 	return nil
 }
 
+// inspect is `docker inspect -f`, bounded by dockerTimeout.
 func inspect(id, format string) (string, error) {
-	out, err := exec.Command("docker", "inspect", "-f", format, id).Output()
+	out, err := docker("docker inspect "+id, "inspect", "-f", format, id)
 	return strings.TrimRight(string(out), "\n"), err
 }
 

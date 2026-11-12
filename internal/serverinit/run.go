@@ -557,7 +557,7 @@ func Run(c Ctx, o Options) (err error) {
 	}
 
 	// The seeds before DMS's first start.
-	var mlay, mst Facts
+	var mlay, mdk, mst Facts
 	var mchanged []string
 	if mailOn {
 		if mlay, err = s.mailLayout(o, mrendered, mv); err != nil {
@@ -660,7 +660,12 @@ func Run(c Ctx, o Options) (err error) {
 
 	// After Traefik is healthy: DMS reads mail.<primary>'s certificate out of
 	// acme.json, and the mail stack's network is joined by a running Traefik.
+	// The DKIM step's image pull runs while the certificate is issued; on a
+	// first run its keys and override land before the DMS container exists.
 	if mailOn {
+		if mdk, err = s.mailDKIM(o, mv); err != nil {
+			return err
+		}
 		if mst, err = s.mailStart(o); err != nil {
 			return err
 		}
@@ -843,7 +848,7 @@ func Run(c Ctx, o Options) (err error) {
 		out.Info("  dashboard: off (%s) — --with-dashboard publishes it at traefik.<domain>", dashOff[v.DashOrigin])
 	}
 	if mailOn {
-		reportMail(out, o, mv, &mr, mchanged, mlay, mst)
+		reportMail(out, o, mv, &mr, mchanged, mlay, mdk, mst)
 	}
 	if backupOn {
 		reportBackup(out, o, bv, brep)

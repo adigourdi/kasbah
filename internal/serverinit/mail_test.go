@@ -70,7 +70,6 @@ func TestMailRender(t *testing.T) {
 		"_mail.yml":        "Host(`webmail.example.com`)",
 		"compose.yml":      "name: mail",
 		"env":              "MAIL_HOSTNAME=mail.example.com\nDOMAIN=example.com\nDATA_PATH=/srv/data\n",
-		"dkim":             "rsa-2048-mail-example.com.private.txt",
 		"compose.yml#":     "./cypht-nginx.conf:/etc/nginx/nginx.conf:ro",
 		"cypht-nginx.conf": "\treal_ip_header X-Forwarded-For;\n\treal_ip_recursive on;\n",
 		"fail2ban-jail.cf": "[DEFAULT]\nignoreip = 127.0.0.1/8 mail-cypht\n",
@@ -79,6 +78,9 @@ func TestMailRender(t *testing.T) {
 		if !strings.Contains(r[k], want) {
 			t.Errorf("%s lacks %q", k, want)
 		}
+	}
+	if _, ok := r["dkim"]; ok {
+		t.Error("the signing override is the dkim step's to render, not init's")
 	}
 	// The registry has one renderer: init's and add-mail-domain's agree.
 	if reg, _ := mail.RenderRegistry(repoTemplates(t), "example.com", []string{"example.com", "shop.test"}); reg != r["kasbah.yml"] {
@@ -170,7 +172,7 @@ func TestReportMailUnban(t *testing.T) {
 			t.Fatalf("%s %q: %v %v", c.n, c.addr, st, err)
 		}
 		out, b := newOut()
-		reportMail(out, o, v, &mail.ReadReport{Dir: "dir"}, nil, Facts{}, st)
+		reportMail(out, o, v, &mail.ReadReport{Dir: "dir"}, nil, Facts{}, Facts{}, st)
 		got := b.String()
 		if c.want != "" && !strings.Contains(got, c.want) {
 			t.Errorf("%s %q: no %q in\n%s", c.n, c.addr, c.want, got)
@@ -188,14 +190,19 @@ func TestReportMailChecklist(t *testing.T) {
 	v := MailValues{Primary: "a.com", Origin: "reused", Domains: []string{"a.com", "b.com"}}
 	out, b := newOut()
 	// Every warning the summary can raise, so the checklist is shown to follow them.
-	reportMail(out, o, v, &mail.ReadReport{Dir: "dir"}, nil, Facts{},
+	dk := Facts{"mail_dkim_a.com": "generated generated", "mail_dkim_conf": "replaced", "mail_dkim_rspamd": "atstart",
+		"mail_dkim_unsigned": "b.com", "mail_dkim_prev": "/apps/data/mail/dms/config/rspamd/override.d/dkim_signing.conf.kasbah-prev"}
+	reportMail(out, o, v, &mail.ReadReport{Dir: "dir"}, nil, Facts{}, dk,
 		Facts{"mail_dms_health": "starting", "mail_cypht_unbanned": "failed", "mail_jail": "failed", "mail_cypht_addr": "172.18.0.5"})
 	want := "        setup guide: kasbah server mail-setup-guide deploy@vps\n" +
 		"        before the first real send (each one a step of the guide):\n" +
-		"          DKIM  keys per domain: docker exec mail-dms setup config dkim ... (step 2)\n" +
+		"          DKIM  two TXT records per domain, from its keys' .public.dns.txt (step 2)\n" +
 		"          PTR   the VPS IP's reverse DNS names mail.a.com, set at the provider (step 0)\n" +
 		"          SPF   a TXT record on each domain (step 3)\n"
-	if got := b.String(); !strings.HasSuffix(got, want) || !strings.Contains(got, "could not unban") || !strings.Contains(got, "healthcheck says 'starting'") {
+	if got := b.String(); !strings.HasSuffix(got, want) || !strings.Contains(got, "could not unban") || !strings.Contains(got, "healthcheck says 'starting'") ||
+		!strings.Contains(got, "dkim: a.com keys generated, override replaced, rspamd reads it when docker-mailserver starts") ||
+		!strings.Contains(got, "kept as /apps/data/mail/dms/config/rspamd/override.d/dkim_signing.conf.kasbah-prev") ||
+		!strings.Contains(got, "no DKIM key for b.com") {
 		t.Errorf("summary does not end with the checklist:\n%s", got)
 	}
 }

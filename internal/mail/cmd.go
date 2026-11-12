@@ -15,6 +15,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/initproject"
 	"github.com/adigourdi/kasbah/internal/mailreg"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/ssh"
 )
 
@@ -24,17 +25,25 @@ var ErrHelp = errors.New("help")
 const AddUsage = `Usage: kasbah server add-mail-domain USER@HOST <domain>
 
 Joins <domain> to the VPS's shared mail stack (docs/mail.md → Multi-domain).
-Two things change: the domain joins domains: in <apps>/mail/kasbah.yml — the
-registry, and the only thing asked whether this stack serves a domain — and
-postmaster@<domain> is aliased to the primary mailbox in docker-mailserver's
-postfix-virtual.cf, which is also what makes Postfix accept mail for it.
+The domain joins domains: in <apps>/mail/kasbah.yml — the registry, and the
+only thing asked whether this stack serves a domain — and postmaster@<domain>
+is aliased to the primary mailbox in docker-mailserver's postfix-virtual.cf,
+which is also what makes Postfix accept mail for it. Its two DKIM keys (RSA
+selector mail, Ed25519 selector ed) are generated unless they exist — a key
+is never replaced, a missing public file is derived from its private key —
+and Rspamd's signing override is rendered again, with a block for every
+domain that has its keys. An override kasbah did not render is kept beside
+it as dkim_signing.conf.kasbah-prev. The run holds the server lock.
 
-Adding a domain twice is a no-op that says so.
+Adding a domain twice says so, and still makes a key still missing and
+renders the override again where it differs from the render.
+
+The primary domain is init's: naming it changes nothing and exits 0.
 
 No router is added: mail.<primary> and webmail.<primary> are the stack's
 hostnames and an app domain needs no MX of its own — it needs an MX record
 pointing at mail.<primary>. Run ` + "`kasbah server mail-setup-guide USER@HOST`" + `
-for the records this domain needs, and generate its DKIM keys on the VPS.
+for the DNS records this domain needs.
 `
 
 const GuideUsage = `Usage: kasbah server mail-setup-guide USER@HOST
@@ -104,6 +113,10 @@ type Session interface {
 	Paths() (apps, data string, err error)
 	// Remote runs `kasbah remote ARGS…` bounded, stdin the payload or nil.
 	Remote(stdin []byte, args ...string) ([]byte, int)
+	// Unbounded runs `kasbah remote ARGS…` with no time limit.
+	Unbounded(args ...string) ([]byte, int)
+	// Hold takes the server lock exclusively until release.
+	Hold(apps string) (release func(), err error)
 	Close()
 }
 
@@ -139,10 +152,18 @@ func Decode(b64, what, target string) (string, error) {
 	return string(b), nil
 }
 
-// stack is the registry of a stack that is there to act on.
-func stack(out *cli.Output, s Session, target string) (apps, data string, r *ReadReport, reg *mailreg.Registry, err error) {
+// stack is the registry of a stack that is there to act on; with lock, read
+// under the server lock, held until release.
+func stack(out *cli.Output, s Session, target string, lock bool) (apps, data string, r *ReadReport, reg *mailreg.Registry, release func(), err error) {
+	release = func() {}
 	if apps, data, err = s.Paths(); err != nil {
 		return
+	}
+	if lock {
+		if release, err = s.Hold(apps); err != nil {
+			release = func() {}
+			return
+		}
 	}
 	if r, err = Read(s, target, apps, data); err != nil {
 		return
@@ -195,7 +216,8 @@ func Run(c Ctx, o Options) error {
 		return err
 	}
 	defer s.Close()
-	apps, data, r, reg, err := stack(c.Out, s, o.Target)
+	apps, data, r, reg, release, err := stack(c.Out, s, o.Target, o.Cmd == "add-mail-domain")
+	defer release()
 	if err != nil {
 		return err
 	}
@@ -231,9 +253,13 @@ func add(c Ctx, s Session, o Options, apps, data string, r *ReadReport, reg *mai
 		}
 	}
 	if known && aliased {
-		out.Info("%s is already served by the mail stack on %s — nothing to do", d, o.Target)
+		out.Info("%s is already served by the mail stack on %s", d, o.Target)
 		out.Info("  registry: %s lists it under domains:", mailreg.Path(apps))
 		out.Info("  alias:    %s", alias)
+		if err := dkim(out, s, o.Target, apps, data, d); err != nil {
+			return err
+		}
+		followup(out.Stdout, o.Target, d)
 		return nil
 	}
 	domains := reg.Domains
@@ -281,31 +307,36 @@ func add(c Ctx, s Session, o Options, apps, data string, r *ReadReport, reg *mai
 		out.Warn("let it do this one too:")
 		out.Warn("%s", fix)
 	}
-	followup(out.Stdout, o.Target, d, reg.Primary, data)
+	if err := dkim(out, s, o.Target, apps, data, d); err != nil {
+		return err
+	}
+	followup(out.Stdout, o.Target, d)
 	return nil
 }
 
-// followup is what is left that is not kasbah's: DKIM keys, the signing
-// block, DNS.
-func followup(w io.Writer, target, d, primary, data string) {
-	fmt.Fprintf(w, "\nStill to do for %s — none of it is kasbah's to do:\n\n", d)
-	fmt.Fprintf(w, "1. Generate its DKIM keys, on the VPS:\n")
-	for _, c := range DKIMKeygen(target, d) {
-		fmt.Fprintf(w, "     %s\n", c)
+// dkim makes d's keys where absent and renders the signing override again.
+func dkim(out *cli.Output, s Session, target, apps, data, d string) error {
+	res, rc := s.Unbounded("mail", "dkim", apps, data, d)
+	if rc != 0 {
+		return cli.Fail("could not make the DKIM keys of %s on %s (the remote step exited %d, see above)", d, target, rc).Cont(
+			"the domain is in the registry and no existing key was replaced; once the cause",
+			"above is fixed, a re-run of this command makes only what is still missing")
 	}
-	fmt.Fprintf(w, "\n2. Add a block for it to the Rspamd signing override, which kasbah wrote\n")
-	fmt.Fprintf(w, "   once for %s and never rewrites:\n", primary)
-	fmt.Fprintf(w, "     %s\n\n", DKIMConf(data))
-	fmt.Fprintf(w, "     domain {\n")
-	fmt.Fprintf(w, "         %s {\n", d)
-	fmt.Fprintf(w, "             selectors [\n")
-	k := DKIMKeyNames(d)
-	fmt.Fprintf(w, "                 { path = \"%s/%s\"; selector = \"mail\"; },\n", DKIMContainerDir, k[0])
-	fmt.Fprintf(w, "                 { path = \"%s/%s\"; selector = \"ed\"; }\n", DKIMContainerDir, k[1])
-	fmt.Fprintf(w, "             ]\n")
-	fmt.Fprintf(w, "         }\n")
-	fmt.Fprintf(w, "     }\n\n")
-	fmt.Fprintf(w, "3. Publish its DNS records — MX, SPF, DMARC and the two DKIM keys:\n")
+	f := Facts(string(res))
+	for _, k := range DKIMFacts([]string{d}) {
+		if _, ok := f[k]; !ok {
+			return cli.Fail("the DKIM step on %s reported no %s — the step was truncated, or the server's kasbah rejected it", target, k)
+		}
+	}
+	out.Info("  dkim:     %s (%s)", DKIMSummary(f, d), DKIMDir(data))
+	DKIMWarn(out, target, data, []string{d}, f)
+	return nil
+}
+
+// followup is what is left that is not kasbah's: DNS.
+func followup(w io.Writer, target, d string) {
+	fmt.Fprintf(w, "\nStill to do for %s — DNS, which is not kasbah's to do: publish its MX, SPF\n", d)
+	fmt.Fprintf(w, "and DMARC records and its two DKIM keys' TXT records, all listed by\n")
 	fmt.Fprintf(w, "     kasbah server mail-setup-guide %s\n", target)
 }
 
@@ -341,6 +372,18 @@ func (s SSH) Remote(stdin []byte, args ...string) ([]byte, int) {
 	cmd.Stdout = &out
 	err := cmd.Run()
 	return out.Bytes(), ssh.ExitCode(err)
+}
+
+func (s SSH) Unbounded(args ...string) ([]byte, int) {
+	var out bytes.Buffer
+	cmd := s.Conn.Command(append([]string{s.Bin(), "remote"}, args...)...)
+	cmd.Stdout = &out
+	err := cmd.Run()
+	return out.Bytes(), ssh.ExitCode(err)
+}
+
+func (s SSH) Hold(apps string) (func(), error) {
+	return serverlock.Hold(s.Conn, s.Bin(), apps, serverlock.Exclusive, "server add-mail-domain")
 }
 
 func (s SSH) Close() { s.Conn.Close() }

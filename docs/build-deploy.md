@@ -1214,8 +1214,8 @@ cannot tell a first deploy from a crashed stack:
   retags (multi-operator safety). The whole run, from the marker read to the
   fragment, also holds the server lock `<apps>/.kasbah/server.lock` shared
   (`kasbah remote lock`), so a deploy never runs inside a
-  `server init`, `upgrade-traefik`, `server prune` or `server destroy`, which
-  take it exclusively; either refusal names every holder — command, user, pid. The lock is a dedicated file,
+  `server init`, `upgrade-traefik`, `server prune`, `server destroy`,
+  `server add-mail-domain` or `migrate server`, which take it exclusively; either refusal names every holder — command, user, pid. The lock is a dedicated file,
   `<project>/.deploy.lock`, held on its own file descriptor — flocking the
   directory path itself is not portable. Both are held while the engine waits
   on its question, so that wait is bounded: no answer within 10 minutes is

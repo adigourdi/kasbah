@@ -204,9 +204,10 @@ For each additional domain:
 
 Webmail needs nothing per domain: every address signs in at `webmail.<primary>`.
 
-`kasbah server add-mail-domain USER@HOST <domain>` does the first and third of
-those: the domain joins `domains:` here, and the alias is appended to
-`<data>/mail/dms/config/postfix-virtual.cf`. **That alias is not a courtesy.**
+`kasbah server add-mail-domain USER@HOST <domain>` does the third, and the
+DKIM keys of the second (DKIM signing, below): the domain joins `domains:`
+here, the alias is appended to `<data>/mail/dms/config/postfix-virtual.cf`, and
+the domain's keys are made and signed with. **That alias is not a courtesy.**
 docker-mailserver builds `/etc/postfix/vhost` — which `main.cf` uses as
 `virtual_mailbox_domains` — out of `postfix-accounts.cf` and
 `postfix-virtual.cf`, taking the domain part of every account and of every alias
@@ -225,8 +226,74 @@ files and reloads; no restart.
 and an app domain needs an MX record rather than a fragment. `add-mail-domain`
 does not touch the fragment.
 
-DKIM keys, the per-domain block in Rspamd's `dkim_signing.conf`, and DNS stay
-the operator's: `add-mail-domain` prints all three as follow-ups.
+DNS stays the operator's: `add-mail-domain` ends by pointing at
+`mail-setup-guide`, which lists the records.
+
+### DKIM signing
+
+Every domain signs twice — RSA-2048 under selector `mail`, Ed25519 under
+selector `ed` — with keys in `<data>/mail/dms/config/rspamd/dkim/`, named as
+docker-mailserver's `setup config dkim` names them:
+`rsa-2048-mail-<domain>.private.txt`, `.public.txt` and `.public.dns.txt`, and
+`ed25519-ed-<domain>.…` likewise. `server init --with-mail` makes the primary's
+and `add-mail-domain` the added domain's; a re-run of either makes only what is
+still missing.
+
+The keys come from `rspamadm dkim_keygen` of the image the mail `compose.yml`
+pins for `mail-dms`, run as `_rspamd` in named one-off containers (`docker run
+--rm --network none`, the key directory mounted where DMS mounts it), so they
+are what DMS's helper writes: the directory and every key file belong to the
+image's `_rspamd` (the directory `chown`ed in a container, as DMS's preflight
+does), a private key is `600` and its public files `644` — `.public.txt` is
+rspamadm's zone-format output, `.public.dns.txt` the record DMS's own transform
+makes of it. Every docker command but the image pull is bounded (two
+minutes), and a container that outlives the bound is removed, so nothing lands
+after the step gave up. Nothing waits on DMS: this works before its first
+start, and while it crashloops for want of a certificate. The step runs under
+the server lock, which `server init` holds for its whole run and
+`add-mail-domain` exclusively for its own, so the two never make keys at once.
+
+**A key is never replaced.** Each key's three files are made under temporary
+names (`.kasbah-new-<name>`) inside its container and hard-linked into place,
+and a link never writes over a file: a private key that appears meanwhile is
+kept, the new one discarded, and the key reported `kept`. A private key whose
+public files are missing — a run cut short between them — is kept, and the
+missing files are derived from it in the same image (`openssl pkey` for RSA,
+the public half of rspamd's Ed25519 key), the bytes rspamadm wrote; the run
+reports the key `repaired`, and a private key they cannot be derived from
+fails the step with that key left for the operator. One whose private file is
+missing while a public file is still there is not made, and the run says so
+(move those aside and re-run). A key file the deploy user cannot look for — a
+key directory made `700`, say — refuses the step before any container runs,
+naming the path: a key kasbah cannot see is one it could replace.
+
+`<data>/mail/dms/config/rspamd/override.d/dkim_signing.conf` is **rendered
+whole** on the same runs, from `templates/mail/rspamd-dkim-signing.conf`, the
+registry and the keys present: one block per registry domain, listing each
+selector whose private key exists. A domain with neither key gets no block —
+Rspamd fails signing with a key path that is not there — and the run names it
+as sending unsigned. kasbah is the file's one writer, and its first line,
+`# kasbah-render sha256:<hex>`, is the digest of the rest: a file whose digest
+still matches is kasbah's own last render, replaced without a copy. Any other
+— a hand edit, or the copy an older kasbah seeded, which has no digest line and
+so is saved once, on this kasbah's first run over it — is saved beside it as
+`dkim_signing.conf.kasbah-prev`, over any older one, and the run names that
+path; Rspamd loads only `dkim_signing.conf`.
+
+Rspamd takes the change without a hand step, as `mail-dms`'s state allows.
+Into a healthy one the run copies the override to `/etc/rspamd/override.d/`
+and runs `supervisorctl restart rspamd` (both by `docker exec`), as DMS's
+helper does after a key; a failure there is a warning, since DMS reads both at
+its next start. One running but not healthy yet is left to its change
+detector, which copies `override.d` and restarts Rspamd on any change under
+`rspamd/`. One not running — not created yet, stopped, crashlooping — reads
+both when it starts.
+
+Publishing each domain's two TXT records — `mail._domainkey.<domain>` and
+`ed._domainkey.<domain>`, from the `.public.dns.txt` files — is DNS, and the
+operator's. **Back up `<data>/mail/dms/config/rspamd/dkim/`**: a regenerated key
+is a different key, and every receiver holding the old one fails verification
+until its cache expires.
 
 ## Account management
 
@@ -294,13 +361,13 @@ rule and runs under `kasbah check --server`, which reads this file and fails a
 claim it does not carry; the deploy asks that question anyway, on every deploy,
 and only warns, because an unmet claim costs mail rather than the site. **M04**
 warns, from any project's `check --server`, for each domain of the registry
-missing either DKIM key or its block in the signing override — kasbah never generates one, and unsigned mail from a fresh
-VPS is mail in spam.
+missing either DKIM key or its block in the signing override — a key that
+could not be made, or a domain served since before kasbah made keys — and
+unsigned mail from a fresh VPS is mail in spam.
 
 What kasbah does NOT do:
 - Create mailboxes.
-- Generate DKIM keys (admin runs `docker exec mail-dms setup config dkim …`).
-- Publish DNS records.
+- Publish DNS records, DKIM's included.
 
 The mail stack's setup walkthrough (ported from the original project's `mail/SETUP.md`)
 is printed once by the `kasbah server init --with-mail` run that *creates* the
@@ -308,7 +375,7 @@ stack, and on demand by `kasbah server mail-setup-guide user@vps`. A re-run of
 init prints the one-line pointer at that command instead, along with the stack's
 state and the one warning that matters — that DMS crashlooping while the first
 certificate is issued is expected. Every run ends with a three-line
-deliverability checklist — a DKIM key per domain, a PTR record matching the mail
+deliverability checklist — two DKIM TXT records per domain, a PTR record matching the mail
 hostname, an SPF record — each pointing at its step of the guide; kasbah states
 them and probes none.
 
@@ -325,13 +392,11 @@ All three exist because somebody lost time to them. The first two are done by
 `server init --with-mail`, **before the DMS container is created** — which is
 the whole of what makes them work, and is asserted rather than assumed.
 
-- **DKIM dual-signing config** — Ed25519 primary + RSA fallback.
-  `rspamd-dkim-signing.conf` is rendered for the primary domain and copied to
-  `<data>/mail/dms/config/rspamd/override.d/dkim_signing.conf` before first
-  start, so the `setup config dkim` helper generates keys without writing its
-  own single-selector default over it. **Copy-if-missing**: once DMS has run
-  that helper the file names real key paths, and re-shipping kasbah's copy
-  would break signing.
+- **DKIM dual-signing** — Ed25519 primary + RSA fallback. The primary's two
+  keys are made and `override.d/dkim_signing.conf` rendered (DKIM signing,
+  above) before first start, so DMS boots signing, and its `setup config dkim`
+  helper, run by hand later, finds the file and never writes its own
+  single-selector default over it.
 - **Postmaster account** — DMS's Dovecot panics within 120s if no account
   exists in `postfix-accounts.cf`. `kasbah server init --with-mail` prompts
   for the postmaster password, hashes it locally (SHA512-crypt, in Go), and
@@ -398,7 +463,9 @@ requirement** for DMS, not a nicety. On a first run the sequence is:
 
 **Step 3 is often skipped entirely, and that is the point of the ordering.**
 Because the fragment goes into Traefik's watch directory *before* the mail
-containers start, issuance runs in parallel with the image pull. Measured on a
+containers start, issuance runs in parallel with the image pull — the DKIM
+step's pull of the docker-mailserver image included, which is why that step
+runs after Traefik starts. Measured on a
 first run against a real OVH host: Traefik requested both certificates 5 s into
 the run and had `mail.<domain>` in hand 10 s later, while `docker compose up`
 was still pulling 1.5 GB — so DMS found its certificate on its **first** start

@@ -13,7 +13,7 @@ assumes.
 | Docker ≥ 24 | `docker compose` v2 plugin required | Hard fail, link to docker docs |
 | Docker Compose v2 **or newer** | Manifest uses `include:` and modern syntax. The check is on the major version, not the string: a live host ran Compose **v5.2.0** and passed | Hard fail |
 | The SSH user can run `docker` without sudo | Avoids mixed sudo/non-sudo ownership in `/apps/data/` | Hard fail, suggest `usermod -aG docker` |
-| A POSIX `sh` on the remote — no `bash` | The bootstrap probe and the `sudo` steps of `server init` and `server destroy` run as POSIX shell scripts over the SSH master (tested under dash and busybox ash, linted with shellcheck); everything else runs the kasbah binary there, shipped to `<apps>/.kasbah/bin/kasbah` | Hard fail |
+| A POSIX `sh` on the remote — no `bash` | The bootstrap probe and the `sudo` steps of `server init` and `server destroy` run as POSIX shell scripts over the SSH master (tested under dash and busybox ash, linted with shellcheck); everything else runs the kasbah binary there, shipped to `<apps>/.kasbah/bin/kasbah` (which in turn runs some images' own tools in their containers, e.g. the mail image's `rspamadm` for DKIM keys) | Hard fail |
 | A POSIX userland — `uname`, `id`, `stat`, `od`, `timeout`, `sed`, `head`, `tr`, `wc`, `find`, `cat`, `mkdir`, `mv`, `rm`, `nproc`, `df` | The remaining shell steps (the bootstrap probe and the `sudo` steps) assume these rather than check them, because a box without them cannot run a shell step usefully in the first place. The rule kasbah's remote shell follows is **POSIX `sh` builtins and the coreutils that busybox also provides, nothing separately packaged** (GNU coreutils and busybox are both exercised); the deploy engine and the env setup are the kasbah binary and need none of it | Not checked; failure surfaces as the step's own error |
 | **`:80` and `:443` free, and reachable from the internet** | Traefik binds both, and ACME's HTTP-01 challenge is answered on `:80` from outside. **Not probed** — init does not look at what is listening or at any firewall, so a port already held, or a `ufw` rule, surfaces as Traefik failing to start or as a challenge that never validates | Not checked |
 | **DNS in place before the first certificate** — `traefik.<apex>`, plus every project domain | A challenge for a name that does not resolve to this host fails, and **failed challenges count against Let's Encrypt's rate limits**. Rehearse with `--acme-staging` until DNS is right. **Not probed** — kasbah never resolves a name for you | Not checked |
@@ -83,9 +83,13 @@ Default paths (override with `--apps-path`, `--data-path`):
 With `--with-mail`, the data path gains `mail/dms/{mail-data,mail-state,mail-logs,config}`
 and `mail/cypht`. Only those; Cypht builds `users/`, `attachments/` and
 `cypht.sqlite` inside the last one and hands the tree to `www-data` (`mail.md` → Webmail). The postmaster account (`mail/dms/config/postfix-accounts.cf`,
-mode 600) and the Rspamd DKIM override
-(`mail/dms/config/rspamd/override.d/dkim_signing.conf`) are seeded there before
-DMS first starts, and never written over afterwards.
+mode 600) is seeded there before DMS first starts, and never written over
+afterwards. The primary domain's two DKIM keys
+(`mail/dms/config/rspamd/dkim/`) are made there before DMS first starts too,
+and never replaced; the Rspamd signing override
+(`mail/dms/config/rspamd/override.d/dkim_signing.conf`) is not a seed —
+kasbah renders it whole on every `--with-mail` run and `add-mail-domain`
+(`mail.md` → DKIM signing).
 
 **The Traefik stack has no `.env`, deliberately** — its one environment is
 each DNS provider's credentials, read through `env_file:` from
@@ -318,9 +322,9 @@ the receiver sends the file again and renames it into place, which needs only
 the directory's write bit. Directories get the group the owner's bits.
 
 **One lock orders the server.** `<apps>/.kasbah/server.lock` (`flock(2)`,
-never waited on) is taken exclusively by `server init` and `server
-upgrade-traefik` — both for every SSH step of the run, through `kasbah remote
-lock` — and by `server prune`, `server destroy` and `migrate server`; and shared
+never waited on) is taken exclusively by `server init`, `server
+upgrade-traefik` and `server add-mail-domain` — init and upgrade-traefik for every SSH step of the
+run, add-mail-domain from its mail read on, through `kasbah remote lock` — and by `server prune`, `server destroy` and `migrate server`; and shared
 by `deploy`, `rollback`, `deploy X.Y.Z` and `drop` for their whole run, from the
 marker read to the fragment, on top of their per-project `.deploy.lock` —
 and, for a moment, by `remote load` and `remote layers` writing the layer map
@@ -892,8 +896,11 @@ server binary reads it out of the marker.
   kasbah keys and copies every other line through**, so a hand-edited relay
   block is not a difference; **never rewrites `postfix-accounts.cf`**, so the
   postmaster password is not regenerated and no mailbox is lost; **never
-  rewrites the Rspamd DKIM override**, which `setup config dkim` extends; and
-  never touches mail data. It does not prompt for a password it will not use.
+  replaces a DKIM key**, making only the primary's missing ones (and public
+  files missing beside a private key), and renders the Rspamd signing
+  override again from the registry and the keys present, keeping a file
+  kasbah did not render as `dkim_signing.conf.kasbah-prev`; and never
+  touches mail data. It does not prompt for a password it will not use.
   The stack starts with `up -d --remove-orphans`, so a container the template
   no longer names is removed (its data directory is not). Two kasbah-owned files
   are rewritten when they differ and applied without a DMS restart:

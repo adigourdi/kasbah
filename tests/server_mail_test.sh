@@ -6,9 +6,13 @@
 # is the scratch tree. The registry is parsed on the workstation by
 # internal/mailreg, the one reader.
 #
-# What the stub cannot show is on the rig: that the registry it writes is the
-# one `server init` re-renders unchanged, and that docker-mailserver picks the
-# alias up. A write step reporting something kasbah does not know is pinned in
+# A stub docker stands in for the docker-mailserver image: its bash container
+# runs kasbah's key script against the -v mount's host side, with an rspamadm
+# that writes a fake private key and prints a zone-format public key.
+#
+# What the stubs cannot show is on the rig: that the registry it writes is the
+# one `server init` re-renders unchanged, that the keys are the image's own
+# with its owners and modes, and that docker-mailserver picks the alias up. A write step reporting something kasbah does not know is pinned in
 # internal/mail's go test, which can fake the server's answer.
 
 set -uo pipefail
@@ -55,15 +59,63 @@ exec "${args[@]}"
 STUB
 chmod 0755 "$stub_dir/ssh"
 
+cat > "$stub_dir/docker" <<'STUB'
+#!/usr/bin/env bash
+{ printf 'docker'; for a in "$@"; do printf '|%s' "$a"; done; printf '\n'; } >> "$CALL_LOG"
+case "$1" in
+image) exit 0 ;;
+inspect) exit 1 ;;
+run)
+    src= dst= ent= prev=
+    shift
+    while [ $# -gt 0 ]; do
+        a=$1; shift
+        case "$prev" in
+        -v) src=${a%%:*}; dst=${a#*:} ;;
+        --entrypoint) ent=$a ;;
+        esac
+        prev=$a
+        [ "$a" != dms:test ] || break
+    done
+    case "$ent" in
+    chown) ;;
+    bash)
+        script=$2; shift 3
+        d=$1; shift
+        [ "$d" != "$dst" ] || d=$src
+        PATH="${0%/*}/image:$PATH" exec bash -c "$script" bash "$d" "$@" ;;
+    *) exit 9 ;;
+    esac ;;
+*) exit 9 ;;
+esac
+STUB
+mkdir -p "$stub_dir/image"
+cat > "$stub_dir/image/rspamadm" <<'STUB'
+#!/usr/bin/env bash
+k=
+while [ $# -gt 0 ]; do [ "$1" != -k ] || k=$2; shift; done
+printf 'PRIVATE %s\n' "$RANDOM$RANDOM" > "$k"
+case "$k" in
+*/.kasbah-new-ed25519-*) printf 'ed._domainkey IN TXT ( "v=DKIM1; k=ed25519;" \n\t"p=EDKEY=" ) ;\n' ;;
+*) printf 'mail._domainkey IN TXT ( "v=DKIM1; k=rsa; "\n\t"p=RSA1"\n\t"RSA2"\n) ; \n' ;;
+esac
+STUB
+chmod 0755 "$stub_dir/image/rspamadm"
+chmod 0755 "$stub_dir/docker"
+
 registry_one=$'name: mail\nprimary_domain: example.test\ndomains:\n  - example.test\n'
 registry_two=$'name: mail\nprimary_domain: example.test\ndomains:\n  - example.test\n  - shop.test\n'
 reg="$FAKE_APPS/mail/kasbah.yml"
 aliases="$FAKE_APPS/data/mail/dms/config/postfix-virtual.cf"
 frag="$FAKE_APPS/traefik/dynamic/_mail.yml"
+dkim_dir="$FAKE_APPS/data/mail/dms/config/rspamd/dkim"
+override="$FAKE_APPS/data/mail/dms/config/rspamd/override.d/dkim_signing.conf"
 
 # A prepared server with a mail stack: marker, binary, the stack's directory,
-# its .env, DMS's config directory, the fragment. MAIL_DIR=absent leaves the
-# stack out; MAIL_ENV=no its .env; REGISTRY="" leaves the registry out.
+# its .env and compose file, DMS's config directory, the fragment.
+# MAIL_DIR=absent leaves the stack out; MAIL_ENV=no its .env; REGISTRY=""
+# leaves the registry out; KEYS=<domain> plants that domain's two keys and
+# OVERRIDE a signing override.
 plant() {
     chmod -R u+rwX "$tmpdir/srv" 2>/dev/null
     rm -rf "$tmpdir/srv"
@@ -73,7 +125,17 @@ plant() {
     cp "$KASBAH_BIN" "$FAKE_APPS/.kasbah/bin/kasbah"
     printf 'http: {}\n' > "$frag"
     [ "${MAIL_DIR:-dir}" = dir ] || return 0
-    mkdir -p "$FAKE_APPS/mail" "$FAKE_APPS/data/mail/dms/config"
+    mkdir -p "$FAKE_APPS/mail" "$FAKE_APPS/data/mail/dms/config/rspamd/override.d"
+    printf 'services:\n  mail-dms:\n    image: dms:test\n' > "$FAKE_APPS/mail/compose.yml"
+    if [ -n "${KEYS:-}" ]; then
+        mkdir -p "$dkim_dir"
+        for f in "rsa-2048-mail-$KEYS" "ed25519-ed-$KEYS"; do
+            printf 'PLANTED %s\n' "$f" > "$dkim_dir/$f.private.txt"
+            printf 'planted\n' > "$dkim_dir/$f.public.txt"
+            printf 'v=DKIM1; planted\n' > "$dkim_dir/$f.public.dns.txt"
+        done
+    fi
+    [ -z "${OVERRIDE:-}" ] || printf '%s' "$OVERRIDE" > "$override"
     [ "${MAIL_ENV:-yes}" = no ] || printf 'DOMAIN=example.test\n' > "$FAKE_APPS/mail/.env"
     [ -z "${REGISTRY-$registry_one}" ] || printf '%s' "${REGISTRY-$registry_one}" > "$reg"
     [ -z "${ALIASES:-}" ] || printf '%s' "$ALIASES" > "$aliases"
@@ -107,18 +169,48 @@ assert 'grep -qxF "postmaster@shop.test postmaster@example.test" "$aliases"' \
 assert 'grep -qF "postmaster@shop.test postmaster@example.test" <<<"$out"' "which is reported (said '$out')"
 # No router: an app domain needs an MX record, not a fragment.
 assert '[ "$(cat "$frag")" = "http: {}" ]' "and the Traefik fragment is untouched"
-assert 'grep -qF "setup config dkim keytype ed25519 selector ed   domain shop.test" <<<"$out"' \
-    "the DKIM follow-up names the keygen command for the new domain (said '$out')"
-assert '[ -z "$(ls "$FAKE_APPS/mail" | grep -v -e "^kasbah.yml$" -e "^.env$")" ] && [ -z "$(ls -A "$tmpdir/run")" ]' \
-    "and no staging file is left anywhere ($(ls -A "$FAKE_APPS/mail" "$tmpdir/run"))"
+# Its two DKIM keys, made by the image's rspamadm, and a signing block that
+# names both; the primary, with no key planted, has none.
+# (the script spans lines of the log: its first, then the arguments after it)
+assert 'grep -qF "|--network|none|-v|$dkim_dir:/tmp/docker-mailserver/rspamd/dkim|--user|_rspamd|--entrypoint|bash|dms:test|-c|set -euo pipefail" "$call_log" &&
+        grep -qxF "|bash|/tmp/docker-mailserver/rspamd/dkim|ed25519-ed-shop.test|generated|ed|ed25519|dkim_keygen|-s|ed|-d|shop.test|-t|ed25519" "$call_log"' \
+    "the keys are made by rspamadm in the image the mail compose pins ($(grep docker "$call_log"))"
+assert '[ -s "$dkim_dir/rsa-2048-mail-shop.test.private.txt" ] && [ -s "$dkim_dir/ed25519-ed-shop.test.private.txt" ]' \
+    "both of the new domain's private keys are there ($(ls "$dkim_dir" 2>&1))"
+assert '[ "$(cat "$dkim_dir/rsa-2048-mail-shop.test.public.dns.txt")" = "v=DKIM1; k=rsa; p=RSA1RSA2" ]' \
+    "with the TXT record DMS would write beside them ($(cat "$dkim_dir/rsa-2048-mail-shop.test.public.dns.txt" 2>&1))"
+assert 'grep -qF "path = \"/tmp/docker-mailserver/rspamd/dkim/ed25519-ed-shop.test.private.txt\";" "$override" && ! grep -qF "example.test {" "$override"' \
+    "the signing override is rendered with a block for the domain with keys alone ($(cat "$override" 2>&1))"
+assert 'grep -qF "dkim:     keys generated, override written" <<<"$out"' "which is reported (said '$out')"
+assert 'grep -qF "no DKIM key for example.test, so the signing override has no block for it" <<<"$out"' \
+    "and the domain left unsigned is named (said '$out')"
+assert '! grep -qF "setup config dkim" <<<"$out" && grep -qF "kasbah server mail-setup-guide deploy@vps" <<<"$out"' \
+    "the follow-up is DNS alone (said '$out')"
+assert '[ -z "$(ls "$FAKE_APPS/mail" | grep -v -e "^kasbah.yml$" -e "^.env$" -e "^compose.yml$")" ] && [ -z "$(ls -A "$tmpdir/run")" ] &&
+        [ -z "$(ls "${override%/*}" | grep -v "^dkim_signing.conf$")" ] && [ -z "$(ls -A "$dkim_dir" | grep -F .kasbah-new-)" ]' \
+    "and no staging file is left anywhere ($(ls -A "$FAKE_APPS/mail" "$tmpdir/run" "${override%/*}"))"
+
+# Keys already there are never made again; a hand-edited override is
+# replaced, and kept beside it under a name Rspamd never loads.
+planted="$( KEYS=shop.test plant; cat "$dkim_dir"/*shop.test* | sha256sum )"
+out="$( KEYS=shop.test OVERRIDE=$'# hand edit\n' run server add-mail-domain deploy@vps shop.test )"; rc=$?
+assert '[ "$rc" = "0" ] && [ "$(cat "$dkim_dir"/*shop.test* | sha256sum)" = "$planted" ]' \
+    "existing keys are kept byte for byte (rc $rc: $out)"
+assert '! grep -qF "dkim_keygen" "$call_log"' "with no keygen run ($(grep docker "$call_log"))"
+assert 'grep -qF "dkim:     keys kept, override replaced" <<<"$out"' "which is reported (said '$out')"
+assert '[ "$(cat "$override.kasbah-prev")" = "# hand edit" ] && grep -qF "shop.test {" "$override"' \
+    "the hand edit is kept as dkim_signing.conf.kasbah-prev ($(cat "$override.kasbah-prev" 2>&1))"
+assert 'grep -qF "the file it was is kept as $override.kasbah-prev" <<<"$out"' \
+    "and named (said '$out')"
 
 # --- Idempotence -----------------------------------------------------------------
 out="$( REGISTRY="$registry_two" ALIASES=$'postmaster@shop.test postmaster@example.test\n' \
         run server add-mail-domain deploy@vps shop.test )"; rc=$?
 assert '[ "$rc" = "0" ]' "adding a domain twice is not an error (rc $rc: $out)"
 assert 'grep -qF "already served" <<<"$out"' "and says so (said '$out')"
-assert '! wrote' "and writes nothing at all ($(<"$call_log"))"
+assert '! wrote' "and writes neither registry nor alias ($(<"$call_log"))"
 assert '! grep -qF "Added shop.test" <<<"$out"' "not reported as an addition (said '$out')"
+assert 'grep -qF "dkim:     keys generated" <<<"$out"' "while keys still missing are made (said '$out')"
 
 # Listed, but with no alias, so Postfix still refuses mail for it: converges.
 out="$( REGISTRY="$registry_two" run server add-mail-domain deploy@vps shop.test )"; rc=$?
