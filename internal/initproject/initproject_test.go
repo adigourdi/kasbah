@@ -59,7 +59,7 @@ func TestScaffold(t *testing.T) {
 		}
 	}
 	if !strings.Contains(stderr.String(), "Initialized kasbah project 'my-app'") ||
-		!strings.Contains(stderr.String(), "warning: domain is empty") {
+		!strings.Contains(stderr.String(), "warning: domain is empty — before deploying, set domain in kasbah.yml, or routed: false for a project nothing routes") {
 		t.Errorf("stderr = %q", stderr.String())
 	}
 	if !strings.HasPrefix(stdout.String(), "\nNext step:") || !strings.Contains(stdout.String(), "Host(`<your-domain>`)") {

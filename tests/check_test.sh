@@ -3049,6 +3049,35 @@ assert 'grep -qF "⚠ mail-dms is named in .env.prod.example — " <<<"$out"' \
     "and says the template can no longer reach it (said '$out')"
 assert 'grep -qF "mail.<domain>:587" <<<"$out"' "pointing at public submission"
 
+# --- An unrouted project: routed: false, no fragment, no domain --------------
+proju="$tmpdir/relay"
+mkdir -p "$proju"
+(cd "$proju" && "$kasbah" init-project --name=relay >/dev/null)
+printf 'routed: false\n' >> "$proju/kasbah.yml"
+cat > "$proju/compose.prod.yml" <<'YAML'
+services:
+  relay:
+    image: alpine/socat
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}
+    ports: ["5000:5000/udp"]
+YAML
+out="$(cd "$proju" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]' "an unrouted project passes (exit $rc: $out)"
+assert 'grep -qF "✓ No traefik-dynamic.yml — the project is unrouted (routed: false)" <<<"$out"' "with one line saying it is unrouted (said '$out')"
+assert '! grep -qF "⚠" <<<"$out"' "and no warning about the fragment or the domain (said '$out')"
+printf 'http: {}\n' > "$proju/traefik-dynamic.yml"
+out="$(cd "$proju" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ]' "routed: false beside a fragment fails (exit $rc)"
+assert 'grep -qF "✗ kasbah.yml sets routed: false, yet traefik-dynamic.yml exists — remove one" <<<"$out"' "naming both (said '$out')"
+rm "$proju/traefik-dynamic.yml"
+sed -i 's/^routed: false$/routed: no/' "$proju/kasbah.yml"
+out="$(cd "$proju" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "1" ]' "routed: no is not a boolean to YAML 1.2 (exit $rc)"
+assert 'grep -qF "routed: must be true or false, not \"no\"" <<<"$out"' "and is refused naming the key (said '$out')"
+
 # --- The --fix diffs, through GNU patch (fx_run) -----------------------------
 if ! gnu_patch; then
     echo "GNU patch is needed: every --fix diff shown here is applied with it" >&2

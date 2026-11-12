@@ -65,6 +65,9 @@ type fake struct {
 	injectRC  int
 	undoErr   error
 	undoSaved string
+	// routeLeft is a route file an earlier version left; unrouteErr Unroute's failure.
+	routeLeft  bool
+	unrouteErr error
 }
 
 func (f *fake) log(c string) { f.calls = append(f.calls, c) }
@@ -99,6 +102,10 @@ func (f *fake) Sync(e Entry, base string) error {
 	return nil
 }
 func (f *fake) Fragment(local, dest string) error { f.log("fragment " + dest); return f.fragErr }
+func (f *fake) Unroute(apps, name string) (bool, error) {
+	f.log("unroute " + apps + " " + name)
+	return f.routeLeft && f.unrouteErr == nil, f.unrouteErr
+}
 func (f *fake) Inject(dir string, pairs []string) int {
 	f.log("inject")
 	f.injects = append(f.injects, pairs)
@@ -264,6 +271,7 @@ func TestRunFailuresLeaveNoState(t *testing.T) {
 		{"engine reverted", &fake{rc: 1, out: &reverted}, "it was reverted: d@h runs what it ran before", false},
 		{"first deploy failed", &fake{rc: 1, out: &first}, "a first deploy has nothing to revert to", false},
 		{"post-hook failed", &fake{rc: 1, out: &post}, "The Traefik fragment was shipped, so the route names the live containers", true},
+		{"post-hook failed, fragment fails", &fake{rc: 1, out: &post, fragErr: errors.New("x")}, "The Traefik route was not updated either: could not ship traefik-dynamic.yml to d@h:", true},
 		{"revert failed", &fake{rc: 1, out: &revFailed}, "the revert to what ran before failed too", false},
 		{"restored", &fake{rc: 1, out: &restored}, "the files it had shipped were put back", false},
 		{"unrestored", &fake{rc: 1, out: &unrestored}, "putting back the files it had shipped failed", false},
@@ -279,6 +287,9 @@ func TestRunFailuresLeaveNoState(t *testing.T) {
 		err, out := deployWith(t, c.f, Options{Target: "d@h"})
 		if err == nil || !strings.Contains(out, c.want) {
 			t.Errorf("%s: %v\n%s", c.name, err, out)
+		}
+		if strings.HasPrefix(c.name, "post-hook") && strings.Contains(out, "itself succeeded") {
+			t.Errorf("%s: a post-hook failure is not a run that succeeded:\n%s", c.name, out)
 		}
 		if c.f.called("fragment") != c.frag {
 			t.Errorf("%s: fragment shipped = %v", c.name, !c.frag)
@@ -386,6 +397,69 @@ func TestRunSuccess(t *testing.T) {
 	}
 	if len(f.token) != 24 || f.spec.Snapshot != f.token {
 		t.Errorf("snapshot token %q, spec's %q", f.token, f.spec.Snapshot)
+	}
+}
+
+// routed: false beside a fragment is refused before the server is dialed;
+// without one, the deploy says nothing of the fragment.
+func TestRunUnrouted(t *testing.T) {
+	project(t, "routed: false\n")
+	f := &fake{}
+	err, out := deployWith(t, f, Options{Target: "d@h", SkipHooks: true, NoHealthWait: true})
+	if exitOf(err) != 1 || !strings.Contains(out, "kasbah.yml sets routed: false, yet traefik-dynamic.yml exists — remove one") || f.called("marker") {
+		t.Errorf("a fragment beside routed: false: %v %v\n%s", err, f.calls, out)
+	}
+	os.Remove(Fragment)
+	gitc(t, "commit", "-qam", "unrouted")
+	gitc(t, "tag", "-f", "v1.0.0")
+	f = &fake{drift: "template_exists=yes\nenv_exists=yes\nmissing=\nextra=\n"}
+	err, out = deployWith(t, f, Options{Target: "d@h", SkipHooks: true, NoHealthWait: true})
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if f.called("fragment") || strings.Contains(out, Fragment) || strings.Contains(out, "routing:") || strings.Contains(out, "removed") {
+		t.Errorf("unrouted: ships nothing and says nothing of it\n%s", out)
+	}
+	if !f.called("unroute /apps demo") {
+		t.Errorf("unrouted: no look for a route left behind %v", f.calls)
+	}
+	// A route a routed version left is taken down, and said so.
+	f = &fake{drift: f.drift, routeLeft: true}
+	if err, out = deployWith(t, f, Options{Target: "d@h", SkipHooks: true, NoHealthWait: true}); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(out, "removed /apps/traefik/dynamic/demo.yml, the route an earlier version left — demo is unrouted (routed: false)") {
+		t.Errorf("a route left behind: not said\n%s", out)
+	}
+	f = &fake{drift: f.drift, unrouteErr: errors.New("h (connection lost)")}
+	err, out = deployWith(t, f, Options{Target: "d@h", SkipHooks: true, NoHealthWait: true})
+	if exitOf(err) != 1 || !strings.Contains(out, "could not remove d@h:/apps/traefik/dynamic/demo.yml, the route an earlier version left") || !strings.Contains(out, "itself succeeded") {
+		t.Errorf("a failed removal: %v\n%s", err, out)
+	}
+}
+
+// unroute removes the project's route file and nothing else.
+func TestRemoteUnroute(t *testing.T) {
+	apps := t.TempDir()
+	dyn := filepath.Join(apps, "traefik", "dynamic")
+	os.MkdirAll(dyn, 0o755)
+	os.WriteFile(filepath.Join(dyn, "demo.yml"), []byte("http: {}\n"), 0o644)
+	os.WriteFile(filepath.Join(dyn, "other.yml"), []byte("http: {}\n"), 0o644)
+	for _, want := range []string{"route=removed\n", "route=absent\n"} {
+		var out, errb strings.Builder
+		if rc := Remote([]string{"unroute", apps, "demo"}, nil, &out, &errb); rc != 0 || out.String() != want {
+			t.Errorf("rc %d out %q, want %q (%s)", rc, out.String(), want, errb.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dyn, "other.yml")); err != nil {
+		t.Errorf("another project's route went: %v", err)
+	}
+	os.Mkdir(filepath.Join(dyn, "demo.yml"), 0o755)
+	for _, name := range []string{"demo", "../x", ""} {
+		var out, errb strings.Builder
+		if rc := Remote([]string{"unroute", apps, name}, nil, &out, &errb); rc != 1 || out.Len() != 0 {
+			t.Errorf("%q: rc %d out %q", name, rc, out.String())
+		}
 	}
 }
 

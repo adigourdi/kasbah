@@ -432,6 +432,18 @@ func TestServerCert(t *testing.T) {
 	}
 }
 
+// An unrouted project has no certificate to look for, and says nothing of one.
+func TestServerCertUnrouted(t *testing.T) {
+	for _, extra := range []string{"routed: false\n", "routed: false\ndomain: \"\"\n"} {
+		project(t, map[string]string{"kasbah.yml": "schema: 1\nname: demo\nhealth:\n  container: demo-web\n" + extra, "traefik-dynamic.yml": ""})
+		s := newSrv(t)
+		s.r.AcmeState, s.r.Acme = "unreadable", ""
+		out, _ := s.run()
+		contains(t, out, "Server (deploy@vps at /apps):")
+		hasNot(t, out, "certificate", "acme.json", "names no domain")
+	}
+}
+
 func TestServerCertPlainHTTP(t *testing.T) {
 	webOnly := "http:\n  routers:\n" +
 		"    demo: {rule: \"Host(`demo.example.com`)\", entryPoints: [web], service: demo}\n" +

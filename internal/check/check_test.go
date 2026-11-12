@@ -125,6 +125,58 @@ Summary: 28 passed, 1 warning, 0 failed
 	}
 }
 
+// relayCompose publishes a UDP port and joins no Traefik network.
+const relayCompose = `services:
+  demo-relay:
+    image: alpine/socat
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+    ports: ["5000:5000/udp"]
+`
+
+// An unrouted project: no fragment, no domain, and nothing warned about either.
+func TestUnroutedProject(t *testing.T) {
+	project(t, map[string]string{"kasbah.yml": "schema: 1\nname: demo\nrouted: false\n", "compose.prod.yml": relayCompose, "traefik-dynamic.yml": ""})
+	out, _, code := check(t)
+	want := `Checking /p
+
+Structure:
+  ✓ kasbah.yml exists (schema 1)
+  ✓ compose.prod.yml exists
+  ✓ .env.prod.example exists
+  ✓ .gitignore excludes .env
+  ✓ .gitignore excludes .kasbah/
+  ✓ client is not set — backups file under the project name (demo)
+
+Compose:
+  ✓ All services set restart policy
+  ✓ All services set json-file logging with rotation
+  ✓ No Traefik-routed services in compose
+  ✓ No internal services on the kasbah network or kasbah-net
+  ✓ No deprecated 'version:' field
+
+Resources:
+  ✓ All services set cpus/mem_limit via KASBAH_* vars
+  ✓ No resource reservations
+
+Traefik:
+  ✓ No traefik-dynamic.yml — the project is unrouted (routed: false)
+  ✓ compose.prod.yml has no traefik.* labels
+
+Env:
+  ✓ .env.prod.example syntax is valid
+  ✓ .env.prod.example has no obvious long secrets
+  ✓ .env.prod.example leaves the KASBAH_* prefix to kasbah
+
+Summary: 18 passed, 0 warning, 0 failed
+`
+	if out != want || code != 0 {
+		t.Errorf("exit %d, report:\n%s", code, out)
+	}
+}
+
 const man = "schema: 1\nname: demo\ndomain: demo.example.com\n"
 
 func TestVerdicts(t *testing.T) {
@@ -203,6 +255,21 @@ func TestVerdicts(t *testing.T) {
 		{"with no fragment read, the default-alias shape still fails C07",
 			map[string]string{"traefik-dynamic.yml": "", "compose.prod.yml": legacyCompose + "  default: {name: kasbah-net}\n"}, 6,
 			[]string{"  ⚠ traefik-dynamic.yml missing — skipping C03 and C11, which need the services it routes", "  ✗ default network aliases kasbah-net — every service joins the shared network; join it explicitly per routed service and keep the rest on a project-internal network"}},
+		{"routed: false still judges C07: nothing may join the kasbah network",
+			map[string]string{"kasbah.yml": "schema: 1\nname: demo\nrouted: false\n", "traefik-dynamic.yml": ""}, 6,
+			[]string{"  ✓ No Traefik-routed services in compose", "  ✗ Non-routed services on the kasbah network: demo-web — Traefik joins it, so only what it routes belongs there",
+				"  ✓ No traefik-dynamic.yml — the project is unrouted (routed: false)"}},
+		{"routed: false and a fragment contradict",
+			map[string]string{"kasbah.yml": man + "routed: false\n"}, 6,
+			[]string{"  ✗ kasbah.yml sets routed: false, yet traefik-dynamic.yml exists — remove one: the fragment to keep the project unrouted, or routed: false to route it",
+				"  ⚠ manifest domain is 'demo.example.com', but routed: false — nothing routes it to this project; leave domain: out"}},
+		{"routed: false with a domain warns that nothing routes it",
+			map[string]string{"kasbah.yml": man + "routed: false\n", "traefik-dynamic.yml": "", "compose.prod.yml": relayCompose}, 0,
+			[]string{"  ✓ No traefik-dynamic.yml — the project is unrouted (routed: false)",
+				"  ⚠ manifest domain is 'demo.example.com', but routed: false — nothing routes it to this project; leave domain: out"}},
+		{"routed: true with no fragment is today's project",
+			map[string]string{"kasbah.yml": man + "routed: true\n", "traefik-dynamic.yml": ""}, 0,
+			[]string{"  ⚠ traefik-dynamic.yml missing — skipping T02–T05 and T08–T10"}},
 		{"a legacy project on kasbah-net passes C03 and is warned to move",
 			map[string]string{"compose.prod.yml": legacyCompose}, 0,
 			[]string{"  ✓ All routed services join kasbah-net", "  ⚠ Routed through the shared kasbah-net: demo-web — every project's routed containers reach each other there; move them to a project network under the key kasbah (docs/traefik.md → Network)",

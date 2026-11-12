@@ -187,7 +187,9 @@ by `server init --with-mail`. Don't author your own `_`-prefixed files.
 
 ## Project fragment
 
-Each project ships `traefik-dynamic.yml` at its repo root. `kasbah deploy`
+Each routed project ships `traefik-dynamic.yml` at its repo root (a project
+with nothing to route says `routed: false` in its manifest and ships none —
+`project-manifest.md` → `routed`). `kasbah deploy`
 syncs it directly to `/apps/traefik/dynamic/<manifest.name>.yml` — no
 intermediate copy, no entry in the manifest's `sync:` list. Kasbah
 handles it out-of-band.
@@ -522,6 +524,9 @@ server status` surfaces it.
 - **Deploy / rollback, before the fragment** — after `compose up`, Traefik is
   attached to `<project>_kasbah` (a failed attach fails the run, which reverts);
   a revert's own `up` attaches it again.
+- **Deploy / rollback of an unrouted version** (`routed: false`) — kasbah
+  removes `/apps/traefik/dynamic/<manifest.name>.yml` when an earlier version
+  left one there, and says so; with none there it says nothing of routes.
 - **Drop** — `rm /apps/traefik/dynamic/<manifest.name>.yml`, then Traefik
   detached from `<project>_kasbah`, then `docker compose down`. That order is the
   point: the route goes first, so a run that dies between them leaves a stopped
@@ -544,7 +549,7 @@ server status` surfaces it.
   network (or the legacy `kasbah-net`) — internal services stay on a
   project-internal network.
 
-`kasbah check` enforces these (rules T01–T10, C03, C04, C07, C09).
+`kasbah check` enforces these (rules T01–T11, C03, C04, C07, C09).
 
 ## Upgrading Traefik
 

@@ -180,6 +180,44 @@ func TestDeployVersion(t *testing.T) {
 	}
 }
 
+// A tag's own routed: false is judged against the tag's own fragment.
+func TestDeployVersionUnrouted(t *testing.T) {
+	history(t, "routed: false\n")
+	f := &fake{}
+	err, out := runTagged(t, f, Options{Target: "d@h", Version: "1.0.0"}, "deploy")
+	if exitOf(err) != 1 || !strings.Contains(out, "v1.0.0 cannot be deployed: its kasbah.yml sets routed: false, yet it carries traefik-dynamic.yml") || !strings.Contains(out, "Pick a version tag that has only one of the two") || f.called("marker") {
+		t.Errorf("a tag's fragment beside its routed: false: %v %v\n%s", err, f.calls, out)
+	}
+	os.Remove(Fragment)
+	write(t, map[string]string{"kasbah.yml": "schema: 1\nname: demo\nrouted: false\nsync:\n  - compose.prod.yml -> compose.yml\n  - .env.prod.example\n"})
+	git(t, "commit", "-qam", "three")
+	git(t, "tag", "v3.0.0")
+	f = &fake{}
+	if err, out = runTagged(t, f, Options{Target: "d@h", Version: "3.0.0"}, "deploy"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if f.called("fragment") || strings.Contains(out, Fragment) || !f.called("unroute /apps demo") {
+		t.Errorf("an unrouted tag: ships nothing and says nothing of it %v\n%s", f.calls, out)
+	}
+	// Back from a routed version: its route is taken down, in both modes.
+	for _, mode := range []string{"deploy", "rollback"} {
+		f = &fake{routeLeft: true}
+		o := Options{Target: "d@h", Version: "3.0.0"}
+		if mode == "rollback" {
+			rep := "{\"" + ReportKey + "\":1,\"version\":\"3.0.0\",\"prev_version\":\"2.0.0\",\"deployed_before\":true,\"backup\":\"no-backup\",\"digest\":\"-\"}\n"
+			f.out, f.record = &rep, record("2026-01-01T00:00:00+00:00 deploy 3.0.0 no-backup kasbah=0.1.0 digest=-\n"+
+				"2026-02-01T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n", "", true)
+			o.Version = ""
+		}
+		if err, out = runTagged(t, f, o, mode); err != nil {
+			t.Fatalf("%s: %v\n%s", mode, err, out)
+		}
+		if !strings.Contains(out, "removed /apps/traefik/dynamic/demo.yml, the route an earlier version left") {
+			t.Errorf("%s: a route left behind is not said\n%s", mode, out)
+		}
+	}
+}
+
 // A named deploy and a rollback end like a deploy of HEAD: a tag origin lacks
 // is one summary line, asked once the server is let go; one it has is silence.
 func TestTaggedUnpublishedTag(t *testing.T) {

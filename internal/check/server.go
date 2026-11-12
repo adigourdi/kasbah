@@ -756,7 +756,11 @@ func or(s, def string) string {
 	return s
 }
 
+// cert is silent for an unrouted project: nothing on it asks for a certificate.
 func (c *checker) cert() {
+	if c.m.Unrouted {
+		return
+	}
 	s := c.srv
 	path := s.data + "/traefik/letsencrypt/acme.json"
 	d := c.m.Domain

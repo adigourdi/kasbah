@@ -870,6 +870,9 @@ Flow (no-args / working-tree path):
      was taken.
 9. Sync `traefik-dynamic.yml` to `/apps/traefik/dynamic/<name>.yml` — locally
    driven, after the stack is up, so a failed deploy leaves no live route.
+   Without one nothing is written, with a warning — unless the manifest says
+   `routed: false`: then the route an earlier version left there is removed,
+   and the run says so. That key beside a fragment is refused before step 1.
 10. Ask origin whether it has `v<version>`, once the server is let go — the
     same read-only check and one `git:` line as `build-push` step 6; it never
     fails the run. Then print the local changelog (`git log <prev>..<new>`).
@@ -963,8 +966,9 @@ Flow (see `build-deploy.md` for full detail):
 9. Sync v<target>'s `traefik-dynamic.yml` to
    `/apps/traefik/dynamic/<name>.yml` — **last**, once the remote step has
    returned 0, for the same reason `deploy` ships it last. A version carrying
-   no fragment is rolled back anyway and warned about; the fragment already
-   there is never deleted.
+   no fragment is rolled back anyway and warned about, and the fragment
+   already there is kept — unless its manifest says `routed: false`: then no
+   warning, and that fragment is removed, as `deploy` step 9 does.
 10. Ask origin whether it has `v<target>`, once the server is let go — the
     same read-only check and one `git:` line as `build-push` step 6; it never
     fails the run.

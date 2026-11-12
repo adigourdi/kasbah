@@ -29,6 +29,9 @@ var Reserved = []string{"traefik", "mail", "data", "backups"}
 
 var reName = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
+// ValidName is whether name matches the name: field's charset.
+func ValidName(name string) bool { return reName.MatchString(name) }
+
 // NameReserved reports whether a name is one kasbah owns.
 func NameReserved(name string) bool {
 	for _, r := range Reserved {
@@ -71,6 +74,9 @@ type Manifest struct {
 	// Domain may be empty: init-project without --domain writes `domain: ""`,
 	// and the commands that need one enforce it themselves.
 	Domain string
+	// Unrouted is `routed: false`: the project has no Traefik fragment on
+	// purpose. Absent or null is routed.
+	Unrouted bool
 	// Doc is the whole document, for every other question about it.
 	Doc tree.Value
 }
@@ -128,6 +134,11 @@ func Require(path, version string) (*Manifest, error) {
 	if n, err := strconv.ParseUint(schema, 10, 64); err == nil && n > Schema {
 		return nil, &NewerSchema{Schema: n, err: cli.Fail("%s: schema %s is newer than this kasbah (%s supports schema %d). Upgrade kasbah.", path, schema, version, Schema)}
 	}
+	// After the schema: a newer one may give `routed` a meaning this kasbah lacks.
+	routed, _ := tree.Lookup(docs[0], "routed")
+	if _, ok := routed.(bool); !ok && routed != nil {
+		return nil, cli.Fail("%s: routed: must be true or false, not %s", path, tree.Compact(routed))
+	}
 	if name == "" || name == "null" {
 		return nil, cli.Fail("%s: missing required field 'name'", path)
 	}
@@ -137,7 +148,7 @@ func Require(path, version string) (*Manifest, error) {
 	if NameReserved(name) {
 		return nil, cli.Fail("%s: '%s' is reserved — kasbah owns <apps>/%s on every server (reserved: %s). Rename the project.", path, name, name, strings.Join(Reserved, " "))
 	}
-	return &Manifest{Path: path, Schema: schema, KasbahVersion: kv, Name: name, Domain: domain, Doc: docs[0]}, nil
+	return &Manifest{Path: path, Schema: schema, KasbahVersion: kv, Name: name, Domain: domain, Unrouted: routed == false, Doc: docs[0]}, nil
 }
 
 // Render is the manifest init-project scaffolds. The domain is written inside

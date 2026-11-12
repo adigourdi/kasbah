@@ -525,7 +525,14 @@ below). The only differences:
 9. Sync traefik-dynamic.yml → /apps/traefik/dynamic/<name>.yml (its content —
    a symlinked fragment ships what it points to, mode 644). Done by the
    *local* side once the engine has returned 0 with a valid report — the file
-   is on the workstation, and the ordering is the point (see below).
+   is on the workstation, and the ordering is the point (see below). A
+   checkout with no fragment writes nothing and is warned about. An unrouted
+   project (`routed: false`) is not warned about: instead the route an
+   earlier, routed version left at /apps/traefik/dynamic/<name>.yml is
+   removed (`kasbah remote deploy unroute`), and the run says so; when there
+   is none it says nothing. That file is not in the snapshot — a later deploy
+   or rollback of a routed version ships its own. One with `routed: false`
+   and a fragment both is refused at the start, before anything is shipped.
 10. Ask origin for v<version>, read-only, once the server lock and the ssh
     session are released; a missing tag is one line under the summary
     (Versioning contract). Then compute the changelog
@@ -925,7 +932,11 @@ small without sacrificing history.
     (see "Why the fragment ships last"). A rollback that dies at
     `compose up` must not have already pointed the live route at
     v<target>'s container names. A project with no fragment at v<target>
-    is warned about and rolled back anyway; nothing is ever deleted.
+    is warned about and rolled back anyway, and its live route is left as
+    it is. When v<target>'s manifest says `routed: false`, there is no
+    warning, and the route a routed version left is removed and the run
+    says so, as a deploy's step 9 does; when it says so beside a fragment,
+    the rollback is refused before anything is shipped.
 12. Ask origin for v<target>, read-only, once the server lock and the ssh
     session are released; a missing tag is one line under the summary
     (Versioning contract) — a version that reached the server through
@@ -963,7 +974,8 @@ Restores:
 - Everything in v<target>'s `sync:` list: compose.prod.yml → compose.yml,
   .env.prod.example, init SQL, etc.
 - v<target>'s `traefik-dynamic.yml` → /apps/traefik/dynamic/<name>.yml,
-  synced out-of-band (same path as deploy).
+  synced out-of-band (same path as deploy); for an unrouted v<target>, that
+  file removed.
 - `.env`, from v<target>'s newest backup, when there is one and the answer is
   restore (whole) or per key (flow, step 7). Either way v<target>'s template
   then goes through the standard drift detection.

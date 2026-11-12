@@ -3,6 +3,7 @@ package deploy
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -419,10 +420,29 @@ func readSync(m *manifest.Manifest) ([]Entry, error) {
 	return sync, nil
 }
 
+// unroutedFragment refuses `routed: false` beside a fragment, as check fails it.
+func unroutedFragment(m *manifest.Manifest, pwd, version string, historical bool) error {
+	if !m.Unrouted {
+		return nil
+	}
+	if fi, err := os.Stat(filepath.Join(pwd, Fragment)); err != nil || !fi.Mode().IsRegular() {
+		return nil
+	}
+	if historical {
+		return cli.Fail("v%s cannot be deployed: its kasbah.yml sets routed: false, yet it carries %s — the two contradict, so kasbah cannot tell whether that version is routed", version, Fragment).
+			Cont("Nothing was changed on the server. Pick a version tag that has only one of the two;",
+				"for a later release, remove one of them from the project and tag it.")
+	}
+	return cli.Fail("kasbah.yml sets routed: false, yet %s exists — remove one: the fragment to keep the project unrouted, or routed: false to route it", Fragment)
+}
+
 // readPlan reads from the current directory; historical is a tag's manifest.
 func readPlan(m *manifest.Manifest, pwd, version string, historical bool) (*Plan, error) {
 	p := &Plan{}
 	var err error
+	if err := unroutedFragment(m, pwd, version, historical); err != nil {
+		return nil, err
+	}
 	if p.Sync, err = readSync(m); err != nil {
 		return nil, err
 	}

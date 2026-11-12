@@ -108,7 +108,8 @@ Types are what the YAML says, not what it can be printed as. A text field
 domain below) takes a string — a number reads as its text — and refuses a
 boolean, a list or a block; a block (`health`, `hooks`, `resources`, `mail`)
 that is not a mapping is refused, and an absent or null one means none
-(`false` too, for `health` and `mail`); `sync` must be a list. A top-level
+(`false` too, for `health` and `mail`); `sync` must be a list, and `routed`
+a boolean. A top-level
 `backup:` key, whatever it holds, is refused by `kasbah check` (HK02) and by
 every deploy and rollback, pointing at `hooks.backup` (below).
 
@@ -147,11 +148,34 @@ holds the shared mail stack, and `--remove-orphans` there takes mail off the
 whole server. `kasbah check` and `kasbah deploy` both refuse these names, and
 `init-project` will not scaffold one.
 
-### `domain` *(required)*
+### `domain` *(optional)*
 
-The primary Traefik hostname. Used in checks (the compose file must route
-this host somewhere), in `kasbah server status` output, and for the mail
-claim reconciliation.
+The primary Traefik hostname. Used in checks (T02 and T08 match the
+fragment's routers against it), in `kasbah server status` output, and by
+`check --server`'s certificate lookup. Absent, null and `""` all read as no
+domain; `init-project` without `--domain` writes `domain: ""`. A routed
+project with no domain is warned about by `kasbah check` (T02 and T08 are
+skipped); an unrouted one (`routed: false`, below) leaves it out.
+
+### `routed` *(optional, boolean)*
+
+Whether Traefik routes to this project. Absent (or null) is `true`: the
+project ships `traefik-dynamic.yml`, and a missing fragment is warned about
+(T01). `routed: false` says the project has no fragment on purpose — a UDP
+relay publishing a raw port, say — so `kasbah check` passes it without the
+fragment and without a domain (T11), `check --server` looks up no certificate,
+and `deploy` writes no route. Where an earlier, routed version left one at
+`<apps>/traefik/dynamic/<name>.yml`, `deploy`, `deploy <version>` and
+`rollback` of an unrouted version remove it and say so; where none is left,
+they say nothing of routes. Deploying or rolling back to a routed version
+ships its fragment again. Only
+a YAML boolean is accepted: `true`, `True`, `TRUE`, `false`, `False` or
+`FALSE`; anything else — `fAlSe`, `no`, `"false"`, `0` — is refused naming
+the key, since YAML 1.2 reads `no` as a string. With
+`routed: false`, a `traefik-dynamic.yml` in the checkout fails `check` and is
+refused by `deploy` (and by `deploy <version>` and `rollback`, reading the
+tag's manifest and fragment) before anything is shipped: remove one or the
+other. A `domain` set alongside it is warned about, since nothing routes it.
 
 ### `client` *(optional)*
 

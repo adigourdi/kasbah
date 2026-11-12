@@ -853,9 +853,26 @@ assert 'grep -qE "^  keep +$image_web:$label  " <<<"$plan" && ! grep -E "^  keep
 assert 'grep -E "^  keep +$image_web:$label  " <<<"$plan" | grep -qF "inside the 3-month window"' \
     "— the only reason left once :current has moved off it (plan: $plan)"
 
+# --- routed: false takes down the route a routed version left ---------------------------
+route_remote="$apps/traefik/dynamic/$project.yml"
+route_state() { rig_ssh "[ -f $route_remote ] && echo present || echo absent" 2>/dev/null | tr -d '\r'; }
+assert '[ "$(route_state)" = "present" ]' "the routed v$next_version left its route at $route_remote"
+( cd "$projdir" && printf 'routed: false\n' >> kasbah.yml && rm traefik-dynamic.yml ) || exit 2
+build_push "$RIG_TARGET" --dirty; rc=$?
+assert '[ "$rc" = "0" ]' "build-push --dirty ships the unrouted tree (exit $rc: $(cli_err))"
+unrouted_label="$(jq -r .dirty_build "$projdir/.kasbah/state.json" 2>/dev/null)"
+deploy "$RIG_TARGET" --dirty; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "removed $route_remote, the route an earlier version left" "$tmpdir/err"' \
+    "an unrouted deploy says it removed the route left behind (exit $rc: $(cli_err))"
+assert '[ "$(route_state)" = "absent" ]' "and the route is gone from the server"
+( cd "$projdir" && git checkout -q -- kasbah.yml traefik-dynamic.yml ) || exit 2
+kx rollback "$RIG_TARGET" "$next_version" --no-env --no-data; rc=$?
+assert '[ "$rc" = "0" ] && [ "$(route_state)" = "present" ]' \
+    "a rollback to the routed v$next_version ships its route again (exit $rc: $(cli_err))"
+
 # --- Leave the rig as it was found, but only on success ---------------------------------
 if [ "$fail" -eq 0 ]; then
-    rig_ssh "docker image rm -f $web $worker $image_web:$next_version $image_worker:$next_version $image_web:$label $image_worker:$label $image_web:current $image_worker:current" >/dev/null 2>&1
+    rig_ssh "docker image rm -f $web $worker $image_web:$next_version $image_worker:$next_version $image_web:$label $image_worker:$label $image_web:$unrouted_label $image_worker:$unrouted_label $image_web:current $image_worker:current" >/dev/null 2>&1
     rig_clean || fail=1
 fi
 

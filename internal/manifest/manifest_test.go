@@ -92,6 +92,15 @@ func TestRefusals(t *testing.T) {
 	refused(t, write(t, "# only a comment\n"), 1, "expected a single YAML document")
 	refused(t, write(t, "schema: 1\nname: demo\ndomain: {a: 1}\n"), 1, "domain: is a list or a mapping")
 	refused(t, write(t, "schema: 1\nname: \"de\\nmo\"\n"), 1, "name: spans more than one line")
+	// Only a YAML boolean: `no` is a string to go.yaml.in/yaml/v3.
+	for _, v := range []string{"no", `"false"`, "0", "off", "fAlSe", "[false]"} {
+		refused(t, write(t, "schema: 1\nname: demo\nrouted: "+v+"\n"), 1, "routed: must be true or false, not ")
+	}
+	// The schema is judged first: a newer one hands off whatever `routed` holds.
+	if _, err := Require(write(t, "schema: 2\nname: demo\nrouted: maybe\n"), version); !errors.As(err, &ns) || ns.Schema != 2 {
+		t.Errorf("schema 2 beside a bad routed: is not a *NewerSchema: %v", err)
+	}
+	refused(t, write(t, "name: demo\nrouted: maybe\n"), 1, "missing required field 'schema'")
 	for _, r := range Reserved {
 		p := write(t, "schema: 1\nkasbah_version: 0.1.0\nname: "+r+"\ndomain: \"r.test\"\nsync: []\n")
 		refused(t, p, 1, "is reserved — kasbah owns <apps>/"+r+" on every server (reserved: traefik mail data backups)")
@@ -117,8 +126,14 @@ func TestAccepted(t *testing.T) {
 		t.Errorf("CRLF domain %q", m.Domain)
 	}
 	m, _ = Require(write(t, "schema: 1\nname: nodomain\ndomain: \"\"\n"), version)
-	if m.Domain != "" {
-		t.Errorf("empty domain %q", m.Domain)
+	if m.Domain != "" || m.Unrouted {
+		t.Errorf("empty domain %q, unrouted %v", m.Domain, m.Unrouted)
+	}
+	for in, unrouted := range map[string]bool{"routed: false\n": true, "routed: False\r\n": true, "routed: true\n": false, "routed: ~\n": false, "": false} {
+		m, err := Require(write(t, "schema: 1\nname: relay\n"+in), version)
+		if err != nil || m.Unrouted != unrouted || m.Domain != "" {
+			t.Errorf("%q: %+v %v", in, m, err)
+		}
 	}
 }
 

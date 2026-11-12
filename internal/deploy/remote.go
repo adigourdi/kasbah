@@ -7,14 +7,17 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/fsstate"
+	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/remote"
 )
 
 // RemoteUsage names `kasbah remote deploy`'s modes.
-const RemoteUsage = "usage: kasbah remote deploy prepare APPS DATA NAME CLIENT [DIR…] | snapshot DIR TOKEN TARGET… | run DIR (spec on stdin) | mail APPS | images VERSION IMAGE… | backup DIR | backup-probe DIR VERSION | restore-env DIR BACKUP --all|KEY… | restore-env DIR --undo TOKEN | backup-probe DIR --backup NAME | restore-list APPS NAME [SNAPSHOT] [--from-path=PATH] | fetch DIR SNAPSHOT BACKUP [--from-path=PATH] | restore DIR BACKUP LIVE [--env=all|--env=KEY,…] [--data]"
+const RemoteUsage = "usage: kasbah remote deploy prepare APPS DATA NAME CLIENT [DIR…] | snapshot DIR TOKEN TARGET… | run DIR (spec on stdin) | unroute APPS NAME | mail APPS | images VERSION IMAGE… | backup DIR | backup-probe DIR VERSION | restore-env DIR BACKUP --all|KEY… | restore-env DIR --undo TOKEN | backup-probe DIR --backup NAME | restore-list APPS NAME [SNAPSHOT] [--from-path=PATH] | fetch DIR SNAPSHOT BACKUP [--from-path=PATH] | restore DIR BACKUP LIVE [--env=all|--env=KEY,…] [--data]"
 
 // Remote is `kasbah remote deploy …` on a server. stdout is a protocol in
 // every mode; narration and docker's output go to stderr.
@@ -37,6 +40,10 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		w, done := remote.Outlive(stderr)
 		defer done()
 		return prepare(args[1], args[2], args[3], args[4], args[5:], stdout, w)
+	case args[0] == "unroute" && len(args) == 3:
+		w, done := remote.Outlive(stderr)
+		defer done()
+		return unroute(args[1], args[2], stdout, w)
 	case args[0] == "backup" && len(args) == 2:
 		w, done := remote.Outlive(stderr)
 		defer done()
@@ -114,6 +121,27 @@ func prepare(apps, data, name, client string, parents []string, stdout, stderr i
 		}
 	}
 	fmt.Fprintf(stdout, "client=%s\nprepared=yes\n", state)
+	return 0
+}
+
+// unroute removes an unrouted project's leftover route file, never anything
+// but a file: route=removed, or route=absent when there was none.
+func unroute(apps, name string, stdout, stderr io.Writer) int {
+	if !manifest.ValidName(name) {
+		fmt.Fprintf(stderr, "remote: invalid project name '%s'\n", name)
+		return 1
+	}
+	p := filepath.Join(apps, "traefik", "dynamic", name+".yml")
+	if fi, err := os.Lstat(p); err == nil && fi.IsDir() {
+		fmt.Fprintf(stderr, "remote: %s is a directory, not a route file\n", p)
+		return 1
+	}
+	st := fsstate.Remove(p)
+	if st == "failed" {
+		fmt.Fprintf(stderr, "remote: could not remove %s\n", p)
+		return 1
+	}
+	fmt.Fprintf(stdout, "route=%s\n", st)
 	return 0
 }
 

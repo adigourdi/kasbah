@@ -288,6 +288,8 @@ type Server interface {
 	// Run is the engine; ask answers its question after a failed pre-step.
 	Run(dir string, sp Spec, ask func(Question) string) (stdout string, rc int)
 	Fragment(local, dest string) error
+	// Unroute removes <apps>/traefik/dynamic/<name>.yml; removed is whether one was there.
+	Unroute(apps, name string) (removed bool, err error)
 	// Images and Record are the tagged path's: which :<version> images are
 	// gone, and the deploy record.
 	Images(version string, images []string) (checked int, missing []string, err error)
@@ -733,7 +735,9 @@ func (r *run) engineFailed(out string, rc int) error {
 			"and was not reverted, because the hook may already have changed data.",
 			"versions.log records it as deploy-failed.")
 		if shipped, ferr := r.route(); ferr != nil {
-			e.Cont("The Traefik fragment could not be shipped: " + ferr.Error() + ".")
+			// Only the headline: the rest is written for a run that succeeded.
+			head, _, _ := strings.Cut(ferr.Error(), "\n")
+			e.Cont("The Traefik route was not updated either: " + strings.TrimSuffix(head, ".") + ".")
 		} else if shipped {
 			e.Cont("The Traefik fragment was shipped, so the route names the live containers.")
 		}
@@ -761,10 +765,14 @@ func ParseFailure(out string) *Failure {
 	return found
 }
 
-// fragment ships the route last; a project without one deploys anyway.
+// fragment ships the route last; a project without one deploys anyway, and
+// an unrouted one without a word unless it takes down a route left behind.
 func (r *run) fragment() (bool, error) {
 	dest := r.mk.AppsPath + "/traefik/dynamic/" + r.m.Name + ".yml"
 	if fi, err := os.Stat(r.frag); err != nil || !fi.Mode().IsRegular() {
+		if r.m.Unrouted {
+			return false, r.unroute(dest)
+		}
 		r.c.Out.Warn("no %s in %s — nothing was written to %s", Fragment, r.c.PWD, dest)
 		r.c.Out.Warn("this project routes through Traefik only if that file exists (docs/traefik.md)")
 		return false, nil
@@ -783,6 +791,22 @@ func (r *run) fragment() (bool, error) {
 		return false, e.Cont("re-run `" + r.rerun() + "` once the server is reachable again.")
 	}
 	return true, nil
+}
+
+// unroute removes the route an earlier, routed version left: nothing routes
+// an unrouted project, so that file would send its host to nothing.
+func (r *run) unroute(dest string) error {
+	removed, err := r.s.Unroute(r.mk.AppsPath, r.m.Name)
+	if err != nil {
+		return cli.Fail("could not remove %s:%s, the route an earlier version left: %v", r.target, dest, err).Cont(
+			"the "+r.mode+" itself succeeded — the new containers are up and versions.log",
+			"already records "+r.version+", and nothing routes them. Traefik still serves that",
+			"route; re-run `"+r.rerun()+"` once the server is reachable again.")
+	}
+	if removed {
+		r.c.Out.Info("removed %s, the route an earlier version left — %s is unrouted (routed: false)", dest, r.m.Name)
+	}
+	return nil
 }
 
 func (r *run) banner(headline string, rep *Report, client string, shipped bool) {

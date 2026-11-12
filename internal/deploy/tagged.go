@@ -113,6 +113,8 @@ type tagged struct {
 	extract  string
 	hasFrag  bool
 	fragName string
+	// unrouted is the tag's own `routed: false`.
+	unrouted bool
 	pop      func()
 }
 
@@ -234,6 +236,9 @@ func RunTagged(c Ctx, o Options, mode string) error {
 			return r.fragment()
 		}
 		dest := r.mk.AppsPath + "/traefik/dynamic/" + m.Name + ".yml"
+		if t.unrouted {
+			return false, r.unroute(dest)
+		}
 		c.Out.Warn("v%s carries no %s — nothing was written to %s", r.version, t.fragName, dest)
 		c.Out.Warn("whatever is there now is left as it is: removing a route is `kasbah drop`'s decision")
 		return false, nil
@@ -510,7 +515,7 @@ func (r *run) readRef(t *tagged) error {
 	if err := checkExtraction(ref, r.version, r.mode, paths, tmp); err != nil {
 		return err
 	}
-	t.fragName = Fragment
+	t.fragName, t.unrouted = Fragment, m.Unrouted
 	if ty, err := refType(ref, Fragment); err != nil {
 		return err
 	} else if ty == "blob" {

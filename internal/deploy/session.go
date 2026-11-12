@@ -153,6 +153,22 @@ func (s *SSH) Fragment(local, dest string) error {
 	return treesync.Push(s.Conn, s.Bin(), src, dest)
 }
 
+// Unroute is `kasbah remote deploy unroute`.
+func (s *SSH) Unroute(apps, name string) (bool, error) {
+	out, err := s.Conn.Run(s.Bounded("deploy", "unroute", apps, name)...)
+	if err != nil {
+		return false, cli.Fail("%s (%s, see above)", s.target(), serverbin.ExitText(ssh.ExitCode(err), serverbin.RunTimeout))
+	}
+	switch lines(out)["route"] {
+	case "removed":
+		return true, nil
+	case "absent":
+		return false, nil
+	}
+	return false, rawOutput(cli.Fail("the route removal on %s reported no route", s.target()).Cont(
+		"the step was truncated, or the server's kasbah rejected it — raw output:"), out)
+}
+
 func (s *SSH) Images(version string, images []string) (int, []string, error) {
 	out, err := s.Conn.Run(s.Bounded(append([]string{"deploy", "images", version}, images...)...)...)
 	if err != nil {

@@ -112,7 +112,7 @@ func Run(out *cli.Output, o Options, pwd, version string) error {
 	if o.Domain != "" {
 		out.Info("  domain: %s", o.Domain)
 	} else {
-		out.Warn("domain is empty — edit kasbah.yml before deploying")
+		out.Warn("domain is empty — before deploying, set domain in kasbah.yml, or routed: false for a project nothing routes")
 	}
 	fmt.Fprintln(out.Stdout)
 	fmt.Fprint(out.Stdout, Snippet(name, o.Domain))

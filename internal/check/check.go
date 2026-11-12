@@ -488,6 +488,9 @@ func (c *checker) networks() (on, own []string, defaultAliases bool) {
 	hnExt := c.need(d, "networks", "kasbah-net", "external") == true
 	routed := c.routedHosts()
 	_, unread := c.fragment()
+	if c.m.Unrouted && !isFile(traefikFile) {
+		unread = ""
+	}
 
 	var badC03, badC07HN, badC07PN, legacy []string
 	nRouted := 0
@@ -833,22 +836,31 @@ func (c *checker) r05(block tree.Value) {
 	c.passf("resources: %s — resolved on the server at deploy (a %% is a share of the host) and held to its 90%% ceiling", strings.Join(set, ", "))
 }
 
-// --- Traefik (T01–T10) ------------------------------------------------------
+// --- Traefik (T01–T11) ------------------------------------------------------
 
 func (c *checker) traefikSection() {
 	c.section("Traefik")
 	routers, unread := c.fragment()
-	if unread != "" {
+	unrouted := c.m.Unrouted
+	switch {
+	case unrouted && isFile(traefikFile):
+		c.failf("kasbah.yml sets routed: false, yet traefik-dynamic.yml exists — remove one: the fragment to keep the project unrouted, or routed: false to route it")
+	case unrouted:
+		c.passf("No traefik-dynamic.yml — the project is unrouted (routed: false)")
+	case unread != "":
 		c.warnf("%s — skipping T02–T05 and T08–T10", unread)
-	} else {
+	default:
 		c.passf("traefik-dynamic.yml exists")
+	}
+	if unrouted && c.m.Domain != "" {
+		c.warnf("manifest domain is '%s', but routed: false — nothing routes it to this project; leave domain: out", c.m.Domain)
 	}
 
 	if unread == "" {
 		domain := c.m.Domain
 		if domain != "" {
 			c.t02(routers, domain)
-		} else {
+		} else if !unrouted {
 			c.warnf("manifest domain is empty — skipping T02 and T08 (both match routers against it)")
 		}
 		c.t03(routers)
