@@ -158,6 +158,11 @@ func TestProbe(t *testing.T) {
 		if !errors.As(err, &e) || e.Code != cli.ExitNoRemoteState || !strings.Contains(err.Error(), "`kasbah server init`") || strings.Contains(err.Error(), "init d@h") {
 			t.Fatalf("got %v; want exit 4 naming kasbah server init, and no runnable bare init", err)
 		}
+		// What Inspect reads: no marker is a fact, not a refusal.
+		p, err := readLayout("d@h", rc, out)
+		if err != nil || p.Apps != s.apps || p.Marker || p.Bin.Present || p.Machine == "" {
+			t.Errorf("readLayout: %+v, %v", p, err)
+		}
 	})
 	t.Run("default, marker, no binary", func(t *testing.T) {
 		s := newScratch(t)
@@ -768,7 +773,8 @@ func TestEnsurePrepared(t *testing.T) {
 }
 
 // A marker of another major is refused before anything ships, in every mode
-// but Migrating's, which admits the older one.
+// but Migrating's, which admits the older one — and before the command reads
+// its fields, which a newer major may lay out otherwise.
 func TestEnsureMajor(t *testing.T) {
 	const ours = "1.0.2-dev.142.1760790000"
 	RunTimeout = 2
@@ -780,20 +786,31 @@ func TestEnsureMajor(t *testing.T) {
 		name, version string
 		opt           Options
 		refuse        string
+		raw           string
 	}{
-		{"older, prepared", "0.9.0", prepared, "`kasbah migrate server d@h`"},
-		{"older, bootstrap", "0.9.0", Options{}, "`kasbah migrate server d@h`"},
-		{"older, migrating", "0.9.0", Options{Prepared: prepared.Prepared, Migrating: true}, ""},
-		{"newer, prepared", "99.0.0", prepared, "written by kasbah 99.0.0"},
-		{"newer, migrating", "99.0.0", Options{Prepared: prepared.Prepared, Migrating: true}, "written by kasbah 99.0.0"},
-		{"same", "1.4.0", prepared, ""},
-		{"incomparable", "", prepared, ""},
+		{"older, prepared", "0.9.0", prepared, "`kasbah migrate server d@h`", ""},
+		{"older, bootstrap", "0.9.0", Options{}, "`kasbah migrate server d@h`", ""},
+		{"older, migrating", "0.9.0", Options{Prepared: prepared.Prepared, Migrating: true}, "", ""},
+		{"newer, prepared", "99.0.0", prepared, "written by kasbah 99.0.0", ""},
+		{"newer, migrating", "99.0.0", Options{Prepared: prepared.Prepared, Migrating: true}, "written by kasbah 99.0.0", ""},
+		{"newer, fields unread", "99.0.0", Options{Prepared: func(body []byte, _ string) error {
+			if !bytes.Contains(body, []byte("apps_path")) {
+				return cli.Fail("re-run init")
+			}
+			return nil
+		}}, "written by kasbah 99.0.0", `{"kasbah_version":"99.0.0"}`},
+		{"same", "1.4.0", prepared, "", ""},
+		{"incomparable", "", prepared, "", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			stubSSH(t)
 			s := newScratch(t)
 			os.MkdirAll(filepath.Join(s.apps, ".kasbah"), 0o755)
-			os.WriteFile(filepath.Join(s.apps, ".kasbah", "server.json"), []byte(body(c.version)), 0o644)
+			b := body(c.version)
+			if c.raw != "" {
+				b = c.raw
+			}
+			os.WriteFile(filepath.Join(s.apps, ".kasbah", "server.json"), []byte(b), 0o644)
 			local := filepath.Join(s.root, "local", "kasbah-linux")
 			fake(t, local, ours, "", 0o755)
 			conn, err := ssh.Connect("d@h")

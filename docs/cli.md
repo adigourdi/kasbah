@@ -4,7 +4,10 @@ Two levels of commands:
 
 - **`kasbah server …`** — act on a VPS. Always take `user@host` as first arg.
 - **`kasbah …`** (everything else) — act on a project. Run from the project
-  root. Read `./kasbah.yml`. Error if missing.
+  root. Read `./kasbah.yml`. Error if missing. `help`, `info`, `version`,
+  `self-update` and `migrate server USER@HOST` read no project and run
+  anywhere; `init-project` needs no
+  `kasbah.yml` — it writes one in the current directory.
 
 `kasbah`, `kasbah -h` and `kasbah --help` print the command list and exit 0;
 `kasbah <command> --help` prints that command's flags, and so does
@@ -50,6 +53,79 @@ binary was built from — `https://github.com/adigourdi/kasbah/blob/v<VERSION>/d
 for a release build (one stamped exactly a release tag, an `-rc.N`
 included), and `…/blob/main/docs/<file>` for a dev or unstamped build, which
 no tag names. An unknown topic, or a second one, names the topics and exits 1.
+
+## `kasbah info [USER@HOST]`
+
+Which build this is, where it is installed and which docs match it, for a bug
+report or a script: one `key: value` line each, keys in ASCII and always in
+this order, exit 0. Nothing is read from the network.
+
+| Key | Value |
+|---|---|
+| `name` | `kasbah` |
+| `version` | the `VERSION` the build was made from (`version.Base`), `unstamped` for an unstamped build |
+| `build` | the build stamp, as `kasbah version` prints it |
+| `os`, `arch` | the platform the binary was built for, Go's names (`linux`, `amd64`) |
+| `binary` | the path it was started by: the command's own path, or its `PATH` entry — `~/.local/bin/kasbah`, usually a symlink. When that does not resolve to the running binary, the running binary's path |
+| `resolved` | that path with every symlink resolved: the file that runs |
+| `install` | `library` — a version directory of the library (`<lib>/<version>/kasbah`), where `get.sh`, `install-dev.sh` and `self-update` install; `checkout` — a checkout's `dist/kasbah` (`go.mod` and `cmd/kasbah/` two levels up); `other` — anywhere else, a binary kasbah did not install |
+| `lib` | the library root, found as the hand-off finds it (Hand-off between installed versions, below); `unknown (…)` when none can be |
+| `docs` | the `docs/` tree on GitHub at this build: `https://github.com/adigourdi/kasbah/tree/v<VERSION>/docs` for a release build, `…/tree/main/docs` for a dev or unstamped build, as `kasbah help` links |
+
+With `USER@HOST` the server's lines follow, read and never changed: the
+bootstrap probe every command runs first (no `sudo`), then — only when the
+server's kasbah is this same build — that binary's `kasbah remote info`,
+bounded at 30 s.
+
+| Key | Value |
+|---|---|
+| `server` | the `USER@HOST` given |
+| `server.apps` | the apps path and how it was found: `(pointer)` from `/etc/kasbah/apps-path`, or `(default)` |
+| `server.prepared` | `yes` when the marker is under it, else `no` |
+| `server.kasbah` | the build of `<apps>/.kasbah/bin/kasbah`; `none` when there is none; `unknown` when one is there that does not run or cannot say, with why on stderr |
+| `server.arch` | the server's machine as a Go arch (`amd64`, `arm64`), else its `uname -m` |
+| `server.os` | `PRETTY_NAME` from the server's `/etc/os-release`, or from `/usr/lib/os-release` when that cannot be read (os-release(5)); `unknown` when the file read has none |
+| `server.docker` | the Docker engine's version, from docker's stdout alone (a warning on stderr is not part of it); `none` when `docker` is not on the server's `PATH`, `unknown (<why>)` when it is and fails — the daemon does not answer this user, say — where why is its stderr's first line, else its stdout's, else `docker exited N` (`-1` for one killed by a signal), or why docker could not be started |
+| `server.compose` | `docker compose version --short`, stdout alone; `none` when it fails or docker is absent |
+
+A server whose binary is absent or another build keeps it: info ships
+nothing, and does not hand off to the server's build. `server.os`, `server.docker` and
+`server.compose` then say `unknown`; stderr says why, then what the next
+command that reaches the server would do there, judged as that command
+judges it and acted on in nothing:
+
+- an apps path that is there and not a directory stops it with exit 1,
+  naming `--apps-path=<dir>`; with no marker, it stops with the exit-4
+  refusal every command gives there (Exit codes, below) — never a bare
+  `kasbah server init`, which at the wrong apps path takes the running proxy
+  down; a marker that is unreadable, empty, not a JSON object, or of another
+  major stops it with that refusal; one recording a relative `apps_path` or
+  `data_path`, or a missing or spaced limit, stops the commands that read the
+  marker in full — every one but `kasbah server status` and `kasbah server
+  prune`, which still read it, and `kasbah server init`, which rewrites it;
+- a binary kasbah cannot account for (not a regular file, an answer that is
+  not a version line, no answer within 30 s, any other failing exit, a
+  `noexec` apps path) is named, and every command refuses it until it is dealt
+  with on the server;
+- an absent, not runnable or older binary: the next command (such as
+  `kasbah server status`) ships this build, and info reads the three lines
+  after that — asking first when a dev build would replace a release
+  (`--ship-dev`/`--keep-server`);
+- a newer build of this major: that command refuses, and hands the run to the
+  server's build when it is installed on this workstation (Hand-off between
+  installed versions, below); a newer major, a server build that is not a
+  version, an unstamped workstation build, or a server machine with no server
+  build is that command's refusal, quoted.
+
+The note assumes this build has a server binary to ship: one missing from a
+checkout's `dist/server/`, or a release download that fails, is met by that
+command, not named here.
+
+`--ship-dev`/`--keep-server` change nothing here. The workstation's lines are
+printed before the connection, so a server that does not answer still leaves
+them, and exits 3; a pointer the probe refuses exits 1 with the same message
+every command gives. A server with no marker, or a refusal above, still exits
+0: info reports it rather than meets it.
 
 ## Server commands
 

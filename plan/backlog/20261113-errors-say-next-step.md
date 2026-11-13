@@ -2,10 +2,8 @@
 description: A failure can say what broke but not what to do about it
 cause: no convention makes an error carry the next step; causes were dropped
 where: internal/cli (Error, Fail, Cause), every command's failure paths
-state: blocked
+state: ready
 priority: high
-after:
-  - "[[info-and-help-commands]] — the `kasbah help …` pointers need a target"
 ---
 
 ## Prompted by

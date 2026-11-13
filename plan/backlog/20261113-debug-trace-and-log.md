@@ -25,5 +25,8 @@ the binary, and something to attach to an issue.
       `~/.local/state/kasbah/logs/<time>-<command>.log` and the error names it
 - [ ] `.env` values and other secrets redacted, so the log is safe to attach
 - [ ] Retention: keep the last N logs
+- [ ] `kasbah info` gains a line for the log directory and the latest log
+      (its key order is pinned in internal/info/info_test.go TestSelf and
+      tests/info_test.sh Case 1)
 - [ ] docs/cli.md (flag, env var, exit codes untouched), docs/files.md (the
       log files); tests

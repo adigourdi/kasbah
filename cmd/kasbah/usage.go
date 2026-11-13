@@ -12,7 +12,7 @@ import (
 
 // commands is every command the usage lists by its first word: what
 // `kasbah help <command>` runs as `kasbah <command> --help`.
-var commands = []string{"init-project", "check", "build-push", "deploy", "rollback", "backup", "restore", "drop", "history", "pending", "changelog", "env", "logs", "exec", "migrate", "self-update", "version", "server"}
+var commands = []string{"init-project", "check", "build-push", "deploy", "rollback", "backup", "restore", "drop", "history", "pending", "changelog", "env", "logs", "exec", "migrate", "self-update", "version", "info", "server"}
 
 // serverSubcommands is every `kasbah server` subcommand, in usage order.
 var serverSubcommands = []string{"init", "status", "prune", "backup-prune", "destroy", "upgrade-traefik", "add-mail-domain", "mail-dkim", "mail-setup-guide"}
@@ -48,6 +48,7 @@ Commands:
   self-update [vN | vN.M | vN.M.P] [--pre] [--yes]
                                              Install a released kasbah beside this one and repoint the symlink.
   version                                    Print this kasbah's version.
+  info [USER@HOST]                           Print this build, where it lives and its docs; with a host, what the server runs.
   help [topic]                               Explain kasbah, a project's files and setups, or a check rule.
   server init USER@HOST [flags]              Prepare a VPS to host projects.
   server status USER@HOST                    Report what a prepared VPS is running.

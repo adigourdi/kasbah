@@ -523,8 +523,10 @@ binary ships: an older major is refused by every command — `server init`
 included — naming `kasbah migrate server USER@HOST` (`cli.md`), which is the
 one command allowed to put a newer major on that server. A marker that is
 not an object, or whose `kasbah_version` cannot be compared, passes this check
-and is judged by the command's own reading of the marker (`init` warns, the
-others refuse what `Validate` refuses).
+and is judged by the command's own reading of the marker: `init` refuses one
+that is not an object and warns on a version it cannot compare, `server
+status` and `server prune` refuse only a marker that is not an object, and
+every other command refuses what `Validate` refuses.
 
 Marker writes **merge, they never replace.** A command computes the fields it
 owns and overlays them onto whatever is already there, so a key written by a

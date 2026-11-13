@@ -424,7 +424,7 @@ func judge(target string, rc int, out []byte, opt Options) (*Probe, error) {
 	}
 	// A reader ships nothing to a server whose marker it would refuse.
 	if p.MarkerUnreadable {
-		return nil, cli.Fail("%s on %s could not be read", marker.Path(p.Apps), target)
+		return nil, UnreadableMarker(target, p.Apps)
 	}
 	if err := opt.Prepared(p.MarkerBody, p.Apps); err != nil {
 		return nil, err
@@ -433,6 +433,72 @@ func judge(target string, rc int, out []byte, opt Options) (*Probe, error) {
 }
 
 func judgeLayout(target string, rc int, out []byte, prepared bool) (*Probe, error) {
+	p, err := readLayout(target, rc, out)
+	if err != nil {
+		return nil, err
+	}
+	if prepared && p.AppsNotDir {
+		return nil, AppsNotDir(target, p.Apps)
+	}
+	if prepared && p.Source == "explicit" && !p.Marker {
+		return nil, NoMarker(target, p)
+	}
+	if p.Source == "explicit" {
+		if !p.AppsDir {
+			return nil, cli.Fail("%s has no directory at %s to put kasbah's binary under", target, p.Apps)
+		}
+		return p, nil
+	}
+	if !p.Marker {
+		return nil, NoMarker(target, p)
+	}
+	return p, nil
+}
+
+// AppsNotDir is the refusal of an apps path that is there and not a directory.
+func AppsNotDir(target, apps string) *cli.Error {
+	return cli.Fail("%s on %s exists and is not a directory — point kasbah elsewhere with --apps-path=<dir>", apps, target)
+}
+
+// UnreadableMarker is the refusal of a marker the probe could not read.
+func UnreadableMarker(target, apps string) *cli.Error {
+	return cli.Fail("%s on %s could not be read", marker.Path(apps), target)
+}
+
+// NoMarker is the exit-4 refusal of a server with no marker under the apps
+// path p names, worded for how that path was found.
+func NoMarker(target string, p *Probe) *cli.Error {
+	mk := marker.Path(p.Apps)
+	switch {
+	case p.Source == "explicit":
+		return cli.Failf(cli.ExitNoRemoteState, "%s has no server marker at %s", target, mk).Cont(
+			"That path is the one --apps-path named, and nothing else was looked at.",
+			"So this is one of two situations, and they have different answers:",
+			"  * the server has never been prepared, and initialising it is the answer.",
+			"  * it is prepared somewhere else: name that tree with --apps-path=<dir>.",
+			"Do not re-run init until you know which: at the wrong apps path it renders a",
+			"second Traefik stack under the frozen 'traefik' compose project, which",
+			"recreates the running proxy against it and takes every site down.")
+	case p.Source == "pointer" && p.Apps != probeDefault:
+		return cli.Failf(cli.ExitNoRemoteState, "%s has no server marker at %s", target, mk).Cont(
+			probePointer+" says this server was prepared at "+p.Apps+", and there is no marker there;",
+			"kasbah does not fall back to "+probeDefault+". Look at both before doing anything else.")
+	}
+	// No runnable init line: a lost pointer looks exactly like this, and a
+	// bare init there takes the running proxy down.
+	return cli.Failf(cli.ExitNoRemoteState, "%s has no server marker at %s", target, mk).Cont(
+		"kasbah puts its binary only on a server `kasbah server init` has prepared,",
+		"and this is one of two situations, with different answers:",
+		"  * the server has never been prepared, and initialising it is the answer.",
+		"  * it was prepared at another apps path and the pointer has been lost. Find",
+		"    that tree (its marker is at <dir>/.kasbah/server.json), then re-run init",
+		"    with --apps-path=<dir> set to it — that restores the pointer.",
+		"Do not guess the path: init at the wrong one takes the running Traefik down.")
+}
+
+// readLayout reads the probe's answer and makes its pointer refusals: where
+// the apps path is, whatever is or is not there.
+func readLayout(target string, rc int, out []byte) (*Probe, error) {
 	switch rc {
 	case 0, 5, 6, 7:
 	default:
@@ -463,43 +529,6 @@ func judgeLayout(target string, rc int, out []byte, prepared bool) (*Probe, erro
 	}
 	if !strings.HasPrefix(p.Apps, "/") || p.Apps == "/" {
 		return nil, cli.Fail("the server probe on %s named '%s' as the apps path, which is not an absolute path", target, p.Apps)
-	}
-	if prepared && p.AppsNotDir {
-		return nil, cli.Fail("%s on %s exists and is not a directory — point kasbah elsewhere with --apps-path=<dir>", p.Apps, target)
-	}
-	if prepared && p.Source == "explicit" && !p.Marker {
-		return nil, cli.Failf(cli.ExitNoRemoteState, "%s has no server marker at %s", target, marker.Path(p.Apps)).Cont(
-			"That path is the one --apps-path named, and nothing else was looked at.",
-			"So this is one of two situations, and they have different answers:",
-			"  * the server has never been prepared, and initialising it is the answer.",
-			"  * it is prepared somewhere else: name that tree with --apps-path=<dir>.",
-			"Do not re-run init until you know which: at the wrong apps path it renders a",
-			"second Traefik stack under the frozen 'traefik' compose project, which",
-			"recreates the running proxy against it and takes every site down.")
-	}
-	if p.Source == "explicit" {
-		if !p.AppsDir {
-			return nil, cli.Fail("%s has no directory at %s to put kasbah's binary under", target, p.Apps)
-		}
-		return p, nil
-	}
-	if !p.Marker {
-		mk := marker.Path(p.Apps)
-		if p.Source == "pointer" && p.Apps != probeDefault {
-			return nil, cli.Failf(cli.ExitNoRemoteState, "%s has no server marker at %s", target, mk).Cont(
-				probePointer+" says this server was prepared at "+p.Apps+", and there is no marker there;",
-				"kasbah does not fall back to "+probeDefault+". Look at both before doing anything else.")
-		}
-		// No runnable init line: a lost pointer looks exactly like this, and a
-		// bare init there takes the running proxy down.
-		return nil, cli.Failf(cli.ExitNoRemoteState, "%s has no server marker at %s", target, mk).Cont(
-			"kasbah puts its binary only on a server `kasbah server init` has prepared,",
-			"and this is one of two situations, with different answers:",
-			"  * the server has never been prepared, and initialising it is the answer.",
-			"  * it was prepared at another apps path and the pointer has been lost. Find",
-			"    that tree (its marker is at <dir>/.kasbah/server.json), then re-run init",
-			"    with --apps-path=<dir> set to it — that restores the pointer.",
-			"Do not guess the path: init at the wrong one takes the running Traefik down.")
 	}
 	return p, nil
 }
@@ -616,6 +645,17 @@ type Options struct {
 // server binary for a GOARCH.
 func Ensure(c *ssh.Conn, self remote.Info, local func(arch string) (string, error), opt Options) (*Result, error) {
 	target := c.Target.String()
+	// The major is judged before the command's own reading of the marker: a
+	// newer major's marker may not read as this one's, and its remedy is an
+	// upgrade here, never a re-init there.
+	if prep := opt.Prepared; prep != nil {
+		opt.Prepared = func(body []byte, apps string) error {
+			if err := marker.Check(body, self.Build, marker.Path(apps), target, opt.Migrating); err != nil {
+				return err
+			}
+			return prep(body, apps)
+		}
+	}
 	cmd := c.Script(probeScript, probeDefault, probePointer, opt.Apps, strconv.Itoa(RunTimeout))
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -625,7 +665,7 @@ func Ensure(c *ssh.Conn, self remote.Info, local func(arch string) (string, erro
 	}
 	// The marker's major is judged before anything ships: a binary landing on
 	// a server of another major would lock that major's workstations out.
-	if p.Marker && !p.MarkerUnreadable {
+	if opt.Prepared == nil && p.Marker && !p.MarkerUnreadable {
 		if err := marker.Check(p.MarkerBody, self.Build, marker.Path(p.Apps), target, opt.Migrating); err != nil {
 			return nil, err
 		}

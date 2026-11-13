@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/drop"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/history"
+	"github.com/adigourdi/kasbah/internal/info"
 	"github.com/adigourdi/kasbah/internal/initproject"
 	"github.com/adigourdi/kasbah/internal/mail"
 	"github.com/adigourdi/kasbah/internal/marker"
@@ -114,6 +116,9 @@ func main() {
 				// A signal removes the probe's credential scratch on the way out.
 				atexit.HandleSignals()
 				atexit.Exit(backup.RemoteInit(args[2:], os.Stdin, os.Stdout, os.Stderr))
+			}
+			if len(args) > 1 && args[1] == "info" {
+				os.Exit(info.Remote(build, args[2:], os.Stdout, os.Stderr))
 			}
 			if len(args) > 1 && args[1] == "status" {
 				os.Exit(status.Remote(args[2:], os.Stdout, os.Stderr))
@@ -262,6 +267,10 @@ func main() {
 			o, err := check.Parse(args[1:])
 			atexit.HandleSignals()
 			atexit.Exit(checkCmd(o, err))
+		case "info":
+			o, err := info.Parse(args[1:])
+			atexit.HandleSignals()
+			atexit.Exit(infoCmd(o, err))
 		case "init-project":
 			o, err := initproject.Parse(args[1:])
 			atexit.HandleSignals()
@@ -299,7 +308,7 @@ func remoteCmd(args []string) int {
 	if len(args) > 0 {
 		sub = args[0]
 	}
-	return report(out, cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, install-self, marker, setup-env, load, deploy, sync, vlog, init, mail, backup, backup-init, status, check, prune, traefik, drop, destroy, migrate", sub))
+	return report(out, cli.Fail("remote: unknown subcommand '%s' — `kasbah remote` is what a workstation runs on a server, and this binary knows: version, info, install-self, marker, setup-env, load, deploy, sync, vlog, init, mail, backup, backup-init, status, check, prune, traefik, drop, destroy, migrate", sub))
 }
 
 // ensureServer is `kasbah __ensure-server [--apps-path=<dir>] USER@HOST`: the
@@ -569,6 +578,35 @@ func statusCmd(o status.Options, err error) int {
 		return report(out, err)
 	}
 	code := report(out, status.Run(status.Ctx{Out: out, Version: v, Dial: status.Dial(remote.Self(build), local)}, o))
+	if c := atexit.Interrupted(); c != 0 {
+		code = c
+	}
+	return code
+}
+
+// infoCmd is `kasbah info [USER@HOST]`.
+func infoCmd(o info.Options, err error) int {
+	out := cli.Std()
+	if err == info.ErrHelp {
+		fmt.Fprint(out.Stdout, info.Usage)
+		return cli.ExitOK
+	}
+	if err != nil {
+		return out.Report(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return out.Report(cli.Fail("cannot locate this binary: %v", err))
+	}
+	code := out.Report(info.Run(info.Ctx{
+		Out:     out,
+		Build:   build,
+		GOOS:    runtime.GOOS,
+		GOARCH:  runtime.GOARCH,
+		Binary:  info.Locate(os.Args[0], exe, info.LookPath),
+		Getenv:  os.Getenv,
+		Inspect: info.Dial,
+	}, o))
 	if c := atexit.Interrupted(); c != 0 {
 		code = c
 	}

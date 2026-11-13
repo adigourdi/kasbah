@@ -23,3 +23,4 @@ Topics:
   kasbah help <rule id>    one rule: why, and what to change (kasbah help C01)
   kasbah help <command>    a command's flags, as kasbah <command> --help
   kasbah --help            the command list
+  kasbah info              this build, where it is installed, and its docs

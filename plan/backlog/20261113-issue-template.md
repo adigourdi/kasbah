@@ -5,7 +5,6 @@ where: .github/ISSUE_TEMPLATE/
 state: blocked
 priority: normal
 after:
-  - "[[info-and-help-commands]] — the template asks for `kasbah info`"
   - "[[debug-trace-and-log]] — the template asks for the failure's log"
 ---
 
