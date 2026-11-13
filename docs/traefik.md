@@ -559,14 +559,14 @@ server status` surfaces it.
   (claimed by kasbah's `_mail.yml` — cert-trigger and webmail).
 - Route to a Traefik `@internal` service other than `noop@internal` — `api@internal`
   and its kin would publish Traefik's API with no auth (T09).
-- Bind ports 80 or 443 on the host (they belong to Traefik).
+- Bind ports 80 or 443 on the host (they belong to Traefik; C14).
 - Replace the `kasbah-net` network, or declare their `kasbah` network
   `external` or with a fixed `name:`.
 - Attach non-routed services (databases, caches, workers) to the `kasbah`
   network (or the legacy `kasbah-net`) — internal services stay on a
   project-internal network.
 
-`kasbah check` enforces these (rules T01–T11, C03, C04, C07, C09).
+`kasbah check` enforces these (rules T01–T11, C03, C04, C07, C09, C14).
 
 ## Upgrading Traefik
 

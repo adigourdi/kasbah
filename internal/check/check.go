@@ -254,7 +254,7 @@ func (c *checker) s08() {
 	}
 }
 
-// --- Compose (C01–C05, C07–C11) ---------------------------------------------
+// --- Compose (C01–C05, C07–C11, C14) ----------------------------------------
 
 var restartOK = regexp.MustCompile(`^(unless-stopped|always|on-failure(:[0-9]+)?)$`)
 
@@ -326,7 +326,34 @@ func (c *checker) composeSection() {
 	if c.anyBuilt() {
 		c.c08()
 	}
+	c.c14()
 	c.c11()
+}
+
+// c14: no service publishes host port 80 or 443, Traefik's; a host range
+// holding either fails too. An entry whose host port needs interpolation is
+// left to C12.
+func (c *checker) c14() {
+	var bad []string
+	for _, svc := range c.services {
+		for _, p := range asList(c.svc(svc, "ports")) {
+			var b deploy.Bind
+			ok := false
+			if m, isMap := p.(*tree.Map); isMap {
+				b, ok = deploy.ParseBind(scalar(opt(m, "host_ip")), scalar(opt(m, "published")), scalar(opt(m, "protocol")))
+			} else if str, isStr := p.(string); isStr {
+				b, ok, _ = deploy.ParseShortPort(str)
+			}
+			if ok && (b.Lo <= 80 && 80 <= b.Hi || b.Lo <= 443 && 443 <= b.Hi) {
+				bad = append(bad, svc+" ("+b.String()+")")
+			}
+		}
+	}
+	if len(bad) == 0 {
+		c.passf("No service publishes host port 80 or 443")
+	} else {
+		c.failf("Services publishing host port 80 or 443: %s — those ports belong to the shared Traefik, whatever the protocol (over TCP a bind collides with it, a range may take them while it is down); route through traefik-dynamic.yml or publish another port", strings.Join(bad, " "))
+	}
 }
 
 func (c *checker) c05() {

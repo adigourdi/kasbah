@@ -95,6 +95,7 @@ Compose:
   ✓ No internal services on the kasbah network or kasbah-net
   ✓ Names on the kasbah network are project-prefixed
   ✓ No deprecated 'version:' field
+  ✓ No service publishes host port 80 or 443
   ⚠ demo-web will not roll on deploy — the fragment targets its container_name, so it is recreated in place, briefly unrouted
 
 Resources:
@@ -118,7 +119,7 @@ Env:
   ✓ .env.prod.example has no obvious long secrets
   ✓ .env.prod.example leaves the KASBAH_* prefix to kasbah
 
-Summary: 28 passed, 1 warning, 0 failed
+Summary: 29 passed, 1 warning, 0 failed
 `
 	if out != want || code != 0 {
 		t.Errorf("exit %d, report:\n%s", code, out)
@@ -156,6 +157,7 @@ Compose:
   ✓ No Traefik-routed services in compose
   ✓ No internal services on the kasbah network or kasbah-net
   ✓ No deprecated 'version:' field
+  ✓ No service publishes host port 80 or 443
 
 Resources:
   ✓ All services set cpus/mem_limit via KASBAH_* vars
@@ -170,7 +172,7 @@ Env:
   ✓ .env.prod.example has no obvious long secrets
   ✓ .env.prod.example leaves the KASBAH_* prefix to kasbah
 
-Summary: 18 passed, 0 warning, 0 failed
+Summary: 19 passed, 0 warning, 0 failed
 `
 	if out != want || code != 0 {
 		t.Errorf("exit %d, report:\n%s", code, out)
@@ -656,6 +658,35 @@ func TestC11(t *testing.T) {
 	project(t, map[string]string{"traefik-dynamic.yml": "", "compose.prod.yml": noHC})
 	if out, _, _ := check(t); strings.Contains(out, "roll") {
 		t.Errorf("with no fragment read, nothing is said of rolling:\n%s", out)
+	}
+}
+
+func TestC14(t *testing.T) {
+	with := func(ports string) string {
+		return strings.Replace(relayCompose, `    ports: ["5000:5000/udp"]`, "    ports: "+ports, 1)
+	}
+	const why = " — those ports belong to the shared Traefik, whatever the protocol (over TCP a bind collides with it, a range may take them while it is down); route through traefik-dynamic.yml or publish another port"
+	for _, tc := range []struct{ name, ports, want string }{
+		{"other host ports pass", `["8080:80", "443", "127.0.0.1::443", "8443:443/udp", "${P:-80}:80"]`, "  ✓ No service publishes host port 80 or 443"},
+		{"short form, any address", `["80:8080", "127.0.0.1:443:8443"]`, "  ✗ Services publishing host port 80 or 443: demo-relay (80/tcp) demo-relay (127.0.0.1:443/tcp)" + why},
+		{"IPv6 and UDP", `["[::1]:443:443/udp"]`, "  ✗ Services publishing host port 80 or 443: demo-relay ([::1]:443/udp)" + why},
+		{"long form", `[{target: 8080, published: 80, host_ip: 0.0.0.0}, {target: 443, published: "443", protocol: UDP}]`,
+			"  ✗ Services publishing host port 80 or 443: demo-relay (0.0.0.0:80/tcp) demo-relay (443/udp)" + why},
+		{"target alone publishes nothing", `[{target: 80}]`, "  ✓ No service publishes host port 80 or 443"},
+		{"only the host port's interpolation skips", `["${IP}:80:80"]`, "  ✗ Services publishing host port 80 or 443: demo-relay (${IP}:80/tcp)" + why},
+		{"a host range holding 80 or 443", `["70-90:80", "400-500:400-500", "81-442:81-442"]`,
+			"  ✗ Services publishing host port 80 or 443: demo-relay (70-90/tcp) demo-relay (400-500/tcp)" + why},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			project(t, map[string]string{"kasbah.yml": "schema: 1\nname: demo\nrouted: false\n", "compose.prod.yml": with(tc.ports), "traefik-dynamic.yml": ""})
+			out, _, code := check(t)
+			if !strings.Contains(out, tc.want+"\n") {
+				t.Errorf("no line %q in:\n%s", tc.want, out)
+			}
+			if fail := strings.HasPrefix(tc.want, "  ✗"); fail != (code != 0) {
+				t.Errorf("exit %d for %q", code, tc.want)
+			}
+		})
 	}
 }
 
