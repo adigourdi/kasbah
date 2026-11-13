@@ -102,7 +102,7 @@ the same battle-tested workflow without copying scripts between repos.
  ├ kasbah.yml  │   │   ├── compose.yml                         │
  ├ .env.prod.ex │   │   ├── .env                                │
  └ ...          │   │   └── kasbah.yml                         │
-                │   ├── data/           (all bind mounts here)  │
+                │   ├── data/           (kasbah-owned data)     │
                 │   │   ├── traefik/letsencrypt/acme.json       │
                 │   │   ├── shop/postgres/                      │
                 │   │   └── jellyfin/config/                    │
@@ -137,12 +137,76 @@ Chosen defaults (overridable via `kasbah server init --apps-path=...`):
 │   ├── .env.prod.example        # synced from project for drift detection
 │   ├── versions.log             # deploy/rollback history
 │   └── backups/                 # tarballs: one per deploy and rollback, of the version it replaced, per kasbah backup and nightly backup, of the live one, and each kasbah restore fetched from off-box
-├── data/                        # all bind mounts, by project
+├── data/                        # kasbah-owned data: Traefik's, mail's, one directory per project (see below)
 │   ├── traefik/letsencrypt/acme.json
 │   ├── mail/dms/...
 │   └── <project>/...
 └── backups/                     # top-level backup archive (always created)
 ```
+
+### Where a bind mount may point
+
+`<data>/<project>/` is where kasbah creates and owns a project's data; a bind
+mount may point anywhere. No compliance rule reads a volume's source, so a
+`compose.prod.yml` mounts `<data>/<project>/…`, a project-relative path
+(`./site` resolves under `<apps>/<project>/`, where the `sync:` list puts it),
+or any absolute host path alike. The two directories named after the project
+are kasbah's, and so are the apps and data paths that hold them; a
+path outside the apps path and the data path is the operator's, and kasbah
+does none of this for it:
+
+- **Not created.** Every deploy ensures `<data>/<project>/` exists
+  (`mkdir -p`); a path elsewhere is never created by kasbah. Docker creates
+  a missing source itself, as a root-owned directory (in the long syntax,
+  unless `bind.create_host_path: false` makes `compose up` refuse it), so
+  create it with the ownership its containers need before the first deploy.
+- **No `kasbah` group, no setgid.** `<data>/` is `kasbah`-group and setgid
+  (`server-setup.md` → Operators), so `<data>/<project>/` inherits both when
+  deploy creates it; `server init`'s group step walks only the apps path,
+  skipping the data path, and never regroups anything inside `<data>/`.
+- **Kept by `drop --prune` and `server destroy`.** `drop --prune` deletes
+  `<apps>/<project>/` and `<data>/<project>/` — paths it derives from the
+  project's name, never from a volume's source; `server destroy` keeps
+  `<data>/` whole and never touches a bind-mount source.
+- **Never in a backup tarball unless a `backup` hook dumps it.** A tarball
+  holds the synced files, `.env` and what the project's `backup` hooks write
+  (`backup.md`) — the sync targets as they are on the server, what a
+  container wrote there included, and no other bind mount's contents, in
+  `<data>/<project>/` or out — and the nightly off-VPS run ships tarballs and
+  `.env`, not data.
+
+A shared media library is the worked case: one host directory, say
+`/srv/media`, created once by the operator, mounted by several projects — a
+media server that only reads it, and the tools that fill it:
+
+```yaml
+# the media server's compose.prod.yml
+services:
+  player:
+    volumes:
+      - /srv/media:/media:ro     # read-only: this service never writes it
+```
+
+```yaml
+# a downloader's compose.prod.yml
+services:
+  fetcher:
+    volumes:
+      - /srv/media:/media        # read-write: this one fills it
+```
+
+Mount it read-only (`:ro`) in every service that only reads it, so one
+misbehaving container cannot damage what all of them share. Every service
+that writes it runs as one shared uid/gid, or the directory carries a group
+the writers share, with setgid so new files keep it; the deploy user needs
+no access to it. Keep it outside the apps and data paths: never inside one
+project's `<data>/<project>/`, which `drop --prune` of that project would
+delete under the others, nor directly under `<apps>/`, where every
+subdirectory is read as a project, or `<data>/`, where a directory is the
+one `drop --prune` of a project of that name deletes. Dropping or pruning any
+of the projects leaves the library in place. Backing it up is the
+operator's, outside kasbah, unless a `backup` hook in one of the projects
+takes it on, for whatever part of it fits in a tarball.
 
 ## Constraints that shape the design
 

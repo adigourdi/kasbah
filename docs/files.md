@@ -236,7 +236,7 @@ neither.
 
 | Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |
 |---|---|---|---|---|---|---|---|
-| `<data>` | `server init` | every bind mount | directory → `server-setup.md` (What init creates) | `2775` | `deploy:kasbah` | never removed | `internal/serverinit/remote.go:126` |
+| `<data>` | `server init` | every `<data>/<project>/`, Traefik's and mail's data | directory → `server-setup.md` (What init creates) | `2775` | `deploy:kasbah` | never removed | `internal/serverinit/remote.go:126` |
 | `<data>/traefik` | `server init` | — | directory | umask | `deploy` | never removed | `internal/serverinit/remote.go:126` |
 | `<data>/traefik/letsencrypt` | `server init` | — | directory | umask | `deploy` | never removed | `internal/serverinit/remote.go:126` |
 | `<data>/traefik/letsencrypt/acme.json` | `server init` (`touch` when absent; `chmod 600` every run); Traefik writes it in place | Traefik, DMS, `check --server`, `server status`, `upgrade-traefik` | Traefik's ACME store → `server-setup.md` (The ACME endpoint), `traefik.md` (TLS) | `600` | `deploy` | never removed, never replaced: a CA-switch reset, run inside the Traefik start with the old Traefik stopped, copies it to the archive and empties it in place, so the inode DMS's file bind mount holds is the live store | `internal/serverinit/remote.go:139`, reset `:168` |
@@ -265,7 +265,7 @@ neither.
 | `<data>/mail/cypht` | `server init --with-mail` makes the directory and sets `755` while it is still the deploy user's; Cypht's entrypoint wrapper hands it to `www-data` and fills it | Cypht | directory → `mail.md` (Webmail) | `755` | `www-data` (33) after the first start | never removed | `internal/mail/remote.go` (layout) |
 | `<data>/mail/cypht/cypht.sqlite` | the compose entrypoint wrapper (`touch`, `chown`), then Cypht's entrypoint creates the schema | Cypht (`brute_force`) | SQLite → `mail.md` (Webmail): failed-login counts only | `644` | `www-data` (33) | never removed | `templates/mail/compose.yml` |
 | `<data>/mail/cypht/{users,attachments}/**` | Cypht: `users/<address>.txt` when a user saves settings, attachments while composing | Cypht | encrypted settings → `mail.md` (Webmail) | `755` dirs, `644` files | `www-data` (33) | never removed | — (not kasbah's code) |
-| `<data>/<project>` | `deploy` (`mkdir -p`) | the project's bind mounts | directory → `build-deploy.md` (deploy Flow) | umask | `deploy:kasbah` | kept by `drop` and `server destroy`; removed by `drop --prune` | `internal/deploy/remote.go:59`, `internal/drop/remote.go:388` |
+| `<data>/<project>` | `deploy` (`mkdir -p`) | the project's bind mounts into it (a bind mount may point anywhere: `overview.md` → Where a bind mount may point) | directory → `build-deploy.md` (deploy Flow) | umask | `deploy:kasbah` | kept by `drop` and `server destroy`; removed by `drop --prune` | `internal/deploy/remote.go:104`, `internal/drop/remote.go:426` |
 | `<apps>/backups` | `server init` | — (operator's) | directory → `server-setup.md` (What init creates) | `2775` | `deploy:kasbah` | never removed (`drop --prune` included) | `internal/serverinit/remote.go:126` |
 
 ### Outside the apps path

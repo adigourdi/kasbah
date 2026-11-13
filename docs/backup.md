@@ -3,9 +3,10 @@
 Optional (`kasbah server init --with-backup`). Everything else in kasbah
 survives a lost VPS via git plus a redeploy — except what exists only on the
 VPS: **`.env` secret values** and the project's data. The data travels as the
-backup tarballs in `backups/`, which hold what the project's `backup` hooks
-dump; this feature ships those and `.env` off-box, never the data bind mounts
-themselves.
+backup tarballs in `backups/`, which hold the project's synced files as they
+are on the server and what its `backup` hooks dump; this feature ships those
+and `.env` off-box, and with the mail stack every mailbox, but never what a
+bind mount holds beyond the synced files, wherever it points.
 
 ## Model
 
@@ -350,10 +351,13 @@ restic ships only backups. Per project, each snapshot includes:
   `.env` is resolved the same way and, outside the mounts, named and failed
   the same way
 
-`/apps/data/<name>/` — the bind mounts, which may be a media library — is
-not shipped. Whatever a project wants kept off-box, its `backup` hook writes
-into the backup (`project-manifest.md` → `hooks`); a project without one has
-only its `.env` and synced files backed up.
+`/apps/data/<name>/` — the project's data, which may be a media library — is
+not shipped, nor is any other host path a bind mount points at beyond the
+sync targets, which ride in the tarballs as they are on the server, what a
+container wrote there included (`overview.md` → Where a bind mount may
+point). Whatever a project wants kept off-box, its `backup` hook writes into
+the backup (`project-manifest.md` → `hooks`); a project without one has only
+its `.env` and synced files backed up.
 
 And, when the host runs the shared mail stack, into the `mail` repo:
 

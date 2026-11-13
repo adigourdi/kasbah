@@ -95,8 +95,10 @@ Flags:
   retention, recorded in the marker and applied by `server backup-prune`, not on
   the VPS. Default 7 / 4 / 3.
 - `--apps-path=/apps` — root directory on the VPS (default `/apps`).
-- `--data-path=<dir>` — bind-mount root (default `<apps-path>/data`, so it
-  follows `--apps-path` rather than being pinned to `/apps/data`).
+- `--data-path=<dir>` — the data path, `<data>`: the root of the data kasbah
+  owns — Traefik's, mail's, and one `<data>/<project>/` per project (default
+  `<apps-path>/data`, so it follows `--apps-path` rather than being pinned to
+  `/apps/data`).
 - `--traefik-auth=user:pass` — basic auth for the dashboard. The password is
   hashed with bcrypt on the workstation and never sent in clear; the hash lands
   in `dynamic/_shared.yml`. The hashing normally runs in a throwaway
@@ -339,7 +341,7 @@ names the project to fix. Reading such a project as "declares nothing" would
 defeat both guards with the very condition that triggers the skip: the file
 that would say which images it names is the file kasbah could not read.
 
-The bind-mount root is not a project: `--data-path` can put it under the
+The data path is not a project: `--data-path` can put it under the
 apps path with any name, so prune reads `data_path` out of the server
 marker and drops that row, exactly as `server status` does.
 
@@ -1305,7 +1307,8 @@ Removes, in this order:
 
 Keeps:
 - `/apps/<name>/` (compose, `.env`, versions.log, scripts)
-- `/apps/data/<name>/` (bind mounts)
+- `/apps/data/<name>/` (the project's data)
+- any other host path a bind mount points at — drop never reads a volume's source
 - backups (on-VPS and off-VPS)
 - named volumes — `down` runs without `-v`, because drop keeps data
 - pulled images (`postgres:16`, `nginx:alpine`) — nothing declares them as
@@ -1336,12 +1339,15 @@ path is an ordinary first deploy and needs nothing.)
 project's on-VPS backups (`/apps/<name>/backups/` — **not** the server's
 top-level `/apps/backups/` — and any snapshot a backup could not take in,
 kept aside as `/apps/<name>/.kasbah-prev.kept-*/`, and any backup a killed
-rollback left extracted, `.kasbah-unpacked.*/`) — everything except the off-VPS restic repo, which
-is operator property (see `backup.md`). It also **releases the project's claim on
-the shared mail stack**: the domain leaves `<apps>/mail/kasbah.yml`, read and
-re-rendered through `internal/mailreg`, which folds `primary_domain` into the
-served list the way the writers do; a registry that changed between drop's read
-and its write is left alone and the run fails naming it. **Every command that
+rollback left extracted, `.kasbah-unpacked.*/`) — everything kasbah holds for
+the project except the off-VPS restic repo, which is operator property (see
+`backup.md`). A bind mount's source outside `/apps/<name>/` and
+`/apps/data/<name>/` is kept: it is not kasbah's. It also **releases the
+project's claim on the shared mail stack**: the domain leaves
+`<apps>/mail/kasbah.yml`, read and re-rendered through `internal/mailreg`,
+which folds `primary_domain` into the served list the way the writers do; a
+registry that changed between drop's read and its write is left alone and
+the run fails naming it. **Every command that
 asks "does this stack serve X"** — `deploy`, `drop`, `server init`,
 `add-mail-domain`, `check --server`, `server status` — reads through that one
 reader. A

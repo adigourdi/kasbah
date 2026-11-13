@@ -63,7 +63,7 @@ Default paths (override with `--apps-path`, `--data-path`):
 │       ├── compose.yml              the scheduler stack — its runner is the mounted kasbah binary
 │       ├── env                      mode 600 — kasbah's repo_base, the operator's credentials
 │       └── repos/<repo>.pass        mode 600 — one encryption password per repository
-├── data/                            bind-mount root for all projects
+├── data/                            kasbah-owned data: Traefik's, mail's, and <data>/<project>/ per project
 │   └── traefik/letsencrypt/
 │       └── acme.json                touched as a file, chmod 600
 ├── backups/                         top-level backups (always created)
