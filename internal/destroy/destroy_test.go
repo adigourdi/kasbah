@@ -60,6 +60,19 @@ func TestStripSentinels(t *testing.T) {
 	}
 }
 
+// A quoted span is kept or dropped whole, its lines never read as keys.
+func TestMailKeptSpans(t *testing.T) {
+	in := "DOMAIN=a.test\nRELAY_KEY=\"-----BEGIN\r\nDOMAIN=x\r\n-----END\"\nDATA_PATH='/d\nRELAY=1'\nRELAY_PASSWORD=s\n"
+	got, n := filterLines([]byte(in), mailKept)
+	if want := "DOMAIN=a.test\nDATA_PATH='/d\nRELAY=1'\n"; string(got) != want || n != 4 {
+		t.Errorf("got %q (%d dropped), want %q", got, n, want)
+	}
+	pem := "A=1\n" + B + "\nKASBAH_CPU_LIMIT=2\n" + E + "\nK=\"x\n" + B + "\n" + E + "\ny\"\n"
+	if got, _ := filterLines([]byte(pem), unsentineled); string(got) != "A=1\nKASBAH_CPU_LIMIT=2\nK=\"x\n"+B+"\n"+E+"\ny\"\n" {
+		t.Errorf("a span's sentinel text stripped: %q", got)
+	}
+}
+
 func TestMailKeep(t *testing.T) {
 	for l, want := range map[string]bool{
 		"MAIL_HOSTNAME=mail.a.test": true, "DOMAIN=a.test\r": true, "  export DATA_PATH=/apps/data": true,
@@ -225,9 +238,9 @@ func TestAct(t *testing.T) {
 		t.Errorf("no launcher read as %s", r.BkLaunchers)
 	}
 	want := []ProjectResult{
-		{"beta", "absent", "absent", "kept", "absent", "absent", "absent", "absent", "absent", "absent", "absent"},
-		{"demo", "removed", "absent", "absent", "absent", "removed", "stripped", "removed", "removed", "removed", "removed"},
-		{"gamma", "absent", "absent", "removed", "absent", "absent", "absent", "absent", "absent", "absent", "absent"},
+		{"beta", "absent", "absent", "kept", "absent", "absent", "absent", "absent", "absent", "absent", "absent", ""},
+		{"demo", "removed", "absent", "absent", "absent", "removed", "stripped", "removed", "removed", "removed", "removed", ""},
+		{"gamma", "absent", "absent", "removed", "absent", "absent", "absent", "absent", "absent", "absent", "absent", ""},
 	}
 	for i, w := range want {
 		if r.Projects[i] != w {
@@ -425,6 +438,16 @@ func TestRunHeldAndNosudo(t *testing.T) {
 	f = &fake{mk: mk(), scan: scanFixture(), actOut: okAct, tailOut: "pointer=removed\n", tailRC: 255}
 	if _, se, code := run(t, f, Options{Target: "deploy@vps.example", Yes: true}, false, ""); code != 1 || !strings.Contains(se, "the last destroy step on deploy@vps.example exited 255") {
 		t.Fatalf("tail cut: %d %s", code, se)
+	}
+}
+
+// A refused .env is named by line and key in the report, never by value.
+func TestRunReportsRefusedEnv(t *testing.T) {
+	act := strings.Replace(okAct, `"mail_env":"absent"`, `"mail_env":"refused","mail_env_refused":"line 3 (RELAY_PASSWORD): the double quote is not closed"`, 1)
+	f := &fake{mk: mk(), scan: scanFixture(), actOut: act, tailOut: okTail}
+	so, se, code := run(t, f, Options{Target: "deploy@vps.example", Yes: true}, false, "")
+	if code != 1 || !strings.Contains(se, "/apps/mail/.env on deploy@vps.example was not rewritten: line 3 (RELAY_PASSWORD): the double quote is not closed") {
+		t.Fatalf("%d\n%s\n%s", code, so, se)
 	}
 }
 
@@ -690,7 +713,7 @@ func TestStripEnvFile(t *testing.T) {
 	} {
 		os.WriteFile(p, []byte(c.in), 0o640)
 		os.Chmod(p, 0o640)
-		if v := rewrite(p, keep, 0); v != c.verdict {
+		if v := rewrite(p, perLine(keep), 0); v != c.verdict {
 			t.Errorf("%s: %s", c.name, v)
 		}
 		got, err := os.ReadFile(p)
@@ -700,13 +723,13 @@ func TestStripEnvFile(t *testing.T) {
 		}
 	}
 	os.Remove(p)
-	if v := rewrite(p, keep, 0); v != "absent" {
+	if v := rewrite(p, perLine(keep), 0); v != "absent" {
 		t.Errorf("no .env: %s", v)
 	}
 	os.MkdirAll(filepath.Join(dir, "real"), 0o755)
 	os.WriteFile(filepath.Join(dir, "real", "env"), []byte(B+"\nK=1\n"+E+"\n"), 0o600)
 	os.Symlink("real/env", p)
-	if v := rewrite(p, keep, 0); v != "stripped" {
+	if v := rewrite(p, perLine(keep), 0); v != "stripped" {
 		t.Errorf("symlink: %s", v)
 	}
 	got, _ := os.ReadFile(filepath.Join(dir, "real", "env"))
@@ -885,5 +908,22 @@ func TestRemoveAcmeDNS(t *testing.T) {
 	}
 	if _, err := os.Stat(apps + "/traefik/acme-dns"); !os.IsNotExist(err) {
 		t.Errorf("still there: %v", err)
+	}
+}
+
+// A .env kasbah cannot read as compose does is left byte for byte.
+func TestRewriteEnvRefuses(t *testing.T) {
+	p := t.TempDir() + "/.env"
+	in := "A=\"open\n" + B + "\nKASBAH_CPU_LIMIT=2\n" + E + "\n"
+	os.WriteFile(p, []byte(in), 0o600)
+	if v, why := rewriteEnv(p, unsentineled, 0); v != "refused" || why != "line 1 (A): the double quote is not closed" {
+		t.Errorf("verdict %q %q", v, why)
+	}
+	if b, _ := os.ReadFile(p); string(b) != in {
+		t.Errorf("rewritten: %q", b)
+	}
+	os.WriteFile(p, []byte("A=1\n"+B+"\n"+E+"\n"), 0o600)
+	if v, why := rewriteEnv(p, unsentineled, 0); v != "stripped" || why != "" {
+		t.Errorf("readable: %q %q", v, why)
 	}
 }

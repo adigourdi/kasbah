@@ -4,19 +4,19 @@ import (
 	"fmt"
 	"os"
 	"slices"
-	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/envtpl"
 )
 
 // lastValues is each non-reserved key's last assignment: its value and its
-// line, CR stripped.
+// line, CR stripped, a quoted span folded to one line.
 func lastValues(data []byte) (vals, lines map[string]string) {
 	vals, lines = map[string]string{}, map[string]string{}
-	for _, l := range envtpl.Lines(data) {
-		if k, v, ok := envtpl.Assign(l); ok && !reserved(k) {
-			vals[k], lines[k] = v, l
+	raw := envtpl.RawLines(data)
+	for _, e := range envtpl.Entries(raw) {
+		if e.Key != "" && !reserved(e.Key) {
+			vals[e.Key], lines[e.Key] = e.Value, e.OneLine(raw)
 		}
 	}
 	return vals, lines
@@ -44,18 +44,18 @@ func EnvDiff(cur, old []byte) (changed, onlyOld, onlyCur []string) {
 	return envtpl.SortUniq(changed), envtpl.SortUniq(onlyOld), envtpl.SortUniq(onlyCur)
 }
 
-// MergeEnv is cur's lines with each of keys' assignments replaced by old's
-// last line for it, where the first stood (appended if none), or dropped when
-// old sets none; every other line is kept byte for byte.
+// MergeEnv is cur's lines with each of keys' assignments (a span whole)
+// replaced by old's last one, where the first stood (appended if none), or
+// dropped when old sets none; every other line byte for byte.
 func MergeEnv(cur, old []byte, keys []string) []string {
 	_, oldLines := lastValues(old)
-	lines := rawLines(cur)
+	lines := envtpl.RawLines(cur)
 	var out []string
 	placed := map[string]bool{}
-	for _, l := range lines {
-		k, _, ok := envtpl.Assign(strings.TrimSuffix(l, "\r"))
-		if !ok || reserved(k) || !slices.Contains(keys, k) {
-			out = append(out, l)
+	for _, e := range envtpl.Entries(lines) {
+		k := e.Key
+		if k == "" || reserved(k) || !slices.Contains(keys, k) {
+			out = append(out, lines[e.Line:e.End]...)
 			continue
 		}
 		if ol, has := oldLines[k]; has && !placed[k] {
@@ -101,11 +101,19 @@ func restoreEnvLocked(dir string, old []byte, keys []string, cleanup bool) error
 	}
 	var lines []string
 	if keys == nil {
-		lines = rawLines(old)
+		lines = envtpl.RawLines(old)
 	} else {
 		cur, err := os.ReadFile(path)
 		if err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("cannot read %s: %v — .env left untouched", path, cli.OSCause(err))
+		}
+		for _, f := range []struct {
+			name string
+			data []byte
+		}{{path, cur}, {"the backup's .env", old}} {
+			if err := envtpl.Refused(envtpl.RawLines(f.data)); err != nil {
+				return fmt.Errorf("%s %v, which kasbah does not merge — .env left untouched", f.name, err)
+			}
 		}
 		lines = MergeEnv(cur, old, keys)
 	}

@@ -876,6 +876,11 @@ func (p *Plan) reportProject(r *reporter, pr ProjectResult) {
 		r.say("  .env carries no managed block")
 	case "absent":
 		r.say("  no .env")
+	case "refused":
+		r.say("  FAILED: .env holds a line kasbah cannot read as compose does — left as it was")
+		r.o.Err("%s/%s/.env on %s was not rewritten: %s", p.Apps, pr.Name, p.Target, refusedWhy(pr.EnvRefused))
+		r.o.ErrCont("it still carries the managed-block comments — fix the file by hand and re-run")
+		r.bad = true
 	case "unreadable":
 		r.say("  FAILED: .env could not be read or written")
 		r.o.Err("%s/%s/.env on %s could not be rewritten", p.Apps, pr.Name, p.Target)
@@ -890,6 +895,14 @@ func (p *Plan) reportProject(r *reporter, pr ProjectResult) {
 	}
 }
 
+// refusedWhy is a refused .env's line and key, as the act reported them.
+func refusedWhy(why string) string {
+	if why == "" {
+		return "kasbah cannot read it as compose does"
+	}
+	return why
+}
+
 func (p *Plan) reportMail(r *reporter, a *ActReport) {
 	keys := strings.Join(MailKeys, " ")
 	me := p.Apps + "/mail/.env"
@@ -900,6 +913,11 @@ func (p *Plan) reportMail(r *reporter, a *ActReport) {
 		r.say("%s holds nothing but %s", me, keys)
 	case "absent":
 		r.say("no %s", me)
+	case "refused":
+		r.say("FAILED: %s holds a line kasbah cannot read as compose does — left as it was", me)
+		r.o.Err("%s on %s was not rewritten: %s", me, p.Target, refusedWhy(a.MailEnvRefused))
+		r.o.ErrCont("any relay credential in it is still on this server — fix the file by hand and re-run")
+		r.bad = true
 	case "unreadable":
 		r.say("FAILED: %s could not be read or written", me)
 		r.o.Err("%s on %s could not be rewritten", me, p.Target)

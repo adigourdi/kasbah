@@ -326,3 +326,38 @@ func TestSelect(t *testing.T) {
 		}
 	}
 }
+
+// A pasted PEM block is read hidden to its END line; any other answer is one line.
+func TestHiddenPEM(t *testing.T) {
+	pem := "-----BEGIN PRIVATE KEY-----\r\nMIIE\r\nAAAA\r\n-----END PRIVATE KEY-----\r\nnext\n"
+	p, errb := tty(pem)
+	hidden := 0
+	p.NoEcho = func() (func() error, error) { hidden++; return func() error { hidden--; return nil }, nil }
+	a, err := p.Hidden("Value")
+	if want := "-----BEGIN PRIVATE KEY-----\nMIIE\nAAAA\n-----END PRIVATE KEY-----"; err != nil || a != want || hidden != 0 || strings.Contains(errb.String(), "MIIE") {
+		t.Errorf("pem: %q %v, echo %d, said %q", a, err, hidden, errb.String())
+	}
+	if rest, _ := p.readExact(); rest != "next" {
+		t.Errorf("read past the END line: %q", rest)
+	}
+	p, _ = tty("-----BEGIN X\nbody\n")
+	if _, err := p.Hidden("Value"); err == nil {
+		t.Error("a block cut short by EOF was taken")
+	}
+	flushed := 0
+	p, _ = tty("-----BEGIN X\n" + strings.Repeat("A\n", maxPasteLines+1) + "-----END X\n")
+	p.Flush = func() error { flushed++; return nil }
+	if _, err := p.Hidden("Value"); err == nil || !strings.Contains(failText(t, err), "-----END") || flushed != 1 {
+		t.Errorf("an endless block: %v, flushed %d", err, flushed)
+	}
+	p, _ = tty(pem)
+	p.Flush = func() error { flushed++; return nil }
+	if _, err := p.Hidden("Value"); err != nil || flushed != 2 {
+		t.Errorf("a taken block: %v, flushed %d", err, flushed)
+	}
+	p, _ = tty("a -----BEGIN X\nb\n")
+	p.Flush = func() error { flushed++; return nil }
+	if a, err := p.Hidden("Value"); err != nil || a != "a -----BEGIN X" || flushed != 2 {
+		t.Errorf("one line: %q %v, flushed %d", a, err, flushed)
+	}
+}

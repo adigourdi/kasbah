@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -40,6 +41,16 @@ func Len(s string) int { return utf8.RuneCountInString(s) }
 // Lines splits a file as a `while read -r line || [ -n "$line" ]` loop does,
 // NUL bytes dropped, with one trailing CR off each line.
 func Lines(data []byte) []string {
+	lines := RawLines(data)
+	for i, l := range lines {
+		lines[i] = strings.TrimSuffix(l, "\r")
+	}
+	return lines
+}
+
+// RawLines is Lines with each line's bytes kept, CR included; a last line
+// without a newline is data.
+func RawLines(data []byte) []string {
 	s := strings.ReplaceAll(string(data), "\x00", "")
 	if s == "" {
 		return nil
@@ -48,10 +59,228 @@ func Lines(data []byte) []string {
 	if lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
-	for i, l := range lines {
-		lines[i] = strings.TrimSuffix(l, "\r")
-	}
 	return lines
+}
+
+// Entry is one statement of a .env as compose reads it: lines[Line:End], a
+// quoted value that runs past its line spanning to the closing quote (Value
+// joined by "\n", inner CRs kept). Key is "" where Assign reads no key.
+type Entry struct {
+	Line, End  int
+	Key, Value string
+	badKey     bool
+}
+
+// Span reports an entry of more than one line.
+func (e Entry) Span() bool { return e.End-e.Line > 1 }
+
+// composeKey is compose's wider key rule (letters, digits, `_ . - [ ]`),
+// which decides where its statements end even where kasbah reads no key.
+var composeKey = regexp.MustCompile(`^[\pL\pN_.\[\]-]+[\t\v\f\r \x{85}\x{A0}]*[=:](.*)$`)
+
+// composeValue is the value compose reads from a line Assign refuses, bad
+// bytes taken as U+FFFD; ok false where compose reads no key either.
+func composeValue(line string) (string, bool) {
+	s := strings.TrimLeftFunc(strings.ToValidUTF8(line, "�"), unicode.IsSpace)
+	if p := exportPrefix.FindString(s); p != "" {
+		s = strings.TrimLeftFunc(s[len(p):], dotenvSpace)
+	}
+	m := composeKey.FindStringSubmatch(s)
+	if m == nil {
+		return "", false
+	}
+	return strings.TrimLeftFunc(m[1], dotenvSpace), true
+}
+
+var composeName = regexp.MustCompile(`^[\pL\pN_.\[\]-]+$`)
+
+// composeRefuses reports a line whose key — before its first `=` or `:`, else
+// the whole line — compose refuses the file for: a space, a byte not UTF-8, a
+// character no key holds; compose's other blanks inside a key are let pass.
+func composeRefuses(line string) bool {
+	s := strings.TrimLeftFunc(line, unicode.IsSpace)
+	if p := exportPrefix.FindString(s); p != "" {
+		s = strings.TrimLeftFunc(s[len(p):], dotenvSpace)
+	}
+	if i := strings.IndexAny(s, "=:"); i >= 0 {
+		s = s[:i]
+	}
+	k := strings.TrimRightFunc(s, dotenvSpace)
+	if k == "" {
+		return false
+	}
+	if !utf8.ValidString(k) || strings.Contains(k, " ") {
+		return true
+	}
+	return !composeName.MatchString(strings.Map(func(r rune) rune {
+		if dotenvSpace(r) {
+			return -1
+		}
+		return r
+	}, k))
+}
+
+// Entries reads lines (RawLines' or Lines') as compose groups them.
+func Entries(lines []string) []Entry {
+	// closer[q][j] is the first line from j holding a q no backslash escapes;
+	// a line break ends any escape, so each line is scanned once.
+	closer := map[byte][]int{}
+	closeAt := func(q byte, j int) int {
+		c, ok := closer[q]
+		if !ok {
+			c = make([]int, len(lines)+1)
+			c[len(lines)] = len(lines)
+			for k := len(lines) - 1; k >= 0; k-- {
+				if c[k] = c[k+1]; hasQuote(lines[k], q) {
+					c[k] = k
+				}
+			}
+			closer[q] = c
+		}
+		return c[j]
+	}
+	var out []Entry
+	for i := 0; i < len(lines); i++ {
+		e := Entry{Line: i, End: i + 1}
+		l := strings.TrimSuffix(lines[i], "\r")
+		k, v, ok := Assign(l)
+		if !ok {
+			v, ok = composeValue(l)
+		}
+		if !ok && !Blank(l) && !Comment(l) {
+			e.badKey = composeRefuses(l)
+		}
+		if ok {
+			e.Key, e.Value = k, v
+			if v != "" && (v[0] == '\'' || v[0] == '"') {
+				if _, _, closed := quoted(v); !closed {
+					if j := closeAt(v[0], i+1); j < len(lines) {
+						cr := strings.TrimPrefix(lines[i], l)
+						e.Value = strings.TrimSuffix(v+cr+"\n"+strings.Join(lines[i+1:j+1], "\n"), "\r")
+						e.End = j + 1
+					}
+				}
+			}
+		}
+		out = append(out, e)
+		i = e.End - 1
+	}
+	return out
+}
+
+// hasQuote reports a q in s that no backslash escapes, as quoted scans.
+func hasQuote(s string, q byte) bool {
+	esc := false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == q && !esc:
+			return true
+		case esc:
+			esc = false
+		case c == '\\':
+			esc = true
+		}
+	}
+	return false
+}
+
+// Refused is why compose's reading of the entry is not one kasbah can take
+// whole — a key compose refuses, a quote never closed, text after the closing
+// one, a span under a key kasbah reads none from — or nil. It never quotes
+// the value.
+func (e Entry) Refused() error {
+	if e.badKey {
+		return errors.New("a key compose refuses (a character no key holds), so compose refuses the file")
+	}
+	if e.Key == "" && e.Span() {
+		return errors.New("a quoted value over several lines under a key kasbah does not read")
+	}
+	if e.Value != "" && (e.Value[0] == '\'' || e.Value[0] == '"') {
+		return quoteErr(e.Value)
+	}
+	return nil
+}
+
+// Refused is the first entry of lines (RawLines') Entry.Refused refuses,
+// named by line and key, or nil.
+func Refused(lines []string) error {
+	for _, e := range Entries(lines) {
+		if err := e.Refused(); err != nil {
+			if e.Key == "" {
+				return fmt.Errorf("line %d: %v", e.Line+1, err)
+			}
+			return fmt.Errorf("line %d (%s): %v", e.Line+1, e.Key, err)
+		}
+	}
+	return nil
+}
+
+// Continued marks each line a span holds past its first.
+func Continued(lines []string) []bool {
+	in := make([]bool, len(lines))
+	for _, e := range Entries(lines) {
+		for j := e.Line + 1; j < e.End; j++ {
+			in[j] = true
+		}
+	}
+	return in
+}
+
+// OneLine is an entry as one line compose reads the same: the line itself,
+// CR stripped, or for a span KEY= and OneValue (a keyless span its first line).
+func (e Entry) OneLine(lines []string) string {
+	if !e.Span() || e.Key == "" {
+		return strings.TrimSuffix(lines[e.Line], "\r")
+	}
+	return e.Key + "=" + e.OneValue()
+}
+
+// OneValue is Value on one line, as compose reads it: a span's line breaks
+// escaped, a single-quoted span re-quoted double.
+func (e Entry) OneValue() string {
+	if !e.Span() || e.Key == "" {
+		return e.Value
+	}
+	return oneLine(e.Value)
+}
+
+// Folded is a file's lines, each entry on one line (OneLine).
+func Folded(data []byte) []string {
+	lines := RawLines(data)
+	var out []string
+	for _, e := range Entries(lines) {
+		out = append(out, e.OneLine(lines))
+	}
+	return out
+}
+
+func oneLine(v string) string {
+	body, rest, _ := quoted(v)
+	if v[0] == '\'' {
+		r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", "$$", "\n", `\n`, "\r", `\r`)
+		return `"` + r.Replace(body) + `"` + rest
+	}
+	var b strings.Builder
+	b.WriteByte('"')
+	esc := false
+	for i := 1; i < len(v)-len(rest); i++ {
+		c := v[i]
+		switch {
+		case c == '\n' || c == '\r':
+			if esc {
+				b.WriteByte('\\')
+			}
+			b.WriteString(map[byte]string{'\n': `\n`, '\r': `\r`}[c])
+			esc = false
+		case esc:
+			b.WriteByte(c)
+			esc = false
+		default:
+			b.WriteByte(c)
+			esc = c == '\\'
+		}
+	}
+	return b.String() + rest
 }
 
 // Assign reads one line (CR stripped) as compose's dotenv does: `KEY=v`,
@@ -89,12 +318,12 @@ func Keys(path string) []string {
 	return KeysOf(data)
 }
 
-// KeysOf is Keys over a file's bytes.
+// KeysOf is Keys over a file's bytes, a span's key once.
 func KeysOf(data []byte) []string {
 	var keys []string
-	for _, l := range Lines(data) {
-		if k, _, ok := Assign(l); ok {
-			keys = append(keys, k)
+	for _, e := range Entries(RawLines(data)) {
+		if e.Key != "" {
+			keys = append(keys, e.Key)
 		}
 	}
 	return keys
@@ -145,70 +374,113 @@ func SortUniq(ss []string) []string {
 	return slices.Compact(slices.Sorted(slices.Values(ss)))
 }
 
-// ValuesOf is each key's last value in a .env as compose reads it: quotes,
-// " #" comments, interpolation from the keys above. A line it cannot read
-// (a multi-line quote, a key Assign refuses) sets nothing; err is the first.
+// ValuesOf is each key's last value in a .env as compose reads it (quotes,
+// escapes, spans, " #" comments, interpolation from the keys above). An
+// entry it cannot read sets nothing; err is the first.
 func ValuesOf(data []byte) (vals map[string]string, err error) {
 	vals = map[string]string{}
 	lookup := func(k string) (string, bool) { v, ok := vals[k]; return v, ok }
-	for i, l := range Lines(data) {
-		k, raw, ok := Assign(l)
-		if !ok {
+	lines := RawLines(data)
+	for _, e := range Entries(lines) {
+		if e.Key == "" {
+			l := strings.TrimSuffix(lines[e.Line], "\r")
 			if !Blank(l) && !Comment(l) && err == nil {
-				err = fmt.Errorf("line %d is not an assignment kasbah reads", i+1)
+				err = fmt.Errorf("line %d is not an assignment kasbah reads", e.Line+1)
 			}
 			continue
 		}
-		v, verr := dotenvValue(raw, lookup)
+		v, verr := dotenvValue(e.Value, lookup)
 		if verr != nil {
-			delete(vals, k)
+			delete(vals, e.Key)
 			if err == nil {
-				err = fmt.Errorf("line %d (%s): %v", i+1, k, verr)
+				err = fmt.Errorf("line %d (%s): %v", e.Line+1, e.Key, verr)
 			}
 			continue
 		}
-		vals[k] = v
+		vals[e.Key] = v
 	}
 	return vals, err
 }
 
+// afterQuote is what may follow a closing quote: blanks, a # comment, or one
+// bare name, which compose reads as a key inherited from its environment.
+var afterQuote = regexp.MustCompile(`^(#.*|[\pL\pN_.\[\]-]*)$`)
+
+// dotenvValue is one value as compose reads it: single quotes literal but
+// for \', double quotes with compose's escapes and interpolation, a quote
+// closed by the first one no backslash escapes.
 func dotenvValue(s string, lookup func(string) (string, bool)) (string, error) {
-	switch {
-	case strings.HasPrefix(s, "'"):
-		end := strings.IndexByte(s[1:], '\'')
-		if end < 0 {
-			return "", errors.New("the single quote is not closed on its line")
+	if s != "" && (s[0] == '\'' || s[0] == '"') {
+		if err := quoteErr(s); err != nil {
+			return "", err
 		}
-		return s[1 : end+1], nil
-	case strings.HasPrefix(s, `"`):
-		var b strings.Builder
-		for i := 1; i < len(s); i++ {
-			switch c := s[i]; {
-			case c == '"':
-				return Interpolate(b.String(), lookup)
-			case c == '\\' && i+1 < len(s):
-				i++
-				switch s[i] {
-				case 'n':
-					b.WriteByte('\n')
-				case 'r':
-					b.WriteByte('\r')
-				case 't':
-					b.WriteByte('\t')
-				case '\\', '"':
-					b.WriteByte(s[i])
-				default:
-					b.WriteByte('\\')
-					b.WriteByte(s[i])
-				}
-			default:
-				b.WriteByte(c)
-			}
+		body, _, _ := quoted(s)
+		if s[0] == '\'' {
+			return body, nil
 		}
-		return "", errors.New("the double quote is not closed on its line")
+		return Interpolate(expandEscapes(body), lookup)
 	}
 	s, _, _ = strings.Cut(s, " #")
 	return Interpolate(strings.TrimRightFunc(s, unicode.IsSpace), lookup)
+}
+
+// quoteErr is why compose refuses the quoted value s, or reads more from it
+// than one value; nil if neither.
+func quoteErr(s string) error {
+	kind := map[byte]string{'\'': "single", '"': "double"}[s[0]]
+	_, rest, ok := quoted(s)
+	if !ok {
+		return fmt.Errorf("the %s quote is not closed", kind)
+	}
+	if !afterQuote.MatchString(strings.TrimFunc(rest, unicode.IsSpace)) {
+		return fmt.Errorf("text follows the closing %s quote, which compose reads as another assignment", kind)
+	}
+	return nil
+}
+
+// quoted is compose's scan of a quoted value: body up to the first quote
+// not escaped, a backslash dropped only before that quote; rest what
+// follows it; ok false when no quote closes it.
+func quoted(s string) (body, rest string, ok bool) {
+	q := s[0]
+	var b []byte
+	esc := false
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == q && esc:
+			b, esc = append(b, c), false
+		case c == q:
+			return string(b), s[i+1:], true
+		case esc:
+			b, esc = append(b, '\\', c), false
+		case c == '\\':
+			esc = true
+		default:
+			b = append(b, c)
+		}
+	}
+	return "", "", false
+}
+
+var escapeSeq = regexp.MustCompile(`\\(?:[abcfnrtv$"\\]|0\d{0,3})`)
+
+// expandEscapes is compose's: the escapes escapeSeq finds that Go's
+// UnquoteChar reads (\0NNN as octal NNN), \$ as $$; any other kept as written.
+func expandEscapes(s string) string {
+	return escapeSeq.ReplaceAllStringFunc(s, func(m string) string {
+		if m == `\$` {
+			return "$$"
+		}
+		if strings.HasPrefix(m, `\0`) {
+			m = `\` + m[2:]
+		}
+		r, _, _, err := strconv.UnquoteChar(m, '"')
+		if err != nil {
+			return m
+		}
+		return string(r)
+	})
 }
 
 // Interpolate is s as compose interpolates it: `$$` is `$`; $VAR, ${VAR},

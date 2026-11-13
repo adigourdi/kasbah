@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/envtpl"
@@ -189,7 +190,11 @@ func (s *Setup) Run() int {
 		fmt.Fprintf(s.Err, "ERROR: cannot read %s: %v\n", example, err)
 		return SetupFail
 	}
-	template := envtpl.Lines(tmplData)
+	if err := envtpl.Refused(envtpl.RawLines(tmplData)); err != nil {
+		fmt.Fprintf(s.Err, "ERROR: %s %v — .env left untouched\n", example, err)
+		return SetupFail
+	}
+	template := envtpl.Folded(tmplData)
 	lock, err := lockEnv(s.Dir)
 	if err != nil {
 		fmt.Fprintf(s.Err, "ERROR: %v\n", err)
@@ -210,7 +215,11 @@ func (s *Setup) Run() int {
 			fmt.Fprintf(s.Err, "ERROR: cannot read %s: %v\n", output, err)
 			return SetupFail
 		}
-		for _, l := range envtpl.Lines(data) {
+		if err := envtpl.Refused(envtpl.RawLines(data)); err != nil {
+			fmt.Fprintf(s.Err, "ERROR: %s %v, which kasbah does not rewrite — fix it by hand; .env left untouched\n", output, err)
+			return SetupFail
+		}
+		for _, l := range envtpl.Folded(data) {
 			if l == "" || envtpl.Comment(l) {
 				continue
 			}
@@ -418,7 +427,7 @@ func (s *Setup) Run() int {
 			}
 		case raw == "":
 			if has {
-				out("%s%s%s [current: %s]: ", c.bold, key, c.reset, current)
+				out("%s%s%s [current: %s]: ", c.bold, key, c.reset, shown(current))
 			} else {
 				out("%s%s%s: ", c.bold, key, c.reset)
 			}
@@ -519,22 +528,25 @@ func isHeader(line string) bool {
 	return n >= 3
 }
 
-// Encode is v as a .env value compose reads back as exactly v: bare (`$` as
-// `$$`) when nothing in it needs quoting, else single-quoted (literal to
-// compose) when it holds no `'` and does not end in `\`, else double-quoted
-// with `\`, `"` escaped and `$` as `$$`. A line break or NUL cannot be written.
+// Encode is v as one .env value compose reads back as exactly v: bare when
+// nothing needs quoting, else single-quoted, else double-quoted with `\n`
+// escapes. A NUL or a byte not UTF-8 cannot be written.
 func Encode(v string) (string, error) {
-	if strings.ContainsAny(v, "\n\r\x00") {
-		return "", errors.New("the value has a line break or a NUL in it, and .env holds one line per key")
+	if strings.Contains(v, "\x00") {
+		return "", errors.New("the value has a NUL in it, which no .env can hold")
 	}
+	if !utf8.ValidString(v) {
+		return "", errors.New("the value has a byte that is not UTF-8, which kasbah could not read back from .env")
+	}
+	broken := strings.ContainsAny(v, "\n\r")
 	trimmed := strings.TrimSpace(v) == v
-	if trimmed && !strings.HasPrefix(v, "'") && !strings.HasPrefix(v, `"`) && !strings.Contains(v, " #") {
+	if !broken && trimmed && !strings.HasPrefix(v, "'") && !strings.HasPrefix(v, `"`) && !strings.Contains(v, " #") {
 		return strings.ReplaceAll(v, "$", "$$"), nil
 	}
-	if !strings.Contains(v, "'") && !strings.HasSuffix(v, `\`) {
+	if !broken && !strings.Contains(v, "'") && !strings.HasSuffix(v, `\`) {
 		return "'" + v + "'", nil
 	}
-	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", "$$")
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", "$$", "\n", `\n`, "\r", `\r`)
 	return `"` + r.Replace(v) + `"`, nil
 }
 

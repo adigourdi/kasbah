@@ -69,12 +69,16 @@ func RemoteInit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 // ReadReport is what the backup half of init needs from a server before it
 // decides anything. The env file's content never travels: only whether it
-// has any, and the first key in it kasbah sets itself.
+// has any, the first key in it kasbah sets itself, and where its first line
+// that is not KEY=value is.
 type ReadReport struct {
 	Dir      string `json:"dir"`
 	Compose  string `json:"compose_b64"`
 	Env      string `json:"env"`
 	EnvOwned string `json:"env_owned"`
+	// EnvBadLine is FirstBadLine's line, EnvBadAbove the key above it.
+	EnvBadLine  int    `json:"env_bad_line,omitempty"`
+	EnvBadAbove string `json:"env_bad_above,omitempty"`
 	// Owner is the backup directory's owner when it is not this user's.
 	Owner    string              `json:"owner"`
 	HasPass  []string            `json:"haspass"`
@@ -102,6 +106,7 @@ func Read(apps, data string) ReadReport {
 		if env != "" {
 			r.Env = "present"
 			r.EnvOwned = FirstOwned(env)
+			r.EnvBadLine, r.EnvBadAbove = FirstBadLine(env)
 		}
 	}
 	return r
@@ -179,6 +184,9 @@ func remoteLayout(apps, size, sum string, stdin io.Reader, stdout io.Writer) err
 	}
 	if k := FirstOwned(current); k != "" {
 		return fmt.Errorf("%s sets %s, which kasbah sets itself — remove the line and re-run", envPath, k)
+	}
+	if n, k := FirstBadLine(current); n > 0 {
+		return BadEnvLineError(envPath, n, k)
 	}
 	merged := MergeEnv(body.Default, current, body.RepoBase, body.Env)
 	state := "unchanged"

@@ -529,7 +529,10 @@ below). The only differences:
    resolved on the server — once step 1's tag exists and the server lock is
    held, before step 4, so a value above the ceiling is refused with nothing
    of the project changed on the server; a tag step 1 just cut stays in the
-   local repository). The `KASBAH_` prefix is
+   local repository). A `.env` kasbah cannot read as compose does
+   (`env-template.md` → Drift detection) is refused there, naming the line
+   and key, never a value, and the deploy stops before `compose up`, so the
+   live stack is left as it was. The `KASBAH_` prefix is
    reserved and exempt from drift detection.
 7. Mail claim (if manifest has `mail:`):
      look for a mail stack on the server   # today: warn and continue when absent

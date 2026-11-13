@@ -133,17 +133,17 @@ func ManagedLimits(envfile string) (cpu, mem string, ok bool) {
 	if err != nil {
 		return "", "", false
 	}
-	lines := rawLines(data)
+	lines := envtpl.RawLines(data)
 	in := managedBlock(lines)
-	for i, line := range lines {
-		if !in[i] {
+	for _, e := range envtpl.Entries(lines) {
+		if !in[e.Line] {
 			continue
 		}
-		switch k, v, ok := envtpl.Assign(strings.TrimSuffix(line, "\r")); {
-		case ok && k == "KASBAH_CPU_LIMIT":
-			cpu = v
-		case ok && k == "KASBAH_MEM_LIMIT":
-			mem = v
+		switch e.Key {
+		case "KASBAH_CPU_LIMIT":
+			cpu = e.Value
+		case "KASBAH_MEM_LIMIT":
+			mem = e.Value
 		}
 	}
 	return cpu, mem, true

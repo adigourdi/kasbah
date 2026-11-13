@@ -294,7 +294,7 @@ func TestLastRunCarried(t *testing.T) {
 
 func TestRead(t *testing.T) {
 	apps, data := appsTree(t)
-	write(t, apps+"/.kasbah/backup/env", "AWS_ACCESS_KEY_ID=secret-value\nRESTIC_REPOSITORY=x\n")
+	write(t, apps+"/.kasbah/backup/env", "AWS_ACCESS_KEY_ID=secret-value\nRESTIC_REPOSITORY=x\nsecret-rest\n")
 	write(t, apps+"/.kasbah/backup/compose.yml", "name: kasbah-backup\n")
 	os.MkdirAll(data+"/vol", 0o755)
 	r := Read(apps, data)
@@ -302,7 +302,7 @@ func TestRead(t *testing.T) {
 	if strings.Contains(string(b), "secret-value") {
 		t.Errorf("the env file's content left the server: %s", b)
 	}
-	if r.Dir != "dir" || r.Env != "present" || r.EnvOwned != "RESTIC_REPOSITORY" || !r.Mail || strings.Join(r.HasPass, " ") != "acme" {
+	if r.Dir != "dir" || r.Env != "present" || r.EnvOwned != "RESTIC_REPOSITORY" || r.EnvBadLine != 3 || r.EnvBadAbove != "RESTIC_REPOSITORY" || !r.Mail || strings.Join(r.HasPass, " ") != "acme" {
 		t.Errorf("%+v", r)
 	}
 	if c, _ := base64.StdEncoding.DecodeString(r.Compose); string(c) != "name: kasbah-backup\n" {
@@ -376,6 +376,13 @@ func TestLayout(t *testing.T) {
 	write(t, dir+"/env", "RESTIC_REPOSITORY=x\n")
 	if _, err := layout(t, apps, LayoutBody{Default: def, RepoBase: "c/"}); err == nil || !strings.Contains(err.Error(), "which kasbah sets itself") {
 		t.Error(err)
+	}
+	// A value over several lines is refused, by line and the key above, the file kept.
+	span := "KASBAH_BACKUP_REPO_BASE=b/\r\nGCS_KEY='{\r\n  \"private_key\": \"s3cr3t\"\r\n}'\nMINE=1\n"
+	write(t, dir+"/env", span)
+	_, err = layout(t, apps, LayoutBody{Default: def, RepoBase: "c/", Env: []string{"MINE=2"}})
+	if err == nil || !strings.Contains(err.Error(), "line 3 (below GCS_KEY=) is not blank") || strings.Contains(err.Error(), "s3cr3t") || read(t, dir+"/env") != span {
+		t.Error(err, read(t, dir+"/env"))
 	}
 	for _, bad := range []LayoutBody{
 		{RepoBase: ""}, {RepoBase: "b/", Env: []string{"RESTIC_PASSWORD=x"}},

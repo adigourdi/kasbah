@@ -298,6 +298,9 @@ func TestBackupRender(t *testing.T) {
 	if _, _, err := BackupRender(repoTemplates(t), o, v, &backup.ReadReport{EnvOwned: "RESTIC_REPOSITORY"}); !strings.Contains(errText(err), "which kasbah sets itself") {
 		t.Error(err)
 	}
+	if _, _, err := BackupRender(repoTemplates(t), o, v, &backup.ReadReport{EnvBadLine: 4, EnvBadAbove: "GCS_KEY"}); !strings.Contains(errText(err), "/.kasbah/backup/env: line 4 (below GCS_KEY=) is not blank") {
+		t.Error(err)
+	}
 }
 
 func probeFacts(stage, mid, after string) Facts {

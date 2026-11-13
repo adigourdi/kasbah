@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/envtpl"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/serverlock"
@@ -155,8 +157,65 @@ func TestEncode(t *testing.T) {
 			t.Errorf("Encode(%q) = %q %v, want %q", v, got, err, want)
 		}
 	}
-	if _, err := Encode("a\nb"); err == nil {
-		t.Error("a newline encoded")
+	// Line breaks: always double-quoted, as \n and \r.
+	for v, want := range map[string]string{
+		"a\nb":                 `"a\nb"`,
+		"a\r\nb\n":             `"a\r\nb\n"`,
+		"it's\n\"x\" $y \\z\\": `"it's\n\"x\" $$y \\z\\"`,
+		"a\\\nn":               `"a\\\nn"`,
+	} {
+		if got, err := Encode(v); err != nil || got != want {
+			t.Errorf("Encode(%q) = %q %v, want %q", v, got, err, want)
+		}
+	}
+	if _, err := Encode("a\x00b"); err == nil {
+		t.Error("a NUL encoded")
+	}
+}
+
+const pemKey = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7$HOME\\n\"x'\n" +
+	"KASBAH_CPU_LIMIT=9\n" + ManagedBegin + "\nAPP_NAME=evil\n-----END PRIVATE KEY-----"
+
+// Every value Encode writes, a PEM key's above all, reads back as it was.
+func TestEncodeReadsBack(t *testing.T) {
+	for _, v := range []string{pemKey, "a\nb", "\n", "x\r\n", "a\\\n$$\\\"'", " lead\n", "#\n#"} {
+		enc, err := Encode(v)
+		if err != nil || strings.ContainsAny(enc, "\r\n") {
+			t.Fatalf("Encode(%q) = %q %v", v, enc, err)
+		}
+		if vals, err := envtpl.ValuesOf([]byte("K=" + enc + "\n")); err != nil || vals["K"] != v {
+			t.Errorf("%q reads back as %q (%v)", v, vals["K"], err)
+		}
+	}
+}
+
+// A hand-written quoted span of the key is replaced whole, its lines gone;
+// another key's span stays byte for byte.
+func TestSetKeyReplacesSpan(t *testing.T) {
+	keep := "MAIL_HOST=\"-----BEGIN\r\nAPI_SECRET=no\r\n-----END\"\r\n"
+	env := "APP_NAME='multi\nAPI_SECRET=inside\nline' # c\n" + keep + "API_SECRET=\"a\nb\"\r\n"
+	dir := setDir(t, env)
+	if verb, err := SetKey(dir, "APP_NAME", pemKey); err != nil || verb != "changed" {
+		t.Fatal(verb, err)
+	}
+	enc, _ := Encode(pemKey)
+	want := "APP_NAME=" + enc + "\n" + keep + "API_SECRET=\"a\nb\"\r\n"
+	got := readFile(t, dir+"/.env")
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if verb, err := SetKey(dir, "API_SECRET", "v"); err != nil || verb != "changed" {
+		t.Fatal(verb, err)
+	}
+	if got := readFile(t, dir+"/.env"); got != "APP_NAME="+enc+"\n"+keep+"API_SECRET=v\r\n" {
+		t.Errorf("second set: %q", got)
+	}
+	vals, err := envtpl.ValuesOf([]byte(readFile(t, dir+"/.env")))
+	if err != nil || vals["APP_NAME"] != pemKey || vals["API_SECRET"] != "v" || vals["MAIL_HOST"] != "-----BEGIN\r\nAPI_SECRET=no\r\n-----END" {
+		t.Errorf("read back: %q %v", vals, err)
+	}
+	if keys := envtpl.KeysOf([]byte(readFile(t, dir+"/.env"))); !slices.Equal(keys, []string{"APP_NAME", "MAIL_HOST", "API_SECRET"}) {
+		t.Errorf("keys: %q", keys)
 	}
 }
 
@@ -184,7 +243,7 @@ func TestSetKeyRefusals(t *testing.T) {
 	for _, c := range []struct{ key, value, want string }{
 		{"NOT_THERE", "v", "not a key of " + dir + "/.env.prod.example"},
 		{"KASBAH_CPU_LIMIT", "2", "not a key env set may change"},
-		{"APP_NAME", "a\nb", "line break"},
+		{"APP_NAME", "a\x00b", "NUL"},
 	} {
 		if _, err := SetKey(dir, c.key, c.value); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v", c.key, err)
@@ -348,7 +407,15 @@ func TestRunSet(t *testing.T) {
 		t.Error("last_server not recorded")
 	}
 
-	for _, in := range []string{"", "\n", "a\nb\n"} {
+	// stdin whole: one final newline dropped, a PEM key's lines kept.
+	for in, want := range map[string]string{"a\nb\n": "a\nb", pemKey + "\n": pemKey, "a\n\n": "a\n", "x\r\ny\r\n": "x\r\ny"} {
+		f := &fakeSet{keyOut: known, setOut: "set=changed\n"}
+		if code, errs, _ := runSetCmd(t, f, false, in, "API_SECRET", "deploy@vps", "--no-restart"); code != 0 || f.value != want || strings.Contains(errs, "BEGIN") {
+			t.Errorf("stdin %q: %d %q value %q", in, code, errs, f.value)
+		}
+	}
+
+	for _, in := range []string{"", "\n", "a\x00b\n", "a\xffb\n"} {
 		f := &fakeSet{keyOut: known}
 		if code, errs, dialed := runSetCmd(t, f, false, in, "API_SECRET", "deploy@vps", "--no-restart"); code != 1 || dialed {
 			t.Errorf("stdin %q: %d %q dialed=%v", in, code, errs, dialed)
@@ -380,5 +447,20 @@ func TestRunSet(t *testing.T) {
 	code, errs, _ = runSetCmd(t, f, false, "v", "API_SECRET", "deploy@vps", "--restart")
 	if code != 1 || !strings.Contains(errs, "is set in") || f.up != "demo" {
 		t.Errorf("up failed: %d %q", code, errs)
+	}
+}
+
+// A PEM block pasted on a terminal is taken whole; nothing of it is echoed.
+func TestRunSetPastedPEM(t *testing.T) {
+	project(t, true)
+	f := &fakeSet{keyOut: known, setOut: "set=changed\n"}
+	pem := "-----BEGIN KEY-----\r\nMIIEsecret\r\n-----END KEY-----\r\n"
+	code, errs, _ := runSetCmd(t, f, true, pem+"n\n", "API_SECRET", "deploy@vps")
+	if code != 0 || f.value != "-----BEGIN KEY-----\nMIIEsecret\n-----END KEY-----" || strings.Contains(errs, "MIIE") {
+		t.Errorf("%d %q value %q", code, errs, f.value)
+	}
+	f = &fakeSet{keyOut: known}
+	if code, errs, _ := runSetCmd(t, f, true, "a\xffb\nn\n", "API_SECRET", "deploy@vps"); code != 1 || !strings.Contains(errs, "not UTF-8") || f.value != "" {
+		t.Errorf("non-UTF-8 typed: %d %q", code, errs)
 	}
 }

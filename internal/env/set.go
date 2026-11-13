@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/composefile"
@@ -29,9 +30,12 @@ it is. KEY must be a key of the server's .env.prod.example; a KEY the .env
 lacks is added where the template has it. The KASBAH_* keys are kasbah's own.
 
 The value is never taken from the command line. On a terminal it is asked with
-the typing hidden; without one it is read from stdin — one line, its newline
-dropped:
+the typing hidden, one line — a pasted PEM block, from its -----BEGIN line to
+its -----END line, whole; without one it is read from stdin, whole, one final
+newline dropped. A value of several lines (a PEM key) is written as one
+double-quoted .env line with \n escapes:
   printf '%s' "$VALUE" | kasbah env set API_SECRET --no-restart
+  kasbah env set TLS_KEY --no-restart < key.pem
 
 Flags:
   --restart     docker compose -p <name> up -d once .env is written
@@ -45,7 +49,7 @@ func SetUsage() string { return setUsage }
 // UpTimeout bounds a set that brings the project up: compose may pull.
 const UpTimeout = 300
 
-// maxValue is the most stdin may carry: one .env line, not a file.
+// maxValue is the most stdin may carry: one value, a PEM key, not a file.
 const maxValue = 64 << 10
 
 var envKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -108,27 +112,30 @@ func parseSet(args []string) (Options, error) {
 	return o, nil
 }
 
-// stdinValue is the value without a terminal: one line, one trailing
-// newline (and CR) dropped.
+// stdinValue is the value without a terminal: stdin whole, one final
+// newline (and a CR before it) dropped.
 func stdinValue(r io.Reader, key string) (string, error) {
 	b, err := io.ReadAll(io.LimitReader(r, maxValue+1))
 	if err != nil {
 		return "", cli.Fail("env set: could not read the value for %s from stdin: %v", key, err)
 	}
 	if len(b) > maxValue {
-		return "", cli.Fail("env set: the value for %s on stdin is over %d bytes — a .env value is one line. Nothing was changed.", key, maxValue)
+		return "", cli.Fail("env set: the value for %s on stdin is over %d bytes. Nothing was changed.", key, maxValue)
 	}
 	v := strings.TrimSuffix(strings.TrimSuffix(string(b), "\n"), "\r")
 	if v == "" {
 		return "", cli.Fail("env set: no value for %s on stdin, and no terminal to ask on", key).Cont(
 			"pipe it in: printf '%s' \"$VALUE\" | kasbah env set " + key + " --no-restart. Nothing was changed.")
 	}
-	return v, checkValue(key, v)
+	return v, checkValue(key, v, "\x00", "a NUL")
 }
 
-func checkValue(key, v string) error {
-	if strings.ContainsAny(v, "\n\r\x00") {
-		return cli.Fail("env set: the value for %s has a line break or a NUL in it — .env holds one line per key. Nothing was changed.", key)
+func checkValue(key, v, bad, what string) error {
+	if strings.ContainsAny(v, bad) {
+		return cli.Fail("env set: the value for %s has %s in it, which .env cannot hold. Nothing was changed.", key, what)
+	}
+	if !utf8.ValidString(v) {
+		return cli.Fail("env set: the value for %s has a byte that is not UTF-8, which kasbah could not read back from .env. Nothing was changed.", key)
 	}
 	return nil
 }
@@ -196,7 +203,7 @@ func runSet(c Ctx, o Options) error {
 			}
 			return err
 		}
-		if err := checkValue(o.Key, value); err != nil {
+		if err := checkValue(o.Key, value, "\r\x00", "a CR or a NUL"); err != nil {
 			return err
 		}
 	}
@@ -254,9 +261,9 @@ func keyReport(dir, key string) string {
 	return "template_exists=" + yes(hasTmpl) + "\nin_template=" + yes(in) + "\nenv_exists=" + yes(hasEnv) + "\n"
 }
 
-// SetKey writes KEY=value into dir's .env through writeEnv: every assignment
-// of KEY replaced in place (its CR kept), or a new line where the template
-// puts KEY; every other line byte for byte. verb is "changed" or "added".
+// SetKey writes KEY=value on one line into dir's .env (writeEnv): each
+// assignment of KEY replaced in place, a span whole, or one added where the
+// template puts KEY; every other line byte for byte. verb: changed or added.
 func SetKey(dir, key, value string) (verb string, err error) {
 	tpath, epath := dir+"/.env.prod.example", dir+"/.env"
 	if !envKey.MatchString(key) || reserved(key) {
@@ -290,15 +297,19 @@ func SetKey(dir, key, value string) (verb string, err error) {
 	if err != nil {
 		return "", fmt.Errorf("cannot read %s: %v", epath, cli.OSCause(err))
 	}
-	lines := rawLines(data)
+	lines := envtpl.RawLines(data)
+	if err := envtpl.Refused(lines); err != nil {
+		return "", fmt.Errorf("%s %v, which kasbah does not rewrite — fix it by hand", epath, err)
+	}
 	line := key + "=" + enc
 	verb = "added"
 	inBlock := managedBlock(lines)
 	first, last := map[string]int{}, map[string]int{}
-	for i, l := range lines {
-		k, _, ok := envtpl.Assign(strings.TrimSuffix(l, "\r"))
-		if !ok {
-			if readsAs(strings.TrimSuffix(l, "\r"), key) {
+	drop := map[int]bool{}
+	for _, e := range envtpl.Entries(lines) {
+		i, k := e.Line, e.Key
+		if k == "" {
+			if readsAs(strings.TrimSuffix(lines[i], "\r"), key) {
 				return "", fmt.Errorf("%s line %d sets %s with a byte that is not UTF-8, which kasbah does not rewrite — fix that line by hand", epath, i+1, key)
 			}
 			continue
@@ -308,20 +319,29 @@ func SetKey(dir, key, value string) (verb string, err error) {
 		}
 		if k == key {
 			nl := line
-			if strings.HasSuffix(l, "\r") {
+			if strings.HasSuffix(lines[e.End-1], "\r") {
 				nl += "\r"
 			}
 			lines[i], verb = nl, "changed"
+			for j := i + 1; j < e.End; j++ {
+				drop[j] = true
+			}
 		}
 		if _, seen := first[k]; !seen {
 			first[k] = i
 		}
-		last[k] = i
+		last[k] = e.End - 1
 	}
 	if verb == "added" {
 		lines = slices.Insert(lines, insertAt(tkeys, at, first, last, len(lines)), line)
 	}
-	if err := writeEnv(epath, lines); err != nil {
+	kept := lines[:0:0]
+	for i, l := range lines {
+		if !drop[i] {
+			kept = append(kept, l)
+		}
+	}
+	if err := writeEnv(epath, kept); err != nil {
 		return "", fmt.Errorf("could not write %s: %v", epath, err)
 	}
 	return verb, nil

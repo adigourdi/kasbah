@@ -306,6 +306,9 @@ func BackupRender(fsys fs.FS, o Options, v *BackupValues, r *backup.ReadReport) 
 	if r.EnvOwned != "" {
 		return "", "", backup.OwnedEnvError(o.Apps, r.EnvOwned)
 	}
+	if r.EnvBadLine > 0 {
+		return "", "", backup.BadEnvLineError(o.Apps+"/.kasbah/backup/env", r.EnvBadLine, r.EnvBadAbove)
+	}
 	return compose, envDefault, nil
 }
 

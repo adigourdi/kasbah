@@ -190,8 +190,8 @@ func countSentinels(path string) int {
 		return 0
 	}
 	n := 0
-	for _, l := range splitLines(b) {
-		if sentinel(l) {
+	for _, k := range unsentineled(splitLines(b)) {
+		if !k {
 			n++
 		}
 	}
@@ -203,6 +203,18 @@ func countSentinels(path string) int {
 func mailKeep(line string) bool {
 	k, _, ok := envtpl.Assign(strings.TrimSuffix(line, "\r"))
 	return ok && slices.Contains(MailKeys, k)
+}
+
+// mailKept is mailKeep over a mail .env's entries: a quoted span kept or
+// dropped whole, its lines past the first never read as keys.
+func mailKept(lines []string) []bool {
+	keep := make([]bool, len(lines))
+	for _, e := range envtpl.Entries(lines) {
+		for j := e.Line; j < e.End; j++ {
+			keep[j] = mailKeep(lines[e.Line])
+		}
+	}
+	return keep
 }
 
 // splitKeep is a file's lines with the final fragment marked: a last line
@@ -221,10 +233,37 @@ func splitKeep(b []byte) (lines []string, lastBare bool) {
 
 // filter is b with the lines keep refuses dropped, every other byte kept.
 func filter(b []byte, keep func(string) bool) (out []byte, dropped int) {
+	return filterLines(b, perLine(keep))
+}
+
+// perLine judges each line alone.
+func perLine(keep func(string) bool) func([]string) []bool {
+	return func(lines []string) []bool {
+		k := make([]bool, len(lines))
+		for i, l := range lines {
+			k[i] = keep(l)
+		}
+		return k
+	}
+}
+
+// unsentineled keeps every line but the managed block's sentinels, their
+// text inside a quoted span being a value's.
+func unsentineled(lines []string) []bool {
+	k := envtpl.Continued(lines)
+	for i, l := range lines {
+		k[i] = k[i] || !sentinel(l)
+	}
+	return k
+}
+
+// filterLines is filter with keep judging the file's lines together.
+func filterLines(b []byte, keep func([]string) []bool) (out []byte, dropped int) {
 	lines, bare := splitKeep(b)
+	kept := keep(lines)
 	var buf bytes.Buffer
 	for i, l := range lines {
-		if !keep(l) {
+		if !kept[i] {
 			dropped++
 			continue
 		}
@@ -244,7 +283,7 @@ func countMailExtra(path string) int {
 	if err != nil {
 		return 0
 	}
-	_, n := filter(b, mailKeep)
+	_, n := filterLines(b, mailKept)
 	return n
 }
 
@@ -369,6 +408,8 @@ type ProjectResult struct {
 	Seeds   string `json:"seeds"`
 	Kept    string `json:"kept"`
 	Hooks   string `json:"hooks"`
+	// EnvRefused is why a refused .env was: line and key, never a value.
+	EnvRefused string `json:"env_refused,omitempty"`
 }
 
 // ActReport is what `kasbah remote destroy act` did. A `started=yes` line
@@ -378,15 +419,17 @@ type ActReport struct {
 	BkDownDetail string `json:"bk_down_detail"`
 	BkContainer  string `json:"bk_container"`
 	// BkLaunchers is the labelled launchers: removed, absent or failed.
-	BkLaunchers  string          `json:"bk_launchers"`
-	BkVolume     string          `json:"bk_volume"`
-	BkNetwork    string          `json:"bk_network"`
-	BkFiles      string          `json:"bk_files"`
-	Projects     []ProjectResult `json:"projects"`
-	MailEnv      string          `json:"mail_env"`
-	MailEnvN     int             `json:"mail_env_n"`
-	MailRegistry string          `json:"mail_registry"`
-	LayersMap    string          `json:"layers_map"`
+	BkLaunchers string          `json:"bk_launchers"`
+	BkVolume    string          `json:"bk_volume"`
+	BkNetwork   string          `json:"bk_network"`
+	BkFiles     string          `json:"bk_files"`
+	Projects    []ProjectResult `json:"projects"`
+	MailEnv     string          `json:"mail_env"`
+	MailEnvN    int             `json:"mail_env_n"`
+	// MailEnvRefused is EnvRefused for the mail .env.
+	MailEnvRefused string `json:"mail_env_refused,omitempty"`
+	MailRegistry   string `json:"mail_registry"`
+	LayersMap      string `json:"layers_map"`
 	// AcmeDNS is the DNS providers' credentials: removed, absent or failed.
 	AcmeDNS string `json:"acme_dns"`
 	// Marker is removed, absent, failed — or held, when anything above
@@ -397,10 +440,21 @@ type ActReport struct {
 var actKeys = []string{"bk_down", "bk_down_detail", "bk_container", "bk_launchers", "bk_volume", "bk_network", "bk_files",
 	"projects", "mail_env", "mail_env_n", "mail_registry", "layers_map", "acme_dns", "marker"}
 
+// rewriteEnv is rewrite for a .env, refused (left as it is) when kasbah
+// cannot read it as compose does, why naming the line and key.
+func rewriteEnv(path string, keep func([]string) []bool, mode os.FileMode) (verdict, why string) {
+	if b, err := os.ReadFile(path); err == nil {
+		if err := envtpl.Refused(envtpl.RawLines(b)); err != nil {
+			return "refused", err.Error()
+		}
+	}
+	return rewrite(path, keep, mode), ""
+}
+
 // rewrite replaces a file's lines through keep, beside the file it resolves
 // to: written whole and checked before it is renamed over, mode kept.
 // stripped, noblock (nothing dropped), absent, unreadable or failed.
-func rewrite(path string, keep func(string) bool, mode os.FileMode) string {
+func rewrite(path string, keep func([]string) []bool, mode os.FileMode) string {
 	target := path
 	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		t, err := filepath.EvalSymlinks(path)
@@ -426,7 +480,7 @@ func rewrite(path string, keep func(string) bool, mode os.FileMode) string {
 	if err != nil {
 		return "unreadable"
 	}
-	out, n := filter(b, keep)
+	out, n := filterLines(b, keep)
 	if n == 0 {
 		return "noblock"
 	}
@@ -560,14 +614,14 @@ func act(apps string, names []string, stdout io.Writer) error {
 		p.Kept = removeKept(d)
 		// The sentinel comments go; KASBAH_CPU_LIMIT and KASBAH_MEM_LIMIT
 		// stay, because compose interpolates them into every service.
-		p.Env = rewrite(filepath.Join(d, ".env"), func(l string) bool { return !sentinel(l) }, 0)
+		p.Env, p.EnvRefused = rewriteEnv(filepath.Join(d, ".env"), unsentineled, 0)
 		for _, v := range []string{p.Vlog, p.VlogGz, p.Scripts, p.Lock, p.Client, p.Hooks, p.Prev, p.Seeds, p.Kept} {
 			if v == "failed" {
 				bad = true
 			}
 		}
 		// A .env still claiming kasbah rewrites it has not been de-branded.
-		if p.Env == "failed" || p.Env == "unreadable" {
+		if p.Env == "failed" || p.Env == "unreadable" || p.Env == "refused" {
 			bad = true
 		}
 		r.Projects = append(r.Projects, p)
@@ -577,9 +631,10 @@ func act(apps string, names []string, stdout io.Writer) error {
 	// credential. postfix-accounts.cf stays: the postmaster must still log in.
 	menv := filepath.Join(apps, "mail", ".env")
 	if b, err := os.ReadFile(menv); err == nil {
-		_, r.MailEnvN = filter(b, mailKeep)
+		_, r.MailEnvN = filterLines(b, mailKept)
 	}
-	switch v := rewrite(menv, mailKeep, 0o600); v {
+	v, why := rewriteEnv(menv, mailKept, 0o600)
+	switch v {
 	case "stripped":
 		r.MailEnv = "stripped"
 	case "noblock":
@@ -587,7 +642,7 @@ func act(apps string, names []string, stdout io.Writer) error {
 	case "absent":
 		r.MailEnv, r.MailEnvN = "absent", 0
 	default:
-		r.MailEnv, r.MailEnvN, bad = v, 0, true
+		r.MailEnv, r.MailEnvN, r.MailEnvRefused, bad = v, 0, why, true
 	}
 	r.MailRegistry = fsstate.Remove(filepath.Join(apps, "mail", "kasbah.yml"))
 	if r.MailRegistry == "failed" {
@@ -628,7 +683,7 @@ func removeAcmeDNS(apps string) string {
 	if !fsstate.Exists(dir) {
 		return "absent"
 	}
-	switch rewrite(filepath.Join(apps, "traefik", "compose.yml"), func(l string) bool { return !dnsEnvLine.MatchString(l) }, 0) {
+	switch rewrite(filepath.Join(apps, "traefik", "compose.yml"), perLine(func(l string) bool { return !dnsEnvLine.MatchString(l) }), 0) {
 	case "stripped", "noblock", "absent":
 	default:
 		return "failed"

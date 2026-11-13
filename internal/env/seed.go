@@ -59,21 +59,26 @@ type Seed struct {
 	Keys map[string]bool
 }
 
-// ParseSeed reads assignments as the setup reads a .env (envtpl.Assign): CR
-// stripped, blank and `#` lines skipped, the last assignment winning. A value
-// is compose syntax, written to .env as it stands.
+// ParseSeed reads assignments as the setup reads a .env (envtpl.Entries),
+// the last winning; a value is compose syntax, written to .env as it stands,
+// a span on one line (envtpl.Entry.OneValue).
 func ParseSeed(data []byte) (map[string]string, error) {
 	if len(data) > MaxSeed {
 		return nil, fmt.Errorf("it is over %d KiB", MaxSeed>>10)
 	}
 	vals := map[string]string{}
-	for i, l := range envtpl.Lines(data) {
+	lines := envtpl.RawLines(data)
+	for _, e := range envtpl.Entries(lines) {
+		l, i := strings.TrimSuffix(lines[e.Line], "\r"), e.Line
 		if envtpl.Blank(l) || envtpl.Comment(l) {
 			continue
 		}
-		k, v, ok := envtpl.Assign(l)
+		k, v, ok := e.Key, e.OneValue(), e.Key != ""
 		if !ok {
 			return nil, fmt.Errorf("line %d is not an assignment (KEY=value, KEY = value or KEY: value; blank lines and # comments aside)", i+1)
+		}
+		if err := e.Refused(); err != nil {
+			return nil, fmt.Errorf("line %d (%s): %v", i+1, k, err)
 		}
 		if reserved(k) {
 			return nil, fmt.Errorf("line %d sets %s — the %s* keys are kasbah's own, injected at deploy", i+1, k, envtpl.ReservedPrefix)
@@ -93,11 +98,8 @@ func ParseSeed(data []byte) (map[string]string, error) {
 // `$$` outside single quotes: compose blanks a variable it cannot resolve.
 func bareDollars(data []byte) []string {
 	var out []string
-	for i, l := range envtpl.Lines(data) {
-		if envtpl.Blank(l) || envtpl.Comment(l) {
-			continue
-		}
-		k, v, ok := envtpl.Assign(l)
+	for _, e := range envtpl.Entries(envtpl.RawLines(data)) {
+		i, k, v, ok := e.Line, e.Key, e.Value, e.Key != ""
 		if !ok || len(v) >= 2 && v[0] == '\'' && strings.IndexByte(v[1:], '\'') >= 0 {
 			continue
 		}

@@ -4,6 +4,7 @@
 package backup
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -302,6 +303,37 @@ func OwnedEnvError(apps, key string) *cli.Error {
 		"scheduled backup wrote to another — and the probe would report a URL it had",
 		"never contacted. Remove the line from that file and re-run.",
 		"The repository is --backup-repo-base=; the password is --backup-password=<repo>=<password>.")
+}
+
+// FirstBadLine is the first line (from 1) of an env file that is not blank,
+// a `#` comment or KEY=value with a variable name for KEY — a value pasted over
+// several lines shows up so — and the key of the KEY= line above it; 0 if none.
+func FirstBadLine(content string) (line int, above string) {
+	for i, l := range strings.Split(content, "\n") {
+		l = strings.TrimSuffix(l, "\r")
+		if strings.Trim(l, " \t") == "" || l[0] == '#' {
+			continue
+		}
+		if k, _, ok := strings.Cut(l, "="); ok && reKey.MatchString(k) {
+			above = k
+			continue
+		}
+		return i + 1, above
+	}
+	return 0, ""
+}
+
+// BadEnvLineError is FirstBadLine's refusal, named by line and the key above
+// it, never by what the line holds.
+func BadEnvLineError(path string, line int, above string) *cli.Error {
+	at := fmt.Sprintf("line %d", line)
+	if above != "" {
+		at += fmt.Sprintf(" (below %s=)", above)
+	}
+	return cli.Fail("%s: %s is not blank, a # comment or KEY=value", path, at).Cont(
+		"this file is read one line at a time, each value taken literally to the end",
+		"of its line, so a value over several lines reaches restic as its first line",
+		"alone. Put the value on one line (or remove the line) and re-run.")
 }
 
 // MergeEnv is the env file kasbah writes: the default plus the given entries

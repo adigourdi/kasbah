@@ -254,6 +254,25 @@ assert '[ "$rc" = 0 ]' "env set of a value that needs quoting exits 0 (rc $rc: $
 assert '[ "$(remote "docker exec demo-envset printenv API_SECRET")" = "$nasty" ]' \
     "compose reads it back exactly (got [$(remote "docker exec demo-envset printenv API_SECRET")])"
 
+# A PEM key from a file: stdin whole, one line in .env, a hand-written span of
+# the key replaced whole, and compose giving the container the file's bytes
+# less its final newline.
+openssl genpkey -algorithm ed25519 -out "$tmpdir/key.pem" 2>/dev/null
+pem_sum=$(head -c -1 "$tmpdir/key.pem" | sha256sum | cut -d' ' -f1)
+remote "sed -i '/^API_SECRET=/d' $pdir/.env && printf 'API_SECRET=\"old\\nX_SPAN=1\\nend\" # hand\\n' >> $pdir/.env" >/dev/null
+assert 'grep -qx "X_SPAN=1" <<<"$(remote "cat $pdir/.env")"' "a hand-written span of API_SECRET is in .env"
+(cd "$proj" && timeout 120 env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" NO_COLOR=1 \
+    "$KASBAH_BIN" env set API_SECRET "$RIG_TARGET" --restart <"$tmpdir/key.pem") >"$tmpdir/out" 2>"$tmpdir/err"; rc=$?
+got=$(remote "cat $pdir/.env")
+assert '[ "$rc" = 0 ]' "env set of a PEM key from stdin exits 0 (rc $rc: $(said))"
+assert '[ "$(grep -c "^API_SECRET=" <<<"$got")" = 1 ] && ! grep -qF "X_SPAN" <<<"$got" && ! grep -qF -- "-----END" <<<"$(grep -v "^API_SECRET=" <<<"$got")"' \
+    "the key takes one line, the old span gone whole"
+assert '! grep -qF "PRIVATE KEY" <<<"$(said)"' "the key never printed"
+in_ctr=$(remote "docker exec demo-envset sh -c 'printf %s \"\$API_SECRET\"' | sha256sum | cut -d' ' -f1")
+assert '[ "$in_ctr" = "$pem_sum" ]' "the container's value is the PEM file's bytes, final newline dropped"
+in_cfg=$(remote "cd $pdir && docker compose -p $project config --format json" | jq -j '.services.envset.environment.API_SECRET' | sha256sum | cut -d' ' -f1)
+assert '[ "$in_cfg" = "$pem_sum" ]' "docker compose config on the server reads the same bytes"
+
 # A run holding .deploy.lock refuses the set. The holder prints its pid once it
 # has the lock, and a bounded read waits for that line.
 mkfifo "$tmpdir/lockfifo"

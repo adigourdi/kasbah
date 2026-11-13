@@ -1476,17 +1476,15 @@ func (c *checker) envSection() {
 		fmt.Fprintf(c.out.Stderr, "%s: %v\n", templateFile, err)
 		panic(abort{cli.ExitFailure})
 	}
-	tpl := envtpl.Lines(data)
+	raw := envtpl.RawLines(data)
+	tpl := envtpl.Folded(data)
 
 	var badLines []string
-	for i, l := range tpl {
-		if envtpl.Blank(l) || envtpl.Comment(l) {
+	for _, e := range envtpl.Entries(raw) {
+		if l := strings.TrimSuffix(raw[e.Line], "\r"); e.Refused() == nil && (e.Key != "" || envtpl.Blank(l) || envtpl.Comment(l)) {
 			continue
 		}
-		if _, _, ok := envtpl.Assign(l); ok {
-			continue
-		}
-		badLines = append(badLines, fmt.Sprint(i+1))
+		badLines = append(badLines, fmt.Sprint(e.Line+1))
 	}
 	if len(badLines) == 0 {
 		c.passf(".env.prod.example syntax is valid")

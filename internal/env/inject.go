@@ -31,23 +31,19 @@ func GroupMode(m os.FileMode) os.FileMode { return m | (m&0o600)>>3 }
 
 var rePair = regexp.MustCompile(`^` + envtpl.ReservedPrefix + `[A-Za-z0-9_]*=`)
 
-// rawLines splits a file keeping each line's bytes, CR included, NULs
-// dropped; a last line without a newline is data.
-func rawLines(data []byte) []string {
-	s := strings.ReplaceAll(string(data), "\x00", "")
-	if s == "" {
-		return nil
+// strays marks the lines of every entry outside the managed block that sets
+// a reserved key, a quoted span whole.
+func strays(lines []string, inBlock []bool) []bool {
+	out := make([]bool, len(lines))
+	for _, e := range envtpl.Entries(lines) {
+		if e.Key == "" || !reserved(e.Key) || inBlock[e.Line] {
+			continue
+		}
+		for j := e.Line; j < e.End; j++ {
+			out[j] = true
+		}
 	}
-	lines := strings.Split(s, "\n")
-	if lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	return lines
-}
-
-func setsReserved(line string) bool {
-	k, _, ok := envtpl.Assign(strings.TrimSuffix(line, "\r"))
-	return ok && reserved(k)
+	return out
 }
 
 // resolve is `readlink -f` for a path whose last component may be missing.
@@ -73,17 +69,19 @@ func resolve(p string) (string, error) {
 	return "", fmt.Errorf("too many levels of symbolic links")
 }
 
-// managedBlock marks the lines of every managed block, sentinels included.
+// managedBlock marks the lines of every managed block, sentinels included;
+// a sentinel's text inside a quoted span is the value's, no sentinel.
 func managedBlock(lines []string) []bool {
 	n := len(lines)
 	inBlock := make([]bool, n)
+	cont := envtpl.Continued(lines)
 	for i := 0; i < n; i++ {
-		if strings.TrimSuffix(lines[i], "\r") != ManagedBegin {
+		if cont[i] || strings.TrimSuffix(lines[i], "\r") != ManagedBegin {
 			continue
 		}
 		j := i + 1
 		for ; j < n; j++ {
-			if strings.TrimSuffix(lines[j], "\r") == ManagedEnd {
+			if !cont[j] && strings.TrimSuffix(lines[j], "\r") == ManagedEnd {
 				break
 			}
 		}
@@ -113,7 +111,8 @@ func lockEnv(dir string) (*os.File, error) {
 }
 
 // Inject rewrites the managed block where the first one began, drops reserved
-// strays and keeps every other line byte for byte (docs/env-template.md);
+// strays and keeps every other line byte for byte (docs/env-template.md), on
+// a file envtpl.Refused passes;
 // renamed over the symlink-resolved target, whose mode it keeps (new: 600).
 func Inject(envfile string, pairs []string, errw io.Writer) int {
 	fail := func(format string, a ...any) int {
@@ -153,10 +152,14 @@ func Inject(envfile string, pairs []string, errw io.Writer) int {
 		if err != nil {
 			return fail("cannot read '%s'", target)
 		}
-		lines = rawLines(data)
+		lines = envtpl.RawLines(data)
+		if err := envtpl.Refused(lines); err != nil {
+			return fail("'%s' is left as it is, kasbah cannot read it as compose does: %v", target, err)
+		}
 	}
 
 	inBlock := managedBlock(lines)
+	stray := strays(lines, inBlock)
 	var kept []string
 	at := -1
 	for i, l := range lines {
@@ -166,7 +169,7 @@ func Inject(envfile string, pairs []string, errw io.Writer) int {
 			}
 			continue
 		}
-		if setsReserved(l) {
+		if stray[i] {
 			continue
 		}
 		kept = append(kept, l)

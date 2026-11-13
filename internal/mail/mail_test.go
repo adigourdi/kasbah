@@ -51,6 +51,8 @@ func TestMergeEnv(t *testing.T) {
 		{rendered, rendered},
 		{"MAIL_HOSTNAME=old\r\nRELAY_USER=me\r\nDOMAIN=b.com", "MAIL_HOSTNAME=mail.a.com\nRELAY_USER=me\r\nDOMAIN=a.com\nDATA_PATH=/d\n"},
 		{"", "MAIL_HOSTNAME=mail.a.com\nDOMAIN=a.com\nDATA_PATH=/d\n"},
+		{"RELAY_KEY=\"-----BEGIN\r\nDOMAIN=x\r\n-----END\"\r\nDOMAIN='b\nc'\nMAIL_HOSTNAME=m\nDATA_PATH=/d\n",
+			"RELAY_KEY=\"-----BEGIN\r\nDOMAIN=x\r\n-----END\"\r\nDOMAIN=a.com\nMAIL_HOSTNAME=mail.a.com\nDATA_PATH=/d\n"},
 	} {
 		if got := MergeEnv(c.cur, rendered); got != c.want {
 			t.Errorf("%q: %q", c.cur, got)
@@ -157,6 +159,14 @@ func TestRemoteLayout(t *testing.T) {
 	if !strings.Contains(out, "mail_env=rewritten") || string(b) != "DOMAIN=a.com\nRELAY_PASSWORD=s3cret\nMAIL_HOSTNAME=mail.a.com\nDATA_PATH="+data+"\n" {
 		t.Errorf("merge: %q %q", out, b)
 	}
+	// A .env kasbah cannot read as compose does is refused, left as it is.
+	bad := "DOMAIN=b.com\nRELAY_PASSWORD=\"s3cret\n"
+	os.WriteFile(apps+"/mail/.env", []byte(bad), 0o600)
+	_, errs, rc := run(t, body, signed(body, "layout", apps, data)...)
+	if b, _ := os.ReadFile(apps + "/mail/.env"); rc == 0 || string(b) != bad || !strings.Contains(errs, "line 2 (RELAY_PASSWORD)") || strings.Contains(errs, "s3cret") {
+		t.Errorf("unclosed quote: rc %d %q %q", rc, errs, b)
+	}
+	os.WriteFile(apps+"/mail/.env", b, 0o600)
 
 	// An account file this user cannot read (DMS leaves it root's 600 after
 	// `setup email update`) is reported present, as layout keeps it.

@@ -40,13 +40,17 @@ is a generator and `VAR= # hint` a hint.
 A template default taken with Enter is compose syntax already: it is written as
 it stands, with `$` as `$$` so docker-compose does not interpolate it. A kept
 value (untouched by an update) is written as it stands, since it was written
-right the first time. A **typed or generated value is literal text**, written
+right the first time. A quoted value written over several lines, in the
+template or the `.env` (Drift detection), is written on one line that compose
+reads the same: its line breaks as `\n` and `\r` inside double quotes, a
+single-quoted one re-quoted double. Every key the setup writes takes one line.
+A **typed or generated value is literal text**, written
 in the form compose reads back exactly: bare with `$` as `$$` when nothing in it
 needs quoting; single-quoted when it has blanks at either end, starts with a
-quote or holds ` #` — and holds no `'` and does not end in `\`; otherwise
-double-quoted, with `\` and `"` escaped and `$` as `$$`. A line break or NUL is
-refused. A trailing CR in a typed answer is dropped. `kasbah env set` writes
-the same way.
+quote or holds ` #` — and holds no `'`, no line break and does not end in `\`;
+otherwise double-quoted, with `\` and `"` escaped, `$` as `$$` and a line break
+as `\n` (a CR as `\r`), so a PEM key still takes one line. A NUL is refused. A
+trailing CR in a typed answer is dropped. `kasbah env set` writes the same way.
 A `! command` generator runs in `bash --norc --noprofile` and sees `KEY`,
 `TARGET_DIR`, `EXAMPLE` and `OUTPUT`, not the setup's functions.
 
@@ -115,9 +119,42 @@ with the template default.
 A line of blanks only, no-break spaces included, is blank, and one whose first
 non-blank is `#` a comment, as compose skips both. A key is letters, digits
 and `_`, not opening with a digit. A line compose reads with another key
-(`A.B=1`, `1A=1`), or refuses (`A B=1`, a figure space U+2007 after the key),
-or one with a byte that is not UTF-8, sets no key for kasbah; where kasbah
-needs the value (check C12) it says it cannot read the line rather than guess.
+(`A.B=1`, `1A=1`), or one with a byte that is not UTF-8 in its value, sets no
+key for kasbah; where kasbah needs the value (check C12) it says it cannot read
+the line rather than guess. A key compose refuses — a character no key holds
+before the line's first `=` or `:` (`A B=1`, a figure space U+2007 after the
+key, a byte that is not UTF-8 in the key) — makes compose refuse the whole
+file, and kasbah refuses it with compose (below); such a line opens no quoted
+value.
+
+A value is read as compose reads it. Unquoted, it ends at the line's end or a
+` #`, trailing blanks dropped. A quote opens a quoted value, closed by the first
+same quote no backslash escapes, on its line or a later one: a quoted value may
+run over several lines, line breaks (and the CRs of a CRLF file) included, and
+is then one entry — every reader of `.env` and the template (drift, the setup,
+`env set`, the managed block, the restore, the seed, check's E rules, `server
+destroy`'s strip of the mail `.env`) takes its lines together and never reads
+one as a key, a comment or a sentinel. Where it opens matters as compose sees
+it: after any key compose reads (letters, digits, `_`, `.`, `-`, `[`, `]` —
+`APP.KEY="…`) and on a line whose value holds a byte that is not UTF-8, so a span under a
+key kasbah reads none from still holds its lines, and sets no key for kasbah. Inside single quotes everything is
+literal but `\'`, which is a `'`; a backslash before any other character is kept.
+Inside double quotes `\"` is a `"` and compose's escapes apply — `\n`, `\t`,
+`\r`, `\a`, `\b`, `\f`, `\v`, `\\` for one backslash, `\$` for a literal `$`,
+`\0NNN` octal — any other backslash pair kept as written (`\q`, `\x41`,
+`\u00e9`), then `$$`, `$VAR` and `${VAR…}` are interpolated. After the closing
+quote may follow blanks, a `#` comment, or one bare name (which compose reads as
+a key inherited from its environment). kasbah reads no value from a quote never
+closed (compose refuses the file), nor from a closing quote followed by anything
+else — compose reads `A="x" B=y` as setting `B` too, and kasbah does not guess.
+A file holding either, a span under a key kasbah reads none from, or a key
+compose refuses, is one no kasbah writer rewrites (the setup, `env set`, the
+restore's merge, the seed, the mail `.env` merge, `server destroy`'s strips,
+the deploy's injection of the managed block): each refuses it naming the line,
+and the key where it has one, never a value, and leaves it byte for byte; E01
+fails it in the template. The injection refusing stops the deploy before
+`compose up`, leaving the live stack as it was — compose itself would refuse
+some of these files, and read others differently from what kasbah can check.
 
 Both lists are empty when in sync.
 
@@ -157,7 +194,9 @@ Rules, all of them load-bearing:
   Every other line survives byte-for-byte in its original order, comments,
   blank lines and hand-spacing included — users edit this file.
 - **Any line outside the block that Compose would read as assigning a
-  `KASBAH_*` variable is removed.** Compose honours a leading-whitespace
+  `KASBAH_*` variable is removed** — a quoted value over several lines with
+  every line of it; a line inside such a value is the value's, never a stray or
+  a sentinel. Compose honours a leading-whitespace
   assignment and an `export ` prefix, and takes the *last* assignment — so a
   stray below the block would silently outrank the server marker. The match is
   anchored (optional blanks, optional `export `, `=` or `:` after the key, as
@@ -170,6 +209,9 @@ Rules, all of them load-bearing:
 - Values are written through unchanged. A `0` limit stays `0` — the rig cannot
   apply cgroup limits at all, and injection must keep working when the values
   it writes are ones the host cannot honour.
+- A `.env` kasbah cannot read as compose does (Drift detection) is refused,
+  not rewritten around: injecting into it could put the block inside a quoted
+  value or drop part of one. The run stops there, naming the line and key.
 - Idempotent: the second run is byte-identical to the first. The one
   normalisation is a trailing newline on a file that lacked one, since the
   block has to start on its own line.
@@ -204,8 +246,9 @@ key, the last assignment of each winning, `\r` stripped from both files, the
 `KASBAH_*` keys left out, values compared as written; only key names reach the
 workstation. A whole restore writes the backup's `.env` byte for byte; a
 per-key one keeps the server's file and, for each chosen key, replaces its
-assignments with the backup's line, written as the backup holds it — in the
-form a kasbah writer gave it then — adds that line at the end when the
+assignments (a quoted value over several lines whole) with the backup's line,
+written as the backup holds it — in the form a kasbah writer gave it then, a
+hand-written value over several lines on one line — adds that line at the end when the
 server's file has none, or removes the key when the backup has none. Either is
 written as the setup writes (staged beside the file and renamed, the mode kept
 or `660` for a new file, under `.deploy.lock`), before the drift check against
@@ -227,8 +270,9 @@ export API_KEY=abc$$def
 - Read as the setup reads a `.env`: `KEY=value` lines in any form compose
   reads (Drift detection: leading blanks, `export `, `KEY = value`,
   `KEY: value`), blank lines and `#` comments skipped, a trailing CR stripped,
-  the last assignment of a key winning. A value is **compose syntax**, written
-  into `.env` as it stands — quote it, and write `$` as `$$`, as in `.env`
+  the last assignment of a key winning; a quoted value over several lines is
+  one value, written onto one line as the setup writes a kept one. A value is
+  **compose syntax**, written into `.env` as it stands — quote it, and write `$` as `$$`, as in `.env`
   itself: compose blanks a `$VAR` or `${VAR}` it cannot resolve, without a
   word. A value holding a bare `$` (not `$$`, outside single quotes) gets a
   warning naming its line number and key, never its value; the run goes on.

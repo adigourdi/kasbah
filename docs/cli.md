@@ -70,6 +70,10 @@ Flags:
   decide which repository restic opens and what opens it — kasbah sets them, and
   an entry naming one would point the credential probe somewhere other than
   where the backups go, which is the one shape of that bug nothing else catches.
+  A value is one line, taken literally (no quoting, no continuation): a file
+  with a line that is not blank, a `#` comment or `KEY=value` — the rest of a
+  value pasted over several lines — is refused before anything changes, named
+  by line and the key above it, never by what the line holds.
 - `--backup-password=<repo>=<pw>` (repeatable) — the encryption password for one
   repository. Operator-supplied, never generated, **never rewritten** by a later
   run. A repository with no password is not backed up, and the run says so.
@@ -1475,7 +1479,8 @@ the server marker's resource limits, or from `kasbah.yml`'s `resources:`
 resolved on the server before the template ships (a value above the marker's
 ceiling stops the run there, exit 1); the closing `limits:` line names the
 source. See `env-template.md` for the template conventions and the managed
-block.
+block. A `.env` kasbah cannot read as compose does is refused there, naming the
+line and key, never a value, and left as it was (exit 1).
 
 The injection is not optional decoration: a `.env` without `KASBAH_CPU_LIMIT`
 makes `compose up` fail outright, so a command whose job is producing a usable
@@ -1548,17 +1553,30 @@ or has drifted, while `env` runs it every time, since that is what it is for.
 Changes one key of the project's server `.env` — a rotated API key, a new
 password — without re-running the whole setup. KEY must be a key of the
 server's `.env.prod.example`; `KASBAH_*` keys are kasbah's and refused. On a
-terminal the value is asked with echo off; without one it is read from stdin
-(one value, its trailing newline dropped; empty, multi-line or over 64 KiB is
-refused), so it never reaches argv or shell history, and no output names it.
+terminal the value is asked with echo off, one line — except an answer whose
+first line opens `-----BEGIN `: a pasted PEM block, read hidden on to the first
+line opening `-----END ` and taken whole (past 2000 lines or 64 KiB without
+that line it is refused). Input already arrived once the read ends — taken or
+refused — is discarded, so the rest of a paste does not reach the shell, though
+a paste still arriving over a slow link can; of a chain or bundle of several
+blocks only the first is taken. Pass such values through stdin (`< file`). Without a terminal it is
+read from stdin whole, one final newline (and a CR before it) dropped — so
+`kasbah env set TLS_KEY --no-restart < key.pem` sets the key's lines, ending
+`-----END … KEY-----`. Empty, holding a NUL (or, typed, a CR), a byte that is
+not UTF-8, or over 64 KiB is refused. It never reaches argv or shell history,
+and no output names it.
 
 The value is taken exactly as typed or piped and written in the form compose
-reads back exactly (`env-template.md`); its size and sha256 travel on stdin with
+reads back exactly (`env-template.md`), on one line — a value of several lines
+double-quoted with `\n` escapes; its size and sha256 travel on stdin with
 it, never on a command line. Every assignment of KEY is replaced (`export KEY=`,
-`KEY = ` and `KEY: ` become `KEY=`), a key not yet in `.env` is placed beside its template
+`KEY = ` and `KEY: ` become `KEY=`), a quoted value written over several lines
+with every line of it, a key not yet in `.env` is placed beside its template
 neighbours, every other line is kept byte for byte, mode `660`. A line compose
-would read as KEY but kasbah cannot rewrite (a byte that is not UTF-8)
-and a key inside the `KASBAH_*` managed block are refused, naming the line. `--restart` then runs `docker compose -p <name> up -d`, which
+would read as KEY but kasbah cannot rewrite (a byte that is not UTF-8),
+a key inside the `KASBAH_*` managed block, and a `.env` kasbah cannot read as
+compose does — a quote never closed, a closing quote followed by another
+assignment (`KEY="a" B=c`) — are refused, naming the line and key, never a value. `--restart` then runs `docker compose -p <name> up -d`, which
 recreates what reads the key — except on a project whose `compose.yml`
 declares no service, where the key is written and the run says there is
 nothing to restart; `--no-restart` leaves the containers on the old

@@ -6,6 +6,7 @@ import (
 	"os"
 	"syscall"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -112,5 +113,32 @@ func TestCharMode(t *testing.T) {
 	st, _ = getState(slave.Fd())
 	if st.Lflag&syscall.ICANON == 0 {
 		t.Error("canonical input not restored")
+	}
+}
+
+// Flush drops what the terminal holds unread, so the rest of a paste already
+// arrived does not reach the next reader.
+func TestFlush(t *testing.T) {
+	master, slave := openPTY(t)
+	master.Write([]byte("left over\n"))
+	pending := func() int32 {
+		var n int32
+		syscall.Syscall(syscall.SYS_IOCTL, slave.Fd(), syscall.TIOCINQ, uintptr(unsafe.Pointer(&n)))
+		return n
+	}
+	for i := 0; i < 500 && pending() == 0; i++ {
+		time.Sleep(time.Millisecond)
+	}
+	if pending() == 0 {
+		t.Fatal("the input never arrived")
+	}
+	if err := Flush(slave.Fd()); err != nil {
+		t.Fatal(err)
+	}
+	if n := pending(); n != 0 {
+		t.Errorf("%d bytes still pending", n)
+	}
+	if err := Flush(uintptr(^uint(0) >> 1)); err == nil {
+		t.Error("Flush on a bad descriptor succeeds")
 	}
 }

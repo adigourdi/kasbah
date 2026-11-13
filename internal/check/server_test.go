@@ -1203,7 +1203,7 @@ func TestServerOutsidersPorts(t *testing.T) {
 			"every port of 18000-18001/tcp, the range service demo-web of this project publishes one port from, is taken: container h18000 (not a compose container) publishes 18000/tcp, container h18001 (not a compose container) publishes 18001/tcp"},
 			[]string{"✓ no container outside", "h9000"}},
 		{"B='unclosed\n", nil, []string{
-			"  ⚠ whether a container outside /apps/demo on deploy@vps publishes service demo-web's port \"${A:-${B}}:80\" cannot be checked: the server's .env has a line kasbah cannot read as compose does: line 4 (B): the single quote is not closed on its line",
+			"  ⚠ whether a container outside /apps/demo on deploy@vps publishes service demo-web's port \"${A:-${B}}:80\" cannot be checked: the server's .env has a line kasbah cannot read as compose does: line 4 (B): the single quote is not closed",
 			"service demo-web's port \"$$x:84\" cannot be checked: \"$x\" is not a host port or range"},
 			[]string{"✓ no container outside"}},
 	} {

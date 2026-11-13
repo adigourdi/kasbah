@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestLines(t *testing.T) {
@@ -131,7 +133,7 @@ func TestValuesOf(t *testing.T) {
 }
 
 func TestValuesOfUnreadLine(t *testing.T) {
-	for _, in := range []string{"WEB.PORT=8080\n", "WEB_PORT\u2007= 8080\n", "A=\"line1\nline2\"\n"} {
+	for _, in := range []string{"WEB.PORT=8080\n", "WEB_PORT\u2007= 8080\n", "A=\"line1\nline2\n"} {
 		if _, err := ValuesOf([]byte("OK=1\n" + in)); err == nil {
 			t.Errorf("%q: no error for a line kasbah cannot read", in)
 		}
@@ -164,5 +166,200 @@ func TestInterpolate(t *testing.T) {
 		if _, err := Interpolate(in, lookup); err == nil || err.Error() != want {
 			t.Errorf("%q: %v, want %q", in, err, want)
 		}
+	}
+}
+
+// What `docker compose config` (compose v5.6.1) read from each .env, every
+// case measured: the value it gave V (and B), or its refusal of the file
+// (refused: ValuesOf errs and sets no V). One deliberate difference: text
+// after a closing quote that compose reads as another assignment is refused.
+func TestValuesOfAsCompose(t *testing.T) {
+	const refused = "\x00refused"
+	for _, tc := range []struct{ name, env, v, b string }{
+		{"sq escaped quote", `V='a\'b'`, `a'b`, ""},
+		{"sq two backslashes", `V='a\\b'`, `a\\b`, ""},
+		{"sq trailing backslash", `V='a\'`, refused, ""},
+		{"sq trailing two backslashes", `V='a\\'`, `a\\`, ""},
+		{"sq \\n literal", `V='a\nb'`, `a\nb`, ""},
+		{"sq dollars literal", "W=w\nV='a$W b$$c'", `a$W b$$c`, ""},
+		{"sq text after the escaped quote", `V='a\'b'c'`, refused, ""},
+		{"dq escaped quote", `V="a\"b"`, `a"b`, ""},
+		{"dq two backslashes", `V="a\\b"`, `a\b`, ""},
+		{"dq trailing backslash", `V="a\"`, refused, ""},
+		{"dq trailing two backslashes", `V="a\\"`, `a\`, ""},
+		{"dq backslash then escaped quote", `V="a\\\"b"`, `a\"b`, ""},
+		{"dq \\n", `V="a\nb"`, "a\nb", ""},
+		{"dq \\t", `V="a\tb"`, "a\tb", ""},
+		{"dq \\r", `V="a\rb"`, "a\rb", ""},
+		{"dq unknown escapes kept", `V="a\qb\'c"`, `a\qb\'c`, ""},
+		{"dq \\$", "W=w\nV=\"a\\$W\"", `a$W`, ""},
+		{"dq $$", "W=w\nV=\"a$$W\"", `a$W`, ""},
+		{"dq interpolation", "W=w\nV=\"a${W}b$W\"", `awbw`, ""},
+		{"dq \\${}", "W=w\nV=\"a\\${W}\"", `a${W}`, ""},
+		{"dq \\\\ then $W", "W=w\nV=\"a\\\\$W\"", `a\w`, ""},
+		{"dq \\\\n", `V="a\\nb"`, `a\nb`, ""},
+		{"dq octal and the rest", `V="a\0101b\012c\0d\c\x41\u00e9\U00e9"`, `aAb\12c\d\c\x41\u00e9\U00e9`, ""},
+		{"dq \\a \\b \\f \\v \\0", `V="a\a\b\f\v\0"`, "a\a\b\f\v\\", ""},
+		{"dq span", "V=\"a\nb\"\nB=y", "a\nb", "y"},
+		{"dq span, comment after", "V=\"a\nb\" # c\nB=y", "a\nb", "y"},
+		{"dq span with escapes", "V=\"a\\n\nb\\\"c\"\nB=y", "a\n\nb\"c", "y"},
+		{"dq span, backslash at a line end", "V=\"a\\\nb\"\nB=y", "a\\\nb", "y"},
+		{"dq span interpolated", "W=w\nV=\"a$W\n$$b\"\nB=y", "aw\n$b", "y"},
+		{"dq span holding KEY= lines", "V=\"-----BEGIN\nX=1\n-----END\"\nB=y", "-----BEGIN\nX=1\n-----END", "y"},
+		{"dq span, no final newline", "V=\"a\nb\"", "a\nb", ""},
+		{"sq span", "V='a\nb'\nB=y", "a\nb", "y"},
+		{"sq span, escaped quote", "V='a\\\nb\\'c'\nB=y", "a\\\nb'c", "y"},
+		{"dq never closed", "B=y\nV=\"a\nb", refused, "y"},
+		{"sq never closed", "B=y\nV='a", refused, "y"},
+		{"comment after the quote", "V=\"a\" #c\nB=y", "a", "y"},
+		{"comment glued to the quote", "V=\"a\"#c\nB=y", "a", "y"},
+		{"bare name after the quote", "V=\"a\" junk\nB=y", "a", "y"},
+		{"sq bare name glued", "V='a'x\nB=y", "a", "y"},
+		{"assignment after the quote", "V=\"a\" C=z", refused, ""},
+		{"crlf bare", "V=a\r\nB=y\r", "a", "y"},
+		{"crlf dq", "V=\"a\"\r\nB=y\r", "a", "y"},
+		{"crlf sq", "V='a'\r\nB=y\r", "a", "y"},
+		{"crlf dq span keeps the CR", "V=\"a\r\nb\"\r\nB=y\r", "a\r\nb", "y"},
+		{"crlf sq span keeps the CR", "V='a\r\nb'\r\nB=y\r", "a\r\nb", "y"},
+		{"quote inside a bare value", "V=a\"b\nB=y", `a"b`, "y"},
+		{"empty dq", "V=\"\"\nB=y", "", "y"},
+		{"blank before the quote", "V= \"a\"\nB=y", "a", "y"},
+		{"sq inside dq", `V="it's"`, "it's", ""},
+		{"dq inside sq", `V='say "hi"'`, `say "hi"`, ""},
+	} {
+		vals, err := ValuesOf([]byte(tc.env + "\n"))
+		v, ok := vals["V"]
+		switch {
+		case tc.v == refused && (err == nil || ok):
+			t.Errorf("%s: compose refuses %q, kasbah read V=%q (err %v)", tc.name, tc.env, v, err)
+		case tc.v != refused && (err != nil || !ok || v != tc.v):
+			t.Errorf("%s: %q read V=%q (err %v), compose reads %q", tc.name, tc.env, v, err, tc.v)
+		case tc.b != "" && vals["B"] != tc.b:
+			t.Errorf("%s: B=%q, compose reads %q", tc.name, vals["B"], tc.b)
+		}
+	}
+}
+
+func TestEntries(t *testing.T) {
+	lines := RawLines([]byte("A=1\nPEM=\"-----BEGIN\r\nX=1\n-----END\" # k\nexport B='x\nC=2\n#'\nD=\"never\nE=3\n"))
+	type e struct {
+		line, end int
+		key       string
+	}
+	var got []e
+	for _, en := range Entries(lines) {
+		got = append(got, e{en.Line, en.End, en.Key})
+	}
+	want := []e{{0, 1, "A"}, {1, 4, "PEM"}, {4, 7, "B"}, {7, 8, "D"}, {8, 9, "E"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Entries = %v, want %v", got, want)
+	}
+	if got := KeysOf([]byte("A=1\nPEM=\"-----BEGIN\nX=1\n-----END\"\nB=2\n")); !slices.Equal(got, []string{"A", "PEM", "B"}) {
+		t.Errorf("KeysOf reads a span's lines as keys: %q", got)
+	}
+	if c := Continued(lines); !slices.Equal(c, []bool{false, false, true, true, false, true, true, false, false}) {
+		t.Errorf("Continued = %v", c)
+	}
+}
+
+// A span folded to one line reads as compose reads the span.
+func TestOneLine(t *testing.T) {
+	for _, in := range []string{
+		"V=\"a\nb\"", "V=\"a\\\nb\"", "V=\"a\r\nb\" # c", "V=\"$W\n$$x\\$y\\\"z\\\\\"", "V=\"\\0\n12\"",
+		"V='a\nb'", "V='a\\'\n\"$W\\\\'", "V='a\r\nb' junk", "V=\"-----BEGIN\nX=1\n-----END\"",
+	} {
+		data := []byte("W=w\n" + in + "\n")
+		lines := RawLines(data)
+		ents := Entries(lines)
+		folded := ents[1].OneLine(lines)
+		if strings.ContainsAny(folded, "\r\n") {
+			t.Errorf("%q folds to %q, not one line", in, folded)
+		}
+		want, err := ValuesOf(data)
+		got, err2 := ValuesOf([]byte("W=w\n" + folded + "\n"))
+		if err != nil || err2 != nil || got["V"] != want["V"] {
+			t.Errorf("%q folds to %q: V=%q (%v), the span reads %q (%v)", in, folded, got["V"], err2, want["V"], err)
+		}
+	}
+}
+
+// compose ends a statement at the closing quote whatever key opened it.
+func TestEntriesUnderComposeKeys(t *testing.T) {
+	for _, in := range []string{
+		"APP.KEY=\"a\nKASBAH_CPU_LIMIT=9\nV=x\n\"\nB=1\n",
+		"a-b[0]: 'a\nV=x\n'\nB=1\n",
+		"V=\"\xff\nW=1\n\"\nB=1\n",
+	} {
+		lines := RawLines([]byte(in))
+		es := Entries(lines)
+		if got := KeysOf([]byte(in)); !slices.Equal(got, []string{"B"}) || len(es) != 2 || es[0].Key != "" || !es[0].Span() {
+			t.Errorf("%q: keys %q, entries %+v", in, got, es)
+		}
+		if err := Refused(lines); err == nil || !strings.Contains(err.Error(), "line 1:") {
+			t.Errorf("%q: refused %v", in, err)
+		}
+		if got := Folded([]byte(in)); len(got) != 2 {
+			t.Errorf("%q: folded %q", in, got)
+		}
+	}
+	// A key compose refuses opens nothing, and the file is refused at it.
+	for _, in := range []string{"A B=\"x\nC=1\n\"\n", "A\xffB=\"x\nC=1\n\"\n", "export A\u2007=\"x\nC=1\n\"\n", "Z=1\nmy key: \"x\nC=1\n\"\n"} {
+		lines := RawLines([]byte(in))
+		if got := KeysOf([]byte(in)); !slices.Contains(got, "C") {
+			t.Errorf("%q: %q", in, got)
+		}
+		err := Refused(lines)
+		if err == nil || !strings.Contains(err.Error(), ": a key compose refuses") || strings.Contains(err.Error(), "x") {
+			t.Errorf("%q: refused %v", in, err)
+		}
+	}
+	// compose refuses a bare line it cannot take as a key, as it does a key.
+	for _, in := range []string{"A=1\nno equals sign\n", "A=1\na/b\n"} {
+		if err := Refused(RawLines([]byte(in))); err == nil {
+			t.Errorf("%q: not refused", in)
+		}
+	}
+	// A bad byte in the value, a bare key, a tab inside a key: compose reads them.
+	for _, in := range []string{"V=\xff\n", "A=1\nNOEQ\n", "U=http://x:1\n", "A\tB=1\n"} {
+		if err := Refused(RawLines([]byte(in))); err != nil {
+			t.Errorf("%q: %v", in, err)
+		}
+	}
+}
+
+func TestRefused(t *testing.T) {
+	for in, want := range map[string]string{
+		"A=1\nPEM=\"-----BEGIN\nbody\n":  `line 2 (PEM): the double quote is not closed`,
+		"V=\"a\" C=z\n":                  `line 1 (V): text follows the closing double quote, which compose reads as another assignment`,
+		"K='x\ny' B=2\n":                 `line 1 (K): text follows the closing single quote`,
+		"APP.KEY=\"open\n":               `line 1: the double quote is not closed`,
+		"A=\"x\" # c\nB='y' name\nC=1\n": "",
+	} {
+		err := Refused(RawLines([]byte(in)))
+		if want == "" && err != nil || want != "" && (err == nil || !strings.HasPrefix(err.Error(), want)) {
+			t.Errorf("%q: %v, want %q", in, err, want)
+		}
+		if err != nil && (strings.Contains(err.Error(), "BEGIN") || strings.Contains(err.Error(), "C=z")) {
+			t.Errorf("%q: a value in %v", in, err)
+		}
+	}
+}
+
+// A quote that never closes is scanned once, not once per line after it.
+func TestEntriesLinear(t *testing.T) {
+	in := []byte("A=\"x\n" + strings.Repeat("B=1\n", 16<<10))
+	start := time.Now()
+	if keys := KeysOf(in); len(keys) != 1+16<<10 {
+		t.Fatalf("%d keys", len(keys))
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("KeysOf over %d KiB took %v", len(in)>>10, d)
+	}
+}
+
+func BenchmarkKeysOfUnclosed(b *testing.B) {
+	in := []byte("A=\"x\n" + strings.Repeat("B=1\n", 64<<10/4))
+	for b.Loop() {
+		KeysOf(in)
 	}
 }

@@ -122,9 +122,12 @@ var setupCases = []setupCase{
 	{name: "a multibyte key at the menu", tmpl: str(basic), env: str("APP_NAME=x\n"), in: "é\n\n"},
 	{name: "a blank at the menu", tmpl: str(basic), env: str("APP_NAME=x\n"), in: " \n\n"},
 	{name: "structure preserved",
-		tmpl: str("# ===== Top =====\n\n# --- DB ---\n# free comment\nDB=pg\n  # indented comment\ngarbage line\n   \nexport EXP=1\n  LEAD=2\n#--- tight ---\n# -- two --\n"),
+		tmpl: str("# ===== Top =====\n\n# --- DB ---\n# free comment\nDB=pg\n  # indented comment\ngarbage_line\n   \nexport EXP=1\n  LEAD=2\n#--- tight ---\n# -- two --\n"),
 		in:   "\n\n\n",
-		want: str("# ===== Top =====\n\n# --- DB ---\n# free comment\nDB=pg\n  # indented comment\ngarbage line\n   \nEXP=1\nLEAD=2\n#--- tight ---\n# -- two --\n")},
+		want: str("# ===== Top =====\n\n# --- DB ---\n# free comment\nDB=pg\n  # indented comment\ngarbage_line\n   \nEXP=1\nLEAD=2\n#--- tight ---\n# -- two --\n")},
+	// A line compose refuses (a space in what it reads as a key) is refused, the
+	// template's other lines notwithstanding: copied, it would break the .env.
+	{name: "a line compose refuses is refused", tmpl: str("DB=pg\ngarbage line\n"), in: "\n", rc: 1, absent: true},
 	{name: "hint type", tmpl: str("MAIL_HOST=# Your SMTP host\nMAIL_PASSWORD=# SMTP password\n"), in: "smtp\n\n",
 		want: str("MAIL_HOST=smtp\nMAIL_PASSWORD=\n")},
 	{name: "hint type, current kept", tmpl: str("MAIL_HOST=# host\nMAIL_KEY=# k\nNEW=\n"), env: str("MAIL_HOST=h\nMAIL_KEY=s3\n"), in: "a\n\n\n\n"},

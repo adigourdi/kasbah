@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/envtpl"
 	"github.com/adigourdi/kasbah/internal/mailreg"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverlock"
@@ -266,8 +267,8 @@ func ownedKey(line string) string {
 }
 
 // MergeEnv rewrites kasbah's three keys in current by name, from the
-// rendered default, copies every other line through untouched, and appends
-// an owned key current lacks.
+// rendered default (an owned key's quoted span whole), copies every other
+// line through untouched, and appends an owned key current lacks.
 func MergeEnv(current, rendered string) string {
 	want := map[string]string{}
 	for _, l := range strings.Split(rendered, "\n") {
@@ -282,12 +283,19 @@ func MergeEnv(current, rendered string) string {
 	if strings.HasSuffix(current, "\n") || current == "" {
 		lines = lines[:len(lines)-1]
 	}
-	for _, l := range lines {
-		if k := ownedKey(strings.TrimSuffix(l, "\r")); k != "" {
-			l = k + "=" + want[k]
-			seen[k] = true
+	// A quoted span is one entry: its lines past the first are never a key,
+	// and go with an owned key's first line.
+	for _, e := range envtpl.Entries(lines) {
+		l := lines[e.Line]
+		k := ownedKey(strings.TrimSuffix(l, "\r"))
+		if k == "" {
+			for _, l := range lines[e.Line:e.End] {
+				b.WriteString(l + "\n")
+			}
+			continue
 		}
-		b.WriteString(l + "\n")
+		b.WriteString(k + "=" + want[k] + "\n")
+		seen[k] = true
 	}
 	for _, k := range envKeys {
 		if !seen[k] {
@@ -342,6 +350,9 @@ func remoteLayout(apps, data, size, sum string, stdin io.Reader, stdout io.Write
 		cur, err := os.ReadFile(env)
 		if err != nil {
 			return fmt.Errorf("could not read %s: %v", env, cli.OSCause(err))
+		}
+		if err := envtpl.Refused(envtpl.RawLines(cur)); err != nil {
+			return fmt.Errorf("%s %v, which kasbah does not rewrite — fix it by hand", env, err)
 		}
 		merged := MergeEnv(string(cur), b.Env)
 		if merged == string(cur) {

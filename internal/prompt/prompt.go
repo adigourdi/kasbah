@@ -55,6 +55,8 @@ type Prompter struct {
 	TTY bool
 	// NoEcho hides typing for a secret and returns what restores it.
 	NoEcho func() (func() error, error)
+	// Flush discards terminal input not yet read; nil does nothing.
+	Flush func() error
 	// Exit ends the process when a signal interrupts a secret; nil is
 	// atexit.Exit, which runs the command's registered cleanups first.
 	Exit func(code int)
@@ -67,6 +69,7 @@ func Std(out *cli.Output) *Prompter {
 		Out:    out,
 		TTY:    term.IsTerminal(os.Stdin.Fd()),
 		NoEcho: func() (func() error, error) { return term.NoEcho(os.Stdin.Fd()) },
+		Flush:  func() error { return term.Flush(os.Stdin.Fd()) },
 	}
 }
 
@@ -126,6 +129,34 @@ func (p *Prompter) readExact() (string, error) {
 			return "", errEOF
 		}
 	}
+}
+
+// A pasted PEM block is read to its -----END line within these bounds.
+const maxPasteLines, maxPasteBytes = 2000, 64 << 10
+
+// readPasted is readExact, and after a first line opening `-----BEGIN ` every
+// line to one opening `-----END `, joined by "\n", so a pasted key is whole;
+// then, taken or refused, the input already arrived is discarded.
+func (p *Prompter) readPasted() (string, error) {
+	a, err := p.readExact()
+	if err != nil || !strings.HasPrefix(a, "-----BEGIN ") {
+		return a, err
+	}
+	if p.Flush != nil {
+		defer p.Flush()
+	}
+	lines, n := []string{a}, len(a)
+	for !strings.HasPrefix(lines[len(lines)-1], "-----END ") {
+		l, err := p.readExact()
+		if err != nil {
+			return "", err
+		}
+		lines, n = append(lines, l), n+1+len(l)
+		if len(lines) > maxPasteLines || n > maxPasteBytes {
+			return "", cli.Fail("the pasted block runs past %d lines or %d KiB without a -----END line", maxPasteLines, maxPasteBytes>>10)
+		}
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 func (p *Prompter) ask(prompt string) (string, error) {
@@ -271,9 +302,9 @@ func (p *Prompter) Secret(flag, question, given string) (string, error) {
 	}
 }
 
-// Hidden is Secret for a value no flag carries, so a refusal names no flag:
-// the caller says where else the value can come from. The line comes back as
-// typed: only its newline and one CR are dropped.
+// Hidden is Secret for a value no flag carries, so a refusal names no flag.
+// The line comes back as typed, its newline and one CR dropped; a pasted PEM
+// block comes back whole (readPasted).
 func (p *Prompter) Hidden(question string) (string, error) {
 	if !p.TTY {
 		return "", cli.Fail("cannot ask: %s", question).Cont(reasonNoTTY)
@@ -299,7 +330,7 @@ func (p *Prompter) Hidden(question string) (string, error) {
 func (p *Prompter) askHidden(prompt string, exact bool) (a string, err error) {
 	read := p.readLine
 	if exact {
-		read = p.readExact
+		read = p.readPasted
 	}
 	if p.NoEcho == nil {
 		fmt.Fprint(p.Out.Stderr, prompt)

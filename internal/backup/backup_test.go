@@ -2,6 +2,8 @@ package backup
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -141,6 +143,32 @@ func TestFirstOwned(t *testing.T) {
 		t.Errorf("%q", k)
 	}
 	if e := OwnedEnvError("/apps", "RESTIC_REPOSITORY"); !strings.Contains(e.Error(), "which kasbah sets itself") || !strings.Contains(e.Error(), "Remove the line") {
+		t.Error(e)
+	}
+}
+
+// The file's own grammar, not compose's: a quote is a literal character.
+func TestFirstBadLine(t *testing.T) {
+	tpl, err := os.ReadFile("../../templates/backup/env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for content, want := range map[string]string{
+		string(tpl):                      "0 ",
+		"A=1\nB=\"x\ny\"\nC=2\n":         "3 B",
+		"# c\r\nP='one\r\ntwo'\r\n":      "3 P",
+		"P=\"lit\nQ=it\"s\n\n  \t\n#x\n": "0 ",
+		"a.b=x\n":                        "1 ",
+		"A=1\n =x\n":                     "2 A",
+		"A=1\n#c\nnot a line\n":          "3 A",
+		"A=1\n  # indented\n":            "2 A",
+	} {
+		if n, k := FirstBadLine(content); fmt.Sprintf("%d %s", n, k) != want {
+			t.Errorf("%q: %d %q, want %s", content, n, k, want)
+		}
+	}
+	e := BadEnvLineError("/apps/.kasbah/backup/env", 3, "K")
+	if !strings.HasPrefix(e.Error(), "/apps/.kasbah/backup/env: line 3 (below K=) is not blank") || !strings.Contains(e.Error(), "Put the value on one line") {
 		t.Error(e)
 	}
 }

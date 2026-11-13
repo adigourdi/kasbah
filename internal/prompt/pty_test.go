@@ -158,3 +158,33 @@ func TestSecretInterrupted(t *testing.T) {
 		t.Fatal("the prompt outlived the test")
 	}
 }
+
+// On a real terminal the rest of a pasted chain is discarded with the block
+// taken: none of it reaches the next reader, the shell.
+func TestPastedChainOnARealTerminal(t *testing.T) {
+	master, slave := openPTY(t)
+	p := &Prompter{
+		In:     slave,
+		Out:    &cli.Output{Stderr: slave},
+		TTY:    true,
+		NoEcho: func() (func() error, error) { return term.NoEcho(slave.Fd()) },
+		Flush:  func() error { return term.Flush(slave.Fd()) },
+	}
+	done := make(chan string, 1)
+	go func() { a, _ := p.Hidden("Value"); done <- a }()
+	deadline := time.Now().Add(5 * time.Second)
+	for !echoOff(slave.Fd()) {
+		if time.Now().After(deadline) {
+			t.Fatal("echo never went off")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	master.Write([]byte("-----BEGIN C-----\nAAAA\n-----END C-----\n-----BEGIN CA-----\nBBBB\n-----END CA-----\n"))
+	if a := <-done; a != "-----BEGIN C-----\nAAAA\n-----END C-----" {
+		t.Fatalf("answer %q", a)
+	}
+	master.Write([]byte("next\n"))
+	if l, err := p.readExact(); err != nil || l != "next" {
+		t.Errorf("the paste's rest was left: %q %v", l, err)
+	}
+}
