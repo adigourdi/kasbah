@@ -1,0 +1,25 @@
+kasbah turns a plain VPS into a host for many Docker Compose projects: one
+shared Traefik routes each project's domain, and images travel over SSH, with
+no registry. The same binary runs on the server as `kasbah remote`.
+
+A project is a repository with these files at its root:
+  kasbah.yml           the manifest: name, domain, what a deploy ships
+  compose.prod.yml     the compose file the server runs
+  traefik-dynamic.yml  the project's routing (none with routed: false)
+  .env.prod.example    the template the server's .env is generated from
+
+The usual flow, from the project root:
+  kasbah server init USER@HOST   prepare a VPS, once
+  kasbah init-project            write kasbah.yml and .env.prod.example
+  kasbah check                   lint the project; each line names its rule
+  kasbah build-push USER@HOST    build the images and load them on the server
+  kasbah deploy USER@HOST        ship the tree and bring it up
+  kasbah rollback USER@HOST      go back to a version the server has run
+
+Topics:
+  kasbah help files        what each project file must and may hold
+  kasbah help setups       the common shapes of a project, each an example
+  kasbah help rules        every rule kasbah check applies
+  kasbah help <rule id>    one rule: why, and what to change (kasbah help C01)
+  kasbah help <command>    a command's flags, as kasbah <command> --help
+  kasbah --help            the command list

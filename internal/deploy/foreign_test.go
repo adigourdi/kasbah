@@ -96,16 +96,16 @@ func TestCollisions(t *testing.T) {
 		{"18000-18001:80/udp", "0.0.0.0:18000-18001->80-81/tcp", false},
 	} {
 		c := Collisions("demo", "/apps/demo", []Bind{bind(tc.ours, "web")}, []Holder{{Name: "x", Ports: dockerPorts(tc.theirs)}})
-		if (len(c) > 0) != tc.hit {
-			t.Errorf("%s vs %s: %v", tc.ours, tc.theirs, c)
+		if (len(c) > 0) != tc.hit || tc.hit && c[0].Kind != PortCollision {
+			t.Errorf("%s vs %s: %+v", tc.ours, tc.theirs, c)
 		}
 	}
 	c := Collisions("demo", "/apps/demo", []Bind{bind("18000-18002:80", "web")}, []Holder{
 		{Name: "a", Project: "other", Ports: dockerPorts("0.0.0.0:18000->80/tcp, [::]:18000->80/tcp")},
 		{Name: "b", Ports: dockerPorts("0.0.0.0:18001-18002->80-81/tcp")},
 	})
-	if len(c) != 1 || c[0] != "every port of 18000-18002/tcp, the range service web of this project publishes one port from, is taken: container a (compose project other) publishes 18000/tcp, container b (not a compose container) publishes 0.0.0.0:18001-18002/tcp — stop or move one of those containers, or change the range web publishes" {
-		t.Errorf("range: %q", c)
+	if len(c) != 1 || c[0].Kind != PortCollision || c[0].Msg != "every port of 18000-18002/tcp, the range service web of this project publishes one port from, is taken: container a (compose project other) publishes 18000/tcp, container b (not a compose container) publishes 0.0.0.0:18001-18002/tcp — stop or move one of those containers, or change the range web publishes" {
+		t.Errorf("range: %+v", c)
 	}
 	for _, tc := range []struct {
 		name string
@@ -120,8 +120,8 @@ func TestCollisions(t *testing.T) {
 			"a compose project named demo already exists outside /apps/demo: demo-web-1, started with no working directory recorded — Docker keys compose projects by name, so this project's up would take its containers for its own; run `docker compose -p demo down` where it was started, or rename this project"},
 	} {
 		c := Collisions(tc.name, "/apps/"+tc.name, nil, tc.hs)
-		if len(c) != 1 || c[0] != tc.want {
-			t.Errorf("name: %q", c)
+		if len(c) != 1 || c[0].Kind != NameCollision || c[0].Msg != tc.want {
+			t.Errorf("name: %+v", c)
 		}
 	}
 }

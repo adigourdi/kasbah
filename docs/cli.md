@@ -7,6 +7,8 @@ Two levels of commands:
   root. Read `./kasbah.yml`. Error if missing.
 
 `kasbah`, `kasbah -h` and `kasbah --help` print the command list and exit 0;
+`kasbah <command> --help` prints that command's flags, and so does
+`kasbah help <command>` (below);
 `kasbah version`, `kasbah --version` and `-v` print the tool and the manifest
 schema it writes — `kasbah 1.0.0 (schema 1)` — and exit 0; `kasbah version`
 takes no arguments other than `-h`/`--help`. An unknown command, or `kasbah server` with a missing or
@@ -18,6 +20,36 @@ $ kasbah deploy you@vps
 error: No kasbah.yml in current directory.
        Run from the project root, or `kasbah init-project` to scaffold.
 ```
+
+## `kasbah help [topic]`
+
+The binary's own summary of how kasbah works, matched to its version: each
+topic is a screen or so, and sends the detail to the doc it summarises.
+Nothing is read from the project or a server, so it runs anywhere.
+
+- `kasbah help` — what kasbah is, a project's files, the usual flow
+  (`server init`, `init-project`, `check`, `build-push`, `deploy`,
+  `rollback`) and the topics.
+- `kasbah help files` — each project file, what it must and may hold, and
+  the rules that fail or warn on it, summarising `authoring.md`.
+- `kasbah help setups` — the common shapes of a project and the example
+  directory under `examples/` for each (`authoring.md` → Setups).
+- `kasbah help rules` — every rule of `compliance.md`'s catalog on one line:
+  ID, level (`fail`, `warn`, `fail/warn` where the case decides, or
+  `retired`) and title, grouped by area, the rules only `check --server`
+  asks marked `[--server]`.
+- `kasbah help <id>` — one rule, the ID in any case (`kasbah help t05`): its
+  level, area, title, why it exists and what to change. The ID is the one
+  `kasbah check` prints on the line.
+- `kasbah help <command> [<subcommand>]` — exactly what
+  `kasbah <command> [<subcommand>] --help` prints (`kasbah help server init`,
+  `kasbah help env set`).
+
+Every topic ends with the URL of its doc on GitHub at the version this
+binary was built from — `https://github.com/adigourdi/kasbah/blob/v<VERSION>/docs/<file>`
+for a release build (one stamped exactly a release tag, an `-rc.N`
+included), and `…/blob/main/docs/<file>` for a dev or unstamped build, which
+no tag names. An unknown topic, or a second one, names the topics and exits 1.
 
 ## Server commands
 
@@ -778,7 +810,11 @@ Flags:
 ### `kasbah check [--server [USER@HOST]] [--fix [--yes]]`
 
 Run the compliance check on the current project. See `compliance.md` for
-the full rule set. Exit code 0 on pass, 6 on any failure (see "Exit codes" below),
+the full rule set. Every verdict line leads with the IDs of the rules it
+speaks for (`✓ C01 All services set restart policy`), which
+`kasbah help <id>` explains; `compliance.md` names the few lines that carry
+none.
+Exit code 0 on pass, 6 on any failure (see "Exit codes" below),
 and 1 — naming the file and the reason — when a file is shaped so badly that a
 rule cannot be evaluated at all: inside a mapping `services:`, a service that is
 neither null nor a mapping (`services: {web: nginx}`) or a `networks:` entry

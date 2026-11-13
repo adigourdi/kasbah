@@ -60,6 +60,7 @@ func main() {
 		}
 		args, argv, shipDev = rest, rest, answer
 	}
+	args = helpArgs(args)
 	if len(args) > 0 {
 		switch args[0] {
 		case "remote":

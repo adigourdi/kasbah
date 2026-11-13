@@ -105,13 +105,13 @@ check_out="$("$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "the scaffolded project passes kasbah check (exit $rc)"
 assert 'grep -qF ", 0 warning, 0 failed" <<<"$check_out"' \
     "with nothing warned and nothing failed (said '$(tail -1 <<<"$check_out")')"
-assert 'grep -qF "✓ All routed services join the project'"'"'s kasbah network" <<<"$check_out"' \
+assert 'grep -qF "✓ C03 All routed services join the project'"'"'s kasbah network" <<<"$check_out"' \
     "C03 among them, on the new shape"
-assert 'grep -qF "✓ The kasbah network is the project'"'"'s own (snip_kasbah)" <<<"$check_out"' \
+assert 'grep -qF "✓ C04 The kasbah network is the project'"'"'s own (snip_kasbah)" <<<"$check_out"' \
     "and C04 names the network deploy connects Traefik to"
-assert 'grep -qF "✓ A router serves snip.example.com on the web entrypoint" <<<"$check_out"' \
+assert 'grep -qF "✓ T08 A router serves snip.example.com on the web entrypoint" <<<"$check_out"' \
     "and T08, which is why the fragment prints two routers"
-assert 'grep -qF "✓ All routed services can roll on deploy" <<<"$check_out"' \
+assert 'grep -qF "✓ C11 All routed services can roll on deploy" <<<"$check_out"' \
     "and C11, which is why the service carries a healthcheck"
 
 # --- Case 2: refuses to overwrite existing manifest ---------------------------

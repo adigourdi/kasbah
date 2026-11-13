@@ -166,15 +166,15 @@ func TestServerGolden(t *testing.T) {
 	contains(t, out,
 		"Server (deploy@vps at /apps):",
 		"  ✓ /apps/demo exists on deploy@vps",
-		"  ✓ .env on deploy@vps has no missing keys vs .env.prod.example",
-		"  ✓ .env on deploy@vps has no extra keys vs .env.prod.example",
-		"  ✓ the mail stack on deploy@vps serves 'shop.rig.test' (listed under domains:)",
+		"  ✓ E02 .env on deploy@vps has no missing keys vs .env.prod.example",
+		"  ✓ E03 .env on deploy@vps has no extra keys vs .env.prod.example",
+		"  ✓ M03 the mail stack on deploy@vps serves 'shop.rig.test' (listed under domains:)",
 		"  ✓ manifest health.container 'demo-web' is running and healthy on deploy@vps",
 		"  ✓ certificate for 'demo.example.com' valid for 400 more day(s) (until ",
 		"O = kasbah test fixture, CN = demo.example.com)",
-		"  ✓ effective resource limits on deploy@vps match the host's 90% ceiling (14.4 cpus, 54g)",
-		"  ✓ No router claims a hostname kasbah owns on deploy@vps (traefik.rig.test mail.rig.test webmail.rig.test)",
-		"  ✓ every mail domain on deploy@vps has both DKIM keys, listed in its signing override (rig.test shop.rig.test)")
+		"  ✓ R04 effective resource limits on deploy@vps match the host's 90% ceiling (14.4 cpus, 54g)",
+		"  ✓ T05 No router claims a hostname kasbah owns on deploy@vps (traefik.rig.test mail.rig.test webmail.rig.test)",
+		"  ✓ M04 every mail domain on deploy@vps has both DKIM keys, listed in its signing override (rig.test shop.rig.test)")
 	hasNot(t, out, secret, "backup on", "backup scheduler")
 	if st, _ := os.ReadFile(".kasbah/state.json"); !strings.Contains(string(st), `"last_server": "deploy@vps"`) {
 		t.Errorf("last_server not recorded: %s", st)
@@ -197,7 +197,7 @@ func TestServerProjectAndEnv(t *testing.T) {
 		{"not a directory", func(s *srvCase) { s.r.Project = "notdir" }, []string{"✗ /apps/demo on deploy@vps exists and is not a directory"}, nil, 6},
 		{"drift", func(s *srvCase) {
 			s.r.Env = b64s("OTHER=1\nexport DOMAIN=x\n" + "KASBAH_CPU_LIMIT=14.4\nKASBAH_MEM_LIMIT=54g\n")
-		}, []string{"⚠ .env on deploy@vps has extra keys not in .env.prod.example: OTHER", "✓ .env on deploy@vps has no missing keys"}, nil, 0},
+		}, []string{"⚠ E03 .env on deploy@vps has extra keys not in .env.prod.example: OTHER", "✓ E02 .env on deploy@vps has no missing keys"}, nil, 0},
 		{"env absent", func(s *srvCase) { s.r.EnvState, s.r.Env = "absent", "" }, []string{"/apps/demo/.env does not exist on deploy@vps — the next deploy"}, []string{"effective resource limits"}, 0},
 		{"env unreadable", func(s *srvCase) { s.r.EnvState, s.r.Env = "unreadable", "" }, []string{"cannot be read by this user, so its keys cannot be compared"}, nil, 0},
 		{"env a directory", func(s *srvCase) { s.r.EnvState, s.r.Env = "dir", "" }, []string{"✗ /apps/demo/.env on deploy@vps is not a regular file (it is dir)"}, nil, 6},
@@ -219,7 +219,7 @@ func TestServerProjectAndEnv(t *testing.T) {
 		srvProject(t, "")
 		os.Remove(".env.prod.example")
 		out, _ := newSrv(t).run()
-		contains(t, out, "⚠ no .env.prod.example in this checkout, so /apps/demo/.env on deploy@vps cannot be checked for drift")
+		contains(t, out, "⚠ E02,E03 no .env.prod.example in this checkout, so /apps/demo/.env on deploy@vps cannot be checked for drift")
 	})
 }
 
@@ -230,13 +230,13 @@ func TestServerM03(t *testing.T) {
 		want         string
 		code         int
 	}{
-		{"primary", "rig.test", nil, "✓ the mail stack on deploy@vps serves 'rig.test' (its primary_domain)", 0},
-		{"unserved", "nowhere.rig.test", nil, "✗ the mail stack on deploy@vps does not serve 'nowhere.rig.test' — /apps/mail/kasbah.yml serves rig.test shop.rig.test; add it with: kasbah server add-mail-domain deploy@vps nowhere.rig.test", 6},
-		{"no stack", "rig.test", func(s *srvCase) { s.r.RegistryState, s.r.Registry = "absent", "" }, "✗ demo claims the mail domain 'rig.test', and there is no mail stack on deploy@vps", 6},
-		{"unreadable", "rig.test", func(s *srvCase) { s.r.RegistryState, s.r.Registry = "unreadable", "" }, "⚠ demo claims the mail domain 'rig.test', and /apps/mail/kasbah.yml on deploy@vps is unreadable", 0},
+		{"primary", "rig.test", nil, "✓ M03 the mail stack on deploy@vps serves 'rig.test' (its primary_domain)", 0},
+		{"unserved", "nowhere.rig.test", nil, "✗ M03 the mail stack on deploy@vps does not serve 'nowhere.rig.test' — /apps/mail/kasbah.yml serves rig.test shop.rig.test; add it with: kasbah server add-mail-domain deploy@vps nowhere.rig.test", 6},
+		{"no stack", "rig.test", func(s *srvCase) { s.r.RegistryState, s.r.Registry = "absent", "" }, "✗ M03 demo claims the mail domain 'rig.test', and there is no mail stack on deploy@vps", 6},
+		{"unreadable", "rig.test", func(s *srvCase) { s.r.RegistryState, s.r.Registry = "unreadable", "" }, "⚠ M03 demo claims the mail domain 'rig.test', and /apps/mail/kasbah.yml on deploy@vps is unreadable", 0},
 		{"not YAML", "rig.test", func(s *srvCase) { s.r.Registry = b64s("a: [\n") }, "does not parse as YAML", 0},
 		{"no primary: the refusal is the finding", "rig.test", func(s *srvCase) { s.r.Registry = b64s("domains: [rig.test]\n") },
-			"✗ demo claims the mail domain 'rig.test', and /apps/mail/kasbah.yml on deploy@vps has no primary_domain:", 6},
+			"✗ M03 demo claims the mail domain 'rig.test', and /apps/mail/kasbah.yml on deploy@vps has no primary_domain:", 6},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			project(t, map[string]string{"kasbah.yml": "schema: 1\nname: demo\ndomain: demo.example.com\nmail:\n  domain: " + tc.domain + "\n"})
@@ -272,7 +272,7 @@ func TestServerM04(t *testing.T) {
 		not  []string
 	}{
 		{"no keys for one domain", func(s *srvCase) { s.r.DKIMKeys = s.r.DKIMKeys[:2] },
-			[]string{"⚠ mail domain 'shop.rig.test' on deploy@vps is not DKIM-signed: no rsa-2048-mail-shop.rig.test.private.txt or ed25519-ed-shop.rig.test.private.txt in " + dir + "/" + tail + fix},
+			[]string{"⚠ M04 mail domain 'shop.rig.test' on deploy@vps is not DKIM-signed: no rsa-2048-mail-shop.rig.test.private.txt or ed25519-ed-shop.rig.test.private.txt in " + dir + "/" + tail + fix},
 			[]string{"'rig.test' on deploy@vps is not", "every mail domain", "signing block", "setup config dkim"}},
 		{"ed25519 only", func(s *srvCase) { s.r.DKIMKeys = []string{s.r.DKIMKeys[0], s.r.DKIMKeys[1], s.r.DKIMKeys[3]} },
 			[]string{"is not DKIM-signed: no rsa-2048-mail-shop.rig.test.private.txt in " + dir + "/" + tail + fix}, []string{"ed25519-ed-shop.rig.test.private.txt in"}},
@@ -280,28 +280,28 @@ func TestServerM04(t *testing.T) {
 			s.r.Registry = b64s("primary_domain: rig.test\ndomains: [rig.test, a.test]\n")
 			s.r.DKIMKeys = append(s.r.DKIMKeys, "rsa-2048-mail-shop-a.test.private.txt", "ed25519-ed-shop-a.test.private.txt")
 			s.r.DKIMConf = b64s(srvConf + strings.ReplaceAll(srvConf, "shop.rig.test", "shop-a.test"))
-		}, []string{"⚠ mail domain 'a.test' on deploy@vps is not DKIM-signed: no rsa-2048-mail-a.test.private.txt or ed25519-ed-a.test.private.txt in " + dir + "/, and " +
+		}, []string{"⚠ M04 mail domain 'a.test' on deploy@vps is not DKIM-signed: no rsa-2048-mail-a.test.private.txt or ed25519-ed-a.test.private.txt in " + dir + "/, and " +
 			conf + " does not list rsa-2048-mail-a.test.private.txt or ed25519-ed-a.test.private.txt" + tail +
 			"\n      kasbah server mail-dkim deploy@vps a.test --keep-keys\n"}, nil},
 		{"keys, no signing block", func(s *srvCase) { s.r.DKIMConf = b64s(strings.ReplaceAll(srvConf, "shop.rig.test", "other.test")) },
-			[]string{"⚠ mail domain 'shop.rig.test' on deploy@vps is not DKIM-signed: " + conf + " does not list rsa-2048-mail-shop.rig.test.private.txt or ed25519-ed-shop.rig.test.private.txt" + tail + fix},
+			[]string{"⚠ M04 mail domain 'shop.rig.test' on deploy@vps is not DKIM-signed: " + conf + " does not list rsa-2048-mail-shop.rig.test.private.txt or ed25519-ed-shop.rig.test.private.txt" + tail + fix},
 			[]string{"setup config dkim keytype", "signing block", "'rig.test' on deploy@vps is not"}},
 		{"no key directory yet", func(s *srvCase) { s.r.DKIMState, s.r.DKIMKeys = "absent", nil },
-			[]string{"⚠ mail domain 'rig.test' on deploy@vps is not DKIM-signed", "⚠ mail domain 'shop.rig.test' on deploy@vps is not DKIM-signed"}, nil},
+			[]string{"⚠ M04 mail domain 'rig.test' on deploy@vps is not DKIM-signed", "⚠ M04 mail domain 'shop.rig.test' on deploy@vps is not DKIM-signed"}, nil},
 		{"an empty override lists nothing", func(s *srvCase) { s.r.DKIMConfState, s.r.DKIMConf = "empty", "" },
 			[]string{"'rig.test' on deploy@vps is not DKIM-signed: " + conf + " does not list"}, nil},
 		{"key directory unlistable", func(s *srvCase) { s.r.DKIMState, s.r.DKIMKeys = "unreadable", nil },
-			[]string{"⚠ " + dir + " on deploy@vps cannot be listed by this user" + cant}, []string{"is not DKIM-signed"}},
+			[]string{"⚠ M04 " + dir + " on deploy@vps cannot be listed by this user" + cant}, []string{"is not DKIM-signed"}},
 		{"key directory a file", func(s *srvCase) { s.r.DKIMState, s.r.DKIMKeys = "notdir", nil },
-			[]string{"⚠ " + dir + " on deploy@vps is not a directory (it is notdir)" + cant}, nil},
+			[]string{"⚠ M04 " + dir + " on deploy@vps is not a directory (it is notdir)" + cant}, nil},
 		{"override unreadable", func(s *srvCase) { s.r.DKIMConfState, s.r.DKIMConf = "unreadable", "" },
-			[]string{"⚠ " + conf + " on deploy@vps is unreadable" + cant}, []string{"is not DKIM-signed"}},
+			[]string{"⚠ M04 " + conf + " on deploy@vps is unreadable" + cant}, []string{"is not DKIM-signed"}},
 		{"override absent", func(s *srvCase) { s.r.DKIMConfState, s.r.DKIMConf = "absent", "" },
-			[]string{"⚠ " + conf + " on deploy@vps is absent" + cant}, nil},
+			[]string{"⚠ M04 " + conf + " on deploy@vps is absent" + cant}, nil},
 		{"override bytes lost", func(s *srvCase) { s.r.DKIMConf = "!!" },
-			[]string{"⚠ " + conf + " on deploy@vps did not come back as readable bytes" + cant}, nil},
+			[]string{"⚠ M04 " + conf + " on deploy@vps did not come back as readable bytes" + cant}, nil},
 		{"registry unreadable", func(s *srvCase) { s.r.RegistryState, s.r.Registry = "unreadable", "" },
-			[]string{"⚠ /apps/mail/kasbah.yml on deploy@vps is unreadable — so whether the mail domains are DKIM-signed cannot be checked"}, nil},
+			[]string{"⚠ M04 /apps/mail/kasbah.yml on deploy@vps is unreadable — so whether the mail domains are DKIM-signed cannot be checked"}, nil},
 		{"registry refused", func(s *srvCase) { s.r.Registry = b64s("domains: [x.test]\n") },
 			[]string{"has no primary_domain:", "— so whether the mail domains are DKIM-signed cannot be checked"}, nil},
 		{"no mail stack", func(s *srvCase) {
@@ -481,12 +481,12 @@ func TestServerR04(t *testing.T) {
 		env, want string
 		code      int
 	}{
-		{"KASBAH_CPU_LIMIT=999\nKASBAH_MEM_LIMIT=54g\n", "✗ effective resource limits on deploy@vps are above the host's 90% ceiling: cpus 999 > 14.4", 6},
-		{"KASBAH_CPU_LIMIT=2\nKASBAH_MEM_LIMIT=1g\n", "⚠ effective resource limits on deploy@vps are below the host's 90% ceiling: cpus 2 < 14.4; mem_limit 1g < 54g", 0},
-		{"KASBAH_CPU_LIMIT=2\nKASBAH_MEM_LIMIT=99g\n", "✗ effective resource limits on deploy@vps are above the host's 90% ceiling: cpus 2 < 14.4; mem_limit 99g > 54g", 6},
-		{"KASBAH_CPU_LIMIT=14.40\nKASBAH_MEM_LIMIT=55296m\n", "✓ effective resource limits on deploy@vps match the host's 90% ceiling (14.40 cpus, 55296m)", 0},
-		{"KASBAH_CPU_LIMIT=1\nexport KASBAH_CPU_LIMIT=14.4\nKASBAH_MEM_LIMIT=54G\n", "✓ effective resource limits on deploy@vps match", 0},
-		{"KASBAH_CPU_LIMIT=lots\nKASBAH_MEM_LIMIT=54g\n", "⚠ effective resource limits on deploy@vps could not all be compared with the host's 14.4 cpus / 54g: cpus 'lots' is not a number", 0},
+		{"KASBAH_CPU_LIMIT=999\nKASBAH_MEM_LIMIT=54g\n", "✗ R04 effective resource limits on deploy@vps are above the host's 90% ceiling: cpus 999 > 14.4", 6},
+		{"KASBAH_CPU_LIMIT=2\nKASBAH_MEM_LIMIT=1g\n", "⚠ R04 effective resource limits on deploy@vps are below the host's 90% ceiling: cpus 2 < 14.4; mem_limit 1g < 54g", 0},
+		{"KASBAH_CPU_LIMIT=2\nKASBAH_MEM_LIMIT=99g\n", "✗ R04 effective resource limits on deploy@vps are above the host's 90% ceiling: cpus 2 < 14.4; mem_limit 99g > 54g", 6},
+		{"KASBAH_CPU_LIMIT=14.40\nKASBAH_MEM_LIMIT=55296m\n", "✓ R04 effective resource limits on deploy@vps match the host's 90% ceiling (14.40 cpus, 55296m)", 0},
+		{"KASBAH_CPU_LIMIT=1\nexport KASBAH_CPU_LIMIT=14.4\nKASBAH_MEM_LIMIT=54G\n", "✓ R04 effective resource limits on deploy@vps match", 0},
+		{"KASBAH_CPU_LIMIT=lots\nKASBAH_MEM_LIMIT=54g\n", "⚠ R04 effective resource limits on deploy@vps could not all be compared with the host's 14.4 cpus / 54g: cpus 'lots' is not a number", 0},
 		{"KASBAH_CPU_LIMIT=14.4\n", "mem_limit 'unset' is not a size", 0},
 		{"DOMAIN=x\n", "carries no KASBAH_CPU_LIMIT or KASBAH_MEM_LIMIT, so there is no effective limit to compare with the host's 14.4 cpus / 54g", 0},
 	} {
@@ -507,26 +507,26 @@ func TestServerR04Resources(t *testing.T) {
 	s := newSrv(t)
 	s.r.Env = b64s("DOMAIN=demo.example.com\nKASBAH_CPU_LIMIT=2.0\nKASBAH_MEM_LIMIT=54g\n")
 	out, _ := s.run()
-	contains(t, out, "  ✓ effective resource limits on deploy@vps are within the host's 90% ceiling (2.0 cpus, 54g) — cpus set by kasbah.yml's resources:")
+	contains(t, out, "  ✓ R04 effective resource limits on deploy@vps are within the host's 90% ceiling (2.0 cpus, 54g) — cpus set by kasbah.yml's resources:")
 
 	srvProject(t, "resources:\n  cpus: 2\n")
 	s = newSrv(t)
 	s.r.Env = b64s("DOMAIN=demo.example.com\nKASBAH_CPU_LIMIT=2.0\nKASBAH_MEM_LIMIT=1g\n")
 	out, _ = s.run()
-	contains(t, out, "  ⚠ effective resource limits on deploy@vps are below the host's 90% ceiling: mem_limit 1g < 54g")
+	contains(t, out, "  ⚠ R04 effective resource limits on deploy@vps are below the host's 90% ceiling: mem_limit 1g < 54g")
 
 	srvProject(t, "resources:\n  memory: 25%\n")
 	s = newSrv(t)
 	s.r.Env = b64s("DOMAIN=demo.example.com\nKASBAH_CPU_LIMIT=14.4\nKASBAH_MEM_LIMIT=15g\n")
 	out, _ = s.run()
-	contains(t, out, "  ✓ effective resource limits on deploy@vps are within the host's 90% ceiling (14.4 cpus, 15g) — memory set by kasbah.yml's resources:")
+	contains(t, out, "  ✓ R04 effective resource limits on deploy@vps are within the host's 90% ceiling (14.4 cpus, 15g) — memory set by kasbah.yml's resources:")
 	hasNot(t, out, "are below the host's 90% ceiling")
 
 	srvProject(t, "resources:\n  memory: 25%\n")
 	s = newSrv(t)
 	s.r.Env = b64s("DOMAIN=demo.example.com\nKASBAH_CPU_LIMIT=2.0\nKASBAH_MEM_LIMIT=15g\n")
 	out, _ = s.run()
-	contains(t, out, "  ⚠ effective resource limits on deploy@vps are below the host's 90% ceiling: cpus 2.0 < 14.4")
+	contains(t, out, "  ⚠ R04 effective resource limits on deploy@vps are below the host's 90% ceiling: cpus 2.0 < 14.4")
 	hasNot(t, out, "mem_limit 15g < 54g")
 }
 
@@ -545,7 +545,7 @@ func TestServerMemoryController(t *testing.T) {
 		want := "  ⚠ deploy@vps has no memory cgroup controller, so Docker discards every mem_limit: the limits are written but not enforced\n" +
 			"      on Raspberry Pi OS: append cgroup_enable=memory to the single line of /boot/firmware/cmdline.txt (/boot/cmdline.txt before Bookworm)\n      elsewhere: remove cgroup_disable=memory"
 		if tc.warn {
-			contains(t, out, "✓ effective resource limits on deploy@vps match", want, "      then reboot and re-run `kasbah server init deploy@vps` to record it\n")
+			contains(t, out, "✓ R04 effective resource limits on deploy@vps match", want, "      then reboot and re-run `kasbah server init deploy@vps` to record it\n")
 		} else {
 			hasNot(t, out, "memory cgroup controller")
 		}
@@ -566,13 +566,13 @@ func TestServerR06(t *testing.T) {
 		{nil, nil, []string{"fit the host", "add up to"}},
 		{[]ProjectLimits{{"demo", "14.4", "54g"}, {"shop", "14.4", "54g"}}, nil, []string{"fit the host", "add up to"}},
 		{[]ProjectLimits{{"demo", "8.0", "30g"}, {"shop", "4.0", "54g"}, {"blog", "14.4", "20g"}},
-			[]string{"  ✓ the projects on deploy@vps with limits of their own fit the host together (12.0 of 16 cores, 51200m of 61440m)"}, []string{"add up to"}},
+			[]string{"  ✓ R06 the projects on deploy@vps with limits of their own fit the host together (12.0 of 16 cores, 51200m of 61440m)"}, []string{"add up to"}},
 		{[]ProjectLimits{{"demo", "8.0", "40g"}, {"shop", "9.0", "30g"}, {"blog", "14.4", "54g"}},
-			[]string{"  ⚠ the projects on deploy@vps with their own cpus limit add up to 17.0 cores, more than the host's 16: demo 8.0, shop 9.0",
-				"  ⚠ the projects on deploy@vps with their own memory limit add up to 71680m, more than the host's 61440m: demo 40g, shop 30g"},
+			[]string{"  ⚠ R06 the projects on deploy@vps with their own cpus limit add up to 17.0 cores, more than the host's 16: demo 8.0, shop 9.0",
+				"  ⚠ R06 the projects on deploy@vps with their own memory limit add up to 71680m, more than the host's 61440m: demo 40g, shop 30g"},
 			[]string{"fit the host"}},
 		{[]ProjectLimits{{"demo", "14.4", "20g"}},
-			[]string{"  ✓ the projects on deploy@vps with limits of their own fit the host together (20480m of 61440m)"}, []string{"cores", "add up to"}},
+			[]string{"  ✓ R06 the projects on deploy@vps with limits of their own fit the host together (20480m of 61440m)"}, []string{"cores", "add up to"}},
 	} {
 		srvProject(t, "")
 		s := newSrv(t)
@@ -620,23 +620,23 @@ func TestServerR04Literals(t *testing.T) {
 		code         int
 	}{
 		{compose("16", "2g"), "KASBAH_CPU_LIMIT=999\n",
-			[]string{"  ✓ All services set cpus/mem_limit, some as literals: demo-web(cpus=16,mem_limit=2g) — compared with the host's ceiling under Server (R04)",
-				"  ✗ literal resource limits in compose.prod.yml are above the 90% ceiling of deploy@vps: demo-web cpus 16 > 14.4; demo-web mem_limit 2g < 54g — kasbah's limits are anti-takeover ceilings"},
+			[]string{"  ✓ R01,R02 All services set cpus/mem_limit, some as literals: demo-web(cpus=16,mem_limit=2g) — compared with the host's ceiling under Server (R04)",
+				"  ✗ R04 literal resource limits in compose.prod.yml are above the 90% ceiling of deploy@vps: demo-web cpus 16 > 14.4; demo-web mem_limit 2g < 54g — kasbah's limits are anti-takeover ceilings"},
 			[]string{"Services with literal resource limits", "effective resource limits on"}, 6},
 		{compose("0.5", "${KASBAH_MEM_LIMIT}"), "KASBAH_CPU_LIMIT=lots\nKASBAH_MEM_LIMIT=54g\n",
-			[]string{"  ⚠ literal resource limits in compose.prod.yml are below the 90% ceiling of deploy@vps: demo-web cpus 0.5 < 14.4 — a tighter per-service limit is allowed, but flagged",
-				"  ✓ effective resource limits on deploy@vps match the host's 90% ceiling (54g)"},
+			[]string{"  ⚠ R04 literal resource limits in compose.prod.yml are below the 90% ceiling of deploy@vps: demo-web cpus 0.5 < 14.4 — a tighter per-service limit is allowed, but flagged",
+				"  ✓ R04 effective resource limits on deploy@vps match the host's 90% ceiling (54g)"},
 			nil, 0},
 		{compose("14.40", "55296m"), "",
-			[]string{"  ✓ literal resource limits in compose.prod.yml match the 90% ceiling of deploy@vps (14.4 cpus, 54g)"},
+			[]string{"  ✓ R04 literal resource limits in compose.prod.yml match the 90% ceiling of deploy@vps (14.4 cpus, 54g)"},
 			[]string{"effective resource limits on", "carries no KASBAH_CPU_LIMIT"}, 0},
 		{strings.Replace(goodCompose, "    cpus: ${KASBAH_CPU_LIMIT}\n", "    deploy: {resources: {limits: {cpus: 16}}}\n", 1), "KASBAH_MEM_LIMIT=54g\n",
-			[]string{"  ✗ literal resource limits in compose.prod.yml are above the 90% ceiling of deploy@vps: demo-web cpus 16 > 14.4",
-				"  ✓ effective resource limits on deploy@vps match the host's 90% ceiling (54g)"},
+			[]string{"  ✗ R04 literal resource limits in compose.prod.yml are above the 90% ceiling of deploy@vps: demo-web cpus 16 > 14.4",
+				"  ✓ R04 effective resource limits on deploy@vps match the host's 90% ceiling (54g)"},
 			nil, 6},
 		{compose("${KASBAH_CPU_LIMIT}", "99g"), "KASBAH_CPU_LIMIT=14.4\n",
-			[]string{"  ✗ literal resource limits in compose.prod.yml are above the 90% ceiling of deploy@vps: demo-web mem_limit 99g > 54g",
-				"  ✓ effective resource limits on deploy@vps match"},
+			[]string{"  ✗ R04 literal resource limits in compose.prod.yml are above the 90% ceiling of deploy@vps: demo-web mem_limit 99g > 54g",
+				"  ✓ R04 effective resource limits on deploy@vps match"},
 			[]string{"is not a size"}, 6},
 	} {
 		srvProject(t, "")
@@ -656,7 +656,7 @@ func TestServerR04Literals(t *testing.T) {
 		s := newSrv(t)
 		s.r.Project, s.r.EnvState, s.r.Env, s.r.HealthState = "absent", "absent", "", "absent"
 		out, code := s.run()
-		contains(t, out, "  ✗ literal resource limits in compose.prod.yml are above the 90% ceiling of deploy@vps: demo-web cpus 32 > 14.4")
+		contains(t, out, "  ✗ R04 literal resource limits in compose.prod.yml are above the 90% ceiling of deploy@vps: demo-web cpus 32 > 14.4")
 		if code != 6 {
 			t.Errorf("exit %d, want 6", code)
 		}
@@ -675,29 +675,29 @@ func TestServerT05(t *testing.T) {
 		want       string
 		code       int
 	}{
-		{"mail of another apex is not reserved here", "mail.demo.example.com", nil, "✓ No router claims a hostname kasbah owns on deploy@vps (traefik.rig.test mail.rig.test webmail.rig.test)", 0},
-		{"webmail of the primary is", "webmail.rig.test", nil, "✗ Routers claim hostnames kasbah owns on deploy@vps: x→webmail.rig.test (traefik.rig.test mail.rig.test webmail.rig.test)", 6},
-		{"no registry: the apex", "mail.rig.test", func(s *srvCase) { s.r.RegistryState, s.r.Registry = "absent", "" }, "✗ Routers claim hostnames kasbah owns on deploy@vps: x→mail.rig.test", 6},
+		{"mail of another apex is not reserved here", "mail.demo.example.com", nil, "✓ T05 No router claims a hostname kasbah owns on deploy@vps (traefik.rig.test mail.rig.test webmail.rig.test)", 0},
+		{"webmail of the primary is", "webmail.rig.test", nil, "✗ T05 Routers claim hostnames kasbah owns on deploy@vps: x→webmail.rig.test (traefik.rig.test mail.rig.test webmail.rig.test)", 6},
+		{"no registry: the apex", "mail.rig.test", func(s *srvCase) { s.r.RegistryState, s.r.Registry = "absent", "" }, "✗ T05 Routers claim hostnames kasbah owns on deploy@vps: x→mail.rig.test", 6},
 		{"dashboard off: traefik.* is nobody's", "traefik.rig.test", func(s *srvCase) { s.r.Shared = b64s("http: {}\n") },
-			"✓ No router claims a hostname kasbah owns on deploy@vps (mail.rig.test webmail.rig.test; dashboard off, traefik.* not reserved)", 0},
+			"✓ T05 No router claims a hostname kasbah owns on deploy@vps (mail.rig.test webmail.rig.test; dashboard off, traefik.* not reserved)", 0},
 		{"dashboard off, registry refused", "traefik.rig.test", func(s *srvCase) {
 			s.r.Shared = b64s("http:\n  middlewares: {}\n")
 			s.r.Registry = b64s("domains: [x.test]\n")
-		}, "✓ No router claims reserved hostnames (mail.*, webmail.*) — heuristic: deploy@vps was asked and its mail registry could not be read — the dashboard is off on deploy@vps, so traefik.* is not reserved", 0},
+		}, "✓ T05 No router claims reserved hostnames (mail.*, webmail.*) — heuristic: deploy@vps was asked and its mail registry could not be read — the dashboard is off on deploy@vps, so traefik.* is not reserved", 0},
 		{"dashboard off, no registry", "traefik.rig.test", func(s *srvCase) {
 			s.r.Shared = b64s("http: {}\n")
 			s.r.RegistryState, s.r.Registry = "absent", ""
-		}, "✓ No router claims reserved hostnames (mail.*, webmail.*) — heuristic: deploy@vps has no mail registry, and no dashboard apex to name mail.* from — the dashboard is off", 0},
+		}, "✓ T05 No router claims reserved hostnames (mail.*, webmail.*) — heuristic: deploy@vps has no mail registry, and no dashboard apex to name mail.* from — the dashboard is off", 0},
 		{"an unparseable _shared.yml: traefik keeps the heuristic", "traefik.elsewhere.test", func(s *srvCase) { s.r.Shared = b64s("http: [1\n") },
-			"✗ Routers claim hostnames kasbah owns on deploy@vps: x→traefik.elsewhere.test (mail.rig.test webmail.rig.test; traefik.* by heuristic)", 6},
+			"✗ T05 Routers claim hostnames kasbah owns on deploy@vps: x→traefik.elsewhere.test (mail.rig.test webmail.rig.test; traefik.* by heuristic)", 6},
 		{"a refused registry: mail keeps the heuristic", "mail.anything.test", func(s *srvCase) { s.r.Registry = b64s("domains: [x.test]\n") },
-			"✗ Routers claim hostnames kasbah owns on deploy@vps: x→mail.anything.test (traefik.rig.test; mail.* by heuristic; webmail.* by heuristic)", 6},
+			"✗ T05 Routers claim hostnames kasbah owns on deploy@vps: x→mail.anything.test (traefik.rig.test; mail.* by heuristic; webmail.* by heuristic)", 6},
 		{"an unreadable registry: mail keeps the heuristic", "webmail.x.test", func(s *srvCase) { s.r.RegistryState, s.r.Registry = "unreadable", "" },
 			"(traefik.rig.test; mail.* by heuristic; webmail.* by heuristic)", 6},
 		{"neither read", "mail.x.test", func(s *srvCase) {
 			s.r.Shared = ""
 			s.r.RegistryState, s.r.Registry = "unreadable", ""
-		}, "✗ Routers claim reserved hostnames: x→mail.x.test — heuristic: deploy@vps was asked and neither its dashboard fragment nor a mail registry could be read", 6},
+		}, "✗ T05 Routers claim reserved hostnames: x→mail.x.test — heuristic: deploy@vps was asked and neither its dashboard fragment nor a mail registry could be read", 6},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			project(t, fragOf(tc.host))
@@ -721,7 +721,7 @@ func TestServerT09(t *testing.T) {
 	s := newSrv(t)
 	s.r.Shared = b64s("http: {}\n")
 	out, code := s.run()
-	contains(t, out, "✗ Fragment routes to Traefik's internal services (only noop@internal is allowed): demo→api@internal")
+	contains(t, out, "✗ T09 Fragment routes to Traefik's internal services (only noop@internal is allowed): demo→api@internal")
 	if code != 6 {
 		t.Errorf("exit %d, want 6:\n%s", code, out)
 	}
@@ -738,26 +738,26 @@ func TestServerB01(t *testing.T) {
 		want               string
 		code               int
 	}{
-		{"ok", "dir", "file", ok, "running", "✓ the last backup on deploy@vps finished 4h ago and succeeded (repositories: demo)", 0},
-		{"nostack", "absent", "absent", "", "running", "⚠ /apps/.kasbah/server.json on deploy@vps records off-box backups and /apps/.kasbah/backup is not there", 0},
-		{"norecord", "dir", "absent", "", "exited", "⚠ the backup scheduler on deploy@vps has written no record at /apps/.kasbah/backup/state/status — it writes one as its first act, so it has not started since backups were configured (its container is exited)", 0},
-		{"unreadable", "dir", "unreadable", "", "running", "⚠ /apps/.kasbah/backup/state/status on deploy@vps cannot be read by the ssh user, so nothing here says whether a backup has ever run", 0},
+		{"ok", "dir", "file", ok, "running", "✓ B01 the last backup on deploy@vps finished 4h ago and succeeded (repositories: demo)", 0},
+		{"nostack", "absent", "absent", "", "running", "⚠ B01 /apps/.kasbah/server.json on deploy@vps records off-box backups and /apps/.kasbah/backup is not there", 0},
+		{"norecord", "dir", "absent", "", "exited", "⚠ B01 the backup scheduler on deploy@vps has written no record at /apps/.kasbah/backup/state/status — it writes one as its first act, so it has not started since backups were configured (its container is exited)", 0},
+		{"unreadable", "dir", "unreadable", "", "running", "⚠ B01 /apps/.kasbah/backup/state/status on deploy@vps cannot be read by the ssh user, so nothing here says whether a backup has ever run", 0},
 		{"empty", "dir", "empty", "", "running", "status on deploy@vps is empty, so nothing here", 0},
 		{"unparsed", "dir", "file", rec("deadline=2000086400"), "running", "is not a record this kasbah reads — it carries no scheduler state", 0},
 		{"octal deadline", "dir", "file", rec("state=sleeping", "deadline=01999000009"), "running", "records deadline='01999000009', which is not a unix time this kasbah can compare", 0},
 		{"huge deadline", "dir", "file", rec("state=sleeping", "deadline=999999999999999999999999"), "running", "which is not a unix time this kasbah can compare", 0},
-		{"never", "dir", "file", rec("state=starting", "deadline=2000000600", "last_run_status=-"), "running", "⚠ backups are configured on deploy@vps and no run has finished yet — the scheduler is 'starting'", 0},
-		{"shipped nothing", "dir", "file", strings.Replace(ok, "repos= demo", "repos= none", 1), "running", "⚠ the last backup on deploy@vps finished 4h ago and shipped nothing", 0},
-		{"failed", "dir", "file", strings.Replace(ok, "status=ok", "status=failed", 1), "running", "✗ the last backup on deploy@vps FAILED 4h ago (repositories backed up: demo)", 6},
+		{"never", "dir", "file", rec("state=starting", "deadline=2000000600", "last_run_status=-"), "running", "⚠ B01 backups are configured on deploy@vps and no run has finished yet — the scheduler is 'starting'", 0},
+		{"shipped nothing", "dir", "file", strings.Replace(ok, "repos= demo", "repos= none", 1), "running", "⚠ B01 the last backup on deploy@vps finished 4h ago and shipped nothing", 0},
+		{"failed", "dir", "file", strings.Replace(ok, "status=ok", "status=failed", 1), "running", "✗ B01 the last backup on deploy@vps FAILED 4h ago (repositories backed up: demo)", 6},
 		{"failed hooks", "dir", "file", strings.Replace(ok, "status=ok", "status=failed", 1) + "last_run_failed=demo the backup hook failed (exit 3): pg_dump\nlast_run_failed=web remove /apps/web/.kasbah-prev by hand\n", "running",
-			"✗ the last backup on deploy@vps FAILED 4h ago (repositories backed up: demo) — demo's backup failed: the backup hook failed (exit 3): pg_dump; web's backup failed: remove /apps/web/.kasbah-prev by hand; docker logs kasbah-backup has each project's result and the last 64 KB of the backup hooks' stderr", 6},
+			"✗ B01 the last backup on deploy@vps FAILED 4h ago (repositories backed up: demo) — demo's backup failed: the backup hook failed (exit 3): pg_dump; web's backup failed: remove /apps/web/.kasbah-prev by hand; docker logs kasbah-backup has each project's result and the last 64 KB of the backup hooks' stderr", 6},
 		{"no launcher", "dir", "file", strings.Replace(ok, "status=ok", "status=failed", 1) + "last_run_launcher=no Docker socket at /var/run/docker.sock\n", "running",
 			"FAILED 4h ago (repositories backed up: demo) — the nightly backup job failed: no Docker socket at /var/run/docker.sock; docker logs kasbah-backup says why", 6},
-		{"overdue", "dir", "file", rec("state=running", "deadline=1999999000", "last_run_finished=1999983600", "last_run_status=ok"), "running", "✗ the backup scheduler on deploy@vps is 16m past its own deadline in state 'running' — a run that never returned, or a sleep that never woke, so nothing is being shipped off-box (the last run finished 4h ago)", 6},
-		{"stopped scheduler is asked first", "dir", "file", ok, "exited", "✗ the backup scheduler on deploy@vps is exited, so nothing is being shipped off-box — its record still reads 'ok', last run 4h ago", 6},
-		{"notours", "dir", "file", ok, "notours", "✗ the container named kasbah-backup on deploy@vps was not started as the kasbah-backup compose project from /apps/.kasbah/backup", 6},
-		{"nodaemon", "dir", "file", ok, "nodaemon", "⚠ the docker daemon on deploy@vps is not answering, so whether its backup scheduler is running cannot be read", 0},
-		{"nodocker", "dir", "file", ok, "nodocker", "⚠ there is no docker on deploy@vps, so whether its backup scheduler is running cannot be read — the record says 'ok'", 0},
+		{"overdue", "dir", "file", rec("state=running", "deadline=1999999000", "last_run_finished=1999983600", "last_run_status=ok"), "running", "✗ B01 the backup scheduler on deploy@vps is 16m past its own deadline in state 'running' — a run that never returned, or a sleep that never woke, so nothing is being shipped off-box (the last run finished 4h ago)", 6},
+		{"stopped scheduler is asked first", "dir", "file", ok, "exited", "✗ B01 the backup scheduler on deploy@vps is exited, so nothing is being shipped off-box — its record still reads 'ok', last run 4h ago", 6},
+		{"notours", "dir", "file", ok, "notours", "✗ B01 the container named kasbah-backup on deploy@vps was not started as the kasbah-backup compose project from /apps/.kasbah/backup", 6},
+		{"nodaemon", "dir", "file", ok, "nodaemon", "⚠ B01 the docker daemon on deploy@vps is not answering, so whether its backup scheduler is running cannot be read", 0},
+		{"nodocker", "dir", "file", ok, "nodocker", "⚠ B01 there is no docker on deploy@vps, so whether its backup scheduler is running cannot be read — the record says 'ok'", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srvProject(t, "")
@@ -796,9 +796,9 @@ func TestServerB01(t *testing.T) {
 			Projects: []backuprec.Project{{Name: "demo"}, {Name: "shop", Client: "acme"}, {Name: "blog", Client: "acme"}, {Name: "x", Client: "?"}}}
 		out, _ := s.run()
 		contains(t, out,
-			"⚠ backup repositories on deploy@vps with no password: acme x mail — a repository with no password is not backed up at all",
-			"⚠ backup repository passwords on deploy@vps that no project files into any more: gone — the last project of that client was dropped",
-			"✓ the last backup on deploy@vps finished 4h ago and succeeded")
+			"⚠ B01 backup repositories on deploy@vps with no password: acme x mail — a repository with no password is not backed up at all",
+			"⚠ B01 backup repository passwords on deploy@vps that no project files into any more: gone — the last project of that client was dropped",
+			"✓ B01 the last backup on deploy@vps finished 4h ago and succeeded")
 	})
 }
 
@@ -993,9 +993,9 @@ func TestServerT04T10(t *testing.T) {
 		name, frag, static, want, not string
 		code                          int
 	}{
-		{"declared DNS resolver", wild("cloudflare"), static, "✓ Secure routers name a cert resolver", "Routers name a cert resolver", 0},
-		{"undeclared resolver", wild("ovh"), static, "✗ Routers name a cert resolver deploy@vps does not declare: demo→ovh", "wildcard certificate from a resolver", 6},
-		{"declared without dnsChallenge", wild("plain"), static, "✗ Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): demo→plain (*.demo.example.com)", "does not declare", 6},
+		{"declared DNS resolver", wild("cloudflare"), static, "✓ T04 Secure routers name a cert resolver", "Routers name a cert resolver", 0},
+		{"undeclared resolver", wild("ovh"), static, "✗ T04 Routers name a cert resolver deploy@vps does not declare: demo→ovh", "wildcard certificate from a resolver", 6},
+		{"declared without dnsChallenge", wild("plain"), static, "✗ T10 Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): demo→plain (*.demo.example.com)", "does not declare", 6},
 		{"a Host() wildcard on http", strings.Replace(goodFragment, "demo: {rule: \"Host(`demo.example.com`)", "demo: {rule: \"Host(`*.demo.example.com`)", 1), static, "demo→http (*.demo.example.com)", "does not declare", 6},
 		{"unreadable traefik.yml warns", wild("cloudflare"), "{nope", "traefik.yml on deploy@vps could not be read, so whether it declares them is unknown", "does not declare", 0},
 	} {
@@ -1070,9 +1070,9 @@ func TestServerB02(t *testing.T) {
 			t.Errorf("B02 failed the run, exit %d:\n%s", code, out)
 		}
 		contains(t, out,
-			"  ⚠ demo on deploy@vps holds 3 leftover(s) a deploy or rollback did not finish with — a backup directory whose tarball was never written, a snapshot a backup could not take in, or a killed rollback's extraction — and each may hold a copy of .env; inspect each, then remove it by hand:\n"+
+			"  ⚠ B02 demo on deploy@vps holds 3 leftover(s) a deploy or rollback did not finish with — a backup directory whose tarball was never written, a snapshot a backup could not take in, or a killed rollback's extraction — and each may hold a copy of .env; inspect each, then remove it by hand:\n"+
 				"      /apps/demo/backups/1.2.0-20261102-100000\n      /apps/demo/.kasbah-prev.kept-1.1.0-20261101-090000\n      /apps/demo/.kasbah-unpacked.4242\n",
-			"  ⚠ blog on deploy@vps holds 22 leftover(s)",
+			"  ⚠ B02 blog on deploy@vps holds 22 leftover(s)",
 			"      /apps/blog/backups/1.0.19-20261102-100019\n      and 2 more\n")
 		hasNot(t, out, "1.0.20-", "empty on deploy@vps", "holds the lock")
 	})
@@ -1090,11 +1090,11 @@ func TestServerB02(t *testing.T) {
 			t.Errorf("exit %d:\n%s", code, out)
 		}
 		contains(t, out,
-			"  ⚠ demo on deploy@vps: a run holds the lock now (a deploy or rollback by alice (pid 4242)); a backup directory or extraction may be its own — each may hold a copy of .env:\n"+
+			"  ⚠ B02 demo on deploy@vps: a run holds the lock now (a deploy or rollback by alice (pid 4242)); a backup directory or extraction may be its own — each may hold a copy of .env:\n"+
 				"      /apps/demo/backups/1.2.0-20261102-100000\n      /apps/demo/.kasbah-unpacked.77\n"+
-				"  ⚠ demo on deploy@vps holds 1 leftover(s) a deploy or rollback did not finish with",
+				"  ⚠ B02 demo on deploy@vps holds 1 leftover(s) a deploy or rollback did not finish with",
 			"inspect each, then remove it by hand:\n      /apps/demo/.kasbah-prev.kept-1.1.0-20261101-090000\n",
-			"  ⚠ blog on deploy@vps: a run holds the lock now (a deploy or rollback by bob (pid 9))")
+			"  ⚠ B02 blog on deploy@vps: a run holds the lock now (a deploy or rollback by bob (pid 9))")
 		hasNot(t, out, "blog on deploy@vps holds")
 	})
 	t.Run("cannot be checked", func(t *testing.T) {
@@ -1102,7 +1102,7 @@ func TestServerB02(t *testing.T) {
 		s := newSrv(t)
 		s.r.Leftovers = []ProjectLeftovers{{Name: "demo", Leftovers: deploy.Leftovers{Error: "backups/ could not be listed: permission denied"}}}
 		out, code := s.run()
-		contains(t, out, "  ⚠ whether demo on deploy@vps holds a leftover that may hold a copy of .env cannot be checked: backups/ could not be listed: permission denied\n")
+		contains(t, out, "  ⚠ B02 whether demo on deploy@vps holds a leftover that may hold a copy of .env cannot be checked: backups/ could not be listed: permission denied\n")
 		hasNot(t, out, "leftover(s)", "✓ demo")
 		if code != 0 {
 			t.Errorf("exit %d", code)
@@ -1144,24 +1144,24 @@ func TestServerOutsiders(t *testing.T) {
 		want, not []string
 		code      int
 	}{
-		{"", nil, "", []string{"  ✓ no container outside /apps/demo on deploy@vps publishes a port it publishes or runs under its compose project name"}, nil, 0},
+		{"", nil, "", []string{"  ✓ C12,C13 no container outside /apps/demo on deploy@vps publishes a port it publishes or runs under its compose project name"}, nil, 0},
 		{"", []deploy.Holder{dns, other}, "", []string{
-			"  ✗ on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp, which service demo-web of this project publishes too — stop or move that container, or change the port demo-web publishes — a deploy refuses this",
-			"  ✗ on deploy@vps, container dns (not a compose container) publishes 5353/udp, which service demo-web of this project publishes too"}, nil, 6},
-		{"WEB_PORT=8081\n", []deploy.Holder{other}, "", []string{"  ✓ no container outside"}, nil, 0},
+			"  ✗ C12 on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp, which service demo-web of this project publishes too — stop or move that container, or change the port demo-web publishes — a deploy refuses this",
+			"  ✗ C12 on deploy@vps, container dns (not a compose container) publishes 5353/udp, which service demo-web of this project publishes too"}, nil, 6},
+		{"WEB_PORT=8081\n", []deploy.Holder{other}, "", []string{"  ✓ C12,C13 no container outside"}, nil, 0},
 		// The .env as compose reads it: an inline comment and quotes are not the value.
-		{"WEB_PORT=8080 # dev\n", []deploy.Holder{other}, "", []string{"  ✗ on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
-		{"WEB_PORT=\"8080\"\n", []deploy.Holder{other}, "", []string{"  ✗ on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
-		{"WEB_PORT=${OTHER:-8081}\n", []deploy.Holder{other}, "", []string{"  ✓ no container outside"}, nil, 0},
+		{"WEB_PORT=8080 # dev\n", []deploy.Holder{other}, "", []string{"  ✗ C12 on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
+		{"WEB_PORT=\"8080\"\n", []deploy.Holder{other}, "", []string{"  ✗ C12 on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
+		{"WEB_PORT=${OTHER:-8081}\n", []deploy.Holder{other}, "", []string{"  ✓ C12,C13 no container outside"}, nil, 0},
 		// `KEY = v` and `KEY: v` set the port, as compose reads them.
-		{"WEB_PORT = 8080\n", []deploy.Holder{other}, "", []string{"  ✗ on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
-		{"\u00a0\nWEB_PORT: 8080 # dev\n", []deploy.Holder{other}, "", []string{"  ✗ on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
+		{"WEB_PORT = 8080\n", []deploy.Holder{other}, "", []string{"  ✗ C12 on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
+		{"\u00a0\nWEB_PORT: 8080 # dev\n", []deploy.Holder{other}, "", []string{"  ✗ C12 on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
 		// A key compose would take with other characters: unread, so the port cannot pass on its default.
-		{"WEB.PORT=1\n", []deploy.Holder{other}, "", []string{"cannot be checked: the server's .env has a line kasbah cannot read as compose does: line 4 is not an assignment kasbah reads"}, []string{"✓ no container outside"}, 0},
+		{"WEB.PORT=1\n", []deploy.Holder{other}, "", []string{"cannot be checked: the server's .env has a line kasbah cannot read as compose does: line 4 is not an assignment kasbah reads"}, []string{"✓ C12,C13 no container outside"}, 0},
 		{"", []deploy.Holder{named}, "", []string{
-			"  ✗ on deploy@vps, a compose project named demo already exists outside /apps/demo: demo-web-1, started from /home/u/demo (/home/u/demo/compose.yml) — Docker keys compose projects by name, so this project's up would take its containers for its own; run `docker compose -p demo down` in /home/u/demo, or rename this project — a deploy refuses this"}, nil, 6},
+			"  ✗ C13 on deploy@vps, a compose project named demo already exists outside /apps/demo: demo-web-1, started from /home/u/demo (/home/u/demo/compose.yml) — Docker keys compose projects by name, so this project's up would take its containers for its own; run `docker compose -p demo down` in /home/u/demo, or rename this project — a deploy refuses this"}, nil, 6},
 		{"", nil, "there is no docker on the server", []string{
-			"  ⚠ whether a container outside /apps/demo on deploy@vps publishes a port it publishes, or runs under its compose project name, cannot be checked: there is no docker on the server"}, []string{"✓ no container outside"}, 0},
+			"  ⚠ C12,C13 whether a container outside /apps/demo on deploy@vps publishes a port it publishes, or runs under its compose project name, cannot be checked: there is no docker on the server"}, []string{"✓ C12,C13 no container outside"}, 0},
 	} {
 		srvProject(t, "")
 		os.WriteFile(composeFile, []byte(ports), 0o644)
@@ -1194,18 +1194,18 @@ func TestServerOutsidersPorts(t *testing.T) {
 		want, not []string
 	}{
 		{"B=9000\nC=9001\nD=1\n", held(9000, 7000, 18000), []string{
-			"  ✗ on deploy@vps, container h9000 (not a compose container) publishes 9000/tcp, which service demo-web",
-			"  ✗ on deploy@vps, container h7000 (not a compose container) publishes 7000/tcp",
-			"  ⚠ whether a container outside /apps/demo on deploy@vps publishes service demo-web's port \"$$x:84\" cannot be checked: \"$x\" is not a host port or range"},
-			[]string{"h18000", "✓ no container outside"}},
+			"  ✗ C12 on deploy@vps, container h9000 (not a compose container) publishes 9000/tcp, which service demo-web",
+			"  ✗ C12 on deploy@vps, container h7000 (not a compose container) publishes 7000/tcp",
+			"  ⚠ C12 whether a container outside /apps/demo on deploy@vps publishes service demo-web's port \"$$x:84\" cannot be checked: \"$x\" is not a host port or range"},
+			[]string{"h18000", "✓ C12,C13 no container outside"}},
 		{"B=9000\n", held(18000, 18001), []string{
-			"  ⚠ whether a container outside /apps/demo on deploy@vps publishes service demo-web's port \"${C:?set C}:81\" cannot be checked: required variable C is missing a value: set C",
+			"  ⚠ C12 whether a container outside /apps/demo on deploy@vps publishes service demo-web's port \"${C:?set C}:81\" cannot be checked: required variable C is missing a value: set C",
 			"every port of 18000-18001/tcp, the range service demo-web of this project publishes one port from, is taken: container h18000 (not a compose container) publishes 18000/tcp, container h18001 (not a compose container) publishes 18001/tcp"},
-			[]string{"✓ no container outside", "h9000"}},
+			[]string{"✓ C12,C13 no container outside", "h9000"}},
 		{"B='unclosed\n", nil, []string{
-			"  ⚠ whether a container outside /apps/demo on deploy@vps publishes service demo-web's port \"${A:-${B}}:80\" cannot be checked: the server's .env has a line kasbah cannot read as compose does: line 4 (B): the single quote is not closed",
+			"  ⚠ C12 whether a container outside /apps/demo on deploy@vps publishes service demo-web's port \"${A:-${B}}:80\" cannot be checked: the server's .env has a line kasbah cannot read as compose does: line 4 (B): the single quote is not closed",
 			"service demo-web's port \"$$x:84\" cannot be checked: \"$x\" is not a host port or range"},
-			[]string{"✓ no container outside"}},
+			[]string{"✓ C12,C13 no container outside"}},
 	} {
 		srvProject(t, "")
 		os.WriteFile(composeFile, []byte(ports), 0o644)

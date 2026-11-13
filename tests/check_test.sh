@@ -93,40 +93,40 @@ proj1="$tmpdir/ok"
 make_project "$proj1"
 out="$(cd "$proj1" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                       "golden path exits 0 (got $rc)"
-assert 'grep -qF "✓ kasbah.yml exists (schema 1)" <<<"$out"'  "S01/S02 pass line"
-assert 'grep -qF "✓ compose.prod.yml exists" <<<"$out"'        "S03 pass line"
-assert 'grep -qF "✓ .env.prod.example exists" <<<"$out"'       "S04 pass line"
-assert 'grep -qF "✓ .gitignore excludes .env" <<<"$out"'       "S05 pass line"
-assert 'grep -qF "✓ .gitignore excludes .kasbah/" <<<"$out"'  "S06 pass line"
-assert 'grep -qF "✓ client is not set — backups file under the project name (demo)" <<<"$out"' "S08 pass line"
-assert 'grep -qF "✓ All services set restart policy" <<<"$out"'                 "C01 pass line"
-assert 'grep -qF "✓ All services set json-file logging with rotation" <<<"$out"' "C02 pass line"
-assert 'grep -qF "✓ All routed services join the project'"'"'s kasbah network" <<<"$out"' "C03 pass line"
-assert 'grep -qF "✓ The kasbah network is the project'"'"'s own (demo_kasbah)" <<<"$out"'  "C04 pass line"
-assert 'grep -qF "✓ No internal services on the kasbah network or kasbah-net" <<<"$out"' "C07 pass line"
+assert 'grep -qF "✓ S01,S02 kasbah.yml exists (schema 1)" <<<"$out"'  "S01/S02 pass line"
+assert 'grep -qF "✓ S03 compose.prod.yml exists" <<<"$out"'        "S03 pass line"
+assert 'grep -qF "✓ S04 .env.prod.example exists" <<<"$out"'       "S04 pass line"
+assert 'grep -qF "✓ S05 .gitignore excludes .env" <<<"$out"'       "S05 pass line"
+assert 'grep -qF "✓ S06 .gitignore excludes .kasbah/" <<<"$out"'  "S06 pass line"
+assert 'grep -qF "✓ S08 client is not set — backups file under the project name (demo)" <<<"$out"' "S08 pass line"
+assert 'grep -qF "✓ C01 All services set restart policy" <<<"$out"'                 "C01 pass line"
+assert 'grep -qF "✓ C02 All services set json-file logging with rotation" <<<"$out"' "C02 pass line"
+assert 'grep -qF "✓ C03 All routed services join the project'"'"'s kasbah network" <<<"$out"' "C03 pass line"
+assert 'grep -qF "✓ C04 The kasbah network is the project'"'"'s own (demo_kasbah)" <<<"$out"'  "C04 pass line"
+assert 'grep -qF "✓ C07 No internal services on the kasbah network or kasbah-net" <<<"$out"' "C07 pass line"
 assert '! grep -qF "kasbah-net service names" <<<"$out"'                       "C09'"'"'s kasbah-net warn is silent with nothing on kasbah-net"
-assert 'grep -qF "✓ Names on the kasbah network are project-prefixed" <<<"$out"' "and C09 passes the names on the project'"'"'s kasbah network"
-assert 'grep -qF "✓ No deprecated '"'"'version:'"'"' field" <<<"$out"'          "C05 pass line"
-assert 'grep -qF "✓ No service publishes host port 80 or 443" <<<"$out"'           "C14 pass line"
-assert 'grep -qF "✓ All services set cpus/mem_limit via KASBAH_* vars" <<<"$out"'  "R01/R02 pass line"
-assert 'grep -qF "✓ No resource reservations" <<<"$out"'                            "R03 pass line"
-assert 'grep -qF "✓ compose.prod.yml has no traefik.* labels" <<<"$out"'                       "T06 pass line"
-assert 'grep -qF "✓ traefik-dynamic.yml exists" <<<"$out"'                                     "T01 pass line"
-assert 'grep -qF "✓ At least one router references manifest domain (demo.example.com)" <<<"$out"' "T02 pass line"
-assert 'grep -qF "✓ All routers declare entryPoints" <<<"$out"'                                "T03 pass line"
-assert 'grep -qF "✓ Secure routers name a cert resolver" <<<"$out"'             "T04 pass line"
-assert 'grep -qF "✓ A router serves demo.example.com on the web entrypoint" <<<"$out"'         "T08 pass line"
-assert 'grep -qF "✓ No router claims reserved hostnames" <<<"$out"'                            "T05 pass line"
-assert 'grep -qF "✓ No router or service reaches a Traefik internal service other than noop@internal" <<<"$out"' "T09 pass line"
-assert 'grep -qF "✓ Fragment loadBalancer URLs target a service, alias or container_name compose defines" <<<"$out"'     "T07 pass line"
-assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'                              "E01 pass line"
-assert 'grep -qF "✓ .env.prod.example has no obvious long secrets" <<<"$out"'                  "E04 pass line"
-assert 'grep -qF "✓ .env.prod.example leaves the KASBAH_* prefix to kasbah" <<<"$out"'       "E05 pass line"
+assert 'grep -qF "✓ C09 Names on the kasbah network are project-prefixed" <<<"$out"' "and C09 passes the names on the project'"'"'s kasbah network"
+assert 'grep -qF "✓ C05 No deprecated '"'"'version:'"'"' field" <<<"$out"'          "C05 pass line"
+assert 'grep -qF "✓ C14 No service publishes host port 80 or 443" <<<"$out"'           "C14 pass line"
+assert 'grep -qF "✓ R01,R02 All services set cpus/mem_limit via KASBAH_* vars" <<<"$out"'  "R01/R02 pass line"
+assert 'grep -qF "✓ R03 No resource reservations" <<<"$out"'                            "R03 pass line"
+assert 'grep -qF "✓ T06 compose.prod.yml has no traefik.* labels" <<<"$out"'                       "T06 pass line"
+assert 'grep -qF "✓ T01 traefik-dynamic.yml exists" <<<"$out"'                                     "T01 pass line"
+assert 'grep -qF "✓ T02 At least one router references manifest domain (demo.example.com)" <<<"$out"' "T02 pass line"
+assert 'grep -qF "✓ T03 All routers declare entryPoints" <<<"$out"'                                "T03 pass line"
+assert 'grep -qF "✓ T04 Secure routers name a cert resolver" <<<"$out"'             "T04 pass line"
+assert 'grep -qF "✓ T08 A router serves demo.example.com on the web entrypoint" <<<"$out"'         "T08 pass line"
+assert 'grep -qF "✓ T05 No router claims reserved hostnames" <<<"$out"'                            "T05 pass line"
+assert 'grep -qF "✓ T09 No router or service reaches a Traefik internal service other than noop@internal" <<<"$out"' "T09 pass line"
+assert 'grep -qF "✓ T07 Fragment loadBalancer URLs target a service, alias or container_name compose defines" <<<"$out"'     "T07 pass line"
+assert 'grep -qF "✓ E01 .env.prod.example syntax is valid" <<<"$out"'                              "E01 pass line"
+assert 'grep -qF "✓ E04 .env.prod.example has no obvious long secrets" <<<"$out"'                  "E04 pass line"
+assert 'grep -qF "✓ E05 .env.prod.example leaves the KASBAH_* prefix to kasbah" <<<"$out"'       "E05 pass line"
 assert '! grep -q "Healthchecks:" <<<"$out"'  "Healthchecks: header suppressed (nothing to check)"
 assert '! grep -q "Hooks:" <<<"$out"'         "Hooks: header suppressed (no hooks in manifest)"
 assert '! grep -qF "built services" <<<"$out"' \
     "C08 says nothing about a project that builds nothing — there is no :current to move"
-assert 'grep -qF "✓ All routed services can roll on deploy" <<<"$out"' "C11 pass line"
+assert 'grep -qF "✓ C11 All routed services can roll on deploy" <<<"$out"' "C11 pass line"
 assert 'grep -qF "30 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
 
 # --- Case 2: missing compose.prod.yml — fail, exit 6 -------------------------
@@ -136,7 +136,7 @@ make_project "$proj2"
 rm "$proj2/compose.prod.yml"
 out="$(cd "$proj2" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                "missing compose exits 6 (got $rc)"
-assert 'grep -qF "✗ compose.prod.yml missing" <<<"$out"' "S03 fail line"
+assert 'grep -qF "✗ S03 compose.prod.yml missing" <<<"$out"' "S03 fail line"
 assert 'grep -qF "1 failed" <<<"$out"'                  "summary reports 1 failed"
 
 # --- Case 3: missing .env.prod.example — fail, exit 6 ------------------------
@@ -145,7 +145,7 @@ make_project "$proj3"
 rm "$proj3/.env.prod.example"
 out="$(cd "$proj3" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                  "missing env example exits 6 (got $rc)"
-assert 'grep -qF "✗ .env.prod.example missing" <<<"$out"' "S04 fail line"
+assert 'grep -qF "✗ S04 .env.prod.example missing" <<<"$out"' "S04 fail line"
 
 # --- Case 4: missing .gitignore — warn for both S05 & S06, exit 0 ------------
 proj4="$tmpdir/no-gitignore"
@@ -153,8 +153,8 @@ make_project "$proj4"
 rm "$proj4/.gitignore"
 out="$(cd "$proj4" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                   "warnings only still exits 0 (got $rc)"
-assert 'grep -qF "⚠ .gitignore does not exclude .env" <<<"$out"'           "S05 warn line"
-assert 'grep -qF "⚠ .gitignore does not exclude .kasbah/" <<<"$out"'      "S06 warn line"
+assert 'grep -qF "⚠ S05 .gitignore does not exclude .env" <<<"$out"'           "S05 warn line"
+assert 'grep -qF "⚠ S06 .gitignore does not exclude .kasbah/" <<<"$out"'      "S06 warn line"
 assert 'grep -qF "2 warning, 0 failed" <<<"$out"'                          "summary reports 2 warnings"
 
 # --- Case 5: partial .gitignore (missing only .kasbah/) — one warn ----------
@@ -164,8 +164,8 @@ make_project "$proj5"
 printf '.env\n' > "$proj5/.gitignore"
 out="$(cd "$proj5" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                              "partial gitignore exits 0"
-assert 'grep -qF "✓ .gitignore excludes .env" <<<"$out"'              "S05 still passes"
-assert 'grep -qF "⚠ .gitignore does not exclude .kasbah/" <<<"$out"' "S06 warns"
+assert 'grep -qF "✓ S05 .gitignore excludes .env" <<<"$out"'              "S05 still passes"
+assert 'grep -qF "⚠ S06 .gitignore does not exclude .kasbah/" <<<"$out"' "S06 warns"
 assert 'grep -qF "1 warning, 0 failed" <<<"$out"'                     "summary reports 1 warning"
 
 # --- Case 6: no kasbah.yml — exit 2 (the manifest reader's contract) -------------
@@ -219,7 +219,7 @@ make_project "$proj9b"
 printf 'client: Acme Corp\n' >> "$proj9b/kasbah.yml"
 out="$(cd "$proj9b" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "S08: a client: outside the charset fails the check (got $rc)"
-assert 'grep -qF "✗ kasbah.yml: client '"'"'Acme Corp'"'"' must match" <<<"$out"' \
+assert 'grep -qF "✗ S08 kasbah.yml: client '"'"'Acme Corp'"'"' must match" <<<"$out"' \
     "naming the value and the rule (said '$out')"
 # The deploy refuses it in the same words, out of the same
 # `manifest_client_check` — pinned in tests/rollback_test.sh, which has the git
@@ -233,7 +233,7 @@ make_project "$proj9c"
 printf 'client: mail\n' >> "$proj9c/kasbah.yml"
 out="$(cd "$proj9c" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "S08: a client: naming a kasbah directory fails too (got $rc)"
-assert 'grep -qF "✗ kasbah.yml: client '"'"'mail'"'"' is reserved" <<<"$out"' \
+assert 'grep -qF "✗ S08 kasbah.yml: client '"'"'mail'"'"' is reserved" <<<"$out"' \
     "and says which list it is on (said '$out')"
 
 # The positive, so the two above are the rule and not a check that fails on any
@@ -243,7 +243,7 @@ make_project "$proj9d"
 printf 'client: acme\n' >> "$proj9d/kasbah.yml"
 out="$(cd "$proj9d" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "S08: a well-formed client: passes (got $rc: $out)"
-assert 'grep -qF "✓ client '"'"'acme'"'"' names a backup repository kasbah can create" <<<"$out"' \
+assert 'grep -qF "✓ S08 client '"'"'acme'"'"' names a backup repository kasbah can create" <<<"$out"' \
     "and says which repository it is (said '$out')"
 
 # --- Case 9e: R05 — kasbah.yml's resources: --------------------------------
@@ -255,7 +255,7 @@ make_project "$proj9e"
 printf 'resources:\n  cpus: 50%%\n  memory: 512\n' >> "$proj9e/kasbah.yml"
 out="$(cd "$proj9e" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "R05: a bare resources.memory fails the check (got $rc)"
-assert 'grep -qF "✗ kasbah.yml: resources.memory '"'"'512'"'"' has no unit" <<<"$out" && grep -qF "m, g or %" <<<"$out"' \
+assert 'grep -qF "✗ R05 kasbah.yml: resources.memory '"'"'512'"'"' has no unit" <<<"$out" && grep -qF "m, g or %" <<<"$out"' \
     "naming the value and the three units (said '$out')"
 
 proj9f="$tmpdir/good-resources"
@@ -263,7 +263,7 @@ make_project "$proj9f"
 printf 'resources:\r\n  cpus: 1.5\r\n  memory: 2g\r\n' >> "$proj9f/kasbah.yml"
 out="$(cd "$proj9f" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "R05: a well-formed resources: passes, CRLF and all (got $rc: $out)"
-assert 'grep -qF "✓ resources: cpus 1.5, memory 2g" <<<"$out"' "and names what it sets (said '$out')"
+assert 'grep -qF "✓ R05 resources: cpus 1.5, memory 2g" <<<"$out"' "and names what it sets (said '$out')"
 out="$(cd "$proj9d" && "$kasbah" check 2>&1)"
 assert '! grep -qF "resources:" <<<"$out"' "R05 is silent on a project without resources: (said '$out')"
 
@@ -289,8 +289,8 @@ make_project "$proj12"
 printf '.env\r\n.kasbah/\r\n' > "$proj12/.gitignore"
 out="$(cd "$proj12" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                       "CRLF gitignore exits 0 (got $rc)"
-assert 'grep -qF "✓ .gitignore excludes .env" <<<"$out"'       "S05 passes despite CRLF"
-assert 'grep -qF "✓ .gitignore excludes .kasbah/" <<<"$out"'  "S06 passes despite CRLF"
+assert 'grep -qF "✓ S05 .gitignore excludes .env" <<<"$out"'       "S05 passes despite CRLF"
+assert 'grep -qF "✓ S06 .gitignore excludes .kasbah/" <<<"$out"'  "S06 passes despite CRLF"
 
 # --- Case 13: C01 — service missing restart policy → fail, exit 6 -----------
 proj13="$tmpdir/no-restart"
@@ -311,7 +311,7 @@ networks:
 YAML
 out="$(cd "$proj13" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                            "C01 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Services missing restart policy: demo-web" <<<"$out"' "C01 fail line names service"
+assert 'grep -qF "✗ C01 Services missing restart policy: demo-web" <<<"$out"' "C01 fail line names service"
 
 # --- Case 14: C02 — service missing logging rotation → fail, exit 6 ---------
 proj14="$tmpdir/no-logging"
@@ -328,7 +328,7 @@ networks:
 YAML
 out="$(cd "$proj14" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                    "C02 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Services missing json-file logging with max-size/max-file: demo-web" <<<"$out"' "C02 fail line"
+assert 'grep -qF "✗ C02 Services missing json-file logging with max-size/max-file: demo-web" <<<"$out"' "C02 fail line"
 
 # --- Case 15: C03 — routed service not on kasbah-net → fail, exit 6 --------
 # Fragment targets demo-web (routed), but the service joins no network.
@@ -350,8 +350,8 @@ services:
 YAML
 out="$(cd "$proj15" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                "C03 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Routed services on neither the project'"'"'s kasbah network nor kasbah-net: demo-web" <<<"$out"' "C03 fail line"
-assert 'grep -qF "✓ No internal services on the kasbah network or kasbah-net" <<<"$out"'     "C07 still passes"
+assert 'grep -qF "✗ C03 Routed services on neither the project'"'"'s kasbah network nor kasbah-net: demo-web" <<<"$out"' "C03 fail line"
+assert 'grep -qF "✓ C07 No internal services on the kasbah network or kasbah-net" <<<"$out"'     "C07 still passes"
 
 # --- Case 16: C04 — kasbah-net referenced but not external → fail, exit 6 --
 proj16="$tmpdir/kasbahnet-not-external"
@@ -376,8 +376,8 @@ networks:
 YAML
 out="$(cd "$proj16" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                  "C04 fail exits 6 (got $rc)"
-assert 'grep -qF "✓ All routed services join kasbah-net" <<<"$out"'      "C03 still passes"
-assert 'grep -qF "✗ kasbah-net not declared external: true" <<<"$out"'   "C04 fail line"
+assert 'grep -qF "✓ C03 All routed services join kasbah-net" <<<"$out"'      "C03 still passes"
+assert 'grep -qF "✗ C04 kasbah-net not declared external: true" <<<"$out"'   "C04 fail line"
 
 # --- Case 16b: C09 — a generic service name on kasbah-net → warn ------------
 # The routed service is called `web`, which is what compose publishes as a DNS
@@ -408,13 +408,13 @@ networks:
 YAML
 out="$(cd "$proj16b" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                        "C09 is a warning, so exit stays 0 (got $rc)"
-assert 'grep -qF "⚠ Services on kasbah-net whose name is not '"'"'demo'"'"' or '"'"'demo-*'"'"': web" <<<"$out"' \
+assert 'grep -qF "⚠ C09 Services on kasbah-net whose name is not '"'"'demo'"'"' or '"'"'demo-*'"'"': web" <<<"$out"' \
        "C09 warn line names the service, not the container (said '$out')"
-assert 'grep -qF "✓ All routed services join kasbah-net" <<<"$out"'            "and C03 is untouched by it"
-assert 'grep -qF "✓ No internal services on the kasbah network or kasbah-net" <<<"$out"'             "as is C07"
-assert 'grep -qF "⚠ Routed through the shared kasbah-net: web — every project'"'"'s routed containers reach each other there; move them to a project network under the key kasbah (docs/traefik.md → Network)" <<<"$out"' \
+assert 'grep -qF "✓ C03 All routed services join kasbah-net" <<<"$out"'            "and C03 is untouched by it"
+assert 'grep -qF "✓ C07 No internal services on the kasbah network or kasbah-net" <<<"$out"'             "as is C07"
+assert 'grep -qF "⚠ C03 Routed through the shared kasbah-net: web — every project'"'"'s routed containers reach each other there; move them to a project network under the key kasbah (docs/traefik.md → Network)" <<<"$out"' \
        "and, routed through the shared kasbah-net, it is warned to move (C03)"
-assert 'grep -qF "⚠ web will not roll on deploy — the fragment targets its container_name, so it is recreated in place, briefly unrouted" <<<"$out"' \
+assert 'grep -qF "⚠ C11 web will not roll on deploy — the fragment targets its container_name, so it is recreated in place, briefly unrouted" <<<"$out"' \
        "and, routed by container_name, it is told it will not roll (C11)"
 assert 'grep -qF "28 passed, 3 warning, 0 failed" <<<"$out"'                    "one line either way (said '$(tail -1 <<<"$out")')"
 
@@ -426,22 +426,22 @@ make_project "$proj16c"
 sed -i 's/^    restart: unless-stopped$/    container_name: demo-web-1\n&/' "$proj16c/compose.prod.yml"
 out="$(cd "$proj16c" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "C11 is a warning, so exit stays 0 (got $rc)"
-assert 'grep -qF "⚠ demo-web will not roll on deploy — it sets container_name, so it is recreated in place, briefly unrouted" <<<"$out"' \
+assert 'grep -qF "⚠ C11 demo-web will not roll on deploy — it sets container_name, so it is recreated in place, briefly unrouted" <<<"$out"' \
        "a container_name stops the roll even when the fragment targets the service (said '$out')"
 assert '! grep -qF "can roll on deploy" <<<"$out"' "and C11 prints no pass line beside it"
 assert 'grep -qF "29 passed, 1 warning, 0 failed" <<<"$out"' "the warn replaces the pass line (said '$(tail -1 <<<"$out")')"
 sed -i '/^    container_name: demo-web-1$/d; s/^    restart: unless-stopped$/    ports: ["8080:80"]\n&/' "$proj16c/compose.prod.yml"
 out="$(cd "$proj16c" && "$kasbah" check 2>&1)"
-assert 'grep -qF "⚠ demo-web will not roll on deploy — it publishes a host port a second replica cannot bind, so it is recreated in place, briefly unrouted" <<<"$out"' \
+assert 'grep -qF "⚠ C11 demo-web will not roll on deploy — it publishes a host port a second replica cannot bind, so it is recreated in place, briefly unrouted" <<<"$out"' \
        "a published host port stops the roll (said '$out')"
 sed -i 's/^    ports: \["8080:80"\]$/    ports: ["80"]/' "$proj16c/compose.prod.yml"
 out="$(cd "$proj16c" && "$kasbah" check 2>&1)"
-assert 'grep -qF "✓ All routed services can roll on deploy" <<<"$out"' \
+assert 'grep -qF "✓ C11 All routed services can roll on deploy" <<<"$out"' \
        "a container port with no host side binds nothing a second replica would clash on (said '$out')"
 sed -i '/^    healthcheck:$/,/^      test:/d' "$proj16c/compose.prod.yml"
 out="$(cd "$proj16c" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "no compose healthcheck is a warning too (got $rc)"
-assert 'grep -qF "⚠ demo-web rolls on deploy only if its image declares a HEALTHCHECK — compose gives it none, and without one it is recreated in place, briefly unrouted" <<<"$out"' \
+assert 'grep -qF "⚠ C11 demo-web rolls on deploy only if its image declares a HEALTHCHECK — compose gives it none, and without one it is recreated in place, briefly unrouted" <<<"$out"' \
        "with no compose healthcheck, rolling is the image's to decide (said '$out')"
 out="$(cd "$proj16c" && "$kasbah" check --fix --yes 2>&1)"
 assert 'grep -qF "nothing --fix can change" <<<"$out"' "and --fix leaves C11 alone (said '$out')"
@@ -484,7 +484,7 @@ networks:
 YAML
 out="$(cd "$proj16c" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                        "the bare project name and an off-net service exit 0 (got $rc)"
-assert 'grep -qF "✓ kasbah-net service names are project-prefixed" <<<"$out"'  "and C09 passes (said '$out')"
+assert 'grep -qF "✓ C09 kasbah-net service names are project-prefixed" <<<"$out"'  "and C09 passes (said '$out')"
 
 # --- Case 16d: C09 says nothing when it has nothing to say ------------------
 # Two silences, both deliberate and both documented in compliance.md's C09 row,
@@ -517,7 +517,7 @@ out="$(cd "$proj16d" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                          "a project with nothing on kasbah-net exits 0 (got $rc)"
 assert '! grep -qE "kasbah-net service names|whose name is not" <<<"$out"' \
        "and C09 emits no line either way — neither its pass nor its warn (said '$out')"
-assert 'grep -qF "✓ No internal services on the kasbah network or kasbah-net" <<<"$out"' \
+assert 'grep -qF "✓ C07 No internal services on the kasbah network or kasbah-net" <<<"$out"' \
        "while C07, which does report on the empty case, still speaks (said '$out')"
 
 # Second: the banned default-alias shape. C07 has just failed on the shape
@@ -558,7 +558,7 @@ networks:
 YAML
 out="$(cd "$proj16e" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                     "the default-alias shape still fails on C07 (got $rc)"
-assert 'grep -qF "✗ default network aliases kasbah-net" <<<"$out"'          "C07 reports the shape (said '$out')"
+assert 'grep -qF "✗ C07 default network aliases kasbah-net" <<<"$out"'          "C07 reports the shape (said '$out')"
 assert '! grep -qE "kasbah-net service names|whose name is not" <<<"$out"' \
        "and C09 emits neither of its two lines, so it does not name the same services a second time (said '$out')"
 assert '[ "$(grep -cF "Non-routed services on kasbah-net" <<<"$out")" = "0" ]' \
@@ -589,7 +589,7 @@ networks:
 YAML
 out="$(cd "$proj17" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                                "C05 warn exits 0 (got $rc)"
-assert 'grep -qF "⚠ compose.prod.yml uses deprecated '"'"'version:'"'"' field" <<<"$out"' "C05 warn line"
+assert 'grep -qF "⚠ C05 compose.prod.yml uses deprecated '"'"'version:'"'"' field" <<<"$out"' "C05 warn line"
 
 # --- Case 18: no services → pass for services: {}, warn for an empty file ---
 # `services: {}` is a redirect-only project's shape: one pass line, then C05.
@@ -600,7 +600,7 @@ printf 'services: {}\n' > "$proj18/compose.prod.yml"
 out="$(cd "$proj18" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                                       "services: {} exits 0 (got $rc)"
 assert 'grep -qF "✓ compose.prod.yml declares no services — a redirect-only project; Compose checks skipped" <<<"$out"' "no-services pass line"
-assert 'grep -qF "✓ No deprecated '"'"'version:'"'"' field" <<<"$out"'                          "C05 still runs"
+assert 'grep -qF "✓ C05 No deprecated '"'"'version:'"'"' field" <<<"$out"'                          "C05 still runs"
 : > "$proj18/compose.prod.yml"
 out="$(cd "$proj18" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                                       "empty compose exits 0 (got $rc)"
@@ -631,9 +631,9 @@ services:
 YAML
 out="$(cd "$proj19" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                      "T01 missing exits 0 (got $rc)"
-assert 'grep -qF "⚠ traefik-dynamic.yml missing" <<<"$out"'                   "T01 warn line"
+assert 'grep -qF "⚠ T01 traefik-dynamic.yml missing" <<<"$out"'                   "T01 warn line"
 assert '! grep -qF "At least one router references manifest domain" <<<"$out"' "T02 skipped when fragment missing"
-assert 'grep -qF "✓ compose.prod.yml has no traefik.* labels" <<<"$out"'       "T06 still runs"
+assert 'grep -qF "✓ T06 compose.prod.yml has no traefik.* labels" <<<"$out"'       "T06 still runs"
 
 # --- Case 20: T02 — router doesn't reference manifest domain → fail ----------
 proj20="$tmpdir/wrong-domain"
@@ -650,7 +650,7 @@ http:
 YAML
 out="$(cd "$proj20" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                  "T02 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ No router rule references manifest domain (demo.example.com)" <<<"$out"' "T02 fail line"
+assert 'grep -qF "✗ T02 No router rule references manifest domain (demo.example.com)" <<<"$out"' "T02 fail line"
 
 # --- Case 21: T03 — router missing entryPoints → fail ------------------------
 proj21="$tmpdir/no-entrypoints"
@@ -664,7 +664,7 @@ http:
 YAML
 out="$(cd "$proj21" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                          "T03 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Routers without entryPoints: demo" <<<"$out"' "T03 fail line"
+assert 'grep -qF "✗ T03 Routers without entryPoints: demo" <<<"$out"' "T03 fail line"
 
 # --- Case 22: T04 — websecure without a cert resolver → fail ----------------
 proj22="$tmpdir/no-cert-resolver"
@@ -679,7 +679,7 @@ http:
 YAML
 out="$(cd "$proj22" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                       "T04 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Websecure routers without tls.certResolver: demo" <<<"$out"'               "T04 fail line"
+assert 'grep -qF "✗ T04 Websecure routers without tls.certResolver: demo" <<<"$out"'               "T04 fail line"
 assert '! grep -qF "renamed" <<<"$out"'                                                        "T04 fail line does not name the rename"
 
 # --- Case 22b: T04 — the resolver's former name → fail naming the rename -----
@@ -703,8 +703,8 @@ http:
 YAML
 out="$(cd "$proj22b" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                       "T04 legacy name exits 6 (got $rc)"
-assert 'grep -qF "✗ certResolver letsencrypt was renamed to http — set tls.certResolver: http on: demo" <<<"$out"' "T04 legacy-name line"
-assert 'grep -qF "⚠ Routers name a cert resolver other than http: other→acme — only \`check --server\` can verify the server declares them" <<<"$out"' \
+assert 'grep -qF "✗ T04 certResolver letsencrypt was renamed to http — set tls.certResolver: http on: demo" <<<"$out"' "T04 legacy-name line"
+assert 'grep -qF "⚠ T04 Routers name a cert resolver other than http: other→acme — only \`check --server\` can verify the server declares them" <<<"$out"' \
     "T04 another name warns that only --server can verify it"
 assert '! grep -qF "Secure routers name a cert resolver" <<<"$out"'                            "T04 legacy name is no pass"
 assert 'grep -qF ", 2 failed" <<<"$out"'                                                       "T04 fails once (the second is C07: demo-web on the kasbah network, unrouted)"
@@ -735,7 +735,7 @@ http:
 YAML
 out="$(cd "$proj22c" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                       "T10 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): demo→http (*.demo.example.com)" <<<"$out"' \
+assert 'grep -qF "✗ T10 Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): demo→http (*.demo.example.com)" <<<"$out"' \
     "T10 names the router, its resolver and the wildcard"
 assert '! grep -qF "tenants→cloudflare (" <<<"$out"'                                           "T10 leaves a DNS provider's resolver to --server"
 
@@ -760,7 +760,7 @@ http:
 YAML
 out="$(cd "$proj23" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                  "T05 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Routers claim reserved hostnames" <<<"$out"'          "T05 fail line"
+assert 'grep -qF "✗ T05 Routers claim reserved hostnames" <<<"$out"'          "T05 fail line"
 assert 'grep -qF "demo-mail" <<<"$out"'                                   "T05 names offending router"
 
 # --- Case 23b: T08 — HTTPS router only, nothing on `web` → warn -------------
@@ -787,10 +787,10 @@ http:
 YAML
 out="$(cd "$proj23b" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                           "T08 is a warning, so exit stays 0 (got $rc)"
-assert 'grep -qF "⚠ No router serves demo.example.com on the web entrypoint" <<<"$out"' \
+assert 'grep -qF "⚠ T08 No router serves demo.example.com on the web entrypoint" <<<"$out"' \
        "T08 warn line (said '$out')"
 assert 'grep -qF "http-to-https@file" <<<"$out"'                                   "and says what to add (said '$out')"
-assert 'grep -qF "✓ All routers declare entryPoints" <<<"$out"'                   "T03 passes on the same fragment — it is not the rule that catches this"
+assert 'grep -qF "✓ T03 All routers declare entryPoints" <<<"$out"'                   "T03 passes on the same fragment — it is not the rule that catches this"
 assert 'grep -qF "29 passed, 1 warning, 0 failed" <<<"$out"'                       "one line either way (said '$(tail -1 <<<"$out")')"
 
 # A `web` router for an unrelated host does not answer for this one: the
@@ -817,7 +817,7 @@ http:
           - url: "http://demo-web:80"
 YAML
 out="$(cd "$proj23b" && "$kasbah" check 2>&1)"; rc=$?
-assert 'grep -qF "⚠ No router serves demo.example.com on the web entrypoint" <<<"$out"' \
+assert 'grep -qF "⚠ T08 No router serves demo.example.com on the web entrypoint" <<<"$out"' \
        "a web router for another host is not this host's redirect (said '$out')"
 
 # The other side of that line, and the reason it is a line rather than an exact
@@ -850,9 +850,9 @@ http:
 YAML
 out="$(cd "$proj23b" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                                "the substring-positive fragment exits 0 (got $rc)"
-assert 'grep -qF "✓ A router serves demo.example.com on the web entrypoint" <<<"$out"' \
+assert 'grep -qF "✓ T08 A router serves demo.example.com on the web entrypoint" <<<"$out"' \
        "a web router whose host contains the manifest domain satisfies T08 (said '$out')"
-assert 'grep -qF "✓ At least one router references manifest domain (demo.example.com)" <<<"$out"' \
+assert 'grep -qF "✓ T02 At least one router references manifest domain (demo.example.com)" <<<"$out"' \
        "on the same reading T02 already gives it (said '$out')"
 assert 'grep -qF "30 passed, 0 warning, 0 failed" <<<"$out"'                             "and nothing warns (said '$(tail -1 <<<"$out")')"
 
@@ -882,7 +882,7 @@ http:
 YAML
 out="$(cd "$proj23c" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                           "T09 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Fragment routes to Traefik'"'"'s internal services (only noop@internal is allowed): demo→api@internal services.split→dashboard@internal" <<<"$out"' \
+assert 'grep -qF "✗ T09 Fragment routes to Traefik'"'"'s internal services (only noop@internal is allowed): demo→api@internal services.split→dashboard@internal" <<<"$out"' \
        "T09 fail line names router, service and the weighted entry (said '$out')"
 assert '! grep -qF "noop@internal services" <<<"$out" && ! grep -qF "demo-http→" <<<"$out"' "T09 leaves noop@internal alone"
 
@@ -909,7 +909,7 @@ networks:
 YAML
 out="$(cd "$proj24" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                  "T06 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Services carry traefik.* labels (file provider only): demo-web" <<<"$out"' "T06 fail line"
+assert 'grep -qF "✗ T06 Services carry traefik.* labels (file provider only): demo-web" <<<"$out"' "T06 fail line"
 
 # --- Case 25: H01 — built service without compose healthcheck → warn --------
 proj25="$tmpdir/built-no-hc"
@@ -940,8 +940,8 @@ YAML
 out="$(cd "$proj25" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                                                          "H01 warn exits 0 (got $rc)"
 assert 'grep -qF "Healthchecks:" <<<"$out"'                                                                       "Healthchecks: header appears"
-assert 'grep -qF "⚠ Built services without a compose healthcheck (Dockerfile may declare one): api" <<<"$out"'    "H01 warn line"
-assert 'grep -qF "✓ All built services reference their image as :current" <<<"$out"' \
+assert 'grep -qF "⚠ H01 Built services without a compose healthcheck (Dockerfile may declare one): api" <<<"$out"'    "H01 warn line"
+assert 'grep -qF "✓ C08 All built services reference their image as :current" <<<"$out"' \
     "C08 pass line — this service's image: is demo-web:current"
 
 # --- Case 25b: C08 — a built service pinned to a version tag → fail ---------
@@ -976,7 +976,7 @@ networks:
 YAML
 out="$(cd "$proj25b" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "C08 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Built services whose image: is not tagged :current: api (demo-web:1.2.3)" <<<"$out"' \
+assert 'grep -qF "✗ C08 Built services whose image: is not tagged :current: api (demo-web:1.2.3)" <<<"$out"' \
     "C08 fail line names the service and the tag it is pinned to
         said: $(grep "image:" <<<"$out")"
 
@@ -1006,7 +1006,7 @@ networks:
 YAML
 out="$(cd "$proj25c" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "a built service with no image: exits 6 (got $rc)"
-assert 'grep -qF "✗ Built services whose image: is not tagged :current: api (no image:)" <<<"$out"' \
+assert 'grep -qF "✗ C08 Built services whose image: is not tagged :current: api (no image:)" <<<"$out"' \
     "and C08 says so rather than reporting a tag it never saw
         said: $(grep "image:" <<<"$out")"
 
@@ -1039,7 +1039,7 @@ networks:
 YAML
 out="$(cd "$proj25e" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "a tag that merely contains 'current' still fails C08 (got $rc)"
-assert 'grep -qF "✗ Built services whose image: is not tagged :current: api (demo-web:current-rc1)" <<<"$out"' \
+assert 'grep -qF "✗ C08 Built services whose image: is not tagged :current: api (demo-web:current-rc1)" <<<"$out"' \
     "quoting the tag it found (said: $(grep "image:" <<<"$out"))"
 
 # --- Case 25d: C08 — a registry with a port is not a tag ---------------------
@@ -1072,7 +1072,7 @@ networks:
 YAML
 out="$(cd "$proj25d" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "a registry-with-a-port image tagged :current passes (got $rc)"
-assert 'grep -qF "✓ All built services reference their image as :current" <<<"$out"' \
+assert 'grep -qF "✓ C08 All built services reference their image as :current" <<<"$out"' \
     "with C08's pass line (said: $(grep "current" <<<"$out"))"
 
 # --- Case 26: H02 — manifest health.container not in compose → fail ---------
@@ -1087,7 +1087,7 @@ health:
 YAML
 out="$(cd "$proj26" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                                                  "H02 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ manifest health.container '"'"'nonexistent-container'"'"' is neither a container_name nor a service in compose" <<<"$out"' "H02 fail line"
+assert 'grep -qF "✗ H02 manifest health.container '"'"'nonexistent-container'"'"' is neither a container_name nor a service in compose" <<<"$out"' "H02 fail line"
 
 # --- Case 26b: H02 — a health: block with only a timeout is legal -----------
 # docs/project-manifest.md says health: defaults to waiting on every service
@@ -1102,7 +1102,7 @@ health:
 YAML
 out="$(cd "$proj26b" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "a health: block with only a timeout passes (got $rc)"
-assert 'grep -qF "✓ manifest health: names no container — the deploy waits on every container with a healthcheck" <<<"$out"' \
+assert 'grep -qF "✓ H02 manifest health: names no container — the deploy waits on every container with a healthcheck" <<<"$out"' \
     "and H02 says which path that is (said: $(grep -i health <<<"$out"))"
 
 # --- Case 26c: H03 — a first probe past health.timeout → warn ---------------
@@ -1114,7 +1114,7 @@ sed -i 's|^      test: \["CMD", "wget".*|&\n      interval: 1m|' "$proj26c/compo
 printf '\nhealth:\n  timeout: 30s\n' >> "$proj26c/kasbah.yml"
 out="$(cd "$proj26c" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "H03 is a warning, never a failure (got $rc)"
-assert 'grep -qF "⚠ demo-web'"'"'s first healthcheck probe comes 60s after it starts, past health.timeout (30s), so a deploy that creates or recreates it fails on health — shorten healthcheck.interval or set a start_period (Docker 25 or later), or raise health.timeout" <<<"$out"' \
+assert 'grep -qF "⚠ H03 demo-web'"'"'s first healthcheck probe comes 60s after it starts, past health.timeout (30s), so a deploy that creates or recreates it fails on health — shorten healthcheck.interval or set a start_period (Docker 25 or later), or raise health.timeout" <<<"$out"' \
     "H03 names the service, both times and the fix (said: $(grep -i health <<<"$out"))"
 # A start_period probes every start_interval inside it: 2s is in time.
 sed -i 's|^      interval: 1m$|&\n      start_period: 30s\n      start_interval: 2s|' "$proj26c/compose.prod.yml"
@@ -1152,7 +1152,7 @@ health:
 YAML
 out="$(cd "$proj27" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                                       "H02 pass exits 0 (got $rc)"
-assert 'grep -qF "✓ manifest health.container '"'"'demo-web'"'"' exists in compose" <<<"$out"' "H02 pass line"
+assert 'grep -qF "✓ H02 manifest health.container '"'"'demo-web'"'"' exists in compose" <<<"$out"' "H02 pass line"
 
 # --- Case 27b: a template that declares nothing is a passing project ---------
 # The scaffold writes comments and no keys, because the hostname lives in the
@@ -1169,10 +1169,10 @@ out="$(cd "$proj27b" && "$kasbah" check 2>&1)"; rc=$?
 assert '! grep -qE "^[[:space:]]*[^#[:space:]]" "$proj27b/.env.prod.example"' \
        "the scaffolded template has no line that is not a comment (said: $(cat "$proj27b/.env.prod.example"))"
 assert '[ "$rc" = "0" ]'                                                       "a project whose template declares nothing exits 0 (got $rc)"
-assert 'grep -qF "✓ .env.prod.example exists" <<<"$out"'                       "S04 still passes on it"
-assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'              "E01 passes on comments alone"
-assert 'grep -qF "✓ .env.prod.example has no obvious long secrets" <<<"$out"'  "E04 has nothing to measure"
-assert 'grep -qF "✓ .env.prod.example leaves the KASBAH_* prefix to kasbah" <<<"$out"' "E05 has no key to object to"
+assert 'grep -qF "✓ S04 .env.prod.example exists" <<<"$out"'                       "S04 still passes on it"
+assert 'grep -qF "✓ E01 .env.prod.example syntax is valid" <<<"$out"'              "E01 passes on comments alone"
+assert 'grep -qF "✓ E04 .env.prod.example has no obvious long secrets" <<<"$out"'  "E04 has nothing to measure"
+assert 'grep -qF "✓ E05 .env.prod.example leaves the KASBAH_* prefix to kasbah" <<<"$out"' "E05 has no key to object to"
 assert 'grep -qF "30 passed, 0 warning, 0 failed" <<<"$out"'                   "and nothing warns about it (said '$(tail -1 <<<"$out")')"
 
 # --- Case 28: E01 — invalid line → fail --------------------------------------
@@ -1182,7 +1182,7 @@ make_project "$proj28"
 printf 'this is not valid env syntax\n' >> "$proj28/.env.prod.example"
 out="$(cd "$proj28" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                            "E01 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ .env.prod.example has invalid lines" <<<"$out"'                 "E01 fail line"
+assert 'grep -qF "✗ E01 .env.prod.example has invalid lines" <<<"$out"'                 "E01 fail line"
 
 # --- Case 28b: the four env rules read a line the way Compose does -----------
 # internal/envtpl sees leading blanks (no-break ones too), an `export `
@@ -1214,12 +1214,12 @@ ENV
 printf '\xc2\xa0NBLED: w\n\xc2\xa0\n\xc2\xa0# c\n' >> "$proj28b/.env"
 out="$(cd "$proj28b" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                     "an exported or indented template line is not an E01 failure (got $rc)"
-assert 'grep -qF "✓ .env.prod.example syntax is valid" <<<"$out"'            "E01 accepts what the env setup accepts (said '$out')"
-assert 'grep -qF "✓ .env has no missing keys vs .env.prod.example" <<<"$out"' "E02 reads the key behind an export/indent in .env"
-assert 'grep -qF "✓ .env has no extra keys vs .env.prod.example" <<<"$out"'   "and E03 reads it in the template too"
-assert 'grep -qF "⚠ .env.prod.example defines reserved KASBAH_* keys (kasbah injects these): KASBAH_CPU_LIMIT" <<<"$out"' \
+assert 'grep -qF "✓ E01 .env.prod.example syntax is valid" <<<"$out"'            "E01 accepts what the env setup accepts (said '$out')"
+assert 'grep -qF "✓ E02 .env has no missing keys vs .env.prod.example" <<<"$out"' "E02 reads the key behind an export/indent in .env"
+assert 'grep -qF "✓ E03 .env has no extra keys vs .env.prod.example" <<<"$out"'   "and E03 reads it in the template too"
+assert 'grep -qF "⚠ E05 .env.prod.example defines reserved KASBAH_* keys (kasbah injects these): KASBAH_CPU_LIMIT" <<<"$out"' \
        "E05 sees an exported reserved key (said '$out')"
-assert 'grep -qF "⚠ .env.prod.example has values >64 chars (possibly leaked secrets): API_TOKEN" <<<"$out"' \
+assert 'grep -qF "⚠ E04 .env.prod.example has values >64 chars (possibly leaked secrets): API_TOKEN" <<<"$out"' \
        "E04 measures the value of an exported assignment (said '$out')"
 
 # The widening is not "anything goes": `export` still has to be followed by a
@@ -1229,7 +1229,7 @@ make_project "$proj28c"
 printf 'export FOO BAR=baz\nexport =1\n' >> "$proj28c/.env.prod.example"
 out="$(cd "$proj28c" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                            "a malformed export line still fails E01 (got $rc)"
-assert 'grep -qF "✗ .env.prod.example has invalid lines" <<<"$out"' "and is named as invalid (said '$out')"
+assert 'grep -qF "✗ E01 .env.prod.example has invalid lines" <<<"$out"' "and is named as invalid (said '$out')"
 
 # --- Case 29: E02 — .env missing a key from .env.prod.example → warn --------
 proj29="$tmpdir/env-missing-key"
@@ -1238,7 +1238,7 @@ make_project "$proj29"
 : > "$proj29/.env"
 out="$(cd "$proj29" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                  "E02 warn exits 0 (got $rc)"
-assert 'grep -qF "⚠ .env missing keys vs .env.prod.example: DOMAIN" <<<"$out"'  "E02 warn line"
+assert 'grep -qF "⚠ E02 .env missing keys vs .env.prod.example: DOMAIN" <<<"$out"'  "E02 warn line"
 
 # --- Case 30: E03 — .env has an extra key not in template → warn ------------
 proj30="$tmpdir/env-extra-key"
@@ -1249,7 +1249,7 @@ EXTRA_VAR=oops
 ENV
 out="$(cd "$proj30" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                              "E03 warn exits 0 (got $rc)"
-assert 'grep -qF "⚠ .env has extra keys not in .env.prod.example: EXTRA_VAR" <<<"$out"' "E03 warn line"
+assert 'grep -qF "⚠ E03 .env has extra keys not in .env.prod.example: EXTRA_VAR" <<<"$out"' "E03 warn line"
 
 # --- Case 30b: the KASBAH_ prefix is invisible to E02/E03 in both directions -
 # Extra in .env is the injected block kasbah itself writes; missing from .env
@@ -1264,8 +1264,8 @@ KASBAH_MEM_LIMIT=54g
 ENV
 out="$(cd "$proj30b" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                     "reserved keys in .env exit 0 (got $rc)"
-assert 'grep -qF "✓ .env has no extra keys vs .env.prod.example" <<<"$out"'  "an extra KASBAH_ key is not E03 drift"
-assert 'grep -qF "✓ .env has no missing keys vs .env.prod.example" <<<"$out"' "and leaves E02 passing"
+assert 'grep -qF "✓ E03 .env has no extra keys vs .env.prod.example" <<<"$out"'  "an extra KASBAH_ key is not E03 drift"
+assert 'grep -qF "✓ E02 .env has no missing keys vs .env.prod.example" <<<"$out"' "and leaves E02 passing"
 
 proj30c="$tmpdir/env-reserved-missing"
 make_project "$proj30c"
@@ -1275,7 +1275,7 @@ DOMAIN=demo.example.com
 ENV
 out="$(cd "$proj30c" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                      "a reserved key only in the template exits 0 (got $rc)"
-assert 'grep -qF "✓ .env has no missing keys vs .env.prod.example" <<<"$out"' "a KASBAH_ key absent from .env is not E02 drift"
+assert 'grep -qF "✓ E02 .env has no missing keys vs .env.prod.example" <<<"$out"' "a KASBAH_ key absent from .env is not E02 drift"
 
 # Real drift in both directions still reports, with the reserved keys filtered
 # out of the message — the half that a blanket "skip the whole check" would
@@ -1289,9 +1289,9 @@ REAL_EXTRA=y
 KASBAH_CPU_LIMIT=14.4
 ENV
 out="$(cd "$proj30d" && "$kasbah" check 2>&1)"; rc=$?
-assert 'grep -qF "⚠ .env missing keys vs .env.prod.example: REAL_MISSING" <<<"$out"' \
+assert 'grep -qF "⚠ E02 .env missing keys vs .env.prod.example: REAL_MISSING" <<<"$out"' \
        "real missing keys are still reported (said '$out')"
-assert 'grep -qF "⚠ .env has extra keys not in .env.prod.example: REAL_EXTRA" <<<"$out"' \
+assert 'grep -qF "⚠ E03 .env has extra keys not in .env.prod.example: REAL_EXTRA" <<<"$out"' \
        "real extra keys are still reported (said '$out')"
 drift_lines="$(grep -F "vs .env.prod.example" <<<"$out")"
 assert '! grep -qF "KASBAH_" <<<"$drift_lines"' \
@@ -1304,7 +1304,7 @@ make_project "$proj30e"
 printf 'KASBAH_CPU_LIMIT=0\nKASBAH_MEM_LIMIT=0\n' >> "$proj30e/.env.prod.example"
 out="$(cd "$proj30e" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                     "E05 is a warning, so exit stays 0 (got $rc)"
-assert 'grep -qF "⚠ .env.prod.example defines reserved KASBAH_* keys (kasbah injects these): KASBAH_CPU_LIMIT KASBAH_MEM_LIMIT" <<<"$out"' \
+assert 'grep -qF "⚠ E05 .env.prod.example defines reserved KASBAH_* keys (kasbah injects these): KASBAH_CPU_LIMIT KASBAH_MEM_LIMIT" <<<"$out"' \
        "E05 warn line names every reserved key, not just the first (said '$out')"
 assert 'grep -qF "29 passed, 1 warning, 0 failed" <<<"$out"'                 "E05 warns instead of passing, one line either way (said '$out')"
 
@@ -1314,7 +1314,7 @@ proj30f="$tmpdir/env-reserved-substring"
 make_project "$proj30f"
 printf 'MY_KASBAH_URL=https://example.com\n' >> "$proj30f/.env.prod.example"
 out="$(cd "$proj30f" && "$kasbah" check 2>&1)"; rc=$?
-assert 'grep -qF "✓ .env.prod.example leaves the KASBAH_* prefix to kasbah" <<<"$out"' \
+assert 'grep -qF "✓ E05 .env.prod.example leaves the KASBAH_* prefix to kasbah" <<<"$out"' \
        "a key merely containing KASBAH_ is not E05 (said '$out')"
 
 # --- Case 31: E04 — long literal value in template → warn -------------------
@@ -1324,7 +1324,7 @@ make_project "$proj31"
 printf 'API_TOKEN=%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" >> "$proj31/.env.prod.example"
 out="$(cd "$proj31" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                                          "E04 warn exits 0 (got $rc)"
-assert 'grep -qF "⚠ .env.prod.example has values >64 chars (possibly leaked secrets): API_TOKEN" <<<"$out"' "E04 warn line"
+assert 'grep -qF "⚠ E04 .env.prod.example has values >64 chars (possibly leaked secrets): API_TOKEN" <<<"$out"' "E04 warn line"
 
 # --- Case 32: HK01 — a hook on two lines → fail -----------------------------
 proj32="$tmpdir/hk01-multiline"
@@ -1355,7 +1355,7 @@ hooks:
 YAML
 out="$(cd "$proj32" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                              "HK01 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ kasbah.yml: the post-deploy hook '"'"'php artisan down…'"'"' spans more than one line" <<<"$out"' "HK01 fail line"
+assert 'grep -qF "✗ HK01 kasbah.yml: the post-deploy hook '"'"'php artisan down…'"'"' spans more than one line" <<<"$out"' "HK01 fail line"
 
 # --- Case 32b: HK01 — an empty hook → fail -----------------------------------
 proj32b="$tmpdir/hk01-empty"
@@ -1363,7 +1363,7 @@ make_project "$proj32b"
 printf '\nhooks:\n  pre-deploy:\n    - ""\n' >> "$proj32b/kasbah.yml"
 out="$(cd "$proj32b" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                              "HK01 empty fails exits 6 (got $rc)"
-assert 'grep -qF "✗ kasbah.yml: hooks.pre-deploy holds an empty entry" <<<"$out"'     "HK01 empty fail line"
+assert 'grep -qF "✗ HK01 kasbah.yml: hooks.pre-deploy holds an empty entry" <<<"$out"'     "HK01 empty fail line"
 
 # --- Case 33: HK02 — a top-level backup: block is refused --------------------
 # The backup is a hook now; the old block gets one clear refusal pointing there.
@@ -1379,7 +1379,7 @@ backup:
 YAML
 out="$(cd "$proj33" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                            "HK02 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ kasbah.yml: backup: is not a key kasbah reads — a backup is the hooks.backup list" <<<"$out"' "HK02 fail line names hooks.backup"
+assert 'grep -qF "✗ HK02 kasbah.yml: backup: is not a key kasbah reads — a backup is the hooks.backup list" <<<"$out"' "HK02 fail line names hooks.backup"
 
 # --- Case 34: HK02 — even an empty backup: is refused ------------------------
 proj34="$tmpdir/hk02-backup-null"
@@ -1387,7 +1387,7 @@ make_project "$proj34"
 printf '\nbackup:\n' >> "$proj34/kasbah.yml"
 out="$(cd "$proj34" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "a null backup: fails too (got $rc)"
-assert 'grep -qF "✗ kasbah.yml: backup: is not a key kasbah reads" <<<"$out"' "HK02 fail line for a null block"
+assert 'grep -qF "✗ HK02 kasbah.yml: backup: is not a key kasbah reads" <<<"$out"' "HK02 fail line for a null block"
 
 # --- Case 35: HK01 — all six hook lists → pass --------------------------------
 # Regression guard for the hooks extraction and the container_name set assembly.
@@ -1459,7 +1459,7 @@ hooks:
 YAML
 out="$(cd "$proj35" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                       "HK pass exits 0 (got $rc)"
-assert 'grep -qF "✓ Every hook is one line of shell" <<<"$out"' "HK01 pass line"
+assert 'grep -qF "✓ HK01 Every hook is one line of shell" <<<"$out"' "HK01 pass line"
 assert '! grep -qF "backup:" <<<"$out"' "and no HK02 line without a top-level backup:"
 
 # --- Case 35b: health names a service, not a container_name -----------------
@@ -1476,8 +1476,8 @@ hooks:
 YAML
 out="$(cd "$proj35b" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "a service name as the health target passes (got $rc: $out)"
-assert 'grep -qF "✓ Every hook is one line of shell" <<<"$out"' "HK01 does not read a hook's first word"
-assert 'grep -qF "✓ manifest health.container '"'"'demo-web'"'"' exists in compose" <<<"$out"' "health.container takes a service name"
+assert 'grep -qF "✓ HK01 Every hook is one line of shell" <<<"$out"' "HK01 does not read a hook's first word"
+assert 'grep -qF "✓ H02 manifest health.container '"'"'demo-web'"'"' exists in compose" <<<"$out"' "health.container takes a service name"
 
 # --- Case 36: T01 — malformed traefik-dynamic.yml → warn, exit 0 ------------
 # T01 was downgraded to warn (worker-only projects). A malformed file is the
@@ -1502,7 +1502,7 @@ services:
 YAML
 out="$(cd "$proj36" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                        "T01 malformed exits 0 (got $rc)"
-assert 'grep -qF "⚠ traefik-dynamic.yml does not parse as YAML" <<<"$out"'      "T01 malformed warn line"
+assert 'grep -qF "⚠ T01 traefik-dynamic.yml does not parse as YAML" <<<"$out"'      "T01 malformed warn line"
 assert '! grep -qF "At least one router references manifest domain" <<<"$out"'  "T02 skipped on parse failure"
 
 # --- Case 37: empty manifest domain → T02 skipped with a warn, exit 0 -------
@@ -1527,9 +1527,9 @@ YAML
 { printf 'http:\n  routers:\n    demo:\n      rule: "Host(`x.test`)"\n      entryPoints: [websecure]\n      tls:\n        certResolver: http\n      service: noop@internal\n'; } > "$proj37/traefik-dynamic.yml"
 out="$(cd "$proj37" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                              "empty-domain T02 skip exits 0 (got $rc)"
-assert 'grep -qF "⚠ manifest domain is empty — skipping T02" <<<"$out"'               "empty-domain warn line"
+assert 'grep -qF "⚠ T02,T08 manifest domain is empty — skipping T02" <<<"$out"'               "empty-domain warn line"
 assert '! grep -qF "At least one router references manifest domain" <<<"$out"'        "T02 not run on empty domain"
-assert 'grep -qF "✓ All routers declare entryPoints" <<<"$out"'                       "T03 still runs on empty domain"
+assert 'grep -qF "✓ T03 All routers declare entryPoints" <<<"$out"'                       "T03 still runs on empty domain"
 
 # --- Case 38: C07 — non-routed service on kasbah-net → fail ----------------
 proj38="$tmpdir/c07-internal-on-shared"
@@ -1567,8 +1567,8 @@ networks:
 YAML
 out="$(cd "$proj38" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                              "C07 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Non-routed services on kasbah-net: db" <<<"$out"' "C07 fail line names db"
-assert 'grep -qF "✓ All routed services join kasbah-net" <<<"$out"'   "C03 still passes"
+assert 'grep -qF "✗ C07 Non-routed services on kasbah-net: db" <<<"$out"' "C07 fail line names db"
+assert 'grep -qF "✓ C03 All routed services join kasbah-net" <<<"$out"'   "C03 still passes"
 
 # --- Case 39: C07 — default network aliasing kasbah-net is banned ----------
 proj39="$tmpdir/c07-default-alias"
@@ -1593,7 +1593,7 @@ networks:
 YAML
 out="$(cd "$proj39" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                    "default-alias exits 6 (got $rc)"
-assert 'grep -qF "✗ default network aliases kasbah-net" <<<"$out"'         "C07 default-alias fail line"
+assert 'grep -qF "✗ C07 default network aliases kasbah-net" <<<"$out"'         "C07 default-alias fail line"
 
 # --- Case 40: R01/R02 literal limits + R03 reservations → fail --------------
 proj40="$tmpdir/r-rules"
@@ -1620,16 +1620,16 @@ networks:
 YAML
 out="$(cd "$proj40" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                  "R rules fail exits 6 (got $rc)"
-assert 'grep -qF "⚠ Services with literal resource limits: demo-web(cpus=1.5) — a literal does not follow the host'"'"'s ceiling" <<<"$out"' "R01 warns on a literal cpus locally"
+assert 'grep -qF "⚠ R01,R02 Services with literal resource limits: demo-web(cpus=1.5) — a literal does not follow the host'"'"'s ceiling" <<<"$out"' "R01 warns on a literal cpus locally"
 assert '! grep -qF "malformed resource limits" <<<"$out"' "R01/R02 pass a literal"
-assert 'grep -qF "✗ Services declare resource reservations: demo-web" <<<"$out"'                "R03 fail line"
+assert 'grep -qF "✗ R03 Services declare resource reservations: demo-web" <<<"$out"'                "R03 fail line"
 
 # --- Case 40b: R01/R02 malformed literals fail -----------------------------
 sed -e 's/^    cpus: "1.5"$/    cpus: 1,5/' -e 's/^    mem_limit: ${KASBAH_MEM_LIMIT}$/    mem_limit: 0/' \
     -e '/^    mem_reservation:/d' "$proj40/compose.prod.yml" > "$proj40/c.next" && mv "$proj40/c.next" "$proj40/compose.prod.yml"
 out="$(cd "$proj40" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "malformed limits exit 6 (got $rc)"
-assert 'grep -qF "✗ Services with missing or malformed resource limits: demo-web(cpus,mem_limit) — each sets cpus: \${KASBAH_CPU_LIMIT} or a positive number" <<<"$out"' \
+assert 'grep -qF "✗ R01,R02 Services with missing or malformed resource limits: demo-web(cpus,mem_limit) — each sets cpus: \${KASBAH_CPU_LIMIT} or a positive number" <<<"$out"' \
     "R01/R02 fail '1,5' and a zero size (said '$out')"
 
 # --- Case 41: T07 — fragment targets a name nothing answers to ---------------
@@ -1654,7 +1654,7 @@ services:
 YAML
 out="$(cd "$proj41" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                       "T07 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ Fragment targets names no service answers to: demo-web (target a service on the kasbah network, one of its kasbah aliases, or a container_name)" <<<"$out"' "T07 fail line"
+assert 'grep -qF "✗ T07 Fragment targets names no service answers to: demo-web (target a service on the kasbah network, one of its kasbah aliases, or a container_name)" <<<"$out"' "T07 fail line"
 
 # --- Case 41b: T07 — a kasbah alias, and a service name only on kasbah-net ---
 proj41b="$tmpdir/t07-alias"
@@ -1663,19 +1663,19 @@ sed -i 's|^    networks: \[kasbah, internal\]|    networks:\n      kasbah:\n    
 sed -i 's|http://demo-web:|http://demo-site:|' "$proj41b/traefik-dynamic.yml"
 out="$(cd "$proj41b" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "a fragment targeting a kasbah alias passes (got $rc: $out)"
-assert 'grep -qF "✓ Fragment loadBalancer URLs target a service, alias or container_name compose defines" <<<"$out"' "T07 pass line for an alias"
-assert 'grep -qF "✓ All routed services join the project'"'"'s kasbah network" <<<"$out"' "the aliased service counts as routed (C03)"
+assert 'grep -qF "✓ T07 Fragment loadBalancer URLs target a service, alias or container_name compose defines" <<<"$out"' "T07 pass line for an alias"
+assert 'grep -qF "✓ C03 All routed services join the project'"'"'s kasbah network" <<<"$out"' "the aliased service counts as routed (C03)"
 
 proj41c="$tmpdir/t07-legacy-service"
 make_project "$proj41c"
 sed -i 's|^    networks: \[kasbah, internal\]|    networks: [kasbah-net, internal]|; s|^  kasbah: {}|  kasbah-net:\n    external: true|' "$proj41c/compose.prod.yml"
 out="$(cd "$proj41c" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "a service name on kasbah-net fails T07 (got $rc)"
-assert 'grep -qF "✗ Fragment targets services on kasbah-net by name: demo-web — there every project'"'"'s same-named service answers too" <<<"$out"' \
+assert 'grep -qF "✗ T07 Fragment targets services on kasbah-net by name: demo-web — there every project'"'"'s same-named service answers too" <<<"$out"' \
     "T07 says kasbah-net needs a container_name ($out)"
 sed -i 's|^    image: nginx:alpine|    image: nginx:alpine\n    container_name: demo-web|' "$proj41c/compose.prod.yml"
 out="$(cd "$proj41c" && "$kasbah" check 2>&1)"
-assert 'grep -qF "✓ Fragment loadBalancer URLs target a service, alias or container_name compose defines" <<<"$out"' \
+assert 'grep -qF "✓ T07 Fragment loadBalancer URLs target a service, alias or container_name compose defines" <<<"$out"' \
     "with container_name set, the legacy shape passes T07"
 
 proj41d="$tmpdir/t07-no-network"
@@ -1683,7 +1683,7 @@ make_project "$proj41d"
 sed -i '/^    networks: \[kasbah, internal\]/d' "$proj41d/compose.prod.yml"
 out="$(cd "$proj41d" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "a routed service on no network fails (got $rc)"
-assert 'grep -qF "✗ Fragment targets services on no Traefik network: demo-web — join them to the kasbah network" <<<"$out"' \
+assert 'grep -qF "✗ T07 Fragment targets services on no Traefik network: demo-web — join them to the kasbah network" <<<"$out"' \
     "T07 says it is on no Traefik network, not kasbah-net ($out)"
 assert '! grep -qF "kasbah-net by name" <<<"$out"' "and does not talk of kasbah-net"
 
@@ -1745,7 +1745,7 @@ make_project "$projm3" mailer3 mailer3.example.com
 printf 'mail: mailer3.example.com\n' >> "$projm3/kasbah.yml"
 out="$(cd "$projm3" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "a scalar mail: fails (rc $rc)"
-assert 'grep -qF "✗ kasbah.yml: mail: is not a block — it has to be a block with a domain: under it" <<<"$out"' \
+assert 'grep -qF "✗ M01 kasbah.yml: mail: is not a block — it has to be a block with a domain: under it" <<<"$out"' \
     "naming what it found, as deploy does (said '$out')"
 assert '! grep -qF "Cannot index" <<<"$out"' "and not a type error (said '$out')"
 
@@ -2301,12 +2301,12 @@ assert 'grep -qF "C01 web — add restart: unless-stopped" <<<"$out"' \
     "F8: what it could fix, it fixed (said '$out')"
 assert 'grep -qF "C08 builder — builds an image but names no image:" <<<"$out"' \
     "F8: and says which one it declined, with the reason (said '$out')"
-assert 'grep -qF "✗ Non-routed services on kasbah-net: cache" <<<"$out"'   "F8: C07 still reported"
+assert 'grep -qF "✗ C07 Non-routed services on kasbah-net: cache" <<<"$out"'   "F8: C07 still reported"
 assert 'grep -qF "Services on kasbah-net whose name is not" <<<"$out"'      "F8: C09 still reported"
-assert 'grep -qF "✗ No router rule references manifest domain" <<<"$out"'   "F8: T02 still reported"
-assert 'grep -qF "✗ Routers without entryPoints: demo" <<<"$out"'           "F8: T03 still reported"
-assert 'grep -qF "✗ Routers claim reserved hostnames" <<<"$out"'            "F8: T05 still reported"
-assert 'grep -qF "✗ kasbah.yml: the post-deploy hook '"'"'nope echo hi…'"'"' spans more than one line" <<<"$out"' "F8: HK01 still reported"
+assert 'grep -qF "✗ T02 No router rule references manifest domain" <<<"$out"'   "F8: T02 still reported"
+assert 'grep -qF "✗ T03 Routers without entryPoints: demo" <<<"$out"'           "F8: T03 still reported"
+assert 'grep -qF "✗ T05 Routers claim reserved hostnames" <<<"$out"'            "F8: T05 still reported"
+assert 'grep -qF "✗ HK01 kasbah.yml: the post-deploy hook '"'"'nope echo hi…'"'"' spans more than one line" <<<"$out"' "F8: HK01 still reported"
 # The paired positive: those rules were not merely *reported* untouched, the
 # file really is untouched where they live. A --fix that had renamed `cache` or
 # rewritten the fragment would satisfy every grep above by making them pass.
@@ -2946,9 +2946,9 @@ assert '[ "$rc" = "6" ]' "F19: the project fails C01 before anything is fixed (r
 out="$(fx_run "$f19")"; rc=$?
 assert 'grep -qF "wrote compose.prod.yml" <<<"$out"' \
     "F19: --fix wrote the file (said '$out')"
-assert 'grep -qF "✓ All services set restart policy" <<<"$out"' \
+assert 'grep -qF "✓ C01 All services set restart policy" <<<"$out"' \
     "F19: and the report in the same run reads the file it just wrote (said '$out')"
-assert '! grep -qF "✗ Services missing restart policy" <<<"$out"' \
+assert '! grep -qF "✗ C01 Services missing restart policy" <<<"$out"' \
     "F19: rather than the failure it repaired"
 assert '[ "$rc" = "0" ]' "F19: so the run ends clean (rc $rc)
 $out"
@@ -3007,7 +3007,7 @@ assert '! grep -qF "Summary:" <<<"$out"' "and the report is cut short, with no s
 # A service name holding a quote is a name like any other: the rules judge it.
 printf '%s\n' 'services:' "  'we\"b': {image: nginx}" > "$projq/compose.prod.yml"
 out="$(cd "$projq" && "$kasbah" check 2>"$tmpdir/q.err")"; rc=$?
-assert '[ "$rc" = "6" ] && grep -qxF "  ✗ Services missing restart policy: we\"b" <<<"$out"' \
+assert '[ "$rc" = "6" ] && grep -qxF "  ✗ C01 Services missing restart policy: we\"b" <<<"$out"' \
     "a name holding a quote is checked, and named in the failure (exit $rc: $out $(cat "$tmpdir/q.err"))"
 
 # --- Per-project networks: the legacy fixture, an external kasbah, mail-dms ----
@@ -3019,7 +3019,7 @@ cp -a "$repo_dir/tests/fixtures/demo/." "$projn/"
 printf '.env\n.kasbah/\n' > "$projn/.gitignore"
 out="$(cd "$projn" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "the legacy kasbah-net fixture still passes (exit $rc: $out)"
-assert 'grep -qF "⚠ Routed through the shared kasbah-net: demo-web — " <<<"$out"' \
+assert 'grep -qF "⚠ C03 Routed through the shared kasbah-net: demo-web — " <<<"$out"' \
     "and is warned to move to a project kasbah network (said '$out')"
 out="$(cd "$projn" && "$kasbah" check --fix 2>&1)"; rc=$?
 assert 'cmp -s "$projn/compose.prod.yml" "$repo_dir/tests/fixtures/demo/compose.prod.yml"' \
@@ -3030,7 +3030,7 @@ make_project "$projk"
 sed -i 's/^  kasbah: {}$/  kasbah: {external: true}/' "$projk/compose.prod.yml"
 out="$(cd "$projk" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "an external kasbah network fails (exit $rc)"
-assert 'grep -qF "✗ The kasbah network is declared external — it is the project'"'"'s own" <<<"$out"' \
+assert 'grep -qF "✗ C04 The kasbah network is declared external — it is the project'"'"'s own" <<<"$out"' \
     "C04 names it (said '$out')"
 
 # A service alias that is another project's container_name answers for it once
@@ -3040,7 +3040,7 @@ make_project "$projs9"
 sed -i 's/^    networks: \[kasbah, internal\]$/    networks:\n      kasbah: {aliases: [krvb-w]}\n      internal: {}/' "$projs9/compose.prod.yml"
 out="$(cd "$projs9" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "a foreign alias on the kasbah network fails (exit $rc: $out)"
-assert 'grep -qF "✗ Names on the kasbah network that are not '"'"'demo'"'"' or '"'"'demo-*'"'"': krvb-w (alias of demo-web)" <<<"$out"' \
+assert 'grep -qF "✗ C09 Names on the kasbah network that are not '"'"'demo'"'"' or '"'"'demo-*'"'"': krvb-w (alias of demo-web)" <<<"$out"' \
     "C09 names the alias and its service (said '$out')"
 
 projd="$tmpdir/kasbah-with-settings"
@@ -3049,8 +3049,8 @@ sed -i 's/^  kasbah: {}$/  kasbah:\n    driver: bridge/' "$projd/compose.prod.ym
 printf '  shared:\n    name: mail_kasbah\n    external: true\n' >> "$projd/compose.prod.yml"
 out="$(cd "$projd" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "a kasbah network with settings, and another stack's network, fail (exit $rc)"
-assert 'grep -qF "✗ The kasbah network sets driver — declare it as kasbah: {}" <<<"$out"' "C04 names the setting (said '$out')"
-assert 'grep -qF "✗ External networks other than kasbah-net: shared (mail_kasbah)" <<<"$out"' "and the foreign network (said '$out')"
+assert 'grep -qF "✗ C04 The kasbah network sets driver — declare it as kasbah: {}" <<<"$out"' "C04 names the setting (said '$out')"
+assert 'grep -qF "✗ C04 External networks other than kasbah-net: shared (mail_kasbah)" <<<"$out"' "and the foreign network (said '$out')"
 
 projm="$tmpdir/names-mail-dms"
 make_project "$projm"
@@ -3060,7 +3060,7 @@ assert '! grep -qF "mail-dms is named" <<<"$out"' "a comment naming mail-dms is 
 printf 'SMTP_HOST=mail-dms\n' >> "$projm/.env.prod.example"
 out="$(cd "$projm" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "naming mail-dms is a warning (exit $rc)"
-assert 'grep -qF "⚠ mail-dms is named in .env.prod.example — " <<<"$out"' \
+assert 'grep -qF "⚠ C10 mail-dms is named in .env.prod.example — " <<<"$out"' \
     "and says the template can no longer reach it (said '$out')"
 assert 'grep -qF "mail.<domain>:587" <<<"$out"' "pointing at public submission"
 
@@ -3081,12 +3081,12 @@ services:
 YAML
 out="$(cd "$proju" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "an unrouted project passes (exit $rc: $out)"
-assert 'grep -qF "✓ No traefik-dynamic.yml — the project is unrouted (routed: false)" <<<"$out"' "with one line saying it is unrouted (said '$out')"
+assert 'grep -qF "✓ T11 No traefik-dynamic.yml — the project is unrouted (routed: false)" <<<"$out"' "with one line saying it is unrouted (said '$out')"
 assert '! grep -qF "⚠" <<<"$out"' "and no warning about the fragment or the domain (said '$out')"
 printf 'http: {}\n' > "$proju/traefik-dynamic.yml"
 out="$(cd "$proju" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "routed: false beside a fragment fails (exit $rc)"
-assert 'grep -qF "✗ kasbah.yml sets routed: false, yet traefik-dynamic.yml exists — remove one" <<<"$out"' "naming both (said '$out')"
+assert 'grep -qF "✗ T11 kasbah.yml sets routed: false, yet traefik-dynamic.yml exists — remove one" <<<"$out"' "naming both (said '$out')"
 rm "$proju/traefik-dynamic.yml"
 sed -i 's/^routed: false$/routed: no/' "$proju/kasbah.yml"
 out="$(cd "$proju" && "$kasbah" check 2>&1)"; rc=$?

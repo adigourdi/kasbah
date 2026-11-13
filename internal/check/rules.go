@@ -1,0 +1,205 @@
+package check
+
+import "strings"
+
+// Rule is one rule of docs/compliance.md's catalog, at summary level: the doc
+// keeps the full text, and a test holds the two to the same IDs and levels.
+type Rule struct {
+	ID, Area string
+	// Level is the catalog's: fail, warn, fail/warn (which depends on the
+	// case), or retired.
+	Level string
+	// Server is a rule only `check --server` asks.
+	Server bool
+	Title  string
+	Why    string
+	Change string
+}
+
+// Areas are the catalog's sections, in its order.
+var Areas = []string{"Structure", "Compose", "Resources", "Traefik", "Healthchecks", "Env", "Hooks", "Mail", "Backup"}
+
+// Rules is every rule, in catalog order: what check's lines name, and what
+// `kasbah help rules` and `kasbah help <id>` print.
+var Rules = []Rule{
+	{"S01", "Structure", "fail", false, "kasbah.yml exists",
+		"The manifest names the project, its domain and what a deploy ships; without it nothing else can be checked (exit 2).",
+		"Run kasbah from the project root, or `kasbah init-project` there to write one."},
+	{"S02", "Structure", "fail", false, "kasbah.yml has a valid schema version",
+		"The schema says how kasbah reads the manifest. A missing, non-integer or newer one is refused before any rule runs (exit 1).",
+		"Set `schema: 1`. A newer schema was written by a newer kasbah: use that one, or `kasbah self-update`."},
+	{"S03", "Structure", "fail", false, "compose.prod.yml exists",
+		"It is the compose file the server runs; a deploy has nothing to start without it.",
+		"Write compose.prod.yml at the project root; `kasbah init-project` prints a starter that passes check."},
+	{"S04", "Structure", "fail", false, ".env.prod.example exists",
+		"The server's .env is generated from it. A comment-only template is a normal end state.",
+		"Create it, even with comments only (`kasbah init-project` does)."},
+	{"S05", "Structure", "warn", false, ".gitignore excludes .env",
+		"A local .env holds the project's secrets and must not be committed.",
+		"Add a line `.env` to .gitignore."},
+	{"S06", "Structure", "warn", false, ".gitignore excludes .kasbah/",
+		".kasbah/ holds this checkout's own state (state.json), not the project's.",
+		"Add a line `.kasbah/` to .gitignore."},
+	{"S07", "Structure", "fail", false, "name is not one of kasbah's reserved names",
+		"traefik, mail, data, backups and kasbah-backup are kasbah's own directories and stacks: a project deployed under one would overwrite or remove the shared proxy, the mail stack or the backups. Refused when the manifest loads (exit 1).",
+		"Give the project another `name:` in kasbah.yml."},
+	{"S08", "Structure", "fail", false, "client is a backup repository name kasbah can create",
+		"client names the restic repository the project's snapshots file into, and deploy refuses the same values.",
+		"Use lowercase letters, digits and -, starting with a letter, and none of traefik, mail, data, backups; or leave client out to file under the project's name."},
+
+	{"C01", "Compose", "fail", false, "Every service sets a restart policy",
+		"A service that does not come back after a crash or a reboot stays down.",
+		"Set `restart: unless-stopped` (or always, on-failure) on each service; `check --fix` adds it."},
+	{"C02", "Compose", "fail", false, "Every service rotates its json-file logs",
+		"Unrotated logs fill the disk every project on the server shares.",
+		"Set logging: driver json-file with options max-size (\"10m\") and max-file (\"3\"); `check --fix` adds it."},
+	{"C03", "Compose", "fail/warn", false, "Every routed service joins the project's kasbah network",
+		"Traefik reaches a routed service only over the project's kasbah network. The legacy shared kasbah-net warns: every project's routed containers reach each other there.",
+		"List `kasbah` under the service's networks: and declare `kasbah: {}` under the top-level networks:; `check --fix` does both."},
+	{"C04", "Compose", "fail", false, "The kasbah network is kasbah: {}, and no other is external",
+		"Compose recreates a network whose settings change, which fails while Traefik is attached, so every later deploy would fail. Another stack's network is not the project's to join.",
+		"Declare `kasbah: {}` with nothing under it, and drop external networks other than the legacy kasbah-net; `check --fix` adds a missing declaration."},
+	{"C05", "Compose", "warn", false, "No deprecated top-level version: field",
+		"Compose ignores it and warns about it.",
+		"Delete the top-level `version:` line; `check --fix` does."},
+	{"C07", "Compose", "fail", false, "No unrouted service joins the kasbah network or kasbah-net",
+		"Traefik sits on that network, so a database or cache there is one name lookup away from every other project.",
+		"Put databases, caches and workers on a project-internal network, or leave out their networks: so they stay on the default one."},
+	{"C08", "Compose", "fail", false, "Every built service names an image tagged :current",
+		"A deploy moves <image>:current and never rewrites compose: a pinned tag keeps the old image running while the deploy reports success.",
+		"Give each service with build: an `image: <name>-<service>:current`; `check --fix` rewrites a tag."},
+	{"C09", "Compose", "fail/warn", false, "Names on the kasbah network are project-prefixed",
+		"Traefik resolves names across every project's network, so a service called web could answer for another project's web.",
+		"Name every service, alias and container_name on the kasbah network <name> or <name>-..., and point the fragment's URLs at the new names."},
+	{"C10", "Compose", "warn", false, "Nothing names mail-dms",
+		"No project shares a network with the mail server, so mail-dms resolves to nothing.",
+		"Send through mail.<domain>:587 with a mailbox login (docs/mail.md -> SMTP access from apps)."},
+	{"C11", "Compose", "warn", false, "Every routed service can roll on deploy",
+		"A service that cannot roll is recreated in place, and is unrouted while it restarts.",
+		"Set no container_name and no host port on it, give it a compose healthcheck:, and use depends_on with no condition but service_started."},
+	{"C12", "Compose", "fail", true, "No outside container holds a published port",
+		"Docker would refuse the bind, so the deploy refuses it first.",
+		"Stop or move the container holding the port, or publish another one."},
+	{"C13", "Compose", "fail", true, "No outside container uses the compose project name",
+		"Docker keys compose projects by name: the deploy's compose would take those containers for its own.",
+		"Run `docker compose -p <name> down` where they were started, or rename the project."},
+	{"C14", "Compose", "fail", false, "No service publishes host port 80 or 443",
+		"Ports 80 and 443 belong to the shared Traefik, whatever the address or protocol.",
+		"Route the service through traefik-dynamic.yml, or publish another port."},
+
+	{"R01", "Resources", "fail/warn", false, "Every service sets a cpus limit",
+		"A per-container ceiling keeps one project from taking the host. A literal does not follow the host, so it warns until `check --server` compares it.",
+		"Set `cpus: ${KASBAH_CPU_LIMIT}` (or a number above 0); `check --fix` adds a missing one. Lower the whole project with resources: in kasbah.yml instead."},
+	{"R02", "Resources", "fail/warn", false, "Every service sets a mem_limit",
+		"As R01, for memory: one container without a limit can run the host out of memory.",
+		"Set `mem_limit: ${KASBAH_MEM_LIMIT}` (or a size of at least 6m, such as 512m); `check --fix` adds a missing one."},
+	{"R03", "Resources", "fail", false, "No service declares resource reservations",
+		"kasbah uses hard limits only; reservations are banned.",
+		"Remove mem_reservation and deploy.resources.reservations; `check --fix` does."},
+	{"R04", "Resources", "fail/warn", true, "Effective limits are within the host's 90% ceiling",
+		"Above the ceiling one project can take the host down; below it is usually a stale .env, unless kasbah.yml's resources: asked for less.",
+		"On the variables, redeploy: the deploy writes the ceiling into the .env; set resources: in kasbah.yml to ask for less. Lower a literal above the ceiling, or use ${KASBAH_CPU_LIMIT} and ${KASBAH_MEM_LIMIT}."},
+	{"R05", "Resources", "fail", false, "kasbah.yml's resources: is valid",
+		"The deploy resolves it on the server, so a malformed one stops it there.",
+		"Give cpus as cores above 0 (one decimal at most) or 1%-100%, and memory as whole m or g of at least 6m, or a percentage."},
+	{"R06", "Resources", "warn", true, "The projects' own limits fit the host together",
+		"Each limit caps one container; together, projects below the ceiling can still starve the host.",
+		"Lower some project's resources: in its kasbah.yml."},
+
+	{"T01", "Traefik", "warn", false, "traefik-dynamic.yml exists and parses",
+		"It is the project's routing. Without a readable one the routing rules are skipped, and so are C03 and C11.",
+		"Write the fragment with http.routers as a mapping, or set `routed: false` for a project nothing routes to."},
+	{"T02", "Traefik", "fail", false, "A router references the manifest's domain",
+		"Otherwise nothing routes the domain kasbah.yml names to the project.",
+		"Give a router a rule with Host(`<domain>`)."},
+	{"T03", "Traefik", "fail", false, "Every router declares entryPoints",
+		"A router with none listens nowhere.",
+		"Set entryPoints: [websecure] (HTTPS, :443) or [web] (HTTP, :80)."},
+	{"T04", "Traefik", "fail", false, "Every websecure router names a cert resolver",
+		"Without one Traefik serves its self-signed default. letsencrypt, the resolver's former name, was renamed to http.",
+		"Set `tls.certResolver: http`, or a DNS provider's resolver added by `server init --acme-dns`."},
+	{"T05", "Traefik", "fail", false, "No router claims a hostname kasbah reserves",
+		"traefik.*, mail.* and webmail.* belong to kasbah's own fragments on the server.",
+		"Route another hostname."},
+	{"T06", "Traefik", "fail", false, "No service carries traefik.* labels",
+		"Traefik's docker provider is not wired in: routing lives in traefik-dynamic.yml only.",
+		"Move the routing into traefik-dynamic.yml and remove the labels."},
+	{"T07", "Traefik", "fail", false, "Every loadBalancer URL names a service compose defines",
+		"Traefik would route to nothing, or on the legacy kasbah-net to another project's same-named service.",
+		"Use http://<service>:<port> for a service on the kasbah network (or one of its aliases), or a container_name."},
+	{"T08", "Traefik", "warn", false, "A router serves the domain on the web entrypoint",
+		"Plain HTTP to the domain otherwise gets Traefik's 404 instead of a redirect.",
+		"Add a web router for the host with middlewares: [\"http-to-https@file\"] and service: noop@internal."},
+	{"T09", "Traefik", "fail", false, "Nothing reaches a Traefik internal service but noop@internal",
+		"api@internal and its kin would publish Traefik's own API with no authentication.",
+		"Route to the project's own services; noop@internal is for redirect routers."},
+	{"T10", "Traefik", "fail", false, "No wildcard certificate from an HTTP-01 resolver",
+		"HTTP-01 cannot issue a wildcard certificate.",
+		"Name a DNS provider's resolver (`server init --acme-dns`), or list the hostnames."},
+	{"T11", "Traefik", "fail/warn", false, "An unrouted project ships no fragment",
+		"With `routed: false` nothing is routed: a fragment beside it fails, and a domain beside it warns that nothing routes it.",
+		"Remove traefik-dynamic.yml or `routed: false`, and leave domain: out of an unrouted project."},
+
+	{"H01", "Healthchecks", "warn", false, "Every built service declares a compose healthcheck",
+		"check cannot see a Dockerfile HEALTHCHECK, so it warns even when the image declares one.",
+		"Add a healthcheck: in compose, or accept the warning when the Dockerfile declares one."},
+	{"H02", "Healthchecks", "fail", false, "health: reads, and health.container is a compose container",
+		"A deploy reads health: for what to wait on and for how long, then waits on that container to be healthy.",
+		"Make health: a block of container: (a string) and timeout: (a duration like 120s, 5m or 2h); name a service or a container_name, or leave health.container out to wait on every container with a healthcheck."},
+	{"H03", "Healthchecks", "warn", false, "Waited-on healthchecks probe within health.timeout",
+		"A container is starting until a probe passes, so a first probe later than the timeout fails every deploy that recreates it.",
+		"Shorten interval, or set a start_period with a short start_interval (Docker 25 or later), or raise health.timeout."},
+
+	{"E01", "Env", "fail", false, ".env.prod.example lines follow template syntax",
+		"The setup that writes the server's .env refuses a template it cannot read.",
+		"Make each line blank, a # comment, or KEY= with a default, a # hint or a ! command (docs/env-template.md)."},
+	{"E02", "Env", "warn", false, ".env has every key .env.prod.example declares",
+		"A key the .env lacks is a value the app does not get, until a deploy asks for it.",
+		"Add the key to .env, or remove it from the template."},
+	{"E03", "Env", "warn", false, ".env has no key .env.prod.example lacks",
+		"A key the template does not declare is one the next server will not get.",
+		"Add the key to the template, or remove it from .env."},
+	{"E04", "Env", "warn", false, "No obvious secret in .env.prod.example",
+		"The template is committed; a value over 64 characters looks like a leaked secret.",
+		"Make a secret a # hint the operator answers or a ! command that generates it."},
+	{"E05", "Env", "warn", false, ".env.prod.example declares no KASBAH_* key",
+		"kasbah injects its KASBAH_* keys at deploy, so a template line naming one does nothing.",
+		"Remove the line; change the limits with resources: in kasbah.yml."},
+
+	{"HK01", "Hooks", "fail", false, "Every hook is one line of shell in a list kasbah reads",
+		"Hooks run on the server from the project folder, one command per entry; kasbah reads six lists and nothing else.",
+		"Use only backup, pre-deploy, post-deploy, restore, pre-rollback and post-rollback, each entry one non-empty line."},
+	{"HK02", "Hooks", "fail", false, "No top-level backup: key",
+		"A backup is hooks.backup; deploy and rollback refuse the top-level key.",
+		"Move the commands under hooks: backup:."},
+
+	{"M01", "Mail", "fail", false, "mail.domain is set",
+		"A mail: block naming no domain claims nothing, and deploy refuses it.",
+		"Set mail.domain to the domain the app sends from, or remove mail:."},
+	{"M02", "Mail", "retired", false, "Retired; the ID is not reused",
+		"It validated snappymail_domain, which the manifest no longer has.",
+		"Nothing."},
+	{"M03", "Mail", "fail", true, "The server's mail stack serves the claimed domain",
+		"Mail for a domain the stack does not serve is not delivered.",
+		"Run `kasbah server add-mail-domain USER@HOST <domain>`, or `kasbah server init USER@HOST --with-mail` on a server with no mail stack."},
+	{"M04", "Mail", "warn", true, "Every mail domain on the server is DKIM-signed",
+		"Unsigned mail is what receivers file as spam.",
+		"Run `kasbah server mail-dkim USER@HOST <domain> --keep-keys`."},
+
+	{"B01", "Backup", "fail/warn", true, "The backup stack has run, and its last run worked",
+		"A failed, stopped or never-started backup leaves nothing off-box.",
+		"Read `docker logs kasbah-backup` on the server, bring it up with `docker compose -p kasbah-backup up -d`, and supply missing passwords with `kasbah server init USER@HOST --with-backup`."},
+	{"B02", "Backup", "warn", true, "No project holds deploy or rollback leftovers",
+		"A leftover backup directory, kept-aside snapshot or extraction may hold a copy of .env, and no retention removes it.",
+		"Inspect each path named, then remove it by hand."},
+}
+
+// Lookup is the rule with id, matched case-insensitively.
+func Lookup(id string) (Rule, bool) {
+	for _, r := range Rules {
+		if strings.EqualFold(r.ID, id) {
+			return r, true
+		}
+	}
+	return Rule{}, false
+}

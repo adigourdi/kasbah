@@ -80,44 +80,44 @@ func TestGoldenProject(t *testing.T) {
 	want := `Checking /p
 
 Structure:
-  ✓ kasbah.yml exists (schema 1)
-  ✓ compose.prod.yml exists
-  ✓ .env.prod.example exists
-  ✓ .gitignore excludes .env
-  ✓ .gitignore excludes .kasbah/
-  ✓ client is not set — backups file under the project name (demo)
+  ✓ S01,S02 kasbah.yml exists (schema 1)
+  ✓ S03 compose.prod.yml exists
+  ✓ S04 .env.prod.example exists
+  ✓ S05 .gitignore excludes .env
+  ✓ S06 .gitignore excludes .kasbah/
+  ✓ S08 client is not set — backups file under the project name (demo)
 
 Compose:
-  ✓ All services set restart policy
-  ✓ All services set json-file logging with rotation
-  ✓ All routed services join the project's kasbah network
-  ✓ The kasbah network is the project's own (demo_kasbah)
-  ✓ No internal services on the kasbah network or kasbah-net
-  ✓ Names on the kasbah network are project-prefixed
-  ✓ No deprecated 'version:' field
-  ✓ No service publishes host port 80 or 443
-  ⚠ demo-web will not roll on deploy — the fragment targets its container_name, so it is recreated in place, briefly unrouted
+  ✓ C01 All services set restart policy
+  ✓ C02 All services set json-file logging with rotation
+  ✓ C03 All routed services join the project's kasbah network
+  ✓ C04 The kasbah network is the project's own (demo_kasbah)
+  ✓ C07 No internal services on the kasbah network or kasbah-net
+  ✓ C09 Names on the kasbah network are project-prefixed
+  ✓ C05 No deprecated 'version:' field
+  ✓ C14 No service publishes host port 80 or 443
+  ⚠ C11 demo-web will not roll on deploy — the fragment targets its container_name, so it is recreated in place, briefly unrouted
 
 Resources:
-  ✓ All services set cpus/mem_limit via KASBAH_* vars
-  ✓ No resource reservations
+  ✓ R01,R02 All services set cpus/mem_limit via KASBAH_* vars
+  ✓ R03 No resource reservations
 
 Traefik:
-  ✓ traefik-dynamic.yml exists
-  ✓ At least one router references manifest domain (demo.example.com)
-  ✓ All routers declare entryPoints
-  ✓ Secure routers name a cert resolver
-  ✓ No router asks for a wildcard certificate from an HTTP-01 resolver
-  ✓ A router serves demo.example.com on the web entrypoint
-  ✓ No router claims reserved hostnames (traefik.*, mail.*, webmail.*)
-  ✓ No router or service reaches a Traefik internal service other than noop@internal
-  ✓ Fragment loadBalancer URLs target a service, alias or container_name compose defines
-  ✓ compose.prod.yml has no traefik.* labels
+  ✓ T01 traefik-dynamic.yml exists
+  ✓ T02 At least one router references manifest domain (demo.example.com)
+  ✓ T03 All routers declare entryPoints
+  ✓ T04 Secure routers name a cert resolver
+  ✓ T10 No router asks for a wildcard certificate from an HTTP-01 resolver
+  ✓ T08 A router serves demo.example.com on the web entrypoint
+  ✓ T05 No router claims reserved hostnames (traefik.*, mail.*, webmail.*)
+  ✓ T09 No router or service reaches a Traefik internal service other than noop@internal
+  ✓ T07 Fragment loadBalancer URLs target a service, alias or container_name compose defines
+  ✓ T06 compose.prod.yml has no traefik.* labels
 
 Env:
-  ✓ .env.prod.example syntax is valid
-  ✓ .env.prod.example has no obvious long secrets
-  ✓ .env.prod.example leaves the KASBAH_* prefix to kasbah
+  ✓ E01 .env.prod.example syntax is valid
+  ✓ E04 .env.prod.example has no obvious long secrets
+  ✓ E05 .env.prod.example leaves the KASBAH_* prefix to kasbah
 
 Summary: 29 passed, 1 warning, 0 failed
 `
@@ -144,33 +144,33 @@ func TestUnroutedProject(t *testing.T) {
 	want := `Checking /p
 
 Structure:
-  ✓ kasbah.yml exists (schema 1)
-  ✓ compose.prod.yml exists
-  ✓ .env.prod.example exists
-  ✓ .gitignore excludes .env
-  ✓ .gitignore excludes .kasbah/
-  ✓ client is not set — backups file under the project name (demo)
+  ✓ S01,S02 kasbah.yml exists (schema 1)
+  ✓ S03 compose.prod.yml exists
+  ✓ S04 .env.prod.example exists
+  ✓ S05 .gitignore excludes .env
+  ✓ S06 .gitignore excludes .kasbah/
+  ✓ S08 client is not set — backups file under the project name (demo)
 
 Compose:
-  ✓ All services set restart policy
-  ✓ All services set json-file logging with rotation
-  ✓ No Traefik-routed services in compose
-  ✓ No internal services on the kasbah network or kasbah-net
-  ✓ No deprecated 'version:' field
-  ✓ No service publishes host port 80 or 443
+  ✓ C01 All services set restart policy
+  ✓ C02 All services set json-file logging with rotation
+  ✓ C03 No Traefik-routed services in compose
+  ✓ C07 No internal services on the kasbah network or kasbah-net
+  ✓ C05 No deprecated 'version:' field
+  ✓ C14 No service publishes host port 80 or 443
 
 Resources:
-  ✓ All services set cpus/mem_limit via KASBAH_* vars
-  ✓ No resource reservations
+  ✓ R01,R02 All services set cpus/mem_limit via KASBAH_* vars
+  ✓ R03 No resource reservations
 
 Traefik:
-  ✓ No traefik-dynamic.yml — the project is unrouted (routed: false)
-  ✓ compose.prod.yml has no traefik.* labels
+  ✓ T11 No traefik-dynamic.yml — the project is unrouted (routed: false)
+  ✓ T06 compose.prod.yml has no traefik.* labels
 
 Env:
-  ✓ .env.prod.example syntax is valid
-  ✓ .env.prod.example has no obvious long secrets
-  ✓ .env.prod.example leaves the KASBAH_* prefix to kasbah
+  ✓ E01 .env.prod.example syntax is valid
+  ✓ E04 .env.prod.example has no obvious long secrets
+  ✓ E05 .env.prod.example leaves the KASBAH_* prefix to kasbah
 
 Summary: 19 passed, 0 warning, 0 failed
 `
@@ -194,259 +194,259 @@ func TestVerdicts(t *testing.T) {
 			[]string{"  ✗ compose.prod.yml holds 2 YAML documents, where kasbah reads one"}},
 		{"an unanswerable question ends the run",
 			map[string]string{"compose.prod.yml": "services:\n  web: nginx\n"}, 1,
-			[]string{"  ✗ Services missing restart policy: web"}},
+			[]string{"  ✗ C01 Services missing restart policy: web"}},
 		{"a service name is a name, quotes and backslashes included",
 			map[string]string{"compose.prod.yml": "services:\n  'a\"b': {image: nginx}\n  'c\\nd': {image: nginx}\n"}, 6,
-			[]string{"  ✗ Services missing restart policy: a\"b c\\nd"}},
+			[]string{"  ✗ C01 Services missing restart policy: a\"b c\\nd"}},
 		{"services: that is not a mapping",
 			map[string]string{"compose.prod.yml": "services: [web]\n"}, 6,
-			[]string{"  ✗ compose.prod.yml: services is a list, not a mapping", "  ✓ No deprecated 'version:' field"}},
+			[]string{"  ✗ compose.prod.yml: services is a list, not a mapping", "  ✓ C05 No deprecated 'version:' field"}},
 		{"a compose document that is not a mapping",
 			map[string]string{"compose.prod.yml": "[a]\n"}, 6,
 			[]string{"  ✗ compose.prod.yml: the document is a list, not a mapping"}},
 		{"version: false is still a version: field",
 			map[string]string{"compose.prod.yml": goodCompose + "version: false\n"}, 0,
-			[]string{"  ⚠ compose.prod.yml uses deprecated 'version:' field"}},
+			[]string{"  ⚠ C05 compose.prod.yml uses deprecated 'version:' field"}},
 		{"external: only a boolean true is external",
 			map[string]string{"compose.prod.yml": strings.Replace(legacyCompose, "{external: true}", "{external: \"true\"}", 1)}, 6,
-			[]string{"  ✗ kasbah-net not declared external: true"}},
+			[]string{"  ✗ C04 kasbah-net not declared external: true"}},
 		{"resources: well formed",
 			map[string]string{"kasbah.yml": "schema: 1\nname: demo\ndomain: demo.example.com\nresources:\n  cpus: 1.5\n  memory: 50%\n"}, 0,
-			[]string{"  ✓ resources: cpus 1.5, memory 50% — resolved on the server at deploy (a % is a share of the host) and held to its 90% ceiling"}},
+			[]string{"  ✓ R05 resources: cpus 1.5, memory 50% — resolved on the server at deploy (a % is a share of the host) and held to its 90% ceiling"}},
 		{"resources: a bare memory fails naming the units",
 			map[string]string{"kasbah.yml": "schema: 1\nname: demo\ndomain: demo.example.com\nresources:\n  memory: 512\n"}, 6,
-			[]string{"  ✗ kasbah.yml: resources.memory '512' has no unit — memory takes MiB (512m), GiB (2g) or a share of the host (50%) — m, g or %"}},
+			[]string{"  ✗ R05 kasbah.yml: resources.memory '512' has no unit — memory takes MiB (512m), GiB (2g) or a share of the host (50%) — m, g or %"}},
 		{"resources: is judged without a compose file",
 			map[string]string{"kasbah.yml": "schema: 1\nname: demo\ndomain: demo.example.com\nresources: {cpus: 0}\n", "compose.prod.yml": ""}, 6,
-			[]string{"  ✗ kasbah.yml: resources.cpus '0' is not a limit — cpus takes a number of cores with at most one decimal (0.5, 2) or a share of the host (50%)"}},
+			[]string{"  ✗ R05 kasbah.yml: resources.cpus '0' is not a limit — cpus takes a number of cores with at most one decimal (0.5, 2) or a share of the host (50%)"}},
 		{"reservations: false is still a reservation",
 			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "    networks: [kasbah]\n", "    networks: [kasbah]\n    deploy: {resources: {reservations: false}}\n", 1)}, 6,
-			[]string{"  ✗ Services declare resource reservations: demo-web"}},
+			[]string{"  ✗ R03 Services declare resource reservations: demo-web"}},
 		{"T04: a DNS provider's resolver warns that only --server can verify it",
 			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "certResolver: http", "certResolver: cloudflare", 1)}, 0,
-			[]string{"  ✓ Secure routers name a cert resolver",
-				"  ⚠ Routers name a cert resolver other than http: demo→cloudflare — only `check --server` can verify the server declares them (`server init --acme-dns=<provider>:<env file>` adds one)"}},
+			[]string{"  ✓ T04 Secure routers name a cert resolver",
+				"  ⚠ T04 Routers name a cert resolver other than http: demo→cloudflare — only `check --server` can verify the server declares them (`server init --acme-dns=<provider>:<env file>` adds one)"}},
 		{"T04: letsencrypt names the rename",
 			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "certResolver: http", "certResolver: letsencrypt", 1)}, 6,
-			[]string{"  ✗ certResolver letsencrypt was renamed to http — set tls.certResolver: http on: demo"}},
+			[]string{"  ✗ T04 certResolver letsencrypt was renamed to http — set tls.certResolver: http on: demo"}},
 		{"T04: a websecure router without a resolver fails",
 			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "tls: {certResolver: http}, ", "", 1)}, 6,
-			[]string{"  ✗ Websecure routers without tls.certResolver: demo"}},
+			[]string{"  ✗ T04 Websecure routers without tls.certResolver: demo"}},
 		{"T10: a wildcard in tls.domains on http fails",
 			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "tls: {certResolver: http}", "tls: {certResolver: http, domains: [{main: demo.example.com, sans: [\"*.demo.example.com\"]}]}", 1)}, 6,
-			[]string{"  ✗ Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): demo→http (*.demo.example.com) — name a DNS provider's resolver (`server init --acme-dns=`)"}},
+			[]string{"  ✗ T10 Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): demo→http (*.demo.example.com) — name a DNS provider's resolver (`server init --acme-dns=`)"}},
 		{"T10: a double-quoted wildcard Host() on http fails",
 			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "rule: \"Host(`demo.example.com`)\", entryPoints: [websecure]", "rule: 'Host(`demo.example.com`) || Host(\"*.demo.example.com\")', entryPoints: [websecure]", 1)}, 6,
-			[]string{"  ✗ Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): demo→http (*.demo.example.com) — name a DNS provider's resolver (`server init --acme-dns=`)"}},
+			[]string{"  ✗ T10 Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): demo→http (*.demo.example.com) — name a DNS provider's resolver (`server init --acme-dns=`)"}},
 		{"T10: a wildcard in a tcp router's tls.domains on http fails",
 			map[string]string{"traefik-dynamic.yml": goodFragment + "tcp:\n  routers:\n    db: {rule: \"HostSNI(`*`)\", tls: {certResolver: http, domains: [{main: \"*.db.example.com\"}]}}\n"}, 6,
-			[]string{"  ✗ Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): tcp db→http (*.db.example.com) — name a DNS provider's resolver (`server init --acme-dns=`)"}},
+			[]string{"  ✗ T10 Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): tcp db→http (*.db.example.com) — name a DNS provider's resolver (`server init --acme-dns=`)"}},
 		{"T10: a wildcard on a DNS provider's resolver passes locally",
 			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "tls: {certResolver: http}", "tls: {certResolver: cloudflare, domains: [{main: \"*.demo.example.com\"}]}", 1)}, 0,
-			[]string{"  ✓ No router asks for a wildcard certificate from an HTTP-01 resolver"}},
+			[]string{"  ✓ T10 No router asks for a wildcard certificate from an HTTP-01 resolver"}},
 		{"routers: that is not a mapping skips the router rules",
 			map[string]string{"traefik-dynamic.yml": "http:\n  routers: [a]\n"}, 0,
-			[]string{"  ⚠ traefik-dynamic.yml: http.routers is a list, not a mapping — skipping T02–T05 and T08–T10",
-				"  ⚠ traefik-dynamic.yml: http.routers is a list, not a mapping — skipping C03, C07 and C11, which need the services it routes"}},
+			[]string{"  ⚠ T01 traefik-dynamic.yml: http.routers is a list, not a mapping — skipping T02–T05 and T08–T10",
+				"  ⚠ C03,C07,C11 traefik-dynamic.yml: http.routers is a list, not a mapping — skipping C03, C07 and C11, which need the services it routes"}},
 		{"with no fragment read, C03, C07 and C11 conclude nothing",
 			map[string]string{"traefik-dynamic.yml": ""}, 0,
-			[]string{"  ⚠ traefik-dynamic.yml missing — skipping C03, C07 and C11, which need the services it routes", "  ✓ The kasbah network is the project's own (demo_kasbah)"}},
+			[]string{"  ⚠ C03,C07,C11 traefik-dynamic.yml missing — skipping C03, C07 and C11, which need the services it routes", "  ✓ C04 The kasbah network is the project's own (demo_kasbah)"}},
 		{"with no fragment read and nothing on kasbah-net, C07 still passes",
 			map[string]string{"traefik-dynamic.yml": "", "compose.prod.yml": strings.Replace(goodCompose, "networks: [kasbah]", "networks: [internal]", 1)}, 0,
-			[]string{"  ⚠ traefik-dynamic.yml missing — skipping C03 and C11, which need the services it routes", "  ✓ No internal services on the kasbah network or kasbah-net"}},
+			[]string{"  ⚠ C03,C11 traefik-dynamic.yml missing — skipping C03 and C11, which need the services it routes", "  ✓ C07 No internal services on the kasbah network or kasbah-net"}},
 		{"with no fragment read, the default-alias shape still fails C07",
 			map[string]string{"traefik-dynamic.yml": "", "compose.prod.yml": legacyCompose + "  default: {name: kasbah-net}\n"}, 6,
-			[]string{"  ⚠ traefik-dynamic.yml missing — skipping C03 and C11, which need the services it routes", "  ✗ default network aliases kasbah-net — every service joins the shared network; join it explicitly per routed service and keep the rest on a project-internal network"}},
+			[]string{"  ⚠ C03,C11 traefik-dynamic.yml missing — skipping C03 and C11, which need the services it routes", "  ✗ C07 default network aliases kasbah-net — every service joins the shared network; join it explicitly per routed service and keep the rest on a project-internal network"}},
 		{"routed: false still judges C07: nothing may join the kasbah network",
 			map[string]string{"kasbah.yml": "schema: 1\nname: demo\nrouted: false\n", "traefik-dynamic.yml": ""}, 6,
-			[]string{"  ✓ No Traefik-routed services in compose", "  ✗ Non-routed services on the kasbah network: demo-web — Traefik joins it, so only what it routes belongs there",
-				"  ✓ No traefik-dynamic.yml — the project is unrouted (routed: false)"}},
+			[]string{"  ✓ C03 No Traefik-routed services in compose", "  ✗ C07 Non-routed services on the kasbah network: demo-web — Traefik joins it, so only what it routes belongs there",
+				"  ✓ T11 No traefik-dynamic.yml — the project is unrouted (routed: false)"}},
 		{"routed: false and a fragment contradict",
 			map[string]string{"kasbah.yml": man + "routed: false\n"}, 6,
-			[]string{"  ✗ kasbah.yml sets routed: false, yet traefik-dynamic.yml exists — remove one: the fragment to keep the project unrouted, or routed: false to route it",
-				"  ⚠ manifest domain is 'demo.example.com', but routed: false — nothing routes it to this project; leave domain: out"}},
+			[]string{"  ✗ T11 kasbah.yml sets routed: false, yet traefik-dynamic.yml exists — remove one: the fragment to keep the project unrouted, or routed: false to route it",
+				"  ⚠ T11 manifest domain is 'demo.example.com', but routed: false — nothing routes it to this project; leave domain: out"}},
 		{"routed: false with a domain warns that nothing routes it",
 			map[string]string{"kasbah.yml": man + "routed: false\n", "traefik-dynamic.yml": "", "compose.prod.yml": relayCompose}, 0,
-			[]string{"  ✓ No traefik-dynamic.yml — the project is unrouted (routed: false)",
-				"  ⚠ manifest domain is 'demo.example.com', but routed: false — nothing routes it to this project; leave domain: out"}},
+			[]string{"  ✓ T11 No traefik-dynamic.yml — the project is unrouted (routed: false)",
+				"  ⚠ T11 manifest domain is 'demo.example.com', but routed: false — nothing routes it to this project; leave domain: out"}},
 		{"routed: true with no fragment is today's project",
 			map[string]string{"kasbah.yml": man + "routed: true\n", "traefik-dynamic.yml": ""}, 0,
-			[]string{"  ⚠ traefik-dynamic.yml missing — skipping T02–T05 and T08–T10"}},
+			[]string{"  ⚠ T01 traefik-dynamic.yml missing — skipping T02–T05 and T08–T10"}},
 		{"a legacy project on kasbah-net passes C03 and is warned to move",
 			map[string]string{"compose.prod.yml": legacyCompose}, 0,
-			[]string{"  ✓ All routed services join kasbah-net", "  ⚠ Routed through the shared kasbah-net: demo-web — every project's routed containers reach each other there; move them to a project network under the key kasbah (docs/traefik.md → Network)",
-				"  ✓ kasbah-net declared external", "  ✓ kasbah-net service names are project-prefixed"}},
+			[]string{"  ✓ C03 All routed services join kasbah-net", "  ⚠ C03 Routed through the shared kasbah-net: demo-web — every project's routed containers reach each other there; move them to a project network under the key kasbah (docs/traefik.md → Network)",
+				"  ✓ C04 kasbah-net declared external", "  ✓ C09 kasbah-net service names are project-prefixed"}},
 		{"a routed service on neither network fails C03",
 			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "networks: [kasbah]", "networks: [internal]", 1)}, 6,
-			[]string{"  ✗ Routed services on neither the project's kasbah network nor kasbah-net: demo-web"}},
+			[]string{"  ✗ C03 Routed services on neither the project's kasbah network nor kasbah-net: demo-web"}},
 		{"an external kasbah network fails C04",
 			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "kasbah: {}", "kasbah: {external: true}", 1)}, 6,
-			[]string{"  ✗ The kasbah network is declared external — it is the project's own: drop external: so compose creates demo_kasbah, which deploy connects Traefik to"}},
+			[]string{"  ✗ C04 The kasbah network is declared external — it is the project's own: drop external: so compose creates demo_kasbah, which deploy connects Traefik to"}},
 		{"a renamed kasbah network fails C04",
 			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "kasbah: {}", "kasbah: {name: shared}", 1)}, 6,
-			[]string{"  ✗ The kasbah network sets name — declare it as kasbah: {}: compose recreates a network whose settings change, which fails while Traefik is attached, and every later deploy would fail at up"}},
+			[]string{"  ✗ C04 The kasbah network sets name — declare it as kasbah: {}: compose recreates a network whose settings change, which fails while Traefik is attached, and every later deploy would fail at up"}},
 		{"any setting on the kasbah network fails C04, naming it",
 			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "kasbah: {}", "kasbah: {driver: bridge, labels: {a: b}}", 1)}, 6,
-			[]string{"  ✗ The kasbah network sets driver, labels — declare it as kasbah: {}: compose recreates a network whose settings change, which fails while Traefik is attached, and every later deploy would fail at up"}},
+			[]string{"  ✗ C04 The kasbah network sets driver, labels — declare it as kasbah: {}: compose recreates a network whose settings change, which fails while Traefik is attached, and every later deploy would fail at up"}},
 		{"a null kasbah network is as empty as {}",
 			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "kasbah: {}", "kasbah:", 1)}, 0,
-			[]string{"  ✓ The kasbah network is the project's own (demo_kasbah)"}},
+			[]string{"  ✓ C04 The kasbah network is the project's own (demo_kasbah)"}},
 		{"another stack's network, taken external, fails C04",
 			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "  kasbah: {}\n", "  kasbah: {}\n  m: {name: mail_kasbah, external: true}\n  o: {external: {name: shop_kasbah}}\n", 1)}, 6,
-			[]string{"  ✗ External networks other than kasbah-net: m (mail_kasbah) o (shop_kasbah) — a project joins only its own networks and the legacy kasbah-net"}},
+			[]string{"  ✗ C04 External networks other than kasbah-net: m (mail_kasbah) o (shop_kasbah) — a project joins only its own networks and the legacy kasbah-net"}},
 		{"a name on the kasbah network not named for the project fails C09",
 			map[string]string{"compose.prod.yml": strings.Replace(strings.Replace(goodCompose, "  demo-web:\n", "  web:\n", 1),
 				"    networks: [kasbah]\n", "    networks: {kasbah: {aliases: [demo-api, krvb-w]}}\n", 1)}, 6,
-			[]string{"  ✗ Names on the kasbah network that are not 'demo' or 'demo-*': web (service) krvb-w (alias of web) — Traefik resolves names across every project's network, so another project's name can answer for this one's"}},
+			[]string{"  ✗ C09 Names on the kasbah network that are not 'demo' or 'demo-*': web (service) krvb-w (alias of web) — Traefik resolves names across every project's network, so another project's name can answer for this one's"}},
 		{"a container_name on the kasbah network not named for the project fails C09",
 			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "container_name: demo-web", "container_name: krvb-w", 1),
 				"traefik-dynamic.yml": strings.Replace(goodFragment, "demo-web:80", "krvb-w:80", 1)}, 6,
-			[]string{"  ✗ Names on the kasbah network that are not 'demo' or 'demo-*': krvb-w (container_name of demo-web) — Traefik resolves names across every project's network, so another project's name can answer for this one's"}},
+			[]string{"  ✗ C09 Names on the kasbah network that are not 'demo' or 'demo-*': krvb-w (container_name of demo-web) — Traefik resolves names across every project's network, so another project's name can answer for this one's"}},
 		{"a commented mail-dms is not a use of it",
 			map[string]string{".env.prod.example": "# c\n# SMTP_HOST=mail-dms was the old way\nDOMAIN=x\n"}, 0,
-			[]string{"  ✓ .env.prod.example syntax is valid"}},
+			[]string{"  ✓ E01 .env.prod.example syntax is valid"}},
 		{"a quoted span is one entry to E01-E03",
 			map[string]string{".env.prod.example": "DOMAIN=x\nTLS_KEY=\"-----BEGIN\nX=1\n-----END\"\n", ".env": "DOMAIN=y\nTLS_KEY='-----BEGIN\r\nY=2\r\n-----END'\r\n"}, 0,
-			[]string{"  ✓ .env.prod.example syntax is valid", "  ✓ .env has no missing keys vs .env.prod.example", "  ✓ .env has no extra keys vs .env.prod.example"}},
+			[]string{"  ✓ E01 .env.prod.example syntax is valid", "  ✓ E02 .env has no missing keys vs .env.prod.example", "  ✓ E03 .env has no extra keys vs .env.prod.example"}},
 		{"a template quote that never closes fails E01",
 			map[string]string{".env.prod.example": "DOMAIN=x\nTLS_KEY=\"-----BEGIN\nX=1\n"}, 6,
-			[]string{"  ✗ .env.prod.example has invalid lines (line numbers: 2)"}},
+			[]string{"  ✗ E01 .env.prod.example has invalid lines (line numbers: 2)"}},
 		{"an undeclared kasbah network fails C04",
 			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "  kasbah: {}\n", "  other: {}\n", 1)}, 6,
-			[]string{"  ✗ The kasbah network is not declared under the top-level networks: — add kasbah: {}"}},
+			[]string{"  ✗ C04 The kasbah network is not declared under the top-level networks: — add kasbah: {}"}},
 		{"a non-routed service on the kasbah network fails C07",
 			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "networks:\n  kasbah", "  db: {image: postgres, restart: always, cpus: 1, mem_limit: 1g, logging: {driver: json-file, options: {max-size: 1m, max-file: 1}}, networks: [kasbah]}\nnetworks:\n  kasbah", 1)}, 6,
-			[]string{"  ✗ Non-routed services on the kasbah network: db — Traefik joins it, so only what it routes belongs there"}},
+			[]string{"  ✗ C07 Non-routed services on the kasbah network: db — Traefik joins it, so only what it routes belongs there"}},
 		{"a compose or env template naming mail-dms is warned",
 			map[string]string{".env.prod.example": "# c\nSMTP_HOST=mail-dms\n"}, 0,
-			[]string{"  ⚠ mail-dms is named in .env.prod.example — no project shares a network with the mail server; send through mail.<domain>:587 with a mailbox login (docs/mail.md → SMTP access from apps)"}},
+			[]string{"  ⚠ C10 mail-dms is named in .env.prod.example — no project shares a network with the mail server; send through mail.<domain>:587 with a mailbox login (docs/mail.md → SMTP access from apps)"}},
 		{"max-size: false is no rotation",
 			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "max-size: 10m", "max-size: false", 1)}, 6,
-			[]string{"  ✗ Services missing json-file logging with max-size/max-file: demo-web"}},
+			[]string{"  ✗ C02 Services missing json-file logging with max-size/max-file: demo-web"}},
 		{"max-file: {a: 1} is no rotation",
 			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, `max-file: "3"`, "max-file: {a: 1}", 1)}, 6,
-			[]string{"  ✗ Services missing json-file logging with max-size/max-file: demo-web"}},
+			[]string{"  ✗ C02 Services missing json-file logging with max-size/max-file: demo-web"}},
 		{"numeric rotation values are given",
 			map[string]string{"compose.prod.yml": strings.Replace(strings.Replace(goodCompose, `max-file: "3"`, "max-file: 3", 1), "max-size: 10m", "max-size: 1000", 1)}, 0,
-			[]string{"  ✓ All services set json-file logging with rotation"}},
+			[]string{"  ✓ C02 All services set json-file logging with rotation"}},
 		{"a fragment of several documents is not read",
 			map[string]string{"traefik-dynamic.yml": goodFragment + "---\n" + goodFragment}, 0,
-			[]string{"  ⚠ traefik-dynamic.yml holds 2 YAML documents, where kasbah reads one — skipping T02–T05 and T08–T10",
-				"  ⚠ traefik-dynamic.yml holds 2 YAML documents, where kasbah reads one — skipping C03, C07 and C11, which need the services it routes"}},
+			[]string{"  ⚠ T01 traefik-dynamic.yml holds 2 YAML documents, where kasbah reads one — skipping T02–T05 and T08–T10",
+				"  ⚠ C03,C07,C11 traefik-dynamic.yml holds 2 YAML documents, where kasbah reads one — skipping C03, C07 and C11, which need the services it routes"}},
 		{"entryPoints: that is not a list",
 			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "entryPoints: [web]", "entryPoints: web", 1)}, 6,
-			[]string{"  ✗ Routers without entryPoints: demo-http (entryPoints is a string, not a list)"}},
+			[]string{"  ✗ T03 Routers without entryPoints: demo-http (entryPoints is a string, not a list)"}},
 		{"T09 fails a router on api@internal, names router and service",
 			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "service: demo}", "service: api@internal}", 1)}, 6,
-			[]string{"  ✗ Fragment routes to Traefik's internal services (only noop@internal is allowed): demo→api@internal"}},
+			[]string{"  ✗ T09 Fragment routes to Traefik's internal services (only noop@internal is allowed): demo→api@internal"}},
 		{"T09 fails weighted, mirroring and failover entries on @internal",
 			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "  services:\n",
 				"  services:\n    w: {weighted: {services: [{name: demo}, {name: dashboard@internal}]}}\n"+
 					"    m: {mirroring: {service: rest@internal, mirrors: [{name: ping@internal}, {name: noop@internal}]}}\n"+
 					"    f: {failover: {service: demo, fallback: api@internal}}\n"+
 					"    h: {highestRandomWeight: {services: [{name: api@internal}, {name: api@internal}]}}\n", 1)}, 6,
-			[]string{"  ✗ Fragment routes to Traefik's internal services (only noop@internal is allowed): services.f→api@internal services.h→api@internal services.m→rest@internal services.m→ping@internal services.w→dashboard@internal"}},
+			[]string{"  ✗ T09 Fragment routes to Traefik's internal services (only noop@internal is allowed): services.f→api@internal services.h→api@internal services.m→rest@internal services.m→ping@internal services.w→dashboard@internal"}},
 		{"T09 fails an errors middleware's service on @internal",
 			map[string]string{"traefik-dynamic.yml": goodFragment + "  middlewares:\n    oops: {errors: {status: [\"500\"], service: api@internal, query: /}}\n"}, 6,
-			[]string{"  ✗ Fragment routes to Traefik's internal services (only noop@internal is allowed): middlewares.oops→api@internal"}},
+			[]string{"  ✗ T09 Fragment routes to Traefik's internal services (only noop@internal is allowed): middlewares.oops→api@internal"}},
 		{"T09 passes noop@internal",
 			nil, 0,
-			[]string{"  ✓ No router or service reaches a Traefik internal service other than noop@internal"}},
+			[]string{"  ✓ T09 No router or service reaches a Traefik internal service other than noop@internal"}},
 		{"local T05 is the first-label heuristic",
 			map[string]string{"traefik-dynamic.yml": "http:\n  routers:\n    a: {rule: \"Host(`mail.x.io`) || Host(`mailhog.x.io`)\", entryPoints: [web]}\n"}, 6,
-			[]string{"  ✗ Routers claim reserved hostnames: a→mail.x.io"}},
+			[]string{"  ✗ T05 Routers claim reserved hostnames: a→mail.x.io"}},
 		{"cpus: 0.5 is a literal, warned locally", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "${KASBAH_CPU_LIMIT}", "0.5", 1)}, 0,
-			[]string{"  ⚠ Services with literal resource limits: demo-web(cpus=0.5) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
+			[]string{"  ⚠ R01,R02 Services with literal resource limits: demo-web(cpus=0.5) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
 		{"quoted cpus and a size are literals", map[string]string{"compose.prod.yml": strings.Replace(strings.Replace(goodCompose, "${KASBAH_CPU_LIMIT}", `"1.5"`, 1), "${KASBAH_MEM_LIMIT}", "2G", 1)}, 0,
-			[]string{"  ⚠ Services with literal resource limits: demo-web(cpus=1.5,mem_limit=2G) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
+			[]string{"  ⚠ R01,R02 Services with literal resource limits: demo-web(cpus=1.5,mem_limit=2G) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
 		{"a byte count is a literal", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "${KASBAH_MEM_LIMIT}", "536870912", 1)}, 0,
-			[]string{"  ⚠ Services with literal resource limits: demo-web(mem_limit=536870912) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
+			[]string{"  ⚠ R01,R02 Services with literal resource limits: demo-web(mem_limit=536870912) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
 		{"cpus: 0 is no limit", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "${KASBAH_CPU_LIMIT}", "0", 1)}, 6,
-			[]string{"  ✗ Services with missing or malformed resource limits: demo-web(cpus) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
+			[]string{"  ✗ R01,R02 Services with missing or malformed resource limits: demo-web(cpus) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
 		{"malformed literals fail", map[string]string{"compose.prod.yml": strings.Replace(strings.Replace(goodCompose, "${KASBAH_CPU_LIMIT}", "1,5", 1), "${KASBAH_MEM_LIMIT}", "{a: 1}", 1)}, 6,
-			[]string{"  ✗ Services with missing or malformed resource limits: demo-web(cpus,mem_limit) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
+			[]string{"  ✗ R01,R02 Services with missing or malformed resource limits: demo-web(cpus,mem_limit) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
 		{"another variable is not a literal", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "${KASBAH_MEM_LIMIT}", "${MY_MEM}", 1)}, 6,
-			[]string{"  ✗ Services with missing or malformed resource limits: demo-web(mem_limit) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
+			[]string{"  ✗ R01,R02 Services with missing or malformed resource limits: demo-web(mem_limit) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
 		{"mem_limit: 1.5g is a size docker reads", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "${KASBAH_MEM_LIMIT}", `1.5g`, 1)}, 0,
-			[]string{"  ⚠ Services with literal resource limits: demo-web(mem_limit=1.5g) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
+			[]string{"  ⚠ R01,R02 Services with literal resource limits: demo-web(mem_limit=1.5g) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
 		{"mem_limit: 2GiB is a size docker reads", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "${KASBAH_MEM_LIMIT}", `2GiB`, 1)}, 0,
-			[]string{"  ⚠ Services with literal resource limits: demo-web(mem_limit=2GiB) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
+			[]string{"  ⚠ R01,R02 Services with literal resource limits: demo-web(mem_limit=2GiB) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
 		{"mem_limit: 1t is a size docker reads", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "${KASBAH_MEM_LIMIT}", `1t`, 1)}, 0,
-			[]string{"  ⚠ Services with literal resource limits: demo-web(mem_limit=1t) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
+			[]string{"  ⚠ R01,R02 Services with literal resource limits: demo-web(mem_limit=1t) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
 		{"mem_limit: 512 MB is a size docker reads", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "${KASBAH_MEM_LIMIT}", `"512 MB"`, 1)}, 0,
-			[]string{"  ⚠ Services with literal resource limits: demo-web(mem_limit=512 MB) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
+			[]string{"  ⚠ R01,R02 Services with literal resource limits: demo-web(mem_limit=512 MB) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
 		{"mem_limit: 6m is a size docker reads", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "${KASBAH_MEM_LIMIT}", `6m`, 1)}, 0,
-			[]string{"  ⚠ Services with literal resource limits: demo-web(mem_limit=6m) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
+			[]string{"  ⚠ R01,R02 Services with literal resource limits: demo-web(mem_limit=6m) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
 		{"512mi is no unit docker reads", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "${KASBAH_MEM_LIMIT}", `512mi`, 1)}, 6,
-			[]string{"  ✗ Services with missing or malformed resource limits: demo-web(mem_limit) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
+			[]string{"  ✗ R01,R02 Services with missing or malformed resource limits: demo-web(mem_limit) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
 		{"512 bytes is under docker's 6m minimum", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "${KASBAH_MEM_LIMIT}", `512`, 1)}, 6,
-			[]string{"  ✗ Services with missing or malformed resource limits: demo-web(mem_limit) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
+			[]string{"  ✗ R01,R02 Services with missing or malformed resource limits: demo-web(mem_limit) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
 		{"99999999999t overflows", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "${KASBAH_MEM_LIMIT}", `99999999999t`, 1)}, 6,
-			[]string{"  ✗ Services with missing or malformed resource limits: demo-web(mem_limit) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
+			[]string{"  ✗ R01,R02 Services with missing or malformed resource limits: demo-web(mem_limit) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
 		{"5.5.5m is no number", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "${KASBAH_MEM_LIMIT}", `5.5.5m`, 1)}, 6,
-			[]string{"  ✗ Services with missing or malformed resource limits: demo-web(mem_limit) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
+			[]string{"  ✗ R01,R02 Services with missing or malformed resource limits: demo-web(mem_limit) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
 		{"cpus: \".5\" is a literal", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "${KASBAH_CPU_LIMIT}", `".5"`, 1)}, 0,
-			[]string{"  ⚠ Services with literal resource limits: demo-web(cpus=.5) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
+			[]string{"  ⚠ R01,R02 Services with literal resource limits: demo-web(cpus=.5) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
 		{"deploy.resources.limits is the service's limit", map[string]string{"compose.prod.yml": strings.Replace(goodCompose,
 			"    cpus: ${KASBAH_CPU_LIMIT}\n    mem_limit: ${KASBAH_MEM_LIMIT}\n", "    deploy: {resources: {limits: {cpus: \"0.5\", memory: 1g}}}\n", 1)}, 0,
-			[]string{"  ⚠ Services with literal resource limits: demo-web(cpus=0.5,mem_limit=1g) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
+			[]string{"  ⚠ R01,R02 Services with literal resource limits: demo-web(cpus=0.5,mem_limit=1g) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
 		{"deploy.resources.limits may hold the references", map[string]string{"compose.prod.yml": strings.Replace(goodCompose,
 			"    cpus: ${KASBAH_CPU_LIMIT}\n    mem_limit: ${KASBAH_MEM_LIMIT}\n", "    deploy: {resources: {limits: {cpus: \"${KASBAH_CPU_LIMIT}\", memory: \"${KASBAH_MEM_LIMIT}\"}}}\n", 1)}, 0,
-			[]string{"  ✓ All services set cpus/mem_limit via KASBAH_* vars"}},
+			[]string{"  ✓ R01,R02 All services set cpus/mem_limit via KASBAH_* vars"}},
 		{"two different values fail", map[string]string{"compose.prod.yml": strings.Replace(goodCompose,
 			"    mem_limit: ${KASBAH_MEM_LIMIT}\n", "    mem_limit: ${KASBAH_MEM_LIMIT}\n    deploy: {resources: {limits: {cpus: 1, memory: \"${KASBAH_MEM_LIMIT}\"}}}\n", 1)}, 6,
-			[]string{"  ✗ Services with missing or malformed resource limits: demo-web(cpus) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
+			[]string{"  ✗ R01,R02 Services with missing or malformed resource limits: demo-web(cpus) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
 		{"the same limit spelled twice passes", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "    cpus: ${KASBAH_CPU_LIMIT}\n", "    cpus: 0.5\n    deploy: {resources: {limits: {cpus: \"0.50\"}}}\n", 1)}, 0,
-			[]string{"  ⚠ Services with literal resource limits: demo-web(cpus=0.5) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
+			[]string{"  ⚠ R01,R02 Services with literal resource limits: demo-web(cpus=0.5) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
 		{"the same size spelled twice passes", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "    mem_limit: ${KASBAH_MEM_LIMIT}\n", "    mem_limit: 512m\n    deploy: {resources: {limits: {memory: \"512M\"}}}\n", 1)}, 0,
-			[]string{"  ⚠ Services with literal resource limits: demo-web(mem_limit=512m) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
+			[]string{"  ⚠ R01,R02 Services with literal resource limits: demo-web(mem_limit=512m) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
 		{"two different sizes fail", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "    mem_limit: ${KASBAH_MEM_LIMIT}\n", "    mem_limit: 512m\n    deploy: {resources: {limits: {memory: 1g}}}\n", 1)}, 6,
-			[]string{"  ✗ Services with missing or malformed resource limits: demo-web(mem_limit) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
+			[]string{"  ✗ R01,R02 Services with missing or malformed resource limits: demo-web(mem_limit) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
 		{"deploy memory as a number fails", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "    mem_limit: ${KASBAH_MEM_LIMIT}\n", "    deploy: {resources: {limits: {memory: 536870912}}}\n", 1)}, 6,
-			[]string{"  ✗ Services with missing or malformed resource limits: demo-web(mem_limit) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
+			[]string{"  ✗ R01,R02 Services with missing or malformed resource limits: demo-web(mem_limit) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
 		{"deploy cpus as a number is a literal", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "    cpus: ${KASBAH_CPU_LIMIT}\n", "    deploy: {resources: {limits: {cpus: 1}}}\n", 1)}, 0,
-			[]string{"  ⚠ Services with literal resource limits: demo-web(cpus=1) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
+			[]string{"  ⚠ R01,R02 Services with literal resource limits: demo-web(cpus=1) — a literal does not follow the host's ceiling, and only check --server can compare it with it"}},
 		{"missing cpus fails", map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "    cpus: ${KASBAH_CPU_LIMIT}\n", "", 1)}, 6,
-			[]string{"  ✗ Services with missing or malformed resource limits: demo-web(cpus) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
+			[]string{"  ✗ R01,R02 Services with missing or malformed resource limits: demo-web(cpus) — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values"}},
 		{"drift", map[string]string{".env": "KASBAH_X=1\nEXTRA=2\r\n"}, 0,
-			[]string{"  ⚠ .env missing keys vs .env.prod.example: DOMAIN", "  ⚠ .env has extra keys not in .env.prod.example: EXTRA"}},
+			[]string{"  ⚠ E02 .env missing keys vs .env.prod.example: DOMAIN", "  ⚠ E03 .env has extra keys not in .env.prod.example: EXTRA"}},
 		{"mail block of the wrong shape", map[string]string{"kasbah.yml": man + "mail: example.com\n"}, 6,
-			[]string{"  ✗ kasbah.yml: mail: is not a block — it has to be a block with a domain: under it (docs/project-manifest.md → mail)"}},
+			[]string{"  ✗ M01 kasbah.yml: mail: is not a block — it has to be a block with a domain: under it (docs/project-manifest.md → mail)"}},
 		{"mail: \"\" is a mail: block deploy refuses", map[string]string{"kasbah.yml": man + "mail: \"\"\n"}, 6,
-			[]string{"  ✗ kasbah.yml: mail: is not a block — it has to be a block with a domain: under it (docs/project-manifest.md → mail)"}},
+			[]string{"  ✗ M01 kasbah.yml: mail: is not a block — it has to be a block with a domain: under it (docs/project-manifest.md → mail)"}},
 		{"T05 matches a Host()'s first label whole",
 			map[string]string{"traefik-dynamic.yml": "http:\n  routers:\n    a: {rule: \"Host(`x\\nmail`)\", entryPoints: [web]}\n"}, 6,
-			[]string{"  ✓ No router claims reserved hostnames (traefik.*, mail.*, webmail.*)"}},
+			[]string{"  ✓ T05 No router claims reserved hostnames (traefik.*, mail.*, webmail.*)"}},
 		{"client: true is not a repository name", map[string]string{"kasbah.yml": man + "client: true\n"}, 6,
-			[]string{"  ✗ kasbah.yml: client must be a string, not true"}},
+			[]string{"  ✗ S08 kasbah.yml: client must be a string, not true"}},
 		{"hooks: false is a hooks: block deploy refuses", map[string]string{"kasbah.yml": man + "hooks: false\n"}, 6,
-			[]string{"  ✗ kasbah.yml: hooks: is not a block — it holds the lists backup:, pre-deploy:, post-deploy:, restore:, pre-rollback: and post-rollback: (docs/project-manifest.md)"}},
+			[]string{"  ✗ HK01 kasbah.yml: hooks: is not a block — it holds the lists backup:, pre-deploy:, post-deploy:, restore:, pre-rollback: and post-rollback: (docs/project-manifest.md)"}},
 		{"HK01 refuses a hook list deploy does not run", map[string]string{"kasbah.yml": man + "hooks:\n  post-deploy: [\"demo-web true\"]\n  pre_deploy: [\"ghost true\"]\n"}, 6,
-			[]string{"  ✗ kasbah.yml: hooks.pre_deploy is not a hook kasbah runs — hooks: holds the lists backup:, pre-deploy:, post-deploy:, restore:, pre-rollback: and post-rollback: (docs/project-manifest.md)"}},
+			[]string{"  ✗ HK01 kasbah.yml: hooks.pre_deploy is not a hook kasbah runs — hooks: holds the lists backup:, pre-deploy:, post-deploy:, restore:, pre-rollback: and post-rollback: (docs/project-manifest.md)"}},
 		{"a hook entry that is not a string", map[string]string{"kasbah.yml": man + "hooks:\n  post-deploy: [{a: b}]\n"}, 6,
-			[]string{"  ✗ kasbah.yml: hooks.post-deploy holds {\"a\":\"b\"} — each entry must be a string, one shell command"}},
+			[]string{"  ✗ HK01 kasbah.yml: hooks.post-deploy holds {\"a\":\"b\"} — each entry must be a string, one shell command"}},
 		{"HK01 refuses a hook on two lines", map[string]string{"kasbah.yml": man + "hooks:\n  post-deploy:\n    - |\n      php artisan down\n      php artisan migrate\n"}, 6,
-			[]string{"  ✗ kasbah.yml: the post-deploy hook 'php artisan down…' spans more than one line — a hook is one line of shell, and a multi-line value would be run as several hooks; chain with && or call a script (docs/project-manifest.md)"}},
+			[]string{"  ✗ HK01 kasbah.yml: the post-deploy hook 'php artisan down…' spans more than one line — a hook is one line of shell, and a multi-line value would be run as several hooks; chain with && or call a script (docs/project-manifest.md)"}},
 		{"HK01 refuses an empty hook", map[string]string{"kasbah.yml": man + "hooks:\n  pre-deploy: [\"\"]\n"}, 6,
-			[]string{"  ✗ kasbah.yml: hooks.pre-deploy holds an empty entry — each entry is one shell command (docs/project-manifest.md)"}},
+			[]string{"  ✗ HK01 kasbah.yml: hooks.pre-deploy holds an empty entry — each entry is one shell command (docs/project-manifest.md)"}},
 		{"HK01 passes shell that names no container", map[string]string{"kasbah.yml": man + "hooks:\n  pre-deploy: [\"docker compose exec -T ghost true\"]\n"}, 0,
-			[]string{"  ✓ Every hook is one line of shell"}},
+			[]string{"  ✓ HK01 Every hook is one line of shell"}},
 		{"health: that is not a block", map[string]string{"kasbah.yml": man + "health: demo-web\n"}, 6,
-			[]string{"  ✗ kasbah.yml: health: is not a block — it holds container: and timeout: (docs/project-manifest.md)"}},
+			[]string{"  ✗ H02 kasbah.yml: health: is not a block — it holds container: and timeout: (docs/project-manifest.md)"}},
 		{"H02 refuses a timeout deploy refuses", map[string]string{"kasbah.yml": man + "health: {container: demo-web, timeout: soon}\n"}, 6,
-			[]string{"  ✗ kasbah.yml: health.timeout 'soon' is not a duration kasbah can use — write it as 120s, 5m or 2h"}},
+			[]string{"  ✗ H02 kasbah.yml: health.timeout 'soon' is not a duration kasbah can use — write it as 120s, 5m or 2h"}},
 		{"HK02 refuses a top-level backup: block", map[string]string{"kasbah.yml": man + "backup: {check: true, command: dump, extension: sql, container: demo-web}\n"}, 6,
-			[]string{"  ✗ kasbah.yml: backup: is not a key kasbah reads — a backup is the hooks.backup list, plain shell that writes into $KASBAH_BACKUP_DIR (docs/project-manifest.md → hooks)"}},
+			[]string{"  ✗ HK02 kasbah.yml: backup: is not a key kasbah reads — a backup is the hooks.backup list, plain shell that writes into $KASBAH_BACKUP_DIR (docs/project-manifest.md → hooks)"}},
 		{"HK02 refuses backup: whatever it holds", map[string]string{"kasbah.yml": man + "backup: false\n"}, 6,
-			[]string{"  ✗ kasbah.yml: backup: is not a key kasbah reads — a backup is the hooks.backup list, plain shell that writes into $KASBAH_BACKUP_DIR (docs/project-manifest.md → hooks)"}},
+			[]string{"  ✗ HK02 kasbah.yml: backup: is not a key kasbah reads — a backup is the hooks.backup list, plain shell that writes into $KASBAH_BACKUP_DIR (docs/project-manifest.md → hooks)"}},
 		{"HK01 reads the backup and restore hooks", map[string]string{"kasbah.yml": man + "hooks:\n  backup: ['docker compose exec -T db pg_dump app > \"$KASBAH_BACKUP_DIR/db.sql\"']\n  restore: [\"\"]\n"}, 6,
-			[]string{"  ✗ kasbah.yml: hooks.restore holds an empty entry — each entry is one shell command (docs/project-manifest.md)"}},
+			[]string{"  ✗ HK01 kasbah.yml: hooks.restore holds an empty entry — each entry is one shell command (docs/project-manifest.md)"}},
 		{"HK01 passes a backup hook", map[string]string{"kasbah.yml": man + "hooks:\n  backup: ['pg_dump > \"$KASBAH_BACKUP_DIR/db.sql\"']\n  restore: ['psql < \"$KASBAH_BACKUP_DIR/db.sql\"']\n"}, 0,
-			[]string{"  ✓ Every hook is one line of shell"}},
+			[]string{"  ✓ HK01 Every hook is one line of shell"}},
 		{"a NUL ends a .gitignore line", map[string]string{".gitignore": "x\x00.env\x00.kasbah/"}, 0,
-			[]string{"  ✓ .gitignore excludes .env", "  ✓ .gitignore excludes .kasbah/"}},
+			[]string{"  ✓ S05 .gitignore excludes .env", "  ✓ S06 .gitignore excludes .kasbah/"}},
 		{"a mail: key kasbah does not know is not read", map[string]string{"kasbah.yml": "schema: 1\nname: demo\ndomain: demo.example.com\nmail: {domain: x.io, snappymail_domain: ./x.json}\n"}, 0,
-			[]string{"  ✓ Mail claim names domain 'x.io'"}},
+			[]string{"  ✓ M01 Mail claim names domain 'x.io'"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			project(t, tc.files)
@@ -470,7 +470,7 @@ func hcCompose(hc, more string) string {
 }
 
 func TestH03(t *testing.T) {
-	const late = "  ⚠ demo-web's first healthcheck probe comes "
+	const late = "  ⚠ H03 demo-web's first healthcheck probe comes "
 	const worker = "  demo-worker:\n    image: busybox\n    healthcheck: {test: [CMD, \"true\"], interval: 10m}\n"
 	for _, tc := range []struct {
 		name, compose, health string
@@ -561,7 +561,7 @@ func TestH03(t *testing.T) {
 			project(t, files)
 			out, _, _ := check(t)
 			for _, svc := range []string{"demo-web", "demo-worker"} {
-				got := strings.Contains(out, "  ⚠ "+svc+"'s first healthcheck probe comes ")
+				got := strings.Contains(out, "  ⚠ H03 "+svc+"'s first healthcheck probe comes ")
 				if want := inList(tc.warned, svc); got != want {
 					t.Errorf("%s warned %v, want %v:\n%s", svc, got, want, out)
 				}
@@ -622,30 +622,30 @@ func TestC11(t *testing.T) {
 	noHC := strings.Replace(rollCompose, "    healthcheck: {test: [CMD, wget, -q, --spider, \"http://127.0.0.1/\"]}\n", "", 1)
 	const unrouted = ", so it is recreated in place, briefly unrouted"
 	for _, tc := range []struct{ name, compose, want string }{
-		{"a rollable service passes", rollCompose, "  ✓ All routed services can roll on deploy"},
+		{"a rollable service passes", rollCompose, "  ✓ C11 All routed services can roll on deploy"},
 		{"a container_name the fragment does not target", with("    container_name: demo-web-1\n"),
-			"  ⚠ demo-web will not roll on deploy — it sets container_name" + unrouted},
+			"  ⚠ C11 demo-web will not roll on deploy — it sets container_name" + unrouted},
 		{"a host port", with("    ports: [\"127.0.0.1:8080:80\"]\n"),
-			"  ⚠ demo-web will not roll on deploy — it publishes a host port a second replica cannot bind" + unrouted},
+			"  ⚠ C11 demo-web will not roll on deploy — it publishes a host port a second replica cannot bind" + unrouted},
 		{"a host port in the long form", with("    ports: [{target: 80, published: 8080}]\n"),
-			"  ⚠ demo-web will not roll on deploy — it publishes a host port a second replica cannot bind" + unrouted},
-		{"an ephemeral port binds nothing", with("    ports: [\"80\", \"127.0.0.1::81\", 82]\n"), "  ✓ All routed services can roll on deploy"},
+			"  ⚠ C11 demo-web will not roll on deploy — it publishes a host port a second replica cannot bind" + unrouted},
+		{"an ephemeral port binds nothing", with("    ports: [\"80\", \"127.0.0.1::81\", 82]\n"), "  ✓ C11 All routed services can roll on deploy"},
 		{"no compose healthcheck leaves it to the image", noHC,
-			"  ⚠ demo-web rolls on deploy only if its image declares a HEALTHCHECK — compose gives it none, and without one it is recreated in place, briefly unrouted"},
+			"  ⚠ C11 demo-web rolls on deploy only if its image declares a HEALTHCHECK — compose gives it none, and without one it is recreated in place, briefly unrouted"},
 		{"a shell-string healthcheck is one", strings.Replace(rollCompose, "{test: [CMD, wget, -q, --spider, \"http://127.0.0.1/\"]}", "{test: \"wget -q --spider http://127.0.0.1/\"}", 1),
-			"  ✓ All routed services can roll on deploy"},
+			"  ✓ C11 All routed services can roll on deploy"},
 		{"a disabled healthcheck", strings.Replace(rollCompose, "{test: [CMD", "{disable: true, test: [CMD", 1),
-			"  ⚠ demo-web will not roll on deploy — it declares no healthcheck to swap on" + unrouted},
+			"  ⚠ C11 demo-web will not roll on deploy — it declares no healthcheck to swap on" + unrouted},
 		{"a gating depends_on", with("    depends_on: {db: {condition: service_healthy}}\n"),
-			"  ⚠ demo-web will not roll on deploy — it depends_on db (service_healthy), a condition only a plain up waits for" + unrouted},
-		{"a plain depends_on list does not gate", with("    depends_on: [db]\n"), "  ✓ All routed services can roll on deploy"},
+			"  ⚠ C11 demo-web will not roll on deploy — it depends_on db (service_healthy), a condition only a plain up waits for" + unrouted},
+		{"a plain depends_on list does not gate", with("    depends_on: [db]\n"), "  ✓ C11 All routed services can roll on deploy"},
 		{"a definite reason outranks the image's healthcheck",
 			strings.Replace(noHC, web, "    depends_on: {db: {condition: service_completed_successfully}}\n"+web, 1),
-			"  ⚠ demo-web will not roll on deploy — it depends_on db (service_completed_successfully), a condition only a plain up waits for" + unrouted},
+			"  ⚠ C11 demo-web will not roll on deploy — it depends_on db (service_completed_successfully), a condition only a plain up waits for" + unrouted},
 		{"the fragment targeting its container_name", goodCompose,
-			"  ⚠ demo-web will not roll on deploy — the fragment targets its container_name" + unrouted},
+			"  ⚠ C11 demo-web will not roll on deploy — the fragment targets its container_name" + unrouted},
 		{"reached by name off the project network", strings.Replace(legacyCompose, "    container_name: demo-web\n", "", 1),
-			"  ⚠ demo-web will not roll on deploy — the fragment reaches it by a name it answers only off the project's kasbah network" + unrouted},
+			"  ⚠ C11 demo-web will not roll on deploy — the fragment reaches it by a name it answers only off the project's kasbah network" + unrouted},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			project(t, map[string]string{"compose.prod.yml": tc.compose})
@@ -673,15 +673,15 @@ func TestC14(t *testing.T) {
 	}
 	const why = " — those ports belong to the shared Traefik, whatever the protocol (over TCP a bind collides with it, a range may take them while it is down); route through traefik-dynamic.yml or publish another port"
 	for _, tc := range []struct{ name, ports, want string }{
-		{"other host ports pass", `["8080:80", "443", "127.0.0.1::443", "8443:443/udp", "${P:-80}:80"]`, "  ✓ No service publishes host port 80 or 443"},
-		{"short form, any address", `["80:8080", "127.0.0.1:443:8443"]`, "  ✗ Services publishing host port 80 or 443: demo-relay (80/tcp) demo-relay (127.0.0.1:443/tcp)" + why},
-		{"IPv6 and UDP", `["[::1]:443:443/udp"]`, "  ✗ Services publishing host port 80 or 443: demo-relay ([::1]:443/udp)" + why},
+		{"other host ports pass", `["8080:80", "443", "127.0.0.1::443", "8443:443/udp", "${P:-80}:80"]`, "  ✓ C14 No service publishes host port 80 or 443"},
+		{"short form, any address", `["80:8080", "127.0.0.1:443:8443"]`, "  ✗ C14 Services publishing host port 80 or 443: demo-relay (80/tcp) demo-relay (127.0.0.1:443/tcp)" + why},
+		{"IPv6 and UDP", `["[::1]:443:443/udp"]`, "  ✗ C14 Services publishing host port 80 or 443: demo-relay ([::1]:443/udp)" + why},
 		{"long form", `[{target: 8080, published: 80, host_ip: 0.0.0.0}, {target: 443, published: "443", protocol: UDP}]`,
-			"  ✗ Services publishing host port 80 or 443: demo-relay (0.0.0.0:80/tcp) demo-relay (443/udp)" + why},
-		{"target alone publishes nothing", `[{target: 80}]`, "  ✓ No service publishes host port 80 or 443"},
-		{"only the host port's interpolation skips", `["${IP}:80:80"]`, "  ✗ Services publishing host port 80 or 443: demo-relay (${IP}:80/tcp)" + why},
+			"  ✗ C14 Services publishing host port 80 or 443: demo-relay (0.0.0.0:80/tcp) demo-relay (443/udp)" + why},
+		{"target alone publishes nothing", `[{target: 80}]`, "  ✓ C14 No service publishes host port 80 or 443"},
+		{"only the host port's interpolation skips", `["${IP}:80:80"]`, "  ✗ C14 Services publishing host port 80 or 443: demo-relay (${IP}:80/tcp)" + why},
 		{"a host range holding 80 or 443", `["70-90:80", "400-500:400-500", "81-442:81-442"]`,
-			"  ✗ Services publishing host port 80 or 443: demo-relay (70-90/tcp) demo-relay (400-500/tcp)" + why},
+			"  ✗ C14 Services publishing host port 80 or 443: demo-relay (70-90/tcp) demo-relay (400-500/tcp)" + why},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			project(t, map[string]string{"kasbah.yml": "schema: 1\nname: demo\nrouted: false\n", "compose.prod.yml": with(tc.ports), "traefik-dynamic.yml": ""})
@@ -702,7 +702,7 @@ func TestC10SkipsComments(t *testing.T) {
 		t.Fatalf("a commented mail-dms warned:\n%s", out)
 	}
 	project(t, map[string]string{"compose.prod.yml": goodCompose + "x-smtp: mail-dms # still used\n"})
-	if out, _, _ := check(t); !strings.Contains(out, "⚠ mail-dms is named in compose.prod.yml — ") {
+	if out, _, _ := check(t); !strings.Contains(out, "⚠ C10 mail-dms is named in compose.prod.yml — ") {
 		t.Fatalf("a used mail-dms did not warn:\n%s", out)
 	}
 }

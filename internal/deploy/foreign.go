@@ -196,11 +196,26 @@ func dockerPorts(s string) []Bind {
 	return bs
 }
 
+// CollisionKind is what a Collision is over.
+type CollisionKind int
+
+const (
+	NameCollision CollisionKind = iota // another compose project of the name
+	PortCollision                      // a port a holder already publishes
+)
+
+// Collision is one reason a project cannot come up beside the holders, and
+// Msg the words the deploy refuses it in.
+type Collision struct {
+	Kind CollisionKind
+	Msg  string
+}
+
 // Collisions is why the project name at dir, publishing binds, cannot come
 // up beside the holders: each other compose project of its name, then each
 // port a holder already publishes. Empty when it can.
-func Collisions(name, dir string, binds []Bind, hs []Holder) []string {
-	var out []string
+func Collisions(name, dir string, binds []Bind, hs []Holder) []Collision {
+	var out []Collision
 	type stack struct {
 		dir, config string
 		names       []string
@@ -226,13 +241,13 @@ func Collisions(name, dir string, binds []Bind, hs []Holder) []string {
 			from += " (" + s.config + ")"
 		}
 		head := fmt.Sprintf("a compose project named %s already exists outside %s: %s, started %s — ", name, dir, strings.Join(s.names, ", "), from)
-		out = append(out, head+fmt.Sprintf("Docker keys compose projects by name, so this project's up would take its containers for its own; run `docker compose -p %s down` %s, or rename this project", name, down))
+		out = append(out, Collision{NameCollision, head + fmt.Sprintf("Docker keys compose projects by name, so this project's up would take its containers for its own; run `docker compose -p %s down` %s, or rename this project", name, down)})
 	}
 	for _, b := range binds {
 		if b.Any {
 			if held := rangeHeld(b, hs); held != nil {
-				out = append(out, fmt.Sprintf("every port of %s, the range service %s of this project publishes one port from, is taken: %s — stop or move one of those containers, or change the range %s publishes",
-					b, b.Svc, strings.Join(held, ", "), b.Svc))
+				out = append(out, Collision{PortCollision, fmt.Sprintf("every port of %s, the range service %s of this project publishes one port from, is taken: %s — stop or move one of those containers, or change the range %s publishes",
+					b, b.Svc, strings.Join(held, ", "), b.Svc)})
 			}
 			continue
 		}
@@ -241,8 +256,8 @@ func Collisions(name, dir string, binds []Bind, hs []Holder) []string {
 			if i < 0 {
 				continue
 			}
-			out = append(out, fmt.Sprintf("container %s (%s) publishes %s, which service %s of this project publishes too — stop or move that container, or change the port %s publishes",
-				h.Name, whose(h), h.Ports[i], b.Svc, b.Svc))
+			out = append(out, Collision{PortCollision, fmt.Sprintf("container %s (%s) publishes %s, which service %s of this project publishes too — stop or move that container, or change the port %s publishes",
+				h.Name, whose(h), h.Ports[i], b.Svc, b.Svc)})
 		}
 	}
 	return out

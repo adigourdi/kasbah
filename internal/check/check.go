@@ -121,7 +121,7 @@ func Run(e Env) (code int) {
 		return e.report(err)
 	}
 	c.m = m
-	c.passf("kasbah.yml exists (schema %s)", m.Schema)
+	c.passf("S01,S02", "kasbah.yml exists (schema %s)", m.Schema)
 
 	// Asked before the local rules: T05's verdict depends on the answer.
 	if e.Server != "" {
@@ -144,24 +144,24 @@ func Run(e Env) (code int) {
 	}
 
 	if isFile(composeFile) {
-		c.passf("compose.prod.yml exists")
+		c.passf("S03", "compose.prod.yml exists")
 	} else {
-		c.failf("compose.prod.yml missing")
+		c.failf("S03", "compose.prod.yml missing")
 	}
 	if isFile(templateFile) {
-		c.passf(".env.prod.example exists")
+		c.passf("S04", ".env.prod.example exists")
 	} else {
-		c.failf(".env.prod.example missing")
+		c.failf("S04", ".env.prod.example missing")
 	}
 	if gitignoreHas(".env") {
-		c.passf(".gitignore excludes .env")
+		c.passf("S05", ".gitignore excludes .env")
 	} else {
-		c.warnf(".gitignore does not exclude .env")
+		c.warnf("S05", ".gitignore does not exclude .env")
 	}
 	if gitignoreHas(".kasbah/") {
-		c.passf(".gitignore excludes .kasbah/")
+		c.passf("S06", ".gitignore excludes .kasbah/")
 	} else {
-		c.warnf(".gitignore does not exclude .kasbah/")
+		c.warnf("S06", ".gitignore does not exclude .kasbah/")
 	}
 	c.s08()
 
@@ -191,19 +191,28 @@ func Run(e Env) (code int) {
 	return cli.ExitOK
 }
 
-func (c *checker) passf(format string, a ...any) {
+// passf, warnf and failf print one verdict line led by the IDs it speaks for
+// (comma-separated, each in Rules); "" is a line no catalog rule owns.
+func (c *checker) passf(ids, format string, a ...any) {
 	c.pass++
-	fmt.Fprintf(c.w, "  ✓ %s\n", fmt.Sprintf(format, a...))
+	c.line("✓", ids, fmt.Sprintf(format, a...))
 }
 
-func (c *checker) warnf(format string, a ...any) {
+func (c *checker) warnf(ids, format string, a ...any) {
 	c.warn++
-	fmt.Fprintf(c.w, "  ⚠ %s\n", fmt.Sprintf(format, a...))
+	c.line("⚠", ids, fmt.Sprintf(format, a...))
 }
 
-func (c *checker) failf(format string, a ...any) {
+func (c *checker) failf(ids, format string, a ...any) {
 	c.fail++
-	fmt.Fprintf(c.w, "  ✗ %s\n", fmt.Sprintf(format, a...))
+	c.line("✗", ids, fmt.Sprintf(format, a...))
+}
+
+func (c *checker) line(mark, ids, text string) {
+	if ids != "" {
+		text = ids + " " + text
+	}
+	fmt.Fprintf(c.w, "  %s %s\n", mark, text)
 }
 
 func (c *checker) section(name string) { fmt.Fprintf(c.w, "\n%s:\n", name) }
@@ -236,21 +245,23 @@ func gitignoreHas(pattern string) bool {
 	return inLines(s, pattern)
 }
 
-func (c *checker) failErr(err error) { c.failf("%s", strings.ReplaceAll(err.Error(), "\n", "; ")) }
+func (c *checker) failErr(ids string, err error) {
+	c.failf(ids, "%s", strings.ReplaceAll(err.Error(), "\n", "; "))
+}
 
 func (c *checker) s08() {
 	raw, err := deploy.Field(c.m, "a string", "client")
 	if err != nil {
-		c.failErr(err)
+		c.failErr("S08", err)
 		return
 	}
 	switch reason, ok := manifest.ClientCheck(raw); {
 	case raw == "":
-		c.passf("client is not set — backups file under the project name (%s)", c.m.Name)
+		c.passf("S08", "client is not set — backups file under the project name (%s)", c.m.Name)
 	case ok:
-		c.passf("client '%s' names a backup repository kasbah can create", raw)
+		c.passf("S08", "client '%s' names a backup repository kasbah can create", raw)
 	default:
-		c.failf("kasbah.yml: %s", reason)
+		c.failf("S08", "kasbah.yml: %s", reason)
 	}
 }
 
@@ -269,11 +280,11 @@ func (c *checker) composeSection() {
 	}
 	c.section("Compose")
 	if c.compose.bad != "" {
-		c.failf("compose.prod.yml %s", c.compose.bad)
+		c.failf("", "compose.prod.yml %s", c.compose.bad)
 		return
 	}
 	if c.servicesBad != "" {
-		c.failf("compose.prod.yml: %s", c.servicesBad)
+		c.failf("", "compose.prod.yml: %s", c.servicesBad)
 		if _, ok := c.compose.root.(*tree.Map); ok {
 			c.c05()
 		}
@@ -283,9 +294,9 @@ func (c *checker) composeSection() {
 		// Only the shape deploy brings up without compose up passes; an empty file
 		// or one whose services come through include: does not.
 		if composefile.ServicelessDoc(c.compose.root) {
-			c.passf("compose.prod.yml declares no services — a redirect-only project; Compose checks skipped")
+			c.passf("", "compose.prod.yml declares no services — a redirect-only project; Compose checks skipped")
 		} else {
-			c.warnf("compose.prod.yml declares no services — skipping Compose checks")
+			c.warnf("", "compose.prod.yml declares no services — skipping Compose checks")
 		}
 		c.c05()
 		return
@@ -298,9 +309,9 @@ func (c *checker) composeSection() {
 		}
 	}
 	if len(bad) == 0 {
-		c.passf("All services set restart policy")
+		c.passf("C01", "All services set restart policy")
 	} else {
-		c.failf("Services missing restart policy: %s", strings.Join(bad, " "))
+		c.failf("C01", "Services missing restart policy: %s", strings.Join(bad, " "))
 	}
 
 	bad = nil
@@ -313,9 +324,9 @@ func (c *checker) composeSection() {
 		}
 	}
 	if len(bad) == 0 {
-		c.passf("All services set json-file logging with rotation")
+		c.passf("C02", "All services set json-file logging with rotation")
 	} else {
-		c.failf("Services missing json-file logging with max-size/max-file: %s", strings.Join(bad, " "))
+		c.failf("C02", "Services missing json-file logging with max-size/max-file: %s", strings.Join(bad, " "))
 	}
 
 	onHN, own, defaultAliases := c.networks()
@@ -350,17 +361,17 @@ func (c *checker) c14() {
 		}
 	}
 	if len(bad) == 0 {
-		c.passf("No service publishes host port 80 or 443")
+		c.passf("C14", "No service publishes host port 80 or 443")
 	} else {
-		c.failf("Services publishing host port 80 or 443: %s — those ports belong to the shared Traefik, whatever the protocol (over TCP a bind collides with it, a range may take them while it is down); route through traefik-dynamic.yml or publish another port", strings.Join(bad, " "))
+		c.failf("C14", "Services publishing host port 80 or 443: %s — those ports belong to the shared Traefik, whatever the protocol (over TCP a bind collides with it, a range may take them while it is down); route through traefik-dynamic.yml or publish another port", strings.Join(bad, " "))
 	}
 }
 
 func (c *checker) c05() {
 	if scalar(c.need(c.compose, "version")) != "" {
-		c.warnf("compose.prod.yml uses deprecated 'version:' field")
+		c.warnf("C05", "compose.prod.yml uses deprecated 'version:' field")
 	} else {
-		c.passf("No deprecated 'version:' field")
+		c.passf("C05", "No deprecated 'version:' field")
 	}
 }
 
@@ -391,9 +402,9 @@ func (c *checker) c08() {
 		}
 	}
 	if len(bad) == 0 {
-		c.passf("All built services reference their image as :current")
+		c.passf("C08", "All built services reference their image as :current")
 	} else {
-		c.failf("Built services whose image: is not tagged :current: %s — deploy moves <image>:current, so a pinned tag keeps the old image running", strings.Join(bad, " "))
+		c.failf("C08", "Built services whose image: is not tagged :current: %s — deploy moves <image>:current, so a pinned tag keeps the old image running", strings.Join(bad, " "))
 	}
 }
 
@@ -419,15 +430,15 @@ func (c *checker) c11() {
 		st := stays[0]
 		if st == deploy.StayNoHealthcheck && r.Health == deploy.HealthUnset {
 			if len(stays) == 1 {
-				c.warnf("%s rolls on deploy only if its image declares a HEALTHCHECK — compose gives it none, and without one it is recreated in place, briefly unrouted", svc)
+				c.warnf("C11", "%s rolls on deploy only if its image declares a HEALTHCHECK — compose gives it none, and without one it is recreated in place, briefly unrouted", svc)
 				continue
 			}
 			st = stays[1]
 		}
-		c.warnf("%s will not roll on deploy — %s, so it is recreated in place, briefly unrouted", svc, r.Why(st))
+		c.warnf("C11", "%s will not roll on deploy — %s, so it is recreated in place, briefly unrouted", svc, r.Why(st))
 	}
 	if n > 0 && !warned {
-		c.passf("All routed services can roll on deploy")
+		c.passf("C11", "All routed services can roll on deploy")
 	}
 }
 
@@ -558,28 +569,28 @@ func (c *checker) networks() (on, own []string, defaultAliases bool) {
 
 	switch {
 	case unread != "" && (defaultAliases || len(on)+len(own) == 0):
-		c.warnf("%s — skipping C03 and C11, which need the services it routes", unread)
+		c.warnf("C03,C11", "%s — skipping C03 and C11, which need the services it routes", unread)
 	case unread != "":
-		c.warnf("%s — skipping C03, C07 and C11, which need the services it routes", unread)
+		c.warnf("C03,C07,C11", "%s — skipping C03, C07 and C11, which need the services it routes", unread)
 	case len(badC03) > 0:
-		c.failf("Routed services on neither the project's kasbah network nor kasbah-net: %s", strings.Join(badC03, " "))
+		c.failf("C03", "Routed services on neither the project's kasbah network nor kasbah-net: %s", strings.Join(badC03, " "))
 	case nRouted > 0 && len(legacy) == 0:
-		c.passf("All routed services join the project's kasbah network")
+		c.passf("C03", "All routed services join the project's kasbah network")
 	case nRouted > 0 && len(legacy) == nRouted:
-		c.passf("All routed services join kasbah-net")
+		c.passf("C03", "All routed services join kasbah-net")
 	case nRouted > 0:
-		c.passf("All routed services join the project's kasbah network or kasbah-net")
+		c.passf("C03", "All routed services join the project's kasbah network or kasbah-net")
 	default:
-		c.passf("No Traefik-routed services in compose")
+		c.passf("C03", "No Traefik-routed services in compose")
 	}
 	if unread == "" && !defaultAliases && len(legacy) > 0 {
-		c.warnf("Routed through the shared kasbah-net: %s — every project's routed containers reach each other there; move them to a project network under the key kasbah (docs/traefik.md → Network)", strings.Join(legacy, " "))
+		c.warnf("C03", "Routed through the shared kasbah-net: %s — every project's routed containers reach each other there; move them to a project network under the key kasbah (docs/traefik.md → Network)", strings.Join(legacy, " "))
 	}
 	if len(on) > 0 {
 		if hnExt || (defaultAliases && defaultExt) {
-			c.passf("kasbah-net declared external")
+			c.passf("C04", "kasbah-net declared external")
 		} else {
-			c.failf("kasbah-net not declared external: true")
+			c.failf("C04", "kasbah-net not declared external: true")
 		}
 	}
 	if len(own) > 0 {
@@ -588,17 +599,17 @@ func (c *checker) networks() (on, own []string, defaultAliases bool) {
 	c.c04External()
 	switch {
 	case defaultAliases:
-		c.failf("default network aliases kasbah-net — every service joins the shared network; join it explicitly per routed service and keep the rest on a project-internal network")
+		c.failf("C07", "default network aliases kasbah-net — every service joins the shared network; join it explicitly per routed service and keep the rest on a project-internal network")
 	case unread != "" && len(on)+len(own) > 0:
 	case len(badC07HN)+len(badC07PN) > 0:
 		if len(badC07PN) > 0 {
-			c.failf("Non-routed services on the kasbah network: %s — Traefik joins it, so only what it routes belongs there", strings.Join(badC07PN, " "))
+			c.failf("C07", "Non-routed services on the kasbah network: %s — Traefik joins it, so only what it routes belongs there", strings.Join(badC07PN, " "))
 		}
 		if len(badC07HN) > 0 {
-			c.failf("Non-routed services on kasbah-net: %s", strings.Join(badC07HN, " "))
+			c.failf("C07", "Non-routed services on kasbah-net: %s", strings.Join(badC07HN, " "))
 		}
 	default:
-		c.passf("No internal services on the kasbah network or kasbah-net")
+		c.passf("C07", "No internal services on the kasbah network or kasbah-net")
 	}
 	return on, own, defaultAliases
 }
@@ -613,15 +624,15 @@ func (c *checker) c04Project() {
 	m, isMap := v.(*tree.Map)
 	switch {
 	case !hasKey(c.need(d, "networks"), projectNet):
-		c.failf("The kasbah network is not declared under the top-level networks: — add kasbah: {}")
+		c.failf("C04", "The kasbah network is not declared under the top-level networks: — add kasbah: {}")
 	case v != nil && !isMap:
-		c.failf("The kasbah network is declared as %s — declare it as kasbah: {}", tree.Compact(v))
+		c.failf("C04", "The kasbah network is declared as %s — declare it as kasbah: {}", tree.Compact(v))
 	case isMap && m != nil && truthy(opt(m, "external")):
-		c.failf("The kasbah network is declared external — it is the project's own: drop external: so compose creates %s, which deploy connects Traefik to", name)
+		c.failf("C04", "The kasbah network is declared external — it is the project's own: drop external: so compose creates %s, which deploy connects Traefik to", name)
 	case isMap && m != nil && m.Len() > 0:
-		c.failf("The kasbah network sets %s — declare it as kasbah: {}: compose recreates a network whose settings change, which fails while Traefik is attached, and every later deploy would fail at up", strings.Join(m.Keys(), ", "))
+		c.failf("C04", "The kasbah network sets %s — declare it as kasbah: {}: compose recreates a network whose settings change, which fails while Traefik is attached, and every later deploy would fail at up", strings.Join(m.Keys(), ", "))
 	default:
-		c.passf("The kasbah network is the project's own (%s)", name)
+		c.passf("C04", "The kasbah network is the project's own (%s)", name)
 	}
 }
 
@@ -657,7 +668,7 @@ func (c *checker) c04External() {
 		}
 	}
 	if len(bad) > 0 {
-		c.failf("External networks other than kasbah-net: %s — a project joins only its own networks and the legacy kasbah-net", strings.Join(bad, " "))
+		c.failf("C04", "External networks other than kasbah-net: %s — a project joins only its own networks and the legacy kasbah-net", strings.Join(bad, " "))
 	}
 }
 
@@ -685,9 +696,9 @@ func (c *checker) c09Project(own []string) {
 		}
 	}
 	if len(bad) == 0 {
-		c.passf("Names on the kasbah network are project-prefixed")
+		c.passf("C09", "Names on the kasbah network are project-prefixed")
 	} else {
-		c.failf("Names on the kasbah network that are not '%s' or '%s-*': %s — Traefik resolves names across every project's network, so another project's name can answer for this one's", name, name, strings.Join(bad, " "))
+		c.failf("C09", "Names on the kasbah network that are not '%s' or '%s-*': %s — Traefik resolves names across every project's network, so another project's name can answer for this one's", name, name, strings.Join(bad, " "))
 	}
 }
 
@@ -708,7 +719,7 @@ func (c *checker) c10() {
 		}
 	}
 	if len(bad) > 0 {
-		c.warnf("mail-dms is named in %s — no project shares a network with the mail server; send through mail.<domain>:587 with a mailbox login (docs/mail.md → SMTP access from apps)", strings.Join(bad, " and "))
+		c.warnf("C10", "mail-dms is named in %s — no project shares a network with the mail server; send through mail.<domain>:587 with a mailbox login (docs/mail.md → SMTP access from apps)", strings.Join(bad, " and "))
 	}
 }
 
@@ -726,9 +737,9 @@ func (c *checker) c09(onHN []string, defaultAliases bool) {
 		}
 	}
 	if len(bad) == 0 {
-		c.passf("kasbah-net service names are project-prefixed")
+		c.passf("C09", "kasbah-net service names are project-prefixed")
 	} else {
-		c.warnf("Services on kasbah-net whose name is not '%s' or '%s-*': %s — the service name is a DNS alias on the shared network, so a generic one collides with every other project using it", name, name, strings.Join(bad, " "))
+		c.warnf("C09", "Services on kasbah-net whose name is not '%s' or '%s-*': %s — the service name is a DNS alias on the shared network, so a generic one collides with every other project using it", name, name, strings.Join(bad, " "))
 	}
 }
 
@@ -822,14 +833,14 @@ func (c *checker) resourcesSection() {
 	}
 	switch {
 	case len(bad) > 0:
-		c.failf("Services with missing or malformed resource limits: %s — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values", strings.Join(bad, " "))
+		c.failf("R01,R02", "Services with missing or malformed resource limits: %s — each sets cpus: ${KASBAH_CPU_LIMIT} or a positive number (0.5, 2), and mem_limit: ${KASBAH_MEM_LIMIT} or a size of at least docker's 6m (512m, 1.5g, 2GiB) — top-level or under deploy.resources.limits, never two different values", strings.Join(bad, " "))
 	case len(lits) == 0:
-		c.passf("All services set cpus/mem_limit via KASBAH_* vars")
+		c.passf("R01,R02", "All services set cpus/mem_limit via KASBAH_* vars")
 	case c.srv != nil:
-		c.passf("All services set cpus/mem_limit, some as literals: %s — compared with the host's ceiling under Server (R04)", strings.Join(lits, " "))
+		c.passf("R01,R02", "All services set cpus/mem_limit, some as literals: %s — compared with the host's ceiling under Server (R04)", strings.Join(lits, " "))
 	}
 	if len(lits) > 0 && c.srv == nil {
-		c.warnf("Services with literal resource limits: %s — a literal does not follow the host's ceiling, and only check --server can compare it with it", strings.Join(lits, " "))
+		c.warnf("R01,R02", "Services with literal resource limits: %s — a literal does not follow the host's ceiling, and only check --server can compare it with it", strings.Join(lits, " "))
 	}
 
 	bad = nil
@@ -839,9 +850,9 @@ func (c *checker) resourcesSection() {
 		}
 	}
 	if len(bad) == 0 {
-		c.passf("No resource reservations")
+		c.passf("R03", "No resource reservations")
 	} else {
-		c.failf("Services declare resource reservations: %s", strings.Join(bad, " "))
+		c.failf("R03", "Services declare resource reservations: %s", strings.Join(bad, " "))
 	}
 }
 
@@ -852,7 +863,7 @@ func (c *checker) r05(block tree.Value) {
 	}
 	spec, err := resources.Read(c.m)
 	if err != nil {
-		c.failf("kasbah.yml: %v", err)
+		c.failf("R05", "kasbah.yml: %v", err)
 		return
 	}
 	var set []string
@@ -863,11 +874,11 @@ func (c *checker) r05(block tree.Value) {
 		set = append(set, "memory "+spec.Memory)
 	}
 	if len(set) == 0 {
-		c.passf("resources: sets nothing — the containers get the server's 90%% ceiling")
+		c.passf("R05", "resources: sets nothing — the containers get the server's 90%% ceiling")
 		return
 	}
 	c.res = spec
-	c.passf("resources: %s — resolved on the server at deploy (a %% is a share of the host) and held to its 90%% ceiling", strings.Join(set, ", "))
+	c.passf("R05", "resources: %s — resolved on the server at deploy (a %% is a share of the host) and held to its 90%% ceiling", strings.Join(set, ", "))
 }
 
 // --- Traefik (T01–T11) ------------------------------------------------------
@@ -878,16 +889,16 @@ func (c *checker) traefikSection() {
 	unrouted := c.m.Unrouted
 	switch {
 	case unrouted && isFile(traefikFile):
-		c.failf("kasbah.yml sets routed: false, yet traefik-dynamic.yml exists — remove one: the fragment to keep the project unrouted, or routed: false to route it")
+		c.failf("T11", "kasbah.yml sets routed: false, yet traefik-dynamic.yml exists — remove one: the fragment to keep the project unrouted, or routed: false to route it")
 	case unrouted:
-		c.passf("No traefik-dynamic.yml — the project is unrouted (routed: false)")
+		c.passf("T11", "No traefik-dynamic.yml — the project is unrouted (routed: false)")
 	case unread != "":
-		c.warnf("%s — skipping T02–T05 and T08–T10", unread)
+		c.warnf("T01", "%s — skipping T02–T05 and T08–T10", unread)
 	default:
-		c.passf("traefik-dynamic.yml exists")
+		c.passf("T01", "traefik-dynamic.yml exists")
 	}
 	if unrouted && c.m.Domain != "" {
-		c.warnf("manifest domain is '%s', but routed: false — nothing routes it to this project; leave domain: out", c.m.Domain)
+		c.warnf("T11", "manifest domain is '%s', but routed: false — nothing routes it to this project; leave domain: out", c.m.Domain)
 	}
 
 	if unread == "" {
@@ -895,7 +906,7 @@ func (c *checker) traefikSection() {
 		if domain != "" {
 			c.t02(routers, domain)
 		} else if !unrouted {
-			c.warnf("manifest domain is empty — skipping T02 and T08 (both match routers against it)")
+			c.warnf("T02,T08", "manifest domain is empty — skipping T02 and T08 (both match routers against it)")
 		}
 		c.t03(routers)
 		c.t04(routers)
@@ -943,9 +954,9 @@ func (c *checker) t02(routers []string, domain string) {
 		}
 	}
 	if found {
-		c.passf("At least one router references manifest domain (%s)", domain)
+		c.passf("T02", "At least one router references manifest domain (%s)", domain)
 	} else {
-		c.failf("No router rule references manifest domain (%s)", domain)
+		c.failf("T02", "No router rule references manifest domain (%s)", domain)
 	}
 }
 
@@ -964,9 +975,9 @@ func (c *checker) t03(routers []string) {
 		}
 	}
 	if len(bad) == 0 {
-		c.passf("All routers declare entryPoints")
+		c.passf("T03", "All routers declare entryPoints")
 	} else {
-		c.failf("Routers without entryPoints: %s", strings.Join(bad, " "))
+		c.failf("T03", "Routers without entryPoints: %s", strings.Join(bad, " "))
 	}
 }
 
@@ -994,23 +1005,23 @@ func (c *checker) t04(routers []string) {
 		}
 	}
 	if len(bad)+len(legacy)+len(undeclared) == 0 {
-		c.passf("Secure routers name a cert resolver")
+		c.passf("T04", "Secure routers name a cert resolver")
 	}
 	if len(other) > 0 {
 		where := "only `check --server` can verify the server declares them"
 		if c.srv != nil {
 			where = "traefik.yml on " + c.srv.target + " could not be read, so whether it declares them is unknown"
 		}
-		c.warnf("Routers name a cert resolver other than %s: %s — %s (`server init --acme-dns=<provider>:<env file>` adds one)", acme.Resolver, strings.Join(other, " "), where)
+		c.warnf("T04", "Routers name a cert resolver other than %s: %s — %s (`server init --acme-dns=<provider>:<env file>` adds one)", acme.Resolver, strings.Join(other, " "), where)
 	}
 	if len(undeclared) > 0 {
-		c.failf("Routers name a cert resolver %s does not declare: %s — `kasbah server init --acme-dns=<provider>:<env file>` adds one", c.srv.target, strings.Join(undeclared, " "))
+		c.failf("T04", "Routers name a cert resolver %s does not declare: %s — `kasbah server init --acme-dns=<provider>:<env file>` adds one", c.srv.target, strings.Join(undeclared, " "))
 	}
 	if len(legacy) > 0 {
-		c.failf("certResolver letsencrypt was renamed to %s — set tls.certResolver: %s on: %s", acme.Resolver, acme.Resolver, strings.Join(legacy, " "))
+		c.failf("T04", "certResolver letsencrypt was renamed to %s — set tls.certResolver: %s on: %s", acme.Resolver, acme.Resolver, strings.Join(legacy, " "))
 	}
 	if len(bad) > 0 {
-		c.failf("Websecure routers without tls.certResolver: %s", strings.Join(bad, " "))
+		c.failf("T04", "Websecure routers without tls.certResolver: %s", strings.Join(bad, " "))
 	}
 }
 
@@ -1059,9 +1070,9 @@ func (c *checker) t10(routers []string) {
 		judge("tcp "+r, opt(tcp, r), "")
 	}
 	if len(bad) > 0 {
-		c.failf("Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): %s — name a DNS provider's resolver (`server init --acme-dns=`)", strings.Join(bad, " "))
+		c.failf("T10", "Routers ask for a wildcard certificate from a resolver without dnsChallenge (HTTP-01 cannot issue one): %s — name a DNS provider's resolver (`server init --acme-dns=`)", strings.Join(bad, " "))
 	} else {
-		c.passf("No router asks for a wildcard certificate from an HTTP-01 resolver")
+		c.passf("T10", "No router asks for a wildcard certificate from an HTTP-01 resolver")
 	}
 }
 
@@ -1074,9 +1085,9 @@ func (c *checker) t08(routers []string, domain string) {
 		}
 	}
 	if found {
-		c.passf("A router serves %s on the web entrypoint", domain)
+		c.passf("T08", "A router serves %s on the web entrypoint", domain)
 	} else {
-		c.warnf("No router serves %s on the web entrypoint — plain HTTP gets Traefik's 404; add a redirect router with middlewares: [\"http-to-https@file\"] and service: noop@internal", domain)
+		c.warnf("T08", "No router serves %s on the web entrypoint — plain HTTP gets Traefik's 404; add a redirect router with middlewares: [\"http-to-https@file\"] and service: noop@internal", domain)
 	}
 }
 
@@ -1103,9 +1114,9 @@ func (c *checker) t05(routers []string) {
 		}
 	}
 	if len(bad) > 0 {
-		c.failf("Routers claim reserved hostnames: %s", strings.Join(bad, " "))
+		c.failf("T05", "Routers claim reserved hostnames: %s", strings.Join(bad, " "))
 	} else {
-		c.passf("No router claims reserved hostnames (traefik.*, mail.*, webmail.*)")
+		c.passf("T05", "No router claims reserved hostnames (traefik.*, mail.*, webmail.*)")
 	}
 }
 
@@ -1144,9 +1155,9 @@ func (c *checker) t09(routers []string) {
 		flag("middlewares."+k, opt(v, "errors", "service"))
 	}
 	if len(bad) > 0 {
-		c.failf("Fragment routes to Traefik's internal services (only noop@internal is allowed): %s", strings.Join(bad, " "))
+		c.failf("T09", "Fragment routes to Traefik's internal services (only noop@internal is allowed): %s", strings.Join(bad, " "))
 	} else {
-		c.passf("No router or service reaches a Traefik internal service other than noop@internal")
+		c.passf("T09", "No router or service reaches a Traefik internal service other than noop@internal")
 	}
 }
 
@@ -1164,9 +1175,9 @@ func (c *checker) t06() {
 		}
 	}
 	if len(bad) == 0 {
-		c.passf("compose.prod.yml has no traefik.* labels")
+		c.passf("T06", "compose.prod.yml has no traefik.* labels")
 	} else {
-		c.failf("Services carry traefik.* labels (file provider only): %s", strings.Join(bad, " "))
+		c.failf("T06", "Services carry traefik.* labels (file provider only): %s", strings.Join(bad, " "))
 	}
 }
 
@@ -1194,7 +1205,7 @@ func (c *checker) t07() {
 	}
 	hosts := envtpl.SortUniq(c.routedHosts())
 	if len(hosts) == 0 {
-		c.passf("Fragment has no loadBalancer server URLs to verify")
+		c.passf("T07", "Fragment has no loadBalancer server URLs to verify")
 		return
 	}
 	names := c.containerNames()
@@ -1224,16 +1235,16 @@ func (c *checker) t07() {
 		}
 	}
 	if len(shared) > 0 {
-		c.failf("Fragment targets services on kasbah-net by name: %s — there every project's same-named service answers too; set container_name, or join the service to the kasbah network", strings.Join(shared, " "))
+		c.failf("T07", "Fragment targets services on kasbah-net by name: %s — there every project's same-named service answers too; set container_name, or join the service to the kasbah network", strings.Join(shared, " "))
 	}
 	if len(off) > 0 {
-		c.failf("Fragment targets services on no Traefik network: %s — join them to the kasbah network", strings.Join(off, " "))
+		c.failf("T07", "Fragment targets services on no Traefik network: %s — join them to the kasbah network", strings.Join(off, " "))
 	}
 	switch {
 	case len(bad) > 0:
-		c.failf("Fragment targets names no service answers to: %s (target a service on the kasbah network, one of its kasbah aliases, or a container_name)", strings.Join(bad, " "))
+		c.failf("T07", "Fragment targets names no service answers to: %s (target a service on the kasbah network, one of its kasbah aliases, or a container_name)", strings.Join(bad, " "))
 	case len(shared)+len(off) == 0:
-		c.passf("Fragment loadBalancer URLs target a service, alias or container_name compose defines")
+		c.passf("T07", "Fragment loadBalancer URLs target a service, alias or container_name compose defines")
 	}
 }
 
@@ -1326,25 +1337,25 @@ func (c *checker) healthSection() {
 			}
 		}
 		if len(bad) == 0 {
-			c.passf("All built services declare a compose healthcheck")
+			c.passf("H01", "All built services declare a compose healthcheck")
 		} else {
-			c.warnf("Built services without a compose healthcheck (Dockerfile may declare one): %s", strings.Join(bad, " "))
+			c.warnf("H01", "Built services without a compose healthcheck (Dockerfile may declare one): %s", strings.Join(bad, " "))
 		}
 	}
 	if health {
 		switch {
 		case herr != nil:
-			c.failErr(herr)
+			c.failErr("H02", herr)
 		case h.Container == "":
-			c.passf("manifest health: names no container — the deploy waits on every container with a healthcheck")
+			c.passf("H02", "manifest health: names no container — the deploy waits on every container with a healthcheck")
 		case inList(c.targets(), h.Container):
-			c.passf("manifest health.container '%s' exists in compose", h.Container)
+			c.passf("H02", "manifest health.container '%s' exists in compose", h.Container)
 		default:
-			c.failf("manifest health.container '%s' is neither a container_name nor a service in compose", h.Container)
+			c.failf("H02", "manifest health.container '%s' is neither a container_name nor a service in compose", h.Container)
 		}
 	}
 	for _, l := range late {
-		c.warnf("%s", l)
+		c.warnf("H03", "%s", l)
 	}
 }
 
@@ -1487,22 +1498,22 @@ func (c *checker) envSection() {
 		badLines = append(badLines, fmt.Sprint(e.Line+1))
 	}
 	if len(badLines) == 0 {
-		c.passf(".env.prod.example syntax is valid")
+		c.passf("E01", ".env.prod.example syntax is valid")
 	} else {
-		c.failf(".env.prod.example has invalid lines (line numbers: %s)", strings.Join(badLines, " "))
+		c.failf("E01", ".env.prod.example has invalid lines (line numbers: %s)", strings.Join(badLines, " "))
 	}
 
 	if isFile(envFile) {
 		missing, extra := envtpl.Drift(templateFile, envFile)
 		if len(missing) == 0 {
-			c.passf(".env has no missing keys vs .env.prod.example")
+			c.passf("E02", ".env has no missing keys vs .env.prod.example")
 		} else {
-			c.warnf(".env missing keys vs .env.prod.example: %s", strings.Join(missing, " "))
+			c.warnf("E02", ".env missing keys vs .env.prod.example: %s", strings.Join(missing, " "))
 		}
 		if len(extra) == 0 {
-			c.passf(".env has no extra keys vs .env.prod.example")
+			c.passf("E03", ".env has no extra keys vs .env.prod.example")
 		} else {
-			c.warnf(".env has extra keys not in .env.prod.example: %s", strings.Join(extra, " "))
+			c.warnf("E03", ".env has extra keys not in .env.prod.example: %s", strings.Join(extra, " "))
 		}
 	}
 
@@ -1520,9 +1531,9 @@ func (c *checker) envSection() {
 		}
 	}
 	if len(long) == 0 {
-		c.passf(".env.prod.example has no obvious long secrets")
+		c.passf("E04", ".env.prod.example has no obvious long secrets")
 	} else {
-		c.warnf(".env.prod.example has values >64 chars (possibly leaked secrets): %s", strings.Join(long, " "))
+		c.warnf("E04", ".env.prod.example has values >64 chars (possibly leaked secrets): %s", strings.Join(long, " "))
 	}
 
 	var reserved []string
@@ -1532,9 +1543,9 @@ func (c *checker) envSection() {
 		}
 	}
 	if len(reserved) == 0 {
-		c.passf(".env.prod.example leaves the %s* prefix to kasbah", envtpl.ReservedPrefix)
+		c.passf("E05", ".env.prod.example leaves the %s* prefix to kasbah", envtpl.ReservedPrefix)
 	} else {
-		c.warnf(".env.prod.example defines reserved %s* keys (kasbah injects these): %s", envtpl.ReservedPrefix, strings.Join(reserved, " "))
+		c.warnf("E05", ".env.prod.example defines reserved %s* keys (kasbah injects these): %s", envtpl.ReservedPrefix, strings.Join(reserved, " "))
 	}
 }
 
@@ -1565,7 +1576,7 @@ func (c *checker) hooksSection() {
 func (c *checker) hk01() {
 	lists, err := deploy.ReadHooks(c.m)
 	if err != nil {
-		c.failErr(err)
+		c.failErr("HK01", err)
 		return
 	}
 	n := 0
@@ -1573,16 +1584,16 @@ func (c *checker) hk01() {
 		n += len(l)
 	}
 	if n == 0 {
-		c.passf("Hooks block is empty")
+		c.passf("HK01", "Hooks block is empty")
 		return
 	}
-	c.passf("Every hook is one line of shell")
+	c.passf("HK01", "Every hook is one line of shell")
 }
 
 // hk02: a top-level backup: is refused, as a deploy refuses it.
 func (c *checker) hk02() {
 	if err := deploy.ReadBackup(c.m, ""); err != nil {
-		c.failErr(err)
+		c.failErr("HK02", err)
 	}
 }
 
@@ -1594,8 +1605,8 @@ func (c *checker) mailSection() {
 	}
 	c.section("Mail")
 	if d, err := deploy.MailDomain(c.m); err != nil {
-		c.failErr(err)
+		c.failErr("M01", err)
 	} else {
-		c.passf("Mail claim names domain '%s'", d)
+		c.passf("M01", "Mail claim names domain '%s'", d)
 	}
 }

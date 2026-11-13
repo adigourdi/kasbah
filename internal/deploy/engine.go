@@ -816,8 +816,12 @@ func (e *engine) outsiders() error {
 	} else {
 		e.note("could not read the ports compose.yml publishes (%v) — whether a container outside the project holds one was not checked", err)
 	}
-	if c := Collisions(e.project, e.dir, binds, hs); len(c) > 0 {
-		return failf("%s. Nothing was started.", strings.Join(c, "; "))
+	if cs := Collisions(e.project, e.dir, binds, hs); len(cs) > 0 {
+		msgs := make([]string, len(cs))
+		for i, c := range cs {
+			msgs[i] = c.Msg
+		}
+		return failf("%s. Nothing was started.", strings.Join(msgs, "; "))
 	}
 	return nil
 }

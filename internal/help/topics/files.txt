@@ -1,0 +1,47 @@
+The files at a project's root, what each must and may hold, and what
+`kasbah check` fails (✗) or warns (⚠) about. `kasbah help <id>` explains a rule.
+
+kasbah.yml — the manifest, written by `kasbah init-project`.
+  Must:  schema: 1 (S02); a name of lowercase letters, digits and -, not
+         traefik, mail, data, backups or kasbah-backup (S07); sync: the files
+         a deploy copies, always compose.prod.yml -> compose.yml and
+         .env.prod.example.
+  Should: domain: the hostname the routers answer on (T02, T08 skipped
+         without it).
+  May:   routed: false (T11), health (H02, H03), hooks (HK01, HK02),
+         resources (R05), client (S08), mail.domain (M01).
+
+compose.prod.yml — the compose file the server runs.
+  Every service: restart: unless-stopped (C01); json-file logging with
+         max-size and max-file (C02); cpus: ${KASBAH_CPU_LIMIT} and
+         mem_limit: ${KASBAH_MEM_LIMIT} (R01, R02); no reservations (R03).
+  Routed services join the project's kasbah network, declared as exactly
+         kasbah: {} (C03, C04), named <name> or <name>-... (C09); with no
+         container_name, no host port and a healthcheck they roll on deploy
+         (C11).
+  Everything else stays off the kasbah network (C07).
+  Built services: image: <name>-<service>:current (C08); a compose
+         healthcheck, or a warning (H01).
+  Never: traefik.* labels (T06), host port 80 or 443 (C14), mail-dms
+         (C10), a top-level version: (C05).
+  `kasbah check --fix` rewrites C01-C05, C08 and R01-R03.
+
+traefik-dynamic.yml — the project's routing, a Traefik file-provider fragment.
+  Absent or unreadable warns (T01); with routed: false it must be absent.
+  Usual shape: a websecure router on Host(`<domain>`) with
+         tls.certResolver: http, a web router redirecting through
+         middlewares: ["http-to-https@file"] to noop@internal, and a
+         loadBalancer URL http://<routed service>:<port>.
+  Fails: no router on the domain (T02), no entryPoints (T03), a websecure
+         router without a resolver (T04), a traefik./mail./webmail. host
+         (T05), a URL naming nothing compose defines (T07), an @internal
+         service but noop@internal (T09), a wildcard from http (T10).
+  Warns: nothing serving the domain on web (T08).
+
+.env.prod.example — the template the server's .env is generated from.
+  Required, even comment-only (S04). Each line is blank, a # comment, or
+  KEY= with a default, a # hint or a ! command (E01). A value over 64
+  characters warns as a possible secret (E04); a KASBAH_* key warns (E05);
+  a local .env whose keys differ warns (E02, E03).
+
+.gitignore — excludes .env and .kasbah/ (S05, S06, warnings).

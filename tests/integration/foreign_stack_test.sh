@@ -219,10 +219,10 @@ check --server "$RIG_TARGET"; rc=$?
 out=$(cli_out; cli_err)
 assert '[ "$rc" = "6" ]' "check --server fails with both foreign stacks up (exit $rc)
 $(sed 's/^/      | /' <<<"$out")"
-assert 'grep -qF "✗ on $RIG_TARGET, $name_msg — a deploy refuses this" <<<"$out"' \
+assert 'grep -qF "✗ C13 on $RIG_TARGET, $name_msg — a deploy refuses this" <<<"$out"' \
     "check --server reports the compose project name
 $(sed 's/^/      | /' <<<"$out")"
-assert 'grep -qF "✗ on $RIG_TARGET, container $squatter-web-1 (compose project $squatter) publishes $held" <<<"$out"' \
+assert 'grep -qF "✗ C12 on $RIG_TARGET, container $squatter-web-1 (compose project $squatter) publishes $held" <<<"$out"' \
     "check --server reports the port
 $(sed 's/^/      | /' <<<"$out")"
 
@@ -230,7 +230,7 @@ $(sed 's/^/      | /' <<<"$out")"
 sed -i "s/- \"$port:80\"/- \"$port-$((port + 1)):80\"/" "$projdir/compose.prod.yml"
 check --server "$RIG_TARGET"; out=$(cli_out; cli_err)
 git -C "$projdir" checkout -q -- compose.prod.yml
-assert 'grep -qF "✗ on $RIG_TARGET, $name_msg" <<<"$out" && ! grep -qF "publishes $held" <<<"$out"' \
+assert 'grep -qF "✗ C13 on $RIG_TARGET, $name_msg" <<<"$out" && ! grep -qF "publishes $held" <<<"$out"' \
     "check --server passes a range with a free port over the held one
 $(sed 's/^/      | /' <<<"$out")"
 
@@ -268,7 +268,7 @@ got=$(rig_ssh "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.
 assert '[ "$got" = "200" ]' "and answers on :$port (got '$got')"
 
 check --server "$RIG_TARGET"; out=$(cli_out; cli_err)
-assert 'grep -qF "✓ no container outside $projdir_remote on $RIG_TARGET publishes a port it publishes or runs under its compose project name" <<<"$out"' \
+assert 'grep -qF "✓ C12,C13 no container outside $projdir_remote on $RIG_TARGET publishes a port it publishes or runs under its compose project name" <<<"$out"' \
     "check --server passes over the project's own container
 $(sed 's/^/      | /' <<<"$out")"
 

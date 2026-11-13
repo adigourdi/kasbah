@@ -2,11 +2,17 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/help"
 	"github.com/adigourdi/kasbah/internal/manifest"
 )
+
+// commands is every command the usage lists by its first word: what
+// `kasbah help <command>` runs as `kasbah <command> --help`.
+var commands = []string{"init-project", "check", "build-push", "deploy", "rollback", "backup", "restore", "drop", "history", "pending", "changelog", "env", "logs", "exec", "migrate", "self-update", "version", "server"}
 
 // serverSubcommands is every `kasbah server` subcommand, in usage order.
 var serverSubcommands = []string{"init", "status", "prune", "backup-prune", "destroy", "upgrade-traefik", "add-mail-domain", "mail-dkim", "mail-setup-guide"}
@@ -42,6 +48,7 @@ Commands:
   self-update [vN | vN.M | vN.M.P] [--pre] [--yes]
                                              Install a released kasbah beside this one and repoint the symlink.
   version                                    Print this kasbah's version.
+  help [topic]                               Explain kasbah, a project's files and setups, or a check rule.
   server init USER@HOST [flags]              Prepare a VPS to host projects.
   server status USER@HOST                    Report what a prepared VPS is running.
   server prune USER@HOST [--yes]             Remove image tags outside the retention window.
@@ -58,8 +65,9 @@ Every command that reaches a server also takes:
   --ship-dev | --keep-server                 When this dev build would replace the release the server
                                              runs: ship it, or keep the server's and run its build.
 
-Run ` + "`kasbah <command> --help`" + ` for a command's flags. The docs/ files kasbah's
-messages name are in the kasbah repository; docs/cli.md is the full reference.
+Run ` + "`kasbah <command> --help`" + `, or ` + "`kasbah help <command>`" + `, for a command's flags, and
+` + "`kasbah help`" + ` for the topics. The docs/ files kasbah's messages name are in the
+kasbah repository; docs/cli.md is the full reference.
 `
 }
 
@@ -101,20 +109,45 @@ Prints this kasbah's version and the manifest schema it writes, as --version
 does: kasbah <version> (schema <n>), or "kasbah (unstamped build)".
 `
 
+// helpArgs is the command line `kasbah help <command> [sub…]` stands for,
+// `kasbah <command> [sub…] --help`, so the two print the same; any other
+// command line is itself.
+func helpArgs(args []string) []string {
+	if len(args) > 1 && args[0] == "help" && slices.Contains(commands, args[1]) {
+		return append(slices.Clone(args[1:]), "--help")
+	}
+	return args
+}
+
 // topLevel answers what no command handler took: usage, --version and
-// `version`, `server` with no or an unknown subcommand, and unknown commands.
+// `version`, `help` and its topics, `server` with no or an unknown
+// subcommand, and unknown commands.
 func topLevel(out *cli.Output, build string, args []string) int {
 	if len(args) == 0 {
 		fmt.Fprint(out.Stdout, usage(build))
 		return cli.ExitOK
 	}
 	switch args[0] {
+	case "help":
+		topic := ""
+		if len(args) > 1 {
+			topic = args[1]
+		}
+		if len(args) > 2 {
+			return out.Report(cli.Fail("help: unexpected argument '%s' — help takes one topic: %s, a rule ID (C01), or a command; `kasbah help` lists them", args[2], strings.Join(help.Topics, ", ")))
+		}
+		t, err := help.Topic(build, topic)
+		if err != nil {
+			return out.Report(err)
+		}
+		fmt.Fprint(out.Stdout, t)
+		return cli.ExitOK
 	case "-h", "--help":
 		fmt.Fprint(out.Stdout, usage(build))
 		return cli.ExitOK
 	case "-v", "--version", "version":
 		if args[0] == "version" && len(args) > 1 {
-			a := strings.TrimSuffix(args[1], "\r")
+			a := args[1]
 			switch {
 			case a == "-h" || a == "--help":
 				fmt.Fprint(out.Stdout, versionUsage)

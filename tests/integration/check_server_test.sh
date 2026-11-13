@@ -232,25 +232,25 @@ assert 'grep -qF "Server ($RIG_TARGET at $apps):" <<<"$out"' \
     "the section names the target and the apps path read off the marker (said '$out')"
 assert 'grep -qF "✓ $project_dir exists on $RIG_TARGET" <<<"$out"' \
     "the project directory a real deploy created (said '$out')"
-assert 'grep -qF "✓ .env on $RIG_TARGET has no missing keys vs .env.prod.example" <<<"$out"' \
+assert 'grep -qF "✓ E02 .env on $RIG_TARGET has no missing keys vs .env.prod.example" <<<"$out"' \
     "E02 against the .env a real deploy generated (said '$out')"
-assert 'grep -qF "✓ .env on $RIG_TARGET has no extra keys vs .env.prod.example" <<<"$out"' \
+assert 'grep -qF "✓ E03 .env on $RIG_TARGET has no extra keys vs .env.prod.example" <<<"$out"' \
     "E03 against the same file — the KASBAH_* block a deploy injected is exempt (said '$out')"
-assert 'grep -qF "✓ the mail stack on $RIG_TARGET serves '"'"'$rig_domain'"'"' (its primary_domain)" <<<"$out"' \
+assert 'grep -qF "✓ M03 the mail stack on $RIG_TARGET serves '"'"'$rig_domain'"'"' (its primary_domain)" <<<"$out"' \
     "M03 against the registry server init --with-mail wrote (said '$out')"
 assert 'grep -qF "✓ manifest health.container '"'"'$container'"'"' is running and healthy on $RIG_TARGET" <<<"$out"' \
     "the health of the container the deploy brought up (said '$out')"
-assert 'grep -qF "✓ effective resource limits on $RIG_TARGET match the host'"'"'s 90% ceiling ($marker_cpu cpus, $marker_mem)" <<<"$out"' \
+assert 'grep -qF "✓ R04 effective resource limits on $RIG_TARGET match the host'"'"'s 90% ceiling ($marker_cpu cpus, $marker_mem)" <<<"$out"' \
     "R04, comparing the deployed .env with the marker (said '$out')"
 # T05's tightened form, built from two files a real init wrote — the dashboard
 # router's apex and the registry's primary domain.
-assert 'grep -qF "✓ No router claims a hostname kasbah owns on $RIG_TARGET (traefik.$rig_domain mail.$rig_domain webmail.$rig_domain)" <<<"$out"' \
+assert 'grep -qF "✓ T05 No router claims a hostname kasbah owns on $RIG_TARGET (traefik.$rig_domain mail.$rig_domain webmail.$rig_domain)" <<<"$out"' \
     "T05 tightened to hostnames read off this server (said '$out')"
 # M04: the primary's keys are init's, listed in the override it rendered; the
 # domain an older kasbah joined has neither, so it alone warns and names the
 # repair, which never asks.
 conf="$data/mail/dms/config/rspamd/override.d/dkim_signing.conf"
-assert 'grep -qF "⚠ mail domain '"'"'$old_domain'"'"' on $RIG_TARGET is not DKIM-signed: no rsa-2048-mail-$old_domain.private.txt or ed25519-ed-$old_domain.private.txt in $dkim_dir/, and $conf does not list rsa-2048-mail-$old_domain.private.txt or ed25519-ed-$old_domain.private.txt — " <<<"$out"' \
+assert 'grep -qF "⚠ M04 mail domain '"'"'$old_domain'"'"' on $RIG_TARGET is not DKIM-signed: no rsa-2048-mail-$old_domain.private.txt or ed25519-ed-$old_domain.private.txt in $dkim_dir/, and $conf does not list rsa-2048-mail-$old_domain.private.txt or ed25519-ed-$old_domain.private.txt — " <<<"$out"' \
     "M04 warns for a registry domain with no DKIM key (said '$out')"
 assert 'grep -qF "      kasbah server mail-dkim $RIG_TARGET $old_domain --keep-keys" <<<"$out" && ! grep -qF "mail domain '"'"'$rig_domain'"'"' on $RIG_TARGET is not DKIM-signed" <<<"$out"' \
     "and names the command that makes them, and not for the primary init made keys for (said '$out')"
@@ -281,7 +281,7 @@ sed -i "s/^  domain: $rig_domain\$/  domain: nowhere.rig.test/" "$projdir/kasbah
 check --server "$RIG_TARGET"; rc=$?
 out="$(cli_out)"
 assert '[ "$rc" = "6" ]' "M03 fails a claim this stack does not serve (exit $rc)"
-assert 'grep -qF "✗ the mail stack on $RIG_TARGET does not serve '"'"'nowhere.rig.test'"'"'" <<<"$out"' \
+assert 'grep -qF "✗ M03 the mail stack on $RIG_TARGET does not serve '"'"'nowhere.rig.test'"'"'" <<<"$out"' \
     "saying so, against the registry on the rig (said '$out')"
 sed -i "s/^  domain: nowhere.rig.test\$/  domain: $rig_domain/" "$projdir/kasbah.yml"
 
@@ -293,7 +293,7 @@ assert '[ "$rc" = "0" ] && grep -qF "dkim:     keys generated, override updated"
     "the remedy M04 names makes the missing keys (exit $rc: $(cli_out) $(cli_err))"
 check --server "$RIG_TARGET"; rc=$?
 out="$(cli_out)"
-assert 'grep -qF "✓ every mail domain on $RIG_TARGET has both DKIM keys, listed in its signing override ($rig_domain $old_domain)" <<<"$out"' \
+assert 'grep -qF "✓ M04 every mail domain on $RIG_TARGET has both DKIM keys, listed in its signing override ($rig_domain $old_domain)" <<<"$out"' \
     "M04 passes once both domains' keys are there and listed (exit $rc, said '$out')"
 
 # --- R04, above the host's ceiling ------------------------------------------------------
@@ -305,7 +305,7 @@ rig_ssh "sed -i 's/^KASBAH_CPU_LIMIT=.*/KASBAH_CPU_LIMIT=999/' $project_dir/.env
 check --server "$RIG_TARGET"; rc=$?
 out="$(cli_out)"
 assert '[ "$rc" = "6" ]' "R04 fails an effective cpu limit above the host's ceiling (exit $rc)"
-assert 'grep -qF "✗ effective resource limits on $RIG_TARGET are above the host'"'"'s 90% ceiling: cpus 999 > $marker_cpu" <<<"$out"' \
+assert 'grep -qF "✗ R04 effective resource limits on $RIG_TARGET are above the host'"'"'s 90% ceiling: cpus 999 > $marker_cpu" <<<"$out"' \
     "naming both numbers, read off the .env and the marker (said '$out')"
 rig_ssh "mv -f $project_dir/.env.kasbah-suite-backup $project_dir/.env" >/dev/null 2>&1
 
@@ -320,7 +320,7 @@ sed -i 's/^\( *\)cpus: .*/\1cpus: 999/' "$projdir/compose.prod.yml"
 check --server "$RIG_TARGET"; rc=$?
 out="$(cli_out)"
 assert '[ "$rc" = "6" ]' "R04 fails a literal cpus above the host's ceiling (exit $rc)"
-assert 'grep -qF "✗ literal resource limits in compose.prod.yml are above the 90% ceiling of $RIG_TARGET: $container cpus 999 > 2" <<<"$out"' \
+assert 'grep -qF "✗ R04 literal resource limits in compose.prod.yml are above the 90% ceiling of $RIG_TARGET: $container cpus 999 > 2" <<<"$out"' \
     "naming the service and both numbers (said '$out')"
 assert '! grep -qF "Services with literal resource limits" <<<"$out"' \
     "under --server the literal is compared, not merely warned about (said '$out')"
@@ -328,7 +328,7 @@ sed -i -e 's/^\( *\)cpus: .*/\1cpus: "0.5"/' -e 's/^\( *\)mem_limit: .*/\1mem_li
 check --server "$RIG_TARGET"; rc=$?
 out="$(cli_out)"
 assert '[ "$rc" = "0" ]' "R04 only warns on literals below the ceiling (exit $rc)"
-assert 'grep -qF "⚠ literal resource limits in compose.prod.yml are below the 90% ceiling of $RIG_TARGET: $container cpus 0.5 < 2; $container mem_limit 512m < 1g" <<<"$out"' \
+assert 'grep -qF "⚠ R04 literal resource limits in compose.prod.yml are below the 90% ceiling of $RIG_TARGET: $container cpus 0.5 < 2; $container mem_limit 512m < 1g" <<<"$out"' \
     "both literals named against the marker (said '$out')"
 assert '! grep -qF "effective resource limits on $RIG_TARGET" <<<"$out"' \
     "and the .env is not compared for limits no service takes from it (said '$out')"
@@ -352,11 +352,11 @@ check --server "$RIG_TARGET"; rc=$?
 out="$(cli_out)"
 assert '[ "$rc" = "0" ]' "leftovers warn and never fail check --server (exit $rc)
 $out"
-assert 'grep -qF "⚠ $project on $RIG_TARGET holds 3 leftover(s)" <<<"$out" && grep -qF "may hold a copy of .env; inspect each, then remove it by hand:" <<<"$out"' \
+assert 'grep -qF "⚠ B02 $project on $RIG_TARGET holds 3 leftover(s)" <<<"$out" && grep -qF "may hold a copy of .env; inspect each, then remove it by hand:" <<<"$out"' \
     "B02 warns for this project's leftovers, and what to do (said '$out')"
 assert 'grep -qxF "      $left_bdir" <<<"$out" && grep -qxF "      $left_kept" <<<"$out" && grep -qxF "      $left_unp" <<<"$out"' \
     "naming each path (said '$out')"
-assert 'grep -qF "⚠ kasbah-suite-other on $RIG_TARGET holds 1 leftover(s)" <<<"$out" && grep -qxF "      $other_kept" <<<"$out"' \
+assert 'grep -qF "⚠ B02 kasbah-suite-other on $RIG_TARGET holds 1 leftover(s)" <<<"$out" && grep -qxF "      $other_kept" <<<"$out"' \
     "and another project's (said '$out')"
 kasbah_cli server status "$RIG_TARGET" >"$tmpdir/out" 2>"$tmpdir/err" </dev/null; rc=$?
 out="$(cli_out)"
@@ -386,11 +386,11 @@ out="$(cli_out)"
 rig_ssh "$leftovers_rm" >/dev/null 2>&1 && leftovers_planted=""
 assert '[ "$rc" = "0" ]' "a held lock and an unlistable backups/ only warn (exit $rc)
 $out"
-assert 'grep -qF "⚠ kasbah-suite-other on $RIG_TARGET: a run holds the lock now (" <<<"$out" && grep -qxF "      $other_bdir" <<<"$out"' \
+assert 'grep -qF "⚠ B02 kasbah-suite-other on $RIG_TARGET: a run holds the lock now (" <<<"$out" && grep -qxF "      $other_bdir" <<<"$out"' \
     "a held lock names the run, and the backup directory apart (said '$out')"
 assert '! grep -qF "kasbah-suite-other on $RIG_TARGET holds" <<<"$out"' \
     "and does not call it a leftover (said '$out')"
-assert 'grep -qF "⚠ whether $project on $RIG_TARGET holds a leftover that may hold a copy of .env cannot be checked: backups/ could not be listed: not a directory" <<<"$out"' \
+assert 'grep -qF "⚠ B02 whether $project on $RIG_TARGET holds a leftover that may hold a copy of .env cannot be checked: backups/ could not be listed: not a directory" <<<"$out"' \
     "an unlistable backups/ cannot be checked (said '$out')"
 
 # --- A project that has not been deployed ------------------------------------------------

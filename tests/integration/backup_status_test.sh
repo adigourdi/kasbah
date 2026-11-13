@@ -238,9 +238,9 @@ out="$(cli_out)"
 assert '[ "$rc" = "0" ]' "check --server does not fail a stack that has never fired (exit $rc)
 $out
 $(cli_err)"
-assert 'grep -qF "⚠ backups are configured on $RIG_TARGET and no run has finished yet" <<<"$out"' \
+assert 'grep -qF "⚠ B01 backups are configured on $RIG_TARGET and no run has finished yet" <<<"$out"' \
     "it warns and says which fact this is (said '$out')"
-assert '! grep -qF "✗ the last backup" <<<"$out"' \
+assert '! grep -qF "✗ B01 the last backup" <<<"$out"' \
     "and never reports a failure it has no evidence for (said '$out')"
 
 # ==================================================================================
@@ -282,7 +282,7 @@ check; rc=$?
 out="$(cli_out)"
 assert '[ "$rc" = "0" ]' "check --server passes a stack whose last run succeeded (exit $rc)
 $out"
-assert 'grep -qE "✓ the last backup on $RIG_TARGET finished [0-9]+s ago and succeeded \(repositories: $project\)" <<<"$out"' \
+assert 'grep -qE "✓ B01 the last backup on $RIG_TARGET finished [0-9]+s ago and succeeded \(repositories: $project\)" <<<"$out"' \
     "with what it reached (said '$out')"
 
 # The record the two readers read is one the real runner wrote. Pinned against
@@ -335,9 +335,9 @@ assert 'grep -qF "no password      $nopass" <<<"$out"' \
     "server status names the repository with no password at once (said '$out')"
 check; rc=$?
 cout="$(cli_out)"
-assert 'grep -qF "⚠ backup repositories on $RIG_TARGET with no password: $nopass" <<<"$cout"' \
+assert 'grep -qF "⚠ B01 backup repositories on $RIG_TARGET with no password: $nopass" <<<"$cout"' \
     "and so does check --server, on the same server at the same moment (said '$cout')"
-assert 'grep -qF "✓ the last backup on $RIG_TARGET" <<<"$cout"' \
+assert 'grep -qF "✓ B01 the last backup on $RIG_TARGET" <<<"$cout"' \
     "while the record still says the last run worked, because it did (said '$cout')"
 assert '[ "$rc" = "0" ]' "which is a warning, not a failure (exit $rc)
 $cout"
@@ -366,7 +366,7 @@ out="$(cli_out)"
 assert '[ "$rc" = "6" ]' "check --server fails a stack whose last run failed (exit $rc)
 $out
 $(cli_err)"
-assert 'grep -qE "✗ the last backup on $RIG_TARGET FAILED [0-9]+s ago" <<<"$out"' \
+assert 'grep -qE "✗ B01 the last backup on $RIG_TARGET FAILED [0-9]+s ago" <<<"$out"' \
     "saying so against a run that really failed (said '$out')"
 assert 'grep -qF "docker logs $backup_container" <<<"$out"' \
     "and where the reason is (said '$out')"
@@ -405,9 +405,9 @@ out="$(cli_out)"
 assert '[ "$rc" = "6" ]' "check --server fails a server whose scheduler is not running (exit $rc)
 $out
 $(cli_err)"
-assert 'grep -qF "✗ the backup scheduler on $RIG_TARGET is exited, so nothing is being shipped off-box" <<<"$out"' \
+assert 'grep -qF "✗ B01 the backup scheduler on $RIG_TARGET is exited, so nothing is being shipped off-box" <<<"$out"' \
     "saying so against a container this suite really stopped (said '$out')"
-assert '! grep -qF "✓ the last backup" <<<"$out"' \
+assert '! grep -qF "✓ B01 the last backup" <<<"$out"' \
     "and the still-valid record it left behind is not read as a working backup (said '$out')"
 
 # The record the stopped scheduler left behind, so what happens next can be
@@ -470,7 +470,7 @@ $(cli_err)"
 # seconds, and the gap between State 3's run and this read is about half of that
 # on a rig that is a container on this machine. A suite that goes red on a slow
 # day pins the day, not the behaviour.
-assert 'grep -qE "✗ the last backup on $RIG_TARGET FAILED [0-9]+[smh] ago" <<<"$out"' \
+assert 'grep -qE "✗ B01 the last backup on $RIG_TARGET FAILED [0-9]+[smh] ago" <<<"$out"' \
     "reported again rather than forgotten (said '$out')"
 assert '! grep -qF "no run has finished yet" <<<"$out"' \
     "and never as a stack that has never fired (said '$out')"

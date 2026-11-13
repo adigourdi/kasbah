@@ -6,6 +6,10 @@ guide takes them one by one — what each must hold, what it may hold, and what
 common shapes of a project, each with a complete example under
 [`examples/`](../examples/). The rules themselves, with every detail of what
 passes, are in [compliance.md](compliance.md); the rule IDs below link there.
+`kasbah check` prints each line's rule ID, and the binary explains them
+without the docs: `kasbah help <id>` says why a rule exists and what to
+change, and `kasbah help files` and `kasbah help setups` summarise this guide
+([cli.md](cli.md) → `kasbah help`).
 
 | File | Who writes it | Needed |
 |---|---|---|

@@ -35,7 +35,9 @@ kasbah logs -f     # follow the project's logs
 ```
 
 Commands remember the last server a project used. `kasbah --help` lists them
-all; [docs/cli.md](docs/cli.md) describes each one.
+all; [docs/cli.md](docs/cli.md) describes each one. `kasbah help` explains a
+project's files, its common setups and every rule `kasbah check` names, for
+the version you run.
 
 ## Requirements
 

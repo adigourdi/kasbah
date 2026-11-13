@@ -326,7 +326,7 @@ done
 (cd "$proj" && timeout 120 env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" NO_COLOR=1 \
     "$KASBAH_BIN" check --server "$RIG_TARGET") >"$tmpdir/out" 2>&1 </dev/null
 said_check=$(nocr <"$tmpdir/out")
-assert 'grep -qF "⚠ the projects on $RIG_TARGET with their own cpus limit add up to" <<<"$said_check" && grep -qF "⚠ the projects on $RIG_TARGET with their own memory limit add up to" <<<"$said_check"' \
+assert 'grep -qF "⚠ R06 the projects on $RIG_TARGET with their own cpus limit add up to" <<<"$said_check" && grep -qF "⚠ R06 the projects on $RIG_TARGET with their own memory limit add up to" <<<"$said_check"' \
     "check --server warns that the shares add up past the host (said '$said_check')"
 assert 'grep -qF "blog $share_cpu, $project $share_cpu, shop $share_cpu" <<<"$said_check"' "naming each project once (said '$said_check')"
 assert 'grep -qF "set by kasbah.yml'"'"'s resources:" <<<"$said_check" && ! grep -qF "are below the host" <<<"$said_check"' \

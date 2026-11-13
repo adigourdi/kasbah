@@ -10,59 +10,71 @@ $ kasbah check
 Checking /home/you/projects/myapp
 
 Structure:
-  ✓ kasbah.yml exists (schema 1)
-  ✓ compose.prod.yml exists
-  ✓ .env.prod.example exists
-  ✓ .gitignore excludes .env
-  ✓ .gitignore excludes .kasbah/
-  ✓ client is not set — backups file under the project name (myapp)
+  ✓ S01,S02 kasbah.yml exists (schema 1)
+  ✓ S03 compose.prod.yml exists
+  ✓ S04 .env.prod.example exists
+  ✓ S05 .gitignore excludes .env
+  ✓ S06 .gitignore excludes .kasbah/
+  ✓ S08 client is not set — backups file under the project name (myapp)
 
 Compose:
-  ✓ All services set restart policy
-  ✓ All services set json-file logging with rotation
-  ✓ All routed services join the project's kasbah network
-  ✓ The kasbah network is the project's own (myapp_kasbah)
-  ✓ No internal services on the kasbah network or kasbah-net
-  ✓ Names on the kasbah network are project-prefixed
-  ✓ No deprecated 'version:' field
-  ✓ All built services reference their image as :current
-  ✓ No service publishes host port 80 or 443
-  ✓ All routed services can roll on deploy
+  ✓ C01 All services set restart policy
+  ✓ C02 All services set json-file logging with rotation
+  ✓ C03 All routed services join the project's kasbah network
+  ✓ C04 The kasbah network is the project's own (myapp_kasbah)
+  ✓ C07 No internal services on the kasbah network or kasbah-net
+  ✓ C09 Names on the kasbah network are project-prefixed
+  ✓ C05 No deprecated 'version:' field
+  ✓ C08 All built services reference their image as :current
+  ✓ C14 No service publishes host port 80 or 443
+  ✓ C11 All routed services can roll on deploy
 
 Resources:
-  ✓ All services set cpus/mem_limit via KASBAH_* vars
-  ✓ No resource reservations
+  ✓ R01,R02 All services set cpus/mem_limit via KASBAH_* vars
+  ✓ R03 No resource reservations
 
 Traefik:
-  ✓ traefik-dynamic.yml exists
-  ✓ At least one router references manifest domain (myapp.example.com)
-  ✓ All routers declare entryPoints
-  ✓ Secure routers name a cert resolver
-  ✓ No router asks for a wildcard certificate from an HTTP-01 resolver
-  ✓ A router serves myapp.example.com on the web entrypoint
-  ✓ No router claims reserved hostnames (traefik.*, mail.*, webmail.*)
-  ✓ No router or service reaches a Traefik internal service other than noop@internal
-  ✓ Fragment loadBalancer URLs target a service, alias or container_name compose defines
-  ✓ compose.prod.yml has no traefik.* labels
+  ✓ T01 traefik-dynamic.yml exists
+  ✓ T02 At least one router references manifest domain (myapp.example.com)
+  ✓ T03 All routers declare entryPoints
+  ✓ T04 Secure routers name a cert resolver
+  ✓ T10 No router asks for a wildcard certificate from an HTTP-01 resolver
+  ✓ T08 A router serves myapp.example.com on the web entrypoint
+  ✓ T05 No router claims reserved hostnames (traefik.*, mail.*, webmail.*)
+  ✓ T09 No router or service reaches a Traefik internal service other than noop@internal
+  ✓ T07 Fragment loadBalancer URLs target a service, alias or container_name compose defines
+  ✓ T06 compose.prod.yml has no traefik.* labels
 
 Healthchecks:
-  ⚠ Built services without a compose healthcheck (Dockerfile may declare one): worker
+  ⚠ H01 Built services without a compose healthcheck (Dockerfile may declare one): worker
 
 Env:
-  ✓ .env.prod.example syntax is valid
-  ✓ .env.prod.example has no obvious long secrets
-  ✓ .env.prod.example leaves the KASBAH_* prefix to kasbah
+  ✓ E01 .env.prod.example syntax is valid
+  ✓ E04 .env.prod.example has no obvious long secrets
+  ✓ E05 .env.prod.example leaves the KASBAH_* prefix to kasbah
 
 Hooks:
-  ✓ Every hook is one line of shell
+  ✓ HK01 Every hook is one line of shell
 
 Mail:
-  ✓ Mail claim names domain 'myapp.example.com'
+  ✓ M01 Mail claim names domain 'myapp.example.com'
 
 Summary: 33 passed, 1 warning, 0 failed
 ```
 
 Exit code 0 if no failures (warnings are informational).
+
+Each line leads with the IDs of the catalog rules it speaks for — several,
+comma-separated, when one line answers for more than one (`S01,S02` above).
+`kasbah help <id>` (any case: `kasbah help t05`) prints that rule's level, why
+it exists and what to change, and `kasbah help rules` lists every rule by
+area — the IDs and levels of this catalog, each summarised, the same IDs
+`check` prints. A few lines answer no rule of the catalog and carry no ID:
+a `compose.prod.yml` that does not parse or whose `services:` is not a
+mapping, one that declares no services, and the `--server` lines that the
+table under `kasbah check --server` lists without an ID — the project
+directory, a server `.env` that is not a regular file, `health.container`'s
+health, the certificate, the memory controller and the apps tree's group.
 
 The verdicts do not depend on the locale: names and URL schemes are ASCII
 everywhere, values are measured in UTF-8 characters, and lists (missing keys,
@@ -158,7 +170,7 @@ docker provider is not wired in.
 | ID | Rule | Level |
 |---|---|---|
 | H01 | Each custom-built service declares a `healthcheck:` in compose. Warn-only and never a failure, because kasbah cannot see a `HEALTHCHECK` in the service's Dockerfile — which is the better place for one, since it travels inside the image. A project whose built services are healthchecked in their Dockerfiles warns here forever, correctly | warn |
-| H02 | Manifest `health.container` exists among services | fail |
+| H02 | Manifest `health:` reads — a block whose `container:` is a string and `timeout:` a duration — and `health.container`, when set, names a service or a `container_name` | fail |
 | H03 | Each compose healthcheck a deploy waits on under `health.timeout` (120s when unset) runs its first probe within it, judged by Docker 25's rule. Waited on are `health.container`'s service — every service when it names none — and every routed service C11 finds able to roll, whose new replicas a roll waits on whatever `health.container` says. On Docker 25 or later the first probe comes one `interval` after the container starts (30s when unset), or one `start_interval` (5s when unset) when `start_period` is above zero; Docker 24 has no `start_interval` and probes first at `interval` either way. A container is `starting` until a probe passes, so a later first probe fails on health any deploy that creates or recreates it; one left running and already healthy passes at once. The warning names the service, the first probe's time and the timeout, and says to shorten `interval` or set a `start_period` (Docker 25 or later) — inside a `start_period`, to shorten `start_interval`, or set a shorter one when the file sets none — or raise `health.timeout`. A duration reads in Go's units plus `d` and `w` (`1m30s`, `500ms`, `1h1d`, `1w`), and zero is unset; a negative or otherwise unreadable duration, a healthcheck with `disable: true`, `test: ["NONE"]` or no `test:`, and a Dockerfile `HEALTHCHECK` are not judged. A key compose leaves unset takes Docker's default here, though the image's `HEALTHCHECK` may set it. Says nothing when every probe is in time | warn |
 
 ### Env
@@ -332,7 +344,7 @@ runs; these are added, and T05 tightens (above).
 | Asked | Level |
 |---|---|
 | Does the project dir exist on VPS? | warn if absent — a project that has not been deployed yet is the ordinary state a pre-deploy check runs in; **fail** if the path is there and is not a directory. Every rule below that needs the tree is then skipped rather than answered about a tree that is not there |
-| Does `.env` on VPS match the current `.env.prod.example`? | warn — E02/E03 against the server's real file, and against *this checkout's* template rather than the copy the last deploy shipped |
+| Does `.env` on VPS match the current `.env.prod.example`? | warn — E02/E03 against the server's real file, and against *this checkout's* template rather than the copy the last deploy shipped; **fail**, with no rule ID, when the path is there and is not a regular file — compose reads that path as the project's environment |
 | Is the claimed mail domain known to the mail stack? (M03) | fail — the registry `<apps>/mail/kasbah.yml` is the only thing asked, read one key at a time. A registry that cannot be parsed warns instead: "cannot be checked" is not "not served". This is where `deploy`'s warning has a level; deploy keeps warning, because an unmet claim costs mail rather than the site |
 | Is the manifest's `health.container` currently healthy (if deployed)? | fail when the container reports `unhealthy` — Traefik keeps routing to it. Warn when it is starting, has no healthcheck, or is not running at all |
 | Cert status for the project's `domain` in Traefik's `acme.json` | not asked, and nothing said, for an unrouted project (`routed: false`, T11). Pass without reading the store when this checkout's fragment has no router that could serve HTTPS and an `http` router names the domain in a `Host()` — it is served over plain HTTP and no certificate is expected (`traefik.md` → TLS). Otherwise the domain is looked up under the resolver this checkout's router naming it names (`http` when none does): fail when the certificate has expired; warn inside Traefik's 30-day renewal window, and warn for every way the store can decline to answer, each with its own message (absent, empty, unreadable, not a regular file, no entry for this domain, not JSON, no key for that resolver (for `http`, which is how a store filled under the former name `letsencrypt` reads; for a DNS provider's, a resolver that has issued nothing yet), a `Certificates` that is not a list, an entry with no `certificate`, one that is not base64, one openssl will not read) — they have different remedies, so collapsing them into "no certificate" throws away the only thing that says what to do next |

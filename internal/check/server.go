@@ -48,7 +48,9 @@ func Usage() string {
 	return `Usage: kasbah check [--server [USER@HOST]] [--fix [--yes]]
 
 Runs structural checks against the current project. Exit 0 if no failures
-(warnings are informational). See docs/compliance.md for the full rule set.
+(warnings are informational). Each line leads with its rule's ID: kasbah help
+<id> explains it, kasbah help rules lists them all, and docs/compliance.md has
+the full rule set.
 
 Flags:
   --server USER@HOST  also ask that VPS: is the project deployed, does its .env
@@ -516,13 +518,13 @@ func (c *checker) t05Server(routers []string) {
 	}
 	switch {
 	case len(s.reserved) > 0 && len(bad) > 0:
-		c.failf("Routers claim hostnames kasbah owns on %s: %s (%s)", s.target, strings.Join(bad, " "), against)
+		c.failf("T05", "Routers claim hostnames kasbah owns on %s: %s (%s)", s.target, strings.Join(bad, " "), against)
 	case len(s.reserved) > 0:
-		c.passf("No router claims a hostname kasbah owns on %s (%s)", s.target, against)
+		c.passf("T05", "No router claims a hostname kasbah owns on %s (%s)", s.target, against)
 	case len(bad) > 0:
-		c.failf("Routers claim reserved hostnames: %s%s", strings.Join(bad, " "), note)
+		c.failf("T05", "Routers claim reserved hostnames: %s%s", strings.Join(bad, " "), note)
 	default:
-		c.passf("No router claims reserved hostnames (%s)%s", strings.Join(labels, ", "), note)
+		c.passf("T05", "No router claims reserved hostnames (%s)%s", strings.Join(labels, ", "), note)
 	}
 }
 
@@ -559,11 +561,11 @@ func (c *checker) groupPerms() {
 	s := c.srv
 	switch {
 	case s.r.GroupState == "absent":
-		c.warnf("%s has no '%s' group — a second operator cannot deploy here. `kasbah server init %s` creates it and converges %s", s.target, Group, s.target, s.apps)
+		c.warnf("", "%s has no '%s' group — a second operator cannot deploy here. `kasbah server init %s` creates it and converges %s", s.target, Group, s.target, s.apps)
 	case s.r.PermsCount == 0:
-		c.passf("%s on %s is the '%s' group's, setgid and group-writable", s.apps, s.target, Group)
+		c.passf("", "%s on %s is the '%s' group's, setgid and group-writable", s.apps, s.target, Group)
 	default:
-		c.warnf("%d entries under %s on %s are not the '%s' group's or lack its write bits — another operator's deploy can fail on them; `kasbah server init %s` converges the tree:", s.r.PermsCount, s.apps, s.target, Group, s.target)
+		c.warnf("", "%d entries under %s on %s are not the '%s' group's or lack its write bits — another operator's deploy can fail on them; `kasbah server init %s` converges the tree:", s.r.PermsCount, s.apps, s.target, Group, s.target)
 		for _, l := range s.r.Perms {
 			fmt.Fprintf(c.w, "      %s\n", l)
 		}
@@ -578,11 +580,11 @@ func (c *checker) projectDir() {
 	dir := s.apps + "/" + c.m.Name
 	switch s.r.Project {
 	case "dir":
-		c.passf("%s exists on %s", dir, s.target)
+		c.passf("", "%s exists on %s", dir, s.target)
 	case "notdir":
-		c.failf("%s on %s exists and is not a directory — a deploy would try to write the project into it", dir, s.target)
+		c.failf("", "%s on %s exists and is not a directory — a deploy would try to write the project into it", dir, s.target)
 	default:
-		c.warnf("%s does not exist on %s — nothing has been deployed there yet, so the server rules below have nothing to read", dir, s.target)
+		c.warnf("", "%s does not exist on %s — nothing has been deployed there yet, so the server rules below have nothing to read", dir, s.target)
 	}
 }
 
@@ -593,35 +595,35 @@ func (c *checker) envDrift() {
 	}
 	path := s.apps + "/" + c.m.Name + "/.env"
 	if !isFile(templateFile) {
-		c.warnf("no .env.prod.example in this checkout, so %s on %s cannot be checked for drift (S04 has already failed)", path, s.target)
+		c.warnf("E02,E03", "no .env.prod.example in this checkout, so %s on %s cannot be checked for drift (S04 has already failed)", path, s.target)
 		return
 	}
 	switch s.r.EnvState {
 	case "file", "empty":
 	case "absent":
-		c.warnf("%s does not exist on %s — the next deploy will run the interactive setup to write one", path, s.target)
+		c.warnf("E02,E03", "%s does not exist on %s — the next deploy will run the interactive setup to write one", path, s.target)
 		return
 	case "unreadable":
-		c.warnf("%s on %s cannot be read by this user, so its keys cannot be compared with .env.prod.example", path, s.target)
+		c.warnf("E02,E03", "%s on %s cannot be read by this user, so its keys cannot be compared with .env.prod.example", path, s.target)
 		return
 	default:
-		c.failf("%s on %s is not a regular file (it is %s) — compose reads that path as the project's environment", path, s.target, s.r.EnvState)
+		c.failf("", "%s on %s is not a regular file (it is %s) — compose reads that path as the project's environment", path, s.target, s.r.EnvState)
 		return
 	}
 	if len(s.env) == 0 && s.r.EnvState == "file" {
-		c.warnf("%s on %s did not come back as readable bytes, so its keys cannot be compared with .env.prod.example", path, s.target)
+		c.warnf("E02,E03", "%s on %s did not come back as readable bytes, so its keys cannot be compared with .env.prod.example", path, s.target)
 		return
 	}
 	missing, extra := envtpl.DriftKeys(envtpl.Keys(templateFile), envtpl.KeysOf(s.env))
 	if len(missing) == 0 {
-		c.passf(".env on %s has no missing keys vs .env.prod.example", s.target)
+		c.passf("E02", ".env on %s has no missing keys vs .env.prod.example", s.target)
 	} else {
-		c.warnf(".env on %s is missing keys vs .env.prod.example: %s", s.target, strings.Join(missing, " "))
+		c.warnf("E02", ".env on %s is missing keys vs .env.prod.example: %s", s.target, strings.Join(missing, " "))
 	}
 	if len(extra) == 0 {
-		c.passf(".env on %s has no extra keys vs .env.prod.example", s.target)
+		c.passf("E03", ".env on %s has no extra keys vs .env.prod.example", s.target)
 	} else {
-		c.warnf(".env on %s has extra keys not in .env.prod.example: %s", s.target, strings.Join(extra, " "))
+		c.warnf("E03", ".env on %s has extra keys not in .env.prod.example: %s", s.target, strings.Join(extra, " "))
 	}
 }
 
@@ -639,27 +641,27 @@ func (c *checker) m04() {
 		err = fmt.Errorf("%s on %s is %s", regPath, s.target, s.r.RegistryState)
 	}
 	if err != nil {
-		c.warnf("%s — so whether the mail domains are DKIM-signed cannot be checked", strings.ReplaceAll(err.Error(), "\n", "; "))
+		c.warnf("M04", "%s — so whether the mail domains are DKIM-signed cannot be checked", strings.ReplaceAll(err.Error(), "\n", "; "))
 		return
 	}
 	dir, conf := mail.DKIMDir(s.data), mail.DKIMConf(s.data)
 	switch s.r.DKIMState {
 	case "dir", "absent":
 	case "unreadable":
-		c.warnf("%s on %s cannot be listed by this user, so whether the mail domains are DKIM-signed cannot be checked", dir, s.target)
+		c.warnf("M04", "%s on %s cannot be listed by this user, so whether the mail domains are DKIM-signed cannot be checked", dir, s.target)
 		return
 	default:
-		c.warnf("%s on %s is not a directory (it is %s), so whether the mail domains are DKIM-signed cannot be checked", dir, s.target, or(s.r.DKIMState, "unreported"))
+		c.warnf("M04", "%s on %s is not a directory (it is %s), so whether the mail domains are DKIM-signed cannot be checked", dir, s.target, or(s.r.DKIMState, "unreported"))
 		return
 	}
 	confText := string(dec(s.r.DKIMConf))
 	switch {
 	case s.r.DKIMConfState == "empty":
 	case s.r.DKIMConfState != "file":
-		c.warnf("%s on %s is %s, so whether the mail domains are DKIM-signed cannot be checked", conf, s.target, or(s.r.DKIMConfState, "unreported"))
+		c.warnf("M04", "%s on %s is %s, so whether the mail domains are DKIM-signed cannot be checked", conf, s.target, or(s.r.DKIMConfState, "unreported"))
 		return
 	case confText == "":
-		c.warnf("%s on %s did not come back as readable bytes, so whether the mail domains are DKIM-signed cannot be checked", conf, s.target)
+		c.warnf("M04", "%s on %s did not come back as readable bytes, so whether the mail domains are DKIM-signed cannot be checked", conf, s.target)
 		return
 	}
 	missing := 0
@@ -676,11 +678,11 @@ func (c *checker) m04() {
 		if len(unlisted) > 0 {
 			why = append(why, conf+" does not list "+strings.Join(unlisted, " or "))
 		}
-		c.warnf("mail domain '%s' on %s is not DKIM-signed: %s — its mail leaves unsigned and receivers file it as spam; this makes its missing keys and renders the override:", d, s.target, strings.Join(why, ", and "))
+		c.warnf("M04", "mail domain '%s' on %s is not DKIM-signed: %s — its mail leaves unsigned and receivers file it as spam; this makes its missing keys and renders the override:", d, s.target, strings.Join(why, ", and "))
 		fmt.Fprintf(c.w, "      kasbah server mail-dkim %s %s --keep-keys\n", s.target, d)
 	}
 	if missing == 0 {
-		c.passf("every mail domain on %s has both DKIM keys, listed in its signing override (%s)", s.target, strings.Join(reg.Domains, " "))
+		c.passf("M04", "every mail domain on %s has both DKIM keys, listed in its signing override (%s)", s.target, strings.Join(reg.Domains, " "))
 	}
 }
 
@@ -709,31 +711,31 @@ func (c *checker) m03() {
 	}
 	reg := mailreg.Path(s.apps)
 	if s.r.RegistryState == "absent" {
-		c.failf("%s claims the mail domain '%s', and there is no mail stack on %s (%s is not there) — enable it with: kasbah server init %s --with-mail", c.m.Name, domain, s.target, reg, s.target)
+		c.failf("M03", "%s claims the mail domain '%s', and there is no mail stack on %s (%s is not there) — enable it with: kasbah server init %s --with-mail", c.m.Name, domain, s.target, reg, s.target)
 		return
 	}
 	if len(s.registry) == 0 {
-		c.warnf("%s claims the mail domain '%s', and %s on %s is %s — the registry is the only thing that answers whether this stack serves a domain, so the claim cannot be checked", c.m.Name, domain, reg, s.target, s.r.RegistryState)
+		c.warnf("M03", "%s claims the mail domain '%s', and %s on %s is %s — the registry is the only thing that answers whether this stack serves a domain, so the claim cannot be checked", c.m.Name, domain, reg, s.target, s.r.RegistryState)
 		return
 	}
 	r, err := mailreg.Parse(s.registry, reg+" on "+s.target)
 	if errors.Is(err, mailreg.ErrUnparseable) {
-		c.warnf("%s claims the mail domain '%s', and %s on %s does not parse as YAML — the claim cannot be checked against a registry kasbah cannot read", c.m.Name, domain, reg, s.target)
+		c.warnf("M03", "%s claims the mail domain '%s', and %s on %s does not parse as YAML — the claim cannot be checked against a registry kasbah cannot read", c.m.Name, domain, reg, s.target)
 		return
 	}
 	if err != nil {
-		c.failf("%s claims the mail domain '%s', and %s — every kasbah command refuses this registry until it is fixed", c.m.Name, domain, strings.ReplaceAll(err.Error(), "\n", "; "))
+		c.failf("M03", "%s claims the mail domain '%s', and %s — every kasbah command refuses this registry until it is fixed", c.m.Name, domain, strings.ReplaceAll(err.Error(), "\n", "; "))
 		return
 	}
 	if r.Primary == domain {
-		c.passf("the mail stack on %s serves '%s' (its primary_domain)", s.target, domain)
+		c.passf("M03", "the mail stack on %s serves '%s' (its primary_domain)", s.target, domain)
 		return
 	}
 	if r.Serves(domain) {
-		c.passf("the mail stack on %s serves '%s' (listed under domains:)", s.target, domain)
+		c.passf("M03", "the mail stack on %s serves '%s' (listed under domains:)", s.target, domain)
 		return
 	}
-	c.failf("the mail stack on %s does not serve '%s' — %s serves %s; add it with: kasbah server add-mail-domain %s %s", s.target, domain, reg, strings.Join(r.Domains, " "), s.target, domain)
+	c.failf("M03", "the mail stack on %s does not serve '%s' — %s serves %s; add it with: kasbah server add-mail-domain %s %s", s.target, domain, reg, strings.Join(r.Domains, " "), s.target, domain)
 }
 
 func (c *checker) serverHealth() {
@@ -746,30 +748,30 @@ func (c *checker) serverHealth() {
 	derr := or(s.r.DockerError, "nothing")
 	switch st {
 	case "nodocker":
-		c.warnf("no docker on %s, so the health of '%s' cannot be read", s.target, name)
+		c.warnf("", "no docker on %s, so the health of '%s' cannot be read", s.target, name)
 		return
 	case "nodaemon":
-		c.warnf("the docker daemon on %s is not answering, so the health of '%s' cannot be read — nothing here says the container is down (docker said: %s)", s.target, name, derr)
+		c.warnf("", "the docker daemon on %s is not answering, so the health of '%s' cannot be read — nothing here says the container is down (docker said: %s)", s.target, name, derr)
 		return
 	case "absent":
 		if s.r.Project == "dir" {
-			c.warnf("manifest health.container '%s' is not running on %s — the project is deployed, so either it was stopped or the container is named something else there", name, s.target)
+			c.warnf("", "manifest health.container '%s' is not running on %s — the project is deployed, so either it was stopped or the container is named something else there", name, s.target)
 		} else {
-			c.warnf("manifest health.container '%s' is not running on %s (nothing has been deployed there yet)", name, s.target)
+			c.warnf("", "manifest health.container '%s' is not running on %s (nothing has been deployed there yet)", name, s.target)
 		}
 		return
 	}
 	switch health {
 	case "healthy":
-		c.passf("manifest health.container '%s' is %s and healthy on %s", name, st, s.target)
+		c.passf("", "manifest health.container '%s' is %s and healthy on %s", name, st, s.target)
 	case "unhealthy":
-		c.failf("manifest health.container '%s' is %s and UNHEALTHY on %s — Traefik keeps routing to it, so this is live", name, st, s.target)
+		c.failf("", "manifest health.container '%s' is %s and UNHEALTHY on %s — Traefik keeps routing to it, so this is live", name, st, s.target)
 	case "starting":
-		c.warnf("manifest health.container '%s' is %s and still starting on %s", name, st, s.target)
+		c.warnf("", "manifest health.container '%s' is %s and still starting on %s", name, st, s.target)
 	case "none":
-		c.warnf("manifest health.container '%s' is %s on %s and declares no healthcheck, so nothing there reports health (H01)", name, st, s.target)
+		c.warnf("", "manifest health.container '%s' is %s on %s and declares no healthcheck, so nothing there reports health (H01)", name, st, s.target)
 	default:
-		c.warnf("manifest health.container '%s' is %s on %s and reports health '%s'", name, st, s.target, health)
+		c.warnf("", "manifest health.container '%s' is %s on %s and reports health '%s'", name, st, s.target, health)
 	}
 }
 
@@ -789,7 +791,7 @@ func (c *checker) cert() {
 	path := s.data + "/traefik/letsencrypt/acme.json"
 	d := c.m.Domain
 	if d == "" {
-		c.warnf("the manifest names no domain, so there is no certificate to look for in %s", path)
+		c.warnf("", "the manifest names no domain, so there is no certificate to look for in %s", path)
 		return
 	}
 	resolver := acme.Resolver
@@ -797,7 +799,7 @@ func (c *checker) cert() {
 		raw, err := os.ReadFile(traefikFile)
 		f := c.load(traefikFile)
 		if err == nil && f.bad == "" && acme.PlainHTTP(raw, f.root, d) {
-			c.passf("this checkout's fragment has no HTTPS router, so '%s' is served over plain HTTP and no certificate is expected", d)
+			c.passf("", "this checkout's fragment has no HTTPS router, so '%s' is served over plain HTTP and no certificate is expected", d)
 			return
 		}
 		if f.bad == "" {
@@ -807,52 +809,52 @@ func (c *checker) cert() {
 	switch s.r.AcmeState {
 	case "file":
 	case "absent":
-		c.warnf("no certificate store at %s on %s — `kasbah server init` creates it, so this server's Traefik is not the one kasbah prepared", path, s.target)
+		c.warnf("", "no certificate store at %s on %s — `kasbah server init` creates it, so this server's Traefik is not the one kasbah prepared", path, s.target)
 		return
 	case "empty":
-		c.warnf("the certificate store at %s on %s is empty — Traefik has not issued anything yet, so '%s' is served with its self-signed default", path, s.target, d)
+		c.warnf("", "the certificate store at %s on %s is empty — Traefik has not issued anything yet, so '%s' is served with its self-signed default", path, s.target, d)
 		return
 	case "unreadable":
-		c.warnf("%s on %s cannot be read by this user, so the certificate for '%s' cannot be checked — the store is mode 600 and owned by the deploy user on a server kasbah prepared", path, s.target, d)
+		c.warnf("", "%s on %s cannot be read by this user, so the certificate for '%s' cannot be checked — the store is mode 600 and owned by the deploy user on a server kasbah prepared", path, s.target, d)
 		return
 	default:
-		c.warnf("%s on %s is %s, not a regular file — Traefik bind-mounts that path as its certificate store", path, s.target, s.r.AcmeState)
+		c.warnf("", "%s on %s is %s, not a regular file — Traefik bind-mounts that path as its certificate store", path, s.target, s.r.AcmeState)
 		return
 	}
 	if len(s.acme) == 0 {
-		c.warnf("%s on %s did not come back as readable bytes, so the certificate for '%s' cannot be checked", path, s.target, d)
+		c.warnf("", "%s on %s did not come back as readable bytes, so the certificate for '%s' cannot be checked", path, s.target, d)
 		return
 	}
 	l := acme.FindIn(s.acme, resolver, d, s.now)
 	switch l.State {
 	case "found":
 	case "empty":
-		c.warnf("the certificate store at %s on %s holds no certificates — nothing has been issued for '%s' yet", path, s.target, d)
+		c.warnf("", "the certificate store at %s on %s holds no certificates — nothing has been issued for '%s' yet", path, s.target, d)
 		return
 	case "nomatch":
-		c.warnf("no certificate for '%s' in %s on %s (%d in the store) — Traefik issues one when a router claims the hostname and it resolves to this server", d, path, s.target, l.Count)
+		c.warnf("", "no certificate for '%s' in %s on %s (%d in the store) — Traefik issues one when a router claims the hostname and it resolves to this server", d, path, s.target, l.Count)
 		return
 	case "notjson":
-		c.warnf("%s on %s does not parse as JSON, so the certificate for '%s' cannot be read (its bytes are not shown: the store holds private key material)", path, s.target, d)
+		c.warnf("", "%s on %s does not parse as JSON, so the certificate for '%s' cannot be read (its bytes are not shown: the store holds private key material)", path, s.target, d)
 		return
 	case "noresolver":
 		if resolver != acme.Resolver {
-			c.warnf("%s on %s has no '%s' store — the resolver this checkout's router names for '%s' has issued nothing yet", path, s.target, resolver, d)
+			c.warnf("", "%s on %s has no '%s' store — the resolver this checkout's router names for '%s' has issued nothing yet", path, s.target, resolver, d)
 			return
 		}
-		c.warnf("%s on %s has no '%s' store — a store filled under the resolver's former name 'letsencrypt' reads this way until Traefik issues under the new one; otherwise the schema has shifted with a Traefik upgrade", path, s.target, acme.Resolver)
+		c.warnf("", "%s on %s has no '%s' store — a store filled under the resolver's former name 'letsencrypt' reads this way until Traefik issues under the new one; otherwise the schema has shifted with a Traefik upgrade", path, s.target, acme.Resolver)
 		return
 	case "notarray":
-		c.warnf("%s on %s holds a '%s' whose Certificates is a %s, not a list — the store's schema is not the one this kasbah reads", path, s.target, resolver, l.Kind)
+		c.warnf("", "%s on %s holds a '%s' whose Certificates is a %s, not a list — the store's schema is not the one this kasbah reads", path, s.target, resolver, l.Kind)
 		return
 	case "nocert":
-		c.warnf("the entry for '%s' in %s on %s carries no certificate field — the store's schema is not the one this kasbah reads", d, path, s.target)
+		c.warnf("", "the entry for '%s' in %s on %s carries no certificate field — the store's schema is not the one this kasbah reads", d, path, s.target)
 		return
 	case "notbase64":
-		c.warnf("the certificate for '%s' in %s on %s is not base64 — the store's schema is not the one this kasbah reads", d, path, s.target)
+		c.warnf("", "the certificate for '%s' in %s on %s is not base64 — the store's schema is not the one this kasbah reads", d, path, s.target)
 		return
 	default:
-		c.warnf("the certificate for '%s' in %s on %s is not a certificate openssl reads", d, path, s.target)
+		c.warnf("", "the certificate for '%s' in %s on %s is not a certificate openssl reads", d, path, s.target)
 		return
 	}
 	via, issuer := "", or(l.Issuer, "unknown issuer")
@@ -861,11 +863,11 @@ func (c *checker) cert() {
 	}
 	switch {
 	case l.Expired:
-		c.failf("certificate for '%s'%s EXPIRED %d day(s) ago (%s, %s) — Traefik renews at 30 days remaining, so renewal has been failing", d, via, l.Days, l.NotAfter, issuer)
+		c.failf("", "certificate for '%s'%s EXPIRED %d day(s) ago (%s, %s) — Traefik renews at 30 days remaining, so renewal has been failing", d, via, l.Days, l.NotAfter, issuer)
 	case l.Days <= 14:
-		c.warnf("certificate for '%s'%s expires in %d day(s) (%s, %s) — Traefik renews at 30 days remaining, so renewal has already missed its window", d, via, l.Days, l.NotAfter, issuer)
+		c.warnf("", "certificate for '%s'%s expires in %d day(s) (%s, %s) — Traefik renews at 30 days remaining, so renewal has already missed its window", d, via, l.Days, l.NotAfter, issuer)
 	default:
-		c.passf("certificate for '%s'%s valid for %d more day(s) (until %s, %s)", d, via, l.Days, l.NotAfter, issuer)
+		c.passf("", "certificate for '%s'%s valid for %d more day(s) (until %s, %s)", d, via, l.Days, l.NotAfter, issuer)
 	}
 }
 
@@ -885,7 +887,7 @@ func (c *checker) r04() {
 	}
 	cpu, mem := s.envVals["KASBAH_CPU_LIMIT"], s.envVals["KASBAH_MEM_LIMIT"]
 	if cpu == "" && mem == "" {
-		c.warnf("%s/%s/.env on %s carries no KASBAH_CPU_LIMIT or KASBAH_MEM_LIMIT, so there is no effective limit to compare with the host's %s cpus / %s — every deploy rewrites that block, so it has been edited out", s.apps, c.m.Name, s.target, hostCPU, hostMem)
+		c.warnf("R04", "%s/%s/.env on %s carries no KASBAH_CPU_LIMIT or KASBAH_MEM_LIMIT, so there is no effective limit to compare with the host's %s cpus / %s — every deploy rewrites that block, so it has been edited out", s.apps, c.m.Name, s.target, hostCPU, hostMem)
 		return
 	}
 	verdict, note := "ok", ""
@@ -932,11 +934,11 @@ func (c *checker) r04() {
 	}
 	switch {
 	case verdict == "above":
-		c.failf("effective resource limits on %s are above the host's 90%% ceiling: %s — kasbah's limits are anti-takeover ceilings, and one project over them can take the host down", s.target, note)
+		c.failf("R04", "effective resource limits on %s are above the host's 90%% ceiling: %s — kasbah's limits are anti-takeover ceilings, and one project over them can take the host down", s.target, note)
 	case verdict == "below":
-		c.warnf("effective resource limits on %s are below the host's 90%% ceiling: %s — deliberately tighter is allowed, but every deploy rewrites the KASBAH_* block, so this is usually a stale .env", s.target, note)
+		c.warnf("R04", "effective resource limits on %s are below the host's 90%% ceiling: %s — deliberately tighter is allowed, but every deploy rewrites the KASBAH_* block, so this is usually a stale .env", s.target, note)
 	case note != "":
-		c.warnf("effective resource limits on %s could not all be compared with the host's %s cpus / %s: %s", s.target, hostCPU, hostMem, note)
+		c.warnf("R04", "effective resource limits on %s could not all be compared with the host's %s cpus / %s: %s", s.target, hostCPU, hostMem, note)
 	default:
 		var used []string
 		if useCPU {
@@ -946,10 +948,10 @@ func (c *checker) r04() {
 			used = append(used, mem)
 		}
 		if len(own) > 0 {
-			c.passf("effective resource limits on %s are within the host's 90%% ceiling (%s) — %s set by kasbah.yml's resources:", s.target, strings.Join(used, ", "), strings.Join(own, " and "))
+			c.passf("R04", "effective resource limits on %s are within the host's 90%% ceiling (%s) — %s set by kasbah.yml's resources:", s.target, strings.Join(used, ", "), strings.Join(own, " and "))
 			return
 		}
-		c.passf("effective resource limits on %s match the host's 90%% ceiling (%s)", s.target, strings.Join(used, ", "))
+		c.passf("R04", "effective resource limits on %s match the host's 90%% ceiling (%s)", s.target, strings.Join(used, ", "))
 	}
 }
 
@@ -982,11 +984,11 @@ func (c *checker) r06() {
 	over := false
 	if cpuSum.Cmp(new(big.Rat).SetInt64(s.r.HostCores)) > 0 {
 		over = true
-		c.warnf("the projects on %s with their own cpus limit add up to %s cores, more than the host's %d: %s — each limit caps one container, so together they can still starve each other", s.target, cpuSum.FloatString(1), s.r.HostCores, strings.Join(cpus, ", "))
+		c.warnf("R06", "the projects on %s with their own cpus limit add up to %s cores, more than the host's %d: %s — each limit caps one container, so together they can still starve each other", s.target, cpuSum.FloatString(1), s.r.HostCores, strings.Join(cpus, ", "))
 	}
 	if memSum > s.r.HostMemKB*1024 {
 		over = true
-		c.warnf("the projects on %s with their own memory limit add up to %dm, more than the host's %dm: %s — each limit caps one container, so together they can still run the host out of memory", s.target, memSum>>20, hostMiB, strings.Join(mems, ", "))
+		c.warnf("R06", "the projects on %s with their own memory limit add up to %dm, more than the host's %dm: %s — each limit caps one container, so together they can still run the host out of memory", s.target, memSum>>20, hostMiB, strings.Join(mems, ", "))
 	}
 	if !over {
 		var fit []string
@@ -996,7 +998,7 @@ func (c *checker) r06() {
 		if len(mems) > 0 {
 			fit = append(fit, fmt.Sprintf("%dm of %dm", memSum>>20, hostMiB))
 		}
-		c.passf("the projects on %s with limits of their own fit the host together (%s)", s.target, strings.Join(fit, ", "))
+		c.passf("R06", "the projects on %s with limits of their own fit the host together (%s)", s.target, strings.Join(fit, ", "))
 	}
 }
 
@@ -1005,7 +1007,7 @@ func (c *checker) r06() {
 func (c *checker) memoryController() {
 	if c.srv.mk.MemoryController == "no" {
 		w := marker.NoMemoryController(c.srv.target)
-		c.warnf("%s", w[0])
+		c.warnf("", "%s", w[0])
 		for _, l := range w[1:] {
 			fmt.Fprintf(c.w, "      %s\n", l)
 		}
@@ -1060,13 +1062,13 @@ func (c *checker) r04Literals(hostCPU, hostMem string) (useCPU, useMem bool) {
 	s := c.srv
 	switch {
 	case verdict == "above":
-		c.failf("literal resource limits in compose.prod.yml are above the 90%% ceiling of %s: %s — kasbah's limits are anti-takeover ceilings, and one service over them can take the host down", s.target, note)
+		c.failf("R04", "literal resource limits in compose.prod.yml are above the 90%% ceiling of %s: %s — kasbah's limits are anti-takeover ceilings, and one service over them can take the host down", s.target, note)
 	case verdict == "below":
-		c.warnf("literal resource limits in compose.prod.yml are below the 90%% ceiling of %s: %s — a tighter per-service limit is allowed, but flagged", s.target, note)
+		c.warnf("R04", "literal resource limits in compose.prod.yml are below the 90%% ceiling of %s: %s — a tighter per-service limit is allowed, but flagged", s.target, note)
 	case verdict == "unknown":
-		c.warnf("literal resource limits in compose.prod.yml could not all be compared with the %s cpus / %s ceiling of %s: %s", hostCPU, hostMem, s.target, note)
+		c.warnf("R04", "literal resource limits in compose.prod.yml could not all be compared with the %s cpus / %s ceiling of %s: %s", hostCPU, hostMem, s.target, note)
 	case n > 0:
-		c.passf("literal resource limits in compose.prod.yml match the 90%% ceiling of %s (%s cpus, %s)", s.target, hostCPU, hostMem)
+		c.passf("R04", "literal resource limits in compose.prod.yml match the 90%% ceiling of %s (%s cpus, %s)", s.target, hostCPU, hostMem)
 	}
 	return useCPU, useMem
 }
@@ -1090,23 +1092,23 @@ func (c *checker) b01() {
 	}
 	switch r.Verdict {
 	case backuprec.NoStack:
-		c.warnf("%s/.kasbah/server.json on %s records off-box backups and %s %s — nothing on this server would take one, and there is no record here to say when the last one ran; re-run: kasbah server init %s --with-backup", s.apps, s.target, dir, r.Reason, s.target)
+		c.warnf("B01", "%s/.kasbah/server.json on %s records off-box backups and %s %s — nothing on this server would take one, and there is no record here to say when the last one ran; re-run: kasbah server init %s --with-backup", s.apps, s.target, dir, r.Reason, s.target)
 	case backuprec.NoRecord:
-		c.warnf("the backup scheduler on %s has written no record at %s — it writes one as its first act, so it has not started since backups were configured (its container is %s); bring it up: docker compose -p kasbah-backup up -d", s.target, rec, cstate)
+		c.warnf("B01", "the backup scheduler on %s has written no record at %s — it writes one as its first act, so it has not started since backups were configured (its container is %s); bring it up: docker compose -p kasbah-backup up -d", s.target, rec, cstate)
 	case backuprec.Unreadable:
-		c.warnf("%s on %s %s, so nothing here says whether a backup has ever run — this is not the same fact as a backup that has stopped", rec, s.target, r.Reason)
+		c.warnf("B01", "%s on %s %s, so nothing here says whether a backup has ever run — this is not the same fact as a backup that has stopped", rec, s.target, r.Reason)
 	case backuprec.Unparsed:
-		c.warnf("%s on %s is not a record this kasbah reads — it %s, so nothing here says whether a backup has ever run", rec, s.target, r.Reason)
+		c.warnf("B01", "%s on %s is not a record this kasbah reads — it %s, so nothing here says whether a backup has ever run", rec, s.target, r.Reason)
 	default:
 		c.b01Verdict(r, b, clock)
 	}
 
 	missing, orphan := backuprec.Diff(b.Repos(), b.HasPass)
 	if len(missing) > 0 {
-		c.warnf("backup repositories on %s with no password: %s — a repository with no password is not backed up at all (docs/backup.md), and the run says so only in its own log; supply one with: kasbah server init %s --with-backup", s.target, strings.Join(missing, " "), s.target)
+		c.warnf("B01", "backup repositories on %s with no password: %s — a repository with no password is not backed up at all (docs/backup.md), and the run says so only in its own log; supply one with: kasbah server init %s --with-backup", s.target, strings.Join(missing, " "), s.target)
 	}
 	if len(orphan) > 0 {
-		c.warnf("backup repository passwords on %s that no project files into any more: %s — the last project of that client was dropped and its password stayed behind at mode 600. Keep it: it is what decrypts the snapshots already off-box, and kasbah never deletes one. Take it off by hand once that repository has been handed over or emptied (docs/backup.md → Handover).", s.target, strings.Join(orphan, " "))
+		c.warnf("B01", "backup repository passwords on %s that no project files into any more: %s — the last project of that client was dropped and its password stayed behind at mode 600. Keep it: it is what decrypts the snapshots already off-box, and kasbah never deletes one. Take it off by hand once that repository has been handed over or emptied (docs/backup.md → Handover).", s.target, strings.Join(orphan, " "))
 	}
 }
 
@@ -1117,14 +1119,14 @@ func (c *checker) b02() {
 	for _, p := range s.r.Leftovers {
 		dir := s.apps + "/" + p.Name
 		if p.Error != "" {
-			c.warnf("whether %s on %s holds a leftover that may hold a copy of .env cannot be checked: %s", p.Name, s.target, p.Error)
+			c.warnf("B02", "whether %s on %s holds a leftover that may hold a copy of .env cannot be checked: %s", p.Name, s.target, p.Error)
 		}
 		if paths := p.Running().Paths(dir); len(paths) > 0 {
-			c.warnf("%s on %s: a run holds the lock now (%s); a backup directory or extraction may be its own — each may hold a copy of .env:", p.Name, s.target, p.Holder)
+			c.warnf("B02", "%s on %s: a run holds the lock now (%s); a backup directory or extraction may be its own — each may hold a copy of .env:", p.Name, s.target, p.Holder)
 			c.paths(paths)
 		}
 		if paths := p.Settled().Paths(dir); len(paths) > 0 {
-			c.warnf("%s on %s holds %d leftover(s) a deploy or rollback did not finish with — a backup directory whose tarball was never written, a snapshot a backup could not take in, or a killed rollback's extraction — and each may hold a copy of .env; inspect each, then remove it by hand:", p.Name, s.target, len(paths))
+			c.warnf("B02", "%s on %s holds %d leftover(s) a deploy or rollback did not finish with — a backup directory whose tarball was never written, a snapshot a backup could not take in, or a killed rollback's extraction — and each may hold a copy of .env; inspect each, then remove it by hand:", p.Name, s.target, len(paths))
 			c.paths(paths)
 		}
 	}
@@ -1151,20 +1153,20 @@ func (c *checker) b01Verdict(r *backuprec.Record, b backuprec.Facts, clock strin
 	switch b.Container.State {
 	case "running":
 	case "nodocker":
-		c.warnf("there is no docker on %s, so whether its backup scheduler is running cannot be read — the record says '%s'", s.target, r.Verdict)
+		c.warnf("B01", "there is no docker on %s, so whether its backup scheduler is running cannot be read — the record says '%s'", s.target, r.Verdict)
 		return
 	case "nodaemon":
-		c.warnf("the docker daemon on %s is not answering, so whether its backup scheduler is running cannot be read — nothing here says it is down (docker said: %s)", s.target, or(s.r.DockerError, "nothing"))
+		c.warnf("B01", "the docker daemon on %s is not answering, so whether its backup scheduler is running cannot be read — nothing here says it is down (docker said: %s)", s.target, or(s.r.DockerError, "nothing"))
 		return
 	case "notours":
-		c.failf("the container named kasbah-backup on %s was not started as the kasbah-backup compose project from %s/.kasbah/backup, so it is not kasbah's scheduler and nothing is shipping this server off-box", s.target, s.apps)
+		c.failf("B01", "the container named kasbah-backup on %s was not started as the kasbah-backup compose project from %s/.kasbah/backup, so it is not kasbah's scheduler and nothing is shipping this server off-box", s.target, s.apps)
 		return
 	default:
 		last := ""
 		if r.Age >= 0 {
 			last = ", last run " + ago + " ago"
 		}
-		c.failf("the backup scheduler on %s is %s, so nothing is being shipped off-box — its record still reads '%s'%s; bring it up: docker compose -p kasbah-backup up -d", s.target, b.Container.State, r.Verdict, last)
+		c.failf("B01", "the backup scheduler on %s is %s, so nothing is being shipped off-box — its record still reads '%s'%s; bring it up: docker compose -p kasbah-backup up -d", s.target, b.Container.State, r.Verdict, last)
 		return
 	}
 	switch r.Verdict {
@@ -1178,23 +1180,23 @@ func (c *checker) b01Verdict(r *backuprec.Record, b backuprec.Facts, clock strin
 			if r.Launcher == "" {
 				logs = "docker logs kasbah-backup has each project's result and the last 64 KB of the backup hooks' stderr"
 			}
-			c.failf("the last backup on %s FAILED %s ago (repositories backed up: %s) — %s; %s%s%s", s.target, ago, or(repos, "-"), strings.Join(why, "; "), logs, past, clock)
+			c.failf("B01", "the last backup on %s FAILED %s ago (repositories backed up: %s) — %s; %s%s%s", s.target, ago, or(repos, "-"), strings.Join(why, "; "), logs, past, clock)
 			break
 		}
-		c.failf("the last backup on %s FAILED %s ago (repositories backed up: %s) — nothing new has been shipped off-box since; docker logs kasbah-backup says which repository and why%s%s", s.target, ago, or(repos, "-"), past, clock)
+		c.failf("B01", "the last backup on %s FAILED %s ago (repositories backed up: %s) — nothing new has been shipped off-box since; docker logs kasbah-backup says which repository and why%s%s", s.target, ago, or(repos, "-"), past, clock)
 	case backuprec.Overdue:
 		finished := ""
 		if r.Age >= 0 {
 			finished = " (the last run finished " + ago + " ago)"
 		}
-		c.failf("the backup scheduler on %s is %s past its own deadline in state '%s' — a run that never returned, or a sleep that never woke, so nothing is being shipped off-box%s; docker logs kasbah-backup%s", s.target, due, r.State, finished, clock)
+		c.failf("B01", "the backup scheduler on %s is %s past its own deadline in state '%s' — a run that never returned, or a sleep that never woke, so nothing is being shipped off-box%s; docker logs kasbah-backup%s", s.target, due, r.State, finished, clock)
 	case backuprec.Never:
-		c.warnf("backups are configured on %s and no run has finished yet — the scheduler is '%s' and inside its own deadline, so this is a stack that has not fired rather than one that has stopped%s", s.target, r.State, clock)
+		c.warnf("B01", "backups are configured on %s and no run has finished yet — the scheduler is '%s' and inside its own deadline, so this is a stack that has not fired rather than one that has stopped%s", s.target, r.State, clock)
 	case backuprec.OK:
 		if repos == "" || repos == "none" {
-			c.warnf("the last backup on %s finished %s ago and shipped nothing — no repository had anything to back up, so nothing of this server exists off-box yet%s", s.target, ago, clock)
+			c.warnf("B01", "the last backup on %s finished %s ago and shipped nothing — no repository had anything to back up, so nothing of this server exists off-box yet%s", s.target, ago, clock)
 		} else {
-			c.passf("the last backup on %s finished %s ago and succeeded (repositories: %s)%s", s.target, ago, repos, clock)
+			c.passf("B01", "the last backup on %s finished %s ago and succeeded (repositories: %s)%s", s.target, ago, repos, clock)
 		}
 	}
 }
@@ -1205,19 +1207,23 @@ func (c *checker) outsiders() {
 	s := c.srv
 	dir := s.apps + "/" + c.m.Name
 	if s.r.OutsidersError != "" {
-		c.warnf("whether a container outside %s on %s publishes a port it publishes, or runs under its compose project name, cannot be checked: %s", dir, s.target, s.r.OutsidersError)
+		c.warnf("C12,C13", "whether a container outside %s on %s publishes a port it publishes, or runs under its compose project name, cannot be checked: %s", dir, s.target, s.r.OutsidersError)
 		return
 	}
 	binds, unsure := c.binds()
 	cs := deploy.Collisions(c.m.Name, dir, binds, s.r.Outsiders)
-	for _, m := range cs {
-		c.failf("on %s, %s — a deploy refuses this", s.target, m)
+	for _, col := range cs {
+		if col.Kind == deploy.NameCollision {
+			c.failf("C13", "on %s, %s — a deploy refuses this", s.target, col.Msg)
+		} else {
+			c.failf("C12", "on %s, %s — a deploy refuses this", s.target, col.Msg)
+		}
 	}
 	for _, u := range unsure {
-		c.warnf("whether a container outside %s on %s publishes %s cannot be checked: %s", dir, s.target, u.entry, u.why)
+		c.warnf("C12", "whether a container outside %s on %s publishes %s cannot be checked: %s", dir, s.target, u.entry, u.why)
 	}
 	if len(cs) == 0 && len(unsure) == 0 {
-		c.passf("no container outside %s on %s publishes a port it publishes or runs under its compose project name", dir, s.target)
+		c.passf("C12,C13", "no container outside %s on %s publishes a port it publishes or runs under its compose project name", dir, s.target)
 	}
 }
 

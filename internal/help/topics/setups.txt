@@ -1,0 +1,22 @@
+The common shapes of a project. Each is a complete project under examples/
+in the kasbah repository that passes `kasbah check` with no failure and no
+warning: copy it, replace its name, its domain and the names prefixed with
+it, and adapt the services.
+
+  examples/web-app/             One service built from the project's
+                                Dockerfile, tagged :current, with a compose
+                                healthcheck so it rolls; HTTPS, an HTTP
+                                redirect, and www. sent to the bare domain.
+  examples/app-database/        A stock app on kasbah and internal, PostgreSQL
+                                on internal only, a generated password, and
+                                backup and restore hooks that dump the database.
+  examples/worker/              routed: false, no domain, no fragment: a
+                                service on the project's default network.
+  examples/redirect-only/       An old domain sent to a new one: services: {}
+                                and routers ending on noop@internal.
+  examples/raw-port/            A service reached on a port of its own (TCP
+                                and UDP), not through Traefik; routed: false.
+  examples/sends-mail/          A routed app with mail.domain, sending
+                                through mail.<domain>:587 with a mailbox login.
+  examples/persistent-volumes/  A bind mount under <data>/<name>/, a named
+                                volume, and a read-only host path.
