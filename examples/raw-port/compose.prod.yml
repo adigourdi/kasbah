@@ -1,0 +1,25 @@
+services:
+  server:
+    image: itzg/minecraft-server:2024.10.2-java21
+    restart: unless-stopped
+    environment:
+      EULA: ${MC_EULA}
+      MEMORY: ${MC_MEMORY}
+      ENABLE_QUERY: "true"
+    # Published on the host, every address: TCP for the game, UDP for the
+    # status query. 80 and 443 are Traefik's and refused.
+    ports:
+      - "25565:25565"
+      - "25565:25565/udp"
+    volumes:
+      - world:/data
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  world: {}

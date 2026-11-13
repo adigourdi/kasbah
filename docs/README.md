@@ -8,6 +8,7 @@ same commit as the code. Start with the overview.
 | [overview.md](overview.md) | What kasbah is for, its scope and what stays out, the decisions table, the layout of a server |
 | [install.md](install.md) | Every way to install kasbah, what each one trusts, uninstalling |
 | [server-setup.md](server-setup.md) | Preparing a VPS: prerequisites, what `server init` creates, mail and backup options |
+| [authoring.md](authoring.md) | Writing a project's files: what each must hold, what fails and what warns, and an example per common setup in `examples/` |
 | [project-manifest.md](project-manifest.md) | `kasbah.yml`, field by field, and the project's local state |
 | [env-template.md](env-template.md) | How a project's `.env` is generated on the server and kept in sync |
 | [traefik.md](traefik.md) | The shared reverse proxy and the routing fragment each project declares |

@@ -1,0 +1,11 @@
+# A domain that only redirects — here an old name to the site that replaced
+# it. Its routers answer every request themselves, so no container runs.
+schema: 1
+kasbah_version: 1.0.0
+
+name: old-site
+domain: old.example.com
+
+sync:
+  - compose.prod.yml -> compose.yml
+  - .env.prod.example

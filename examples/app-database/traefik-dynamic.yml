@@ -1,0 +1,21 @@
+http:
+  routers:
+    reader-http:
+      rule: "Host(`reader.example.com`)"
+      entryPoints: [web]
+      middlewares: ["http-to-https@file"]
+      service: noop@internal
+
+    reader:
+      rule: "Host(`reader.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: http
+      middlewares: ["security-headers@file", "gzip-compression@file"]
+      service: reader
+
+  services:
+    reader:
+      loadBalancer:
+        servers:
+          - url: "http://reader-web:8080"

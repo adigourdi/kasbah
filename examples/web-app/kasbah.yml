@@ -1,0 +1,13 @@
+# A web app built from this repository's Dockerfile: one routed service, served
+# over HTTPS on its domain, with www redirected to it.
+schema: 1
+kasbah_version: 1.0.0
+
+name: site
+domain: site.example.com
+
+# The image travels as a tarball (kasbah build-push); only what the server's
+# compose reads is synced. traefik-dynamic.yml is shipped on its own.
+sync:
+  - compose.prod.yml -> compose.yml
+  - .env.prod.example

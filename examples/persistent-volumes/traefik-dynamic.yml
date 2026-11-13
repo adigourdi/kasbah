@@ -1,0 +1,21 @@
+http:
+  routers:
+    media-http:
+      rule: "Host(`media.example.com`)"
+      entryPoints: [web]
+      middlewares: ["http-to-https@file"]
+      service: noop@internal
+
+    media:
+      rule: "Host(`media.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: http
+      middlewares: ["security-headers@file"]
+      service: media
+
+  services:
+    media:
+      loadBalancer:
+        servers:
+          - url: "http://media-web:8096"

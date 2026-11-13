@@ -1,0 +1,27 @@
+services:
+  # Named for the project: Traefik resolves names across every project's
+  # network, so a name on the kasbah network carries the project's prefix.
+  site-web:
+    build:
+      context: .
+    # A built service names its image and tags it :current; deploy moves that
+    # tag to the version it starts.
+    image: site-web:current
+    restart: unless-stopped
+    # A compose healthcheck lets a deploy start the new container beside the
+    # old and swap once it is healthy.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+    networks: [kasbah]
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# The project's own network, which deploy connects Traefik to.
+networks:
+  kasbah: {}

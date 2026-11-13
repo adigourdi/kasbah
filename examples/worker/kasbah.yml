@@ -1,0 +1,11 @@
+# A background worker: one service, nothing reaching it from outside.
+schema: 1
+kasbah_version: 1.0.0
+
+name: jobs
+# Nothing routes to this project, so it ships no fragment and names no domain.
+routed: false
+
+sync:
+  - compose.prod.yml -> compose.yml
+  - .env.prod.example

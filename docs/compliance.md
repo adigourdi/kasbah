@@ -14,16 +14,19 @@ Structure:
   ✓ compose.prod.yml exists
   ✓ .env.prod.example exists
   ✓ .gitignore excludes .env
+  ✓ .gitignore excludes .kasbah/
+  ✓ client is not set — backups file under the project name (myapp)
 
 Compose:
   ✓ All services set restart policy
   ✓ All services set json-file logging with rotation
   ✓ All routed services join the project's kasbah network
-  ✓ The kasbah network is the project's own (my-app_kasbah)
+  ✓ The kasbah network is the project's own (myapp_kasbah)
   ✓ No internal services on the kasbah network or kasbah-net
   ✓ Names on the kasbah network are project-prefixed
-  ✓ No `version:` field (deprecated)
+  ✓ No deprecated 'version:' field
   ✓ All built services reference their image as :current
+  ✓ No service publishes host port 80 or 443
   ✓ All routed services can roll on deploy
 
 Resources:
@@ -33,26 +36,30 @@ Resources:
 Traefik:
   ✓ traefik-dynamic.yml exists
   ✓ At least one router references manifest domain (myapp.example.com)
-  ✓ Routers declare entrypoints (web or websecure)
+  ✓ All routers declare entryPoints
   ✓ Secure routers name a cert resolver
   ✓ No router asks for a wildcard certificate from an HTTP-01 resolver
-  ✓ A router serves the domain on the web entrypoint
+  ✓ A router serves myapp.example.com on the web entrypoint
+  ✓ No router claims reserved hostnames (traefik.*, mail.*, webmail.*)
+  ✓ No router or service reaches a Traefik internal service other than noop@internal
+  ✓ Fragment loadBalancer URLs target a service, alias or container_name compose defines
+  ✓ compose.prod.yml has no traefik.* labels
 
 Healthchecks:
-  ⚠ Service 'worker' has no HEALTHCHECK (warning only)
+  ⚠ Built services without a compose healthcheck (Dockerfile may declare one): worker
 
 Env:
-  ✓ .env.prod.example keys are syntactically valid
-  ✓ .env (if present) matches .env.prod.example keys
+  ✓ .env.prod.example syntax is valid
+  ✓ .env.prod.example has no obvious long secrets
+  ✓ .env.prod.example leaves the KASBAH_* prefix to kasbah
 
 Hooks:
   ✓ Every hook is one line of shell
 
-Mail (if manifest has `mail:`):
-  ✓ Mail claim names domain 'shop.example.com'
-    (M03 — the stack on the VPS knows this domain — only runs with --server)
+Mail:
+  ✓ Mail claim names domain 'myapp.example.com'
 
-Summary: 22 passed, 1 warning, 0 failed
+Summary: 33 passed, 1 warning, 0 failed
 ```
 
 Exit code 0 if no failures (warnings are informational).

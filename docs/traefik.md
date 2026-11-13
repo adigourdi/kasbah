@@ -189,6 +189,13 @@ with `_` belong to kasbah and are re-shipped whenever their bytes differ —
 `_shared.yml` by `server init` and by `server upgrade-traefik`, `_mail.yml`
 by `server init --with-mail`. Don't author your own `_`-prefixed files.
 
+Every fragment in the directory feeds one configuration, so router, service
+and middleware names form one namespace across every project and kasbah's
+own fragments. A project names its own `<manifest.name>` or
+`<manifest.name>-…`: when two fragments define the same name, Traefik reports
+the conflict and serves at most one of the definitions. `kasbah check` reads
+no other project's fragment, so no rule catches a clash.
+
 ## Project fragment
 
 Each routed project ships `traefik-dynamic.yml` at its repo root (a project

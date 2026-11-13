@@ -1,0 +1,25 @@
+# Both entrypoints redirect straight to the new site, so plain HTTP takes one
+# hop rather than two. The middleware is the project's own, defined below.
+http:
+  routers:
+    old-site-http:
+      rule: "Host(`old.example.com`) || Host(`www.old.example.com`)"
+      entryPoints: [web]
+      middlewares: ["old-site-moved"]
+      service: noop@internal
+
+    old-site:
+      rule: "Host(`old.example.com`) || Host(`www.old.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: http
+      middlewares: ["old-site-moved"]
+      service: noop@internal
+
+  middlewares:
+    # Keeps the path: https://old.example.com/a/b → https://new.example.com/a/b.
+    old-site-moved:
+      redirectRegex:
+        regex: "^https?://[^/]+/(.*)"
+        replacement: "https://new.example.com/${1}"
+        permanent: true

@@ -783,10 +783,13 @@ and 1 — naming the file and the reason — when a file is shaped so badly that
 rule cannot be evaluated at all: inside a mapping `services:`, a service that is
 neither null nor a mapping (`services: {web: nginx}`) or a `networks:` entry
 that is not a mapping; inside a mapping `http.routers`, a router that is not a
-mapping or a `websecure` router whose `tls:` is not one; and an unreadable
-`.env.prod.example`. Every other bad shape — a compose file that does not parse,
-holds several documents, or whose document or `services:` is not a mapping, and
-every manifest shape — is a named failure (6).
+mapping or a `websecure` router whose `tls:` is not one; an unreadable
+`.env.prod.example`; and a `kasbah.yml` that does not load — YAML that does
+not parse or is not one mapping, a missing, non-integer or newer `schema`
+(S02), a reserved `name` (S07), a missing or malformed one, a field of the
+wrong type. Every other bad shape — a compose file that does not parse,
+holds several documents, or whose document or `services:` is not a mapping —
+is a named failure (6).
 
 `--server USER@HOST` also asks that VPS: whether the project is deployed there,
 whether its `.env` still matches this checkout's `.env.prod.example`, whether

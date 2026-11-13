@@ -1,0 +1,3 @@
+# No service: every router ends on noop@internal, so deploy starts nothing
+# and still ships the fragment.
+services: {}

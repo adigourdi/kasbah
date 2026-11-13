@@ -1,0 +1,18 @@
+# A routed media server and the three places its data lives: a directory
+# kasbah owns, a named volume, and a host path the operator owns.
+schema: 1
+kasbah_version: 1.0.0
+
+name: media
+domain: media.example.com
+
+sync:
+  - compose.prod.yml -> compose.yml
+  - .env.prod.example
+
+# The media server takes a while to come up on its first start.
+health:
+  timeout: 180s
+
+# No backup hook: nothing of the data directory or the volume is in a backup
+# until a hook dumps it there (examples/app-database has one).

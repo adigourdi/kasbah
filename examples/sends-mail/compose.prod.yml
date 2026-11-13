@@ -1,0 +1,43 @@
+services:
+  git-web:
+    image: gitea/gitea:1.22.3
+    restart: unless-stopped
+    environment:
+      GITEA__server__DOMAIN: git.example.com
+      GITEA__server__ROOT_URL: ${APP_URL}
+      GITEA__server__DISABLE_SSH: "true"
+      # Configured here, so no install wizard faces the public domain, and
+      # registration is closed: create the first account with `gitea admin
+      # user create`, run as the git user inside the container.
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__database__PATH: /data/gitea/gitea.db
+      GITEA__mailer__ENABLED: "true"
+      GITEA__mailer__PROTOCOL: smtp+starttls
+      GITEA__mailer__SMTP_ADDR: ${MAIL_HOST}
+      GITEA__mailer__SMTP_PORT: ${MAIL_PORT}
+      GITEA__mailer__USER: ${MAIL_USER}
+      GITEA__mailer__PASSWD: ${MAIL_PASSWORD}
+      GITEA__mailer__FROM: ${MAIL_FROM}
+    volumes:
+      - git-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:3000/api/healthz"]
+      interval: 10s
+    # Only the kasbah network: the app reaches the mail stack the way the
+    # internet does, through the host's public address, never a shared network.
+    networks: [kasbah]
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah: {}
+
+volumes:
+  git-data: {}

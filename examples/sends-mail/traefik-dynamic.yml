@@ -1,0 +1,21 @@
+http:
+  routers:
+    git-http:
+      rule: "Host(`git.example.com`)"
+      entryPoints: [web]
+      middlewares: ["http-to-https@file"]
+      service: noop@internal
+
+    git:
+      rule: "Host(`git.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: http
+      middlewares: ["security-headers@file", "gzip-compression@file"]
+      service: git
+
+  services:
+    git:
+      loadBalancer:
+        servers:
+          - url: "http://git-web:3000"

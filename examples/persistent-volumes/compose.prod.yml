@@ -1,0 +1,32 @@
+services:
+  media-web:
+    image: jellyfin/jellyfin:10.9.11
+    restart: unless-stopped
+    volumes:
+      # The project's data directory, <data>/media/, which every deploy
+      # creates and drop --prune removes; this path is it under the default
+      # data path, <apps>/data, seen from the project folder <apps>/media/.
+      - ../data/media/config:/config
+      # A named volume: docker keeps it across deploys, rollbacks and drop.
+      - cache:/cache
+      # The operator's library, created by hand outside the apps and data
+      # paths, read-only: this service never writes it.
+      - ${MEDIA_LIBRARY}:/media:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8096/health"]
+      interval: 30s
+      start_period: 60s
+    networks: [kasbah]
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah: {}
+
+volumes:
+  cache: {}

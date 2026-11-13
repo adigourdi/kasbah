@@ -83,7 +83,10 @@ It writes `kasbah.yml` and `.env.prod.example`, the template the server's
 deploy. It also prints a starter for the two files you write yourself:
 `compose.prod.yml`, the compose file the server runs, and
 `traefik-dynamic.yml`, how its domain routes to it. `kasbah check` then tells
-you whether the project is ready to deploy. More in
+you whether the project is ready to deploy. What each file holds, and a
+complete example for each common shape of a project — a web app, an app and
+its database, a worker, a redirect, a raw port, mail, persistent data — are in
+[docs/authoring.md](docs/authoring.md) and [examples/](examples/). More in
 [docs/server-setup.md](docs/server-setup.md) and
 [docs/project-manifest.md](docs/project-manifest.md).
 

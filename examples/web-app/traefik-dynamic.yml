@@ -1,0 +1,39 @@
+http:
+  routers:
+    # Plain HTTP on the domain redirects to HTTPS.
+    site-http:
+      rule: "Host(`site.example.com`)"
+      entryPoints: [web]
+      middlewares: ["http-to-https@file"]
+      service: noop@internal
+
+    site:
+      rule: "Host(`site.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: http
+      middlewares: ["security-headers@file", "gzip-compression@file"]
+      service: site
+
+    # www goes to the bare domain, over either entrypoint.
+    site-www-http:
+      rule: "Host(`www.site.example.com`)"
+      entryPoints: [web]
+      middlewares: ["http-www-to-https-non-www@file"]
+      service: noop@internal
+
+    site-www:
+      rule: "Host(`www.site.example.com`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: http
+      middlewares: ["https-www-to-https-non-www@file"]
+      service: noop@internal
+
+  services:
+    site:
+      loadBalancer:
+        servers:
+          # The service name on the kasbah network: it answers with every
+          # replica, which is what lets a deploy roll.
+          - url: "http://site-web:80"

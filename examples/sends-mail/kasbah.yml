@@ -1,0 +1,16 @@
+# A routed app that sends mail through the server's shared mail stack, as
+# any mail client does: mail.<domain> on port 587, with a mailbox login.
+schema: 1
+kasbah_version: 1.0.0
+
+name: git
+domain: git.example.com
+
+sync:
+  - compose.prod.yml -> compose.yml
+  - .env.prod.example
+
+# The mail domain this app sends from. Deploy checks the server's mail stack
+# serves it and warns, without stopping, when it does not.
+mail:
+  domain: example.com

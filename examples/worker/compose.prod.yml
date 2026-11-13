@@ -1,0 +1,18 @@
+services:
+  # The image and command stand in for the project's own worker; a worker
+  # built from a Dockerfile names image: jobs-worker:current beside build:.
+  worker:
+    image: alpine:3.20.3
+    command: ["sh", "-c", "while :; do echo \"tick every $${JOB_INTERVAL}s\"; sleep \"$${JOB_INTERVAL}\"; done"]
+    restart: unless-stopped
+    environment:
+      JOB_INTERVAL: ${JOB_INTERVAL}
+    # No networks: key: the worker sits on the project's default network,
+    # which no other project and no Traefik joins.
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

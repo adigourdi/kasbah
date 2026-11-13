@@ -1,0 +1,59 @@
+services:
+  reader-web:
+    image: miniflux/miniflux:2.2.0
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://reader:${DB_PASSWORD}@db/reader?sslmode=disable
+      LISTEN_ADDR: 0.0.0.0:8080
+      BASE_URL: ${APP_URL}
+      RUN_MIGRATIONS: "1"
+      CREATE_ADMIN: "1"
+      ADMIN_USERNAME: ${ADMIN_USERNAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+    # The plain list form: a condition (service_healthy) would keep the app
+    # from rolling on deploy. Until the database answers, the app exits and
+    # its restart policy starts it again.
+    depends_on: [db]
+    healthcheck:
+      test: ["CMD", "/usr/bin/miniflux", "-healthcheck", "auto"]
+      interval: 10s
+    # Routed, so on kasbah; on internal to reach the database.
+    networks: [kasbah, internal]
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Nothing routes to the database, so it stays off kasbah: its service name
+  # is then an alias on this project's internal network only.
+  db:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: reader
+      POSTGRES_DB: reader
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "reader", "-d", "reader"]
+      interval: 10s
+    networks: [internal]
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  kasbah: {}
+  internal: {}
+
+# A named volume outlives every deploy and rollback; drop keeps it too.
+volumes:
+  db-data: {}

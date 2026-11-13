@@ -30,4 +30,7 @@ next failure from losing it, or from stopping at the cause with no way out.
 - [ ] Settled: no links to doc files in messages — `kasbah help` is the pointer
 - [ ] check's warn/fail lines end with `kasbah help <rule id>`
 - [ ] Hard convention in CLAUDE.md; a test that a failure path keeps its cause
-- [ ] Sweep the existing failures, command by command
+- [ ] Sweep the main paths: check, deploy, build-push, env, server init,
+      rollback (settled); file the remaining call sites as their own item
+- [ ] `docs/troubleshooting.md`, keyed by the exact error text, each entry the
+      cause and the fix — generic, not one operator's history

@@ -1,0 +1,20 @@
+# A stock web app and the PostgreSQL database it keeps its data in. Only the
+# app is routed; the database is reachable from the app alone.
+schema: 1
+kasbah_version: 1.0.0
+
+name: reader
+domain: reader.example.com
+
+sync:
+  - compose.prod.yml -> compose.yml
+  - .env.prod.example
+
+# Each hook is one line of shell, run on the server in the project folder.
+# backup dumps the database into the backup of the version going out; restore
+# loads it back on a rollback or restore asked to bring data with it.
+hooks:
+  backup:
+    - docker compose exec -T db timeout 600 pg_dump --clean --if-exists -U reader reader | gzip > "$KASBAH_BACKUP_DIR/db.sql.gz"
+  restore:
+    - gunzip -c "$KASBAH_BACKUP_DIR/db.sql.gz" | docker compose exec -T db psql -v ON_ERROR_STOP=1 -q -U reader reader

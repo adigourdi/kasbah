@@ -96,11 +96,13 @@ older kasbah ignores is allowed without a bump); release tags
 - `templates/` — files kasbah renders onto servers, embedded in the binary.
 - `tests/` — black-box `*_test.sh` suites (`tests/cli.sh` resolves `KASBAH_BIN`);
   `tests/rig/` fake VPS; `tests/integration/` rig-driven; `tests/fixtures/` sample projects.
+- `examples/` — complete example projects, one per setup, held to a clean
+  `kasbah check` by `tests/examples_test.sh`.
 - `README.md` is the project's front page; `CONTRIBUTING.md` covers building,
   testing and releasing for people.
 - `docs/` — the spec, indexed by `docs/README.md`; `compliance.md` is the rule
-  catalog, `files.md` lists every file kasbah writes, and `install.md` owns
-  every install path.
+  catalog, `files.md` lists every file kasbah writes, `install.md` owns
+  every install path, and `authoring.md` guides writing a project's files.
 - `plan/` — intent, not state: `plan/roadmap/` is the build plan and the only
   progress tracker (phase Findings sections are the project's memory of traps;
   read the relevant phase file before touching its area), `plan/backlog/` holds

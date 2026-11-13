@@ -1,0 +1,21 @@
+# A service clients reach on a port of its own, TCP and UDP, not through
+# Traefik — a game server here. Nothing is routed, so no fragment, no domain.
+schema: 1
+kasbah_version: 1.0.0
+
+name: game
+routed: false
+
+sync:
+  - compose.prod.yml -> compose.yml
+  - .env.prod.example
+
+# The image's own healthcheck turns healthy once the world is loaded, which
+# takes longer on a first start than the 120s the deploy waits by default.
+health:
+  timeout: 300s
+
+# The server's memory ceiling for this project, as a share of the host,
+# in place of the 90% every project gets by default.
+resources:
+  memory: 50%
