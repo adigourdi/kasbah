@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // chainIDs are the ids both image stores key an applied layer by: a diffID
@@ -45,7 +47,7 @@ func rootFS(images []string) ([][]string, error) {
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
-	raw, err := cmd.Output()
+	raw, err := trace.Output(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("docker image inspect exited %v: %s", err, strings.TrimSpace(errb.String()))
 	}
@@ -177,7 +179,7 @@ func Layers(args []string, stdout, stderr io.Writer) int {
 	ls := exec.Command("docker", "image", "ls", "-aq", "--no-trunc")
 	ls.Env = append(os.Environ(), "LC_ALL=C")
 	ls.Stderr = stderr
-	raw, err := ls.Output()
+	raw, err := trace.Output(ls)
 	if err != nil {
 		return fail("docker image ls failed (%v)", err)
 	}

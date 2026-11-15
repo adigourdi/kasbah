@@ -216,6 +216,9 @@ for a; do [ "$a" = -n ] && exec </dev/null; done
 last="${!#}"
 [ "$last" = true ] && exit 0
 eval "set -- $last"
+# A server arm's trace marker (docs/cli.md "Debugging a failure"): the real
+# binary takes it off, and so does this stand-in.
+[ "${!#}" = --trace ] && set -- "${@:1:$#-1}"
 # The bootstrap probe, which reads the marker, runs for real.
 if [ "$1 $2" = "sh -s" ]; then
     exec sh -s -- "$FAKE_APPS" "$FAKE_APPS/no-pointer" "$6" "$7" "${8:-}"

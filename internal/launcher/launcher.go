@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/version"
 )
 
@@ -113,7 +114,7 @@ func Newest(root string, major uint64) string {
 func Runs(bin string, limit time.Duration) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
-	return exec.CommandContext(ctx, bin, "--version").Run() == nil
+	return trace.Run(exec.CommandContext(ctx, bin, "--version")) == nil
 }
 
 // Exec replaces this process with bin on the same arguments and environment,

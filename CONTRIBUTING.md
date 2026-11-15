@@ -44,6 +44,10 @@ Each suite prints one line; its full output is in `.cache/test-logs/`, and is
 shown when it fails. `KASBAH_TEST_VERBOSE=1` streams everything;
 `KASBAH_BIN=<path>` tests that binary instead of building one; the suites still
 read YAML through this checkout's `dist/yaml2json`, so run the build once first.
+The logs the kasbah under test saves when a run fails (`docs/cli.md` →
+Debugging a failure) go to `.cache/test-state/kasbah/logs/`, never your own
+`~/.local/state`; `kasbah --debug <command>` streams a run's trace when a
+suite's failure needs more than its output.
 
 The integration tests run against the rig, a container that plays a VPS
 ([tests/rig/README.md](tests/rig/README.md)). They take much longer:

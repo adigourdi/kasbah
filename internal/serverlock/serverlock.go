@@ -18,6 +18,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 const (
@@ -273,6 +274,9 @@ func procLocks(f *os.File, kind string) []Holder {
 
 // describe is a holder's command line in the operator's words.
 func describe(argv []string) string {
+	if n := len(argv); n > 0 && argv[n-1] == trace.Marker {
+		argv = argv[:n-1]
+	}
 	for i, a := range argv {
 		if a != "remote" || i+1 >= len(argv) {
 			continue
@@ -343,17 +347,17 @@ func Hold(c *ssh.Conn, bin, apps, mode, what string) (release func(), err error)
 	if err != nil {
 		return nil, cli.Fail("could not take the server lock on %s: %v", c.Target, err)
 	}
-	if err := cmd.Start(); err != nil {
+	if err := trace.Start(cmd); err != nil {
 		return nil, cli.Fail("could not take the server lock on %s: %v", c.Target, err)
 	}
 	line, _ := bufio.NewReader(out).ReadString('\n')
 	if strings.TrimSpace(strings.ReplaceAll(line, "\r", "")) != "locked="+mode {
 		in.Close()
-		rc := ssh.ExitCode(cmd.Wait())
+		rc := ssh.ExitCode(trace.Wait(cmd))
 		return nil, cli.Fail("could not take the server lock %s on %s (exit %d, see above)", Path(apps), c.Target, rc)
 	}
 	return func() {
 		in.Close()
-		cmd.Wait()
+		trace.Wait(cmd)
 	}, nil
 }

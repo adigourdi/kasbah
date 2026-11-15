@@ -22,7 +22,15 @@ $ cd ~/some/random/path
 $ kasbah deploy you@vps
 error: No kasbah.yml in current directory.
        Run from the project root, or `kasbah init-project` to scaffold.
+       log: /home/you/.local/state/kasbah/logs/20261115T120102.345Z-deploy.log
 ```
+
+Every failure that prints an `error:` ends on that `log:` line, naming the
+trace it saved (Debugging a failure, below); the other examples in this file
+leave it out. Every command also takes `--debug`, anywhere before a `--`, and
+`KASBAH_DEBUG=1` is the same for every command run while it is set: the trace
+streams to stderr as it is recorded, and a log is saved even when the run
+succeeds.
 
 ## `kasbah help [topic]`
 
@@ -41,6 +49,8 @@ Nothing is read from the project or a server, so it runs anywhere.
   ID, level (`fail`, `warn`, `fail/warn` where the case decides, or
   `retired`) and title, grouped by area, the rules only `check --server`
   asks marked `[--server]`.
+- `kasbah help debug` — the trace every run records, `--debug`, and the log
+  a failure saves (Debugging a failure, below).
 - `kasbah help <id>` — one rule, the ID in any case (`kasbah help t05`): its
   level, area, title, why it exists and what to change. The ID is the one
   `kasbah check` prints on the line.
@@ -71,6 +81,8 @@ this order, exit 0. Nothing is read from the network.
 | `install` | `library` — a version directory of the library (`<lib>/<version>/kasbah`), where `get.sh`, `install-dev.sh` and `self-update` install; `checkout` — a checkout's `dist/kasbah` (`go.mod` and `cmd/kasbah/` two levels up); `other` — anywhere else, a binary kasbah did not install |
 | `lib` | the library root, found as the hand-off finds it (Hand-off between installed versions, below); `unknown (…)` when none can be |
 | `docs` | the `docs/` tree on GitHub at this build: `https://github.com/adigourdi/kasbah/tree/v<VERSION>/docs` for a release build, `…/tree/main/docs` for a dev or unstamped build, as `kasbah help` links |
+| `logs` | the directory failed and `--debug` runs save their logs in (Debugging a failure, below): `$XDG_STATE_HOME/kasbah/logs`, else `~/.local/state/kasbah/logs`; `unknown (…)` when neither variable is set |
+| `logs.last` | the newest log there, the one the last failure named; `none` before any |
 
 With `USER@HOST` the server's lines follow, read and never changed: the
 bootstrap probe every command runs first (no `sudo`), then — only when the
@@ -1969,6 +1981,74 @@ so today there is no step and a schema-1 project answers *nothing to migrate*
 installed (Hand-off, above). Project and server migrations are independent and
 run in either order; `deploy` needs both at this kasbah's schema.
 
+## Debugging a failure
+
+Every run records a trace of what it does, in memory, in the order it
+happens:
+
+- each ssh call — the command line it runs on the server, never what it sends
+  on stdin — and its exit status;
+- each step on the server (`kasbah remote …`) with its arguments, and that
+  step's own trace: the server binary sends its lines back on stderr as they
+  happen, and the workstation takes them out of what it shows, so the
+  terminal sees only what the step itself printed. A step under `ssh -t` (the
+  interactive env setup, `exec` with a terminal) sends none; its ssh call is
+  still there. The server keeps no log of its own;
+- each docker, compose, git or other command kasbah runs on either end, with
+  its directory, its exit status (or the signal that killed it) and what it
+  wrote on stderr, a line at a time — not when that stderr is a terminal,
+  which the program would then no longer see, nor when it goes to the same
+  in-memory output as stdout, which is never recorded;
+- the decisions worth knowing: whether the server's binary was kept or
+  replaced, a hand-off to another installed version.
+
+Without `--debug` nothing of it is shown. A run that fails with an `error:`
+saves it as a log and names the file on the error's last line, `log: <path>`;
+one that a signal ends (Ctrl-C, exit `128+N`) saves one too and names it on a
+line of its own. A run that only exits non-zero — `check`'s findings, the
+status `exec` passes through — saves none. With `--debug` (any command,
+before any `--`) or `KASBAH_DEBUG=1` (set, and neither empty nor `0`), each
+line streams to stderr as it is recorded, prefixed `debug: `, and the log is
+saved however the run ends, its path on stderr's last line: the error's
+indented `log: <path>` for a run that fails with an `error:`, `log: <path>`
+for one a signal ends, `debug: log: <path>` for any other. A workstation
+command's stderr line the operator already sees is not repeated; the server's
+half streams whole. Exit codes and stdout are the same with or without it.
+`KASBAH_DEBUG` is not passed on to a kasbah the run starts itself (a
+`--version` probe of another build saves no log of its own), but a hand-off
+to another installed version (the newer-server and newer-schema refusals) is
+given `KASBAH_DEBUG=1` when the run has `--debug`,
+so the version that carries the command on streams and saves its trace too.
+
+Logs go to `$XDG_STATE_HOME/kasbah/logs`, else `~/.local/state/kasbah/logs`,
+the file `<UTC start>-<command>.log` (`20261115T120102.345Z-server-init.log`),
+`600` in `700` directories; the newest 20 are kept (`files.md` → The run
+logs). `kasbah info` names the directory (`logs`) and the newest log
+(`logs.last`). A log opens with the build (`kasbah <build> (schema N)`), the
+command line, the start time in UTC and the exit code, then the trace, each
+line its seconds since the start.
+
+A log is meant to be attached to a bug report. It names the servers, users
+and paths of the run, and never holds:
+
+- a value read from or written to an env file — a project's `.env`, its
+  template, an `--env-seed=` file, an `--acme-dns=` file — other than
+  kasbah's own `KASBAH_*` keys;
+- a value typed at a hidden prompt, or given by a flag that carries a
+  credential (`--traefik-auth=`, `--postmaster-password=`, `--backup-password=`,
+  `--backup-env=`, `--backup-repo-base=`, and `server backup-prune`'s
+  `--repo-base=` and `--env=`; the command line shows such a flag's name and
+  `***`), or `env set`'s value;
+- the repository base `server init` and `server backup-prune` use, whether
+  a flag, the prompt or the server marker gave it;
+- `GITHUB_TOKEN`, or the token `gh` gave;
+- anything sent on stdin, and anything a command printed on stdout.
+
+Each such value is replaced by `***` wherever it appears in a recorded line,
+an ssh command line or a program's stderr included — so a word that happens
+to equal one is hidden too. A value under four characters is not replaced:
+it cannot be told from ordinary text.
+
 ## Deferred commands
 
 Nothing — every command the docs name exists.
@@ -2010,7 +2090,9 @@ Nothing — every command the docs name exists.
 - `6` compliance check failed
 - `128+N` kasbah was stopped by signal N — `130` for Ctrl-C, `143` for
   `SIGTERM`, `129` for `SIGHUP`. Its own temp files and ssh connection are
-  cleaned up first; a step already running on the server finishes there.
+  cleaned up first, then the run's log is saved and its path printed
+  (Debugging a failure, above); a step already running on the server
+  finishes there.
 
 `kasbah exec` departs from this list furthest: it exits with **the status of
 the command it was asked to run**, whatever that is, because a wrapper that

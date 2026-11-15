@@ -42,9 +42,9 @@ func TestTopLevel(t *testing.T) {
 		{[]string{"help", "rules"}, 0, "\n  T05   fail       No router claims", ""},
 		{[]string{"help", "t05"}, 0, "T05  fail  (Traefik)\n", ""},
 		{[]string{"help", "files"}, 0, "/blob/v1.0.0/docs/authoring.md\n", ""},
-		{[]string{"help", "nope"}, 1, "", "help: unknown topic 'nope' — the topics are files, setups, rules"},
+		{[]string{"help", "nope"}, 1, "", "help: unknown topic 'nope' — the topics are files, setups, rules, debug"},
 		{[]string{"help", "C06"}, 1, "", "help: unknown topic 'C06'"},
-		{[]string{"help", "rules", "x"}, 1, "", "help: unexpected argument 'x' — help takes one topic: files, setups, rules, a rule ID (C01), or a command"},
+		{[]string{"help", "rules", "x"}, 1, "", "help: unexpected argument 'x' — help takes one topic: files, setups, rules, debug, a rule ID (C01), or a command"},
 	}
 	for _, tt := range tests {
 		var so, se bytes.Buffer

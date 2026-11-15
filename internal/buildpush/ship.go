@@ -18,6 +18,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // errWriter remembers a failed write, so a broken copy can say which end of
@@ -269,7 +270,7 @@ func dropSet(out *cli.Output, refs []string, skip serverHeld, diffs map[string]b
 // containerdStore is whether this engine keeps images in containerd's store,
 // whose save names layers by their compressed digest.
 func containerdStore() bool {
-	raw, err := exec.Command("docker", "info", "--format", "{{json .DriverStatus}}").Output()
+	raw, err := trace.Output(exec.Command("docker", "info", "--format", "{{json .DriverStatus}}"))
 	if err != nil {
 		return false
 	}
@@ -295,13 +296,13 @@ func learnLocal(refs []string) (names, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := save.Start(); err != nil {
+	if err := trace.Start(save); err != nil {
 		return nil, err
 	}
 	pop := atexit.Push(func() { kill(save) })
 	defer pop()
 	n, lerr := learn(src)
-	if err := save.Wait(); err != nil {
+	if err := trace.Wait(save); err != nil {
 		return nil, fmt.Errorf("docker save exited %d: %s", ssh.ExitCode(err), strings.TrimSpace(errb.String()))
 	}
 	return n, lerr
@@ -329,14 +330,14 @@ func stream(conn *ssh.Conn, apps string, refs []string, skip, known map[string]b
 	if err != nil {
 		return st, cli.Fail("could not run docker save: %v", err)
 	}
-	if err := load.Start(); err != nil {
+	if err := trace.Start(load); err != nil {
 		return st, cli.Fail("could not run ssh: %v", err)
 	}
 	pop := atexit.Push(func() { kill(save); kill(load) })
 	defer pop()
-	if err := save.Start(); err != nil {
+	if err := trace.Start(save); err != nil {
 		sink.Close()
-		load.Wait()
+		trace.Wait(load)
 		return st, cli.Fail("could not run docker save: %v", err)
 	}
 
@@ -355,7 +356,7 @@ func stream(conn *ssh.Conn, apps string, refs []string, skip, known map[string]b
 	if copyErr != nil {
 		kill(save)
 	}
-	saveErr := save.Wait()
+	saveErr := trace.Wait(save)
 	var closeErr error
 	if copyErr == nil && saveErr == nil {
 		if f != nil {
@@ -369,7 +370,7 @@ func stream(conn *ssh.Conn, apps string, refs []string, skip, known map[string]b
 		}
 	}
 	sink.Close()
-	loadErr := load.Wait()
+	loadErr := trace.Wait(load)
 	st.sent = wire.n
 	if f != nil {
 		st.skipped, st.skippedBytes, st.compressed = f.skipped, f.skippedBytes, f.matched == 0

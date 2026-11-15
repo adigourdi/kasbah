@@ -22,6 +22,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverlock"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/traefiknet"
 )
 
@@ -90,7 +91,7 @@ var runDocker = func(dir string, args ...string) (string, error) {
 	cmd.Dir = dir
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	if err != nil {
 		return out.String(), errors.New(flat(errb.String() + "\n" + out.String()))
 	}

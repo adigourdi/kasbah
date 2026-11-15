@@ -19,6 +19,8 @@ repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
+# A failing kasbah saves its log under XDG_STATE_HOME: here, never ~/.local/state.
+export XDG_STATE_HOME="$tmpdir/state"
 
 fail=0
 assert() {

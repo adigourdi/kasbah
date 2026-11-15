@@ -22,6 +22,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/release"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/version"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
@@ -138,7 +139,7 @@ func RunTagged(c Ctx, o Options, mode string) error {
 	if err != nil {
 		return err
 	}
-	if exec.Command("git", "rev-parse", "--git-dir").Run() != nil {
+	if trace.Run(exec.Command("git", "rev-parse", "--git-dir")) != nil {
 		return cli.Fail("%s is not a git repository — the version to %s comes from a git tag", c.PWD, mode)
 	}
 	r := &run{c: c, o: o, m: m, target: o.Target, version: o.Version, mode: mode, tagged: true}
@@ -405,7 +406,7 @@ func (r *run) requireDeployed(rec *vlog.Record) error {
 func (r *run) requireTag() error {
 	ref := "v" + r.version
 	have := func() bool {
-		return exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/"+ref+"^{commit}").Run() == nil
+		return trace.Run(exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/"+ref+"^{commit}")) == nil
 	}
 	if have() {
 		return nil
@@ -413,7 +414,7 @@ func (r *run) requireTag() error {
 	r.c.Out.Warn("this checkout has no tag %s — fetching tags from the remote", ref)
 	f := exec.Command("git", "fetch", "--tags")
 	f.Stdout, f.Stderr = os.Stderr, os.Stderr
-	if f.Run() == nil && have() {
+	if trace.Run(f) == nil && have() {
 		return nil
 	}
 	return cli.Fail("%s is not a tag in this repository, and `git fetch --tags` did not bring it", ref).Cont(
@@ -427,7 +428,7 @@ func (r *run) requireTag() error {
 func refType(ref, path string) (string, error) {
 	cmd := exec.Command("git", "ls-tree", ref, "--", path)
 	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
+	out, err := trace.Output(cmd)
 	if err != nil {
 		return "", cli.Fail("could not read %s at %s (see git's error above)", path, ref)
 	}
@@ -444,7 +445,7 @@ func showBlob(ref, path, dest string) error {
 	}
 	cmd := exec.Command("git", "show", ref+":"+path)
 	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
+	out, err := trace.Output(cmd)
 	if err != nil || os.WriteFile(dest, out, 0o666) != nil {
 		return cli.Fail("could not read %s out of %s (see git's error above)", path, ref)
 	}
@@ -600,12 +601,12 @@ func archive(ref string, paths []string, dir string) error {
 	cmd := exec.Command("git", append([]string{"archive", "--format=tar", ref, "--"}, paths...)...)
 	cmd.Stderr = os.Stderr
 	pipe, err := cmd.StdoutPipe()
-	if err != nil || cmd.Start() != nil {
+	if err != nil || trace.Start(cmd) != nil {
 		return fail
 	}
 	terr := untar(pipe, dir)
 	io.Copy(io.Discard, pipe)
-	if cmd.Wait() != nil || terr != nil {
+	if trace.Wait(cmd) != nil || terr != nil {
 		if terr != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", terr)
 		}
@@ -680,7 +681,7 @@ func checkExtraction(ref, version, mode string, paths []string, dir string) erro
 	for _, src := range paths {
 		cmd := exec.Command("git", "ls-tree", "-r", "-z", "--name-only", ref, "--", src)
 		cmd.Stderr = os.Stderr
-		out, err := cmd.Output()
+		out, err := trace.Output(cmd)
 		if err != nil {
 			return cli.Fail("could not list %s at %s (see git's error above)", src, ref)
 		}
@@ -788,14 +789,14 @@ func (r *run) gaveUp(rep *Report) {
 		return
 	}
 	rng := "v" + v + ".." + from
-	if exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/"+from+"^{commit}").Run() != nil {
+	if trace.Run(exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/"+from+"^{commit}")) != nil {
 		o.Warn("%s was running %s, and this checkout has no tag %s — so there", t, prev, from)
 		o.Warn("is no list of what the rollback gave up. `git fetch --tags`, then `git log %s`", rng)
 		return
 	}
 	cmd := exec.Command("git", "log", "--no-color", "--format=%h %s", rng, "--")
 	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
+	out, err := trace.Output(cmd)
 	if err != nil {
 		o.Warn("could not read `git log %s` (see git's error above) — no changelog", rng)
 		return

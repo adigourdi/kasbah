@@ -15,6 +15,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // replacePair answers whether a server tag holding another build is replaced.
@@ -103,7 +104,7 @@ func inspectRef(ref string) (b identity, found bool, err error) {
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	var errb bytes.Buffer
 	cmd.Stderr = &tail{&errb, 4 << 10}
-	raw, err := cmd.Output()
+	raw, err := trace.Output(cmd)
 	if err != nil {
 		if strings.Contains(errb.String(), "No such image") {
 			return identity{}, false, nil

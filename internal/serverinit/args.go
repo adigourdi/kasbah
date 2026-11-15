@@ -9,6 +9,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/backup"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 const (
@@ -173,6 +174,7 @@ func Parse(args []string) (Options, error) {
 			return o, err
 		}
 	}
+	secrets(o)
 	if err := checkDNSFlags(o); err != nil {
 		return o, err
 	}
@@ -331,4 +333,22 @@ func SplitAuth(v string) (user, pass string, err error) {
 		return "", "", err
 	}
 	return user, pass, nil
+}
+
+// secrets keeps every credential the flags carry out of the trace: the
+// dashboard and postmaster passwords, the backup env values and passwords,
+// the repository base.
+func secrets(o Options) {
+	if _, pw, err := SplitAuth(o.Auth); err == nil {
+		trace.Secret(pw)
+	}
+	trace.Secret(o.Auth, o.Postmaster, o.Bk.RepoBase)
+	for _, e := range o.Bk.Env {
+		_, v, _ := strings.Cut(e, "=")
+		trace.Secret(v)
+	}
+	for _, p := range o.Bk.Pass {
+		_, v, _ := strings.Cut(p, "=")
+		trace.Secret(v)
+	}
 }

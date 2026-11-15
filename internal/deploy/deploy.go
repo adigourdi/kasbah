@@ -27,6 +27,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/release"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/version"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
@@ -866,7 +867,7 @@ func (r *run) changelog(rep *Report) {
 	}
 	rng := from + ".." + to
 	for _, t := range []string{from, to} {
-		if exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/"+t+"^{commit}").Run() != nil {
+		if trace.Run(exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/"+t+"^{commit}")) != nil {
 			o.Warn("%s was running %s, and this checkout has no tag %s — no changelog", r.target, prev, t)
 			o.Warn("`git fetch --tags`, then `git log %s`", rng)
 			return
@@ -874,7 +875,7 @@ func (r *run) changelog(rep *Report) {
 	}
 	cmd := exec.Command("git", "log", "--no-color", "--format=%h %s", rng, "--")
 	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
+	out, err := trace.Output(cmd)
 	if err != nil {
 		o.Warn("could not read `git log %s` (see git's error above) — no changelog", rng)
 		return

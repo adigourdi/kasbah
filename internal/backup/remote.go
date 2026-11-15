@@ -21,6 +21,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/probe"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverlock"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // RemoteInit is `kasbah remote backup-init <step> …`: init's backup half and
@@ -230,7 +231,7 @@ func bounded(limit time.Duration, stdout, stderr io.Writer, env []string, name s
 	if env != nil {
 		cmd.Env = env
 	}
-	if err := cmd.Start(); err != nil {
+	if err := trace.Start(cmd); err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", name, err)
 		return 127
 	}
@@ -238,7 +239,7 @@ func bounded(limit time.Duration, stdout, stderr io.Writer, env []string, name s
 	pop := atexit.Push(func() { cmd.Process.Signal(syscall.SIGTERM) })
 	defer pop()
 	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	go func() { done <- trace.Wait(cmd) }()
 	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	select {
@@ -345,7 +346,7 @@ func runProbe(apps, image string, limit time.Duration) (string, error) {
 	var names []string
 	cleanup := func() {
 		if len(names) > 0 {
-			exec.Command("docker", append([]string{"rm", "-f"}, names...)...).Run()
+			trace.Run(exec.Command("docker", append([]string{"rm", "-f"}, names...)...))
 		}
 		os.RemoveAll(d)
 	}
@@ -415,7 +416,7 @@ func runProbe(apps, image string, limit time.Duration) (string, error) {
 }
 
 func inspect(id, format string) string {
-	out, _ := exec.Command("docker", "inspect", "-f", format, id).Output()
+	out, _ := trace.Output(exec.Command("docker", "inspect", "-f", format, id))
 	return strings.TrimRight(string(out), "\n")
 }
 
@@ -432,12 +433,12 @@ func remoteStart(apps string, restart bool, stdout, stderr io.Writer) error {
 	dc := func(args ...string) error {
 		cmd := exec.Command("docker", append([]string{"compose", "-p", Project}, args...)...)
 		cmd.Dir, cmd.Stdout, cmd.Stderr = dir, stderr, stderr
-		return cmd.Run()
+		return trace.Run(cmd)
 	}
 	cid := func() string {
 		cmd := exec.Command("docker", "compose", "-p", Project, "ps", "-a", "-q", "backup")
 		cmd.Dir = dir
-		out, _ := cmd.Output()
+		out, _ := trace.Output(cmd)
 		return strings.TrimSpace(string(out))
 	}
 	before := ""

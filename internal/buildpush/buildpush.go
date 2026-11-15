@@ -23,6 +23,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // ErrHelp is --help: the usage on stdout, exit 0.
@@ -381,7 +382,7 @@ func build(project string, images []Image, platform, engine string) error {
 	// compose's stderr still reaches the terminal; a copy is kept to read its refusal.
 	var errs bytes.Buffer
 	cmd.Stderr = io.MultiWriter(os.Stderr, &tail{&errs, 64 << 10})
-	if err := cmd.Run(); err != nil {
+	if err := trace.Run(cmd); err != nil {
 		f := cli.Fail("docker compose -p %s -f %s build failed (see the error above)", project, Compose)
 		if platform != "" && strings.Contains(errs.String(), "does not support value set by DOCKER_DEFAULT_PLATFORM") {
 			f.Cont("the server runs " + platform + ", so every built service's build.platforms must include " + platform + " (or be left out)")
@@ -393,7 +394,7 @@ func build(project string, images []Image, platform, engine string) error {
 	}
 	// The permanent tag only; :current stays where the build put it.
 	for _, im := range images {
-		if err := docker("tag", im.Source, im.Ref).Run(); err != nil {
+		if err := trace.Run(docker("tag", im.Source, im.Ref)); err != nil {
 			return cli.Fail("could not tag %s as %s (see docker's error above)", im.Source, im.Ref)
 		}
 	}
@@ -415,7 +416,7 @@ func (t *tail) Write(p []byte) (int, error) {
 
 // enginePlatform is the local docker engine's os/arch, "" when it does not say.
 func enginePlatform() string {
-	out, err := exec.Command("docker", "version", "--format", "{{.Server.Os}}/{{.Server.Arch}}").Output()
+	out, err := trace.Output(exec.Command("docker", "version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"))
 	p := strings.TrimSpace(string(out))
 	if err != nil || !strings.Contains(p, "/") || strings.HasPrefix(p, "/") || strings.HasSuffix(p, "/") {
 		return ""

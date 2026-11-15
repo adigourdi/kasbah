@@ -13,6 +13,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // Load is `kasbah remote load APPS IMAGE...` on the server: a gzipped `docker
@@ -63,7 +64,7 @@ func Load(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail("cannot run docker load: %v", err)
 	}
-	if err := dl.Start(); err != nil {
+	if err := trace.Start(dl); err != nil {
 		return fail("cannot run docker load: %v", err)
 	}
 	pop := atexit.Push(func() { kill(dl) })
@@ -85,11 +86,11 @@ func Load(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		// Killed before its stdin closes, so docker never sees a clean end.
 		kill(dl)
 		w.Close()
-		dl.Wait()
+		trace.Wait(dl)
 		return fail("the image stream was cut short or corrupted (%v) — the load was abandoned", cerr)
 	}
 	w.Close()
-	if err := dl.Wait(); err != nil {
+	if err := trace.Wait(dl); err != nil {
 		return fail("docker load exited %d", ssh.ExitCode(err))
 	}
 	if cerr != nil {
@@ -97,7 +98,7 @@ func Load(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	// Asked of the daemon: what the next deploy retags is the tag.
 	for _, img := range images {
-		if exec.Command("docker", "image", "inspect", img).Run() != nil {
+		if trace.Run(exec.Command("docker", "image", "inspect", img)) != nil {
 			return fail("%s is not on this server after docker load", img)
 		}
 	}
@@ -170,7 +171,7 @@ func creatable(img string, stderr io.Writer) bool {
 	probes++
 	name := fmt.Sprintf("kasbah-load-probe-%d-%d", os.Getpid(), probes)
 	// -v drops the anonymous volumes an image VOLUME gets filled at create.
-	rm := func() { exec.Command("docker", "rm", "-f", "-v", name).Run() }
+	rm := func() { trace.Run(exec.Command("docker", "rm", "-f", "-v", name)) }
 	pop := atexit.Push(rm)
 	defer func() { rm(); pop() }()
 	// A blank compose project label keeps the probe out of every compose filter.
@@ -179,7 +180,7 @@ func creatable(img string, stderr io.Writer) bool {
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	cmd.Stderr = stderr
 	cmd.Stdout = io.Discard
-	return cmd.Run() == nil
+	return trace.Run(cmd) == nil
 }
 
 var probes int

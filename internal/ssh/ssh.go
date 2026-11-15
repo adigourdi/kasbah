@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // CtlPathMax is the longest ControlPath a master can bind here.
@@ -143,6 +145,33 @@ type Conn struct {
 	mu        sync.Mutex
 	connected bool
 	popExit   func()
+	// sameBuild: the server's binary is this build, so its arms take
+	// trace.Marker and send their trace back.
+	sameBuild bool
+}
+
+// SameBuild records that the server runs this build (serverbin.Ensure).
+func (c *Conn) SameBuild() { c.sameBuild = true }
+
+// describe registers cmd with the trace as a call of words over ssh.
+func (c *Conn) describe(cmd *exec.Cmd, how string, words []string, noTee bool) *exec.Cmd {
+	desc := "ssh" + how + " " + c.Target.String()
+	if len(words) > 0 {
+		desc += ": " + trace.Words(words)
+	}
+	trace.SSH(cmd, desc, c.sameBuild && how == "" && isArm(words), noTee)
+	return cmd
+}
+
+// isArm is a command line running `kasbah remote …`, however it is wrapped
+// (timeout, sudo).
+func isArm(words []string) bool {
+	for i := 1; i < len(words); i++ {
+		if words[i] == "remote" && path.Base(words[i-1]) == "kasbah" {
+			return true
+		}
+	}
+	return false
 }
 
 // Connect opens the master and proves the host answers, once, before any real
@@ -176,9 +205,10 @@ func Connect(target string) (*Conn, error) {
 
 	// ssh's own stderr is the reader's diagnosis ("Permission denied
 	// (publickey)"); no wrapper message replaces it.
-	probe := exec.Command("ssh", c.args(true, "true")...)
+	// Its stderr stays ssh's own: the master this call forks would hold a pipe.
+	probe := c.describe(exec.Command("ssh", c.args(true, "true")...), " (connect)", []string{"true"}, true)
 	probe.Stderr = os.Stderr
-	if err := probe.Run(); err != nil {
+	if err := trace.Run(probe); err != nil {
 		c.Close()
 		return nil, cli.Failf(cli.ExitSSHUnreachable, "cannot reach %s over ssh (see ssh's own error above)", t)
 	}
@@ -215,7 +245,7 @@ func (c *Conn) args(noStdin bool, remote string) []string {
 // for a command of that name. The remote stdin is cmd.Stdin (/dev/null when
 // unset); stderr passes through unless the caller replaces it.
 func (c *Conn) Command(words ...string) *exec.Cmd {
-	cmd := exec.Command("ssh", c.args(false, Quote(words...))...)
+	cmd := c.describe(exec.Command("ssh", c.args(false, Quote(words...))...), "", words, false)
 	cmd.Stderr = os.Stderr
 	return cmd
 }
@@ -223,11 +253,11 @@ func (c *Conn) Command(words ...string) *exec.Cmd {
 // Run runs one remote command with stdin closed, its stderr passed through,
 // and returns its stdout.
 func (c *Conn) Run(words ...string) ([]byte, error) {
-	cmd := exec.Command("ssh", c.args(true, Quote(words...))...)
+	cmd := c.describe(exec.Command("ssh", c.args(true, Quote(words...))...), "", words, false)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = os.Stderr
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	return out.Bytes(), err
 }
 
@@ -235,7 +265,8 @@ func (c *Conn) Run(words ...string) ([]byte, error) {
 // stdin so nothing in it is re-quoted. sh, not bash: only the bootstrap is
 // shell; remote logic belongs in the Go binary. Stderr passes through.
 func (c *Conn) Script(script string, args ...string) *exec.Cmd {
-	cmd := exec.Command("ssh", c.args(false, Quote(append([]string{"sh", "-s", "--"}, args...)...))...)
+	sh := append([]string{"sh", "-s", "--"}, args...)
+	cmd := c.describe(exec.Command("ssh", c.args(false, Quote(sh...))...), " (script on stdin)", sh, false)
 	cmd.Stdin = strings.NewReader(script)
 	cmd.Stderr = os.Stderr
 	return cmd
@@ -245,7 +276,7 @@ func (c *Conn) Script(script string, args ...string) *exec.Cmd {
 // asked for a pty. Callers refuse without a local terminal first.
 func (c *Conn) TTY(words ...string) *exec.Cmd {
 	a := append([]string{"-t"}, c.opts...)
-	cmd := exec.Command("ssh", append(a, c.Target.String(), Quote(words...))...)
+	cmd := c.describe(exec.Command("ssh", append(a, c.Target.String(), Quote(words...))...), " -t", words, false)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd
 }
@@ -268,9 +299,9 @@ func (c *Conn) cleanup() {
 	if c.connected || (c.path != "" && serr == nil) {
 		c.connected = false
 		a := append(append([]string{}, c.opts...), "-O", "exit", c.Target.String())
-		cmd := exec.Command("ssh", a...)
+		cmd := c.describe(exec.Command("ssh", a...), " -O exit", nil, false)
 		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
-		cmd.Run()
+		trace.Run(cmd)
 	}
 	if c.dir != "" {
 		os.RemoveAll(c.dir)

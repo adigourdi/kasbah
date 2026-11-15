@@ -7,6 +7,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // Inspection is what the bootstrap probe learns of a server, nothing changed.
@@ -26,7 +27,7 @@ func Inspect(c *ssh.Conn) (*Inspection, error) {
 	cmd := c.Script(probeScript, probeDefault, probePointer, "", strconv.Itoa(RunTimeout))
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	p, err := readLayout(target, ssh.ExitCode(cmd.Run()), out.Bytes())
+	p, err := readLayout(target, ssh.ExitCode(trace.Run(cmd)), out.Bytes())
 	if err != nil {
 		return nil, err
 	}

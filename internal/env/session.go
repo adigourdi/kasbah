@@ -11,6 +11,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/treesync"
 )
 
@@ -117,7 +118,7 @@ func (s *SSH) Setup(dir string, f SetupFlags) int {
 		if f.Token != "" {
 			args = append(args, "--seed="+f.Token)
 		}
-		return ssh.ExitCode(s.Conn.TTY(append([]string{s.bin, "remote"}, args...)...).Run())
+		return ssh.ExitCode(trace.Run(s.Conn.TTY(append([]string{s.bin, "remote"}, args...)...)))
 	}
 	args = append(args, "--headless")
 	var stdin string
@@ -128,7 +129,7 @@ func (s *SSH) Setup(dir string, f SetupFlags) int {
 	cmd := s.Conn.Command(s.bounded(args...)...)
 	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Stdout = os.Stderr
-	return ssh.ExitCode(cmd.Run())
+	return ssh.ExitCode(trace.Run(cmd))
 }
 
 // StageSeed sends SetHeader and the seed on stdin, never on argv.
@@ -137,7 +138,7 @@ func (s *SSH) StageSeed(dir, token string, data []byte) error {
 	cmd.Stdin = strings.NewReader(SetHeader(string(data)) + string(data))
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+	if err := trace.Run(cmd); err != nil {
 		return cli.Fail("could not stage the env seed in %s on %s (%s, see above)", dir, s.target(), exitText(ssh.ExitCode(err)))
 	}
 	if !strings.Contains(out.String(), "staged=yes") {
@@ -172,7 +173,7 @@ func (s *SSH) SetKey(dir, key, value, up string) (string, int) {
 	cmd.Stdin = strings.NewReader(SetHeader(value) + value)
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	return out.String(), ssh.ExitCode(err)
 }
 

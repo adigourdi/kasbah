@@ -19,6 +19,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/tree"
 )
 
@@ -63,7 +64,7 @@ func (s *session) script(body string, args ...string) (string, int) {
 	cmd := s.conn.Script(body, args...)
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	return out.String(), ssh.ExitCode(err)
 }
 
@@ -84,7 +85,7 @@ func (s *session) remote(stdin []byte, bounded bool, args ...string) (string, in
 	}
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	return out.String(), ssh.ExitCode(err)
 }
 

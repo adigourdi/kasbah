@@ -62,8 +62,17 @@ func run() {
 func Exit(code int) {
 	mu.Lock()
 	run()
+	if final != nil {
+		final(code, Interrupted() != 0)
+	}
 	os.Exit(code)
 }
+
+var final func(code int, signalled bool)
+
+// Final sets what runs after the cleanups, last before the exit: the trace's
+// log is written there, so it holds the cleanups too.
+func Final(fn func(code int, signalled bool)) { final = fn }
 
 // HandleSignals makes SIGINT, SIGTERM and SIGHUP exit 128+signal through the
 // cleanups, as bash does with an EXIT trap installed. A second signal during

@@ -19,6 +19,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/composefile"
 	"github.com/adigourdi/kasbah/internal/serverlock"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/traefiknet"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
@@ -222,7 +223,7 @@ func (e *engine) query(args ...string) (string, error) {
 	c := exec.Command("docker", args...)
 	c.Env = append(os.Environ(), "LC_ALL=C")
 	c.Dir = e.dir
-	out, err := c.Output()
+	out, err := trace.Output(c)
 	return strings.TrimRight(strings.ReplaceAll(string(out), "\r", ""), "\n"), err
 }
 
@@ -482,7 +483,7 @@ func (e *engine) record(action string, extra ...string) error {
 // to remove, Traefik first leaving their network so down can remove it, as on drop.
 func (e *engine) up() error {
 	if !e.noSvc {
-		return e.docker("compose", "-p", e.project, "up", "-d", "--remove-orphans").Run()
+		return trace.Run(e.docker("compose", "-p", e.project, "up", "-d", "--remove-orphans"))
 	}
 	if len(e.projectContainers()) == 0 {
 		e.note("compose.yml declares no services — nothing to start")
@@ -501,7 +502,7 @@ func (e *engine) up() error {
 	if err != nil {
 		e.note("could not disconnect traefik from %s's kasbah network (%v) — down leaves that network in place", e.project, err)
 	}
-	if e.docker("compose", "-p", e.project, "down", "--remove-orphans").Run() != nil {
+	if trace.Run(e.docker("compose", "-p", e.project, "down", "--remove-orphans")) != nil {
 		return failf("docker compose -p %s down --remove-orphans failed in %s", e.project, e.dir)
 	}
 	return nil
@@ -660,13 +661,13 @@ func (e *engine) retagBack() (string, error) {
 		id := e.prevIDs[img]
 		if id == "" {
 			// No :current before this run: the old stack never named it.
-			if e.docker("image", "rm", img+":current").Run() != nil {
+			if trace.Run(e.docker("image", "rm", img+":current")) != nil {
 				return "the files are back, and " + img + ":current still names " + v, fmt.Errorf("could not untag %s:current", img)
 			}
 			e.note("untagged %s:current, which nothing named before this run", img)
 			continue
 		}
-		if e.docker("tag", id, img+":current").Run() != nil {
+		if trace.Run(e.docker("tag", id, img+":current")) != nil {
 			return "the files are back, and " + img + ":current still names " + v, fmt.Errorf("could not retag %s as %s:current", id, img)
 		}
 		e.note("retagged %s:current back to %s", img, id)
@@ -737,7 +738,7 @@ func (e *engine) currentIDs() (map[string]string, error) {
 		c.Dir = e.dir
 		var stderr strings.Builder
 		c.Stderr = &stderr
-		out, err := c.Output()
+		out, err := trace.Output(c)
 		id := strings.TrimSpace(string(out))
 		switch {
 		case err == nil && id != "":
@@ -962,7 +963,7 @@ func (e *engine) hooks(what string, list []string, onFail func(error) error) err
 
 func (e *engine) retag() error {
 	for _, img := range e.sp.Images {
-		if e.docker("tag", img+":"+e.sp.Version, img+":current").Run() != nil {
+		if trace.Run(e.docker("tag", img+":"+e.sp.Version, img+":current")) != nil {
 			return failf("could not retag %s:%s as %s:current", img, e.sp.Version, img)
 		}
 		e.note("retagged %s:%s as %s:current", img, e.sp.Version, img)

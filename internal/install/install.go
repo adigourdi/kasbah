@@ -21,6 +21,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/launcher"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/version"
 )
 
@@ -213,7 +214,7 @@ func Reports(bin, ver string, limit time.Duration) bool {
 func Reported(bin string, limit time.Duration) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, bin, "--version").Output()
+	out, err := trace.Output(exec.CommandContext(ctx, bin, "--version"))
 	if err != nil {
 		return "", false
 	}
@@ -378,7 +379,7 @@ func currentVersion(link string, fi os.FileInfo, limit time.Duration) (version.V
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, link, "--version").Output()
+	out, err := trace.Output(exec.CommandContext(ctx, link, "--version"))
 	if err != nil {
 		return version.Version{}, false
 	}

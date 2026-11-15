@@ -20,6 +20,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/dockerapi"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // hostMount is where the launcher container mounts the host's /, and Binary
@@ -77,7 +78,7 @@ var hostOutput = func(root, tool string, args ...string) (string, error) {
 		c := exec.Command(dir+tool, args...)
 		c.SysProcAttr = &syscall.SysProcAttr{Chroot: root}
 		c.Dir, c.Env = "/", []string{"PATH=" + hostPath, "LC_ALL=C"}
-		out, err := c.Output()
+		out, err := trace.Output(c)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
@@ -299,7 +300,7 @@ func launchCmd(u *HostUser, apps, secs string) *exec.Cmd {
 }
 
 // startJob starts the host job. A seam for the tests, which cannot setuid.
-var startJob = func(c *exec.Cmd) error { return c.Start() }
+var startJob = func(c *exec.Cmd) error { return trace.Start(c) }
 
 // The first words of the launcher's own result lines: who it enters the
 // host as, or why the job did not start.
@@ -357,7 +358,7 @@ func Launch(args []string, stdout, stderr io.Writer) int {
 			c.Process.Signal(s)
 		}
 	}()
-	return ssh.ExitCode(c.Wait())
+	return ssh.ExitCode(trace.Wait(c))
 }
 
 func joinIDs(ids []uint32) string {

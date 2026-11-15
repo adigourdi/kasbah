@@ -25,6 +25,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/rootsteps"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // ErrHelp is --help: the usage on stdout, exit 0.
@@ -140,7 +141,7 @@ func (s SSH) script(script string, args ...string) ([]byte, int) {
 	cmd := s.Conn.Script(script, args...)
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	return out.Bytes(), ssh.ExitCode(err)
 }
 

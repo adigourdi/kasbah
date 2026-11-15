@@ -18,6 +18,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // ErrHelp is --help: the usage on stdout, exit 0.
@@ -259,12 +260,12 @@ func (s *SSH) Stream(tty bool, words ...string) (int, error) {
 // on — so the caller still decides what to record. Its status is the child's,
 // 128+N for a child killed by N, or 128+N when this process was signalled.
 func Wait(cmd *exec.Cmd) (int, error) {
-	if err := cmd.Start(); err != nil {
+	if err := trace.Start(cmd); err != nil {
 		return 0, cli.Fail("could not run ssh: %v", err)
 	}
 	release := atexit.Hold(func(sig os.Signal) { cmd.Process.Signal(sig) })
 	held()
-	err := cmd.Wait()
+	err := trace.Wait(cmd)
 	release()
 	if c := atexit.Interrupted(); c != 0 {
 		return c, nil

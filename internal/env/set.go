@@ -21,6 +21,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 const setUsage = `Usage: kasbah env set KEY [USER@HOST] [--restart|--no-restart]
@@ -207,6 +208,7 @@ func runSet(c Ctx, o Options) error {
 			return err
 		}
 	}
+	trace.Secret(value)
 	restart, err := c.Prompter.Choice(restartPair,
 		fmt.Sprintf("Restart %s on %s once %s is set (docker compose -p %s up -d)?", m.Name, target, o.Key, m.Name), o.Restart)
 	if err != nil {
@@ -398,6 +400,7 @@ func remoteSet(dir, key, up string, stdin io.Reader, stdout, stderr io.Writer) i
 	if err != nil {
 		return fail("%v — .env left untouched", err)
 	}
+	trace.Secret(string(body))
 	if up != "" {
 		if fi, err := os.Stat(dir + "/compose.yml"); err != nil || !fi.Mode().IsRegular() {
 			return fail("no %s/compose.yml to bring up — .env left untouched", dir)
@@ -432,7 +435,7 @@ func remoteSet(dir, key, up string, stdin io.Reader, stdout, stderr io.Writer) i
 	c.Env = append(os.Environ(), "LC_ALL=C")
 	c.Dir = dir
 	c.Stdout, c.Stderr = stderr, stderr
-	if err := c.Run(); err != nil {
+	if err := trace.Run(c); err != nil {
 		return fail("docker compose -p %s up -d failed in %s", up, dir)
 	}
 	fmt.Fprintln(stdout, "restarted=yes")

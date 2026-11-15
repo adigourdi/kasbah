@@ -10,6 +10,7 @@ import (
 	"runtime"
 
 	"github.com/adigourdi/kasbah/internal/probe"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // Remote is `kasbah remote info`, run by the server binary: Collect's lines as
@@ -35,7 +36,7 @@ func docker(args ...string) (string, string, int) {
 	var out, errOut bytes.Buffer
 	cmd := exec.Command("docker", args...)
 	cmd.Stdout, cmd.Stderr = &out, &errOut
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	var x *exec.ExitError
 	switch {
 	case err == nil:

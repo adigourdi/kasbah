@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/term"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // Exit codes — the shared contract of docs/cli.md "Exit codes".
@@ -147,7 +148,8 @@ func OSCause(err error) error {
 
 // Report prints err and returns the exit
 // code to leave with: an *Error with its own lines and code, anything else as
-// one error: line and exit 1. A nil err is exit 0, silently.
+// one error: line and exit 1. A nil err is exit 0, silently. On a
+// workstation the run's log is saved, and a last line names it.
 func (o *Output) Report(err error) int {
 	if err == nil {
 		return ExitOK
@@ -155,6 +157,7 @@ func (o *Output) Report(err error) int {
 	var e *Error
 	if !errors.As(err, &e) {
 		o.Err("%s", err.Error())
+		o.logLine(ExitFailure)
 		return ExitFailure
 	}
 	for i, l := range e.Lines {
@@ -164,5 +167,15 @@ func (o *Output) Report(err error) int {
 			o.ErrCont("%s", l)
 		}
 	}
+	o.logLine(e.Code)
 	return e.Code
+}
+
+func (o *Output) logLine(code int) {
+	switch path, err := trace.Failed(code); {
+	case err != nil:
+		o.ErrCont("log: not saved (%v)", err)
+	case path != "":
+		o.ErrCont("log: %s", path)
+	}
 }

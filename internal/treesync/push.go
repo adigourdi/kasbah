@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // Push sends src to dest through bin's `remote sync`, over c's master, in one
@@ -32,12 +33,12 @@ func Push(c *ssh.Conn, bin string, src *Source, dest string) error {
 	if err != nil {
 		return err
 	}
-	if err := cmd.Start(); err != nil {
+	if err := trace.Start(cmd); err != nil {
 		return fmt.Errorf("cannot run ssh: %v", err)
 	}
 	rep, serr := src.Send(in, out, os.Stderr)
 	io.Copy(io.Discard, out)
-	werr := cmd.Wait()
+	werr := trace.Wait(cmd)
 	switch {
 	case serr != nil:
 		return serr

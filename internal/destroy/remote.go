@@ -25,6 +25,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/serverinit"
 	"github.com/adigourdi/kasbah/internal/serverlock"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // The backup stack's compose project and the objects it leaves behind
@@ -128,7 +129,7 @@ var docker = func(dir string, args ...string) (string, error) {
 	cmd.Dir = dir
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	if err != nil {
 		return out.String(), errors.New(flat(errb.String() + "\n" + out.String()))
 	}
@@ -140,7 +141,7 @@ var sudoState = func() string {
 	if os.Geteuid() == 0 {
 		return "root"
 	}
-	if exec.Command("sudo", "-n", "true").Run() == nil {
+	if trace.Run(exec.Command("sudo", "-n", "true")) == nil {
 		return "yes"
 	}
 	return "no"

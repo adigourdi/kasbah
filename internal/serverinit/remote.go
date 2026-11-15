@@ -18,6 +18,7 @@ import (
 	markerpkg "github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverlock"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/traefiknet"
 )
 
@@ -321,11 +322,11 @@ func docker(stderr io.Writer, dir string, args ...string) error {
 	cmd := exec.Command("docker", args...)
 	cmd.Dir = dir
 	cmd.Stdout, cmd.Stderr = stderr, stderr
-	return cmd.Run()
+	return trace.Run(cmd)
 }
 
 func inspect(id, format string) (string, error) {
-	out, err := exec.Command("docker", "inspect", "-f", format, id).Output()
+	out, err := trace.Output(exec.Command("docker", "inspect", "-f", format, id))
 	return strings.TrimRight(string(out), "\n"), err
 }
 
@@ -346,7 +347,7 @@ func remoteStart(apps string, restart bool, timeout time.Duration, acme, stamp s
 	cid := func() string {
 		cmd := exec.Command("docker", "compose", "-p", project, "ps", "-a", "-q", "traefik")
 		cmd.Dir = dir
-		out, _ := cmd.Output()
+		out, _ := trace.Output(cmd)
 		return strings.TrimSpace(string(out))
 	}
 	startedAt := func(id string) string { s, _ := inspect(id, "{{.State.StartedAt}}"); return s }

@@ -96,20 +96,26 @@ func TestProjectNamesItsHolder(t *testing.T) {
 
 func TestDescribe(t *testing.T) {
 	for argv, want := range map[string]string{
-		"/apps/.kasbah/bin/kasbah remote lock /apps exclusive server init": "server init",
-		"/apps/.kasbah/bin/kasbah remote prune rm /apps a:1":               "server prune",
-		"/apps/.kasbah/bin/kasbah remote destroy act /apps":                "server destroy",
-		"/apps/.kasbah/bin/kasbah remote deploy run /apps/x":               "a deploy or rollback",
-		"/apps/.kasbah/bin/kasbah remote deploy images 1.0":                "kasbah remote deploy",
-		"/apps/.kasbah/bin/kasbah remote deploy backup /apps/x":            "kasbah backup",
-		"/apps/.kasbah/bin/kasbah remote setup-env set /apps/x K":          "env set",
-		"/apps/.kasbah/bin/kasbah remote setup-env setup /apps/x":          "kasbah env",
-		"/apps/.kasbah/bin/kasbah remote setup-env seed /apps/x 0123":      "the --env-seed staging of kasbah env, a deploy or a rollback",
-		"/apps/.kasbah/bin/kasbah remote drop act /apps x":                 "drop",
+		"/apps/.kasbah/bin/kasbah remote lock /apps exclusive server init":         "server init",
+		"/apps/.kasbah/bin/kasbah remote prune rm /apps a:1":                       "server prune",
+		"/apps/.kasbah/bin/kasbah remote destroy act /apps":                        "server destroy",
+		"/apps/.kasbah/bin/kasbah remote deploy run /apps/x":                       "a deploy or rollback",
+		"/apps/.kasbah/bin/kasbah remote deploy images 1.0":                        "kasbah remote deploy",
+		"/apps/.kasbah/bin/kasbah remote deploy backup /apps/x":                    "kasbah backup",
+		"/apps/.kasbah/bin/kasbah remote setup-env set /apps/x K":                  "env set",
+		"/apps/.kasbah/bin/kasbah remote setup-env setup /apps/x":                  "kasbah env",
+		"/apps/.kasbah/bin/kasbah remote setup-env seed /apps/x 0123":              "the --env-seed staging of kasbah env, a deploy or a rollback",
+		"/apps/.kasbah/bin/kasbah remote drop act /apps x":                         "drop",
+		"/apps/.kasbah/bin/kasbah remote drop act /apps x --trace":                 "drop",
+		"/apps/.kasbah/bin/kasbah remote lock /apps exclusive server init --trace": "server init",
+		"/apps/.kasbah/bin/kasbah remote deploy run /apps/x --trace":               "a deploy or rollback",
 	} {
 		w := strings.Fields(argv)
 		if argv == "/apps/.kasbah/bin/kasbah remote lock /apps exclusive server init" {
 			w = []string{"/apps/.kasbah/bin/kasbah", "remote", "lock", "/apps", "exclusive", "server init"}
+		}
+		if argv == "/apps/.kasbah/bin/kasbah remote lock /apps exclusive server init --trace" {
+			w = []string{"/apps/.kasbah/bin/kasbah", "remote", "lock", "/apps", "exclusive", "server init", "--trace"}
 		}
 		if got := describe(w); got != want {
 			t.Errorf("describe(%q) = %q, want %q", argv, got, want)

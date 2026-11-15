@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // errDeadline is a hook stopped at the engine's deadline.
@@ -22,7 +23,7 @@ var killGrace = 30 * time.Second
 // process group, killed whole at the deadline: a hook's children go with it.
 func (e *engine) runHook(c *exec.Cmd) error {
 	if e.deadline.IsZero() && !e.forward {
-		return c.Run()
+		return trace.Run(c)
 	}
 	ctx := context.Background()
 	if !e.deadline.IsZero() {
@@ -36,7 +37,7 @@ func (e *engine) runHook(c *exec.Cmd) error {
 	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// A child left holding the output does not hold the job past the kill.
 	c.WaitDelay = killGrace + 5*time.Second
-	if err := c.Start(); err != nil {
+	if err := trace.Start(c); err != nil {
 		return err
 	}
 	pgid := c.Process.Pid
@@ -51,7 +52,7 @@ func (e *engine) runHook(c *exec.Cmd) error {
 		}
 	}
 	done := make(chan error, 1)
-	go func() { done <- c.Wait() }()
+	go func() { done <- trace.Wait(c) }()
 	select {
 	case err := <-done:
 		return err

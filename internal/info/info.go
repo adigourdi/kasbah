@@ -18,6 +18,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/status"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/version"
 )
 
@@ -137,6 +138,13 @@ func Self(build, goos, goarch string, b Binary, getenv func(string) string) []Fi
 	if err != nil {
 		lib = "unknown (" + err.Error() + ")"
 	}
+	// The newest log is the one a failure just named: "none" before any.
+	logs, last := "", "none"
+	if d, err := trace.Dir(getenv); err != nil {
+		logs = "unknown (" + err.Error() + ")"
+	} else if logs = d; trace.Latest(d) != "" {
+		last = trace.Latest(d)
+	}
 	return []Field{
 		{"name", "kasbah"},
 		{"version", ver},
@@ -148,6 +156,8 @@ func Self(build, goos, goarch string, b Binary, getenv func(string) string) []Fi
 		{"install", Install(b.Exe)},
 		{"lib", lib},
 		{"docs", version.DocsURL(build, "")},
+		{"logs", logs},
+		{"logs.last", last},
 	}
 }
 

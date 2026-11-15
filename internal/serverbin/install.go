@@ -16,6 +16,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverlock"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/version"
 )
 
@@ -113,7 +114,7 @@ func localFacts(file string) Facts {
 	cmd := exec.CommandContext(ctx, file, "remote", "version")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err = cmd.Run()
+	err = trace.Run(cmd)
 	f.Stdout, f.Stderr = stdout.String(), stderr.String()
 	var ee *exec.ExitError
 	switch {

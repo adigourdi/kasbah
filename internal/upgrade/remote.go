@@ -25,6 +25,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverinit"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/traefiknet"
 )
 
@@ -113,7 +114,7 @@ var dockerCmd = func(dir string, args ...string) (string, error) {
 	cmd.Dir = dir
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
-	out, err := cmd.Output()
+	out, err := trace.Output(cmd)
 	if msg := strings.TrimSpace(errb.String()); err != nil && msg != "" {
 		err = errors.New(msg)
 	}
@@ -123,7 +124,7 @@ var dockerCmd = func(dir string, args ...string) (string, error) {
 var haveDocker = func() bool { _, err := exec.LookPath("docker"); return err == nil }
 
 var dockerLogs = func(name string) string {
-	out, _ := exec.Command("docker", "logs", name).CombinedOutput()
+	out, _ := trace.CombinedOutput(exec.Command("docker", "logs", name))
 	return string(out)
 }
 

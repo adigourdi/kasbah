@@ -27,6 +27,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/serverinit"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
@@ -186,7 +187,7 @@ func (s *SSH) Call(stdin []byte, bounded bool, args ...string) ([]byte, int) {
 	}
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	return out.Bytes(), ssh.ExitCode(err)
 }
 

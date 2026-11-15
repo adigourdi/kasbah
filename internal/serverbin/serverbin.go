@@ -26,6 +26,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/selfupdate"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/version"
 )
 
@@ -659,7 +660,7 @@ func Ensure(c *ssh.Conn, self remote.Info, local func(arch string) (string, erro
 	cmd := c.Script(probeScript, probeDefault, probePointer, opt.Apps, strconv.Itoa(RunTimeout))
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	p, err := judge(target, ssh.ExitCode(cmd.Run()), out.Bytes(), opt)
+	p, err := judge(target, ssh.ExitCode(trace.Run(cmd)), out.Bytes(), opt)
 	if err != nil {
 		return nil, err
 	}
@@ -690,6 +691,8 @@ func Ensure(c *ssh.Conn, self remote.Info, local func(arch string) (string, erro
 	}
 	if action == remote.Keep {
 		res.Now = srv.Build
+		c.SameBuild()
+		trace.Note("server binary %s kept: the server runs this build (%s)", bin, res.Now)
 		return res, nil
 	}
 
@@ -726,6 +729,8 @@ func Ensure(c *ssh.Conn, self remote.Info, local func(arch string) (string, erro
 		}
 		if action == remote.Keep {
 			res.Action, res.Now = remote.Keep, kept.Build
+			c.SameBuild()
+			trace.Note("server binary %s kept: another run installed this build (%s) meanwhile", bin, res.Now)
 			return res, nil
 		}
 		if try > 0 {
@@ -739,6 +744,8 @@ func Ensure(c *ssh.Conn, self remote.Info, local func(arch string) (string, erro
 		old = "(" + cmp.Or(old, "none") + ")"
 	}
 	Notes.Info("server kasbah %s → %s", old, res.Now)
+	c.SameBuild()
+	trace.Note("server binary %s shipped: %s → %s", bin, old, res.Now)
 	return res, nil
 }
 
@@ -792,7 +799,7 @@ func ship(c *ssh.Conn, self remote.Info, file, bin, over string) (*remote.Info, 
 		return nil, cli.Fail("cannot read %s: %v", file, err)
 	}
 
-	removeTmp := func() { c.Command("rm", "-f", tmp).Run() }
+	removeTmp := func() { trace.Run(c.Command("rm", "-f", tmp)) }
 	pop := atexit.Push(removeTmp)
 	// Every way out, a panic's included; after a successful install the name
 	// is already gone.
@@ -800,20 +807,20 @@ func ship(c *ssh.Conn, self remote.Info, file, bin, over string) (*remote.Info, 
 
 	up := c.Command("sh", "-c", uploadScript, "sh", dir, name, strconv.FormatInt(fi.Size(), 10))
 	up.Stdin = f
-	if err := up.Run(); err != nil {
+	if err := trace.Run(up); err != nil {
 		return nil, cli.Fail("could not upload kasbah to %s on %s (exit %d, see above)", tmp, target, ssh.ExitCode(err))
 	}
 
 	var vout, verr bytes.Buffer
 	run := c.Command(Bounded(tmp, RunTimeout, "version")...)
 	run.Stdout, run.Stderr = &vout, &verr
-	switch rc := ssh.ExitCode(run.Run()); {
+	switch rc := ssh.ExitCode(trace.Run(run)); {
 	case rc == 0:
 	case TimedOut(rc):
 		return nil, cli.Fail("the kasbah binary uploaded to %s on %s did not answer within %d s", dir, target, RunTimeout)
 	case rc == 126:
 		m := c.Command("sh", "-c", `findmnt -n -o TARGET,FSTYPE,OPTIONS -T "$1" 2>/dev/null || cat /proc/mounts`, "sh", dir)
-		mo, _ := m.Output()
+		mo, _ := trace.Output(m)
 		mount := strings.Split(strings.TrimRight(strings.ReplaceAll(string(mo), "\r", ""), "\n"), "\n")
 		if err := noexec(target, dir, dir+"/kasbah", mount); err != nil {
 			return nil, err
@@ -834,7 +841,7 @@ func ship(c *ssh.Conn, self remote.Info, file, bin, over string) (*remote.Info, 
 	var iout bytes.Buffer
 	inst := c.Command(Bounded(tmp, 2*RunTimeout+LockWait, "install-self", bin, "--over="+over)...)
 	inst.Stdout = &iout
-	if err := inst.Run(); err != nil {
+	if err := trace.Run(inst); err != nil {
 		return nil, cli.Fail("installing kasbah at %s on %s failed (exit %d, see above)", bin, target, ssh.ExitCode(err))
 	}
 	line := strings.TrimSpace(strings.ReplaceAll(iout.String(), "\r", ""))

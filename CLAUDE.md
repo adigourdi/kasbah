@@ -59,6 +59,10 @@ truth; `plan/` holds what is intended and queued (roadmap, backlog, research).
   `atexit.Exit`, so temp files, the ssh master and terminal echo are cleaned on
   a signal. Every server-side step that changes state ignores SIGHUP/SIGPIPE,
   so a dropped session never leaves it half-done.
+- **Trace:** every external command runs through `internal/trace`
+  (`trace.Run`/`Output`/`CombinedOutput`/`Start`+`Wait`, never the
+  `exec.Cmd` methods), and every secret kasbah reads or is given goes to
+  `trace.Secret` where it is read; nothing traced goes to stdout.
 - **CRLF tolerance:** strip `\r` before matching any user-authored file.
 - **Interactive, never assume:** an unset flag means *prompt*, not *no*.
   Every prompt has a `--with-x`/`--no-x` (or `--yes`) pair; without a TTY,

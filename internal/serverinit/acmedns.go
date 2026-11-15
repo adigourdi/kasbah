@@ -18,6 +18,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverlock"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/tree"
 )
 
@@ -120,6 +121,7 @@ func envBody(data []byte) (body []byte, keys int, fault string) {
 			continue
 		}
 		k, v, ok := strings.Cut(l, "=")
+		trace.Secret(v)
 		switch {
 		case !ok:
 			return nil, 0, fmt.Sprintf("line %d is not KEY=value (blank lines and full-line # comments aside)", i+1)

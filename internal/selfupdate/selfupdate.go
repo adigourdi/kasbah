@@ -26,6 +26,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/minisign"
 	"github.com/adigourdi/kasbah/internal/releasekey"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/version"
 )
 
@@ -71,7 +72,7 @@ func New(out *cli.Output, getenv func(string) string) (*Client, error) {
 		c.API = strings.TrimRight(v, "/")
 	}
 	c.Token, c.TokenFrom = Token(c.API, getenv, exec.LookPath, func(name string, args ...string) ([]byte, error) {
-		return exec.Command(name, args...).Output()
+		return trace.Output(exec.Command(name, args...))
 	})
 	c.HTTP = NewHTTP()
 	return c, nil
@@ -108,6 +109,7 @@ func Token(api string, getenv func(string) string, lookPath func(string) (string
 	}
 	out, err := run("gh", "auth", "token", "--hostname", "github.com")
 	if t := strings.TrimSpace(string(out)); err == nil && t != "" {
+		trace.Secret(t)
 		return t, "gh"
 	}
 	return "", ""

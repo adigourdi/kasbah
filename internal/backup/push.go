@@ -9,6 +9,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // Push is `kasbah remote backup push APPS NAME`: NAME's repository backed up
@@ -27,7 +28,7 @@ func Push(apps, name string, stdout, stderr io.Writer) int {
 	}
 	c := exec.Command("docker", "exec", Container, apps+"/.kasbah/bin/kasbah", "remote", "backup", "once", "--project", name)
 	c.Stdout, c.Stderr = stderr, stderr
-	if err := c.Run(); err != nil {
+	if err := trace.Run(c); err != nil {
 		fmt.Fprintf(stdout, "push=failed\nrc=%d\n", ssh.ExitCode(err))
 		return 0
 	}

@@ -29,6 +29,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/tree"
 )
 
@@ -139,7 +140,7 @@ func (s SSH) Act(stdin []byte, args []string) ([]byte, int) {
 	cmd.Stdin = bytes.NewReader(stdin)
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	return out.Bytes(), ssh.ExitCode(err)
 }
 

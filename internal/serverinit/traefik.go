@@ -14,6 +14,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/tmpl"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
@@ -534,7 +535,7 @@ func Bcrypt(user, pass string) (string, error) {
 	var stdout bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, os.Stderr
 	rc := 0
-	if err := cmd.Run(); err != nil {
+	if err := trace.Run(cmd); err != nil {
 		rc = 1
 		if ee, ok := err.(*exec.ExitError); ok {
 			rc = ee.ExitCode()

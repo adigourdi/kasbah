@@ -15,6 +15,7 @@ import (
 	"syscall"
 
 	"github.com/adigourdi/kasbah/internal/manifest"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // FState is a path in one of the states the readers tell apart: nopath (no
@@ -103,7 +104,7 @@ func Docker(args ...string) (string, int) {
 	var out bytes.Buffer
 	cmd := exec.Command("docker", args...)
 	cmd.Stdout = &out
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	return out.String(), rc(err)
 }
 
@@ -112,13 +113,13 @@ func DockerErr(args ...string) (string, int) {
 	var errb bytes.Buffer
 	cmd := exec.Command("docker", args...)
 	cmd.Stderr = &errb
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	return errb.String(), rc(err)
 }
 
 // DockerAll is Docker with stdout and stderr together (`2>&1`).
 func DockerAll(args ...string) (string, int) {
-	out, err := exec.Command("docker", args...).CombinedOutput()
+	out, err := trace.CombinedOutput(exec.Command("docker", args...))
 	return string(out), rc(err)
 }
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/composefile"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
@@ -428,7 +429,7 @@ func (e *engine) upStack() (string, error) {
 	}
 	if len(rest) > 0 {
 		args := append([]string{"compose", "-p", e.project, "up", "-d", "--no-deps", "--remove-orphans"}, rest...)
-		if e.docker(args...).Run() != nil {
+		if trace.Run(e.docker(args...)) != nil {
 			return "up", failf("docker compose -p %s up -d --no-deps --remove-orphans %s failed in %s", e.project, strings.Join(rest, " "), e.dir)
 		}
 	}
@@ -445,15 +446,15 @@ func (e *engine) upStack() (string, error) {
 // new replica that fails is removed and the running old ones are left as they were.
 func (e *engine) roll(r roll) (string, error) {
 	for _, id := range r.stale {
-		if e.docker("rm", id).Run() != nil {
+		if trace.Run(e.docker("rm", id)) != nil {
 			return "up", failf("could not remove %s's stopped container %s, which the scale-up would restart on its old config", r.svc, short(id))
 		}
 		e.note("%s: removed the stopped old container %s", r.svc, short(id))
 	}
 	n := len(r.old) + r.replicas
 	e.note("%s: starting %d new replica(s) beside the running one(s), which keep serving %s", r.svc, r.replicas, r.host)
-	err := e.docker("compose", "-p", e.project, "up", "-d", "--no-deps", "--no-recreate", "--remove-orphans",
-		"--scale", fmt.Sprintf("%s=%d", r.svc, n), r.svc).Run()
+	err := trace.Run(e.docker("compose", "-p", e.project, "up", "-d", "--no-deps", "--no-recreate", "--remove-orphans",
+		"--scale", fmt.Sprintf("%s=%d", r.svc, n), r.svc))
 	var fresh []string
 	for _, c := range e.serviceContainers(r.svc) {
 		if !slices.Contains(r.old, c.id) {
@@ -462,7 +463,7 @@ func (e *engine) roll(r roll) (string, error) {
 	}
 	drop := func() {
 		for _, id := range fresh {
-			if e.docker("rm", "-f", id).Run() == nil {
+			if trace.Run(e.docker("rm", "-f", id)) == nil {
 				e.note("%s: removed the new replica %s; the old container(s) were not touched", r.svc, short(id))
 			}
 		}
@@ -476,7 +477,7 @@ func (e *engine) roll(r roll) (string, error) {
 		return "health", err
 	}
 	for _, id := range r.old {
-		if e.docker("stop", id).Run() != nil || e.docker("rm", id).Run() != nil {
+		if trace.Run(e.docker("stop", id)) != nil || trace.Run(e.docker("rm", id)) != nil {
 			return "up", failf("could not stop and remove %s's old container %s — both versions of %s may be serving", r.svc, short(id), r.host)
 		}
 		e.note("%s: stopped and removed the old container %s", r.svc, short(id))

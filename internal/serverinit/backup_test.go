@@ -13,6 +13,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/tmpl"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/tree"
 )
 
@@ -146,6 +147,23 @@ func TestBackupResolve(t *testing.T) {
 
 // The nightly job's user and deadline: a flag, else the marker, else the
 // ssh user and the default; each refusal names its flag.
+// A base typed at the prompt is a credential as one given by flag is.
+func TestBackupResolvePromptedBase(t *testing.T) {
+	trace.Reset()
+	t.Cleanup(trace.Reset)
+	trace.Begin(trace.Config{Stderr: &bytes.Buffer{}, Getenv: func(string) string { return "" }})
+	o, _ := Parse([]string{"deploy@vps", "--with-backup", "--no-backup-env"})
+	p, said := bkPrompter("rest:http://u:typed-pw-77@h/b/\n")
+	v, err := BackupResolve(p.Out, p, o, fresh(), nil, "deploy")
+	if err != nil || v.BaseOrigin != "prompt" {
+		t.Fatalf("%+v %v %s", v, err, said)
+	}
+	trace.Note("base %s", v.RepoBase)
+	if tr := trace.Text(); strings.Contains(tr, "typed-pw-77") {
+		t.Errorf("the trace holds the typed base:\n%s", tr)
+	}
+}
+
 func TestBackupUserAndHookTimeout(t *testing.T) {
 	o, err := Parse([]string{"a@b", "--with-backup", "--backup-user=stevedore\r", "--backup-hook-timeout=600"})
 	if err != nil || o.Bk.User != "stevedore" || o.Bk.HookTimeout != "600" {

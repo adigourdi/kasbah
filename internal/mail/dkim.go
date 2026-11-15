@@ -20,6 +20,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/mailreg"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/tmpl"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
@@ -213,7 +214,7 @@ func docker(what string, args ...string) ([]byte, error) {
 	cmd.WaitDelay = 5 * time.Second
 	var o, e bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &o, &e
-	if err := cmd.Run(); err != nil {
+	if err := trace.Run(cmd); err != nil {
 		if ctx.Err() != nil {
 			return o.Bytes(), fmt.Errorf("%s did not finish within %s (%w)", what, dockerTimeout, errTimeout)
 		}
@@ -362,7 +363,7 @@ func (b *keyBox) prepare() error {
 		}
 		pull := exec.Command("docker", "pull", "-q", img)
 		pull.Stdout, pull.Stderr = b.stderr, b.stderr
-		if pull.Run() != nil {
+		if trace.Run(pull) != nil {
 			return fmt.Errorf("could not pull %s, whose rspamadm makes the DKIM keys", img)
 		}
 	}

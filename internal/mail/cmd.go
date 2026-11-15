@@ -21,6 +21,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // ErrHelp is -h/--help: print the usage and leave 0.
@@ -588,7 +589,7 @@ func (s SSH) Remote(stdin []byte, args ...string) ([]byte, int) {
 	}
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	return out.Bytes(), ssh.ExitCode(err)
 }
 
@@ -596,7 +597,7 @@ func (s SSH) Unbounded(args ...string) ([]byte, int) {
 	var out bytes.Buffer
 	cmd := s.Conn.Command(append([]string{s.Bin(), "remote"}, args...)...)
 	cmd.Stdout = &out
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	return out.Bytes(), ssh.ExitCode(err)
 }
 

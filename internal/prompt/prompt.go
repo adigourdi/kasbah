@@ -16,6 +16,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/term"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // Given is what the command line said about a yes/no question.
@@ -280,6 +281,7 @@ func (p *Prompter) Select(flag, question string, choices, labels []string, given
 // land on the prompt.
 func (p *Prompter) Secret(flag, question, given string) (string, error) {
 	if given != "" {
+		trace.Secret(given)
 		return strings.TrimSuffix(given, "\r"), nil
 	}
 	flags := "--" + flag + "=<value>"
@@ -328,6 +330,8 @@ func (p *Prompter) Hidden(question string) (string, error) {
 // askHidden reads with echo off. SIGINT or SIGTERM meanwhile puts the
 // terminal back and exits 128+signal, as bash's `read -s` does.
 func (p *Prompter) askHidden(prompt string, exact bool) (a string, err error) {
+	// What is typed hidden is a secret, and stays out of the trace.
+	defer func() { trace.Secret(a) }()
 	read := p.readLine
 	if exact {
 		read = p.readPasted

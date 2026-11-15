@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 const (
@@ -37,7 +39,7 @@ func Exec(args ...string) (string, error) {
 	c.Env = append(os.Environ(), "LC_ALL=C")
 	var out, errb bytes.Buffer
 	c.Stdout, c.Stderr = &out, &errb
-	if err := c.Run(); err != nil {
+	if err := trace.Run(c); err != nil {
 		msg := strings.TrimSpace(errb.String())
 		if msg == "" {
 			msg = err.Error()

@@ -20,6 +20,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/mailreg"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverlock"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/traefiknet"
 )
 
@@ -408,12 +409,12 @@ func remoteStart(apps string, timeout time.Duration, stdout, stderr io.Writer) e
 		cmd := exec.Command("docker", append([]string{"compose", "-p", Project}, args...)...)
 		cmd.Dir = dir
 		cmd.Stdout, cmd.Stderr = stderr, stderr
-		return cmd.Run()
+		return trace.Run(cmd)
 	}
 	cid := func(svc string) string {
 		cmd := exec.Command("docker", "compose", "-p", Project, "ps", "-a", "-q", svc)
 		cmd.Dir = dir
-		out, _ := cmd.Output()
+		out, _ := trace.Output(cmd)
 		return strings.TrimSpace(string(out))
 	}
 	dmsBefore := cid("mail-dms")
@@ -445,7 +446,7 @@ func remoteStart(apps string, timeout time.Duration, stdout, stderr io.Writer) e
 	// file whole: a container showing other bytes is recreated onto the new one.
 	nginx := "unchecked"
 	want, rerr := os.ReadFile(dir + "/cypht-nginx.conf")
-	got, gerr := exec.Command("docker", "exec", web, "cat", "/etc/nginx/nginx.conf").Output()
+	got, gerr := trace.Output(exec.Command("docker", "exec", web, "cat", "/etc/nginx/nginx.conf"))
 	if rerr == nil && gerr == nil {
 		nginx = "mounted"
 		if !bytes.Equal(got, want) {
@@ -521,7 +522,7 @@ func applyJail(before, dms string, stderr io.Writer) string {
 		return "atstart"
 	}
 	do := func(args ...string) ([]byte, error) {
-		return exec.Command("docker", args...).CombinedOutput()
+		return trace.CombinedOutput(exec.Command("docker", args...))
 	}
 	failed := func(what string, out []byte) string {
 		fmt.Fprintf(stderr, "remote: %s on mail-dms failed: %s\n", what, strings.TrimSpace(string(out)))
@@ -575,12 +576,12 @@ func ignoresCypht(out string) bool {
 // stops new bans, not ones made before it. The count is "skipped" while
 // Fail2ban is not answering; a starting jail drops restored bans it ignores.
 func unbanCypht(dms string, stderr io.Writer) (count, addr string) {
-	if exec.Command("docker", "exec", dms, "fail2ban-client", "ping").Run() != nil {
+	if trace.Run(exec.Command("docker", "exec", dms, "fail2ban-client", "ping")) != nil {
 		return "skipped", ""
 	}
 	// Every address, resolved inside DMS as Fail2ban resolves ignoreip: on a
 	// dual-stack network `getent hosts` gives only the IPv6 one.
-	out, err := exec.Command("docker", "exec", dms, "getent", "ahosts", "mail-cypht").Output()
+	out, err := trace.Output(exec.Command("docker", "exec", dms, "getent", "ahosts", "mail-cypht"))
 	var addrs []string
 	for _, l := range strings.Split(string(out), "\n") {
 		if f := strings.Fields(l); len(f) > 0 && !slices.Contains(addrs, f[0]) {
@@ -592,7 +593,7 @@ func unbanCypht(dms string, stderr io.Writer) (count, addr string) {
 		return "failed", ""
 	}
 	addr = strings.Join(addrs, " ")
-	out, err = exec.Command("docker", append([]string{"exec", dms, "fail2ban-client", "unban"}, addrs...)...).CombinedOutput()
+	out, err = trace.CombinedOutput(exec.Command("docker", append([]string{"exec", dms, "fail2ban-client", "unban"}, addrs...)...))
 	n := strings.TrimSpace(string(out))
 	if _, cerr := strconv.Atoi(n); err != nil || cerr != nil {
 		fmt.Fprintf(stderr, "remote: fail2ban-client unban %s on mail-dms failed: %s\n", addr, n)

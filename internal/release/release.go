@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/version"
 )
 
@@ -49,10 +50,10 @@ func Repo(pwd string) error {
 	if _, err := exec.LookPath("git"); err != nil {
 		return cli.Fail("git is required — kasbah resolves the version from HEAD's tag")
 	}
-	if exec.Command("git", "rev-parse", "--git-dir").Run() != nil {
+	if trace.Run(exec.Command("git", "rev-parse", "--git-dir")) != nil {
 		return cli.Fail("%s is not a git repository — kasbah resolves the version from HEAD's tag", pwd)
 	}
-	if exec.Command("git", "rev-parse", "-q", "--verify", "HEAD").Run() != nil {
+	if trace.Run(exec.Command("git", "rev-parse", "-q", "--verify", "HEAD")) != nil {
 		return cli.Fail("this repository has no commits yet, so there is no HEAD to read a version tag from")
 	}
 	return nil
@@ -65,7 +66,7 @@ func Resolve(pwd string) (string, error) {
 	}
 	cmd := exec.Command("git", "tag", "--points-at", "HEAD")
 	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
+	out, err := trace.Output(cmd)
 	if err != nil {
 		return "", cli.Fail("could not list the tags on HEAD (see git's error above)")
 	}

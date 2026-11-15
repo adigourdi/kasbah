@@ -14,6 +14,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/mail"
 	"github.com/adigourdi/kasbah/internal/probe"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/traefiknet"
 	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/vlog"
@@ -292,7 +293,7 @@ func disk(path string) Disk {
 	if _, err := os.Stat(path); err != nil {
 		return Disk{State: "absent"}
 	}
-	out, err := exec.Command("df", "-Pk", path).Output()
+	out, err := trace.Output(exec.Command("df", "-Pk", path))
 	last := ""
 	if err == nil {
 		for _, l := range strings.Split(string(out), "\n") {

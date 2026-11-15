@@ -2,10 +2,8 @@
 description: A bug report on GitHub arrives with no version, command or log
 cause: the repository has no issue templates
 where: .github/ISSUE_TEMPLATE/
-state: blocked
+state: ready
 priority: normal
-after:
-  - "[[debug-trace-and-log]] — the template asks for the failure's log"
 ---
 
 ## Prompted by

@@ -11,6 +11,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 func TestParsePrune(t *testing.T) {
@@ -103,6 +104,46 @@ func prune(t *testing.T, f *fakePrune, o PruneOptions, fail map[string]int) (str
 		t.Errorf("staged credentials left behind: %v", ents)
 	}
 	return out.String(), errb.String(), calls, err
+}
+
+// The base and the env values are credentials, kept out of the trace.
+func TestPruneSecrets(t *testing.T) {
+	trace.Reset()
+	t.Cleanup(trace.Reset)
+	trace.Begin(trace.Config{Stderr: &bytes.Buffer{}, Getenv: func(string) string { return "" }})
+	f := &fakePrune{marker: prunedMarker, repos: ReposReport{Repos: []string{"alpha"},
+		Pass: map[string]string{"alpha": base64.StdEncoding.EncodeToString([]byte("pw\n"))}}}
+	o := PruneOptions{RepoBase: "rest:http://u:admin-key-55@h/b/", Env: []string{"AWS_SECRET_ACCESS_KEY=env-secret-66"}, Yes: true}
+	if _, errb, _, err := prune(t, f, o, nil); err != nil {
+		t.Fatal(err, errb)
+	}
+	trace.Note("%s %s", o.RepoBase, o.Env[0])
+	if tr := trace.Text(); strings.Contains(tr, "admin-key-55") || strings.Contains(tr, "env-secret-66") {
+		t.Errorf("trace:\n%s", tr)
+	}
+}
+
+// The flags are credentials from the moment they are parsed, so a run that
+// fails before it reaches the server still keeps them out of its log.
+func TestParsePruneSecrets(t *testing.T) {
+	trace.Reset()
+	t.Cleanup(trace.Reset)
+	if _, err := ParsePrune([]string{"deploy@vps", "--repo-base=rest:http://u:base-key-77@h/b/", "--env=AWS_SECRET_ACCESS_KEY=env-secret-88"}); err != nil {
+		t.Fatal(err)
+	}
+	trace.Begin(trace.Config{Stderr: &bytes.Buffer{}, Getenv: func(string) string { return "" }})
+	trace.Note("rest:http://u:base-key-77@h/b/ env-secret-88")
+	if tr := trace.Text(); strings.Contains(tr, "base-key-77") || strings.Contains(tr, "env-secret-88") {
+		t.Errorf("trace:\n%s", tr)
+	}
+	// A run refused while parsing registers nothing, and its header still hides the entry.
+	args := []string{"server", "backup-prune", "deploy@vps", "--keep-daily=x", "--env=RESTIC_PASSWORD=env-secret-99"}
+	if _, err := ParsePrune(args[2:]); err == nil {
+		t.Fatal("a bad --keep-daily parsed")
+	}
+	if got := trace.CommandLine(args); strings.Contains(got, "env-secret-99") || !strings.Contains(got, "--env=***") {
+		t.Errorf("header: %s", got)
+	}
 }
 
 func TestPrune(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/adigourdi/kasbah/internal/serverlock"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // Group is serverlock.Group, the operators' Unix group.
@@ -67,7 +68,7 @@ func owners(group string, gid int) map[int]bool {
 	set := map[int]bool{os.Getuid(): true}
 	// Keyed lookups reach directory services that refuse enumeration.
 	db := func(name string, key ...string) string {
-		if out, err := exec.Command("getent", append([]string{name}, key...)...).Output(); err == nil {
+		if out, err := trace.Output(exec.Command("getent", append([]string{name}, key...)...)); err == nil {
 			return string(out)
 		}
 		b, _ := os.ReadFile("/etc/" + name)

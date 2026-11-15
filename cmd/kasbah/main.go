@@ -55,10 +55,17 @@ var (
 
 func main() {
 	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "remote" {
+		args = remoteTrace(args)
+	} else {
+		rest, debug := debugFlag(args)
+		beginTrace(rest, debug || debugOn(os.Getenv))
+		args, argv = rest, rest
+	}
 	if len(args) > 0 && args[0] != "remote" {
 		rest, answer, err := answerShipDev(prompt.Std(cli.Std()), args, os.Getenv)
 		if err != nil {
-			os.Exit(cli.Std().Report(err))
+			atexit.Exit(cli.Std().Report(err))
 		}
 		args, argv, shipDev = rest, rest, answer
 	}
@@ -278,7 +285,7 @@ func main() {
 		}
 	}
 
-	os.Exit(topLevel(cli.Std(), build, args))
+	atexit.Exit(topLevel(cli.Std(), build, args))
 }
 
 func remoteCmd(args []string) int {

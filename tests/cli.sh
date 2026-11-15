@@ -15,6 +15,11 @@ KASBAH_BIN="${KASBAH_BIN:-$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/di
 [[ $KASBAH_BIN == /* ]] || KASBAH_BIN="$PWD/$KASBAH_BIN"
 export KASBAH_BIN
 
+# A failed run saves its log under XDG_STATE_HOME (docs/cli.md "Debugging a
+# failure"): the suites' go to this checkout's .cache, never the user's
+# ~/.local/state. A suite that reads them points it at its own directory.
+export XDG_STATE_HOME="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.cache/test-state"
+
 if [ ! -x "$KASBAH_BIN" ]; then
     echo "no kasbah binary at $KASBAH_BIN — build it: docker compose run --rm build" >&2
     exit 2

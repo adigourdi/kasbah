@@ -14,6 +14,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/term"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // OriginTimeout bounds a call to origin when there is no terminal; with one,
@@ -25,7 +26,7 @@ var (
 )
 
 // HasOrigin is whether the repository has an 'origin' remote.
-func HasOrigin() bool { return exec.Command("git", "remote", "get-url", "origin").Run() == nil }
+func HasOrigin() bool { return trace.Run(exec.Command("git", "remote", "get-url", "origin")) == nil }
 
 // originResult is one call to origin: git's exit code (-1 when it timed out or
 // never ran) and what it said on stderr.
@@ -68,7 +69,7 @@ func origin(args ...string) originResult {
 		cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 		cmd.WaitDelay = 2 * time.Second
 	}
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	r := originResult{out: out.Bytes()}
 	for _, l := range strings.Split(strings.TrimSpace(strings.ReplaceAll(errb.String(), "\r", "")), "\n") {
 		if l != "" {
@@ -100,7 +101,7 @@ func sshCommand(tty bool) string {
 	}
 	s := os.Getenv("GIT_SSH_COMMAND")
 	if s == "" {
-		if out, err := exec.Command("git", "config", "core.sshCommand").Output(); err == nil {
+		if out, err := trace.Output(exec.Command("git", "config", "core.sshCommand")); err == nil {
 			s = strings.TrimSpace(string(out))
 		}
 	}

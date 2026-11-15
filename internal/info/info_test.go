@@ -94,7 +94,8 @@ func TestSelf(t *testing.T) {
 	Write(&b, Self("1.2.3", "linux", "amd64", Binary{"/home/u/.local/bin/kasbah", bin}, env))
 	want := "name: kasbah\nversion: 1.2.3\nbuild: 1.2.3\nos: linux\narch: amd64\n" +
 		"binary: /home/u/.local/bin/kasbah\nresolved: " + bin + "\ninstall: library\nlib: " + filepath.Join(d, "lib") +
-		"\ndocs: https://github.com/adigourdi/kasbah/tree/v1.2.3/docs\n"
+		"\ndocs: https://github.com/adigourdi/kasbah/tree/v1.2.3/docs\n" +
+		"logs: /home/u/.local/state/kasbah/logs\nlogs.last: none\n"
 	if b.String() != want {
 		t.Errorf("release:\n%s\nwant:\n%s", b.String(), want)
 	}
@@ -107,7 +108,7 @@ func TestSelf(t *testing.T) {
 		m[f.Key] = f.Value
 		keys = append(keys, f.Key)
 	}
-	if strings.Join(keys, " ") != "name version build os arch binary resolved install lib docs" {
+	if strings.Join(keys, " ") != "name version build os arch binary resolved install lib docs logs logs.last" {
 		t.Errorf("keys: %v", keys)
 	}
 	if m["version"] != "1.3.0-dev" || m["install"] != "other" || m["lib"] != "/home/u/.local/share/kasbah" ||
@@ -122,6 +123,31 @@ func TestSelf(t *testing.T) {
 	if m["version"] != "unstamped" || m["build"] != "unstamped" || !strings.HasPrefix(m["lib"], "unknown (") ||
 		!strings.HasSuffix(m["docs"], "/tree/main/docs") {
 		t.Errorf("unstamped: %v", m)
+	}
+
+	// The log directory under XDG_STATE_HOME, and the newest log in it.
+	state := t.TempDir()
+	logs := filepath.Join(state, "kasbah", "logs")
+	if err := os.MkdirAll(logs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"20261115T100000.000Z-deploy.log", "20261115T110000.000Z-env-set.log", "notes.txt"} {
+		touch(t, filepath.Join(logs, n))
+	}
+	m = map[string]string{}
+	xdg := func(k string) string { return map[string]string{"HOME": "/home/u", "XDG_STATE_HOME": state}[k] }
+	for _, f := range Self("1.2.3", "linux", "amd64", Binary{other, other}, xdg) {
+		m[f.Key] = f.Value
+	}
+	if m["logs"] != logs || m["logs.last"] != filepath.Join(logs, "20261115T110000.000Z-env-set.log") {
+		t.Errorf("logs: %v", m)
+	}
+	m = map[string]string{}
+	for _, f := range Self("", "linux", "amd64", Binary{other, other}, func(string) string { return "" }) {
+		m[f.Key] = f.Value
+	}
+	if !strings.HasPrefix(m["logs"], "unknown (") || m["logs.last"] != "none" {
+		t.Errorf("no HOME: %v", m)
 	}
 }
 

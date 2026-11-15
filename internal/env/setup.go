@@ -16,6 +16,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/envtpl"
 	"github.com/adigourdi/kasbah/internal/term"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // Exit statuses of the setup; EOF at a menu aborts with SetupFail.
@@ -161,7 +162,7 @@ func (s *Setup) generate(key, cmd string) (string, int) {
 	}
 	c.Env = append(env, "KEY="+key, "TARGET_DIR="+s.Dir, "EXAMPLE="+s.Dir+"/.env.prod.example", "OUTPUT="+s.Dir+"/.env")
 	c.Stdin, c.Stderr = s.In, s.Err
-	out, err := c.Output()
+	out, err := trace.Output(c)
 	rc := 0
 	if err != nil {
 		rc = 1

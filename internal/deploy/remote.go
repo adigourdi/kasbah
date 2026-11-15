@@ -14,6 +14,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/fsstate"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // RemoteUsage names `kasbah remote deploy`'s modes.
@@ -155,7 +156,7 @@ type MailFacts struct {
 }
 
 func containerState(c string) string {
-	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Status}}", c).Output()
+	out, err := trace.Output(exec.Command("docker", "inspect", "-f", "{{.State.Status}}", c))
 	s := strings.TrimSpace(string(out))
 	if err != nil || s == "" {
 		return "absent"
@@ -193,7 +194,7 @@ func mailFacts(apps string, stdout io.Writer) int {
 func images(version string, list []string, stdout io.Writer) int {
 	var missing []string
 	for _, img := range list {
-		if exec.Command("docker", "image", "inspect", img+":"+version).Run() != nil {
+		if trace.Run(exec.Command("docker", "image", "inspect", img+":"+version)) != nil {
 			missing = append(missing, img)
 		}
 	}

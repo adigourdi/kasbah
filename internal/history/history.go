@@ -20,6 +20,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/version"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
@@ -378,11 +379,11 @@ func (x *run) deployed(skipFailed bool) int {
 }
 
 func haveRef(ref string) bool {
-	return exec.Command("git", "rev-parse", "-q", "--verify", ref+"^{commit}").Run() == nil
+	return trace.Run(exec.Command("git", "rev-parse", "-q", "--verify", ref+"^{commit}")) == nil
 }
 
 func commit(ref string) string {
-	out, err := exec.Command("git", "rev-parse", "-q", "--verify", ref+"^{commit}").Output()
+	out, err := trace.Output(exec.Command("git", "rev-parse", "-q", "--verify", ref+"^{commit}"))
 	if err != nil {
 		return ""
 	}
@@ -398,7 +399,7 @@ func sameCommit(a, b string) bool {
 func gitLog(rng string) (string, bool) {
 	cmd := exec.Command("git", "log", "--no-color", "--format=%h %s", rng, "--")
 	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
+	out, err := trace.Output(cmd)
 	if err != nil {
 		return "", false
 	}

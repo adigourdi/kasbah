@@ -1,0 +1,24 @@
+Every run records a trace of what it does: each ssh call, each step it runs
+on the server (`kasbah remote …`) with its arguments, each docker, compose
+and other command on either end with its exit status and what it printed on
+stderr, and the decisions worth knowing, such as whether the server's binary
+was kept or replaced. The server sends its half back as it goes.
+
+When a run fails, the trace is saved as a log and the error's last line
+names it:
+  error: …
+         log: ~/.local/state/kasbah/logs/20261115T120102.345Z-deploy.log
+
+  kasbah --debug <command>  also streams the trace to stderr as it happens,
+                            and saves a log even when the run succeeds
+  KASBAH_DEBUG=1            the same, for every command run while it is set
+  kasbah info               logs: the directory, logs.last: the newest log
+
+Logs go to $XDG_STATE_HOME/kasbah/logs, else ~/.local/state/kasbah/logs,
+readable by you alone; the newest 20 are kept. Ctrl-C leaves one too.
+
+A log is safe to attach to a bug report: what kasbah sends on stdin
+(payloads, values) is never in it, and a .env value, a password or a token
+is replaced by *** wherever it appears, except one under four characters,
+which cannot be told from ordinary text. It does name your servers, users
+and paths.

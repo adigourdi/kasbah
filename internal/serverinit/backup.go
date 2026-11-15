@@ -18,6 +18,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/tmpl"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/tree"
 )
 
@@ -143,6 +144,8 @@ func BackupResolve(out *cli.Output, p *prompt.Prompter, o Options, r *backup.Rea
 	if err := backup.CheckRepoBase(bkCmd, "--backup-repo-base=", v.RepoBase); err != nil {
 		return nil, err
 	}
+	// Flag, marker or prompt alike: a base can carry its credential.
+	trace.Secret(v.RepoBase)
 	// Said, not refused: a rest: target has nowhere else for its credential.
 	if shown := backup.Redact(v.RepoBase); shown != v.RepoBase {
 		out.Warn("the repository base carries a credential: %s", shown)

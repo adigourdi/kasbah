@@ -41,7 +41,7 @@ run "$kasbah" info; rc=$?
 assert '[ "$rc" -eq 0 ]' "info exits 0 (got $rc)"
 assert '[ ! -s "$tmpdir/err" ]' "info prints nothing on stderr: $(cat "$tmpdir/err")"
 keys=$(cut -d: -f1 "$tmpdir/out" | tr '\n' ' ')
-assert '[ "$keys" = "name version build os arch binary resolved install lib docs " ]' "the keys in order (got: $keys)"
+assert '[ "$keys" = "name version build os arch binary resolved install lib docs logs logs.last " ]' "the keys in order (got: $keys)"
 assert '! grep -vqE "^[a-z.]+: .+$" "$tmpdir/out"' "every line is key: value"
 assert '[ "$(val name)" = kasbah ]' "name: kasbah"
 assert '[ "$(val build)" = "$build" ]' "build is the --version stamp ($build, got $(val build))"
@@ -56,6 +56,8 @@ if [ -f "$root/go.mod" ] && [ -d "$root/cmd/kasbah" ]; then
     assert '[ "$(val install)" = checkout ]' "a checkout's dist/kasbah is install: checkout (got $(val install))"
     assert '[ "$(val lib)" = "$tmpdir/home/.local/share/kasbah" ]' "a checkout's lib is the environment's (got $(val lib))"
 fi
+assert '[ "$(val logs)" = "$tmpdir/home/.local/state/kasbah/logs" ] && [ "$(val logs.last)" = none ]' \
+    "logs is ~/.local/state/kasbah/logs, with no log yet (got $(val logs), $(val logs.last))"
 
 # --- Case 2: started through a symlink on PATH --------------------------------
 mkdir -p "$tmpdir/bin"

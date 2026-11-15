@@ -12,6 +12,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/version"
 )
 
@@ -20,16 +21,26 @@ import (
 func report(out *cli.Output, err error) int {
 	if bin := resolve(err, os.Getenv); bin != "" {
 		atexit.Run()
-		if shipDev != "" {
-			os.Setenv(devEnv, shipDev)
-		} else {
-			os.Unsetenv(devEnv)
-		}
+		handoffEnv()
+		trace.Note("handing the command to %s", bin)
 		if xerr := launcher.Exec(bin, build, argv); xerr != nil {
 			cont(err, fmt.Sprintf("could not run %s: %v", bin, xerr))
 		}
 	}
 	return out.Report(err)
+}
+
+// handoffEnv is what the version handed the command carries on with: the
+// ship-dev answer and --debug, neither of which is left on its command line.
+func handoffEnv() {
+	if shipDev != "" {
+		os.Setenv(devEnv, shipDev)
+	} else {
+		os.Unsetenv(devEnv)
+	}
+	if debugging {
+		os.Setenv(debugEnv, "1")
+	}
 }
 
 // resolve is the binary to hand the command to for err — a server build newer

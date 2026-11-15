@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/version"
 )
 
@@ -28,7 +29,7 @@ func gitIn(dir string, args ...string) ([]byte, error) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
-	out, err := cmd.Output()
+	out, err := trace.Output(cmd)
 	if err != nil {
 		return nil, cli.Fail("git %s failed in %s", strings.Join(args, " "), dir).Cont(
 			strings.Split(strings.TrimSpace(errb.String()), "\n")...)
@@ -344,7 +345,7 @@ func Endpoint(v string) (tag, note string, ok bool) {
 		return "v" + v, "", true
 	}
 	b := version.DirtyBase(v)
-	if exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/v"+b+"^{commit}").Run() == nil {
+	if trace.Run(exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/v"+b+"^{commit}")) == nil {
 		return "v" + b, v + " is a --dirty build — compared as its base tag v" + b + "; its own changes are in no commit", true
 	}
 	if b == "0.0.0" {

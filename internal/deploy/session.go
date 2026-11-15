@@ -11,6 +11,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/treesync"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
@@ -132,7 +133,7 @@ func (s *SSH) Run(dir string, sp Spec, ask func(Question) string) (string, int) 
 	if err != nil {
 		return "", -1
 	}
-	if err := cmd.Start(); err != nil {
+	if err := trace.Start(cmd); err != nil {
 		return "", -1
 	}
 	in.Write(append(spec, '\n'))
@@ -140,7 +141,7 @@ func (s *SSH) Run(dir string, sp Spec, ask func(Question) string) (string, int) 
 		in.Close()
 	}
 	out := Converse(outp, in, ask)
-	return out, ssh.ExitCode(cmd.Wait())
+	return out, ssh.ExitCode(trace.Wait(cmd))
 }
 
 // Fragment is a temp file renamed over dest, never written in place: Traefik's

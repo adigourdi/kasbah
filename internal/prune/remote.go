@@ -16,6 +16,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/serverlock"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
@@ -62,7 +63,7 @@ var runDocker = func(args ...string) (string, error) {
 	cmd := exec.Command("docker", args...)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	if err != nil {
 		msg := strings.TrimSpace(errb.String() + "\n" + out.String())
 		return out.String(), fmt.Errorf("%s", strings.Join(strings.Fields(strings.ReplaceAll(msg, "\r", "")), " "))

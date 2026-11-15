@@ -7,6 +7,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/version"
 )
 
@@ -202,7 +203,7 @@ func choose(t Tagging, base version.Version) (string, error) {
 // taken refuses a tag that exists already — on another commit here, or on
 // origin. An origin that cannot be asked is warned about, not failed on.
 func taken(t Tagging, tag string) error {
-	if exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/"+tag).Run() == nil {
+	if trace.Run(exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/"+tag)) == nil {
 		at, _ := gitIn(".", "rev-parse", "--short", tag+"^{commit}")
 		return cli.Fail("%s: %s already exists, on commit %s — kasbah will not move or reuse a release tag", t.Cmd, tag, strings.TrimSpace(string(at))).Cont(
 			"tag HEAD yourself with an unused version and retry:  git tag v<version>")

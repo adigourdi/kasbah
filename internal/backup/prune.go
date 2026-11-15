@@ -18,6 +18,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/tree"
 )
 
@@ -87,9 +88,12 @@ func ParsePrune(args []string) (PruneOptions, error) {
 		switch {
 		case hasVal && name == "--repo-base":
 			o.RepoBase = strings.TrimSuffix(val, "\r")
+			trace.Secret(o.RepoBase)
 			err = CheckRepoBase(pruneCmd, "--repo-base=", o.RepoBase)
 		case hasVal && name == "--env":
 			if err = CheckEnvEntry(pruneCmd, "--env=", val); err == nil {
+				_, v, _ := strings.Cut(val, "=")
+				trace.Secret(v)
 				o.Env = append(o.Env, val)
 			}
 		case a == "--no-env":
@@ -201,7 +205,7 @@ func DockerRestic(dir, network, repo string, args ...string) (string, int) {
 	var out bytes.Buffer
 	cmd := exec.Command("docker", append(words, args...)...)
 	cmd.Stdout, cmd.Stderr = &out, &out
-	err := cmd.Run()
+	err := trace.Run(cmd)
 	if err != nil && cmd.ProcessState == nil {
 		return err.Error(), 127
 	}
@@ -300,6 +304,12 @@ func Prune(c PruneCtx, o PruneOptions) error {
 			}
 			env = append(env, name+"="+val)
 		}
+	}
+	// Flag, marker or prompt, the base and the env values are credentials.
+	trace.Secret(base)
+	for _, e := range env {
+		_, v, _ := strings.Cut(e, "=")
+		trace.Secret(v)
 	}
 
 	raw, rc := s.Repos(apps)

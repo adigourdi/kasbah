@@ -21,6 +21,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/backup"
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/serverlock"
+	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
@@ -106,7 +107,7 @@ func restoreList(apps, name, snapshot, from string, stdout, stderr io.Writer) in
 		var out bytes.Buffer
 		c := inContainer(apps, args...)
 		c.Stdout, c.Stderr = &out, stderr
-		if err := c.Run(); err != nil {
+		if err := trace.Run(c); err != nil {
 			return fail("listing %s's backups in %s failed (see above)", name, backup.Container)
 		}
 		var l backup.RestoreList
@@ -170,12 +171,12 @@ func fetchBackup(dir, snapshot, name, from string, stdout, stderr io.Writer) int
 	if err != nil {
 		return fail("could not start docker exec: %v", err)
 	}
-	if err := c.Start(); err != nil {
+	if err := trace.Start(c); err != nil {
 		return fail("could not start docker exec: %v", err)
 	}
 	n, rerr := receive(e.broot, name, bufio.NewReader(pipe))
 	io.Copy(io.Discard, pipe)
-	werr := c.Wait()
+	werr := trace.Wait(c)
 	if rerr == nil && werr != nil {
 		e.broot.Remove(name)
 		rerr = fmt.Errorf("%s exited %d after the stream", backup.Container, exitStatus(werr))

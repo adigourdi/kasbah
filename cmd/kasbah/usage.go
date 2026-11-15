@@ -49,7 +49,7 @@ Commands:
                                              Install a released kasbah beside this one and repoint the symlink.
   version                                    Print this kasbah's version.
   info [USER@HOST]                           Print this build, where it lives and its docs; with a host, what the server runs.
-  help [topic]                               Explain kasbah, a project's files and setups, or a check rule.
+  help [topic]                               Explain kasbah, a project's files and setups, a check rule, or debugging.
   server init USER@HOST [flags]              Prepare a VPS to host projects.
   server status USER@HOST                    Report what a prepared VPS is running.
   server prune USER@HOST [--yes]             Remove image tags outside the retention window.
@@ -62,6 +62,9 @@ Commands:
   server upgrade-traefik USER@HOST --version=<tag>
                                              Dry-run the fragments against a Traefik version, then switch.
 
+Every command also takes:
+  --debug                                    Stream the run's trace to stderr and save it as a log
+                                             (KASBAH_DEBUG=1 does the same); a failure saves one anyway.
 Every command that reaches a server also takes:
   --ship-dev | --keep-server                 When this dev build would replace the release the server
                                              runs: ship it, or keep the server's and run its build.

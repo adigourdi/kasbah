@@ -12,6 +12,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/adigourdi/kasbah/internal/trace"
 )
 
 // ReservedPrefix marks kasbah's own keys: never prompted, invisible to drift
@@ -158,6 +160,7 @@ func Entries(lines []string) []Entry {
 						cr := strings.TrimPrefix(lines[i], l)
 						e.Value = strings.TrimSuffix(v+cr+"\n"+strings.Join(lines[i+1:j+1], "\n"), "\r")
 						e.End = j + 1
+						secret(k, e.Value)
 					}
 				}
 			}
@@ -298,7 +301,26 @@ func Assign(line string) (key, value string, ok bool) {
 	if m == nil {
 		return "", "", false
 	}
-	return m[1], strings.TrimLeftFunc(m[2], dotenvSpace), true
+	value = strings.TrimLeftFunc(m[2], dotenvSpace)
+	secret(m[1], value)
+	return m[1], value, true
+}
+
+// secret keeps a value read from an env file out of the trace, quoted and
+// bare; kasbah's own KASBAH_ keys are not secrets.
+func secret(key, value string) {
+	if strings.HasPrefix(key, ReservedPrefix) {
+		return
+	}
+	trace.Secret(value)
+	if len(value) < 2 || value[0] != '"' && value[0] != '\'' {
+		return
+	}
+	if body, _, ok := quoted(value); ok {
+		trace.Secret(body)
+	} else {
+		trace.Secret(value[1:])
+	}
 }
 
 // Blank reports a line of whitespace only, no-break spaces included, as
@@ -398,6 +420,7 @@ func ValuesOf(data []byte) (vals map[string]string, err error) {
 			continue
 		}
 		vals[e.Key] = v
+		secret(e.Key, v)
 	}
 	return vals, err
 }
