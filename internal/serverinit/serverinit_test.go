@@ -137,6 +137,21 @@ func goodFacts() Facts {
 		"memory_controller": "yes"}
 }
 
+// The refusal ends on what to do and where to read about it.
+func TestPreflightNext(t *testing.T) {
+	f := goodFacts()
+	f["have_docker"] = "no"
+	var b bytes.Buffer
+	(&cli.Output{Stdout: &b, Stderr: &b}).Report(Preflight(f, "d@h", "/apps", "/apps/data", false))
+	want := "       kasbah checks prerequisites and never installs them.\n" +
+		"       Fix each line above on the server, then re-run\n" +
+		"       `kasbah server init d@h`.\n" +
+		"       help: kasbah help troubleshooting\n"
+	if !strings.HasSuffix(b.String(), want) {
+		t.Errorf("got %q, want it to end %q", b.String(), want)
+	}
+}
+
 func TestPreflight(t *testing.T) {
 	if err := Preflight(goodFacts(), "d@h", "/apps", "/apps/data", false); err != nil {
 		t.Fatalf("a good host fails: %v", err)

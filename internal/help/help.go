@@ -1,7 +1,7 @@
 // Package help is `kasbah help [topic]`: summaries of what kasbah is, a
-// project's files, its setups, check's rules and the debug trace, each ending with the link
-// to its doc at this build's version. `help <command>` is the command's own
-// --help, which the CLI runs in its place.
+// project's files, its setups, check's rules, the debug trace and the common
+// failures, each ending with the link to its doc at this build's version.
+// `help <command>` is the command's own --help, which the CLI runs in its place.
 package help
 
 import (
@@ -26,7 +26,7 @@ func text(name string) string {
 }
 
 // Topics are the named topics, in the order an unknown one lists them.
-var Topics = []string{"files", "setups", "rules", "debug"}
+var Topics = []string{"files", "setups", "rules", "debug", "troubleshooting"}
 
 // Topic is the text for topic under build: "" (or -h, --help) is the index.
 // An unknown topic is an error naming the valid ones.
@@ -43,6 +43,8 @@ func Topic(build, topic string) (string, error) {
 		body, doc = text("rules")+rules(), "compliance.md"
 	case "debug":
 		body, doc = text("debug"), "cli.md#debugging-a-failure"
+	case "troubleshooting":
+		body, doc = text("troubleshooting"), "troubleshooting.md"
 	default:
 		r, ok := check.Lookup(topic)
 		if !ok {

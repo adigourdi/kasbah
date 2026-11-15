@@ -1,0 +1,26 @@
+A failure prints what failed and why, then what to do next, a `kasbah help`
+topic where one fits, and last the log it saved:
+  error: cannot reach you@vps over ssh (see ssh's own error above)
+         Make `ssh you@vps true` work from this shell first: …
+         help: kasbah help troubleshooting
+         log: ~/.local/state/kasbah/logs/20261115T120102.345Z-deploy.log
+
+The failures a new project meets most, and where to start:
+  No kasbah.yml in current directory   run from the project root, or
+                                       kasbah init-project to write one
+  cannot reach … over ssh              make `ssh USER@HOST true` work first
+  passwordless sudo — `sudo -n true`   run the printed commands as root once,
+  failed                               or server init from a terminal
+  … has no server marker at …          not prepared yet (kasbah server init),
+                                       or prepared at another --apps-path
+  the server runs kasbah X, newer …    kasbah self-update to that version
+  the working tree differs from HEAD   commit and tag, or ship it with --dirty
+  HEAD carries no version tag          tag it (git tag v1.0.0), or --bump=patch
+  no terminal here to render it on     kasbah env from a terminal, or
+                                       --env-seed=FILE / --on-drift=
+  … did not become healthy within Ns   kasbah logs USER@HOST says why
+  a compose project named … already    docker compose -p NAME down there, or
+  exists / … publishes …               rename; free the port the line names
+  could not load the images onto …     a full disk is the usual cause
+
+Each entry, with the exact text to search for, is in troubleshooting.md.

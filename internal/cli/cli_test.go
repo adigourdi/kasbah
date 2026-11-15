@@ -91,6 +91,31 @@ func TestCause(t *testing.T) {
 	}
 }
 
+// The next step and the help pointer print after the cause and continuation
+// lines whatever order a call site adds them in; the log line stays last.
+func TestNextAndHelp(t *testing.T) {
+	o, _, errb := capture(false)
+	e := Failf(ExitComplianceFail, "check failed").Help("T05").Next("Fix it, then re-run.").Cause(errors.New("a\nb")).Cont("c")
+	if code := o.Report(e); code != 6 {
+		t.Errorf("code %d, want 6", code)
+	}
+	want := "error: check failed: a\n       b\n       c\n       Fix it, then re-run.\n       help: kasbah help T05\n"
+	if errb.String() != want {
+		t.Errorf("stderr %q, want %q", errb.String(), want)
+	}
+	if e.Error() != "check failed: a\nb\nc" {
+		t.Errorf("Error() %q", e.Error())
+	}
+}
+
+func TestSetNext(t *testing.T) {
+	o, _, errb := capture(false)
+	o.Report(Fail("x").Next("old", "older").Help("S02").SetNext("new"))
+	if want := "error: x\n       new\n       help: kasbah help S02\n"; errb.String() != want {
+		t.Errorf("stderr %q, want %q", errb.String(), want)
+	}
+}
+
 func TestOSCause(t *testing.T) {
 	_, err := os.Stat("/nonexistent/kasbah")
 	if got := OSCause(err).Error(); got != "no such file or directory" {

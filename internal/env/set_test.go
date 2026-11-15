@@ -41,6 +41,18 @@ func TestParseSet(t *testing.T) {
 	}
 }
 
+// A KEY=value argument is told where the value goes instead.
+func TestParseSetAssignment(t *testing.T) {
+	_, err := Parse([]string{"set", "FOO=bar", "deploy@vps"})
+	var b bytes.Buffer
+	(&cli.Output{Stderr: &b}).Report(err)
+	if got := b.String(); !strings.Contains(got, "'FOO=bar' is not an env key") ||
+		!strings.Contains(got, "the prompt of\n         kasbah env set FOO deploy@vps\n") ||
+		!strings.Contains(got, `printf '%s' "$VALUE" | kasbah env set FOO deploy@vps --no-restart`) {
+		t.Errorf("refusal:\n%s", got)
+	}
+}
+
 const setTmpl = "# --- App ---\nAPP_NAME=demo\nDB_PASSWORD=! echo pw\nAPI_SECRET=\nMAIL_HOST=# host\nKASBAH_CPU_LIMIT=1\n"
 
 func setDir(t *testing.T, env string) string {

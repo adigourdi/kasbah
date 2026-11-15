@@ -59,7 +59,7 @@ func Field(m *manifest.Manifest, what string, path ...any) (string, error) {
 		for i, p := range path {
 			names[i] = fmt.Sprint(p)
 		}
-		return "", cli.Fail("kasbah.yml: %s must be %s, not %s", strings.Join(names, "."), what, tree.Compact(v))
+		return "", cli.Fail("kasbah.yml: %s must be %s, not %s", strings.Join(names, "."), what, tree.Compact(v)).Help("files")
 	}
 	s := strings.TrimSuffix(tree.TextAt(m.Doc, path...), "\r")
 	if s == "null" {
@@ -71,19 +71,19 @@ func Field(m *manifest.Manifest, what string, path ...any) (string, error) {
 func checkSyncPath(p, side, entry string) error {
 	switch {
 	case p == "":
-		return cli.Fail("kasbah.yml: sync entry '%s' has no %s", entry, side)
+		return cli.Fail("kasbah.yml: sync entry '%s' has no %s", entry, side).Help("files")
 	case strings.HasPrefix(p, "/"):
-		return cli.Fail("kasbah.yml: sync entry '%s' names an absolute %s ('%s') — entries are relative to the project root", entry, side, p)
+		return cli.Fail("kasbah.yml: sync entry '%s' names an absolute %s ('%s') — entries are relative to the project root", entry, side, p).Help("files")
 	case strings.HasPrefix(p, "-"):
-		return cli.Fail("kasbah.yml: sync entry '%s' has a %s starting with '-' ('%s'), which kasbah 1.0.1 and older hand to rsync as an option", entry, side, p)
+		return cli.Fail("kasbah.yml: sync entry '%s' has a %s starting with '-' ('%s'), which kasbah 1.0.1 and older hand to rsync as an option", entry, side, p).Help("files")
 	case strings.Contains(p, ":"):
-		return cli.Fail("kasbah.yml: sync entry '%s' has a ':' in its %s ('%s') — kasbah 1.0.1 and older hand it to rsync, which splits host from path on it", entry, side, p)
+		return cli.Fail("kasbah.yml: sync entry '%s' has a ':' in its %s ('%s') — kasbah 1.0.1 and older hand it to rsync, which splits host from path on it", entry, side, p).Help("files")
 	case strings.IndexFunc(p, unicode.IsControl) >= 0:
-		return cli.Fail("kasbah.yml: sync entry '%s' has a control character in its %s", entry, side)
+		return cli.Fail("kasbah.yml: sync entry '%s' has a control character in its %s", entry, side).Help("files")
 	}
 	w := "/" + p + "/"
 	if strings.Contains(w, "//") || strings.Contains(w, "/./") || strings.Contains(w, "/../") {
-		return cli.Fail("kasbah.yml: sync entry '%s' has a '.', '..' or empty segment in its %s ('%s')", entry, side, p)
+		return cli.Fail("kasbah.yml: sync entry '%s' has a '.', '..' or empty segment in its %s ('%s')", entry, side, p).Help("files")
 	}
 	return nil
 }
@@ -111,7 +111,7 @@ func ParseSync(lines []string) ([]Entry, error) {
 		out = append(out, Entry{Src: src, Dst: dst, Recurse: rec})
 	}
 	if len(out) == 0 {
-		return nil, cli.Fail("kasbah.yml: the sync: list is empty — a deploy would ship no compose file and nothing to run")
+		return nil, cli.Fail("kasbah.yml: the sync: list is empty — a deploy would ship no compose file and nothing to run").Help("files")
 	}
 	return out, nil
 }
@@ -130,7 +130,7 @@ func syncLines(m *manifest.Manifest) ([]string, error) {
 			add(x)
 		}
 	default:
-		return nil, cli.Fail("kasbah.yml: sync: is not a list — it lists the files a deploy ships (docs/project-manifest.md)")
+		return nil, cli.Fail("kasbah.yml: sync: is not a list — it lists the files a deploy ships").Help("files")
 	}
 	return lines, nil
 }
@@ -186,14 +186,14 @@ func MailDomain(m *manifest.Manifest) (string, error) {
 		return "", nil
 	}
 	if _, ok := v.(*tree.Map); !ok {
-		return "", cli.Fail("kasbah.yml: mail: is not a block — it has to be a block with a domain: under it (docs/project-manifest.md → mail)")
+		return "", cli.Fail("kasbah.yml: mail: is not a block — it has to be a block with a domain: under it").Help("M01")
 	}
 	d, err := Field(m, "a string", "mail", "domain")
 	if err != nil {
 		return "", err
 	}
 	if d == "" {
-		return "", cli.Fail("kasbah.yml: mail: has no domain: — the claim is that the VPS mail stack handles that domain, and there is nothing else in the block for kasbah to check (docs/project-manifest.md)")
+		return "", cli.Fail("kasbah.yml: mail: has no domain: — the claim is that the VPS mail stack handles that domain, and there is nothing else in the block for kasbah to check").Help("M01")
 	}
 	return d, nil
 }
@@ -223,7 +223,7 @@ func readClient(m *manifest.Manifest, p *Plan, historical bool) error {
 			p.Client, p.ClientNote = m.Name, why
 			return nil
 		}
-		return cli.Fail("kasbah.yml: %s", why)
+		return cli.Fail("kasbah.yml: %s", why).Help("S08")
 	}
 	p.Client = raw
 	return nil
@@ -239,7 +239,7 @@ func readResources(m *manifest.Manifest, p *Plan, historical bool) error {
 	case historical:
 		p.ResourcesNote = err.Error()
 	default:
-		return cli.Fail("kasbah.yml: %v", err)
+		return cli.Fail("kasbah.yml: %v", err).Help("files")
 	}
 	return nil
 }
@@ -263,7 +263,7 @@ func readHooks(m *manifest.Manifest, p *Plan, historical bool) error {
 	if h, _ := m.Get("hooks"); h != nil {
 		hm, ok := h.(*tree.Map)
 		if !ok {
-			return cli.Fail("kasbah.yml: hooks: is not a block — it holds the lists %s (docs/project-manifest.md)", hookList)
+			return cli.Fail("kasbah.yml: hooks: is not a block — it holds the lists %s", hookList).Help("HK01")
 		}
 		for _, k := range hm.Keys() {
 			if slices.Contains(hookNames, k) {
@@ -273,7 +273,7 @@ func readHooks(m *manifest.Manifest, p *Plan, historical bool) error {
 				p.HookNotes = append(p.HookNotes, k)
 				continue
 			}
-			return cli.Fail("kasbah.yml: hooks.%s is not a hook kasbah runs — hooks: holds the lists %s (docs/project-manifest.md)", k, hookList)
+			return cli.Fail("kasbah.yml: hooks.%s is not a hook kasbah runs — hooks: holds the lists %s", k, hookList).Help("HK01")
 		}
 	}
 	for _, which := range hookNames {
@@ -284,20 +284,20 @@ func readHooks(m *manifest.Manifest, p *Plan, historical bool) error {
 		case []tree.Value:
 			list = l
 		default:
-			return cli.Fail("kasbah.yml: hooks.%s is not a list of strings", which)
+			return cli.Fail("kasbah.yml: hooks.%s is not a list of strings", which).Help("files")
 		}
 		for _, x := range list {
 			line, ok := x.(string)
 			if !ok {
-				return cli.Fail("kasbah.yml: hooks.%s holds %s — each entry must be a string, one shell command", which, tree.Compact(x))
+				return cli.Fail("kasbah.yml: hooks.%s holds %s — each entry must be a string, one shell command", which, tree.Compact(x)).Help("files")
 			}
 			line = strings.TrimRight(line, "\n")
 			if first, _, ok := strings.Cut(line, "\n"); ok {
-				return cli.Fail("kasbah.yml: the %s hook '%s…' spans more than one line — a hook is one line of shell, and a multi-line value would be run as several hooks; chain with && or call a script (docs/project-manifest.md)", which, strings.TrimSuffix(first, "\r"))
+				return cli.Fail("kasbah.yml: the %s hook '%s…' spans more than one line — a hook is one line of shell, and a multi-line value would be run as several hooks; chain with && or call a script", which, strings.TrimSuffix(first, "\r")).Help("HK01")
 			}
 			line = trim(strings.TrimSuffix(line, "\r"))
 			if line == "" {
-				return cli.Fail("kasbah.yml: hooks.%s holds an empty entry — each entry is one shell command (docs/project-manifest.md)", which)
+				return cli.Fail("kasbah.yml: hooks.%s holds an empty entry — each entry is one shell command", which).Help("HK01")
 			}
 			p.Hooks[which] = append(p.Hooks[which], line)
 		}
@@ -311,14 +311,14 @@ var reDuration = regexp.MustCompile(`^([0-9]+)([smh]?)$`)
 func Seconds(raw string) (int, error) {
 	g := reDuration.FindStringSubmatch(raw)
 	if g == nil {
-		return 0, cli.Fail("kasbah.yml: health.timeout '%s' is not a duration kasbah can use — write it as 120s, 5m or 2h", raw)
+		return 0, cli.Fail("kasbah.yml: health.timeout '%s' is not a duration kasbah can use — write it as 120s, 5m or 2h", raw).Help("files")
 	}
 	n, err := strconv.Atoi(g[1])
 	if err != nil || n > 1<<30 {
-		return 0, cli.Fail("kasbah.yml: health.timeout '%s' is not a duration kasbah can use — write it as 120s, 5m or 2h", raw)
+		return 0, cli.Fail("kasbah.yml: health.timeout '%s' is not a duration kasbah can use — write it as 120s, 5m or 2h", raw).Help("files")
 	}
 	if n == 0 {
-		return 0, cli.Fail("kasbah.yml: health.timeout '%s' is zero — a wait of no time at all cannot gate the deploy on health", raw)
+		return 0, cli.Fail("kasbah.yml: health.timeout '%s' is zero — a wait of no time at all cannot gate the deploy on health", raw).Help("files")
 	}
 	switch g[2] {
 	case "m":
@@ -341,7 +341,7 @@ func readHealth(m *manifest.Manifest, p *Plan) error {
 	if v, _ := m.Get("health"); v == nil || v == false {
 		return nil
 	} else if _, ok := v.(*tree.Map); !ok {
-		return cli.Fail("kasbah.yml: health: is not a block — it holds container: and timeout: (docs/project-manifest.md)")
+		return cli.Fail("kasbah.yml: health: is not a block — it holds container: and timeout:").Help("H02")
 	}
 	var err error
 	if p.Health.Container, err = Field(m, "a string", "health", "container"); err != nil {
@@ -368,9 +368,9 @@ func ReadBackup(m *manifest.Manifest, version string) error {
 	if _, ok := m.Get("backup"); !ok {
 		return nil
 	}
-	const why = "backup: is not a key kasbah reads — a backup is the hooks.backup list, plain shell that writes into $KASBAH_BACKUP_DIR (docs/project-manifest.md → hooks)"
+	const why = "backup: is not a key kasbah reads — a backup is the hooks.backup list, plain shell that writes into $KASBAH_BACKUP_DIR"
 	if version == "" {
-		return cli.Fail("kasbah.yml: %s", why)
+		return cli.Fail("kasbah.yml: %s", why).Help("HK02")
 	}
 	return cli.Fail("kasbah.yml in v%s: %s", version, why).Cont(
 		"a version is deployed or rolled back with the manifest it was tagged with, so this one cannot be: deploy a version whose kasbah.yml has no backup: key.")
@@ -379,7 +379,7 @@ func ReadBackup(m *manifest.Manifest, version string) error {
 // readImages is what build-push tagged, untagged: the server appends the
 // version.
 func readImages(pwd, name, version string, p *Plan) error {
-	doc, err := buildpush.ReadCompose(pwd, "deploy reads the images to retag from the same file `kasbah build-push` builds (docs/build-deploy.md)")
+	doc, err := buildpush.ReadCompose(pwd, "deploy reads the images to retag from the same file `kasbah build-push` builds")
 	if err != nil {
 		return err
 	}

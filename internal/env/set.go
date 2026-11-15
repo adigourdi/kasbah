@@ -105,10 +105,18 @@ func parseSet(args []string) (Options, error) {
 		o.Target = pos[1]
 	}
 	if !envKey.MatchString(o.Key) {
-		return o, cli.Fail("env set: '%s' is not an env key — letters, digits and _, not starting with a digit", o.Key)
+		e := cli.Fail("env set: '%s' is not an env key — letters, digits and _, not starting with a digit", o.Key)
+		if k, _, ok := strings.Cut(o.Key, "="); ok && envKey.MatchString(k) && !strings.HasPrefix(k, "KASBAH_") {
+			run := strings.TrimSpace("kasbah env set " + k + " " + o.Target)
+			e.Next("The value is never an argument: type it at the prompt of",
+				"  "+run,
+				"or pipe it on stdin:",
+				"  printf '%s' \"$VALUE\" | "+run+" --no-restart")
+		}
+		return o, e
 	}
 	if reserved(o.Key) {
-		return o, cli.Fail("env set: %s is kasbah's own — the %s* keys are the managed block of .env, rewritten on every deploy from the server marker or kasbah.yml's resources: (docs/env-template.md)", o.Key, envtpl.ReservedPrefix)
+		return o, cli.Fail("env set: %s is kasbah's own — the %s* keys are the managed block of .env, rewritten on every deploy from the server marker or kasbah.yml's resources:", o.Key, envtpl.ReservedPrefix).Help("E05")
 	}
 	return o, nil
 }

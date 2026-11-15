@@ -67,6 +67,11 @@ truth; `plan/` holds what is intended and queued (roadmap, backlog, research).
 - **Interactive, never assume:** an unset flag means *prompt*, not *no*.
   Every prompt has a `--with-x`/`--no-x` (or `--yes`) pair; without a TTY,
   an unanswered prompt is a hard fail naming the flag.
+- **Every failure carries its cause and a next step:** a `cli.Fail` built
+  on a caught error calls `.Cause(err)` (or puts err in its text — else it is
+  listed in `internal/cli/cause_test.go`'s `dropsCause`, with why), and says
+  what to do with `.Next(…)`, `.Help("<topic|rule>")` where `kasbah help`
+  explains it. No doc-file links in messages; `kasbah help` is the pointer.
 - **Compose:** files are `compose.yml` (never docker-compose.yml), no
   `version:` attribute.
 - **Shell scripts:** every executed Bash script runs under `set -uo pipefail`,

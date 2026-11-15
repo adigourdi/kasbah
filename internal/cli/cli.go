@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/term"
@@ -94,13 +95,27 @@ func (o *Output) ErrCont(format string, args ...any) {
 }
 
 // Error is a failure on its way to the exit. Lines[0] is the error: line, the
-// rest its continuation lines.
+// rest its cause and continuation lines; Report prints the next step and the
+// help pointer after them, whatever order they were added in, then the log line.
 type Error struct {
 	Code  int
 	Lines []string
+	next  []string
+	help  string
 }
 
+// Error is the failure and its cause, without the next step or the help
+// pointer: what another message quotes when it carries this one.
 func (e *Error) Error() string { return strings.Join(e.Lines, "\n") }
+
+// all is every line in the order Report prints them.
+func (e *Error) all() []string {
+	l := append(slices.Clone(e.Lines), e.next...)
+	if e.help != "" {
+		l = append(l, "help: kasbah help "+e.help)
+	}
+	return l
+}
 
 // Fail is an exit-1 error of one line.
 func Fail(format string, args ...any) *Error {
@@ -117,6 +132,31 @@ func (e *Error) Cont(lines ...string) *Error {
 	e.Lines = append(e.Lines, lines...)
 	return e
 }
+
+// Next appends the next step: what to run, pass or change to get past the
+// failure, printed after the cause and continuation lines.
+func (e *Error) Next(lines ...string) *Error {
+	e.next = append(e.next, lines...)
+	return e
+}
+
+// SetNext replaces the next step, for a caller that knows a better one than
+// the code that built the failure.
+func (e *Error) SetNext(lines ...string) *Error {
+	e.next = slices.Clone(lines)
+	return e
+}
+
+// Help ends the failure with a `help: kasbah help <topic>` line, topic a help
+// topic, a rule ID or a command (cmd/kasbah's tests hold every literal to
+// that).
+func (e *Error) Help(topic string) *Error {
+	e.help = topic
+	return e
+}
+
+// HelpTopic is the topic Help set, "" for none.
+func (e *Error) HelpTopic() string { return e.help }
 
 // Cause puts err's first line on the headline after ": ", trailing period
 // dropped, and appends its further lines after any continuation lines already
@@ -160,7 +200,7 @@ func (o *Output) Report(err error) int {
 		o.logLine(ExitFailure)
 		return ExitFailure
 	}
-	for i, l := range e.Lines {
+	for i, l := range e.all() {
 		if i == 0 {
 			o.Err("%s", l)
 		} else {

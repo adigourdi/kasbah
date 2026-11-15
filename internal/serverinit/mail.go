@@ -300,7 +300,7 @@ func reportMail(out *cli.Output, o Options, v MailValues, r *mail.ReadReport, ch
 		out.Warn("the mail stack left the shared kasbah-net for its own network (%s).", st["mail_networks"])
 		out.Warn("an app that reached mail-dms over kasbah-net (SMTP host mail-dms) has lost it:")
 		out.Warn("switch it to mail.%s:587 with STARTTLS and a mailbox login, like any client", p)
-		out.Warn("(docs/mail.md → SMTP access from apps). `kasbah check` warns on a project naming mail-dms.")
+		out.Warn("`kasbah check` warns on a project naming mail-dms (kasbah help C10).")
 	}
 	switch n := st["mail_cypht_unbanned"]; n {
 	case "0", "skipped":

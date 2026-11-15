@@ -1105,10 +1105,10 @@ func (c *checker) b01() {
 
 	missing, orphan := backuprec.Diff(b.Repos(), b.HasPass)
 	if len(missing) > 0 {
-		c.warnf("B01", "backup repositories on %s with no password: %s — a repository with no password is not backed up at all (docs/backup.md), and the run says so only in its own log; supply one with: kasbah server init %s --with-backup", s.target, strings.Join(missing, " "), s.target)
+		c.warnf("B01", "backup repositories on %s with no password: %s — a repository with no password is not backed up at all, and the run says so only in its own log; supply one with: kasbah server init %s --with-backup", s.target, strings.Join(missing, " "), s.target)
 	}
 	if len(orphan) > 0 {
-		c.warnf("B01", "backup repository passwords on %s that no project files into any more: %s — the last project of that client was dropped and its password stayed behind at mode 600. Keep it: it is what decrypts the snapshots already off-box, and kasbah never deletes one. Take it off by hand once that repository has been handed over or emptied (docs/backup.md → Handover).", s.target, strings.Join(orphan, " "))
+		c.warnf("B01", "backup repository passwords on %s that no project files into any more: %s — the last project of that client was dropped and its password stayed behind at mode 600. Keep it: it is what decrypts the snapshots already off-box, and kasbah never deletes one. Take it off by hand once that repository has been handed over or emptied.", s.target, strings.Join(orphan, " "))
 	}
 }
 

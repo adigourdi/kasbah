@@ -5,6 +5,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -44,7 +46,7 @@ func TestTopLevel(t *testing.T) {
 		{[]string{"help", "files"}, 0, "/blob/v1.0.0/docs/authoring.md\n", ""},
 		{[]string{"help", "nope"}, 1, "", "help: unknown topic 'nope' — the topics are files, setups, rules, debug"},
 		{[]string{"help", "C06"}, 1, "", "help: unknown topic 'C06'"},
-		{[]string{"help", "rules", "x"}, 1, "", "help: unexpected argument 'x' — help takes one topic: files, setups, rules, debug, a rule ID (C01), or a command"},
+		{[]string{"help", "rules", "x"}, 1, "", "help: unexpected argument 'x' — help takes one topic: files, setups, rules, debug, troubleshooting, a rule ID (C01), or a command"},
 	}
 	for _, tt := range tests {
 		var so, se bytes.Buffer
@@ -188,4 +190,66 @@ func sameSet(a, b []string) bool {
 	slices.Sort(a)
 	slices.Sort(b)
 	return slices.Equal(a, b)
+}
+
+// Every `.Help(topic)` a failure carries is a literal `kasbah help` answers:
+// a topic, a rule ID, or a command (a server subcommand after `server`).
+func TestFailureHelpTopics(t *testing.T) {
+	fset := token.NewFileSet()
+	n := 0
+	for _, dir := range []string{".", "../../internal"} {
+		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			file, err := parser.ParseFile(fset, path, nil, 0)
+			if err != nil {
+				return err
+			}
+			ast.Inspect(file, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if sel, ok := call.Fun.(*ast.SelectorExpr); !ok || sel.Sel.Name != "Help" || len(call.Args) != 1 {
+					return true
+				}
+				n++
+				lit, ok := call.Args[0].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					t.Errorf("%s: .Help takes a string literal", fset.Position(call.Pos()))
+					return true
+				}
+				topic, _ := strconv.Unquote(lit.Value)
+				if !helpAnswers(topic) {
+					t.Errorf("%s: kasbah help does not know %q", fset.Position(call.Pos()), topic)
+				}
+				return true
+			})
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n == 0 {
+		t.Error("no .Help call found: the scan is looking in the wrong place")
+	}
+	if helpAnswers("nope") || helpAnswers("server nope") || !helpAnswers("server init") || !helpAnswers("T05") {
+		t.Error("helpAnswers does not tell topics apart")
+	}
+}
+
+func helpAnswers(topic string) bool {
+	words := strings.Fields(topic)
+	switch {
+	case len(words) == 2 && words[0] == "server":
+		return slices.Contains(serverSubcommands, words[1])
+	case len(words) != 1:
+		return false
+	case slices.Contains(commands, words[0]):
+		return true
+	}
+	_, err := help.Topic("", topic)
+	return err == nil
 }

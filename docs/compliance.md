@@ -60,9 +60,13 @@ Mail:
   ✓ M01 Mail claim names domain 'myapp.example.com'
 
 Summary: 33 passed, 1 warning, 0 failed
+`kasbah help H01` (or any ID above) says why a rule exists and what to change.
 ```
 
-Exit code 0 if no failures (warnings are informational).
+Exit code 0 if no failures (warnings are informational). A report with any
+warning or failure ends on that footer, naming the first rule that failed (else
+the first that warned); a
+clean one ends on its summary.
 
 Each line leads with the IDs of the catalog rules it speaks for — several,
 comma-separated, when one line answers for more than one (`S01,S02` above).

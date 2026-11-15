@@ -120,6 +120,7 @@ Env:
   ✓ E05 .env.prod.example leaves the KASBAH_* prefix to kasbah
 
 Summary: 29 passed, 1 warning, 0 failed
+` + "`kasbah help C11`" + ` (or any ID above) says why a rule exists and what to change.
 `
 	if out != want || code != 0 {
 		t.Errorf("exit %d, report:\n%s", code, out)
@@ -274,7 +275,7 @@ func TestVerdicts(t *testing.T) {
 			[]string{"  ⚠ T01 traefik-dynamic.yml missing — skipping T02–T05 and T08–T10"}},
 		{"a legacy project on kasbah-net passes C03 and is warned to move",
 			map[string]string{"compose.prod.yml": legacyCompose}, 0,
-			[]string{"  ✓ C03 All routed services join kasbah-net", "  ⚠ C03 Routed through the shared kasbah-net: demo-web — every project's routed containers reach each other there; move them to a project network under the key kasbah (docs/traefik.md → Network)",
+			[]string{"  ✓ C03 All routed services join kasbah-net", "  ⚠ C03 Routed through the shared kasbah-net: demo-web — every project's routed containers reach each other there; move them to a project network under the key kasbah",
 				"  ✓ C04 kasbah-net declared external", "  ✓ C09 kasbah-net service names are project-prefixed"}},
 		{"a routed service on neither network fails C03",
 			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "networks: [kasbah]", "networks: [internal]", 1)}, 6,
@@ -319,7 +320,7 @@ func TestVerdicts(t *testing.T) {
 			[]string{"  ✗ C07 Non-routed services on the kasbah network: db — Traefik joins it, so only what it routes belongs there"}},
 		{"a compose or env template naming mail-dms is warned",
 			map[string]string{".env.prod.example": "# c\nSMTP_HOST=mail-dms\n"}, 0,
-			[]string{"  ⚠ C10 mail-dms is named in .env.prod.example — no project shares a network with the mail server; send through mail.<domain>:587 with a mailbox login (docs/mail.md → SMTP access from apps)"}},
+			[]string{"  ⚠ C10 mail-dms is named in .env.prod.example — no project shares a network with the mail server; send through mail.<domain>:587 with a mailbox login"}},
 		{"max-size: false is no rotation",
 			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "max-size: 10m", "max-size: false", 1)}, 6,
 			[]string{"  ✗ C02 Services missing json-file logging with max-size/max-file: demo-web"}},
@@ -411,36 +412,36 @@ func TestVerdicts(t *testing.T) {
 		{"drift", map[string]string{".env": "KASBAH_X=1\nEXTRA=2\r\n"}, 0,
 			[]string{"  ⚠ E02 .env missing keys vs .env.prod.example: DOMAIN", "  ⚠ E03 .env has extra keys not in .env.prod.example: EXTRA"}},
 		{"mail block of the wrong shape", map[string]string{"kasbah.yml": man + "mail: example.com\n"}, 6,
-			[]string{"  ✗ M01 kasbah.yml: mail: is not a block — it has to be a block with a domain: under it (docs/project-manifest.md → mail)"}},
+			[]string{"  ✗ M01 kasbah.yml: mail: is not a block — it has to be a block with a domain: under it"}},
 		{"mail: \"\" is a mail: block deploy refuses", map[string]string{"kasbah.yml": man + "mail: \"\"\n"}, 6,
-			[]string{"  ✗ M01 kasbah.yml: mail: is not a block — it has to be a block with a domain: under it (docs/project-manifest.md → mail)"}},
+			[]string{"  ✗ M01 kasbah.yml: mail: is not a block — it has to be a block with a domain: under it"}},
 		{"T05 matches a Host()'s first label whole",
 			map[string]string{"traefik-dynamic.yml": "http:\n  routers:\n    a: {rule: \"Host(`x\\nmail`)\", entryPoints: [web]}\n"}, 6,
 			[]string{"  ✓ T05 No router claims reserved hostnames (traefik.*, mail.*, webmail.*)"}},
 		{"client: true is not a repository name", map[string]string{"kasbah.yml": man + "client: true\n"}, 6,
 			[]string{"  ✗ S08 kasbah.yml: client must be a string, not true"}},
 		{"hooks: false is a hooks: block deploy refuses", map[string]string{"kasbah.yml": man + "hooks: false\n"}, 6,
-			[]string{"  ✗ HK01 kasbah.yml: hooks: is not a block — it holds the lists backup:, pre-deploy:, post-deploy:, restore:, pre-rollback: and post-rollback: (docs/project-manifest.md)"}},
+			[]string{"  ✗ HK01 kasbah.yml: hooks: is not a block — it holds the lists backup:, pre-deploy:, post-deploy:, restore:, pre-rollback: and post-rollback:"}},
 		{"HK01 refuses a hook list deploy does not run", map[string]string{"kasbah.yml": man + "hooks:\n  post-deploy: [\"demo-web true\"]\n  pre_deploy: [\"ghost true\"]\n"}, 6,
-			[]string{"  ✗ HK01 kasbah.yml: hooks.pre_deploy is not a hook kasbah runs — hooks: holds the lists backup:, pre-deploy:, post-deploy:, restore:, pre-rollback: and post-rollback: (docs/project-manifest.md)"}},
+			[]string{"  ✗ HK01 kasbah.yml: hooks.pre_deploy is not a hook kasbah runs — hooks: holds the lists backup:, pre-deploy:, post-deploy:, restore:, pre-rollback: and post-rollback:"}},
 		{"a hook entry that is not a string", map[string]string{"kasbah.yml": man + "hooks:\n  post-deploy: [{a: b}]\n"}, 6,
 			[]string{"  ✗ HK01 kasbah.yml: hooks.post-deploy holds {\"a\":\"b\"} — each entry must be a string, one shell command"}},
 		{"HK01 refuses a hook on two lines", map[string]string{"kasbah.yml": man + "hooks:\n  post-deploy:\n    - |\n      php artisan down\n      php artisan migrate\n"}, 6,
-			[]string{"  ✗ HK01 kasbah.yml: the post-deploy hook 'php artisan down…' spans more than one line — a hook is one line of shell, and a multi-line value would be run as several hooks; chain with && or call a script (docs/project-manifest.md)"}},
+			[]string{"  ✗ HK01 kasbah.yml: the post-deploy hook 'php artisan down…' spans more than one line — a hook is one line of shell, and a multi-line value would be run as several hooks; chain with && or call a script"}},
 		{"HK01 refuses an empty hook", map[string]string{"kasbah.yml": man + "hooks:\n  pre-deploy: [\"\"]\n"}, 6,
-			[]string{"  ✗ HK01 kasbah.yml: hooks.pre-deploy holds an empty entry — each entry is one shell command (docs/project-manifest.md)"}},
+			[]string{"  ✗ HK01 kasbah.yml: hooks.pre-deploy holds an empty entry — each entry is one shell command"}},
 		{"HK01 passes shell that names no container", map[string]string{"kasbah.yml": man + "hooks:\n  pre-deploy: [\"docker compose exec -T ghost true\"]\n"}, 0,
 			[]string{"  ✓ HK01 Every hook is one line of shell"}},
 		{"health: that is not a block", map[string]string{"kasbah.yml": man + "health: demo-web\n"}, 6,
-			[]string{"  ✗ H02 kasbah.yml: health: is not a block — it holds container: and timeout: (docs/project-manifest.md)"}},
+			[]string{"  ✗ H02 kasbah.yml: health: is not a block — it holds container: and timeout:"}},
 		{"H02 refuses a timeout deploy refuses", map[string]string{"kasbah.yml": man + "health: {container: demo-web, timeout: soon}\n"}, 6,
 			[]string{"  ✗ H02 kasbah.yml: health.timeout 'soon' is not a duration kasbah can use — write it as 120s, 5m or 2h"}},
 		{"HK02 refuses a top-level backup: block", map[string]string{"kasbah.yml": man + "backup: {check: true, command: dump, extension: sql, container: demo-web}\n"}, 6,
-			[]string{"  ✗ HK02 kasbah.yml: backup: is not a key kasbah reads — a backup is the hooks.backup list, plain shell that writes into $KASBAH_BACKUP_DIR (docs/project-manifest.md → hooks)"}},
+			[]string{"  ✗ HK02 kasbah.yml: backup: is not a key kasbah reads — a backup is the hooks.backup list, plain shell that writes into $KASBAH_BACKUP_DIR"}},
 		{"HK02 refuses backup: whatever it holds", map[string]string{"kasbah.yml": man + "backup: false\n"}, 6,
-			[]string{"  ✗ HK02 kasbah.yml: backup: is not a key kasbah reads — a backup is the hooks.backup list, plain shell that writes into $KASBAH_BACKUP_DIR (docs/project-manifest.md → hooks)"}},
+			[]string{"  ✗ HK02 kasbah.yml: backup: is not a key kasbah reads — a backup is the hooks.backup list, plain shell that writes into $KASBAH_BACKUP_DIR"}},
 		{"HK01 reads the backup and restore hooks", map[string]string{"kasbah.yml": man + "hooks:\n  backup: ['docker compose exec -T db pg_dump app > \"$KASBAH_BACKUP_DIR/db.sql\"']\n  restore: [\"\"]\n"}, 6,
-			[]string{"  ✗ HK01 kasbah.yml: hooks.restore holds an empty entry — each entry is one shell command (docs/project-manifest.md)"}},
+			[]string{"  ✗ HK01 kasbah.yml: hooks.restore holds an empty entry — each entry is one shell command"}},
 		{"HK01 passes a backup hook", map[string]string{"kasbah.yml": man + "hooks:\n  backup: ['pg_dump > \"$KASBAH_BACKUP_DIR/db.sql\"']\n  restore: ['psql < \"$KASBAH_BACKUP_DIR/db.sql\"']\n"}, 0,
 			[]string{"  ✓ HK01 Every hook is one line of shell"}},
 		{"a NUL ends a .gitignore line", map[string]string{".gitignore": "x\x00.env\x00.kasbah/"}, 0,
@@ -704,5 +705,17 @@ func TestC10SkipsComments(t *testing.T) {
 	project(t, map[string]string{"compose.prod.yml": goodCompose + "x-smtp: mail-dms # still used\n"})
 	if out, _, _ := check(t); !strings.Contains(out, "⚠ C10 mail-dms is named in compose.prod.yml — ") {
 		t.Fatalf("a used mail-dms did not warn:\n%s", out)
+	}
+}
+
+// The footer names the first failed rule, even after a warning.
+func TestFooterPrefersFailure(t *testing.T) {
+	var b bytes.Buffer
+	c := &checker{w: &b}
+	c.warnf("S05", "warned")
+	c.failf("C01,C02", "failed")
+	c.footer()
+	if !strings.HasSuffix(b.String(), "`kasbah help C01` (or any ID above) says why a rule exists and what to change.\n") {
+		t.Errorf("footer:\n%s", b.String())
 	}
 }

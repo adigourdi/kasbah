@@ -80,6 +80,8 @@ assert 'grep -qF "server init" "$tmpdir/out"' "usage advertises server init"
 run server init deploy@kasbah-unit-test.invalid --with-mail --no-backup; rc=$?
 assert '[ "$rc" = "3" ]' \
     "--with-mail goes on to the server, and this one is unreachable (exit $rc: $(cat "$tmpdir/err"))"
+assert 'grep -qxF "       Make \`ssh deploy@kasbah-unit-test.invalid true\` work from this shell first: the host answers," "$tmpdir/err" && grep -qxF "       help: kasbah help troubleshooting" "$tmpdir/err"' \
+    "an unreachable host says what to try next, and where to read more (said '$(cat "$tmpdir/err")')"
 assert '! grep -qF "not implemented" "$tmpdir/err"' \
     "and no longer refuses (said '$(cat "$tmpdir/err")')"
 assert '[ -s "$si_ssh_log" ]' "the stub ssh is what it reached (ssh saw: $(cat "$si_ssh_log"))"

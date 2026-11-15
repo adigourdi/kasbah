@@ -182,7 +182,7 @@ func Run(c Ctx, o Options) error {
 	}
 	tmpl := ".env.prod.example"
 	if fi, err := os.Stat(tmpl); err != nil || !fi.Mode().IsRegular() {
-		return cli.Fail("no .env.prod.example in %s — that file is the template this renders .env from (docs/env-template.md)", c.PWD)
+		return cli.Fail("no .env.prod.example in %s — that file is the template this renders .env from", c.PWD).Help("S04")
 	}
 
 	spec, err := resources.Read(m)
@@ -279,7 +279,7 @@ func (st *Step) remedies(reason, dir string) []string {
 	case "missing":
 		return []string{
 			"  * run `kasbah env " + t + "` from a terminal, or",
-			"  * answer every key from a file: --env-seed=FILE (docs/env-template.md), or",
+			"  * answer every key from a file: --env-seed=FILE, or",
 			"  * write the file on the server yourself, from the template that is",
 			"    already beside it:",
 			"      ssh " + t + " 'cp " + dir + "/.env.prod.example " + dir + "/.env'   # then edit it there",
@@ -315,8 +315,8 @@ func (st *Step) setup(dir, why, reason string, ask []string, menu bool) error {
 		}
 		return e.Cont(
 			"the setup is interactive — it prompts per variable, masks the secret ones and",
-			"runs the template's generators (docs/env-template.md). Either:").Cont(
-			st.remedies(reason, dir)...).Cont("Nothing was deployed.")
+			"runs the template's generators. Either:").Cont(
+			st.remedies(reason, dir)...).Cont("Nothing was deployed.").Help("troubleshooting")
 	}
 	f := SetupFlags{Color: st.Color, TTY: tty}
 	if st.Seed != nil && tty {
@@ -374,7 +374,7 @@ func (st *Step) chooseOnDrift(given string, unseeded []string) (string, error) {
 		return "", e.Cont(
 			"pass --on-drift=setup (re-run the interactive setup), --on-drift=continue",
 			"(deploy against the .env as it stands) or --on-drift=abort.",
-			"Nothing was deployed.")
+			"Nothing was deployed.").Help("troubleshooting")
 	}
 	for {
 		a, err := st.Prompter.Value("on-drift",
@@ -409,17 +409,17 @@ func (st *Step) Run(dir, cpu, mem, onDrift string, always bool) error {
 		if !s.TemplateExists {
 			return cli.Failf(cli.ExitEnvSetup, "%s has no %s/.env, and no %s/.env.prod.example to render one from", t, dir, dir).Cont(
 				"the template is the project's own file and reaches the server through the",
-				"manifest's sync: list — add .env.prod.example to it",
-				"(docs/project-manifest.md, docs/env-template.md). Nothing was deployed.")
+				"manifest's sync: list — add .env.prod.example to it. Nothing was deployed.").Help("files")
 		}
 		action, why, reason = "setup", dir+"/.env does not exist yet", "missing"
 		ask, menu = st.Seed.unseeded(s.Missing), false
 	case !s.TemplateExists:
 		// No template: every key would read as extra against an empty set.
 		st.Out.Warn("%s has no %s/.env.prod.example, so its .env cannot be checked for drift", t, dir)
-		st.Out.Warn("add .env.prod.example to the manifest's sync: list (docs/project-manifest.md)")
+		st.Out.Warn("add .env.prod.example to the manifest's sync: list (kasbah help files)")
 		if always {
-			return cli.Fail("there is no %s/.env.prod.example on %s to run the setup against", dir, t)
+			return cli.Fail("there is no %s/.env.prod.example on %s to run the setup against", dir, t).
+				Next("Add .env.prod.example to the manifest's sync: list, then re-run.").Help("files")
 		}
 	case s.Missing != "" || s.Extra != "":
 		st.Out.Warn("%s/.env on %s has drifted from .env.prod.example", dir, t)

@@ -670,6 +670,8 @@ DOCKER_LOAD_RC=1 run "deploy@vps"; rc=$?
 assert '[ "$rc" = "1" ]' "a docker load the server refuses fails the run (exit $rc)"
 assert 'grep -qF "docker load exited 1" <<<"$err"' "the far side saying why (said '$err')"
 assert 'grep -qF "could not load the images onto deploy@vps" <<<"$err"' "and this side which step (said '$err')"
+assert 'grep -qxF "       cause (\`kasbah server prune deploy@vps\` removes old image tags)." <<<"$err" && grep -qxF "       Then re-run build-push." <<<"$err" && grep -qxF "       help: kasbah help troubleshooting" <<<"$err"' \
+    "and what to do next (said '$err')"
 assert '[ ! -e "$projdir/.kasbah/state.json" ]' \
     "and a run that failed records no server (docs/project-manifest.md: only on success)"
 

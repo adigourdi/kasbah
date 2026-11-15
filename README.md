@@ -39,6 +39,11 @@ all; [docs/cli.md](docs/cli.md) describes each one. `kasbah help` explains a
 project's files, its common setups and every rule `kasbah check` names, for
 the version you run.
 
+When something fails, the error says what to do next, and its last line names
+the log the run saved. [docs/troubleshooting.md](docs/troubleshooting.md)
+(`kasbah help troubleshooting`) lists the common failures under their exact
+text.
+
 ## Requirements
 
 - **Your machine:** Linux or macOS on amd64 or arm64 (the macOS build is not yet

@@ -441,7 +441,7 @@ func ProbeVerdict(f Facts, target, apps string, v *BackupValues, hadStack bool) 
 			fmt.Sprintf("the probe wrote %d snapshots to %s, asked restic to forget", mid, probed),
 			fmt.Sprintf("one of them by name, and %d were left. A VPS that can delete its own history is", after),
 			"a VPS whose history a compromise destroys, which is the whole point of the",
-			"credential split (docs/backup.md → Credentials).",
+			"credential split.",
 			"Give this server an append-only key — write and list, no delete, no overwrite —",
 			"and keep the full-access one on your own machine, where",
 			"`kasbah server backup-prune` uses it.",

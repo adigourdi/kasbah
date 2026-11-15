@@ -21,6 +21,8 @@ Topics:
   kasbah help setups       the common shapes of a project, each an example
   kasbah help rules        every rule kasbah check applies
   kasbah help debug        the trace of a run, and the log a failure saves
+  kasbah help troubleshooting
+                           the common failures, and what to do about each
   kasbah help <rule id>    one rule: why, and what to change (kasbah help C01)
   kasbah help <command>    a command's flags, as kasbah <command> --help
   kasbah --help            the command list

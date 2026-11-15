@@ -70,8 +70,8 @@ Every command that reaches a server also takes:
                                              runs: ship it, or keep the server's and run its build.
 
 Run ` + "`kasbah <command> --help`" + `, or ` + "`kasbah help <command>`" + `, for a command's flags, and
-` + "`kasbah help`" + ` for the topics. The docs/ files kasbah's messages name are in the
-kasbah repository; docs/cli.md is the full reference.
+` + "`kasbah help`" + ` for the topics; docs/cli.md in the kasbah repository is the full
+reference.
 `
 }
 

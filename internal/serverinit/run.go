@@ -654,7 +654,7 @@ func Run(c Ctx, o Options) (err error) {
 		kv := remote.KV([]byte(res))
 		for _, p := range dns.Remove {
 			if files, ok := kv["acme_dns_kept_"+p]; ok {
-				out.Warn("kept %s/traefik/%s: %s may still name '%s' (the word, or characters kasbah cannot read past — traefik.md → DNS-01); the credentials stay until nothing under dynamic/ does", o.Apps, DNSEnvRel(p), files, p)
+				out.Warn("kept %s/traefik/%s: %s may still name '%s' (the word, or characters kasbah cannot read past); the credentials stay until nothing under dynamic/ does", o.Apps, DNSEnvRel(p), files, p)
 				continue
 			}
 			dnsRemoved = append(dnsRemoved, p)

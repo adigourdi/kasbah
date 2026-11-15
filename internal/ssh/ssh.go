@@ -210,7 +210,11 @@ func Connect(target string) (*Conn, error) {
 	probe.Stderr = os.Stderr
 	if err := trace.Run(probe); err != nil {
 		c.Close()
-		return nil, cli.Failf(cli.ExitSSHUnreachable, "cannot reach %s over ssh (see ssh's own error above)", t)
+		return nil, cli.Failf(cli.ExitSSHUnreachable, "cannot reach %s over ssh (see ssh's own error above)", t).
+			Next(fmt.Sprintf("Make `ssh %s true` work from this shell first: the host answers,", t),
+				"the user is right, and ssh offers a key the server accepts",
+				"(ssh-add -l lists the agent's).").
+			Help("troubleshooting")
 	}
 	c.mu.Lock()
 	c.connected = true

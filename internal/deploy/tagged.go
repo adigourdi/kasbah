@@ -317,6 +317,7 @@ func (r *run) implicitTarget(rec *vlog.Record) error {
 	} else {
 		e = cli.Fail("there is no earlier deploy of %s on %s in what kasbah could read of its record", name, r.target)
 	}
+	e.Next("`kasbah history " + r.target + " --all` shows every version the server has run.")
 	if damaged > 0 {
 		e.Cont(fmt.Sprintf("%d line(s) of that record could not be read, and any of them may be one", damaged))
 	}
@@ -467,6 +468,19 @@ func extractBlob(ref, path, dest, what string) error {
 	return showBlob(ref, path, dest)
 }
 
+// taggedManifest is Require's refusal of the kasbah.yml extracted from ref,
+// named as the tag's: a tag cannot be edited, so the fix is a new release.
+func taggedManifest(err error, path, ref string) error {
+	var e *cli.Error
+	var newer *manifest.NewerSchema
+	if errors.As(err, &newer) || !errors.As(err, &e) {
+		return err
+	}
+	e.Lines[0] = manifest.File + " at " + ref + strings.TrimPrefix(e.Lines[0], path)
+	return e.SetNext("A version deploys with the kasbah.yml it was tagged with, and a tag does not",
+		"change: fix kasbah.yml in a new release and deploy that.")
+}
+
 // readRef is everything this run reads out of the checkout: the tag, then
 // v<target>'s manifest, compose file, sync list, fragment and mail seed.
 func (r *run) readRef(t *tagged) error {
@@ -485,12 +499,12 @@ func (r *run) readRef(t *tagged) error {
 		return err
 	}
 	if err := extractBlob(ref, buildpush.Compose, filepath.Join(tmp, buildpush.Compose),
-		"the images to retag are read from it (docs/build-deploy.md → the invariant)"); err != nil {
+		"the images to retag are read from it"); err != nil {
 		return err
 	}
 	m, err := manifest.Require(filepath.Join(tmp, manifest.File), r.c.Version)
 	if err != nil {
-		return err
+		return taggedManifest(err, filepath.Join(tmp, manifest.File), ref)
 	}
 	if m.Name != r.m.Name {
 		return cli.Fail("this project is called %s today and was called %s at %s — the server's directory is <apps>/<name>, so kasbah cannot tell which of the two this run is about", r.m.Name, m.Name, ref)

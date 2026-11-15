@@ -282,7 +282,7 @@ func SettleDNS(out *cli.Output, o Options, static string, present []string, name
 				"A router naming that resolver would stop getting certificates. A file counts when it holds",
 				"the name as a whole word in any case (comments included), and also when kasbah cannot read",
 				"it as Traefik would: a backslash, a '!', a '{{', a control character or a byte that is not",
-				"UTF-8 anywhere in it (traefik.md → DNS-01). Only _shared.yml is skipped.",
+				"UTF-8 anywhere in it. Only _shared.yml is skipped.",
 				fmt.Sprintf("point those routers at another certResolver and remove the word or those characters, deploy, then re-run with --no-acme-dns=%s.", p))
 		}
 	}

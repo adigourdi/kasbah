@@ -261,6 +261,7 @@ func TestRunFailuresLeaveNoState(t *testing.T) {
 	reverted, first, post, revFailed := failure(Reverted), failure(FirstFailed), failure(PostHook), failure(RevertFailed)
 	restored, unrestored, unrecorded := failure(Restored), failure(Unrestored), failure(Unrecorded)
 	envKept := "{\"" + FailureKey + "\":1,\"outcome\":\"restored\",\"reason\":\"start\",\"prev\":\"0.9.0\",\"saved\":\"/apps/demo/.env.kasbah-replaced\"}\n"
+	unhealthy := "{\"" + FailureKey + "\":1,\"outcome\":\"reverted\",\"reason\":\"health\",\"prev\":\"0.9.0\"}\n"
 	cases := []struct {
 		name string
 		f    *fake
@@ -276,6 +277,7 @@ func TestRunFailuresLeaveNoState(t *testing.T) {
 		{"restored", &fake{rc: 1, out: &restored}, "the files it had shipped were put back", false},
 		{"unrestored", &fake{rc: 1, out: &unrestored}, "putting back the files it had shipped failed", false},
 		{"unrecorded", &fake{rc: 1, out: &unrecorded}, "versions.log could not record it", false},
+		{"unhealthy", &fake{rc: 1, out: &unhealthy}, "re-run `kasbah deploy d@h`.\n       `kasbah logs d@h` shows why the containers did not become healthy;\n       health.timeout in kasbah.yml sets how long the wait is.\n       help: kasbah help troubleshooting", false},
 		{"env kept", &fake{rc: 1, out: &envKept}, "/apps/demo/.env.kasbah-replaced — carry anything typed there back into .env", false},
 		{"connection lost", &fake{rc: 255, out: &none}, "kasbah history", false},
 		{"no report", &fake{out: &none}, "reported no report", false},
@@ -296,6 +298,17 @@ func TestRunFailuresLeaveNoState(t *testing.T) {
 			t.Errorf("%s: fragment shipped = %v", c.name, !c.frag)
 		}
 		noState(t, c.name)
+	}
+}
+
+// A tagged run waits on the tag's own health.timeout, which no edit reaches.
+func TestHealthNextStepTagged(t *testing.T) {
+	unhealthy := "{\"" + FailureKey + "\":1,\"outcome\":\"reverted\",\"reason\":\"health\",\"prev\":\"0.9.0\"}\n"
+	r := &run{mode: "rollback", tagged: true, version: "1.2.0", target: "d@h"}
+	var b bytes.Buffer
+	(&cli.Output{Stderr: &b}).Report(r.engineFailed(unhealthy, 1))
+	if got := b.String(); !strings.Contains(got, "v1.2.0's own health.timeout: --no-health-wait skips it") || strings.Contains(got, "in kasbah.yml sets") {
+		t.Errorf("tagged health next step:\n%s", got)
 	}
 }
 

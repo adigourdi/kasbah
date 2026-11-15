@@ -152,6 +152,10 @@ ks --help; rc=$?
 assert 'grep -qF -- "--debug" "$tmpdir/out" && grep -qF "KASBAH_DEBUG=1" "$tmpdir/out"' "kasbah --help documents --debug"
 ks help debug; rc=$?
 assert '[ "$rc" = 0 ] && grep -qF "cli.md#debugging-a-failure" "$tmpdir/out"' "kasbah help debug ends on its doc (rc $rc)"
+ks help troubleshooting; rc=$?
+last="$(tail -n 1 "$tmpdir/out")"
+assert '[ "$rc" = 0 ] && [[ $last == https://github.com/adigourdi/kasbah/blob/*/docs/troubleshooting.md ]]' \
+    "kasbah help troubleshooting ends on its doc (rc $rc: $last)"
 
 # --- Case 3: a seed's values stay out of the log ----------------------------------
 printf 'API_SECRET=seeded-value-55\nDB_PASSWORD=planted-env-secret-42\n' >"$tmpdir/seed"

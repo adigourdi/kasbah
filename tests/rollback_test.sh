@@ -449,6 +449,8 @@ out="$( FAKE_ACTIVE=$'2026-08-02T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.
 calls="$(<"$call_log")"
 assert '[ "$rc" != "0" ]' "a record with one deploy in it has no implicit target (rc $rc: $out)"
 assert 'grep -qF "no earlier deploy" <<<"$out"' "and says so (said '$out')"
+assert 'grep -qxF "       \`kasbah history deploy@vps --all\` shows every version the server has run." <<<"$out"' \
+    "and where to see what it ran (said '$out')"
 assert 'grep -qF "kasbah rollback deploy@vps <X.Y.Z>" <<<"$out"' \
     "pointing at the argument that would answer it (said '$out')"
 assert '[ -z "$(ran)" ]' "no implicit target: nothing ran on the server"

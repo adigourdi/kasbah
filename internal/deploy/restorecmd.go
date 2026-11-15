@@ -199,10 +199,10 @@ func RunRestore(c RestoreCtx, o RestoreOptions) error {
 	}
 	dir := mk.AppsPath + "/" + m.Name
 	local := "A backup already on the server, in " + dir + "/" + Backups + "/, is restored by `kasbah rollback " + target +
-		" <version>` when it is an earlier version's, or by hand when it is the live version's (docs/backup.md → Restore)."
+		" <version>` when it is an earlier version's, or by hand when it is the live version's."
 	if en, _ := tree.Lookup(mk.JSON, "backup", "enabled"); en != true {
 		return cli.Fail("restore: %s has no off-box backups, and kasbah restore pulls its backup from them — nothing was changed", target).Cont(
-			"`kasbah server init "+target+" --with-backup` sets them up.", local)
+			"`kasbah server init "+target+" --with-backup` sets them up.", local).Help("restore")
 	}
 	release, err := s.HoldServer(mk.AppsPath, "restore")
 	if err != nil {
@@ -215,11 +215,11 @@ func RunRestore(c RestoreCtx, o RestoreOptions) error {
 	}
 	if f.State == "notours" {
 		return cli.Fail("restore: %s records off-box backups, and the container named %s there is not kasbah's: it is not the kasbah-backup compose project started from %s/.kasbah/backup, and only kasbah's reads the repository. Nothing was changed", target, backup.Container, mk.AppsPath).Cont(
-			notOurs(target)+".", local)
+			notOurs(target)+".", local).Help("restore")
 	}
 	if f.State != "running" || f.List == nil {
 		return cli.Fail("restore: %s records off-box backups, and the %s container is %s there — it alone reads the repository. Nothing was changed", target, backup.Container, f.State).Cont(
-			"`kasbah server status "+target+"` shows the stack; `kasbah server init "+target+" --with-backup` reinstalls it.", local)
+			"`kasbah server status "+target+"` shows the stack; `kasbah server init "+target+" --with-backup` reinstalls it.", local).Help("restore")
 	}
 	l := f.List
 	if o.List {
@@ -375,7 +375,7 @@ func noSnapshot(l *backup.RestoreList, name, target string) error {
 	}
 	e.Cont("its snapshots hold backup tarballs at: " + strings.Join(l.Elsewhere, " "))
 	return e.Cont("if one is " + name + "'s (another apps path, or a backups/ that was a symlink), `kasbah restore " + target +
-		" --from-path=PATH` restores from it; keeping the apps path and re-creating the backups/ link avoids it (docs/backup.md → Restore).")
+		" --from-path=PATH` restores from it; keeping the apps path and re-creating the backups/ link avoids it.").Help("restore")
 }
 
 // restoreFailed is the failed restore's error: where it stopped, and what

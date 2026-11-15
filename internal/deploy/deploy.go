@@ -160,7 +160,7 @@ func Classify(cmd, arg string, target, version *string) error {
 		return cli.Fail("%s: write the version without the 'v' — `kasbah %s %s` (the tag is v%s, the version is %s)", cmd, cmd, v, v, v)
 	}
 	if !reSemver.MatchString(arg) {
-		return cli.Fail("%s: '%s' is not a version kasbah can use — expected <major>.<minor>.<patch> (docs/build-deploy.md → versioning contract)", cmd, arg)
+		return cli.Fail("%s: '%s' is not a version kasbah can use — expected <major>.<minor>.<patch>", cmd, arg)
 	}
 	*version = arg
 	return nil
@@ -699,6 +699,16 @@ func (r *run) engineFailed(out string, rc int) error {
 			"pass --on-hook-failure=continue or --on-hook-failure=stop.")
 	}
 	f := ParseFailure(out)
+	if f != nil && f.Reason == "health" {
+		e.Next("`kasbah logs " + t + "` shows why the containers did not become healthy;")
+		if r.tagged {
+			e.Next("the wait is v"+v+"'s own health.timeout: --no-health-wait skips it, or",
+				"fix the timeout in a new release.")
+		} else {
+			e.Next("health.timeout in kasbah.yml sets how long the wait is.")
+		}
+		e.Help("troubleshooting")
+	}
 	if f == nil {
 		e.Cont("nothing was started — the containers and :current are what they were,",
 			"and "+v+"'s files are on the server beside them — "+again)
@@ -775,7 +785,7 @@ func (r *run) fragment() (bool, error) {
 			return false, r.unroute(dest)
 		}
 		r.c.Out.Warn("no %s in %s — nothing was written to %s", Fragment, r.c.PWD, dest)
-		r.c.Out.Warn("this project routes through Traefik only if that file exists (docs/traefik.md)")
+		r.c.Out.Warn("this project routes through Traefik only if that file exists (kasbah help T01)")
 		return false, nil
 	}
 	if err := r.s.Fragment(r.frag, dest); err != nil {

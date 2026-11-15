@@ -84,11 +84,11 @@ func Read(m *manifest.Manifest) (Spec, error) {
 	}
 	rm, ok := v.(*tree.Map)
 	if !ok {
-		return s, fmt.Errorf("resources: is not a block — it holds cpus: and memory: (docs/project-manifest.md)")
+		return s, fmt.Errorf("resources: is not a block — it holds cpus: and memory:")
 	}
 	for _, k := range rm.Keys() {
 		if k != "cpus" && k != "memory" {
-			return s, fmt.Errorf("resources.%s is not a limit kasbah sets — resources: holds cpus: and memory: (docs/project-manifest.md)", k)
+			return s, fmt.Errorf("resources.%s is not a limit kasbah sets — resources: holds cpus: and memory:", k)
 		}
 	}
 	for _, k := range []string{"cpus", "memory"} {

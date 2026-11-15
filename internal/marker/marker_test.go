@@ -158,7 +158,7 @@ func TestValidate(t *testing.T) {
 		}
 	}
 	_, err = Validate([]byte(`{"apps_path":"/a","data_path":"/d","cpu_limit":"1"}`), path, target, initCmd)
-	if e := err.(*cli.Error); len(e.Lines) != 5 || e.Lines[4] != "(docs/env-template.md). Re-run `"+initCmd+"` to rewrite it." {
+	if e := err.(*cli.Error); len(e.Lines) != 5 || e.Lines[4] != "Re-run `"+initCmd+"` to rewrite it." {
 		t.Errorf("limit refusal lines %q", e.Lines)
 	}
 }

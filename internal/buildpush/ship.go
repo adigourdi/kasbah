@@ -133,7 +133,8 @@ func ship(out *cli.Output, conn *ssh.Conn, apps string, images []Image, p *promp
 	st.layers = len(diffs)
 	st.same, st.replaced = pl.same, pl.replaced
 	if errors.Is(err, errIncomplete) {
-		err = cli.Fail("%s could not unpack the images it loaded (see docker's error above)", conn.Target)
+		err = cli.Fail("%s could not unpack the images it loaded (see docker's error above)", conn.Target).
+			Next(loadNext(conn.Target.String())...).Help("troubleshooting")
 	}
 	return st, err
 }
@@ -378,7 +379,8 @@ func stream(conn *ssh.Conn, apps string, refs []string, skip, known map[string]b
 	raw := strings.ReplaceAll(report.String(), "\r", "")
 	lines := strings.Split(raw, "\n")
 
-	loadFailed := cli.Fail("could not load the images onto %s (%s, see above)", target, serverbin.ExitText(ssh.ExitCode(loadErr), 0))
+	loadFailed := cli.Fail("could not load the images onto %s (%s, see above)", target, serverbin.ExitText(ssh.ExitCode(loadErr), 0)).
+		Next(loadNext(target)...).Help("troubleshooting")
 	switch {
 	case out.err != nil && loadErr != nil:
 		return st, loadFailed
@@ -414,4 +416,12 @@ func stream(conn *ssh.Conn, apps string, refs []string, skip, known map[string]b
 		e.Cont("| " + l)
 	}
 	return st, e
+}
+
+// loadNext is what to do when the server's docker would not take the images:
+// its own words are above, and a full disk is the usual reason.
+func loadNext(target string) []string {
+	return []string{"Look at docker's error above; a full disk on the server is the usual",
+		"cause (`kasbah server prune " + target + "` removes old image tags).",
+		"Then re-run build-push."}
 }

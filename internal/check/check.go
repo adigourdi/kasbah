@@ -9,10 +9,12 @@
 package check
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -83,7 +85,9 @@ type checker struct {
 	// res is kasbah.yml's resources:, unset when R05 refused it.
 	res              resources.Spec
 	pass, warn, fail int
-	srv              *server
+	// flagged is the first rule a failure named, else the first a warning did.
+	flagged, failed string
+	srv             *server
 	// compose is compose.prod.yml when it exists; services are its service
 	// names in byte order, servicesBad why services: cannot be read.
 	compose     yamlDoc
@@ -108,7 +112,7 @@ func Run(e Env) (code int) {
 	fmt.Fprintf(c.w, "Checking %s\n\n", e.PWD)
 	if e.Fix {
 		if _, err := manifest.Require(manifest.File, e.Version); err != nil {
-			return e.report(err)
+			return e.report(ruled(err))
 		}
 		if err := c.fix(e); err != nil {
 			return e.report(err)
@@ -118,7 +122,7 @@ func Run(e Env) (code int) {
 
 	m, err := manifest.Require(manifest.File, e.Version)
 	if err != nil {
-		return e.report(err)
+		return e.report(ruled(err))
 	}
 	c.m = m
 	c.passf("S01,S02", "kasbah.yml exists (schema %s)", m.Schema)
@@ -185,6 +189,9 @@ func Run(e Env) (code int) {
 	}
 
 	fmt.Fprintf(c.w, "\nSummary: %d passed, %d warning, %d failed\n", c.pass, c.warn, c.fail)
+	if c.warn+c.fail > 0 {
+		c.footer()
+	}
 	if c.fail > 0 {
 		return cli.ExitComplianceFail
 	}
@@ -200,11 +207,16 @@ func (c *checker) passf(ids, format string, a ...any) {
 
 func (c *checker) warnf(ids, format string, a ...any) {
 	c.warn++
+	c.flag(ids)
 	c.line("⚠", ids, fmt.Sprintf(format, a...))
 }
 
 func (c *checker) failf(ids, format string, a ...any) {
 	c.fail++
+	if c.failed == "" {
+		c.failed, _, _ = strings.Cut(ids, ",")
+	}
+	c.flag(ids)
 	c.line("✗", ids, fmt.Sprintf(format, a...))
 }
 
@@ -213,6 +225,35 @@ func (c *checker) line(mark, ids, text string) {
 		text = ids + " " + text
 	}
 	fmt.Fprintf(c.w, "  %s %s\n", mark, text)
+}
+
+// flag keeps the first rule a warning or failure names, for the footer.
+func (c *checker) flag(ids string) {
+	if c.flagged == "" {
+		c.flagged, _, _ = strings.Cut(ids, ",")
+	}
+}
+
+// footer points at the help for the lines that warned or failed.
+func (c *checker) footer() {
+	if c.failed != "" {
+		c.flagged = c.failed
+	}
+	if c.flagged == "" {
+		fmt.Fprintln(c.w, "`kasbah help rules` lists every rule and what it asks.")
+		return
+	}
+	fmt.Fprintf(c.w, "`kasbah help %s` (or any ID above) says why a rule exists and what to change.\n", c.flagged)
+}
+
+// ruled leads a manifest refusal that is a Structure rule's with its ID, as
+// check's own lines do.
+func ruled(err error) error {
+	var e *cli.Error
+	if errors.As(err, &e) && slices.Contains([]string{"S01", "S02", "S07"}, e.HelpTopic()) {
+		e.Lines[0] = e.HelpTopic() + " " + e.Lines[0]
+	}
+	return err
 }
 
 func (c *checker) section(name string) { fmt.Fprintf(c.w, "\n%s:\n", name) }
@@ -584,7 +625,7 @@ func (c *checker) networks() (on, own []string, defaultAliases bool) {
 		c.passf("C03", "No Traefik-routed services in compose")
 	}
 	if unread == "" && !defaultAliases && len(legacy) > 0 {
-		c.warnf("C03", "Routed through the shared kasbah-net: %s — every project's routed containers reach each other there; move them to a project network under the key kasbah (docs/traefik.md → Network)", strings.Join(legacy, " "))
+		c.warnf("C03", "Routed through the shared kasbah-net: %s — every project's routed containers reach each other there; move them to a project network under the key kasbah", strings.Join(legacy, " "))
 	}
 	if len(on) > 0 {
 		if hnExt || (defaultAliases && defaultExt) {
@@ -719,7 +760,7 @@ func (c *checker) c10() {
 		}
 	}
 	if len(bad) > 0 {
-		c.warnf("C10", "mail-dms is named in %s — no project shares a network with the mail server; send through mail.<domain>:587 with a mailbox login (docs/mail.md → SMTP access from apps)", strings.Join(bad, " and "))
+		c.warnf("C10", "mail-dms is named in %s — no project shares a network with the mail server; send through mail.<domain>:587 with a mailbox login", strings.Join(bad, " and "))
 	}
 }
 

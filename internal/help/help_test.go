@@ -15,6 +15,7 @@ func TestTopics(t *testing.T) {
 		{"1.0.0", "setups", "/blob/v1.0.0/docs/authoring.md#setups"},
 		{"1.0.0", "rules", "/blob/v1.0.0/docs/compliance.md"},
 		{"1.0.0", "debug", "/blob/v1.0.0/docs/cli.md#debugging-a-failure"},
+		{"1.0.0", "troubleshooting", "/blob/v1.0.0/docs/troubleshooting.md"},
 		{"1.0.0", "hk01", "/blob/v1.0.0/docs/compliance.md"},
 		{dev, "rules", "/blob/main/docs/compliance.md"},
 		{"", "C01", "/blob/main/docs/compliance.md"},
@@ -59,7 +60,7 @@ func TestRuleTopic(t *testing.T) {
 
 // The topic text is a screen wide.
 func TestTopicWidth(t *testing.T) {
-	for _, name := range []string{"", "files", "setups", "rules", "debug"} {
+	for _, name := range []string{"", "files", "setups", "rules", "debug", "troubleshooting"} {
 		got, _ := Topic("1.0.0", name)
 		for _, l := range strings.Split(got, "\n") {
 			if n := len([]rune(l)); n > 80 && !strings.HasPrefix(l, "https://") {
@@ -70,8 +71,8 @@ func TestTopicWidth(t *testing.T) {
 }
 
 func TestUnknownTopic(t *testing.T) {
-	for _, topic := range []string{"nope", "troubleshooting", "C6", "M05"} {
-		if _, err := Topic("1.0.0", topic); err == nil || !strings.Contains(err.Error(), "unknown topic '"+topic+"' — the topics are files, setups, rules, debug") {
+	for _, topic := range []string{"nope", "faq", "C6", "M05"} {
+		if _, err := Topic("1.0.0", topic); err == nil || !strings.Contains(err.Error(), "unknown topic '"+topic+"' — the topics are files, setups, rules, debug, troubleshooting,") {
 			t.Errorf("Topic(%q): %v", topic, err)
 		}
 	}

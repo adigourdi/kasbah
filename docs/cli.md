@@ -22,6 +22,7 @@ $ cd ~/some/random/path
 $ kasbah deploy you@vps
 error: No kasbah.yml in current directory.
        Run from the project root, or `kasbah init-project` to scaffold.
+       help: kasbah help S01
        log: /home/you/.local/state/kasbah/logs/20261115T120102.345Z-deploy.log
 ```
 
@@ -31,6 +32,25 @@ leave it out. Every command also takes `--debug`, anywhere before a `--`, and
 `KASBAH_DEBUG=1` is the same for every command run while it is set: the trace
 streams to stderr as it is recorded, and a log is saved even when the run
 succeeds.
+
+## How a failure reads
+
+A failure is one `error:` line on stderr and the lines indented under it, in
+this order:
+
+1. the `error:` line — what failed, and the underlying cause after a `: ` when
+   it is another error's (`could not create /x: permission denied`);
+2. the lines that explain it, and the output of the step that failed when the
+   server or a program printed one;
+3. the next step — the command to run, the flag to pass or the file to
+   change to get past it;
+4. `help: kasbah help <topic>` where a topic or a rule explains it
+   (`kasbah help troubleshooting`, `kasbah help S01`, `kasbah help server init`);
+5. `log: <path>`, the trace the run saved, last.
+
+A message never sends you to a doc file: `kasbah help` is the pointer, and each
+topic ends with its doc's URL. `troubleshooting.md` lists the failures a new
+project meets most, under their exact text.
 
 ## `kasbah help [topic]`
 
@@ -51,6 +71,8 @@ Nothing is read from the project or a server, so it runs anywhere.
   asks marked `[--server]`.
 - `kasbah help debug` — the trace every run records, `--debug`, and the log
   a failure saves (Debugging a failure, below).
+- `kasbah help troubleshooting` — how a failure reads, and the common failures
+  with what to do about each, summarising `troubleshooting.md`.
 - `kasbah help <id>` — one rule, the ID in any case (`kasbah help t05`): its
   level, area, title, why it exists and what to change. The ID is the one
   `kasbah check` prints on the line.
@@ -901,7 +923,10 @@ Run the compliance check on the current project. See `compliance.md` for
 the full rule set. Every verdict line leads with the IDs of the rules it
 speaks for (`✓ C01 All services set restart policy`), which
 `kasbah help <id>` explains; `compliance.md` names the few lines that carry
-none.
+none. A report with any warning or failure ends, after its summary, on one
+line pointing at the first rule that failed, else the first that warned:
+`` `kasbah help S05` (or any ID above) says why a rule exists and what to change. ``
+— or at `kasbah help rules` when none of the flagged lines carries an ID.
 Exit code 0 on pass, 6 on any failure (see "Exit codes" below),
 and 1 — naming the file and the reason — when a file is shaped so badly that a
 rule cannot be evaluated at all: inside a mapping `services:`, a service that is
@@ -911,7 +936,10 @@ mapping or a `websecure` router whose `tls:` is not one; an unreadable
 `.env.prod.example`; and a `kasbah.yml` that does not load — YAML that does
 not parse or is not one mapping, a missing, non-integer or newer `schema`
 (S02), a reserved `name` (S07), a missing or malformed one, a field of the
-wrong type. Every other bad shape — a compose file that does not parse,
+wrong type. A missing `kasbah.yml` (S01, exit 2) and the S02 and S07 refusals
+print with the rule's ID ahead of the text, as the report's lines do —
+`error: S01 No kasbah.yml in current directory.` — and end on
+`help: kasbah help <ID>`. Every other bad shape — a compose file that does not parse,
 holds several documents, or whose document or `services:` is not a mapping —
 is a named failure (6).
 
@@ -1691,7 +1719,9 @@ read from stdin whole, one final newline (and a CR before it) dropped — so
 `kasbah env set TLS_KEY --no-restart < key.pem` sets the key's lines, ending
 `-----END … KEY-----`. Empty, holding a NUL (or, typed, a CR), a byte that is
 not UTF-8, or over 64 KiB is refused. It never reaches argv or shell history,
-and no output names it.
+and no output names it: `kasbah env set KEY=value` is refused as not a key,
+with the prompt and the `printf '%s' "$VALUE" | kasbah env set KEY
+--no-restart` pipe as its next step.
 
 The value is taken exactly as typed or piped and written in the form compose
 reads back exactly (`env-template.md`), on one line — a value of several lines
@@ -1983,8 +2013,9 @@ run in either order; `deploy` needs both at this kasbah's schema.
 
 ## Debugging a failure
 
-Every run records a trace of what it does, in memory, in the order it
-happens:
+The common failures and their fixes are in `troubleshooting.md`
+(`kasbah help troubleshooting`). Every run records a trace of what it does,
+in memory, in the order it happens:
 
 - each ssh call — the command line it runs on the server, never what it sends
   on stdin — and its exit status;

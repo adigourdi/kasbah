@@ -87,7 +87,7 @@ func Built(doc tree.Value, project, version string) ([]Image, error) {
 // a missing file, what the caller needed it for.
 func ReadCompose(pwd, why string) (tree.Value, error) {
 	if fi, err := os.Stat(Compose); err != nil || !fi.Mode().IsRegular() {
-		return nil, cli.Fail("%s: not found (cwd=%s) — %s", Compose, pwd, why)
+		return nil, cli.Fail("%s: not found (cwd=%s) — %s", Compose, pwd, why).Help("S03")
 	}
 	docs, err := yamlx.LoadFile(Compose)
 	if err != nil {

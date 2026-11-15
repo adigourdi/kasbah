@@ -188,8 +188,8 @@ func Validate(body []byte, path, target, initCmd string) (*Marker, error) {
 			return nil, cli.Fail("%s on %s records cpu_limit='%s' mem_limit='%s'", path, target, mk.CPULimit, mk.MemLimit).Cont(
 				"both are required and neither may carry whitespace: kasbah writes them",
 				"into every project's .env as KASBAH_CPU_LIMIT / KASBAH_MEM_LIMIT, and",
-				"the compose files read cpus: and mem_limit: from there",
-				"(docs/env-template.md). Re-run `"+initCmd+"` to rewrite it.")
+				"the compose files read cpus: and mem_limit: from there.",
+				"Re-run `"+initCmd+"` to rewrite it.")
 		}
 	}
 	return mk, nil

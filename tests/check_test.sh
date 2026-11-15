@@ -128,6 +128,7 @@ assert '! grep -qF "built services" <<<"$out"' \
     "C08 says nothing about a project that builds nothing — there is no :current to move"
 assert 'grep -qF "✓ C11 All routed services can roll on deploy" <<<"$out"' "C11 pass line"
 assert 'grep -qF "30 passed, 0 warning, 0 failed" <<<"$out"'   "summary all pass"
+assert '! grep -qF "kasbah help" <<<"$out"' "a clean report ends on its summary, with no help footer (said '$out')"
 
 # --- Case 2: missing compose.prod.yml — fail, exit 6 -------------------------
 # Exit 6 is the documented "compliance check failed" code (docs/cli.md).
@@ -156,6 +157,8 @@ assert '[ "$rc" = "0" ]'                                                   "warn
 assert 'grep -qF "⚠ S05 .gitignore does not exclude .env" <<<"$out"'           "S05 warn line"
 assert 'grep -qF "⚠ S06 .gitignore does not exclude .kasbah/" <<<"$out"'      "S06 warn line"
 assert 'grep -qF "2 warning, 0 failed" <<<"$out"'                          "summary reports 2 warnings"
+assert '[ "$(tail -n 1 <<<"$out")" = "\`kasbah help S05\` (or any ID above) says why a rule exists and what to change." ]' \
+    "a report that warned ends with one footer naming the first rule it flagged (said '$(tail -n 1 <<<"$out")')"
 
 # --- Case 5: partial .gitignore (missing only .kasbah/) — one warn ----------
 proj5="$tmpdir/partial-gitignore"
@@ -174,6 +177,9 @@ mkdir -p "$proj6"
 out="$(cd "$proj6" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "2" ]'                          "no manifest exits 2 (got $rc)"
 assert 'grep -qF "No kasbah.yml" <<<"$out"'      "no-manifest message"
+assert 'grep -qxF "error: S01 No kasbah.yml in current directory." <<<"$out"' \
+    "check leads the refusal with its rule's ID (said '$out')"
+assert 'grep -qxF "       help: kasbah help S01" <<<"$out"' "and points at the rule's help (said '$out')"
 
 # --- Case 7: future schema — exit 1 (the manifest reader's contract) --------------
 proj7="$tmpdir/future-schema"
@@ -188,6 +194,8 @@ EOF
 out="$(cd "$proj7" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "1" ]'                              "future schema exits 1 (got $rc)"
 assert 'grep -qF "newer than this kasbah" <<<"$out"' "future schema message"
+assert 'grep -qF "error: S02 kasbah.yml: schema 99 is newer" <<<"$out"' "led by S02 (said '$out')"
+assert 'grep -qxF "       help: kasbah help S02" <<<"$out"' "and points at S02's help (said '$out')"
 
 # --- Case 8: --help works without a project ----------------------------------
 out="$(cd "$tmpdir" && "$kasbah" check --help 2>&1)"; rc=$?
@@ -412,7 +420,7 @@ assert 'grep -qF "⚠ C09 Services on kasbah-net whose name is not '"'"'demo'"'"
        "C09 warn line names the service, not the container (said '$out')"
 assert 'grep -qF "✓ C03 All routed services join kasbah-net" <<<"$out"'            "and C03 is untouched by it"
 assert 'grep -qF "✓ C07 No internal services on the kasbah network or kasbah-net" <<<"$out"'             "as is C07"
-assert 'grep -qF "⚠ C03 Routed through the shared kasbah-net: web — every project'"'"'s routed containers reach each other there; move them to a project network under the key kasbah (docs/traefik.md → Network)" <<<"$out"' \
+assert 'grep -qF "⚠ C03 Routed through the shared kasbah-net: web — every project'"'"'s routed containers reach each other there; move them to a project network under the key kasbah" <<<"$out"' \
        "and, routed through the shared kasbah-net, it is warned to move (C03)"
 assert 'grep -qF "⚠ C11 web will not roll on deploy — the fragment targets its container_name, so it is recreated in place, briefly unrouted" <<<"$out"' \
        "and, routed by container_name, it is told it will not roll (C11)"
@@ -1709,6 +1717,8 @@ EOF
     assert '[ "$rc" = "1" ]' "check refuses a project named $reserved with exit 1 (got $rc)"
     assert 'grep -qF "is reserved" <<<"$out"' "and says it is reserved (said '$out')"
     assert 'grep -qF "$reserved" <<<"$out"'   "naming it"
+    assert 'grep -qF "error: S07 kasbah.yml: " <<<"$out"' "led by S07 (said '$out')"
+    assert 'grep -qxF "       help: kasbah help S07" <<<"$out"' "and points at S07's help (said '$out')"
 done
 
 # --- Mail (M01) --------------------------------------------------------------

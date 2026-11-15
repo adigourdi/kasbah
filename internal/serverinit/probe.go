@@ -437,7 +437,9 @@ func Preflight(f Facts, target, apps, data string, wait bool) error {
 		return nil
 	}
 	e := cli.Fail("%s does not meet the prerequisites for kasbah server init:", target).Cont(rows...)
-	return e.Cont("kasbah checks prerequisites and never installs them — see docs/server-setup.md")
+	return e.Cont("kasbah checks prerequisites and never installs them.").
+		Next("Fix each line above on the server, then re-run",
+			"`kasbah server init "+target+"`.").Help("troubleshooting")
 }
 
 // SharedApps is a kasbah server another operator prepared and handed to the

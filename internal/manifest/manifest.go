@@ -58,7 +58,7 @@ func ReservedWhy(name string) string {
 // fall back) stays the reader's.
 func ClientCheck(raw string) (reason string, ok bool) {
 	if !reName.MatchString(raw) {
-		return fmt.Sprintf("client '%s' must match ^[a-z][a-z0-9-]*$ — it names a backup repository, the same charset as name (docs/project-manifest.md)", raw), false
+		return fmt.Sprintf("client '%s' must match ^[a-z][a-z0-9-]*$ — it names a backup repository, the same charset as name", raw), false
 	}
 	if slices.Contains(Reserved, raw) {
 		return fmt.Sprintf("client '%s' is reserved — kasbah owns the backup repository of that name (reserved: %s)", raw, strings.Join(Reserved, " ")), false
@@ -101,18 +101,18 @@ func (m *Manifest) Get(path ...any) (tree.Value, bool) { return tree.Lookup(m.Do
 func Require(path, version string) (*Manifest, error) {
 	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() {
 		return nil, cli.Failf(cli.ExitNoProject, "No %s in current directory.", path).
-			Cont("Run from the project root, or `kasbah init-project` to scaffold.")
+			Cont("Run from the project root, or `kasbah init-project` to scaffold.").Help("S01")
 	}
 	docs, err := yamlx.LoadFile(path)
 	if err != nil {
-		return nil, cli.Fail("%s: could not parse YAML", path).Cont(err.Error())
+		return nil, cli.Fail("%s: could not parse YAML", path).Cont(err.Error()).Help("files")
 	}
 
 	if len(docs) != 1 {
-		return nil, cli.Fail("%s: expected a single YAML document", path)
+		return nil, cli.Fail("%s: expected a single YAML document", path).Help("files")
 	}
 	if _, ok := docs[0].(*tree.Map); !ok && docs[0] != nil {
-		return nil, cli.Fail("%s: the document is not a mapping — kasbah.yml is a set of fields like schema: and name:", path)
+		return nil, cli.Fail("%s: the document is not a mapping — kasbah.yml is a set of fields like schema: and name:", path).Help("files")
 	}
 	// The four fields are single-line values: null or absent is "".
 	var fields [4]string
@@ -120,44 +120,45 @@ func Require(path, version string) (*Manifest, error) {
 		v, _ := tree.Lookup(docs[0], k)
 		switch v.(type) {
 		case []tree.Value, *tree.Map:
-			return nil, cli.Fail("%s: %s: is a list or a mapping — it has to be a single value", path, k)
+			return nil, cli.Fail("%s: %s: is a list or a mapping — it has to be a single value", path, k).Help("files")
 		case bool:
 			if k != "schema" {
-				return nil, cli.Fail("%s: %s: must be a string, not %s", path, k, tree.Compact(v))
+				return nil, cli.Fail("%s: %s: must be a string, not %s", path, k, tree.Compact(v)).Help("files")
 			}
 		}
 		f := tree.TextAt(docs[0], k)
 		if strings.Contains(f, "\n") {
-			return nil, cli.Fail("%s: %s: spans more than one line — it has to be a single value", path, k)
+			return nil, cli.Fail("%s: %s: spans more than one line — it has to be a single value", path, k).Help("files")
 		}
 		fields[i] = strings.TrimSuffix(f, "\r")
 	}
 	schema, kv, name, domain := fields[0], fields[1], fields[2], fields[3]
 
 	if schema == "" {
-		return nil, cli.Fail("%s: missing required field 'schema'", path)
+		return nil, cli.Fail("%s: missing required field 'schema'", path).Next("Add `schema: 1`.").Help("S02")
 	}
 	if !regexp.MustCompile(`^[0-9]+$`).MatchString(schema) {
-		return nil, cli.Fail("%s: schema must be an integer (got '%s')", path, schema)
+		return nil, cli.Fail("%s: schema must be an integer (got '%s')", path, schema).Next("Set `schema: 1`.").Help("S02")
 	}
 	// `[ "$schema" -gt 1 ]`: a value too large for test(1) is an error there,
 	// and the check is then skipped rather than failed.
 	if n, err := strconv.ParseUint(schema, 10, 64); err == nil && n > Schema {
-		return nil, &NewerSchema{Schema: n, err: cli.Fail("%s: schema %s is newer than this kasbah (%s supports schema %d). Upgrade kasbah.", path, schema, version, Schema)}
+		return nil, &NewerSchema{Schema: n, err: cli.Fail("%s: schema %s is newer than this kasbah (%s supports schema %d). Upgrade kasbah.", path, schema, version, Schema).Help("S02")}
 	}
 	// After the schema: a newer one may give `routed` a meaning this kasbah lacks.
 	routed, _ := tree.Lookup(docs[0], "routed")
 	if _, ok := routed.(bool); !ok && routed != nil {
-		return nil, cli.Fail("%s: routed: must be true or false, not %s", path, tree.Compact(routed))
+		return nil, cli.Fail("%s: routed: must be true or false, not %s", path, tree.Compact(routed)).Help("files")
 	}
 	if name == "" || name == "null" {
-		return nil, cli.Fail("%s: missing required field 'name'", path)
+		return nil, cli.Fail("%s: missing required field 'name'", path).Next("Add `name: <project>`: lowercase letters, digits and -,",
+			"starting with a letter.").Help("files")
 	}
 	if !reName.MatchString(name) {
-		return nil, cli.Fail("%s: invalid name '%s' (must match ^[a-z][a-z0-9-]*$)", path, name)
+		return nil, cli.Fail("%s: invalid name '%s' (must match ^[a-z][a-z0-9-]*$)", path, name).Help("files")
 	}
 	if NameReserved(name) {
-		return nil, cli.Fail("%s: %s. Rename the project.", path, ReservedWhy(name))
+		return nil, cli.Fail("%s: %s. Rename the project.", path, ReservedWhy(name)).Help("S07")
 	}
 	return &Manifest{Path: path, Schema: schema, KasbahVersion: kv, Name: name, Domain: domain, Unrouted: routed == false, Doc: docs[0]}, nil
 }

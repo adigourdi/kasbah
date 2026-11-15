@@ -18,6 +18,7 @@ same commit as the code. Start with the overview.
 | [mail.md](mail.md) | The optional shared mail stack |
 | [backup.md](backup.md) | The optional off-server backups |
 | [files.md](files.md) | Every file kasbah writes, on the workstation and on a server |
+| [troubleshooting.md](troubleshooting.md) | The failures a new project meets most, under their exact text, each with its cause and fix |
 
 What is intended rather than built — the build plan, the backlog and background
 research — lives in [plan/](../plan/roadmap/README.md).

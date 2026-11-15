@@ -51,7 +51,7 @@ func Parse(data []byte, where string) (*Registry, error) {
 	}
 	docs, err := yamlx.Load(data)
 	if err != nil || len(docs) > 1 {
-		return nil, unparseable{cli.Fail("%s could not be read as YAML", where)}
+		return nil, unparseable{cli.Fail("%s could not be read as YAML", where).Cause(err)}
 	}
 	var doc tree.Value
 	if len(docs) == 1 {

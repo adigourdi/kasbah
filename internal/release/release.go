@@ -35,7 +35,8 @@ func Pick(tags string) (string, error) {
 	// A space would break versions.log, whose fields are space-delimited.
 	if !reVersion.MatchString(vs[0]) {
 		return "", cli.Fail("HEAD's tag '%s' is not a version kasbah can use", vs[0]).Cont(
-			"expected v<major>.<minor>.<patch> (docs/build-deploy.md → versioning contract)")
+			"expected v<major>.<minor>.<patch>, such as v1.2.0").Next(
+			"Replace the tag: git tag -d " + vs[0] + " && git tag v<major>.<minor>.<patch>")
 	}
 	if version.IsDirty(vs[0][1:]) {
 		return "", cli.Fail("HEAD's tag '%s' is shaped like a --dirty build's label, which no release may carry", vs[0]).Cont(

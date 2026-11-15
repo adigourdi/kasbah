@@ -717,3 +717,27 @@ func TestRollbackEnvPutBack(t *testing.T) {
 		t.Errorf("engine refused: %v\n%s", f.calls, out)
 	}
 }
+
+// A tag's kasbah.yml is refused under the tag's name, with a remedy that does
+// not ask for an edit of the extracted copy.
+func TestTaggedManifestRemedy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, manifest.File)
+	os.WriteFile(path, []byte("name: demo\n"), 0o644)
+	_, err := manifest.Require(path, "1.0.0")
+	var e *cli.Error
+	if !errors.As(taggedManifest(err, path, "v1.2.0"), &e) {
+		t.Fatalf("not a cli.Error: %v", err)
+	}
+	var b bytes.Buffer
+	(&cli.Output{Stderr: &b}).Report(e)
+	got := b.String()
+	for _, want := range []string{"kasbah.yml at v1.2.0: missing required field 'schema'", "fix kasbah.yml in a new release", "help: kasbah help S02"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, dir) || strings.Contains(got, "Add `schema: 1`") {
+		t.Errorf("names the extracted copy or asks for its edit:\n%s", got)
+	}
+}
