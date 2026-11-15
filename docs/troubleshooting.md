@@ -282,7 +282,16 @@ holds the rest), then re-run `kasbah build-push USER@HOST`.
 
 ## Anything else
 
-Every failure saves a log of what the run did on both ends and names it on its
-last line (`log: …`); `kasbah --debug <command>` streams the same trace as it
-happens (`cli.md` → Debugging a failure). A bug report is most useful with the
-output of `kasbah info USER@HOST` and that log.
+Every run that ends on an `error:` saves a log of what it did on both ends and
+names it on its last line (`log: …`); `kasbah --debug <command>` streams the same trace as it
+happens (`cli.md` → Debugging a failure).
+
+A bug report goes to https://github.com/adigourdi/kasbah/issues, on the
+Bug report form, with what happened and what you expected, the command run,
+the output of `kasbah info USER@HOST` when a server is involved (else
+`kasbah info`), and the run's log: the path its last line names, which
+`kasbah info` also shows as `logs.last`. A run that misbehaves, or exits
+non-zero without an `error:` (`kasbah check`'s findings), saves no log;
+`kasbah --debug <command>` saves one. A log holds no env value
+or secret, but names the run's servers, users and paths: look it over before
+attaching it.

@@ -17,7 +17,7 @@ names it:
 Logs go to $XDG_STATE_HOME/kasbah/logs, else ~/.local/state/kasbah/logs,
 readable by you alone; the newest 20 are kept. Ctrl-C leaves one too.
 
-A log is safe to attach to a bug report: what kasbah sends on stdin
+Look a log over before attaching it to a bug report: what kasbah sends on stdin
 (payloads, values) is never in it, and a .env value, a password or a token
 is replaced by *** wherever it appears, except one under four characters,
 which cannot be told from ordinary text. It does name your servers, users

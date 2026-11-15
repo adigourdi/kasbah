@@ -2059,8 +2059,11 @@ logs). `kasbah info` names the directory (`logs`) and the newest log
 command line, the start time in UTC and the exit code, then the trace, each
 line its seconds since the start.
 
-A log is meant to be attached to a bug report. It names the servers, users
-and paths of the run, and never holds:
+A log is meant to be attached to a bug report, with the command run and the
+output of `kasbah info USER@HOST` when a server is involved (else
+`kasbah info`) — the repository's Bug report form asks for the three
+(`troubleshooting.md` → Anything else). It names the servers, users and paths
+of the run, so the reporter looks it over first, and never holds:
 
 - a value read from or written to an env file — a project's `.env`, its
   template, an `--env-seed=` file, an `--acme-dns=` file — other than

@@ -4,6 +4,26 @@ kasbah is built spec-first. The files in [docs/](docs/README.md) describe what
 the tool does: a change in behaviour updates the document that describes it,
 and the tests that prove it, in the same commit.
 
+## Reporting a bug or asking for a feature
+
+Reports go to the [issues](https://github.com/adigourdi/kasbah/issues), on
+the Bug report or Feature request form; a blank issue is open too. A bug
+report needs:
+
+- what happened, and what you expected;
+- the command you ran;
+- the output of `kasbah info USER@HOST` when a server is involved, else of
+  `kasbah info` — the build, the workstation's OS and what the server runs;
+- the run's log: a run that ends on an `error:` names it on its last line
+  (`log: <path>`), and `kasbah info` shows the newest as `logs.last`; a run
+  that misbehaves, or exits non-zero without an `error:` (`kasbah check`'s
+  findings), saves one under `kasbah --debug <command>`. kasbah keeps env values
+  and secrets out of it, but it names your servers, users and paths: look it
+  over before attaching it.
+
+What a log records and leaves out: [docs/cli.md](docs/cli.md) (Debugging a
+failure).
+
 ## Building
 
 Only Docker is needed on the host. The Go toolchain runs in a container

@@ -1,0 +1,21 @@
+name: Feature request
+description: Something kasbah should do that it does not.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do, and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape
+      description: How it could look — a command, a flag, a key in `kasbah.yml`, what it would print.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: What you do instead now, or other ways it could work.

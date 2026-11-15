@@ -5,12 +5,15 @@
 # `kasbah help info` is `kasbah info --help`. A host that does not answer
 # still leaves the workstation's lines (a stand-in ssh, nothing on the network).
 # `kasbah remote info`, run here against a stand-in docker, reads docker's
-# stdout for a version and its stderr for why it failed.
+# stdout for a version and its stderr for why it failed. The issue forms in
+# .github/ISSUE_TEMPLATE/ parse as GitHub issue forms, and the bug form asks
+# for what info and a failed run's log line name.
 
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 . "$repo_dir/tests/cli.sh"
+need_yaml2json
 kasbah="$KASBAH_BIN"
 build="$(kasbah_bin_version)"
 base="$(kasbah_base_version)"
@@ -122,5 +125,34 @@ assert '[ "$rc" -eq 0 ] && [ -z "$(kv docker)" ] && [ "$(kv docker_error)" = "pe
 remote_info "$tmpdir/nodocker"; rc=$?
 assert '[ "$rc" -eq 0 ] && grep -qx "docker=" "$tmpdir/out" && grep -qx "compose=" "$tmpdir/out" && ! grep -q "^docker_error=" "$tmpdir/out"' \
     "remote info: no docker on PATH is docker= with no docker_error, which info shows as none (rc $rc: $(flat))"
+
+# --- The issue forms ---------------------------------------------------------------
+
+forms="$repo_dir/.github/ISSUE_TEMPLATE"
+# A form: name, description and a body; each element a known type, every
+# input with a unique id and a label, validations only where GitHub takes
+# them, and labels GitHub creates by default.
+form_ok='(.name|type)=="string" and (.description|type)=="string" and
+    (.body|type)=="array" and (.body|length)>0 and
+    ((.labels // [])-["bug","enhancement"]|length)==0 and
+    ([.body[]|.type]-["markdown","textarea","input","dropdown","checkboxes"]|length)==0 and
+    ([.body[]|select(.type!="markdown")|.id|select(type=="string" and test("^[A-Za-z0-9_-]+$"))]|length)==([.body[]|select(.type!="markdown")]|length) and
+    ([.body[]|select(.type!="markdown")|.id]|length)==([.body[]|select(.type!="markdown")|.id]|unique|length) and
+    all(.body[]|select(.type!="markdown"); (.attributes.label|type)=="string") and
+    all(.body[]|select(.type=="markdown"); (.attributes.value|type)=="string" and .validations==null)'
+for f in bug feature; do
+    assert '[ "$(yaml2json "$forms/$f.yml" | jq "$form_ok")" = true ]' "$f.yml is an issue form (got: $(yaml2json "$forms/$f.yml" 2>&1 | head -c 300))"
+done
+assert '[ "$(yaml2json "$forms/config.yml" | jq -c .)" = "{\"blank_issues_enabled\":true}" ]' \
+    "config.yml keeps blank issues and links nowhere (got: $(yaml2json "$forms/config.yml" 2>&1))"
+bug="$(yaml2json "$forms/bug.yml")"
+assert '[ "$(jq -c "[.body[]|select(.validations.required)|.id]" <<<"$bug")" = "[\"what-happened\",\"command\",\"info\"]" ]' \
+    "the bug form requires what happened, the command and info (got: $(jq -c "[.body[]|select(.validations.required)|.id]" <<<"$bug"))"
+info_field="$(jq -r ".body[]|select(.id==\"info\")|.attributes.description" <<<"$bug")"
+assert 'grep -qF "\`kasbah info USER@HOST\`" <<<"$info_field" && grep -qF "\`kasbah info\`" <<<"$info_field"' \
+    "the bug form asks for kasbah info, with USER@HOST when a server is involved (got: $info_field)"
+log_field="$(jq -c ".body[]|select(.id==\"log\")" <<<"$bug")"
+assert 'grep -qF "\`log: <path>\`" <<<"$log_field" && grep -qF "\`logs.last\`" <<<"$log_field" && [ "$(jq -r ".attributes.render" <<<"$log_field")" = null ]' \
+    "the log field names the log line and logs.last, and takes an attachment, no render (got: $log_field)"
 
 exit "$fail"

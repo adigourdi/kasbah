@@ -1,0 +1,49 @@
+name: Bug report
+description: kasbah did something wrong, or failed where it should not have.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A report a maintainer can act on carries the build, the command and what kasbah ran.
+        The common failures and their fixes are in [docs/troubleshooting.md](https://github.com/adigourdi/kasbah/blob/main/docs/troubleshooting.md) (`kasbah help troubleshooting`).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What kasbah did, and what it printed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What it should have done instead.
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The command you ran, with its flags (and the steps before it, if they matter).
+      placeholder: kasbah deploy deploy@vps.example.com
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: info
+    attributes:
+      label: kasbah info
+      description: |
+        The output of `kasbah info USER@HOST` when a server is involved, else of `kasbah info`.
+        It names this build, the workstation's OS and, with a host, what the server runs.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        A run that ends on an `error:` names its log on its last line, `log: <path>`; `kasbah info` names the newest as `logs.last`.
+        A run that misbehaves, or exits non-zero without an `error:` (`kasbah check`'s findings), saves none: run it again as `kasbah --debug <command>`, and its last line names one.
+        kasbah keeps `.env` values and secrets out of a log, but it names your servers, users and paths: look it over before attaching it.
+        Drag the file here to attach it, or paste it inside a code block.
