@@ -144,16 +144,16 @@ run migrate server "$RIG_TARGET" --undo --yes; rc=$?
 assert '[ "$rc" = 0 ]' "undo --yes succeeds (exit $rc: $(err))"
 assert '[ "$(marker_version)" = "0.9.0" ]' "the marker is back at 0.9.0 ($(marker_version))"
 assert 'grep -qF "back at major 0" <<<"$(out)"' "and the report says so (said '$(out)')"
+assert '[ "$(remote_exists "$snapdir/$snap.undone")" = yes ]' "and noted the snapshot undone"
 
 sleep 1
 run migrate server "$RIG_TARGET" --yes; rc=$?
 assert '[ "$rc" = 0 ]' "migrating again succeeds (exit $rc: $(err))"
 assert '[ "$(marker_version | cut -d. -f1)" = "$major" ]' "back at this major ($(marker_version))"
-# The undo put the originals back, so the first snapshot still holds them:
-# a move from the same major reuses it rather than snapshotting over it.
-assert '[ "$(snapshots)" = "$snap" ]' "the first snapshot is reused, not rewritten ($(snapshots | tr '\n' ' '))"
-assert 'grep -qF "an earlier run'"'"'s, kept" <<<"$(out)"' "and the report says so (said '$(out)')"
-newest=$snap
+# The undone snapshot is history: a move after it takes a fresh one.
+newest=$(snapshots | tail -n 1)
+assert '[ "$(wc -l <<<"$(snapshots)")" = 2 ] && [ "$newest" != "$snap" ]' "a fresh snapshot beside the undone one ($(snapshots | tr '\n' ' '))"
+assert '! grep -qF "an earlier run'"'"'s, kept" <<<"$(out)"' "and none is reported reused (said '$(out)')"
 
 # A project deployed after the snapshot: its versions.log line (vlog.Line's
 # format) stamped an hour from now.

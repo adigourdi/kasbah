@@ -2012,30 +2012,56 @@ migration lock `<apps>/.kasbah/migrate.lock`, the server lock
 project); every file the steps declare, plus the marker, is written into
 `<apps>/.kasbah/migrate/<from>-to-<to>-<stamp>.tar` before anything is
 rewritten — unless one for this step already exists while the marker still
-says `<from>`: that one holds the originals (a run that died halfway, or an
-undone run), so it is kept and reused — a step that rewrites files under
-`traefik/` or `mail/` must therefore compare the tree to the tarball before
-reusing it, which none does yet; files are rewritten one by one, temp + rename, each skipped when
-its own stamp already says `<to>`, so a run that died halfway finishes on the
+says `<from>` and no `.undone` note sits beside it: that one holds the
+originals of a run that died halfway, so it is kept and reused (after an
+undo has finished with it a fresh snapshot is taken instead; one from a
+kasbah that left no notes is reused even when it was undone); files are
+rewritten one by one, temp + rename, each skipped when its own stamp already
+says `<to>`, so a run that died halfway finishes on the
 next; the marker moves last (merged — keys it does not own survive). Steps are
 compiled into the binary, one per major, and the newest binary carries them
 all. Today the chain holds one, `0→1`, which rewrites nothing: 0.x server
 state is 1.x state.
 
-`--undo` restores the newest snapshot that ends at the marker's current major — files and marker, the marker as it was
-snapshotted, so a key written after the migration (a later `server init
---with-backup`) is lost with it — after the same prompt, and refuses when any
-project's `versions.log` has an entry newer than the snapshot: the server has
-moved on, and the tarball is the manual path. An entry in the same second as
-the snapshot does not count as newer.
+`--undo`, after the same prompt, goes back one of two ways, and once done
+leaves an empty note `<snapshot>.undone` beside the snapshot it used:
+
+- *A run that stopped.* The newest snapshot that starts at the marker's
+  major, with no note beside it, is a run that stopped before moving the
+  marker — partway, or before its first rewrite. Its files that differ from
+  the live ones (an absent live file counts) are restored, possibly none,
+  then the note is written; the marker is left as it is — it already says that
+  major, and its snapshotted copy would drop a key written since. With nothing
+  to put back the run is reported closed. A snapshot from a kasbah that left
+  no notes counts as such a run even when it was undone, so the first `--undo`
+  may close it with nothing to put back.
+- *A finished migration.* Otherwise `--undo` restores the newest snapshot that
+  ends at the marker's current major, whatever its note: files, then the
+  note, then the marker, as it was snapshotted — so a key written after the
+  migration (a later `server init --with-backup`) is lost with it.
+
+So after a finished `0→1` and a stopped `1→2`, a first `--undo` closes `1→2`
+and a second undoes `0→1`; after a finished `1→2` is undone, a file it held
+that changes later (an `upgrade-traefik`) is not reverted — the next `--undo`
+undoes `0→1`, or is *nothing to undo*. A file whose directory is gone (a
+dropped project) is not restored, and the report names it. A restore that
+has files to put back refuses when any project's `versions.log` has an entry
+newer than the snapshot: the server has moved on, and the tarball is the
+manual path; for a stopped run, re-running `kasbah migrate server` finishes
+it instead. An entry in the same second as the snapshot does not count as
+newer.
 
 A run that fails once its snapshot is written (or reused), and an undo that
-fails writing a restored file or the marker (`kasbah remote migrate` exits 3
-for both; the command itself exits 1), fail naming the same command to re-run
-once the cause is fixed: it resumes, on the same snapshot. A failure before
+fails writing a restored file, its note or the marker (`kasbah remote
+migrate` exits 3 for both; the command itself exits 1), fail naming the same
+command to re-run once the cause is fixed: it resumes, on the same snapshot.
+A run's failure names `--undo` beside it, as the way back. A failure before
 that — a held lock, nothing to undo, a deploy since the snapshot — and a
 snapshot that does not read back fail in the server's own words, the latter
-naming what it already restored, and name no re-run command.
+naming what it already restored, and name no re-run of the same command: a
+deploy since names leaving the server where it is (a finished migration) or
+re-running `kasbah migrate server` forward (a stopped run), and a stopped
+run's snapshot that does not read back names the file to move aside.
 
 Exit codes: 3 unreachable, 4 no marker, 1 refused.
 

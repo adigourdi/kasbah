@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/probe"
 	"github.com/adigourdi/kasbah/internal/serverlock"
@@ -44,10 +45,13 @@ type Report struct {
 	// Marker is updated, unchanged or restored.
 	Marker   string   `json:"marker"`
 	Restored []string `json:"restored"`
+	// Gone is an undo's files left out because their directory is gone (a
+	// dropped project).
+	Gone []string `json:"gone"`
 }
 
 // Keys is what a report must carry to be one (remote.Decode).
-var Keys = []string{"undo", "from", "to", "nothing", "snapshot", "snapshot_reused", "steps", "marker", "restored"}
+var Keys = []string{"undo", "from", "to", "nothing", "snapshot", "snapshot_reused", "steps", "marker", "restored", "gone"}
 
 // ExitPartway is `kasbah remote migrate`'s exit when the run stopped after
 // it began rewriting: the same command, re-run once the cause is fixed,
@@ -62,6 +66,22 @@ func (p partway) Unwrap() error { return p.error }
 const stampLayout = "20060102T150405Z"
 
 var reSnapshot = regexp.MustCompile(`^([0-9]+)-to-([0-9]+)-([0-9]{8}T[0-9]{6}Z)\.tar$`)
+
+// Undone is the suffix of the empty note beside a snapshot that an undo
+// finished with.
+const Undone = ".undone"
+
+// undone is whether an undo finished with the snapshot at path.
+func undone(path string) (bool, error) {
+	_, err := os.Lstat(path + Undone)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("could not check for %s: %v", path+Undone, err)
+	}
+	return true, nil
+}
 
 // SnapshotName is the tarball a run from major from to major to writes at t.
 func SnapshotName(from, to int, t time.Time) string {
@@ -190,7 +210,7 @@ func snapshot(apps, name string, rel []string) (string, error) {
 	}
 	path := filepath.Join(dir, name)
 	if _, err := os.Stat(path); err == nil {
-		return "", fmt.Errorf("%s already exists — a snapshot of this second was already written", path)
+		return "", fmt.Errorf("%s already exists — a snapshot of this second was already written; re-run in a second", path)
 	}
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -244,7 +264,7 @@ func Run(apps, ours string, steps []Step, now time.Time) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &Report{From: from, To: to, Steps: []StepReport{}, Marker: "unchanged", Restored: []string{}}
+	r := &Report{From: from, To: to, Steps: []StepReport{}, Marker: "unchanged", Restored: []string{}, Gone: []string{}}
 	if from == to {
 		r.Nothing = true
 		return r, nil
@@ -258,9 +278,17 @@ func Run(apps, ours string, steps []Step, now time.Time) (*Report, error) {
 		return nil, err
 	}
 	// A failed run's snapshot holds the originals; a rerun keeps it so that
-	// an undo restores those, never the half-migrated tree.
+	// an undo restores those, never the half-migrated tree. One an undo has
+	// finished with is history, and a fresh one is taken.
 	if r.Snapshot, _, err = Find(apps, from, to); err != nil {
 		return nil, err
+	}
+	if r.Snapshot != "" {
+		if done, err := undone(r.Snapshot); err != nil {
+			return nil, err
+		} else if done {
+			r.Snapshot = ""
+		}
 	}
 	if r.Snapshot != "" {
 		r.SnapshotReused = true
@@ -353,8 +381,8 @@ func DeployedSince(apps string, t time.Time) (project, stamp string, err error) 
 	return "", "", nil
 }
 
-// Undo restores the newest snapshot, the marker last, unless a project has
-// deployed since it was taken.
+// Undo puts back the newest unfinished or finished migration, unless a
+// project has deployed since its snapshot was taken.
 func Undo(apps string) (*Report, error) {
 	held, err := lockAll(apps)
 	if err != nil {
@@ -365,34 +393,42 @@ func Undo(apps string) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The snapshot to restore is the one whose move ended at the major the
-	// marker is at now; a newest file from another move is someone else's.
-	to, _, err := Majors(m, "0.0.0")
+	cur, _, err := Majors(m, "0.0.0")
 	if err != nil {
 		return nil, err
 	}
-	path, at, err := findTo(apps, to)
+	// A run that stopped partway left the marker where it started and its
+	// snapshot, with no note, starting there.
+	partial, at, err := Find(apps, cur, -1)
+	if err != nil {
+		return nil, err
+	}
+	if partial != "" {
+		done, err := undone(partial)
+		if err != nil {
+			return nil, err
+		}
+		if !done {
+			return undoPartial(apps, cur, partial, at)
+		}
+	}
+	// Otherwise the snapshot whose move ended at the marker's major; a newest
+	// file from another move is someone else's.
+	path, at, err := findTo(apps, cur)
 	if err != nil {
 		return nil, err
 	}
 	if path == "" {
-		return nil, fmt.Errorf("nothing to undo: no migration snapshot ending at major %d under %s", to, filepath.Join(apps, Dir))
+		if partial != "" {
+			return nil, fmt.Errorf("nothing to undo: no migration snapshot ending at major %d under %s, and %s, the newest starting there, was already undone", cur, filepath.Join(apps, Dir), partial)
+		}
+		return nil, fmt.Errorf("nothing to undo: no migration snapshot ending at major %d under %s", cur, filepath.Join(apps, Dir))
 	}
 	from, _ := strconv.Atoi(reSnapshot.FindStringSubmatch(filepath.Base(path))[1])
-	r := &Report{Undo: true, From: from, To: to, Snapshot: path, Steps: []StepReport{}, Marker: "unchanged", Restored: []string{}}
-	project, stamp, err := DeployedSince(apps, at)
-	if err != nil {
+	r := &Report{Undo: true, From: from, To: cur, Snapshot: path, Steps: []StepReport{}, Marker: "unchanged", Restored: []string{}, Gone: []string{}}
+	if err := deployedSince(apps, path, at, fmt.Sprintf("Leave the server on major %d, or restore by hand from the tarball.", cur)); err != nil {
 		return nil, err
 	}
-	if project != "" {
-		return nil, fmt.Errorf("%s was deployed at %s, after the snapshot %s was taken — an undo would put files from before that deploy under it; restore by hand from the tarball, or leave the server on major %d", project, stamp, path, to)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("could not open %s: %v", path, err)
-	}
-	defer f.Close()
-	tr := tar.NewReader(f)
 	var mk []byte
 	done := func() string {
 		if len(r.Restored) == 0 {
@@ -400,36 +436,147 @@ func Undo(apps string) (*Report, error) {
 		}
 		return "already restored: " + strings.Join(r.Restored, ", ") + "; the marker was not"
 	}
-	for {
-		h, err := tr.Next()
-		if err == io.EOF {
-			break
+	err = walk(path, done, func(e entry) error {
+		if e.name == marker.Path("")[1:] {
+			mk = e.body
+			return nil
 		}
-		if err != nil {
-			return nil, fmt.Errorf("%s is not a tarball kasbah wrote: %v — %s", path, err, done())
+		if gone(apps, e.name) {
+			r.Gone = append(r.Gone, e.name)
+			return nil
 		}
-		if h.Typeflag != tar.TypeReg || strings.HasPrefix(h.Name, "/") || strings.Contains(h.Name, "..") {
-			return nil, fmt.Errorf("%s holds %q, which is not a file under the apps path — %s", path, h.Name, done())
+		if err := writeAtomic(filepath.Join(apps, e.name), e.body, e.mode); err != nil {
+			return partway{err}
 		}
-		body, err := io.ReadAll(tr)
-		if err != nil {
-			return nil, fmt.Errorf("could not read %s out of %s: %v — %s", h.Name, path, err, done())
-		}
-		if h.Name == marker.Path("")[1:] {
-			mk = body
-			continue
-		}
-		if err := writeAtomic(filepath.Join(apps, h.Name), body, os.FileMode(h.Mode).Perm()); err != nil {
-			return nil, partway{err}
-		}
-		r.Restored = append(r.Restored, h.Name)
+		r.Restored = append(r.Restored, e.name)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	if mk == nil {
 		return nil, fmt.Errorf("%s carries no marker, which an undo restores last — %s", path, done())
+	}
+	// The note before the marker: until the marker moves, a re-run picks this
+	// snapshot again by its major.
+	if err := note(path); err != nil {
+		return nil, err
 	}
 	if err := writeAtomic(marker.Path(apps), mk, marker.Mode); err != nil {
 		return nil, partway{err}
 	}
 	r.Marker = "restored"
 	return r, nil
+}
+
+// undoPartial puts back the files of a run that stopped partway, those that
+// differ from the snapshot (maybe none), then notes it done. The marker stays:
+// it already says cur, and the snapshot's copy would drop a key written since.
+func undoPartial(apps string, cur int, path string, at time.Time) (*Report, error) {
+	sm := reSnapshot.FindStringSubmatch(filepath.Base(path))
+	to, _ := strconv.Atoi(sm[2])
+	r := &Report{Undo: true, From: cur, To: to, Snapshot: path, Steps: []StepReport{}, Marker: "unchanged", Restored: []string{}, Gone: []string{}}
+	diff, err := differs(apps, path, r)
+	if err != nil {
+		return nil, cli.Fail("%v", err).Next(fmt.Sprintf("Move %s aside, out of %s, and re-run the undo: it then looks past it.", path, filepath.Join(apps, Dir)))
+	}
+	if len(diff) > 0 {
+		if err := deployedSince(apps, path, at, fmt.Sprintf("Finish the run instead: re-run `kasbah migrate server` for this server with a kasbah of major %d — it picks up where it stopped. Or restore by hand from the tarball.", to)); err != nil {
+			return nil, err
+		}
+	}
+	for _, e := range diff {
+		if err := writeAtomic(filepath.Join(apps, e.name), e.body, e.mode); err != nil {
+			return nil, partway{err}
+		}
+		r.Restored = append(r.Restored, e.name)
+	}
+	if err := note(path); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// note records that an undo finished with the snapshot at path.
+func note(path string) error {
+	if err := writeAtomic(path+Undone, nil, 0o644); err != nil {
+		return partway{err}
+	}
+	return nil
+}
+
+// gone is whether the directory a snapshot's file goes back into is gone.
+func gone(apps, name string) bool {
+	_, err := os.Stat(filepath.Dir(filepath.Join(apps, name)))
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// deployedSince refuses an undo of the snapshot at path, taken at at, once a
+// project has deployed since; next is the way on.
+func deployedSince(apps, path string, at time.Time, next string) error {
+	project, stamp, err := DeployedSince(apps, at)
+	if err != nil {
+		return err
+	}
+	if project != "" {
+		return cli.Fail("%s was deployed at %s, after the snapshot %s was taken — an undo would put files from before that deploy under it", project, stamp, path).Next(next)
+	}
+	return nil
+}
+
+type entry struct {
+	name string
+	mode os.FileMode
+	body []byte
+}
+
+// walk reads a snapshot's files in order; a read failure says what done
+// reports was already restored.
+func walk(path string, done func() string, each func(entry) error) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("could not open %s: %v", path, err)
+	}
+	defer f.Close()
+	tr := tar.NewReader(f)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("%s is not a tarball kasbah wrote: %v — %s", path, err, done())
+		}
+		if h.Typeflag != tar.TypeReg || strings.HasPrefix(h.Name, "/") || strings.Contains(h.Name, "..") {
+			return fmt.Errorf("%s holds %q, which is not a file under the apps path — %s", path, h.Name, done())
+		}
+		body, err := io.ReadAll(tr)
+		if err != nil {
+			return fmt.Errorf("could not read %s out of %s: %v — %s", h.Name, path, err, done())
+		}
+		if err := each(entry{h.Name, os.FileMode(h.Mode).Perm(), body}); err != nil {
+			return err
+		}
+	}
+}
+
+// differs is the files in a snapshot, the marker aside, whose live copy is
+// absent or not the snapshot's bytes; those whose directory is gone go to
+// r.Gone instead.
+func differs(apps, path string, r *Report) ([]entry, error) {
+	var out []entry
+	err := walk(path, func() string { return "nothing was restored" }, func(e entry) error {
+		if e.name == marker.Path("")[1:] {
+			return nil
+		}
+		if gone(apps, e.name) {
+			r.Gone = append(r.Gone, e.name)
+			return nil
+		}
+		if live, err := os.ReadFile(filepath.Join(apps, e.name)); err != nil || !bytes.Equal(live, e.body) {
+			out = append(out, e)
+		}
+		return nil
+	})
+	return out, err
 }

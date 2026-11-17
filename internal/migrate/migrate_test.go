@@ -272,7 +272,7 @@ func TestUndo(t *testing.T) {
 }
 
 // Undo takes the snapshot whose move ended at the marker's major, not the
-// newest file, and refuses when none did.
+// newest file from another move, and refuses when none did.
 func TestUndoPicksByMajor(t *testing.T) {
 	apps := newApps(t, "0.9.0")
 	write(t, apps, "a/x.yml", "v0\nx\n")
@@ -283,7 +283,8 @@ func TestUndoPicksByMajor(t *testing.T) {
 	if _, err := Run(apps, "2.0.0", steps, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	// A stray, newer file from a move that is not where the marker is.
+	// A stray, newer file from a move that starts at major 0, where the
+	// marker is not yet.
 	write(t, apps, Dir+"/0-to-3-20261021T130000Z.tar", "not read")
 	u, err := Undo(apps)
 	if err != nil || !strings.HasSuffix(u.Snapshot, "1-to-2-20261021T120100Z.tar") || u.From != 1 {
@@ -296,6 +297,14 @@ func TestUndoPicksByMajor(t *testing.T) {
 	if err != nil || !strings.HasSuffix(u.Snapshot, "0-to-1-20261021T120000Z.tar") {
 		t.Fatalf("second undo: %+v %v", u, err)
 	}
+	// At major 0 the stray is the newest snapshot starting there, with no
+	// note: read, and refused, naming the file to move aside.
+	_, err = Undo(apps)
+	if err == nil || !strings.Contains(err.Error(), "0-to-3-20261021T130000Z.tar is not a tarball kasbah wrote") ||
+		len(next(err)) != 1 || !strings.HasPrefix(next(err)[0], "Move "+filepath.Join(apps, Dir, "0-to-3-20261021T130000Z.tar")+" aside") {
+		t.Errorf("the stray at major 0: %v %q", err, next(err))
+	}
+	os.Remove(filepath.Join(apps, Dir, "0-to-3-20261021T130000Z.tar"))
 	if _, err := Undo(apps); err == nil || !strings.Contains(err.Error(), "ending at major 0") {
 		t.Errorf("no snapshot ends at 0: %v", err)
 	}
@@ -369,13 +378,22 @@ func TestRemote(t *testing.T) {
 		t.Errorf("usage: %d %s", rc, se.String())
 	}
 	if os.Geteuid() != 0 {
-		// The marker cannot be written: the run stopped partway.
+		// The marker cannot be written: the run stopped partway, and its fresh
+		// snapshot (the undone one moved a second back) is closed by --undo.
+		ents, _ := os.ReadDir(filepath.Join(apps, Dir))
+		for _, e := range ents {
+			os.Rename(filepath.Join(apps, Dir, e.Name()), filepath.Join(apps, Dir, strings.Replace(e.Name(), "-2", "-1", 1)))
+		}
 		os.Chmod(apps+"/.kasbah", 0o555)
 		var o2, e2 bytes.Buffer
 		rc := Remote([]string{"--apps=" + apps, "--version=1.0.2-dev"}, &o2, &e2)
 		os.Chmod(apps+"/.kasbah", 0o755)
 		if rc != ExitPartway {
 			t.Errorf("partway: rc %d, %s", rc, e2.String())
+		}
+		e2.Reset()
+		if rc := Remote([]string{"--apps=" + apps, "--version=1.0.2-dev", "--undo"}, &o2, &e2); rc != 0 || !strings.Contains(o2.String(), `"marker":"unchanged","restored":[],"gone":[]`) {
+			t.Errorf("closed: rc %d, %s %s", rc, o2.String(), e2.String())
 		}
 		e2.Reset()
 		if rc := Remote([]string{"--apps=" + apps, "--version=1.0.2-dev", "--undo"}, &o2, &e2); rc != 1 || !strings.Contains(e2.String(), "nothing to undo") {
@@ -534,7 +552,7 @@ func TestRunServer(t *testing.T) {
 		}
 	})
 	t.Run("--yes runs and prints the report", func(t *testing.T) {
-		f := &fakeSession{marker: mk, apps: "/apps", out: `{"undo":false,"from":0,"to":1,"nothing":false,"snapshot":"/apps/.kasbah/migrate/x.tar","snapshot_reused":false,"steps":[{"from":0,"to":1,"files":[]}],"marker":"updated","restored":[]}`}
+		f := &fakeSession{marker: mk, apps: "/apps", out: `{"undo":false,"from":0,"to":1,"nothing":false,"snapshot":"/apps/.kasbah/migrate/x.tar","snapshot_reused":false,"steps":[{"from":0,"to":1,"files":[]}],"marker":"updated","restored":[],"gone":[]}`}
 		c, so, _ := ctx(f, false, "")
 		if err := RunServer(c, Options{Server: true, Target: "d@h", Yes: true}); err != nil || len(f.calls) != 1 || f.calls[0] != "/apps 1.0.2-dev run" {
 			t.Fatalf("%v %v", err, f.calls)
@@ -551,7 +569,7 @@ func TestRunServer(t *testing.T) {
 		}
 	})
 	t.Run("undo", func(t *testing.T) {
-		f := &fakeSession{marker: strings.Replace(mk, "0.9.0", "1.0.0", 1), apps: "/apps", out: `{"undo":true,"from":0,"to":1,"nothing":false,"snapshot":"/apps/.kasbah/migrate/x.tar","snapshot_reused":false,"steps":[],"marker":"restored","restored":["a"]}`}
+		f := &fakeSession{marker: strings.Replace(mk, "0.9.0", "1.0.0", 1), apps: "/apps", out: `{"undo":true,"from":0,"to":1,"nothing":false,"snapshot":"/apps/.kasbah/migrate/x.tar","snapshot_reused":false,"steps":[],"marker":"restored","restored":["a"],"gone":[]}`}
 		c, so, _ := ctx(f, false, "")
 		if err := RunServer(c, Options{Server: true, Target: "d@h", Yes: true, Undo: true}); err != nil || f.calls[0] != "/apps 1.0.2-dev undo" || !strings.Contains(so.String(), "back at major 0") {
 			t.Fatalf("%v %v %s", err, f.calls, so.String())
@@ -563,7 +581,7 @@ func TestRunServer(t *testing.T) {
 		}
 		f.rc = ExitPartway
 		err = RunServer(c, Options{Server: true, Target: "d@h", Yes: true, Undo: true})
-		if !slices.Equal(next(err), []string{"Once the cause above is fixed, re-run `kasbah migrate server d@h --undo`: the marker goes back last, so the same snapshot is restored."}) {
+		if !slices.Equal(next(err), []string{"Once the cause above is fixed, re-run `kasbah migrate server d@h --undo`: it picks the same snapshot again, which is noted undone only once every file is back."}) {
 			t.Errorf("%v %q", err, next(err))
 		}
 		g := &fakeSession{marker: mk, apps: "/apps", rc: 1}
@@ -573,8 +591,24 @@ func TestRunServer(t *testing.T) {
 		}
 		g.rc = ExitPartway
 		err = RunServer(c, Options{Server: true, Target: "d@h", Yes: true})
-		if !slices.Equal(next(err), []string{"Once the cause above is fixed, re-run `kasbah migrate server d@h`: it picks up where it stopped, skipping every file already rewritten."}) {
+		if !slices.Equal(next(err), []string{"Once the cause above is fixed, re-run `kasbah migrate server d@h`: it picks up where it stopped, skipping every file already rewritten.",
+			"Or go back: `kasbah migrate server d@h --undo` puts back from its snapshot any file it rewrote."}) {
 			t.Errorf("%v %q", err, next(err))
+		}
+		p := &fakeSession{marker: mk, apps: "/apps", out: `{"undo":true,"from":0,"to":1,"nothing":false,"snapshot":"/apps/.kasbah/migrate/0-to-1-x.tar","snapshot_reused":false,"steps":[],"marker":"unchanged","restored":["a/x.yml"],"gone":["b/y.yml"]}`}
+		c, so, _ = ctx(p, false, "")
+		if err := RunServer(c, Options{Server: true, Target: "d@h", Yes: true, Undo: true}); err != nil {
+			t.Fatal(err)
+		}
+		if want := "undone on d@h: the run from major 0 to 1 that stopped partway — 1 file(s) put back from /apps/.kasbah/migrate/0-to-1-x.tar; the marker is unchanged, still at major 0\n  restored a/x.yml\n  not restored b/y.yml: its directory is gone\n"; !strings.HasSuffix(so.String(), want) || strings.Contains(so.String(), "back at major") {
+			t.Errorf("a partial undo's summary: %s", so.String())
+		}
+		p.out = `{"undo":true,"from":0,"to":1,"nothing":false,"snapshot":"/apps/.kasbah/migrate/0-to-1-x.tar","snapshot_reused":false,"steps":[],"marker":"unchanged","restored":[],"gone":[]}`
+		if err := RunServer(c, Options{Server: true, Target: "d@h", Yes: true, Undo: true}); err != nil {
+			t.Fatal(err)
+		}
+		if want := "undone on d@h: the run from major 0 to 1 had stopped; every file still there already matches what /apps/.kasbah/migrate/0-to-1-x.tar holds — closed, the marker unchanged at major 0\n"; !strings.HasSuffix(so.String(), want) {
+			t.Errorf("a close's summary: %s", so.String())
 		}
 		c, _, _ = ctx(f, false, "")
 		f.rc, f.out = 0, `{"from":0}`
@@ -625,5 +659,239 @@ func TestUndoNamesWhatItRestored(t *testing.T) {
 	_, err = Undo(apps)
 	if err == nil || !strings.Contains(err.Error(), "carries no marker, which an undo restores last — already restored: alpha/a.yml; the marker was not") {
 		t.Errorf("a snapshot with no marker: %v", err)
+	}
+}
+
+// A run that stopped partway is undone from its snapshot: the files it
+// rewrote go back, the marker, already at the old major, stays, and the
+// snapshot is noted undone.
+func TestUndoPartial(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through a read-only directory")
+	}
+	apps := newApps(t, "0.9.0")
+	write(t, apps, "alpha/a.yml", "v0\na\n")
+	write(t, apps, "beta/b.yml", "v0\nb\n")
+	write(t, apps, "beta/.deploy.lock", "")
+	before := read(t, apps, ".kasbah/server.json")
+	steps := []Step{step(0, 1, "alpha/a.yml", "beta/b.yml")}
+	os.Chmod(apps+"/beta", 0o555)
+	_, err := Run(apps, "1.0.0", steps, now)
+	os.Chmod(apps+"/beta", 0o755)
+	if !errors.As(err, new(partway)) || read(t, apps, "alpha/a.yml") != "v1\na\n+01\n" {
+		t.Fatalf("partway: %v", err)
+	}
+	snap, _, _ := Find(apps, 0, 1)
+
+	// A deploy since the snapshot refuses the partial undo too, naming the
+	// way forward.
+	later, _ := vlog.Line(vlog.Stamp(now.Add(time.Minute)), "deploy", "1.0.1", "-", "0.9.0", "-", "deploy")
+	write(t, apps, "alpha/versions.log", later+"\n")
+	_, err = Undo(apps)
+	if err == nil || !strings.Contains(err.Error(), "alpha was deployed at") || !strings.Contains(err.Error(), snap) || errors.As(err, new(partway)) ||
+		len(next(err)) != 1 || !strings.Contains(next(err)[0], "re-run `kasbah migrate server` for this server with a kasbah of major 1") {
+		t.Errorf("refusal: %v %q", err, next(err))
+	}
+	if read(t, apps, "alpha/a.yml") != "v1\na\n+01\n" {
+		t.Error("a refused undo changes nothing")
+	}
+	os.Remove(apps + "/alpha/versions.log")
+
+	u, err := Undo(apps)
+	if err != nil || !u.Undo || u.Snapshot != snap || u.From != 0 || u.To != 1 || u.Marker != "unchanged" || !slices.Equal(u.Restored, []string{"alpha/a.yml"}) {
+		t.Fatalf("undo: %+v %v", u, err)
+	}
+	if read(t, apps, "alpha/a.yml") != "v0\na\n" || read(t, apps, "beta/b.yml") != "v0\nb\n" || read(t, apps, ".kasbah/server.json") != before {
+		t.Error("the rewritten file is back, the marker untouched")
+	}
+	if fi, err := os.Stat(snap + Undone); err != nil || fi.Size() != 0 || fi.Mode().Perm() != 0o644 {
+		t.Errorf("the note: %v %v", fi, err)
+	}
+	// A file changed since is not taken for a stopped run's.
+	write(t, apps, "beta/b.yml", "v0\nchanged\n")
+	if _, err := Undo(apps); err == nil || !strings.Contains(err.Error(), "nothing to undo") || !strings.Contains(err.Error(), snap+", the newest starting there, was already undone") {
+		t.Errorf("second undo: %v", err)
+	}
+	if read(t, apps, "beta/b.yml") != "v0\nchanged\n" {
+		t.Error("the second undo changed nothing")
+	}
+	// A run after the undo takes a fresh snapshot of the tree as it now is.
+	r, err := Run(apps, "1.0.0", steps, now.Add(time.Hour))
+	if err != nil || r.SnapshotReused || r.Snapshot == snap || tarNames(t, r.Snapshot)["beta/b.yml"] != "v0\nchanged\n" {
+		t.Errorf("rerun after the undo: %+v %v", r, err)
+	}
+}
+
+// A finished undo is not taken for a stopped run: a file of the undone move
+// changed since stays, and an undo that died partway resumes on its snapshot.
+func TestUndoAfterFinishedUndo(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through a read-only directory")
+	}
+	apps := newApps(t, "0.9.0")
+	write(t, apps, "a/x.yml", "v0\nx\n")
+	write(t, apps, "b/y.yml", "v1\ny\n")
+	write(t, apps, "c/z.yml", "v0\nz\n")
+	steps := []Step{step(0, 1, "a/x.yml", "c/z.yml"), step(1, 2, "a/x.yml", "b/y.yml")}
+	if _, err := Run(apps, "1.0.0", steps, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(apps, "2.0.0", steps, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if u, err := Undo(apps); err != nil || !strings.HasSuffix(u.Snapshot, "1-to-2-20261021T120100Z.tar") || u.Marker != "restored" {
+		t.Fatalf("undo 1->2: %+v %v", u, err)
+	}
+	// Something else (an upgrade-traefik) changes a file only 1->2 held.
+	write(t, apps, "b/y.yml", "v1\nupgraded\n")
+
+	// The undo of 0->1 dies after its first file, then resumes.
+	os.Chmod(apps+"/c", 0o555)
+	_, err := Undo(apps)
+	os.Chmod(apps+"/c", 0o755)
+	if !errors.As(err, new(partway)) || read(t, apps, "a/x.yml") != "v0\nx\n" {
+		t.Fatalf("partway undo: %v", err)
+	}
+	u, err := Undo(apps)
+	if err != nil || !strings.HasSuffix(u.Snapshot, "0-to-1-20261021T120000Z.tar") || u.Marker != "restored" || u.From != 0 {
+		t.Fatalf("resumed undo: %+v %v", u, err)
+	}
+	if read(t, apps, "a/x.yml") != "v0\nx\n" || read(t, apps, "c/z.yml") != "v0\nz\n" || !strings.Contains(read(t, apps, ".kasbah/server.json"), `"kasbah_version":"0.9.0"`) {
+		t.Error("back at major 0")
+	}
+	if read(t, apps, "b/y.yml") != "v1\nupgraded\n" {
+		t.Error("the change since 1->2 was undone is kept")
+	}
+}
+
+// A run that fails before its first rewrite is closed by --undo, which
+// leaves the migration before it alone.
+func TestUndoRunFailedBeforeRewrite(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through a read-only directory")
+	}
+	apps := newApps(t, "0.9.0")
+	write(t, apps, "a/x.yml", "v0\nx\n")
+	steps := []Step{step(0, 1, "a/x.yml"), step(1, 2, "a/x.yml")}
+	if _, err := Run(apps, "1.0.0", steps, now); err != nil {
+		t.Fatal(err)
+	}
+	at1 := read(t, apps, ".kasbah/server.json")
+	os.Chmod(apps+"/a", 0o555)
+	_, err := Run(apps, "2.0.0", steps, now.Add(time.Minute))
+	os.Chmod(apps+"/a", 0o755)
+	if !errors.As(err, new(partway)) || read(t, apps, "a/x.yml") != "v1\nx\n+01\n" {
+		t.Fatalf("failed run: %v", err)
+	}
+	u, err := Undo(apps)
+	if err != nil || !strings.HasSuffix(u.Snapshot, "1-to-2-20261021T120100Z.tar") || u.Marker != "unchanged" || len(u.Restored) != 0 || u.From != 1 || u.To != 2 {
+		t.Fatalf("close: %+v %v", u, err)
+	}
+	if read(t, apps, "a/x.yml") != "v1\nx\n+01\n" || read(t, apps, ".kasbah/server.json") != at1 {
+		t.Error("the finished 0->1 is untouched")
+	}
+	if u, err := Undo(apps); err != nil || !strings.HasSuffix(u.Snapshot, "0-to-1-20261021T120000Z.tar") || u.Marker != "restored" {
+		t.Errorf("then 0->1: %+v %v", u, err)
+	}
+}
+
+// A snapshot with no note that an undo already put back (a kasbah that wrote
+// none) is closed with nothing to put back.
+func TestUndoOldSnapshot(t *testing.T) {
+	apps := newApps(t, "0.9.0")
+	write(t, apps, "a/x.yml", "v0\nx\n")
+	r, err := Run(apps, "1.0.0", []Step{step(0, 1, "a/x.yml")}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Undo(apps); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(r.Snapshot + Undone)
+	u, err := Undo(apps)
+	if err != nil || u.Snapshot != r.Snapshot || u.Marker != "unchanged" || len(u.Restored) != 0 {
+		t.Fatalf("closed: %+v %v", u, err)
+	}
+	if _, err := os.Stat(r.Snapshot + Undone); err != nil {
+		t.Errorf("noted: %v", err)
+	}
+	if _, err := Undo(apps); err == nil || !strings.Contains(err.Error(), "nothing to undo") {
+		t.Errorf("then: %v", err)
+	}
+}
+
+// A file whose directory is gone (a dropped project) is reported, not
+// restored, on either path.
+func TestUndoDroppedProject(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through a read-only directory")
+	}
+	apps := newApps(t, "0.9.0")
+	write(t, apps, "alpha/a.yml", "v0\na\n")
+	write(t, apps, "beta/b.yml", "v0\nb\n")
+	write(t, apps, "beta/.deploy.lock", "")
+	steps := []Step{step(0, 1, "alpha/a.yml", "beta/b.yml")}
+	os.Chmod(apps+"/beta", 0o555)
+	_, err := Run(apps, "1.0.0", steps, now)
+	os.Chmod(apps+"/beta", 0o755)
+	if !errors.As(err, new(partway)) {
+		t.Fatalf("partway: %v", err)
+	}
+	os.RemoveAll(apps + "/alpha")
+	u, err := Undo(apps)
+	if err != nil || len(u.Restored) != 0 || !slices.Equal(u.Gone, []string{"alpha/a.yml"}) {
+		t.Fatalf("partial: %+v %v", u, err)
+	}
+
+	write(t, apps, "alpha/a.yml", "v0\na\n")
+	if _, err := Run(apps, "1.0.0", steps, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	os.RemoveAll(apps + "/alpha")
+	u, err = Undo(apps)
+	if err != nil || u.Marker != "restored" || !slices.Equal(u.Restored, []string{"beta/b.yml"}) || !slices.Equal(u.Gone, []string{"alpha/a.yml"}) {
+		t.Fatalf("finished: %+v %v", u, err)
+	}
+	if _, err := os.Stat(apps + "/alpha"); !errors.Is(err, os.ErrNotExist) {
+		t.Error("the dropped project is not recreated")
+	}
+}
+
+// A finished 0->1 then a partial 1->2: the partial one is undone first, then
+// the finished one.
+func TestUndoPartialBeforeFinished(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through a read-only directory")
+	}
+	apps := newApps(t, "0.9.0")
+	write(t, apps, "a/x.yml", "v0\nx\n")
+	write(t, apps, "b/y.yml", "v1\ny\n")
+	steps := []Step{step(0, 1, "a/x.yml"), step(1, 2, "a/x.yml", "b/y.yml")}
+	if _, err := Run(apps, "1.0.0", steps, now); err != nil {
+		t.Fatal(err)
+	}
+	at1 := read(t, apps, ".kasbah/server.json")
+	os.Chmod(apps+"/b", 0o555)
+	_, err := Run(apps, "2.0.0", steps, now.Add(time.Minute))
+	os.Chmod(apps+"/b", 0o755)
+	if !errors.As(err, new(partway)) || read(t, apps, "a/x.yml") != "v2\nx\n+01\n+12\n" {
+		t.Fatalf("partway: %v", err)
+	}
+	u, err := Undo(apps)
+	if err != nil || !strings.HasSuffix(u.Snapshot, "1-to-2-20261021T120100Z.tar") || u.Marker != "unchanged" || u.From != 1 || u.To != 2 {
+		t.Fatalf("first undo: %+v %v", u, err)
+	}
+	if read(t, apps, "a/x.yml") != "v1\nx\n+01\n" || read(t, apps, ".kasbah/server.json") != at1 {
+		t.Error("back at the finished 0->1")
+	}
+	u, err = Undo(apps)
+	if err != nil || !strings.HasSuffix(u.Snapshot, "0-to-1-20261021T120000Z.tar") || u.Marker != "restored" || u.From != 0 || u.To != 1 {
+		t.Fatalf("second undo: %+v %v", u, err)
+	}
+	if read(t, apps, "a/x.yml") != "v0\nx\n" || !strings.Contains(read(t, apps, ".kasbah/server.json"), `"kasbah_version":"0.9.0"`) {
+		t.Error("back at major 0")
+	}
+	if _, err := Undo(apps); err == nil || !strings.Contains(err.Error(), "nothing to undo") {
+		t.Errorf("third undo: %v", err)
 	}
 }

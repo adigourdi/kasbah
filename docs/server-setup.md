@@ -57,6 +57,7 @@ Default paths (override with `--apps-path`, `--data-path`):
 │   ├── server.json                  server marker (version, paths, limits, backup)
 │   ├── migrate.lock                 held by `kasbah migrate server` while it runs
 │   ├── migrate/<from>-to-<to>-<stamp>.tar   snapshot of what a migration rewrote (its --undo)
+│   ├── migrate/<…>.tar.undone        empty note: an --undo finished with that snapshot
 │   ├── bin/kasbah                   the kasbah binary — shipped by the workstation when absent
 │   │                                or older, kept when the same build, refused when newer (installed under bin/.lock)
 │   └── backup/                      only with --with-backup (see below)

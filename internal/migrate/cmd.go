@@ -182,9 +182,9 @@ func RunServer(c Ctx, o Options) error {
 	v, _ := mk.JSON.Get("kasbah_version")
 	recorded := strings.TrimRight(fmt.Sprint(v), "\n")
 	if o.Undo {
-		fmt.Fprintf(w, "undo the last migration of %s: the newest snapshot under %s goes back, %s last\n", o.Target, filepath.Join(apps, Dir), path)
-		fmt.Fprintf(w, "refused if any project has deployed since it was taken\n")
-		return confirmAndRun(c, s, o, apps, "Undo? Workstations of this server's old major can talk to it again afterwards; this kasbah's major is refused until it is migrated again.")
+		fmt.Fprintf(w, "undo the last migration of %s from its snapshot under %s: a run that stopped partway has the files it rewrote put back, %s untouched; else the newest finished one goes back, %s last\n", o.Target, filepath.Join(apps, Dir), path, path)
+		fmt.Fprintf(w, "refused if it has a file to put back and any project has deployed since it was taken\n")
+		return confirmAndRun(c, s, o, apps, "Undo? Once a finished migration goes back, workstations of this server's old major can talk to it again, and this kasbah's major is refused until it is migrated again.")
 	}
 	if from == to {
 		fmt.Fprintf(w, "nothing to migrate: %s on %s is at major %d (kasbah %s), which is this kasbah's\n", path, o.Target, from, recorded)
@@ -218,9 +218,10 @@ func confirmAndRun(c Ctx, s Session, o Options, apps, question string) error {
 		if rc == ExitPartway {
 			again := "kasbah migrate server " + o.Target
 			if o.Undo {
-				e.Next("Once the cause above is fixed, re-run `" + again + " --undo`: the marker goes back last, so the same snapshot is restored.")
+				e.Next("Once the cause above is fixed, re-run `" + again + " --undo`: it picks the same snapshot again, which is noted undone only once every file is back.")
 			} else {
-				e.Next("Once the cause above is fixed, re-run `" + again + "`: it picks up where it stopped, skipping every file already rewritten.")
+				e.Next("Once the cause above is fixed, re-run `"+again+"`: it picks up where it stopped, skipping every file already rewritten.",
+					"Or go back: `"+again+" --undo` puts back from its snapshot any file it rewrote.")
 			}
 		}
 		return e
@@ -236,11 +237,21 @@ func confirmAndRun(c Ctx, s Session, o Options, apps, question string) error {
 // Print is a report in words.
 func Print(w io.Writer, target string, r *Report) {
 	switch {
+	case r.Undo && r.Marker == "unchanged" && len(r.Restored) == 0:
+		fmt.Fprintf(w, "undone on %s: the run from major %d to %d had stopped; every file still there already matches what %s holds — closed, the marker unchanged at major %d\n", target, r.From, r.To, r.Snapshot, r.From)
+		printGone(w, r)
+	case r.Undo && r.Marker == "unchanged":
+		fmt.Fprintf(w, "undone on %s: the run from major %d to %d that stopped partway — %d file(s) put back from %s; the marker is unchanged, still at major %d\n", target, r.From, r.To, len(r.Restored), r.Snapshot, r.From)
+		for _, f := range r.Restored {
+			fmt.Fprintf(w, "  restored %s\n", f)
+		}
+		printGone(w, r)
 	case r.Undo:
 		fmt.Fprintf(w, "undone on %s: %s restored (%d file(s), the marker %s) — the server is back at major %d\n", target, r.Snapshot, len(r.Restored), r.Marker, r.From)
 		for _, f := range r.Restored {
 			fmt.Fprintf(w, "  restored %s\n", f)
 		}
+		printGone(w, r)
 	case r.Nothing:
 		fmt.Fprintf(w, "nothing to migrate on %s: the marker is already at major %d\n", target, r.To)
 	default:
@@ -256,5 +267,11 @@ func Print(w io.Writer, target string, r *Report) {
 			}
 		}
 		fmt.Fprintf(w, "  marker %s\n", r.Marker)
+	}
+}
+
+func printGone(w io.Writer, r *Report) {
+	for _, f := range r.Gone {
+		fmt.Fprintf(w, "  not restored %s: its directory is gone\n", f)
 	}
 }
