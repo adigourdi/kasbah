@@ -14,7 +14,9 @@
 #     block a real deploy injected — which is also what R04 reads;
 #   * a certificate store this user genuinely cannot read (mode 000 applies to
 #     the owner too), rather than a fact table that says so;
-#   * **that the whole thing writes nothing**, digested off the rig.
+#   * **that the whole thing writes nothing**, digested off the rig;
+#   * health.container read off the container deploy would wait on, both an
+#     exact container_name and a service name resolved to its running replica.
 #
 # What the rig cannot show, and the brief does not ask it to: a store with
 # certificates in it. There is no public DNS here, HTTP-01 never validates, and
@@ -392,6 +394,24 @@ assert '! grep -qF "kasbah-suite-other on $RIG_TARGET holds" <<<"$out"' \
     "and does not call it a leftover (said '$out')"
 assert 'grep -qF "⚠ B02 whether $project on $RIG_TARGET holds a leftover that may hold a copy of .env cannot be checked: backups/ could not be listed: not a directory" <<<"$out"' \
     "an unlistable backups/ cannot be checked (said '$out')"
+
+# --- health.container naming a service ----------------------------------------------
+# container_name dropped, so the container is compose's replica and the
+# manifest's demo-web now names the service; check resolves it as deploy does
+# and names the replica it read.
+sed -i '/^    container_name: demo-web$/d' "$projdir/compose.prod.yml"
+(cd "$projdir" && git add -A && git commit -qm 1.0.1 && git tag v1.0.1) >/dev/null 2>&1
+deploy "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "0" ]' "a deploy with container_name dropped (exit $rc: $(cli_err))"
+replica=$(rig_ssh "docker ps --filter label=com.docker.compose.project=$project --filter label=com.docker.compose.service=$container --filter status=running --format '{{.Names}}'" 2>/dev/null | tr -d '\r')
+assert '[[ "$replica" =~ ^$project-$container-[0-9]+$ ]]' \
+    "one running replica, named by compose rather than container_name (got '$replica')"
+check --server "$RIG_TARGET"; rc=$?
+out="$(cli_out)"
+assert 'grep -qF "✓ manifest health.container '"'"'$container'"'"' ($replica) is running and healthy on $RIG_TARGET" <<<"$out"' \
+    "a service name resolves to its running replica, named in the line (exit $rc, said '$out')"
+assert '! grep -qF "is not running" <<<"$out"' \
+    "and the service is not reported as not running (said '$out')"
 
 # --- A project that has not been deployed ------------------------------------------------
 notdir="$tmpdir/not-deployed"

@@ -340,17 +340,24 @@ type ctr struct {
 }
 
 // projectContainers is the project's containers, one-off runs aside, in
-// service then replica-number order.
+// service then replica-number order; none when docker cannot list them.
 func (e *engine) projectContainers() []ctr {
-	out, err := e.query("ps", "-a", "--no-trunc",
-		"--filter", "label=com.docker.compose.project="+e.project,
+	cs, _ := containers(e.project, e.query)
+	return cs
+}
+
+// containers lists a compose project's containers through query, a
+// `docker ps` read.
+func containers(project string, query func(...string) (string, error)) ([]ctr, error) {
+	out, err := query("ps", "-a", "--no-trunc",
+		"--filter", "label=com.docker.compose.project="+project,
 		"--filter", "label=com.docker.compose.oneoff=False",
 		"--format", `{{.ID}}	{{.Names}}	{{.Label "com.docker.compose.service"}}	{{.Label "com.docker.compose.container-number"}}	{{.State}}`)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var cs []ctr
-	for _, l := range strings.Split(out, "\n") {
+	for _, l := range strings.Split(strings.ReplaceAll(out, "\r", ""), "\n") {
 		f := strings.Split(l, "\t")
 		if len(f) != 5 {
 			continue
@@ -367,7 +374,7 @@ func (e *engine) projectContainers() []ctr {
 		}
 		return cs[i].name < cs[j].name
 	})
-	return cs
+	return cs, nil
 }
 
 func (e *engine) serviceContainers(svc string) []ctr {
@@ -380,11 +387,23 @@ func (e *engine) serviceContainers(svc string) []ctr {
 	return out
 }
 
-// target is the container a manifest name means: the project's container of
-// that name, else the service's first running replica (its first container
-// when none runs), else the name itself; isSvc says it named a service.
 func (e *engine) target(name string) (c string, isSvc bool) {
-	cs := e.projectContainers()
+	return pick(e.projectContainers(), name)
+}
+
+// Target is the container a manifest name means in a compose project: that
+// container, else the service's lowest-numbered running replica (else its
+// first), else the name itself — also when the `docker ps` query fails.
+func Target(project, name string, query func(...string) (string, error)) (c string, isSvc bool, err error) {
+	cs, err := containers(project, query)
+	if err != nil {
+		return name, false, err
+	}
+	c, isSvc = pick(cs, name)
+	return c, isSvc, nil
+}
+
+func pick(cs []ctr, name string) (string, bool) {
 	for _, x := range cs {
 		if x.name == name {
 			return name, false

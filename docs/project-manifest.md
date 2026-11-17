@@ -246,7 +246,8 @@ or a compose service name, which resolves on the server to that service's
 lowest-numbered running replica (or its first container when none runs) — what
 lets it name a service compose names `<project>-<service>-N` and a rolling
 deploy renames. An exact `container_name` wins on a clash; `kasbah check`
-holds the name to the compose file. Without it — no
+holds the name to the compose file, and `kasbah check --server` resolves it
+the same way and names the replica it read. Without it — no
 `health:` block at all, or a block naming only `timeout:` — the deploy waits on
 every container in the project that declares a healthcheck, which is what lets
 a project raise the timeout without singling out one container.

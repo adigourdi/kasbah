@@ -363,19 +363,23 @@ func TestServerHealth(t *testing.T) {
 	for _, tc := range []struct {
 		state, health, derr, want string
 		code                      int
+		target                    string
 	}{
-		{"running", "unhealthy", "", "✗ manifest health.container 'demo-web' is running and UNHEALTHY on deploy@vps — Traefik keeps routing to it", 6},
-		{"running", "starting", "", "⚠ manifest health.container 'demo-web' is running and still starting", 0},
-		{"running", "none", "", "declares no healthcheck, so nothing there reports health (H01)", 0},
-		{"exited", "weird", "", "is exited on deploy@vps and reports health 'weird'", 0},
-		{"absent", "none", "", "⚠ manifest health.container 'demo-web' is not running on deploy@vps — the project is deployed", 0},
-		{"nodocker", "nodocker", "", "⚠ no docker on deploy@vps, so the health of 'demo-web' cannot be read", 0},
-		{"nodaemon", "none", "Cannot connect to the Docker daemon", "the docker daemon on deploy@vps is not answering, so the health of 'demo-web' cannot be read — nothing here says the container is down (docker said: Cannot connect to the Docker daemon)", 0},
+		{"running", "healthy", "", "✓ manifest health.container 'demo-web' is running and healthy on deploy@vps", 0, "demo-web"},
+		{"running", "healthy", "", "✓ manifest health.container 'demo-web' (demo-demo-web-3) is running and healthy on deploy@vps", 0, "demo-demo-web-3"},
+		{"running", "unhealthy", "", "✗ manifest health.container 'demo-web' (demo-demo-web-3) is running and UNHEALTHY", 6, "demo-demo-web-3"},
+		{"running", "unhealthy", "", "✗ manifest health.container 'demo-web' is running and UNHEALTHY on deploy@vps — Traefik keeps routing to it", 6, ""},
+		{"running", "starting", "", "⚠ manifest health.container 'demo-web' is running and still starting", 0, ""},
+		{"running", "none", "", "declares no healthcheck, so nothing there reports health (H01)", 0, ""},
+		{"exited", "weird", "", "is exited on deploy@vps and reports health 'weird'", 0, ""},
+		{"absent", "none", "", "⚠ manifest health.container 'demo-web' is not running on deploy@vps — the project is deployed", 0, ""},
+		{"nodocker", "nodocker", "", "⚠ no docker on deploy@vps, so the health of 'demo-web' cannot be read", 0, ""},
+		{"nodaemon", "none", "Cannot connect to the Docker daemon", "the docker daemon on deploy@vps is not answering, so the health of 'demo-web' cannot be read — nothing here says the container is down (docker said: Cannot connect to the Docker daemon)", 0, ""},
 	} {
-		t.Run(tc.state+"/"+tc.health, func(t *testing.T) {
+		t.Run(tc.state+"/"+tc.health+"/"+tc.target, func(t *testing.T) {
 			srvProject(t, "")
 			s := newSrv(t)
-			s.r.HealthState, s.r.HealthHealth, s.r.DockerError = tc.state, tc.health, tc.derr
+			s.r.HealthTarget, s.r.HealthState, s.r.HealthHealth, s.r.DockerError = tc.target, tc.state, tc.health, tc.derr
 			out, code := s.run()
 			contains(t, out, tc.want)
 			if code != tc.code {
@@ -944,22 +948,52 @@ func TestDecodeServerShowsNothing(t *testing.T) {
 func TestCollectServerHealth(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "docker"), []byte(`#!/bin/sh
+for last; do :; done
 case "$1" in
     version) [ -z "$DAEMON_DOWN" ] && { echo 27.0; exit 0; }
              printf 'Cannot connect to the Docker daemon\r\nat unix:///var/run/docker.sock \n' >&2; exit 1 ;;
+    ps) [ -z "$DAEMON_DOWN$PS_FAIL" ] || exit 1
+        case "$*" in *com.docker.compose.project=demo*) printf '%s' "$PS" ;; esac; exit 0 ;;
+    inspect) case "$last" in demo-demo-web-3|web)
+        case "$*" in *Health*) echo healthy ;; *) echo running ;; esac; exit 0 ;; esac ;;
 esac
 exit 1
 `), 0o755)
 	t.Setenv("PATH", dir)
 	apps := t.TempDir()
 	r := CollectServer(apps, apps+"/data", "demo", "demo-web")
-	if r.HealthState != "absent" || r.HealthHealth != "none" || r.DockerError != "" || r.Project != "absent" {
+	if r.HealthState != "absent" || r.HealthHealth != "none" || r.DockerError != "" || r.Project != "absent" || r.HealthTarget != "demo-web" {
 		t.Errorf("absent: %+v", r)
 	}
+	// A service name reads off the replica deploy would wait on, and an
+	// exact container name off itself.
+	t.Setenv("PS", "a\tdemo-demo-web-2\tdemo-web\t2\texited\nb\tdemo-demo-web-3\tdemo-web\t3\trunning\nc\tweb\tother\t1\trunning\n")
+	for name, want := range map[string]string{"demo-web": "demo-demo-web-3", "web": "web"} {
+		r = CollectServer(apps, apps+"/data", "demo", name)
+		if r.HealthTarget != want || r.HealthState != "running" || r.HealthHealth != "healthy" {
+			t.Errorf("%s: %q %q %q, want %s running healthy", name, r.HealthTarget, r.HealthState, r.HealthHealth, want)
+		}
+	}
+	// A service with no container is the name as written, absent.
+	t.Setenv("PS", "c\tweb\tother\t1\trunning\n")
+	if r = CollectServer(apps, apps+"/data", "demo", "demo-web"); r.HealthTarget != "demo-web" || r.HealthState != "absent" {
+		t.Errorf("no container: %+v", r)
+	}
+	// A failed ps leaves the name as written for inspect to judge, though the
+	// replica list would resolve demo-web to demo-demo-web-3.
+	t.Setenv("PS", "b\tdemo-demo-web-3\tdemo-web\t3\trunning\n")
+	t.Setenv("PS_FAIL", "1")
+	for name, want := range map[string]string{"web": "running", "demo-web": "absent"} {
+		if r = CollectServer(apps, apps+"/data", "demo", name); r.HealthTarget != name || r.HealthState != want {
+			t.Errorf("ps failing, %s: %q %q, want %s", name, r.HealthTarget, r.HealthState, want)
+		}
+	}
+	t.Setenv("PS_FAIL", "")
+	t.Setenv("PS", "")
 	t.Setenv("DAEMON_DOWN", "1")
 	r = CollectServer(apps, apps+"/data", "demo", "demo-web")
-	if r.HealthState != "nodaemon" || r.DockerError != "Cannot connect to the Docker daemon at unix:///var/run/docker.sock" {
-		t.Errorf("nodaemon: %q %q", r.HealthState, r.DockerError)
+	if r.HealthState != "nodaemon" || r.HealthTarget != "demo-web" || r.DockerError != "Cannot connect to the Docker daemon at unix:///var/run/docker.sock" {
+		t.Errorf("nodaemon: %q %q %q", r.HealthState, r.HealthTarget, r.DockerError)
 	}
 	if r := CollectServer(apps, apps+"/data", "demo", ""); r.HealthState != "skipped" {
 		t.Errorf("no health container: %+v", r.HealthState)

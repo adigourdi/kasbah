@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -263,5 +264,41 @@ func TestEngineTargets(t *testing.T) {
 	r.containers("b\tdemo-demo-web-10\tdemo-web\t10\trunning", "a\tdemo-demo-web-2\tdemo-web\t2\trunning")
 	if got, isSvc := e.target("demo-web"); got != "demo-demo-web-2" || !isSvc {
 		t.Errorf("target(demo-web) = %s %v, want the lowest-numbered running replica", got, isSvc)
+	}
+}
+
+func TestTarget(t *testing.T) {
+	rows := func(rs ...string) func(...string) (string, error) {
+		return func(args ...string) (string, error) {
+			if args[0] != "ps" || index(args, "label=com.docker.compose.project=app") < 0 || index(args, "label=com.docker.compose.oneoff=False") < 0 {
+				t.Errorf("query %v", args)
+			}
+			return strings.Join(rs, "\r\n"), nil
+		}
+	}
+	for _, tc := range []struct {
+		why, name, want string
+		isSvc           bool
+		rows            []string
+	}{
+		{"an exact container name wins over a service of that name", "web", "web", false,
+			[]string{"a\tapp-web-1\tweb\t1\trunning", "b\tweb\tother\t1\texited"}},
+		{"the running replica over an exited lower one", "web", "app-web-3", true,
+			[]string{"b\tapp-web-3\tweb\t3\trunning", "a\tapp-web-2\tweb\t2\texited"}},
+		{"the lowest-numbered of several running", "web", "app-web-2", true,
+			[]string{"c\tapp-web-10\tweb\t10\trunning", "a\tapp-web-2\tweb\t2\trunning", "b\tapp-web-3\tweb\t3\trunning"}},
+		{"none running: the first container", "web", "app-web-2", true,
+			[]string{"b\tapp-web-3\tweb\t3\texited", "a\tapp-web-2\tweb\t2\tcreated"}},
+		{"no match: the name itself", "ghost", "ghost", false,
+			[]string{"a\tapp-web-1\tweb\t1\trunning"}},
+	} {
+		c, isSvc, err := Target("app", tc.name, rows(tc.rows...))
+		if c != tc.want || isSvc != tc.isSvc || err != nil {
+			t.Errorf("%s: Target(%s) = %s %v %v, want %s %v", tc.why, tc.name, c, isSvc, err, tc.want, tc.isSvc)
+		}
+	}
+	c, isSvc, err := Target("app", "web", func(...string) (string, error) { return "", errors.New("docker ps -a exited 1") })
+	if c != "web" || isSvc || err == nil {
+		t.Errorf("a failed ps: %s %v %v, want the name as written and the error", c, isSvc, err)
 	}
 }

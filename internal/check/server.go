@@ -140,10 +140,13 @@ type ServerReport struct {
 	SharedState   string `json:"shared_state"`
 	Shared        string `json:"shared_b64"`
 	// Static is traefik.yml, read for the cert resolvers it declares.
-	StaticState  string          `json:"static_state"`
-	Static       string          `json:"static_b64"`
-	AcmeState    string          `json:"acme_state"`
-	Acme         string          `json:"acme_b64"`
+	StaticState string `json:"static_state"`
+	Static      string `json:"static_b64"`
+	AcmeState   string `json:"acme_state"`
+	Acme        string `json:"acme_b64"`
+	// HealthTarget is the container health.container resolved to, as
+	// deploy resolves it; HealthState and HealthHealth are read off it.
+	HealthTarget string          `json:"health_target"`
 	HealthState  string          `json:"health_state"`
 	HealthHealth string          `json:"health_health"`
 	DockerError  string          `json:"docker_error"`
@@ -269,7 +272,10 @@ func CollectServer(apps, data, name, health string) *ServerReport {
 	case !probe.HaveDocker():
 		r.HealthState, r.HealthHealth = "nodocker", "nodocker"
 	default:
-		s, rc := probe.Docker("inspect", "-f", "{{.State.Status}}", health)
+		// A failed ps leaves the name as written for inspect to judge.
+		target, _, _ := deploy.Target(name, health, dockerPS)
+		r.HealthTarget = target
+		s, rc := probe.Docker("inspect", "-f", "{{.State.Status}}", target)
 		s = strings.TrimRight(s, "\n")
 		if rc != 0 || s == "" {
 			if derr, rc := probe.DockerErr("version", "--format", "{{.Server.Version}}"); rc == 0 {
@@ -279,7 +285,7 @@ func CollectServer(apps, data, name, health string) *ServerReport {
 				r.DockerError = probe.Flat(derr)
 			}
 		}
-		h, rc := probe.Docker("inspect", "-f", "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}", health)
+		h, rc := probe.Docker("inspect", "-f", "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}", target)
 		h = strings.TrimRight(h, "\n")
 		if rc != 0 || h == "" {
 			h = "none"
@@ -294,20 +300,23 @@ func outsiders(name, dir string) ([]deploy.Holder, string) {
 	if !probe.HaveDocker() {
 		return nil, "there is no docker on the server"
 	}
-	hs, err := deploy.Outsiders(name, dir, func(args ...string) (string, error) {
-		if len(args) == 0 || args[0] != "ps" {
-			return "", fmt.Errorf("docker %s is not a read", strings.Join(args, " "))
-		}
-		out, rc := probe.Docker(append([]string{"ps"}, args[1:]...)...)
-		if rc != 0 {
-			return "", fmt.Errorf("docker ps -a exited %d", rc)
-		}
-		return out, nil
-	})
+	hs, err := deploy.Outsiders(name, dir, dockerPS)
 	if err != nil {
 		return nil, err.Error()
 	}
 	return hs, ""
+}
+
+// dockerPS is the read-only docker query deploy's readers take: ps alone.
+func dockerPS(args ...string) (string, error) {
+	if len(args) == 0 || args[0] != "ps" {
+		return "", fmt.Errorf("docker %s is not a read", strings.Join(args, " "))
+	}
+	out, rc := probe.Docker(append([]string{"ps"}, args[1:]...)...)
+	if rc != 0 {
+		return "", fmt.Errorf("docker ps -a exited %d", rc)
+	}
+	return out, nil
 }
 
 // stated is state(p), except that a stat failing for any reason but a
@@ -761,17 +770,21 @@ func (c *checker) serverHealth() {
 		}
 		return
 	}
+	label := "'" + name + "'"
+	if t := s.r.HealthTarget; t != "" && t != name {
+		label += " (" + t + ")"
+	}
 	switch health {
 	case "healthy":
-		c.passf("", "manifest health.container '%s' is %s and healthy on %s", name, st, s.target)
+		c.passf("", "manifest health.container %s is %s and healthy on %s", label, st, s.target)
 	case "unhealthy":
-		c.failf("", "manifest health.container '%s' is %s and UNHEALTHY on %s — Traefik keeps routing to it, so this is live", name, st, s.target)
+		c.failf("", "manifest health.container %s is %s and UNHEALTHY on %s — Traefik keeps routing to it, so this is live", label, st, s.target)
 	case "starting":
-		c.warnf("", "manifest health.container '%s' is %s and still starting on %s", name, st, s.target)
+		c.warnf("", "manifest health.container %s is %s and still starting on %s", label, st, s.target)
 	case "none":
-		c.warnf("", "manifest health.container '%s' is %s on %s and declares no healthcheck, so nothing there reports health (H01)", name, st, s.target)
+		c.warnf("", "manifest health.container %s is %s on %s and declares no healthcheck, so nothing there reports health (H01)", label, st, s.target)
 	default:
-		c.warnf("", "manifest health.container '%s' is %s on %s and reports health '%s'", name, st, s.target, health)
+		c.warnf("", "manifest health.container %s is %s on %s and reports health '%s'", label, st, s.target, health)
 	}
 }
 
