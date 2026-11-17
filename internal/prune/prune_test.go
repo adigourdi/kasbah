@@ -400,6 +400,19 @@ func TestDataDir(t *testing.T) {
 	if _, err := dataDir([]byte("[1]"), "/apps", "m", "t"); err == nil {
 		t.Error("a marker that is not an object is refused")
 	}
+	_, err := dataDir([]byte("{"), "/apps", "m", "t")
+	var b bytes.Buffer
+	(&cli.Output{Stderr: &b}).Report(err)
+	if got := b.String(); !strings.Contains(got, "error: m on t is not a JSON object: ") ||
+		!strings.Contains(got, "remove it and re-run `kasbah server init t` to start the server's record over.") {
+		t.Errorf("unparsable marker:\n%s", got)
+	}
+	_, err = dataDir([]byte("{"), "/srv/apps", "m", "t")
+	b.Reset()
+	(&cli.Output{Stderr: &b}).Report(err)
+	if got := b.String(); !strings.Contains(got, "re-run `kasbah server init t --apps-path=/srv/apps` to start") {
+		t.Errorf("unparsable marker off the default apps path:\n%s", got)
+	}
 }
 
 func TestScan(t *testing.T) {

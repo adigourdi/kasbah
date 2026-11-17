@@ -106,7 +106,7 @@ func TestRefusals(t *testing.T) {
 	for _, bad := range []string{"not json\n", "[1]\n", "\"s\"\n", ""} {
 		os.WriteFile(p, []byte(bad), 0o644)
 		err := Record(p, version, "last_server", "x@y")
-		if err == nil || !strings.Contains(err.Error(), "not a JSON object — kasbah will not overwrite it") {
+		if err == nil || !strings.Contains(err.Error(), "not a JSON object") || !strings.Contains(err.Error(), "\nkasbah will not overwrite it.") {
 			t.Errorf("record over %q: %v", bad, err)
 		}
 		if read(t, p) != bad {

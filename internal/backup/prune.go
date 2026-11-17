@@ -376,7 +376,10 @@ func Prune(c PruneCtx, o PruneOptions) error {
 		planned = append(planned, r)
 	}
 	if len(planned) == 0 {
-		return cli.Fail("server backup-prune: no repository could be read with these credentials — nothing was changed")
+		return cli.Fail("server backup-prune: no repository could be read with these credentials — nothing was changed").Next(
+			"restic's answer for each is above. --repo-base= takes the full-access spelling of the base, --env=KEY=VALUE",
+			"what restic needs besides it (an S3 key pair, for instance), and --docker-network= the network the storage",
+			"is reachable from, when docker's default does not reach it.").Help("server backup-prune")
 	}
 	if o.DryRun {
 		say("--dry-run: nothing was removed")

@@ -51,7 +51,8 @@ because **every restic invocation is bounded** (`--backup-timeout=`, default 900
 seconds): an endpoint that accepts a connection and then answers nothing is
 indistinguishable from a working one until something gives up, and without a
 bound the run never reaches its next sleep at all — the container stays
-"running" and backs nothing up, permanently.
+"running" and backs nothing up, permanently. A call the bound stopped says so,
+naming the flag that sets it.
 
 ### The backup hooks, nightly
 

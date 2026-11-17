@@ -79,7 +79,7 @@ func TestChecks(t *testing.T) {
 	if _, err := CheckTimeout(c, "29"); !strings.Contains(errText(err), "under 30 seconds") {
 		t.Error(err)
 	}
-	if _, err := CheckTimeout(c, "99999999999999999999"); !strings.Contains(errText(err), "under 30 seconds") {
+	if _, err := CheckTimeout(c, "99999999999999999999"); !strings.Contains(errText(err), "too large a number of seconds") {
 		t.Error(err)
 	}
 	if _, err := CheckKeep(c, "--backup-keep-daily=", "lots"); errText(err) != "server init: --backup-keep-daily=lots is not a whole number of snapshots to keep" {

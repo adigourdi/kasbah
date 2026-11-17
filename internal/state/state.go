@@ -59,26 +59,31 @@ func Get(path, key string) (string, error) {
 	if !isFile(path) {
 		return "", nil
 	}
-	unreadable := cli.Fail("%s: not readable as JSON — delete it, or fix it by hand", path)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", unreadable
+		return "", cli.Fail("could not read %s", path).Cause(cli.OSCause(err))
 	}
 	vs, err := tree.Parse(data)
 	if err != nil {
-		return "", unreadable
+		return "", unreadable(path, err)
 	}
 	var outs []string
 	for _, v := range vs {
 		switch v.(type) {
 		case nil, *tree.Map:
 		default:
-			return "", unreadable
+			return "", unreadable(path, nil)
 		}
 		outs = append(outs, tree.TextAt(v, key))
 	}
 	out := strings.TrimRight(strings.Join(outs, "\n"), "\n")
 	return strings.TrimSuffix(out, "\r"), nil
+}
+
+// unreadable is Get's refusal of a file that is not JSON objects, err the
+// parser's when it failed.
+func unreadable(path string, err error) *cli.Error {
+	return cli.Fail("%s: not readable as JSON", path).Cause(err).Next("Delete it, or fix it by hand.")
 }
 
 var reKey = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
@@ -133,20 +138,22 @@ func update(path, version string, apply func(m *tree.Map)) error {
 
 	current := []tree.Value{Defaults(version)}
 	if isFile(path) {
-		notObject := cli.Fail("%s: not a JSON object — kasbah will not overwrite it. Look at it, then delete it.", path)
+		notObject := func(err error) *cli.Error {
+			return cli.Fail("%s: not a JSON object", path).Cause(err).Cont("kasbah will not overwrite it.").Next("Look at it, then delete it.")
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return notObject
+			return cli.Fail("could not read %s", path).Cause(cli.OSCause(err))
 		}
 		vs, err := tree.Parse(data)
 		if err != nil || len(vs) == 0 {
-			return notObject
+			return notObject(err)
 		}
 		current = current[:0]
 		for _, v := range vs {
 			m, ok := v.(*tree.Map)
 			if !ok {
-				return notObject
+				return notObject(nil)
 			}
 			current = append(current, tree.Merge(Defaults(version), m))
 		}

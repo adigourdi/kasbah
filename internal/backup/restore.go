@@ -126,7 +126,7 @@ func (r *Runner) repoOf(project, from string) (string, []string, bool) {
 func (r *Runner) snapshots(env []string, base, repo string, cands []string) (ss, all []Snapshot, ok bool) {
 	var out bytes.Buffer
 	if rc := r.restic(env, base, repo, &out, r.Stderr, "snapshots", "--json"); rc != 0 {
-		r.warn("%s: restic snapshots failed (exit %d)", repo, rc)
+		r.warn("%s: restic snapshots failed (exit %d)%s", repo, rc, r.stopped(rc))
 		return nil, nil, false
 	}
 	var raw []struct {
@@ -208,7 +208,7 @@ func pick(ss []Snapshot, id string) (Snapshot, bool) {
 func (r *Runner) tarballs(env []string, base, repo string, s Snapshot) ([]Tarball, bool) {
 	var out bytes.Buffer
 	if rc := r.restic(env, base, repo, &out, r.Stderr, "ls", "--json", s.full, s.path); rc != 0 {
-		r.warn("%s: restic ls %s failed (exit %d)", repo, s.ID, rc)
+		r.warn("%s: restic ls %s failed (exit %d)%s", repo, s.ID, rc, r.stopped(rc))
 		return nil, false
 	}
 	ts := []Tarball{}
@@ -239,7 +239,10 @@ func (r *Runner) restoreList(args []string) int {
 	}
 	project, id := a.project, a.snapshot
 	env, base, ok := r.loadEnv()
-	if !ok || base == "" {
+	if !ok {
+		return 1
+	}
+	if base == "" {
 		r.warn("no repository base in %s — re-run kasbah server init --with-backup", r.envfile())
 		return 1
 	}
@@ -252,7 +255,7 @@ func (r *Runner) restoreList(args []string) int {
 		return 1
 	}
 	if a.from != "" && len(ss) == 0 {
-		r.warn("%s: no snapshot holds %s", repo, a.from)
+		r.warn("%s: no snapshot holds %s — kasbah restore --list without --from-path= lists the snapshots of backups/, or, when there are none, the paths that hold backups", repo, a.from)
 		return 1
 	}
 	rep := RestoreList{Repo: repo, Snapshots: append([]Snapshot{}, ss...), Backups: []Tarball{}, Looked: cands, Elsewhere: []string{}}
@@ -266,7 +269,7 @@ func (r *Runner) restoreList(args []string) int {
 		}
 		rep.Snapshot, rep.Path, rep.Backups = s.ID, s.path, ts
 	} else if id != "" {
-		r.warn("%s: no snapshot holding %s's backups matches '%s'", repo, project, id)
+		r.warn("%s: no snapshot holding %s's backups matches '%s' — kasbah restore --list without --snapshot= lists the ones that do", repo, project, id)
 		return 1
 	}
 	b, _ := json.Marshal(rep)
@@ -286,7 +289,10 @@ func (r *Runner) restoreDump(args []string) int {
 	}
 	project := a.project
 	env, base, ok := r.loadEnv()
-	if !ok || base == "" {
+	if !ok {
+		return 1
+	}
+	if base == "" {
 		r.warn("no repository base in %s — re-run kasbah server init --with-backup", r.envfile())
 		return 1
 	}
@@ -300,7 +306,7 @@ func (r *Runner) restoreDump(args []string) int {
 	}
 	s, found := pick(ss, rest[0])
 	if !found {
-		r.warn("%s: no snapshot holding %s's backups matches '%s'", repo, project, rest[0])
+		r.warn("%s: no snapshot holding %s's backups matches '%s' — kasbah restore --list without --snapshot= lists the ones that do", repo, project, rest[0])
 		return 1
 	}
 	f, err := os.CreateTemp("", "kasbah-restore-dump.*")
@@ -313,7 +319,7 @@ func (r *Runner) restoreDump(args []string) int {
 	os.Remove(f.Name())
 	defer f.Close()
 	if rc := r.restic(env, base, repo, f, r.Stderr, "dump", s.full, s.path+"/"+rest[1]); rc != 0 {
-		r.warn("%s: restic dump of %s/%s from %s failed (exit %d)", repo, s.path, rest[1], s.ID, rc)
+		r.warn("%s: restic dump of %s/%s from %s failed (exit %d)%s", repo, s.path, rest[1], s.ID, rc, r.stopped(rc))
 		return 1
 	}
 	h := sha256.New()

@@ -407,7 +407,7 @@ func (r *Runner) printPlan(p plan) {
 func (r *Runner) loadEnv() (env []string, base string, ok bool) {
 	content, ok := readEnv(r.envfile())
 	if !ok {
-		r.warn("no %s — nothing says where the repository is", r.envfile())
+		r.warn("no %s — nothing says where the repository is; kasbah server init --with-backup writes it", r.envfile())
 		return nil, "", false
 	}
 	env = append([]string{}, r.Environ...)
@@ -444,6 +444,14 @@ func (r *Runner) restic(env []string, base, repo string, out, errw io.Writer, ar
 	env = append(append([]string{}, env...),
 		"RESTIC_REPOSITORY="+base+repo, "RESTIC_PASSWORD_FILE="+r.passdir()+"/"+repo+".pass")
 	return bounded(time.Duration(r.Timeout)*time.Second, out, errw, env, r.Restic, args...)
+}
+
+// stopped is what a failed restic call's line adds when its bound stopped it.
+func (r *Runner) stopped(rc int) string {
+	if rc != boundFired {
+		return ""
+	}
+	return fmt.Sprintf(" — stopped at its %ds bound: an endpoint that answers nothing, or a call that needs longer (kasbah server init --with-backup --backup-timeout=SECONDS)", r.Timeout)
 }
 
 // once backs up every repository, or with only set the one that project
@@ -520,15 +528,15 @@ func (r *Runner) once(only string) int {
 		default:
 			if r.restic(env, base, repo.name, io.Discard, io.Discard, "cat", "config") != 0 {
 				r.say("%s: initialising the repository", repo.name)
-				if r.restic(env, base, repo.name, r.Stdout, r.Stderr, "init") != 0 {
-					r.warn("%s: could not initialise the repository", repo.name)
+				if rc := r.restic(env, base, repo.name, r.Stdout, r.Stderr, "init"); rc != 0 {
+					r.warn("%s: could not initialise the repository%s", repo.name, r.stopped(rc))
 					status = 1
 					continue
 				}
 			}
 			r.say("%s: backing up %s", repo.name, strings.Join(repo.paths, " "))
-			if r.restic(env, base, repo.name, r.Stdout, r.Stderr, append([]string{"backup", "--tag", "kasbah"}, repo.paths...)...) != 0 {
-				r.warn("%s: restic backup failed", repo.name)
+			if rc := r.restic(env, base, repo.name, r.Stdout, r.Stderr, append([]string{"backup", "--tag", "kasbah"}, repo.paths...)...); rc != 0 {
+				r.warn("%s: restic backup failed%s", repo.name, r.stopped(rc))
 				status = 1
 				continue
 			}

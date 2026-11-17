@@ -35,7 +35,7 @@ var dropsCause = map[string]bool{
 	// parser's own wording would only repeat it.
 	`internal/backup/backup.go CheckJitter "%s: --backup-jitter=%s is a day or more — the slot is a time of day, so anything from 86400 wraps"`:                                                                          true,
 	`internal/backup/backup.go CheckKeep "%s: %s%s is not a whole number of snapshots to keep"`:                                                                                                                          true,
-	"internal/backup/backup.go CheckTimeout `%s: --backup-timeout=%s is under 30 seconds — that is a bound restic could not finish an empty repository inside, and timeout(1) reads 0 as \"kill it now\"`":               true,
+	`internal/backup/backup.go CheckTimeout "%s: --backup-timeout=%s is too large a number of seconds to hold"`:                                                                                                          true,
 	`internal/backup/backup.go CheckHookTimeout "%s: --backup-hook-timeout=%s is outside 30 to 86400 seconds — the nightly job's whole run, every project's backup hook in it, has to fit inside a day"`:                 true,
 	`internal/check/server.go DecodeServer "the check probe on %s answered with %d bytes that are not a whole report — truncated, or not this kasbah's"`:                                                                 true,
 	`internal/deploy/plan.go Seconds "kasbah.yml: health.timeout '%s' is not a duration kasbah can use — write it as 120s, 5m or 2h"`:                                                                                    true,
@@ -45,7 +45,6 @@ var dropsCause = map[string]bool{
 	"internal/marker/marker.go Validate \"%s on %s is not a JSON object — re-run `%s`\"":                                                                                                                                 true,
 	`internal/marker/marker.go Compat "%s on %s is not a JSON object"`:                                                                                                                                                   true,
 	`internal/migrate/project.go RunProject "%s: schema '%s' is not a number this kasbah can migrate from"`:                                                                                                              true,
-	`internal/prune/prune.go dataDir "%s on %s does not parse — prune will not decide a deletion against a marker it cannot read"`:                                                                                       true,
 	`internal/remote/remote.go Decide "this kasbah's build stamp is '%s', which is not a version — it cannot be ordered against the server's binary"`:                                                                    true,
 	`internal/remote/remote.go Decide "the kasbah on the server reports build '%s', which is not a version — this kasbah (%s) will not replace what it cannot order"`:                                                    true,
 	`internal/selfupdate/selfupdate.go Releases "%s answered with something that is not a list of releases — nothing was installed"`:                                                                                     true,

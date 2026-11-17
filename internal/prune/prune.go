@@ -480,7 +480,9 @@ func dataDir(body []byte, apps, path, target string) (string, error) {
 	v, err := tree.ParseOne(body)
 	m, ok := v.(*tree.Map)
 	if err != nil || !ok {
-		return "", cli.Fail("%s on %s does not parse — prune will not decide a deletion against a marker it cannot read", path, target)
+		return "", cli.Fail("%s on %s is not a JSON object", path, target).Cause(err).Cont(
+			"prune will not decide a deletion against a marker it cannot read — nothing was removed").Next(
+			"Look at it, then fix it, or remove it and re-run `" + serverbin.InitCmd(target, apps) + "` to start the server's record over.")
 	}
 	data := strings.TrimRight(tree.TextAt(m, "data_path"), "\n")
 	rest, found := strings.CutPrefix(data, apps+"/")

@@ -163,7 +163,7 @@ func remoteLayout(apps, size, sum string, stdin io.Reader, stdout io.Writer) err
 		}
 	}
 	if st := probe.DirState(dir); st == "notdir" {
-		return fmt.Errorf("%s exists and is not a directory", dir)
+		return fmt.Errorf("%s exists and is not a directory — look at it, remove it, and re-run", dir)
 	}
 	for _, d := range []string{dir, dir + "/repos", dir + "/state"} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -220,9 +220,12 @@ func remoteLayout(apps, size, sum string, stdin io.Reader, stdout io.Writer) err
 	return nil
 }
 
+// boundFired is bounded's exit status when the bound stopped the command.
+const boundFired = 124
+
 // bounded runs name with a TERM at limit and a KILL ten seconds on, as
-// `timeout -k 10 LIMIT` does; it returns the exit status, 124 when the bound
-// fired, 127 when name could not be started.
+// `timeout -k 10 LIMIT` does; it returns the exit status, boundFired when the
+// bound fired, 127 when name could not be started.
 func bounded(limit time.Duration, stdout, stderr io.Writer, env []string, name string, args ...string) int {
 	cmd := exec.Command(name, args...)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
@@ -254,7 +257,7 @@ func bounded(limit time.Duration, stdout, stderr io.Writer, env []string, name s
 		cmd.Process.Kill()
 		<-done
 	}
-	return 124
+	return boundFired
 }
 
 func exitCode(err error) int {

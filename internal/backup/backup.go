@@ -148,7 +148,10 @@ func CheckTimeout(cmd, v string) (int, error) {
 		return 0, cli.Fail("%s: --backup-timeout=%s is not a whole number of seconds", cmd, v)
 	}
 	n, err := strconv.Atoi(v)
-	if err != nil || n < 30 {
+	if err != nil {
+		return 0, cli.Fail("%s: --backup-timeout=%s is too large a number of seconds to hold", cmd, v)
+	}
+	if n < 30 {
 		return 0, cli.Fail(`%s: --backup-timeout=%s is under 30 seconds — that is a bound restic could not finish an empty repository inside, and timeout(1) reads 0 as "kill it now"`, cmd, v)
 	}
 	return n, nil

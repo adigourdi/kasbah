@@ -258,8 +258,19 @@ func TestOnceBounded(t *testing.T) {
 	if el := time.Since(start); el > 20*time.Second {
 		t.Errorf("took %v", el)
 	}
-	if !strings.Contains(errb.String(), "acme: could not initialise the repository") {
+	if !strings.Contains(errb.String(), "acme: could not initialise the repository — stopped at its 1s bound: an endpoint that answers nothing, or a call that needs longer (kasbah server init --with-backup --backup-timeout=SECONDS)\n") {
 		t.Errorf("%s", errb)
+	}
+}
+
+// A restic call that fails on its own says nothing of the bound.
+func TestStoppedOnlyAtTheBound(t *testing.T) {
+	r, _, _, _ := runner("", "", time.Now())
+	if s := r.stopped(1); s != "" {
+		t.Errorf("rc 1: %q", s)
+	}
+	if s := r.stopped(boundFired); !strings.Contains(s, "stopped at its 900s bound") {
+		t.Errorf("rc %d: %q", boundFired, s)
 	}
 }
 
