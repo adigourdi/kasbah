@@ -2,13 +2,16 @@ package serverinit
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
@@ -302,6 +305,76 @@ func TestRemotePayloads(t *testing.T) {
 	}
 	if left, _ := filepath.Glob(root + "/*.tmp.*"); len(left) != 0 {
 		t.Errorf("temp left: %v", left)
+	}
+}
+
+// init write holds its directory's flock from before it reads the payload
+// until the file is renamed into place, then lets it go.
+func TestWriteHoldsItsDirectory(t *testing.T) {
+	root := t.TempDir()
+	body := "a: 1\n"
+	pr, pw := io.Pipe()
+	var o, e bytes.Buffer
+	done := make(chan int, 1)
+	go func() { done <- Remote(signed(body, "write", root+"/f.yml"), pr, &o, &e) }()
+	d, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	locked := false
+	for i := 0; i < 100 && !locked; i++ {
+		if syscall.Flock(int(d.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+			syscall.Flock(int(d.Fd()), syscall.LOCK_UN)
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		locked = true
+	}
+	if !locked {
+		t.Fatal("the write did not hold its directory while it waited for the payload")
+	}
+	pw.Write([]byte(body))
+	pw.Close()
+	select {
+	case rc := <-done:
+		if b, _ := os.ReadFile(root + "/f.yml"); rc != 0 || o.String() != "written=yes\n" || string(b) != body {
+			t.Fatalf("write: %d %q %q %q", rc, o.String(), e.String(), b)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the write did not finish")
+	}
+	if err := syscall.Flock(int(d.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Errorf("the write kept its directory locked: %v", err)
+	}
+}
+
+// --unless=FLAG refuses the write, its payload read, when FLAG is there by
+// the rename, and installs nothing; a FLAG that is absent, or no --unless,
+// writes as ever; any other fifth argument is a usage error.
+func TestWriteUnless(t *testing.T) {
+	root := t.TempDir()
+	flag := root + "/.restored"
+	body := "a: 1\n"
+	if o, e, rc := remoteRun(t, body, append(signed(body, "write", root+"/f.yml"), "--unless="+flag)...); rc != 0 || o != "written=yes\n" {
+		t.Errorf("flag absent: %d %q %q", rc, o, e)
+	}
+	os.WriteFile(flag, nil, 0o644)
+	if o, e, rc := remoteRun(t, body, signed(body, "write", root+"/g.yml")...); rc != 0 || o != "written=yes\n" {
+		t.Errorf("no --unless: %d %q %q", rc, o, e)
+	}
+	o, e, rc := remoteRun(t, "b: 2\n", append(signed("b: 2\n", "write", root+"/f.yml"), "--unless="+flag)...)
+	if b, _ := os.ReadFile(root + "/f.yml"); rc != 1 || o != "written=no\nrefused="+flag+"\n" || string(b) != body ||
+		!strings.Contains(e, "remote: did not write "+root+"/f.yml: "+flag+" is there, the files were already put back — nothing was installed") {
+		t.Errorf("flag there: %d %q %q %q", rc, o, e, b)
+	}
+	if left, _ := filepath.Glob(root + "/*.tmp.*"); len(left) != 0 {
+		t.Errorf("temp left: %v", left)
+	}
+	for _, extra := range []string{"--unless=", "--if=" + flag, flag} {
+		if o, e, rc := remoteRun(t, body, append(signed(body, "write", root+"/h.yml"), extra)...); rc != 1 || o != "" || !strings.Contains(e, "usage:") {
+			t.Errorf("%q: %d %q %q", extra, rc, o, e)
+		}
 	}
 }
 

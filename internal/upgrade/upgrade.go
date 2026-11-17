@@ -662,9 +662,13 @@ func (x *run) ship() error {
 		dest := x.apps + "/traefik/" + rel
 		body := []byte(x.rendered[rel])
 		size, sum := remote.Digest(body)
-		out, rc := x.s.Call(body, true, "init", "write", dest, size, sum)
+		out, rc := x.s.Call(body, true, "init", "write", dest, size, sum, "--unless="+RestoredFlag(x.backupDir))
 		if c := x.interrupted(); c != 0 {
 			return x.shipFailed(cli.Failf(c, "interrupted while the Traefik files were being shipped to %s — the backup is at %s", x.o.Target, x.backupDir))
+		}
+		if strings.Contains(string(out), "refused=") {
+			// Only after a restore of this backup began: the write installed nothing.
+			return x.shipFailed(cli.Fail("the Traefik %s was not shipped to %s:%s: the restore of %s had already begun, so the write installed nothing", rel, x.o.Target, dest, x.backupDir))
 		}
 		if rc != 0 || !strings.Contains(string(out), "written=yes") {
 			why := serverbin.ExitText(rc, serverbin.RunTimeout) + ", see above"

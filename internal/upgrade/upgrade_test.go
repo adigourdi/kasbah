@@ -243,6 +243,7 @@ type fake struct {
 	writeAt    int // only that init write (1-based) fails with writeRC, every one when 0
 	writes     int
 	writeMute  bool // init write exits 0 without written=yes
+	refused    bool // init write finds the restore's flag
 	backupRC   int
 	restore    *Restored
 	restoreRC  int
@@ -280,6 +281,12 @@ func (f *fake) Call(stdin []byte, bounded bool, args ...string) ([]byte, int) {
 		return j(map[string]string{"backup_dir": "/apps/traefik/backups/S"}), 0
 	case "init write":
 		f.writes++
+		if len(args) != 6 || args[5] != "--unless=/apps/traefik/backups/S/.restored" {
+			return []byte("no --unless\n"), 9
+		}
+		if f.refused {
+			return []byte("written=no\nrefused=/apps/traefik/backups/S/.restored\n"), 1
+		}
 		if f.writeRC != 0 && (f.writeAt == 0 || f.writeAt == f.writes) {
 			return nil, f.writeRC
 		}
@@ -507,6 +514,15 @@ func TestRun(t *testing.T) {
 		!strings.Contains(se, "interrupted while the Traefik files were being shipped to deploy@vps — the backup is at /apps/traefik/backups/S\n"+
 			"       the previous files are back, the running proxy was not restarted\n") {
 		t.Errorf("interrupted ship: %d holds=%d releases=%d %q\n%s", code, holds, releases, f.calls, se)
+	}
+	// A write the restore's flag refused is no failure of its own.
+	f = newFake(t, "traefik:v3.7.10")
+	f.refused = true
+	if se, code = runUp(t, f, "v3.7.11"); code != 1 || len(f.written) != 0 ||
+		!strings.Contains(se, "the Traefik compose.yml was not shipped to deploy@vps:/apps/traefik/compose.yml: the restore of /apps/traefik/backups/S had already begun, so the write installed nothing\n"+
+			"       the previous files are back, the running proxy was not restarted\n") ||
+		strings.Contains(se, "could not ship") || strings.Join(f.calls, "|") != "traefik read|traefik dry-run|traefik backup|init write|traefik restore" {
+		t.Errorf("write refused: %d %q\n%s", code, f.calls, se)
 	}
 	f = newFake(t, "traefik:v3.7.10")
 	f.writeMute = true

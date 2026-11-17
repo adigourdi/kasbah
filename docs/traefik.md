@@ -637,13 +637,22 @@ normal.
 server, so a dry run that says no leaves the old proxy running and
 untouched. A file that cannot be shipped, or an interrupt while the files
 are shipped, has the server put the backup back over the three files, each
-renamed into place whole, the proxy not restarted: the failure either says
-the previous files are back, or says the restore failed or could not be
-confirmed and names the backup and the `cp -p` lines that put it back by
-hand. If the new version will not come up healthy, the backup is copied
-back **on the server** and the old version brought up again — the restore
-is part of the same step rather than a round trip, so a dropped connection
-cannot strand the proxy with the fix on the wrong machine.
+renamed into place whole, the proxy not restarted. A write still on its way
+— its ssh killed, its payload already sent — never lands over the restored
+files: the write holds a flock of its file's directory from before it reads
+its payload through the rename, and refuses to install once the backup
+holds a `.restored` flag; the restore takes both directories' flocks within
+one 20-second wait, creates that flag, then copies. So either the write
+renames first and the restore copies over it, or the restore flags first
+and the write installs nothing. A restore that cannot take the flocks in
+time, or cannot create the flag, reports that it failed and copies nothing.
+The failure either says the previous files are back, or says the restore
+failed or could not be confirmed and names the backup and the `cp -p` lines
+that put it back by hand. If the new version will not come up healthy, the
+backup is copied back **on the server** and the old version brought up
+again — the restore is part of the same step rather than a round trip, so a
+dropped connection cannot strand the proxy with the fix on the wrong
+machine.
 
 The endpoint (`caServer`), the ACME address, and — when the dashboard is on —
 its apex and basic-auth entry are recovered off the server and reproduced

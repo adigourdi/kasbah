@@ -5,8 +5,11 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestTake(t *testing.T) {
@@ -110,6 +113,8 @@ func TestDescribe(t *testing.T) {
 		"/apps/.kasbah/bin/kasbah remote drop act /apps x --trace":                 "drop",
 		"/apps/.kasbah/bin/kasbah remote lock /apps exclusive server init --trace": "server init",
 		"/apps/.kasbah/bin/kasbah remote deploy run /apps/x --trace":               "a deploy or rollback",
+		"/apps/.kasbah/bin/kasbah remote init write /apps/traefik/a.yml 3 0123":    "the write of /apps/traefik/a.yml",
+		"/apps/.kasbah/bin/kasbah remote traefik restore /apps /apps/traefik/b/S":  "the upgrade-traefik restore",
 	} {
 		w := strings.Fields(argv)
 		if argv == "/apps/.kasbah/bin/kasbah remote lock /apps exclusive server init" {
@@ -219,5 +224,112 @@ func TestGiveBack(t *testing.T) {
 	kasbahGroup = mine
 	if got := giveBack(path, fs.ErrNotExist); got != "" {
 		t.Errorf("not a permission error: %q", got)
+	}
+}
+
+// holdDir flocks dir as another writer would, through its own open file.
+func holdDir(t *testing.T, dir string) *os.File {
+	t.Helper()
+	f, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return f
+}
+
+// Dir waits for a directory's holder and takes it once let go; past DirWait
+// it fails naming the holder; a directory it cannot open is not locked.
+func TestDir(t *testing.T) {
+	d := t.TempDir()
+	h := holdDir(t, d)
+	got := make(chan error, 1)
+	go func() {
+		release, err := Dir(d)
+		if err == nil {
+			release()
+		}
+		got <- err
+	}()
+	select {
+	case err := <-got:
+		t.Fatalf("Dir did not wait for the holder: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	h.Close()
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatalf("Dir after the holder let go: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Dir still waiting after the holder let go")
+	}
+
+	prev := DirWait
+	DirWait = 150 * time.Millisecond
+	t.Cleanup(func() { DirWait = prev })
+	holdDir(t, d)
+	if _, err := Dir(d); err == nil || !strings.Contains(err.Error(), "still holds "+d+" after 150ms") || !strings.Contains(err.Error(), "(pid ") {
+		t.Errorf("bounded wait: %v", err)
+	}
+
+	release, err := Dir(d + "/absent")
+	if err != nil {
+		t.Fatalf("absent directory: %v", err)
+	}
+	release()
+}
+
+func mkdev(major, minor uint64) uint64 {
+	return minor&0xff | (major&0xfff)<<8 | (minor&^0xff)<<12 | (major&^0xfff)<<32
+}
+
+// lockPIDs names only the exact device:inode when a line has it, and falls
+// back to the inode alone when none does (btrfs).
+func TestLockPIDs(t *testing.T) {
+	dev := uint64(259<<8 | 2) // 103:02
+	locks := "1: FLOCK  ADVISORY  WRITE 10 103:02:77 0 EOF\n" +
+		"2: FLOCK  ADVISORY  WRITE 11 08:01:77 0 EOF\n" +
+		"3: FLOCK  ADVISORY  READ  12 103:02:77 0 EOF\n"
+	if got := lockPIDs(locks, dev, 77, "WRITE"); !slices.Equal(got, []string{"10"}) {
+		t.Errorf("exact device: %q", got)
+	}
+	// btrfs: stat's subvolume device is in no line, so the inode decides.
+	if got := lockPIDs(locks, uint64(0<<8|45), 77, "WRITE"); !slices.Equal(got, []string{"10", "11"}) {
+		t.Errorf("inode fallback: %q", got)
+	}
+	if got := lockPIDs(locks, dev, 78, "WRITE"); got != nil {
+		t.Errorf("another inode: %q", got)
+	}
+}
+
+// lockID names an inode as /proc/locks does: major:minor in hex, inode in
+// decimal — so a lock on another device with the same inode is not named.
+func TestLockID(t *testing.T) {
+	for dev, want := range map[uint64]string{
+		0x10302:              "103:02:5", // 259:2, an nvme partition
+		0x801:                "08:01:5",
+		0x2c:                 "00:2c:5",
+		mkdev(0x123a, 0xfff): "123a:fff:5",
+		mkdev(259, 1048575):  "103:fffff:5",
+	} {
+		if got := lockID(dev, 5); got != want {
+			t.Errorf("%#x: %q, want %q", dev, got, want)
+		}
+	}
+	d := t.TempDir()
+	h := holdDir(t, d)
+	fi, _ := h.Stat()
+	st := fi.Sys().(*syscall.Stat_t)
+	if l := procLocks(h, "WRITE"); len(l) != 1 {
+		t.Fatalf("own lock: %v", l)
+	}
+	b, _ := os.ReadFile("/proc/locks")
+	if !strings.Contains(string(b), " "+lockID(uint64(st.Dev), st.Ino)+" ") {
+		t.Errorf("%s not in /proc/locks:\n%s", lockID(uint64(st.Dev), st.Ino), b)
 	}
 }

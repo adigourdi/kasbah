@@ -322,7 +322,7 @@ Synced files are never re-moded or re-timed when another operator owns them —
 the receiver sends the file again and renames it into place, which needs only
 the directory's write bit. Directories get the group the owner's bits.
 
-**One lock orders the server.** `<apps>/.kasbah/server.lock` (`flock(2)`,
+**One lock orders the server's commands.** `<apps>/.kasbah/server.lock` (`flock(2)`,
 never waited on) is taken exclusively by `server init`, `server
 upgrade-traefik`, `server add-mail-domain` and `server mail-dkim` — init and upgrade-traefik for every SSH step of the
 run, the two mail commands from their mail read on, through `kasbah remote lock` — and by `server prune`, `server destroy` and `migrate server`; and shared
@@ -332,6 +332,12 @@ and, for a moment, by `remote load` and `remote layers` writing the layer map
 (skipped, with a note, while an exclusive holder runs). A held lock refuses at once and names the command, user and pid
 holding it, read from `/proc/locks`; nothing is written into the file. Each
 `versions.log` line records the operator as `by=<user>` (`build-deploy.md`).
+A second, narrower lock orders steps inside a run: each `kasbah remote init
+write` flocks its file's directory — the directory itself, no lock file —
+from before it reads its payload through the rename, and upgrade-traefik's
+restore waits up to 20 seconds for `traefik/` and `traefik/dynamic/`, then
+flags its backup so a ship write that comes later refuses to install
+(`traefik.md`, Upgrading Traefik).
 
 A file kasbah needs at a fixed mode (`acme.json`, `mail/.env`, the backup
 stack's files) is re-moded only when its mode differs; when it differs on a file

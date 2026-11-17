@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,9 @@ import (
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/serverinit"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 )
 
 // fakeDocker is a server whose Traefik comes up healthy only on the attempts
@@ -249,6 +253,159 @@ func TestRemoteRestore(t *testing.T) {
 	if code := Remote([]string{"restore", apps, bk}, nil, &so, &se); code != 0 || json.Unmarshal(so.Bytes(), &r) != nil ||
 		r.Restored != "failed" || !strings.Contains(r.Err, "could not copy "+bk+"/traefik.yml to "+apps+"/traefik/traefik.yml") {
 		t.Errorf("a missing file: %d %s", code, so.String())
+	}
+}
+
+// holdDir flocks dir as a write in flight would, through its own open file.
+func holdDir(t *testing.T, dir string) *os.File {
+	t.Helper()
+	f, err := os.Open(dir)
+	if err != nil || syscall.Flock(int(f.Fd()), syscall.LOCK_EX) != nil {
+		t.Fatalf("could not hold %s", dir)
+	}
+	t.Cleanup(func() { f.Close() })
+	return f
+}
+
+// isLocked is whether another open file holds dir's flock.
+func isLocked(t *testing.T, dir string) bool {
+	t.Helper()
+	f, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil
+}
+
+func setDirWait(t *testing.T, d time.Duration) {
+	prev := serverlock.DirWait
+	serverlock.DirWait = d
+	t.Cleanup(func() { serverlock.DirWait = prev })
+}
+
+// A write holding traefik/ or traefik/dynamic/ finishes before the restore
+// copies over it; held past the one shared DirWait, the restore reports
+// restored=failed and copies nothing.
+func TestRestoreWaitsForAWrite(t *testing.T) {
+	for _, held := range []string{"traefik", "traefik/dynamic"} {
+		apps, bk := stack(t)
+		w := holdDir(t, apps+"/"+held)
+		var so, se bytes.Buffer
+		done := make(chan int, 1)
+		go func() { done <- Remote([]string{"restore", apps, bk}, nil, &so, &se) }()
+		select {
+		case <-done:
+			t.Fatalf("%s: the restore did not wait for the write: %s", held, so.String())
+		case <-time.After(200 * time.Millisecond):
+		}
+		if held == "traefik/dynamic" && !isLocked(t, apps+"/traefik") {
+			t.Errorf("the restore waits on traefik/dynamic without holding traefik/")
+		}
+		if _, err := os.Lstat(RestoredFlag(bk)); err == nil {
+			t.Errorf("%s: the flag is set before the restore holds both directories", held)
+		}
+		os.WriteFile(apps+"/traefik/dynamic/_shared.yml", []byte("written late"), 0o644)
+		w.Close()
+		select {
+		case code := <-done:
+			if code != 0 || strings.TrimSpace(so.String()) != `{"restored":"yes"}` || !restored(apps) {
+				t.Errorf("%s: after the write: %d %s %s restored=%v", held, code, so.String(), se.String(), restored(apps))
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: the restore still waits after the write let go", held)
+		}
+		if _, err := os.Lstat(RestoredFlag(bk)); err != nil || isLocked(t, apps+"/traefik") || isLocked(t, apps+"/traefik/dynamic") {
+			t.Errorf("%s: after the restore: flag %v, a directory still locked", held, err)
+		}
+	}
+
+	setDirWait(t, 600*time.Millisecond)
+	apps, bk := stack(t)
+	top := holdDir(t, apps+"/traefik")
+	holdDir(t, apps+"/traefik/dynamic")
+	time.AfterFunc(450*time.Millisecond, func() { top.Close() })
+	var so, se bytes.Buffer
+	var r Restored
+	began := time.Now()
+	code := Remote([]string{"restore", apps, bk}, nil, &so, &se)
+	if took := time.Since(began); took > 950*time.Millisecond {
+		t.Errorf("the two directories waited %s, not one DirWait", took)
+	}
+	if code != 0 || json.Unmarshal(so.Bytes(), &r) != nil || r.Restored != "failed" ||
+		!strings.Contains(r.Err, "still holds "+apps+"/traefik/dynamic after 600ms — nothing was copied") {
+		t.Errorf("held past the bound: %d %s", code, so.String())
+	}
+	if _, err := os.Lstat(RestoredFlag(bk)); err == nil {
+		t.Errorf("a timed-out restore set the flag")
+	}
+	if b, _ := os.ReadFile(apps + "/traefik/compose.yml"); string(b) != "new compose.yml" {
+		t.Errorf("a timed-out restore copied: %q", b)
+	}
+}
+
+// shipWrite is the ship's init write of body to dest on this server.
+func shipWrite(dest, bk, body string, stdin io.Reader) (string, int) {
+	size, sum := remote.Digest([]byte(body))
+	var o, e bytes.Buffer
+	rc := serverinit.Remote([]string{"write", dest, size, sum, "--unless=" + RestoredFlag(bk)}, stdin, &o, &e)
+	return o.String() + e.String(), rc
+}
+
+// The two orders a late ship write and the restore can take: the restore
+// first, and the write refuses and installs nothing; the write first, and
+// the restore copies over it once it lets go.
+func TestRestoreAndALateWrite(t *testing.T) {
+	apps, bk := stack(t)
+	var so, se bytes.Buffer
+	if code := Remote([]string{"restore", apps, bk}, nil, &so, &se); code != 0 || !restored(apps) {
+		t.Fatalf("restore: %d %s %s", code, so.String(), se.String())
+	}
+	for _, dest := range []string{apps + "/traefik/compose.yml", apps + "/traefik/dynamic/_shared.yml"} {
+		out, rc := shipWrite(dest, bk, "late", strings.NewReader("late"))
+		if rc != 1 || !strings.HasPrefix(out, "written=no\nrefused="+RestoredFlag(bk)+"\n") ||
+			!strings.Contains(out, "did not write "+dest+": "+RestoredFlag(bk)+" is there") || !restored(apps) {
+			t.Errorf("a write after the restore: %d %q restored=%v", rc, out, restored(apps))
+		}
+	}
+	if m, _ := filepath.Glob(apps + "/traefik/*.tmp.*"); len(m) > 0 {
+		t.Errorf("a refused write left %v", m)
+	}
+
+	apps, bk = stack(t)
+	dest := apps + "/traefik/dynamic/_shared.yml"
+	pr, pw := io.Pipe()
+	wrote := make(chan string, 1)
+	go func() {
+		out, rc := shipWrite(dest, bk, "late", pr)
+		wrote <- fmt.Sprint(rc, " ", out)
+	}()
+	for i := 0; i < 100 && !isLocked(t, apps+"/traefik/dynamic"); i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !isLocked(t, apps+"/traefik/dynamic") {
+		t.Fatal("the write did not lock traefik/dynamic")
+	}
+	so.Reset()
+	done := make(chan int, 1)
+	go func() { done <- Remote([]string{"restore", apps, bk}, nil, &so, &se) }()
+	select {
+	case <-done:
+		t.Fatalf("the restore did not wait for the write: %s", so.String())
+	case <-time.After(200 * time.Millisecond):
+	}
+	pw.Write([]byte("late"))
+	pw.Close()
+	if got := <-wrote; got != "0 written=yes\n" {
+		t.Errorf("the write before the restore: %q", got)
+	}
+	select {
+	case code := <-done:
+		if code != 0 || strings.TrimSpace(so.String()) != `{"restored":"yes"}` || !restored(apps) {
+			t.Errorf("the restore after the write: %d %s %s restored=%v", code, so.String(), se.String(), restored(apps))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the restore still waits after the write")
 	}
 }
 

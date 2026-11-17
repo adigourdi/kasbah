@@ -567,7 +567,17 @@ server writes that file whole or not at all), stops the run before the proxy
 is restarted, and the server puts the backup's three files back over
 whatever was shipped (`kasbah remote traefik restore`), each staged beside
 its file and renamed over it, one already holding the backup's bytes left
-alone, again restarting nothing. The failure then says one of two things:
+alone, again restarting nothing. A write still on its way to the server —
+its ssh killed, its payload already sent — never lands over the restored
+files: each write holds an exclusive flock on its file's directory from
+before it reads its payload until the rename, and is given the backup's
+`.restored` flag, refusing to install (`written=no`, `refused=<flag>`) when
+the flag is there by the rename; the restore takes `traefik/` then
+`traefik/dynamic/` within one 20-second wait, creates the flag, then
+copies. Either the write renames first and the restore copies over it, or
+the restore flags first and the write installs nothing. Past the wait the
+restore reports that it failed, naming what holds the directory, and
+copies nothing. The failure then says one of two things:
 the previous files are back, and a re-run once the cause is fixed is the
 next step; or the restore failed, or its outcome could not be confirmed (the
 connection dropped or it timed out), and it names the backup and the `cp -p`

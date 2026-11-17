@@ -1,6 +1,7 @@
 // Package serverlock is <apps>/.kasbah/server.lock, the server-wide flock,
 // taken without waiting: exclusive by init, add-mail-domain, mail-dkim, upgrade-traefik,
 // prune, destroy and migrate; shared by deploy, rollback, drop and env set.
+// Dir is the directory flock that orders a file write with the restore.
 package serverlock
 
 import (
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unicode"
 
 	"github.com/adigourdi/kasbah/internal/cli"
@@ -203,6 +205,48 @@ func Take(apps, mode, what string) (*os.File, error) {
 	return f, nil
 }
 
+// DirWait bounds Dir's wait. A writer holds its directory only while its
+// payload streams in and it renames, inside its own 30 s run bound; the waiter
+// runs under that same bound, so it gives up with time left to report.
+var DirWait = 20 * time.Second
+
+// Dir flocks the directory itself, exclusively — no lock file — waiting up to
+// DirWait: init write locks its target's directory. A directory that cannot be
+// opened or flocked (absent, unreadable, a filesystem without flock) is not
+// locked, and what runs next meets it as it would have; only the wait fails.
+func Dir(dir string) (release func(), err error) {
+	return DirUntil(dir, time.Now().Add(DirWait))
+}
+
+// DirUntil is Dir waiting until deadline, so several directories taken in
+// turn share one bound: the upgrade-traefik restore locks traefik/ then
+// traefik/dynamic/ within one DirWait.
+func DirUntil(dir string, deadline time.Time) (release func(), err error) {
+	f, err := os.Open(dir)
+	if err != nil {
+		return func() {}, nil
+	}
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return func() { f.Close() }, nil
+		}
+		if err != syscall.EWOULDBLOCK && err != syscall.EINTR {
+			f.Close()
+			return func() {}, nil
+		}
+		if !time.Now().Before(deadline) {
+			h := "another kasbah step"
+			if l := procHolders(f, "WRITE"); len(l) > 0 {
+				h = strings.Join(l, "; ")
+			}
+			f.Close()
+			return nil, fmt.Errorf("%s still holds %s after %s", h, dir, DirWait)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // giveBack is the fix for a lock this user may not open, run on the server:
 // the lock is the kasbah group's at Mode, in a directory the group writes,
 // and the user is in that group. A file or directory already the group's
@@ -308,15 +352,8 @@ func procLocks(f *os.File, kind string) []Holder {
 	if err != nil {
 		return nil
 	}
-	ino := ":" + strconv.FormatUint(st.Ino, 10)
 	var out []Holder
-	for _, l := range strings.Split(string(b), "\n") {
-		w := strings.Fields(l)
-		// 1: FLOCK  ADVISORY  WRITE 1234 08:01:5678 0 EOF
-		if len(w) < 6 || w[1] != "FLOCK" || w[3] != kind || !strings.HasSuffix(w[5], ino) {
-			continue
-		}
-		pid := w[4]
+	for _, pid := range lockPIDs(string(b), uint64(st.Dev), st.Ino, kind) {
 		what := "kasbah"
 		if c, err := os.ReadFile("/proc/" + pid + "/cmdline"); err == nil {
 			what = describe(strings.Split(strings.TrimRight(string(c), "\x00"), "\x00"))
@@ -328,6 +365,39 @@ func procLocks(f *os.File, kind string) []Holder {
 		out = append(out, Holder{What: fmt.Sprintf("%s (pid %s)", what, pid), PID: n})
 	}
 	return out
+}
+
+// lockPIDs is the pid of every flock of kind on dev:ino in a /proc/locks
+// text. btrfs gives stat a subvolume's device but /proc/locks the
+// superblock's, so with no exact match the inode alone decides.
+func lockPIDs(locks string, dev, ino uint64, kind string) []string {
+	var rows [][]string
+	for _, l := range strings.Split(locks, "\n") {
+		// 1: FLOCK  ADVISORY  WRITE 1234 08:01:5678 0 EOF
+		if w := strings.Fields(l); len(w) >= 6 && w[1] == "FLOCK" && w[3] == kind {
+			rows = append(rows, w)
+		}
+	}
+	id, suffix := lockID(dev, ino), ":"+strconv.FormatUint(ino, 10)
+	match := func(w []string) bool { return w[5] == id }
+	if !slices.ContainsFunc(rows, match) {
+		match = func(w []string) bool { return strings.HasSuffix(w[5], suffix) }
+	}
+	var pids []string
+	for _, w := range rows {
+		if match(w) {
+			pids = append(pids, w[4])
+		}
+	}
+	return pids
+}
+
+// lockID is how /proc/locks names an inode: the device's major and minor in
+// hex (at least two digits), then the inode in decimal.
+func lockID(dev, ino uint64) string {
+	major := (dev&0x00000000000fff00)>>8 | (dev&0xfffff00000000000)>>32
+	minor := dev&0x00000000000000ff | (dev&0x00000ffffff00000)>>12
+	return fmt.Sprintf("%02x:%02x:%d", major, minor, ino)
 }
 
 // describe is a holder's command line in the operator's words.
@@ -361,6 +431,10 @@ func describe(argv []string) string {
 			return "kasbah backup"
 		case rest[0] == "drop":
 			return "drop"
+		case rest[0] == "init" && len(rest) > 2 && rest[1] == "write":
+			return "the write of " + rest[2]
+		case rest[0] == "traefik" && len(rest) > 1 && rest[1] == "restore":
+			return "the upgrade-traefik restore"
 		}
 		return "kasbah remote " + rest[0]
 	}

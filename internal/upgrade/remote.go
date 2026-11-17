@@ -25,6 +25,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/serverinit"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/traefiknet"
 )
@@ -340,10 +341,8 @@ func backup(apps, stamp, from, to string) (string, error) {
 // restoreFiles puts the backup's three files back over the live ones, trying
 // every file and naming each that failed; it restarts nothing.
 func restoreFiles(apps, backupDir string) error {
-	if fi, err := os.Stat(backupDir); err != nil {
-		return fmt.Errorf("could not read the backup %s: %v", backupDir, cli.OSCause(err))
-	} else if !fi.IsDir() {
-		return fmt.Errorf("the backup %s is not a directory", backupDir)
+	if err := isBackup(backupDir); err != nil {
+		return err
 	}
 	var errs []error
 	for _, rel := range serverinit.Files {
@@ -353,6 +352,42 @@ func restoreFiles(apps, backupDir string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// RestoredFlag is the file the restore creates in its backup once it holds
+// both directories, before it copies: a ship write naming it in --unless that
+// comes later refuses, so a late write never lands over the restored files.
+func RestoredFlag(backupDir string) string { return backupDir + "/.restored" }
+
+func isBackup(backupDir string) error {
+	if fi, err := os.Stat(backupDir); err != nil {
+		return fmt.Errorf("could not read the backup %s: %v", backupDir, cli.OSCause(err))
+	} else if !fi.IsDir() {
+		return fmt.Errorf("the backup %s is not a directory", backupDir)
+	}
+	return nil
+}
+
+// restoreLocked is restoreFiles once a write already under way into traefik/
+// or traefik/dynamic/ has finished: both directories locked, in that order,
+// within one DirWait, then the flag set.
+func restoreLocked(apps, backupDir string) error {
+	if err := isBackup(backupDir); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(serverlock.DirWait)
+	for _, d := range []string{apps + "/traefik", apps + "/traefik/dynamic"} {
+		release, err := serverlock.DirUntil(d, deadline)
+		if err != nil {
+			return fmt.Errorf("%v — nothing was copied", err)
+		}
+		defer release()
+	}
+	flag := RestoredFlag(backupDir)
+	if err := os.WriteFile(flag, nil, 0o666); err != nil {
+		return fmt.Errorf("could not create %s, which stops a late write landing over the restore: %v — nothing was copied", flag, cli.OSCause(err))
+	}
+	return restoreFiles(apps, backupDir)
 }
 
 // putFile is copyFile staged as <dst>.tmp.<pid> and renamed over dst, keeping
@@ -544,7 +579,7 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case len(args) == 3 && args[0] == "restore":
 		signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
 		r := Restored{Restored: "yes"}
-		if err := restoreFiles(args[1], args[2]); err != nil {
+		if err := restoreLocked(args[1], args[2]); err != nil {
 			r = Restored{Restored: "failed", Err: cli.Full(err)}
 		}
 		emit(r)
