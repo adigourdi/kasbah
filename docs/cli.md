@@ -769,10 +769,13 @@ Prints:
   containers could not be listed, with docker's answer.
 
 **Certificate expiry comes from Traefik's own `acme.json`**, read by the same
-`internal/acme` that answers `check --server` — one store, one reader. The file
-holds the ACME account key and every certificate's private key, so it is never
-written to a temp file, echoed, or quoted in a message: the diagnostic that
-echoes a truncated probe back reports that line by name and length only.
+`internal/acme` that answers `check --server` — one store, one reader, one
+match: a host is covered by an entry naming it, or by a `*.` name one label
+above it, and a wildcard-covered host's line names the wildcard and its
+entry's `main` (`traefik.md` → TLS). The file holds the ACME account key and
+every certificate's private key, so it is never written to a temp file,
+echoed, or quoted in a message: the diagnostic that echoes a truncated probe
+back reports that line by name and length only.
 
 **All of it is one SSH round trip.** Each addition read on its own is what turns
 `status` into several sessions, and the rig's `maxstartups 10` is what that

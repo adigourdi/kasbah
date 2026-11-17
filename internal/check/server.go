@@ -870,10 +870,7 @@ func (c *checker) cert() {
 		c.warnf("", "the certificate for '%s' in %s on %s is not a certificate openssl reads", d, path, s.target)
 		return
 	}
-	via, issuer := "", or(l.Issuer, "unknown issuer")
-	if l.Main != d {
-		via = " (as a SAN of " + l.Main + ")"
-	}
+	via, issuer := l.Via(), or(l.Issuer, "unknown issuer")
 	switch {
 	case l.Expired:
 		c.failf("", "certificate for '%s'%s EXPIRED %d day(s) ago (%s, %s) — Traefik renews at 30 days remaining, so renewal has been failing", d, via, l.Days, l.NotAfter, issuer)

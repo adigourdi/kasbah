@@ -320,11 +320,16 @@ Project-specific middlewares go in the same project fragment under
 - Traefik keys `acme.json` by resolver name: each DNS resolver's certificates
   sit under its own top-level key beside `http`. `check --server` and `server
   status` look a host up under the resolver its router names (`http` when no
-  router names one). A store filled under the resolver's former name,
-  `letsencrypt`, is not read for an `http` router: `check --server` reports
-  no `http` store and names the former name, and `server status` counts
-  every resolver's entries, then says the store holds `letsencrypt` and
-  nothing under `http` yet.
+  router names one). An entry covers a host its `main` or a SAN names, in
+  ASCII lowercase, or that a `*.` `main` or SAN covers by exactly one label:
+  `*.example.com` covers `a.example.com`, not `a.b.example.com` nor
+  `example.com`. An entry naming the host outright wins over any wildcard one,
+  else the first wildcard entry in store order; the report names the wildcard
+  and its entry's `main` beside the expiry. A store filled under the
+  resolver's former name, `letsencrypt`, is not read for an `http` router:
+  `check --server` reports no `http` store and names the former name, and
+  `server status` counts every resolver's entries, then says the store holds
+  `letsencrypt` and nothing under `http` yet.
 - A server rendered under `letsencrypt` moves to `http` in two steps: re-run
   `server init` (with `--with-mail` where the mail stack runs, so `_mail.yml`
   is re-rendered too), then redeploy every project from a fragment edited to
@@ -373,6 +378,16 @@ http:
             sans: ["*.tenants.example.com"]
       service: tenants
 ```
+
+`server status` looks up every host a router names in a plain `Host()`, and
+`check --server` the manifest's `domain`, each in the store of the resolver of
+the router whose `Host()` names it, `http` when none does. So
+`tenants.example.com` here, or `acme.tenants.example.com` given its own
+``Host(`…`)``, is found in that entry — the subdomain through the
+`*.tenants.example.com` SAN (one label: `a.b.tenants.example.com` is not
+covered). A host matched only by the `HostRegexp` is not listed by `server
+status`, and as a manifest `domain` is looked up under `http`, not found in
+this entry.
 
 Every other router keeps `certResolver: http`. A wildcard (`*.` in
 `tls.domains` of an `http` or `tcp` router, or in an `http` router's

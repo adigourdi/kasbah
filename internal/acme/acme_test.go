@@ -133,3 +133,62 @@ func TestFindIn(t *testing.T) {
 		t.Errorf("no store at all: %+v", l)
 	}
 }
+
+// A *. name covers one label; an exact name anywhere wins over a wildcard.
+func TestWildcard(t *testing.T) {
+	entry := func(main string, sans ...string) string {
+		b := `{"domain":{"main":"` + main + `","sans":[`
+		for i, s := range sans {
+			if i > 0 {
+				b += ","
+			}
+			b += `"` + s + `"`
+		}
+		return b + `]}}`
+	}
+	store := func(entries ...string) []byte {
+		return []byte(`{"http":{"Certificates":[` + strings.Join(entries, ",") + `]}}`)
+	}
+	wildMain := entry("*.example.com")
+	wildSAN := entry("tenants.example.com", "*.tenants.example.com")
+	for _, tc := range []struct {
+		name  string
+		store []byte
+		host  string
+		main  string
+		match string
+		wild  bool
+		via   string
+	}{
+		{"exact main", store(entry("a.example.com")), "a.example.com", "a.example.com", "a.example.com", false, ""},
+		{"exact SAN", store(entry("x.test", "a.example.com")), "a.example.com", "x.test", "a.example.com", false, " (as a SAN of x.test)"},
+		{"wildcard main", store(wildMain), "a.example.com", "*.example.com", "*.example.com", true, " (by the wildcard *.example.com)"},
+		{"wildcard SAN", store(wildSAN), "acme.tenants.example.com", "tenants.example.com", "*.tenants.example.com", true, " (by the wildcard *.tenants.example.com, a SAN of tenants.example.com)"},
+		{"the wildcard entry's own main", store(wildSAN), "tenants.example.com", "tenants.example.com", "tenants.example.com", false, ""},
+		{"deeper label", store(wildMain), "a.b.example.com", "", "", false, ""},
+		{"apex", store(wildMain), "example.com", "", "", false, ""},
+		{"empty label", store(wildMain), ".example.com", "", "", false, ""},
+		{"suffix not on a label boundary", store(wildMain), "aexample.com", "", "", false, ""},
+		{"a bare *.", store(entry("*.")), "a.", "", "", false, ""},
+		{"mixed case exact", store(entry("A.Example.COM")), "a.example.com", "A.Example.COM", "A.Example.COM", false, ""},
+		{"mixed case wildcard", store(entry("*.Example.com")), "App.EXAMPLE.com", "*.Example.com", "*.Example.com", true, " (by the wildcard *.Example.com)"},
+		{"CR stripped", store(entry(`*.example.com\r`)), "a.example.com", "*.example.com", "*.example.com", true, " (by the wildcard *.example.com)"},
+		{"exact preferred over an earlier wildcard", store(wildMain, entry("x.test", "a.example.com")), "a.example.com", "x.test", "a.example.com", false, " (as a SAN of x.test)"},
+		{"a * inside the first label", store(entry("*foo.example.com")), "afoo.example.com", "", "", false, ""},
+		{"a * in a later label", store(entry("a.*.example.com")), "a.b.example.com", "", "", false, ""},
+		{"a bare *", store(entry("*")), "a", "", "", false, ""},
+		{"a wildcard host matches its own name exactly", store(wildMain), "*.example.com", "*.example.com", "*.example.com", false, ""},
+		{"a trailing dot is not stripped", store(wildMain, entry("a.example.com")), "a.example.com.", "", "", false, ""},
+		{"exact SAN preferred over a wildcard main", store(entry("*.example.com", "a.example.com")), "a.example.com", "*.example.com", "a.example.com", false, " (as a SAN of *.example.com)"},
+		{"first wildcard entry wins", store(entry("one.test", "*.example.com"), wildMain), "a.example.com", "one.test", "*.example.com", true, " (by the wildcard *.example.com, a SAN of one.test)"},
+	} {
+		l := Find(tc.store, tc.host, time.Now())
+		want := "nocert"
+		if tc.main == "" {
+			want = "nomatch"
+		}
+		if l.State != want || l.Main != tc.main || l.Name != tc.match || l.Wildcard != tc.wild || l.Via() != tc.via {
+			t.Errorf("%s: %+v via %q, want %s main %q name %q wildcard %v via %q", tc.name, l, l.Via(), want, tc.main, tc.match, tc.wild, tc.via)
+		}
+	}
+}

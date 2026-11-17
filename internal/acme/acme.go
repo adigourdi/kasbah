@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,8 +28,12 @@ const Resolver = "http"
 type Lookup struct {
 	State, Kind string
 	// Count is the certificates in the store, whatever the verdict.
-	Count            int
-	Main             string
+	Count int
+	// Main is the covering entry's main domain; Name is the entry's name that
+	// covered the host — Main or a SAN, as written — and Wildcard says it is a
+	// *. name covering one label.
+	Main, Name       string
+	Wildcard         bool
 	Issuer, NotAfter string
 	// Expired is notAfter in the past; Days is whole days since it then,
 	// whole days until it otherwise.
@@ -43,7 +48,9 @@ func Find(content []byte, domain string, now time.Time) Lookup {
 
 // FindIn looks domain up in the store's content under resolver — every
 // resolver's entry, in store order, when resolver is "" — judging expiry
-// against now. An entry matches on its main domain or any of its SANs.
+// against now. An entry matches on its main domain or any of its SANs, in
+// ASCII lowercase, or on a *. one covering exactly one label; the first entry
+// matching exactly wins over every wildcard one, else the first wildcard one.
 func FindIn(content []byte, resolver, domain string, now time.Time) Lookup {
 	var l Lookup
 	vals, err := tree.Parse(content)
@@ -96,15 +103,23 @@ func FindIn(content []byte, resolver, domain string, now time.Time) Lookup {
 		l.State = "empty"
 		return l
 	}
-	found := -1
+	found, wild, host := -1, -1, lower(domain)
+	var wildName string
 	for i, c := range list {
-		mv, _ := tree.Lookup(c, "domain", "main")
-		main, _ := tree.String(mv)
-		main = strings.TrimSuffix(main, "\r")
-		if main == domain || sansMatch(c, domain) {
-			found, l.Main = i, main
+		own := entryNames(c)
+		if n := slices.IndexFunc(own, func(n string) bool { return lower(n) == host }); n >= 0 {
+			found, l.Name = i, own[n]
 			break
 		}
+		if n := slices.IndexFunc(own, func(n string) bool { return covers(lower(n), host) }); n >= 0 && wild < 0 {
+			wild, wildName = i, own[n]
+		}
+	}
+	if found < 0 && wild >= 0 {
+		found, l.Name, l.Wildcard = wild, wildName, true
+	}
+	if found >= 0 {
+		l.Main = entryNames(list[found])[0]
 	}
 	if found < 0 {
 		l.State = "nomatch"
@@ -139,15 +154,54 @@ func FindIn(content []byte, resolver, domain string, now time.Time) Lookup {
 	return l
 }
 
-func sansMatch(c tree.Value, domain string) bool {
+// entryNames is an entry's main domain then its string SANs, \r stripped.
+func entryNames(c tree.Value) []string {
+	mv, _ := tree.Lookup(c, "domain", "main")
+	main, _ := tree.String(mv)
+	names := []string{strings.TrimSuffix(main, "\r")}
 	sv, _ := tree.Lookup(c, "domain", "sans")
 	sans, _ := sv.([]tree.Value)
 	for _, s := range sans {
-		if s, ok := s.(string); ok && strings.TrimSuffix(s, "\r") == domain {
-			return true
+		if s, ok := s.(string); ok {
+			names = append(names, strings.TrimSuffix(s, "\r"))
 		}
 	}
-	return false
+	return names
+}
+
+// covers is whether the wildcard name covers host by exactly one label, both
+// lowercase: *.example.com covers a.example.com, not a.b.example.com.
+func covers(name, host string) bool {
+	suffix, ok := strings.CutPrefix(name, "*")
+	if !ok || len(suffix) < 2 || suffix[0] != '.' || !strings.HasSuffix(host, suffix) {
+		return false
+	}
+	label := host[:len(host)-len(suffix)]
+	return label != "" && !strings.Contains(label, ".")
+}
+
+func lower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
+// Via is how a found certificate covers the host it was looked up for, for
+// a report to append to the host: nothing when the entry's main is the host.
+func (l Lookup) Via() string {
+	switch {
+	case l.Wildcard && l.Name == l.Main:
+		return " (by the wildcard " + l.Main + ")"
+	case l.Wildcard:
+		return " (by the wildcard " + l.Name + ", a SAN of " + l.Main + ")"
+	case l.Name != l.Main:
+		return " (as a SAN of " + l.Main + ")"
+	}
+	return ""
 }
 
 // firstCert is the first certificate block `openssl x509` would read.

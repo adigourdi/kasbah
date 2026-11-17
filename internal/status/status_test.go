@@ -336,6 +336,14 @@ func TestCertsAndMail(t *testing.T) {
 	if strings.Contains(out, "SECRET-KEY") {
 		t.Error("the store's key material was printed")
 	}
+	// A wildcard SAN covers a one-label host under its resolver, not a deeper one.
+	wild := r
+	wild.Acme = b64s(`{"http":{"Certificates":[]},"cloudflare":{"Certificates":[{"domain":{"main":"tenants.test","sans":["*.tenants.test"]},"certificate":"` + pemCert(t, "tenants.test", now.Add(60*24*time.Hour+time.Hour)) + `"}]}}`)
+	wild.Projects = []Project{{Name: "demo", LogState: "ok", Log: r.Projects[0].Log, FragState: "ok", Total: 1, Running: 1,
+		Frag: b64s("http:\n  routers:\n    a: {rule: \"Host(`acme.tenants.test`) || Host(`a.b.tenants.test`)\", tls: {certResolver: cloudflare}}\n")}}
+	out, _, _ = runStatus(t, wild)
+	has(t, out, "      acme.tenants.test\n          certificate (by the wildcard *.tenants.test, a SAN of tenants.test) valid for 60 more day(s) (until ",
+		"      a.b.tenants.test\n          no certificate — Traefik issues one when the hostname resolves here")
 	// A host is looked up under the resolver its router names.
 	dns := r
 	dns.Acme = b64s(`{"http":{"Certificates":[]},"cloudflare":{"Certificates":[{"domain":{"main":"demo.test"},"certificate":"` + pemCert(t, "demo.test", now.Add(80*24*time.Hour+time.Hour)) + `"}]}}`)

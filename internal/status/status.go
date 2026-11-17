@@ -520,10 +520,7 @@ func (x *run) certLine(host, resolver, indent string) {
 		return
 	}
 	l := acme.FindIn(x.acme, resolver, host, x.now)
-	via := ""
-	if l.Main != host {
-		via = " (as a SAN of " + l.Main + ")"
-	}
+	via := l.Via()
 	switch l.State {
 	case "found":
 	case "nomatch", "empty":
