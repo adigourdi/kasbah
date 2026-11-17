@@ -30,7 +30,9 @@ func Pick(tags string) (string, error) {
 	if len(vs) > 1 {
 		return "", cli.Fail("HEAD carries %d version tags — %s", len(vs), strings.Join(vs, " ")).Cont(
 			"exactly one is required: the tag is the version that goes into versions.log",
-			"and onto the images, and kasbah will not choose between them")
+			"and onto the images, and kasbah will not choose between them").Next(
+			"Delete the ones this release is not (git tag -d <tag>), and on origin too when they were pushed",
+			"(git push origin :refs/tags/<tag>), else the next fetch brings them back; then retry.")
 	}
 	// A space would break versions.log, whose fields are space-delimited.
 	if !reVersion.MatchString(vs[0]) {
@@ -52,10 +54,12 @@ func Repo(pwd string) error {
 		return cli.Fail("git is required — kasbah resolves the version from HEAD's tag")
 	}
 	if trace.Run(exec.Command("git", "rev-parse", "--git-dir")) != nil {
-		return cli.Fail("%s is not a git repository — kasbah resolves the version from HEAD's tag", pwd)
+		return cli.Fail("%s is not a git repository — kasbah resolves the version from HEAD's tag", pwd).Next(
+			"Run from the project's git checkout, or make this one: git init, then commit the project.")
 	}
 	if trace.Run(exec.Command("git", "rev-parse", "-q", "--verify", "HEAD")) != nil {
-		return cli.Fail("this repository has no commits yet, so there is no HEAD to read a version tag from")
+		return cli.Fail("this repository has no commits yet, so there is no HEAD to read a version tag from").Next(
+			"Commit the project (git add, git commit), then retry.")
 	}
 	return nil
 }

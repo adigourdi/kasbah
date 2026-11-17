@@ -253,7 +253,7 @@ func (c *Client) Release(ver string) (*Release, error) {
 	if err != nil {
 		return nil, err
 	}
-	r, err := c.verify(ver, sums, sig)
+	r, err := c.verify(ver, "", sums, sig)
 	if err != nil {
 		return nil, err
 	}
@@ -276,10 +276,11 @@ func (c *Client) Local(ver, dir string) (*Release, error) {
 			err = errors.New("longer than 1 MiB")
 		}
 		if err != nil {
-			return nil, cli.Fail("cannot read %s: %v", p, err).Cont("nothing was installed")
+			return nil, cli.Fail("cannot read %s: %v", p, err).Cont("nothing was installed").Next(
+				"Put v" + ver + "'s checksums.txt and checksums.txt.minisig in " + dir + ", or drop --from to fetch them from the release.")
 		}
 	}
-	r, err := c.verify(ver, files[0], files[1])
+	r, err := c.verify(ver, dir, files[0], files[1])
 	if err != nil {
 		return nil, err
 	}
@@ -288,17 +289,18 @@ func (c *Client) Local(ver, dir string) (*Release, error) {
 }
 
 // verify checks checksums.txt's signature against the key and its trusted
-// comment against `kasbah <ver>`, then reads the sums it vouches for.
-func (c *Client) verify(ver string, sums, sig []byte) (*Release, error) {
+// comment against `kasbah <ver>`, then reads the sums it vouches for. from is
+// --from's DIR the files were read from, "" when they came from the API.
+func (c *Client) verify(ver, from string, sums, sig []byte) (*Release, error) {
 	tag := "v" + ver
 	comment, err := minisign.Verify(c.Key, sums, sig)
 	if err != nil {
 		return nil, cli.Fail("%s's checksums.txt does not verify against release.pub (key %s): %v", tag, c.Key.IDString(), err).Cont(
-			"nothing was installed — the release is not one kasbah's key signed")
+			"nothing was installed — the release is not one kasbah's key signed").Next(untrusted(ver, from)).Help("troubleshooting")
 	}
 	if comment != "kasbah "+ver {
 		return nil, cli.Fail("%s's checksums.txt is signed as %q, not \"kasbah %s\"", tag, comment, ver).Cont(
-			"nothing was installed — the signature vouches for another release")
+			"nothing was installed — the signature vouches for another release").Next(untrusted(ver, from)).Help("troubleshooting")
 	}
 	r := &Release{Tag: tag, Sums: map[string]string{}, Comment: comment, KeyID: c.Key.IDString()}
 	for _, l := range strings.Split(strings.ReplaceAll(string(sums), "\r", ""), "\n") {
@@ -309,6 +311,15 @@ func (c *Client) verify(ver string, sums, sig []byte) (*Release, error) {
 		r.Sums[strings.TrimPrefix(f[1], "*")] = f[0]
 	}
 	return r, nil
+}
+
+// untrusted is the next step after a release that does not verify: files read
+// from a directory may be mixed or altered, the API's answer would repeat.
+func untrusted(ver, from string) string {
+	if from != "" {
+		return "Run nothing that came with these files. Download v" + ver + "'s release files again into an empty directory and pass that to --from (get.sh does so each run); if it fails the same way, report it."
+	}
+	return "Fetching it again gets the same files: install nothing of v" + ver + " by hand, and report it."
 }
 
 // fetch reads one small asset whole.
@@ -420,12 +431,23 @@ type httpError struct{ msg, hint string }
 
 func (e *httpError) Error() string { return e.msg }
 
-// failed is a failure whose first line wraps err, its remedy on the next.
+// failed is a failure whose first line wraps err, its remedy on the next: a
+// continuation line, so it survives a caller that quotes the failure.
 func failed(err error, format string, args ...any) error {
 	f := cli.Fail(format+": %v", append(args, err)...)
 	var h *httpError
-	if errors.As(err, &h) && h.hint != "" {
-		f.Cont(h.hint)
+	var ue *neturl.Error
+	switch {
+	case errors.As(err, &h):
+		if h.hint != "" {
+			f.Cont(h.hint)
+		}
+	case errors.As(err, &ue):
+		host := ue.URL
+		if u, perr := neturl.Parse(ue.URL); perr == nil && u.Host != "" {
+			host = u.Host
+		}
+		f.Cont("check that this machine reaches " + host + " over HTTPS — behind a proxy, set HTTPS_PROXY")
 	}
 	return f
 }
@@ -531,16 +553,23 @@ func (c *Client) Download(r *Release, name, dst string) error {
 		return cli.Fail("could not write %s: %v", tmp, err)
 	}
 	if n != a.Size {
-		return cli.Fail("%s of %s: %d bytes downloaded, the release lists %d — nothing was installed", name, r.Tag, n, a.Size)
+		return cli.Fail("%s of %s: %d bytes downloaded, the release lists %d — nothing was installed", name, r.Tag, n, a.Size).Next(cutShort).Help("troubleshooting")
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != want {
-		return cli.Fail("%s of %s: sha256 %s, checksums.txt says %s — nothing was installed", name, r.Tag, got, want)
+		return cli.Fail("%s of %s: sha256 %s, checksums.txt says %s — nothing was installed", name, r.Tag, got, want).Next(notSigned).Help("troubleshooting")
 	}
 	if err := os.Rename(tmp, dst); err != nil {
 		return cli.Fail("%v", err)
 	}
 	return nil
 }
+
+// The next steps after a download that is not the published asset: one cut
+// short is worth another try, a sha256 that repeats is the release's own.
+const (
+	cutShort  = "Nothing of it was kept: run the command again to download it afresh."
+	notSigned = "Nothing of it was kept. If a second run gets the same sha256, the file published is not the one signed: install nothing of it by hand, and report it."
+)
 
 // FetchServerBuild is the lazy path: the linux/arch build of release ver into
 // <home>/server/, verified like every asset. home is the version directory.

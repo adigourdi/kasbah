@@ -554,7 +554,9 @@ it before and after and reports whether the new Traefik touched it.
 If the new version does not come up healthy, the backup is copied back **on
 the server** and the old version brought up again, in the same step rather
 than a round trip later — so a dropped connection cannot leave the proxy
-down with the fix on the wrong machine. Exits 4 on a host with no server
+down with the fix on the wrong machine. A file that cannot be written stops
+the run before the proxy is restarted, and the failure names the `cp -p`
+commands that put the backup back. Exits 4 on a host with no server
 marker.
 
 ### `kasbah server destroy USER@HOST [--yes]`
@@ -1873,6 +1875,8 @@ release, or the token cannot see the repository), a used-up rate limit (until
 when), a `Retry-After` (the wait), a plain 429 (retry later). A token the API
 answers 401 is dropped with one warning naming its source, and the request
 retried without it — a stale `GITHUB_TOKEN` never blocks a public repository.
+A request that gets no HTTP answer names the host to reach and `HTTPS_PROXY`,
+which kasbah honours (with `NO_PROXY`) as Go's HTTP client does.
 A refusal or network error after the redirect names the storage URL without
 its query: a signed URL's query is its credential.
 
@@ -1914,7 +1918,8 @@ is fetched.
 The other architecture's server build is not installed up front. An installed
 *release* kasbah that meets a server of an arch it holds no build for fetches
 exactly that asset the same verified way, into `<lib>/<ver>/server/`, before
-shipping it; a dev build or a checkout never fetches.
+shipping it; a dev build or a checkout never fetches. A fetch that fails stops
+the command, quoting why, and the next run that needs the build tries again.
 
 ## Hand-off between installed versions
 

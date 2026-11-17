@@ -1,6 +1,7 @@
 package serverbin
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/shtest"
 )
 
@@ -140,9 +142,30 @@ func TestLocalFetchesRelease(t *testing.T) {
 	other := filepath.Join(lib, "1.3.0")
 	os.MkdirAll(other, 0o755)
 	_, err := Local(other, false, "amd64")
-	if err == nil || !strings.Contains(err.Error(), "release v1.3.0 failed") || !strings.Contains(err.Error(), "set GITHUB_TOKEN") || !strings.Contains(err.Error(), "install-dev.sh") {
-		t.Errorf("failed fetch: %v", err)
+	if got := report(err); err == nil || !strings.Contains(got, "release v1.3.0 failed") || !strings.Contains(got, "\n       set GITHUB_TOKEN\n") ||
+		!strings.Contains(got, "\n       Re-run once that is fixed: an installed release fetches a server build it lacks each time a server needs one.\n") ||
+		strings.Contains(got, "install-dev.sh") || strings.Contains(got, "help:") {
+		t.Errorf("failed fetch:\n%s", got)
 	}
+	// A fetch failure's own next step and help line come through in its place.
+	fetchRelease = func(string, string, string) error {
+		return cli.Fail("kasbah_1.3.0_linux_amd64 of v1.3.0: sha256 x, checksums.txt says y").Next("Run it again.").Help("troubleshooting")
+	}
+	_, err = Local(other, false, "amd64")
+	wantErr := "error: there is no linux/amd64 server binary at " + filepath.Join(other, "server", "kasbah-linux-amd64") + ", and fetching it from release v1.3.0 failed\n" +
+		"       kasbah_1.3.0_linux_amd64 of v1.3.0: sha256 x, checksums.txt says y\n" +
+		"       Run it again.\n" +
+		"       help: kasbah help troubleshooting\n"
+	if got := report(err); got != wantErr {
+		t.Errorf("failed fetch, its own next step:\n%s\nwant\n%s", got, wantErr)
+	}
+}
+
+// report is err as the terminal shows it, next step and help line included.
+func report(err error) string {
+	var b bytes.Buffer
+	(&cli.Output{Stdout: &b, Stderr: &b}).Report(err)
+	return b.String()
 }
 
 func TestNormPath(t *testing.T) {

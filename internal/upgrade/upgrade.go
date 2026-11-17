@@ -295,12 +295,15 @@ func Run(c Ctx, o Options) error {
 	return nil
 }
 
+// initCmd is the server init that owns this server's stack, at its apps path.
+func (x *run) initCmd() string { return serverbin.InitCmd(x.o.Target, x.apps) }
+
 func (x *run) noStack(rel string) error {
 	return cli.Fail("%s/traefik/%s is missing or unreadable on %s", x.apps, rel, x.o.Target).Cont(
 		"upgrade-traefik re-renders the three kasbah-owned files and needs the ones",
 		"already there to recover the dashboard apex, its credentials, the ACME",
 		"address and the endpoint in effect. It will not invent any of them.",
-		"Run `kasbah server init "+x.o.Target+"` to lay the stack down first.")
+		"Run `"+x.initCmd()+"` to lay the stack down first.")
 }
 
 func (x *run) readStack() error {
@@ -314,7 +317,8 @@ func (x *run) readStack() error {
 		return err
 	}
 	if !x.stack.Docker {
-		return cli.Fail("docker is not on %s's PATH — this host is not running a kasbah Traefik stack", x.o.Target)
+		return cli.Fail("docker is not on %s's PATH — this host is not running a kasbah Traefik stack", x.o.Target).Next(
+			"Get `ssh " + x.o.Target + " docker version` to work, then re-run.")
 	}
 	x.cur = map[string]string{
 		"compose.yml":         decodeB64(x.stack.Compose),
@@ -333,14 +337,14 @@ func (x *run) unreadable(rel string) error {
 	return cli.Fail("%s/traefik/%s on %s is not valid YAML", x.apps, rel, x.o.Target).Cont(
 		"kasbah reproduces the values already in effect rather than regenerating them,",
 		"and it cannot read them out of this file. Fix it, or re-render the stack with",
-		"`kasbah server init "+x.o.Target+"`, which owns that file and will replace it.")
+		"`"+x.initCmd()+"`, which owns that file and will replace it.")
 }
 
 func (x *run) missing(what, file, flag string) error {
 	return cli.Fail("%s on %s does not say what %s is", file, x.o.Target, what).Cont(
 		"upgrade-traefik reproduces it verbatim and will not invent one — a bump that",
 		"changed it would be a side effect nobody asked for.",
-		"`kasbah server init "+x.o.Target+" "+flag+"` sets it; this command only moves the version.")
+		"`"+x.initCmd()+" "+flag+"` sets it; this command only moves the version.")
 }
 
 // recover reads the four values back, the DNS resolvers, and the image in
@@ -390,8 +394,8 @@ func (x *run) recover() (serverinit.Values, error) {
 			return v, cli.Fail("%s/traefik/traefik.yml on %s declares the DNS resolver '%s', and its credentials are not there", x.apps, x.o.Target, p).Cont(
 				fmt.Sprintf("%s/traefik/%s is missing, and Traefik's compose stack reads it, so", x.apps, serverinit.DNSEnvRel(p)),
 				"the upgraded stack would not start. upgrade-traefik never writes credentials:",
-				fmt.Sprintf("`kasbah server init %s --acme-dns=%s:<env file>` installs them, or", x.o.Target, p),
-				fmt.Sprintf("`kasbah server init %s --no-acme-dns=%s` removes the resolver.", x.o.Target, p))
+				fmt.Sprintf("`%s --acme-dns=%s:<env file>` installs them, or", x.initCmd(), p),
+				fmt.Sprintf("`%s --no-acme-dns=%s` removes the resolver.", x.initCmd(), p))
 		}
 	}
 	if x.imageNow, err = serverinit.ExtractImage(compose); err != nil {
@@ -658,10 +662,23 @@ func (x *run) ship() error {
 			if rc == 0 {
 				why = "it did not report written=yes"
 			}
-			return cli.Fail("could not ship the Traefik %s to %s:%s (%s) — the backup is at %s", rel, x.o.Target, dest, why, x.backupDir)
+			return cli.Fail("could not ship the Traefik %s to %s:%s (%s) — the backup is at %s", rel, x.o.Target, dest, why, x.backupDir).Cont(
+				"the running proxy was not restarted").Next(
+				"Put the previous files back on the server before anything restarts the proxy:").Next(
+				x.restore()...).Next(
+				"then, once the cause is fixed, re-run `kasbah server upgrade-traefik " + x.o.Target + " --version=" + x.o.Version + "`.")
 		}
 	}
 	return nil
+}
+
+// restore is the commands that put the backed-up files back.
+func (x *run) restore() []string {
+	return []string{
+		"  cp -p " + x.backupDir + "/compose.yml " + x.apps + "/traefik/compose.yml",
+		"  cp -p " + x.backupDir + "/traefik.yml " + x.apps + "/traefik/traefik.yml",
+		"  cp -p " + x.backupDir + "/_shared.yml " + x.apps + "/traefik/dynamic/_shared.yml",
+	}
 }
 
 func or(s, def string) string {
@@ -697,12 +714,10 @@ func (x *run) start() (Up, error) {
 	}
 	if rc != 0 && rc != 3 {
 		return up, cli.Fail("could not bring Traefik up on %s (%s, see above)", t, serverbin.ExitText(rc, 0)).Cont(
-			"the previous stack is backed up at "+x.backupDir+" — restore it with:",
-			"  cp -p "+x.backupDir+"/compose.yml "+x.apps+"/traefik/compose.yml",
-			"  cp -p "+x.backupDir+"/traefik.yml "+x.apps+"/traefik/traefik.yml",
-			"  cp -p "+x.backupDir+"/_shared.yml "+x.apps+"/traefik/dynamic/_shared.yml",
+			"the previous stack is backed up at "+x.backupDir+" — restore it with:").Cont(
+			x.restore()...).Cont(
 			"  cd "+x.apps+"/traefik && docker compose -p "+Project+" up -d",
-			"a recreated Traefik is on kasbah-net alone: `kasbah server init "+t+"` rejoins it to the project networks.")
+			"a recreated Traefik is on kasbah-net alone: `"+x.initCmd()+"` rejoins it to the project networks.")
 	}
 	if err := remote.Decode(out, &up,
 		[]string{"up_rolled_back", "up_health", "up_state", "up_image", "up_started_at", "up_acme_digest", "up_networks"}, "the Traefik start", t); err != nil {
@@ -712,7 +727,7 @@ func (x *run) start() (Up, error) {
 		"every site whose network it is not on answers 502 until it is connected:",
 		"  docker network ls --filter label=com.docker.compose.network=kasbah",
 		"  docker network connect <network> traefik",
-		"or re-run `kasbah server init " + t + "`, whose Traefik start rejoins them."}
+		"or re-run `" + x.initCmd() + "`, whose Traefik start rejoins them."}
 	switch {
 	case up.RolledBack == "no" && up.JoinErr == "":
 		return up, nil
@@ -737,5 +752,5 @@ func (x *run) start() (Up, error) {
 		"the proxy is "+state+" ("+up.Health+") — every site on this host is down.",
 		"the previous stack's files are at "+x.backupDir+"; restore them and run:",
 		"  cd "+x.apps+"/traefik && docker compose -p "+Project+" up -d",
-		"then `kasbah server init "+t+"`, which rejoins Traefik to the project networks.")
+		"then `"+x.initCmd()+"`, which rejoins Traefik to the project networks.")
 }

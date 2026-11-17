@@ -264,11 +264,13 @@ func listedBytes(p string, rel *Release, name string) ([]byte, error) {
 	}
 	b, err := os.ReadFile(p)
 	if err != nil {
-		return nil, cli.Fail("cannot read the server build %s: %v", p, err).Cont("nothing was installed — get.sh downloads both linux server builds beside the binary")
+		return nil, cli.Fail("cannot read the server build %s: %v", p, err).Cont("nothing was installed — get.sh downloads both linux server builds beside the binary").Next(
+			"Put " + name + " in " + filepath.Dir(p) + ", or drop --from to download it from the release.")
 	}
 	sum := sha256.Sum256(b)
 	if got := hex.EncodeToString(sum[:]); got != want {
-		return nil, cli.Fail("%s is not the published %s: sha256 %s, the signed checksums.txt says %s", p, name, got, want).Cont("nothing was installed")
+		return nil, cli.Fail("%s is not the published %s: sha256 %s, the signed checksums.txt says %s", p, name, got, want).Cont("nothing was installed").Next(
+			"Download " + name + " into " + filepath.Dir(p) + " again, or drop --from to download it from the release.").Help("troubleshooting")
 	}
 	return b, nil
 }
@@ -285,15 +287,18 @@ func fromOwn(c Ctx, o Options) (version.Version, error) {
 		return v, cli.Fail("--from installs a downloaded release binary, and %s is already in the library", c.Exe).Cont(
 			"nothing was installed — drop --from to install through the releases API")
 	case c.Self == "":
-		return v, cli.Fail("--from installs this binary itself, and it carries no build stamp — nothing was installed")
+		return v, cli.Fail("--from installs this binary itself, and it carries no build stamp — nothing was installed").Next(notRelease)
 	case version.Dev(c.Self):
-		return v, cli.Fail("--from installs this binary itself, and it is a dev build (%s), not a release — nothing was installed", c.Self)
+		return v, cli.Fail("--from installs this binary itself, and it is a dev build (%s), not a release — nothing was installed", c.Self).Next(notRelease)
 	case v.String() != c.Self:
 		return v, cli.Fail("--from installs this binary itself, and it is kasbah %s, not %s", c.Self, v).Cont(
 			"nothing was installed — drop --from to install another version through the releases API")
 	}
 	return v, nil
 }
+
+// notRelease is the next step for --from run by a binary that is no release.
+const notRelease = "Drop --from to install a release through the releases API (kasbah self-update vN.M.P), or install this build from its checkout: ./install-dev.sh."
 
 // ownBytes reads the binary at exe whole and returns it when its size and
 // sha256 are the ones rel lists and signed for asset name.
@@ -311,7 +316,7 @@ func ownBytes(exe string, rel *Release, name string) ([]byte, error) {
 	a, listed := rel.Assets[name]
 	if got != want || (listed && a.Size != int64(len(b))) {
 		return nil, cli.Fail("this binary (%s) is not the published %s: sha256 %s, %d bytes; the signed checksums.txt says %s", exe, name, got, len(b), want).Cont(
-			"nothing was installed — download the release asset again, or run self-update from an installed kasbah")
+			"nothing was installed — download the release asset again, or run self-update from an installed kasbah").Help("troubleshooting")
 	}
 	return b, nil
 }

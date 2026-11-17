@@ -22,5 +22,14 @@ The failures a new project meets most, and where to start:
   a compose project named … already    docker compose -p NAME down there, or
   exists / … publishes …               rename; free the port the line names
   could not load the images onto …     a full disk is the usual cause
+  could not list the releases of …     why is on the error: line, what to do
+                                       on the next: reach GitHub (HTTPS_PROXY)
+                                       or wait out a rate limit
+  … checksums.txt does not verify      a download cut short is a retry; a
+  / sha256 …, checksums.txt says …     signature or sha256 that fails again
+                                       is worth a report: install none of it
+  cannot write …/kasbah                chown the directory (or the one above
+                                       it) back, or export KASBAH_BIN_DIR as
+                                       a directory you own, on PATH
 
 Each entry, with the exact text to search for, is in troubleshooting.md.

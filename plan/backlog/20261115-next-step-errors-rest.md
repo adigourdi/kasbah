@@ -16,9 +16,8 @@ next step.
 ## Evidence
 
 Rough counts (no next step / all failure sites), by package:
-- `cmd/kasbah` ~24/39, `selfupdate` ~18/42,
-  `status` ~17/20, `install` ~14/27, `mail` ~14/22, `release` ~14/23,
-  `destroy` ~11/21, `migrate` ~10/16, `upgrade` ~10/29, `drop` ~10/23
+- `cmd/kasbah` ~24/39, `status` ~17/20, `mail` ~14/22,
+  `destroy` ~11/21, `migrate` ~10/16, `drop` ~10/23
 - smaller: `mailreg` 5, `ops` 4, `serverlock` 4,
   `initproject` 4, `tmpl` 4, `vlog` 2, `history` 2, `info` 1
 - still bare inside the swept packages (~209, mostly deliberate): argument
@@ -45,7 +44,8 @@ Rough counts (no next step / all failure sites), by package:
   likely to meet (install, self-update, restore), generic.
 - No guard test for next steps: review is the guard.
 - Messages that name a doc file, failures or not, point at `kasbah help`.
-- Units: (backup/prune/state/restore flags done); selfupdate/install/upgrade/release;
+- Units: (backup/prune/state/restore flags and
+  selfupdate/install/upgrade/release done);
   cmd/kasbah/status/info/history/vlog/initproject/tmpl;
   mail/mailreg/destroy/drop/migrate/ops/serverlock; the swept packages'
   leftovers and what remains of `dropsCause`.

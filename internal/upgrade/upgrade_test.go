@@ -243,10 +243,12 @@ type fake struct {
 	writeMute bool // init write exits 0 without written=yes
 	calls     []string
 	written   map[string]string
+	apps      string // the marker's apps path, /apps when ""
 }
 
 func (f *fake) Marker() (*marker.Marker, error) {
-	return &marker.Marker{AppsPath: "/apps", DataPath: "/apps/data"}, nil
+	apps := or(f.apps, "/apps")
+	return &marker.Marker{AppsPath: apps, DataPath: apps + "/data"}, nil
 }
 func (f *fake) Close() {}
 func (f *fake) Lock(apps string) (func(), error) {
@@ -402,7 +404,9 @@ func TestRun(t *testing.T) {
 	}
 	f = newFake(t, "traefik:v3.7.10")
 	f.writeRC = 3
-	if se, code = runUp(t, f, "v3.7.11"); code != 1 || !strings.Contains(se, "could not ship the Traefik compose.yml to deploy@vps:/apps/traefik/compose.yml (it exited 3, see above) — the backup is at /apps/traefik/backups/S") {
+	if se, code = runUp(t, f, "v3.7.11"); code != 1 || !strings.Contains(se, "could not ship the Traefik compose.yml to deploy@vps:/apps/traefik/compose.yml (it exited 3, see above) — the backup is at /apps/traefik/backups/S") ||
+		!strings.Contains(se, "\n         cp -p /apps/traefik/backups/S/_shared.yml /apps/traefik/dynamic/_shared.yml\n") ||
+		!strings.Contains(se, "re-run `kasbah server upgrade-traefik deploy@vps --version=v3.7.11`.") {
 		t.Errorf("write failed: %d\n%s", code, se)
 	}
 	f = newFake(t, "traefik:v3.7.10")
@@ -424,7 +428,9 @@ func TestRecover(t *testing.T) {
 	}{
 		{func(f *fake) { f.stack.Shared = "" }, "dynamic/_shared.yml is missing or unreadable"},
 		{func(f *fake) { f.stack.Shared = enc(" \n\n") }, "dynamic/_shared.yml is missing or unreadable"},
-		{func(f *fake) { f.stack.Docker = false }, "docker is not on deploy@vps's PATH"},
+		{func(f *fake) { f.stack.Docker = false }, "docker is not on deploy@vps's PATH — this host is not running a kasbah Traefik stack\n       Get `ssh deploy@vps docker version` to work, then re-run."},
+		{func(f *fake) { f.apps = "/srv/apps"; f.stack.Static = enc("a: [") },
+			"re-render the stack with\n       `kasbah server init deploy@vps --apps-path=/srv/apps`, which owns that file"},
 		{func(f *fake) {
 			f.stack.Static = enc("certificatesResolvers:\n  http:\n    acme:\n      email: a@b.c\n")
 		}, "does not say what the ACME endpoint (caServer) is"},

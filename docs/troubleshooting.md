@@ -280,6 +280,95 @@ line above says why — most often `no space left on device`.
 image tags outside the retention window; `docker system df` there shows what
 holds the rest), then re-run `kasbah build-push USER@HOST`.
 
+## could not list the releases of adigourdi/kasbah: …
+
+```
+error: could not list the releases of adigourdi/kasbah: Get "https://api.github.com/repos/adigourdi/kasbah/releases?per_page=100&page=1": dial tcp: lookup api.github.com…: no such host
+       check that this machine reaches api.github.com over HTTPS — behind a proxy, set HTTPS_PROXY
+```
+
+Its siblings, `could not read the release v…` and `could not download … of
+v…`, are the same request for one release or one of its files.
+
+**Cause:** `kasbah self-update` — and `get.sh` asked for a version other than
+its own — reads GitHub's releases API, and the request got no answer: no
+network, a name that does not resolve, a firewall, or a proxy kasbah was not
+told about. When GitHub answers and refuses, the line says so instead, and the
+line under it what to do: a used-up rate limit (until when), a `Retry-After`
+(how long), or a 404 without a token (the repository may be private: set
+`GITHUB_TOKEN` or `gh auth login`).
+
+**Fix:** get `curl -sI https://api.github.com` to answer from the same shell.
+Behind a proxy, export `HTTPS_PROXY` (and `NO_PROXY` for hosts that bypass
+it): kasbah reads them. For a rate limit, wait until the time named, or set
+`GITHUB_TOKEN`.
+
+## … checksums.txt does not verify against release.pub
+
+```
+error: v1.2.0's checksums.txt does not verify against release.pub (key …): …
+       nothing was installed — the release is not one kasbah's key signed
+       Fetching it again gets the same files: install nothing of v1.2.0 by hand, and report it.
+       help: kasbah help troubleshooting
+```
+
+Its siblings: `… checksums.txt is signed as "kasbah X", not "kasbah Y"`,
+`kasbah_…: sha256 …, checksums.txt says …`, `kasbah_…: N bytes downloaded, the
+release lists M` and `… is not the published kasbah_…`.
+
+**Cause:** before anything is installed, the release's `checksums.txt` must
+carry a signature by the key built into kasbah, made for that version, and
+each file must match the size and sha256 it lists. A file that does not is a
+download cut short, one altered on the way (a proxy that rewrites downloads),
+files of two releases mixed in one directory given to `--from DIR` by hand
+(`get.sh` downloads into a fresh directory and checks every sha256 itself
+before it hands off), or a release kasbah's key did not sign.
+
+**Fix:** the symlink was not moved, and the file that failed was not installed.
+What happens next depends on the line:
+
+- **`N bytes downloaded`** is a download cut short: run the command again.
+- **A sha256 that does not match**, or **a signature that does not verify**,
+  fetched from GitHub: a second run gets the same files unless something on the
+  way rewrites them. If it repeats, install nothing of that release some other
+  way, and report it (below).
+- **With `--from DIR`:** download the release's files again into an empty
+  directory and pass that (`get.sh` does so on each run); a signature that
+  fails the same way again is worth reporting.
+
+On a Mac, when kasbah downloads the two Linux server builds (not with
+`--from`, whose builds are checked before anything is written), a mismatch in
+one comes after the macOS binary is in place: `<lib>/<ver>/kasbah` stays,
+with any server build checked before it. A second run takes that version as
+installed and moves the symlink; the server build it lacks is fetched, verified, when a server first
+needs it.
+
+## cannot write …/kasbah: …
+
+```
+error: cannot write /home/you/.local/bin/kasbah: symlink kasbah /home/you/.local/bin/.kasbah.new: permission denied
+       nothing was installed
+       Make /home/you/.local/bin writable by this user, or set KASBAH_BIN_DIR to a directory that is.
+       help: kasbah help troubleshooting
+```
+
+Its sibling, `cannot make …: …`, is the same directory failing to be created.
+
+**Cause:** an install ends by pointing `<bin>/kasbah` — `~/.local/bin/kasbah`,
+or `KASBAH_BIN_DIR`'s — at the version it installed, and this user cannot
+create the symlink there: the directory, or one above it, belongs to root,
+often after an earlier install or `mkdir` run under `sudo`. kasbah needs no
+root and asks for none; an install checks this before it writes anything.
+
+**Fix:** give back the directory the line names — or, for `cannot make`, the
+lowest one above it that exists (`ls -ld ~/.local ~/.local/bin` shows the
+owners): `sudo chown "$USER" ~/.local/bin`, or `sudo chown "$USER" ~/.local`
+when `~/.local/bin` is not there yet. Or install where you can write, with that
+directory on `PATH`: `KASBAH_BIN_DIR=$HOME/bin kasbah self-update`, or `curl
+-fsSL …/get.sh | KASBAH_BIN_DIR=$HOME/bin sh`. The variable holds for that run
+only: export it in your shell profile, or every later `self-update` goes back
+to `~/.local/bin` and fails there the same way.
+
 ## Anything else
 
 Every run that ends on an `error:` saves a log of what it did on both ends and

@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -104,9 +105,7 @@ func Local(home string, checkout bool, arch string) (string, error) {
 	if !checkout {
 		if v, err := version.Parse(filepath.Base(home)); err == nil && len(v.Pre) == 0 {
 			if err := fetchRelease(home, v.String(), arch); err != nil {
-				return "", cli.Fail("there is no linux/%s server binary at %s, and fetching it from release v%s failed", arch, p, v).Cont(
-					strings.Split(err.Error(), "\n")...).Cont(
-					"or reinstall kasbah (install-dev.sh), which installs both server binaries")
+				return "", fetchFailed(err, arch, p, v.String())
 			}
 			if isFile(p) {
 				return p, nil
@@ -114,6 +113,20 @@ func Local(home string, checkout bool, arch string) (string, error) {
 		}
 	}
 	return "", cli.Fail("there is no linux/%s server binary at %s", arch, p).Cont(remedy)
+}
+
+// fetchFailed quotes the failed fetch of release ver's linux/arch build,
+// its next step and help line carried over, since Error() leaves them out.
+func fetchFailed(err error, arch, p, ver string) error {
+	f := cli.Fail("there is no linux/%s server binary at %s, and fetching it from release v%s failed", arch, p, ver).Cont(
+		strings.Split(err.Error(), "\n")...)
+	if e := (*cli.Error)(nil); errors.As(err, &e) {
+		f.Carry(e)
+	}
+	if len(f.NextLines()) == 0 {
+		f.Next("Re-run once that is fixed: an installed release fetches a server build it lacks each time a server needs one.")
+	}
+	return f
 }
 
 // Facts are what is known about an existing server binary before judging it.

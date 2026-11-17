@@ -522,7 +522,16 @@ func TestReleaseVerifies(t *testing.T) {
 	g.releases["v1.2.0"]["checksums.txt.minisig"] = s.sign(g.releases["v1.2.0"]["checksums.txt"], "kasbah 1.1.0")
 	if _, err := c.Release("1.2.0"); noToken(t, err) == nil || !strings.Contains(err.Error(), `signed as "kasbah 1.1.0", not "kasbah 1.2.0"`) {
 		t.Errorf("another release's signature: %v", err)
+	} else if got := report(err); !strings.Contains(got, "\n       Fetching it again gets the same files: install nothing of v1.2.0 by hand, and report it.\n       help: kasbah help troubleshooting\n") {
+		t.Errorf("another release's signature, its next step:\n%s", got)
 	}
+}
+
+// report is err as the terminal shows it, next step and help line included.
+func report(err error) string {
+	var b bytes.Buffer
+	(&cli.Output{Stdout: &b, Stderr: &b}).Report(err)
+	return b.String()
 }
 
 // TestRefusedToken is a token GitHub answers 401: dropped with one warning
@@ -1315,5 +1324,50 @@ func TestAsset(t *testing.T) {
 	}
 	if AssetName("1.2.0", "arm64") != "kasbah_1.2.0_linux_arm64" {
 		t.Error("AssetName is not the linux build")
+	}
+}
+
+// The next steps a failure computes from what it was given.
+func TestNextSteps(t *testing.T) {
+	s := newSigner(t)
+	// A refused connection: the host to reach, on a line the failure carries.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := "http://" + ln.Addr().String()
+	ln.Close()
+	c := &Client{API: api, Key: s.pub, HTTP: NewHTTP()}
+	_, err = c.Releases()
+	if err == nil || !strings.Contains(err.Error(), "could not list the releases of "+Repo+": ") ||
+		!strings.Contains(err.Error(), "\ncheck that this machine reaches "+ln.Addr().String()+" over HTTPS — behind a proxy, set HTTPS_PROXY") {
+		t.Errorf("unreachable API: %v", err)
+	}
+	// --from, its files absent.
+	dir := filepath.Join(t.TempDir(), "nope")
+	_, err = c.Local("1.2.0", dir)
+	if got := report(err); !strings.Contains(got, "Put v1.2.0's checksums.txt and checksums.txt.minisig in "+dir+", or drop --from to fetch them from the release.") {
+		t.Errorf("--from, no files:\n%s", got)
+	}
+	// --from, a signature that does not verify.
+	dir = t.TempDir()
+	os.WriteFile(filepath.Join(dir, "checksums.txt"), []byte("x  y\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "checksums.txt.minisig"), []byte("junk\n"), 0o644)
+	_, err = c.Local("1.2.0", dir)
+	if got := report(err); !strings.Contains(got, "does not verify against release.pub") ||
+		!strings.Contains(got, "\n       Run nothing that came with these files. Download v1.2.0's release files again into an empty directory and pass that to --from (get.sh does so each run); if it fails the same way, report it.\n       help: kasbah help troubleshooting\n") {
+		t.Errorf("--from, bad signature:\n%s", got)
+	}
+	// --from on a Mac, a server build absent or not the published one.
+	name := AssetName("1.2.0", "arm64")
+	rel := &Release{Tag: "v1.2.0", Sums: map[string]string{name: strings.Repeat("0", 64)}}
+	_, err = listedBytes(filepath.Join(dir, name), rel, name)
+	if got := report(err); !strings.Contains(got, "Put "+name+" in "+dir+", or drop --from to download it from the release.") {
+		t.Errorf("--from, no server build:\n%s", got)
+	}
+	os.WriteFile(filepath.Join(dir, name), []byte("other\n"), 0o755)
+	_, err = listedBytes(filepath.Join(dir, name), rel, name)
+	if got := report(err); !strings.Contains(got, "Download "+name+" into "+dir+" again, or drop --from to download it from the release.") {
+		t.Errorf("--from, another server build:\n%s", got)
 	}
 }

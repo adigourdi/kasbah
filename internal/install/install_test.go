@@ -17,6 +17,13 @@ func fakeTTY(answer string, out *cli.Output) *prompt.Prompter {
 	return &prompt.Prompter{In: strings.NewReader(answer), Out: out, TTY: answer != ""}
 }
 
+// report is err as the terminal shows it, next step and help line included.
+func report(err error) string {
+	var b bytes.Buffer
+	(&cli.Output{Stdout: &b, Stderr: &b}).Report(err)
+	return b.String()
+}
+
 func script(ver string) []byte { return []byte("#!/bin/sh\necho 'kasbah " + ver + " (schema 1)'\n") }
 
 func write(t *testing.T, path string, body []byte) {
@@ -178,18 +185,31 @@ func TestInstallRefusals(t *testing.T) {
 	// Neither a symlink nor a file at <bin>/kasbah: nothing written.
 	lib := filepath.Join(tmp, "lib")
 	os.MkdirAll(filepath.Join(tmp, "xbin", "kasbah"), 0o755)
-	if err := Install(target(lib, filepath.Join(tmp, "xbin"), &buf), b); err == nil || !strings.Contains(err.Error(), "refusing to replace") {
+	if err := Install(target(lib, filepath.Join(tmp, "xbin"), &buf), b); err == nil || !strings.Contains(err.Error(), "refusing to replace") ||
+		!strings.Contains(report(err), "Move "+filepath.Join(tmp, "xbin", "kasbah")+" out of the way, or set KASBAH_BIN_DIR to another directory.") {
 		t.Errorf("a directory at <bin>/kasbah: %v", err)
 	}
 	if _, err := os.Stat(lib); err == nil {
 		t.Error("the refused install wrote the library")
 	}
+	// A <bin> that cannot be made: refused before the library is.
+	os.WriteFile(filepath.Join(tmp, "fbin"), nil, 0o644)
+	nb := filepath.Join(tmp, "fbin", "bin")
+	if err := Install(target(lib, nb, &buf), b); err == nil || !strings.Contains(report(err), "error: cannot make "+nb+": ") ||
+		!strings.Contains(report(err), "Make "+nb+" writable by this user, or set KASBAH_BIN_DIR to a directory that is.") {
+		t.Errorf("<bin> under a file: %s", report(err))
+	}
+	if _, err := os.Stat(lib); err == nil {
+		t.Error("an unmakeable <bin> still let the library be written")
+	}
 	// A <bin> that cannot be written: refused before the library is.
 	if os.Geteuid() != 0 {
 		ro := filepath.Join(tmp, "robin")
 		os.MkdirAll(ro, 0o555)
-		if err := Install(target(lib, ro, &buf), b); err == nil || !strings.Contains(err.Error(), "cannot write "+ro+"/kasbah") {
-			t.Errorf("read-only <bin>: %v", err)
+		err := Install(target(lib, ro, &buf), b)
+		if err == nil || !strings.Contains(err.Error(), "cannot write "+ro+"/kasbah") ||
+			!strings.Contains(report(err), "Make "+ro+" writable by this user, or set KASBAH_BIN_DIR to a directory that is.\n       help: kasbah help troubleshooting") {
+			t.Errorf("read-only <bin>: %s", report(err))
 		}
 		if _, err := os.Stat(lib); err == nil {
 			t.Error("a read-only <bin> still let the library be written")
@@ -210,7 +230,8 @@ func TestInstallRefusals(t *testing.T) {
 	os.MkdirAll(filepath.Join(tmp, "bin"), 0o755)
 	os.Symlink(filepath.Join(good, "kasbah"), link)
 	liar := Build{Version: ver, Bin: func(p string) error { return os.WriteFile(p, script("9.9.9"), 0o755) }}
-	if err := Install(target(lib, filepath.Join(tmp, "bin"), &buf), liar); err == nil || !strings.Contains(err.Error(), "does not report kasbah "+ver) {
+	if err := Install(target(lib, filepath.Join(tmp, "bin"), &buf), liar); err == nil || !strings.Contains(err.Error(), "does not report kasbah "+ver) ||
+		!strings.Contains(report(err), "`"+filepath.Join(lib, ver, "kasbah")+" --version` shows what it does instead.") {
 		t.Errorf("liar: %v", err)
 	}
 	if got, _ := os.Readlink(link); got != filepath.Join(good, "kasbah") {
@@ -291,8 +312,27 @@ func TestRepoint(t *testing.T) {
 	// Something else there is refused.
 	os.Remove(link)
 	os.Mkdir(link, 0o755)
-	if _, err := Repoint(root, binDir, "", fakeTTY("", out), true, 5*time.Second); err == nil || !strings.Contains(err.Error(), "refusing to replace") {
-		t.Errorf("a directory: %v", err)
+	if _, err := Repoint(root, binDir, "", fakeTTY("", out), true, 5*time.Second); err == nil || !strings.Contains(err.Error(), "refusing to replace") ||
+		!strings.Contains(report(err), "\n       Move "+link+" out of the way, or set KASBAH_BIN_DIR to another directory.\n") {
+		t.Errorf("a directory: %s", report(err))
+	}
+	os.Remove(link)
+	// A <bin> that cannot be made, or written: the step names it.
+	os.WriteFile(filepath.Join(binDir, "file"), nil, 0o644)
+	nb := filepath.Join(binDir, "file", "bin")
+	if _, err := Repoint(root, nb, "", fakeTTY("", out), true, 5*time.Second); err == nil ||
+		!strings.Contains(report(err), "error: cannot make "+nb+": ") ||
+		!strings.Contains(report(err), "\n       Make "+nb+" writable by this user, or set KASBAH_BIN_DIR to a directory that is.\n       help: kasbah help troubleshooting\n") {
+		t.Errorf("<bin> under a file: %s", report(err))
+	}
+	if os.Geteuid() != 0 {
+		ro := filepath.Join(t.TempDir(), "robin")
+		os.MkdirAll(ro, 0o555)
+		if _, err := Repoint(root, ro, "", fakeTTY("", out), true, 5*time.Second); err == nil ||
+			!strings.Contains(report(err), "error: cannot write "+ro+"/kasbah: ") ||
+			!strings.Contains(report(err), "\n       Make "+ro+" writable by this user, or set KASBAH_BIN_DIR to a directory that is.\n       help: kasbah help troubleshooting\n") {
+			t.Errorf("read-only <bin>: %s", report(err))
+		}
 	}
 	// Nothing runs.
 	if _, err := Repoint(t.TempDir(), t.TempDir(), "", fakeTTY("", out), true, 5*time.Second); err == nil || !strings.Contains(err.Error(), "no installed kasbah runs") {
@@ -321,6 +361,20 @@ func TestInstallAfterInterrupt(t *testing.T) {
 	}
 	if got, _ := os.Readlink(filepath.Join(binDir, "kasbah")); got != filepath.Join(lib, ver, "kasbah") {
 		t.Errorf("symlink -> %s", got)
+	}
+}
+
+// A library this user cannot read is refused, naming the directory to fix.
+func TestCheckLibUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every directory")
+	}
+	shut := filepath.Join(t.TempDir(), "shut")
+	os.MkdirAll(shut, 0o755)
+	os.Chmod(shut, 0)
+	defer os.Chmod(shut, 0o755)
+	if err := CheckLib(shut); err == nil || !strings.Contains(report(err), "\n       Make "+shut+" readable by this user, or set KASBAH_LIB_DIR to another directory.\n") {
+		t.Errorf("an unreadable library: %s", report(err))
 	}
 }
 

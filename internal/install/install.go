@@ -85,7 +85,8 @@ func BinDir(getenv func(string) string) (string, error) {
 	if home := getenv("HOME"); home != "" {
 		return filepath.Join(home, ".local", "bin"), nil
 	}
-	return "", cli.Fail("neither KASBAH_BIN_DIR nor HOME is set, so there is no <bin>/kasbah to point at the install")
+	return "", cli.Fail("neither KASBAH_BIN_DIR nor HOME is set, so there is no <bin>/kasbah to point at the install").Next(
+		"Set KASBAH_BIN_DIR to the directory kasbah's symlink goes in.")
 }
 
 // Dist is the build in a checkout's dist/: dir/kasbah, which reports ver,
@@ -178,7 +179,8 @@ func Place(lib string, b Build, limit time.Duration) (string, error) {
 	}
 	if !Reports(bin, b.Version, limit) {
 		return "", cli.Fail("%s does not run here, or does not report kasbah %s — the symlink was not repointed", bin, b.Version).Cont(
-			"the files stay under " + dir + " for a look")
+			"the files stay under " + dir + " for a look").Next(
+			"`" + bin + " --version` shows what it does instead.")
 	}
 	return dir, nil
 }
@@ -238,7 +240,7 @@ func CheckLib(lib string) error {
 		if fi, serr := os.Stat(lib); serr == nil && !fi.IsDir() {
 			return cli.Fail("%s is not a directory — set KASBAH_LIB_DIR to an empty or previously installed path", lib)
 		}
-		return cli.Fail("%v", err)
+		return cli.Fail("%v", err).Next("Make " + lib + " readable by this user, or set KASBAH_LIB_DIR to another directory.")
 	}
 	if len(ents) == 0 {
 		return nil
@@ -279,18 +281,28 @@ func pruneDev(lib, keep string) ([]string, error) {
 func checkBin(binDir string) error {
 	link := filepath.Join(binDir, "kasbah")
 	if fi, err := os.Lstat(link); err == nil && fi.Mode()&os.ModeSymlink == 0 && !fi.Mode().IsRegular() {
-		return cli.Fail("%s exists and is not a regular file or a symlink — refusing to replace it", link).Cont("nothing was installed")
+		return cli.Fail("%s exists and is not a regular file or a symlink — refusing to replace it", link).Cont("nothing was installed").Next(occupied(link))
 	}
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		return cli.Fail("cannot make %s: %v", binDir, err).Cont("nothing was installed")
+		return cli.Fail("cannot make %s: %v", binDir, err).Cont("nothing was installed").Next(unwritable(binDir)).Help("troubleshooting")
 	}
 	tmp := filepath.Join(binDir, ".kasbah.new")
 	os.Remove(tmp)
 	if err := os.Symlink("kasbah", tmp); err != nil {
-		return cli.Fail("cannot write %s/kasbah: %v", binDir, err).Cont("nothing was installed")
+		return cli.Fail("cannot write %s/kasbah: %v", binDir, err).Cont("nothing was installed").Next(unwritable(binDir)).Help("troubleshooting")
 	}
 	os.Remove(tmp)
 	return nil
+}
+
+// unwritable is the next step for a <bin> this user cannot write in.
+func unwritable(binDir string) string {
+	return "Make " + binDir + " writable by this user, or set KASBAH_BIN_DIR to a directory that is."
+}
+
+// occupied is the next step for a <bin>/kasbah that is neither file nor symlink.
+func occupied(link string) string {
+	return "Move " + link + " out of the way, or set KASBAH_BIN_DIR to another directory."
 }
 
 // Repoint points <binDir>/kasbah at the newest installed version under root
@@ -328,7 +340,7 @@ func repoint(root, binDir, pin string, p *prompt.Prompter, yes bool, limit time.
 	fi, err := os.Lstat(link)
 	exists := err == nil
 	if exists && fi.Mode()&os.ModeSymlink == 0 && !fi.Mode().IsRegular() {
-		return "", cli.Fail("%s exists and is not a regular file or a symlink — refusing to replace it", link)
+		return "", cli.Fail("%s exists and is not a regular file or a symlink — refusing to replace it", link).Next(occupied(link))
 	}
 	if exists {
 		if cur, ok := currentVersion(link, fi, limit); ok && cur.Major != newest.Version.Major {
@@ -343,18 +355,18 @@ func repoint(root, binDir, pin string, p *prompt.Prompter, yes bool, limit time.
 		}
 	}
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		return "", cli.Fail("%v", err)
+		return "", cli.Fail("cannot make %s: %v", binDir, err).Next(unwritable(binDir)).Help("troubleshooting")
 	}
 	tmp := filepath.Join(binDir, ".kasbah.new")
 	os.Remove(tmp)
 	pop := atexit.Push(func() { os.Remove(tmp) })
 	defer pop()
 	if err := os.Symlink(newest.Bin, tmp); err != nil {
-		return "", cli.Fail("%v", err)
+		return "", cli.Fail("cannot write %s/kasbah: %v", binDir, err).Next(unwritable(binDir)).Help("troubleshooting")
 	}
 	if err := os.Rename(tmp, link); err != nil {
 		os.Remove(tmp)
-		return "", cli.Fail("could not repoint %s: %v", link, err)
+		return "", cli.Fail("could not repoint %s: %v", link, err).Next(unwritable(binDir))
 	}
 	return newest.Bin, nil
 }

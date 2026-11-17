@@ -158,6 +158,22 @@ func (e *Error) Help(topic string) *Error {
 // HelpTopic is the topic Help set, "" for none.
 func (e *Error) HelpTopic() string { return e.help }
 
+// NextLines is the next step Next and SetNext set.
+func (e *Error) NextLines() []string { return slices.Clone(e.next) }
+
+// Carry appends from's next step and takes its help topic, when it has one:
+// for a failure that quotes from through Error(), which leaves both out.
+func (e *Error) Carry(from *Error) *Error {
+	if from == nil {
+		return e
+	}
+	e.next = append(e.next, from.next...)
+	if from.help != "" {
+		e.help = from.help
+	}
+	return e
+}
+
 // Cause puts err's first line on the headline after ": ", trailing period
 // dropped, and appends its further lines after any continuation lines already
 // present, \r stripped. A nil err leaves e as it is.

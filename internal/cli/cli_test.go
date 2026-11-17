@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -113,6 +115,40 @@ func TestSetNext(t *testing.T) {
 	o.Report(Fail("x").Next("old", "older").Help("S02").SetNext("new"))
 	if want := "error: x\n       new\n       help: kasbah help S02\n"; errb.String() != want {
 		t.Errorf("stderr %q, want %q", errb.String(), want)
+	}
+}
+
+// NextLines and HelpTopic hand a quoting caller what Error() leaves out; the
+// copy is the caller's own.
+func TestNextLines(t *testing.T) {
+	e := Fail("x").Next("a", "b").Help("debug")
+	got := e.NextLines()
+	if strings.Join(got, "|") != "a|b" || e.HelpTopic() != "debug" {
+		t.Errorf("NextLines %q, HelpTopic %q", got, e.HelpTopic())
+	}
+	got[0] = "changed"
+	if e.NextLines()[0] != "a" {
+		t.Error("NextLines shares the failure's slice")
+	}
+	if Fail("y").NextLines() != nil {
+		t.Error("no next step: want nil")
+	}
+}
+
+// Carry brings a quoted failure's next step and help line along; a quoted one
+// without a help topic leaves the carrier's.
+func TestCarry(t *testing.T) {
+	if e := Fail("x").Next("Step.").Help("debug").Carry(nil); !slices.Equal(e.NextLines(), []string{"Step."}) || e.HelpTopic() != "debug" {
+		t.Errorf("Carry(nil) changed the failure: %q %q", e.NextLines(), e.HelpTopic())
+	}
+	o, _, errb := capture(false)
+	inner := Fail("inner").Cont("why").Next("Do this.").Help("debug")
+	o.Report(Fail("outer").Cont(strings.Split(inner.Error(), "\n")...).Next("First.").Carry(inner))
+	if want := "error: outer\n       inner\n       why\n       First.\n       Do this.\n       help: kasbah help debug\n"; errb.String() != want {
+		t.Errorf("stderr %q, want %q", errb.String(), want)
+	}
+	if e := Fail("x").Help("S02").Carry(Fail("y")); e.HelpTopic() != "S02" || e.NextLines() != nil {
+		t.Errorf("carrying a bare failure: help %q, next %q", e.HelpTopic(), e.NextLines())
 	}
 }
 
