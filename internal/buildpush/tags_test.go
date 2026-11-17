@@ -2,6 +2,7 @@ package buildpush
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -147,7 +148,11 @@ func errText(err error) string {
 	if err == nil {
 		return ""
 	}
-	return err.Error()
+	msg := err.Error()
+	if e := (*cli.Error)(nil); errors.As(err, &e) {
+		msg += "\n" + strings.Join(e.NextLines(), "\n")
+	}
+	return msg
 }
 
 func TestRefsOf(t *testing.T) {

@@ -72,8 +72,8 @@ func Parse(data []byte, where string) (*Registry, error) {
 	pv, _ := tree.Lookup(doc, "primary_domain")
 	r := &Registry{Primary: str(pv)}
 	if r.Primary == "" {
-		return nil, cli.Fail("%s has no primary_domain: — it is the MX target and the name both certificates are issued for, and nothing here can invent it", where).Cont(
-			"add it to that file:  primary_domain: <domain>")
+		return nil, cli.Fail("%s has no primary_domain: — it is the MX target and the name both certificates are issued for, and nothing here can invent it", where).Next(
+			"Add it to that file (primary_domain: <domain>), then re-run.")
 	}
 	if !initproject.IsFQDN(r.Primary) {
 		return nil, cli.Fail("%s has primary_domain: '%s', which is not a domain name", where, r.Primary).Next(fix)

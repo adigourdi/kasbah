@@ -85,8 +85,8 @@ func Decide(ours Info, srv *Info) (Action, error) {
 	}
 	if sv.Major > ov.Major {
 		return 0, cli.Fail("the server runs kasbah %s, a newer major than this kasbah %s", srv.Build, ours.Build).Cont(
-			"a newer major on the server speaks a protocol this binary does not know",
-			"upgrade kasbah on this workstation, or point at a server this version manages")
+			"a newer major on the server speaks a protocol this binary does not know").Next(
+			fmt.Sprintf("Install kasbah %d.x on this workstation and re-run: `kasbah self-update v%[1]d`.", sv.Major))
 	}
 	switch {
 	case version.Compare(sv, ov) == 0:

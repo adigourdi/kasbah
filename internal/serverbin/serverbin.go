@@ -94,10 +94,10 @@ var fetchRelease = func(home, ver, arch string) error {
 func Local(home string, checkout bool, arch string) (string, error) {
 	name := "kasbah-linux-" + arch
 	p := filepath.Join(home, "server", name)
-	remedy := "reinstall kasbah (install-dev.sh), which installs both server binaries"
+	remedy := "Reinstall kasbah (./install-dev.sh), which installs both server binaries."
 	if checkout {
 		p = filepath.Join(home, "dist", "server", name)
-		remedy = "build it: docker compose run --rm build"
+		remedy = "Build it: `docker compose run --rm build`."
 	}
 	if isFile(p) {
 		return p, nil
@@ -112,7 +112,7 @@ func Local(home string, checkout bool, arch string) (string, error) {
 			}
 		}
 	}
-	return "", cli.Fail("there is no linux/%s server binary at %s", arch, p).Cont(remedy)
+	return "", cli.Fail("there is no linux/%s server binary at %s", arch, p).Next(remedy)
 }
 
 // fetchFailed quotes the failed fetch of release ver's linux/arch build,
@@ -127,6 +127,23 @@ func fetchFailed(err error, arch, p, ver string) error {
 		f.Next("Re-run once that is fixed: an installed release fetches a server build it lacks each time a server needs one.")
 	}
 	return f
+}
+
+// rebuild is the step for a server binary at file, as Local found it, that is
+// not this build: a checkout's dist/server/, an installed release's fetched
+// build, or a dev install's server/.
+func rebuild(file string) []string {
+	home := filepath.Dir(filepath.Dir(file))
+	if filepath.Base(home) == "dist" {
+		return []string{"The workstation and server binaries come from one build: rebuild both with",
+			"`docker compose run --rm build`, then re-run."}
+	}
+	if v, err := version.Parse(filepath.Base(home)); err == nil && len(v.Pre) == 0 {
+		return []string{fmt.Sprintf("Delete %s and re-run: an installed release fetches its", file),
+			"server build, verified, when a server needs one it lacks."}
+	}
+	return []string{"The workstation and server binaries come from one build: reinstall kasbah",
+		"(./install-dev.sh), which installs both, then re-run."}
 }
 
 // Facts are what is known about an existing server binary before judging it.
@@ -174,7 +191,8 @@ func Classify(f Facts, file, goarch string, noexec func() error) (*remote.Info, 
 		return nil, cli.Fail("%s answered `remote version` with %q, not a version line — kasbah will not replace what it cannot order", file, f.Stdout)
 	case TimedOut(rc):
 		return nil, cli.Fail("%s did not answer `remote version` within %d s, or was killed (exit %d)", file, RunTimeout, f.RC).Cont(
-			"kasbah does not replace a binary it cannot account for; look at it on the server")
+			"kasbah does not replace a binary it cannot account for.").Next(
+			"Look at it on the server; moved aside, the next command ships this build in its place.")
 	case rc == 126:
 		if noexec != nil {
 			if err := noexec(); err != nil {
@@ -216,6 +234,8 @@ type Probe struct {
 	AppsDir      bool
 	AppsNotDir   bool
 	Marker       bool
+	// MarkerNotFile: something other than a regular file is at the marker's path.
+	MarkerNotFile bool
 	// MarkerBody is the marker's first 256 KiB; MarkerUnreadable says this
 	// user could not read them.
 	MarkerBody       []byte
@@ -227,7 +247,7 @@ type Probe struct {
 
 // probeScript resolves the apps path ($3, else the pointer $2, else $1) and
 // reports the marker, `uname -m` and the existing binary, whose `remote
-// version` runs for at most $4 s. POSIX sh; exit 5/6/7 are pointer refusals.
+// version` runs for at most $4 s. POSIX sh; exit 5/6/7/8 are pointer refusals.
 const probeScript = `set -u
 export LC_ALL=C
 apps=$1
@@ -279,8 +299,7 @@ elif [ -f "$pointer" ]; then
         readable=no
     fi
 elif [ -e "$pointer" ]; then
-    printf 'remote: %s exists and is not a regular file\n' "$pointer" >&2
-    exit 1
+    exit 8
 elif [ -d "$dir" ] && [ ! -x "$dir" ]; then
     source=pointer
     reachable=no
@@ -304,10 +323,8 @@ fi
 if [ -d "$apps" ]; then echo apps_dir=yes; elif [ -e "$apps" ]; then echo apps_dir=notdir; else echo apps_dir=no; fi
 marker="$apps/.kasbah/server.json"
 if [ -e "$marker" ] && [ ! -f "$marker" ]; then
-    printf 'remote: %s exists and is not a regular file\n' "$marker" >&2
-    exit 1
-fi
-if [ -f "$marker" ]; then
+    echo marker=notfile
+elif [ -f "$marker" ]; then
     echo marker=yes
     if [ -r "$marker" ]; then
         printf 'marker_hex=%s\n' "$(od -An -tx1 -v -N 262144 "$marker" 2>/dev/null | tr -d ' \n')"
@@ -374,6 +391,7 @@ func ParseProbe(out []byte) (*Probe, error) {
 			p.AppsNotDir = v == "notdir"
 		case "marker":
 			p.Marker = v == "yes"
+			p.MarkerNotFile = v == "notfile"
 		case "marker_hex":
 			p.MarkerBody, _ = hex.DecodeString(v)
 		case "marker_readable":
@@ -452,7 +470,7 @@ func judgeLayout(target string, rc int, out []byte, prepared bool) (*Probe, erro
 		return nil, err
 	}
 	if prepared && p.AppsNotDir {
-		return nil, AppsNotDir(target, p.Apps)
+		return nil, AppsNotDir(target, p)
 	}
 	if prepared && p.Source == "explicit" && !p.Marker {
 		return nil, NoMarker(target, p)
@@ -469,9 +487,44 @@ func judgeLayout(target string, rc int, out []byte, prepared bool) (*Probe, erro
 	return p, nil
 }
 
-// AppsNotDir is the refusal of an apps path that is there and not a directory.
-func AppsNotDir(target, apps string) *cli.Error {
-	return cli.Fail("%s on %s exists and is not a directory — point kasbah elsewhere with --apps-path=<dir>", apps, target)
+// AppsNotDir is the refusal of an apps path that is there and not a
+// directory, its next step worded for how that path was found.
+func AppsNotDir(target string, p *Probe) *cli.Error {
+	e := cli.Fail("%s on %s exists and is not a directory", p.Apps, target)
+	switch p.Source {
+	case "explicit":
+		return e.Next("Name the directory the server was prepared at with --apps-path=<dir>.")
+	case "pointer":
+		return e.Cont(probePointer + " names it as the tree this server was prepared at.").Next(lookAtPointer(target, p.Apps))
+	}
+	return e.Next(notDirDefault(target, p.Apps)...)
+}
+
+// notDirDefault is the step for a default apps path that is a file: init
+// refuses it there, so the choice is removing it or another apps path. No
+// runnable bare init line, for the reason lostPointer gives.
+func notDirDefault(target, apps string) []string {
+	return []string{
+		fmt.Sprintf("If the server has never been prepared, remove %s, and `kasbah server init` prepares it there,", apps),
+		fmt.Sprintf("or prepare it elsewhere with `%s`. If it was prepared", InitCmd(target, "<dir>")),
+		"at another apps path and the pointer has been lost, the same line with <dir>",
+		"set to that tree (its marker is at <dir>/.kasbah/server.json) restores it.",
+	}
+}
+
+// lookAtPointer is the step when the pointer names a tree that is not one.
+func lookAtPointer(target, apps string) string {
+	return fmt.Sprintf("Look at both before doing anything else: `ssh %s 'cat %s; ls -la %s'`.", target, probePointer, apps)
+}
+
+// lostPointer is the step for a default apps path that holds no tree: no
+// runnable init line, since a lost pointer looks exactly like this, and a bare
+// init there takes the running proxy down.
+var lostPointer = []string{
+	"If the server has never been prepared, `kasbah server init` prepares it.",
+	"If it was prepared at another apps path and the pointer has been lost, find",
+	"that tree (its marker is at <dir>/.kasbah/server.json), then re-run init with",
+	"--apps-path=<dir> set to it — that restores the pointer.",
 }
 
 // UnreadableMarker is the refusal of a marker the probe could not read. Any
@@ -487,32 +540,34 @@ func UnreadableMarker(target, apps string) *cli.Error {
 // NoMarker is the exit-4 refusal of a server with no marker under the apps
 // path p names, worded for how that path was found.
 func NoMarker(target string, p *Probe) *cli.Error {
-	mk := marker.Path(p.Apps)
+	e := cli.Failf(cli.ExitNoRemoteState, "%s has no server marker at %s", target, marker.Path(p.Apps))
 	switch {
 	case p.Source == "explicit":
-		return cli.Failf(cli.ExitNoRemoteState, "%s has no server marker at %s", target, mk).Cont(
-			"That path is the one --apps-path named, and nothing else was looked at.",
-			"So this is one of two situations, and they have different answers:",
-			"  * the server has never been prepared, and initialising it is the answer.",
-			"  * it is prepared somewhere else: name that tree with --apps-path=<dir>.",
-			"Do not re-run init until you know which: at the wrong apps path it renders a",
-			"second Traefik stack under the frozen 'traefik' compose project, which",
-			"recreates the running proxy against it and takes every site down.")
+		return e.Cont(
+			"That path is the one --apps-path named, and nothing else was looked at,",
+			"so this is one of two situations, with different answers. Do not run init",
+			"until you know which: at the wrong apps path it renders a second Traefik",
+			"stack under the frozen 'traefik' compose project, which recreates the",
+			"running proxy against it and takes every site down.").Next(
+			"If the server has never been prepared, initialising it at that path is the answer.",
+			"If it is prepared somewhere else, name that tree with --apps-path=<dir>.")
 	case p.Source == "pointer" && p.Apps != probeDefault:
-		return cli.Failf(cli.ExitNoRemoteState, "%s has no server marker at %s", target, mk).Cont(
+		return e.Cont(
 			probePointer+" says this server was prepared at "+p.Apps+", and there is no marker there;",
-			"kasbah does not fall back to "+probeDefault+". Look at both before doing anything else.")
+			"kasbah does not fall back to "+probeDefault+".").Next(lookAtPointer(target, p.Apps))
 	}
-	// No runnable init line: a lost pointer looks exactly like this, and a
-	// bare init there takes the running proxy down.
-	return cli.Failf(cli.ExitNoRemoteState, "%s has no server marker at %s", target, mk).Cont(
+	return e.Cont(
 		"kasbah puts its binary only on a server `kasbah server init` has prepared,",
-		"and this is one of two situations, with different answers:",
-		"  * the server has never been prepared, and initialising it is the answer.",
-		"  * it was prepared at another apps path and the pointer has been lost. Find",
-		"    that tree (its marker is at <dir>/.kasbah/server.json), then re-run init",
-		"    with --apps-path=<dir> set to it — that restores the pointer.",
-		"Do not guess the path: init at the wrong one takes the running Traefik down.")
+		"and this is one of two situations, with different answers. Do not guess the",
+		"path: init at the wrong one takes the running Traefik down.").Next(lostPointer...)
+}
+
+// MarkerNotFile is the refusal of something other than a regular file at
+// the marker's path.
+func MarkerNotFile(target, apps string) *cli.Error {
+	mk := marker.Path(apps)
+	return cli.Fail("%s on %s exists and is not a regular file", mk, target).Next(
+		marker.StartOver(target, mk, InitCmd(target, apps), "ls -ld")...)
 }
 
 // readLayout reads the probe's answer and makes its pointer refusals: where
@@ -520,6 +575,11 @@ func NoMarker(target string, p *Probe) *cli.Error {
 func readLayout(target string, rc int, out []byte) (*Probe, error) {
 	switch rc {
 	case 0, 5, 6, 7:
+	case 8:
+		return nil, cli.Fail("%s on %s exists and is not a regular file", probePointer, target).Cont(
+			"it is the server's record of where it was prepared: one absolute path, in a file root owns.").Next(
+			fmt.Sprintf("Look at it (`ssh %s ls -ld %s`) and move it aside, then re-run `kasbah server init %s --apps-path=<dir>`", target, probePointer, target),
+			"naming the tree the server was prepared at, which writes it again.")
 	default:
 		return nil, cli.Fail("could not read the server layout on %s (%s, see above)", target, ExitText(rc, 0))
 	}
@@ -532,19 +592,23 @@ func readLayout(target string, rc int, out []byte) (*Probe, error) {
 	case 7:
 		return nil, cli.Fail("%s on %s cannot be entered by this deploy user", path.Dir(probePointer), target).Cont(
 			"whether this server carries a pointer cannot be told from outside it, and",
-			probeDefault+" is only the right tree if it does not",
-			fmt.Sprintf("(ssh %s 'sudo chmod 755 %s')", target, path.Dir(probePointer)))
+			probeDefault+" is only the right tree if it does not.").Next(
+			fmt.Sprintf("Make it traversable again: `ssh %s 'sudo chmod 755 %s'`.", target, path.Dir(probePointer)))
 	case 6:
 		return nil, cli.Fail("%s on %s cannot be read by this deploy user", probePointer, target).Cont(
-			"it is world-readable by contract, and reading "+probeDefault+" instead could be a different server",
-			fmt.Sprintf("(ssh %s 'sudo chmod 644 %s')", target, probePointer))
+			"it is world-readable by contract, and reading " + probeDefault + " instead could be a different server.").Next(
+			fmt.Sprintf("Make it readable again: `ssh %s 'sudo chmod 644 %s'`.", target, probePointer))
 	case 5:
 		if p.Source == "explicit" {
 			return nil, cli.Fail("the apps path '%s' is not an absolute path", p.Apps)
 		}
 		return nil, cli.Fail("%s on %s does not name an absolute path", probePointer, target).Cont(
-			"it holds '"+p.Apps+"'; correct it, or re-run init with --apps-path=<dir> set to",
-			"the directory the server was actually prepared at")
+			"it holds '"+p.Apps+"'.").Next(
+			"Correct it, or remove it and re-run init with --apps-path=<dir> set to the",
+			"directory the server was actually prepared at: init refuses a pointer it cannot read.")
+	}
+	if p.MarkerNotFile {
+		return nil, MarkerNotFile(target, p.Apps)
 	}
 	if !strings.HasPrefix(p.Apps, "/") || p.Apps == "/" {
 		return nil, cli.Fail("the server probe on %s named '%s' as the apps path, which is not an absolute path", target, p.Apps)
@@ -604,8 +668,8 @@ func noexec(target, dir, file string, mount []string) error {
 	for _, o := range strings.Split(f[2], ",") {
 		if o == "noexec" {
 			return cli.Fail("kasbah's binary cannot run from %s on %s: %s is mounted noexec (%s)", dir, target, f[0], m).Cont(
-				"kasbah runs its own binary on the server from the apps path; remount",
-				f[0]+" without noexec, or prepare the server at an apps path on another filesystem")
+				"kasbah runs its own binary on the server from the apps path.").Next(
+				"Remount " + f[0] + " without noexec, or prepare the server at an apps path on another filesystem.")
 		}
 	}
 	return nil
@@ -851,9 +915,7 @@ func ship(c *ssh.Conn, self remote.Info, file, bin, over string) (*remote.Info, 
 	got, perr := remote.ParseInfo(vout.String())
 	if perr != nil || got.Build != self.Build {
 		return nil, cli.Fail("%s is build %s, and this kasbah is %s — refusing to ship a server binary from another build",
-			file, strings.TrimSpace(vout.String()), self.Build).Cont(
-			"the workstation and server binaries come from one build: docker compose run --rm build",
-			"(or ./install-dev.sh), then retry")
+			file, strings.TrimSpace(vout.String()), self.Build).Next(rebuild(file)...)
 	}
 
 	var iout bytes.Buffer

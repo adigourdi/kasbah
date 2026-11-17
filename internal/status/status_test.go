@@ -874,3 +874,18 @@ done
 	out, _, _ := runStatus(t, r)
 	has(t, out, "\nNot kasbah's: unknown — docker could not list the containers: Cannot connect to the Docker daemon\n")
 }
+
+// status records an --apps-path as "flag"; its refusals are worded for the
+// probe's "explicit", the other sources passed through.
+func TestProbeSource(t *testing.T) {
+	for in, want := range map[string]string{"flag": "explicit", "pointer": "pointer", "default": "default"} {
+		if p := (&run{apps: "/srv/apps", source: in}).probe(); p.Source != want || p.Apps != "/srv/apps" {
+			t.Errorf("%s: %+v, want source %s", in, p, want)
+		}
+	}
+	x := &run{target: "d@h", apps: "/srv/apps", source: "flag", r: &Report{AppsState: "notdir"}}
+	var e *cli.Error
+	if err := x.readMarker(); !errors.As(err, &e) || strings.Join(e.NextLines(), "\n") != "Name the directory the server was prepared at with --apps-path=<dir>." {
+		t.Errorf("an --apps-path that is not a directory: %v", err)
+	}
+}

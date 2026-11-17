@@ -152,6 +152,17 @@ func TestCarry(t *testing.T) {
 	}
 }
 
+// Full keeps the next step and help line Error() leaves out.
+func TestFull(t *testing.T) {
+	e := Fail("x").Cont("why").Next("Do this.").Help("debug")
+	if got := Full(e); got != "x\nwhy\nDo this.\nhelp: kasbah help debug" {
+		t.Errorf("Full(*Error) %q", got)
+	}
+	if got := Full(errors.New("plain")); got != "plain" {
+		t.Errorf("Full(plain) %q", got)
+	}
+}
+
 func TestOSCause(t *testing.T) {
 	_, err := os.Stat("/nonexistent/kasbah")
 	if got := OSCause(err).Error(); got != "no such file or directory" {

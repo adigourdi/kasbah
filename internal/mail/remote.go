@@ -67,7 +67,7 @@ func Remote(templates fs.FS, args []string, stdin io.Reader, stdout, stderr io.W
 		return 1
 	}
 	if err != nil {
-		return fail("%v", err)
+		return fail("%s", cli.Full(err))
 	}
 	return 0
 }
@@ -205,7 +205,7 @@ func remoteWrite(apps, data, size, sum string, stdin io.Reader, stdout io.Writer
 
 	cfg := data + "/mail/dms/config"
 	aliases := cfg + "/postfix-virtual.cf"
-	state := "skipped"
+	state, cause := "skipped", ""
 	if b.Alias != "" {
 		state = "failed"
 		exists, regular := isFile(aliases)
@@ -213,11 +213,16 @@ func remoteWrite(apps, data, size, sum string, stdin io.Reader, stdout io.Writer
 			state = "noconfig"
 		} else if exists && !regular {
 			state = "notfile"
-		} else if appendLine(aliases, b.Alias) == nil {
+		} else if err := appendLine(aliases, b.Alias); err != nil {
+			cause = strings.ReplaceAll(err.Error(), "\n", " ")
+		} else {
 			state = "added"
 		}
 	}
 	fmt.Fprintf(stdout, "alias=%s\n", state)
+	if cause != "" {
+		fmt.Fprintf(stdout, "alias_error=%s\n", cause)
+	}
 	return nil
 }
 
@@ -226,25 +231,32 @@ func appendLine(path, line string) error {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o664)
 	if errors.Is(err, os.ErrPermission) {
 		if fi, serr := os.Stat(path); serr == nil {
-			return fmt.Errorf("%s belongs to %s and is mode %o, not group-writable: only its owner or root can append to it", path, serverlock.OwnerName(fi), fi.Mode().Perm())
+			return fmt.Errorf("it belongs to %s and is mode %o, not group-writable: only its owner or root can append to it", serverlock.OwnerName(fi), fi.Mode().Perm())
 		}
 	}
 	if err != nil {
-		return err
+		return cli.OSCause(err)
 	}
 	defer f.Close()
 	lead := ""
 	if fi, err := f.Stat(); err == nil && fi.Size() > 0 {
 		last := make([]byte, 1)
 		if _, err := f.ReadAt(last, fi.Size()-1); err != nil {
-			return err
+			return cli.OSCause(err)
 		}
 		if last[0] != '\n' {
 			lead = "\n"
 		}
 	}
 	_, err = f.WriteString(lead + line + "\n")
-	return err
+	return cli.OSCause(err)
+}
+
+// notFile is the layout step's refusal of something other than a regular
+// file where init writes one.
+func notFile(path string) *cli.Error {
+	return cli.Fail("%s exists and is not a regular file", path).Next(
+		fmt.Sprintf("Look at it (`ls -ld %s`) and move it aside: init writes it again.", path))
 }
 
 // LayoutBody is init's payload to the layout step: the rendered .env and the
@@ -341,7 +353,7 @@ func remoteLayout(apps, data, size, sum string, stdin io.Reader, stdout io.Write
 	exists, regular := isFile(env)
 	switch {
 	case exists && !regular:
-		return fmt.Errorf("%s exists and is not a regular file", env)
+		return notFile(env)
 	case !exists:
 		if err := remote.Install(env, []byte(b.Env), 0o600); err != nil {
 			return err
@@ -373,7 +385,7 @@ func remoteLayout(apps, data, size, sum string, stdin io.Reader, stdout io.Write
 	accounts := accountsPath(data)
 	exists, regular = isFile(accounts)
 	if exists && !regular {
-		return fmt.Errorf("%s exists and is not a regular file", accounts)
+		return notFile(accounts)
 	}
 	has, readable := hasAccount(accounts)
 	if b.Account == "" || (exists && (has || !readable)) {

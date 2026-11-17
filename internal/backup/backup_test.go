@@ -142,7 +142,7 @@ func TestFirstOwned(t *testing.T) {
 	if k := FirstOwned("AWS_ACCESS_KEY_ID=k\n"); k != "" {
 		t.Errorf("%q", k)
 	}
-	if e := OwnedEnvError("/apps", "RESTIC_REPOSITORY"); !strings.Contains(e.Error(), "which kasbah sets itself") || !strings.Contains(e.Error(), "Remove the line") {
+	if e := OwnedEnvError("/apps", "RESTIC_REPOSITORY"); !strings.Contains(e.Error(), "which kasbah sets itself") || !strings.Contains(strings.Join(e.NextLines(), "\n"), "Remove the line") {
 		t.Error(e)
 	}
 }
@@ -168,7 +168,7 @@ func TestFirstBadLine(t *testing.T) {
 		}
 	}
 	e := BadEnvLineError("/apps/.kasbah/backup/env", 3, "K")
-	if !strings.HasPrefix(e.Error(), "/apps/.kasbah/backup/env: line 3 (below K=) is not blank") || !strings.Contains(e.Error(), "Put the value on one line") {
+	if !strings.HasPrefix(e.Error(), "/apps/.kasbah/backup/env: line 3 (below K=) is not blank") || !strings.Contains(strings.Join(e.NextLines(), "\n"), "Put the value on one line") {
 		t.Error(e)
 	}
 }

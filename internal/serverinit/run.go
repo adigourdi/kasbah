@@ -303,9 +303,13 @@ func AppsWhy(f Facts, target, apps string) string {
 
 // stepFailed is a remote step's failure; limit is the step's bound in seconds
 // (serverbin.ExitText), 0 when it ran unbounded.
-func stepFailed(what, target string, rc, limit int) error {
+func stepFailed(what, target string, rc, limit int) *cli.Error {
 	return cli.Fail("could not %s on %s (%s, see above)", what, target, serverbin.ExitText(rc, limit))
 }
+
+// rerunInit is the step after a backup or mail step whose cause the server
+// printed: init converges on a re-run, whatever this one left in place.
+const rerunInit = "Once the cause above is fixed, re-run the same `kasbah server init` command."
 
 // pointerPath is Pointer, moved only by tests.
 var pointerPath = Pointer
@@ -447,7 +451,7 @@ func Run(c Ctx, o Options) (err error) {
 
 	var existingMap *tree.Map
 	if present {
-		warns, err := marker.Compat(existing, c.Version, markerPath, target)
+		warns, err := marker.Compat(existing, c.Version, markerPath, target, serverbin.InitCmd(target, o.Apps))
 		if err != nil {
 			return err
 		}

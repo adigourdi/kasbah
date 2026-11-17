@@ -653,3 +653,18 @@ esac
 		t.Errorf("docker ran on a refused argument:\n%s", read(t, logf))
 	}
 }
+
+// The arm prints a refusal's next step on the server, where it was built.
+func TestRemoteInitStep(t *testing.T) {
+	apps := t.TempDir() + "/apps"
+	os.MkdirAll(apps+"/.kasbah/backup", 0o700)
+	os.WriteFile(apps+"/.kasbah/backup/env", []byte("A=1\nnot a line\n"), 0o600)
+	raw, _ := json.Marshal(LayoutBody{Default: "# kasbah\n", RepoBase: "b/"})
+	size, sum := remote.Digest(raw)
+	var errb bytes.Buffer
+	if rc := RemoteInit([]string{"layout", apps, size, sum}, bytes.NewReader(raw), &bytes.Buffer{}, &errb); rc != 1 ||
+		!strings.HasPrefix(errb.String(), "remote: "+apps+"/.kasbah/backup/env: line 2 (below A=) is not blank") ||
+		!strings.HasSuffix(errb.String(), "\nPut the value on one line (or remove the line) and re-run.\n") {
+		t.Errorf("rc %d, stderr %q", rc, errb.String())
+	}
+}

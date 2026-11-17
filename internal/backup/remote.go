@@ -63,7 +63,7 @@ func RemoteInit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return usage()
 	}
 	if err != nil {
-		return fail("%v", err)
+		return fail("%s", cli.Full(err))
 	}
 	return 0
 }
@@ -163,7 +163,7 @@ func remoteLayout(apps, size, sum string, stdin io.Reader, stdout io.Writer) err
 		}
 	}
 	if st := probe.DirState(dir); st == "notdir" {
-		return fmt.Errorf("%s exists and is not a directory — look at it, remove it, and re-run", dir)
+		return fmt.Errorf("%s exists and is not a directory — look at it, then remove it", dir)
 	}
 	for _, d := range []string{dir, dir + "/repos", dir + "/state"} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -184,7 +184,7 @@ func remoteLayout(apps, size, sum string, stdin io.Reader, stdout io.Writer) err
 		current = string(b)
 	}
 	if k := FirstOwned(current); k != "" {
-		return fmt.Errorf("%s sets %s, which kasbah sets itself — remove the line and re-run", envPath, k)
+		return fmt.Errorf("%s sets %s, which kasbah sets itself — remove the line", envPath, k)
 	}
 	if n, k := FirstBadLine(current); n > 0 {
 		return BadEnvLineError(envPath, n, k)

@@ -459,3 +459,16 @@ func TestRemoteDKIM(t *testing.T) {
 		t.Error("a failed keygen left a key")
 	}
 }
+
+// A refusal built on the server prints its next step there: the workstation
+// only says "see above".
+func TestDKIMRefusalStep(t *testing.T) {
+	root := t.TempDir()
+	apps, data := root+"/apps", root+"/data"
+	os.MkdirAll(apps+"/mail", 0o755)
+	os.WriteFile(apps+"/mail/kasbah.yml", []byte("name: mail\n"), 0o644)
+	if _, e, rc := run(t, "", "dkim", apps, data, "a.com"); rc != 1 || !strings.Contains(e, "has no primary_domain:") ||
+		!strings.HasSuffix(e, "\nAdd it to that file (primary_domain: <domain>), then re-run.\n") {
+		t.Errorf("rc %d, stderr %q", rc, e)
+	}
+}

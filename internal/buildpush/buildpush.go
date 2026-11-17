@@ -268,11 +268,10 @@ func Run(c Ctx, o Options) error {
 	if err := build(m.Name, images, platform, engine); err != nil {
 		return err
 	}
-	again := []string{"to ship it under another label instead, re-run: each --dirty run labels its build anew;"}
+	again := []string{"To ship it under another label instead, re-run: each --dirty run labels its build anew."}
 	if !o.Dirty {
-		again = []string{"to ship this build under another version instead: git tag -d v" + version + ", then tag",
-			"HEAD a higher version yourself, or re-run with a --bump that reaches one",
-			"(a tag already pushed: delete it on origin too);"}
+		again = []string{"To ship this build under another version instead: `git tag -d v" + version + "`, then tag HEAD",
+			"a higher version yourself or re-run with a --bump that reaches one (a tag already pushed: delete it on origin too)."}
 	}
 	st, err := ship(c.Out, conn, res.Apps, images, c.Prompter, o.ReplaceTag, again)
 	if err != nil {

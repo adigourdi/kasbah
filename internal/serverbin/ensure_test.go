@@ -268,16 +268,33 @@ func TestProbe(t *testing.T) {
 	refusals := []struct {
 		name  string
 		setup func(s *scratch)
-		want  string
+		want  func(s *scratch) string
 	}{
-		{"pointer not an absolute path", func(s *scratch) { s.point("apps\n") }, "does not name an absolute path"},
-		{"pointer empty", func(s *scratch) { s.point("") }, "does not name an absolute path"},
-		{"pointer unreadable", func(s *scratch) { s.point(s.apps + "\n"); os.Chmod(s.pointer, 0) }, "cannot be read"},
-		{"pointer directory not enterable", func(s *scratch) { s.point(s.apps + "\n"); os.Chmod(filepath.Dir(s.pointer), 0o600) }, "cannot be entered"},
+		{"pointer not an absolute path", func(s *scratch) { s.point("apps\n") }, func(*scratch) string { return "does not name an absolute path" }},
+		{"pointer empty", func(s *scratch) { s.point("") }, func(*scratch) string { return "does not name an absolute path" }},
+		{"pointer unreadable", func(s *scratch) { s.point(s.apps + "\n"); os.Chmod(s.pointer, 0) }, func(s *scratch) string {
+			return "cannot be read by this deploy user\n" +
+				"       it is world-readable by contract, and reading " + s.apps + " instead could be a different server.\n" +
+				"       Make it readable again: `ssh d@h 'sudo chmod 644 " + s.pointer + "'`.\n"
+		}},
+		{"pointer directory not enterable", func(s *scratch) { s.point(s.apps + "\n"); os.Chmod(filepath.Dir(s.pointer), 0o600) }, func(s *scratch) string {
+			return "Make it traversable again: `ssh d@h 'sudo chmod 755 " + filepath.Dir(s.pointer) + "'`.\n"
+		}},
+		{"pointer not a regular file", func(s *scratch) { os.MkdirAll(s.pointer, 0o755) }, func(s *scratch) string {
+			return "error: " + s.pointer + " on d@h exists and is not a regular file\n" +
+				"       it is the server's record of where it was prepared: one absolute path, in a file root owns.\n" +
+				"       Look at it (`ssh d@h ls -ld " + s.pointer + "`) and move it aside, then re-run `kasbah server init d@h --apps-path=<dir>`\n" +
+				"       naming the tree the server was prepared at, which writes it again.\n"
+		}},
 		{"marker not a regular file", func(s *scratch) {
 			os.Remove(filepath.Join(s.apps, ".kasbah", "server.json"))
 			os.Mkdir(filepath.Join(s.apps, ".kasbah", "server.json"), 0o755)
-		}, "exited 1"},
+		}, func(s *scratch) string {
+			mk := s.apps + "/.kasbah/server.json"
+			return "error: " + mk + " on d@h exists and is not a regular file\n" +
+				"       Look at it before running anything else against this server (`ssh d@h ls -ld " + mk + "`);\n" +
+				"       to start the server's record over, move it aside and re-run `kasbah server init d@h --apps-path=" + s.apps + "`.\n"
+		}},
 	}
 	for _, tt := range refusals {
 		t.Run(tt.name, func(t *testing.T) {
@@ -285,11 +302,45 @@ func TestProbe(t *testing.T) {
 			s.marker(s.apps)
 			tt.setup(s)
 			rc, out := s.probe("")
-			_, err := judge("d@h", rc, out, Options{})
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Errorf("rc %d, %v; want a refusal saying %q (output %q)", rc, err, tt.want, out)
+			// Every mode refuses it, Inspect's too.
+			for _, opt := range []Options{{}, prepared} {
+				_, err := judge("d@h", rc, out, opt)
+				if want := tt.want(s); err == nil || !strings.Contains(report(err), want) {
+					t.Errorf("rc %d, %v; want a refusal saying %q (output %q)", rc, report(err), want, out)
+				}
+			}
+			if _, err := readLayout("d@h", rc, out); err == nil {
+				t.Errorf("readLayout passed it: %q", out)
 			}
 		})
+	}
+}
+
+// Each refusal of an apps path with no tree names the step for how the path
+// was found.
+func TestAppsRefusalSteps(t *testing.T) {
+	for _, tc := range []struct {
+		p    Probe
+		next []string
+	}{
+		{Probe{Apps: "/srv/apps", Source: "explicit"}, []string{"Name the directory the server was prepared at with --apps-path=<dir>."}},
+		{Probe{Apps: "/srv/apps", Source: "pointer"}, []string{"Look at both before doing anything else: `ssh d@h 'cat " + Pointer + "; ls -la /srv/apps'`."}},
+		{Probe{Apps: DefaultApps, Source: "default"}, []string{
+			"If the server has never been prepared, remove /apps, and `kasbah server init` prepares it there,",
+			"or prepare it elsewhere with `kasbah server init d@h --apps-path=<dir>`. If it was prepared",
+			"at another apps path and the pointer has been lost, the same line with <dir>",
+			"set to that tree (its marker is at <dir>/.kasbah/server.json) restores it.",
+		}},
+	} {
+		if got := AppsNotDir("d@h", &tc.p).NextLines(); !slices.Equal(got, tc.next) {
+			t.Errorf("AppsNotDir %+v: %q, want %q", tc.p, got, tc.next)
+		}
+	}
+	if got := NoMarker("d@h", &Probe{Apps: "/srv/apps", Source: "pointer"}).NextLines(); !slices.Equal(got, []string{"Look at both before doing anything else: `ssh d@h 'cat " + Pointer + "; ls -la /srv/apps'`."}) {
+		t.Errorf("NoMarker, pointer: %q", got)
+	}
+	if got := NoMarker("d@h", &Probe{Apps: DefaultApps, Source: "pointer"}).NextLines(); !slices.Equal(got, lostPointer) {
+		t.Errorf("NoMarker, a pointer naming the default: %q", got)
 	}
 }
 
@@ -741,7 +792,7 @@ func TestEnsurePrepared(t *testing.T) {
 	RunTimeout = 2
 	t.Cleanup(func() { RunTimeout = 30 })
 	for _, c := range []struct{ name, body, refuse string }{
-		{"not JSON", "nope\n", "is not a JSON object — re-run `kasbah server init d@h --apps-path="},
+		{"not JSON", "nope\n", "move it aside and re-run `kasbah server init d@h --apps-path="},
 		{"no limits", `{"apps_path":"/apps","data_path":"/apps/data"}`, "records cpu_limit=''"},
 		{"valid", `{"apps_path":"/srv/apps","data_path":"/srv/data","cpu_limit":"1","mem_limit":"1g"}`, ""},
 	} {
@@ -760,7 +811,7 @@ func TestEnsurePrepared(t *testing.T) {
 			res, mk, err := EnsurePrepared(conn, remote.Self(ours), func(string) (string, error) { return local, nil })
 			_, statErr := os.Stat(Path(s.apps))
 			if c.refuse != "" {
-				if err == nil || !strings.Contains(err.Error(), c.refuse) || statErr == nil {
+				if err == nil || !strings.Contains(report(err), c.refuse) || statErr == nil {
 					t.Fatalf("got %v (binary shipped: %v); want a refusal saying %q, nothing shipped", err, statErr == nil, c.refuse)
 				}
 				return
@@ -821,7 +872,7 @@ func TestEnsureMajor(t *testing.T) {
 			res, err := Ensure(conn, remote.Self(ours), func(string) (string, error) { return local, nil }, c.opt)
 			_, statErr := os.Stat(Path(s.apps))
 			if c.refuse != "" {
-				if err == nil || !strings.Contains(err.Error(), c.refuse) || statErr == nil {
+				if err == nil || !strings.Contains(report(err), c.refuse) || statErr == nil {
 					t.Fatalf("got %v (binary shipped: %v); want a refusal saying %q, nothing shipped", err, statErr == nil, c.refuse)
 				}
 				if strings.Contains(c.name, "older") && !strings.Contains(err.Error(), "0.9.0") {

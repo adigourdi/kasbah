@@ -117,6 +117,17 @@ func (e *Error) all() []string {
 	return l
 }
 
+// Full is err as Report prints it, without the error: prefix and log line: an
+// *Error's next step and help line included. A server arm writes its failure
+// with it, so a step built on the server is printed there.
+func Full(err error) string {
+	var e *Error
+	if errors.As(err, &e) {
+		return strings.Join(e.all(), "\n")
+	}
+	return err.Error()
+}
+
 // Fail is an exit-1 error of one line.
 func Fail(format string, args ...any) *Error {
 	return &Error{Code: ExitFailure, Lines: []string{fmt.Sprintf(format, args...)}}

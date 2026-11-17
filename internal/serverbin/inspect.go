@@ -21,7 +21,8 @@ type Inspection struct {
 
 // Inspect runs Ensure's probe and judges the binary found, shipping nothing:
 // no marker or binary is a fact, not a refusal. It fails only where
-// readLayout refuses: a failed or unparsable probe, the pointer's refusals.
+// readLayout refuses: a failed or unparsable probe, the pointer's refusals,
+// a marker that is not a regular file.
 func Inspect(c *ssh.Conn) (*Inspection, error) {
 	target := c.Target.String()
 	cmd := c.Script(probeScript, probeDefault, probePointer, "", strconv.Itoa(RunTimeout))

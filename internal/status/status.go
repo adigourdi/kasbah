@@ -196,18 +196,9 @@ func JudgeMarker(body []byte, apps, target string) error {
 	}
 	v, err := tree.ParseOne(body)
 	if _, ok := v.(*tree.Map); err != nil || !ok {
-		return cli.Fail("%s on %s is not a JSON object", path, target).Cause(err).Next(startOver(target, apps, "cat")...)
+		return cli.Fail("%s on %s is not a JSON object", path, target).Cause(err).Next(marker.StartOver(target, path, serverbin.InitCmd(target, apps), "cat")...)
 	}
 	return nil
-}
-
-// startOver is the step for a marker kasbah will not read: look at it (with
-// the command look), then move it aside and let server init write it afresh.
-func startOver(target, apps, look string) []string {
-	return []string{
-		fmt.Sprintf("Look at it before running anything else against this server (`ssh %s %s %s`);", target, look, marker.Path(apps)),
-		fmt.Sprintf("to start the server's record over, move it aside and re-run `%s`.", serverbin.InitCmd(target, apps)),
-	}
 }
 
 type run struct {
@@ -279,21 +270,30 @@ func field(m *tree.Map, path ...any) string {
 	return strings.TrimRight(tree.TextAt(m, path...), "\n")
 }
 
+// probe is the apps path as Ensure's probe found it, for its refusals.
+func (x *run) probe() *serverbin.Probe {
+	source := x.source
+	if source == "flag" {
+		source = "explicit"
+	}
+	return &serverbin.Probe{Apps: x.apps, Source: source}
+}
+
 func (x *run) readMarker() error {
 	path := marker.Path(x.apps)
 	switch x.r.AppsState {
 	case "dir", "absent":
 	case "notdir":
-		return cli.Fail("%s on %s exists and is not a directory — point status elsewhere with --apps-path=<dir>", x.apps, x.target)
+		return serverbin.AppsNotDir(x.target, x.probe())
 	default:
 		return cli.Fail("%s on %s is in a state the probe called '%s', which this kasbah does not know", x.apps, x.target, x.r.AppsState)
 	}
 	switch x.r.MarkerState {
 	case "ok":
 	case "absent":
-		return cli.Failf(cli.ExitNoRemoteState, "%s has no server marker at %s", x.target, path)
+		return serverbin.NoMarker(x.target, x.probe())
 	case "notfile":
-		return cli.Fail("%s on %s exists and is not a regular file", path, x.target).Next(startOver(x.target, x.apps, "ls -ld")...)
+		return serverbin.MarkerNotFile(x.target, x.apps)
 	case "empty":
 		return JudgeMarker(nil, x.apps, x.target)
 	default:

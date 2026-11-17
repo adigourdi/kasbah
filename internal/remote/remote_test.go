@@ -3,6 +3,7 @@ package remote
 import (
 	"bytes"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -85,6 +86,9 @@ func TestDecide(t *testing.T) {
 				}
 				if tt.newer && (n.Server != tt.srv.Build || n.Ours != ours) {
 					t.Errorf("Newer = %+v", n)
+				}
+				if strings.HasPrefix(tt.name, "newer major") && !slices.Equal(e.NextLines(), []string{"Install kasbah 1.x on this workstation and re-run: `kasbah self-update v1`."}) {
+					t.Errorf("newer major: next %q", e.NextLines())
 				}
 				return
 			}

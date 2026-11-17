@@ -94,10 +94,10 @@ func TestLocal(t *testing.T) {
 	if got, err := Local(root, false, "arm64"); err != nil || got != inst {
 		t.Errorf("installed: %q, %v", got, err)
 	}
-	if _, err := Local(root, true, "arm64"); err == nil || !strings.Contains(err.Error(), "docker compose run --rm build") {
+	if _, err := Local(root, true, "arm64"); err == nil || !strings.Contains(report(err), "docker compose run --rm build") {
 		t.Errorf("a missing checkout binary: %v", err)
 	}
-	if _, err := Local(root, false, "amd64"); err == nil || !strings.Contains(err.Error(), "install-dev.sh") {
+	if _, err := Local(root, false, "amd64"); err == nil || !strings.Contains(report(err), "install-dev.sh") {
 		t.Errorf("a missing installed binary: %v", err)
 	}
 }
@@ -128,10 +128,10 @@ func TestLocalFetchesRelease(t *testing.T) {
 	// A dev stamp and a checkout never fetch.
 	dev := filepath.Join(lib, "1.2.1-dev.88.1700000000")
 	os.MkdirAll(dev, 0o755)
-	if _, err := Local(dev, false, "arm64"); err == nil || !strings.Contains(err.Error(), "install-dev.sh") {
+	if _, err := Local(dev, false, "arm64"); err == nil || !strings.Contains(report(err), "install-dev.sh") {
 		t.Errorf("dev stamp: %v", err)
 	}
-	if _, err := Local(t.TempDir(), true, "arm64"); err == nil || !strings.Contains(err.Error(), "docker compose run --rm build") {
+	if _, err := Local(t.TempDir(), true, "arm64"); err == nil || !strings.Contains(report(err), "docker compose run --rm build") {
 		t.Errorf("checkout: %v", err)
 	}
 	if len(fetched) != 1 {
@@ -239,6 +239,19 @@ norm_path "$pointed"`
 			if got := normPath(line); got != string(out) {
 				t.Errorf("%q: Go %q, %s %q", in, got, sh.Name, out)
 			}
+		}
+	}
+}
+
+// A binary of another build names the remedy for where it was found.
+func TestRebuild(t *testing.T) {
+	for file, want := range map[string]string{
+		"/src/kasbah/dist/server/kasbah-linux-amd64":                   "`docker compose run --rm build`, then re-run.",
+		"/h/.local/share/kasbah/1.2.3/server/kasbah-linux-arm64":       "Delete /h/.local/share/kasbah/1.2.3/server/kasbah-linux-arm64 and re-run: an installed release fetches its",
+		"/h/.local/share/kasbah/1.2.3-dev.4/server/kasbah-linux-amd64": "(./install-dev.sh), which installs both, then re-run.",
+	} {
+		if got := strings.Join(rebuild(file), "\n"); !strings.Contains(got, want) {
+			t.Errorf("%s: %q, want %q", file, got, want)
 		}
 	}
 }

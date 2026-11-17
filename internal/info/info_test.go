@@ -339,7 +339,8 @@ func TestNext(t *testing.T) {
 	// An apps path that is not a directory is refused before the marker is looked for.
 	in = inspection(false, nil, false)
 	in.Probe.AppsNotDir = true
-	if got := next(self, in); !strings.Contains(got, serverbin.AppsNotDir("ops@vps", "/apps").Error()) || strings.Contains(got, "has no server marker") {
+	if got := next(self, in); !strings.Contains(got, serverbin.AppsNotDir("ops@vps", in.Probe).Error()) || !strings.Contains(got, "remove /apps, and `kasbah server init` prepares it there") ||
+		strings.Contains(got, "has no server marker") {
 		t.Errorf("apps path not a directory: %q", got)
 	}
 	in = inspection(true, nil, false)

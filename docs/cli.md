@@ -129,10 +129,13 @@ command that reaches the server would do there, judged as that command
 judges it and acted on in nothing:
 
 - an apps path that is there and not a directory stops it with exit 1,
-  naming `--apps-path=<dir>`; with no marker, it stops with the exit-4
-  refusal every command gives there (Exit codes, below) — never a bare
-  `kasbah server init`, which at the wrong apps path takes the running proxy
-  down; a marker that is unreadable, empty, not a JSON object, or of another
+  naming the step for how the path was found (the pointer to look at, the
+  directory `--apps-path=<dir>` should name, or, for the default `/apps`, to
+  remove it before init or prepare the server elsewhere with
+  `--apps-path=<dir>`); with no marker, it stops with the exit-4 refusal every
+  command gives there (Exit codes, below) — both name `kasbah server init`, but
+  never a runnable init line with a guessed apps path, which at the wrong one
+  takes the running proxy down; a marker that is unreadable, empty, not a JSON object, or of another
   major stops it with that refusal and the step it names; one recording a
   relative `apps_path` or `data_path`, or a missing or spaced limit, stops the
   commands that read the marker in full — every one but `kasbah server status`
@@ -158,7 +161,8 @@ command, not named here.
 
 `--ship-dev`/`--keep-server` change nothing here. The workstation's lines are
 printed before the connection, so a server that does not answer still leaves
-them, and exits 3; a pointer the probe refuses exits 1 with the same message
+them, and exits 3; a pointer the probe refuses, or a marker path holding
+something other than a regular file, exits 1 with the same message and step
 every command gives. A server with no marker, or a refusal above, still exits
 0: info reports it rather than meets it.
 
@@ -441,9 +445,11 @@ the flag. There is **no `--apps-path`** here: among the commands that only
 Where the server was prepared is the server's own
 answer, and aiming a destructive command at a tree the server does not
 consider its own is not a recovery path: a damaged pointer refuses, and
-the refusal sends you to `kasbah server status <host> --apps-path=<dir>`
-(read-only) to find the tree and then to `kasbah server init` to repair
-the pointer.
+the refusal sends you to `kasbah server init <host> --apps-path=<dir>`,
+naming the tree the server was prepared at, to write the pointer again once
+the damaged one is moved aside or corrected;
+`kasbah server status <host> --apps-path=<dir>` reads a tree without the
+pointer and changes nothing, to confirm it is that one first.
 
 What a project's version tags *are* comes from the compose file on the
 server: every service with a `build:` key, and the repository its

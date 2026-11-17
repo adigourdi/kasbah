@@ -231,7 +231,7 @@ func planTags(out *cli.Output, p *prompt.Prompter, target string, refs []string,
 		if given != prompt.Unset {
 			e.Cont(lines...)
 		}
-		return pl, e.Cont(again...).Cont("to replace the server's, re-run with --replace-tag")
+		return pl, e.Next(again...).Next("To replace the server's build with this one, re-run with --replace-tag.")
 	}
 	return pl, nil
 }

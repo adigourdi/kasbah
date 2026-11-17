@@ -166,7 +166,7 @@ func Validate(body []byte, path, target, initCmd string) (*Marker, error) {
 	v, err := tree.ParseOne(body)
 	m, ok := v.(*tree.Map)
 	if err != nil || !ok {
-		return nil, cli.Fail("%s on %s is not a JSON object — re-run `%s`", path, target, initCmd)
+		return nil, cli.Fail("%s on %s is not a JSON object", path, target).Cause(err).Next(StartOver(target, path, initCmd, "cat")...)
 	}
 	mk := &Marker{
 		JSON:             m,
@@ -188,11 +188,21 @@ func Validate(body []byte, path, target, initCmd string) (*Marker, error) {
 			return nil, cli.Fail("%s on %s records cpu_limit='%s' mem_limit='%s'", path, target, mk.CPULimit, mk.MemLimit).Cont(
 				"both are required and neither may carry whitespace: kasbah writes them",
 				"into every project's .env as KASBAH_CPU_LIMIT / KASBAH_MEM_LIMIT, and",
-				"the compose files read cpus: and mem_limit: from there.",
-				"Re-run `"+initCmd+"` to rewrite it.")
+				"the compose files read cpus: and mem_limit: from there.").Next(
+				"Re-run `" + initCmd + "` to rewrite it.")
 		}
 	}
 	return mk, nil
+}
+
+// StartOver is the step for a marker kasbah will not read or overwrite: look
+// at it (with the command look), then move it aside and let initCmd write it
+// afresh.
+func StartOver(target, path, initCmd, look string) []string {
+	return []string{
+		fmt.Sprintf("Look at it before running anything else against this server (`ssh %s %s %s`);", target, look, path),
+		fmt.Sprintf("to start the server's record over, move it aside and re-run `%s`.", initCmd),
+	}
 }
 
 // MemoryController is the marker's memory_controller: "yes", "no", or ""
@@ -257,8 +267,8 @@ func Check(body []byte, ours, path, target string, migrating bool) error {
 	switch {
 	case m64 > o64:
 		return cli.Fail("%s on %s was written by kasbah %s, and this is kasbah %s", path, target, version, ours).Cont(
-			"a newer major on the server means fields this binary does not know about",
-			"upgrade kasbah locally, or point at a server this version manages")
+			"a newer major on the server means fields this binary does not know about").Next(
+			fmt.Sprintf("Install kasbah %s.x on this workstation and re-run: `kasbah self-update v%[1]s`.", major))
 	case m64 < o64 && !migrating:
 		return cli.Fail("%s on %s was written by kasbah %s, and this is kasbah %s", path, target, version, ours).Cont(
 			"a server stays on its major until it is migrated, and nothing was shipped to it:",
@@ -270,14 +280,13 @@ func Check(body []byte, ours, path, target string, migrating bool) error {
 
 // Compat is `server init`'s check of an existing marker: Check, after the
 // marker is known to be an object; versions that cannot be compared are
-// warned about.
-func Compat(existing []byte, ours, path, target string) (warnings []string, err error) {
+// warned about. initCmd is the init command spelled for this server.
+func Compat(existing []byte, ours, path, target, initCmd string) (warnings []string, err error) {
 	v, perr := tree.ParseOne(existing)
 	m, ok := v.(*tree.Map)
 	if perr != nil || !ok {
-		return nil, cli.Fail("%s on %s is not a JSON object", path, target).Cont(
-			"kasbah will not overwrite a marker it cannot read — look at it, then remove",
-			"it and re-run to start the server's record over")
+		return nil, cli.Fail("%s on %s is not a JSON object", path, target).Cause(perr).Cont(
+			"kasbah will not overwrite a marker it cannot read.").Next(StartOver(target, path, initCmd, "cat")...)
 	}
 	version := field(m, "kasbah_version")
 	major, ourMajor := Major(version), Major(ours)

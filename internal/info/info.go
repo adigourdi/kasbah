@@ -300,7 +300,7 @@ func Next(target string, self remote.Info, in *serverbin.Inspection) []string {
 	}
 	switch {
 	case p.AppsNotDir:
-		return refuses(serverbin.AppsNotDir(target, p.Apps))
+		return refuses(serverbin.AppsNotDir(target, p))
 	case !p.Marker:
 		return refuses(serverbin.NoMarker(target, p))
 	case p.MarkerUnreadable:
@@ -315,7 +315,7 @@ func Next(target string, self remote.Info, in *serverbin.Inspection) []string {
 	// Every command but `server status` and `server prune` (an object will do)
 	// and `server init` (it rewrites them) reads the marker this way.
 	if _, err := marker.Validate(p.MarkerBody, marker.Path(p.Apps), target, serverbin.InitCmd(target, p.Apps)); err != nil {
-		return append([]string{"every command but `kasbah server status`, `kasbah server prune` and `kasbah server init` stops there:"}, strings.Split(err.Error(), "\n")...)
+		return append([]string{"every command but `kasbah server status`, `kasbah server prune` and `kasbah server init` stops there:"}, refuses(err)[1:]...)
 	}
 	if in.BinErr != nil {
 		return []string{"kasbah does not replace that binary: every command that reaches the server refuses it, as above, until it is dealt with there"}

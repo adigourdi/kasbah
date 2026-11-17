@@ -102,8 +102,8 @@ func BackupResolve(out *cli.Output, p *prompt.Prompter, o Options, r *backup.Rea
 	case "notdir":
 		return nil, cli.Fail("%s/.kasbah/backup on %s exists and is not a directory", o.Apps, o.Target).Cont(
 			"that is where the backup stack lives — its compose file, its runner, the",
-			"repository base and the per-repository passwords. Look at it, remove it,",
-			"and re-run. Nothing has been changed.")
+			"repository base and the per-repository passwords. Nothing has been changed.").Next(
+			"Look at it, remove it, and re-run.")
 	default:
 		return nil, cli.Fail("the backup stack read on %s reported backup_dir='%s', which this kasbah does not know", o.Target, r.Dir)
 	}
@@ -471,7 +471,7 @@ func (s *session) backupInstall(out *cli.Output, o Options, v *BackupValues, r *
 	size, sum := remote.Digest(raw)
 	res, rc = s.remote(raw, true, "backup-init", "layout", o.Apps, size, sum)
 	if rc != 0 {
-		return rep, stepFailed("lay out "+o.Apps+"/.kasbah/backup", s.target, rc, serverbin.RunTimeout)
+		return rep, stepFailed("lay out "+o.Apps+"/.kasbah/backup", s.target, rc, serverbin.RunTimeout).Next(rerunInit)
 	}
 	lay, err := checked("the backup layout step", s.target, res, "backup_layout", "env_state")
 	if err != nil {
@@ -482,7 +482,7 @@ func (s *session) backupInstall(out *cli.Output, o Options, v *BackupValues, r *
 	// Unbounded here: each of its restic calls is bounded on the server.
 	res, rc = s.remote(nil, false, "backup-init", "probe", o.Apps, backup.ResticImage, strconv.Itoa(v.Timeout))
 	if rc != 0 {
-		return rep, cli.Fail("could not run the backup credential probe on %s (%s, see above)", s.target, serverbin.ExitText(rc, 0))
+		return rep, cli.Fail("could not run the backup credential probe on %s (%s, see above)", s.target, serverbin.ExitText(rc, 0)).Next(rerunInit)
 	}
 	pf, err := checked("the backup credential probe", s.target, res,
 		"probe_repo", "probe_stage", "probe_mid", "probe_after", "probe_rc", "probe_when", "probe_log_b64")
@@ -508,7 +508,7 @@ func (s *session) backupInstall(out *cli.Output, o Options, v *BackupValues, r *
 	}
 	res, rc = s.remote(nil, false, "backup-init", "start", o.Apps, yn)
 	if rc != 0 {
-		return rep, cli.Fail("could not start the backup stack on %s (%s, see above)", s.target, serverbin.ExitText(rc, 0))
+		return rep, cli.Fail("could not start the backup stack on %s (%s, see above)", s.target, serverbin.ExitText(rc, 0)).Next(rerunInit)
 	}
 	if rep.Start, err = checked("the backup start", s.target, res,
 		"backup_state", "backup_restarts", "backup_image", "backup_container", "backup_legacy"); err != nil {

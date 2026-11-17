@@ -1,7 +1,7 @@
 ---
-description: A few failures in swept packages still lack a true next step
-cause: leftovers each package sweep found outside its own scope
-where: internal/serverinit, serverbin, buildpush, marker, mail/remote.go
+description: Server-side arms drop a failure's next step when they print it
+cause: they print `%v` of the error, which leaves out next and help lines
+where: each package's remote.go: serverinit, deploy, env, upgrade, drop, …
 state: ready
 priority: normal
 ---
@@ -16,16 +16,12 @@ next step.
 ## Evidence
 
 Every package has had its sweep. What is left:
-- still bare inside the swept packages (~209, mostly deliberate): argument
-  checks that state the rule, "see above", malformed server answers, internal
-  errors; among the rest, `serverinit/backup.go`'s "see above" layout and
-  start failures, `buildpush/tags.go` "already
-  holds … as another build", the `serverbin` apps-path and machine refusals; `serverbin.Ensure`'s probe
-  exiting 1 on a marker that is not a regular file (so `server status`'s own
-  step for it never shows); `marker.Validate` saying "re-run `server init`"
-  for a marker that is not an object, which `server init` refuses;
-  `serverinit`'s handling of a mail registry it cannot parse, and the
-  server-side `fmt.Errorf` texts in `internal/mail/remote.go`
+- server-side arms print their failure as `fail("%v", err)`, which drops a
+  `*cli.Error`'s next step and help line; the backup and mail arms print
+  `cli.Full(err)` instead. About 20 others do not (serverinit, deploy, env,
+  upgrade, buildpush, prune, drop, destroy, status, check, serverlock): each
+  needs a per-path check that the workstation does not already print the same
+  step, so it is printed once
 - cause-dropping sites allowed on purpose: `dropsCause` in
   `internal/cli/cause_test.go`
 
@@ -50,5 +46,4 @@ Every package has had its sweep. What is left:
 
 ## Work
 
-- [ ] the leftovers in the swept packages, listed above
-- [ ] shrink `dropsCause` where a site can carry its cause after all
+- [ ] every server-side arm prints a failure's next step and help, once

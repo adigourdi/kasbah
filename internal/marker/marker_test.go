@@ -3,6 +3,7 @@ package marker
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -139,7 +140,7 @@ func TestValidate(t *testing.T) {
 	}
 
 	refusals := []struct{ body, want string }{
-		{"", "/srv/apps/.kasbah/server.json on deploy@vps is not a JSON object — re-run `" + initCmd + "`"},
+		{"", "/srv/apps/.kasbah/server.json on deploy@vps is not a JSON object"},
 		{"[1]", "is not a JSON object"},
 		{"not json", "is not a JSON object"},
 		{`{"apps_path":"apps","data_path":"/d","cpu_limit":"1","mem_limit":"1g"}`, "records apps_path='apps' data_path='/d'; both must be absolute paths — re-run `" + initCmd + "`"},
@@ -158,9 +159,20 @@ func TestValidate(t *testing.T) {
 		}
 	}
 	_, err = Validate([]byte(`{"apps_path":"/a","data_path":"/d","cpu_limit":"1"}`), path, target, initCmd)
-	if e := err.(*cli.Error); len(e.Lines) != 5 || e.Lines[4] != "Re-run `"+initCmd+"` to rewrite it." {
-		t.Errorf("limit refusal lines %q", e.Lines)
+	if e := err.(*cli.Error); len(e.Lines) != 4 || !slices.Equal(e.NextLines(), []string{"Re-run `" + initCmd + "` to rewrite it."}) {
+		t.Errorf("limit refusal lines %q, next %q", e.Lines, e.NextLines())
 	}
+	// Init refuses a marker that is not an object, so the step is init's own.
+	_, err = Validate([]byte(`[1]`), path, target, initCmd)
+	if e := err.(*cli.Error); !slices.Equal(e.NextLines(), startOver) {
+		t.Errorf("not an object: next %q", e.NextLines())
+	}
+}
+
+// startOver is StartOver for path on target, looked at with cat.
+var startOver = []string{
+	"Look at it before running anything else against this server (`ssh deploy@vps cat /srv/apps/.kasbah/server.json`);",
+	"to start the server's record over, move it aside and re-run `kasbah server init deploy@vps --apps-path=/srv/apps`.",
 }
 
 // A marker as kasbah 1.1.0 wrote it (jq's rendering) reads, and a re-run of
@@ -178,10 +190,10 @@ func TestReadsJqWrittenMarker(t *testing.T) {
 }
 
 func TestCompat(t *testing.T) {
-	if w, err := Compat([]byte(`{"kasbah_version":"1.4.0"}`), "1.0.0", path, target); w != nil || err != nil {
+	if w, err := Compat([]byte(`{"kasbah_version":"1.4.0"}`), "1.0.0", path, target, initCmd); w != nil || err != nil {
 		t.Errorf("same major: %v %v", w, err)
 	}
-	_, err := Compat([]byte(`{"kasbah_version":"0.9.0"}`), "1.0.0", path, target)
+	_, err := Compat([]byte(`{"kasbah_version":"0.9.0"}`), "1.0.0", path, target, initCmd)
 	if err == nil || !strings.Contains(err.Error(), "written by kasbah 0.9.0, and this is kasbah 1.0.0") || !strings.Contains(err.Error(), "`kasbah migrate server "+target+"`") {
 		t.Errorf("older major is refused naming migrate server: %v", err)
 	}
@@ -196,23 +208,28 @@ func TestCompat(t *testing.T) {
 			t.Errorf("Check(%s) = %v; want nil", body, err)
 		}
 	}
-	_, err = Compat([]byte(`{"kasbah_version":"v2.0.0"}`), "1.0.0", path, target)
-	if err == nil || !strings.Contains(err.Error(), "on "+target+" was written by kasbah v2.0.0, and this is kasbah 1.0.0") {
+	_, err = Compat([]byte(`{"kasbah_version":"v2.0.0"}`), "1.0.0", path, target, initCmd)
+	if err == nil || !strings.Contains(err.Error(), "on "+target+" was written by kasbah v2.0.0, and this is kasbah 1.0.0") ||
+		!slices.Equal(err.(*cli.Error).NextLines(), []string{"Install kasbah 2.x on this workstation and re-run: `kasbah self-update v2`."}) {
 		t.Errorf("newer major: %v", err)
 	}
-	if w, err := Compat([]byte(`{}`), "1.0.0", path, target); err != nil || len(w) != 2 ||
+	if w, err := Compat([]byte(`{}`), "1.0.0", path, target, initCmd); err != nil || len(w) != 2 ||
 		w[0] != path+" records kasbah_version ''; this kasbah is 1.0.0" {
 		t.Errorf("incomparable: %q %v", w, err)
 	}
-	if _, err := Compat([]byte(`[]`), "1.0.0", path, target); err == nil || !strings.Contains(err.Error(), "is not a JSON object") {
+	if _, err := Compat([]byte(`[]`), "1.0.0", path, target, initCmd); err == nil || !strings.Contains(err.Error(), "is not a JSON object") ||
+		!slices.Equal(err.(*cli.Error).NextLines(), startOver) {
 		t.Errorf("not an object: %v", err)
+	}
+	if _, err := Compat([]byte(`{`), "1.0.0", path, target, initCmd); err == nil || !strings.Contains(err.Error(), "is not a JSON object: unexpected end of JSON input") {
+		t.Errorf("not JSON: %v", err)
 	}
 	if Major("v10.2.3") != "10" {
 		t.Error("major")
 	}
 	// Bash's `[ "$major" -gt "$ours" ]` errors on a major past int64 and the
 	// refusal is skipped: matched, not refused.
-	if w, err := Compat([]byte(`{"kasbah_version":"99999999999999999999.0.0"}`), "1.0.0", path, target); w != nil || err != nil {
+	if w, err := Compat([]byte(`{"kasbah_version":"99999999999999999999.0.0"}`), "1.0.0", path, target, initCmd); w != nil || err != nil {
 		t.Errorf("20-digit major: %v %v", w, err)
 	}
 }

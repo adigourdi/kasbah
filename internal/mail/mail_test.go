@@ -198,7 +198,8 @@ func TestRemoteLayout(t *testing.T) {
 	}
 	os.Remove(apps + "/mail/.env")
 	os.Mkdir(apps+"/mail/.env", 0o755)
-	if _, e, rc := run(t, body, signed(body, "layout", apps, data)...); rc != 1 || !strings.Contains(e, ".env exists and is not a regular file") {
+	if _, e, rc := run(t, body, signed(body, "layout", apps, data)...); rc != 1 || !strings.Contains(e, ".env exists and is not a regular file\n"+
+		"Look at it (`ls -ld "+apps+"/mail/.env`) and move it aside: init writes it again.\n") {
 		t.Errorf("env dir: %q", e)
 	}
 	if left, _ := filepath.Glob(apps + "/mail/*.tmp.*"); len(left) != 0 {
@@ -234,7 +235,8 @@ func TestRemoteWrite(t *testing.T) {
 	}
 	os.Chmod(cfg+"/postfix-virtual.cf", 0o444)
 	if os.Getuid() != 0 {
-		if out, _, _ := w("p@c.com p@a.com"); out != "registry=written\nalias=failed\n" {
+		if out, _, _ := w("p@c.com p@a.com"); !strings.HasPrefix(out, "registry=written\nalias=failed\nalias_error=it belongs to ") ||
+			!strings.HasSuffix(out, " and is mode 444, not group-writable: only its owner or root can append to it\n") {
 			t.Errorf("failed: %q", out)
 		}
 	}
@@ -514,6 +516,11 @@ func TestAddMailDomain(t *testing.T) {
 	if err != nil || len(f.writes) != 1 || strings.Count(f.writes[0].Registry, "- shop.test") != 1 ||
 		!strings.Contains(se, "has no .env") || !strings.Contains(se, "setup alias add postmaster@shop.test postmaster@example.test") {
 		t.Errorf("converge: %v %q %+v", err, se, f.writes)
+	}
+	f = &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(one)}, result: "registry=written\nalias=failed\nalias_error=it belongs to root and is mode 644\n"}
+	if _, se, err = runWith(t, f, "add-mail-domain", "shop.test"); err != nil ||
+		!strings.Contains(se, "could not append to /apps/data/mail/dms/config/postfix-virtual.cf (it belongs to root and is mode 644), so\n") {
+		t.Errorf("alias cause: %v %q", err, se)
 	}
 
 	// The primary itself: no self-alias; its keys are init's.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -18,11 +19,16 @@ import (
 	"github.com/adigourdi/kasbah/templates"
 )
 
+// errText is err as its lines and next step read, the help line aside.
 func errText(err error) string {
 	if err == nil {
 		return ""
 	}
-	return err.Error()
+	msg := err.Error()
+	if e := (*cli.Error)(nil); errors.As(err, &e) && len(e.NextLines()) > 0 {
+		msg += "\n" + strings.Join(e.NextLines(), "\n")
+	}
+	return msg
 }
 
 func TestParse(t *testing.T) {

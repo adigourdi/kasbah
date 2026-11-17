@@ -531,7 +531,11 @@ func add(c Ctx, s Session, o Options, apps, data string, r *ReadReport, reg *mai
 		out.Warn("postmaster@%s has no alias. The stack has to have run once. Then:", d)
 		out.Warn("%s", fix)
 	default:
-		out.Warn("could not append to %s/mail/dms/config/postfix-virtual.cf, so", data)
+		why := ""
+		if c := f["alias_error"]; c != "" {
+			why = " (" + c + ")"
+		}
+		out.Warn("could not append to %s/mail/dms/config/postfix-virtual.cf%s, so", data, why)
 		out.Warn("postmaster@%s has no alias and Postfix will not accept mail for it.", d)
 		out.Warn("docker-mailserver rewrites that file as root once its own helper has been used;")
 		out.Warn("let it do this one too:")
