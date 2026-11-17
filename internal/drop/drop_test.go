@@ -422,19 +422,23 @@ func TestRunPruneShipsRegistry(t *testing.T) {
 func TestRunRefusals(t *testing.T) {
 	project(t, "")
 	for _, c := range []struct {
-		mut  func(*Scan)
-		code int
-		want string
+		mut   func(*Scan)
+		code  int
+		want  string
+		prune bool
 	}{
-		{func(s *Scan) { s.LockState = "held"; s.LockHolder = "env set by alice (pid 7)" }, 1, "env set by alice (pid 7) is running in"},
-		{func(s *Scan) { s.DockerError = "Cannot connect" }, 1, "docker did not answer"},
-		{func(s *Scan) { s.AppsState = "absent" }, 4, "/apps on deploy@vps is not there"},
-		{func(s *Scan) { s.Count = 9 }, 1, "counted 9 projects and described 3"},
+		{func(s *Scan) { s.LockState = "held"; s.LockHolder = "env set by alice (pid 7)" }, 1, "env set by alice (pid 7) is running in", false},
+		{func(s *Scan) { s.LockState = "held" }, 1, "nothing was changed.\n       Once it has finished, re-run `kasbah drop deploy@vps --prune`.\n", true},
+		{func(s *Scan) { s.DockerError = "Cannot connect" }, 1, "docker did not answer", false},
+		{func(s *Scan) { s.DockerError = "Cannot connect" }, 1, "\n       `ssh deploy@vps docker info` shows why; once docker answers, re-run `kasbah drop deploy@vps`.\n", false},
+		{func(s *Scan) { s.AppsState = "noaccess" }, 1, "\n       `ssh deploy@vps ls -ld /apps` shows its owner and mode. Operators enter it as members of the kasbah group:\n       `ssh deploy@vps 'sudo usermod -aG kasbah deploy'` adds deploy (a new login picks it up), and `kasbah server init deploy@vps` makes the tree the group's.\n       A directory with no group bits stays private to its owner: if /apps is meant to be shared, `ssh deploy@vps 'sudo chmod g+rwxs /apps'` opens it. Then re-run.\n", false},
+		{func(s *Scan) { s.AppsState = "absent" }, 4, "/apps on deploy@vps is not there", false},
+		{func(s *Scan) { s.Count = 9 }, 1, "counted 9 projects and described 3", false},
 	} {
 		s := fixture()
 		c.mut(s)
 		f := &fake{scan: s}
-		_, se, code := run(t, f, Options{Target: "deploy@vps", Yes: true}, false, "")
+		_, se, code := run(t, f, Options{Target: "deploy@vps", Yes: true, Prune: c.prune}, false, "")
 		if code != c.code || !strings.Contains(se, c.want) || len(f.acted) != 0 || lastServer(t) != "" {
 			t.Errorf("%s: %d %s", c.want, code, se)
 		}

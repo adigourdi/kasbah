@@ -57,7 +57,7 @@ func RunProject(w io.Writer, root, ours string, steps []Step) error {
 	}
 	from, err := strconv.Atoi(m.Schema)
 	if err != nil {
-		return cli.Fail("%s: schema '%s' is not a number this kasbah can migrate from", mf, m.Schema)
+		return cli.Fail("%s: schema '%s' is not a number this kasbah can migrate from", mf, m.Schema).Help("S02")
 	}
 	if from == manifest.Schema {
 		fmt.Fprintf(w, "nothing to migrate: %s is at schema %d, which is this kasbah's\n", manifest.File, from)
@@ -70,7 +70,7 @@ func RunProject(w io.Writer, root, ours string, steps []Step) error {
 	for _, s := range plan {
 		sr, err := apply(root, s)
 		if err != nil {
-			return cli.Fail("%v", err).Cont("a rerun picks up where this stopped: every file already rewritten is skipped")
+			return cli.Fail("%v", err).Next("Once that is fixed, `kasbah migrate` again picks up where this stopped: every file already rewritten is skipped.")
 		}
 		for _, f := range sr.Files {
 			fmt.Fprintf(w, "step %d->%d: %s %s\n", s.From, s.To, f.Path, f.Action)

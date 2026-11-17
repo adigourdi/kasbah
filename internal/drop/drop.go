@@ -27,6 +27,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/prune"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/state"
 	"github.com/adigourdi/kasbah/internal/trace"
@@ -458,7 +459,7 @@ func (p *Plan) Report(w io.Writer) {
 		fmt.Fprintf(w, "  mail        %s — %s\n", p.MailDomain, p.MailVerdict)
 	}
 	if p.Prune {
-		fmt.Fprintf(w, "\nthe off-VPS restic repository is not touched: it is operator property (docs/backup.md).\n")
+		fmt.Fprintf(w, "\nthe off-VPS restic repository is not touched: it is operator property.\n")
 	} else {
 		fmt.Fprintf(w, "\na later `kasbah deploy` resurrects this project, once `kasbah build-push` has\nre-shipped its images.\n")
 	}
@@ -641,19 +642,22 @@ func Run(c Ctx, o Options) error {
 // makes the apps path's question meaningless, then the tree, then the lock.
 func (p *Plan) checkServer() error {
 	s := p.Scan
+	again := p.again()
 	if !s.HaveDocker || s.DockerError != "" {
 		e := cli.Fail("docker did not answer on %s", p.Target)
 		if s.DockerError != "" {
 			e.Cont(s.DockerError)
 		}
-		return e.Cont("drop has nothing to read and has removed nothing")
+		return e.Cont("drop has nothing to read and has removed nothing").Next(
+			fmt.Sprintf("`ssh %s docker info` shows why; once docker answers, re-run %s.", p.Target, again))
 	}
 	switch s.AppsState {
 	case "dir":
 	case "notdir":
 		return cli.Fail("%s on %s is not a directory", p.Apps, p.Target)
 	case "noaccess":
-		return cli.Fail("%s on %s cannot be entered by this user — drop reads every project there to decide which images are this one's alone", p.Apps, p.Target)
+		return cli.Fail("%s on %s cannot be entered by this user — drop reads every project there to decide which images are this one's alone. Nothing was removed", p.Apps, p.Target).Next(
+			serverbin.EnterApps(p.Target, p.Apps)...)
 	default:
 		return cli.Failf(cli.ExitNoRemoteState, "%s on %s is not there", p.Apps, p.Target).Cont(
 			"the server marker names it, so this server's layout and its tree disagree",
@@ -669,7 +673,7 @@ func (p *Plan) checkServer() error {
 		}
 		return cli.Fail("%s is running in %s/%s on %s", holder, p.Apps, p.Name, p.Target).Cont(
 			"it holds the lock on "+p.Apps+"/"+p.Name+"/.deploy.lock, which drop takes",
-			"for the same reason: nothing was changed. Wait for it and run drop again.")
+			"for the same reason: nothing was changed.").Next("Once it has finished, re-run " + again + ".")
 	default:
 		return cli.Fail("the drop probe on %s reported lock_state='%s', which this kasbah does not know", p.Target, s.LockState)
 	}
@@ -691,7 +695,7 @@ func (p *Plan) act(c Ctx, s Session) (started bool, err error) {
 		a.RegSize, a.RegSum = remote.Digest(stdin)
 		a.RegPrev = p.MailPrev
 	}
-	again := fmt.Sprintf("`kasbah drop %s%s`", p.Target, p.pruneArg())
+	again := p.again()
 	out, rc := s.Act(stdin, a.Argv())
 	head, body, _ := bytes.Cut(bytes.ReplaceAll(out, []byte("\r"), nil), []byte("\n"))
 	started = string(head) == "started=yes"
@@ -716,10 +720,13 @@ func (p *Plan) act(c Ctx, s Session) (started bool, err error) {
 	}
 	if n := len(r.Removed) + len(r.Failed); n != len(p.Remove) {
 		return true, cli.Fail("the drop step on %s accounted for %d of %d image tags", p.Target, n, len(p.Remove)).Cont(
-			"the step was truncated; run drop again to see what is left")
+			"the step was truncated; run " + again + " again to see what is left")
 	}
 	return true, p.reportAct(c.Out, &r)
 }
+
+// again is this run's command, to run once more.
+func (p *Plan) again() string { return fmt.Sprintf("`kasbah drop %s%s`", p.Target, p.pruneArg()) }
 
 func (p *Plan) pruneArg() string {
 	if p.Prune {
@@ -749,7 +756,7 @@ func (p *Plan) reportAct(o *cli.Output, r *ActReport) error {
 		say("FAILED to remove route %s", frag)
 		o.Err("could not remove %s on %s", frag, p.Target)
 		o.ErrCont("the site is still routed at a stack this run has taken down — remove the file")
-		o.ErrCont("by hand, or re-deploy the project")
+		o.ErrCont("by hand (`ssh %s rm -f %s`), or re-deploy the project", p.Target, frag)
 		bad = true
 	}
 	for _, n := range strings.Fields(r.Detached) {
@@ -833,7 +840,7 @@ func (p *Plan) reportAct(o *cli.Output, r *ActReport) error {
 
 	if bad {
 		return cli.Fail("%s was not fully dropped from %s — see the FAILED line(s) above", p.Name, p.Target).Cont(
-			fmt.Sprintf("nothing here is undone by running it again: `kasbah drop %s%s` picks up what is left", p.Target, p.pruneArg()))
+			"nothing here is undone by running it again: " + p.again() + " picks up what is left")
 	}
 	if !p.Prune {
 		say("")

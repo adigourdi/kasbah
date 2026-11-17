@@ -74,7 +74,7 @@ func TestReadProbe(t *testing.T) {
 	// The record this user cannot read names the chown that gives it back.
 	for state, want := range map[string]string{
 		"unreadable": "\n       Give it back to this user: `ssh d@h 'sudo chown d:kasbah /a/demo/versions.log && sudo chmod 664 /a/demo/versions.log'`.\n",
-		"noaccess":   "\n       `ssh d@h ls -ld /a /a/demo` shows which one; give it back to this user: `ssh d@h 'sudo chown d:kasbah <dir> && sudo chmod 2775 <dir>'`.\n",
+		"noaccess":   "\n       `ssh d@h ls -ld /a /a/demo` shows which one. The project directory is the kasbah group's at 2775: `ssh d@h 'sudo chown d:kasbah /a/demo && sudo chmod 2775 /a/demo'` gives it back.\n       If it is the apps path:\n       `ssh d@h 'sudo usermod -aG kasbah d'` adds d (a new login picks it up), and `kasbah server init d@h --apps-path=/a` makes the tree the group's.\n       A directory with no group bits stays private to its owner: if /a is meant to be shared, `ssh d@h 'sudo chmod g+rwxs /a'` opens it. Then re-run.\n",
 	} {
 		_, err := ReadProbe(encode("", state, "missing", nil), "d@h", "/a/demo/versions.log")
 		var b bytes.Buffer

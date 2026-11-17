@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -177,7 +178,7 @@ func TestRunFailingStepLeavesMarkerAndFinishesOnRerun(t *testing.T) {
 		return inner(b)
 	}
 	_, err := Run(apps, "1.0.2-dev", []Step{s}, now)
-	if err == nil || !strings.Contains(err.Error(), "boom") || !strings.Contains(err.Error(), "still says major 0") {
+	if err == nil || !strings.Contains(err.Error(), "boom") || !strings.Contains(err.Error(), "still says major 0") || !errors.As(err, new(partway)) {
 		t.Fatalf("got %v", err)
 	}
 	if got := read(t, apps, ".kasbah/server.json"); !strings.Contains(got, `"kasbah_version":"0.1.0"`) {
@@ -231,12 +232,20 @@ func TestUndo(t *testing.T) {
 	write(t, apps, "alpha/versions.log", line+"\n")
 	write(t, apps, "beta/versions.log", "garbage\n")
 	before := read(t, apps, ".kasbah/server.json")
-	if _, err := Undo(apps); err == nil || !strings.Contains(err.Error(), "nothing to undo") {
+	if _, err := Undo(apps); err == nil || !strings.Contains(err.Error(), "nothing to undo") || errors.As(err, new(partway)) {
 		t.Errorf("no snapshot: %v", err)
 	}
 	r, err := Run(apps, "1.0.2-dev", []Step{step(0, 1, "alpha/a.yml")}, now)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if os.Geteuid() != 0 {
+		os.Chmod(apps+"/alpha", 0o555)
+		_, err := Undo(apps)
+		os.Chmod(apps+"/alpha", 0o755)
+		if !errors.As(err, new(partway)) {
+			t.Errorf("a restore that fails partway: %v", err)
+		}
 	}
 	u, err := Undo(apps)
 	if err != nil || !u.Undo || u.Marker != "restored" || u.Snapshot != r.Snapshot || len(u.Restored) != 1 || u.Restored[0] != "alpha/a.yml" {
@@ -254,7 +263,7 @@ func TestUndo(t *testing.T) {
 	later, _ := vlog.Line(vlog.Stamp(now.Add(2*time.Minute)), "deploy", "1.0.1", "-", "1.0.2-dev", "-", "deploy")
 	write(t, apps, "alpha/versions.log", line+"\n"+later+"\n")
 	_, err = Undo(apps)
-	if err == nil || !strings.Contains(err.Error(), "alpha was deployed at "+vlog.Stamp(now.Add(2*time.Minute))) || !strings.Contains(err.Error(), r.Snapshot) {
+	if err == nil || !strings.Contains(err.Error(), "alpha was deployed at "+vlog.Stamp(now.Add(2*time.Minute))) || !strings.Contains(err.Error(), r.Snapshot) || errors.As(err, new(partway)) {
 		t.Errorf("refusal: %v", err)
 	}
 	if got := read(t, apps, ".kasbah/server.json"); !strings.Contains(got, "1.0.2-dev") {
@@ -358,6 +367,20 @@ func TestRemote(t *testing.T) {
 	}
 	if rc := Remote([]string{"--apps=relative", "--version=1"}, &so, &se); rc != 1 || !strings.Contains(se.String(), "usage") {
 		t.Errorf("usage: %d %s", rc, se.String())
+	}
+	if os.Geteuid() != 0 {
+		// The marker cannot be written: the run stopped partway.
+		os.Chmod(apps+"/.kasbah", 0o555)
+		var o2, e2 bytes.Buffer
+		rc := Remote([]string{"--apps=" + apps, "--version=1.0.2-dev"}, &o2, &e2)
+		os.Chmod(apps+"/.kasbah", 0o755)
+		if rc != ExitPartway {
+			t.Errorf("partway: rc %d, %s", rc, e2.String())
+		}
+		e2.Reset()
+		if rc := Remote([]string{"--apps=" + apps, "--version=1.0.2-dev", "--undo"}, &o2, &e2); rc != 1 || !strings.Contains(e2.String(), "nothing to undo") {
+			t.Errorf("nothing to undo: rc %d, %s", rc, e2.String())
+		}
 	}
 	for _, k := range Keys {
 		if !strings.Contains(so.String(), `"`+k+`":`) {
@@ -534,9 +557,26 @@ func TestRunServer(t *testing.T) {
 			t.Fatalf("%v %v %s", err, f.calls, so.String())
 		}
 		f.rc, f.out = 1, ""
-		if err := RunServer(c, Options{Server: true, Target: "d@h", Yes: true, Undo: true}); err == nil || !strings.Contains(err.Error(), "exited 1") {
-			t.Errorf("%v", err)
+		err := RunServer(c, Options{Server: true, Target: "d@h", Yes: true, Undo: true})
+		if err == nil || !strings.Contains(err.Error(), "exited 1") || next(err) != nil {
+			t.Errorf("a refusal: %v %q", err, next(err))
 		}
+		f.rc = ExitPartway
+		err = RunServer(c, Options{Server: true, Target: "d@h", Yes: true, Undo: true})
+		if !slices.Equal(next(err), []string{"Once the cause above is fixed, re-run `kasbah migrate server d@h --undo`: the marker goes back last, so the same snapshot is restored."}) {
+			t.Errorf("%v %q", err, next(err))
+		}
+		g := &fakeSession{marker: mk, apps: "/apps", rc: 1}
+		c, _, _ = ctx(g, false, "")
+		if err := RunServer(c, Options{Server: true, Target: "d@h", Yes: true}); next(err) != nil {
+			t.Errorf("a refusal: %v %q", err, next(err))
+		}
+		g.rc = ExitPartway
+		err = RunServer(c, Options{Server: true, Target: "d@h", Yes: true})
+		if !slices.Equal(next(err), []string{"Once the cause above is fixed, re-run `kasbah migrate server d@h`: it picks up where it stopped, skipping every file already rewritten."}) {
+			t.Errorf("%v %q", err, next(err))
+		}
+		c, _, _ = ctx(f, false, "")
 		f.rc, f.out = 0, `{"from":0}`
 		if err := RunServer(c, Options{Server: true, Target: "d@h", Yes: true, Undo: true}); err == nil || !strings.Contains(err.Error(), "reported no") {
 			t.Errorf("%v", err)
@@ -551,4 +591,39 @@ func TestRunServer(t *testing.T) {
 			t.Errorf("%v", err)
 		}
 	})
+}
+
+// next is a failure's next step.
+func next(err error) []string {
+	var e *cli.Error
+	if !errors.As(err, &e) {
+		return nil
+	}
+	return e.NextLines()
+}
+
+// A snapshot that fails to read back names what it restored before it failed.
+func TestUndoNamesWhatItRestored(t *testing.T) {
+	apps := newApps(t, "0.9.0")
+	write(t, apps, "alpha/a.yml", "v0\na\n")
+	r, err := Run(apps, "1.0.2-dev", []Step{step(0, 1, "alpha/a.yml")}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := r.Snapshot
+	if !filepath.IsAbs(snap) {
+		snap = filepath.Join(apps, Dir, snap)
+	}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	tw.WriteHeader(&tar.Header{Name: "alpha/a.yml", Mode: 0o644, Size: 5, Typeflag: tar.TypeReg})
+	tw.Write([]byte("v0\na\n"))
+	tw.Close()
+	if err := os.WriteFile(snap, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Undo(apps)
+	if err == nil || !strings.Contains(err.Error(), "carries no marker, which an undo restores last — already restored: alpha/a.yml; the marker was not") {
+		t.Errorf("a snapshot with no marker: %v", err)
+	}
 }

@@ -248,8 +248,7 @@ sender is listed.
 ---------------------------------------------------------------------------
 postmaster@{P} already exists — {BT}server init --with-mail{BT} seeded it,
 because Dovecot panics within 120 s if the account file is empty. Every other
-address is created out of band, deliberately: deploys do not touch user data
-(docs/mail.md → Account management).
+address is created out of band, deliberately: deploys do not touch user data.
 
     ssh -t {T} 'docker exec -it mail-dms setup email add noreply@{P}'
     ssh -t {T} 'docker exec -it mail-dms setup email update postmaster@{P}'

@@ -1,7 +1,7 @@
 ---
-description: Failures outside the main commands still stop at the cause
-cause: the next-step sweep covered check, deploy, build-push, env, init, rollback
-where: internal/backup, selfupdate, status, install, mail, release, destroy, …
+description: A few failures in swept packages still lack a true next step
+cause: leftovers each package sweep found outside its own scope
+where: internal/serverinit, serverbin, buildpush, marker, mail/remote.go
 state: ready
 priority: normal
 ---
@@ -15,9 +15,7 @@ next step.
 
 ## Evidence
 
-Rough counts (no next step / all failure sites), by package:
-- `mail` ~14/22, `destroy` ~11/21, `migrate` ~10/16, `drop` ~10/23
-- smaller: `mailreg` 5, `ops` 4, `serverlock` 4
+Every package has had its sweep. What is left:
 - still bare inside the swept packages (~209, mostly deliberate): argument
   checks that state the rule, "see above", malformed server answers, internal
   errors; among the rest, `serverinit/backup.go`'s "see above" layout and
@@ -25,10 +23,9 @@ Rough counts (no next step / all failure sites), by package:
   holds … as another build", the `serverbin` apps-path and machine refusals; `serverbin.Ensure`'s probe
   exiting 1 on a marker that is not a regular file (so `server status`'s own
   step for it never shows); `marker.Validate` saying "re-run `server init`"
-  for a marker that is not an object, which `server init` refuses
-- failure messages still naming a doc file (CLAUDE.md: `kasbah help` is the
-  pointer): `internal/ops/ops.go:207,341`, `internal/destroy/destroy.go:559`,
-  `internal/drop/drop.go:461`
+  for a marker that is not an object, which `server init` refuses;
+  `serverinit`'s handling of a mail registry it cannot parse, and the
+  server-side `fmt.Errorf` texts in `internal/mail/remote.go`
 - cause-dropping sites allowed on purpose: `dropsCause` in
   `internal/cli/cause_test.go`
 
@@ -47,11 +44,11 @@ Rough counts (no next step / all failure sites), by package:
 - Messages that name a doc file, failures or not, point at `kasbah help`.
 - Units: (backup/prune/state/restore flags and
   selfupdate/install/upgrade/release and
-  cmd/kasbah/status/info/history/vlog/initproject/tmpl done);
-  mail/mailreg/destroy/drop/migrate/ops/serverlock; the swept packages'
+  cmd/kasbah/status/info/history/vlog/initproject/tmpl and
+  mail/mailreg/destroy/drop/migrate/ops/serverlock done); the swept packages'
   leftovers and what remains of `dropsCause`.
 
 ## Work
 
-- [ ] sweep each package above, command by command, as the main paths were
+- [ ] the leftovers in the swept packages, listed above
 - [ ] shrink `dropsCause` where a site can carry its cause after all

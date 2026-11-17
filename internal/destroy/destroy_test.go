@@ -441,6 +441,32 @@ func TestRunHeldAndNosudo(t *testing.T) {
 	}
 }
 
+// A failure names the command that gets past it, for this server.
+func TestRunNextSteps(t *testing.T) {
+	held := strings.Replace(okAct, `"marker":"removed"`, `"marker":"held"`, 1)
+	held = strings.Replace(held, `"mail_env":"absent"`, `"mail_env":"unreadable"`, 1)
+	noDocker, noAccess := scanFixture(), scanFixture()
+	noDocker.HaveDocker = false
+	noAccess.AppsState = "noaccess"
+	for _, c := range []struct {
+		scan *Scan
+		act  string
+		tail string
+		want string
+	}{
+		{noDocker, okAct, okTail, "\n       `ssh deploy@vps.example docker info` shows why; once docker answers, re-run `kasbah server destroy deploy@vps.example`.\n"},
+		{noAccess, okAct, okTail, "\n       `ssh deploy@vps.example ls -ld /apps` shows its owner and mode. Operators enter it as members of the kasbah group:\n       `ssh deploy@vps.example 'sudo usermod -aG kasbah deploy'` adds deploy (a new login picks it up), and `kasbah server init deploy@vps.example` makes the tree the group's.\n       A directory with no group bits stays private to its owner: if /apps is meant to be shared, `ssh deploy@vps.example 'sudo chmod g+rwxs /apps'` opens it. Then re-run.\n"},
+		{scanFixture(), held, okTail, "this server and remove what is left\n       Fix what failed, then `kasbah server destroy deploy@vps.example` again.\n"},
+		{scanFixture(), okAct, "pointer=removed\n", "kasbah's own last step when that is all it finds\n       Fix what failed, then `kasbah server destroy deploy@vps.example` again.\n"},
+		{scanFixture(), strings.Replace(okAct, `"marker":"removed"`, `"marker":"failed"`, 1), okTail, "the server marker is still there, so a second run finds this server and\n       removes what is left\n       Fix what failed, then `kasbah server destroy deploy@vps.example` again.\n"},
+	} {
+		f := &fake{mk: mk(), scan: c.scan, actOut: c.act, tailOut: c.tail}
+		if _, se, code := run(t, f, Options{Target: "deploy@vps.example", Yes: true}, false, ""); code == 0 || !strings.Contains(se, c.want) {
+			t.Errorf("%d: no %q in\n%s", code, c.want, se)
+		}
+	}
+}
+
 // A refused .env is named by line and key in the report, never by value.
 func TestRunReportsRefusedEnv(t *testing.T) {
 	act := strings.Replace(okAct, `"mail_env":"absent"`, `"mail_env":"refused","mail_env_refused":"line 3 (RELAY_PASSWORD): the double quote is not closed"`, 1)

@@ -161,7 +161,7 @@ neither.
 
 | Path | Writer | Readers | Format → spec | Mode | Owner | Lifecycle | Code |
 |---|---|---|---|---|---|---|---|
-| `<apps>` | `server init` (`sudo mkdir`, `chown` to the deploy user) when absent, or the operator from init's printed commands | everything | directory → `server-setup.md` (Who creates the apps path) | root's umask, never chmodded | `deploy:kasbah` | never removed | `internal/serverinit/run.go` `Run` (its `elevateScript`) |
+| `<apps>` | `server init` (`sudo mkdir`, `chown` to the deploy user) when absent, or the operator from init's printed commands | everything | directory → `server-setup.md` (Who creates the apps path) | root's umask on create; `g+rwxs` by init's group step when it has group bits | `deploy:kasbah` | never removed | `internal/serverinit/run.go` `Run` (its `elevateScript`) |
 | `<apps>/.kasbah/migrate.lock` | `kasbah remote migrate` (`flock(2)`, taken without waiting, with `server.lock` exclusive) | — | empty | `664` | `deploy:kasbah` | created on the first migration, never removed by it | `internal/migrate/server.go` `flock` |
 | `<apps>/.kasbah/migrate` | `kasbah remote migrate`, on its first snapshot | `--undo` | directory → `cli.md` (`migrate server`) | `755` asked, setgid inherited from `.kasbah` | `deploy:kasbah` | kept, as its snapshots are | `internal/migrate/server.go` `snapshot` |
 | `<apps>/.kasbah/migrate/<from>-to-<to>-<stamp>.tar` | `kasbah remote migrate`, before any rewrite: every file the steps declare, the marker last (`archive/tar`, written beside its name and renamed) | `--undo` (the newest) | tar → `cli.md` (`migrate server`) | `644` | `deploy:kasbah` | kept; the manual undo path when `versions.log` has moved on | `internal/migrate/server.go` `snapshot` |

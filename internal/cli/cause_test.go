@@ -81,9 +81,7 @@ var dropsCause = map[string]bool{
 	// decoder's error adds nothing the message lacks (a password stays unquoted).
 	`internal/backup/prune.go stage "internal: %s listed the '%s' repository and sent no password for it"`: true,
 	`internal/serverinit/probe.go Limits "internal: nproc '%s' or MemTotal '%s' is out of range"`:          true,
-	// git's stderr follows as continuation lines; a mail read that is not JSON
-	// was cut short or refused, as the message says.
-	`internal/mail/cmd.go Read "the mail read on %s reported nothing kasbah can use — the step was truncated, or the server's kasbah rejected it"`: true,
+	// git's stderr follows as continuation lines.
 	`internal/release/dirty.go gitIn "git %s failed in %s"`: true,
 }
 

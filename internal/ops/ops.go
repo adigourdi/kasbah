@@ -204,7 +204,7 @@ func (o *Options) requireExec() error {
 			"`kasbah exec [USER@HOST] SERVICE -- CMD…`, for example:",
 			"  kasbah exec "+svc+" -- sh -c 'ls -la /srv'",
 			"the '--' is mandatory because it is what makes a flag in CMD belong to CMD",
-			"rather than to kasbah (docs/cli.md → kasbah exec).")
+			"rather than to kasbah.").Help("exec")
 	}
 	if o.Service == "" {
 		return cli.Fail("exec: no service given — `kasbah exec [USER@HOST] SERVICE -- CMD…`").Cont(
@@ -338,7 +338,7 @@ func Run(c Ctx, o Options) (int, error) {
 			if c.Fed {
 				c.Out.Warn("exec: stdin is not forwarded, and this one is a pipe or a file — the command will read EOF")
 				c.Out.Warn("  with no terminal here, exec runs `docker compose exec -T` with stdin closed")
-				c.Out.Warn("  (docs/cli.md → kasbah exec). Put the data inside the command instead:")
+				c.Out.Warn("  (kasbah help exec). Put the data inside the command instead:")
 				c.Out.Warn("  kasbah exec %s -- sh -c 'printf %%s \"$DATA\" | %s …'", o.Service, o.Command[0])
 			}
 			rc, err = s.Stream(false, append(append(dc, "exec", "-T", o.Service), o.Command...)...)

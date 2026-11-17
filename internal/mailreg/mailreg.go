@@ -41,6 +41,9 @@ type unparseable struct{ e *cli.Error }
 func (u unparseable) Error() string   { return u.e.Error() }
 func (u unparseable) Unwrap() []error { return []error{u.e, ErrUnparseable} }
 
+// fix is the next step of a registry that parses and is refused.
+const fix = "Correct it in that file, then re-run."
+
 // Parse reads the registry's bytes; where names the file in messages (e.g.
 // "/apps/mail/kasbah.yml on deploy@vps").
 func Parse(data []byte, where string) (*Registry, error) {
@@ -73,7 +76,7 @@ func Parse(data []byte, where string) (*Registry, error) {
 			"add it to that file:  primary_domain: <domain>")
 	}
 	if !initproject.IsFQDN(r.Primary) {
-		return nil, cli.Fail("%s has primary_domain: '%s', which is not a domain name", where, r.Primary)
+		return nil, cli.Fail("%s has primary_domain: '%s', which is not a domain name", where, r.Primary).Next(fix)
 	}
 	r.Domains = []string{r.Primary}
 	dv, _ := tree.Lookup(doc, "domains")
@@ -86,14 +89,14 @@ func Parse(data []byte, where string) (*Registry, error) {
 				continue
 			}
 			if !initproject.IsFQDN(d) {
-				return nil, cli.Fail("%s lists '%s' under domains:, which is not a domain name", where, d)
+				return nil, cli.Fail("%s lists '%s' under domains:, which is not a domain name", where, d).Next(fix)
 			}
 			if d != r.Primary {
 				r.Domains = append(r.Domains, d)
 			}
 		}
 	default:
-		return nil, cli.Fail("%s has a domains: that is not a list", where)
+		return nil, cli.Fail("%s has a domains: that is not a list", where).Next(fix)
 	}
 	return r, nil
 }

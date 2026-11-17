@@ -3,6 +3,7 @@ package serverlock
 import (
 	"bufio"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 	"testing"
@@ -166,5 +167,57 @@ func TestPrivate(t *testing.T) {
 	err := PrivateRefusal("--with-backup", "alice", "/apps/.kasbah/backup")
 	if !strings.Contains(err.Error(), "--with-backup on this server is alice's to change — run it as alice") {
 		t.Errorf("refusal: %v", err)
+	}
+}
+
+// A lock this user may not open names what gives it back: the file's or,
+// when it cannot be created, its directory's group and mode, and the user's
+// membership of the group — that alone when the mode is already right.
+func TestGiveBack(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root opens any file")
+	}
+	saved := kasbahGroup
+	t.Cleanup(func() { kasbahGroup = saved })
+	apps := t.TempDir()
+	dir, path := apps+"/.kasbah", Path(apps)
+	os.Mkdir(dir, 0o555)
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+	join := " " + login() + " is not in the kasbah group: `sudo usermod -aG kasbah " + login() + "` adds them (a new login picks it up)."
+	fixDir := " Its directory is every operator's, group kasbah at mode 2775: `sudo chgrp kasbah " + dir + " && sudo chmod 2775 " + dir + "` puts it back."
+	fixFile := " It is every operator's, group kasbah at mode 664: `sudo chgrp kasbah " + path + " && sudo chmod 664 " + path + "` puts it back."
+	head := "could not open the server lock " + path + ": permission denied. Nothing was changed."
+	mine, other := func() (int, bool) { return os.Getgid(), true }, func() (int, bool) { return os.Getgid() + 4242, false }
+	for _, c := range []struct {
+		name     string
+		dirMode  os.FileMode
+		fileMode os.FileMode // 0: no lock file
+		group    func() (int, bool)
+		want     string
+	}{
+		{"no lock, a directory not the group's, not a member", 0o555, 0, other, head + fixDir + join},
+		{"no lock, a member, a directory the group cannot write", 0o555, 0, mine, head + fixDir},
+		{"a lock not the group's", 0o755, 0o004, mine, head + fixFile},
+		{"a lock the group's, not a member", 0o755, 0o064, func() (int, bool) { return os.Getgid(), false }, head + join},
+	} {
+		os.Chmod(dir, 0o755)
+		os.Remove(path)
+		if c.fileMode != 0 {
+			os.WriteFile(path, nil, 0o600)
+			os.Chmod(path, c.fileMode)
+		}
+		os.Chmod(dir, c.dirMode)
+		kasbahGroup = c.group
+		f, err := Take(apps, Shared, "")
+		if f != nil {
+			f.Close()
+		}
+		if err == nil || err.Error() != c.want {
+			t.Errorf("%s:\n%v\nwant\n%s", c.name, err, c.want)
+		}
+	}
+	kasbahGroup = mine
+	if got := giveBack(path, fs.ErrNotExist); got != "" {
+		t.Errorf("not a permission error: %q", got)
 	}
 }

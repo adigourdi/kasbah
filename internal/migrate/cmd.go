@@ -213,7 +213,17 @@ func confirmAndRun(c Ctx, s Session, o Options, apps, question string) error {
 	}
 	out, rc := s.Migrate(apps, c.Version, o.Undo)
 	if rc != 0 {
-		return cli.Fail("the migration step on %s exited %d (see above)", o.Target, rc)
+		e := cli.Fail("the migration step on %s exited %d (see above)", o.Target, rc)
+		// Only a run that stopped partway is resumed by a re-run.
+		if rc == ExitPartway {
+			again := "kasbah migrate server " + o.Target
+			if o.Undo {
+				e.Next("Once the cause above is fixed, re-run `" + again + " --undo`: the marker goes back last, so the same snapshot is restored.")
+			} else {
+				e.Next("Once the cause above is fixed, re-run `" + again + "`: it picks up where it stopped, skipping every file already rewritten.")
+			}
+		}
+		return e
 	}
 	var r Report
 	if err := remote.Decode(out, &r, Keys, "the migration step", o.Target); err != nil {

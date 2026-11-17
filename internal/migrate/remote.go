@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -45,6 +46,9 @@ func Remote(args []string, stdout, stderr io.Writer) int {
 	}
 	if err != nil {
 		fmt.Fprintf(w, "remote: %v\n", err)
+		if errors.As(err, new(partway)) {
+			return ExitPartway
+		}
 		return 1
 	}
 	b, _ := json.Marshal(r)

@@ -1,7 +1,9 @@
 package serverbin
 
 import (
+	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/remote"
@@ -22,6 +24,22 @@ func InitCmd(target, apps string) string {
 		init += " --apps-path=" + apps
 	}
 	return init
+}
+
+// EnterApps is the next step for an apps path this user cannot enter:
+// operators enter it as members of the kasbah group, init's group step makes
+// the tree the group's, and a directory with no group bits stays private
+// unless its operator opens it.
+func EnterApps(target, apps string) []string {
+	login, _, ok := strings.Cut(target, "@")
+	if !ok || login == "" {
+		login = "<user>"
+	}
+	return []string{
+		fmt.Sprintf("`ssh %s ls -ld %s` shows its owner and mode. Operators enter it as members of the kasbah group:", target, apps),
+		fmt.Sprintf("`ssh %s 'sudo usermod -aG kasbah %s'` adds %[2]s (a new login picks it up), and `%s` makes the tree the group's.", target, login, InitCmd(target, apps)),
+		fmt.Sprintf("A directory with no group bits stays private to its owner: if %s is meant to be shared, `ssh %s 'sudo chmod g+rwxs %[1]s'` opens it. Then re-run.", apps, target),
+	}
 }
 
 // EnsurePrepared is Ensure for every command that needs a prepared server: the

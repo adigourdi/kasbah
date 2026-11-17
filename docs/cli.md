@@ -2005,6 +2005,14 @@ project's `versions.log` has an entry newer than the snapshot: the server has
 moved on, and the tarball is the manual path. An entry in the same second as
 the snapshot does not count as newer.
 
+A run that fails once its snapshot is written (or reused), and an undo that
+fails writing a restored file or the marker (`kasbah remote migrate` exits 3
+for both; the command itself exits 1), fail naming the same command to re-run
+once the cause is fixed: it resumes, on the same snapshot. A failure before
+that — a held lock, nothing to undo, a deploy since the snapshot — and a
+snapshot that does not read back fail in the server's own words, the latter
+naming what it already restored, and name no re-run command.
+
 Exit codes: 3 unreachable, 4 no marker, 1 refused.
 
 ### `kasbah migrate`

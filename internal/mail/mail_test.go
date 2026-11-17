@@ -21,11 +21,14 @@ func repoTemplates(t *testing.T) fs.FS {
 	return templates.FS
 }
 
+// errText is err as Report prints it, next step and help line included.
 func errText(err error) string {
 	if err == nil {
 		return ""
 	}
-	return err.Error()
+	var b bytes.Buffer
+	(&cli.Output{Stdout: &b, Stderr: &b}).Report(err)
+	return b.String()
 }
 
 // Vectors from `openssl passwd -6 -salt …`.
@@ -333,7 +336,9 @@ func TestMailDKIM(t *testing.T) {
 	// A rotation that failed before any swap says the keys are as they were.
 	f = &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(reg), DKIMFiles: full}, dkim: "mail_dkim_image=dms:9\nmail_dkim_old_shop.test=\n", dkimRC: 1}
 	if _, se, err := dkim(f, "", "--replace-keys"); !strings.Contains(errText(err), "could not make the DKIM keys of shop.test") ||
-		!strings.Contains(errText(err), "--replace-keys rotates") || !strings.Contains(se, "no key file of shop.test was swapped: its keys are as they were") ||
+		!strings.Contains(errText(err), "Once the cause above is fixed, `kasbah server mail-dkim deploy@vps shop.test --replace-keys` rotates both keys again,\n"+
+			"       and `kasbah server mail-dkim deploy@vps shop.test --keep-keys` repairs only.") ||
+		!strings.Contains(se, "no key file of shop.test was swapped: its keys are as they were") ||
 		strings.Contains(se, "way back") {
 		t.Errorf("failed replace: %v %q", err, se)
 	}
@@ -405,6 +410,8 @@ type fake struct {
 	lock string
 	// dkimArgs is the dkim step's last argument list.
 	dkimArgs []string
+	// apps is the marker's apps path, /apps when empty.
+	apps string
 }
 
 func (f *fake) Unbounded(args ...string) ([]byte, int) {
@@ -422,7 +429,12 @@ func (f *fake) Unbounded(args ...string) ([]byte, int) {
 	return []byte(f.dkim), f.dkimRC
 }
 
-func (f *fake) Paths() (string, string, error) { return "/apps", "/apps/data", nil }
+func (f *fake) Paths() (string, string, error) {
+	if f.apps != "" {
+		return f.apps, f.apps + "/data", nil
+	}
+	return "/apps", "/apps/data", nil
+}
 func (f *fake) Hold(_, cmd string) (func(), error) {
 	f.held++
 	f.lock = cmd
@@ -489,6 +501,7 @@ func TestAddMailDomain(t *testing.T) {
 		want string
 	}{
 		{"x=1\n", 1, "could not make the DKIM keys of shop.test on deploy@vps (it exited 1"},
+		{"x=1\n", 1, "\n       Once the cause above is fixed, `kasbah server add-mail-domain deploy@vps shop.test` again makes only what is still missing.\n"},
 		{"mail_dkim_shop.test=kept kept\n", 0, "reported no mail_dkim "},
 	} {
 		f = &fake{r: ReadReport{Dir: "dir", Env: true, Registry: enc(one)}, result: "registry=written\nalias=added\n", dkim: c.res, dkimRC: c.rc}
@@ -520,6 +533,10 @@ func TestAddMailDomain(t *testing.T) {
 		{ReadReport{Dir: "dir", Env: true}, "", "missing or empty"},
 		{ReadReport{Dir: "dir", Env: true, Registry: enc("name: mail\ndomains: [a.com]\n")}, "", "has no primary_domain"},
 		{ReadReport{Dir: "dir", Env: true, Registry: enc(one)}, "registry=half\nalias=added\n", "reported registry='half'"},
+		{ReadReport{Dir: "dir", Env: true, Registry: enc(one)}, "registry=half\nalias=added\n", "\n       `ssh deploy@vps cat /apps/mail/kasbah.yml` shows what it holds now.\n"},
+		{ReadReport{Dir: "dir", Env: true}, "", "\n       Re-run:  kasbah server init deploy@vps --with-mail\n"},
+		{ReadReport{Dir: "dir", Env: true, Registry: enc("primary_domain: example.test\ndomains: x\n")}, "", "is not a list\n       `ssh deploy@vps cat /apps/mail/kasbah.yml` shows it; fix it on the server and re-run.\n"},
+		{ReadReport{Dir: "dir", Env: true, Registry: enc("domains:\n  - [oops\n")}, "", "\n       `ssh deploy@vps cat /apps/mail/kasbah.yml` shows it; fix it on the server and re-run.\n"},
 	} {
 		f := &fake{r: c.r, result: c.res}
 		if _, _, err := runWith(t, f, "add-mail-domain", "shop.test"); !strings.Contains(errText(err), c.want) {
@@ -528,6 +545,11 @@ func TestAddMailDomain(t *testing.T) {
 		if c.res == "" && len(f.writes) != 0 {
 			t.Errorf("%+v wrote", c.r)
 		}
+	}
+	// The init it names keeps the server's apps path.
+	f = &fake{r: ReadReport{Dir: "absent"}, apps: "/srv/apps"}
+	if _, _, err := runWith(t, f, "add-mail-domain", "shop.test"); !strings.Contains(errText(err), "\n       Install it with:  kasbah server init deploy@vps --apps-path=/srv/apps --with-mail\n") {
+		t.Errorf("no stack elsewhere: %v", errText(err))
 	}
 }
 

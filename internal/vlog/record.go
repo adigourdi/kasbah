@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/serverbin"
 	"github.com/adigourdi/kasbah/internal/version"
 )
 
@@ -162,7 +163,10 @@ func ReadProbe(out []byte, target, activePath string) (*Record, error) {
 		case "noaccess":
 			e.Cont("the directory holding it cannot be entered by this ssh user — a deploy that ran under sudo leaves that")
 			dir := path.Dir(r.ActivePath)
-			e.Next(fmt.Sprintf("`ssh %s ls -ld %s %s` shows which one; give it back to this user: `ssh %[1]s 'sudo chown %[4]s:kasbah <dir> && sudo chmod 2775 <dir>'`.", target, path.Dir(dir), dir, user(target)))
+			apps := path.Dir(dir)
+			e.Next(fmt.Sprintf("`ssh %s ls -ld %s %s` shows which one. The project directory is the kasbah group's at 2775: `ssh %[1]s 'sudo chown %[4]s:kasbah %[3]s && sudo chmod 2775 %[3]s'` gives it back.", target, apps, dir, user(target)))
+			e.Next("If it is the apps path:")
+			e.Next(serverbin.EnterApps(target, apps)[1:]...)
 		case "notdir":
 			e.Cont("a path above it is occupied by something that is not a directory")
 		default:

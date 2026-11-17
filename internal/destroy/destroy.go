@@ -384,14 +384,16 @@ func (p *Plan) check() error {
 		}
 		return e.Cont("the backup stack cannot be stopped without it, and a de-branding that leaves",
 			"the schedule running would go on pushing this server's data into the",
-			"departing operator's storage — nothing was removed")
+			"departing operator's storage — nothing was removed").Next(
+			fmt.Sprintf("`ssh %s docker info` shows why; once docker answers, re-run `kasbah server destroy %[1]s`.", p.Target))
 	}
 	switch s.AppsState {
 	case "dir":
 	case "notdir":
 		return cli.Fail("%s on %s is not a directory", p.Apps, p.Target)
 	case "noaccess":
-		return cli.Fail("%s on %s cannot be entered by this user — destroy walks every project there", p.Apps, p.Target)
+		return cli.Fail("%s on %s cannot be entered by this user — destroy walks every project there. Nothing was removed", p.Apps, p.Target).Next(
+			serverbin.EnterApps(p.Target, p.Apps)...)
 	default:
 		return cli.Failf(cli.ExitNoRemoteState, "%s on %s is not there", p.Apps, p.Target).Cont(
 			"the server marker names it, so this server's layout and its tree disagree",
@@ -556,7 +558,7 @@ func (p *Plan) Report(w io.Writer) {
 	if s.MailDir == "dir" {
 		fmt.Fprintf(w, "  the postmaster account in %s/mail/dms/config/postfix-accounts.cf\n", p.Data)
 	}
-	fmt.Fprintf(w, "  the off-VPS restic repositories — operator property (docs/backup.md)\n")
+	fmt.Fprintf(w, "  the off-VPS restic repositories — operator property\n")
 	fmt.Fprintf(w, "\nthis is permanent: the deploy history in versions.log, and the mail domain\n")
 	fmt.Fprintf(w, "registry, exist nowhere else. A later `server init` cannot reproduce them.\n\n")
 }
@@ -612,13 +614,13 @@ func (p *Plan) act(o *cli.Output, pr *prompt.Prompter, s Session) error {
 	// By name and in order: the report below is keyed by name.
 	if len(a.Projects) != len(names) {
 		return cli.Fail("the destroy step on %s reported %d of %d projects", p.Target, len(a.Projects), len(names)).Cont(
-			"the step was truncated; run destroy again to see what is left")
+			"the step was truncated; " + again + " again shows what is left")
 	}
 	for i, n := range names {
 		if a.Projects[i].Name != n {
 			return cli.Fail("the destroy step on %s reported '%s' where the plan named '%s'", p.Target, a.Projects[i].Name, n).Cont(
 				"the step and the plan disagree about which projects this server has —",
-				"run destroy again to see what is left")
+				again+" again shows what is left")
 		}
 	}
 	r := &reporter{o: o, target: p.Target}
@@ -651,7 +653,6 @@ func (p *Plan) act(o *cli.Output, pr *prompt.Prompter, s Session) error {
 			if trc != 0 || tail["done"] != "yes" {
 				r.say("FAILED: the last step — %s and the server's kasbah binary", serverbin.Pointer)
 				o.Err("the last destroy step on %s exited %d", p.Target, trc)
-				o.ErrCont("the marker is gone, so a re-run reports what is still there")
 				r.bad = true
 			} else {
 				p.reportTail(r, tail)
@@ -661,11 +662,16 @@ func (p *Plan) act(o *cli.Output, pr *prompt.Prompter, s Session) error {
 
 	if r.bad {
 		e := cli.Fail("%s was not fully de-branded — see the FAILED line(s) above", p.Target)
-		if a.Marker == "held" {
-			e.Cont("the server marker and "+serverbin.Pointer+" were kept so a second run can find",
-				"this server: fix what failed, then "+again+" again.")
+		switch a.Marker {
+		case "held":
+			return e.Cont("the server marker and "+serverbin.Pointer+" were kept so a second run can find",
+				"this server and remove what is left").Next("Fix what failed, then " + again + " again.")
+		case "failed":
+			return e.Cont("the server marker is still there, so a second run finds this server and",
+				"removes what is left").Next("Fix what failed, then " + again + " again.")
 		}
-		return e
+		return e.Cont("the server marker is gone: a second run reports what is left, and finishes",
+			"kasbah's own last step when that is all it finds").Next("Fix what failed, then " + again + " again.")
 	}
 	if tail["pointer"] == "nosudo" || tail["pointer_dir"] == "nosudo" {
 		h, err := pointerByHand(pr, s, p.Target)
@@ -1027,13 +1033,15 @@ func finishTail(o *cli.Output, pr *prompt.Prompter, s Session, target string, ka
 		out, rc := s.Tail(a)
 		t := kv(out)
 		if rc != 0 || t["done"] != "yes" {
-			return cli.Fail("the last destroy step on %s exited %d", target, rc)
+			return cli.Fail("the last destroy step on %s exited %d", target, rc).Next(
+				"Once the cause above is fixed, `kasbah server destroy " + target + "` again finishes it.")
 		}
 		(&Plan{Target: target, Apps: a}).reportTail(r, t)
 		nosudo = nosudo || t["pointer"] == "nosudo" || t["pointer_dir"] == "nosudo"
 	}
 	if r.bad {
-		return cli.Fail("%s was not fully de-branded — see the FAILED line(s) above", target)
+		return cli.Fail("%s was not fully de-branded — see the FAILED line(s) above", target).Next(
+			"Fix what failed, then `kasbah server destroy " + target + "` again.")
 	}
 	if nosudo {
 		// Server-wide: one wait, whichever apps path's tail found it.

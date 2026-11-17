@@ -191,7 +191,7 @@ func Read(s Session, target, apps, data string) (*ReadReport, error) {
 	}
 	var r ReadReport
 	if err := json.Unmarshal(body, &r); err != nil {
-		return nil, cli.Fail("the mail read on %s reported nothing kasbah can use — the step was truncated, or the server's kasbah rejected it", target)
+		return nil, cli.Fail("the mail read on %s reported nothing kasbah can use — the step was truncated, or the server's kasbah rejected it", target).Cause(err)
 	}
 	return &r, nil
 }
@@ -226,8 +226,8 @@ func stack(out *cli.Output, s Session, target, lock string) (apps, data string, 
 	case "absent", "notdir":
 		err = cli.Fail("there is no mail stack at %s/mail on %s", apps, target).Cont(
 			"that directory is where the shared stack lives — its compose file, its .env",
-			"and its registry. Install it with:",
-			"  kasbah server init "+target+" --with-mail")
+			"and its registry.").Next(
+			"Install it with:  " + serverbin.InitCmd(target, apps) + " --with-mail")
 		return
 	default:
 		err = cli.Fail("the mail read on %s reported dir='%s', which this kasbah does not know", target, r.Dir)
@@ -236,7 +236,7 @@ func stack(out *cli.Output, s Session, target, lock string) (apps, data string, 
 	if !r.Env {
 		out.Warn("%s/mail on %s has no .env, so that stack cannot start as it stands", apps, target)
 		out.Warn("compose reads MAIL_HOSTNAME, DOMAIN and DATA_PATH out of it — re-run:")
-		out.Warn("  kasbah server init %s --with-mail", target)
+		out.Warn("  %s --with-mail", serverbin.InitCmd(target, apps))
 	}
 	body, err := Decode(r.Registry, "registry", target)
 	if err != nil {
@@ -244,6 +244,11 @@ func stack(out *cli.Output, s Session, target, lock string) (apps, data string, 
 	}
 	reg, err = ParseRegistry(body, apps, target)
 	return
+}
+
+// regCat is the command that shows the registry as the server holds it.
+func regCat(target, apps string) string {
+	return "`ssh " + target + " cat " + mailreg.Path(apps) + "`"
 }
 
 // ParseRegistry is mailreg.Parse with what each refusal means here.
@@ -254,9 +259,12 @@ func ParseRegistry(body, apps, target string) (*mailreg.Registry, error) {
 		switch {
 		case errors.Is(err, mailreg.ErrUnparseable):
 			e.Cont("kasbah reproduces what is in that file rather than regenerating it, so a",
-				"file it cannot parse is one it will not rewrite. Fix it and re-run.")
+				"file it cannot parse is one it will not rewrite.").Next(
+				regCat(target, apps) + " shows it; fix it on the server and re-run.")
 		case strings.TrimSpace(body) == "":
-			e.Cont("Re-run:  kasbah server init " + target + " --with-mail")
+			e.Next("Re-run:  " + serverbin.InitCmd(target, apps) + " --with-mail")
+		default:
+			e.SetNext(regCat(target, apps) + " shows it; fix it on the server and re-run.")
 		}
 	}
 	return reg, err
@@ -331,16 +339,17 @@ func rekey(c Ctx, s Session, o Options, apps, data string, r *ReadReport, reg *m
 	f := Facts(string(res))
 	if rc != 0 {
 		e := cli.Fail("could not make the DKIM keys of %s on %s (%s, see above)", d, o.Target, serverbin.ExitText(rc, 0))
+		again := "kasbah server mail-dkim " + o.Target + " " + d
 		if replace {
 			rotateFailed(out, o.Target, apps, data, d, stamp, f)
 			DKIMWarn(out, o.Target, data, []string{d}, f)
-			return e.Cont("no old key was deleted; once the cause above is fixed, --replace-keys rotates",
-				"both keys again and --keep-keys repairs only")
+			return e.Cont("no old key was deleted").Next(
+				"Once the cause above is fixed, `"+again+" --replace-keys` rotates both keys again,",
+				"and `"+again+" --keep-keys` repairs only.")
 		}
 		DKIMWarn(out, o.Target, data, []string{d}, f)
-		return e.Cont(
-			"no existing key was written over; once the cause above is fixed, a re-run with",
-			"--keep-keys makes only what is still missing")
+		return e.Cont("no existing key was written over").Next(
+			"Once the cause above is fixed, `" + again + " --keep-keys` makes only what is still missing.")
 	}
 	want := DKIMFacts([]string{d})
 	if replace {
@@ -497,11 +506,13 @@ func add(c Ctx, s Session, o Options, apps, data string, r *ReadReport, reg *mai
 	size, sum := remote.Digest(body)
 	res, rc := s.Remote(body, "mail", "write", apps, data, size, sum)
 	if rc != 0 {
-		return cli.Fail("could not write the mail registry on %s (%s, see above) — nothing else was changed", o.Target, serverbin.ExitText(rc, serverbin.RunTimeout))
+		return cli.Fail("could not write the mail registry on %s (%s, see above) — nothing else was changed", o.Target, serverbin.ExitText(rc, serverbin.RunTimeout)).Next(
+			"Once the cause above is fixed, re-run `kasbah server add-mail-domain " + o.Target + " " + d + "`.")
 	}
 	f := Facts(string(res))
 	if f["registry"] != "written" {
-		return cli.Fail("the registry write on %s reported registry='%s', which this kasbah does not know — %s may be half-written", o.Target, f["registry"], mailreg.Path(apps))
+		return cli.Fail("the registry write on %s reported registry='%s', which this kasbah does not know — %s may be half-written", o.Target, f["registry"], mailreg.Path(apps)).Next(
+			regCat(o.Target, apps) + " shows what it holds now.")
 	}
 	if _, ok := f["alias"]; !ok {
 		return cli.Fail("the mail write on %s reported no alias — the step was truncated, or the server's kasbah rejected it", o.Target)
@@ -538,8 +549,8 @@ func dkim(out *cli.Output, s Session, target, apps, data, d string) error {
 	res, rc := s.Unbounded("mail", "dkim", apps, data, d)
 	if rc != 0 {
 		return cli.Fail("could not make the DKIM keys of %s on %s (%s, see above)", d, target, serverbin.ExitText(rc, 0)).Cont(
-			"the domain is in the registry and no existing key was replaced; once the cause",
-			"above is fixed, a re-run of this command makes only what is still missing")
+			"the domain is in the registry and no existing key was replaced").Next(
+			"Once the cause above is fixed, `kasbah server add-mail-domain " + target + " " + d + "` again makes only what is still missing.")
 	}
 	f := Facts(string(res))
 	for _, k := range DKIMFacts([]string{d}) {

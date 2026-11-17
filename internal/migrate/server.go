@@ -49,6 +49,16 @@ type Report struct {
 // Keys is what a report must carry to be one (remote.Decode).
 var Keys = []string{"undo", "from", "to", "nothing", "snapshot", "snapshot_reused", "steps", "marker", "restored"}
 
+// ExitPartway is `kasbah remote migrate`'s exit when the run stopped after
+// it began rewriting: the same command, re-run once the cause is fixed,
+// resumes. Every other failure exits 1.
+const ExitPartway = 3
+
+// partway is a failure after the first rewrite.
+type partway struct{ error }
+
+func (p partway) Unwrap() error { return p.error }
+
 const stampLayout = "20060102T150405Z"
 
 var reSnapshot = regexp.MustCompile(`^([0-9]+)-to-([0-9]+)-([0-9]{8}T[0-9]{6}Z)\.tar$`)
@@ -110,7 +120,7 @@ func Projects(apps string) ([]string, error) {
 func lockAll(apps string) (locks, error) {
 	var held locks
 	f, err := flock(filepath.Join(apps, Lock), func(p string) error {
-		return fmt.Errorf("a migration is running on this server — it holds the lock on %s", p)
+		return fmt.Errorf("a migration is running on this server — it holds the lock on %s; re-run once it has finished", p)
 	})
 	if err != nil {
 		return nil, err
@@ -261,13 +271,13 @@ func Run(apps, ours string, steps []Step, now time.Time) (*Report, error) {
 		sr, err := apply(apps, s)
 		r.Steps = append(r.Steps, sr)
 		if err != nil {
-			return nil, fmt.Errorf("%v — the marker still says major %d; the files are in %s, and a rerun picks up where this stopped", err, from, r.Snapshot)
+			return nil, partway{fmt.Errorf("%v — the marker still says major %d; the originals are in %s", err, from, r.Snapshot)}
 		}
 	}
 	own := tree.NewMap()
 	own.Set("kasbah_version", ours)
 	if err := writeAtomic(marker.Path(apps), marker.Render(tree.Merge(m, own)), marker.Mode); err != nil {
-		return nil, err
+		return nil, partway{err}
 	}
 	r.Marker = "updated"
 	return r, nil
@@ -384,35 +394,41 @@ func Undo(apps string) (*Report, error) {
 	defer f.Close()
 	tr := tar.NewReader(f)
 	var mk []byte
+	done := func() string {
+		if len(r.Restored) == 0 {
+			return "nothing was restored"
+		}
+		return "already restored: " + strings.Join(r.Restored, ", ") + "; the marker was not"
+	}
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("%s is not a tarball kasbah wrote: %v", path, err)
+			return nil, fmt.Errorf("%s is not a tarball kasbah wrote: %v — %s", path, err, done())
 		}
 		if h.Typeflag != tar.TypeReg || strings.HasPrefix(h.Name, "/") || strings.Contains(h.Name, "..") {
-			return nil, fmt.Errorf("%s holds %q, which is not a file under the apps path — nothing was restored", path, h.Name)
+			return nil, fmt.Errorf("%s holds %q, which is not a file under the apps path — %s", path, h.Name, done())
 		}
 		body, err := io.ReadAll(tr)
 		if err != nil {
-			return nil, fmt.Errorf("could not read %s out of %s: %v", h.Name, path, err)
+			return nil, fmt.Errorf("could not read %s out of %s: %v — %s", h.Name, path, err, done())
 		}
 		if h.Name == marker.Path("")[1:] {
 			mk = body
 			continue
 		}
 		if err := writeAtomic(filepath.Join(apps, h.Name), body, os.FileMode(h.Mode).Perm()); err != nil {
-			return nil, err
+			return nil, partway{err}
 		}
 		r.Restored = append(r.Restored, h.Name)
 	}
 	if mk == nil {
-		return nil, fmt.Errorf("%s carries no marker — nothing is restored without one", path)
+		return nil, fmt.Errorf("%s carries no marker, which an undo restores last — %s", path, done())
 	}
 	if err := writeAtomic(marker.Path(apps), mk, marker.Mode); err != nil {
-		return nil, err
+		return nil, partway{err}
 	}
 	r.Marker = "restored"
 	return r, nil

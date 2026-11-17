@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"os/user"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -108,7 +109,11 @@ func OwnerName(fi os.FileInfo) string {
 func Open(path string) (*os.File, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, Mode)
 	if errors.Is(err, os.ErrPermission) {
-		f, err = os.Open(path)
+		// An absent file in a directory this user cannot write: the
+		// refused create is the cause, not the read-only retry's ENOENT.
+		if g, gerr := os.Open(path); !errors.Is(gerr, os.ErrNotExist) {
+			f, err = g, gerr
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -188,7 +193,7 @@ func Take(apps, mode, what string) (*os.File, error) {
 	}
 	f, err := Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("could not open the server lock %s: %v. Nothing was changed.", path, cli.OSCause(err))
+		return nil, fmt.Errorf("could not open the server lock %s: %v. Nothing was changed.%s", path, cli.OSCause(err), giveBack(path, err))
 	}
 	if err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB); err != nil {
 		h := holder(f, path)
@@ -196,6 +201,59 @@ func Take(apps, mode, what string) (*os.File, error) {
 		return nil, &Busy{Holder: h, Path: path}
 	}
 	return f, nil
+}
+
+// giveBack is the fix for a lock this user may not open, run on the server:
+// the lock is the kasbah group's at Mode, in a directory the group writes,
+// and the user is in that group. A file or directory already the group's
+// needs only the membership.
+func giveBack(path string, err error) string {
+	if !errors.Is(err, os.ErrPermission) {
+		return ""
+	}
+	gid, member := kasbahGroup()
+	join := ""
+	if !member {
+		join = fmt.Sprintf(" %s is not in the kasbah group: `sudo usermod -aG kasbah %[1]s` adds them (a new login picks it up).", login())
+	}
+	at, want := path, fs.FileMode(0o060)
+	fix := fmt.Sprintf(" It is every operator's, group kasbah at mode 664: `sudo chgrp kasbah %s && sudo chmod 664 %[1]s` puts it back.", path)
+	fi, serr := os.Lstat(path)
+	if serr != nil {
+		at, want = path[:strings.LastIndex(path, "/")], 0o070
+		fix = fmt.Sprintf(" Its directory is every operator's, group kasbah at mode 2775: `sudo chgrp kasbah %s && sudo chmod 2775 %[1]s` puts it back.", at)
+		fi, serr = os.Stat(at)
+	}
+	if serr == nil && fi.Mode().Perm()&want == want {
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok && gid >= 0 && int(st.Gid) == gid {
+			return join
+		}
+	}
+	return fix + join
+}
+
+// login is this user's name, for a command to run as root; <user> when it
+// has none.
+func login() string {
+	if u, err := user.Current(); err == nil && safeName(u.Username) {
+		return u.Username
+	}
+	return "<user>"
+}
+
+// kasbahGroup is the kasbah group's gid (-1 when there is none) and whether
+// this process is in it.
+var kasbahGroup = func() (gid int, member bool) {
+	g, err := user.LookupGroup(Group)
+	if err != nil {
+		return -1, false
+	}
+	gid, err = strconv.Atoi(g.Gid)
+	if err != nil {
+		return -1, false
+	}
+	ids, _ := os.Getgroups()
+	return gid, gid == os.Getegid() || slices.Contains(ids, gid)
 }
 
 // Busy is Take refused: Holder holds the lock at Path.

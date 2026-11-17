@@ -324,7 +324,7 @@ func takeLock(dir string) (*os.File, error) {
 		return nil, fmt.Errorf("could not open the lock file %s: %v. Nothing was changed.", path, cli.OSCause(err))
 	}
 	if f == nil {
-		return nil, fmt.Errorf("%s is running in %s — it holds the lock on %s. Nothing was changed.", holder, dir, path)
+		return nil, fmt.Errorf("%s is running in %s — it holds the lock on %s. Nothing was changed; re-run once it has finished.", holder, dir, path)
 	}
 	return f, nil
 }
