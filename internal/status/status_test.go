@@ -221,10 +221,17 @@ func TestMarkerStates(t *testing.T) {
 		want string
 	}{
 		{func(r *Report) { r.MarkerState = "absent" }, cli.ExitNoRemoteState, "deploy@vps has no server marker at /apps/.kasbah/server.json"},
-		{func(r *Report) { r.MarkerState = "empty" }, 1, "is empty — kasbah server init did not finish"},
-		{func(r *Report) { r.MarkerState = "notfile" }, 1, "exists and is not a regular file"},
-		{func(r *Report) { r.MarkerState = "unreadable" }, 1, "could not be read"},
-		{func(r *Report) { r.Marker = b64s("[1]") }, 1, "is not a JSON object"},
+		{func(r *Report) { r.MarkerState = "empty" }, 1, "is empty — kasbah server init did not finish, or something truncated it\n" +
+			"       Remove it and re-run `kasbah server init deploy@vps` to write it again.\n"},
+		{func(r *Report) { r.MarkerState = "notfile" }, 1, "exists and is not a regular file\n" +
+			"       Look at it before running anything else against this server (`ssh deploy@vps ls -ld /apps/.kasbah/server.json`);\n" +
+			"       to start the server's record over, move it aside and re-run `kasbah server init deploy@vps`.\n"},
+		{func(r *Report) { r.MarkerState = "unreadable" }, 1, "could not be read\n" +
+			"       `ssh deploy@vps ls -l /apps/.kasbah/server.json` shows its owner and mode; give it back to this user:\n" +
+			"       `ssh deploy@vps 'sudo chown deploy:kasbah /apps/.kasbah/server.json && sudo chmod 664 /apps/.kasbah/server.json'`.\n"},
+		{func(r *Report) { r.Marker = b64s("[1]") }, 1, "is not a JSON object\n" +
+			"       Look at it before running anything else against this server (`ssh deploy@vps cat /apps/.kasbah/server.json`);\n"},
+		{func(r *Report) { r.Marker = b64s("{") }, 1, "is not a JSON object: unexpected end of JSON input\n"},
 		{func(r *Report) { r.AppsState = "notdir" }, 1, "exists and is not a directory"},
 	} {
 		r := base()

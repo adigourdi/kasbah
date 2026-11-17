@@ -90,7 +90,11 @@ func Run(out *cli.Output, o Options, pwd, version string) error {
 		name = filepath.Base(pwd)
 	}
 	if !reName.MatchString(name) {
-		return cli.Fail("invalid project name '%s' (must match ^[a-z][a-z0-9-]*$)", name)
+		e := cli.Fail("invalid project name '%s' (must match ^[a-z][a-z0-9-]*$)", name)
+		if !o.NameGiven {
+			e.Next("The name defaults to this directory's: pass --name=<name> with one that matches.")
+		}
+		return e
 	}
 	if manifest.NameReserved(name) {
 		return cli.Fail("project name %s. Pass --name=<other>.", manifest.ReservedWhy(name))
@@ -100,12 +104,18 @@ func Run(out *cli.Output, o Options, pwd, version string) error {
 	}
 	for _, t := range []string{manifest.File, ".env.prod.example", state.File} {
 		if _, err := os.Stat(t); err == nil {
-			return cli.Fail("%s already exists — refusing to overwrite", t)
+			return cli.Fail("%s already exists — refusing to overwrite", t).Next(
+				fmt.Sprintf("Move %s aside to scaffold afresh — or, when this directory is a kasbah project", t),
+				"already, carry on from it: `kasbah check` reads it.")
 		}
 	}
 
 	if err := scaffold(name, o.Domain, version); err != nil {
-		return cli.Fail("init-project: %v", err)
+		e := cli.Fail("init-project: %v", err)
+		if errors.Is(err, fs.ErrPermission) {
+			e.Next(permissionStep(err, pwd))
+		}
+		return e
 	}
 
 	out.Info("Initialized kasbah project '%s'", name)
@@ -117,6 +127,24 @@ func Run(out *cli.Output, o Options, pwd, version string) error {
 	fmt.Fprintln(out.Stdout)
 	fmt.Fprint(out.Stdout, Snippet(name, o.Domain))
 	return nil
+}
+
+// permissionStep names what to fix for a permission error from scaffold: the
+// directory a missing file was to be created in, or the file that is there.
+func permissionStep(err error, pwd string) string {
+	var pe *fs.PathError
+	if !errors.As(err, &pe) {
+		return fmt.Sprintf("Make %s and what it holds readable and writable by this user.", pwd)
+	}
+	p := filepath.Join(pwd, pe.Path)
+	switch _, serr := os.Lstat(p); {
+	case serr == nil:
+		return fmt.Sprintf("Make %s readable and writable by this user.", p)
+	case errors.Is(serr, fs.ErrNotExist):
+		return fmt.Sprintf("Make %s writable by this user.", filepath.Dir(p))
+	default:
+		return fmt.Sprintf("Make %s readable and writable by this user.", filepath.Dir(p))
+	}
 }
 
 // scaffold writes every file. On any failure it removes what this run created

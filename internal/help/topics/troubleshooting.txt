@@ -8,6 +8,8 @@ topic where one fits, and last the log it saved:
 The failures a new project meets most, and where to start:
   No kasbah.yml in current directory   run from the project root, or
                                        kasbah init-project to write one
+  invalid project name '…'             init-project --name=<name>: the
+                                       directory's own name does not fit
   cannot reach … over ssh              make `ssh USER@HOST true` work first
   passwordless sudo — `sudo -n true`   run the printed commands as root once,
   failed                               or server init from a terminal

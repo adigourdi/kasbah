@@ -28,6 +28,23 @@ never set up for kasbah.
 For a project that has none yet, `kasbah init-project` writes it and
 `.env.prod.example` (`authoring.md`).
 
+## invalid project name '…' (must match ^[a-z][a-z0-9-]*$)
+
+```
+error: invalid project name 'My_App' (must match ^[a-z][a-z0-9-]*$)
+       The name defaults to this directory's: pass --name=<name> with one that matches.
+```
+
+**Cause:** `kasbah init-project` names the project after the current
+directory unless `--name` says otherwise, and a project name is lowercase
+ASCII letters, digits and `-`, starting with a letter: it becomes the compose
+project, the directory on the server and part of every container's name. A
+directory called `My_App`, `my.site` or `2048` does not qualify.
+
+**Fix:** pass a name that matches — `kasbah init-project --name=my-app` — and
+the directory keeps its own. A few names are reserved (`traefik`, `mail`,
+`data`, `backups`, `kasbah-backup`); init-project says so when one is picked.
+
 ## Summary: … failed (`kasbah check` exits 6)
 
 ```
@@ -138,7 +155,7 @@ moves it, as the error's next lines say.
 ```
 error: the server runs kasbah 1.5.0, newer than this kasbah 1.4.0 — both ends run the server's build
        kasbah 1.5.0 is not installed on this workstation (nothing under …)
-       install it: `kasbah self-update v1.5.0`, or ./install-dev.sh from that tag's checkout
+       Install it: `kasbah self-update v1.5.0`, or ./install-dev.sh from that tag's checkout.
 ```
 
 **Cause:** both ends must run the same build, and kasbah never downgrades a

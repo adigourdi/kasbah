@@ -3,7 +3,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"runtime"
 	"strings"
@@ -520,8 +522,8 @@ func kasbahVersion(writes bool) (string, error) {
 		if !writes {
 			return "unstamped", nil
 		}
-		return "", cli.Fail("this kasbah carries no build stamp, so it cannot record which version wrote its files").Cont(
-			"build it with `docker compose run --rm build`, which stamps it")
+		return "", cli.Fail("this kasbah carries no build stamp, so it cannot record which version wrote its files").Next(
+			"Build it with `docker compose run --rm build`, which stamps it.")
 	}
 	v, err := version.Base(build)
 	if err != nil {
@@ -545,7 +547,7 @@ func checkCmd(o check.Options, err error) int {
 	}
 	pwd, err := os.Getwd()
 	if err != nil {
-		return report(out, cli.Fail("cannot read the current directory: %v", err))
+		return report(out, cwdFailed(err))
 	}
 	target, err := check.Target(o)
 	if err != nil {
@@ -635,7 +637,7 @@ func initProjectCmd(o initproject.Options, err error) int {
 	}
 	pwd, err := os.Getwd()
 	if err != nil {
-		return report(out, cli.Fail("cannot read the current directory: %v", err))
+		return report(out, cwdFailed(err))
 	}
 	code := report(out, initproject.Run(out, o, pwd, v))
 	if c := atexit.Interrupted(); c != 0 {
@@ -659,7 +661,7 @@ func buildPushCmd(o buildpush.Options, err error) int {
 	}
 	pwd, err := os.Getwd()
 	if err != nil {
-		return report(out, cli.Fail("cannot read the current directory: %v", err))
+		return report(out, cwdFailed(err))
 	}
 	local, err := localBinary()
 	if err != nil {
@@ -698,7 +700,7 @@ func deployCmd(cmd string, o deploy.Options, err error) int {
 	}
 	pwd, err := os.Getwd()
 	if err != nil {
-		return report(out, cli.Fail("cannot read the current directory: %v", err))
+		return report(out, cwdFailed(err))
 	}
 	local, err := localBinary()
 	if err != nil {
@@ -809,7 +811,7 @@ func envCmd(o env.Options, err error) int {
 	}
 	pwd, err := os.Getwd()
 	if err != nil {
-		return report(out, cli.Fail("cannot read the current directory: %v", err))
+		return report(out, cwdFailed(err))
 	}
 	local, err := localBinary()
 	if err != nil {
@@ -858,6 +860,16 @@ func historyCmd(o history.Options, err error) int {
 		code = c
 	}
 	return code
+}
+
+// cwdFailed is the failure of os.Getwd: most often the directory this shell
+// is in was removed, or replaced under it.
+func cwdFailed(err error) *cli.Error {
+	e := cli.Fail("cannot read the current directory").Cause(err)
+	if errors.Is(err, fs.ErrNotExist) {
+		e.Next("The directory this shell is in is gone: cd into the project again.")
+	}
+	return e
 }
 
 // localBinary is serverbin.Local for this installation.
@@ -1003,7 +1015,7 @@ func migrateCmd(o migrate.Options, err error) int {
 	if !o.Server {
 		pwd, err := os.Getwd()
 		if err != nil {
-			return report(out, cli.Fail("cannot read the current directory: %v", err))
+			return report(out, cwdFailed(err))
 		}
 		return report(out, migrate.RunProject(out.Stdout, pwd, v, migrate.Project))
 	}

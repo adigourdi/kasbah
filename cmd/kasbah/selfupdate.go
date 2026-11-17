@@ -39,12 +39,12 @@ func selfUpdate(out *cli.Output, o selfupdate.Options) error {
 	exe, loose := locate(exe)
 	home, checkout := serverbin.Home(exe)
 	if checkout {
-		return cli.Fail("this kasbah runs from the checkout at %s, which self-update does not touch", home).Cont(
-			"build it: docker compose run --rm build, then ./install-dev.sh")
+		return cli.Fail("this kasbah runs from the checkout at %s, which self-update does not touch", home).Next(
+			"Install this checkout with ./install-dev.sh, which builds it first, or run self-update from an installed kasbah.")
 	}
 	root, err := launcher.Root(exe, os.Getenv)
 	if err != nil {
-		return cli.Fail("the installed versions cannot be found: %v", err)
+		return cli.Fail("the installed versions cannot be found: %v", err).Next(libDirStep)
 	}
 	binDir, err := install.BinDir(os.Getenv)
 	if err != nil {

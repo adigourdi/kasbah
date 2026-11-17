@@ -57,7 +57,6 @@ var dropsCause = map[string]bool{
 	`internal/serverinit/run.go Run "the read of %s on %s returned a marker that does not decode"`:                                                                                                                       true,
 	`internal/serverinit/run.go Run "the read of %s/traefik/%s on %s returned content that does not decode"`:                                                                                                             true,
 	`internal/status/status.go Decode "the status probe on %s answered with %d bytes that are not a whole report — truncated, or not this kasbah's (not shown: they carry acme.json, which holds private key material)"`: true,
-	`internal/status/status.go JudgeMarker "%s on %s is not a JSON object — look at it before running anything else against this server"`:                                                                                true,
 	`internal/status/status.go readMarker "the status probe on %s sent %s back as something that is not base64"`:                                                                                                         true,
 	`internal/vlog/record.go ReadProbe "the deploy record read on %s sent %s back as something that is not base64"`:                                                                                                      true,
 	// Absent, or not what it must be: the message says so and what to do.

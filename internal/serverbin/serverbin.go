@@ -474,9 +474,14 @@ func AppsNotDir(target, apps string) *cli.Error {
 	return cli.Fail("%s on %s exists and is not a directory — point kasbah elsewhere with --apps-path=<dir>", apps, target)
 }
 
-// UnreadableMarker is the refusal of a marker the probe could not read.
+// UnreadableMarker is the refusal of a marker the probe could not read. Any
+// operator may own the marker; its group is kasbah and its mode 664.
 func UnreadableMarker(target, apps string) *cli.Error {
-	return cli.Fail("%s on %s could not be read", marker.Path(apps), target)
+	mk := marker.Path(apps)
+	login, _, _ := strings.Cut(target, "@")
+	return cli.Fail("%s on %s could not be read", mk, target).Next(
+		fmt.Sprintf("`ssh %s ls -l %s` shows its owner and mode; give it back to this user:", target, mk),
+		fmt.Sprintf("`ssh %s 'sudo chown %s:kasbah %s && sudo chmod 664 %[3]s'`.", target, login, mk))
 }
 
 // NoMarker is the exit-4 refusal of a server with no marker under the apps

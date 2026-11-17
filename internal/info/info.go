@@ -291,7 +291,12 @@ func Server(target string, self remote.Info, in *serverbin.Inspection, read func
 func Next(target string, self remote.Info, in *serverbin.Inspection) []string {
 	p := in.Probe
 	refuses := func(err error) []string {
-		return append([]string{"the next command that reaches the server stops there:"}, strings.Split(err.Error(), "\n")...)
+		l := append([]string{"the next command that reaches the server stops there:"}, strings.Split(err.Error(), "\n")...)
+		var e *cli.Error
+		if errors.As(err, &e) {
+			l = append(l, e.NextLines()...)
+		}
+		return l
 	}
 	switch {
 	case p.AppsNotDir:
@@ -304,7 +309,7 @@ func Next(target string, self remote.Info, in *serverbin.Inspection) []string {
 	if err := marker.Check(p.MarkerBody, self.Build, marker.Path(p.Apps), target, false); err != nil {
 		return refuses(err)
 	}
-	if err := status.JudgeMarker(p.MarkerBody, marker.Path(p.Apps), target); err != nil {
+	if err := status.JudgeMarker(p.MarkerBody, p.Apps, target); err != nil {
 		return refuses(err)
 	}
 	// Every command but `server status` and `server prune` (an object will do)

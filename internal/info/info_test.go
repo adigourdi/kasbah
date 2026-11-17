@@ -319,7 +319,11 @@ func TestNext(t *testing.T) {
 		t.Errorf("unreadable marker: %q", got)
 	}
 	// An empty marker, or one that is not an object, is the refusal status gives.
-	for body, want := range map[string]string{"": "/apps/.kasbah/server.json on ops@vps is empty", "[1]": "is not a JSON object", "{": "is not a JSON object"} {
+	for body, want := range map[string]string{
+		"":    "/apps/.kasbah/server.json on ops@vps is empty — kasbah server init did not finish, or something truncated it\nRemove it and re-run `kasbah server init ops@vps` to write it again.",
+		"[1]": "is not a JSON object\nLook at it before running anything else against this server (`ssh ops@vps cat /apps/.kasbah/server.json`);",
+		"{":   "is not a JSON object: unexpected end of JSON input",
+	} {
 		in = inspection(true, nil, false)
 		in.Probe.MarkerBody = []byte(body)
 		if got := next(self, in); !strings.Contains(got, "stops there") || !strings.Contains(got, want) || strings.Contains(got, "ships") {

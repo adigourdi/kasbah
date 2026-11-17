@@ -133,10 +133,11 @@ judges it and acted on in nothing:
   refusal every command gives there (Exit codes, below) — never a bare
   `kasbah server init`, which at the wrong apps path takes the running proxy
   down; a marker that is unreadable, empty, not a JSON object, or of another
-  major stops it with that refusal; one recording a relative `apps_path` or
-  `data_path`, or a missing or spaced limit, stops the commands that read the
-  marker in full — every one but `kasbah server status` and `kasbah server
-  prune`, which still read it, and `kasbah server init`, which rewrites it;
+  major stops it with that refusal and the step it names; one recording a
+  relative `apps_path` or `data_path`, or a missing or spaced limit, stops the
+  commands that read the marker in full — every one but `kasbah server status`
+  and `kasbah server prune`, which still read it, and `kasbah server init`,
+  which rewrites it;
 - a binary kasbah cannot account for (not a regular file, an answer that is
   not a version line, no answer within 30 s, any other failing exit, a
   `noexec` apps path) is named, and every command refuses it until it is dealt

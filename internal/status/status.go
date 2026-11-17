@@ -149,7 +149,7 @@ func Dial(self remote.Info, local func(arch string) (string, error)) func(string
 func (s *SSH) Read(apps string) (*Report, string, string, error) {
 	target := s.Conn.Target.String()
 	res, err := serverbin.Ensure(s.Conn, s.Self, s.Local, serverbin.Options{Apps: apps, Prepared: func(body []byte, apps string) error {
-		return JudgeMarker(body, marker.Path(apps), target)
+		return JudgeMarker(body, apps, target)
 	}})
 	if err != nil {
 		return nil, "", "", err
@@ -186,16 +186,28 @@ func Decode(out []byte, target string) (*Report, error) {
 	return &r, nil
 }
 
-// JudgeMarker is status's reading of a marker: there, and a JSON object.
-func JudgeMarker(body []byte, path, target string) error {
+// JudgeMarker is status's reading of the marker under apps: there, and a JSON
+// object.
+func JudgeMarker(body []byte, apps, target string) error {
+	path := marker.Path(apps)
 	if len(body) == 0 {
-		return cli.Fail("%s on %s is empty — kasbah server init did not finish, or something truncated it", path, target)
+		return cli.Fail("%s on %s is empty — kasbah server init did not finish, or something truncated it", path, target).Next(
+			fmt.Sprintf("Remove it and re-run `%s` to write it again.", serverbin.InitCmd(target, apps)))
 	}
 	v, err := tree.ParseOne(body)
 	if _, ok := v.(*tree.Map); err != nil || !ok {
-		return cli.Fail("%s on %s is not a JSON object — look at it before running anything else against this server", path, target)
+		return cli.Fail("%s on %s is not a JSON object", path, target).Cause(err).Next(startOver(target, apps, "cat")...)
 	}
 	return nil
+}
+
+// startOver is the step for a marker kasbah will not read: look at it (with
+// the command look), then move it aside and let server init write it afresh.
+func startOver(target, apps, look string) []string {
+	return []string{
+		fmt.Sprintf("Look at it before running anything else against this server (`ssh %s %s %s`);", target, look, marker.Path(apps)),
+		fmt.Sprintf("to start the server's record over, move it aside and re-run `%s`.", serverbin.InitCmd(target, apps)),
+	}
 }
 
 type run struct {
@@ -281,17 +293,17 @@ func (x *run) readMarker() error {
 	case "absent":
 		return cli.Failf(cli.ExitNoRemoteState, "%s has no server marker at %s", x.target, path)
 	case "notfile":
-		return cli.Fail("%s on %s exists and is not a regular file", path, x.target)
+		return cli.Fail("%s on %s exists and is not a regular file", path, x.target).Next(startOver(x.target, x.apps, "ls -ld")...)
 	case "empty":
-		return cli.Fail("%s on %s is empty — kasbah server init did not finish, or something truncated it", path, x.target)
+		return JudgeMarker(nil, x.apps, x.target)
 	default:
-		return cli.Fail("%s on %s could not be read", path, x.target)
+		return serverbin.UnreadableMarker(x.target, x.apps)
 	}
 	body, err := base64.StdEncoding.DecodeString(x.r.Marker)
 	if err != nil {
 		return cli.Fail("the status probe on %s sent %s back as something that is not base64", x.target, path)
 	}
-	if err := JudgeMarker(body, path, x.target); err != nil {
+	if err := JudgeMarker(body, x.apps, x.target); err != nil {
 		return err
 	}
 	v, _ := tree.ParseOne(body)

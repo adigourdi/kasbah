@@ -16,15 +16,16 @@ next step.
 ## Evidence
 
 Rough counts (no next step / all failure sites), by package:
-- `cmd/kasbah` ~24/39, `status` ~17/20, `mail` ~14/22,
-  `destroy` ~11/21, `migrate` ~10/16, `drop` ~10/23
-- smaller: `mailreg` 5, `ops` 4, `serverlock` 4,
-  `initproject` 4, `tmpl` 4, `vlog` 2, `history` 2, `info` 1
+- `mail` ~14/22, `destroy` ~11/21, `migrate` ~10/16, `drop` ~10/23
+- smaller: `mailreg` 5, `ops` 4, `serverlock` 4
 - still bare inside the swept packages (~209, mostly deliberate): argument
   checks that state the rule, "see above", malformed server answers, internal
   errors; among the rest, `serverinit/backup.go`'s "see above" layout and
   start failures, `buildpush/tags.go` "already
-  holds … as another build", the `serverbin` apps-path and machine refusals
+  holds … as another build", the `serverbin` apps-path and machine refusals; `serverbin.Ensure`'s probe
+  exiting 1 on a marker that is not a regular file (so `server status`'s own
+  step for it never shows); `marker.Validate` saying "re-run `server init`"
+  for a marker that is not an object, which `server init` refuses
 - failure messages still naming a doc file (CLAUDE.md: `kasbah help` is the
   pointer): `internal/ops/ops.go:207,341`, `internal/destroy/destroy.go:559`,
   `internal/drop/drop.go:461`
@@ -45,8 +46,8 @@ Rough counts (no next step / all failure sites), by package:
 - No guard test for next steps: review is the guard.
 - Messages that name a doc file, failures or not, point at `kasbah help`.
 - Units: (backup/prune/state/restore flags and
-  selfupdate/install/upgrade/release done);
-  cmd/kasbah/status/info/history/vlog/initproject/tmpl;
+  selfupdate/install/upgrade/release and
+  cmd/kasbah/status/info/history/vlog/initproject/tmpl done);
   mail/mailreg/destroy/drop/migrate/ops/serverlock; the swept packages'
   leftovers and what remains of `dropsCause`.
 

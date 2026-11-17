@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -116,6 +117,12 @@ func Usable(state string) bool {
 	return false
 }
 
+// user is the login of target, USER@HOST.
+func user(target string) string {
+	u, _, _ := strings.Cut(target, "@")
+	return u
+}
+
 // ReadProbe judges the probe's answer in opposite directions: an active log
 // kasbah cannot read stops the run (an empty answer there is "never deployed
 // here"), while everything about the archive is a warning.
@@ -151,8 +158,11 @@ func ReadProbe(out []byte, target, activePath string) (*Record, error) {
 			e.Cont("something that is not a regular file is where the deploy record should be")
 		case "unreadable":
 			e.Cont("the file is there and this ssh user cannot read it — a deploy that ran under sudo leaves that")
+			e.Next(fmt.Sprintf("Give it back to this user: `ssh %s 'sudo chown %s:kasbah %s && sudo chmod 664 %[3]s'`.", target, user(target), r.ActivePath))
 		case "noaccess":
 			e.Cont("the directory holding it cannot be entered by this ssh user — a deploy that ran under sudo leaves that")
+			dir := path.Dir(r.ActivePath)
+			e.Next(fmt.Sprintf("`ssh %s ls -ld %s %s` shows which one; give it back to this user: `ssh %[1]s 'sudo chown %[4]s:kasbah <dir> && sudo chmod 2775 <dir>'`.", target, path.Dir(dir), dir, user(target)))
 		case "notdir":
 			e.Cont("a path above it is occupied by something that is not a directory")
 		default:

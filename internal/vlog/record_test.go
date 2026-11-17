@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/adigourdi/kasbah/internal/cli"
 )
 
 func probe(t *testing.T, apps, name string) Probe {
@@ -68,6 +70,18 @@ func TestReadProbe(t *testing.T) {
 	}
 	if _, err := ReadProbe(encode("", "noaccess", "missing", nil), "d@h", "/a/demo/versions.log"); err == nil || !strings.Contains(err.Error(), "cannot be read — the probe called it 'noaccess'") {
 		t.Errorf("an unusable active log: %v", err)
+	}
+	// The record this user cannot read names the chown that gives it back.
+	for state, want := range map[string]string{
+		"unreadable": "\n       Give it back to this user: `ssh d@h 'sudo chown d:kasbah /a/demo/versions.log && sudo chmod 664 /a/demo/versions.log'`.\n",
+		"noaccess":   "\n       `ssh d@h ls -ld /a /a/demo` shows which one; give it back to this user: `ssh d@h 'sudo chown d:kasbah <dir> && sudo chmod 2775 <dir>'`.\n",
+	} {
+		_, err := ReadProbe(encode("", state, "missing", nil), "d@h", "/a/demo/versions.log")
+		var b bytes.Buffer
+		(&cli.Output{Stdout: &b, Stderr: &b}).Report(err)
+		if !strings.Contains(b.String(), "the difference.\n"+strings.TrimPrefix(want, "\n")) {
+			t.Errorf("%s: %s", state, b.String())
+		}
 	}
 	var z bytes.Buffer
 	zw := gzip.NewWriter(&z)

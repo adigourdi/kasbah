@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,6 +158,13 @@ func TestInstallDirRefusals(t *testing.T) {
 			t.Errorf("%s: got %v, want %q", tt.name, err, tt.want)
 		}
 	}
+	// A DIR whose kasbah does not answer names the command that shows why.
+	err := installFrom(&cli.Output{Stdout: io.Discard, Stderr: io.Discard}, []string{stranger}, exe, func(k string) string {
+		return map[string]string{"KASBAH_LIB_DIR": lib, "KASBAH_BIN_DIR": binDir}[k]
+	})
+	if want := "\n       `" + filepath.Join(stranger, "kasbah") + " --version` shows what it does instead.\n"; !strings.Contains(shown(err), want) {
+		t.Errorf("a binary that is not kasbah: %s", shown(err))
+	}
 	if _, err := os.Stat(lib); !os.IsNotExist(err) {
 		t.Errorf("a refusal wrote the library: %v", err)
 	}
@@ -200,8 +208,8 @@ func TestPickTag(t *testing.T) {
 			continue
 		}
 		for _, w := range tt.wantErr {
-			if !strings.Contains(err.Error(), w) {
-				t.Errorf("%q: %q does not name %q", tt.args, err.Error(), w)
+			if !strings.Contains(shown(err), w) {
+				t.Errorf("%q: %q does not name %q", tt.args, shown(err), w)
 			}
 		}
 	}

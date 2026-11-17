@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,13 +60,13 @@ func TestResolve(t *testing.T) {
 		{"nil", nil, lib, "", ""},
 		{"the server's build", newer("1.1.0"), lib, v110, ""},
 		{"the server's other build", newer("1.2.0"), lib, v120, ""},
-		{"the server's build is not installed", newer("1.3.0"), lib, "", "install it: `kasbah self-update v1.3.0`, or ./install-dev.sh"},
+		{"the server's build is not installed", newer("1.3.0"), lib, "", "Install it: `kasbah self-update v1.3.0`, or ./install-dev.sh"},
 		{"the server's dev build is not installed", newerThan("1.0.1-dev.5.1+gabc1234", "1.0.1-dev.9.1+g1a2b3c4"), lib, "",
 			"a dev build from another checkout (1.0.1-dev.9.1+g1a2b3c4): check out and build commit 1a2b3c4 and install it"},
 		{"the server's dirty dev build is not installed", newerThan("1.0.1-dev.5.1", "1.0.1-dev.9.1+g1a2b3c4.dirty"), lib, "", "commit 1a2b3c4 (built from a dirty tree"},
 		{"the server's unmarked dev build is not installed", newerThan("1.0.1-dev.5.1", "1.0.1-dev.9.1"), lib, "", "build that commit and install it"},
 		{"the release kept over our dev build", remote.Kept("1.1.0", "1.1.1-dev.14.1"), lib, v110, ""},
-		{"the release kept is not installed", remote.Kept("1.3.0", "1.3.1-dev.14.1"), lib, "", "install it: `kasbah self-update v1.3.0`"},
+		{"the release kept is not installed", remote.Kept("1.3.0", "1.3.1-dev.14.1"), lib, "", "Install it: `kasbah self-update v1.3.0`"},
 		{"a newer major is no hand-off", newer("2.0.1"), lib, "", ""},
 		{"the manifest's major, newest installed", schema("schema: 2\nname: demo\n"), lib, v201, ""},
 		{"the manifest's major is not installed", schema("schema: 3\nname: demo\n"), lib, "", "kasbah self-update v3"},
@@ -78,11 +79,11 @@ func TestResolve(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("resolve = %q, want %q (%v)", got, tt.want, tt.err)
 			}
-			if tt.said != "" && (tt.err == nil || !strings.Contains(tt.err.Error(), tt.said)) {
-				t.Errorf("the refusal does not say %q: %v", tt.said, tt.err)
+			if tt.said != "" && (tt.err == nil || !strings.Contains(shown(tt.err), tt.said)) {
+				t.Errorf("the refusal does not say %q: %s", tt.said, shown(tt.err))
 			}
-			if strings.Contains(tt.name, "dev build") && strings.Contains(tt.err.Error(), "self-update") {
-				t.Errorf("a dev build has no tag to self-update to: %v", tt.err)
+			if strings.Contains(tt.name, "dev build") && strings.Contains(shown(tt.err), "self-update") {
+				t.Errorf("a dev build has no tag to self-update to: %s", shown(tt.err))
 			}
 			if tt.err != nil {
 				var e *cli.Error
@@ -92,6 +93,13 @@ func TestResolve(t *testing.T) {
 			}
 		})
 	}
+}
+
+// shown is err as the terminal shows it, next step and help line included.
+func shown(err error) string {
+	var b strings.Builder
+	(&cli.Output{Stdout: &b, Stderr: &b}).Report(err)
+	return b.String()
 }
 
 // check reports its own refusals through Env.Report, so a newer schema there
@@ -113,5 +121,18 @@ func TestCheckHandsOff(t *testing.T) {
 	}})
 	if got != want || code != cli.ExitFailure {
 		t.Errorf("check's newer-schema refusal resolved to %q (exit %d); want %q, exit 1", got, code, want)
+	}
+}
+
+// Only a directory that is gone gets the cd step.
+func TestCwdFailed(t *testing.T) {
+	gone := shown(cwdFailed(&os.PathError{Op: "getwd", Path: ".", Err: fs.ErrNotExist}))
+	if !strings.Contains(gone, "error: cannot read the current directory: getwd .: file does not exist\n"+
+		"       The directory this shell is in is gone: cd into the project again.\n") {
+		t.Errorf("a removed directory: %s", gone)
+	}
+	other := shown(cwdFailed(&os.PathError{Op: "getwd", Path: ".", Err: fs.ErrPermission}))
+	if !strings.Contains(other, "error: cannot read the current directory: getwd .: permission denied\n") || strings.Contains(other, "cd into") {
+		t.Errorf("another failure: %s", other)
 	}
 }

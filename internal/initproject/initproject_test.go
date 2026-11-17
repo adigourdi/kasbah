@@ -67,8 +67,54 @@ func TestScaffold(t *testing.T) {
 	}
 
 	err := Run(out, Options{Name: "other"}, dir, "1.2.3")
-	if err == nil || !strings.Contains(err.Error(), "kasbah.yml already exists — refusing to overwrite") {
-		t.Errorf("second run: %v", err)
+	if err == nil || !strings.Contains(report(err), "error: kasbah.yml already exists — refusing to overwrite\n"+
+		"       Move kasbah.yml aside to scaffold afresh — or, when this directory is a kasbah project\n") {
+		t.Errorf("second run: %s", report(err))
+	}
+}
+
+// report is err as the terminal shows it, next step included.
+func report(err error) string {
+	var b bytes.Buffer
+	(&cli.Output{Stdout: &b, Stderr: &b}).Report(err)
+	return b.String()
+}
+
+// A permission failure names the directory or file to fix.
+func TestUnwritable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes every directory")
+	}
+	dir := t.TempDir()
+	t.Chdir(dir)
+	os.Chmod(dir, 0o555)
+	defer os.Chmod(dir, 0o755)
+	out, _, _ := output()
+	err := Run(out, Options{Name: "demo"}, dir, "1")
+	if got := report(err); !strings.Contains(got, "error: init-project: open kasbah.yml: permission denied\n"+
+		"       Make "+dir+" writable by this user.\n") {
+		t.Errorf("an unwritable directory: %s", got)
+	}
+
+	// An existing .kasbah it cannot write into is the directory to fix.
+	dir = t.TempDir()
+	t.Chdir(dir)
+	os.Mkdir(".kasbah", 0o555)
+	defer os.Chmod(filepath.Join(dir, ".kasbah"), 0o755)
+	err = Run(out, Options{Name: "demo"}, dir, "1")
+	if got := report(err); !strings.Contains(got, "error: init-project: open .kasbah/state.json: permission denied\n"+
+		"       Make "+filepath.Join(dir, ".kasbah")+" writable by this user.\n") {
+		t.Errorf("an unwritable .kasbah: %s", got)
+	}
+
+	// An unreadable .gitignore is the file to fix.
+	dir = t.TempDir()
+	t.Chdir(dir)
+	os.WriteFile(".gitignore", nil, 0o200)
+	err = Run(out, Options{Name: "demo"}, dir, "1")
+	if got := report(err); !strings.Contains(got, "error: init-project: open .gitignore: permission denied\n"+
+		"       Make "+filepath.Join(dir, ".gitignore")+" readable and writable by this user.\n") {
+		t.Errorf("an unreadable .gitignore: %s", got)
 	}
 }
 
@@ -91,6 +137,14 @@ func TestRefusals(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%+v in %s: %v, want %q", tc.o, tc.pwd, err, tc.want)
 		}
+	}
+	// A name taken from the directory says so; one passed does not.
+	step := "The name defaults to this directory's: pass --name=<name> with one that matches."
+	if got := report(Run(out, Options{}, "/x/My_App", "1")); !strings.Contains(got, "(must match ^[a-z][a-z0-9-]*$)\n       "+step+"\n") {
+		t.Errorf("a directory's name: %s", got)
+	}
+	if got := report(Run(out, Options{Name: "My_App", NameGiven: true}, "/x/demo", "1")); strings.Contains(got, step) {
+		t.Errorf("a name passed: %s", got)
 	}
 	if ents, _ := os.ReadDir("."); len(ents) != 0 {
 		t.Errorf("a refusal wrote %d files", len(ents))

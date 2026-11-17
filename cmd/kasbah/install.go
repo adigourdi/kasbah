@@ -53,7 +53,8 @@ func installFrom(out *cli.Output, args []string, exe string, getenv func(string)
 		}
 		got, ok := install.Reported(bin, limit)
 		if !ok {
-			return cli.Fail("%s does not run here, or does not answer --version as kasbah — nothing was installed", bin)
+			return cli.Fail("%s does not run here, or does not answer --version as kasbah — nothing was installed", bin).Next(
+				"`" + bin + " --version` shows what it does instead.")
 		}
 		ver = got
 	default:
@@ -61,7 +62,7 @@ func installFrom(out *cli.Output, args []string, exe string, getenv func(string)
 	}
 	lib, err := launcher.EnvRoot(getenv)
 	if err != nil {
-		return cli.Fail("%v", err)
+		return cli.Fail("%v", err).Next("Set KASBAH_LIB_DIR to the directory to install kasbah's versions under.")
 	}
 	binDir, err := install.BinDir(getenv)
 	if err != nil {
@@ -112,7 +113,7 @@ func pickTagCmd(out *cli.Output, args []string, in io.Reader) error {
 	v, err := version.Pick(arg, version.Tags(strings.Split(string(body), "\n")), pre)
 	var nm *version.NoMatch
 	if errors.As(err, &nm) {
-		return cli.Fail("no local tag matches %s", nm.Want).Cont(noMatchHints(nm)...)
+		return cli.Fail("no local tag matches %s", nm.Want).Next(noMatchHints(nm)...)
 	}
 	if err != nil {
 		return cli.Fail("%v", err)
@@ -124,7 +125,7 @@ func pickTagCmd(out *cli.Output, args []string, in io.Reader) error {
 func noMatchHints(nm *version.NoMatch) []string {
 	var h []string
 	if nm.Skipped > 0 {
-		h = append(h, fmt.Sprintf("%d pre-release tag(s) were skipped — --pre takes them", nm.Skipped))
+		h = append(h, fmt.Sprintf("%d pre-release tag(s) were skipped — --pre takes them.", nm.Skipped))
 	}
-	return append(h, "the remote's tags may not be here yet: git fetch --tags")
+	return append(h, "The remote's tags may not be here yet: `git fetch --tags`.")
 }
