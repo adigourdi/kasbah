@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/trace"
@@ -165,7 +166,7 @@ func Remote(args []string, stdout, stderr io.Writer) int {
 	case len(args) >= 3 && args[0] == "rm":
 		sl, err := serverlock.Take(args[1], serverlock.Exclusive, "server prune")
 		if err != nil {
-			fmt.Fprintf(stderr, "remote: %v\n", err)
+			fmt.Fprintf(stderr, "remote: %s\n", cli.Full(err))
 			return 1
 		}
 		if sl != nil {

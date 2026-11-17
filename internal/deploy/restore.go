@@ -17,6 +17,7 @@ import (
 	"syscall"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 )
@@ -232,7 +233,7 @@ func restoreEnv(dir, name string, args []string, stdout, stderr io.Writer) int {
 		return fail("%s/%s holds no %s — .env left untouched", at, name, snapEnv)
 	}
 	if err := env.RestoreEnv(dir, old, keys); err != nil {
-		return fail("%v", err)
+		return fail("%s", cli.Full(err))
 	}
 	fmt.Fprintln(stdout, "env=restored")
 	return 0

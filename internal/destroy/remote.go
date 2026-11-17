@@ -16,6 +16,7 @@ import (
 	"syscall"
 
 	"github.com/adigourdi/kasbah/internal/buildpush"
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/envtpl"
@@ -705,7 +706,7 @@ func Remote(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case len(args) >= 2 && args[0] == "act":
 		if err := act(args[1], args[2:], stdout); err != nil {
-			fmt.Fprintf(stderr, "remote: %v\n", err)
+			fmt.Fprintf(stderr, "remote: %s\n", cli.Full(err))
 			return 1
 		}
 		return 0

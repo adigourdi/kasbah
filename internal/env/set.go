@@ -416,12 +416,12 @@ func remoteSet(dir, key, up string, stdin io.Reader, stdout, stderr io.Writer) i
 	}
 	lock, err := lockEnv(dir)
 	if err != nil {
-		return fail("%v", err)
+		return fail("%s", cli.Full(err))
 	}
 	defer lock.Close()
 	sl, err := serverlock.Take(parent(dir), serverlock.Shared, "")
 	if err != nil {
-		return fail("%v", err)
+		return fail("%s", cli.Full(err))
 	}
 	if sl != nil {
 		defer sl.Close()

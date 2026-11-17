@@ -121,7 +121,7 @@ func remoteLimits(cpus, memory string, stdout, stderr io.Writer) int {
 			return 0
 		}
 	}
-	fmt.Fprintf(stderr, "ERROR: %v\n", err)
+	fmt.Fprintf(stderr, "ERROR: %s\n", cli.Full(err))
 	return 1
 }
 

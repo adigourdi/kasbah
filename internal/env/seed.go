@@ -206,7 +206,7 @@ func stageSeed(dir, token string, stdin io.Reader, stdout, stderr io.Writer) int
 	}
 	lock, err := lockEnv(dir)
 	if err != nil {
-		return fail("%v", err)
+		return fail("%s", cli.Full(err))
 	}
 	defer lock.Close()
 	tmp := path + "." + strconv.Itoa(os.Getpid())

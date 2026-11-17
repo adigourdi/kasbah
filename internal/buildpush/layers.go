@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/trace"
 )
 
@@ -169,7 +170,7 @@ func Layers(args []string, stdout, stderr io.Writer) int {
 	for _, r := range refs {
 		b, found, err := inspectRef(r)
 		if err != nil {
-			return fail("%v", err)
+			return fail("%s", cli.Full(err))
 		}
 		fmt.Fprint(stdout, printTag(r, b, found))
 	}
@@ -197,7 +198,7 @@ func Layers(args []string, stdout, stderr io.Writer) int {
 	if len(ids) > 0 && (len(chains) > 0 || len(m) > 0) {
 		all, err := rootFS(ids)
 		if err != nil {
-			return fail("%v", err)
+			return fail("%s", cli.Full(err))
 		}
 		for _, diffs := range all {
 			for i, c := range chainIDs(diffs) {

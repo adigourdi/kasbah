@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/remote"
 )
 
@@ -45,7 +46,7 @@ func Remote(args []string, stdout, stderr io.Writer) int {
 		r, err = Run(apps, ours, Server, time.Now())
 	}
 	if err != nil {
-		fmt.Fprintf(w, "remote: %v\n", err)
+		fmt.Fprintf(w, "remote: %s\n", cli.Full(err))
 		if errors.As(err, new(partway)) {
 			return ExitPartway
 		}

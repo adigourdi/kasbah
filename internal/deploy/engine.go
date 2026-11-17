@@ -17,6 +17,7 @@ import (
 	"unicode"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/composefile"
 	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/trace"
@@ -258,7 +259,7 @@ func engineMain(dir string, stdin io.Reader, stdout, stderr, raw io.Writer, answ
 		defer e.serverLock.Close()
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "remote: %v\n", err)
+		fmt.Fprintf(stderr, "remote: %s\n", cli.Full(err))
 		if e.failure != nil {
 			b, _ := json.Marshal(e.failure)
 			fmt.Fprintf(stdout, "{\"%s\":1,%s\n", FailureKey, b[1:])

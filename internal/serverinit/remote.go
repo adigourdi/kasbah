@@ -75,7 +75,7 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if err != nil {
-		return fail("%v", err)
+		return fail("%s", cli.Full(err))
 	}
 	return 0
 }

@@ -460,7 +460,7 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			err = act(a, stdin, stdout)
 		}
 		if err != nil {
-			fmt.Fprintf(stderr, "remote: %v\n", err)
+			fmt.Fprintf(stderr, "remote: %s\n", cli.Full(err))
 			return 1
 		}
 		return 0

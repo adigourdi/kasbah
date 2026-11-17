@@ -300,7 +300,7 @@ func remoteCmd(args []string) int {
 	if len(args) == 2 && args[0] == "marker" {
 		body, err := marker.ReadLocal(args[1])
 		if err != nil {
-			fmt.Fprintf(out.Stderr, "remote: %v\n", err)
+			fmt.Fprintf(out.Stderr, "remote: %s\n", cli.Full(err))
 			return cli.ExitFailure
 		}
 		out.Stdout.Write(body)

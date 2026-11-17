@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
@@ -41,7 +42,7 @@ func liveVersion(entries []vlog.Entry) string {
 func takeBackup(dir string, now func() time.Time, stdout, stderr io.Writer) int {
 	name, version, err := backupOne(&engine{dir: strings.TrimSuffix(dir, "/"), stderr: stderr, now: now})
 	if err != nil {
-		fmt.Fprintf(stderr, "remote: backup: %v\n", err)
+		fmt.Fprintf(stderr, "remote: backup: %s\n", cli.Full(err))
 		return 1
 	}
 	fmt.Fprintf(stdout, "backup=%s\nversion=%s\n", name, version)

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/fsstate"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/remote"
@@ -99,7 +100,7 @@ func prepare(apps, data, name, client string, parents []string, stdout, stderr i
 		return fail("%s/traefik/dynamic is not a directory", apps)
 	}
 	if err := checkBackups(apps + "/" + name); err != nil {
-		return fail("%v", err)
+		return fail("%s", cli.Full(err))
 	}
 	for _, d := range append([]string{apps + "/" + name, apps + "/" + name + "/backups", data + "/" + name}, parents...) {
 		if os.MkdirAll(d, 0o777) != nil {
@@ -118,7 +119,7 @@ func prepare(apps, data, name, client string, parents []string, stdout, stderr i
 	}
 	if state == "written" {
 		if err := remote.Install(record, []byte(client+"\n"), 0o644); err != nil {
-			return fail("%v", err)
+			return fail("%s", cli.Full(err))
 		}
 	}
 	fmt.Fprintf(stdout, "client=%s\nprepared=yes\n", state)

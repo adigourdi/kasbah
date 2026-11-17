@@ -467,7 +467,7 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		d, err := dryRun(args[1], args[2], args[3], args[4], args[5], args[6], time.Duration(t)*time.Second, p)
 		if err != nil {
-			return fail("%v", err)
+			return fail("%s", cli.Full(err))
 		}
 		emit(d)
 		return 0
@@ -475,7 +475,7 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
 		dest, err := backup(args[1], args[2], args[3], args[4])
 		if err != nil {
-			return fail("%v", err)
+			return fail("%s", cli.Full(err))
 		}
 		emit(map[string]string{"backup_dir": dest})
 		return 0

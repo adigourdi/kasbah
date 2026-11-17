@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/envtpl"
 	"github.com/adigourdi/kasbah/internal/term"
 	"github.com/adigourdi/kasbah/internal/trace"
@@ -198,7 +199,7 @@ func (s *Setup) Run() int {
 	template := envtpl.Folded(tmplData)
 	lock, err := lockEnv(s.Dir)
 	if err != nil {
-		fmt.Fprintf(s.Err, "ERROR: %v\n", err)
+		fmt.Fprintf(s.Err, "ERROR: %s\n", cli.Full(err))
 		return SetupFail
 	}
 	defer lock.Close()

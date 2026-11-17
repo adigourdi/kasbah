@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/remote"
 	"github.com/adigourdi/kasbah/internal/term"
 )
@@ -53,7 +54,7 @@ func Remote(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		removeSeeds(dir)
 		r, err := Report(dir)
 		if err != nil {
-			fmt.Fprintf(stderr, "ERROR: %v\n", err)
+			fmt.Fprintf(stderr, "ERROR: %s\n", cli.Full(err))
 			return 1
 		}
 		fmt.Fprint(stdout, r)

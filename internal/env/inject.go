@@ -129,7 +129,7 @@ func Inject(envfile string, pairs []string, errw io.Writer) int {
 	}
 	lock, err := lockEnv(filepath.Dir(envfile))
 	if err != nil {
-		return fail("%v", err)
+		return fail("%s", cli.Full(err))
 	}
 	defer lock.Close()
 	target := envfile

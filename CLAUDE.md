@@ -72,6 +72,8 @@ truth; `plan/` holds what is intended and queued (roadmap, backlog, research).
   listed in `internal/cli/cause_test.go`'s `dropsCause`, with why), and says
   what to do with `.Next(…)`, `.Help("<topic|rule>")` where `kasbah help`
   explains it. No doc-file links in messages; `kasbah help` is the pointer.
+  `Error()` leaves the next step out: a failure quoting another carries it
+  with `.Carry(inner)`, and a server arm prints its failure with `cli.Full`.
 - **Compose:** files are `compose.yml` (never docker-compose.yml), no
   `version:` attribute.
 - **Shell scripts:** every executed Bash script runs under `set -uo pipefail`,

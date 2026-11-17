@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/composefile"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/vlog"
@@ -70,7 +71,7 @@ func (e *engine) restoreArm(name, live string, flags []string, stdout io.Writer)
 		e.broot.Close()
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "remote: %v\n", err)
+		fmt.Fprintf(stderr, "remote: %s\n", cli.Full(err))
 	}
 	code := 1
 	if sig := int(e.stop.Load()); sig != 0 {
