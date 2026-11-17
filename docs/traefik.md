@@ -635,10 +635,15 @@ normal.
 
 **What a failure leaves.** Everything up to the backup is read-only on the
 server, so a dry run that says no leaves the old proxy running and
-untouched. If the new version will not come up healthy, the backup is
-copied back **on the server** and the old version brought up again — the
-restore is part of the same step rather than a round trip, so a dropped
-connection cannot strand the proxy with the fix on the wrong machine.
+untouched. A file that cannot be shipped, or an interrupt while the files
+are shipped, has the server put the backup back over the three files, each
+renamed into place whole, the proxy not restarted: the failure either says
+the previous files are back, or says the restore failed or could not be
+confirmed and names the backup and the `cp -p` lines that put it back by
+hand. If the new version will not come up healthy, the backup is copied
+back **on the server** and the old version brought up again — the restore
+is part of the same step rather than a round trip, so a dropped connection
+cannot strand the proxy with the fix on the wrong machine.
 
 The endpoint (`caServer`), the ACME address, and — when the dashboard is on —
 its apex and basic-auth entry are recovered off the server and reproduced

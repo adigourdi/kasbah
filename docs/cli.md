@@ -561,10 +561,18 @@ it before and after and reports whether the new Traefik touched it.
 If the new version does not come up healthy, the backup is copied back **on
 the server** and the old version brought up again, in the same step rather
 than a round trip later — so a dropped connection cannot leave the proxy
-down with the fix on the wrong machine. A file that cannot be written stops
-the run before the proxy is restarted, and the failure names the `cp -p`
-commands that put the backup back. Exits 4 on a host with no server
-marker.
+down with the fix on the wrong machine. A file that cannot be written, or an
+interrupt while the files are shipped (a Ctrl-C kills the write's ssh; the
+server writes that file whole or not at all), stops the run before the proxy
+is restarted, and the server puts the backup's three files back over
+whatever was shipped (`kasbah remote traefik restore`), each staged beside
+its file and renamed over it, one already holding the backup's bytes left
+alone, again restarting nothing. The failure then says one of two things:
+the previous files are back, and a re-run once the cause is fixed is the
+next step; or the restore failed, or its outcome could not be confirmed (the
+connection dropped or it timed out), and it names the backup and the `cp -p`
+commands that put it back by hand before anything restarts the proxy. Exits
+4 on a host with no server marker.
 
 ### `kasbah server destroy USER@HOST [--yes]`
 

@@ -337,7 +337,73 @@ func backup(apps, stamp, from, to string) (string, error) {
 	return dest, nil
 }
 
-// copyFile is `cp -p`: bytes, mode and mtime.
+// restoreFiles puts the backup's three files back over the live ones, trying
+// every file and naming each that failed; it restarts nothing.
+func restoreFiles(apps, backupDir string) error {
+	if fi, err := os.Stat(backupDir); err != nil {
+		return fmt.Errorf("could not read the backup %s: %v", backupDir, cli.OSCause(err))
+	} else if !fi.IsDir() {
+		return fmt.Errorf("the backup %s is not a directory", backupDir)
+	}
+	var errs []error
+	for _, rel := range serverinit.Files {
+		src, dst := backupDir+"/"+filepath.Base(rel), apps+"/traefik/"+rel
+		if err := putFile(src, dst); err != nil {
+			errs = append(errs, fmt.Errorf("could not copy %s to %s: %v", src, dst, cli.OSCause(err)))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// putFile is copyFile staged as <dst>.tmp.<pid> and renamed over dst, keeping
+// dst's group: a reader sees the old file or the backup's, never a part. A dst
+// already holding the backup's bytes is left alone.
+func putFile(src, dst string) error {
+	fi, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	gid := -1
+	if cur, err := os.ReadFile(dst); err == nil && bytes.Equal(cur, b) {
+		return nil
+	} else if st, err := os.Stat(dst); err == nil {
+		if sys, ok := st.Sys().(*syscall.Stat_t); ok {
+			gid = int(sys.Gid)
+		}
+	}
+	tmp := fmt.Sprintf("%s.tmp.%d", dst, os.Getpid())
+	pop := atexit.Push(func() { os.Remove(tmp) })
+	defer pop()
+	err = os.WriteFile(tmp, b, fi.Mode().Perm())
+	if err == nil {
+		err = os.Chmod(tmp, fi.Mode().Perm())
+	}
+	if err == nil && gid != -1 {
+		os.Lchown(tmp, -1, gid)
+	}
+	if err == nil {
+		err = os.Chtimes(tmp, fi.ModTime(), fi.ModTime())
+	}
+	if err == nil {
+		err = os.Rename(tmp, dst)
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
+}
+
+// Restored is the restore's report: yes, or failed with its cause.
+type Restored struct {
+	Restored string `json:"restored"`
+	Err      string `json:"restore_err,omitempty"`
+}
+
+// copyFile is `cp -p`: bytes, mode and mtime, written in place.
 func copyFile(src, dst string) error {
 	fi, err := os.Stat(src)
 	if err != nil {
@@ -412,11 +478,7 @@ func start(apps, backupDir, acme string, timeout time.Duration, stderr io.Writer
 	if !up() || !waitHealthy() {
 		failing, _ := dockerCmd(dir, "compose", "-p", Project, "logs", "--no-color", "--tail", "40")
 		u.RolledBack = "failed"
-		if fi, err := os.Stat(backupDir); err == nil && fi.IsDir() &&
-			copyFile(backupDir+"/compose.yml", dir+"/compose.yml") == nil &&
-			copyFile(backupDir+"/traefik.yml", dir+"/traefik.yml") == nil &&
-			copyFile(backupDir+"/_shared.yml", dir+"/dynamic/_shared.yml") == nil &&
-			up() && waitHealthy() {
+		if restoreFiles(apps, backupDir) == nil && up() && waitHealthy() {
 			u.RolledBack = "yes"
 		}
 		fmt.Fprintf(stderr, "remote: the new Traefik did not come up healthy — restored %s (rollback: %s); its log:\n%s\n", backupDir, u.RolledBack, failing)
@@ -434,11 +496,11 @@ func start(apps, backupDir, acme string, timeout time.Duration, stderr io.Writer
 	return u
 }
 
-const remoteUsage = "usage: kasbah remote traefik read APPS DATA | dry-run APPS IMAGE LABEL STAMP ACME_MSG DRY_CA TIMEOUT SIZE SHA256 | backup APPS STAMP FROM TO | start APPS BACKUP ACME TIMEOUT"
+const remoteUsage = "usage: kasbah remote traefik read APPS DATA | dry-run APPS IMAGE LABEL STAMP ACME_MSG DRY_CA TIMEOUT SIZE SHA256 | backup APPS STAMP FROM TO | start APPS BACKUP ACME TIMEOUT | restore APPS BACKUP"
 
 // Remote is the server's half of upgrade-traefik. Reports are one JSON line
 // on stdout; a failure is `remote: …` on stderr, exit 1. start exits 3 when
-// it had to roll back.
+// it had to roll back; restore reports a copy that failed and exits 0.
 func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fail := func(format string, a ...any) int {
 		fmt.Fprintf(stderr, "remote: "+format+"\n", a...)
@@ -478,6 +540,14 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return fail("%s", cli.Full(err))
 		}
 		emit(map[string]string{"backup_dir": dest})
+		return 0
+	case len(args) == 3 && args[0] == "restore":
+		signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
+		r := Restored{Restored: "yes"}
+		if err := restoreFiles(args[1], args[2]); err != nil {
+			r = Restored{Restored: "failed", Err: cli.Full(err)}
+		}
+		emit(r)
 		return 0
 	case len(args) == 5 && args[0] == "start":
 		t, err := strconv.Atoi(args[4])

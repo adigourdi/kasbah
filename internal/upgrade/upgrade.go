@@ -197,6 +197,9 @@ type Ctx struct {
 	Templates fs.FS
 	Dial      func(target string) (Session, error)
 	Now       func() time.Time
+	// Interrupted is atexit.Interrupted when nil; Hold, atexit.Hold.
+	Interrupted func() int
+	Hold        func(fn func(os.Signal)) (release func())
 }
 
 type run struct {
@@ -646,9 +649,12 @@ func (x *run) backup() error {
 	return nil
 }
 
-// ship overwrites through the payload-checked write; _shared.yml last, as
-// the one file the running Traefik picks up without a restart.
+// ship writes through the payload-checked write, _shared.yml last (Traefik
+// picks it up live). Held: a Ctrl-C kills the write's ssh (the server installs
+// a whole payload or nothing); the restore then runs over a new ssh call.
 func (x *run) ship() error {
+	release := x.hold(func(os.Signal) {})
+	defer release()
 	for _, rel := range serverinit.Files {
 		if !contains(x.changed, rel) {
 			continue
@@ -657,17 +663,70 @@ func (x *run) ship() error {
 		body := []byte(x.rendered[rel])
 		size, sum := remote.Digest(body)
 		out, rc := x.s.Call(body, true, "init", "write", dest, size, sum)
+		if c := x.interrupted(); c != 0 {
+			return x.shipFailed(cli.Failf(c, "interrupted while the Traefik files were being shipped to %s — the backup is at %s", x.o.Target, x.backupDir))
+		}
 		if rc != 0 || !strings.Contains(string(out), "written=yes") {
 			why := serverbin.ExitText(rc, serverbin.RunTimeout) + ", see above"
 			if rc == 0 {
 				why = "it did not report written=yes"
 			}
-			return cli.Fail("could not ship the Traefik %s to %s:%s (%s) — the backup is at %s", rel, x.o.Target, dest, why, x.backupDir).Cont(
-				"the running proxy was not restarted").Next(
-				"Put the previous files back on the server before anything restarts the proxy:").Next(
-				x.restore()...).Next(
-				"then, once the cause is fixed, re-run `kasbah server upgrade-traefik " + x.o.Target + " --version=" + x.o.Version + "`.")
+			return x.shipFailed(cli.Fail("could not ship the Traefik %s to %s:%s (%s) — the backup is at %s", rel, x.o.Target, dest, why, x.backupDir))
 		}
+	}
+	return nil
+}
+
+func (x *run) hold(fn func(os.Signal)) (release func()) {
+	if x.c.Hold != nil {
+		return x.c.Hold(fn)
+	}
+	return atexit.Hold(fn)
+}
+
+func (x *run) interrupted() int {
+	if x.c.Interrupted != nil {
+		return x.c.Interrupted()
+	}
+	return atexit.Interrupted()
+}
+
+// shipFailed has the server put the backup back and adds the outcome to e:
+// the files are back, or the cp -p lines that put them back by hand.
+func (x *run) shipFailed(e *cli.Error) error {
+	rerun := "re-run `kasbah server upgrade-traefik " + x.o.Target + " --version=" + x.o.Version + "`."
+	if failed := x.putBack(); len(failed) > 0 {
+		failed[0] = "the running proxy was not restarted, and " + failed[0]
+		return e.Cont(failed...).Next(
+			"Put the previous files back on the server before anything restarts the proxy:").Next(
+			x.restore()...).Next(
+			"then, once the cause is fixed, " + rerun)
+	}
+	return e.Cont("the previous files are back, the running proxy was not restarted").Next(
+		"Once the cause is fixed, " + rerun)
+}
+
+// putBack has the server copy the backup over a partial ship; it returns
+// why the files may not be back, nil once they are.
+func (x *run) putBack() []string {
+	out, rc := x.s.Call(nil, true, "traefik", "restore", x.apps, x.backupDir)
+	if rc == -1 || rc == 255 || serverbin.TimedOut(rc) {
+		// The arm ignores SIGHUP: it may have finished without this end.
+		return []string{"whether the backup is back could not be confirmed: the restore step " + serverbin.ExitText(rc, serverbin.RunTimeout) + ", see above"}
+	}
+	if rc != 0 {
+		return []string{"putting the backup back failed: the restore step " + serverbin.ExitText(rc, serverbin.RunTimeout) + ", see above"}
+	}
+	var r Restored
+	if err := remote.Decode(out, &r, []string{"restored"}, "the restore", x.o.Target); err != nil {
+		lines := strings.Split(err.Error(), "\n")
+		lines[0] = "whether the backup is back could not be confirmed: " + lines[0]
+		return lines
+	}
+	if r.Restored != "yes" {
+		lines := strings.Split(or(r.Err, "the restore reported '"+r.Restored+"'"), "\n")
+		lines[0] = "putting the backup back failed: " + lines[0]
+		return lines
 	}
 	return nil
 }
@@ -702,11 +761,11 @@ func (x *run) start() (Up, error) {
 	t := x.o.Target
 	// Held: a signal here must not tear the master down mid-switch. The
 	// server finishes the start, and its rollback, either way.
-	release := atexit.Hold(func(os.Signal) {})
+	release := x.hold(func(os.Signal) {})
 	out, rc := x.s.Call(nil, false, "traefik", "start", x.apps, x.backupDir,
 		x.data+"/traefik/letsencrypt/acme.json", strconv.Itoa(StartTimeout))
 	release()
-	if c := atexit.Interrupted(); c != 0 && rc != 0 && rc != 3 {
+	if c := x.interrupted(); c != 0 && rc != 0 && rc != 3 {
 		return up, cli.Failf(c, "interrupted while Traefik was being started on %s", t).Cont(
 			"the server carries on without this end: it finishes the start, and puts the",
 			"backup at "+x.backupDir+" back on its own if the new version does not come up.",

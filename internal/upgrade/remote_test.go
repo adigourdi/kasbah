@@ -214,6 +214,105 @@ func TestStartOutlivesSession(t *testing.T) {
 	}
 }
 
+// The restore arm puts the backup back byte for byte, mode and mtime kept,
+// and touches no container.
+func TestRemoteRestore(t *testing.T) {
+	apps, bk := stack(t)
+	mt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for i, f := range []string{"compose.yml", "traefik.yml", "_shared.yml"} {
+		os.Chmod(bk+"/"+f, []os.FileMode{0o600, 0o640, 0o604}[i])
+		os.Chtimes(bk+"/"+f, mt, mt)
+	}
+	f := &fakeDocker{}
+	install(t, f)
+	var so, se bytes.Buffer
+	if code := Remote([]string{"restore", apps, bk}, nil, &so, &se); code != 0 || strings.TrimSpace(so.String()) != `{"restored":"yes"}` || !restored(apps) || len(f.calls) != 0 {
+		t.Fatalf("restore: %d %s %s restored=%v calls=%q", code, so.String(), se.String(), restored(apps), f.calls)
+	}
+	for i, f := range []string{"compose.yml", "traefik.yml", "dynamic/_shared.yml"} {
+		fi, err := os.Stat(apps + "/traefik/" + f)
+		if err != nil || fi.Mode().Perm() != []os.FileMode{0o600, 0o640, 0o604}[i] || !fi.ModTime().Equal(mt) {
+			t.Errorf("%s: %v %v", f, fi.Mode(), err)
+		}
+	}
+
+	apps, _ = stack(t)
+	so.Reset()
+	var r Restored
+	if code := Remote([]string{"restore", apps, apps + "/traefik/backups/nope"}, nil, &so, &se); code != 0 || json.Unmarshal(so.Bytes(), &r) != nil ||
+		r.Restored != "failed" || !strings.Contains(r.Err, "could not read the backup "+apps+"/traefik/backups/nope: no such file or directory") || restored(apps) {
+		t.Errorf("no backup: %d %s", code, so.String())
+	}
+	apps, bk = stack(t)
+	os.Remove(bk + "/traefik.yml")
+	so.Reset()
+	if code := Remote([]string{"restore", apps, bk}, nil, &so, &se); code != 0 || json.Unmarshal(so.Bytes(), &r) != nil ||
+		r.Restored != "failed" || !strings.Contains(r.Err, "could not copy "+bk+"/traefik.yml to "+apps+"/traefik/traefik.yml") {
+		t.Errorf("a missing file: %d %s", code, so.String())
+	}
+}
+
+// putFile renames a staged copy over the target, the backup's mode and mtime
+// kept; a target already holding the bytes is left alone, and a failed write
+// leaves the old file whole.
+func TestPutFile(t *testing.T) {
+	d := t.TempDir()
+	src, dst := d+"/src", d+"/dst"
+	mt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	os.WriteFile(src, []byte("old"), 0o640)
+	os.Chmod(src, 0o640)
+	os.Chtimes(src, mt, mt)
+	os.WriteFile(dst, []byte("new, and longer"), 0o644)
+	ino := func() uint64 {
+		fi, err := os.Stat(dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi.Sys().(*syscall.Stat_t).Ino
+	}
+	before := ino()
+	if err := putFile(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	fi, _ := os.Stat(dst)
+	if b, _ := os.ReadFile(dst); string(b) != "old" || ino() == before || fi.Mode().Perm() != 0o640 || !fi.ModTime().Equal(mt) {
+		t.Errorf("put: %q inode %d -> %d, %v %v", b, before, ino(), fi.Mode(), fi.ModTime())
+	}
+	if m, _ := filepath.Glob(dst + ".tmp.*"); len(m) != 0 {
+		t.Errorf("staging left: %v", m)
+	}
+
+	before = ino()
+	if err := putFile(src, dst); err != nil || ino() != before {
+		t.Errorf("unchanged bytes rewritten: %v, inode %d -> %d", err, before, ino())
+	}
+
+	os.WriteFile(dst, []byte("new"), 0o644)
+	before = ino()
+	os.Mkdir(fmt.Sprintf("%s.tmp.%d", dst, os.Getpid()), 0o755) // the staged write fails
+	if err := putFile(src, dst); err == nil {
+		t.Error("a failed write reported no error")
+	}
+	if b, _ := os.ReadFile(dst); string(b) != "new" || ino() != before {
+		t.Errorf("a failed write touched the target: %q", b)
+	}
+}
+
+// Every file the restore cannot put back is named, not only the first.
+func TestRestoreFilesNamesEach(t *testing.T) {
+	apps, bk := stack(t)
+	os.Remove(bk + "/compose.yml")
+	os.Remove(bk + "/_shared.yml")
+	err := restoreFiles(apps, bk)
+	if err == nil || strings.Count(err.Error(), "\n") != 1 || !strings.Contains(err.Error(), "could not copy "+bk+"/compose.yml") ||
+		!strings.Contains(err.Error(), "could not copy "+bk+"/_shared.yml") {
+		t.Errorf("%v", err)
+	}
+	if b, _ := os.ReadFile(apps + "/traefik/traefik.yml"); string(b) != "old traefik.yml" {
+		t.Errorf("the file that could be put back was not: %q", b)
+	}
+}
+
 func TestReadStack(t *testing.T) {
 	apps, data := t.TempDir(), t.TempDir()
 	os.MkdirAll(apps+"/traefik/dynamic/e.yml", 0o755)

@@ -140,8 +140,8 @@ func main() {
 			}
 			if len(args) > 1 && args[1] == "traefik" {
 				// dry-run: a signal, a dropped session's SIGHUP included, removes
-				// the throwaway on the way out. start ignores SIGHUP and SIGPIPE
-				// itself, so its rollback outlives the session.
+				// the throwaway on the way out. backup, restore and start ignore
+				// SIGHUP and SIGPIPE themselves, so a dropped session never halves them.
 				atexit.HandleSignals()
 				atexit.Exit(upgrade.Remote(args[2:], os.Stdin, os.Stdout, os.Stderr))
 			}

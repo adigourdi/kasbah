@@ -233,17 +233,23 @@ func TestBackupAndStartRemote(t *testing.T) {
 }
 
 type fake struct {
-	stack     Stack
-	dry       Dry
-	overlay   string
-	dryStatic string
-	up        Up
-	upRC      int
-	writeRC   int
-	writeMute bool // init write exits 0 without written=yes
-	calls     []string
-	written   map[string]string
-	apps      string // the marker's apps path, /apps when ""
+	stack      Stack
+	dry        Dry
+	overlay    string
+	dryStatic  string
+	up         Up
+	upRC       int
+	writeRC    int
+	writeAt    int // only that init write (1-based) fails with writeRC, every one when 0
+	writes     int
+	writeMute  bool // init write exits 0 without written=yes
+	backupRC   int
+	restore    *Restored
+	restoreRC  int
+	restoreOut []byte // the restore's raw report, when set
+	calls      []string
+	written    map[string]string
+	apps       string // the marker's apps path, /apps when ""
 }
 
 func (f *fake) Marker() (*marker.Marker, error) {
@@ -268,9 +274,13 @@ func (f *fake) Call(stdin []byte, bounded bool, args ...string) ([]byte, int) {
 		f.overlay, f.dryStatic = p.Shared, p.Static
 		return j(f.dry), 0
 	case "traefik backup":
+		if f.backupRC != 0 {
+			return nil, f.backupRC
+		}
 		return j(map[string]string{"backup_dir": "/apps/traefik/backups/S"}), 0
 	case "init write":
-		if f.writeRC != 0 {
+		f.writes++
+		if f.writeRC != 0 && (f.writeAt == 0 || f.writeAt == f.writes) {
 			return nil, f.writeRC
 		}
 		f.written[args[2]] = string(stdin)
@@ -280,6 +290,17 @@ func (f *fake) Call(stdin []byte, bounded bool, args ...string) ([]byte, int) {
 		return []byte("written=yes\n"), 0
 	case "traefik start":
 		return j(f.up), f.upRC
+	case "traefik restore":
+		if args[2] != or(f.apps, "/apps") || args[3] != "/apps/traefik/backups/S" {
+			return nil, 1
+		}
+		if f.restoreOut != nil {
+			return f.restoreOut, f.restoreRC
+		}
+		if f.restore == nil {
+			return j(Restored{Restored: "yes"}), f.restoreRC
+		}
+		return j(f.restore), f.restoreRC
 	}
 	return nil, 1
 }
@@ -306,14 +327,17 @@ func newFake(t *testing.T, image string) *fake {
 	}
 }
 
-func runUp(t *testing.T, f *fake, version string) (string, int) {
+func runUp(t *testing.T, f *fake, version string, edit ...func(*Ctx)) (string, int) {
 	t.Helper()
 	tpl := templates.FS
 	var se bytes.Buffer
 	out := &cli.Output{Stdout: &bytes.Buffer{}, Stderr: &se}
-	err := Run(Ctx{Out: out, Templates: tpl, Dial: func(string) (Session, error) { return f, nil },
-		Now: func() time.Time { return time.Date(2026, 8, 25, 1, 2, 3, 0, time.UTC) }},
-		Options{Target: "deploy@vps", Version: version})
+	c := Ctx{Out: out, Templates: tpl, Dial: func(string) (Session, error) { return f, nil },
+		Now: func() time.Time { return time.Date(2026, 8, 25, 1, 2, 3, 0, time.UTC) }}
+	for _, e := range edit {
+		e(&c)
+	}
+	err := Run(c, Options{Target: "deploy@vps", Version: version})
 	code := out.Report(err)
 	return se.String(), code
 }
@@ -402,12 +426,87 @@ func TestRun(t *testing.T) {
 		!strings.Contains(se, "the restored Traefik could not rejoin the project networks: docker network connect b_kasbah traefik failed: boom") {
 		t.Errorf("rolled back, join failed: %d\n%s", code, se)
 	}
+	// A failed ship has the server put the backup back, and restarts nothing.
 	f = newFake(t, "traefik:v3.7.10")
 	f.writeRC = 3
-	if se, code = runUp(t, f, "v3.7.11"); code != 1 || !strings.Contains(se, "could not ship the Traefik compose.yml to deploy@vps:/apps/traefik/compose.yml (it exited 3, see above) — the backup is at /apps/traefik/backups/S") ||
-		!strings.Contains(se, "\n         cp -p /apps/traefik/backups/S/_shared.yml /apps/traefik/dynamic/_shared.yml\n") ||
-		!strings.Contains(se, "re-run `kasbah server upgrade-traefik deploy@vps --version=v3.7.11`.") {
-		t.Errorf("write failed: %d\n%s", code, se)
+	if se, code = runUp(t, f, "v3.7.11"); code != 1 || !strings.Contains(se, "could not ship the Traefik compose.yml to deploy@vps:/apps/traefik/compose.yml (it exited 3, see above) — the backup is at /apps/traefik/backups/S\n"+
+		"       the previous files are back, the running proxy was not restarted\n"+
+		"       Once the cause is fixed, re-run `kasbah server upgrade-traefik deploy@vps --version=v3.7.11`.\n") ||
+		strings.Contains(se, "cp -p") || strings.Join(f.calls, "|") != "traefik read|traefik dry-run|traefik backup|init write|traefik restore" {
+		t.Errorf("write failed, restored: %d %q\n%s", code, f.calls, se)
+	}
+	// A restore that fails, or whose outcome is unknown, leaves the cp -p lines as the step.
+	for _, c := range []struct {
+		restore *Restored
+		out     string
+		rc      int
+		why     string
+	}{
+		{&Restored{Restored: "failed", Err: "could not copy /apps/traefik/backups/S/compose.yml to /apps/traefik/compose.yml: no space left on device\n" +
+			"could not copy /apps/traefik/backups/S/_shared.yml to /apps/traefik/dynamic/_shared.yml: no space left on device"}, "", 0,
+			"putting the backup back failed: could not copy /apps/traefik/backups/S/compose.yml to /apps/traefik/compose.yml: no space left on device\n" +
+				"       could not copy /apps/traefik/backups/S/_shared.yml to /apps/traefik/dynamic/_shared.yml: no space left on device\n"},
+		{&Restored{Restored: "maybe"}, "", 0, "putting the backup back failed: the restore reported 'maybe'"},
+		{nil, "", 1, "putting the backup back failed: the restore step it exited 1, see above"},
+		{nil, "", -1, "whether the backup is back could not be confirmed: the restore step ssh could not run, or was killed by a signal, see above"},
+		{nil, "", 124, "whether the backup is back could not be confirmed: the restore step it did not finish within"},
+		{nil, "restored=yes\n", 0, "whether the backup is back could not be confirmed: the restore on deploy@vps reported no restored\n" +
+			"       the step was truncated, or the server's kasbah rejected it — raw output:\n"},
+	} {
+		f = newFake(t, "traefik:v3.7.10")
+		f.writeRC, f.restore, f.restoreRC = 3, c.restore, c.rc
+		if c.out != "" {
+			f.restoreOut = []byte(c.out)
+		}
+		if se, code = runUp(t, f, "v3.7.11"); code != 1 || !strings.Contains(se, "the running proxy was not restarted, and "+c.why) ||
+			!strings.Contains(se, "       Put the previous files back on the server before anything restarts the proxy:\n"+
+				"         cp -p /apps/traefik/backups/S/compose.yml /apps/traefik/compose.yml\n"+
+				"         cp -p /apps/traefik/backups/S/traefik.yml /apps/traefik/traefik.yml\n"+
+				"         cp -p /apps/traefik/backups/S/_shared.yml /apps/traefik/dynamic/_shared.yml\n"+
+				"       then, once the cause is fixed, re-run `kasbah server upgrade-traefik deploy@vps --version=v3.7.11`.\n") ||
+			strings.Contains(se, "the previous files are back") {
+			t.Errorf("write failed, restore %q: %d\n%s", c.why, code, se)
+		}
+	}
+	// The partial ship: the first file lands, the second does not, and the
+	// server puts the backup back over both.
+	hand := func(f *fake) {
+		b, _ := base64.StdEncoding.DecodeString(f.stack.Shared)
+		f.stack.Shared = enc(string(b) + "# a hand edit\n")
+	}
+	f = newFake(t, "traefik:v3.7.10")
+	hand(f)
+	f.writeRC, f.writeAt = 3, 2
+	if se, code = runUp(t, f, "v3.7.11"); code != 1 || len(f.written) != 1 || f.written["/apps/traefik/compose.yml"] == "" ||
+		!strings.Contains(se, "could not ship the Traefik dynamic/_shared.yml to deploy@vps:/apps/traefik/dynamic/_shared.yml (it exited 3, see above)") ||
+		!strings.Contains(se, "the previous files are back") || strings.Join(f.calls, "|") != "traefik read|traefik dry-run|traefik backup|init write|init write|traefik restore" {
+		t.Errorf("partial ship: %d %q %v\n%s", code, f.calls, f.written, se)
+	}
+	// A failed backup changes nothing, so nothing is restored.
+	f = newFake(t, "traefik:v3.7.10")
+	f.backupRC = 1
+	if se, code = runUp(t, f, "v3.7.11"); code != 1 || !strings.Contains(se, "could not back up the Traefik stack on deploy@vps") ||
+		strings.Join(f.calls, "|") != "traefik read|traefik dry-run|traefik backup" {
+		t.Errorf("backup failed: %d %q\n%s", code, f.calls, se)
+	}
+	// An interrupt is held across the ship: the write in flight finishes, the
+	// rest are not sent, the backup goes back, and the run leaves with the signal.
+	f = newFake(t, "traefik:v3.7.10")
+	hand(f)
+	var holds, releases int
+	if se, code = runUp(t, f, "v3.7.11", func(c *Ctx) {
+		c.Hold = func(func(os.Signal)) func() { holds++; return func() { releases++ } }
+		c.Interrupted = func() int {
+			if f.writes > 0 {
+				return 130
+			}
+			return 0
+		}
+	}); code != 130 || holds != 1 || releases != 1 || len(f.written) != 1 ||
+		strings.Join(f.calls, "|") != "traefik read|traefik dry-run|traefik backup|init write|traefik restore" ||
+		!strings.Contains(se, "interrupted while the Traefik files were being shipped to deploy@vps — the backup is at /apps/traefik/backups/S\n"+
+			"       the previous files are back, the running proxy was not restarted\n") {
+		t.Errorf("interrupted ship: %d holds=%d releases=%d %q\n%s", code, holds, releases, f.calls, se)
 	}
 	f = newFake(t, "traefik:v3.7.10")
 	f.writeMute = true
