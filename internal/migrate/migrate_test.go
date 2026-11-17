@@ -16,6 +16,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/serverlock"
 	"github.com/adigourdi/kasbah/internal/vlog"
 )
 
@@ -263,8 +264,16 @@ func TestUndo(t *testing.T) {
 	later, _ := vlog.Line(vlog.Stamp(now.Add(2*time.Minute)), "deploy", "1.0.1", "-", "1.0.2-dev", "-", "deploy")
 	write(t, apps, "alpha/versions.log", line+"\n"+later+"\n")
 	_, err = Undo(apps)
-	if err == nil || !strings.Contains(err.Error(), "alpha was deployed at "+vlog.Stamp(now.Add(2*time.Minute))) || !strings.Contains(err.Error(), r.Snapshot) || errors.As(err, new(partway)) {
-		t.Errorf("refusal: %v", err)
+	if rf, _ := refusal(err); err == nil || !strings.Contains(err.Error(), "alpha was deployed at "+vlog.Stamp(now.Add(2*time.Minute))) || !strings.Contains(err.Error(), r.Snapshot) || errors.As(err, new(partway)) ||
+		rf != (Refusal{"stay", 1, r.Snapshot}) {
+		t.Errorf("refusal: %v %+v", err, rf)
+	}
+	// Through the arm: the cause on stderr, no step, the refusal on stdout.
+	var so, se bytes.Buffer
+	if rc := Remote([]string{"--apps=" + apps, "--version=1.0.2-dev", "--undo"}, &so, &se); rc != ExitRefused ||
+		so.String() != `{"refused":"stay","major":1,"snapshot":"`+r.Snapshot+`"}`+"\n" ||
+		!strings.Contains(se.String(), "alpha was deployed at") || strings.Contains(se.String(), "Leave") || strings.Count(se.String(), "\n") != 1 {
+		t.Errorf("the arm's refusal: rc %d, %s %s", rc, so.String(), se.String())
 	}
 	if got := read(t, apps, ".kasbah/server.json"); !strings.Contains(got, "1.0.2-dev") {
 		t.Error("a refused undo changes nothing")
@@ -300,9 +309,9 @@ func TestUndoPicksByMajor(t *testing.T) {
 	// At major 0 the stray is the newest snapshot starting there, with no
 	// note: read, and refused, naming the file to move aside.
 	_, err = Undo(apps)
-	if err == nil || !strings.Contains(err.Error(), "0-to-3-20261021T130000Z.tar is not a tarball kasbah wrote") ||
-		len(next(err)) != 1 || !strings.HasPrefix(next(err)[0], "Move "+filepath.Join(apps, Dir, "0-to-3-20261021T130000Z.tar")+" aside") {
-		t.Errorf("the stray at major 0: %v %q", err, next(err))
+	if rf, _ := refusal(err); err == nil || !strings.Contains(err.Error(), "0-to-3-20261021T130000Z.tar is not a tarball kasbah wrote") ||
+		rf != (Refusal{"aside", 0, filepath.Join(apps, Dir, "0-to-3-20261021T130000Z.tar")}) || next(err) != nil {
+		t.Errorf("the stray at major 0: %v %+v %q", err, rf, next(err))
 	}
 	os.Remove(filepath.Join(apps, Dir, "0-to-3-20261021T130000Z.tar"))
 	if _, err := Undo(apps); err == nil || !strings.Contains(err.Error(), "ending at major 0") {
@@ -328,15 +337,30 @@ func TestLocks(t *testing.T) {
 	os.MkdirAll(apps+"/alpha", 0o755)
 	hold(t, filepath.Join(apps, "alpha", ".deploy.lock"))
 	_, err := Run(apps, "1.0.0", Server, now)
-	if err == nil || !strings.Contains(err.Error(), "running in alpha") {
-		t.Errorf("held deploy lock: %v", err)
+	if rf, _ := refusal(err); err == nil || !strings.Contains(err.Error(), "running in alpha") || rf.Way != "busy" || next(err) != nil {
+		t.Errorf("held deploy lock: %v %+v", err, rf)
 	}
 	if _, err := Undo(apps); err == nil || !strings.Contains(err.Error(), "running in alpha") {
 		t.Errorf("undo under a held deploy lock: %v", err)
 	}
+	hold(t, serverlock.Path(apps))
+	_, err = Undo(apps)
+	if rf, _ := refusal(err); rf.Way != "busy" {
+		t.Errorf("undo under a held server lock: %+v", rf)
+	}
+	if _, err := Run(apps, "1.0.0", Server, now); err == nil || !strings.Contains(err.Error(), "is running on this server — it holds "+serverlock.Path(apps)) ||
+		strings.Contains(err.Error(), "re-run") {
+		t.Errorf("held server lock: %v", err)
+	}
 	hold(t, filepath.Join(apps, Lock))
 	if _, err := Run(apps, "1.0.0", Server, now); err == nil || !strings.Contains(err.Error(), "a migration is running") {
 		t.Errorf("held migrate lock: %v", err)
+	}
+	// Through the arm: the cause alone, the refusal on stdout.
+	var so, se bytes.Buffer
+	if rc := Remote([]string{"--apps=" + apps, "--version=1.0.2-dev", "--undo"}, &so, &se); rc != ExitRefused ||
+		so.String() != `{"refused":"busy","major":0,"snapshot":""}`+"\n" || !strings.Contains(se.String(), "a migration is running") || strings.Contains(se.String(), "re-run") {
+		t.Errorf("the arm under a held lock: rc %d, %s %s", rc, so.String(), se.String())
 	}
 	if got := read(t, apps, ".kasbah/server.json"); !strings.Contains(got, "0.9.0") {
 		t.Error("nothing changed")
@@ -577,9 +601,33 @@ func TestRunServer(t *testing.T) {
 		f.rc, f.out = 1, ""
 		err := RunServer(c, Options{Server: true, Target: "d@h", Yes: true, Undo: true})
 		if err == nil || !strings.Contains(err.Error(), "exited 1") || next(err) != nil {
-			t.Errorf("a refusal: %v %q", err, next(err))
+			t.Errorf("a failure before anything changed: %v %q", err, next(err))
 		}
-		f.rc = ExitPartway
+		// A refusal's step is spelled here, with the target the server lacks.
+		for _, w := range []struct{ out, step string }{
+			{`{"refused":"finish","major":2,"snapshot":"/apps/.kasbah/migrate/1-to-2-x.tar"}`,
+				"Finish the run instead: re-run `kasbah migrate server d@h` with a kasbah of major 2 — it picks up where it stopped. Or restore by hand from /apps/.kasbah/migrate/1-to-2-x.tar."},
+			{`{"refused":"stay","major":1,"snapshot":"/apps/.kasbah/migrate/0-to-1-x.tar"}`,
+				"Leave d@h on major 1, or restore by hand from /apps/.kasbah/migrate/0-to-1-x.tar."},
+			{`{"refused":"aside","major":1,"snapshot":"/apps/.kasbah/migrate/1-to-3-x.tar"}`,
+				"Move /apps/.kasbah/migrate/1-to-3-x.tar aside, out of /apps/.kasbah/migrate, and re-run `kasbah migrate server d@h --undo`: it then looks past it."},
+			{`{"refused":"busy","major":0,"snapshot":""}`, "Re-run `kasbah migrate server d@h --undo` once it has finished."},
+			{`{"refused":"later","major":0,"snapshot":""}`,
+				"This kasbah does not know the server's next step \"later\" — the server runs another build of kasbah than this workstation; the cause above is its own."},
+		} {
+			f.rc, f.out = ExitRefused, w.out
+			err = RunServer(c, Options{Server: true, Target: "d@h", Yes: true, Undo: true})
+			if err == nil || !strings.Contains(err.Error(), "exited 5") || !slices.Equal(next(err), []string{w.step}) {
+				t.Errorf("%v %q", err, next(err))
+			}
+		}
+		f.out = `{"refused":"stay"}`
+		err = RunServer(c, Options{Server: true, Target: "d@h", Yes: true, Undo: true})
+		if err == nil || !strings.HasPrefix(err.Error(), "the migration step on d@h exited 5 (see above): the migration step on d@h reported no major snapshot") ||
+			!strings.Contains(err.Error(), "nothing was changed on d@h") || !slices.Equal(next(err), []string{"Re-run `kasbah migrate server d@h --undo` to see the refusal again."}) {
+			t.Errorf("a truncated refusal: %v %q", err, next(err))
+		}
+		f.rc, f.out = ExitPartway, ""
 		err = RunServer(c, Options{Server: true, Target: "d@h", Yes: true, Undo: true})
 		if !slices.Equal(next(err), []string{"Once the cause above is fixed, re-run `kasbah migrate server d@h --undo`: it picks the same snapshot again, which is noted undone only once every file is back."}) {
 			t.Errorf("%v %q", err, next(err))
@@ -587,8 +635,24 @@ func TestRunServer(t *testing.T) {
 		g := &fakeSession{marker: mk, apps: "/apps", rc: 1}
 		c, _, _ = ctx(g, false, "")
 		if err := RunServer(c, Options{Server: true, Target: "d@h", Yes: true}); next(err) != nil {
-			t.Errorf("a refusal: %v %q", err, next(err))
+			t.Errorf("a failure before anything changed: %v %q", err, next(err))
 		}
+		// A run's refusals name the run.
+		for _, w := range []struct{ out, step string }{
+			{`{"refused":"busy","major":0,"snapshot":""}`, "Re-run `kasbah migrate server d@h` once it has finished."},
+			{`{"refused":"second","major":0,"snapshot":"/apps/.kasbah/migrate/0-to-1-x.tar"}`, "Re-run `kasbah migrate server d@h` in a second."},
+		} {
+			g.rc, g.out = ExitRefused, w.out
+			err = RunServer(c, Options{Server: true, Target: "d@h", Yes: true})
+			if err == nil || !strings.Contains(err.Error(), "exited 5") || !slices.Equal(next(err), []string{w.step}) {
+				t.Errorf("%v %q", err, next(err))
+			}
+		}
+		g.out = "garbled"
+		if err := RunServer(c, Options{Server: true, Target: "d@h", Yes: true}); !slices.Equal(next(err), []string{"Re-run `kasbah migrate server d@h` to see the refusal again."}) {
+			t.Errorf("an unreadable refusal: %v %q", err, next(err))
+		}
+		g.out = ""
 		g.rc = ExitPartway
 		err = RunServer(c, Options{Server: true, Target: "d@h", Yes: true})
 		if !slices.Equal(next(err), []string{"Once the cause above is fixed, re-run `kasbah migrate server d@h`: it picks up where it stopped, skipping every file already rewritten.",
@@ -627,6 +691,15 @@ func TestRunServer(t *testing.T) {
 	})
 }
 
+// refusal is a run's or an undo's refusal and the step it names on d@h.
+func refusal(err error) (Refusal, string) {
+	var rf refused
+	if !errors.As(err, &rf) {
+		return Refusal{}, ""
+	}
+	return rf.Refusal, rf.Step("d@h", false)
+}
+
 // next is a failure's next step.
 func next(err error) []string {
 	var e *cli.Error
@@ -662,6 +735,55 @@ func TestUndoNamesWhatItRestored(t *testing.T) {
 	}
 }
 
+// A run in the second of a snapshot an undo has finished with is refused,
+// nothing changed: the fresh one would take its name.
+func TestSnapshotOfThisSecond(t *testing.T) {
+	apps := newApps(t, "0.9.0")
+	write(t, apps, "a/x.yml", "v0\nx\n")
+	r, err := Run(apps, "1.0.0", []Step{step(0, 1, "a/x.yml")}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Undo(apps); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Run(apps, "1.0.0", []Step{step(0, 1, "a/x.yml")}, now)
+	if rf, _ := refusal(err); rf != (Refusal{"second", 0, r.Snapshot}) || !strings.Contains(err.Error(), r.Snapshot+" already exists") || strings.Contains(err.Error(), "re-run") {
+		t.Errorf("%v %+v", err, rf)
+	}
+	if read(t, apps, "a/x.yml") != "v0\nx\n" || !strings.Contains(read(t, apps, ".kasbah/server.json"), "0.9.0") {
+		t.Error("a refused run changes nothing")
+	}
+}
+
+// A finished undo writes its note before the marker: one whose marker write
+// fails is picked again by a re-run, which then moves the marker.
+func TestUndoNoteBeforeMarker(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through a read-only directory")
+	}
+	apps := newApps(t, "0.9.0")
+	write(t, apps, "a/x.yml", "v0\nx\n")
+	before := read(t, apps, ".kasbah/server.json")
+	r, err := Run(apps, "1.0.0", []Step{step(0, 1, "a/x.yml")}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(apps+"/.kasbah", 0o555)
+	_, err = Undo(apps)
+	os.Chmod(apps+"/.kasbah", 0o755)
+	if !errors.As(err, new(partway)) || read(t, apps, "a/x.yml") != "v0\nx\n" || !strings.Contains(read(t, apps, ".kasbah/server.json"), `"kasbah_version": "1.0.0"`) {
+		t.Fatalf("the marker write fails: %v", err)
+	}
+	if _, err := os.Stat(r.Snapshot + Undone); err != nil {
+		t.Errorf("the note is written before the marker: %v", err)
+	}
+	u, err := Undo(apps)
+	if err != nil || u.Snapshot != r.Snapshot || u.Marker != "restored" || read(t, apps, ".kasbah/server.json") != before {
+		t.Errorf("the re-run: %+v %v", u, err)
+	}
+}
+
 // A run that stopped partway is undone from its snapshot: the files it
 // rewrote go back, the marker, already at the old major, stays, and the
 // snapshot is noted undone.
@@ -688,9 +810,9 @@ func TestUndoPartial(t *testing.T) {
 	later, _ := vlog.Line(vlog.Stamp(now.Add(time.Minute)), "deploy", "1.0.1", "-", "0.9.0", "-", "deploy")
 	write(t, apps, "alpha/versions.log", later+"\n")
 	_, err = Undo(apps)
-	if err == nil || !strings.Contains(err.Error(), "alpha was deployed at") || !strings.Contains(err.Error(), snap) || errors.As(err, new(partway)) ||
-		len(next(err)) != 1 || !strings.Contains(next(err)[0], "re-run `kasbah migrate server` for this server with a kasbah of major 1") {
-		t.Errorf("refusal: %v %q", err, next(err))
+	if rf, _ := refusal(err); err == nil || !strings.Contains(err.Error(), "alpha was deployed at") || !strings.Contains(err.Error(), snap) || errors.As(err, new(partway)) ||
+		rf != (Refusal{"finish", 1, snap}) || next(err) != nil {
+		t.Errorf("refusal: %v %+v %q", err, rf, next(err))
 	}
 	if read(t, apps, "alpha/a.yml") != "v1\na\n+01\n" {
 		t.Error("a refused undo changes nothing")

@@ -45,6 +45,13 @@ func Remote(args []string, stdout, stderr io.Writer) int {
 	} else {
 		r, err = Run(apps, ours, Server, time.Now())
 	}
+	var rf refused
+	if errors.As(err, &rf) {
+		fmt.Fprintf(w, "remote: %s\n", rf.Error())
+		b, _ := json.Marshal(rf.Refusal)
+		fmt.Fprintf(stdout, "%s\n", b)
+		return ExitRefused
+	}
 	if err != nil {
 		fmt.Fprintf(w, "remote: %s\n", cli.Full(err))
 		if errors.As(err, new(partway)) {

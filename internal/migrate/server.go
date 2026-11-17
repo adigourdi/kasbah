@@ -63,6 +63,61 @@ type partway struct{ error }
 
 func (p partway) Unwrap() error { return p.error }
 
+// ExitRefused is its exit when a run or an undo is refused, nothing changed,
+// with a next step that names the command: the server cannot know USER@HOST,
+// so it prints the cause alone and a Refusal on stdout for the workstation.
+const ExitRefused = 5
+
+// Refusal is what ExitRefused reports.
+type Refusal struct {
+	// Way is "finish" (a stopped run: forward at Major), "stay" (a finished
+	// one: left at Major), "aside" (Snapshot does not read back), "busy" (a
+	// lock is held) or "second" (Snapshot, of this second, already exists).
+	Way      string `json:"refused"`
+	Major    int    `json:"major"`
+	Snapshot string `json:"snapshot"`
+}
+
+// RefusalKeys is what a Refusal must carry to be one (remote.Decode).
+var RefusalKeys = []string{"refused", "major", "snapshot"}
+
+// Step is the next step on target, for a run or (undo) an undo.
+func (r Refusal) Step(target string, undo bool) string {
+	again := "kasbah migrate server " + target
+	same := again
+	if undo {
+		same += " --undo"
+	}
+	switch r.Way {
+	case "finish":
+		return fmt.Sprintf("Finish the run instead: re-run `%s` with a kasbah of major %d — it picks up where it stopped. Or restore by hand from %s.", again, r.Major, r.Snapshot)
+	case "stay":
+		return fmt.Sprintf("Leave %s on major %d, or restore by hand from %s.", target, r.Major, r.Snapshot)
+	case "aside":
+		return fmt.Sprintf("Move %s aside, out of %s, and re-run `%s --undo`: it then looks past it.", r.Snapshot, filepath.Dir(r.Snapshot), again)
+	case "busy":
+		return fmt.Sprintf("Re-run `%s` once it has finished.", same)
+	case "second":
+		return fmt.Sprintf("Re-run `%s` in a second.", same)
+	}
+	// Both ends ship together: only a server of another build gets here.
+	return fmt.Sprintf("This kasbah does not know the server's next step %q — the server runs another build of kasbah than this workstation; the cause above is its own.", r.Way)
+}
+
+// refused is a run's or an undo's failure that Remote reports as ExitRefused.
+type refused struct {
+	err *cli.Error
+	Refusal
+}
+
+func (r refused) Error() string { return r.err.Error() }
+func (r refused) Unwrap() error { return r.err }
+
+// busy is a refusal while a lock is held.
+func busy(format string, a ...any) error {
+	return refused{cli.Fail(format, a...), Refusal{Way: "busy"}}
+}
+
 const stampLayout = "20060102T150405Z"
 
 var reSnapshot = regexp.MustCompile(`^([0-9]+)-to-([0-9]+)-([0-9]{8}T[0-9]{6}Z)\.tar$`)
@@ -140,7 +195,7 @@ func Projects(apps string) ([]string, error) {
 func lockAll(apps string) (locks, error) {
 	var held locks
 	f, err := flock(filepath.Join(apps, Lock), func(p string) error {
-		return fmt.Errorf("a migration is running on this server — it holds the lock on %s; re-run once it has finished", p)
+		return busy("a migration is running on this server — it holds the lock on %s", p)
 	})
 	if err != nil {
 		return nil, err
@@ -149,6 +204,9 @@ func lockAll(apps string) (locks, error) {
 	sl, err := serverlock.Take(apps, serverlock.Exclusive, "kasbah migrate")
 	if err != nil {
 		held.release()
+		if b := (*serverlock.Busy)(nil); errors.As(err, &b) {
+			return nil, busy("%s is running on this server — it holds %s", b.Holder, b.Path)
+		}
 		return nil, err
 	}
 	if sl != nil {
@@ -161,7 +219,7 @@ func lockAll(apps string) (locks, error) {
 	}
 	for _, p := range projects {
 		f, err := flock(filepath.Join(apps, p, ".deploy.lock"), func(path string) error {
-			return fmt.Errorf("a deploy, rollback or drop is running in %s — it holds the lock on %s; migrate once it has finished", p, path)
+			return busy("a deploy, rollback or drop is running in %s — it holds the lock on %s", p, path)
 		})
 		if err != nil {
 			held.release()
@@ -210,7 +268,7 @@ func snapshot(apps, name string, rel []string) (string, error) {
 	}
 	path := filepath.Join(dir, name)
 	if _, err := os.Stat(path); err == nil {
-		return "", fmt.Errorf("%s already exists — a snapshot of this second was already written; re-run in a second", path)
+		return "", refused{cli.Fail("%s already exists — a snapshot of this second was already written", path), Refusal{Way: "second", Snapshot: path}}
 	}
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -426,7 +484,7 @@ func Undo(apps string) (*Report, error) {
 	}
 	from, _ := strconv.Atoi(reSnapshot.FindStringSubmatch(filepath.Base(path))[1])
 	r := &Report{Undo: true, From: from, To: cur, Snapshot: path, Steps: []StepReport{}, Marker: "unchanged", Restored: []string{}, Gone: []string{}}
-	if err := deployedSince(apps, path, at, fmt.Sprintf("Leave the server on major %d, or restore by hand from the tarball.", cur)); err != nil {
+	if err := deployedSince(apps, path, at, Refusal{"stay", cur, path}); err != nil {
 		return nil, err
 	}
 	var mk []byte
@@ -478,10 +536,10 @@ func undoPartial(apps string, cur int, path string, at time.Time) (*Report, erro
 	r := &Report{Undo: true, From: cur, To: to, Snapshot: path, Steps: []StepReport{}, Marker: "unchanged", Restored: []string{}, Gone: []string{}}
 	diff, err := differs(apps, path, r)
 	if err != nil {
-		return nil, cli.Fail("%v", err).Next(fmt.Sprintf("Move %s aside, out of %s, and re-run the undo: it then looks past it.", path, filepath.Join(apps, Dir)))
+		return nil, refused{cli.Fail("%v", err), Refusal{"aside", cur, path}}
 	}
 	if len(diff) > 0 {
-		if err := deployedSince(apps, path, at, fmt.Sprintf("Finish the run instead: re-run `kasbah migrate server` for this server with a kasbah of major %d — it picks up where it stopped. Or restore by hand from the tarball.", to)); err != nil {
+		if err := deployedSince(apps, path, at, Refusal{"finish", to, path}); err != nil {
 			return nil, err
 		}
 	}
@@ -512,14 +570,14 @@ func gone(apps, name string) bool {
 }
 
 // deployedSince refuses an undo of the snapshot at path, taken at at, once a
-// project has deployed since; next is the way on.
-func deployedSince(apps, path string, at time.Time, next string) error {
+// project has deployed since; way is the way on.
+func deployedSince(apps, path string, at time.Time, way Refusal) error {
 	project, stamp, err := DeployedSince(apps, at)
 	if err != nil {
 		return err
 	}
 	if project != "" {
-		return cli.Fail("%s was deployed at %s, after the snapshot %s was taken — an undo would put files from before that deploy under it", project, stamp, path).Next(next)
+		return refused{cli.Fail("%s was deployed at %s, after the snapshot %s was taken — an undo would put files from before that deploy under it", project, stamp, path), way}
 	}
 	return nil
 }

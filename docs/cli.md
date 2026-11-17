@@ -2056,12 +2056,21 @@ fails writing a restored file, its note or the marker (`kasbah remote
 migrate` exits 3 for both; the command itself exits 1), fail naming the same
 command to re-run once the cause is fixed: it resumes, on the same snapshot.
 A run's failure names `--undo` beside it, as the way back. A failure before
-that — a held lock, nothing to undo, a deploy since the snapshot — and a
-snapshot that does not read back fail in the server's own words, the latter
-naming what it already restored, and name no re-run of the same command: a
-deploy since names leaving the server where it is (a finished migration) or
-re-running `kasbah migrate server` forward (a stopped run), and a stopped
-run's snapshot that does not read back names the file to move aside.
+that — nothing to undo, say — and a snapshot that does not read back fail in
+the server's own words, the latter naming what it already restored, and name
+no re-run of the same command as it stands. A refusal names its way on: a
+held lock (the migration lock, the server lock or a project's `.deploy.lock`,
+for a run or an undo) names the same command, `--undo` included when given,
+to re-run once its holder has finished; a run whose snapshot name, of this
+second, is already taken names it to re-run in a second; a deploy since the
+snapshot names leaving `USER@HOST` at its major (a finished migration) or
+`kasbah migrate server USER@HOST` with a kasbah of the stopped run's major,
+which finishes it; a stopped run's snapshot that does not read back names the
+file to move aside, then `kasbah migrate server USER@HOST --undo`. For a
+refusal `kasbah remote migrate` prints the cause alone and exits 5 with a
+report of which on stdout, and the workstation prints the step with its
+target; a report that does not read back fails naming the exit, nothing
+changed, and the same command to re-run to see the refusal again.
 
 Exit codes: 3 unreachable, 4 no marker, 1 refused.
 

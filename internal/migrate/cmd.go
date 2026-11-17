@@ -214,9 +214,21 @@ func confirmAndRun(c Ctx, s Session, o Options, apps, question string) error {
 	out, rc := s.Migrate(apps, c.Version, o.Undo)
 	if rc != 0 {
 		e := cli.Fail("the migration step on %s exited %d (see above)", o.Target, rc)
+		again := "kasbah migrate server " + o.Target
+		if rc == ExitRefused {
+			var rf Refusal
+			if err := remote.Decode(out, &rf, RefusalKeys, "the migration step", o.Target); err != nil {
+				same := again
+				if o.Undo {
+					same += " --undo"
+				}
+				return e.Cause(err).Cont("nothing was changed on " + o.Target + ": the server refused, but its refusal's report did not read back").
+					Next("Re-run `" + same + "` to see the refusal again.")
+			}
+			return e.Next(rf.Step(o.Target, o.Undo))
+		}
 		// Only a run that stopped partway is resumed by a re-run.
 		if rc == ExitPartway {
-			again := "kasbah migrate server " + o.Target
 			if o.Undo {
 				e.Next("Once the cause above is fixed, re-run `" + again + " --undo`: it picks the same snapshot again, which is noted undone only once every file is back.")
 			} else {
