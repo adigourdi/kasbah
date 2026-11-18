@@ -35,7 +35,7 @@ type Options struct {
 }
 
 // Usage is the command's --help.
-const Usage = `Usage: kasbah server prune USER@HOST [--yes]
+const Usage = `Usage: kasbah server prune [USER@]HOST [--yes]
 
 Image retention cleanup across every project on the server. Removes
 <image>:<version> tags that are both older than 3 months and not among the
@@ -67,6 +67,14 @@ warning: kasbah does not delete images on incomplete evidence.
 
 // Parse reads the command line. There is deliberately no --apps-path.
 func Parse(args []string) (Options, error) {
+	o, err := parse(args)
+	if err == nil {
+		o.Target, err = ssh.ResolveTarget("server prune", o.Target)
+	}
+	return o, err
+}
+
+func parse(args []string) (Options, error) {
 	var o Options
 	for _, a := range args {
 		switch {
@@ -79,13 +87,13 @@ func Parse(args []string) (Options, error) {
 			return o, cli.Fail("server prune: unknown flag '%s' (expected --yes)", name)
 		default:
 			if o.Target != "" {
-				return o, cli.Fail("server prune: unexpected argument '%s' (USER@HOST is given once)", a)
+				return o, cli.Fail("server prune: unexpected argument '%s' ([USER@]HOST is given once)", a)
 			}
 			o.Target = strings.TrimSuffix(a, "\r")
 		}
 	}
 	if o.Target == "" {
-		return o, cli.Fail("server prune: USER@HOST is required (the user kasbah deploys as is not optional)")
+		return o, cli.Fail("server prune: no server given (expected `kasbah server prune [USER@]HOST`)")
 	}
 	return o, nil
 }

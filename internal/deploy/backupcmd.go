@@ -17,10 +17,10 @@ import (
 // BackupOptions is `kasbah backup`'s command line.
 type BackupOptions struct{ Target string }
 
-const backupUsage = `Usage: kasbah backup [USER@HOST]
+const backupUsage = `Usage: kasbah backup [[USER@]HOST]
 
 Takes a backup of the version live on the server, outside any deploy, and
-pushes it off the box when the server has off-box backups (` + "`kasbah server\ninit --with-backup`" + `). Run from the project root. USER@HOST defaults to the
+pushes it off the box when the server has off-box backups (` + "`kasbah server\ninit --with-backup`" + `). Run from the project root. [USER@]HOST defaults to the
 last server this project deployed to (.kasbah/state.json).
 
 What it does:
@@ -50,16 +50,16 @@ func ParseBackup(args []string) (BackupOptions, error) {
 			return o, ErrHelp
 		case strings.HasPrefix(a, "-"):
 			name, _, _ := strings.Cut(a, "=")
-			return o, cli.Fail("backup: unknown flag '%s' (backup takes USER@HOST and nothing else)", name)
-		case !strings.Contains(a, "@"):
-			return o, cli.Fail("backup: '%s' is not a server — backup takes USER@HOST and nothing else", a)
+			return o, cli.Fail("backup: unknown flag '%s' (backup takes [USER@]HOST and nothing else)", name)
 		case o.Target != "":
 			return o, cli.Fail("backup: two servers given ('%s' and '%s') — one run goes to one server", o.Target, a)
 		default:
 			o.Target = a
 		}
 	}
-	return o, nil
+	var err error
+	o.Target, err = ssh.ResolveTarget("backup", o.Target)
+	return o, err
 }
 
 // BackupServer is one server as `kasbah backup` needs it.

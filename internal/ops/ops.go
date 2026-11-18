@@ -44,7 +44,8 @@ root. USER@HOST defaults to the last server this project talked to
 
 An argument carrying an '@' is the server and anything else is the service —
 the same rule ` + "`kasbah exec`" + ` uses, because both commands take the two in that
-order and neither can tell them apart by position.
+order and neither can tell them apart by position. So the user is never taken
+from ssh's config here: a bare host would read as a service.
 
 Flags:
   -f           follow, until interrupted
@@ -69,7 +70,8 @@ to kasbah, so ` + "`kasbah exec web -- ls -la`" + ` lists a directory instead of
 refused for an unknown '-la'.
 
 SERVICE is required. An argument carrying an '@' is the server, so a service
-name may not contain one.
+name may not contain one, and a bare host reads as the service — the user is
+never taken from ssh's config here.
 
 A terminal is allocated only when this side has one at both ends — stdin and
 stdout both a tty — so ` + "`kasbah exec db -- pg_dump …`" + ` redirected to a file
@@ -381,6 +383,10 @@ func Run(c Ctx, o Options) (int, error) {
 			fmt.Sprintf("`docker compose -p %s logs` exited %d in %s (see above).", m.Name, rc, dir))
 		if o.Service != "" {
 			e.Cont(fmt.Sprintf("'%s' is the service as compose.prod.yml spells it — `kasbah logs %s` shows every one.", o.Service, target))
+			// No '@' argument: the one word given may have been meant as the server.
+			if o.Target == "" && ssh.IsHost(o.Service) {
+				e.Next(fmt.Sprintf("If '%s' is a server, pass it as USER@%s: an argument without '@' is the service.", o.Service, o.Service))
+			}
 		}
 		return 0, e
 	}

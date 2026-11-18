@@ -63,7 +63,7 @@ const (
 var SharedRouters = []string{"traefik-dashboard@file", "traefik-dashboard-http@file", DryAnchor}
 
 // Usage is the command's --help.
-const Usage = `Usage: kasbah server upgrade-traefik USER@HOST --version=<tag>
+const Usage = `Usage: kasbah server upgrade-traefik [USER@]HOST --version=<tag>
 
 Moves the shared Traefik proxy to another image tag. Two halves:
 
@@ -115,6 +115,14 @@ func CheckVersion(tag string) error {
 
 // Parse reads the command line.
 func Parse(args []string) (Options, error) {
+	o, err := parse(args)
+	if err == nil {
+		o.Target, err = ssh.ResolveTarget("server upgrade-traefik", o.Target)
+	}
+	return o, err
+}
+
+func parse(args []string) (Options, error) {
 	var o Options
 	for _, a := range args {
 		switch {
@@ -132,13 +140,13 @@ func Parse(args []string) (Options, error) {
 			return o, cli.Fail("server upgrade-traefik: unknown flag '%s' (expected --version=<tag>)", name)
 		default:
 			if o.Target != "" {
-				return o, cli.Fail("server upgrade-traefik: unexpected argument '%s' (USER@HOST is given once)", a)
+				return o, cli.Fail("server upgrade-traefik: unexpected argument '%s' ([USER@]HOST is given once)", a)
 			}
 			o.Target = strings.TrimSuffix(a, "\r")
 		}
 	}
 	if o.Target == "" {
-		return o, cli.Fail("server upgrade-traefik: USER@HOST is required (the user kasbah deploys as is not optional)")
+		return o, cli.Fail("server upgrade-traefik: no server given (expected `kasbah server upgrade-traefik [USER@]HOST --version=<tag>`)")
 	}
 	if o.Version == "" {
 		return o, cli.Fail("server upgrade-traefik: --version=<tag> is required — this command exists to change it, and there is no default to fall back on")

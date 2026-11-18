@@ -26,7 +26,7 @@ func TestParsePrune(t *testing.T) {
 		t.Fatalf("%+v %v", o, err)
 	}
 	for _, c := range []struct{ args, want string }{
-		{"", "USER@HOST is required"},
+		{"", "no server given"},
 		{"a@b|c@d", "unexpected argument 'c@d'"},
 		{"a@b|--docker-network=bad net", "is not a docker network name"},
 		{"a@b|--repo=Bad", "is not a repository name"},

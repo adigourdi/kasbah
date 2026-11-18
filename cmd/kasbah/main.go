@@ -591,7 +591,7 @@ func statusCmd(o status.Options, err error) int {
 	return code
 }
 
-// infoCmd is `kasbah info [USER@HOST]`.
+// infoCmd is `kasbah info [[USER@]HOST]`.
 func infoCmd(o info.Options, err error) int {
 	out := cli.Std()
 	if err == info.ErrHelp {

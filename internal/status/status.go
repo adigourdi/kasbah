@@ -1,4 +1,4 @@
-// Package status is `kasbah server status USER@HOST [--apps-path=<dir>]`:
+// Package status is `kasbah server status [USER@]HOST [--apps-path=<dir>]`:
 // what a prepared server is running, read in one `kasbah remote status`
 // round trip after the server binary is ensured. It reports; `check
 // --server` judges. Nothing on the server is written but kasbah's own binary,
@@ -44,7 +44,7 @@ type Options struct {
 
 // Usage is the --help text.
 func Usage() string {
-	return `Usage: kasbah server status USER@HOST [--apps-path=<dir>]
+	return `Usage: kasbah server status [USER@]HOST [--apps-path=<dir>]
 
 Prints what a prepared server is running: docker and compose versions, the
 shared Traefik stack, and every project under the apps path with its last
@@ -67,6 +67,14 @@ container kasbah does not manage, with its image, state and health.
 
 // Parse reads `server status`'s arguments.
 func Parse(args []string) (Options, error) {
+	o, err := parse(args)
+	if err == nil {
+		o.Target, err = ssh.ResolveTarget("server status", o.Target)
+	}
+	return o, err
+}
+
+func parse(args []string) (Options, error) {
 	var o Options
 	apps, given := "", false
 	for _, a := range args {
@@ -80,13 +88,13 @@ func Parse(args []string) (Options, error) {
 			return o, cli.Fail("server status: unknown flag '%s' (expected --apps-path=)", flag)
 		default:
 			if o.Target != "" {
-				return o, cli.Fail("server status: unexpected argument '%s' (USER@HOST is given once)", a)
+				return o, cli.Fail("server status: unexpected argument '%s' ([USER@]HOST is given once)", a)
 			}
 			o.Target = strings.TrimSuffix(a, "\r")
 		}
 	}
 	if o.Target == "" {
-		return o, cli.Fail("server status: USER@HOST is required (the user kasbah deploys as is not optional)")
+		return o, cli.Fail("server status: no server given (expected `kasbah server status [USER@]HOST`)")
 	}
 	if !given {
 		return o, nil

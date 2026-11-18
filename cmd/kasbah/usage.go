@@ -29,37 +29,38 @@ Usage: kasbah [--version] [--help] <command> [args...]
 
 Commands:
   init-project [--name=<n>] [--domain=<d>]   Scaffold kasbah metadata in cwd.
-  check [--server [USER@HOST]] [--fix]       Run structural checks on the project, optionally against a server; --fix repairs what it can.
-  build-push [USER@HOST]                     Build this project's images and load them on a server.
+  check [--server [[USER@]HOST]] [--fix]     Run structural checks on the project, optionally against a server; --fix repairs what it can.
+  build-push [[USER@]HOST]                   Build this project's images and load them on a server.
   deploy [USER@HOST] [VERSION]               Ship the working tree, or a tagged version, and bring it up.
   rollback [USER@HOST] [VERSION]             Put a server back on a version it has already run.
-  backup [USER@HOST]                         Back up the live version on a server, and push it off-box.
-  restore [USER@HOST]                        Bring .env and data back from the off-box backups.
-  drop [USER@HOST] [--prune]                 Remove this project from a server.
-  history [USER@HOST] [--all]                Show a server's deploy record for this project.
+  backup [[USER@]HOST]                       Back up the live version on a server, and push it off-box.
+  restore [[USER@]HOST]                      Bring .env and data back from the off-box backups.
+  drop [[USER@]HOST] [--prune]               Remove this project from a server.
+  history [[USER@]HOST] [--all]              Show a server's deploy record for this project.
   pending [USER@HOST] [VERSION]              Show the commits a deploy would ship.
-  changelog [USER@HOST]                      Show what changed in the deployed version.
-  env [USER@HOST]                            Render the project's .env on the server.
-  env set KEY [USER@HOST]                    Change one key of the project's .env on the server.
+  changelog [[USER@]HOST]                    Show what changed in the deployed version.
+  env [[USER@]HOST]                          Render the project's .env on the server.
+  env set KEY [[USER@]HOST]                  Change one key of the project's .env on the server.
   logs [USER@HOST] [SERVICE] [-f] [--tail=N] Show this project's container logs on a server.
   exec [USER@HOST] SERVICE -- CMD...         Run a command in one of this project's containers.
   migrate                                    Move this project's files to this kasbah's schema.
-  migrate server USER@HOST [--yes] [--undo]  Move a server to this kasbah's major, or undo the last move.
+  migrate server [USER@]HOST [--yes] [--undo]
+                                             Move a server to this kasbah's major, or undo the last move.
   self-update [vN | vN.M | vN.M.P] [--pre] [--yes]
                                              Install a released kasbah beside this one and repoint the symlink.
   version                                    Print this kasbah's version.
-  info [USER@HOST]                           Print this build, where it lives and its docs; with a host, what the server runs.
+  info [[USER@]HOST]                         Print this build, where it lives and its docs; with a host, what the server runs.
   help [topic]                               Explain kasbah, a project's files and setups, a check rule, or debugging.
-  server init USER@HOST [flags]              Prepare a VPS to host projects.
-  server status USER@HOST                    Report what a prepared VPS is running.
-  server prune USER@HOST [--yes]             Remove image tags outside the retention window.
-  server backup-prune USER@HOST              Apply the retention policy to the server's restic repositories.
-  server destroy USER@HOST [--yes]           De-brand a VPS for handover; the sites keep running.
+  server init [USER@]HOST [flags]            Prepare a VPS to host projects.
+  server status [USER@]HOST                  Report what a prepared VPS is running.
+  server prune [USER@]HOST [--yes]           Remove image tags outside the retention window.
+  server backup-prune [USER@]HOST            Apply the retention policy to the server's restic repositories.
+  server destroy [USER@]HOST [--yes]         De-brand a VPS for handover; the sites keep running.
   server add-mail-domain USER@HOST DOMAIN    Join a domain to the VPS's shared mail stack.
   server mail-dkim USER@HOST DOMAIN [--replace-keys|--keep-keys]
                                              Repair a mail domain's DKIM keys, or rotate them.
-  server mail-setup-guide USER@HOST          Print the mail stack's setup walkthrough.
-  server upgrade-traefik USER@HOST --version=<tag>
+  server mail-setup-guide [USER@]HOST        Print the mail stack's setup walkthrough.
+  server upgrade-traefik [USER@]HOST --version=<tag>
                                              Dry-run the fragments against a Traefik version, then switch.
 
 Every command also takes:
@@ -75,23 +76,25 @@ reference.
 `
 }
 
-const serverUsage = `Usage: kasbah server <subcommand> USER@HOST [args...]
+const serverUsage = `Usage: kasbah server <subcommand> [USER@]HOST [args...]
 
 Subcommands:
-  init USER@HOST [flags]   Prepare a VPS to host projects.
-  status USER@HOST         Report what a prepared VPS is running (read-only).
-  prune USER@HOST [--yes]  Remove <image>:<version> tags older than 3 months and
+  init [USER@]HOST [flags]
+                           Prepare a VPS to host projects.
+  status [USER@]HOST       Report what a prepared VPS is running (read-only).
+  prune [USER@]HOST [--yes]
+                           Remove <image>:<version> tags older than 3 months and
                            outside each project's last 3 deployed versions.
-  backup-prune USER@HOST   Apply the retention policy to this server's restic
+  backup-prune [USER@]HOST Apply the retention policy to this server's restic
                            repositories. restic runs here, not on the VPS: the
                            full-access credential never goes to the server.
-  destroy USER@HOST [--yes]
+  destroy [USER@]HOST [--yes]
                            De-brand a VPS for handover: the marker, the backup
                            stack and its credentials, the server's kasbah
                            binary, each project's deploy record and helpers,
                            and the mail relay block. Every container but the
                            backup scheduler's keeps running.
-  upgrade-traefik USER@HOST --version=<tag>
+  upgrade-traefik [USER@]HOST --version=<tag>
                            Move the shared Traefik to another image tag: backs
                            up the three kasbah-owned files and dry-runs every
                            dynamic fragment against the target version first.
@@ -101,7 +104,7 @@ Subcommands:
                            Make a mail domain's missing DKIM keys and render the
                            signing override again; or replace its keys, the old
                            ones kept beside the new.
-  mail-setup-guide USER@HOST
+  mail-setup-guide [USER@]HOST
                            Print the mail stack's setup walkthrough (read-only).
 
 Run ` + "`kasbah server <subcommand> --help`" + ` for its flags.

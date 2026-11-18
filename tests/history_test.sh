@@ -84,6 +84,10 @@ cat > "$stub_dir/ssh" <<'STUB'
 #!/usr/bin/env bash
 { printf 'ssh'; for a in "$@"; do printf '|%s' "$a"; done; printf '\n'; } >> "$CALL_LOG"
 for a; do [ "$a" = -O ] && exit 0; done
+if [ "$1" = -G ]; then
+    [ -z "${FAKE_SSH_USER:-}" ] || printf 'host %s\nuser %s\n' "${!#}" "$FAKE_SSH_USER"
+    exit 0
+fi
 for a; do [ "$a" = -n ] && exec </dev/null; done
 last="${!#}"
 if [ "$last" = true ]; then
@@ -155,6 +159,7 @@ drive() {
     ( cd "$dir" && env -u KASBAH_LIB_DIR \
           HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$tmpdir/runtmp" \
           CALL_LOG="$call_log" FAKE_APPS="$FAKE_APPS" FAKE_UNREACHABLE="${FAKE_UNREACHABLE:-}" \
+          FAKE_SSH_USER="${FAKE_SSH_USER-deploy}" \
           "$KASBAH_BIN" "${args[@]}" ) >"$tmpdir/o" 2>"$tmpdir/e" </dev/null || rc=$?
     DRC=$rc
     OUT="$(cat "$tmpdir/o")"
@@ -678,6 +683,7 @@ kasbah() {
     ( cd "$project" && env -u KASBAH_LIB_DIR \
           HOME="$tmpdir/home" PATH="$stub_dir:$PATH" TMPDIR="$tmpdir/runtmp" \
           CALL_LOG="$call_log" FAKE_APPS="$FAKE_APPS" FAKE_UNREACHABLE="${FAKE_UNREACHABLE:-}" \
+          FAKE_SSH_USER="${FAKE_SSH_USER-deploy}" \
           "$KASBAH_BIN" "$@" ) >"$tmpdir/o" 2>"$tmpdir/e" </dev/null || rc=$?
     CRC=$rc; COUT="$(cat "$tmpdir/o")"; CERR="$(cat "$tmpdir/e")"
     return 0
@@ -760,10 +766,25 @@ kasbah pending deploy@vps --all
 assert '[ "$CRC" != "0" ]' "pending has no --all (rc $CRC)"
 assert 'grep -qF "unknown flag" <<<"$CERR"' "and says so (got '$CERR')"
 
-# The argument rule: an '@' is the server, and these two take nothing else.
+# The argument rule: these two take nothing but the server, so a bare host is
+# one, logged in to as ssh's config says; a version is a misread pending.
 kasbah history vps
-assert '[ "$CRC" != "0" ]' "history refuses an argument that is not a server (rc $CRC)"
-assert 'grep -qF "'\''vps'\'' is not a server" <<<"$CERR"' "naming what it expected (got '$CERR')"
+assert '[ "$CRC" = "0" ]' "history takes a bare host (rc $CRC: $CERR)"
+assert 'grep -qF "kasbah: as deploy@vps (user from ssh config)" <<<"$CERR"' "and says which user ssh's config gave it (got '$CERR')"
+assert '[ "$(grep -c "^ssh|-G|" "$call_log")" = 1 ] && grep -qF "ssh|-G|--|vps" "$call_log"' "asking ssh -G once (calls: $(cat "$call_log"))"
+conns="$(grep -v "^ssh|-G|" "$call_log")"
+assert '[ -n "$conns" ] && ! grep -qE "\|vps(\||$)" <<<"$conns"' "and every later ssh call goes to deploy@vps (calls: $(cat "$call_log"))"
+assert '[ "$(state_of last_server)" = deploy@vps ]' "which is what last_server records (got '$(state_of last_server)')"
+FAKE_SSH_USER=root kasbah history vps
+assert '[ "$CRC" != "0" ] && grep -qF "logs in to vps as root" <<<"$CERR" && grep -qF "root@vps" <<<"$CERR"' \
+    "a root the config picked is refused, naming root@vps (rc $CRC: $CERR)"
+assert '[ -z "$(grep -v "^ssh|-G|" "$call_log")" ]' "before any connection (calls: $(cat "$call_log"))"
+FAKE_SSH_USER="" kasbah changelog vps
+assert '[ "$CRC" != "0" ] && grep -qF "could not tell which user ssh logs in to vps as" <<<"$CERR" && grep -qF "USER@vps" <<<"$CERR"' \
+    "no user line from ssh -G is a failure saying to pass USER@HOST (rc $CRC: $CERR)"
+kasbah pending vps
+assert '[ "$CRC" != "0" ] && grep -qF "USER@vps" <<<"$CERR" && ! grep -q "^ssh|-G|" "$call_log"' \
+    "pending, which takes a version too, never looks a bare host up (rc $CRC: $CERR)"
 kasbah changelog 1.2.3
 assert '[ "$CRC" != "0" ]' "changelog refuses a version (rc $CRC)"
 assert 'grep -qF "takes no version" <<<"$CERR"' "pointing at the command that takes one (got '$CERR')"
@@ -773,5 +794,42 @@ assert 'grep -qF "two servers given" <<<"$CERR"' "the same refusal deploy and ro
 kasbah pending deploy@vps 2.0.0
 assert '[ "$CRC" = "0" ]' "while a server and a version together are the ordinary call (rc $CRC: $CERR)"
 assert 'grep -qF "v3.0.0..v2.0.0" <<<"$COUT"' "and the version ends the range (got '$COUT')"
+
+# The real OpenSSH reads the user from a scratch config (-F: never the
+# user's own) and takes the argv kasbah builds; ProxyCommand false fails the
+# connect without a packet leaving, and nothing reaches the stub's server.
+if [ -x /usr/bin/ssh ]; then
+    real_dir="$tmpdir/realssh"
+    mkdir -p "$real_dir"
+    cat > "$real_dir/config" <<'CFG'
+Host vps
+    User alice
+    HostName 127.0.0.1
+    ProxyCommand false
+    BatchMode yes
+    ConnectTimeout 2
+    IdentityAgent none
+    UserKnownHostsFile /dev/null
+    GlobalKnownHostsFile /dev/null
+CFG
+    cat > "$real_dir/ssh" <<WRAP
+#!/usr/bin/env bash
+set -uo pipefail
+{ printf 'ssh'; for a in "\$@"; do printf '|%s' "\$a"; done; printf '\n'; } >> "$tmpdir/real.log"
+exec /usr/bin/ssh -F "$real_dir/config" "\$@"
+WRAP
+    chmod 0755 "$real_dir/ssh"
+    : > "$tmpdir/real.log"
+    rc=0
+    ( cd "$project" && env -u KASBAH_LIB_DIR HOME="$tmpdir/home" PATH="$real_dir:$PATH" TMPDIR="$tmpdir/runtmp" \
+          timeout 60 "$KASBAH_BIN" history vps ) >"$tmpdir/o" 2>"$tmpdir/e" </dev/null || rc=$?
+    RERR="$(cat "$tmpdir/e")"; rlog="$(cat "$tmpdir/real.log")"
+    assert 'grep -qF "kasbah: as alice@vps (user from ssh config)" <<<"$RERR"' "real ssh -G names the config's user (rc $rc: $RERR)"
+    assert '[ "$rc" != 0 ] && grep -qF "cannot reach alice@vps over ssh" <<<"$RERR"' "and the run goes on as alice@vps until the connect fails (rc $rc: $RERR)"
+    assert 'grep -qxF "ssh|-G|--|vps" <<<"$rlog" && grep -qE "\|--\|alice@vps\|true$" <<<"$rlog"' "with -- before the destination each time (calls: $rlog)"
+    assert '! grep -qi "usage:" <<<"$RERR"' "which real ssh takes as its argv (stderr: $RERR)"
+else
+    printf 'SKIP real OpenSSH target case: no /usr/bin/ssh\n'
+fi
 
 exit "$fail"

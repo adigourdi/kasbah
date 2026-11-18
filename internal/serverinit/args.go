@@ -9,6 +9,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/backup"
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/trace"
 )
 
@@ -166,7 +167,7 @@ func Parse(args []string) (Options, error) {
 			return o, cli.Fail("server init: unknown flag '%s' (expected %s)", name, unknownFlags)
 		default:
 			if o.Target != "" {
-				return o, cli.Fail("server init: unexpected argument '%s' (USER@HOST is given once)", a)
+				return o, cli.Fail("server init: unexpected argument '%s' ([USER@]HOST is given once)", a)
 			}
 			o.Target = strings.TrimSuffix(a, "\r")
 		}
@@ -179,7 +180,7 @@ func Parse(args []string) (Options, error) {
 		return o, err
 	}
 	if o.Target == "" {
-		return o, cli.Fail("server init: USER@HOST is required (the user kasbah deploys as is not optional)")
+		return o, cli.Fail("server init: no server given (expected `kasbah server init [USER@]HOST`)")
 	}
 	if !appsGiven {
 		apps = DefaultApps
@@ -199,7 +200,8 @@ func Parse(args []string) (Options, error) {
 	if strings.HasPrefix(o.Apps, o.Data+"/") {
 		return o, cli.Fail("server init: --data-path=%s must not be a directory above the apps path %s", o.Data, o.Apps)
 	}
-	return o, nil
+	o.Target, err = ssh.ResolveTarget("server init", o.Target)
+	return o, err
 }
 
 // isCntrl is `[[:cntrl:]]` under C.UTF-8.

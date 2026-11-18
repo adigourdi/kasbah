@@ -106,7 +106,7 @@ proj="$tmpdir/proj"
 cp -R "$repo_dir/tests/fixtures/demo" "$proj"
 alone() { (cd "$proj" && env -u XDG_DATA_HOME KASBAH_LIB_DIR="$tmpdir/nowhere" "$bin_dir/kasbah" "$@"); }
 out="$(alone --help 2>&1)"; rc=$?
-assert '[ "$rc" = "0" ] && grep -qF "server init USER@HOST" <<<"$out"' "--help, alone (exit $rc)"
+assert '[ "$rc" = "0" ] && grep -qF "server init [USER@]HOST" <<<"$out"' "--help, alone (exit $rc)"
 out="$(alone init-project --help 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ] && grep -qF "Usage: kasbah init-project" <<<"$out"' "init-project --help, alone (exit $rc: $out)"
 out="$(alone check 2>&1)"; rc=$?

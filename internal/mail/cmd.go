@@ -77,7 +77,7 @@ Flags:
                   --keep-keys repairs only
 `
 
-const GuideUsage = `Usage: kasbah server mail-setup-guide USER@HOST
+const GuideUsage = `Usage: kasbah server mail-setup-guide [USER@]HOST
 
 Prints the mail stack's post-install walkthrough, rendered for this server:
 its primary domain, every domain in <apps>/mail/kasbah.yml, and the DNS
@@ -103,6 +103,14 @@ var replacePair = prompt.Pair{Yes: "replace-keys", No: "keep-keys"}
 // Parse reads `server add-mail-domain` (cmd "add-mail-domain"), `server
 // mail-dkim` or `server mail-setup-guide` arguments.
 func Parse(cmd string, args []string) (Options, error) {
+	o, err := parse(cmd, args)
+	if err == nil && cmd == "mail-setup-guide" {
+		o.Target, err = ssh.ResolveTarget("server "+cmd, o.Target)
+	}
+	return o, err
+}
+
+func parse(cmd string, args []string) (Options, error) {
 	o := Options{Cmd: cmd}
 	add := cmd == "add-mail-domain" || cmd == "mail-dkim"
 	for _, a := range args {
@@ -120,7 +128,7 @@ func Parse(cmd string, args []string) (Options, error) {
 			}
 		case strings.HasPrefix(a, "-"):
 			name, _, _ := strings.Cut(a, "=")
-			takes := "USER@HOST"
+			takes := "[USER@]HOST"
 			switch {
 			case cmd == "mail-dkim":
 				takes = "USER@HOST, a domain and --replace-keys/--keep-keys"
@@ -135,15 +143,20 @@ func Parse(cmd string, args []string) (Options, error) {
 		case add:
 			return o, cli.Fail("server %s: unexpected argument '%s' (USER@HOST and one domain)", cmd, a)
 		default:
-			return o, cli.Fail("server mail-setup-guide: unexpected argument '%s' (USER@HOST is given once)", a)
+			return o, cli.Fail("server mail-setup-guide: unexpected argument '%s' ([USER@]HOST is given once)", a)
 		}
 	}
 	if o.Target == "" {
-		why := "the guide is rendered for one server's registry"
 		if add {
-			why = "the user kasbah deploys as is not optional"
+			return o, cli.Fail("server %s: USER@HOST is required (the user kasbah deploys as is not optional)", cmd)
 		}
-		return o, cli.Fail("server %s: USER@HOST is required (%s)", cmd, why)
+		return o, cli.Fail("server %s: no server given (expected `kasbah server %s [USER@]HOST`)", cmd, cmd)
+	}
+	if add && !strings.Contains(o.Target, "@") {
+		return o, cli.Fail("server %s: '%s' has no '@', and %s takes the server only as USER@HOST", cmd, o.Target, cmd).
+			Cont("its other positional is a domain, often served by this same VPS: with the two",
+				"swapped, a bare host would connect to the domain's host as if it were the server.").
+			Next(fmt.Sprintf("Pass the server as USER@HOST: `kasbah server %s USER@%s <domain>` if '%s' is the server.", cmd, o.Target, o.Target))
 	}
 	if add {
 		if o.Domain == "" {

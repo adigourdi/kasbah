@@ -87,7 +87,48 @@ config's port) is filtered, and kasbah gives up after 10 seconds;
 
 **Fix:** get `ssh USER@HOST true` to succeed from the same shell without
 typing anything, then re-run. kasbah takes `USER@HOST` as given — any port,
-key or jump host goes in `~/.ssh/config` under that host name.
+key or jump host goes in `~/.ssh/config` under that host name. A bare host
+(`kasbah server status vps`) is logged in to as the user your ssh config gives
+it, and the `kasbah: as …` line before the error names that user.
+
+## could not tell which user ssh logs in to … as
+
+```
+error: could not tell which user ssh logs in to vps as: `ssh -G vps` failed: …
+       Pass the user yourself: USER@vps.
+       help: kasbah help troubleshooting
+```
+
+Exit 1, before any connection.
+
+**Cause:** the server was given as a bare host, so kasbah asked ssh which user
+it would log in as — `ssh -G HOST`, its `user` line (`cli.md` → Targets) — and
+ssh failed (the text after `failed:` is its own, typically a `~/.ssh/config`
+it cannot parse), or printed no `user` line, or named a user kasbah does not
+take.
+
+**Fix:** pass `USER@HOST`, which kasbah uses as given without asking ssh; or
+fix the config until `ssh -G HOST` prints the right `user`.
+
+## ssh logs in to … as root, and kasbah takes root only when it is typed
+
+```
+error: ssh logs in to vps as root, and kasbah takes root only when it is typed
+       root is the User your ssh config gives vps, or your own login when it gives none.
+       Pass root@vps to work as root, or USER@vps with the operator kasbah acts as.
+       help: kasbah help troubleshooting
+```
+
+Exit 1, before any connection.
+
+**Cause:** the server was given as a bare host and `ssh -G` says root — a
+`User root` in `~/.ssh/config`, or no `User` line while you are root locally.
+What kasbah creates on the server is owned by the user it acts as, and each
+operator is their own Unix user (`server-setup.md` → Operators), so root is
+never chosen by a config default.
+
+**Fix:** type `root@HOST` if root is meant, or `USER@HOST` with your own
+operator user — or give the host your operator's `User` in `~/.ssh/config`.
 
 ## passwordless sudo — `sudo -n true` failed as …
 

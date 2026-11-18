@@ -42,7 +42,7 @@ func TestParse(t *testing.T) {
 			t.Errorf("%v: %v", args, err)
 		}
 	}
-	if _, err := Parse(nil); err == nil || !strings.Contains(err.Error(), "USER@HOST is required") {
+	if _, err := Parse(nil); err == nil || !strings.Contains(err.Error(), "no server given") {
 		t.Errorf("no target: %v", err)
 	}
 }

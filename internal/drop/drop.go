@@ -1,4 +1,4 @@
-// Package drop is `kasbah drop [USER@HOST] [--prune] [--yes]`: one project
+// Package drop is `kasbah drop [[USER@]HOST] [--prune] [--yes]`: one project
 // off a server (docs/cli.md → kasbah drop). The server binary reads (scan)
 // and removes (act); every decision is made here, from what it reported.
 //
@@ -44,9 +44,9 @@ type Options struct {
 }
 
 // Usage is the command's --help.
-const Usage = `Usage: kasbah drop [USER@HOST] [--prune] [--yes]
+const Usage = `Usage: kasbah drop [[USER@]HOST] [--prune] [--yes]
 
-Removes this project from a server. Run from the project root. USER@HOST
+Removes this project from a server. Run from the project root. [USER@]HOST
 defaults to the last server this project talked to (.kasbah/state.json).
 
 Plain drop is reversible — a later ` + "`kasbah deploy`" + ` resurrects the project with
@@ -90,19 +90,17 @@ func Parse(args []string) (Options, error) {
 			return o, cli.Fail("drop: %s takes no value — pass it on its own (`kasbah drop USER@HOST %s`)", f, f)
 		case strings.HasPrefix(a, "-"):
 			f, _, _ := strings.Cut(a, "=")
-			return o, cli.Fail("drop: unknown flag '%s' (drop takes USER@HOST, --prune and --yes)", f)
+			return o, cli.Fail("drop: unknown flag '%s' (drop takes [USER@]HOST, --prune and --yes)", f)
 		default:
 			if o.Target != "" {
 				return o, cli.Fail("drop: two servers given ('%s' and '%s') — one run goes to one server", o.Target, a)
 			}
-			t := strings.TrimSuffix(a, "\r")
-			if !strings.Contains(t, "@") {
-				return o, cli.Fail("drop: '%s' is not a USER@HOST — drop takes the server and nothing else positionally", t)
-			}
-			o.Target = t
+			o.Target = strings.TrimSuffix(a, "\r")
 		}
 	}
-	return o, nil
+	var err error
+	o.Target, err = ssh.ResolveTarget("drop", o.Target)
+	return o, err
 }
 
 // Session is what drop needs from a server.

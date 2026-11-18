@@ -29,6 +29,7 @@ func TestParseTarget(t *testing.T) {
 	for _, in := range []string{
 		"", "vps.example.com", "deploy@", "@vps.example.com", "deploy@vps:2222",
 		"deploy@[::1]", "deploy@-vps", "deploy@vps-", "de ploy@vps", "deploy@v ps", "a@b@c",
+		"-oProxyCommand=x@vps", "-l@vps",
 	} {
 		if _, err := ParseTarget(in); err == nil {
 			t.Errorf("ParseTarget(%q) accepted it", in)
@@ -244,8 +245,14 @@ func TestConnectRunClose(t *testing.T) {
 	if last := cs[2][len(cs[2])-1]; last != `'sh' '-s' '--' 'one' 'two three'` {
 		t.Errorf("Script's remote command is %s", last)
 	}
-	if n := len(cs[3]); n < 3 || cs[3][n-3] != "-O" || cs[3][n-2] != "exit" || cs[3][n-1] != "deploy@vps.example.com" {
-		t.Errorf("the teardown is not -O exit TARGET: %q", cs[3])
+	if n := len(cs[3]); n < 4 || cs[3][n-4] != "-O" || cs[3][n-3] != "exit" || cs[3][n-2] != "--" || cs[3][n-1] != "deploy@vps.example.com" {
+		t.Errorf("the teardown is not -O exit -- TARGET: %q", cs[3])
+	}
+	// '--' ends ssh's options, so nothing after it is read as one.
+	for i, call := range cs[:3] {
+		if n := len(call); n < 3 || call[n-3] != "--" || call[n-2] != "deploy@vps.example.com" {
+			t.Errorf("call %d does not end -- TARGET COMMAND: %q", i, call)
+		}
 	}
 	if ents, _ := os.ReadDir(tmp); len(ents) != 0 {
 		t.Errorf("TMPDIR is not left empty after Close: %v", ents)

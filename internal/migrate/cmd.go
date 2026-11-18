@@ -20,7 +20,7 @@ import (
 var ErrHelp = errors.New("help")
 
 // Options are the command's arguments: `kasbah migrate` in a project, or
-// `kasbah migrate server USER@HOST [--yes] [--undo]`.
+// `kasbah migrate server [USER@]HOST [--yes] [--undo]`.
 type Options struct {
 	Server bool
 	Target string
@@ -30,7 +30,7 @@ type Options struct {
 
 // Usage is the command's --help.
 const Usage = `Usage: kasbah migrate
-       kasbah migrate server USER@HOST [--yes] [--undo]
+       kasbah migrate server [USER@]HOST [--yes] [--undo]
 
 Crosses a major. Within a major nothing migrates: a newer kasbah reads every
 older file of its major and rewrites one only when it writes it anyway. A
@@ -63,6 +63,14 @@ compatibility).
 
 // Parse reads the command line; every argument meets it with its CR off.
 func Parse(args []string) (Options, error) {
+	o, err := parse(args)
+	if err == nil {
+		o.Target, err = ssh.ResolveTarget("migrate server", o.Target)
+	}
+	return o, err
+}
+
+func parse(args []string) (Options, error) {
 	var o Options
 	for i, raw := range args {
 		a := strings.TrimSuffix(raw, "\r")
@@ -80,9 +88,9 @@ func Parse(args []string) (Options, error) {
 			return o, cli.Fail("migrate: %s takes no value — pass it on its own", f)
 		case strings.HasPrefix(a, "-"):
 			f, _, _ := strings.Cut(a, "=")
-			return o, cli.Fail("migrate: unknown flag '%s' (migrate takes `server USER@HOST`, --yes and --undo)", f)
+			return o, cli.Fail("migrate: unknown flag '%s' (migrate takes `server [USER@]HOST`, --yes and --undo)", f)
 		case !o.Server:
-			return o, cli.Fail("migrate: unexpected argument '%s' — in a project, migrate takes none; for a server, `kasbah migrate server USER@HOST`", a)
+			return o, cli.Fail("migrate: unexpected argument '%s' — in a project, migrate takes none; for a server, `kasbah migrate server [USER@]HOST`", a)
 		default:
 			if o.Target != "" {
 				return o, cli.Fail("migrate server: two servers given ('%s' and '%s') — one run goes to one server", o.Target, a)
@@ -91,10 +99,10 @@ func Parse(args []string) (Options, error) {
 		}
 	}
 	if o.Server && o.Target == "" {
-		return o, cli.Fail("migrate server: no server given (expected `kasbah migrate server USER@HOST`)")
+		return o, cli.Fail("migrate server: no server given (expected `kasbah migrate server [USER@]HOST`)")
 	}
 	if !o.Server && (o.Yes || o.Undo) {
-		return o, cli.Fail("migrate: --yes and --undo belong to `kasbah migrate server USER@HOST`; a project migration asks nothing and keeps no snapshot")
+		return o, cli.Fail("migrate: --yes and --undo belong to `kasbah migrate server [USER@]HOST`; a project migration asks nothing and keeps no snapshot")
 	}
 	return o, nil
 }

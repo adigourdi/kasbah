@@ -87,9 +87,9 @@ assert '[ "$(val lib)" = "$tmpdir/elsewhere" ]' "KASBAH_LIB_DIR is the lib (got 
 run "$kasbah" help info; rc1=$?; cp "$tmpdir/out" "$tmpdir/help1"
 run "$kasbah" info --help; rc2=$?
 assert '[ "$rc1" -eq 0 ] && [ "$rc2" -eq 0 ] && cmp -s "$tmpdir/help1" "$tmpdir/out"' "kasbah help info is kasbah info --help"
-assert 'grep -q "^Usage: kasbah info \[USER@HOST\]" "$tmpdir/out"' "info --help prints its usage"
+assert 'grep -qF "Usage: kasbah info [[USER@]HOST]" "$tmpdir/out"' "info --help prints its usage"
 run "$kasbah" --help
-assert 'grep -qE "^  info \[USER@HOST\] +" "$tmpdir/out"' "kasbah --help lists info"
+assert 'grep -qE "^  info \[\[USER@\]HOST\] +" "$tmpdir/out"' "kasbah --help lists info"
 run "$kasbah" info --json; rc=$?
 assert '[ "$rc" -eq 1 ] && grep -q "unknown flag '"'"'--json'"'"'" "$tmpdir/err"' "an unknown flag exits 1 naming it (rc $rc)"
 run "$kasbah" info a@b c@d; rc=$?

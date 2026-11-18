@@ -2,7 +2,8 @@
 
 Two levels of commands:
 
-- **`kasbah server …`** — act on a VPS. Always take `user@host` as first arg.
+- **`kasbah server …`** — act on a VPS. Always take the server as first arg:
+  `user@host`, or a bare host (Targets, below).
 - **`kasbah …`** (everything else) — act on a project. Run from the project
   root. Read `./kasbah.yml`. Error if missing. `help`, `info`, `version`,
   `self-update` and `migrate server USER@HOST` read no project and run
@@ -32,6 +33,44 @@ leave it out. Every command also takes `--debug`, anywhere before a `--`, and
 `KASBAH_DEBUG=1` is the same for every command run while it is set: the trace
 streams to stderr as it is recorded, and a log is saved even when the run
 succeeds.
+
+## Targets
+
+A server is given as `USER@HOST`: the user kasbah acts as on it, and the host
+— a hostname, an `~/.ssh/config` alias or an IPv4 address, with no port and no
+IPv6 literal (a port, a key or a jump host goes in `~/.ssh/config` under that
+host name). A user starting with `-` is refused, typed or resolved, and kasbah
+puts `--` before the destination on every ssh command line, so nothing there is
+read as an ssh option. Where a synopsis writes `[USER@]HOST` the user may be
+left out: kasbah then asks ssh which user it would log in as (`ssh -G HOST`,
+its `user` line — which evaluates the config's `Match exec` blocks, as
+connecting would), says so once on stderr,
+
+```
+kasbah: as you@vps (user from ssh config)
+```
+
+and from there uses `you@vps` everywhere — in its messages, the commands it
+prints, the server-side steps and `last_server`. A run handed to another
+installed version (Hand-off between installed versions) asks ssh again there,
+without a second note. `USER@HOST` as typed is used as given, with no `ssh -G`. If
+`ssh -G` fails or prints no user, the command stops and says to pass
+`USER@HOST`. When ssh would log in as `root` — the config's `User root`, or no
+`User` while the local login is root — the command is refused unless
+`root@HOST` is typed: each operator is their own Unix user (`server-setup.md` →
+Operators), and what kasbah creates on the server is owned by whoever it acts
+as, so root is never picked for you. A bare argument shaped like a version
+(`1.2.0`, `v1.2.0`, `1.2.0-rc.1`) is refused as a misread version and never
+looked up — pass `USER@1.2.0` if that is the server; a dotted quad
+(`10.0.0.1`) is an address. `build-push --build-only` connects nowhere, so it
+asks ssh nothing.
+
+`deploy`, `rollback`, `pending`, `logs`, `exec`, `server add-mail-domain` and
+`server mail-dkim` always take `USER@HOST`: each has a second positional
+argument (a version, a service, a domain). In the first five an argument
+carrying an `@` is the server and anything else is the other one, and a bare
+host — `1.2.3` is a valid one — could be either; beside a domain, swapped
+arguments would send a bare host to the domain's own host, often the same VPS.
 
 ## How a failure reads
 
@@ -86,7 +125,7 @@ for a release build (one stamped exactly a release tag, an `-rc.N`
 included), and `…/blob/main/docs/<file>` for a dev or unstamped build, which
 no tag names. An unknown topic, or a second one, names the topics and exits 1.
 
-## `kasbah info [USER@HOST]`
+## `kasbah info [[USER@]HOST]`
 
 Which build this is, where it is installed and which docs match it, for a bug
 report or a script: one `key: value` line each, keys in ASCII and always in
@@ -168,7 +207,7 @@ every command gives. A server with no marker, or a refusal above, still exits
 
 ## Server commands
 
-### `kasbah server init USER@HOST [flags]`
+### `kasbah server init [USER@]HOST [flags]`
 
 One-time VPS setup. Idempotent — safe to re-run.
 
@@ -387,7 +426,7 @@ Re-running init against a server whose pointer records a **different** apps
 path is refused: one machine runs one kasbah, because one Traefik holds `:80`
 and `:443`.
 
-### `kasbah server backup-prune USER@HOST [flags]`
+### `kasbah server backup-prune [USER@]HOST [flags]`
 
 Apply retention to the server's backup repositories: `restic forget` plus
 `prune`. The counterpart to `server init --with-backup` — the VPS writes
@@ -429,7 +468,7 @@ Flags:
 deletes a repository — deleting one is a manual act at the storage provider,
 which is also what makes a client offboarding a deliberate decision.
 
-### `kasbah server prune USER@HOST [--yes]`
+### `kasbah server prune [USER@]HOST [--yes]`
 
 Image retention cleanup across all projects on the VPS: removes
 `:<version>` image tags that are both older than 3 months and not among
@@ -506,7 +545,7 @@ only if there is something to remove and the operator said yes — one removal
 on a host with no server marker, 1 on one whose marker cannot be read: prune
 does not delete images on a machine it cannot tell is a kasbah server.
 
-### `kasbah server upgrade-traefik USER@HOST --version=<tag>`
+### `kasbah server upgrade-traefik [USER@]HOST --version=<tag>`
 
 A managed Traefik version bump. `--version=` is required — the command
 exists to change the tag and there is no default to fall back on — and is
@@ -584,7 +623,7 @@ connection dropped or it timed out), and it names the backup and the `cp -p`
 commands that put it back by hand before anything restarts the proxy. Exits
 4 on a host with no server marker.
 
-### `kasbah server destroy USER@HOST [--yes]`
+### `kasbah server destroy [USER@]HOST [--yes]`
 
 De-brand the VPS for handover. **Every project container keeps running
 throughout** — projects, Traefik and mail; the sites stay up — except kasbah's
@@ -683,7 +722,7 @@ no-sudo case above is deliberate — what that leaves is a world-readable
 discovery pointer, and what this leaves is the credentials the command exists to
 take away.
 
-### `kasbah server status USER@HOST [--apps-path=<dir>]`
+### `kasbah server status [USER@]HOST [--apps-path=<dir>]`
 
 It changes nothing on the server but kasbah's own binary, which it brings up to
 date first (`<apps>/.kasbah/bin/kasbah`, same-build rule) — and never on a server
@@ -812,8 +851,9 @@ it out of the server's marker.
 
 All run from the project root (where `kasbah.yml` lives).
 
-`USER@HOST` is optional on any command that takes it. If omitted, kasbah
-reads `last_server` from `.kasbah/state.json` and uses that. After any
+`USER@HOST` is optional on any command that takes it, and a bare host takes its
+user from ssh's config where the synopsis says `[USER@]HOST` (Targets, above).
+If omitted, kasbah reads `last_server` from `.kasbah/state.json` and uses that. After any
 command succeeds against a given server, `last_server` is written so the
 next invocation in the same project defaults to it. `kasbah init-project`
 writes an empty state file; the first command that needs a server must
@@ -902,7 +942,7 @@ back, the override rendered and Rspamd reloaded all the same.
 The run holds the server lock `<apps>/.kasbah/server.lock` exclusively from
 the mail read on, as `add-mail-domain` does.
 
-### `kasbah server mail-setup-guide USER@HOST`
+### `kasbah server mail-setup-guide [USER@]HOST`
 
 Prints the mail stack's post-install walkthrough, rendered for this server:
 its primary domain, every domain in the registry, and the DNS records each of
@@ -948,7 +988,7 @@ Flags:
 - `--name=<name>` (default: current directory name)
 - `--domain=<fqdn>`
 
-### `kasbah check [--server [USER@HOST]] [--fix [--yes]]`
+### `kasbah check [--server [[USER@]HOST]] [--fix [--yes]]`
 
 Run the compliance check on the current project. See `compliance.md` for
 the full rule set. Every verdict line leads with the IDs of the rules it
@@ -1024,7 +1064,7 @@ get describe the project as it now is. Traefik rules, C07, C09, C11, hooks and
 mail claims are never auto-fixed — routing and topology are policy, and kasbah cannot
 invent a command.
 
-### `kasbah build-push [USER@HOST]`
+### `kasbah build-push [[USER@]HOST]`
 
 1. Resolve version from git tag on HEAD (exactly one `vX.Y.Z`), on a clean tree
    (`build-deploy.md` → Versioning contract). Fail otherwise — or, with
@@ -1321,7 +1361,7 @@ newest backup on the server, its `.env` and — through its own `restore`
 hook — its data, when answered so. Without such a backup it restores neither
 (`build-deploy.md` → What rollback restores).
 
-### `kasbah backup [USER@HOST]`
+### `kasbah backup [[USER@]HOST]`
 
 Take a backup of the version live on the server now, outside any deploy, and
 push it off-box when the server has off-box backups (`backup.md` → A backup
@@ -1371,7 +1411,7 @@ now). It takes no flags and asks nothing.
 
 `last_server` is written once the run succeeds.
 
-### `kasbah restore [USER@HOST] [flags]`
+### `kasbah restore [[USER@]HOST] [flags]`
 
 Bring a project's `.env` and data back from its off-box backups onto the
 version live on the server: after a lost server, `server init` it (with the
@@ -1488,10 +1528,10 @@ Flags:
   the backups in the chosen one, with their sizes, the default and those
   already on the server marked — or, with no snapshot, the paths looked at
   and those holding backups — and change nothing. It needs no live version,
-  and takes only `USER@HOST`, `--snapshot=` and `--from-path=`.
+  and takes only `[USER@]HOST`, `--snapshot=` and `--from-path=`.
 - `--with-env` / `--no-env`, `--with-data` / `--no-data` — as above.
 
-### `kasbah drop [USER@HOST] [--prune] [--yes]`
+### `kasbah drop [[USER@]HOST] [--prune] [--yes]`
 
 Remove the project from the VPS. Plain `drop` is reversible:
 
@@ -1612,7 +1652,7 @@ held lock, or has `--prune` refused
 Exits 4 on a host with no server marker; 1 on a decline, a held lock, or a
 refused `--prune`.
 
-### `kasbah history [USER@HOST] [--all]`
+### `kasbah history [[USER@]HOST] [--all]`
 
 Tabular view of `versions.log`. Columns: timestamp, action, version,
 backup file, kasbah version, and BY — the operator whose ssh user wrote the
@@ -1653,7 +1693,7 @@ before cutting a tag. The deployed version is resolved from the VPS at
 runtime, never from `state.json` — state is a cache for defaults, not a
 source of truth for what is running (`project-manifest.md`).
 
-### `kasbah changelog [USER@HOST]`
+### `kasbah changelog [[USER@]HOST]`
 
 `git log <prev>..<current>` — what changed in the version the server is
 running now.
@@ -1665,7 +1705,7 @@ describing a version the server is not running would be answering a
 different question. An inverted or empty range is reported as such, in the
 same words `deploy` uses for it.
 
-### `kasbah env [USER@HOST] [--on-drift=setup|continue|abort] [--env-seed=FILE]`
+### `kasbah env [[USER@]HOST] [--on-drift=setup|continue|abort] [--env-seed=FILE]`
 
 Drift-aware env setup. Ships the kasbah binary if the server's is absent or
 older, syncs `.env.prod.example` to `<apps>/<name>/`, runs the interactive setup
@@ -1743,7 +1783,7 @@ only the drift case has a question for it to answer.
 the difference is that `deploy` runs the setup only when the `.env` is missing
 or has drifted, while `env` runs it every time, since that is what it is for.
 
-### `kasbah env set KEY [USER@HOST] [--restart|--no-restart]`
+### `kasbah env set KEY [[USER@]HOST] [--restart|--no-restart]`
 
 Changes one key of the project's server `.env` — a rotated API key, a new
 password — without re-running the whole setup. KEY must be a key of the
@@ -2005,7 +2045,7 @@ never hands off; it says so and names the version to build. The library root
 is the running binary's own parent directory when it sits in a version
 directory, else `KASBAH_LIB_DIR`, `$XDG_DATA_HOME/kasbah`, `~/.local/share/kasbah`.
 
-### `kasbah migrate server USER@HOST [--yes] [--undo]`
+### `kasbah migrate server [USER@]HOST [--yes] [--undo]`
 
 Moves a server's kasbah-owned files from the major its marker records to this
 kasbah's. It is the one command that ships its binary onto a server whose

@@ -38,7 +38,7 @@ func TestParse(t *testing.T) {
 		{[]string{"deploy@vps"}, "deploy@vps", "", ""},
 		{[]string{"deploy@vps", "--apps-path=/srv/apps"}, "deploy@vps", "/srv/apps", ""},
 		{[]string{"--apps-path=/srv/apps/", "deploy@vps\r"}, "deploy@vps", "/srv/apps", ""},
-		{nil, "", "", "USER@HOST is required"},
+		{nil, "", "", "no server given"},
 		{[]string{"deploy@vps", "other@vps"}, "", "", "given once"},
 		{[]string{"deploy@vps", "--with-certs=x"}, "", "", "unknown flag '--with-certs'"},
 		{[]string{"deploy@vps", "--apps-path="}, "", "", "must not be empty"},

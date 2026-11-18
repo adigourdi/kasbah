@@ -19,11 +19,13 @@ func TestParse(t *testing.T) {
 	}{
 		{"pending", []string{"--all"}, "the archived half of the record is `kasbah history USER@HOST --all`"},
 		{"history", []string{"--all=yes"}, "--all takes no value"},
-		{"history", []string{"vps"}, "'vps' is not a server"},
+		{"history", []string{"1.2.3"}, "'1.2.3' reads as a version, and history takes no version"},
 		{"changelog", []string{"1.2.3"}, "takes no version"},
+		{"changelog", []string{"v1.2.3"}, "takes no version"},
+		{"history", []string{"a@b", "c@d"}, "two servers given"},
 		{"pending", []string{"a@b", "c@d"}, "two servers given"},
 		{"pending", []string{"v1.0.0"}, "write the version without the 'v'"},
-		{"changelog", []string{"--x"}, "changelog: unknown flag '--x' (changelog takes USER@HOST)"},
+		{"changelog", []string{"--x"}, "changelog: unknown flag '--x' (changelog takes [USER@]HOST)"},
 		{"pending", []string{"1.2.0-dirty.20261028123456"}, "is a --dirty build — no tag holds it"},
 	} {
 		if _, err := Parse(c.cmd, c.args); err == nil || !strings.Contains(err.Error(), c.want) {

@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +25,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/release"
+	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/state"
 	"github.com/adigourdi/kasbah/internal/trace"
 	"github.com/adigourdi/kasbah/internal/version"
@@ -64,7 +64,9 @@ a patch, minor or major bump of the highest release tag merged into HEAD, else
 of 0.0.0 — and tags it before anything reaches the server; a dirty tree is then
 refused (commit first), and so is a project that builds images (build-push is
 what tags and ships those). USER@HOST defaults to the last server this project
-deployed to (.kasbah/state.json).
+deployed to (.kasbah/state.json). An argument containing '@' is the server,
+anything else is the version — so the user is never taken from ssh's config
+here: a bare host (1.2.3 is one) could be either.
 
 With a VERSION, it ships that tag instead — every file out of ` + "`git archive\nv<VERSION>`" + `, the working tree neither read nor touched. That is the rollback
 path with a ` + "`deploy`" + ` log entry, the backup and pre-/post-deploy hooks, and
@@ -140,11 +142,6 @@ See docs/build-deploy.md and docs/env-template.md.
 // Usage is `kasbah deploy --help`.
 func Usage() string { return usage }
 
-var (
-	reVTag   = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+`)
-	reSemver = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$`)
-)
-
 // Classify files one positional argument: '@' makes it the server, anything
 // else the version — bare semver, as versions.log carries it.
 func Classify(cmd, arg string, target, version *string) error {
@@ -159,12 +156,18 @@ func Classify(cmd, arg string, target, version *string) error {
 	if *version != "" {
 		return cli.Fail("%s: two versions given ('%s' and '%s') — kasbah will not choose between them", cmd, *version, arg)
 	}
-	if reVTag.MatchString(arg) {
+	looks := ssh.LooksVersion(arg)
+	if looks && strings.HasPrefix(arg, "v") {
 		v := arg[1:]
 		return cli.Fail("%s: write the version without the 'v' — `kasbah %s %s` (the tag is v%s, the version is %s)", cmd, cmd, v, v, v)
 	}
-	if !reSemver.MatchString(arg) {
-		return cli.Fail("%s: '%s' is not a version kasbah can use — expected <major>.<minor>.<patch>", cmd, arg)
+	if !looks {
+		e := cli.Fail("%s: '%s' is not a version kasbah can use — expected <major>.<minor>.<patch>", cmd, arg)
+		if ssh.IsHost(arg) {
+			e.Next(fmt.Sprintf("If '%s' is a server, pass it as USER@%s: %s also takes a version positionally,", arg, arg, cmd),
+				"and a bare host (1.2.3 is a host name too) cannot be told from one.")
+		}
+		return e
 	}
 	*version = arg
 	return nil

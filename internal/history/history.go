@@ -36,10 +36,10 @@ type Options struct {
 }
 
 var usages = map[string]string{
-	"history": `Usage: kasbah history [USER@HOST] [--all]
+	"history": `Usage: kasbah history [[USER@]HOST] [--all]
 
 The deploy record on a server, as a table: timestamp, action, version, backup
-file, kasbah version. Run from the project root. USER@HOST defaults to the last
+file, kasbah version. Run from the project root. [USER@]HOST defaults to the last
 server this project talked to (.kasbah/state.json).
 
 By default the table is <apps>/<name>/versions.log — the active log. --all puts
@@ -64,12 +64,14 @@ out of .kasbah/state.json: state is this workstation's cache of what it last
 did, and the server is what is running.
 
 With VERSION, the range ends at v<VERSION> instead of HEAD.
-An argument containing '@' is the server, anything else is the version.
+An argument containing '@' is the server, anything else is the version — so the
+user is never taken from ssh's config here: a bare host (1.2.3 is one) could be
+either.
 
 Reads the server's record and changes nothing in it — the one write is the
 kasbah binary, installed when the server's is absent or older. See docs/cli.md.
 `,
-	"changelog": `Usage: kasbah changelog [USER@HOST]
+	"changelog": `Usage: kasbah changelog [[USER@]HOST]
 
 What changed in the version a server is running now: the commits between the
 last two entries of its deploy record. Run from the project root.
@@ -108,15 +110,25 @@ func Parse(cmd string, args []string) (Options, error) {
 			name, _, _ := strings.Cut(a, "=")
 			switch cmd {
 			case "history":
-				return o, cli.Fail("history: unknown flag '%s' (history takes USER@HOST and --all)", name)
+				return o, cli.Fail("history: unknown flag '%s' (history takes [USER@]HOST and --all)", name)
 			case "pending":
 				return o, cli.Fail("pending: unknown flag '%s' (pending takes USER@HOST and VERSION)", name)
 			}
-			return o, cli.Fail("%s: unknown flag '%s' (%s takes USER@HOST)", cmd, name, cmd)
+			return o, cli.Fail("%s: unknown flag '%s' (%s takes [USER@]HOST)", cmd, name, cmd)
 		default:
 			arg := strings.TrimSuffix(a, "\r")
-			if cmd != "pending" && !strings.Contains(arg, "@") {
-				return o, cli.Fail("%s: '%s' is not a server — USER@HOST carries an '@', and %s takes no version (`kasbah pending [VERSION]` is the one that does)", cmd, arg, cmd)
+			if cmd != "pending" {
+				// history and changelog take no version: their one positional is
+				// the server, and one shaped like a version is a misread pending.
+				if ssh.LooksVersion(arg) {
+					return o, cli.Fail("%s: '%s' reads as a version, and %s takes no version (`kasbah pending [VERSION]` is the one that does)", cmd, arg, cmd).
+						Next(fmt.Sprintf("If '%s' is a server, pass it as USER@%s.", arg, arg))
+				}
+				if o.Target != "" {
+					return o, cli.Fail("%s: two servers given ('%s' and '%s') — one run goes to one server", cmd, o.Target, arg)
+				}
+				o.Target = arg
+				continue
 			}
 			if err := deploy.Classify(cmd, arg, &o.Target, &o.Version); err != nil {
 				return o, err
@@ -126,7 +138,12 @@ func Parse(cmd string, args []string) (Options, error) {
 			}
 		}
 	}
-	return o, nil
+	if cmd == "pending" {
+		return o, nil
+	}
+	var err error
+	o.Target, err = ssh.ResolveTarget(cmd, o.Target)
+	return o, err
 }
 
 // Session is what the three need from a server.

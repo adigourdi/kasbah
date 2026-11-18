@@ -60,7 +60,7 @@ assert 'grep -qF "expected: init" "$tmpdir/err"' \
 
 run server --help; rc=$?
 assert '[ "$rc" = "0" ]' "\`kasbah server --help\` is help, not an unknown subcommand (exit $rc: $(cat "$tmpdir/err"))"
-assert 'grep -qF "init USER@HOST" "$tmpdir/out"' "it lists the subcommands (got '$(cat "$tmpdir/out")')"
+assert 'grep -qF "init [USER@]HOST" "$tmpdir/out"' "it lists the subcommands (got '$(cat "$tmpdir/out")')"
 run server -h; rc=$?
 assert '[ "$rc" = "0" ]' "\`kasbah server -h\` too (exit $rc)"
 
@@ -198,7 +198,7 @@ run server init --help
 assert 'grep -qF -- "--acme-dns=<provider>:<env file>" "$tmpdir/out"' "the usage names --acme-dns"
 
 run server backup-prune; rc=$?
-assert '[ "$rc" = "1" ] && grep -qF "USER@HOST is required" "$tmpdir/err"' "backup-prune wants a target (exit $rc: $(cat "$tmpdir/err"))"
+assert '[ "$rc" = "1" ] && grep -qF "no server given" "$tmpdir/err"' "backup-prune wants a target (exit $rc: $(cat "$tmpdir/err"))"
 run server backup-prune deploy@kasbah-unit-test.invalid --envy=s3cr3t-do-not-print; rc=$?
 assert 'grep -qF "unknown flag '\''--envy'\''" "$tmpdir/err" && ! grep -qF "s3cr3t" "$tmpdir/err"' \
     "an unknown flag is named, its value not (said '$(cat "$tmpdir/err")')"

@@ -24,7 +24,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/trace"
 )
 
-const setUsage = `Usage: kasbah env set KEY [USER@HOST] [--restart|--no-restart]
+const setUsage = `Usage: kasbah env set KEY [[USER@]HOST] [--restart|--no-restart]
 
 Changes one key of <apps>/<name>/.env on the server, every other line kept as
 it is. KEY must be a key of the server's .env.prod.example; a KEY the .env
@@ -89,16 +89,16 @@ func parseSet(args []string) (Options, error) {
 				"type it at the prompt, or pipe it on stdin: printf '%s' \"$VALUE\" | kasbah env set KEY --no-restart")
 		case strings.HasPrefix(a, "-"):
 			name, _, _ := strings.Cut(a, "=")
-			return o, cli.Fail("env set: unknown flag '%s' (env set takes KEY, USER@HOST, --restart and --no-restart)", name)
+			return o, cli.Fail("env set: unknown flag '%s' (env set takes KEY, [USER@]HOST, --restart and --no-restart)", name)
 		default:
 			pos = append(pos, a)
 		}
 	}
 	switch {
 	case len(pos) == 0:
-		return o, cli.Fail("env set: which key? — kasbah env set KEY [USER@HOST]")
+		return o, cli.Fail("env set: which key? — kasbah env set KEY [[USER@]HOST]")
 	case len(pos) > 2:
-		return o, cli.Fail("env set: too many arguments ('%s') — env set takes KEY and USER@HOST", pos[2])
+		return o, cli.Fail("env set: too many arguments ('%s') — env set takes KEY and [USER@]HOST", pos[2])
 	}
 	o.Key = pos[0]
 	if len(pos) == 2 {

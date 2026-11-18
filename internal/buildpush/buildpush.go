@@ -1,4 +1,4 @@
-// Package buildpush is `kasbah build-push [USER@HOST]`: build the images this
+// Package buildpush is `kasbah build-push [[USER@]HOST]`: build the images this
 // project's compose file declares, tag them with HEAD's version, and stream
 // them to a server without a registry (docs/build-deploy.md → kasbah
 // build-push). It never moves :current and never starts a container — that
@@ -48,12 +48,12 @@ const (
 	DirtyTree   = "dirty_tree"
 )
 
-const usage = `Usage: kasbah build-push [USER@HOST] [--build-only] [--dirty]
+const usage = `Usage: kasbah build-push [[USER@]HOST] [--build-only] [--dirty]
                          [--bump=patch|minor|major]
                          [--replace-tag|--no-replace-tag]
 
 Builds this project's images, tags them with HEAD's version, and loads them onto
-a server over ssh — no registry involved. Run from the project root. USER@HOST
+a server over ssh — no registry involved. Run from the project root. [USER@]HOST
 defaults to the last server this project talked to (.kasbah/state.json).
 
 What it does:
@@ -98,8 +98,17 @@ See docs/build-deploy.md and docs/cli.md.
 // Usage is `kasbah build-push --help`.
 func Usage() string { return usage }
 
-// Parse reads build-push's arguments, in order.
+// Parse reads build-push's arguments, in order; --build-only connects nowhere,
+// so its server is never resolved.
 func Parse(args []string) (Options, error) {
+	o, err := parse(args)
+	if err == nil && !o.BuildOnly {
+		o.Target, err = ssh.ResolveTarget("build-push", o.Target)
+	}
+	return o, err
+}
+
+func parse(args []string) (Options, error) {
 	var o Options
 	for _, a := range args {
 		switch a {
@@ -130,11 +139,11 @@ func Parse(args []string) (Options, error) {
 			case name == "--build-only" || name == "--dirty" || name == "--replace-tag" || name == "--no-replace-tag":
 				return o, cli.Fail("build-push: %s takes no value — pass it on its own", name)
 			case strings.HasPrefix(a, "-"):
-				return o, cli.Fail("build-push: unknown flag '%s' (build-push takes USER@HOST, --build-only, --dirty, --bump= and --replace-tag/--no-replace-tag)", name)
+				return o, cli.Fail("build-push: unknown flag '%s' (build-push takes [USER@]HOST, --build-only, --dirty, --bump= and --replace-tag/--no-replace-tag)", name)
 			case o.Target == "":
 				o.Target = strings.TrimSuffix(a, "\r")
 			default:
-				return o, cli.Fail("build-push: too many arguments ('%s') — it takes one USER@HOST, and the version comes from HEAD's tag", a)
+				return o, cli.Fail("build-push: too many arguments ('%s') — it takes one [USER@]HOST, and the version comes from HEAD's tag", a)
 			}
 		}
 	}

@@ -210,7 +210,7 @@ assert '[ "$rc" = "1" ]'                            "unknown flag exits 1 (got $
 assert 'grep -qF "unknown argument" <<<"$out"'      "unknown flag message"
 # Naming what it does take, as every other command in the CLI does — a refusal
 # that only says "no" leaves the operator guessing at a typo.
-assert 'grep -qF -- "--server [USER@HOST], --fix, --yes" <<<"$out"' \
+assert 'grep -qF -- "--server [[USER@]HOST], --fix, --yes" <<<"$out"' \
     "and it lists the flags check has (said '$out')"
 assert '! grep -qF "Summary:" <<<"$out"' \
     "with no report behind it, so a typo cannot read as a clean project (said '$out')"
@@ -1792,7 +1792,7 @@ assert '! grep -qF "Cannot index" <<<"$out"' "and not a type error (said '$out')
 
 
 # =============================================================================
-# `check --server USER@HOST` — the VPS-aware rules
+# `check --server [USER@]HOST` — the VPS-aware rules
 # =============================================================================
 # The rules themselves, in every state a rig cannot be put into on demand, are
 # Go tests (internal/check/server_test.go) driven through a fake session; the
@@ -1810,7 +1810,7 @@ assert '[ "$rc" = "1" ]' "an empty --server= is refused rather than falling back
 assert 'grep -qF "must name the server to ask" <<<"$out"' "saying so (said '$out')"
 out="$(cd "$srvl" && "$kasbah" check --help 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]' "--help exits 0 (rc $rc)"
-assert 'grep -qF -- "--server USER@HOST" <<<"$out"' "--help documents the flag (said '$out')"
+assert 'grep -qF -- "--server [USER@]HOST" <<<"$out"' "--help documents the flag (said '$out')"
 
 
 # =============================================================================

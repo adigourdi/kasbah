@@ -1,4 +1,4 @@
-// Package info is `kasbah info [USER@HOST]`: which build this is, where it is
+// Package info is `kasbah info [[USER@]HOST]`: which build this is, where it is
 // installed and which docs match it, and given a server, what that server
 // runs — read, never changed.
 package info
@@ -23,14 +23,14 @@ import (
 )
 
 // Usage is `kasbah info --help`.
-const Usage = `Usage: kasbah info [USER@HOST]
+const Usage = `Usage: kasbah info [[USER@]HOST]
 
 Prints this kasbah as key: value lines, in a fixed order, for a bug report or
 a script: name, version, build stamp, os, arch, the binary as invoked and
 resolved, how it was installed (library, checkout or other), the library
 directory, and the docs/ tree on GitHub that matches this build.
 
-With USER@HOST it then reads the server, and changes nothing there: the apps
+With [USER@]HOST it then reads the server, and changes nothing there: the apps
 path, whether it is prepared, the server's kasbah build and machine, and —
 when the server's kasbah is this same build — its OS, Docker engine and
 compose versions. A server binary that is absent or another build is left
@@ -51,6 +51,14 @@ type Options struct {
 
 // Parse reads `info [USER@HOST]`.
 func Parse(args []string) (Options, error) {
+	o, err := parse(args)
+	if err == nil {
+		o.Target, err = ssh.ResolveTarget("info", o.Target)
+	}
+	return o, err
+}
+
+func parse(args []string) (Options, error) {
 	var o Options
 	for _, a := range args {
 		switch {
@@ -58,9 +66,9 @@ func Parse(args []string) (Options, error) {
 			return o, ErrHelp
 		case strings.HasPrefix(a, "-"):
 			f, _, _ := strings.Cut(a, "=")
-			return o, cli.Fail("info: unknown flag '%s' — info takes only USER@HOST", f)
+			return o, cli.Fail("info: unknown flag '%s' — info takes only [USER@]HOST", f)
 		case o.Target != "":
-			return o, cli.Fail("info: unexpected argument '%s' — info takes one USER@HOST", a)
+			return o, cli.Fail("info: unexpected argument '%s' — info takes one [USER@]HOST", a)
 		default:
 			o.Target = a
 		}

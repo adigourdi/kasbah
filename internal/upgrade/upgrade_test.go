@@ -29,7 +29,7 @@ func TestParse(t *testing.T) {
 		want string
 	}{
 		{[]string{"deploy@vps"}, "--version=<tag> is required"},
-		{[]string{"--version=v3"}, "USER@HOST is required"},
+		{[]string{"--version=v3"}, "no server given"},
 		{[]string{"a@b", "c@d", "--version=v3"}, "unexpected argument 'c@d'"},
 		{[]string{"a@b", "--version"}, "needs a value"},
 		{[]string{"a@b", "--version="}, "must not be empty"},

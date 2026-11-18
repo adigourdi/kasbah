@@ -12,6 +12,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/resources"
 	"github.com/adigourdi/kasbah/internal/serverbin"
+	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/internal/state"
 )
 
@@ -28,11 +29,11 @@ type Options struct {
 	Restart prompt.Given
 }
 
-const usage = `Usage: kasbah env [USER@HOST] [--on-drift=setup|continue|abort] [--env-seed=FILE]
+const usage = `Usage: kasbah env [[USER@]HOST] [--on-drift=setup|continue|abort] [--env-seed=FILE]
 
 Renders <apps>/<name>/.env on the server from this project's .env.prod.example,
 interactively, and refreshes the kasbah-managed KASBAH_* block in it from the
-server marker's resource limits. Run from the project root; USER@HOST defaults
+server marker's resource limits. Run from the project root; [USER@]HOST defaults
 to the last server this project deployed to (.kasbah/state.json).
 
 The setup is interactive and needs a terminal at both ends. Without one the run
@@ -88,6 +89,18 @@ func ParseSeedFlag(cmd, a string) (string, error) {
 
 // Parse reads `kasbah env`'s arguments.
 func Parse(args []string) (Options, error) {
+	o, err := parseArgs(args)
+	if err == nil {
+		cmd := "env"
+		if o.Set {
+			cmd = "env set"
+		}
+		o.Target, err = ssh.ResolveTarget(cmd, o.Target)
+	}
+	return o, err
+}
+
+func parseArgs(args []string) (Options, error) {
 	if len(args) > 0 && strings.TrimSuffix(args[0], "\r") == "set" {
 		return parseSet(args[1:])
 	}
@@ -110,11 +123,11 @@ func Parse(args []string) (Options, error) {
 			}
 		case strings.HasPrefix(a, "-"):
 			name, _, _ := strings.Cut(a, "=")
-			return o, cli.Fail("env: unknown flag '%s' (env takes USER@HOST, --on-drift= and --env-seed=)", name)
+			return o, cli.Fail("env: unknown flag '%s' (env takes [USER@]HOST, --on-drift= and --env-seed=)", name)
 		case o.Target == "":
 			o.Target = strings.TrimSuffix(a, "\r")
 		default:
-			return o, cli.Fail("env: too many arguments ('%s') — env takes USER@HOST and nothing else", a)
+			return o, cli.Fail("env: too many arguments ('%s') — env takes [USER@]HOST and nothing else", a)
 		}
 	}
 	return o, nil

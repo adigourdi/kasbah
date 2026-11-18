@@ -1,7 +1,7 @@
 package serverinit
 
 // Usage is `server init --help`.
-const Usage = `Usage: kasbah server init USER@HOST [flags]
+const Usage = `Usage: kasbah server init [USER@]HOST [flags]
 
 Prepares a VPS to host projects: checks the prerequisites, creates the
 directory layout, renders and starts the shared Traefik stack, and writes

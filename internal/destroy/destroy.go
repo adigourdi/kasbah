@@ -1,4 +1,4 @@
-// Package destroy is `kasbah server destroy USER@HOST [--yes]`: the handover
+// Package destroy is `kasbah server destroy [USER@]HOST [--yes]`: the handover
 // verb (docs/cli.md → server destroy). Project, Traefik and mail containers
 // keep running; kasbah's backup scheduler, management layer and every
 // agency-owned secret leave.
@@ -38,7 +38,7 @@ type Options struct {
 }
 
 // Usage is the command's --help.
-const Usage = `Usage: kasbah server destroy USER@HOST [--yes]
+const Usage = `Usage: kasbah server destroy [USER@]HOST [--yes]
 
 De-brands a VPS for handover. Project, Traefik and mail containers keep
 running, so the sites stay up through the whole operation and after the next
@@ -68,6 +68,14 @@ Confirmation is double: a yes/no question, then the hostname typed back.
 
 // Parse reads the command line; every argument meets it with its CR off.
 func Parse(args []string) (Options, error) {
+	o, err := parse(args)
+	if err == nil {
+		o.Target, err = ssh.ResolveTarget("server destroy", o.Target)
+	}
+	return o, err
+}
+
+func parse(args []string) (Options, error) {
 	var o Options
 	for _, raw := range args {
 		a := strings.TrimSuffix(raw, "\r")
@@ -80,7 +88,7 @@ func Parse(args []string) (Options, error) {
 			return o, cli.Fail("server destroy: --yes takes no value — pass it on its own (`kasbah server destroy USER@HOST --yes`)")
 		case strings.HasPrefix(a, "-"):
 			f, _, _ := strings.Cut(a, "=")
-			return o, cli.Fail("server destroy: unknown flag '%s' (destroy takes USER@HOST and --yes)", f)
+			return o, cli.Fail("server destroy: unknown flag '%s' (destroy takes [USER@]HOST and --yes)", f)
 		default:
 			if o.Target != "" {
 				return o, cli.Fail("server destroy: two servers given ('%s' and '%s') — one run goes to one server", o.Target, a)
@@ -89,7 +97,7 @@ func Parse(args []string) (Options, error) {
 		}
 	}
 	if o.Target == "" {
-		return o, cli.Fail("server destroy: no server given (expected `kasbah server destroy USER@HOST`)")
+		return o, cli.Fail("server destroy: no server given (expected `kasbah server destroy [USER@]HOST`)")
 	}
 	return o, nil
 }

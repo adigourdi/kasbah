@@ -42,9 +42,14 @@ type Target struct{ User, Host string }
 func (t Target) String() string { return t.User + "@" + t.Host }
 
 var (
-	reUser = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	// A leading '-' would reach ssh's argv as an option.
+	reUser = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._-]*$`)
 	reHost = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$`)
 )
+
+// IsHost is s shaped as a host kasbah takes: a hostname, ssh alias or IPv4
+// address, no port and no IPv6 literal.
+func IsHost(s string) bool { return reHost.MatchString(s) }
 
 // ParseTarget splits USER@HOST. The host is anything ssh's config resolves,
 // but a port suffix or an IPv6 literal is refused: ssh would report it as a
@@ -56,9 +61,12 @@ func ParseTarget(s string) (Target, error) {
 	}
 	user, host, ok := strings.Cut(s, "@")
 	if !ok {
-		return Target{}, cli.Fail("invalid target '%s' (expected USER@HOST — the user kasbah deploys as is not optional)", s)
+		return Target{}, cli.Fail("invalid target '%s' (expected USER@HOST)", s)
 	}
 	if !reUser.MatchString(user) {
+		if strings.HasPrefix(user, "-") {
+			return Target{}, cli.Fail("invalid ssh user '%s' in '%s' (a user may not start with '-', which ssh would read as an option)", user, s)
+		}
 		return Target{}, cli.Fail("invalid ssh user '%s' in '%s'", user, s)
 	}
 	if !reHost.MatchString(host) {
@@ -242,7 +250,7 @@ func (c *Conn) args(noStdin bool, remote string) []string {
 		a = append(a, "-n")
 	}
 	a = append(a, c.opts...)
-	return append(a, c.Target.String(), remote)
+	return append(a, "--", c.Target.String(), remote)
 }
 
 // Command is one remote command, quoted word by word: `a | b` as one word asks
@@ -280,7 +288,7 @@ func (c *Conn) Script(script string, args ...string) *exec.Cmd {
 // asked for a pty. Callers refuse without a local terminal first.
 func (c *Conn) TTY(words ...string) *exec.Cmd {
 	a := append([]string{"-t"}, c.opts...)
-	cmd := c.describe(exec.Command("ssh", append(a, c.Target.String(), Quote(words...))...), " -t", words, false)
+	cmd := c.describe(exec.Command("ssh", append(a, "--", c.Target.String(), Quote(words...))...), " -t", words, false)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd
 }
@@ -302,7 +310,7 @@ func (c *Conn) cleanup() {
 	_, serr := os.Stat(c.path)
 	if c.connected || (c.path != "" && serr == nil) {
 		c.connected = false
-		a := append(append([]string{}, c.opts...), "-O", "exit", c.Target.String())
+		a := append(append([]string{}, c.opts...), "-O", "exit", "--", c.Target.String())
 		cmd := c.describe(exec.Command("ssh", a...), " -O exit", nil, false)
 		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 		trace.Run(cmd)

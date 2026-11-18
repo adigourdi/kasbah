@@ -27,7 +27,6 @@ func TestParse(t *testing.T) {
 		"--prune=yes":   "--prune takes no value",
 		"--yes=1":       "--yes takes no value",
 		"--force":       "unknown flag '--force'",
-		"vps":           "'vps' is not a USER@HOST",
 		"a@b c@d":       "two servers given",
 		"--colour=auto": "unknown flag '--colour'",
 	} {

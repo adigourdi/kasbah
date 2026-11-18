@@ -820,7 +820,7 @@ func TestParse(t *testing.T) {
 		"--server a@b\r":        "given a@b",
 		"--yes":                 "error: check: --yes answers --fix's prompt",
 		"--server=":             "error: check: --server= must name the server",
-		"--bogus":               "error: check: unknown argument '--bogus' (expected --server [USER@HOST], --fix, --yes)",
+		"--bogus":               "error: check: unknown argument '--bogus' (expected --server [[USER@]HOST], --fix, --yes)",
 		"--fix --help":          "help",
 		"--fix\r":               "error: check: unknown argument",
 		"--server a@b extra@vp": "error: check: unknown argument 'extra@vp'",

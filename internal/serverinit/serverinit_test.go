@@ -52,7 +52,7 @@ func TestParse(t *testing.T) {
 		t.Fatalf("flags: %+v %v", o, err)
 	}
 	for _, c := range []struct{ args, want string }{
-		{"", "USER@HOST is required"},
+		{"", "no server given"},
 		{"a@b|c@d", "unexpected argument 'c@d'"},
 		{"a@b|--reset-acme|--keep-acme", "--reset-acme and --keep-acme cannot both be given"},
 		{"a@b|--no-mail|--no-mail", ""},

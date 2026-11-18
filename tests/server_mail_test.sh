@@ -357,6 +357,6 @@ assert '[ "$rc" = 0 ] && grep -qF "Usage: kasbah server mail-dkim USER@HOST <dom
 out="$( "$kasbah" server add-mail-domain --help 2>&1 )"; rc=$?
 assert '[ "$rc" = 0 ] && grep -qF "Usage: kasbah server add-mail-domain USER@HOST <domain>" <<<"$out"' "add-mail-domain --help (said '$out')"
 out="$( "$kasbah" server mail-setup-guide -h 2>&1 )"; rc=$?
-assert '[ "$rc" = 0 ] && grep -qF "Usage: kasbah server mail-setup-guide USER@HOST" <<<"$out"' "mail-setup-guide -h (said '$out')"
+assert '[ "$rc" = 0 ] && grep -qF "Usage: kasbah server mail-setup-guide [USER@]HOST" <<<"$out"' "mail-setup-guide -h (said '$out')"
 
 exit "$fail"

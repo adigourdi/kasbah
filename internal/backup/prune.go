@@ -41,7 +41,7 @@ type PruneOptions struct {
 }
 
 // PruneUsage is `server backup-prune --help`.
-const PruneUsage = `Usage: kasbah server backup-prune USER@HOST [flags]
+const PruneUsage = `Usage: kasbah server backup-prune [USER@]HOST [flags]
 
 Applies the retention policy to this server's restic repositories, with the
 full-access credentials — which stay on this machine. USER@HOST says which
@@ -81,6 +81,14 @@ var reNetwork = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 // ParsePrune checks every value before anything is opened; a credential in
 // a value is never echoed.
 func ParsePrune(args []string) (PruneOptions, error) {
+	o, err := parsePrune(args)
+	if err == nil && !o.Help {
+		o.Target, err = ssh.ResolveTarget("server backup-prune", o.Target)
+	}
+	return o, err
+}
+
+func parsePrune(args []string) (PruneOptions, error) {
 	var o PruneOptions
 	for _, a := range args {
 		name, val, hasVal := strings.Cut(a, "=")
@@ -127,7 +135,7 @@ func ParsePrune(args []string) (PruneOptions, error) {
 			return o, cli.Fail("server backup-prune: unknown flag '%s' (expected --repo-base=, --env=/--no-env, --repo=, --keep-daily=, --keep-weekly=, --keep-monthly=, --docker-network=, --dry-run, --yes)", name)
 		default:
 			if o.Target != "" {
-				return o, cli.Fail("server backup-prune: unexpected argument '%s' (USER@HOST is given once)", a)
+				return o, cli.Fail("server backup-prune: unexpected argument '%s' ([USER@]HOST is given once)", a)
 			}
 			o.Target = strings.TrimSuffix(a, "\r")
 		}
@@ -136,7 +144,7 @@ func ParsePrune(args []string) (PruneOptions, error) {
 		}
 	}
 	if o.Target == "" {
-		return o, cli.Fail("server backup-prune: USER@HOST is required (it is what says which repositories this server has)")
+		return o, cli.Fail("server backup-prune: no server given ([USER@]HOST is what says which repositories this server has)")
 	}
 	return o, nil
 }

@@ -23,7 +23,7 @@ func TestTopLevel(t *testing.T) {
 		out, err string
 	}{
 		{nil, 0, "Usage: kasbah [--version]", ""},
-		{[]string{"-h"}, 0, "server upgrade-traefik USER@HOST", ""},
+		{[]string{"-h"}, 0, "server upgrade-traefik [USER@]HOST", ""},
 		{[]string{"--help"}, 0, "init-project [--name=<n>]", ""},
 		{[]string{"--version"}, 0, "kasbah 1.0.0 (schema 1)\n", ""},
 		{[]string{"-v"}, 0, "kasbah 1.0.0 (schema 1)\n", ""},
@@ -34,7 +34,7 @@ func TestTopLevel(t *testing.T) {
 		{[]string{"version", "-h"}, 0, "Usage: kasbah version", ""},
 		{[]string{"server"}, 1, "", "server: no subcommand given (expected: init, status, prune, backup-prune, destroy, upgrade-traefik, add-mail-domain, mail-dkim, mail-setup-guide)"},
 		{[]string{"server", "--help"}, 0, "Usage: kasbah server <subcommand>", ""},
-		{[]string{"server", "-h"}, 0, "  init USER@HOST [flags]", ""},
+		{[]string{"server", "-h"}, 0, "  init [USER@]HOST [flags]", ""},
 		{[]string{"server", "--help"}, 0, "\n  mail-dkim USER@HOST DOMAIN [--replace-keys|--keep-keys]\n", ""},
 		{[]string{"server", "statsu"}, 1, "", "server: unknown subcommand 'statsu'"},
 		{[]string{"deplyo"}, 1, "", "unknown command 'deplyo'"},

@@ -2,7 +2,7 @@
 
 Runs a set of structural/conventional checks against the current project so
 the user knows it will behave sensibly when hosted. Runs locally (no SSH)
-unless `--server USER@HOST` is given, which adds the VPS-aware rules below.
+unless `--server [USER@]HOST` is given, which adds the VPS-aware rules below.
 
 ```
 $ cd ~/projects/myapp
@@ -342,7 +342,7 @@ hard fail naming the flag; declining writes nothing and leaves no candidate.
 runs **before** the report, so the lines printed and the exit code returned
 describe the project as it now is.
 
-## `kasbah check --server USER@HOST`
+## `kasbah check --server [USER@]HOST`
 
 Extended check that also queries the VPS. Everything in the local run still
 runs; these are added, and T05 tightens (above).
@@ -387,7 +387,7 @@ arrived and does not quote the payload. And expiry is reported, never age:
 Let's Encrypt backdates `notBefore` by ~58.5 minutes, so a certificate cannot
 say when it was issued.
 
-Given without a `USER@HOST`, `--server` asks the server this project last
+Given without a server, `--server` asks the server this project last
 talked to, and a run that reaches one records it as `last_server` in
 `.kasbah/state.json` — the one thing `check` writes anywhere, and the same rule
 every other server-targeting command follows (`project-manifest.md`).

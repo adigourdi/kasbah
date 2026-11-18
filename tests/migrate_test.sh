@@ -27,7 +27,7 @@ err() { cat "$tmpdir/err"; }
 run migrate --help; rc=$?
 assert '[ "$rc" = 0 ] && grep -qF "Usage: kasbah migrate" "$tmpdir/out"' "--help prints the usage, exit 0 (exit $rc)"
 run --help; rc=$?
-assert 'grep -qF "  migrate server USER@HOST [--yes] [--undo]" "$tmpdir/out"' "the top-level usage lists migrate server"
+assert 'grep -qF "  migrate server [USER@]HOST [--yes] [--undo]" "$tmpdir/out"' "the top-level usage lists migrate server"
 assert 'grep -qF "  migrate " "$tmpdir/out"' "and migrate"
 
 run migrate server; rc=$?

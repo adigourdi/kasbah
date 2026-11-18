@@ -11,6 +11,10 @@ The failures a new project meets most, and where to start:
   invalid project name '…'             init-project --name=<name>: the
                                        directory's own name does not fit
   cannot reach … over ssh              make `ssh USER@HOST true` work first
+  could not tell which user ssh logs   pass USER@HOST: a bare host takes the
+  in to … as                           user `ssh -G HOST` prints
+  ssh logs in to … as root, and        type root@HOST to act as root, or
+  kasbah takes root only when typed    USER@HOST for the operator you are
   passwordless sudo — `sudo -n true`   run the printed commands as root once,
   failed                               or server init from a terminal
   … has no server marker at …          not prepared yet (kasbah server init),

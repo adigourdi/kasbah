@@ -25,11 +25,11 @@ type RestoreOptions struct {
 	Env, Data                      prompt.Given
 }
 
-const restoreUsage = `Usage: kasbah restore [USER@HOST] [--snapshot=ID] [--backup=NAME] [--from-path=PATH]
+const restoreUsage = `Usage: kasbah restore [[USER@]HOST] [--snapshot=ID] [--backup=NAME] [--from-path=PATH]
                       [--list] [--with-env|--no-env] [--with-data|--no-data]
 
 Brings a project's .env and data back from its off-box backups onto the
-version live on the server. Run from the project root. USER@HOST defaults to
+version live on the server. Run from the project root. [USER@]HOST defaults to
 the last server this project deployed to (.kasbah/state.json). The server
 needs off-box backups (` + "`kasbah server init --with-backup`" + `) and a live
 version: after a lost server, init it, deploy, then restore.
@@ -127,9 +127,7 @@ func ParseRestore(args []string) (RestoreOptions, error) {
 			}
 		case strings.HasPrefix(a, "-"):
 			name, _, _ := strings.Cut(a, "=")
-			return o, cli.Fail("restore: unknown flag '%s' (restore takes USER@HOST, --snapshot=, --backup=, --from-path=, --list, --with-env/--no-env and --with-data/--no-data)", name)
-		case !strings.Contains(a, "@"):
-			return o, cli.Fail("restore: '%s' is not a server — restore takes USER@HOST and flags", a)
+			return o, cli.Fail("restore: unknown flag '%s' (restore takes [USER@]HOST, --snapshot=, --backup=, --from-path=, --list, --with-env/--no-env and --with-data/--no-data)", name)
 		case o.Target != "":
 			return o, cli.Fail("restore: two servers given ('%s' and '%s') — one run goes to one server", o.Target, a)
 		default:
@@ -137,9 +135,11 @@ func ParseRestore(args []string) (RestoreOptions, error) {
 		}
 	}
 	if o.List && (o.Env != prompt.Unset || o.Data != prompt.Unset || o.Backup != "") {
-		return o, cli.Fail("restore: --list changes nothing, so it takes only USER@HOST, --snapshot= and --from-path=")
+		return o, cli.Fail("restore: --list changes nothing, so it takes only [USER@]HOST, --snapshot= and --from-path=")
 	}
-	return o, nil
+	var err error
+	o.Target, err = ssh.ResolveTarget("restore", o.Target)
+	return o, err
 }
 
 // RestoreServer is one server as `kasbah restore` needs it.

@@ -145,6 +145,17 @@ func TestLogs(t *testing.T) {
 	if code != 1 || !strings.Contains(se, "could not read the logs of demo on deploy@vps") || !strings.Contains(se, "'nosuch' is the service") || lastServer(t) != "" {
 		t.Errorf("compose failed: code=%d last=%q %s", code, lastServer(t), se)
 	}
+	if strings.Contains(se, "USER@nosuch") {
+		t.Errorf("a server was given, yet the service is suggested as one: %s", se)
+	}
+	if err := state.Record(state.File, "1.0.0", "last_server", "deploy@vps"); err != nil {
+		t.Fatal(err)
+	}
+	se, code = run(t, f, Ctx{}, "logs", "vps")
+	if code != 1 || !strings.Contains(se, "If 'vps' is a server, pass it as USER@vps") {
+		t.Errorf("a bare word taken as the service, then missing: code=%d %s", code, se)
+	}
+	os.Remove(state.File)
 	f.rc, f.mkErr = 0, cli.Failf(cli.ExitNoRemoteState, "no marker")
 	if _, code = run(t, f, Ctx{}, "logs", "deploy@vps"); code != 4 || f.words == nil {
 		t.Errorf("no marker: %d", code)

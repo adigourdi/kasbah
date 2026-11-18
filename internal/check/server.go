@@ -45,7 +45,7 @@ type Options struct {
 
 // Usage is the --help text.
 func Usage() string {
-	return `Usage: kasbah check [--server [USER@HOST]] [--fix [--yes]]
+	return `Usage: kasbah check [--server [[USER@]HOST]] [--fix [--yes]]
 
 Runs structural checks against the current project. Exit 0 if no failures
 (warnings are informational). Each line leads with its rule's ID: kasbah help
@@ -53,7 +53,8 @@ Runs structural checks against the current project. Exit 0 if no failures
 the full rule set.
 
 Flags:
-  --server USER@HOST  also ask that VPS: is the project deployed, does its .env
+  --server [USER@]HOST
+                      also ask that VPS: is the project deployed, does its .env
                       still match .env.prod.example, does the mail stack know
                       the claimed domain (M03) and hold a DKIM key for every
                       domain it serves (M04), is health.container healthy, is
@@ -68,7 +69,7 @@ Flags:
                       hostnames this server really owns.
                       Read-only: --server changes nothing on the server but
                       kasbah's own binary, installed when absent or older.
-                      Without USER@HOST it asks the server this project last
+                      Without [USER@]HOST it asks the server this project last
                       talked to, and it remembers the one it is given.
   --fix               repair the auto-fixable rules before reporting: C01–C05,
                       C08, R01–R03 and a missing kasbah_version. Only
@@ -82,6 +83,14 @@ Flags:
 
 // Parse reads check's arguments.
 func Parse(args []string) (Options, error) {
+	o, err := parse(args)
+	if err == nil {
+		o.Server, err = ssh.ResolveTarget("check --server", o.Server)
+	}
+	return o, err
+}
+
+func parse(args []string) (Options, error) {
 	var o Options
 	empty := false
 	for i := 0; i < len(args); i++ {
@@ -106,14 +115,14 @@ func Parse(args []string) (Options, error) {
 			o.Server = strings.TrimSuffix(strings.TrimPrefix(a, "--server="), "\r")
 			empty = o.Server == ""
 		default:
-			return o, cli.Fail("check: unknown argument '%s' (expected --server [USER@HOST], --fix, --yes)", a)
+			return o, cli.Fail("check: unknown argument '%s' (expected --server [[USER@]HOST], --fix, --yes)", a)
 		}
 	}
 	if o.Yes && !o.Fix {
 		return o, cli.Fail("check: --yes answers --fix's prompt; it does nothing on its own")
 	}
 	if empty {
-		return o, cli.Fail("check: --server= must name the server to ask (USER@HOST)")
+		return o, cli.Fail("check: --server= must name the server to ask ([USER@]HOST)")
 	}
 	return o, nil
 }

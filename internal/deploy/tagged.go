@@ -36,7 +36,9 @@ const rollbackUsage = `Usage: kasbah rollback [USER@HOST] [VERSION] [--on-drift=
                        [--no-health-wait]
 
 Puts a server back on a version it has already run. Run from the project root.
-An argument containing '@' is the server, anything else is the version.
+An argument containing '@' is the server, anything else is the version — so the
+user is never taken from ssh's config here: a bare host (1.2.3 is one) could be
+either.
 
 VERSION defaults to the clean deploy before the running one in the server's
 versions.log (the archive included); a deploy-failed entry can be the running
