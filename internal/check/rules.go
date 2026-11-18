@@ -76,7 +76,7 @@ var Rules = []Rule{
 		"Send through mail.<domain>:587 with a mailbox login (docs/mail.md -> SMTP access from apps)."},
 	{"C11", "Compose", "warn", false, "Every routed service can roll on deploy",
 		"A service that cannot roll is recreated in place, and is unrouted while it restarts.",
-		"Set no container_name and no host port on it, give it a compose healthcheck:, and use depends_on with no condition but service_started."},
+		"Set no container_name and no host port on it, give it a compose healthcheck:, and use depends_on with no condition but service_started. When its old and new containers must never run together, label it `kasbah.noRoll: \"true\"` instead: it is recreated in place on purpose, and C11 says so."},
 	{"C12", "Compose", "fail", true, "No outside container holds a published port",
 		"Docker would refuse the bind, so the deploy refuses it first.",
 		"Stop or move the container holding the port, or publish another one."},
@@ -86,6 +86,9 @@ var Rules = []Rule{
 	{"C14", "Compose", "fail", false, "No service publishes host port 80 or 443",
 		"Ports 80 and 443 belong to the shared Traefik, whatever the address or protocol.",
 		"Route the service through traefik-dynamic.yml, or publish another port."},
+	{"C15", "Compose", "fail/warn", false, "Every kasbah.noRoll label is a boolean",
+		"The label keeps a service from rolling, so its old and new containers never run together. Like a Traefik label, its key matches in any case and its value reads as Go's strconv.ParseBool does; a deploy reads any other value as true. An interpolated value only the deploy can resolve, so it warns.",
+		"Write `kasbah.noRoll: \"true\"` (recreated in place on every deploy) or `\"false\"` (rolls as usual), or drop the label."},
 
 	{"R01", "Resources", "fail/warn", false, "Every service sets a cpus limit",
 		"A per-container ceiling keeps one project from taking the host. A literal does not follow the host, so it warns until `check --server` compares it.",

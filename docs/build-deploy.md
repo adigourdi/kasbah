@@ -1249,8 +1249,12 @@ directory is listed in `files.md`).
 
 - **No `:latest` tag** — git is the source of truth for what's newest.
 - **No blue/green across the project** — but a routed service **rolls**: one
-  with no `container_name`, a healthcheck (its own or its image's), no
-  published host port, no `depends_on` condition but `service_started` (only a
+  whose `kasbah.noRoll` label, if any, reads false (C15, `compliance.md`) — in
+  the files in place and on its running containers alike, so neither a
+  deploy nor a rollback rolls into or out of a labelled version, and a running
+  container whose labels cannot be read is not rolled on a guess — with no
+  `container_name`, a healthcheck (its own or its image's), no published host
+  port, no `depends_on` condition but `service_started` (only a
   plain `up` waits for the others — a migration that must succeed first), every
   host the **live** fragment reaches it by being its service name or a `kasbah`
   alias (so the route Traefik holds during the roll keeps answering), and
@@ -1262,9 +1266,14 @@ directory is listed in `files.md`).
   2–7 502s per in-place recreate, 0 per roll. A replica that never turns
   healthy is removed and the deploy reverts, the old container untouched. Every
   other service — and a routed one that cannot roll, which the deploy names
-  with why — is recreated in place, briefly unrouted. `kasbah check` warns
+  with why — is recreated in place, briefly unrouted. In place, compose
+  stops all of a service's old containers before it starts any new one
+  (measured with three replicas: the last old one gone before the first new
+  one started), which is what `kasbah.noRoll: "true"` asks for: a service
+  whose old and new containers must never run together. `kasbah check` warns
   beforehand about each routed service compose or the fragment keep from
-  rolling (C11, `compliance.md`); live state stays the deploy's to judge. A
+  rolling, and says which ones `kasbah.noRoll` keeps in place on purpose
+  (C11, `compliance.md`); live state stays the deploy's to judge. A
   process that exits on SIGTERM without draining can still drop its
   in-flight requests as the old container stops.
   Acceptable for the homelab / small-business target.

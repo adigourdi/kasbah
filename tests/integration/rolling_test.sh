@@ -11,7 +11,10 @@
 #   * v1.4.0 — the new replica never turns healthy: removed, the old one still
 #     running untouched, the deploy reverted;
 #   * v1.5.0 — built-app-web waits on a one-shot migrate that fails: recreated
-#     in place, so compose's up sees the failure and the deploy reverts.
+#     in place, so compose's up sees the failure and the deploy reverts;
+#   * v1.6.0 — labelled kasbah.noRoll, two replicas: recreated in place, the
+#     old container gone before either new one starts; a rollback to 1.3.0,
+#     unlabelled, is recreated in place too, as the running ones are labelled.
 #
 # Exit status follows test.sh's contract: 0 pass, 1 an assertion failed, 2 the
 # suite could not run at all (no rig).
@@ -41,7 +44,7 @@ assert() {
 
 tmpdir="$(mktemp -d)"
 images=""
-for v in 1.0.0 1.1.0 1.2.0 1.3.0 1.4.0 1.5.0 current; do images+=" built-app-web:$v built-app-worker:$v"; done
+for v in 1.0.0 1.1.0 1.2.0 1.3.0 1.4.0 1.5.0 1.6.0 current; do images+=" built-app-web:$v built-app-worker:$v"; done
 probe_pid=""
 cleanup() {
     if [ -n "$probe_pid" ]; then
@@ -223,6 +226,32 @@ assert '[ "$rc" != 0 ] && grep -qF "failed (up) and was reverted — the server 
     "and the failed migrate fails the deploy (rc $rc: $(cli_err))"
 served=$(remote "curl -s -m 5 -H 'Host: built-app.test' http://127.0.0.1/")
 assert 'grep -qF served-by-built-app-one-three <<<"$served"' "1.3.0's page is served after the revert"
+
+# --- v1.6.0: kasbah.noRoll — the old containers stop before new ones start -----
+( cd "$projdir" && git checkout -q v1.3.0 -- compose.prod.yml kasbah.yml ) || exit 2
+sed -i 's|^    image: built-app-web:current|&\n    labels:\n      kasbah.noRoll: "true"\n    deploy:\n      replicas: 2|' "$projdir/compose.prod.yml"
+page served-by-built-app-one-six
+release 1.6.0
+run build-push "$RIG_TARGET" || { echo "error: build-push of 1.6.0 failed: $(cli_err)" >&2; exit 2; }
+old=$(web_ids)
+since=$(remote "date +%s.%N")
+run deploy "$RIG_TARGET"; rc=$?
+until=$(remote "date +%s.%N")
+assert '[ "$rc" = 0 ]' "1.6.0 deploys (rc $rc: $(cli_err))"
+assert 'grep -qF "built-app-web is recreated in place, as it is labelled kasbah.noRoll" "$tmpdir/err"' \
+    "a kasbah.noRoll service is not rolled, and the deploy says why ($(cli_err))"
+ids=$(web_ids)
+assert '[ "$(grep -c . <<<"$ids")" = 2 ] && ! grep -qxF "$old" <<<"$ids"' "two new built-app-web run, the old one gone ($ids vs $old)"
+events=$(remote "docker events --since $since --until $until --filter label=com.docker.compose.project=$project --filter label=com.docker.compose.service=built-app-web --filter event=die --filter event=start --format '{{.TimeNano}} {{.Action}} {{.Actor.ID}}'")
+died=$(awk -v id="$old" '$2 == "die" && $3 == id { print $1 }' <<<"$events" | tail -n1)
+first=$(awk -v id="$old" '$2 == "start" && $3 != id { print $1 }' <<<"$events" | sort -n | head -n1)
+assert '[ -n "$died" ] && [ -n "$first" ] && [ "$died" -lt "$first" ]' \
+    "the old container died before a new one started (died $died, first start $first)"
+served=$(remote "curl -s -m 5 -H 'Host: built-app.test' http://127.0.0.1/")
+assert 'grep -qF served-by-built-app-one-six <<<"$served"' "1.6.0's page is served"
+run rollback "$RIG_TARGET" 1.3.0 --no-env --no-data; rc=$?
+assert '[ "$rc" = 0 ] && grep -qF "built-app-web is recreated in place, as its running container " "$tmpdir/err" && grep -qF " is labelled kasbah.noRoll" "$tmpdir/err"' \
+    "a rollback to 1.3.0, which has no label, is not rolled out of the labelled containers (rc $rc: $(cli_err))"
 
 [ "$fail" = 0 ] && rig_clean >/dev/null 2>&1
 exit "$fail"

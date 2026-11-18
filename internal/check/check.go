@@ -12,9 +12,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -306,7 +308,7 @@ func (c *checker) s08() {
 	}
 }
 
-// --- Compose (C01–C05, C07–C11, C14) ----------------------------------------
+// --- Compose (C01–C05, C07–C11, C14, C15) ----------------------------------------
 
 var restartOK = regexp.MustCompile(`^(unless-stopped|always|on-failure(:[0-9]+)?)$`)
 
@@ -380,6 +382,7 @@ func (c *checker) composeSection() {
 	}
 	c.c14()
 	c.c11()
+	c.c15()
 }
 
 // c14: no service publishes host port 80 or 443, Traefik's; a host range
@@ -457,6 +460,7 @@ func (c *checker) c11() {
 		return
 	}
 	n, warned := 0, false
+	var noRoll []string
 	for _, svc := range c.services {
 		if !c.routes(svc, routed) {
 			continue
@@ -465,6 +469,10 @@ func (c *checker) c11() {
 		r := c.rollShape(svc, routed)
 		stays := r.Stays(false)
 		if len(stays) == 0 {
+			continue
+		}
+		if stays[0] == deploy.StayNoRoll {
+			noRoll = append(noRoll, svc+" is recreated in place on deploy, as "+r.Why(deploy.StayNoRoll))
 			continue
 		}
 		warned = true
@@ -478,8 +486,80 @@ func (c *checker) c11() {
 		}
 		c.warnf("C11", "%s will not roll on deploy — %s, so it is recreated in place, briefly unrouted", svc, r.Why(st))
 	}
-	if n > 0 && !warned {
+	switch {
+	case warned || n == len(noRoll):
+	case len(noRoll) > 0:
+		c.passf("C11", "All other routed services can roll on deploy")
+	default:
 		c.passf("C11", "All routed services can roll on deploy")
+	}
+	for _, line := range noRoll {
+		c.passf("C11", "%s — its old containers stop before the new ones start, briefly unrouted", line)
+	}
+}
+
+// noRollLabels is svc's kasbah.noRoll labels as compose.prod.yml writes
+// them, keyed as written (any case matches, as in Traefik): the map form, or
+// the list form, a key's last entry winning. A YAML boolean reads as compose
+// renders it, "true" or "false", and a whole-number float as an integer
+// ("0.0" as "0").
+func (c *checker) noRollLabels(svc string) map[string]string {
+	out := map[string]string{}
+	labels := c.svc(svc, "labels")
+	for _, k := range keysOf(labels) {
+		if !strings.EqualFold(k, deploy.NoRollLabel) {
+			continue
+		}
+		x := opt(labels, k)
+		out[k] = scalar(x)
+		if n, ok := x.(tree.Number); ok {
+			if _, isInt := n.Int64(); !isInt {
+				if f, err := strconv.ParseFloat(string(n), 64); err == nil {
+					out[k] = strconv.FormatFloat(f, 'f', -1, 64)
+				}
+			}
+		}
+	}
+	for _, l := range asList(labels) {
+		s, _ := l.(string)
+		if k, v, _ := strings.Cut(s, "="); strings.EqualFold(k, deploy.NoRollLabel) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// interpolated is whether compose would interpolate v: it names a variable,
+// as $VAR or ${...}; `$$` is a literal `$`.
+func interpolated(v string) bool {
+	named := false
+	envtpl.Interpolate(v, func(string) (string, bool) { named = true; return "", false })
+	return named
+}
+
+// c15: every kasbah.noRoll label is a boolean as strconv.ParseBool reads it.
+// The deploy reads any other value as true; an interpolated one only the
+// deploy can resolve.
+func (c *checker) c15() {
+	seen, bad := false, false
+	for _, svc := range c.services {
+		labels := c.noRollLabels(svc)
+		for _, k := range slices.Sorted(maps.Keys(labels)) {
+			seen = true
+			v := labels[k]
+			if _, err := strconv.ParseBool(v); err == nil {
+				continue
+			}
+			bad = true
+			if interpolated(v) {
+				c.warnf("C15", "%s: %s is '%s' — check cannot resolve it; a deploy reads the resolved value, and anything but a false boolean as true", svc, k, v)
+			} else {
+				c.failf("C15", "%s: %s is '%s', not a boolean — write true or false; a deploy reads it as true", svc, k, v)
+			}
+		}
+	}
+	if seen && !bad {
+		c.passf("C15", "Every %s label is a boolean", deploy.NoRollLabel)
 	}
 }
 
@@ -502,6 +582,13 @@ func (c *checker) rolls(svc string, routed []string) bool {
 func (c *checker) rollShape(svc string, routed []string) deploy.RollShape {
 	cn := scalar(c.svc(svc, "container_name"))
 	r := deploy.RollShape{ByContainerName: cn != "" && inList(routed, cn), ContainerName: cn != ""}
+	labels := c.noRollLabels(svc)
+	for k, v := range labels {
+		if interpolated(v) {
+			delete(labels, k)
+		}
+	}
+	r.NoRoll = deploy.NoRoll(labels)
 	r.OffNet = !r.ByContainerName && !joinsNet(c.svc(svc, "networks"), projectNet)
 	for _, p := range asList(c.svc(svc, "ports")) {
 		if published(p) {

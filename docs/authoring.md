@@ -137,6 +137,16 @@ Traefik to it.
   recreated in place, briefly unrouted, and `check` warns naming why
   ([C11](compliance.md#compose)). `depends_on: [db]` keeps the order without
   a condition.
+- A routed service whose old and new containers must never run together —
+  an app holding a file lock or a single-writer SQLite database, or one
+  running its own scheduler — is labelled `kasbah.noRoll: "true"` instead.
+  Every deploy and rollback then recreates it in place: compose stops all of
+  its old containers before it starts any new one, whatever its replica count,
+  and `check` says so rather than warning ([C11](compliance.md#compose)). The
+  running containers carry the label too, so a rollback to a version without
+  it is still recreated in place. The value is a boolean, read as Traefik
+  reads its labels ([C15](compliance.md#compose)). An unrouted service needs
+  no label: it is always recreated in place.
 
 **Everything else** — databases, caches, workers — stays off the `kasbah`
 network and `kasbah-net` ([C07](compliance.md#compose), a failure): Traefik

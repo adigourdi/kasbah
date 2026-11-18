@@ -1,9 +1,16 @@
 package deploy
 
+import (
+	"strconv"
+	"strings"
+)
+
 // RollShape is what compose and the fragment say about whether a routed
 // service rolls on deploy, before docker is asked anything. The deploy reads
 // it off `docker compose config`; check reads it off compose.prod.yml.
 type RollShape struct {
+	// NoRoll is what its kasbah.noRoll label asks, as NoRoll reads it.
+	NoRoll string
 	// ByContainerName: the fragment reaches it by its container_name; OffNet:
 	// by a name it answers only off the project's kasbah network (check only —
 	// the deploy counts such a service unrouted).
@@ -31,8 +38,38 @@ const (
 // than rolled.
 type Stay int
 
+// NoRollLabel is the compose label that keeps a service from rolling, so its
+// old containers all stop before the new ones start. As Traefik reads its own
+// labels, the key matches in any case and the value as strconv.ParseBool
+// reads it.
+const NoRollLabel = "kasbah.noRoll"
+
+// NoRoll is what a service's labels ask of its roll: "" for a roll (no
+// kasbah.noRoll, or one reading false), "true" for none, else the value of a
+// kasbah.noRoll that is no boolean, which reads as true too.
+func NoRoll(labels map[string]string) string {
+	out := ""
+	for _, k := range sortedKeys(labels) {
+		if !strings.EqualFold(k, NoRollLabel) {
+			continue
+		}
+		v := labels[k]
+		b, err := strconv.ParseBool(v)
+		switch {
+		case err != nil && v == "":
+			return `""`
+		case err != nil:
+			return v
+		case b:
+			out = "true"
+		}
+	}
+	return out
+}
+
 const (
-	StayByContainerName Stay = iota + 1
+	StayNoRoll Stay = iota + 1
+	StayByContainerName
 	StayOffNet
 	StayContainerName
 	StayNoHealthWait
@@ -50,6 +87,7 @@ func (r RollShape) Stays(noHealthWait bool) []Stay {
 		on bool
 		s  Stay
 	}{
+		{r.NoRoll != "", StayNoRoll},
 		{r.ByContainerName, StayByContainerName},
 		{r.OffNet, StayOffNet},
 		{r.ContainerName, StayContainerName},
@@ -68,6 +106,11 @@ func (r RollShape) Stays(noHealthWait bool) []Stay {
 // Why is a reason in words, as "it sets container_name".
 func (r RollShape) Why(s Stay) string {
 	switch s {
+	case StayNoRoll:
+		if r.NoRoll == "true" {
+			return "it is labelled " + NoRollLabel
+		}
+		return "it is labelled " + NoRollLabel + "=" + r.NoRoll + ", which reads as true"
 	case StayByContainerName:
 		return "the fragment targets its container_name"
 	case StayOffNet:

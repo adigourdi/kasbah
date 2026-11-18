@@ -69,8 +69,9 @@ type composeModel struct {
 }
 
 type composeService struct {
-	ContainerName string `json:"container_name"`
-	Image         string `json:"image"`
+	ContainerName string            `json:"container_name"`
+	Labels        map[string]string `json:"labels"`
+	Image         string            `json:"image"`
 	Healthcheck   *struct {
 		Test    []string `json:"test"`
 		Disable bool     `json:"disable"`
@@ -211,6 +212,10 @@ func (e *engine) rolls() (*composeModel, []roll) {
 			inPlace("as its old replica " + busy + ", which the swap would leave behind")
 			continue
 		}
+		if why := e.noRollRunning(old); why != "" {
+			inPlace("as " + why)
+			continue
+		}
 		reached := e.reached(running, netName, live)
 		if len(reached) == 0 {
 			inPlace("as the live route does not reach its running container on " + netName)
@@ -272,9 +277,34 @@ func published(s composeService) bool {
 	return false
 }
 
+// noRollRunning is why svc's running containers keep it from rolling, "" for
+// nothing: one whose own labels ask for no roll, as a version labelled
+// kasbah.noRoll is not rolled out of either, whatever the files now in place
+// say; or one whose labels cannot be read, which is not rolled on a guess.
+func (e *engine) noRollRunning(cs []ctr) string {
+	for _, c := range cs {
+		if c.state != "running" {
+			continue
+		}
+		out, err := e.query("inspect", "-f", "{{json .Config.Labels}}", c.id)
+		var labels map[string]string
+		if err == nil {
+			err = json.Unmarshal([]byte(out), &labels)
+		}
+		switch {
+		case err != nil:
+			return "the labels of its running container " + c.name + " cannot be read (" + err.Error() + ")"
+		case NoRoll(labels) != "":
+			return "its running container " + c.name + " is labelled " + NoRollLabel
+		}
+	}
+	return ""
+}
+
 // shapeOf is the static half of the roll predicate, read off the compose model.
 func shapeOf(s composeService, byCN bool) RollShape {
 	r := RollShape{ByContainerName: byCN, ContainerName: s.ContainerName != "", Published: published(s), Gated: gated(s)}
+	r.NoRoll = NoRoll(s.Labels)
 	switch h := s.Healthcheck; {
 	case h != nil && (h.Disable || (len(h.Test) > 0 && h.Test[0] == "NONE")):
 		r.Health = HealthOff

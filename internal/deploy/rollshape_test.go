@@ -29,6 +29,10 @@ func TestRollShapeStays(t *testing.T) {
 		{"healthcheck off", RollShape{Health: HealthOff}, false, []Stay{StayNoHealthcheck}, "it declares no healthcheck to swap on"},
 		{"gated", RollShape{Health: HealthDeclared, Gated: "db (service_healthy)"}, false,
 			[]Stay{StayGated}, "it depends_on db (service_healthy), a condition only a plain up waits for"},
+		{"labelled kasbah.noRoll", RollShape{NoRoll: "true", Health: HealthDeclared}, false,
+			[]Stay{StayNoRoll}, "it is labelled kasbah.noRoll"},
+		{"kasbah.noRoll comes first", RollShape{NoRoll: `""`, ByContainerName: true, ContainerName: true}, false,
+			[]Stay{StayNoRoll, StayByContainerName, StayContainerName, StayNoHealthcheck}, `it is labelled kasbah.noRoll="", which reads as true`},
 		{"in the deploy's order", RollShape{ContainerName: true, Published: true, Gated: "db (service_healthy)"}, true,
 			[]Stay{StayContainerName, StayNoHealthWait, StayPublished, StayNoHealthcheck, StayGated}, "it sets container_name"},
 	} {
@@ -60,6 +64,10 @@ func TestShapeOf(t *testing.T) {
 		{"an ephemeral port is not published", `{"image":"x","ports":[{"published":""}]}`, false, RollShape{}},
 		{"gated", `{"image":"x","depends_on":{"b":{"condition":"service_healthy"},"a":{"condition":"service_started"}}}`, false,
 			RollShape{Gated: "b (service_healthy)"}},
+		{"kasbah.noRoll", `{"image":"x","labels":{"kasbah.noRoll":"true"}}`, false, RollShape{NoRoll: "true"}},
+		{"kasbah.noRoll=false rolls", `{"image":"x","labels":{"kasbah.noRoll":"false"}}`, false, RollShape{}},
+		{"kasbah.noRoll with no value", `{"image":"x","labels":{"kasbah.noRoll":""}}`, false, RollShape{NoRoll: `""`}},
+		{"any key case, ParseBool's values", `{"image":"x","labels":{"kasbah.noroll":"True"}}`, false, RollShape{NoRoll: "true"}},
 	} {
 		var s composeService
 		if err := json.Unmarshal([]byte(tc.js), &s); err != nil {
@@ -67,6 +75,30 @@ func TestShapeOf(t *testing.T) {
 		}
 		if got := shapeOf(s, tc.byCN); got != tc.want {
 			t.Errorf("%s: %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestNoRoll(t *testing.T) {
+	for _, tc := range []struct {
+		labels map[string]string
+		want   string
+	}{
+		{nil, ""},
+		{map[string]string{"other": "true"}, ""},
+		{map[string]string{"kasbah.noRoll": "true"}, "true"},
+		{map[string]string{"KASBAH.NOROLL": "1"}, "true"},
+		{map[string]string{"kasbah.noRoll": "T"}, "true"},
+		{map[string]string{"kasbah.noRoll": "false"}, ""},
+		{map[string]string{"kasbah.noRoll": "0"}, ""},
+		{map[string]string{"kasbah.noRoll": "FALSE"}, ""},
+		{map[string]string{"kasbah.noRoll": "yes"}, "yes"},
+		{map[string]string{"kasbah.noRoll": ""}, `""`},
+		{map[string]string{"kasbah.noRoll": "false", "kasbah.noroll": "true"}, "true"},
+		{map[string]string{"kasbah.noRoll": "nope", "kasbah.noroll": "false"}, "nope"},
+	} {
+		if got := NoRoll(tc.labels); got != tc.want {
+			t.Errorf("%v: %q, want %q", tc.labels, got, tc.want)
 		}
 	}
 }

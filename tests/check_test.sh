@@ -438,7 +438,17 @@ assert 'grep -qF "⚠ C11 demo-web will not roll on deploy — it sets container
        "a container_name stops the roll even when the fragment targets the service (said '$out')"
 assert '! grep -qF "can roll on deploy" <<<"$out"' "and C11 prints no pass line beside it"
 assert 'grep -qF "29 passed, 1 warning, 0 failed" <<<"$out"' "the warn replaces the pass line (said '$(tail -1 <<<"$out")')"
-sed -i '/^    container_name: demo-web-1$/d; s/^    restart: unless-stopped$/    ports: ["8080:80"]\n&/' "$proj16c/compose.prod.yml"
+sed -i 's/^    restart: unless-stopped$/    labels: {kasbah.noRoll: "true"}\n&/' "$proj16c/compose.prod.yml"
+out="$(cd "$proj16c" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "✓ C11 demo-web is recreated in place on deploy, as it is labelled kasbah.noRoll — its old containers stop before the new ones start, briefly unrouted" <<<"$out"' \
+       "labelled kasbah.noRoll, its container_name is no warning: it is recreated in place on purpose (rc $rc, said '$out')"
+assert 'grep -qF "✓ C15 Every kasbah.noRoll label is a boolean" <<<"$out" && grep -qF " 0 warning, 0 failed" <<<"$out"' \
+       "and C15 passes the label (said '$(tail -1 <<<"$out")')"
+sed -i 's/^    labels: {kasbah.noRoll: "true"}$/    labels: {kasbah.noRoll: "yes"}/' "$proj16c/compose.prod.yml"
+out="$(cd "$proj16c" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ] && grep -qF "✗ C15 demo-web: kasbah.noRoll is '"'"'yes'"'"', not a boolean — write true or false; a deploy reads it as true" <<<"$out"' \
+       "a kasbah.noRoll that is no boolean fails C15 (rc $rc, said '$out')"
+sed -i '/^    labels: {kasbah.noRoll: "yes"}$/d; /^    container_name: demo-web-1$/d; s/^    restart: unless-stopped$/    ports: ["8080:80"]\n&/' "$proj16c/compose.prod.yml"
 out="$(cd "$proj16c" && "$kasbah" check 2>&1)"
 assert 'grep -qF "⚠ C11 demo-web will not roll on deploy — it publishes a host port a second replica cannot bind, so it is recreated in place, briefly unrouted" <<<"$out"' \
        "a published host port stops the roll (said '$out')"

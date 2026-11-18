@@ -702,6 +702,98 @@ func TestC11(t *testing.T) {
 	}
 }
 
+func TestC11NoRoll(t *testing.T) {
+	web := "    networks: [kasbah, internal]\n  db:"
+	with := func(compose, lines string) string { return strings.Replace(compose, web, lines+web, 1) }
+	block := rollCompose[strings.Index(rollCompose, "  demo-web:"):strings.Index(rollCompose, "  db:")]
+	two := strings.Replace(rollCompose, "  db:", strings.Replace(block, "demo-web", "demo-api", 1)+"  db:", 1)
+	twoFragment := strings.Replace(goodFragment, `[{url: "http://demo-web:80"}]`, `[{url: "http://demo-web:80"}, {url: "http://demo-api:80"}]`, 1)
+	const inPlace = " — its old containers stop before the new ones start, briefly unrouted"
+	webLine := "  ✓ C11 demo-web is recreated in place on deploy, as it is labelled kasbah.noRoll" + inPlace
+	apiLine := "  ✓ C11 demo-api is recreated in place on deploy, as it is labelled kasbah.noRoll" + inPlace
+	for _, tc := range []struct {
+		name, compose, fragment string
+		want, not               []string
+	}{
+		{"labelled, other reasons go unsaid", with(rollCompose, "    container_name: demo-web-1\n    ports: [\"8080:80\"]\n    labels: {kasbah.noRoll: true}\n"), "",
+			[]string{webLine}, []string{"will not roll", "can roll"}},
+		{"list form, any key case, ParseBool's 1", with(rollCompose, "    labels: [\"kasbah.noroll=1\"]\n"), "",
+			[]string{webLine}, []string{"can roll"}},
+		{"false rolls", with(rollCompose, "    labels: {kasbah.noRoll: \"false\"}\n"), "",
+			[]string{"  ✓ C11 All routed services can roll on deploy"}, []string{"recreated in place on deploy"}},
+		{"a value that is no boolean reads as true", with(rollCompose, "    labels: {kasbah.noRoll: \"yes\"}\n"), "",
+			[]string{"  ✓ C11 demo-web is recreated in place on deploy, as it is labelled kasbah.noRoll=yes, which reads as true" + inPlace}, nil},
+		{"an interpolated value leaves C11 as it was", with(rollCompose, "    container_name: demo-web-1\n    labels: {kasbah.noRoll: \"${NR}\"}\n"), "",
+			[]string{"  ⚠ C11 demo-web will not roll on deploy — it sets container_name, so it is recreated in place, briefly unrouted"}, []string{"recreated in place on deploy"}},
+		{"a $VAR value leaves C11 as it was", with(rollCompose, "    container_name: demo-web-1\n    labels: {kasbah.noRoll: $NR}\n"), "",
+			[]string{"  ⚠ C11 demo-web will not roll on deploy — it sets container_name, so it is recreated in place, briefly unrouted"}, []string{"recreated in place on deploy"}},
+		{"$$ is a literal, so no boolean", with(rollCompose, "    labels: {kasbah.noRoll: \"$${NR}\"}\n"), "",
+			[]string{"  ✓ C11 demo-web is recreated in place on deploy, as it is labelled kasbah.noRoll=$${NR}, which reads as true" + inPlace}, nil},
+		{"a whole-number float reads as compose renders it", with(rollCompose, "    labels: {kasbah.noRoll: 0.0}\n"), "",
+			[]string{"  ✓ C11 All routed services can roll on deploy"}, []string{"recreated in place on deploy"}},
+		{"the others roll", with(two, "    labels: {kasbah.noRoll: \"true\"}\n"), twoFragment,
+			[]string{"  ✓ C11 All other routed services can roll on deploy", apiLine}, []string{"demo-web is recreated", "All routed services can roll"}},
+		{"another one warns", strings.Replace(with(two, "    labels: {kasbah.noRoll: \"true\"}\n"), "  demo-web:\n", "  demo-web:\n    container_name: demo-web-1\n", 1), twoFragment,
+			[]string{"  ⚠ C11 demo-web will not roll on deploy — it sets container_name, so it is recreated in place, briefly unrouted", apiLine}, []string{"can roll"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{"compose.prod.yml": tc.compose}
+			if tc.fragment != "" {
+				files["traefik-dynamic.yml"] = tc.fragment
+			}
+			project(t, files)
+			out, _, _ := check(t)
+			for _, w := range tc.want {
+				if !strings.Contains(out, w+"\n") {
+					t.Errorf("no line %q in:\n%s", w, out)
+				}
+			}
+			for _, n := range tc.not {
+				if strings.Contains(out, n) {
+					t.Errorf("%q in:\n%s", n, out)
+				}
+			}
+		})
+	}
+}
+
+func TestC15(t *testing.T) {
+	with := func(lines string) string {
+		return strings.Replace(rollCompose, "    networks: [internal]\n", lines+"    networks: [internal]\n", 1)
+	}
+	const pass = "  ✓ C15 Every kasbah.noRoll label is a boolean"
+	for _, tc := range []struct{ name, compose, want string }{
+		{"a boolean passes, on an unrouted service too", with("    labels: {kasbah.noRoll: true}\n"), pass},
+		{"ParseBool's forms, in the list form", with("    labels: [\"KASBAH.NOROLL=F\", other=x]\n"), pass},
+		{"no boolean", with("    labels: {kasbah.noRoll: \"yes\"}\n"),
+			"  ✗ C15 db: kasbah.noRoll is 'yes', not a boolean — write true or false; a deploy reads it as true"},
+		{"no value", with("    labels: [kasbah.noroll]\n"),
+			"  ✗ C15 db: kasbah.noroll is '', not a boolean — write true or false; a deploy reads it as true"},
+		{"1.0 is compose's 1", with("    labels: {kasbah.noRoll: 1.0}\n"), pass},
+		{"$$ is a literal", with("    labels: {kasbah.noRoll: \"$$NR\"}\n"),
+			"  ✗ C15 db: kasbah.noRoll is '$$NR', not a boolean — write true or false; a deploy reads it as true"},
+		{"interpolated as $VAR", with("    labels: {kasbah.noRoll: $NR}\n"),
+			"  ⚠ C15 db: kasbah.noRoll is '$NR' — check cannot resolve it; a deploy reads the resolved value, and anything but a false boolean as true"},
+		{"interpolated", with("    labels: {kasbah.noRoll: \"${NR}\"}\n"),
+			"  ⚠ C15 db: kasbah.noRoll is '${NR}' — check cannot resolve it; a deploy reads the resolved value, and anything but a false boolean as true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			project(t, map[string]string{"compose.prod.yml": tc.compose})
+			out, _, _ := check(t)
+			if !strings.Contains(out, tc.want+"\n") {
+				t.Errorf("no line %q in:\n%s", tc.want, out)
+			}
+			if n := strings.Count(out, " C15 "); n != 1 {
+				t.Errorf("%d C15 lines, want one:\n%s", n, out)
+			}
+		})
+	}
+	project(t, map[string]string{"compose.prod.yml": rollCompose})
+	if out, _, _ := check(t); strings.Contains(out, "C15") {
+		t.Errorf("C15 speaks with no label:\n%s", out)
+	}
+}
+
 func TestC14(t *testing.T) {
 	with := func(ports string) string {
 		return strings.Replace(relayCompose, `    ports: ["5000:5000/udp"]`, "    ports: "+ports, 1)

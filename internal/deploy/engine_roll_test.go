@@ -23,6 +23,7 @@ inspect)
     [ "$last" != traefik ] || exit 0
     r=$(row "$last"); [ -n "$r" ] || exit 1
     case "$*" in
+    *Labels*) l=$(sed -n "s/^$(col "$r" 1)=//p" "$LABELS"); [ -n "$l" ] || l='{}'; printf '%s\n' "$l" ;;
     *Networks*) printf '{"demo_kasbah":{"Aliases":null,"DNSNames":["%s","%s"]}}\n' "$(col "$r" 2)" "$(col "$r" 3)" ;;
     *Running*) [ "$(col "$r" 5)" = running ] && echo true || echo false ;;
     *Health*) h=$(sed -n "s/^$(col "$r" 1)=//p" "$HEALTHS"); echo "${h:-healthy}" ;;
@@ -49,15 +50,16 @@ const rollModel = `{"name":"demo","networks":{"kasbah":{"name":"demo_kasbah"},"i
  "demo-db":{"image":"postgres","networks":{"internal":null}}}}`
 
 type rollRig struct {
-	t                           *testing.T
-	dir, log, ps, model, health string
+	t                                   *testing.T
+	dir, log, ps, model, health, labels string
 }
 
 func newRollRig(t *testing.T, model string) *rollRig {
 	t.Helper()
 	root := t.TempDir()
 	r := &rollRig{t: t, dir: filepath.Join(root, "apps", "demo"), log: filepath.Join(root, "log"),
-		ps: filepath.Join(root, "ps"), model: filepath.Join(root, "model"), health: filepath.Join(root, "healths")}
+		ps: filepath.Join(root, "ps"), model: filepath.Join(root, "model"), health: filepath.Join(root, "healths"),
+		labels: filepath.Join(root, "labels")}
 	bin := filepath.Join(root, "bin")
 	os.MkdirAll(bin, 0o755)
 	os.MkdirAll(r.dir, 0o755)
@@ -66,6 +68,7 @@ func newRollRig(t *testing.T, model string) *rollRig {
 	os.WriteFile(filepath.Join(r.dir, ".env"), nil, 0o600)
 	os.WriteFile(r.model, []byte(model), 0o644)
 	os.WriteFile(r.health, nil, 0o644)
+	os.WriteFile(r.labels, nil, 0o644)
 	r.containers("old1\tdemo-demo-web-1\tdemo-web\t1\trunning", "db1\tdemo-demo-db-1\tdemo-db\t1\trunning")
 	r.live("demo-web")
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
@@ -73,6 +76,7 @@ func newRollRig(t *testing.T, model string) *rollRig {
 	t.Setenv("PS", r.ps)
 	t.Setenv("MODEL", r.model)
 	t.Setenv("HEALTHS", r.health)
+	t.Setenv("LABELS", r.labels)
 	t.Setenv("IMGHC", "")
 	return r
 }
@@ -219,6 +223,10 @@ func TestEngineRecreatesInPlace(t *testing.T) {
 			"as it depends_on migrate (service_completed_successfully), a condition only a plain up waits for"},
 		{"live route by container name", rollModel, "as the live route targets demo-demo-web-1, which its new replicas will not answer"},
 		{"no live route", rollModel, "as the live route does not reach its running container on demo_kasbah"},
+		{"a running container labelled kasbah.noRoll", rollModel, "as its running container demo-demo-web-1 is labelled kasbah.noRoll — "},
+		{"a running container's labels unread", rollModel, "as the labels of its running container demo-demo-web-1 cannot be read ("},
+		{"labelled kasbah.noRoll", strings.Replace(rollModel, `"image":"demo-web:current",`, `"image":"demo-web:current","labels":{"kasbah.noRoll":"true"},`, 1), "as it is labelled kasbah.noRoll — "},
+		{"kasbah.noRoll read as true", strings.Replace(rollModel, `"image":"demo-web:current",`, `"image":"demo-web:current","labels":{"kasbah.noRoll":"yes"},`, 1), "as it is labelled kasbah.noRoll=yes, which reads as true — "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRollRig(t, tc.model)
@@ -227,6 +235,10 @@ func TestEngineRecreatesInPlace(t *testing.T) {
 				r.live("demo-web", "demo-demo-web-1")
 			case "no live route":
 				r.live()
+			case "a running container labelled kasbah.noRoll":
+				os.WriteFile(r.labels, []byte(`old1={"com.docker.compose.service":"demo-web","KASBAH.NOROLL":"1"}`+"\n"), 0o644)
+			case "a running container's labels unread":
+				os.WriteFile(r.labels, []byte("old1=not json\n"), 0o644)
 			}
 			rc, _, errs := r.run(r.spec())
 			if rc != 0 || !strings.Contains(errs, "demo-web is recreated in place, "+tc.why) {
@@ -238,8 +250,14 @@ func TestEngineRecreatesInPlace(t *testing.T) {
 			}
 		})
 	}
+	// kasbah.noRoll=false is the default roll, on the files and the running container alike.
+	r := newRollRig(t, strings.Replace(rollModel, `"image":"demo-web:current",`, `"image":"demo-web:current","labels":{"kasbah.noRoll":"false"},`, 1))
+	os.WriteFile(r.labels, []byte(`old1={"kasbah.noRoll":"false"}`+"\n"), 0o644)
+	if rc, _, errs := r.run(r.spec()); rc != 0 || index(r.calls(), "compose -p demo up -d --no-deps --no-recreate --remove-orphans --scale demo-web=2 demo-web") < 0 {
+		t.Fatalf("kasbah.noRoll=false did not roll: rc %d\n%s", rc, errs)
+	}
 	// The image's own healthcheck counts.
-	r := newRollRig(t, strings.Replace(rollModel, `"healthcheck":{"test":["CMD","true"]},`, ``, 1))
+	r = newRollRig(t, strings.Replace(rollModel, `"healthcheck":{"test":["CMD","true"]},`, ``, 1))
 	t.Setenv("IMGHC", `["CMD-SHELL","wget -q -O /dev/null http://127.0.0.1/"]`)
 	if rc, _, errs := r.run(r.spec()); rc != 0 || index(r.calls(), "compose -p demo up -d --no-deps --no-recreate --remove-orphans --scale demo-web=2 demo-web") < 0 {
 		t.Fatalf("an image healthcheck did not roll: rc %d\n%s", rc, errs)
