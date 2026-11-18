@@ -151,18 +151,23 @@ func gated(s composeService) string {
 	return ""
 }
 
+// stay is a routed service the up leaves to compose rather than rolls, and
+// why, as "as it sets container_name".
+type stay struct{ svc, why string }
+
 // rolls picks the routed services the up swaps rather than recreates, and
-// says why each other routed service is recreated in place. A service rolls
-// only when every host the live fragment reaches it by is one its new
-// replicas answer too: that fragment routes until the run's report.
-func (e *engine) rolls() (*composeModel, []roll) {
+// says why each other routed service is left to compose's in-place
+// recreate. A service rolls only when every host the live fragment reaches it
+// by is one its new replicas answer too: that fragment routes until the run's
+// report.
+func (e *engine) rolls() (*composeModel, []roll, []stay) {
 	if len(e.sp.Routed) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	m, err := e.model()
 	if err != nil {
 		e.note("could not read the compose model (%v) — every service is recreated in place", err)
-		return nil, nil
+		return nil, nil, nil
 	}
 	netName := e.project + "_" + projectNet
 	if n, ok := m.Networks[projectNet]; ok && n.Name != "" {
@@ -170,15 +175,14 @@ func (e *engine) rolls() (*composeModel, []roll) {
 	}
 	live := fragmentHosts(filepath.Join(filepath.Dir(e.dir), "traefik", "dynamic", e.project+".yml"))
 	var out []roll
+	var stays []stay
 	for _, svc := range sortedKeys(m.Services) {
 		s := m.Services[svc]
 		host, byCN := routedBy(svc, s, e.sp.Routed)
 		if host == "" {
 			continue
 		}
-		inPlace := func(why string) {
-			e.note("%s is recreated in place, %s — its route answers 502 until the new container is up", svc, why)
-		}
+		inPlace := func(why string) { stays = append(stays, stay{svc, why}) }
 		shape := shapeOf(s, byCN)
 		why := ""
 		for _, st := range shape.Stays(e.sp.NoHealthWait) {
@@ -240,7 +244,77 @@ func (e *engine) rolls() (*composeModel, []roll) {
 		}
 		out = append(out, r)
 	}
-	return m, out
+	return m, out, stays
+}
+
+// running is each service's running containers, id to start time; ok is
+// false when docker cannot read them.
+func (e *engine) running() (map[string]map[string]string, bool) {
+	cs, err := containers(e.project, e.query)
+	if err != nil {
+		return nil, false
+	}
+	var ids []string
+	svcOf := map[string]string{}
+	for _, c := range cs {
+		if c.running {
+			ids = append(ids, c.id)
+			svcOf[c.id] = c.svc
+		}
+	}
+	out := map[string]map[string]string{}
+	if len(ids) == 0 {
+		return out, true
+	}
+	txt, err := e.query(append([]string{"inspect", "-f", "{{.Id}} {{.State.StartedAt}}"}, ids...)...)
+	if err != nil {
+		return nil, false
+	}
+	for _, l := range strings.Split(strings.ReplaceAll(txt, "\r", ""), "\n") {
+		id, at, ok := strings.Cut(l, " ")
+		if svc := svcOf[id]; ok && svc != "" {
+			if out[svc] == nil {
+				out[svc] = map[string]string{}
+			}
+			out[svc][id] = at
+		}
+	}
+	return out, true
+}
+
+// noteRecreated names each stay the up took down, whether it succeeded or
+// not: one none of whose containers running before it still runs unchanged
+// (same id, same start). Every one gone is a recreate, a survivor started
+// again a restart; nothing running before is no outage. When docker cannot
+// read either side, every stay is named a recreate: the line warns of a 502,
+// which is not left unsaid on a guess.
+func (e *engine) noteRecreated(stays []stay, before map[string]map[string]string, ok bool) {
+	if len(stays) == 0 {
+		return
+	}
+	after, okAfter := e.running()
+	for _, st := range stays {
+		if ok && okAfter {
+			was, now := before[st.svc], after[st.svc]
+			kept, gone := false, 0
+			for id, at := range was {
+				switch started, still := now[id]; {
+				case !still:
+					gone++
+				case started == at:
+					kept = true
+				}
+			}
+			if kept || len(was) == 0 {
+				continue
+			}
+			if gone < len(was) {
+				e.note("%s was restarted in place, %s — its route answered 502 while it restarted", st.svc, st.why)
+				continue
+			}
+		}
+		e.note("%s was recreated in place, %s — its route answered 502 while it was replaced", st.svc, st.why)
+	}
 }
 
 func sortedKeys[V any](m map[string]V) []string {
@@ -463,9 +537,16 @@ func (e *engine) upStack() (string, error) {
 	if e.noSvc = composefile.Serviceless(e.dir); e.noSvc {
 		return "up", e.up()
 	}
-	m, rs := e.rolls()
+	m, rs, stays := e.rolls()
+	var before map[string]map[string]string
+	listed := false
+	if len(stays) > 0 {
+		before, listed = e.running()
+	}
 	if len(rs) == 0 {
-		if e.up() != nil {
+		err := e.up()
+		e.noteRecreated(stays, before, listed)
+		if err != nil {
 			return "up", failf("docker compose -p %s up -d --remove-orphans failed in %s", e.project, e.dir)
 		}
 		return "", nil
@@ -478,7 +559,9 @@ func (e *engine) upStack() (string, error) {
 	}
 	if len(rest) > 0 {
 		args := append([]string{"compose", "-p", e.project, "up", "-d", "--no-deps", "--remove-orphans"}, rest...)
-		if trace.Run(e.docker(args...)) != nil {
+		err := trace.Run(e.docker(args...))
+		e.noteRecreated(stays, before, listed)
+		if err != nil {
 			return "up", failf("docker compose -p %s up -d --no-deps --remove-orphans %s failed in %s", e.project, strings.Join(rest, " "), e.dir)
 		}
 	}

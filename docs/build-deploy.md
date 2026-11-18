@@ -1265,11 +1265,20 @@ directory is listed in `files.md`).
   never by compose's choice on scale-down. Measured on the rig at ~15 req/s:
   2–7 502s per in-place recreate, 0 per roll. A replica that never turns
   healthy is removed and the deploy reverts, the old container untouched. Every
-  other service — and a routed one that cannot roll, which the deploy names
-  with why — is recreated in place, briefly unrouted. In place, compose
-  stops all of a service's old containers before it starts any new one
-  (measured with three replicas: the last old one gone before the first new
-  one started), which is what `kasbah.noRoll: "true"` asks for: a service
+  other service — and a routed one that cannot roll — is left to compose,
+  which recreates it in place, briefly unrouted, when its image or config
+  changed (or restarts it, when a `depends_on` with `restart: true` changed),
+  and leaves it running otherwise. Once compose's `up` returns, failed or
+  not, the deploy names with why each routed one it took down — one none of
+  whose containers running before the `up` still runs with the same id and
+  start time: `<svc> was recreated in place, as … — its route answered 502
+  while it was replaced` when they are all gone, `was restarted in place`
+  when one restarted under its id, and a recreate for every one when docker
+  cannot read the containers. An unchanged redeploy names none, nor does a
+  scale-down that keeps a replica running.
+  In place, compose stops all of a service's old containers before it starts
+  any new one (measured with three replicas: the last old one gone before the
+  first new one started), which is what `kasbah.noRoll: "true"` asks for: a service
   whose old and new containers must never run together. `kasbah check` warns
   beforehand about each routed service compose or the fragment keep from
   rolling, and says which ones `kasbah.noRoll` keeps in place on purpose

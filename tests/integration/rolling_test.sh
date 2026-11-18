@@ -138,7 +138,7 @@ run deploy "$RIG_TARGET"; rc=$?
 probe_stop
 read -r inplace_bad inplace_total inplace_max inplace_codes <<<"$probe_result"
 assert '[ "$rc" = 0 ]' "1.1.0 deploys (rc $rc: $(cli_err))"
-assert 'grep -qF "built-app-web is recreated in place, as the fragment targets its container_name" "$tmpdir/err"' \
+assert 'grep -qF "built-app-web was recreated in place, as the fragment targets its container_name" "$tmpdir/err"' \
     "a container_name target is recreated in place, and the deploy says so ($(cli_err))"
 assert '[ "${inplace_total:-0}" -lt "$probe_cap" ]' "the stop file, not the cap, ended the in-place loop ($inplace_total)"
 echo "  measured: in-place recreate — $inplace_bad of $inplace_total requests not 200 (${inplace_codes:-none}; at most $inplace_max built-app-web running)" >&2
@@ -220,7 +220,7 @@ page served-by-built-app-one-five
 release 1.5.0
 run build-push "$RIG_TARGET" || { echo "error: build-push of 1.5.0 failed: $(cli_err)" >&2; exit 2; }
 run deploy "$RIG_TARGET"; rc=$?
-assert 'grep -qF "built-app-web is recreated in place, as it depends_on migrate (service_completed_successfully), a condition only a plain up waits for" "$tmpdir/err"' \
+assert 'grep -qF "built-app-web was recreated in place, as it depends_on migrate (service_completed_successfully), a condition only a plain up waits for" "$tmpdir/err"' \
     "a service gated on a one-shot is not rolled ($(cli_err))"
 assert '[ "$rc" != 0 ] && grep -qF "failed (up) and was reverted — the server is back on 1.3.0" "$tmpdir/err"' \
     "and the failed migrate fails the deploy (rc $rc: $(cli_err))"
@@ -238,7 +238,7 @@ since=$(remote "date +%s.%N")
 run deploy "$RIG_TARGET"; rc=$?
 until=$(remote "date +%s.%N")
 assert '[ "$rc" = 0 ]' "1.6.0 deploys (rc $rc: $(cli_err))"
-assert 'grep -qF "built-app-web is recreated in place, as it is labelled kasbah.noRoll" "$tmpdir/err"' \
+assert 'grep -qF "built-app-web was recreated in place, as it is labelled kasbah.noRoll" "$tmpdir/err"' \
     "a kasbah.noRoll service is not rolled, and the deploy says why ($(cli_err))"
 ids=$(web_ids)
 assert '[ "$(grep -c . <<<"$ids")" = 2 ] && ! grep -qxF "$old" <<<"$ids"' "two new built-app-web run, the old one gone ($ids vs $old)"
@@ -250,7 +250,7 @@ assert '[ -n "$died" ] && [ -n "$first" ] && [ "$died" -lt "$first" ]' \
 served=$(remote "curl -s -m 5 -H 'Host: built-app.test' http://127.0.0.1/")
 assert 'grep -qF served-by-built-app-one-six <<<"$served"' "1.6.0's page is served"
 run rollback "$RIG_TARGET" 1.3.0 --no-env --no-data; rc=$?
-assert '[ "$rc" = 0 ] && grep -qF "built-app-web is recreated in place, as its running container " "$tmpdir/err" && grep -qF " is labelled kasbah.noRoll" "$tmpdir/err"' \
+assert '[ "$rc" = 0 ] && grep -qF "built-app-web was recreated in place, as its running container " "$tmpdir/err" && grep -qF " is labelled kasbah.noRoll" "$tmpdir/err"' \
     "a rollback to 1.3.0, which has no label, is not rolled out of the labelled containers (rc $rc: $(cli_err))"
 
 [ "$fail" = 0 ] && rig_clean >/dev/null 2>&1
