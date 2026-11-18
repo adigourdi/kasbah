@@ -95,8 +95,9 @@ kasbah renders it whole on every `--with-mail` run, `add-mail-domain` and
 
 **The Traefik stack has no `.env`, deliberately** — its one environment is
 each DNS provider's credentials, read through `env_file:` from
-`acme-dns/<provider>.env` (`traefik.md` → DNS-01). Traefik expands
-environment variables in neither its static nor its dynamic configuration,
+`acme-dns/<provider>.env` (`traefik.md` → DNS-01). Traefik's static
+configuration expands no environment variable, and a dynamic file's
+`{{ env }}` reads only Traefik's own environment,
 so the ACME email, the dashboard domain and basic-auth hash (when there is a
 dashboard) and the ACME `caServer` are baked into the rendered files at init time. The rendered `compose.yml` then
 contains no `${…}` for compose to interpolate, which leaves an `.env` with
@@ -860,8 +861,10 @@ reporting them identically would make the line decoration. `check --server`
 answers the same question as a rule (B01) through the same parser.
 
 **The per-project domain comes from `<apps>/traefik/dynamic/<name>.yml`**,
-returned by the server binary in the same round trip and parsed by kasbah on the
-workstation. The VPS needs no `yq`, `jq` or `python3`. Every host the
+parsed by the server binary in the same round trip, which returns each host,
+whether it is plain HTTP, and its resolver — never the fragment, which may hold
+the project's secrets (`traefik.md` → Project fragment). The VPS needs no
+`yq`, `jq` or `python3`. Every host the
 fragment's rules name in a `Host()`, negated ones aside, is listed, once, in
 the order they appear. When the fragment has no router that could serve HTTPS
 (`traefik.md` → TLS), each host says `plain HTTP — its fragment has no HTTPS

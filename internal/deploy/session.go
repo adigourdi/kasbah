@@ -1,7 +1,9 @@
 package deploy
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -144,14 +146,31 @@ func (s *SSH) Run(dir string, sp Spec, ask func(Question) string) (string, int) 
 	return out, ssh.ExitCode(trace.Wait(cmd))
 }
 
-// Fragment is a temp file renamed over dest, never written in place: Traefik's
-// watcher must see one atomic replace. Mode 644 whatever the source's.
-func (s *SSH) Fragment(local, dest string) error {
-	src, err := treesync.Fixed(local, 0o644)
+// Fragment sends the fragment as written, with its size and sha256; the
+// server fills it from the project's .env and installs it (installFragment).
+func (s *SSH) Fragment(local, apps, name string, tagged bool) error {
+	body, err := os.ReadFile(local)
 	if err != nil {
-		return err
+		return cli.OSCause(err)
 	}
-	return treesync.Push(s.Conn, s.Bin(), src, dest)
+	size, sum := remote.Digest(body)
+	args := []string{"deploy", "fragment", apps, name, size, sum, s.target()}
+	if tagged {
+		args = append(args, "--tagged")
+	}
+	cmd := s.Conn.Command(s.Bounded(args...)...)
+	cmd.Stdin = bytes.NewReader(body)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := trace.Run(cmd); err != nil {
+		return fmt.Errorf("the server refused it (%s, see above)", serverbin.ExitText(ssh.ExitCode(err), serverbin.RunTimeout))
+	}
+	switch lines(out.Bytes())["fragment"] {
+	case "written", "unchanged":
+		return nil
+	}
+	return rawOutput(cli.Fail("the fragment step on %s reported no fragment", s.target()).Cont(
+		"the step was truncated, or the server's kasbah rejected it — raw output:"), out.Bytes())
 }
 
 // Unroute is `kasbah remote deploy unroute`.

@@ -796,8 +796,9 @@ pointer).
 
 **The project's domain was the one open decision, and it is settled.** It lives
 in `<apps>/traefik/dynamic/<name>.yml`, so printing it costs either a YAML parse
-or a Traefik API call with the dashboard credentials. kasbah **fetches the
-fragment in the same round trip and parses it on the workstation**. The credentials route would
+or a Traefik API call with the dashboard credentials. kasbah **parses the
+fragment on the server in the same round trip**, which returns its hosts and
+their resolvers, never its text (it may hold the project's secrets). The credentials route would
 yield certificates and router health in one call, but `status` holds only the
 bcrypt hash from `_shared.yml` — never the password — so it would need a new
 flag or prompt plus reachability to `traefik.<apex>`. The VPS has no `yq`, `jq`
@@ -1139,7 +1140,11 @@ Flow (no-args / working-tree path):
      publishes, nor runs under the compose project name `<name>` from
      another directory — either refuses the run, naming the container and the
      way out, with nothing started (`build-deploy.md` → Containers outside the
-     project). Rollback and `deploy VERSION` run the same pre-flight.
+     project); and the fragment renders against `.env` — a `${KEY}` the
+     template does not declare, a `KASBAH_` one, one `.env` leaves unset or
+     empty, or a result that is not YAML refuses the run the same way, naming
+     the key and the `kasbah env set` that sets it. Rollback and `deploy
+     VERSION` run the same pre-flight.
    - Create `backups/<outgoing version>-<stamp>/` and run the `backup` hooks
      into it (`$KASBAH_BACKUP_DIR`), against the previous version's
      still-running containers; `--skip-hooks` does not skip them.
@@ -1164,7 +1169,9 @@ Flow (no-args / working-tree path):
      hours but the newest of them (`build-deploy.md` → A deploy that fails …
      reverts). The summary's `backup:` line names the tarball, or says none
      was taken.
-9. Sync `traefik-dynamic.yml` to `/apps/traefik/dynamic/<name>.yml` — locally
+9. Install `traefik-dynamic.yml` as `/apps/traefik/dynamic/<name>.yml`, its
+   `${KEY}`s filled on the server from the project's `.env` (`traefik.md` →
+   Project fragment; the engine's pre-flight renders it first) — locally
    driven, after the stack is up, so a failed deploy leaves no live route.
    Without one nothing is written, with a warning — unless the manifest says
    `routed: false`: then the route an earlier version left there is removed,
@@ -1243,7 +1250,8 @@ Flow (see `build-deploy.md` for full detail):
    - Pre-flight, as `deploy` runs it: every built image's `:<target>` is on
      the server, and no container outside the project publishes a host port
      v<target>'s `compose.yml` publishes, nor runs under the compose project
-     name `<name>` from another directory — either refuses the rollback,
+     name `<name>` from another directory, and v<target>'s fragment renders
+     against the server's `.env` — any of these refuses the rollback,
      naming the container and the way out, with nothing started and the files
      and `.env` put back.
    - Extract the backup into `<apps>/<name>/.kasbah-unpacked.<pid>/`, handed
@@ -1266,8 +1274,10 @@ Flow (see `build-deploy.md` for full detail):
      `.kasbah-hooks.json` from v<target>'s manifest.
    - Append rollback entry to `versions.log`, field 4 naming that backup,
      rotate, apply backup retention (as `deploy`).
-9. Sync v<target>'s `traefik-dynamic.yml` to
-   `/apps/traefik/dynamic/<name>.yml` — **last**, once the remote step has
+9. Install v<target>'s `traefik-dynamic.yml` as
+   `/apps/traefik/dynamic/<name>.yml`, rendered against the server's `.env` as
+   `deploy` renders it, a `${…}` naming no key it may take left as written
+   with a warning — **last**, once the remote step has
    returned 0, for the same reason `deploy` ships it last. A version carrying
    no fragment is rolled back anyway and warned about, and the fragment
    already there is kept — unless its manifest says `routed: false`: then no

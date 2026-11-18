@@ -444,8 +444,8 @@ assert '[ "$code_unrouted" = "404" ]' \
 
 # --- The fragment, and a Traefik that never restarted ----------------------------------
 frag_stat=$(rig_ssh "stat -c '%F %a' $fragment" 2>/dev/null)
-assert '[ "$frag_stat" = "regular file 644" ]' \
-    "$fragment is a regular file, mode 644 (got '$frag_stat')"
+assert '[ "$frag_stat" = "regular file 640" ]' \
+    "$fragment is a regular file, mode 640 (got '$frag_stat')"
 frag_sha=$(rig_ssh "sha256sum $fragment | cut -d' ' -f1" 2>/dev/null)
 local_sha=$(sha256sum "$projdir/traefik-dynamic.yml" | cut -d' ' -f1)
 assert '[ "$frag_sha" = "$local_sha" ]' \

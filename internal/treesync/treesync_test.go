@@ -589,26 +589,6 @@ func TestFileDestination(t *testing.T) {
 	}
 }
 
-// TestFixed is the fragment: mode forced, a symlinked source followed.
-func TestFixed(t *testing.T) {
-	dir := t.TempDir()
-	write(t, dir+"/real.yml", "http: {}\n", 0o600, at("2022-02-02 00:00:00.2"))
-	symlink(t, "real.yml", dir+"/frag.yml", time.Time{})
-	s, err := Fixed(dir+"/frag.yml", 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
-	write(t, dir+"/dyn/x.yml", "old\n", 0o600, time.Time{})
-	if r := transfer(t, s, dir+"/dyn/x.yml"); r.rc != 0 {
-		t.Fatalf("rc %d %q", r.rc, r.remote)
-	}
-	fi, _ := os.Lstat(dir + "/dyn/x.yml")
-	b, _ := os.ReadFile(dir + "/dyn/x.yml")
-	if !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o644 || string(b) != "http: {}\n" || !fi.ModTime().Equal(at("2022-02-02 00:00:00.2")) {
-		t.Errorf("got %v %q %v", fi.Mode(), b, fi.ModTime())
-	}
-}
-
 // stream is a hand-built transfer of one file, for the integrity cases.
 func stream(t *testing.T, body string, mutate func(frame []byte) []byte) []byte {
 	var b bytes.Buffer

@@ -39,10 +39,9 @@ type Entry struct {
 	Nsec   int64
 	Size   int64
 	Target string
-	// local is the workstation's path, follow whether opening it may follow a
-	// symlink; neither travels.
-	local  string
-	follow bool
+	// local is the workstation's path, opened without following a symlink;
+	// it does not travel.
+	local string
 }
 
 // unixMode is m's permission bits with setuid, setgid and sticky as 07777.

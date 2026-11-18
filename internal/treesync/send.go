@@ -124,21 +124,6 @@ func File(src string, warn io.Writer) (*Source, error) {
 	return s, nil
 }
 
-// Fixed is `rsync -pt --chmod=F<mode> src`, except that a symlinked src is
-// followed where rsync without -l skipped it: what src resolves to, at mode.
-func Fixed(src string, mode uint32) (*Source, error) {
-	fi, err := os.Stat(src)
-	if err != nil {
-		return nil, fmt.Errorf("cannot read %s: %v", src, cli.OSCause(err))
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", src)
-	}
-	e := entryOf(src, filepath.Base(src), fi)
-	e.Kind, e.Size, e.Mode, e.follow = kindFile, fi.Size(), mode, true
-	return &Source{Ents: []Entry{e}}, nil
-}
-
 // Send drives one transfer: the manifest out, the server's need list in, the
 // needed files out, then the server's report. r and w are the far side's
 // stdout and stdin; w is closed once everything is sent.
@@ -204,11 +189,7 @@ func readNeed(r *bufio.Reader, ents []Entry) ([]int, error) {
 // abort, which the server discards and counts. err is the stream's own failure.
 func sendFile(w *writer, i int, e Entry, buf []byte, warn io.Writer) error {
 	w.uvarint(uint64(i))
-	flags := os.O_RDONLY | syscall.O_NOFOLLOW
-	if e.follow {
-		flags = os.O_RDONLY
-	}
-	f, oerr := os.OpenFile(e.local, flags, 0)
+	f, oerr := os.OpenFile(e.local, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if oerr == nil {
 		if fi, serr := f.Stat(); serr != nil || !fi.Mode().IsRegular() {
 			f.Close()

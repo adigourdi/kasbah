@@ -42,6 +42,11 @@ const goodFragment = "http:\n  routers:\n" +
 	"    demo: {rule: \"Host(`demo.example.com`)\", entryPoints: [websecure], tls: {certResolver: http}, service: demo}\n" +
 	"  services:\n    demo: {loadBalancer: {servers: [{url: \"http://demo-web:80\"}]}}\n"
 
+// authMW is a basicAuth middleware whose users line is users.
+func authMW(users string) string {
+	return "  middlewares:\n    demo-auth:\n      basicAuth:\n        users: [\"" + users + "\"]\n"
+}
+
 // project writes a passing project into a fresh working directory, then the
 // overrides (an empty body removes the file).
 func project(t *testing.T, files map[string]string) {
@@ -444,6 +449,35 @@ func TestVerdicts(t *testing.T) {
 			[]string{"  ✗ HK01 kasbah.yml: hooks.restore holds an empty entry — each entry is one shell command"}},
 		{"HK01 passes a backup hook", map[string]string{"kasbah.yml": man + "hooks:\n  backup: ['pg_dump > \"$KASBAH_BACKUP_DIR/db.sql\"']\n  restore: ['psql < \"$KASBAH_BACKUP_DIR/db.sql\"']\n"}, 0,
 			[]string{"  ✓ HK01 Every hook is one line of shell"}},
+		{"T12: a declared ${KEY} passes, and T13 with it",
+			map[string]string{"traefik-dynamic.yml": goodFragment + authMW("${AUTH_USERS}") + "# also $${LITERAL} and $apr1$x$y\n", ".env.prod.example": "DOMAIN=x\nAUTH_USERS=\n"}, 0,
+			[]string{"  ✓ T12 Fragment's ${KEY}s are declared in .env.prod.example (AUTH_USERS) — a deploy fills them from the server's .env",
+				"  ✓ T13 No ${KEY} in a router's rule, tls, service or middlewares, nor a service name T09 reads", "  ✓ T09 No router or service reaches a Traefik internal service other than noop@internal",
+				"  ✓ T02 At least one router references manifest domain (demo.example.com)"}},
+		{"T12: an undeclared ${KEY} fails",
+			map[string]string{"traefik-dynamic.yml": goodFragment + authMW("${AUTH_USERS}") + "# ${OTHER}\n"}, 6,
+			[]string{"  ✗ T12 Fragment names keys .env.prod.example does not declare: AUTH_USERS OTHER — a deploy fills ${KEY} from the server's .env, declared keys only"}},
+		{"T12: a KASBAH_ key fails, even declared",
+			map[string]string{"traefik-dynamic.yml": goodFragment + authMW("${KASBAH_CPU_LIMIT}"), ".env.prod.example": "DOMAIN=x\nKASBAH_CPU_LIMIT=1\n"}, 6,
+			[]string{"  ✗ T12 Fragment names reserved KASBAH_* keys, which a deploy never fills it from: KASBAH_CPU_LIMIT"}},
+		{"T13: a ${KEY} in a rule or under tls fails",
+			map[string]string{"traefik-dynamic.yml": strings.Replace(strings.Replace(goodFragment, "Host(`demo.example.com`)\", entryPoints: [web]", "Host(`${HOST}`)\", entryPoints: [web]", 1),
+				"certResolver: http", "certResolver: \"${RESOLVER}\"", 1), ".env.prod.example": "DOMAIN=x\nHOST=\nRESOLVER=\n"}, 6,
+			[]string{"  ✓ T12 Fragment's ${KEY}s are declared in .env.prod.example (HOST RESOLVER) — a deploy fills them from the server's .env",
+				"  ✗ T13 A ${KEY} where a host, resolver or service name must stay literal: demo.tls demo-http.rule"}},
+		{"T13: a ${KEY} as a router's service or middleware fails",
+			map[string]string{"traefik-dynamic.yml": strings.Replace(goodFragment, "service: demo}", "service: \"${SVC}\", middlewares: [\"${MW}\"]}", 1), ".env.prod.example": "DOMAIN=x\nSVC=\nMW=\n"}, 6,
+			[]string{"  ✗ T13 A ${KEY} where a host, resolver or service name must stay literal: demo.service demo.middlewares"}},
+		{"T13: a ${KEY} as a service name T09 reads outside routers fails",
+			map[string]string{"traefik-dynamic.yml": goodFragment + "    split: {weighted: {services: [{name: \"${W}\", weight: 1}]}}\n" +
+				"  middlewares:\n    oops: {errors: {status: [\"500\"], service: \"${E}\", query: /}}\n", ".env.prod.example": "DOMAIN=x\nW=\nE=\n"}, 6,
+			[]string{"  ✗ T13 A ${KEY} where a host, resolver or service name must stay literal: services.split middlewares.oops.errors.service"}},
+		{"T12: reserved and undeclared keys on one line, reserved first",
+			map[string]string{"traefik-dynamic.yml": goodFragment + authMW("${OTHER}") + "# ${KASBAH_CPU_LIMIT}\n"}, 6,
+			[]string{"  ✗ T12 Fragment names reserved KASBAH_* keys, which a deploy never fills it from: KASBAH_CPU_LIMIT; and keys .env.prod.example does not declare: OTHER — a deploy fills ${KEY} from the server's .env, declared keys only"}},
+		{"T12 reads a fragment YAML refuses; T13 needs it read",
+			map[string]string{"traefik-dynamic.yml": "http: [\n# ${NOPE}\n"}, 6,
+			[]string{"  ✗ T12 Fragment names keys .env.prod.example does not declare: NOPE — a deploy fills ${KEY} from the server's .env, declared keys only"}},
 		{"a NUL ends a .gitignore line", map[string]string{".gitignore": "x\x00.env\x00.kasbah/"}, 0,
 			[]string{"  ✓ S05 .gitignore excludes .env", "  ✓ S06 .gitignore excludes .kasbah/"}},
 		{"a mail: key kasbah does not know is not read", map[string]string{"kasbah.yml": "schema: 1\nname: demo\ndomain: demo.example.com\nmail: {domain: x.io, snappymail_domain: ./x.json}\n"}, 0,

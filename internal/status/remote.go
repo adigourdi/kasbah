@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/adigourdi/kasbah/internal/acme"
 	"github.com/adigourdi/kasbah/internal/backup"
 	"github.com/adigourdi/kasbah/internal/backuprec"
 	"github.com/adigourdi/kasbah/internal/composefile"
@@ -45,9 +46,9 @@ type Container struct {
 	Health string `json:"health"`
 }
 
-// Project is one entry under <apps>. LogState is ok, missing, empty, notfile,
-// unreadable, noaccess or notdir; FragState is ok, absent, empty, unreadable
-// or notfile.
+// Project is one entry under <apps>. LogState: ok missing empty notfile unreadable
+// noaccess notdir; FragState: ok unparsed absent empty unreadable notfile. Hosts
+// is an ok fragment's hosts: it may hold secrets, so it stays on the server.
 type Project struct {
 	Name       string      `json:"name"`
 	Total      int         `json:"total"`
@@ -55,12 +56,51 @@ type Project struct {
 	LogState   string      `json:"log_state"`
 	Log        string      `json:"log"`
 	FragState  string      `json:"frag_state"`
-	Frag       string      `json:"frag_b64"`
+	Hosts      []FragHost  `json:"frag_hosts"`
 	Containers []Container `json:"containers"`
 	// Leftovers is what runs left in the directory that may hold .env.
 	Leftovers deploy.Leftovers `json:"leftovers"`
 	// Serviceless: compose.yml declares no service, so no container is expected.
 	Serviceless bool `json:"serviceless"`
+}
+
+// FragHost is one host a fragment's routers name: Plain when Traefik serves
+// it over plain HTTP only, else the resolver whose store holds its certificate.
+type FragHost struct {
+	Host     string `json:"host"`
+	Plain    bool   `json:"plain,omitempty"`
+	Resolver string `json:"resolver,omitempty"`
+}
+
+// fragmentFacts is an installed fragment's state and its hosts.
+func fragmentFacts(path string) (string, []FragHost) {
+	raw, err := os.ReadFile(path)
+	switch {
+	case err != nil:
+		return "unreadable", nil
+	case len(raw) == 0:
+		return "empty", nil
+	}
+	return FragmentHosts(raw)
+}
+
+// FragmentHosts is a fragment's state, ok or unparsed, and what it says of
+// each host it routes, in router order.
+func FragmentHosts(raw []byte) (string, []FragHost) {
+	root, ok := ParseFragment(raw)
+	if !ok {
+		return "unparsed", nil
+	}
+	routes := acme.Routes(root)
+	hosts := []FragHost{}
+	for _, h := range acme.Hosts(routes) {
+		if acme.PlainHTTP(raw, root, h) {
+			hosts = append(hosts, FragHost{Host: h, Plain: true})
+		} else {
+			hosts = append(hosts, FragHost{Host: h, Resolver: acme.ResolverFor(routes, h)})
+		}
+	}
+	return "ok", hosts
 }
 
 // Foreign is a container kasbah does not manage; Health is none without a
@@ -384,11 +424,7 @@ func projects(apps string, docker bool) []Project {
 			case !probe.Readable(frag):
 				p.FragState = "unreadable"
 			default:
-				if p.Frag = probe.B64(frag); p.Frag != "" {
-					p.FragState = "ok"
-				} else {
-					p.FragState = "empty"
-				}
+				p.FragState, p.Hosts = fragmentFacts(frag)
 			}
 		}
 

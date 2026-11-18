@@ -139,6 +139,12 @@ var Rules = []Rule{
 	{"T11", "Traefik", "fail/warn", false, "An unrouted project ships no fragment",
 		"With `routed: false` nothing is routed: a fragment beside it fails, and a domain beside it warns that nothing routes it.",
 		"Remove traefik-dynamic.yml or `routed: false`, and leave domain: out of an unrouted project."},
+	{"T12", "Traefik", "fail", false, "Every ${KEY} in the fragment is a declared, non-KASBAH_ key",
+		"A deploy fills ${KEY} from the server's .env, and only for keys .env.prod.example declares: anything else stops a deploy of the working tree before any change (rollback and deploy X.Y.Z leave it as written, with a warning).",
+		"Declare the key in .env.prod.example and set it with `kasbah env set KEY`, or write a literal ${ as $${."},
+	{"T13", "Traefik", "fail", false, "No ${KEY} in a host, resolver or service name",
+		"check, check --server and server status read a project's hosts from the fragment as written, and T09 every service name it reaches (a router's, a mirroring, weighted, highestRandomWeight or failover service's, an errors middleware's), so those stay literal.",
+		"Write the hostnames, the tls block and every service and middleware name out; keep ${KEY} for values such as a basicAuth users line."},
 
 	{"H01", "Healthchecks", "warn", false, "Every built service declares a compose healthcheck",
 		"check cannot see a Dockerfile HEALTHCHECK, so it warns even when the image declares one.",

@@ -126,6 +126,12 @@ type fake struct {
 
 func (f *fake) Read(string) (*Report, string, string, error) { return f.r, f.apps, f.source, f.err }
 
+// hostsOf is what the server arm sends of an ok fragment.
+func hostsOf(frag string) []FragHost {
+	_, h := FragmentHosts([]byte(frag))
+	return h
+}
+
 func b64s(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 
 func base() *Report {
@@ -319,10 +325,10 @@ func TestCertsAndMail(t *testing.T) {
 	r.MailDMS = Stack{State: "running", Health: "healthy", Restarts: "3"}
 	r.MailWeb = Stack{State: "absent"}
 	r.Projects = []Project{{Name: "demo", LogState: "ok", Log: "2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0", FragState: "ok", Total: 1, Running: 1,
-		Frag:       b64s("http:\n  routers:\n    a: {rule: \"Host(`demo.test`) || Host(`bad.test`) || Host(`none.test`)\"}\n    b: {rule: \"Host(`plain.test`) || Host(`demo.test`)\", entryPoints: [web]}\n"),
+		Hosts:      hostsOf("http:\n  routers:\n    a: {rule: \"Host(`demo.test`) || Host(`bad.test`) || Host(`none.test`)\"}\n    b: {rule: \"Host(`plain.test`) || Host(`demo.test`)\", entryPoints: [web]}\n"),
 		Containers: []Container{{"demo-web", "running", "healthy"}}},
 		{Name: "site", LogState: "ok", Log: "2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0", FragState: "ok", Total: 1, Running: 1,
-			Frag:       b64s("http:\n  routers:\n    a: {rule: \"Host(`site.test`)\", entryPoints: [web]}\n"),
+			Hosts:      hostsOf("http:\n  routers:\n    a: {rule: \"Host(`site.test`)\", entryPoints: [web]}\n"),
 			Containers: []Container{{"site-web", "running", "healthy"}}}}
 	out, _, _ := runStatus(t, r)
 	has(t, out,
@@ -340,7 +346,7 @@ func TestCertsAndMail(t *testing.T) {
 	wild := r
 	wild.Acme = b64s(`{"http":{"Certificates":[]},"cloudflare":{"Certificates":[{"domain":{"main":"tenants.test","sans":["*.tenants.test"]},"certificate":"` + pemCert(t, "tenants.test", now.Add(60*24*time.Hour+time.Hour)) + `"}]}}`)
 	wild.Projects = []Project{{Name: "demo", LogState: "ok", Log: r.Projects[0].Log, FragState: "ok", Total: 1, Running: 1,
-		Frag: b64s("http:\n  routers:\n    a: {rule: \"Host(`acme.tenants.test`) || Host(`a.b.tenants.test`)\", tls: {certResolver: cloudflare}}\n")}}
+		Hosts: hostsOf("http:\n  routers:\n    a: {rule: \"Host(`acme.tenants.test`) || Host(`a.b.tenants.test`)\", tls: {certResolver: cloudflare}}\n")}}
 	out, _, _ = runStatus(t, wild)
 	has(t, out, "      acme.tenants.test\n          certificate (by the wildcard *.tenants.test, a SAN of tenants.test) valid for 60 more day(s) (until ",
 		"      a.b.tenants.test\n          no certificate — Traefik issues one when the hostname resolves here")
@@ -348,7 +354,7 @@ func TestCertsAndMail(t *testing.T) {
 	dns := r
 	dns.Acme = b64s(`{"http":{"Certificates":[]},"cloudflare":{"Certificates":[{"domain":{"main":"demo.test"},"certificate":"` + pemCert(t, "demo.test", now.Add(80*24*time.Hour+time.Hour)) + `"}]}}`)
 	dns.Projects = []Project{{Name: "demo", LogState: "ok", Log: r.Projects[0].Log, FragState: "ok", Total: 1, Running: 1,
-		Frag: b64s("http:\n  routers:\n    a: {rule: \"Host(`demo.test`)\", tls: {certResolver: cloudflare}}\n    b: {rule: \"Host(`other.test`)\", tls: {certResolver: ovh}}\n")}}
+		Hosts: hostsOf("http:\n  routers:\n    a: {rule: \"Host(`demo.test`)\", tls: {certResolver: cloudflare}}\n    b: {rule: \"Host(`other.test`)\", tls: {certResolver: ovh}}\n")}}
 	out, _, _ = runStatus(t, dns)
 	has(t, out, "  Certificates: 1 in /apps/data/traefik/letsencrypt/acme.json",
 		"      demo.test\n          certificate valid for 80 more day(s)",
@@ -358,7 +364,7 @@ func TestCertsAndMail(t *testing.T) {
 	}
 	// A store filled under the former name says so.
 	dns.Acme = b64s(`{"letsencrypt":{"Certificates":[{"domain":{"main":"demo.test"},"certificate":"` + pemCert(t, "demo.test", now.Add(80*24*time.Hour)) + `"}]}}`)
-	dns.Projects[0].Frag = b64s("http:\n  routers:\n    a: {rule: \"Host(`demo.test`)\", tls: {certResolver: http}}\n")
+	dns.Projects[0].Hosts = hostsOf("http:\n  routers:\n    a: {rule: \"Host(`demo.test`)\", tls: {certResolver: http}}\n")
 	out, _, _ = runStatus(t, dns)
 	has(t, out, "  Certificates: 1 in /apps/data/traefik/letsencrypt/acme.json\n    filled under the resolver's former name 'letsencrypt', with nothing under 'http' yet",
 		"      demo.test\n          no certificate — nothing under 'http' yet; the store's 'letsencrypt' entry is the resolver's former name")
@@ -407,8 +413,8 @@ func TestProjects(t *testing.T) {
 		{Name: "file", LogState: "notdir", FragState: "notfile"},
 		{Name: "locked", LogState: "noaccess", FragState: "unreadable", Total: 1},
 		{Name: "stopped", LogState: "unreadable", FragState: "absent", Total: 2},
-		{Name: "weird", LogState: "notfile", FragState: "ok", Frag: b64s("a: [\n")},
-		{Name: "nohost", LogState: "missing", FragState: "ok", Frag: b64s("http: {}\n")},
+		{Name: "weird", LogState: "notfile", FragState: "unparsed"},
+		{Name: "nohost", LogState: "missing", FragState: "ok", Hosts: hostsOf("http: {}\n")},
 		{Name: "redirect", LogState: "ok", Log: "2026-08-13T22:30:37+00:00 deploy 1.0.0 no-backup kasbah=0.1.0", FragState: "absent", Serviceless: true},
 		{Name: "leftover", LogState: "empty", FragState: "absent", Serviceless: true, Total: 1, Running: 1,
 			Containers: []Container{{"leftover-web", "running", "none"}}},
@@ -507,7 +513,9 @@ func TestCollect(t *testing.T) {
 	w(".kasbah/server.json", `{"apps_path":"`+apps+`","data_path":"`+apps+`/data"}`)
 	w("data/traefik/letsencrypt/acme.json", "")
 	w("traefik/dynamic/_shared.yml", "http: {}\n")
-	w("traefik/dynamic/demo.yml", "x: 1\n")
+	w("traefik/dynamic/demo.yml", "http:\n  routers:\n    a: {rule: \"Host(`demo.test`)\", entryPoints: [web]}\n    b: {rule: \"Host(`dns.test`)\", tls: {certResolver: cloudflare}}\n"+
+		"  middlewares:\n    auth: {basicAuth: {users: [\"admin:FRAGMENT-SECRET\"]}}\n")
+	w("traefik/dynamic/blank.yml", "a: [\n")
 	w("traefik/dynamic/empty.yml", "")
 	w("demo/versions.log", "2026-01-01T00:00:00+00:00 deploy 1.0.0 no-backup\n\n  \r\n")
 	w("blank/versions.log", " \n")
@@ -529,12 +537,21 @@ func TestCollect(t *testing.T) {
 		names = append(names, p.Name)
 		got[p.Name] = p.LogState + "/" + p.FragState + "/" + p.Log
 	}
+	// The fragment's text stays on the server: only what it says of its hosts leaves.
+	if j, _ := json.Marshal(r); strings.Contains(string(j), "FRAGMENT-SECRET") || strings.Contains(string(j), "frag_b64") {
+		t.Errorf("the report carries the fragment: %s", j)
+	}
+	for _, p := range r.Projects {
+		if p.Name == "demo" && fmt.Sprint(p.Hosts) != "[{demo.test false http} {dns.test false cloudflare}]" {
+			t.Errorf("demo hosts %v", p.Hosts)
+		}
+	}
 	if strings.Join(names, " ") != ".dot afile blank demo empty logdir" {
 		t.Errorf("projects %v", names)
 	}
 	for n, want := range map[string]string{
 		"demo":   "ok/ok/2026-01-01T00:00:00+00:00 deploy 1.0.0 no-backup",
-		"blank":  "empty/absent/",
+		"blank":  "empty/unparsed/",
 		"empty":  "missing/empty/",
 		"afile":  "notdir/absent/",
 		"logdir": "notfile/absent/",

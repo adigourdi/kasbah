@@ -930,6 +930,9 @@ func (x *run) printHosts(p Project) {
 	path := x.apps + "/traefik/dynamic/" + p.Name + ".yml"
 	switch p.FragState {
 	case "ok":
+	case "unparsed":
+		x.p("      %s does not parse as YAML, so this project's domain cannot be read\n", path)
+		return
 	case "absent":
 		if p.LogState == "ok" || p.Total != 0 {
 			x.p("      no Traefik fragment at %s — nothing routes to this project\n", path)
@@ -948,25 +951,17 @@ func (x *run) printHosts(p Project) {
 		x.p("      unknown fragment state %s\n", p.FragState)
 		return
 	}
-	raw := b64(p.Frag)
-	root, ok := ParseFragment(raw)
-	routes := acme.Routes(root)
-	hosts := acme.Hosts(routes)
-	if !ok {
-		x.p("      %s does not parse as YAML, so this project's domain cannot be read\n", path)
-		return
-	}
-	if len(hosts) == 0 {
+	if len(p.Hosts) == 0 {
 		x.p("      %s declares no Host() rule, so this project claims no domain\n", path)
 		return
 	}
-	for _, h := range hosts {
-		x.p("      %s\n", h)
-		if acme.PlainHTTP(raw, root, h) {
+	for _, h := range p.Hosts {
+		x.p("      %s\n", h.Host)
+		if h.Plain {
 			x.p("          plain HTTP — its fragment has no HTTPS router, so no certificate is expected\n")
 			continue
 		}
-		x.certLine(h, acme.ResolverFor(routes, h), "          ")
+		x.certLine(h.Host, h.Resolver, "          ")
 	}
 }
 

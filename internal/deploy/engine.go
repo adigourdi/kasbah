@@ -56,6 +56,12 @@ type Spec struct {
 	// extracted for the rollback hooks. RestoreData runs the Restore hooks.
 	RestoreFrom string `json:"restore_from,omitempty"`
 	RestoreData bool   `json:"restore_data,omitempty"`
+	// Fragment is the traefik-dynamic.yml this run ships, as written: the
+	// preflight renders it against .env (Tagged: an old version's text).
+	// Target spells the step a failure names.
+	Fragment string `json:"fragment,omitempty"`
+	Tagged   bool   `json:"tagged,omitempty"`
+	Target   string `json:"target,omitempty"`
 }
 
 // Health is the manifest's health: block; an empty Container waits on every
@@ -797,6 +803,15 @@ func (e *engine) preflight() error {
 	}
 	if len(missing) > 0 {
 		return failf("not on this server: %s — run `kasbah build-push` for %s first. Nothing was changed.", strings.Join(missing, " "), e.sp.Version)
+	}
+	if e.sp.Fragment != "" {
+		_, kept, err := RenderFragment(e.dir, []byte(e.sp.Fragment), e.sp.Target, e.sp.Tagged)
+		if err != nil {
+			return failf("%v", err)
+		}
+		if len(kept) > 0 {
+			e.note("warning: v%s's %s keeps ${%s} as written — not a key it may be filled from, so text from before deploys filled ${KEY}s", e.sp.Version, Fragment, strings.Join(kept, "} ${"))
+		}
 	}
 	return e.outsiders()
 }

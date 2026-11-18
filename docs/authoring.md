@@ -182,8 +182,9 @@ A project with nothing to run — every router a redirect — declares
 
 ## `traefik-dynamic.yml`
 
-The project's routing, as a Traefik file-provider fragment; deploy ships it
-to `<apps>/traefik/dynamic/<name>.yml` and Traefik picks it up live
+The project's routing, as a Traefik file-provider fragment; deploy renders it
+on the server and installs it as `<apps>/traefik/dynamic/<name>.yml`, and
+Traefik picks it up live
 ([traefik.md](traefik.md) → Project fragment). Absent, a routed project warns
 ([T01](compliance.md#traefik)); with `routed: false` it must be absent.
 
@@ -216,6 +217,11 @@ What fails, and why:
   Traefik's API with no authentication.
 - A wildcard certificate (`*.`) from `http` ([T10](compliance.md#traefik)):
   HTTP-01 cannot issue one.
+- A `${KEY}` that `.env.prod.example` does not declare, or a `KASBAH_` one
+  ([T12](compliance.md#traefik)); a `${KEY}` in a router's `rule`,
+  `service` or `middlewares`, under its `tls`, or in a service name T09 reads
+  outside routers ([T13](compliance.md#traefik)): hosts and every service name
+  stay literal.
 
 What warns: no router serving the domain on `web`
 ([T08](compliance.md#traefik)) — plain HTTP then gets Traefik's 404. Leave it
@@ -226,6 +232,32 @@ out only for an HTTPS-only API nothing browses to.
 `security-headers`, `gzip-compression`, `api-rate-limit`
 ([traefik.md](traefik.md) → Middlewares provided by kasbah). A project's own
 go under `http.middlewares` in the same file and are named without a suffix.
+
+**Secrets.** A value that must stay out of git — a basicAuth users line — is
+written `${KEY}` and filled at deploy from the server's `.env`
+([traefik.md](traefik.md) → Project fragment). For basic auth: declare the
+key in `.env.prod.example` with a generator (`MYAPP_AUTH_SECRET=! …` running
+`htpasswd -niB <user>`, [env-template.md](env-template.md) → Sensitive value
+handling) or a `# hint`, then name it in the fragment, single-quoted so a `$`
+or `:` in the hash stays text, and attach the middleware to the router:
+
+```yaml
+http:
+  routers:
+    myapp:
+      # rule, entryPoints, tls and service as above
+      middlewares: ["myapp-auth"]
+  middlewares:
+    myapp-auth:
+      basicAuth:
+        users: ['${MYAPP_AUTH_SECRET}']
+```
+
+Only `${KEY}` with braces is filled: a `$apr1$…` hash written literally, a
+regex's `$` and a replacement's `${1}` are left alone, and `$${` writes `${`.
+A deploy whose `.env` leaves the key unset or empty stops before anything
+changes and names `kasbah env set MYAPP_AUTH_SECRET USER@HOST`. A changed value
+reaches Traefik on the next deploy.
 
 **Names.** Traefik reads every project's fragment, and kasbah's own, from one
 directory into one configuration, so a router, service or middleware name is
@@ -256,7 +288,8 @@ hint the operator must answer, a `!` command that generates the value — are in
   server's.
 
 Compose reads the server's `.env` when it interpolates `compose.prod.yml`,
-so a value reaches a container through `${KEY}` in its `environment:`.
+so a value reaches a container through `${KEY}` in its `environment:`, and
+the fragment through its own `${KEY}` (`traefik-dynamic.yml` above).
 
 ## `.gitignore`
 

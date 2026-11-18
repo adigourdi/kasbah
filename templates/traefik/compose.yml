@@ -2,11 +2,14 @@
 # <apps>/traefik/compose.yml by `kasbah server init`.
 #
 # The apps and data paths below are substituted on the workstation before this
-# file is shipped. Traefik expands environment variables in neither its static
-# nor its dynamic configuration, so every value it needs is baked at render
-# time, a DNS provider's credentials aside (compose reads them from their own
-# files); nothing here is left for compose to interpolate, which is why the
-# stack carries no `.env`.
+# file is shipped. Traefik's static configuration expands no environment
+# variable, so every value it needs is baked at render time, a DNS provider's
+# credentials aside (compose reads them from their own files); nothing here is
+# left for compose to interpolate, which is why the stack carries no `.env`.
+# A dynamic file is rendered as a Go template, and its `{{ env "X" }}` reads
+# this container's environment, which holds nothing per project: a project
+# fragment's ${KEY}s are filled from that project's .env by deploy instead,
+# before the file lands in dynamic/ (docs/traefik.md -> Project fragment).
 #
 # Run by hand as: docker compose -p traefik up -d
 # The `-p` is not optional — `name:` below is the weakest source of the project

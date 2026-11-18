@@ -3,11 +3,11 @@
 # against the rsync invocations it replaced, on the rig as the deploy user.
 #
 # Every case runs twice into two destinations prepared identically: once with
-# the old command line (`rsync -rlpt -s src/ dst/`, `rsync -lpt -s src dst`,
-# `rsync -pt --chmod=F644 -s src dst`) and once with `kasbah __sync`, which is
-# the code deploy, rollback and env use. The two trees must then be identical:
-# type, mode, owner, size, mtime to the nanosecond, link target and content
-# hash, plus rig_files_snapshot's listing — and both runs must agree on
+# the old command line (`rsync -rlpt -s src/ dst/`, `rsync -lpt -s src dst`)
+# and once with `kasbah __sync`, which is the code deploy, rollback and env use
+# for the sync: list (the Traefik fragment has its own install step). The two
+# trees must then be identical: type, mode, owner, size, mtime to the
+# nanosecond, link target and content hash, plus rig_files_snapshot's listing — and both runs must agree on
 # success. While kasbah runs, rsync is gone from the rig and is a failing stub
 # on this workstation's PATH, so nothing of kasbah's can lean on it.
 #
@@ -85,7 +85,6 @@ old() {
     case $mode in
         dir) flags=(-rlpt -s); src+=/; dest+=/ ;;
         file) flags=(-lpt -s) ;;
-        fragment) flags=(-pt --chmod=F644 -s) ;;
     esac
     "$real_rsync" -e "ssh -F $RIG_SSH_CONFIG" "${flags[@]}" "$src" "$RIG_TARGET:$dest"
 }
@@ -328,25 +327,6 @@ assert '[ "$(rig_ssh "cat $base/k/fm/filelink" 2>/dev/null)" = "kept" ]' \
     "a destination that is a symlink to a file is replaced, its target untouched"
 assert '[ "$(rig_ssh "ls -A $base/k/fm/dirlink" 2>/dev/null)" = "compose.prod.yml" ]' \
     "a destination that is a symlink to a directory takes the file inside, as rsync's does"
-
-# --- The fragment: `rsync -pt --chmod=F644 src dst` --------------------------------------
-fr="$tmpdir/fr"
-mk "$fr/traefik-dynamic.yml" $'http: {}\n' 600 '2022-02-02 00:00:00.2'
-for side in r k; do
-    rig_ssh "mkdir -p $base/$side/fr && echo old > $base/$side/fr/b.yml && chmod 600 $base/$side/fr/b.yml" >/dev/null 2>&1
-done
-both fr-a fragment "$fr/traefik-dynamic.yml" fr/a.yml; agree fr-a
-both fr-b fragment "$fr/traefik-dynamic.yml" fr/b.yml; agree fr-b
-same -D fr "$base/r/fr" "$base/k/fr"
-assert '[ "$(rig_ssh "stat -c %a $base/k/fr/a.yml" 2>/dev/null)" = 644 ]' "the fragment lands 644 whatever the source's mode"
-# The one deliberate difference: rsync without -l skips a symlinked fragment
-# and exits 0, so the route never shipped; kasbah ships what it points at.
-ln -s traefik-dynamic.yml "$fr/linked.yml"
-both fr-link fragment "$fr/linked.yml" fr/link.yml
-assert '[ "$rc_r" = 0 ] && grep -qF "skipping non-regular file" "$tmpdir/fr-link.r.out" &&
-        [ -z "$(rig_ssh "ls $base/r/fr/link.yml" 2>/dev/null)" ]' "(the control: rsync skipped the symlinked fragment)"
-assert '[ "$rc_k" = 0 ] && [ "$(rig_ssh "cat $base/k/fr/link.yml" 2>/dev/null)" = "http: {}" ]' \
-    "kasbah ships the symlinked fragment's content (said: $(cat "$tmpdir/fr-link.k.out"))"
 
 # --- Scale: 2,000 files in one session, and a rerun that sends none ----------------------
 many="$tmpdir/many"

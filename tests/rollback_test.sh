@@ -298,11 +298,13 @@ case "${1:-} ${2:-}" in
     # The sync, received by the binary under test under a scratch root; the
     # call log keeps where it was aimed.
     "sync "*)
-        case "$3" in
-            *"/dynamic/demo.yml") [ -z "${SYNC_FAIL_FRAGMENT:-}" ] || exit 12 ;;
-        esac
         mkdir -p "$SYNC_ROOT$(dirname "$3")"
         exec "$FAKE_APPS/.kasbah/bin/kasbah" remote sync "$2" "$SYNC_ROOT$3" ;;
+    # The fragment, rendered and installed by the binary under test there too.
+    "deploy fragment")
+        [ -z "${SYNC_FAIL_FRAGMENT:-}" ] || exit 12
+        mkdir -p "$SYNC_ROOT$3/traefik/dynamic" "$SYNC_ROOT$3/$4"
+        exec "$FAKE_APPS/.kasbah/bin/kasbah" remote deploy fragment "$SYNC_ROOT$3" "${@:4}" ;;
     *)
         printf 'stub: no answer for remote step %s\n' "$last" >&2
         exit 9 ;;
@@ -392,7 +394,7 @@ n_images=$(n_of "'demo-web'")
 n_sync=$(n_of "'sync' 'file' '/apps/demo/compose.yml'")
 n_drift=$(n_of "'setup-env' 'drift'")
 n_remote=$(n_of "'deploy' 'run'")
-n_frag=$(n_of "/dynamic/demo.yml")
+n_frag=$(n_of "'deploy' 'fragment' '/apps' 'demo'")
 for n in n_vlog n_images n_sync n_drift n_remote n_frag; do
     [ -n "${!n}" ] || printf -v "$n" '%s' 0
 done

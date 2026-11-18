@@ -290,8 +290,8 @@ The first engine run a snapshot
 serves records in it each built image's `:current` id — the ids the live stack
 started from, kept with a kept snapshot — and every run records the running
 containers before retagging. Any
-failure before the retag (the pre-flight — images, and containers outside the
-project — a backup or `pre-deploy` hook
+failure before the retag (the pre-flight — images, containers outside the
+project, the fragment's render — a backup or `pre-deploy` hook
 the operator chose to stop on) puts the files back; any failure from the retag through the health wait also puts every
 `:current` back on its old id (untagging one that did not exist), runs `compose
 up -d --remove-orphans` on the restored files, attaches Traefik to the
@@ -542,7 +542,13 @@ below). The only differences:
      Pre-flight: every built image's :<version> is on the server, and no
         container outside the project holds a host port compose.yml publishes
         or the compose project name <name> (see "Containers outside the
-        project" below). Either failing starts nothing and puts the files back.
+        project" below), and the fragment renders against .env: every
+        ${KEY} in traefik-dynamic.yml (sent in the JSON) is a key the shipped
+        .env.prod.example declares, not a KASBAH_ key, set non-empty in .env
+        to one line, and the result has the YAML structure of the fragment
+        as written (traefik.md → Project fragment) — a refusal names the key
+        and `kasbah env set KEY USER@HOST`, never the value. Any of these
+        failing starts nothing and puts the files back.
      a. Create backups/<outgoing version>-<stamp>/ and run the backup hooks
         into it ($KASBAH_BACKUP_DIR), against the currently-running (previous
         version) containers — --skip-hooks does not skip them.
@@ -575,10 +581,13 @@ below). The only differences:
         tarball, to versions.log, then rotate it (see Rotation below), then
         apply backup retention.
      h. Print the run's report on stdout — see "The remote report" below.
-9. Sync traefik-dynamic.yml → /apps/traefik/dynamic/<name>.yml (its content —
-   a symlinked fragment ships what it points to, mode 644). Done by the
-   *local* side once the engine has returned 0 with a valid report — the file
-   is on the workstation, and the ordering is the point (see below). A
+9. Install traefik-dynamic.yml as /apps/traefik/dynamic/<name>.yml: the
+   *local* side sends it (its content — a symlinked fragment sends what it
+   points to — with its size and sha256) once the engine has returned 0 with
+   a valid report, and `kasbah remote deploy fragment` fills its ${KEY}s from
+   /apps/<name>/.env as the pre-flight did, then renames it into place, mode
+   640; identical bytes are left alone. A render that fails leaves the live
+   file as it was. The ordering is the point (see below). A
    checkout with no fragment writes nothing and is warned about. An unrouted
    project (`routed: false`) is not warned about: instead the route an
    earlier, routed version left at /apps/traefik/dynamic/<name>.yml is
@@ -983,7 +992,12 @@ small without sacrificing history.
         the one the run replaced. Append the rollback entry, field 4 naming
         it, to versions.log, rotate, apply backup retention.
 11. Restore v<target>'s Traefik fragment: <apps>/traefik/dynamic/<name>.yml,
-    synced from the same extraction. **Last**, once the remote step has
+    installed from the same extraction as a deploy's step 9 installs it, its
+    ${KEY}s filled from the server's .env as this run leaves it (the engine's
+    pre-flight rendered that same fragment first); a ${…} naming a key
+    the fragment may not take is left as written, with one warning line, as
+    text from before deploys filled ${KEY}s — a declared key still needs its
+    value. **Last**, once the remote step has
     returned 0 — the same ordering, and the same reason, as a deploy's
     (see "Why the fragment ships last"). A rollback that dies at
     `compose up` must not have already pointed the live route at

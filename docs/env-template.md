@@ -57,6 +57,14 @@ A `! command` generator runs in `bash --norc --noprofile` and sees `KEY`,
 Sensitive vars (`KEY`, `PASSWORD`, `SECRET` in the name) are masked during
 input (`****` display, `read -rs`).
 
+A template key can feed the project's Traefik fragment as well as compose: a
+`${KEY}` in `traefik-dynamic.yml` is filled at deploy, on the server, with the
+value compose reads for `KEY` from `.env` (`traefik.md` → Project fragment).
+Only a key the template declares, and no `KASBAH_` key, may be named (T12),
+and a deploy stops before any change when `.env` leaves it unset or empty. A
+basicAuth users line is the usual one; written through the setup or `kasbah
+env set`, its `$`s reach the fragment as typed.
+
 ### Example template
 
 ```bash

@@ -360,12 +360,12 @@ func ensureServer(out *cli.Output, args []string) error {
 	return nil
 }
 
-// syncCmd is the hidden `kasbah __sync USER@HOST dir|file|fragment SRC DEST`:
-// one sync exactly as deploy ships a sync: entry or the fragment, for the
-// rig's parity suite against rsync.
+// syncCmd is the hidden `kasbah __sync USER@HOST dir|file SRC DEST`: one sync
+// exactly as deploy ships a sync: entry, for the rig's parity suite against
+// rsync.
 func syncCmd(args []string) error {
 	if len(args) != 4 {
-		return cli.Fail("usage: kasbah __sync USER@HOST dir|file|fragment SRC DEST")
+		return cli.Fail("usage: kasbah __sync USER@HOST dir|file SRC DEST")
 	}
 	var src *treesync.Source
 	var err error
@@ -374,10 +374,8 @@ func syncCmd(args []string) error {
 		src, err = treesync.Dir(args[2], os.Stderr)
 	case "file":
 		src, err = treesync.File(args[2], os.Stderr)
-	case "fragment":
-		src, err = treesync.Fixed(args[2], 0o644)
 	default:
-		return cli.Fail("usage: kasbah __sync USER@HOST dir|file|fragment SRC DEST")
+		return cli.Fail("usage: kasbah __sync USER@HOST dir|file SRC DEST")
 	}
 	if err != nil {
 		return cli.Fail("%v", err)

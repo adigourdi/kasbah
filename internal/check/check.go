@@ -922,7 +922,7 @@ func (c *checker) r05(block tree.Value) {
 	c.passf("R05", "resources: %s — resolved on the server at deploy (a %% is a share of the host) and held to its 90%% ceiling", strings.Join(set, ", "))
 }
 
-// --- Traefik (T01–T11) ------------------------------------------------------
+// --- Traefik (T01–T13) ------------------------------------------------------
 
 func (c *checker) traefikSection() {
 	c.section("Traefik")
@@ -958,6 +958,9 @@ func (c *checker) traefikSection() {
 		c.t05(routers)
 		c.t09(routers)
 		c.t07()
+	}
+	if !unrouted && isFile(traefikFile) {
+		c.t12(unread == "")
 	}
 	c.t06()
 }
@@ -1200,6 +1203,109 @@ func (c *checker) t09(routers []string) {
 	} else {
 		c.passf("T09", "No router or service reaches a Traefik internal service other than noop@internal")
 	}
+}
+
+// t12 holds the ${KEY}s a deploy fills to keys the template declares, none of
+// them kasbah's; t13, when the fragment parses, out of hosts, resolvers and the
+// service names T09 reads. Silent for a fragment with none.
+func (c *checker) t12(parsed bool) {
+	raw, err := os.ReadFile(traefikFile)
+	keys := deploy.FragmentKeys(raw)
+	if err != nil || len(keys) == 0 {
+		return
+	}
+	declared := map[string]bool{}
+	for _, k := range envtpl.Keys(templateFile) {
+		declared[k] = true
+	}
+	var reserved, undeclared []string
+	for _, k := range keys {
+		switch {
+		case strings.HasPrefix(k, envtpl.ReservedPrefix):
+			reserved = append(reserved, k)
+		case !declared[k]:
+			undeclared = append(undeclared, k)
+		}
+	}
+	var parts []string
+	if len(reserved) > 0 {
+		parts = append(parts, fmt.Sprintf("reserved %s* keys, which a deploy never fills it from: %s", envtpl.ReservedPrefix, strings.Join(reserved, " ")))
+	}
+	if len(undeclared) > 0 {
+		parts = append(parts, fmt.Sprintf("keys .env.prod.example does not declare: %s — a deploy fills ${KEY} from the server's .env, declared keys only", strings.Join(undeclared, " ")))
+	}
+	if len(parts) > 0 {
+		c.failf("T12", "Fragment names %s", strings.Join(parts, "; and "))
+	} else {
+		c.passf("T12", "Fragment's ${KEY}s are declared in .env.prod.example (%s) — a deploy fills them from the server's .env", strings.Join(keys, " "))
+	}
+	if parsed {
+		c.t13()
+	}
+}
+
+func (c *checker) t13() {
+	var bad []string
+	root := c.load(traefikFile).root
+	for _, proto := range []string{"http", "tcp"} {
+		rs, _ := mapAt(root, proto, "routers")
+		for _, r := range keysOf(rs) {
+			v, _ := rs.Get(r)
+			for _, k := range []string{"rule", "tls", "service", "middlewares"} {
+				if x, ok := tree.Lookup(v, k); ok && namesKey(x) {
+					bad = append(bad, r+"."+k)
+				}
+			}
+		}
+	}
+	// The service names T09 reads outside routers stay literal too.
+	svcs, _ := mapAt(root, "http", "services")
+	for _, k := range keysOf(svcs) {
+		v, _ := svcs.Get(k)
+		names := []tree.Value{opt(v, "mirroring", "service"), opt(v, "failover", "service"), opt(v, "failover", "fallback")}
+		for _, list := range [][]string{{"mirroring", "mirrors"}, {"weighted", "services"}, {"highestRandomWeight", "services"}} {
+			for _, x := range asList(opt(v, list...)) {
+				names = append(names, opt(x, "name"))
+			}
+		}
+		if slices.ContainsFunc(names, func(n tree.Value) bool { return n != nil && namesKey(n) }) {
+			bad = append(bad, "services."+k)
+		}
+	}
+	mws, _ := mapAt(root, "http", "middlewares")
+	for _, k := range keysOf(mws) {
+		v, _ := mws.Get(k)
+		if n := opt(v, "errors", "service"); n != nil && namesKey(n) {
+			bad = append(bad, "middlewares."+k+".errors.service")
+		}
+	}
+	if len(bad) > 0 {
+		c.failf("T13", "A ${KEY} where a host, resolver or service name must stay literal: %s", strings.Join(bad, " "))
+	} else {
+		c.passf("T13", "No ${KEY} in a router's rule, tls, service or middlewares, nor a service name T09 reads")
+	}
+}
+
+// namesKey is whether a ${KEY} is anywhere in v, a mapping's keys included.
+func namesKey(v tree.Value) bool {
+	switch x := v.(type) {
+	case *tree.Map:
+		for _, k := range x.Keys() {
+			e, _ := x.Get(k)
+			if namesKey(k) || namesKey(e) {
+				return true
+			}
+		}
+	case []tree.Value:
+		for _, e := range x {
+			if namesKey(e) {
+				return true
+			}
+		}
+	case string:
+		return len(deploy.FragmentKeys([]byte(x))) > 0
+	}
+	return false
 }
 
 // internalService is whether a service reference names one of Traefik's own

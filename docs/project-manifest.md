@@ -220,8 +220,9 @@ shipped: nothing on the server reads it yet, and `kasbah.yml` in a
 project's sync list would be a second copy to drift.
 
 The Traefik dynamic config (`traefik-dynamic.yml` at project root) is
-**not** listed here. Kasbah syncs it directly to
-`/apps/traefik/dynamic/<name>.yml` out-of-band. See `traefik.md` for the fragment shape.
+**not** listed here. Kasbah installs it as
+`/apps/traefik/dynamic/<name>.yml` out-of-band, its `${KEY}`s filled from
+the server's `.env`. See `traefik.md` for the fragment shape.
 
 `.env.prod.example` is required (check S04) whether or not the project has
 anything to configure: a project with nothing to declare ships a comment-only

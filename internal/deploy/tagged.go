@@ -66,7 +66,10 @@ tree, which is neither read nor touched:
     deploy --help); .env goes back with the files, the data does not. Once
     <VERSION> is up, the copies of what the run overwrote become the
     outgoing version's backup, backups/<outgoing version>-<stamp>.tar.gz
-  * <VERSION>'s traefik-dynamic.yml, last, once the stack is up
+  * <VERSION>'s traefik-dynamic.yml, last, once the stack is up, its ${KEY}s
+    filled from the server's .env as deploy fills them — but a ${…} naming
+    no key it may take (text from before deploys filled them) is left as
+    written, with a warning
 
 Without a backup of <VERSION>, .env and data are left as they are (drift is
 prompted for as usual); anything provisioned outside this project never is.

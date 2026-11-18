@@ -89,7 +89,11 @@ What it does:
     failed post-deploy hook is not reverted, and records a deploy-failed entry.
     With the new version live, the copies from the first step and what the
     backup hooks wrote become backups/<outgoing version>-<stamp>.tar.gz
-  * ships traefik-dynamic.yml to <apps>/traefik/dynamic/<name>.yml, last
+  * installs traefik-dynamic.yml as <apps>/traefik/dynamic/<name>.yml, last,
+    each ${KEY} in it filled on the server from <apps>/<name>/.env (rendered
+    first in the engine's pre-flight, which a key not declared, a KASBAH_
+    key, one .env leaves unset or empty, or a value that changes the file's
+    YAML structure refuses with nothing started)
   * prints the commits between the version the server was running and this one
   * a line under the summary when origin lacks v<version>, which kasbah
     never pushes
@@ -288,7 +292,9 @@ type Server interface {
 	Mail(apps string) (*MailFacts, error)
 	// Run is the engine; ask answers its question after a failed pre-step.
 	Run(dir string, sp Spec, ask func(Question) string) (stdout string, rc int)
-	Fragment(local, dest string) error
+	// Fragment renders local against the project's .env on the server and
+	// installs it as <apps>/traefik/dynamic/<name>.yml; tagged as RenderFragment's.
+	Fragment(local, apps, name string, tagged bool) error
 	// Unroute removes <apps>/traefik/dynamic/<name>.yml; removed is whether one was there.
 	Unroute(apps, name string) (removed bool, err error)
 	// Images and Record are the tagged path's: which :<version> images are
@@ -573,6 +579,14 @@ func (r *run) remote() (*Report, error) {
 		Health: b.Health, Snapshot: r.snap,
 		Routed:      fragmentHosts(r.frag),
 		RestoreFrom: r.restoreFrom, RestoreData: r.restoreData,
+		Target: r.target, Tagged: r.tagged,
+	}
+	if fi, err := os.Stat(r.frag); err == nil && fi.Mode().IsRegular() {
+		b, err := os.ReadFile(r.frag)
+		if err != nil {
+			return nil, cli.Fail("could not read %s", Fragment).Cause(cli.OSCause(err)).Next("make it readable, then re-run `" + r.rerun() + "`")
+		}
+		sp.Fragment = string(b)
 	}
 	// Held: the engine finishes on the server whatever happens to this end,
 	// so a signal waits for ssh rather than tearing the master down under it.
@@ -788,7 +802,7 @@ func (r *run) fragment() (bool, error) {
 		r.c.Out.Warn("this project routes through Traefik only if that file exists (kasbah help T01)")
 		return false, nil
 	}
-	if err := r.s.Fragment(r.frag, dest); err != nil {
+	if err := r.s.Fragment(r.frag, r.mk.AppsPath, r.m.Name, r.tagged); err != nil {
 		// The cause goes on the headline, which the post-hook path shows alone.
 		e := cli.Fail("could not ship %s to %s:%s", Fragment, r.target, dest).Cause(err).Cont(
 			"the "+r.mode+" itself succeeded — the new containers are up and versions.log",
@@ -800,7 +814,7 @@ func (r *run) fragment() (bool, error) {
 		} else {
 			e.Cont("host serves whatever it served before (404 if it is a first deploy).")
 		}
-		return false, e.Cont("re-run `" + r.rerun() + "` once the server is reachable again.")
+		return false, e.Cont("re-run `" + r.rerun() + "` once what it reported is fixed, or the server is reachable again.")
 	}
 	return true, nil
 }

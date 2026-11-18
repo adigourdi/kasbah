@@ -23,6 +23,8 @@ The failures a new project meets most, and where to start:
   … did not become healthy within Ns   kasbah logs USER@HOST says why
   a compose project named … already    docker compose -p NAME down there, or
   exists / … publishes …               rename; free the port the line names
+  traefik-dynamic.yml cannot be        kasbah env set KEY USER@HOST, as the
+  rendered: ${…} is not set in …       line says, then deploy again
   could not load the images onto …     a full disk is the usual cause
   could not list the releases of …     why is on the error: line, what to do
                                        on the next: reach GitHub (HTTPS_PROXY)

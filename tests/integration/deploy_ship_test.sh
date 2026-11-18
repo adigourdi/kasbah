@@ -853,6 +853,54 @@ assert 'grep -qE "^  keep +$image_web:$label  " <<<"$plan" && ! grep -E "^  keep
 assert 'grep -E "^  keep +$image_web:$label  " <<<"$plan" | grep -qF "inside the 3-month window"' \
     "— the only reason left once :current has moved off it (plan: $plan)"
 
+# --- The fragment takes ${KEY} from the server's .env -----------------------------------
+# Rendered on the server: a key the template does not declare is refused before
+# anything changes; a declared one is filled from .env, served live, at 640.
+route_remote="$apps/traefik/dynamic/$project.yml"
+greeting_header() {
+    local i h
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        h=$(rig_ssh "curl -s -o /dev/null -D - -m 5 -H 'Host: $project.test' http://127.0.0.1/" 2>/dev/null | tr -d '\r' | sed -n 's/^[Xx]-[Gg]reeting: //p')
+        [ "$h" = "$1" ] && break
+        sleep 1
+    done
+    printf '%s' "$h"
+}
+route_before=$(rig_ssh "sha256sum $route_remote" 2>/dev/null)
+cat >> "$projdir/traefik-dynamic.yml" <<'YAML'
+  middlewares:
+    built-app-greeting:
+      headers:
+        customResponseHeaders:
+          X-Greeting: '${BUILT_APP_NOT_DECLARED}'
+YAML
+sed -i 's/^        - gzip-compression@file$/        - gzip-compression@file\n        - built-app-greeting/' "$projdir/traefik-dynamic.yml"
+build_push "$RIG_TARGET" --dirty; rc=$?
+assert '[ "$rc" = "0" ]' "build-push --dirty ships the tree whose fragment names a \${KEY} (exit $rc: $(cli_err))"
+undeclared_label="$(jq -r .dirty_build "$projdir/.kasbah/state.json" 2>/dev/null)"
+deploy "$RIG_TARGET" --dirty; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "\${BUILT_APP_NOT_DECLARED} is not declared in $projdir_remote/.env.prod.example" "$tmpdir/err" && grep -qF "nothing was started" "$tmpdir/err"' \
+    "an undeclared \${KEY} stops the deploy before anything starts (exit $rc: $(cli_err))"
+assert '[ "$(rig_ssh "sha256sum $route_remote" 2>/dev/null)" = "$route_before" ]' "and the live route is the one before it"
+sed -i 's/BUILT_APP_NOT_DECLARED/BUILT_APP_GREETING/' "$projdir/traefik-dynamic.yml"
+build_push "$RIG_TARGET" --dirty; rc=$?
+assert '[ "$rc" = "0" ]' "build-push --dirty ships the tree whose fragment names a declared \${KEY} (exit $rc: $(cli_err))"
+declared_label="$(jq -r .dirty_build "$projdir/.kasbah/state.json" 2>/dev/null)"
+deploy "$RIG_TARGET" --dirty; rc=$?
+assert '[ "$rc" = "0" ]' "a declared \${KEY} deploys (exit $rc: $(cli_err))"
+assert '[ "$(rig_ssh "stat -c %a $route_remote" 2>/dev/null)" = 640 ] && rig_ssh "grep -qF \"X-Greeting: '"'"'hello from the built-app fixture'"'"'\" $route_remote" >/dev/null 2>&1' \
+    "the route holds .env's value, mode 640 ($(rig_ssh "stat -c %a $route_remote; grep -F X-Greeting $route_remote" 2>/dev/null))"
+assert '[ "$(greeting_header "hello from the built-app fixture")" = "hello from the built-app fixture" ]' "and Traefik serves it"
+( cd "$projdir" && printf '%s' 'hello again' | timeout 240 env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
+    "$KASBAH_BIN" env set BUILT_APP_GREETING "$RIG_TARGET" --no-restart >"$tmpdir/out" 2>"$tmpdir/err" ); rc=$?
+assert '[ "$rc" = "0" ]' "env set changes the value (exit $rc: $(cli_err))"
+deploy "$RIG_TARGET" --dirty; rc=$?
+assert '[ "$rc" = "0" ] && [ "$(greeting_header "hello again")" = "hello again" ]' \
+    "the next deploy re-renders the fragment, and Traefik serves the new value live (exit $rc: $(cli_err))"
+( cd "$projdir" && printf '%s' 'hello from the built-app fixture' | timeout 240 env HOME="$RIG_HOME" PATH="$RIG_SHIM_DIR:$PATH" \
+    "$KASBAH_BIN" env set BUILT_APP_GREETING "$RIG_TARGET" --no-restart >/dev/null 2>&1 ) || fail=1
+( cd "$projdir" && git checkout -q -- traefik-dynamic.yml ) || exit 2
+
 # --- routed: false takes down the route a routed version left ---------------------------
 route_remote="$apps/traefik/dynamic/$project.yml"
 route_state() { rig_ssh "[ -f $route_remote ] && echo present || echo absent" 2>/dev/null | tr -d '\r'; }
@@ -872,7 +920,7 @@ assert '[ "$rc" = "0" ] && [ "$(route_state)" = "present" ]' \
 
 # --- Leave the rig as it was found, but only on success ---------------------------------
 if [ "$fail" -eq 0 ]; then
-    rig_ssh "docker image rm -f $web $worker $image_web:$next_version $image_worker:$next_version $image_web:$label $image_worker:$label $image_web:$unrouted_label $image_worker:$unrouted_label $image_web:current $image_worker:current" >/dev/null 2>&1
+    rig_ssh "docker image rm -f $web $worker $image_web:$next_version $image_worker:$next_version $image_web:$label $image_worker:$label $image_web:$unrouted_label $image_worker:$unrouted_label $image_web:$undeclared_label $image_worker:$undeclared_label $image_web:$declared_label $image_worker:$declared_label $image_web:current $image_worker:current" >/dev/null 2>&1
     rig_clean || fail=1
 fi
 

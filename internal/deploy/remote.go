@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -19,7 +20,7 @@ import (
 )
 
 // RemoteUsage names `kasbah remote deploy`'s modes.
-const RemoteUsage = "usage: kasbah remote deploy prepare APPS DATA NAME CLIENT [DIR…] | snapshot DIR TOKEN TARGET… | run DIR (spec on stdin) | unroute APPS NAME | mail APPS | images VERSION IMAGE… | backup DIR | backup-probe DIR VERSION | restore-env DIR BACKUP --all|KEY… | restore-env DIR --undo TOKEN | backup-probe DIR --backup NAME | restore-list APPS NAME [SNAPSHOT] [--from-path=PATH] | fetch DIR SNAPSHOT BACKUP [--from-path=PATH] | restore DIR BACKUP LIVE [--env=all|--env=KEY,…] [--data]"
+const RemoteUsage = "usage: kasbah remote deploy prepare APPS DATA NAME CLIENT [DIR…] | snapshot DIR TOKEN TARGET… | run DIR (spec on stdin) | unroute APPS NAME | fragment APPS NAME SIZE SHA256 TARGET [--tagged] (fragment on stdin) | mail APPS | images VERSION IMAGE… | backup DIR | backup-probe DIR VERSION | restore-env DIR BACKUP --all|KEY… | restore-env DIR --undo TOKEN | backup-probe DIR --backup NAME | restore-list APPS NAME [SNAPSHOT] [--from-path=PATH] | fetch DIR SNAPSHOT BACKUP [--from-path=PATH] | restore DIR BACKUP LIVE [--env=all|--env=KEY,…] [--data]"
 
 // Remote is `kasbah remote deploy …` on a server. stdout is a protocol in
 // every mode; narration and docker's output go to stderr.
@@ -46,6 +47,10 @@ func Remote(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		w, done := remote.Outlive(stderr)
 		defer done()
 		return unroute(args[1], args[2], stdout, w)
+	case args[0] == "fragment" && (len(args) == 6 || len(args) == 7 && args[6] == "--tagged"):
+		w, done := remote.Outlive(stderr)
+		defer done()
+		return installFragment(args[1], args[2], args[3], args[4], args[5], len(args) == 7, stdin, stdout, w)
 	case args[0] == "backup" && len(args) == 2:
 		w, done := remote.Outlive(stderr)
 		defer done()
@@ -135,7 +140,7 @@ func unroute(apps, name string, stdout, stderr io.Writer) int {
 	}
 	p := filepath.Join(apps, "traefik", "dynamic", name+".yml")
 	if fi, err := os.Lstat(p); err == nil && fi.IsDir() {
-		fmt.Fprintf(stderr, "remote: %s is a directory, not a route file\n", p)
+		fmt.Fprintf(stderr, "remote: %s is a directory, not a route file — move it aside (Traefik reads no route from it), then re-run the deploy\n", p)
 		return 1
 	}
 	st := fsstate.Remove(p)
@@ -144,6 +149,50 @@ func unroute(apps, name string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "route=%s\n", st)
+	return 0
+}
+
+// FragmentMode is an installed fragment's: it may carry the project's
+// secrets, so it is no more readable than .env is.
+const FragmentMode = 0o640
+
+// installFragment renders the fragment on stdin (RenderFragment) and renames
+// it over <apps>/traefik/dynamic/<name>.yml: fragment=written, or unchanged
+// for the bytes already there. A failure leaves the live file as it was.
+func installFragment(apps, name, size, sum, target string, tagged bool, stdin io.Reader, stdout, stderr io.Writer) int {
+	if !manifest.ValidName(name) {
+		fmt.Fprintf(stderr, "remote: invalid project name '%s'\n", name)
+		return 1
+	}
+	dest := filepath.Join(apps, "traefik", "dynamic", name+".yml")
+	fail := func(format string, a ...any) int {
+		fmt.Fprintf(stderr, "remote: "+format+" — %s was left as it was\n", append(a, dest)...)
+		return 1
+	}
+	var body []byte
+	if _, empty := remote.Digest(nil); size != "0" || sum != empty {
+		var err error
+		if body, err = remote.Payload(stdin, size, sum); err != nil {
+			return fail("%v", err)
+		}
+	}
+	// The engine's pre-flight rendered it first and named what it kept.
+	out, _, err := RenderFragment(filepath.Join(apps, name), body, target, tagged)
+	if err != nil {
+		return fail("%v", err)
+	}
+	if fi, err := os.Lstat(dest); err == nil && fi.IsDir() {
+		return fail("%s is a directory, not a route file: move it aside (Traefik reads no route from it), then re-run the deploy", dest)
+	} else if err == nil && fi.Mode().IsRegular() && fi.Mode().Perm() == FragmentMode {
+		if cur, err := os.ReadFile(dest); err == nil && bytes.Equal(cur, out) {
+			fmt.Fprintln(stdout, "fragment=unchanged")
+			return 0
+		}
+	}
+	if err := remote.Install(dest, out, FragmentMode); err != nil {
+		return fail("%v", err)
+	}
+	fmt.Fprintln(stdout, "fragment=written")
 	return 0
 }
 

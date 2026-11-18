@@ -101,7 +101,10 @@ func (f *fake) Sync(e Entry, base string) error {
 	}
 	return nil
 }
-func (f *fake) Fragment(local, dest string) error { f.log("fragment " + dest); return f.fragErr }
+func (f *fake) Fragment(local, apps, name string, tagged bool) error {
+	f.log("fragment " + apps + "/traefik/dynamic/" + name + ".yml")
+	return f.fragErr
+}
 func (f *fake) Unroute(apps, name string) (bool, error) {
 	f.log("unroute " + apps + " " + name)
 	return f.routeLeft && f.unrouteErr == nil, f.unrouteErr
@@ -875,6 +878,9 @@ func TestRunSendsRoutedHosts(t *testing.T) {
 	}
 	if got := strings.Join(f.spec.Routed, ","); got != "demo-web,demo-alt" {
 		t.Errorf("routed %q", got)
+	}
+	if b, _ := os.ReadFile(Fragment); f.spec.Fragment != string(b) || f.spec.Target != "d@h" {
+		t.Errorf("the preflight's fragment %q, target %q", f.spec.Fragment, f.spec.Target)
 	}
 }
 

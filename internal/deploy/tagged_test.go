@@ -142,6 +142,10 @@ func TestRollbackShipsTheTag(t *testing.T) {
 	if last := f.calls[len(f.calls)-1]; last != "fragment /apps/traefik/dynamic/demo.yml" {
 		t.Errorf("the fragment ships last: %v", f.calls)
 	}
+	// The engine's preflight renders the tag's fragment, not the checkout's.
+	if sp.Fragment != "# v1\n" || sp.Target != "d@h" {
+		t.Errorf("spec fragment %q target %q", sp.Fragment, sp.Target)
+	}
 	if f.client != "demo" {
 		t.Errorf("client from v1.0.0 (none: the name), got %q", f.client)
 	}

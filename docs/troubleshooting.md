@@ -277,6 +277,35 @@ and C12.
 there (`docker compose -p <name> down`), or rename the project (`name:` in
 `kasbah.yml`), or change the port the service publishes.
 
+## traefik-dynamic.yml cannot be rendered: ${…} is not set in …/.env
+
+```
+remote: traefik-dynamic.yml cannot be rendered: ${MYAPP_AUTH_SECRET} is not set in /apps/myapp/.env — `kasbah env set MYAPP_AUTH_SECRET deploy@vps` sets it (a key new to .env.prod.example: `kasbah env deploy@vps`, …)
+…
+error: the deploy failed on deploy@vps (the server's kasbah exited 1, see above)
+       nothing was started, and the files it had shipped were put back — …
+```
+
+**Cause:** the project's `traefik-dynamic.yml` names a `${KEY}` the deploy
+fills from the server's `.env`, and that `.env` has no value for it — the key
+was added to the fragment and the template after the server's `.env` was
+written, or set empty. The same line says `is empty`, `is not declared in
+…/.env.prod.example` or `is a KASBAH_ key` for the other keys a fragment may
+not take (`traefik.md` → Project fragment), and `spans lines` for a
+multi-line value. A value that would change the fragment's YAML — it does not
+parse once filled, or adds a key or a list item — is named by its key and
+line, never quoted: single-quote that `${KEY}` in the fragment, or set a value
+that reads as one scalar. The deploy refuses before changing anything.
+
+**Fix:** run the `kasbah env set KEY USER@HOST` the line names, then deploy
+again. A key this deploy is the first to add to `.env.prod.example` is not on
+the server's template yet — the refused deploy put the old one back, and `env
+set` changes only a key the server's template declares — so run `kasbah env
+USER@HOST`, which ships the template and asks for it, or deploy again from a
+terminal and answer the drift prompt with the setup. An undeclared key is
+declared in `.env.prod.example` first; `kasbah check` reports it locally as
+T12.
+
 ## could not load the images onto …
 
 ```

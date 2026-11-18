@@ -201,9 +201,10 @@ no other project's fragment, so no rule catches a clash.
 Each routed project ships `traefik-dynamic.yml` at its repo root (a project
 with nothing to route says `routed: false` in its manifest and ships none —
 `project-manifest.md` → `routed`). `kasbah deploy`
-syncs it directly to `/apps/traefik/dynamic/<manifest.name>.yml` — no
+installs it as `/apps/traefik/dynamic/<manifest.name>.yml` — no
 intermediate copy, no entry in the manifest's `sync:` list. Kasbah
-handles it out-of-band.
+handles it out-of-band: the server's kasbah fills its `${KEY}`s from the
+project's `.env` (below) and renames the result into place, mode `640`.
 Traefik picks up the change on the next watch tick.
 
 The filename `traefik-dynamic.yml` mirrors Traefik's own terminology
@@ -247,6 +248,65 @@ Both routers, not just the `websecure` one: without the `web` half the
 hostname answers plain HTTP with Traefik's 404 rather than a redirect, which
 `kasbah check` warns about (T08). A plain-HTTP project keeps the `web` router
 alone, serving the app instead of redirecting (TLS below).
+
+### Values from the project's `.env`
+
+A fragment can take a value it must not carry in git — a basicAuth users
+line, a header token — from the project's `.env` on the server, the file
+compose reads:
+
+```yaml
+http:
+  middlewares:
+    myapp-auth:
+      basicAuth:
+        users: ['${MYAPP_AUTH_SECRET}']
+```
+
+- `${KEY}`, braces and a key name required, is replaced by `KEY`'s value in
+  `<apps>/<project>/.env`, verbatim, as compose reads that file. Anything else
+  with a `$` is left as written — `$apr1$…` hashes, a regex's `^/x$`, a
+  redirectRegex replacement's `${1}`. `$${` writes a literal `${` (a named
+  group's `${name}` in a replacement is written `$${name}`). The scan is the
+  file's text, comments included.
+- The key must be one `.env.prod.example` declares, and not a `KASBAH_` key
+  (T12). Its value comes from `.env`, which `kasbah env` or `kasbah env set
+  KEY` fills like any other key (`env-template.md`).
+- Hosts and every service name stay literal: a `${KEY}` in a router's
+  `rule`, `service` or `middlewares` or under its `tls`, or in a service name
+  outside routers (a `mirroring`, `weighted`, `highestRandomWeight` or
+  `failover` service's, an `errors` middleware's `service`), is refused (T13),
+  because `check`, `check --server` and `server status` read a project's hosts
+  and resolvers from the fragment, and T09 every service it reaches.
+- The deploy's preflight on the server renders the fragment before anything
+  changes: a key not declared, a `KASBAH_` key, one `.env` leaves unset or
+  empty, a value spanning lines or holding `{{` (Traefik would read it as a
+  template), a `{{` the filling builds out of the text and a value, or a
+  result that reads as other YAML than the fragment as written stops the run,
+  naming the key and the `kasbah env set KEY USER@HOST` that sets it
+  (`kasbah env USER@HOST` for a key new to the template, which the refused run
+  put back), and nothing is started. A value may change only the scalar its
+  `${KEY}` sits in: a result that does not parse, or has a key, a list item
+  or nesting the fragment as written lacks, is refused naming the key and its
+  line, never the value or YAML's message about it. A value YAML reads
+  specially (`"`, `: `, `#`, `[`, a leading `*`, `&` or `!`) wants the
+  `${KEY}` single-quoted in the fragment, so the fragment as written must
+  parse with its `${KEY}`s in place. The same render, after the engine's
+  report, is what is installed; a failure there leaves the live file as it
+  was.
+- `rollback` and `deploy X.Y.Z` render that version's fragment against the
+  server's `.env` as the run leaves it, with the same preflight, but a `${…}`
+  that is not a key the fragment may take — undeclared or `KASBAH_`, text
+  written before deploys filled `${KEY}`s, such as a regex group — is left as
+  written, with one warning line naming it. A declared key that `.env` leaves
+  unset or empty still refuses. A deploy of the working tree refuses either.
+- A changed value reaches Traefik on the next deploy, which renders new bytes
+  and Traefik reloads them live; `kasbah env set` alone does not re-render the
+  fragment.
+- A fragment with no `${KEY}` and no `$${` is installed byte for byte.
+
+Traefik's own `{{ env "X" }}` reads the Traefik container's environment, which
+holds a DNS provider's credentials and nothing per project.
 
 ### Redirect-only router
 
@@ -552,11 +612,13 @@ server status` surfaces it.
 
 ## Lifecycle on deploy / rollback / drop
 
-- **Deploy** — kasbah syncs `traefik-dynamic.yml` directly to
-  `/apps/traefik/dynamic/<manifest.name>.yml`. The sync writes temp + rename,
-  so Traefik sees a single atomic replace event and reloads.
+- **Deploy** — kasbah sends `traefik-dynamic.yml` to the server, which fills
+  its `${KEY}`s from the project's `.env` and installs the result as
+  `/apps/traefik/dynamic/<manifest.name>.yml` by temp + rename, so Traefik
+  sees a single atomic replace event and reloads; bytes already there are
+  left alone.
 - **Rollback** — kasbah reads `traefik-dynamic.yml` from
-  `git archive v<target>` and syncs it to the same destination.
+  `git archive v<target>` and installs it the same way.
 - **Deploy / rollback, before the fragment** — after `compose up`, Traefik is
   attached to `<project>_kasbah` (a failed attach fails the run, which reverts);
   a revert's own `up` attaches it again. A version with no service attaches
@@ -588,7 +650,7 @@ server status` surfaces it.
   network (or the legacy `kasbah-net`) — internal services stay on a
   project-internal network.
 
-`kasbah check` enforces these (rules T01–T11, C03, C04, C07, C09, C14).
+`kasbah check` enforces these (rules T01–T13, C03, C04, C07, C09, C14).
 
 ## Upgrading Traefik
 

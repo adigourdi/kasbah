@@ -894,6 +894,37 @@ assert 'grep -qF "✗ T09 Fragment routes to Traefik'"'"'s internal services (on
        "T09 fail line names router, service and the weighted entry (said '$out')"
 assert '! grep -qF "noop@internal services" <<<"$out" && ! grep -qF "demo-http→" <<<"$out"' "T09 leaves noop@internal alone"
 
+# --- Case 23d: T12/T13 — a fragment's ${KEY}s ---------------------------------
+# A declared ${KEY} outside rule/tls passes both and disturbs nothing else; the
+# golden path names none, so neither rule speaks there.
+assert '! grep -qE "T12|T13" <<<"$(cd "$proj1" && "$kasbah" check 2>&1)"' "a fragment with no \${KEY} prints no T12/T13 line"
+proj23d="$tmpdir/fragment-env"
+make_project "$proj23d"
+printf 'DEMO_AUTH_USERS=# user:hash from htpasswd -nB\n' >> "$proj23d/.env.prod.example"
+{
+    printf '  middlewares:\n'
+    printf '    demo-auth:\n'
+    printf '      basicAuth:\n'
+    printf "        users: ['\${DEMO_AUTH_USERS}']   # \$\${LITERAL}, \$apr1\$x\n"
+} >> "$proj23d/traefik-dynamic.yml"
+out="$(cd "$proj23d" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]'                                                                "a declared \${KEY} exits 0 (got $rc: $out)"
+assert 'grep -qF "✓ T12 Fragment'"'"'s \${KEY}s are declared in .env.prod.example (DEMO_AUTH_USERS) — a deploy fills them from the server'"'"'s .env" <<<"$out"' "T12 pass line (said '$out')"
+assert 'grep -qF "✓ T13 No \${KEY} in a router'"'"'s rule, tls, service or middlewares, nor a service name T09 reads" <<<"$out"'        "T13 pass line"
+assert 'grep -qF "✓ T07 Fragment loadBalancer URLs target" <<<"$out" && grep -qF "✓ T09 No router" <<<"$out"' "the other T rules unchanged"
+# Undeclared, then reserved; then a host taken from .env.
+sed -i 's/DEMO_AUTH_USERS/DEMO_OTHER/' "$proj23d/traefik-dynamic.yml"
+out="$(cd "$proj23d" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ] && grep -qF "✗ T12 Fragment names keys .env.prod.example does not declare: DEMO_OTHER" <<<"$out"' "an undeclared \${KEY} fails T12 (rc $rc: $out)"
+sed -i 's/DEMO_OTHER/KASBAH_CPU_LIMIT/' "$proj23d/traefik-dynamic.yml"
+out="$(cd "$proj23d" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ] && grep -qF "✗ T12 Fragment names reserved KASBAH_* keys, which a deploy never fills it from: KASBAH_CPU_LIMIT" <<<"$out"' "a KASBAH_ key fails T12 (rc $rc)"
+sed -i 's/KASBAH_CPU_LIMIT/DEMO_AUTH_USERS/; s/Host(`demo.example.com`)/Host(`${DEMO_AUTH_USERS}`)/' "$proj23d/traefik-dynamic.yml"
+out="$(cd "$proj23d" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ] && grep -qF "✗ T13 A \${KEY} where a host, resolver or service name must stay literal: demo.rule demo-http.rule" <<<"$out"' "a \${KEY} in a rule fails T13 (rc $rc: $out)"
+"$kasbah" help T13 >"$tmpdir/t13.help" 2>&1; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "T09 every service name it reaches" "$tmpdir/t13.help"'           "kasbah help T13 explains it"
+
 # --- Case 24: T06 — service carries traefik.* label → fail ------------------
 proj24="$tmpdir/traefik-label"
 make_project "$proj24"
