@@ -64,10 +64,9 @@ http:
         - http-to-https
       service: noop@internal
 
-    # Webmail, and the one router here with a real backend. The URL names the
-    # container, not the compose service: container names are unique per host
-    # because Docker refuses a duplicate, service names are only DNS aliases on
-    # a shared network (docs/traefik.md → Network, T07).
+    # Webmail, and the one router here with a real backend. Its host is
+    # qualified with the mail stack's own network, mail_kasbah, so Traefik
+    # resolves it there and on none of the project networks it also joins.
     webmail:
       rule: "Host(`webmail.__MAIL_PRIMARY_DOMAIN__`)"
       entryPoints:
@@ -90,4 +89,4 @@ http:
     webmail:
       loadBalancer:
         servers:
-          - url: "http://mail-cypht:80"
+          - url: "http://mail-cypht.mail_kasbah:80"

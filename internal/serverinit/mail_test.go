@@ -7,6 +7,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/mail"
 	"github.com/adigourdi/kasbah/internal/prompt"
+	"github.com/adigourdi/kasbah/internal/traefiknet"
 )
 
 func TestMailResolve(t *testing.T) {
@@ -73,6 +74,10 @@ func TestMailRender(t *testing.T) {
 		"compose.yml#":     "./cypht-nginx.conf:/etc/nginx/nginx.conf:ro",
 		"cypht-nginx.conf": "\treal_ip_header X-Forwarded-For;\n\treal_ip_recursive on;\n",
 		"fail2ban-jail.cf": "[DEFAULT]\nignoreip = 127.0.0.1/8 mail-cypht\n",
+		// The webmail host is scoped to the network compose names after the
+		// stack's project and the key Traefik joins.
+		"_mail.yml#":    "- url: \"http://mail-cypht." + mail.Project + "_" + traefiknet.Key + ":80\"\n",
+		"compose.yml##": "\nnetworks:\n  kasbah: {}\n",
 	} {
 		k, _, _ = strings.Cut(k, "#")
 		if !strings.Contains(r[k], want) {

@@ -797,7 +797,7 @@ func TestC15(t *testing.T) {
 func TestC16(t *testing.T) {
 	web := "    networks: [kasbah, internal]\n  db:"
 	with := func(lines string) string { return strings.Replace(rollCompose, web, lines, 1) }
-	const why = " — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend; a deploy refuses it"
+	const why = " — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend or kasbah's own webmail; a deploy refuses it"
 	for _, tc := range []struct{ name, compose, want string }{
 		{"a kasbah alias", with("    networks: {kasbah: {aliases: [demo-www, web.other_kasbah]}, internal: {}}\n  db:"),
 			"  ✗ C16 Names on the kasbah network or kasbah-net with a dot: web.other_kasbah (alias of demo-web)" + why},

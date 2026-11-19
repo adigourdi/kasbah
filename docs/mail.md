@@ -19,11 +19,14 @@ deliberate edit to `templates/mail/compose.yml` and a re-run of init.
 
 The container names are load-bearing twice over — this document's
 `docker exec mail-dms …` lines, and `_mail.yml`'s
-`http://mail-cypht:80`. The compose *service* names match them rather
-than being the shorter `dms`/`cypht`, because compose registers a
+`http://mail-cypht.mail_kasbah:80`. The compose *service* names match them
+rather than being the shorter `dms`/`cypht`, because compose registers a
 service name as a DNS alias on every network it joins, and Traefik — which joins
 the mail stack's network and every project's — would see a bare `dms` beside any
-project's.
+project's. The webmail backend's host is qualified with the stack's network
+(`mail-cypht.mail_kasbah`), which only `mail_kasbah` answers: Docker looks a
+whole dotted name up on every network first, and no project kasbah deploys may
+put a dotted name on a network Traefik is on (C16, `compliance.md`).
 
 **The mail stack has its own network, `mail_kasbah`**, which both containers
 join and Traefik is attached to at the mail start (and at every Traefik start),
@@ -127,7 +130,7 @@ Traefik loads the fragment — independent of webmail or DMS startup.
 Traefik requests the cert → DMS reads it from `acme.json` and boots.
 
 The `_mail.yml` fragment also holds the webmail router
-(`Host(\`webmail.<domain>\`)` → `http://mail-cypht:80`). Both
+(`Host(\`webmail.<domain>\`)` → `http://mail-cypht.mail_kasbah:80`). Both
 routers living in a kasbah-owned fragment makes the boot-order deadlock
 impossible regardless of container health.
 

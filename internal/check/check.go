@@ -870,7 +870,7 @@ func (c *checker) c16(defaultAliases bool) {
 		}
 	}
 	if len(bad) > 0 {
-		c.failf("C16", "Names on the kasbah network or kasbah-net with a dot: %s — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend; a deploy refuses it", strings.Join(bad, " "))
+		c.failf("C16", "Names on the kasbah network or kasbah-net with a dot: %s — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend or kasbah's own webmail; a deploy refuses it", strings.Join(bad, " "))
 	}
 }
 

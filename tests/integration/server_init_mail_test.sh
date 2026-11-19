@@ -505,7 +505,7 @@ assert 'grep -qw "mail_kasbah" <<<"${fact[cy_nets]}" && ! grep -qw "kasbah-net" 
     "and so is Cypht, which DMS resolves there for Fail2ban (networks: ${fact[cy_nets]})"
 tk_nets=$(rig_ssh "docker inspect -f '{{range \$k, \$v := .NetworkSettings.Networks}}{{\$k}} {{end}}' traefik" 2>/dev/null | tr -d '\r')
 assert 'grep -qw "mail_kasbah" <<<"$tk_nets"' \
-    "and Traefik joined it, which is how it resolves http://mail-cypht:80 (traefik on: $tk_nets)"
+    "and Traefik joined it, which is how it resolves http://mail-cypht.mail_kasbah:80 (traefik on: $tk_nets)"
 assert 'grep -qF "$data/traefik/letsencrypt/acme.json:/etc/letsencrypt/acme.json:ro" <<<"${fact[dms_mounts]}"' \
     "Traefik's certificate store is mounted into DMS read-only (mounts: ${fact[dms_mounts]})"
 assert 'grep -qF "$mail_data/dms/config:/tmp/docker-mailserver:rw" <<<"${fact[dms_mounts]}"' \

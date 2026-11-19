@@ -187,7 +187,9 @@ Kasbah-owned fragments (written by `kasbah server init`):
 - `_mail.yml` — four routers, only written when `--with-mail` is passed:
   `mail-cert` (`websecure`, `certResolver: http`, `noop@internal`) is
   the cert-trigger that makes DMS bootable at all; `webmail` (`websecure`,
-  `security-headers`) proxies to `http://mail-cypht:80`; and
+  `security-headers`) proxies to `http://mail-cypht.mail_kasbah:80`, its
+  host qualified with the mail stack's own network as a project's backends
+  are with theirs (Backends are the project's own, below); and
   `mail-cert-http` / `webmail-http` redirect on `web`. It defines no
   middlewares of its own — the frozen ones are `_shared.yml`'s. See `mail.md`.
 
