@@ -36,7 +36,7 @@ SSH_LOG="$tmpdir/ssh.log"
 # secret of its own.
 FAKE_APPS="$tmpdir/srv/apps"
 mkdir -p "$FAKE_APPS/.kasbah/bin" "$FAKE_APPS/demo"
-printf '{"kasbah_version":"1.0.0","apps_path":"%s","data_path":"%s/data","cpu_limit":"1","mem_limit":"1g"}\n' \
+printf '{"kasbah_version":"'"$(kasbah_base_version)"'","apps_path":"%s","data_path":"%s/data","cpu_limit":"1","mem_limit":"1g"}\n' \
     "$FAKE_APPS" "$FAKE_APPS" >"$FAKE_APPS/.kasbah/server.json"
 cp "$KASBAH_BIN" "$FAKE_APPS/.kasbah/bin/kasbah"
 printf 'API_SECRET=\nDB_PASSWORD=\n' >"$FAKE_APPS/demo/.env.prod.example"
