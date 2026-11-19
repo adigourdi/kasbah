@@ -101,7 +101,7 @@ func parse(args []string) (Options, error) {
 			return o, cli.Fail("migrate: unexpected argument '%s' — in a project, migrate takes none; for a server, `kasbah migrate server [USER@]HOST`", a)
 		default:
 			if o.Target != "" {
-				return o, cli.Fail("migrate server: two servers given ('%s' and '%s') — one run goes to one server", o.Target, a)
+				return o, ssh.TwoServers("migrate server", o.Target, a)
 			}
 			o.Target = a
 		}

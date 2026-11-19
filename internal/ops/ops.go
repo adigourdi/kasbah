@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"syscall"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
+	"github.com/adigourdi/kasbah/internal/buildpush"
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/composefile"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/marker"
@@ -25,27 +28,32 @@ import (
 var ErrHelp = errors.New("help")
 
 // Options are one command's arguments. Command is everything after `--`,
-// verbatim.
+// verbatim. Word is a lone bare positional beside no '@' server: the service
+// when compose.prod.yml names it, else the server (Run settles it).
 type Options struct {
 	Cmd             string
 	Target, Service string
+	Word            string
 	Follow          bool
 	Tail            string
 	DDash           bool
 	Command         []string
+	words           []string
 }
 
-const logsUsage = `Usage: kasbah logs [USER@HOST] [SERVICE] [-f] [--tail=N]
+const logsUsage = `Usage: kasbah logs [[USER@]HOST] [SERVICE] [-f] [--tail=N]
 
 ` + "`docker compose logs`" + ` for this project on a server, run against
 <apps>/<name>/compose.yml as ` + "`docker compose -p <name>`" + `. Run from the project
-root. USER@HOST defaults to the last server this project talked to
+root. [USER@]HOST defaults to the last server this project talked to
 (.kasbah/state.json); with SERVICE omitted, every service in the project.
 
-An argument carrying an '@' is the server and anything else is the service —
-the same rule ` + "`kasbah exec`" + ` uses, because both commands take the two in that
-order and neither can tell them apart by position. So the user is never taken
-from ssh's config here: a bare host would read as a service.
+The server comes before the service. An argument carrying an '@' is the
+server; of two without one, the first is the server; one alone is the service
+when compose.prod.yml, or a file its include: names, has a service of that
+name — a service wins over an ssh alias spelled the same — and the server
+otherwise, which is said on stderr. A bare host takes its user from ssh's
+config.
 
 Flags:
   -f           follow, until interrupted
@@ -58,20 +66,22 @@ Reads the server and writes nothing to it but kasbah's own binary, installed
 when the server's is absent or older. See docs/cli.md.
 `
 
-const execUsage = `Usage: kasbah exec [USER@HOST] SERVICE -- CMD…
+const execUsage = `Usage: kasbah exec [[USER@]HOST] SERVICE -- CMD…
 
 ` + "`docker compose exec SERVICE CMD…`" + ` on a server, against
 <apps>/<name>/compose.yml as ` + "`docker compose -p <name>`" + `. Run from the project
-root. USER@HOST defaults to the last server this project talked to
+root. [USER@]HOST defaults to the last server this project talked to
 (.kasbah/state.json).
 
 The '--' is mandatory: it is what makes a flag in CMD belong to CMD rather than
 to kasbah, so ` + "`kasbah exec web -- ls -la`" + ` lists a directory instead of being
 refused for an unknown '-la'.
 
-SERVICE is required. An argument carrying an '@' is the server, so a service
-name may not contain one, and a bare host reads as the service — the user is
-never taken from ssh's config here.
+SERVICE is required, and comes after the server. An argument carrying an '@'
+is the server, so a service name may not contain one; of two without one, the
+first is the server; one alone is the service when compose.prod.yml, or a file
+its include: names, has a service of that name, and the server otherwise. A
+bare host takes its user from ssh's config.
 
 A terminal is allocated only when this side has one at both ends — stdin and
 stdout both a tty — so ` + "`kasbah exec db -- pg_dump …`" + ` redirected to a file
@@ -93,46 +103,74 @@ func Usage(cmd string) string {
 	return logsUsage
 }
 
-func (o *Options) targetPrefix() string {
-	if o.Target == "" {
-		return ""
+// lead is what comes before the service on a command line built for a hint.
+func (o *Options) lead() string {
+	if o.Target == "" && len(o.words) == 2 {
+		return lead(o.words[0])
 	}
-	return o.Target + " "
+	return lead(o.Target)
 }
 
-// classify is the rule both commands share: an argument carrying an '@' is
-// the server, anything else the service.
+func lead(server string) string {
+	if server == "" {
+		return ""
+	}
+	return server + " "
+}
+
+// service is the service as far as the arguments read so far tell it.
+func (o *Options) service() string {
+	if o.Service != "" {
+		return o.Service
+	}
+	if n := len(o.words); n > 0 {
+		return o.words[n-1]
+	}
+	return ""
+}
+
+// classify gathers the positionals both commands share: an argument carrying
+// an '@' is the server, and at most two others — the server, then the
+// service — are taken, one only beside an '@' server.
 func (o *Options) classify(arg string) error {
 	arg = strings.TrimSuffix(arg, "\r")
 	if strings.Contains(arg, "@") {
-		if o.Target != "" {
-			return cli.Fail("%s: two servers given ('%s' and '%s') — one run goes to one server", o.Cmd, o.Target, arg)
+		if o.Target != "" || len(o.words) == 2 {
+			first := o.Target
+			if first == "" {
+				first = o.words[0]
+			}
+			return ssh.TwoServers(o.Cmd, first, arg)
 		}
 		o.Target = arg
 		return nil
 	}
-	if o.Service != "" && o.Cmd == "exec" {
-		return cli.Fail("exec: '%s' comes after the service '%s', and there is no '--' between them", arg, o.Service).Cont(
-			"the command to run goes after '--':",
-			fmt.Sprintf("  kasbah exec %s%s -- %s …", o.targetPrefix(), o.Service, arg),
-			"without it kasbah would have to guess which of its own flags are yours.")
+	if len(o.words) == 2 || (o.Target != "" && len(o.words) == 1) {
+		svc := o.service()
+		if o.Cmd == "exec" {
+			return cli.Fail("exec: '%s' comes after the service '%s', and there is no '--' between them", arg, svc).Cont(
+				"the command to run goes after '--':",
+				fmt.Sprintf("  kasbah exec %s%s -- %s …", o.lead(), svc, arg),
+				"without it kasbah would have to guess which of its own flags are yours.")
+		}
+		return cli.Fail("%s: two services given ('%s' and '%s') — kasbah will not choose between them", o.Cmd, svc, arg)
 	}
-	if o.Service != "" {
-		return cli.Fail("%s: two services given ('%s' and '%s') — kasbah will not choose between them", o.Cmd, o.Service, arg)
-	}
-	o.Service = arg
+	o.words = append(o.words, arg)
 	return nil
 }
 
 func (o *Options) execUnknownFlag(a string) error {
 	name, _, _ := strings.Cut(a, "=")
 	e := cli.Fail("exec: unknown flag '%s'", name)
-	if o.Service != "" {
-		return e.Cont("if it belongs to the command you want to run, it goes after '--':",
-			fmt.Sprintf("  kasbah exec %s%s -- <cmd> %s …", o.targetPrefix(), o.Service, a))
+	if o.Target == "" && len(o.words) == 2 {
+		return e.Cont("if it belongs to the command you want to run, it goes after '--'.").Cont(o.readings(a)...)
 	}
-	return e.Cont("exec takes USER@HOST, SERVICE, then '--' and the command to run:",
-		"  kasbah exec [USER@HOST] SERVICE -- CMD…")
+	if svc := o.service(); svc != "" {
+		return e.Cont("if it belongs to the command you want to run, it goes after '--':",
+			fmt.Sprintf("  kasbah exec %s%s -- <cmd> %s …", o.lead(), svc, a))
+	}
+	return e.Cont("exec takes [USER@]HOST, SERVICE, then '--' and the command to run:",
+		"  kasbah exec [[USER@]HOST] SERVICE -- CMD…")
 }
 
 func checkTail(v string) error {
@@ -146,7 +184,8 @@ func checkTail(v string) error {
 }
 
 // Parse reads logs' or exec's arguments; exec's own requirements are checked
-// here too, before the manifest is read and long before ssh.
+// here too, before the manifest is read. A server the positions name is
+// resolved here, through ssh's config; a lone bare word is left to Run.
 func Parse(cmd string, args []string) (Options, error) {
 	o := Options{Cmd: cmd, Tail: "100"}
 	for i := 0; i < len(args); i++ {
@@ -156,7 +195,7 @@ func Parse(cmd string, args []string) (Options, error) {
 			return o, ErrHelp
 		case a == "--":
 			if cmd != "exec" {
-				return o, cli.Fail("logs: '--' separates kasbah's flags from a command to run, and logs runs none (`kasbah logs [USER@HOST] [SERVICE] [-f] [--tail=N]`)")
+				return o, cli.Fail("logs: '--' separates kasbah's flags from a command to run, and logs runs none (`kasbah logs [[USER@]HOST] [SERVICE] [-f] [--tail=N]`)")
 			}
 			o.DDash = true
 			o.Command = append([]string{}, args[i+1:]...)
@@ -169,7 +208,7 @@ func Parse(cmd string, args []string) (Options, error) {
 			case a == "-f":
 				o.Follow = true
 			case strings.HasPrefix(a, "-f="):
-				return o, cli.Fail("logs: -f takes no value — pass it on its own (`kasbah logs USER@HOST -f`)")
+				return o, cli.Fail("logs: -f takes no value — pass it on its own (`kasbah logs HOST -f`)")
 			case a == "--tail":
 				return o, cli.Fail("logs: --tail takes its value with '=' — `kasbah logs --tail=100`")
 			default:
@@ -181,7 +220,7 @@ func Parse(cmd string, args []string) (Options, error) {
 		case strings.HasPrefix(a, "-"):
 			if cmd == "logs" {
 				name, _, _ := strings.Cut(a, "=")
-				return o, cli.Fail("logs: unknown flag '%s' (logs takes USER@HOST, SERVICE, -f and --tail=N)", name)
+				return o, cli.Fail("logs: unknown flag '%s' (logs takes [USER@]HOST, SERVICE, -f and --tail=N)", name)
 			}
 			return o, o.execUnknownFlag(a)
 		default:
@@ -190,36 +229,143 @@ func Parse(cmd string, args []string) (Options, error) {
 			}
 		}
 	}
+	host := ""
+	switch {
+	case len(o.words) == 2:
+		host, o.Service = o.words[0], o.words[1]
+	case len(o.words) == 1 && o.Target != "":
+		o.Service = o.words[0]
+	case len(o.words) == 1:
+		o.Word = o.words[0]
+	}
 	if cmd == "exec" {
-		return o, o.requireExec()
+		if err := o.requireExec(); err != nil {
+			return o, err
+		}
+	}
+	if host != "" {
+		var err error
+		o.Target, err = ssh.ResolveTarget(cmd, host)
+		return o, err
 	}
 	return o, nil
 }
 
 func (o *Options) requireExec() error {
 	if !o.DDash {
-		svc := o.Service
-		if svc == "" {
-			svc = "web"
+		e := cli.Fail("exec: no '--' in the arguments, and the command to run goes after it")
+		switch {
+		case o.Target == "" && len(o.words) == 2:
+			e.Cont(o.readings("")...)
+		case o.service() == "":
+			e.Cont("`kasbah exec [[USER@]HOST] SERVICE -- CMD…`, for example:",
+				"  kasbah exec "+o.lead()+"web -- sh -c 'ls -la /srv'")
+		default:
+			e.Cont("`kasbah exec [[USER@]HOST] SERVICE -- CMD…`, for example:",
+				"  kasbah exec "+o.lead()+o.service()+" -- sh -c 'ls -la /srv'")
 		}
-		return cli.Fail("exec: no '--' in the arguments, and the command to run goes after it").Cont(
-			"`kasbah exec [USER@HOST] SERVICE -- CMD…`, for example:",
-			"  kasbah exec "+svc+" -- sh -c 'ls -la /srv'",
-			"the '--' is mandatory because it is what makes a flag in CMD belong to CMD",
+		return e.Cont("the '--' is mandatory because it is what makes a flag in CMD belong to CMD",
 			"rather than to kasbah.").Help("exec")
 	}
-	if o.Service == "" {
-		return cli.Fail("exec: no service given — `kasbah exec [USER@HOST] SERVICE -- CMD…`").Cont(
-			"the service is the one `docker compose exec` runs the command in, named as",
-			"compose.prod.yml spells it. An argument carrying an '@' is read as the server,",
-			"so a service name cannot contain one.")
+	if o.service() == "" {
+		return noService(o.Target, false)
 	}
 	if len(o.Command) == 0 {
 		return cli.Fail("exec: nothing after the '--' — there is no command to run").Cont(
-			"`kasbah exec "+o.Service+" -- sh -c 'ls -la'`. kasbah runs no default shell:",
+			"`kasbah exec "+o.lead()+o.service()+" -- sh -c 'ls -la'`. kasbah runs no default shell:",
 			"which one an image has is the image's business, not kasbah's.")
 	}
 	return nil
+}
+
+// readings is what two bare words before a missing '--' may mean, flag after
+// them: service then command, or server then service — only the one
+// compose.prod.yml bears out when it names either word.
+func (o *Options) readings(flag string) []string {
+	w0, w1 := o.words[0], o.words[1]
+	asService := "  kasbah exec " + w0 + " -- " + w1 + " …"
+	asServer := "  kasbah exec " + w0 + " " + w1 + " -- CMD…"
+	if flag != "" {
+		asService = "  kasbah exec " + w0 + " -- " + w1 + " " + flag + " …"
+		asServer = "  kasbah exec " + w0 + " " + w1 + " -- CMD " + flag + " …"
+	}
+	if names, err := readServices("", ""); err == nil {
+		switch {
+		case slices.Contains(names, w0):
+			return []string{fmt.Sprintf("'%s' is a service of compose.prod.yml, so the command is what follows it:", w0), asService}
+		case slices.Contains(names, w1):
+			return []string{fmt.Sprintf("'%s' is a service of compose.prod.yml, so '%s' is the server:", w1, w0), asServer}
+		}
+	}
+	return []string{fmt.Sprintf("with '%s' the service and '%s' the command:", w0, w1), asService,
+		fmt.Sprintf("or with '%s' the server and '%s' the service:", w0, w1), asServer}
+}
+
+// readServices is the services compose.prod.yml, in the working directory,
+// declares, those of the files its include: names among them.
+func readServices(pwd, why string) ([]string, error) {
+	doc, err := buildpush.ReadCompose(pwd, why)
+	if err != nil {
+		return nil, err
+	}
+	names, err := composefile.AllServices(".", doc)
+	if err != nil {
+		return nil, fmt.Errorf("compose.prod.yml: %w", err)
+	}
+	return names, nil
+}
+
+// noService is exec's refusal of a run that names no service; server is the
+// one it names, "" for none, and bare says compose.prod.yml has no service
+// of that name.
+func noService(server string, bare bool) error {
+	e := cli.Fail("exec: no service given — `kasbah exec [[USER@]HOST] SERVICE -- CMD…`")
+	switch {
+	case bare:
+		e = cli.Fail("exec: no service given — compose.prod.yml has no service '%s', so it is the server", server)
+	case server != "":
+		e = cli.Fail("exec: no service given — '%s' is the server", server)
+	}
+	return e.Cont(
+		"the service is the one `docker compose exec` runs the command in, named as",
+		"compose.prod.yml spells it, after the server. An argument carrying an '@' is",
+		"read as the server, so a service name cannot contain one.").
+		Next("Name the service: `kasbah exec " + lead(server) + "SERVICE -- CMD…`.")
+}
+
+// settle decides a lone bare word: the service when compose.prod.yml, read
+// here, has a service of that name, else the server, resolved through ssh's
+// config.
+func (o *Options) settle(pwd string) error {
+	w := o.Word
+	if w == "" {
+		return nil
+	}
+	names, err := readServices(pwd, "run "+o.Cmd+" from the project root")
+	if err != nil {
+		e := cli.Fail("%s: cannot tell whether '%s' is a service or the server", o.Cmd, w).Cause(err)
+		var ce *cli.Error
+		if errors.As(err, &ce) {
+			e.Carry(ce)
+		}
+		if o.Cmd == "exec" {
+			return e.Next(fmt.Sprintf("Name the server before it, `kasbah exec HOST %s -- CMD…`, or, with '%s' the server, write it USER@%s before the service: `kasbah exec USER@%s SERVICE -- CMD…`.", w, w, w, w))
+		}
+		return e.Next(fmt.Sprintf("Name the server before it, `kasbah logs HOST %s`, or the server alone as USER@%s.", w, w))
+	}
+	o.Word = ""
+	switch {
+	case slices.Contains(names, w):
+		o.Service = w
+	case !ssh.Hostlike(w):
+		_, err = ssh.ResolveTarget(o.Cmd, w)
+	case o.Cmd == "exec":
+		return noService(w, true)
+	default:
+		ssh.Note(fmt.Sprintf("kasbah: '%s' is no service of compose.prod.yml — taken as the server", w))
+		o.Target, err = ssh.ResolveTarget(o.Cmd, w)
+	}
+	return err
 }
 
 // Session is what the two need from a server.
@@ -312,6 +458,10 @@ func Run(c Ctx, o Options) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	pwd, _ := os.Getwd()
+	if err := o.settle(pwd); err != nil {
+		return 0, err
+	}
 	if c.Interrupted == nil {
 		c.Interrupted = atexit.Interrupted
 	}
@@ -383,10 +533,6 @@ func Run(c Ctx, o Options) (int, error) {
 			fmt.Sprintf("`docker compose -p %s logs` exited %d in %s (see above).", m.Name, rc, dir))
 		if o.Service != "" {
 			e.Cont(fmt.Sprintf("'%s' is the service as compose.prod.yml spells it — `kasbah logs %s` shows every one.", o.Service, target))
-			// No '@' argument: the one word given may have been meant as the server.
-			if o.Target == "" && ssh.IsHost(o.Service) {
-				e.Next(fmt.Sprintf("If '%s' is a server, pass it as USER@%s: an argument without '@' is the service.", o.Service, o.Service))
-			}
 		}
 		return 0, e
 	}

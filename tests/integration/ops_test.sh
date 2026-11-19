@@ -227,6 +227,20 @@ assert '[ "$n_one" = "1" ] && [ "$n_three" = "3" ]' \
 assert '[ "$n_default" -gt "$n_three" ]' \
     "and the default is not the same number — it is 100, so it shows the lot ($n_default without the flag, $n_three with --tail=3)"
 
+# The rig as a bare ssh alias: the user is the one its ssh config names, said
+# once on stderr. A word compose.prod.yml has no service of is the server.
+logs "$RIG_SSH_ALIAS" cache --tail=1; rc=$?
+assert '[ "$rc" = "0" ] && [ "$(grep -c . <<<"$(cli_out)")" = 1 ] && grep -q "^$c_cache  *|" <<<"$(cli_out)"' \
+    "\`kasbah logs rig cache\` reads cache over the bare alias (exit $rc: $(cli_err))"
+assert '[ "$(grep -c "kasbah: as $RIG_TARGET (user from ssh config)" "$tmpdir/err")" = 1 ]' "as $RIG_TARGET, said once (stderr: $(cli_err))"
+logs "$RIG_SSH_ALIAS" --tail=1; rc=$?
+assert '[ "$rc" = "0" ] && grep -q "^$c_web  *|" <<<"$(cli_out)" && grep -q "^$c_cache  *|" <<<"$(cli_out)"' \
+    "\`kasbah logs rig\` is every service on it (exit $rc: $(cli_err))"
+kexec "$RIG_SSH_ALIAS" "$c_web" -- true; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "kasbah: as $RIG_TARGET (user from ssh config)" "$tmpdir/err"' \
+    "\`kasbah exec rig $c_web -- true\` runs over the bare alias (exit $rc: $(cli_err))"
+assert '[ "$(state_of last_server)" = "$RIG_TARGET" ]' "and last_server is the resolved $RIG_TARGET (state: $(state_of last_server))"
+
 logs "$RIG_TARGET" nosuch; rc=$?
 assert '[ "$rc" = "1" ]' "logs for a service the project does not have fails (exit $rc)"
 assert 'grep -qF "could not read the logs of $project on $RIG_TARGET" "$tmpdir/err"' \
@@ -375,16 +389,22 @@ assert '[ "$(state_of last_server)" = "$RIG_TARGET" ]' \
 kexec "$c_web" -- false; rc=$?
 assert '[ "$rc" = "1" ]' "a plain false is 1, not 0 (exit $rc)"
 
-kexec nosuch -- true; rc=$?
+kexec "$RIG_TARGET" nosuch -- true; rc=$?
 assert '[ "$rc" != "0" ]' "exec into a service the project does not have fails (exit $rc)"
 assert 'grep -qiF "nosuch" "$tmpdir/err"' "naming it (stderr: $(cli_err))"
+kexec nosuch -- true; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "compose.prod.yml has no service '"'"'nosuch'"'"', so it is the server" "$tmpdir/err"' \
+    "a lone word that is no service is the server, and exec then names no service (exit $rc: $(cli_err))"
 
 # --- the refusals, against a server that is right there ---------------------------------
 kexec "$c_web" ls; rc=$?
 assert '[ "$rc" = "1" ]' "a command written without the -- is refused (exit $rc)"
-assert 'grep -qF "comes after the service" "$tmpdir/err"' \
-    "as a missing separator rather than as a second service (stderr: $(cli_err))"
+assert 'grep -qF "no '\''--'\'' in the arguments" "$tmpdir/err" && grep -qF "kasbah exec $c_web -- ls" "$tmpdir/err"' \
+    "as a missing separator, showing where the -- goes (stderr: $(cli_err))"
 assert '[ "$(cli_out)" = "" ]' "and nothing ran (stdout: $(cli_out))"
+kexec "$RIG_TARGET" "$c_web" ls; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "comes after the service" "$tmpdir/err"' \
+    "beside a named server, a third word is a missing separator rather than a second service (stderr: $(cli_err))"
 
 kexec "$c_web"; rc=$?
 assert '[ "$rc" = "1" ]' "so is exec with no -- at all (exit $rc)"

@@ -204,7 +204,7 @@ For each additional domain:
 
 Webmail needs nothing per domain: every address signs in at `webmail.<primary>`.
 
-`kasbah server add-mail-domain USER@HOST <domain>` does the third, and the
+`kasbah server add-mail-domain [USER@]HOST <domain>` does the third, and the
 DKIM keys of the second (DKIM signing, below): the domain joins `domains:`
 here, the alias is appended to `<data>/mail/dms/config/postfix-virtual.cf`, and
 the domain's keys are made and signed with. **That alias is not a courtesy.**
@@ -237,7 +237,7 @@ docker-mailserver's `setup config dkim` names them:
 `rsa-2048-mail-<domain>.private.txt`, `.public.txt` and `.public.dns.txt`, and
 `ed25519-ed-<domain>.…` likewise. `server init --with-mail` makes the primary's
 and `add-mail-domain` the added domain's; a re-run of either makes only what is
-still missing, and `kasbah server mail-dkim USER@HOST <domain>` does the same
+still missing, and `kasbah server mail-dkim [USER@]HOST <domain>` does the same
 for any registry domain, or rotates its keys (below).
 
 The keys come from `rspamadm dkim_keygen` of the image the mail `compose.yml`
@@ -293,7 +293,7 @@ detector, which copies `override.d` and restarts Rspamd on any change under
 `rspamd/`. One not running — not created yet, stopped, crashlooping — reads
 both when it starts.
 
-**Repair and rotation** are `kasbah server mail-dkim USER@HOST <domain>`, for
+**Repair and rotation** are `kasbah server mail-dkim [USER@]HOST <domain>`, for
 a domain in the registry (any other is refused, naming `add-mail-domain`). It
 is the same step for that one domain — missing keys made, missing public files
 derived, the override rendered and Rspamd reloaded — and it prints the

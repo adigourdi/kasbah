@@ -107,7 +107,7 @@ func TestResolveTargetRefusals(t *testing.T) {
 // stays an IPv4 address.
 func TestResolveTargetVersion(t *testing.T) {
 	log, _ := fakeSSH(t, "user alice\n", 0, "")
-	for _, in := range []string{"1.2.0", "v1.2.0", "1.2.0-rc.1", "v1.2.0-rc.1"} {
+	for _, in := range []string{"1.2.0", "v1.2.0", "1.2.0-rc.1", "v1.2.0-rc.1", "1.2.0-rc.1+b", "v1.2.0-rc.1+b", "1.2.1-dev.218.1795065102+g54ec93a"} {
 		_, err := ResolveTarget("restore", in)
 		if err == nil || !strings.Contains(err.Error(), "restore: '"+in+"' reads as a version, and restore takes no version") {
 			t.Errorf("ResolveTarget(%q): %v", in, err)
@@ -117,11 +117,20 @@ func TestResolveTargetVersion(t *testing.T) {
 			t.Errorf("%s: next step %q", in, next)
 		}
 	}
+	// Near a version, neither a version nor a host: a mistyped version.
+	for _, in := range []string{"1.2", "1", "v1.2", "v1", "1.2.3.4.5", "v1.2.3.4"} {
+		_, err := ResolveTarget("restore", in)
+		if err == nil || !strings.Contains(err.Error(), "restore: '"+in+"' is not a version kasbah can use") {
+			t.Errorf("ResolveTarget(%q): %v", in, err)
+		}
+	}
 	if c := sshCalls(t, log); c != "" {
 		t.Errorf("ssh ran for a version: %q", c)
 	}
-	if got, err := ResolveTarget("restore", "10.0.0.1"); err != nil || got != "alice@10.0.0.1" {
-		t.Errorf("a dotted quad: %q, %v", got, err)
+	for _, in := range []string{"10.0.0.1", "1.2.3.4", "v2.example.com", "v6host", "v1.2.3.example.com"} {
+		if got, err := ResolveTarget("restore", in); err != nil || got != "alice@"+in {
+			t.Errorf("a host %s: %q, %v", in, got, err)
+		}
 	}
 }
 

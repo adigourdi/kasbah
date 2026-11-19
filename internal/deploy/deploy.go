@@ -52,7 +52,7 @@ type Options struct {
 	Env, Data prompt.Given
 }
 
-const usage = `Usage: kasbah deploy [USER@HOST] [VERSION] [--on-drift=setup|continue|abort]
+const usage = `Usage: kasbah deploy [[USER@]HOST] [VERSION] [--on-drift=setup|continue|abort]
                      [--env-seed=FILE] [--on-hook-failure=continue|stop] [--skip-hooks]
                      [--no-health-wait] [--dirty] [--bump=patch|minor|major]
 
@@ -63,16 +63,16 @@ uncommitted changes or untracked files .gitignore does not cover is refused
 a patch, minor or major bump of the highest release tag merged into HEAD, else
 of 0.0.0 — and tags it before anything reaches the server; a dirty tree is then
 refused (commit first), and so is a project that builds images (build-push is
-what tags and ships those). USER@HOST defaults to the last server this project
-deployed to (.kasbah/state.json). An argument containing '@' is the server,
-anything else is the version — so the user is never taken from ssh's config
-here: a bare host (1.2.3 is one) could be either.
+what tags and ships those). [USER@]HOST defaults to the last server this
+project deployed to (.kasbah/state.json). An argument shaped like a version
+(1.2.3, 1.2.3-rc.1) is the version, and any other is the server; a bare host
+takes its user from ssh's config. A server named like a version is passed as
+USER@1.2.3. One near a version (1.2, 1, v1.2) is a mistyped version, refused.
 
 With a VERSION, it ships that tag instead — every file out of ` + "`git archive\nv<VERSION>`" + `, the working tree neither read nor touched. That is the rollback
 path with a ` + "`deploy`" + ` log entry, the backup and pre-/post-deploy hooks, and
 nothing restored from a backup — no .env or data question — and it is
 allowed to be the first time that version reaches this server.
-An argument containing '@' is the server, anything else is the version.
 
 What it does:
   * copies aside what the run overwrites — the sync: targets and .env — into
@@ -142,13 +142,17 @@ See docs/build-deploy.md and docs/env-template.md.
 // Usage is `kasbah deploy --help`.
 func Usage() string { return usage }
 
-// Classify files one positional argument: '@' makes it the server, anything
-// else the version — bare semver, as versions.log carries it.
+// Classify files one positional argument: one shaped like a version is the
+// version — bare semver, as versions.log carries it — and any other the
+// server, '@' or not; ResolveTarget reads it once every argument is in.
 func Classify(cmd, arg string, target, version *string) error {
 	arg = strings.TrimSuffix(arg, "\r")
-	if strings.Contains(arg, "@") {
+	if ssh.NearVersion(arg) {
+		return ssh.NotVersion(cmd, arg)
+	}
+	if !ssh.LooksVersion(arg) {
 		if *target != "" {
-			return cli.Fail("%s: two servers given ('%s' and '%s') — one run goes to one server", cmd, *target, arg)
+			return ssh.TwoServers(cmd, *target, arg)
 		}
 		*target = arg
 		return nil
@@ -156,18 +160,9 @@ func Classify(cmd, arg string, target, version *string) error {
 	if *version != "" {
 		return cli.Fail("%s: two versions given ('%s' and '%s') — kasbah will not choose between them", cmd, *version, arg)
 	}
-	looks := ssh.LooksVersion(arg)
-	if looks && strings.HasPrefix(arg, "v") {
+	if strings.HasPrefix(arg, "v") {
 		v := arg[1:]
 		return cli.Fail("%s: write the version without the 'v' — `kasbah %s %s` (the tag is v%s, the version is %s)", cmd, cmd, v, v, v)
-	}
-	if !looks {
-		e := cli.Fail("%s: '%s' is not a version kasbah can use — expected <major>.<minor>.<patch>", cmd, arg)
-		if ssh.IsHost(arg) {
-			e.Next(fmt.Sprintf("If '%s' is a server, pass it as USER@%s: %s also takes a version positionally,", arg, arg, cmd),
-				"and a bare host (1.2.3 is a host name too) cannot be told from one.")
-		}
-		return e
 	}
 	*version = arg
 	return nil
@@ -265,14 +260,16 @@ func parse(cmd string, args []string) (Options, error) {
 	case o.Bump != "" && o.Version != "":
 		return o, cli.Fail("deploy: %s names a tag that exists, and --bump=%s cuts a new one on HEAD — pass one or the other", o.Version, o.Bump)
 	}
-	return o, nil
+	var err error
+	o.Target, err = ssh.ResolveTarget(cmd, o.Target)
+	return o, err
 }
 
 func takes(cmd string) string {
 	if cmd == "deploy" {
-		return "USER@HOST, VERSION, --on-drift=, --env-seed=, --on-hook-failure=, --skip-hooks, --no-health-wait, --dirty and --bump="
+		return "[USER@]HOST, VERSION, --on-drift=, --env-seed=, --on-hook-failure=, --skip-hooks, --no-health-wait, --dirty and --bump="
 	}
-	return "USER@HOST, VERSION, --on-drift=, --env-seed=, --on-hook-failure=, --with-env/--no-env, --with-data/--no-data, --skip-hooks and --no-health-wait"
+	return "[USER@]HOST, VERSION, --on-drift=, --env-seed=, --on-hook-failure=, --with-env/--no-env, --with-data/--no-data, --skip-hooks and --no-health-wait"
 }
 
 // CheckOnHookFailure validates the flag where it is parsed, as --on-drift= is.

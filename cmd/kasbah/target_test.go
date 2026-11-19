@@ -76,6 +76,34 @@ var takesBareHost = map[string]func(host string) (string, error){
 		o, err := history.Parse("changelog", []string{h})
 		return o.Target, err
 	},
+	// Two bare words beside each other: the server, then the service.
+	"logs": func(h string) (string, error) { o, err := ops.Parse("logs", []string{h, "web"}); return o.Target, err },
+	"exec": func(h string) (string, error) {
+		o, err := ops.Parse("exec", []string{h, "web", "--", "true"})
+		return o.Target, err
+	},
+	"server add-mail-domain": func(h string) (string, error) {
+		o, err := mail.Parse("add-mail-domain", []string{h, "shop.test"})
+		return o.Target, err
+	},
+	"server mail-dkim": func(h string) (string, error) {
+		o, err := mail.Parse("mail-dkim", []string{h, "shop.test", "--keep-keys"})
+		return o.Target, err
+	},
+}
+
+// takesHostOrVersion is every command whose other positional is a version:
+// one shaped like a version is the version, and any other the server.
+var takesHostOrVersion = map[string]func(args ...string) (string, string, error){
+	"deploy": func(a ...string) (string, string, error) { o, err := deploy.Parse(a); return o.Target, o.Version, err },
+	"rollback": func(a ...string) (string, string, error) {
+		o, err := deploy.ParseRollback(a)
+		return o.Target, o.Version, err
+	},
+	"pending": func(a ...string) (string, string, error) {
+		o, err := history.Parse("pending", a)
+		return o.Target, o.Version, err
+	},
 }
 
 func TestBareHostResolved(t *testing.T) {
@@ -120,25 +148,91 @@ func TestBareHostResolved(t *testing.T) {
 	}
 }
 
-// Beside a domain positional the server is USER@HOST only: swapped, a bare
-// host would be the domain's own host.
-func TestMailTakesUserAtHost(t *testing.T) {
-	looked, _ := stubUser(t, "alice")
+// The domain is checked before the server is looked up, so a swapped pair
+// whose host has no dot fails on it as a domain and asks ssh nothing.
+func TestMailDomainBeforeServer(t *testing.T) {
+	looked, notes := stubUser(t, "alice")
 	for _, cmd := range []string{"add-mail-domain", "mail-dkim"} {
-		for _, args := range [][]string{{"vps", "shop.test"}, {"shop.test", "vps"}} {
-			_, err := mail.Parse(cmd, args)
-			var e *cli.Error
-			if !errors.As(err, &e) || !strings.Contains(err.Error(), "takes the server only as USER@HOST") ||
-				!strings.Contains(strings.Join(e.NextLines(), " "), "USER@"+args[0]) {
-				t.Errorf("%s %q: %v", cmd, args, err)
-			}
+		_, err := mail.Parse(cmd, []string{"shop.test", "vps"})
+		var e *cli.Error
+		if !errors.As(err, &e) || !strings.Contains(err.Error(), "'vps' is not a domain name") ||
+			!strings.Contains(strings.Join(e.NextLines(), " "), "kasbah server "+cmd+" vps shop.test") {
+			t.Errorf("%s shop.test vps: %v", cmd, err)
+		}
+		if _, err := mail.Parse(cmd, []string{"vps"}); err == nil || !strings.Contains(err.Error(), "a domain is required") {
+			t.Errorf("%s vps: %v", cmd, err)
 		}
 		if o, err := mail.Parse(cmd, []string{"bob@vps", "shop.test"}); err != nil || o.Target != "bob@vps" {
 			t.Errorf("%s bob@vps: %+v %v", cmd, o, err)
 		}
 	}
-	if len(*looked) != 0 {
-		t.Errorf("looked up %q", *looked)
+	if len(*looked)+len(*notes) != 0 {
+		t.Errorf("looked up %q, noted %q", *looked, *notes)
+	}
+}
+
+func TestHostOrVersion(t *testing.T) {
+	for name, parse := range takesHostOrVersion {
+		looked, notes := stubUser(t, "alice")
+		for _, args := range [][]string{{"vps"}, {"vps", "1.2.0"}, {"1.2.0", "vps\r"}} {
+			*looked, *notes = nil, nil
+			target, _, err := parse(args...)
+			if err != nil || target != "alice@vps" || len(*looked) != 1 || len(*notes) != 1 ||
+				(*notes)[0] != "kasbah: as alice@vps (user from ssh config)" {
+				t.Errorf("%s %q: %q, %v, looked up %q, noted %q — want one of each", name, args, target, err, *looked, *notes)
+			}
+		}
+		// A version-shaped bare word is the version, never looked up.
+		looked, notes = stubUser(t, "alice")
+		for _, v := range []string{"1.2.0", "1.2.0-rc.1"} {
+			if target, version, err := parse(v); err != nil || target != "" || version != v {
+				t.Errorf("%s %s: %q %q %v", name, v, target, version, err)
+			}
+		}
+		if target, version, err := parse("1.2.3", "you@vps"); err != nil || target != "you@vps" || version != "1.2.3" {
+			t.Errorf("%s 1.2.3 you@vps: %q %q %v", name, target, version, err)
+		}
+		if _, _, err := parse("v1.2.0"); err == nil || !strings.Contains(err.Error(), "write the version without the 'v'") {
+			t.Errorf("%s v1.2.0: %v", name, err)
+		}
+		for _, args := range [][]string{{"vps", "bob@vps"}, {"vps", "rpi"}, {"bob@vps", "rpi"}} {
+			_, _, err := parse(args...)
+			var e *cli.Error
+			if !errors.As(err, &e) || !strings.Contains(err.Error(), "two servers given") || len(e.NextLines()) == 0 {
+				t.Errorf("%s %q: %v", name, args, err)
+			}
+		}
+		// Near a version is a mistyped one, refused even beside a server.
+		for _, args := range [][]string{{"1.2"}, {"1"}, {"v1.2"}, {"1.2.3.4.5"}, {"vps", "1.2"}, {"bob@vps", "v1"}} {
+			_, _, err := parse(args...)
+			bad := args[len(args)-1]
+			var e *cli.Error
+			if !errors.As(err, &e) || !strings.Contains(err.Error(), "'"+bad+"' is not a version kasbah can use") ||
+				!strings.Contains(strings.Join(e.NextLines(), " "), "USER@"+bad) {
+				t.Errorf("%s %q: %v", name, args, err)
+			}
+		}
+		if _, _, err := parse("vps:2222"); err == nil || !strings.Contains(err.Error(), "invalid ssh host 'vps:2222'") {
+			t.Errorf("%s vps:2222: %v", name, err)
+		}
+		if len(*looked)+len(*notes) != 0 {
+			t.Errorf("%s: looked up %q, noted %q", name, *looked, *notes)
+		}
+		for _, h := range []string{"10.0.0.1", "1.2.3.4", "v2.example.com"} {
+			*looked = nil
+			if target, version, err := parse(h); err != nil || target != "alice@"+h || version != "" || len(*looked) != 1 {
+				t.Errorf("%s %s: %q %q %v, looked up %q", name, h, target, version, err, *looked)
+			}
+		}
+		stubUser(t, "root")
+		_, _, err := parse("vps")
+		var e *cli.Error
+		if !errors.As(err, &e) || !strings.Contains(err.Error(), "as root") || !strings.Contains(strings.Join(e.NextLines(), " "), "root@vps") {
+			t.Errorf("%s vps as root: %v", name, err)
+		}
+		if target, _, err := parse("root@vps"); err != nil || target != "root@vps" {
+			t.Errorf("%s root@vps: %q %v", name, target, err)
+		}
 	}
 }
 
@@ -153,36 +247,26 @@ func TestBuildOnlyNotResolved(t *testing.T) {
 	}
 }
 
-// Where a version or a service is positional too, a bare host is never
-// looked up: it reads as the other thing, and the refusal says why.
-func TestBareHostAmbiguous(t *testing.T) {
+// A lone bare word where logs' or exec's service stands is left for the run,
+// which reads compose.prod.yml; changelog takes no version at all.
+func TestBareWordUndecided(t *testing.T) {
 	looked, _ := stubUser(t, "alice")
-	for _, c := range []struct {
-		name  string
-		parse func() error
-	}{
-		{"deploy", func() error { _, err := deploy.Parse([]string{"vps"}); return err }},
-		{"rollback", func() error { _, err := deploy.ParseRollback([]string{"vps"}); return err }},
-		{"pending", func() error { _, err := history.Parse("pending", []string{"vps"}); return err }},
-	} {
-		err := c.parse()
-		var e *cli.Error
-		if !errors.As(err, &e) || !strings.Contains(err.Error(), "'vps' is not a version") ||
-			!strings.Contains(strings.Join(e.NextLines(), " "), "USER@vps") {
-			t.Errorf("%s vps: %v", c.name, err)
-		}
-	}
-	if o, err := deploy.Parse([]string{"1.2.3"}); err != nil || o.Version != "1.2.3" || o.Target != "" {
-		t.Errorf("deploy 1.2.3: %+v %v", o, err)
-	}
-	if o, err := ops.Parse("logs", []string{"vps"}); err != nil || o.Service != "vps" || o.Target != "" {
+	if o, err := ops.Parse("logs", []string{"vps"}); err != nil || o.Word != "vps" || o.Service != "" || o.Target != "" {
 		t.Errorf("logs vps: %+v %v", o, err)
 	}
-	if o, err := ops.Parse("exec", []string{"vps", "--", "true"}); err != nil || o.Service != "vps" || o.Target != "" {
+	if o, err := ops.Parse("exec", []string{"vps", "--", "true"}); err != nil || o.Word != "vps" || o.Service != "" || o.Target != "" {
 		t.Errorf("exec vps: %+v %v", o, err)
+	}
+	if o, err := ops.Parse("logs", []string{"web", "bob@vps"}); err != nil || o.Service != "web" || o.Target != "bob@vps" {
+		t.Errorf("logs web bob@vps: %+v %v", o, err)
 	}
 	if _, err := history.Parse("changelog", []string{"1.2.3"}); err == nil || !strings.Contains(err.Error(), "takes no version") {
 		t.Errorf("changelog 1.2.3: %v", err)
+	}
+	for _, cmd := range []string{"history", "changelog"} {
+		if _, err := history.Parse(cmd, []string{"1.2"}); err == nil || !strings.Contains(err.Error(), "'1.2' is not a version kasbah can use") {
+			t.Errorf("%s 1.2: %v", cmd, err)
+		}
 	}
 	if len(*looked) != 0 {
 		t.Errorf("looked up %q", *looked)

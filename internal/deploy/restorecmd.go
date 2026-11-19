@@ -129,7 +129,7 @@ func ParseRestore(args []string) (RestoreOptions, error) {
 			name, _, _ := strings.Cut(a, "=")
 			return o, cli.Fail("restore: unknown flag '%s' (restore takes [USER@]HOST, --snapshot=, --backup=, --from-path=, --list, --with-env/--no-env and --with-data/--no-data)", name)
 		case o.Target != "":
-			return o, cli.Fail("restore: two servers given ('%s' and '%s') — one run goes to one server", o.Target, a)
+			return o, ssh.TwoServers("restore", o.Target, a)
 		default:
 			o.Target = a
 		}

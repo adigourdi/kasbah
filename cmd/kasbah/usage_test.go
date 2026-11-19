@@ -35,7 +35,7 @@ func TestTopLevel(t *testing.T) {
 		{[]string{"server"}, 1, "", "server: no subcommand given (expected: init, status, prune, backup-prune, destroy, upgrade-traefik, add-mail-domain, mail-dkim, mail-setup-guide)"},
 		{[]string{"server", "--help"}, 0, "Usage: kasbah server <subcommand>", ""},
 		{[]string{"server", "-h"}, 0, "  init [USER@]HOST [flags]", ""},
-		{[]string{"server", "--help"}, 0, "\n  mail-dkim USER@HOST DOMAIN [--replace-keys|--keep-keys]\n", ""},
+		{[]string{"server", "--help"}, 0, "\n  mail-dkim [USER@]HOST DOMAIN [--replace-keys|--keep-keys]\n", ""},
 		{[]string{"server", "statsu"}, 1, "", "server: unknown subcommand 'statsu'"},
 		{[]string{"deplyo"}, 1, "", "unknown command 'deplyo'"},
 		{[]string{"help"}, 0, "\nTopics:\n", ""},

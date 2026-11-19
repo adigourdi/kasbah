@@ -52,7 +52,7 @@ func ParseBackup(args []string) (BackupOptions, error) {
 			name, _, _ := strings.Cut(a, "=")
 			return o, cli.Fail("backup: unknown flag '%s' (backup takes [USER@]HOST and nothing else)", name)
 		case o.Target != "":
-			return o, cli.Fail("backup: two servers given ('%s' and '%s') — one run goes to one server", o.Target, a)
+			return o, ssh.TwoServers("backup", o.Target, a)
 		default:
 			o.Target = a
 		}

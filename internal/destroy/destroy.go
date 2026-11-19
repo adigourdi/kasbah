@@ -91,7 +91,7 @@ func parse(args []string) (Options, error) {
 			return o, cli.Fail("server destroy: unknown flag '%s' (destroy takes [USER@]HOST and --yes)", f)
 		default:
 			if o.Target != "" {
-				return o, cli.Fail("server destroy: two servers given ('%s' and '%s') — one run goes to one server", o.Target, a)
+				return o, ssh.TwoServers("server destroy", o.Target, a)
 			}
 			o.Target = a
 		}

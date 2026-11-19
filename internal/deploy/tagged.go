@@ -30,19 +30,20 @@ import (
 // The tagged path ships everything from the v<target> ref, never HEAD, through
 // a deploy's own sync: `git archive | tar -x` cannot honour sync renames.
 
-const rollbackUsage = `Usage: kasbah rollback [USER@HOST] [VERSION] [--on-drift=setup|continue|abort]
+const rollbackUsage = `Usage: kasbah rollback [[USER@]HOST] [VERSION] [--on-drift=setup|continue|abort]
                        [--env-seed=FILE] [--on-hook-failure=continue|stop]
                        [--with-env|--no-env] [--with-data|--no-data] [--skip-hooks]
                        [--no-health-wait]
 
 Puts a server back on a version it has already run. Run from the project root.
-An argument containing '@' is the server, anything else is the version — so the
-user is never taken from ssh's config here: a bare host (1.2.3 is one) could be
-either.
+An argument shaped like a version (1.2.3) is the version, and any other is the
+server; a bare host takes its user from ssh's config. A server named like a
+version is passed as USER@1.2.3. One near a version (1.2, 1, v1.2) is a
+mistyped version, refused.
 
 VERSION defaults to the clean deploy before the running one in the server's
 versions.log (the archive included); a deploy-failed entry can be the running
-one, never the target. USER@HOST defaults to the last server this project
+one, never the target. [USER@]HOST defaults to the last server this project
 deployed to (.kasbah/state.json).
 
 Everything shipped comes from the v<VERSION> git tag, never from the working

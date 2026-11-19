@@ -93,7 +93,7 @@ func Parse(args []string) (Options, error) {
 			return o, cli.Fail("drop: unknown flag '%s' (drop takes [USER@]HOST, --prune and --yes)", f)
 		default:
 			if o.Target != "" {
-				return o, cli.Fail("drop: two servers given ('%s' and '%s') — one run goes to one server", o.Target, a)
+				return o, ssh.TwoServers("drop", o.Target, a)
 			}
 			o.Target = strings.TrimSuffix(a, "\r")
 		}

@@ -27,7 +27,7 @@ import (
 // ErrHelp is -h/--help: print the usage and leave 0.
 var ErrHelp = errors.New("help")
 
-const AddUsage = `Usage: kasbah server add-mail-domain USER@HOST <domain>
+const AddUsage = `Usage: kasbah server add-mail-domain [USER@]HOST <domain>
 
 Joins <domain> to the VPS's shared mail stack (docs/mail.md → Multi-domain).
 The domain joins domains: in <apps>/mail/kasbah.yml — the registry, and the
@@ -47,11 +47,16 @@ The primary domain is init's: naming it changes nothing and exits 0.
 
 No router is added: mail.<primary> and webmail.<primary> are the stack's
 hostnames and an app domain needs no MX of its own — it needs an MX record
-pointing at mail.<primary>. Run ` + "`kasbah server mail-setup-guide USER@HOST`" + `
+pointing at mail.<primary>. Run ` + "`kasbah server mail-setup-guide [USER@]HOST`" + `
 for the DNS records this domain needs.
+
+The server comes first; a bare host takes its user from ssh's config. The
+domain is checked before anything connects, so a swapped pair whose host has
+no dot (an ssh alias like rpi) fails on it as a domain, connecting nowhere; a
+host spelled as a domain name reads as one, so put the server first.
 `
 
-const DKIMUsage = `Usage: kasbah server mail-dkim USER@HOST <domain> [--replace-keys|--keep-keys]
+const DKIMUsage = `Usage: kasbah server mail-dkim [USER@]HOST <domain> [--replace-keys|--keep-keys]
 
 Repairs or rotates the DKIM keys of <domain>, a domain of the mail stack's
 registry (docs/mail.md → DKIM signing). A key that is missing is made (RSA
@@ -69,6 +74,9 @@ renamed over the name, the private file last. A failed generation changes
 nothing; a swap that fails partway names what it swapped and the way back.
 DNS is the operator's: mail signed with the new keys is trusted once DNS
 carries their new TXT records.
+
+The server comes first; a bare host takes its user from ssh's config. The
+domain is checked before anything connects.
 
 Flags:
   --replace-keys, --keep-keys
@@ -104,7 +112,7 @@ var replacePair = prompt.Pair{Yes: "replace-keys", No: "keep-keys"}
 // mail-dkim` or `server mail-setup-guide` arguments.
 func Parse(cmd string, args []string) (Options, error) {
 	o, err := parse(cmd, args)
-	if err == nil && cmd == "mail-setup-guide" {
+	if err == nil {
 		o.Target, err = ssh.ResolveTarget("server "+cmd, o.Target)
 	}
 	return o, err
@@ -131,9 +139,9 @@ func parse(cmd string, args []string) (Options, error) {
 			takes := "[USER@]HOST"
 			switch {
 			case cmd == "mail-dkim":
-				takes = "USER@HOST, a domain and --replace-keys/--keep-keys"
+				takes = "[USER@]HOST, a domain and --replace-keys/--keep-keys"
 			case add:
-				takes = "USER@HOST and a domain"
+				takes = "[USER@]HOST and a domain"
 			}
 			return o, cli.Fail("server %s: unknown flag '%s' (this command takes %s)", cmd, name, takes)
 		case o.Target == "":
@@ -141,22 +149,16 @@ func parse(cmd string, args []string) (Options, error) {
 		case add && o.Domain == "":
 			o.Domain = a
 		case add:
-			return o, cli.Fail("server %s: unexpected argument '%s' (USER@HOST and one domain)", cmd, a)
+			return o, cli.Fail("server %s: unexpected argument '%s' ([USER@]HOST and one domain)", cmd, a)
 		default:
 			return o, cli.Fail("server mail-setup-guide: unexpected argument '%s' ([USER@]HOST is given once)", a)
 		}
 	}
 	if o.Target == "" {
 		if add {
-			return o, cli.Fail("server %s: USER@HOST is required (the user kasbah deploys as is not optional)", cmd)
+			return o, cli.Fail("server %s: no server given (expected `kasbah server %s [USER@]HOST <domain>`)", cmd, cmd)
 		}
 		return o, cli.Fail("server %s: no server given (expected `kasbah server %s [USER@]HOST`)", cmd, cmd)
-	}
-	if add && !strings.Contains(o.Target, "@") {
-		return o, cli.Fail("server %s: '%s' has no '@', and %s takes the server only as USER@HOST", cmd, o.Target, cmd).
-			Cont("its other positional is a domain, often served by this same VPS: with the two",
-				"swapped, a bare host would connect to the domain's host as if it were the server.").
-			Next(fmt.Sprintf("Pass the server as USER@HOST: `kasbah server %s USER@%s <domain>` if '%s' is the server.", cmd, o.Target, o.Target))
 	}
 	if add {
 		if o.Domain == "" {
@@ -164,7 +166,11 @@ func parse(cmd string, args []string) (Options, error) {
 		}
 		// The FQDN alphabet cannot carry a newline, quote or colon into YAML.
 		if !initproject.IsFQDN(o.Domain) {
-			return o, cli.Fail("server %s: '%s' is not a domain name (it goes under domains: in the mail registry, and every entry there is one)", cmd, o.Domain)
+			e := cli.Fail("server %s: '%s' is not a domain name (it goes under domains: in the mail registry, and every entry there is one)", cmd, o.Domain)
+			if initproject.IsFQDN(o.Target) && ssh.IsHost(o.Domain) {
+				return o, e.Next(fmt.Sprintf("The server comes first: `kasbah server %s %s %s` if '%s' is the server.", cmd, o.Domain, o.Target, o.Domain))
+			}
+			return o, e.Next("Name the domain as its DNS name, such as shop.example.com.")
 		}
 	}
 	return o, nil

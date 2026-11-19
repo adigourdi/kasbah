@@ -42,6 +42,11 @@ cat > "$stub_dir/ssh" <<'STUB'
 #!/usr/bin/env bash
 { printf 'ssh'; for a in "$@"; do printf '|%s' "$a"; done; printf '\n'; } >> "$CALL_LOG"
 for a; do [ "$a" = -O ] && exit 0; done
+# ssh's config logs in to every bare host as deploy.
+if [ "$1" = -G ]; then
+    printf 'host %s\nuser deploy\n' "${!#}"
+    exit 0
+fi
 for a; do [ "$a" = -n ] && exec </dev/null; done
 last="${!#}"
 [ "$last" = true ] && exit 0
@@ -225,7 +230,27 @@ out="$( ALIASES='x@example.test y@example.test' run server add-mail-domain deplo
 assert '[ "$(sed -n 2p "$aliases")" = "postmaster@shop.test postmaster@example.test" ]' \
     "an alias is appended on its own line ($(cat "$aliases"))"
 
+# A bare host is logged in to as the user ssh's config names, said once.
+out="$( REGISTRY="$registry_two" ALIASES=$'postmaster@shop.test postmaster@example.test\n' \
+        run server add-mail-domain vps shop.test )"; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "already served" <<<"$out"' "add-mail-domain takes a bare host (rc $rc: $out)"
+assert '[ "$(grep -c "kasbah: as deploy@vps (user from ssh config)" <<<"$out")" = 1 ]' "naming the user ssh's config gave it, once (said '$out')"
+assert '[ "$(grep -c "^ssh|-G|" "$call_log")" = 1 ] && grep -qxF "ssh|-G|--|vps" "$call_log"' "asking ssh -G once ($(<"$call_log"))"
+conns="$(grep -v "^ssh|-G|" "$call_log")"
+assert '! grep -qE "\|vps(\||$)" <<<"$conns" && grep -qE "\|deploy@vps(\||$)" <<<"$conns"' \
+    "and connecting as deploy@vps every time after ($(<"$call_log"))"
+out="$( KEYS=shop.test REGISTRY="$registry_two" run server mail-dkim vps shop.test --keep-keys )"; rc=$?
+assert '[ "$rc" = 0 ] && grep -qF "kasbah: as deploy@vps (user from ssh config)" <<<"$out" && grep -qF "keys kept" <<<"$out"' \
+    "and so does mail-dkim (rc $rc: $out)"
+
 # --- What it refuses -------------------------------------------------------------
+# Swapped, the host is checked as the domain first: no lookup, no connection.
+for cmd in add-mail-domain mail-dkim; do
+    out="$( run server "$cmd" shop.test vps )"; rc=$?
+    assert '[ "$rc" = 1 ] && grep -qF "'"'"'vps'"'"' is not a domain name" <<<"$out" && grep -qF "kasbah server $cmd vps shop.test" <<<"$out"' \
+        "$cmd with the server and domain swapped fails on the host as a domain, naming the order (rc $rc: $out)"
+    assert '[ ! -s "$call_log" ]' "$cmd asks ssh nothing then (ssh saw: $(<"$call_log"))"
+done
 out="$( run server add-mail-domain deploy@vps 'not a domain' )"; rc=$?
 assert '[ "$rc" != "0" ]' "a value that is not a domain is refused (rc $rc: $out)"
 assert 'grep -qF "is not a domain name" <<<"$out"' "saying why (said '$out')"
@@ -353,9 +378,9 @@ assert '[ "$rc" = 1 ] && grep -qF "shop.test is not served by the mail stack on 
 
 # The usage texts are this binary's.
 out="$( "$kasbah" server mail-dkim --help 2>&1 )"; rc=$?
-assert '[ "$rc" = 0 ] && grep -qF "Usage: kasbah server mail-dkim USER@HOST <domain> [--replace-keys|--keep-keys]" <<<"$out"' "mail-dkim --help (said '$out')"
+assert '[ "$rc" = 0 ] && grep -qF "Usage: kasbah server mail-dkim [USER@]HOST <domain> [--replace-keys|--keep-keys]" <<<"$out"' "mail-dkim --help (said '$out')"
 out="$( "$kasbah" server add-mail-domain --help 2>&1 )"; rc=$?
-assert '[ "$rc" = 0 ] && grep -qF "Usage: kasbah server add-mail-domain USER@HOST <domain>" <<<"$out"' "add-mail-domain --help (said '$out')"
+assert '[ "$rc" = 0 ] && grep -qF "Usage: kasbah server add-mail-domain [USER@]HOST <domain>" <<<"$out"' "add-mail-domain --help (said '$out')"
 out="$( "$kasbah" server mail-setup-guide -h 2>&1 )"; rc=$?
 assert '[ "$rc" = 0 ] && grep -qF "Usage: kasbah server mail-setup-guide [USER@]HOST" <<<"$out"' "mail-setup-guide -h (said '$out')"
 

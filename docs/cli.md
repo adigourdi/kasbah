@@ -36,13 +36,13 @@ succeeds.
 
 ## Targets
 
-A server is given as `USER@HOST`: the user kasbah acts as on it, and the host
+A server is given as `[USER@]HOST`: the user kasbah acts as on it, and the host
 — a hostname, an `~/.ssh/config` alias or an IPv4 address, with no port and no
 IPv6 literal (a port, a key or a jump host goes in `~/.ssh/config` under that
 host name). A user starting with `-` is refused, typed or resolved, and kasbah
 puts `--` before the destination on every ssh command line, so nothing there is
-read as an ssh option. Where a synopsis writes `[USER@]HOST` the user may be
-left out: kasbah then asks ssh which user it would log in as (`ssh -G HOST`,
+read as an ssh option. The user may be left out: kasbah then asks ssh which
+user it would log in as (`ssh -G HOST`,
 its `user` line — which evaluates the config's `Match exec` blocks, as
 connecting would), says so once on stderr,
 
@@ -53,24 +53,58 @@ kasbah: as you@vps (user from ssh config)
 and from there uses `you@vps` everywhere — in its messages, the commands it
 prints, the server-side steps and `last_server`. A run handed to another
 installed version (Hand-off between installed versions) asks ssh again there,
-without a second note. `USER@HOST` as typed is used as given, with no `ssh -G`. If
-`ssh -G` fails or prints no user, the command stops and says to pass
-`USER@HOST`. When ssh would log in as `root` — the config's `User root`, or no
+and repeats none of the notes below. `USER@HOST` as typed is used as given,
+with no `ssh -G`. If `ssh -G` fails or prints no user, the command stops and
+says to pass `USER@HOST`. When ssh would log in as `root` — the config's `User root`, or no
 `User` while the local login is root — the command is refused unless
 `root@HOST` is typed: each operator is their own Unix user (`server-setup.md` →
 Operators), and what kasbah creates on the server is owned by whoever it acts
 as, so root is never picked for you. A bare argument shaped like a version
-(`1.2.0`, `v1.2.0`, `1.2.0-rc.1`) is refused as a misread version and never
-looked up — pass `USER@1.2.0` if that is the server; a dotted quad
-(`10.0.0.1`) is an address. `build-push --build-only` connects nowhere, so it
-asks ssh nothing.
+(`1.2.0`, `v1.2.0`, `1.2.0-rc.1`) is never looked up: where the command takes
+no version it is refused as a misread one — pass `USER@1.2.0` if that is the
+server. Nor is one near a version, which no command takes: digits and dots
+that are not four numbers (`1`, `1.2`, `1.2.3.4.5`), or `v` and digits with
+dots between them (`v1`, `v1.2`, `v1.2.3.4`), are refused as a mistyped
+version, there too `USER@1.2` if that is the server. A dotted quad
+(`10.0.0.1`) is an address, and a `v` name that is not all digits after it
+(`v2.example.com`, `v6host`, `v1.2.3.example.com`) is a host. `build-push
+--build-only` connects nowhere, so it asks ssh nothing.
 
-`deploy`, `rollback`, `pending`, `logs`, `exec`, `server add-mail-domain` and
-`server mail-dkim` always take `USER@HOST`: each has a second positional
-argument (a version, a service, a domain). In the first five an argument
-carrying an `@` is the server and anything else is the other one, and a bare
-host — `1.2.3` is a valid one — could be either; beside a domain, swapped
-arguments would send a bare host to the domain's own host, often the same VPS.
+Seven commands take a second positional beside the server, and tell the two
+apart without asking ssh — by an `@`, by shape, by position, or, for a lone
+bare word beside `logs` and `exec`, by the project's services:
+
+- `deploy`, `rollback` and `pending` take a version: an argument shaped like a
+  version (`1.2.3`, `1.2.3-rc.1`) is the version, and any other — `@` or not —
+  is the server. `v1.2.3` is refused as a version written with its tag's `v`;
+  a server whose name is shaped like a version is passed as `USER@1.2.3`. One
+  near a version (`1.2`) is refused as a mistyped version, never as a second
+  server; the arguments are judged in order, so an earlier complaint (an
+  unknown flag, two servers before it) comes first.
+- `logs` and `exec` take a service, after the server. An argument carrying an
+  `@` is the server; of two bare arguments the first is the server and the
+  second the service; a bare argument alone is the service when
+  `compose.prod.yml` declares a service of that name — under its own
+  `services:` or in a file its `include:` names, read relative to the file
+  that names it as compose reads it — and the server otherwise. A service wins
+  over an ssh alias spelled the same, which is then reached as `USER@HOST` or
+  with the service after it. A word taken as the server this way is said on
+  stderr (`kasbah: 'wbe' is no service of compose.prod.yml — taken as the
+  server`) before ssh is asked, so a mistyped service that then fails to
+  connect reads as what it is; `exec`, which needs a service, refuses there
+  instead. A lone word shaped like a version, near one, or no host at all is
+  refused as the server would be, with no note. That case reads
+  `compose.prod.yml`, from the project root, before anything connects, and so
+  does `exec`'s refusal of a missing `--`, to name only the reading the file
+  bears out; for the lone word, a file it cannot read, or an include it cannot
+  read (a missing file, a path through a variable, a remote one), stops the run
+  there, naming both ways to spell the command without it.
+- `server add-mail-domain` and `server mail-dkim` take a domain, after the
+  server. The domain is checked before the server is looked up, so a swapped
+  pair whose host has no dot (`example.com rpi`, `rpi` an ssh alias) fails on
+  `rpi` as a domain and connects nowhere. A host spelled as a domain name
+  (`example.com vps.example.com`) passes that check, and the run goes to
+  `example.com` as the server: put the server first.
 
 ## How a failure reads
 
@@ -857,13 +891,13 @@ it out of the server's marker.
 
 All run from the project root (where `kasbah.yml` lives).
 
-`USER@HOST` is optional on any command that takes it, and a bare host takes its
-user from ssh's config where the synopsis says `[USER@]HOST` (Targets, above).
+`[USER@]HOST` is optional on any project command that takes it, and a bare host
+takes its user from ssh's config (Targets, above).
 If omitted, kasbah reads `last_server` from `.kasbah/state.json` and uses that. After any
 command succeeds against a given server, `last_server` is written so the
 next invocation in the same project defaults to it. `kasbah init-project`
 writes an empty state file; the first command that needs a server must
-pass `USER@HOST` explicitly.
+name it.
 
 "Succeeds" means kasbah's own work — reach the server, find the project, do
 what was asked, which is not always the same as exiting 0. `kasbah exec` exits
@@ -872,7 +906,7 @@ command ran at all; `kasbah logs` writes it when the reader stopped early too,
 since a closed pipe says nothing about whether the logs were readable
 (`project-manifest.md` → write rules).
 
-### `kasbah server add-mail-domain USER@HOST <domain>`
+### `kasbah server add-mail-domain [USER@]HOST <domain>`
 
 Joins a domain to the VPS's shared mail stack (`mail.md` → Multi-domain).
 Three things change and nothing else does:
@@ -915,7 +949,7 @@ alias is its own mailbox, and its keys are `server init --with-mail`'s.
 What it does not do, because it is not kasbah's: DNS. It ends by pointing at
 `mail-setup-guide`, which prints the records.
 
-### `kasbah server mail-dkim USER@HOST <domain> [--replace-keys|--keep-keys]`
+### `kasbah server mail-dkim [USER@]HOST <domain> [--replace-keys|--keep-keys]`
 
 Repairs or rotates the DKIM keys of a domain in the mail registry (`mail.md` →
 DKIM signing); a domain the registry does not list is refused, naming
@@ -1138,7 +1172,7 @@ so too). A cross build needs the engine's emulation (`tonistiigi/binfmt
   for `deploy --dirty` (not when the tree changed during the build);
   `--dirty --build-only` records nothing.
 
-### `kasbah deploy [USER@HOST] [VERSION] [flags]`
+### `kasbah deploy [[USER@]HOST] [VERSION] [flags]`
 
 Two modes:
 
@@ -1253,7 +1287,7 @@ Flags:
   server's locks, then stops; a signal at the workstation answers `stop`. Any
   other value is refused before anything connects. See `build-deploy.md` → A deploy that fails … reverts.
 
-### `kasbah rollback [USER@HOST] [VERSION]`
+### `kasbah rollback [[USER@]HOST] [VERSION]`
 
 Default target: the most recent `action=deploy` entry before the running one
 that is not a `-dirty.` build, read from `versions.log` and `versions.log.gz`
@@ -1696,7 +1730,7 @@ rollback prints read it as its base tag and say so in a line — and skip the
 changelog when that base is no tag here (`0.0.0`, or a tag whose `+metadata`
 the label dropped). `pending` refuses a dirty `VERSION`.
 
-### `kasbah pending [USER@HOST] [VERSION]`
+### `kasbah pending [[USER@]HOST] [VERSION]`
 
 `git log <deployed>..<VERSION-or-HEAD>` formatted as a changelog. Useful
 before cutting a tag. The deployed version is resolved from the VPS at
@@ -1834,7 +1868,7 @@ waited on), so it never lands inside a deploy whose revert would put the old
 its whole interactive session, the managed-block refresh, `env set` — and a
 refusal names the holder. No `versions.log` line is written.
 
-### `kasbah logs [USER@HOST] [SERVICE] [-f] [--tail=N]`
+### `kasbah logs [[USER@]HOST] [SERVICE] [-f] [--tail=N]`
 
 Thin wrapper around `docker compose logs` on the VPS. If `SERVICE` is
 omitted, shows all services in the project.
@@ -1845,11 +1879,12 @@ Flags:
   buffer; anything that is neither a count nor `all` is refused here rather
   than by compose on the far side.
 
-Both positionals are optional, which is the same ambiguity `exec` has and it
-is resolved the same way: **an argument carrying an `@` is the server, and
-anything else is the service.** So `kasbah logs web` reads one service on the
-remembered server, and `kasbah logs you@vps` reads every service on a named
-one.
+Both positionals are optional, the server first, and they are told apart as
+`exec` tells them (Targets, above): `kasbah logs web` reads one service on the
+remembered server when `compose.prod.yml` (or a file it includes) has a service
+`web`, `kasbah logs rpi` every service on `rpi` when it has none of that name —
+saying on stderr that `rpi` was taken as the server — and `kasbah logs rpi web`
+and `kasbah logs you@vps web` one service on a named server.
 
 Run against `<apps>/<name>/compose.yml` as `docker compose -p <name>`, where
 `<apps>` comes from the server's own discovery pointer exactly as `deploy` and
@@ -1913,11 +1948,19 @@ Not `pkill -f 'compose -f <apps>/<name>'`: that also matches a concurrent
 A pty would hang the session up and cost every piped log its CRs, which is not
 a trade this command makes.
 
-### `kasbah exec [USER@HOST] SERVICE -- CMD…`
+### `kasbah exec [[USER@]HOST] SERVICE -- CMD…`
 
 `docker compose exec SERVICE CMD…` over SSH. The `--` is mandatory so flags
-after it belong to the inner command. `SERVICE` is required; if it looks
-like `user@host` (contains `@`) kasbah treats it as the server.
+after it belong to the inner command. `SERVICE` is required and comes after
+the server, told apart from it as Targets (above) says: `kasbah exec web --
+ls` runs in `web` on the remembered server, `kasbah exec rpi web -- ls` on
+`rpi`, and `kasbah exec rpi -- ls`, with no service `rpi` in
+`compose.prod.yml` or a file it includes, is refused as naming no service. A
+forgotten `--` is refused with the line to run instead: after two bare words
+(`kasbah exec web ls`, `kasbah exec web sh -c ls`) it shows both readings —
+`web` the service and the rest the command, or `web` the server and the second
+word the service — or only the one `compose.prod.yml` bears out when it names
+either word as a service.
 
 Same apps-path discovery and same `-p <name>` as `logs` above.
 

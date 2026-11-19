@@ -14,6 +14,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/remote"
+	"github.com/adigourdi/kasbah/internal/ssh"
 	"github.com/adigourdi/kasbah/templates"
 )
 
@@ -246,6 +247,9 @@ func TestRemoteWrite(t *testing.T) {
 }
 
 func TestParse(t *testing.T) {
+	oldU, oldN := ssh.UserOf, ssh.Note
+	ssh.UserOf, ssh.Note = func(string) (string, error) { return "root", nil }, func(string) {}
+	t.Cleanup(func() { ssh.UserOf, ssh.Note = oldU, oldN })
 	o, err := Parse("add-mail-domain", []string{"d@vps\r", "shop.test\r"})
 	if err != nil || o.Target != "d@vps" || o.Domain != "shop.test" {
 		t.Fatalf("%+v %v", o, err)
@@ -253,16 +257,16 @@ func TestParse(t *testing.T) {
 	for _, c := range []struct{ cmd, args, want string }{
 		{"add-mail-domain", "d@vps|not a domain", "'not a domain' is not a domain name"},
 		{"add-mail-domain", "d@vps", "a domain is required"},
-		{"add-mail-domain", "", "USER@HOST is required"},
-		{"add-mail-domain", "vps|a.com", "'vps' has no '@', and add-mail-domain takes the server only as USER@HOST"},
-		{"mail-dkim", "a.com|vps", "'a.com' has no '@', and mail-dkim takes the server only as USER@HOST"},
+		{"add-mail-domain", "", "server add-mail-domain: no server given (expected `kasbah server add-mail-domain [USER@]HOST <domain>`)"},
+		{"add-mail-domain", "vps|a.com", "logs in to vps as root"},
+		{"mail-dkim", "a.com|vps", "'vps' is not a domain name"},
 		{"add-mail-domain", "d@vps|a.com|b.com", "unexpected argument 'b.com'"},
 		{"add-mail-domain", "d@vps|--x=secret", "unknown flag '--x'"},
 		{"mail-setup-guide", "d@vps|e@vps", "[USER@]HOST is given once"},
 		{"mail-setup-guide", "", "no server given"},
 		{"mail-dkim", "d@vps", "server mail-dkim: a domain is required"},
 		{"mail-dkim", "d@vps|a.com|--replace-keys|--keep-keys", "--replace-keys and --keep-keys cannot both be given"},
-		{"mail-dkim", "d@vps|a.com|--replace", "unknown flag '--replace' (this command takes USER@HOST, a domain and --replace-keys/--keep-keys)"},
+		{"mail-dkim", "d@vps|a.com|--replace", "unknown flag '--replace' (this command takes [USER@]HOST, a domain and --replace-keys/--keep-keys)"},
 		{"add-mail-domain", "d@vps|a.com|--keep-keys", "unknown flag '--keep-keys'"},
 	} {
 		var args []string

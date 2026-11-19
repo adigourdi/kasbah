@@ -31,12 +31,41 @@ var (
 	}
 )
 
-// reVersion is an argument shaped like a version: X.Y.Z with a pre-release or
-// build suffix, or v and anything starting X.Y.Z. A dotted quad is neither.
-var reVersion = regexp.MustCompile(`^(v[0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$)`)
+// reVersion is an argument shaped like a version: X.Y.Z with a pre-release
+// and a build suffix, either optional, v-prefixed or not. A dotted quad is neither.
+var reVersion = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`)
+
+// reNear is a misread version: digits and dots alone, or v and dotted digits.
+// reQuad is a dotted quad, which is an IPv4 address.
+var (
+	reNear = regexp.MustCompile(`^([0-9.]+|v[0-9]+(\.[0-9]+)*)$`)
+	reQuad = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$`)
+)
 
 // LooksVersion is arg shaped like a version, v-prefixed or not.
 func LooksVersion(arg string) bool { return reVersion.MatchString(arg) }
+
+// NearVersion is arg shaped like neither a version nor a host — `1.2`, `1`,
+// `v1.2`, `1.2.3.4.5`: a version mistyped, never looked up as a server.
+func NearVersion(arg string) bool {
+	return !LooksVersion(arg) && reNear.MatchString(arg) && !reQuad.MatchString(arg)
+}
+
+// Hostlike is arg as ResolveTarget would look it up: host-shaped, and neither
+// a version nor near one.
+func Hostlike(arg string) bool { return IsHost(arg) && !LooksVersion(arg) && !NearVersion(arg) }
+
+// NotVersion is the refusal of a NearVersion argument.
+func NotVersion(cmd, arg string) *cli.Error {
+	return cli.Fail("%s: '%s' is not a version kasbah can use — expected <major>.<minor>.<patch>, as in 1.2.0", cmd, arg).
+		Next(fmt.Sprintf("If '%s' is a server, pass it as USER@%s.", arg, arg))
+}
+
+// TwoServers refuses a second server on cmd's command line.
+func TwoServers(cmd, first, second string) *cli.Error {
+	return cli.Fail("%s: two servers given ('%s' and '%s') — one run goes to one server", cmd, first, second).
+		Next(fmt.Sprintf("Drop one, and run `kasbah %s` once per server.", cmd))
+}
 
 // ResolveTarget is cmd's server argument s as USER@HOST: '@' as given (Connect
 // checks it), a bare host with the user `ssh -G` names, said once on stderr,
@@ -49,6 +78,9 @@ func ResolveTarget(cmd, s string) (string, error) {
 	if LooksVersion(s) {
 		return "", cli.Fail("%s: '%s' reads as a version, and %s takes no version", cmd, s, cmd).
 			Next(fmt.Sprintf("If '%s' is a server, pass it as USER@%s.", s, s))
+	}
+	if NearVersion(s) {
+		return "", NotVersion(cmd, s)
 	}
 	if !reHost.MatchString(s) {
 		return "", cli.Fail("invalid ssh host '%s' (expected [USER@]HOST: a hostname, ssh alias or IPv4 address — no port, no IPv6 literal)", s)

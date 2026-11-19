@@ -212,6 +212,11 @@ cat > "$stub_dir/ssh" <<'STUB'
 { printf 'ssh'; for a in "$@"; do printf '|%s' "$a"; done; printf '\n'; } >> "$CALL_LOG"
 printf '%s\n' "$*" >> "$SSH_LOG"
 for a; do [ "$a" = -O ] && exit 0; done
+# ssh's config logs in to every bare host as deploy.
+if [ "$1" = -G ]; then
+    printf 'host %s\nuser deploy\n' "${!#}"
+    exit 0
+fi
 for a; do [ "$a" = -n ] && exec </dev/null; done
 last="${!#}"
 [ "$last" = true ] && exit 0
@@ -222,6 +227,11 @@ eval "set -- $last"
 # The bootstrap probe, which reads the marker, runs for real.
 if [ "$1 $2" = "sh -s" ]; then
     exec sh -s -- "$FAKE_APPS" "$FAKE_APPS/no-pointer" "$6" "$7" "${8:-}"
+fi
+# logs' and exec's one docker compose, said back rather than run.
+if [ "$1" = docker ]; then
+    printf 'ran:'; printf ' %s' "$@"; printf '\n'
+    exit 0
 fi
 while [ $# -gt 0 ] && [ "$1" != remote ]; do shift; done
 [ $# -gt 0 ] && shift
@@ -992,8 +1002,8 @@ assert 'grep -qF "404 if it is a first deploy" <<<"$out"' \
         (said '$out')"
 
 # --- The command line ----------------------------------------------------------------
-# An argument with an `@` is the server, anything else is the version, in either
-# order — the rule `kasbah exec` already uses.
+# An argument shaped like a version is the version, any other the server, in
+# either order.
 out="$( rollback 1.0.0 deploy@vps )"; rc=$?
 calls="$(<"$call_log")"
 assert '[ "$rc" = "0" ]' "version before server parses the same way (rc $rc: $out)"
@@ -1022,8 +1032,57 @@ assert '[ "$rc" != "0" ]' "the tag spelling is refused rather than guessed at (r
 assert 'grep -qF "kasbah rollback 1.0.0" <<<"$out"' "showing the form that works (said '$out')"
 assert '[ ! -s "$ssh_log" ]' "before any connection (ssh saw: $(cat "$ssh_log"))"
 out="$( rollback deploy@vps 1.2 )"; rc=$?
-assert '[ "$rc" != "0" ]' "and so is a version that is not semver (rc $rc: $out)"
-assert 'grep -qF "1.2" <<<"$out"' "quoting it back (said '$out')"
+assert '[ "$rc" != "0" ]' "and a word near a version is a mistyped version (rc $rc: $out)"
+assert 'grep -qF "'"'"'1.2'"'"' is not a version kasbah can use" <<<"$out" && grep -qF "USER@1.2" <<<"$out"' "quoting it back, with the host spelling (said '$out')"
+assert '[ ! -s "$ssh_log" ]' "before any lookup or connection (ssh saw: $(cat "$ssh_log"))"
+
+# A bare host is the server, logged in to as the user ssh's config names — said
+# once, then that user everywhere.
+out="$( rollback vps 1.0.0 )"; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "Rolled demo back to 1.0.0 on deploy@vps" <<<"$out"' \
+    "\`kasbah rollback vps 1.0.0\` rolls back on the server ssh's config names (rc $rc: $out)"
+assert '[ "$(grep -c "kasbah: as deploy@vps (user from ssh config)" <<<"$out")" = 1 ]' "saying which user, once (said '$out')"
+assert '[ "$(grep -c "^ssh|-G|" "$call_log")" = 1 ] && grep -qxF "ssh|-G|--|vps" "$call_log"' "asking ssh -G once ($(grep -F -- "-G" "$call_log"))"
+conns="$(grep -v "^ssh|-G|" "$call_log")"
+assert '! grep -qE "\|vps(\||$)" <<<"$conns"' "and connecting to deploy@vps, never the bare vps ($(grep -E "\|vps(\||$)" "$call_log"))"
+assert '[ "$(jq -r .last_server "$project/.kasbah/state.json" 2>/dev/null)" = "deploy@vps" ]' "which is what last_server records"
+rm -rf "$project/.kasbah"
+out="$( FAKE_ACTIVE= FAKE_ACTIVE_STATE=missing deploy 1.0.0 vps )"; rc=$?
+assert '[ "$rc" = "0" ] && grep -qF "Deployed demo 1.0.0 to deploy@vps" <<<"$out" && grep -qF "kasbah: as deploy@vps (user from ssh config)" <<<"$out"' \
+    "and so does \`kasbah deploy 1.0.0 vps\` (rc $rc: $out)"
+rm -rf "$project/.kasbah"
+# The headline: a bare host on the working-tree deploy, no version at all.
+out="$( FAKE_ACTIVE= FAKE_ACTIVE_STATE=missing deploy vps )"; rc=$?
+conns="$(grep -v "^ssh|-G|" "$call_log")"
+assert '[ "$rc" = "0" ] && grep -qE "^Deployed demo .* to deploy@vps" <<<"$out"' "\`kasbah deploy vps\` ships the working tree to deploy@vps (rc $rc: $out)"
+assert '[ "$(grep -c "kasbah: as deploy@vps (user from ssh config)" <<<"$out")" = 1 ]' "saying which user, once (said '$out')"
+assert '[ "$(grep -c "^ssh|-G|" "$call_log")" = 1 ] && grep -qxF "ssh|-G|--|vps" "$call_log"' "asking ssh -G once ($(grep -F -- "-G" "$call_log"))"
+assert '! grep -qE "\|vps(\||$)" <<<"$conns" && grep -qE "\|deploy@vps(\||$)" <<<"$conns"' "and connecting to deploy@vps, never the bare vps ($(grep -E "\|vps(\||$)" "$call_log"))"
+rm -rf "$project/.kasbah"
+out="$( deploy 7.0.0 deploy@vps )"; rc=$?
+assert '[ "$rc" != "0" ] && grep -qF "is not a tag in this repository" <<<"$out" && [ ! -s "$ssh_log" ]' \
+    "\`kasbah deploy 7.0.0 deploy@vps\` still reads 7.0.0 as the version, refused before any ssh (rc $rc: $out; ssh saw: $(cat "$ssh_log"))"
+out="$( deploy 7.0.0 )"; rc=$?
+assert '[ "$rc" != "0" ] && ! grep -q "^ssh|-G|" "$call_log"' "and a version alone is never looked up as a host (rc $rc: $out)"
+
+# logs and exec: two bare words are the server, then the service; one alone
+# is the service when compose.prod.yml has one of that name, the server else.
+out="$( cd "$project" && kasbah_run logs vps web --tail=5 )"; rc=$?
+assert '[ "$rc" = 0 ] && grep -qxF "ran: docker compose -f /apps/demo/compose.yml -p demo logs --tail=5 web" <<<"$out" &&
+        grep -qF "kasbah: as deploy@vps (user from ssh config)" <<<"$out"' "\`kasbah logs vps web\` reads web on deploy@vps (rc $rc: $out)"
+out="$( cd "$project" && kasbah_run logs cache )"; rc=$?
+assert '[ "$rc" = 0 ] && grep -qxF "ran: docker compose -f /apps/demo/compose.yml -p demo logs --tail=100 cache" <<<"$out" && ! grep -q "^ssh|-G|" "$call_log"' \
+    "\`kasbah logs cache\` is the service on last_server, nothing looked up (rc $rc: $out)"
+out="$( cd "$project" && kasbah_run logs vps )"; rc=$?
+assert '[ "$rc" = 0 ] && grep -qxF "ran: docker compose -f /apps/demo/compose.yml -p demo logs --tail=100" <<<"$out" &&
+        [ "$(grep -c "^ssh|-G|" "$call_log")" = 1 ]' "\`kasbah logs vps\`, no service vps, is every service on vps (rc $rc: $out)"
+out="$( cd "$project" && kasbah_run exec vps web -- true )"; rc=$?
+assert '[ "$rc" = 0 ] && grep -qxF "ran: docker compose -f /apps/demo/compose.yml -p demo exec -T web true" <<<"$out"' \
+    "\`kasbah exec vps web -- true\` runs in web on deploy@vps (rc $rc: $out)"
+out="$( cd "$project" && kasbah_run exec vps -- true )"; rc=$?
+assert '[ "$rc" = 1 ] && grep -qF "compose.prod.yml has no service '"'"'vps'"'"', so it is the server" <<<"$out" && [ ! -s "$ssh_log" ]' \
+    "\`kasbah exec vps -- true\` names no service, refused before any ssh (rc $rc: $out)"
+rm -rf "$project/.kasbah"
 
 out="$( rollback --help )"; rc=$?
 assert '[ "$rc" = "0" ]' "\`kasbah rollback --help\` exits 0 (rc $rc)"

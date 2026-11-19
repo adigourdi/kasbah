@@ -533,7 +533,7 @@ to the VPS. Tracks:
 | Field | Written by | Read by |
 |---|---|---|
 | `kasbah_version` | `init-project` (set once, when the file is created) | `kasbah migrate` |
-| `last_server` | every project command that targets a server, once kasbah's own work on it succeeded (see Write rules) | every project command — used as default when `USER@HOST` is omitted |
+| `last_server` | every project command that targets a server, once kasbah's own work on it succeeded (see Write rules) | every project command — used as default when no server is given |
 | `last_deploy` | `deploy`, `rollback` on success | nothing — recorded so a deployed-vs-local diff can read it |
 | `last_version` | `deploy`, `rollback` on success | nothing |
 | `schema_migrations_applied` | `kasbah migrate` | `kasbah migrate` (idempotency) |
@@ -563,11 +563,11 @@ for defaults, not a source of truth for what's actually running.
   `env`, `history`, `changelog`, `pending`, `logs`, `exec`, `check --server`.
 - `init-project` creates the file with empty fields and the current
   `kasbah_version`. First server-targeting command must be passed
-  `USER@HOST` explicitly; subsequent ones default to `last_server`.
+  `[USER@]HOST`; subsequent ones default to `last_server`.
 
 ### Purpose
 
-- Default `USER@HOST` so users don't repeat it every command in the same project.
+- Default the server so users don't repeat it every command in the same project.
 - Anchor the source-tree schema migration story: `kasbah_version` says which
   kasbah last wrote the project's files, the anchor `kasbah migrate` works from.
 - Record the last deploy, so a deployed-vs-local diff can read it (nothing does).

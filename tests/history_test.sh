@@ -782,9 +782,31 @@ assert '[ -z "$(grep -v "^ssh|-G|" "$call_log")" ]' "before any connection (call
 FAKE_SSH_USER="" kasbah changelog vps
 assert '[ "$CRC" != "0" ] && grep -qF "could not tell which user ssh logs in to vps as" <<<"$CERR" && grep -qF "USER@vps" <<<"$CERR"' \
     "no user line from ssh -G is a failure saying to pass USER@HOST (rc $CRC: $CERR)"
+# pending takes a version too: a bare host is the server, a version-shaped
+# word the version, never looked up.
 kasbah pending vps
-assert '[ "$CRC" != "0" ] && grep -qF "USER@vps" <<<"$CERR" && ! grep -q "^ssh|-G|" "$call_log"' \
-    "pending, which takes a version too, never looks a bare host up (rc $CRC: $CERR)"
+assert '[ "$CRC" = "0" ] && grep -qF "kasbah: as deploy@vps (user from ssh config)" <<<"$CERR"' \
+    "pending takes a bare host too (rc $CRC: $CERR)"
+assert '[ "$(grep -c "^ssh|-G|" "$call_log")" = 1 ] && grep -qF "nothing pending: HEAD is the commit deploy@vps is already running" <<<"$COUT"' \
+    "asking ssh -G once, and reading deploy@vps's record (calls: $(cat "$call_log"); got '$COUT')"
+kasbah pending 2.0.0 vps
+assert '[ "$CRC" = "0" ] && grep -qF "v3.0.0..v2.0.0" <<<"$COUT"' "a version before a bare host is still the version (rc $CRC: $CERR; got '$COUT')"
+kasbah pending 2.0.0
+assert '[ "$CRC" = "0" ] && grep -qF "v3.0.0..v2.0.0" <<<"$COUT" && ! grep -q "^ssh|-G|" "$call_log"' \
+    "and a version alone is never looked up as a host (rc $CRC: $CERR; calls: $(cat "$call_log"))"
+kasbah pending vps rpi
+assert '[ "$CRC" != "0" ] && grep -qF "two servers given ('"'"'vps'"'"' and '"'"'rpi'"'"')" <<<"$CERR" && ! grep -q "^ssh|-G|" "$call_log"' \
+    "two bare hosts are two servers (rc $CRC: $CERR)"
+# A word near a version is a mistyped one: refused, never looked up as a host.
+for args in "1.2" "vps 1.2"; do
+    # shellcheck disable=SC2086
+    kasbah pending $args
+    assert '[ "$CRC" != "0" ] && grep -qF "'"'"'1.2'"'"' is not a version kasbah can use" <<<"$CERR" && grep -qF "USER@1.2" <<<"$CERR" && [ ! -s "$call_log" ]' \
+        "pending $args is refused as a mistyped version, asking ssh nothing (rc $CRC: $CERR; calls: $(cat "$call_log"))"
+done
+kasbah history 1.2
+assert '[ "$CRC" != "0" ] && grep -qF "'"'"'1.2'"'"' is not a version kasbah can use" <<<"$CERR" && [ ! -s "$call_log" ]' \
+    "and so is history 1.2 (rc $CRC: $CERR; calls: $(cat "$call_log"))"
 kasbah changelog 1.2.3
 assert '[ "$CRC" != "0" ]' "changelog refuses a version (rc $CRC)"
 assert 'grep -qF "takes no version" <<<"$CERR"' "pointing at the command that takes one (got '$CERR')"

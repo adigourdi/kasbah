@@ -54,9 +54,17 @@ func TestArgs(t *testing.T) {
 	if o, err := Parse([]string{"1.0.0", "d@h"}); err != nil || o.Version != "1.0.0" || o.Target != "d@h" {
 		t.Fatalf("a version and a server: %+v %v", o, err)
 	}
-	for _, bad := range [][]string{{"v1.0.0"}, {"1.0"}, {"1.0.0", "2.0.0"}} {
-		if _, err := ParseRollback(bad); err == nil || !strings.HasPrefix(err.Error(), "rollback: ") {
-			t.Errorf("ParseRollback(%q) = %v", bad, err)
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"v1.0.0"}, "without the 'v'"},
+		{[]string{"1.0", "h"}, "'1.0' is not a version kasbah can use"},
+		{[]string{"a@h", "1.0"}, "'1.0' is not a version kasbah can use"},
+		{[]string{"1.0.0", "2.0.0"}, "two versions given"},
+	} {
+		if _, err := ParseRollback(c.args); err == nil || !strings.HasPrefix(err.Error(), "rollback: ") || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("ParseRollback(%q) = %v", c.args, err)
 		}
 	}
 	o, err := Parse([]string{"--on-hook-failure=stop", "d@h", "--on-drift=continue", "--no-health-wait", "--skip-hooks"})

@@ -53,7 +53,7 @@ that ran.
 Reads the server's record and changes nothing in it — the one write is the
 kasbah binary, installed when the server's is absent or older. See docs/build-deploy.md.
 `,
-	"pending": `Usage: kasbah pending [USER@HOST] [VERSION]
+	"pending": `Usage: kasbah pending [[USER@]HOST] [VERSION]
 
 The commits between the version a server is running and this checkout — the
 answer to "what would deploying ship", asked before a tag is cut. Run from the
@@ -63,10 +63,10 @@ The deployed version is read out of the server's versions.log at run time, never
 out of .kasbah/state.json: state is this workstation's cache of what it last
 did, and the server is what is running.
 
-With VERSION, the range ends at v<VERSION> instead of HEAD.
-An argument containing '@' is the server, anything else is the version — so the
-user is never taken from ssh's config here: a bare host (1.2.3 is one) could be
-either.
+With VERSION, the range ends at v<VERSION> instead of HEAD. An argument shaped
+like a version (1.2.3) is the version, and any other is the server; a bare host
+takes its user from ssh's config. A server named like a version is passed as
+USER@1.2.3. One near a version (1.2, 1, v1.2) is a mistyped version, refused.
 
 Reads the server's record and changes nothing in it — the one write is the
 kasbah binary, installed when the server's is absent or older. See docs/cli.md.
@@ -112,7 +112,7 @@ func Parse(cmd string, args []string) (Options, error) {
 			case "history":
 				return o, cli.Fail("history: unknown flag '%s' (history takes [USER@]HOST and --all)", name)
 			case "pending":
-				return o, cli.Fail("pending: unknown flag '%s' (pending takes USER@HOST and VERSION)", name)
+				return o, cli.Fail("pending: unknown flag '%s' (pending takes [USER@]HOST and VERSION)", name)
 			}
 			return o, cli.Fail("%s: unknown flag '%s' (%s takes [USER@]HOST)", cmd, name, cmd)
 		default:
@@ -120,12 +120,15 @@ func Parse(cmd string, args []string) (Options, error) {
 			if cmd != "pending" {
 				// history and changelog take no version: their one positional is
 				// the server, and one shaped like a version is a misread pending.
+				if ssh.NearVersion(arg) {
+					return o, ssh.NotVersion(cmd, arg)
+				}
 				if ssh.LooksVersion(arg) {
 					return o, cli.Fail("%s: '%s' reads as a version, and %s takes no version (`kasbah pending [VERSION]` is the one that does)", cmd, arg, cmd).
 						Next(fmt.Sprintf("If '%s' is a server, pass it as USER@%s.", arg, arg))
 				}
 				if o.Target != "" {
-					return o, cli.Fail("%s: two servers given ('%s' and '%s') — one run goes to one server", cmd, o.Target, arg)
+					return o, ssh.TwoServers(cmd, o.Target, arg)
 				}
 				o.Target = arg
 				continue
@@ -137,9 +140,6 @@ func Parse(cmd string, args []string) (Options, error) {
 				return o, cli.Fail("pending: %s is a --dirty build — no tag holds it, so there is no range to end at; name a tagged version, or none for HEAD", o.Version)
 			}
 		}
-	}
-	if cmd == "pending" {
-		return o, nil
 	}
 	var err error
 	o.Target, err = ssh.ResolveTarget(cmd, o.Target)
