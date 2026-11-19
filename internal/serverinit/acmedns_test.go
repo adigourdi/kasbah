@@ -88,7 +88,7 @@ func TestRenderDNS(t *testing.T) {
 	}
 	// Without a provider, nothing of the feature shows.
 	if !strings.Contains(plain["traefik.yml"], "entryPoint: web\n\napi:") || strings.Contains(plain["traefik.yml"], "dnsChallenge") ||
-		!strings.Contains(plain["compose.yml"], "acme.json\"\n    networks:") || strings.Contains(plain["compose.yml"], "env_file") {
+		!strings.Contains(plain["compose.yml"], "acme.json\"\n    # No networks:") || strings.Contains(plain["compose.yml"], "env_file") {
 		t.Errorf("a render without DNS resolvers changed:\n%s\n%s", plain["traefik.yml"], plain["compose.yml"])
 	}
 	v.DNS = []string{"cloudflare", "ovh"}
@@ -109,7 +109,7 @@ func TestRenderDNS(t *testing.T) {
 			t.Errorf("traefik.yml lacks %q:\n%s", want, st)
 		}
 	}
-	if !strings.Contains(r["compose.yml"], "    env_file:\n      - acme-dns/cloudflare.env\n      - acme-dns/ovh.env\n    networks:") {
+	if !strings.Contains(r["compose.yml"], "    env_file:\n      - acme-dns/cloudflare.env\n      - acme-dns/ovh.env\n    # No networks:") {
 		t.Errorf("compose.yml env_file:\n%s", r["compose.yml"])
 	}
 	if got, err := DNSResolvers(st); err != nil || strings.Join(got, " ") != "cloudflare ovh" {

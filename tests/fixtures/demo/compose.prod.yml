@@ -5,16 +5,14 @@
 name: demo
 
 services:
-  # The legacy shape, kept on purpose: routed through the shared kasbah-net,
-  # which 1.x still serves and `kasbah check` warns about (C03) — the
-  # built-app fixture has the project-owned kasbah network instead. Named for
-  # the project, not `web`: compose publishes the service name as a DNS alias
-  # on every network it joins, and kasbah-net is shared with every other
-  # project on it (C09). A service and its container may carry the same name.
+  # Named for the project, not `web` (C09). Like the built-app fixture, this
+  # one routes by container_name, a shape T07 accepts beside a service name.
+  # A service and its container may carry the same name.
   demo-web:
     image: nginx:alpine
-    # Traefik resolves the backend by container name over kasbah-net, so this
-    # is what traefik-dynamic.yml's loadBalancer URL points at (docs/traefik.md).
+    # traefik-dynamic.yml's loadBalancer URL points at this name; deploy installs
+    # it qualified with the project's network, demo-web.demo_kasbah
+    # (docs/traefik.md).
     container_name: demo-web
     restart: unless-stopped
     volumes:
@@ -30,7 +28,7 @@ services:
       # path at all: tests/integration/spine_test.sh inspects the deployed
       # container's network set, and a project on one network proves nothing
       # about the split C03/C07 enforce.
-      - kasbah-net
+      - kasbah
       - internal
     # Injected into .env by kasbah from the server marker, into its managed
     # block. Unset, compose fails outright — an empty value is not a valid
@@ -44,6 +42,5 @@ services:
         max-file: "3"
 
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
   internal: {}

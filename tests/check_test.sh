@@ -103,9 +103,8 @@ assert 'grep -qF "✓ C01 All services set restart policy" <<<"$out"'           
 assert 'grep -qF "✓ C02 All services set json-file logging with rotation" <<<"$out"' "C02 pass line"
 assert 'grep -qF "✓ C03 All routed services join the project'"'"'s kasbah network" <<<"$out"' "C03 pass line"
 assert 'grep -qF "✓ C04 The kasbah network is the project'"'"'s own (demo_kasbah)" <<<"$out"'  "C04 pass line"
-assert 'grep -qF "✓ C07 No internal services on the kasbah network or kasbah-net" <<<"$out"' "C07 pass line"
-assert '! grep -qF "kasbah-net service names" <<<"$out"'                       "C09'"'"'s kasbah-net warn is silent with nothing on kasbah-net"
-assert 'grep -qF "✓ C09 Names on the kasbah network are project-prefixed" <<<"$out"' "and C09 passes the names on the project'"'"'s kasbah network"
+assert 'grep -qF "✓ C07 No internal services on the kasbah network" <<<"$out"' "C07 pass line"
+assert 'grep -qF "✓ C09 Names on the kasbah network are project-prefixed" <<<"$out"' "and C09 passes the names on the project's kasbah network"
 assert 'grep -qF "✓ C05 No deprecated '"'"'version:'"'"' field" <<<"$out"'          "C05 pass line"
 assert 'grep -qF "✓ C14 No service publishes host port 80 or 443" <<<"$out"'           "C14 pass line"
 assert 'grep -qF "✓ R01,R02 All services set cpus/mem_limit via KASBAH_* vars" <<<"$out"'  "R01/R02 pass line"
@@ -312,10 +311,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-networks:
-  default:
-    name: kasbah-net
-    external: true
 YAML
 out="$(cd "$proj13" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                            "C01 fail exits 6 (got $rc)"
@@ -329,16 +324,12 @@ services:
   demo-web:
     image: nginx:alpine
     restart: unless-stopped
-networks:
-  default:
-    name: kasbah-net
-    external: true
 YAML
 out="$(cd "$proj14" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                    "C02 fail exits 6 (got $rc)"
 assert 'grep -qF "✗ C02 Services missing json-file logging with max-size/max-file: demo-web" <<<"$out"' "C02 fail line"
 
-# --- Case 15: C03 — routed service not on kasbah-net → fail, exit 6 --------
+# --- Case 15: C03 — routed service not on the kasbah network → fail, exit 6 -
 # Fragment targets demo-web (routed), but the service joins no network.
 proj15="$tmpdir/no-kasbahnet"
 make_project "$proj15"
@@ -358,11 +349,13 @@ services:
 YAML
 out="$(cd "$proj15" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                "C03 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ C03 Routed services on neither the project'"'"'s kasbah network nor kasbah-net: demo-web" <<<"$out"' "C03 fail line"
-assert 'grep -qF "✓ C07 No internal services on the kasbah network or kasbah-net" <<<"$out"'     "C07 still passes"
+assert 'grep -qF "✗ C03 Routed services not on the project'"'"'s kasbah network: demo-web" <<<"$out"' "C03 fail line"
+assert 'grep -qF "✓ C07 No internal services on the kasbah network" <<<"$out"'     "C07 still passes"
 
-# --- Case 16: C04 — kasbah-net referenced but not external → fail, exit 6 --
-proj16="$tmpdir/kasbahnet-not-external"
+# --- Case 16: C03 — routed service on the shared kasbah-net → fail, exit 6 --
+# kasbah no longer routes over the network every project once shared: the
+# failure names the move, and C04 the external network it takes.
+proj16="$tmpdir/on-kasbah-net"
 make_project "$proj16"
 cat > "$proj16/compose.prod.yml" <<'YAML'
 services:
@@ -379,20 +372,55 @@ services:
         max-file: "3"
     networks: [kasbah-net, internal]
 networks:
-  kasbah-net: {}
+  kasbah-net:
+    external: true
   internal: {}
 YAML
 out="$(cd "$proj16" && "$kasbah" check 2>&1)"; rc=$?
-assert '[ "$rc" = "6" ]'                                                  "C04 fail exits 6 (got $rc)"
-assert 'grep -qF "✓ C03 All routed services join kasbah-net" <<<"$out"'      "C03 still passes"
-assert 'grep -qF "✗ C04 kasbah-net not declared external: true" <<<"$out"'   "C04 fail line"
+assert '[ "$rc" = "6" ]'                                                  "C03 fail exits 6 (got $rc)"
+assert 'grep -qF "✗ C03 Routed services on the shared kasbah-net: demo-web — Traefik reaches a routed service only over the project'"'"'s kasbah network: join them to kasbah in its place, declare kasbah: {} and drop kasbah-net; check --fix does where kasbah-net is the network'"'"'s key" <<<"$out"' \
+       "C03 fail line names the move (said '$out')"
+assert 'grep -qF "✗ C04 Networks from outside the project: kasbah-net (external kasbah-net) — " <<<"$out"' "C04 fails the external network"
+assert 'grep -qF "26 passed, 0 warning, 2 failed" <<<"$out"'              "one line each, no C04 or C09 pass with nothing on kasbah, and no C11 line for a service C03 fails (said '$(grep Summary: <<<"$out")')"
+out="$(cd "$proj16" && "$kasbah" check --fix --yes 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]' "--fix moves it to the kasbah network, and the check passes (got $rc: $out)"
+assert 'grep -qF "C03 demo-web — move it from kasbah-net to kasbah" <<<"$out" && grep -qF "C03 — drop the top-level kasbah-net network no service joins any more" <<<"$out" && grep -qF "C04 — declare the project'"'"'s kasbah: {} network" <<<"$out"' \
+       "the plan names the swap, the drop and the declaration (said '$out')"
+assert 'grep -qF -- "-    networks: [kasbah-net, internal]" <<<"$out" && grep -qF -- "+    networks: [kasbah, internal, default]" <<<"$out"' "and the diff shows the swap, default joined"
+assert '[ "$(sed -n "/^networks:/,\$p" "$proj16/compose.prod.yml")" = "$(printf "networks:\n  internal: {}\n  kasbah: {}")" ]' \
+       "kasbah-net's declaration gave way to kasbah: {} ($(cat "$proj16/compose.prod.yml"))"
 
-# --- Case 16b: C09 — a generic service name on kasbah-net → warn ------------
-# The routed service is called `web`, which is what compose publishes as a DNS
-# alias on the shared network — the shape measured in Phase 6 as
-# `aliases=[gbrev-web web]`. Every other rule passes: it is routed, it is on
-# kasbah-net, and its container_name is unique. Warn only, because nothing
-# resolves that alias today.
+# --- Case 16a: --fix takes an unrouted service off kasbah-net, not onto kasbah
+# A database moved to kasbah would be one lookup from Traefik (C07): default
+# takes kasbah-net's place, which the moved web joins too, so the two still
+# meet. A fixed name: is a network from outside, as external is.
+proj16a="$tmpdir/unrouted-on-kasbah-net"
+make_project "$proj16a"
+svc16a() {
+    printf '  %s:\n    image: %s\n    restart: unless-stopped\n    cpus: ${KASBAH_CPU_LIMIT}\n    mem_limit: ${KASBAH_MEM_LIMIT}\n' "$1" "$2"
+    printf '    logging:\n      driver: json-file\n      options:\n        max-size: "10m"\n        max-file: "3"\n'
+}
+{
+    printf 'services:\n'
+    svc16a demo-web nginx:alpine; printf '    container_name: demo-web\n    networks: [kasbah-net]\n'
+    svc16a demo-db postgres:16; printf '    networks: [internal, kasbah-net]\n'
+    printf 'networks:\n  internal: {}\n  kasbah-net:\n    external: true\n'
+} > "$proj16a/compose.prod.yml"
+out="$(cd "$proj16a" && "$kasbah" check --fix --yes 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]' "--fix leaves a passing project (got $rc: $out)"
+assert 'grep -qF "C04 demo-db — drop kasbah-net, which nothing routes to it over" <<<"$out" && grep -qF "C03 demo-web — move it from kasbah-net to kasbah" <<<"$out"' \
+       "the routed service moves, the unrouted one gets default for kasbah-net (said '$out')"
+assert 'grep -qF "    networks: [internal, default]" "$proj16a/compose.prod.yml" && grep -qF "    networks: [kasbah, default]" "$proj16a/compose.prod.yml" && ! grep -qF "kasbah-net" "$proj16a/compose.prod.yml"' \
+       "demo-db is left on [internal, default], demo-web on [kasbah, default] ($(cat "$proj16a/compose.prod.yml"))"
+assert 'grep -qF "✓ C07 No internal services on the kasbah network" <<<"$out"' "and C07 passes (said '$out')"
+sed -i 's/^  internal: {}$/  internal: {}\n  shared:\n    name: mail_kasbah/' "$proj16a/compose.prod.yml"
+out="$(cd "$proj16a" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ] && grep -qF "✗ C04 Networks from outside the project: shared (named mail_kasbah) — " <<<"$out"' \
+       "a fixed name: fails C04 (got $rc: $out)"
+
+# --- Case 16b: C09 — a generic service name on the kasbah network → fail ----
+# The routed service is called `web`: Traefik resolves names across every
+# project's network, so another project's `web` could answer for it.
 proj16b="$tmpdir/generic-service-name"
 make_project "$proj16b"
 cat > "$proj16b/compose.prod.yml" <<'YAML'
@@ -408,23 +436,20 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    networks: [kasbah-net, internal]
+    networks: [kasbah, internal]
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
   internal: {}
 YAML
 out="$(cd "$proj16b" && "$kasbah" check 2>&1)"; rc=$?
-assert '[ "$rc" = "0" ]'                                                        "C09 is a warning, so exit stays 0 (got $rc)"
-assert 'grep -qF "⚠ C09 Services on kasbah-net whose name is not '"'"'demo'"'"' or '"'"'demo-*'"'"': web" <<<"$out"' \
-       "C09 warn line names the service, not the container (said '$out')"
-assert 'grep -qF "✓ C03 All routed services join kasbah-net" <<<"$out"'            "and C03 is untouched by it"
-assert 'grep -qF "✓ C07 No internal services on the kasbah network or kasbah-net" <<<"$out"'             "as is C07"
-assert 'grep -qF "⚠ C03 Routed through the shared kasbah-net: web — every project'"'"'s routed containers reach each other there; move them to a project network under the key kasbah" <<<"$out"' \
-       "and, routed through the shared kasbah-net, it is warned to move (C03)"
+assert '[ "$rc" = "6" ]'                                                        "C09 fails, exit 6 (got $rc)"
+assert 'grep -qF "✗ C09 Names on the kasbah network that are not '"'"'demo'"'"' or '"'"'demo-*'"'"': web (service)" <<<"$out"' \
+       "C09 fail line names the service, not the container (said '$out')"
+assert 'grep -qF "✓ C03 All routed services join the project'"'"'s kasbah network" <<<"$out"'            "and C03 is untouched by it"
+assert 'grep -qF "✓ C07 No internal services on the kasbah network" <<<"$out"'             "as is C07"
 assert 'grep -qF "⚠ C11 web will not roll on deploy — the fragment targets its container_name, so it is recreated in place, briefly unrouted" <<<"$out"' \
        "and, routed by container_name, it is told it will not roll (C11)"
-assert 'grep -qF "28 passed, 3 warning, 0 failed" <<<"$out"'                    "one line either way (said '$(tail -1 <<<"$out")')"
+assert 'grep -qF "28 passed, 1 warning, 1 failed" <<<"$out"'                    "one line either way (said '$(tail -1 <<<"$out")')"
 
 # --- Case 16c: C11 — a routed service that will not roll → warn -------------
 # One line per routed service, naming the first thing that stops the deploy
@@ -465,7 +490,7 @@ out="$(cd "$proj16c" && "$kasbah" check --fix --yes 2>&1)"
 assert 'grep -qF "nothing --fix can change" <<<"$out"' "and --fix leaves C11 alone (said '$out')"
 
 # The exact project name is as acceptable as a prefixed one, and a service that
-# never joins the shared network is no business of C09's — the alias only
+# never joins the kasbah network is no business of C09's — the alias only
 # exists on the networks the service is actually on.
 proj16c="$tmpdir/service-name-shapes"
 make_project "$proj16c"
@@ -482,7 +507,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    networks: [kasbah-net, internal]
+    networks: [kasbah, internal]
   cache:
     image: redis:7-alpine
     container_name: demo-cache
@@ -496,22 +521,22 @@ services:
         max-file: "3"
     networks: [internal]
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
   internal: {}
 YAML
 out="$(cd "$proj16c" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                        "the bare project name and an off-net service exit 0 (got $rc)"
-assert 'grep -qF "✓ C09 kasbah-net service names are project-prefixed" <<<"$out"'  "and C09 passes (said '$out')"
+assert 'grep -qF "✓ C09 Names on the kasbah network are project-prefixed" <<<"$out"'  "and C09 passes (said '$out')"
 
 # --- Case 16d: C09 says nothing when it has nothing to say ------------------
 # Two silences, both deliberate and both documented in compliance.md's C09 row,
 # because a rule that emits a line per project shifts the pass count between
 # projects that differ in nothing it judges.
 #
-# First: no service on kasbah-net at all. A worker-only project joins no shared
-# network, so there is no alias to collide on and nothing to pass or warn about.
-proj16d="$tmpdir/nothing-on-kasbah-net"
+# First: no service on the kasbah network at all. A worker-only project joins
+# no network Traefik is on, so there is no name to collide on and nothing to
+# pass or fail.
+proj16d="$tmpdir/nothing-on-kasbah"
 make_project "$proj16d"
 cat > "$proj16d/compose.prod.yml" <<'YAML'
 services:
@@ -532,17 +557,15 @@ networks:
 YAML
 rm "$proj16d/traefik-dynamic.yml"
 out="$(cd "$proj16d" && "$kasbah" check 2>&1)"; rc=$?
-assert '[ "$rc" = "0" ]'                                          "a project with nothing on kasbah-net exits 0 (got $rc)"
-assert '! grep -qE "kasbah-net service names|whose name is not" <<<"$out"' \
-       "and C09 emits no line either way — neither its pass nor its warn (said '$out')"
-assert 'grep -qF "✓ C07 No internal services on the kasbah network or kasbah-net" <<<"$out"' \
+assert '[ "$rc" = "0" ]'                                          "a project with nothing on the kasbah network exits 0 (got $rc)"
+assert '! grep -qF "C09" <<<"$out"' \
+       "and C09 emits no line either way — neither its pass nor its failure (said '$out')"
+assert 'grep -qF "✓ C07 No internal services on the kasbah network" <<<"$out"' \
        "while C07, which does report on the empty case, still speaks (said '$out')"
 
-# Second: the banned default-alias shape. C07 has just failed on the shape
-# itself, deliberately as a pattern rather than a per-service list; C09 naming
-# every service in the file again would be shouting twice about one mistake,
-# and with the wrong fix attached — renaming them all fixes nothing, removing
-# the default alias fixes everything.
+# Second: a default network named kasbah-net. The routed service is on it, so
+# C03 fails naming the move and C04 the external network; nothing is on the
+# kasbah network, so C09 is silent.
 proj16e="$tmpdir/default-alias-shape"
 make_project "$proj16e"
 cat > "$proj16e/compose.prod.yml" <<'YAML'
@@ -575,12 +598,15 @@ networks:
     external: true
 YAML
 out="$(cd "$proj16e" && "$kasbah" check 2>&1)"; rc=$?
-assert '[ "$rc" = "6" ]'                                                     "the default-alias shape still fails on C07 (got $rc)"
-assert 'grep -qF "✗ C07 default network aliases kasbah-net" <<<"$out"'          "C07 reports the shape (said '$out')"
-assert '! grep -qE "kasbah-net service names|whose name is not" <<<"$out"' \
-       "and C09 emits neither of its two lines, so it does not name the same services a second time (said '$out')"
-assert '[ "$(grep -cF "Non-routed services on kasbah-net" <<<"$out")" = "0" ]' \
-       "nor does C07 fall through to its per-service list (said '$out')"
+assert '[ "$rc" = "6" ]'                                                     "a default network named kasbah-net fails (got $rc)"
+assert 'grep -qF "✗ C03 Routed services on the shared kasbah-net: web — " <<<"$out"' "C03 names the routed service on it (said '$out')"
+assert 'grep -qF "✗ C04 Networks from outside the project: default (external kasbah-net) — " <<<"$out"'      "C04 names the network"
+assert '! grep -qF "C09" <<<"$out" && grep -qF "✓ C07 No internal services on the kasbah network" <<<"$out"' \
+       "C09 has nothing to judge and C07 nothing to fail (said '$out')"
+out="$(cd "$proj16e" && "$kasbah" check --fix --yes 2>&1)"
+assert 'grep -qF "C03 — the network '"'"'default'"'"' is named kasbah-net; drop its name: and external: by hand, so compose names it demo_default, and move only the routed services to kasbah" <<<"$out"' \
+       "--fix names what it leaves (said '$out')"
+assert '! grep -qF "add networks:" <<<"$out"' "and puts no service on kasbah beside it"
 
 # --- Case 17: C05 — top-level `version:` → warn, exit 0 ---------------------
 proj17="$tmpdir/version-field"
@@ -599,10 +625,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    networks: [kasbah-net, internal]
+    networks: [kasbah, internal]
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
   internal: {}
 YAML
 out="$(cd "$proj17" && "$kasbah" check 2>&1)"; rc=$?
@@ -629,8 +654,8 @@ assert 'grep -qF "⚠ compose.prod.yml declares no services — skipping Compose
 
 # --- Case 19: T01 — traefik-dynamic.yml missing → warn, exit 0 ---------------
 # Worker-only projects without web routing should not fail the whole check.
-# Consistently, such a project has no business on kasbah-net (C07) — so the
-# fixture keeps the service off it entirely.
+# Consistently, such a project has no business on the kasbah network (C07) —
+# so the fixture keeps the service off it entirely.
 proj19="$tmpdir/no-traefik-fragment"
 make_project "$proj19"
 rm "$proj19/traefik-dynamic.yml"
@@ -951,10 +976,6 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.app.rule=Host(`demo.example.com`)"
-networks:
-  default:
-    name: kasbah-net
-    external: true
 YAML
 out="$(cd "$proj24" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                                  "T06 fail exits 6 (got $rc)"
@@ -967,7 +988,7 @@ mkdir -p "$proj25/api"
 : > "$proj25/api/Dockerfile"
 cat > "$proj25/compose.prod.yml" <<'YAML'
 services:
-  api:
+  demo-api:
     build: ./api
     # C08: a built service's image: is what deploy retags :current.
     image: demo-web:current
@@ -980,16 +1001,15 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    networks: [kasbah-net, internal]
+    networks: [kasbah, internal]
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
   internal: {}
 YAML
 out="$(cd "$proj25" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "0" ]'                                                                                          "H01 warn exits 0 (got $rc)"
 assert 'grep -qF "Healthchecks:" <<<"$out"'                                                                       "Healthchecks: header appears"
-assert 'grep -qF "⚠ H01 Built services without a compose healthcheck (Dockerfile may declare one): api" <<<"$out"'    "H01 warn line"
+assert 'grep -qF "⚠ H01 Built services without a compose healthcheck (Dockerfile may declare one): demo-api" <<<"$out"'    "H01 warn line"
 assert 'grep -qF "✓ C08 All built services reference their image as :current" <<<"$out"' \
     "C08 pass line — this service's image: is demo-web:current"
 
@@ -1017,10 +1037,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    networks: [kasbah-net, internal]
+    networks: [kasbah, internal]
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
   internal: {}
 YAML
 out="$(cd "$proj25b" && "$kasbah" check 2>&1)"; rc=$?
@@ -1047,10 +1066,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    networks: [kasbah-net, internal]
+    networks: [kasbah, internal]
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
   internal: {}
 YAML
 out="$(cd "$proj25c" && "$kasbah" check 2>&1)"; rc=$?
@@ -1080,10 +1098,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    networks: [kasbah-net, internal]
+    networks: [kasbah, internal]
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
   internal: {}
 YAML
 out="$(cd "$proj25e" && "$kasbah" check 2>&1)"; rc=$?
@@ -1101,7 +1118,7 @@ mkdir -p "$proj25d/api"
 : > "$proj25d/api/Dockerfile"
 cat > "$proj25d/compose.prod.yml" <<'YAML'
 services:
-  api:
+  demo-api:
     build: ./api
     image: reg.example:5000/demo-web:current
     container_name: demo-web
@@ -1113,10 +1130,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    networks: [kasbah-net, internal]
+    networks: [kasbah, internal]
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
   internal: {}
 YAML
 out="$(cd "$proj25d" && "$kasbah" check 2>&1)"; rc=$?
@@ -1187,10 +1203,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    networks: [kasbah-net, internal]
+    networks: [kasbah, internal]
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
   internal: {}
 YAML
 cat >> "$proj27/kasbah.yml" <<'YAML'
@@ -1389,10 +1404,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-networks:
-  default:
-    name: kasbah-net
-    external: true
 YAML
 cat >> "$proj32/kasbah.yml" <<'YAML'
 
@@ -1444,7 +1455,7 @@ proj35="$tmpdir/hk-all-pass"
 make_project "$proj35"
 cat > "$proj35/compose.prod.yml" <<'YAML'
 services:
-  api:
+  demo-api:
     image: nginx:alpine
     container_name: demo-api
     restart: unless-stopped
@@ -1455,7 +1466,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    networks: [kasbah-net, internal]
+    networks: [kasbah, internal]
   db:
     image: postgres:16
     container_name: demo-db
@@ -1469,8 +1480,7 @@ services:
         max-file: "3"
     networks: [internal]
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
   internal: {}
 YAML
 # Fragment must target the api container (the fixture routes demo-api, not
@@ -1535,7 +1545,7 @@ proj36="$tmpdir/traefik-malformed"
 make_project "$proj36"
 printf 'http:\n  routers:\n    bad: [ this is\n      not yaml\n' > "$proj36/traefik-dynamic.yml"
 # With no parseable fragment there are no routed services, so the fixture's
-# service must stay off kasbah-net (C07) for the warn-only outcome to hold.
+# service must stay off the kasbah network (C07) for the warn-only outcome to hold.
 cat > "$proj36/compose.prod.yml" <<'YAML'
 services:
   demo-web:
@@ -1580,7 +1590,7 @@ assert 'grep -qF "⚠ T02,T08 manifest domain is empty — skipping T02" <<<"$ou
 assert '! grep -qF "At least one router references manifest domain" <<<"$out"'        "T02 not run on empty domain"
 assert 'grep -qF "✓ T03 All routers declare entryPoints" <<<"$out"'                       "T03 still runs on empty domain"
 
-# --- Case 38: C07 — non-routed service on kasbah-net → fail ----------------
+# --- Case 38: C07 — non-routed service on the kasbah network → fail --------
 proj38="$tmpdir/c07-internal-on-shared"
 make_project "$proj38"
 cat > "$proj38/compose.prod.yml" <<'YAML'
@@ -1596,7 +1606,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    networks: [kasbah-net, internal]
+    networks: [kasbah, internal]
   db:
     image: postgres:16
     container_name: demo-db
@@ -1608,18 +1618,19 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    networks: [kasbah-net, internal]
+    networks: [kasbah, internal]
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
   internal: {}
 YAML
 out="$(cd "$proj38" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                              "C07 fail exits 6 (got $rc)"
-assert 'grep -qF "✗ C07 Non-routed services on kasbah-net: db" <<<"$out"' "C07 fail line names db"
-assert 'grep -qF "✓ C03 All routed services join kasbah-net" <<<"$out"'   "C03 still passes"
+assert 'grep -qF "✗ C07 Non-routed services on the kasbah network: db — Traefik joins it, so only what it routes belongs there" <<<"$out"' "C07 fail line names db"
+assert 'grep -qF "✓ C03 All routed services join the project'"'"'s kasbah network" <<<"$out"'   "C03 still passes"
 
-# --- Case 39: C07 — default network aliasing kasbah-net is banned ----------
+# --- Case 39: C03 — a default network named kasbah-net, not external -------
+# Compose's config writes such a service's networks as {"default": null}: it is
+# on kasbah-net all the same, and C04 fails the fixed name: as from outside.
 proj39="$tmpdir/c07-default-alias"
 make_project "$proj39"
 cat > "$proj39/compose.prod.yml" <<'YAML'
@@ -1638,11 +1649,11 @@ services:
 networks:
   default:
     name: kasbah-net
-    external: true
 YAML
 out="$(cd "$proj39" && "$kasbah" check 2>&1)"; rc=$?
-assert '[ "$rc" = "6" ]'                                                    "default-alias exits 6 (got $rc)"
-assert 'grep -qF "✗ C07 default network aliases kasbah-net" <<<"$out"'         "C07 default-alias fail line"
+assert '[ "$rc" = "6" ]'                                                    "a default network named kasbah-net exits 6 (got $rc)"
+assert 'grep -qF "✗ C03 Routed services on the shared kasbah-net: demo-web — " <<<"$out"' "C03 names the service on it (said '$out')"
+assert 'grep -qF "✗ C04 Networks from outside the project: default (named kasbah-net) — " <<<"$out"' "and C04 fails the fixed name: (said '$out')"
 
 # --- Case 40: R01/R02 literal limits + R03 reservations → fail --------------
 proj40="$tmpdir/r-rules"
@@ -1661,10 +1672,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    networks: [kasbah-net, internal]
+    networks: [kasbah, internal]
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
   internal: {}
 YAML
 out="$(cd "$proj40" && "$kasbah" check 2>&1)"; rc=$?
@@ -1705,7 +1715,7 @@ out="$(cd "$proj41" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]'                                                       "T07 fail exits 6 (got $rc)"
 assert 'grep -qF "✗ T07 Fragment targets names no service answers to: demo-web (target a service on the kasbah network, one of its kasbah aliases, or a container_name)" <<<"$out"' "T07 fail line"
 
-# --- Case 41b: T07 — a kasbah alias, and a service name only on kasbah-net ---
+# --- Case 41b: T07 — a kasbah alias, and a service name only on kasbah-net -
 proj41b="$tmpdir/t07-alias"
 make_project "$proj41b"
 sed -i 's|^    networks: \[kasbah, internal\]|    networks:\n      kasbah:\n        aliases: [demo-site]\n      internal: {}|' "$proj41b/compose.prod.yml"
@@ -1720,12 +1730,12 @@ make_project "$proj41c"
 sed -i 's|^    networks: \[kasbah, internal\]|    networks: [kasbah-net, internal]|; s|^  kasbah: {}|  kasbah-net:\n    external: true|' "$proj41c/compose.prod.yml"
 out="$(cd "$proj41c" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "a service name on kasbah-net fails T07 (got $rc)"
-assert 'grep -qF "✗ T07 Fragment targets services on kasbah-net by name: demo-web — there every project'"'"'s same-named service answers too" <<<"$out"' \
-    "T07 says kasbah-net needs a container_name ($out)"
+assert 'grep -qF "✗ T07 Fragment targets services on no Traefik network: demo-web — join them to the kasbah network" <<<"$out"' \
+    "T07 says kasbah-net is no Traefik network ($out)"
 sed -i 's|^    image: nginx:alpine|    image: nginx:alpine\n    container_name: demo-web|' "$proj41c/compose.prod.yml"
-out="$(cd "$proj41c" && "$kasbah" check 2>&1)"
-assert 'grep -qF "✓ T07 Fragment loadBalancer URLs target a service, alias or container_name compose defines" <<<"$out"' \
-    "with container_name set, the legacy shape passes T07"
+out="$(cd "$proj41c" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "6" ] && grep -qF "✗ C03 Routed services on the shared kasbah-net: demo-web — " <<<"$out"' \
+    "with container_name set, C03 still fails the shape (rc $rc: $out)"
 
 proj41d="$tmpdir/t07-no-network"
 make_project "$proj41d"
@@ -1733,8 +1743,7 @@ sed -i '/^    networks: \[kasbah, internal\]/d' "$proj41d/compose.prod.yml"
 out="$(cd "$proj41d" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "a routed service on no network fails (got $rc)"
 assert 'grep -qF "✗ T07 Fragment targets services on no Traefik network: demo-web — join them to the kasbah network" <<<"$out"' \
-    "T07 says it is on no Traefik network, not kasbah-net ($out)"
-assert '! grep -qF "kasbah-net by name" <<<"$out"' "and does not talk of kasbah-net"
+    "T07 says it is on no Traefik network ($out)"
 
 # --- Case 42: a name kasbah owns on the server -------------------------------
 # The project should learn this from `check`, not from the deploy that syncs
@@ -1904,7 +1913,7 @@ services:
     # inside, near the end
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: ${KASBAH_MEM_LIMIT}
-    networks: [kasbah-net]
+    networks: [kasbah]
     logging:
       driver: json-file
       options:
@@ -1913,8 +1922,7 @@ services:
 
 # below everything
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
 cat > "$f1/expected" <<'YAML'
 # file header comment
@@ -1929,7 +1937,7 @@ services:
     # inside, near the end
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: ${KASBAH_MEM_LIMIT}
-    networks: [kasbah-net]
+    networks: [kasbah]
     logging:
       driver: json-file
       options:
@@ -1939,8 +1947,7 @@ services:
 
 # below everything
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
 out="$(fx_run "$f1")"; rc=$?
 assert '[ "$rc" = "0" ]' "F1: the fixed project passes (rc $rc)
@@ -1963,7 +1970,7 @@ services:
     restart: unless-stopped
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: ${KASBAH_MEM_LIMIT}
-    networks: [kasbah-net]
+    networks: [kasbah]
     logging:
       # why this project rotates the way it does
       driver: syslog
@@ -1980,8 +1987,7 @@ services:
     command: ["sleep", "1000"]
 
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
 cat > "$f2/expected" <<'YAML'
 services:
@@ -1991,7 +1997,7 @@ services:
     restart: unless-stopped
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: ${KASBAH_MEM_LIMIT}
-    networks: [kasbah-net]
+    networks: [kasbah]
     logging:
       # why this project rotates the way it does
       driver: json-file
@@ -2014,8 +2020,7 @@ services:
         max-file: "3"
 
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
 out="$(fx_run "$f2")"; rc=$?
 assert '[ "$rc" = "0" ]' "F2: the fixed project passes (rc $rc)
@@ -2051,7 +2056,7 @@ services:
     restart: unless-stopped
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: ${KASBAH_MEM_LIMIT}
-    networks: [kasbah-net]
+    networks: [kasbah]
     logging:
       driver: json-file
       options:
@@ -2096,8 +2101,7 @@ services:
           memory: 32M
 
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
 cat > "$f3/expected" <<'YAML'
 # a comment above version, which stays: a header and a key comment cannot be
@@ -2112,7 +2116,7 @@ services:
     restart: unless-stopped
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: ${KASBAH_MEM_LIMIT}
-    networks: [kasbah-net]
+    networks: [kasbah]
     logging:
       driver: json-file
       options:
@@ -2149,8 +2153,7 @@ services:
         max-file: "3"
 
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
 out="$(fx_run "$f3")"; rc=$?
 assert '[ "$rc" = "0" ]' "F3: the fixed project passes (rc $rc)
@@ -2310,14 +2313,14 @@ services:
   web:
     image: nginx:alpine
     container_name: demo-web
-    networks: [kasbah-net]
+    networks: [kasbah]
   cache:
     image: redis:7
     container_name: demo-cache
     restart: unless-stopped
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: ${KASBAH_MEM_LIMIT}
-    networks: [kasbah-net]
+    networks: [kasbah]
     logging:
       driver: json-file
       options:
@@ -2336,8 +2339,7 @@ services:
         max-file: "3"
 
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
 {
     printf 'http:\n  routers:\n    demo:\n      rule: "Host(`traefik.example.com`)"\n'
@@ -2352,8 +2354,8 @@ assert 'grep -qF "C01 web — add restart: unless-stopped" <<<"$out"' \
     "F8: what it could fix, it fixed (said '$out')"
 assert 'grep -qF "C08 builder — builds an image but names no image:" <<<"$out"' \
     "F8: and says which one it declined, with the reason (said '$out')"
-assert 'grep -qF "✗ C07 Non-routed services on kasbah-net: cache" <<<"$out"'   "F8: C07 still reported"
-assert 'grep -qF "Services on kasbah-net whose name is not" <<<"$out"'      "F8: C09 still reported"
+assert 'grep -qF "✗ C07 Non-routed services on the kasbah network: cache" <<<"$out"'   "F8: C07 still reported"
+assert 'grep -qF "✗ C09 Names on the kasbah network that are not" <<<"$out"'      "F8: C09 still reported"
 assert 'grep -qF "✗ T02 No router rule references manifest domain" <<<"$out"'   "F8: T02 still reported"
 assert 'grep -qF "✗ T03 Routers without entryPoints: demo" <<<"$out"'           "F8: T03 still reported"
 assert 'grep -qF "✗ T05 Routers claim reserved hostnames" <<<"$out"'            "F8: T05 still reported"
@@ -2392,7 +2394,7 @@ services:
     container_name: demo-web
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: ${KASBAH_MEM_LIMIT}
-    networks: [kasbah-net]
+    networks: [kasbah]
     logging:
       driver: json-file
       options:
@@ -2400,8 +2402,7 @@ services:
         max-file: "3"
 
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
 cp "$f10/compose.prod.yml" "$f10/before"
 out="$(cd "$f10" && "$kasbah" check --fix </dev/null 2>&1)"; rc=$?
@@ -2433,7 +2434,7 @@ assert '[ -z "$(find "$f10" -name "*.kasbah-fix.*" -print -quit)" ]' \
 # --- Case F11: the real fixture, broken every fixable way, comes back clean --
 # tests/fixtures/demo is a compose file whose comments carry the reasoning for
 # every choice in it. It is broken here in the awkward shapes an operator would
-# leave — a flow-mapping network, a removed logging block, a reservation — and
+# leave — the shared kasbah-net, a removed logging block, a reservation — and
 # has to come back to exit 0 with all of that prose still in it; its literal
 # cpus: and mem_limit: are the author's and stay as written.
 f11="$tmpdir/fix-fixture"
@@ -2447,10 +2448,9 @@ sed -i -e '1i version: "3.7"' \
        -e '/^    restart: unless-stopped$/d' \
        -e 's/^    cpus: ${KASBAH_CPU_LIMIT}$/    cpus: "0.5"/' \
        -e 's/^    mem_limit: ${KASBAH_MEM_LIMIT}$/    mem_limit: 512m/' \
-       -e '/^      - kasbah-net$/d' \
+       -e 's/^      - kasbah$/      - kasbah-net/' \
        -e '/^    logging:$/,/^        max-file: "3"$/d' \
-       -e 's/^  kasbah-net:$/  kasbah-net: {}/' \
-       -e '/^    external: true$/d' \
+       -e 's/^  kasbah: {}$/  kasbah-net:\n    external: true/' \
        "$f11/compose.prod.yml"
 sed -i '/^    mem_limit: 512m$/a\    mem_reservation: 64m' "$f11/compose.prod.yml"
 grep -v '^kasbah_version:' "$f11/kasbah.yml" > "$f11/k.next" && mv "$f11/k.next" "$f11/kasbah.yml"
@@ -2466,12 +2466,12 @@ assert 'grep -qxF "    cpus: \"0.5\"" "$f11/compose.prod.yml"' "F11: a literal c
 assert 'grep -qxF "    mem_limit: 512m" "$f11/compose.prod.yml"' "F11: and so is a literal mem_limit"
 assert '[ "$(grep -c "#" "$f11/compose.prod.yml")" = "$comments_before" ]' \
     "F11: every one of the $comments_before comment lines survived (found $(grep -c '#' "$f11/compose.prod.yml"))"
-assert 'grep -qF "compose publishes the service name" "$f11/compose.prod.yml"' \
+assert 'grep -qF "a shape T07 accepts beside a service name" "$f11/compose.prod.yml"' \
     "F11: including the one inside the block that was edited"
 assert 'grep -qF "about the split C03/C07 enforce." "$f11/compose.prod.yml"' \
-    "F11: and the one inside the networks list that gained a member"
-assert '[ "$(yaml2json "$f11/compose.prod.yml" | jq -r ".services[\"demo-web\"].networks | join(\",\")")" = "internal,kasbah" ]' \
-    "F11: the routed service that lost kasbah-net is given the project's own kasbah network"
+    "F11: and the one inside the networks list that was rewritten"
+assert '[ "$(yaml2json "$f11/compose.prod.yml" | jq -c "[.services[\"demo-web\"].networks, (.networks | keys)]")" = '"'"'[["kasbah","internal","default"],["internal","kasbah"]]'"'"' ]' \
+    "F11: the routed service on kasbah-net is moved to the project's own kasbah network and joins default, and kasbah-net's declaration dropped"
 
 # --- Case F12: a compliant project is left byte-identical --------------------
 # The control that makes F11 mean something: --fix that rewrote every file it
@@ -2616,7 +2616,7 @@ services:
     restart: "unless-stopped"     # compose's default, spelled out
     cpus: "${KASBAH_CPU_LIMIT}"
     mem_limit: ${KASBAH_MEM_LIMIT}   # sized for the old box
-    networks: [kasbah-net]
+    networks: [kasbah, default]
     logging:
       driver: json-file
       options:
@@ -2624,18 +2624,18 @@ services:
         max-file: "3"
 
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
 out="$(fx_run "$f15")"; rc=$?
 assert '[ "$rc" = "0" ]' "F15: the fixed project passes (rc $rc)
 $out"
 assert 'cmp -s "$f15/compose.prod.yml" "$f15/expected"' \
-    "F15: five values rewritten where they stood, quoting and the comment kept$(diff -u "$f15/expected" "$f15/compose.prod.yml" 2>&1 || true)"
+    "F15: five values and a network rewritten where they stood, quoting and the comment kept$(diff -u "$f15/expected" "$f15/compose.prod.yml" 2>&1 || true)"
 # Each key appears exactly once. Without these, a --fix that appended
 # `restart: unless-stopped` under the `restart: "no"` it was supposed to correct
 # would pass every rule and every lookup above.
-for key in restart cpus mem_limit max-size driver external; do
+assert '! grep -qF "kasbah-net" "$f15/compose.prod.yml"' "F15: kasbah-net is swapped and its declaration dropped, not kept beside kasbah"
+for key in restart cpus mem_limit max-size driver; do
     assert '[ "$(grep -c "^ *$key:" "$f15/compose.prod.yml")" = 1 ]' \
         "F15: '$key' is written once, not twice ($(grep -c "^ *$key:" "$f15/compose.prod.yml") lines)"
 done
@@ -2687,7 +2687,7 @@ services:
   demo-web:
     image: nginx:alpine
     container_name: demo-web
-    networks: [kasbah-net]
+    networks: [kasbah]
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: ${KASBAH_MEM_LIMIT}
     logging:
@@ -2715,8 +2715,7 @@ services:
 
 
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
 # The three values as YAML sees them, read *before* the fix so the comparison
 # below is against what the author wrote and not against what --fix produced.
@@ -2744,7 +2743,7 @@ services:
   demo-web:
     image: nginx:alpine
     container_name: demo-web
-    networks: [kasbah-net]
+    networks: [kasbah]
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: ${KASBAH_MEM_LIMIT}
     logging:
@@ -2774,8 +2773,7 @@ services:
 
     restart: unless-stopped
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
 out="$(fx_run "$f16")"; rc=$?
 assert '[ "$rc" = "0" ]' "F16: the fixed project passes (rc $rc)
@@ -2813,7 +2811,7 @@ services:
   demo-web:
     image: nginx:alpine
     container_name: demo-web
-    networks: [kasbah-net]
+    networks: [kasbah]
     restart: unless-stopped
     cpus: '1.5 # measured on the old box'
     mem_limit: "512m # sized for the box"
@@ -2824,15 +2822,14 @@ services:
         max-file: "3"
 
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
 cat > "$f17/expected" <<'YAML'
 services:
   demo-web:
     image: nginx:alpine
     container_name: demo-web
-    networks: [kasbah-net]
+    networks: [kasbah]
     restart: unless-stopped
     cpus: '${KASBAH_CPU_LIMIT}'
     mem_limit: "${KASBAH_MEM_LIMIT}"
@@ -2843,8 +2840,7 @@ services:
         max-file: "3"
 
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
 out="$(fx_run "$f17")"; rc=$?
 assert '[ "$rc" = "0" ]' "F17: the fixed project passes (rc $rc)
@@ -2868,7 +2864,7 @@ services:
   demo-web:
     image: nginx:alpine
     container_name: demo-web
-    networks: [kasbah-net]
+    networks: [kasbah]
     restart: unless-stopped
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: "512m
@@ -2880,8 +2876,7 @@ services:
         max-file: "3"
 
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
 cp "$f17b/compose.prod.yml" "$f17b/before"
 out="$(fx_run "$f17b")"; rc=$?
@@ -2904,7 +2899,7 @@ services:
   demo-web:
     image: nginx:alpine
     container_name: demo-web
-    networks: [kasbah-net]
+    networks: [kasbah]
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: ${KASBAH_MEM_LIMIT}
     logging:
@@ -2914,8 +2909,7 @@ services:
         max-file: "3"
 
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
     cp "$f18/compose.prod.yml" "$f18/before"
     # A read-only *file* in a writable directory: the candidate is written while
@@ -2939,7 +2933,7 @@ services:
   demo-web:
     image: nginx:alpine
     container_name: demo-web
-    networks: [kasbah-net]
+    networks: [kasbah]
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: ${KASBAH_MEM_LIMIT}
     logging:
@@ -2949,8 +2943,7 @@ services:
         max-file: "3"
 
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
     cp "$f18b/compose.prod.yml" "$f18b/before"
     chmod a-w "$f18b"
@@ -2981,7 +2974,7 @@ services:
     container_name: demo-web
     cpus: ${KASBAH_CPU_LIMIT}
     mem_limit: ${KASBAH_MEM_LIMIT}
-    networks: [kasbah-net]
+    networks: [kasbah]
     logging:
       driver: json-file
       options:
@@ -2989,8 +2982,7 @@ services:
         max-file: "3"
 
 networks:
-  kasbah-net:
-    external: true
+  kasbah: {}
 YAML
 out="$(cd "$f19" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "F19: the project fails C01 before anything is fixed (rc $rc)"
@@ -3061,20 +3053,16 @@ out="$(cd "$projq" && "$kasbah" check 2>"$tmpdir/q.err")"; rc=$?
 assert '[ "$rc" = "6" ] && grep -qxF "  ✗ C01 Services missing restart policy: we\"b" <<<"$out"' \
     "a name holding a quote is checked, and named in the failure (exit $rc: $out $(cat "$tmpdir/q.err"))"
 
-# --- Per-project networks: the legacy fixture, an external kasbah, mail-dms ----
-# tests/fixtures/demo stays on the shared kasbah-net on purpose: 1.x serves it,
-# and check passes it with a warning to move.
-projn="$tmpdir/legacy-fixture"
+# --- Per-project networks: the demo fixture, an external kasbah, mail-dms ----
+# tests/fixtures/demo routes by container_name on its own kasbah network.
+projn="$tmpdir/demo-fixture"
 mkdir -p "$projn"
 cp -a "$repo_dir/tests/fixtures/demo/." "$projn/"
 printf '.env\n.kasbah/\n' > "$projn/.gitignore"
 out="$(cd "$projn" && "$kasbah" check 2>&1)"; rc=$?
-assert '[ "$rc" = "0" ]' "the legacy kasbah-net fixture still passes (exit $rc: $out)"
-assert 'grep -qF "⚠ C03 Routed through the shared kasbah-net: demo-web — " <<<"$out"' \
-    "and is warned to move to a project kasbah network (said '$out')"
-out="$(cd "$projn" && "$kasbah" check --fix 2>&1)"; rc=$?
-assert 'cmp -s "$projn/compose.prod.yml" "$repo_dir/tests/fixtures/demo/compose.prod.yml"' \
-    "--fix leaves a legacy kasbah-net project's compose alone (said '$out')"
+assert '[ "$rc" = "0" ]' "the demo fixture passes (exit $rc: $out)"
+assert 'grep -qF "✓ C03 All routed services join the project'"'"'s kasbah network" <<<"$out" && grep -qF "✓ C04 The kasbah network is the project'"'"'s own (demo_kasbah)" <<<"$out"' \
+    "on its own kasbah network (said '$out')"
 
 projk="$tmpdir/external-kasbah"
 make_project "$projk"
@@ -3101,7 +3089,7 @@ printf '  shared:\n    name: mail_kasbah\n    external: true\n' >> "$projd/compo
 out="$(cd "$projd" && "$kasbah" check 2>&1)"; rc=$?
 assert '[ "$rc" = "6" ]' "a kasbah network with settings, and another stack's network, fail (exit $rc)"
 assert 'grep -qF "✗ C04 The kasbah network sets driver — declare it as kasbah: {}" <<<"$out"' "C04 names the setting (said '$out')"
-assert 'grep -qF "✗ C04 External networks other than kasbah-net: shared (mail_kasbah)" <<<"$out"' "and the foreign network (said '$out')"
+assert 'grep -qF "✗ C04 Networks from outside the project: shared (external mail_kasbah) — " <<<"$out"' "and the foreign network (said '$out')"
 
 projm="$tmpdir/names-mail-dms"
 make_project "$projm"

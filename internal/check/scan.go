@@ -2,6 +2,7 @@ package check
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -90,6 +91,13 @@ func (t *text) render() []byte {
 		s += "\n"
 	}
 	return []byte(s)
+}
+
+// clone is t with its edits copied, for a plan that is thrown away.
+func (t *text) clone() *text {
+	c := *t
+	c.del, c.rep, c.hasRep, c.ins = slices.Clone(t.del), slices.Clone(t.rep), slices.Clone(t.hasRep), slices.Clone(t.ins)
+	return &c
 }
 
 // insertAfter stages s — already-indented lines, newline-separated, no CR —

@@ -124,9 +124,9 @@ if ! rig_clean; then
     exit 2
 fi
 
-# One session plants everything a Phase 2 deploy leaves behind: a compose
-# project (created through `docker compose -p`, the way kasbah does it), the
-# shared network, /apps, and an image that must survive. The image is built by
+# One session plants everything a deploy leaves behind: a compose project
+# (created through `docker compose -p`, the way kasbah does it), the kasbah-net
+# an older build left outside any project, /apps, and an image that must survive. The image is built by
 # importing an empty tar rather than pulling, so the suite stays offline.
 seed_out=$(rig_ssh bash -s <<'REMOTE' 2>&1
 set -uo pipefail

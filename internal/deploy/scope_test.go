@@ -194,17 +194,16 @@ func TestComposeModelDotted(t *testing.T) {
 		return `{"services":{"web":{"container_name":"web.shop","networks":{"kasbah":{"aliases":["www","web.other_kasbah"]}}},"api.v2":{"networks":{"kasbah":null}},"db.x":{"networks":{"internal":null}}}}`, nil
 	})
 	err := m.dotted("shop")
-	if err == nil || err.Error() != "compose puts a name with a dot on this project's kasbah network (shop_kasbah) or kasbah-net: api.v2 (a service), web.other_kasbah (a kasbah alias of web), web.shop (web's container_name) — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend; rename it without a dot, and the fragment's backend with it (kasbah help C16)" {
+	if err == nil || err.Error() != "compose puts a name with a dot on this project's kasbah network (shop_kasbah): api.v2 (a service), web.other_kasbah (a kasbah alias of web), web.shop (web's container_name) — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend; rename it without a dot, and the fragment's backend with it (kasbah help C16)" {
 		t.Errorf("%v", err)
 	}
-	// Traefik is on kasbah-net too, joined by key or as a default network of that name.
-	for model, want := range map[string]string{
-		`{"services":{"web":{"networks":{"kasbah-net":{"aliases":["web.victim_kasbah"]}}}}}`:                                                                "kasbah-net: web.victim_kasbah (a kasbah-net alias of web) —",
-		`{"networks":{"default":{"name":"kasbah-net"}},"services":{"web.victim_kasbah":{"networks":{"default":null}}}}`:                                     "kasbah-net: web.victim_kasbah (a service) —",
-		`{"networks":{"shared":{"name":"kasbah-net"}},"services":{"web":{"container_name":"a.b","networks":{"shared":{"aliases":["web.victim_kasbah"]}}}}}`: "kasbah-net: web.victim_kasbah (a kasbah-net alias of web), a.b (web's container_name) —",
+	// Off the kasbah network a dotted name answers nothing Traefik asks.
+	for _, model := range []string{
+		`{"services":{"web":{"networks":{"kasbah-net":{"aliases":["web.victim_kasbah"]}}}}}`,
+		`{"networks":{"default":{"name":"kasbah-net"}},"services":{"web.victim_kasbah":{"networks":{"default":null}}}}`,
 	} {
 		m, _ := readModel("shop", func(...string) (string, error) { return model, nil })
-		if err := m.dotted("shop"); err == nil || !strings.Contains(err.Error(), want) {
+		if err := m.dotted("shop"); err != nil {
 			t.Errorf("%s: %v", model, err)
 		}
 	}
@@ -217,6 +216,31 @@ func TestComposeModelDotted(t *testing.T) {
 	m, _ = readModel("shop", func(...string) (string, error) { return scopeModel, nil })
 	if err := m.dotted("shop"); err != nil {
 		t.Errorf("%v", err)
+	}
+}
+
+// A network compose takes from outside the project is refused: external, or
+// named other than <project>_<key>. The project's own, and none, pass.
+func TestComposeModelForeign(t *testing.T) {
+	m, err := readModel("shop", func(...string) (string, error) {
+		return `{"networks":{"kasbah":{"name":"shop_kasbah"},"ext":{"name":"kasbah-net","external":true},"old":{"name":"legacy","external":{"name":"legacy"}},"default":{"name":"kasbah-net"},"m":{"name":"mail_kasbah"},"o":{"name":"other_internal"}},"services":{}}`, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = m.foreign("shop")
+	if err == nil || err.Error() != "compose joins this project to a network from outside it: default (named kasbah-net), ext (external kasbah-net), m (named mail_kasbah), o (named other_internal), old (external legacy) — a network outside the project is shared with whatever else joins it, which can then answer for this project's names or reach its services; drop it, or drop its external: and name: so compose creates shop_<key> (kasbah help C04)" {
+		t.Errorf("%v", err)
+	}
+	for _, model := range []string{
+		`{"networks":{"kasbah":{"name":"shop_kasbah"},"internal":{"name":"shop_internal","external":false},"default":{"name":"shop_default"}},"services":{}}`,
+		`{"services":{"web":{"networks":{"default":null}}}}`,
+		scopeModel,
+	} {
+		m, _ := readModel("shop", func(...string) (string, error) { return model, nil })
+		if err := m.foreign("shop"); err != nil {
+			t.Errorf("%s: %v", model, err)
+		}
 	}
 }
 
@@ -284,6 +308,11 @@ func TestFragmentArmScopes(t *testing.T) {
 	if b, _ := os.ReadFile(dest); rc != 1 || string(b) != want || !strings.Contains(errs, "web.other_kasbah (a kasbah alias of web)") || !strings.Contains(errs, "(kasbah help C16)") {
 		t.Errorf("dotted: rc %d %q, live %q", rc, errs, b)
 	}
+	os.WriteFile(cfg, []byte(`{"networks":{"default":{"name":"kasbah-net"}},"services":{"web":{"networks":{"default":null}}}}`), 0o644)
+	rc, _, errs = fragmentArm(t, apps, []byte(strings.Replace(shopFrag, ":80", ":81", 1)), false)
+	if b, _ := os.ReadFile(dest); rc != 1 || string(b) != want || !strings.Contains(errs, "default (named kasbah-net)") || !strings.Contains(errs, "(kasbah help C04)") {
+		t.Errorf("foreign: rc %d %q, live %q", rc, errs, b)
+	}
 }
 
 // The pre-flight refuses a foreign backend before anything starts, in a
@@ -326,12 +355,28 @@ func TestEnginePreflightScopesTheFragment(t *testing.T) {
 	os.WriteFile(cfg, []byte(`{"services":{"web":{"networks":{"kasbah":{"aliases":["web.other_kasbah"]}}}}}`), 0o644)
 	os.Remove(r.log)
 	sp.Fragment = ""
-	if rc, _, errs := r.run(sp); rc != 1 || !strings.Contains(errs, "compose puts a name with a dot on this project's kasbah network (demo_kasbah) or kasbah-net: web.other_kasbah") {
+	if rc, _, errs := r.run(sp); rc != 1 || !strings.Contains(errs, "compose puts a name with a dot on this project's kasbah network (demo_kasbah): web.other_kasbah") {
 		t.Errorf("dotted: rc %d %q", rc, errs)
 	}
 	for _, c := range r.calls() {
 		if strings.HasPrefix(c, "hook") || strings.Contains(c, " up ") || strings.HasPrefix(c, "tag ") {
 			t.Errorf("dotted: ran %q before the preflight refused", c)
+		}
+	}
+	// A network from outside the project refuses it, a rollback too: a
+	// kasbah-net alias would answer for another project's qualified backend.
+	os.WriteFile(cfg, []byte(`{"networks":{"kasbah":{"name":"demo_kasbah"},"kasbah-net":{"name":"kasbah-net","external":true}},"services":{"web":{"networks":{"kasbah":null,"kasbah-net":{"aliases":["web.victim_kasbah"]}}}}}`), 0o644)
+	for _, mode := range []string{"deploy", "rollback"} {
+		sp := r.spec()
+		sp.Mode, sp.Tagged, sp.NoHealthWait = mode, mode == "rollback", true
+		os.Remove(r.log)
+		if rc, _, errs := r.run(sp); rc != 1 || !strings.Contains(errs, "compose joins this project to a network from outside it: kasbah-net (external kasbah-net)") || !strings.Contains(errs, "(kasbah help C04)") {
+			t.Errorf("foreign, %s: rc %d %q", mode, rc, errs)
+		}
+		for _, c := range r.calls() {
+			if strings.HasPrefix(c, "hook") || strings.Contains(c, " up ") || strings.HasPrefix(c, "tag ") {
+				t.Errorf("foreign, %s: ran %q before the preflight refused", mode, c)
+			}
 		}
 	}
 }

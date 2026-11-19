@@ -497,8 +497,8 @@ func start(apps, backupDir, acme string, timeout time.Duration, stderr io.Writer
 		}
 	}
 	u := Up{RolledBack: "no", Health: "none"}
-	// A recreated Traefik is on kasbah-net alone: it rejoins every project
-	// network and the mail stack's as soon as it is up.
+	// A recreated Traefik is on its own network alone: it rejoins every
+	// project network and the mail stack's as soon as it is up.
 	up := func() bool {
 		if dc("up", "-d") != nil {
 			return false

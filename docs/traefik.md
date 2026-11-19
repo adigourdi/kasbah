@@ -118,28 +118,31 @@ Traefik is detached from `<project>_kasbah` before the `compose down
 therefore reaches its own project and nothing else: no other project shares a
 network with it. Traefik reaches everything, which is its job.
 
-A recreated Traefik container keeps only the networks its compose file names,
-so every Traefik start kasbah runs — `server init`, `upgrade-traefik` and its
-restore, the mail stack's start — rejoins every network compose labels with the
-key `kasbah` (`com.docker.compose.network=kasbah`) whose compose project is the
-mail stack or has a directory under the apps path, so a compose project someone
-runs by hand elsewhere on the host never gets Traefik attached. A Traefik recreated by hand
-(`docker compose -p traefik up -d`) has lost them: every site answers 502 until
-`server init` is re-run.
+Traefik's own compose file names no network, so Traefik starts on compose's
+`traefik_default` alone, and a recreated container keeps only that: every
+Traefik start kasbah runs — `server init`, `upgrade-traefik` and its restore,
+the mail stack's start — rejoins every network compose labels with the key
+`kasbah` (`com.docker.compose.network=kasbah`) whose compose project is the
+mail stack or has a directory under the apps path, so a compose project
+someone runs by hand elsewhere on the host never gets Traefik attached. A
+Traefik recreated by hand (`docker compose -p traefik up -d`) has lost them:
+every site answers 502 until `server init` is re-run.
 
-**`kasbah-net`** (a frozen name) is still created by the Traefik stack, but it
-no longer routes a project: a service on it alone — `networks: [kasbah-net]`,
-`external: true` — is not a name of the project's `kasbah` network, so a deploy
-refuses a fragment that targets it (Project fragment), though `kasbah check`
-only warns that the service should move to a `kasbah` network. Projects on it
-see each other.
+No network is shared between projects. A routed service on `kasbah-net`, the
+network every project once shared, fails `kasbah check` (C03, which `check
+--fix` moves to `kasbah`), and a deploy refuses a project whose compose joins
+it, or any network from outside the project. Nothing removes `kasbah-net`
+from a server that has it, and Traefik stays on it until it is recreated:
+once `server init` or `upgrade-traefik` recreates it on `traefik_default`, a
+project an older kasbah deployed on `kasbah-net` loses its route and answers
+502, though both report success. `kasbah check --fix` moves it to `kasbah:
+{}`, and a redeploy routes it again.
 
 Why not put the whole project on its network via `default:`? Compose registers
 every service's **service name** as a DNS alias on each network it joins, and
 Traefik — on every project network — resolves names across all of them: two
-projects with a `postgres` both on the network Traefik shares would make the
-name ambiguous from Traefik's side, and on the legacy shared network project A's
-app could silently reach project B's database. Keeping internal services on a
+projects with a `postgres` both on networks Traefik is on would make the
+name ambiguous from Traefik's side. Keeping internal services on a
 project-internal network scopes those aliases. `kasbah check` enforces the split
 (C03/C04/C07/C09).
 
@@ -162,9 +165,8 @@ DNS first looks the whole dotted name up on every network the asker is on, so
 an alias literally named `web.<project>_kasbah` on another network Traefik is
 on would answer before this project's `web` does; the qualified name answers on
 the project's network only because no project kasbah deploys may put a dotted
-name on its `kasbah` network or on the legacy `kasbah-net`, which Traefik is
-also on — joined by that name or as a `default` network named `kasbah-net`
-(C16, refused by `deploy`, `deploy X.Y.Z` and `rollback` too). A project's
+name on its `kasbah` network (C16, refused by `deploy`, `deploy X.Y.Z` and
+`rollback` too). A project's
 `traefik-dynamic.yml` keeps the bare name.
 
 ## Discovery
@@ -290,8 +292,8 @@ refused, asking for the URL written out, as qualifying it would change that
 other use too. The block-scalar and anchor refusals, and a backend that cannot
 be located (below), name a `${KEY}` that filled it but no `kasbah env set`:
 the fix is in how the fragment is written. The compose model must not put a
-dotted name on the project's `kasbah` network or on `kasbah-net` either
-(above, `kasbah help C16`). `deploy`, `deploy X.Y.Z` and `rollback` hold
+dotted name on the project's `kasbah` network either (above, `kasbah help
+C16`). `deploy`, `deploy X.Y.Z` and `rollback` hold
 every version's fragment to this — in the engine's pre-flight, before
 anything starts, and again when the fragment is installed, which leaves the
 live file as it was on a refusal. A compose model that cannot be read refuses
@@ -700,11 +702,12 @@ server status` surfaces it.
 - Route to a Traefik `@internal` service other than `noop@internal` — `api@internal`
   and its kin would publish Traefik's API with no auth (T09).
 - Bind ports 80 or 443 on the host (they belong to Traefik; C14).
-- Replace the `kasbah-net` network, or declare their `kasbah` network
-  `external` or with a fixed `name:`.
+- Declare their `kasbah` network `external` or with a fixed `name:`, or join
+  any network from outside — `external: true`, or a `name:` other than
+  compose's own `<name>_<key>` — `kasbah-net`, `mail_kasbah` or another
+  project's (C04; a deploy refuses it too).
 - Attach non-routed services (databases, caches, workers) to the `kasbah`
-  network (or the legacy `kasbah-net`) — internal services stay on a
-  project-internal network.
+  network — internal services stay on a project-internal network.
 
 `kasbah check` enforces these (rules T01–T13, C03, C04, C07, C09, C14).
 

@@ -43,8 +43,9 @@ services:
       # a missing bind-mount source as a directory.
       - "__DATA_PATH__/traefik/letsencrypt/acme.json:/letsencrypt/acme.json"
 __ACME_DNS_ENV_FILES__
-    networks:
-      - kasbah-net
+    # No networks: Traefik starts on compose's traefik_default, and is joined
+    # live (`docker network connect`) to each project's network and the mail
+    # stack's.
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 10s
@@ -61,11 +62,3 @@ __ACME_DNS_ENV_FILES__
     # nothing it is not already the victim of, and a throttled Traefik takes
     # every site with it. `kasbah check`'s R01-R03 govern project compose
     # files, not kasbah-owned stacks.
-
-# Kasbah's own shared network, kept for projects still routed through it
-# (declared `external: true` on their side). Each project's own network, and
-# the mail stack's, is joined live with `docker network connect` instead.
-networks:
-  kasbah-net:
-    name: kasbah-net
-    driver: bridge

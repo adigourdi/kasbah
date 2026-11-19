@@ -374,8 +374,7 @@ kv project "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.proj
 kv nets    "$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' traefik 2>/dev/null)"
 kv version "$(docker exec traefik traefik version 2>/dev/null | tr -d '\r' | tr '\n' ' ')"
 
-if docker network inspect kasbah-net >/dev/null 2>&1; then kv net_kasbah yes; else kv net_kasbah no; fi
-kv net_driver "$(docker network inspect -f '{{.Driver}}' kasbah-net 2>/dev/null)"
+if docker network inspect kasbah-net >/dev/null 2>&1; then kv net_shared yes; else kv net_shared no; fi
 
 # The ping entrypoint on :80 — plain HTTP, no router involved. It is also the
 # positive control for the HTTPS rows: if Traefik were not listening at all,
@@ -438,11 +437,10 @@ assert 'grep -qF "$apps/traefik/dynamic:/etc/traefik/dynamic" <<<"${tfk[mounts]}
 assert 'grep -qF "$acme:/letsencrypt/acme.json" <<<"${tfk[mounts]}"' \
     "and acme.json from the data path (mounts: ${tfk[mounts]})"
 
-# Frozen names, on the server rather than in the template.
-assert '[ "${tfk[net_kasbah]}" = "yes" ]' "the kasbah-net network exists"
-assert '[ "${tfk[net_driver]}" = "bridge" ]' "as a bridge (got '${tfk[net_driver]}')"
-assert 'grep -qw "kasbah-net" <<<"${tfk[nets]}"' \
-    "and Traefik is attached to it (networks: ${tfk[nets]})"
+# Traefik's own network is compose's default; no network is shared.
+assert '[ "${tfk[net_shared]}" = "no" ]' "init creates no kasbah-net"
+assert 'grep -qw "traefik_default" <<<"${tfk[nets]}"' \
+    "and Traefik is on its compose default network (networks: ${tfk[nets]})"
 
 shared_yml=$(rig_ssh "cat $apps/traefik/dynamic/_shared.yml" 2>/dev/null)
 assert 'yaml2json <<<"$shared_yml" 2>/dev/null | jq -e . >/dev/null 2>&1' "_shared.yml on the rig parses as YAML"

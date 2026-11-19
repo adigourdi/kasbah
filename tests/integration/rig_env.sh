@@ -219,7 +219,7 @@ rig_restic() {
 }
 
 # Returns the rig to the state kasbah has never touched — no compose projects,
-# no kasbah-net, no /apps — while leaving every image in place. That is the
+# no stray networks, no /apps — while leaving every image in place. That is the
 # whole reason it exists: `rig.sh reset` drops the /var/lib/docker volume, so a
 # reset per suite re-pulls Traefik and nginx every run.
 #
@@ -289,8 +289,11 @@ while IFS= read -r project; do
     docker compose -p "$project" down -v --remove-orphans >/dev/null 2>&1 || status=1
 done <<<"$projects"
 
-# The one network kasbah creates outside any compose project. The built-in
-# bridge/host/none are never named, here or anywhere.
+# kasbah-net, the fixed-name network kasbah 1.x shared between projects. A 1.x
+# Traefik stack labels it as the traefik project's, but that project's down
+# runs first, while other projects' containers are still on it, so it is
+# removed by name once they are gone. The built-in bridge/host/none are never
+# named, here or anywhere.
 if docker network inspect kasbah-net >/dev/null 2>&1; then
     docker network rm kasbah-net >/dev/null 2>&1 || status=1
 fi

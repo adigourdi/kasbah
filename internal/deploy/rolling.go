@@ -63,9 +63,19 @@ const projectNet = "kasbah"
 // composeModel is what the engine reads of `docker compose config`.
 type composeModel struct {
 	Networks map[string]struct {
-		Name string `json:"name"`
+		Name     string   `json:"name"`
+		External external `json:"external"`
 	} `json:"networks"`
 	Services map[string]composeService `json:"services"`
+}
+
+// external is a network's external:, true or the old {name: …} mapping.
+type external bool
+
+func (x *external) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	*x = external(s == "true" || strings.HasPrefix(s, "{"))
+	return nil
 }
 
 type composeService struct {

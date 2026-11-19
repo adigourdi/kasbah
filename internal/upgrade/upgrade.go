@@ -788,7 +788,7 @@ func (x *run) start() (Up, error) {
 			"the previous stack is backed up at "+x.backupDir+" — restore it with:").Cont(
 			x.restore()...).Cont(
 			"  cd "+x.apps+"/traefik && docker compose -p "+Project+" up -d",
-			"a recreated Traefik is on kasbah-net alone: `"+x.initCmd()+"` rejoins it to the project networks.")
+			"a recreated Traefik is on its own network alone: `"+x.initCmd()+"` rejoins it to the project networks.")
 	}
 	if err := remote.Decode(out, &up,
 		[]string{"up_rolled_back", "up_health", "up_state", "up_image", "up_started_at", "up_acme_digest", "up_networks"}, "the Traefik start", t); err != nil {

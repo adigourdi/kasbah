@@ -18,8 +18,6 @@ func TestRollShapeStays(t *testing.T) {
 		{"rollable", ok, false, nil, ""},
 		{"targeted by container_name", RollShape{ByContainerName: true, ContainerName: true, Health: HealthDeclared}, false,
 			[]Stay{StayByContainerName, StayContainerName}, "the fragment targets its container_name"},
-		{"off the project network", RollShape{OffNet: true, Health: HealthDeclared}, false,
-			[]Stay{StayOffNet}, "the fragment reaches it by a name it answers only off the project's kasbah network"},
 		{"sets container_name", RollShape{ContainerName: true, Health: HealthDeclared}, false,
 			[]Stay{StayContainerName}, "it sets container_name"},
 		{"--no-health-wait", ok, true, []Stay{StayNoHealthWait}, "--no-health-wait leaves nothing to swap on"},

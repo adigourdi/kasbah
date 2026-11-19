@@ -30,8 +30,8 @@ type fakeDocker struct {
 	healthyOn map[int]bool
 	calls     []string
 	onUp      func(n int)
-	// connectErr fails every `network connect`; traefik starts on kasbah-net
-	// alone, two project networks waiting.
+	// connectErr fails every `network connect`; traefik starts on its own
+	// network alone, two project networks waiting.
 	connectErr bool
 }
 
@@ -56,7 +56,7 @@ func (f *fakeDocker) run(dir string, args ...string) (string, error) {
 		}
 		return "", nil
 	case args[0] == "inspect" && strings.Contains(j, "NetworkSettings.Networks"):
-		return "kasbah-net\n", nil
+		return "traefik_default\n", nil
 	case strings.HasPrefix(j, "compose -p traefik logs"):
 		return "level=error msg=boom", nil
 	case args[0] == "inspect":

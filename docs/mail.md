@@ -31,10 +31,7 @@ put a dotted name on a network Traefik is on (C16, `compliance.md`).
 **The mail stack has its own network, `mail_kasbah`**, which both containers
 join and Traefik is attached to at the mail start (and at every Traefik start),
 the same way it is attached to projects' — for webmail. No project shares a
-network with DMS. A server whose mail stack was on the shared `kasbah-net`
-moves it off at its next `server init --with-mail`, which says so once: apps
-that reached `mail-dms` over `kasbah-net` lose it and send through
-`mail.<domain>:587` instead.
+network with DMS: apps send through `mail.<domain>:587`.
 
 Mail ports `25`, `465`, `587` and `993` are bound on the host. Traefik is an
 HTTP proxy and is not in the mail data path.

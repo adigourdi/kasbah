@@ -517,7 +517,7 @@ func (e *engine) up() error {
 }
 
 // joinTraefik connects Traefik to the project's kasbah network, which the up
-// may just have created; a project still on kasbah-net, or with no service, has none.
+// may just have created; a project with no service has none.
 func (e *engine) joinTraefik() error {
 	if e.noSvc {
 		return nil
@@ -817,6 +817,9 @@ func (e *engine) preflight() error {
 	// An unread model is scopeFragment's to refuse, and fails compose's up too.
 	if !composefile.Serviceless(e.dir) {
 		if m, err := model(); err == nil {
+			if err := m.foreign(e.project); err != nil {
+				return failf("%v", err)
+			}
 			if err := m.dotted(e.project); err != nil {
 				return failf("%v", err)
 			}

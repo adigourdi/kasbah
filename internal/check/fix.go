@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/envtpl"
 	"github.com/adigourdi/kasbah/internal/manifest"
 	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/udiff"
@@ -58,6 +60,9 @@ func (x *fixer) has(key string, p ...string) bool { return hasKey(opt(x.root, p.
 
 func (x *fixer) planCompose() {
 	t := x.t
+	// Routing is judged on the tree being planned, as check judges it.
+	defer func(d yamlDoc) { x.c.compose = d }(x.c.compose)
+	x.c.compose = yamlDoc{file: composeFile, root: x.root}
 	services := keysOf(opt(x.root, "services"))
 
 	top, end, ci := t.locateTop("services"), -1, 0
@@ -65,40 +70,53 @@ func (x *fixer) planCompose() {
 		end = t.blockEnd(top)
 		ci, _ = t.childIndent(top)
 	}
-	anyHN, anyPN := false, false
-	defaultHN := x.at("networks", "default", "name") == "kasbah-net"
+	anyPN := false
 	routed := x.c.routedHosts()
+	decl, movable, named, sole := x.sharedDecl()
+	_, unread := x.c.fragment()
+	if x.c.m.Unrouted && !isFile(traefikFile) {
+		unread = ""
+	}
+	onShared := 0
+	// --fix moves every service off kasbah-net or none: one left on it would
+	// share no network with those moved to default.
+	var stays []string
+	if movable && !inList(named, "default") {
+		stays = x.sharedStays(services, top, end, ci, routed, unread, named)
+	}
+	for _, l := range stays {
+		x.leftf("%s", l)
+	}
 
 	for _, svc := range services {
 		if top < 0 {
 			x.leftf("compose: cannot find the top-level services: key in the file's text — --fix edits block mappings, not a flow-style document")
 			break
 		}
-		idx := t.locateChild(svc, top, end, ci)
-		if idx < 0 {
-			x.leftf("compose: cannot find service '%s' in the file's text — left untouched", svc)
+		s, why := x.block(svc, top, end, ci)
+		if why != "" {
+			x.leftf("%s", why)
 			continue
 		}
-		if raw := t.rawValue(idx); raw != "" {
-			x.leftf("compose: service '%s' is written inline (%s) — --fix edits block mappings only", svc, raw)
-			continue
-		}
-		s := svcBlock{name: svc, idx: idx, end: t.blockEnd(idx)}
-		s.ci, x.svcStep = t.childIndent(idx)
-		s.at = s.end
-		if s.at < 0 {
-			s.at = idx
-		}
-		s.pre = spaces(s.ci)
-
 		x.c01(s)
 		x.c08(s)
 
 		nets := opt(x.root, "services", svc, "networks")
-		hn := joinsNet(nets, "kasbah-net") || (defaultHN && !x.has("networks", "services", svc))
+		hn := joinsNet(nets, sharedNet)
 		pn := joinsNet(nets, projectNet)
-		anyHN, anyPN = anyHN || hn, anyPN || pn
-		if x.c.routes(svc, routed) && !hn && !pn {
+		anyPN = anyPN || pn
+		switch {
+		case hn:
+			onShared++
+			isRouted := x.c.routes(svc, routed)
+			switch {
+			case !movable || inList(named, "default") || len(stays) > 0:
+				// sharedDecl or sharedStays said why; with default named
+				// kasbah-net, joining default would rejoin it.
+			case x.c03Shared(s, pn, isRouted):
+				anyPN = anyPN || isRouted
+			}
+		case x.c.routes(svc, routed) && !pn && !joinsAny(opt(x.root, "services", svc), named):
 			if x.c03(s) {
 				anyPN = true
 			}
@@ -108,9 +126,47 @@ func (x *fixer) planCompose() {
 		x.c02(s)
 		x.r03(s)
 	}
-	made := x.c04Project(anyPN)
-	x.c04(anyHN, defaultHN, made)
+	x.c04Project(anyPN)
+	after, ok := applied(x.root, x.edits)
+	keep := decl < 0 || !ok || joinsShared(after)
+	switch {
+	case keep:
+	case sole && !anyPN:
+		// A networks: left empty is null, which compose refuses.
+		x.t.deleteKey(x.t.locateTop("networks"))
+		x.del("networks")
+	default:
+		x.t.deleteKey(decl)
+		x.del("networks", sharedNet)
+	}
+	switch {
+	case keep:
+	case onShared == 0:
+		x.planf("C04 — drop the top-level %s network no service joins", sharedNet)
+	default:
+		x.planf("C03 — drop the top-level %s network no service joins any more", sharedNet)
+	}
 	x.c05()
+}
+
+// block is where service svc is written, or why it cannot be edited.
+func (x *fixer) block(svc string, top, end, ci int) (svcBlock, string) {
+	t := x.t
+	idx := t.locateChild(svc, top, end, ci)
+	if idx < 0 {
+		return svcBlock{}, fmt.Sprintf("compose: cannot find service '%s' in the file's text — left untouched", svc)
+	}
+	if raw := t.rawValue(idx); raw != "" {
+		return svcBlock{}, fmt.Sprintf("compose: service '%s' is written inline (%s) — --fix edits block mappings only", svc, raw)
+	}
+	s := svcBlock{name: svc, idx: idx, end: t.blockEnd(idx)}
+	s.ci, x.svcStep = t.childIndent(idx)
+	s.at = s.end
+	if s.at < 0 {
+		s.at = idx
+	}
+	s.pre = spaces(s.ci)
+	return s, ""
 }
 
 // svcBlock is where one service is written: its key line, last content line,
@@ -274,21 +330,10 @@ func (x *fixer) c03(s svcBlock) bool {
 			x.leftf("C03 %s — its networks: is written inline as %s; add kasbah by hand", s.name, raw)
 			return false
 		}
-		line, cr := t.lines[n], ""
-		if strings.HasSuffix(line, "\r") {
-			line, cr = line[:len(line)-1], "\r"
-		}
-		m := reFlowSeq.FindStringSubmatch(line)
-		if m == nil {
+		if !t.appendFlow(n, projectNet) {
 			x.leftf("C03 %s — its networks: list spans more than one line; add kasbah by hand", s.name)
 			return false
 		}
-		sep := ", "
-		if reBlank.MatchString(m[2]) {
-			sep = ""
-		}
-		t.rep[n] = m[1] + m[2] + sep + projectNet + m[3] + cr
-		t.hasRep[n] = true
 		x.app(projectNet, "services", s.name, "networks")
 		x.planf("C03 %s — add kasbah to its networks list", s.name)
 		return true
@@ -316,18 +361,18 @@ func (x *fixer) c03(s svcBlock) bool {
 }
 
 // c04Project declares the project's kasbah network where a service joins it
-// and nothing does; true when that created the top-level networks:.
-func (x *fixer) c04Project(anyPN bool) bool {
+// and nothing does.
+func (x *fixer) c04Project(anyPN bool) {
 	t := x.t
 	if !anyPN || x.has(projectNet, "networks") {
-		return false
+		return
 	}
 	top := t.locateTop("networks")
 	if top < 0 {
 		n := len(t.lines)
 		if n == 0 {
 			x.leftf("C04 — compose.prod.yml is empty")
-			return false
+			return
 		}
 		step := 2
 		if i := t.locateTop("services"); i >= 0 {
@@ -336,11 +381,11 @@ func (x *fixer) c04Project(anyPN bool) bool {
 		t.insertAfter(n-1, "\nnetworks:\n"+spaces(step)+projectNet+": {}")
 		x.set(obj(), "networks", projectNet)
 		x.planf("C04 — add a top-level networks: with the project's kasbah: {}")
-		return true
+		return
 	}
 	if t.inline(top) {
 		x.leftf("C04 — the top-level networks: is written inline; declare kasbah: {} by hand")
-		return false
+		return
 	}
 	at := t.blockEnd(top)
 	if at < 0 {
@@ -350,99 +395,458 @@ func (x *fixer) c04Project(anyPN bool) bool {
 	t.insertAfter(at, spaces(tci)+projectNet+": {}")
 	x.set(obj(), "networks", projectNet)
 	x.planf("C04 — declare the project's kasbah: {} network")
+}
+
+// sharedNet is the network every project once shared, which Traefik no longer
+// routes over; C03 moves a service on it to the project's kasbah network.
+const sharedNet = "kasbah-net"
+
+// sharedDecl is the line declaring kasbah-net under the top-level networks:,
+// -1 for none, and whether services can be moved off it: not when that
+// declaration cannot be found in the file's text. named is the other keys of
+// a network named kasbah-net, left as they are, said so; sole that kasbah-net
+// is the only network declared.
+func (x *fixer) sharedDecl() (decl int, movable bool, named []string, sole bool) {
+	t := x.t
+	nets, _ := opt(x.root, "networks").(*tree.Map)
+	for _, k := range keysOf(nets) {
+		if k != sharedNet && realNet(k, opt(nets, k)) == sharedNet {
+			named = append(named, k)
+			if k == "default" {
+				x.leftf("C03 — the network 'default' is named %s; drop its name: and external: by hand, so compose names it %s_default, and move only the routed services to kasbah", sharedNet, orProject(x.c.m.Name))
+			} else {
+				x.leftf("C03 — the network '%s' is named %s; take its services off it by hand, onto the project's default network, the routed ones onto kasbah too, and drop it", k, sharedNet)
+			}
+		}
+	}
+	joined := false
+	for _, svc := range keysOf(opt(x.root, "services")) {
+		joined = joined || joinsNet(opt(x.root, "services", svc, "networks"), sharedNet)
+	}
+	if !x.has(sharedNet, "networks") {
+		return -1, true, named, false
+	}
+	top := t.locateTop("networks")
+	if top < 0 || t.inline(top) {
+		if joined {
+			x.leftf("C03 — the top-level networks: is written inline; move the services on %s to kasbah by hand", sharedNet)
+		} else {
+			x.leftf("C04 — the top-level networks: is written inline; drop %s, which no service joins, by hand", sharedNet)
+		}
+		return -1, false, named, false
+	}
+	tci, _ := t.childIndent(top)
+	k := t.locateChild(sharedNet, top, t.blockEnd(top), tci)
+	if k < 0 {
+		x.leftf("C03 — cannot find the %s network in the file's text; move its services to kasbah by hand", sharedNet)
+		return -1, false, named, false
+	}
+	return k, true, named, len(keysOf(nets)) == 1
+}
+
+// joinsShared is whether a service in root joins kasbah-net: by that key, by
+// another key named it, or on a default named it.
+func joinsShared(root tree.Value) bool {
+	nets, _ := opt(root, "networks").(*tree.Map)
+	keys := []string{sharedNet}
+	for _, k := range keysOf(nets) {
+		if k != sharedNet && realNet(k, opt(nets, k)) == sharedNet {
+			keys = append(keys, k)
+		}
+	}
+	for _, svc := range keysOf(opt(root, "services")) {
+		if joinsAny(opt(root, "services", svc), keys) {
+			return true
+		}
+	}
 	return false
 }
 
-// c04: kasbah-net is external — asked only when something is on it, and never
-// under the default-alias shape C07 fails, which external: true would entrench.
-func (x *fixer) c04(anyOn, defaultHN, made bool) {
-	t := x.t
-	if !anyOn {
-		return
+func orProject(name string) string {
+	if name == "" {
+		return "<project>"
 	}
-	if defaultHN {
-		if opt(x.root, "networks", "default", "external") == true {
-			return
-		}
-		x.leftf("C04 — the default network aliases kasbah-net (C07). Making it external: true would entrench that shape; join kasbah-net per routed service instead")
-		return
-	}
-	ext := opt(x.root, "networks", "kasbah-net", "external")
-	if ext == true {
-		return
-	}
-	top := t.locateTop("networks")
-	if top < 0 && made {
-		x.leftf("C04 — declare kasbah-net external: true by hand, beside the kasbah network this run adds")
-		return
-	}
+	return name
+}
+
+// sharedStays is the left lines for the services --fix cannot take off
+// kasbah-net, by its key or another naming it, and why; nil when it can take
+// every one. Each c03Shared it tries is planned on a copy and thrown away.
+func (x *fixer) sharedStays(services []string, top, end, ci int, routed []string, unread string, named []string) []string {
 	if top < 0 {
-		n := len(t.lines)
-		if n == 0 {
-			x.leftf("C04 — compose.prod.yml is empty")
-			return
+		return nil
+	}
+	var why []string
+	p := *x
+	p.t, p.plan, p.edits, p.collect, p.left = x.t.clone(), nil, nil, true, &why
+	var left []string
+	movers := 0
+	for _, svc := range services {
+		v := opt(x.root, "services", svc)
+		nets := opt(v, "networks")
+		hn := joinsNet(nets, sharedNet)
+		if !hn && !joinsAny(v, named) {
+			continue
 		}
-		// Indented by the step services: uses: a 4-space file gains no
-		// 2-space corner.
-		step := 2
-		if i := t.locateTop("services"); i >= 0 {
-			_, step = t.childIndent(i)
+		isRouted := x.c.routes(svc, routed)
+		s, bad := p.block(svc, top, end, ci)
+		switch {
+		case !hn:
+			for _, k := range named {
+				if joinsNet(nets, k) {
+					p.stay(svc, isRouted, "it joins '"+k+"', which is named "+sharedNet)
+					break
+				}
+			}
+		case bad != "":
+			p.stay(svc, isRouted, "--fix cannot edit it as written")
+		case !isRouted && unread != "":
+			p.leftf("C03 %s — %s, so whether it is routed is unknown; take it off %s by hand, onto the project's default network, and onto kasbah if it is routed", svc, unread, sharedNet)
+		case !p.c03Shared(s, joinsNet(nets, projectNet), isRouted):
+		default:
+			movers++
+			continue
 		}
-		t.insertAfter(n-1, "\nnetworks:\n"+spaces(step)+"kasbah-net:\n"+spaces(2*step)+"external: true")
-		x.set(obj("external", true), "networks", "kasbah-net")
-		x.planf("C04 — add a top-level networks: with kasbah-net external: true")
-		return
+		left = append(left, svc)
 	}
-	if t.inline(top) {
-		x.leftf("C04 — the top-level networks: is written inline; declare kasbah-net external: true by hand")
-		return
+	if len(left) > 0 && movers > 0 {
+		why = append(why, fmt.Sprintf("C03 — --fix takes no service off %s while it must leave %s on it: one left there would share no network with those moved", sharedNet, strings.Join(left, ", ")))
 	}
-	tEnd := t.blockEnd(top)
-	tci, tstep := t.childIndent(top)
-	tpre := spaces(tci)
-	if !x.has("kasbah-net", "networks") {
-		at := tEnd
-		if at < 0 {
-			at = top
+	return why
+}
+
+// stay says why svc stays on kasbah-net, and how to take it off by hand: onto
+// the project's default network too, which every service --fix moves shares.
+func (x *fixer) stay(svc string, routed bool, why string) {
+	rule, onto := "C04", "the project's default network"
+	if routed {
+		rule, onto = "C03", "kasbah and the project's default network"
+	}
+	x.leftf("%s %s — %s; take it off %s by hand, onto %s", rule, svc, why, sharedNet, onto)
+}
+
+// reSharedEntry is a block list's `- kasbah-net`, bare or quoted, with what
+// precedes and follows it.
+var reSharedEntry = regexp.MustCompile(`^(` + envtpl.Space + `*-` + envtpl.Space + `+)(?:kasbah-net|"kasbah-net"|'kasbah-net')(` + envtpl.Space + `*(?:#.*)?)$`)
+
+// c03Shared takes a service off kasbah-net. A routed one moves to kasbah: the
+// entry's key becomes kasbah, its options kept, or its aliases join the kasbah
+// entry it has already. An unrouted one gets default in its place: Traefik has
+// no business reaching it. Either way it ends on the project's default network,
+// which every service taken off kasbah-net shares; an unrouted one left on
+// default alone loses its networks:. True when an edit was planned.
+func (x *fixer) c03Shared(s svcBlock, pn, routed bool) bool {
+	t := x.t
+	nets := x.svcV(s, "networks")
+	n := t.locateChild("networks", s.idx, s.end, s.ci)
+	rule := "C03"
+	if !routed {
+		rule = "C04"
+	}
+	if n < 0 {
+		x.stay(s.name, routed, "cannot find its networks: in the file's text")
+		return false
+	}
+	move := routed && !pn
+	what := "move it from " + sharedNet + " to kasbah"
+	switch {
+	case pn:
+		what = "drop " + sharedNet + ", it is on kasbah already"
+	case !routed:
+		what = "drop " + sharedNet + ", which nothing routes to it over"
+	}
+	var merge []string
+	if m, ok := nets.(*tree.Map); ok && pn && routed {
+		if v, _ := m.Get(sharedNet); !emptyEntry(v) {
+			if merge, ok = x.sharedAliases(s, m, v); !ok {
+				return false
+			}
 		}
-		t.insertAfter(at, tpre+"kasbah-net:\n"+spaces(tci+tstep)+"external: true")
-		x.set(obj("external", true), "networks", "kasbah-net")
-		x.planf("C04 — declare kasbah-net external: true")
-		return
 	}
-	k := t.locateChild("kasbah-net", top, tEnd, tci)
-	if k < 0 {
-		x.leftf("C04 — cannot find the kasbah-net network in the file's text")
-		return
+	if len(merge) > 0 {
+		what += ", its aliases " + strings.Join(merge, " ") + " joining its kasbah entry"
 	}
-	if raw := t.rawValue(k); raw != "" {
-		if raw == "{}" && t.setValue(k, "{external: true}", false) {
-			x.set(obj("external", true), "networks", "kasbah-net")
-			x.planf("C04 — kasbah-net: {} → {external: true}")
-			return
+	left := movedNets(nets, move, merge)
+	if onlyDefault(left) {
+		t.deleteKey(n)
+		x.del("services", s.name, "networks")
+		x.planf("%s %s — drop its networks: %s, leaving it on the project's default network, over which it keeps reaching its former %s peers", rule, s.name, sharedNet, sharedNet)
+		return true
+	}
+	// repl stands where kasbah-net's entry did, "" for nothing; default joins
+	// last where it does not.
+	onDefault := joinsNet(nets, "default")
+	repl := ""
+	switch {
+	case move:
+		repl = projectNet
+	case !onDefault:
+		repl = "default"
+	}
+	tail := move && !onDefault
+	if raw := t.rawValue(n); raw != "" {
+		if !x.swapFlow(n, repl, tail) {
+			x.stay(s.name, routed, "its networks: is written inline as "+raw)
+			return false
 		}
-		x.leftf("C04 — kasbah-net is declared inline as %s; set external: true by hand", raw)
-		return
-	}
-	kEnd := t.blockEnd(k)
-	kci, _ := t.childIndent(k)
-	if x.has("external", "networks", "kasbah-net") {
-		i := t.locateChild("external", k, kEnd, kci)
-		if i < 0 || !t.setValue(i, "true", false) {
-			x.leftf("C04 — kasbah-net's external: is written in a shape --fix cannot rewrite")
-			return
+	} else {
+		nEnd := t.blockEnd(n)
+		nci, _ := t.childIndent(n)
+		if _, isMap := nets.(*tree.Map); isMap {
+			k := t.locateChild(sharedNet, n, nEnd, nci)
+			if k < 0 {
+				x.stay(s.name, routed, "cannot find "+sharedNet+" in its networks: in the file's text")
+				return false
+			}
+			swapped := false
+			if len(merge) > 0 {
+				var ok bool
+				if swapped, ok = x.mergeAliases(s, n, nEnd, nci, merge); !ok {
+					return false
+				}
+			}
+			if move || swapped {
+				line, _ := strings.CutPrefix(t.lines[k], spaces(nci))
+				_, rest, _ := strings.Cut(line, ":")
+				t.rep[k], t.hasRep[k] = spaces(nci)+projectNet+":"+rest, true
+				if !onDefault {
+					t.insertAfter(nEnd, spaces(nci)+"default:")
+				}
+			} else {
+				t.deleteKey(k)
+				if repl != "" {
+					t.insertAfter(k, spaces(nci)+repl+":")
+				}
+			}
+		} else {
+			k := -1
+			for i := n + 1; i <= nEnd; i++ {
+				if indent(t.lines[i]) == nci && reSharedEntry.MatchString(noCR(t.lines[i])) {
+					k = i
+					break
+				}
+			}
+			if k < 0 {
+				x.stay(s.name, routed, "cannot find "+sharedNet+" in its networks: in the file's text")
+				return false
+			}
+			line, cr := noCR(t.lines[k]), ""
+			if len(line) < len(t.lines[k]) {
+				cr = "\r"
+			}
+			m := reSharedEntry.FindStringSubmatch(line)
+			if repl == "" {
+				t.del[k] = true
+			} else {
+				t.rep[k], t.hasRep[k] = m[1]+repl+m[2]+cr, true
+			}
+			if tail {
+				t.insertAfter(nEnd, m[1]+"default")
+			}
 		}
-		x.mask("networks", "kasbah-net", "external")
-		x.planf("C04 — kasbah-net external: %s → true", tree.Compact(ext))
-		return
 	}
-	at := kEnd
-	if at < 0 {
-		at = k
+	x.set(left, "services", s.name, "networks")
+	x.planf("%s %s — %s; it keeps reaching its former %s peers over the project's default network", rule, s.name, what, sharedNet)
+	return true
+}
+
+// rePlainAlias is an alias --fix writes bare.
+var rePlainAlias = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// sharedAliases is the aliases a routed service's kasbah-net entry v carries
+// that its kasbah entry lacks; false, said why, when v sets more than aliases,
+// an alias would need quoting, or one is listed twice.
+func (x *fixer) sharedAliases(s svcBlock, nets *tree.Map, v tree.Value) ([]string, bool) {
+	e, _ := v.(*tree.Map)
+	al, isList := opt(e, "aliases").([]tree.Value)
+	if e == nil || slices.ContainsFunc(e.Keys(), func(k string) bool { return k != "aliases" }) || !isList && opt(e, "aliases") != nil {
+		x.stay(s.name, true, "it is on kasbah already, and its "+sharedNet+" entry sets more than aliases")
+		return nil, false
 	}
-	t.insertAfter(at, spaces(kci)+"external: true")
-	x.set(true, "networks", "kasbah-net", "external")
-	x.planf("C04 — add external: true to kasbah-net")
+	have := asList(opt(nets, projectNet, "aliases"))
+	var out []string
+	for i, a := range al {
+		str, ok := a.(string)
+		if !ok || !rePlainAlias.MatchString(str) {
+			x.stay(s.name, true, "it is on kasbah already, and its "+sharedNet+" alias "+tree.Compact(a)+" needs quoting")
+			return nil, false
+		}
+		if slices.Index(al, a) < i {
+			// kasbah-net's entry swapped in whole for kasbah's would keep it twice.
+			x.leftf("C03 %s — its %s aliases list %s twice; remove the duplicate alias %s from %s's %s entry", s.name, sharedNet, str, str, s.name, sharedNet)
+			return nil, false
+		}
+		if !slices.Contains(have, tree.Value(str)) {
+			out = append(out, str)
+		}
+	}
+	return out, true
+}
+
+// mergeAliases writes merge into the kasbah entry of the networks: mapping at
+// n: kasbah-net's entry takes the place of a kasbah entry that is one empty
+// line (swapped), else the aliases join kasbah's. False, said why, for a
+// kasbah entry written in a shape a line edit cannot extend.
+func (x *fixer) mergeAliases(s svcBlock, n, nEnd, nci int, merge []string) (swapped, ok bool) {
+	t := x.t
+	if kl := t.locateChild(projectNet, n, nEnd, nci); kl >= 0 {
+		raw, kEnd := t.rawValue(kl), t.blockEnd(kl)
+		switch {
+		case emptyEntry(opt(x.svcV(s, "networks"), projectNet)) && kEnd < 0 && (raw == "" || raw == "{}"):
+			t.del[kl] = true
+			return true, true
+		case raw == "" && kEnd >= 0:
+			kci, _ := t.childIndent(kl)
+			al := t.locateChild("aliases", kl, kEnd, kci)
+			switch {
+			case al < 0:
+				t.insertAfter(kEnd, spaces(kci)+"aliases: ["+strings.Join(merge, ", ")+"]")
+				return false, true
+			case t.rawValue(al) != "":
+				if t.appendFlow(al, strings.Join(merge, ", ")) {
+					return false, true
+				}
+			case t.blockEnd(al) >= 0:
+				aci, _ := t.childIndent(al)
+				var lines []string
+				for _, a := range merge {
+					lines = append(lines, spaces(aci)+"- "+a)
+				}
+				t.insertAfter(t.blockEnd(al), strings.Join(lines, "\n"))
+				return false, true
+			}
+		}
+	}
+	x.stay(s.name, true, "it is on kasbah already, and its "+sharedNet+" aliases cannot be added to its kasbah entry as written")
+	return false, false
+}
+
+// appendFlow adds s to the one-line flow sequence at idx; false for any other
+// shape.
+func (t *text) appendFlow(idx int, s string) bool {
+	raw := t.rawValue(idx)
+	line, cr := t.lines[idx], ""
+	if strings.HasSuffix(line, "\r") {
+		line, cr = line[:len(line)-1], "\r"
+	}
+	m := reFlowSeq.FindStringSubmatch(line)
+	if m == nil || len(raw) < 2 || raw[0] != '[' || raw[len(raw)-1] != ']' {
+		return false
+	}
+	sep := ", "
+	if reBlank.MatchString(m[2]) {
+		sep = ""
+	}
+	t.rep[idx], t.hasRep[idx] = m[1]+m[2]+sep+s+m[3]+cr, true
+	return true
+}
+
+// swapFlow does c03Shared's edit to a one-line flow sequence: kasbah-net's
+// entry becomes repl, or goes for "", and default joins last on tail. False
+// for any other inline shape.
+func (x *fixer) swapFlow(n int, repl string, tail bool) bool {
+	t := x.t
+	line, cr := t.lines[n], ""
+	if strings.HasSuffix(line, "\r") {
+		line, cr = line[:len(line)-1], "\r"
+	}
+	raw := t.rawValue(n)
+	m := reFlowSeq.FindStringSubmatch(line)
+	if m == nil || len(raw) < 2 || raw[0] != '[' || raw[len(raw)-1] != ']' {
+		return false
+	}
+	parts := strings.Split(m[2], ",")
+	for i, p := range parts {
+		v := strings.Trim(strings.TrimSpace(p), `"'`)
+		if v != sharedNet {
+			continue
+		}
+		if repl == "" {
+			parts = slices.Delete(parts, i, i+1)
+			if i == 0 && len(parts) > 0 {
+				parts[0] = p[:len(p)-len(strings.TrimLeft(p, " \t"))] + strings.TrimLeft(parts[0], " \t")
+			}
+		} else {
+			parts[i] = strings.Replace(p, strings.TrimSpace(p), repl, 1)
+		}
+		if tail {
+			last := parts[len(parts)-1]
+			body := strings.TrimRight(last, " \t")
+			parts[len(parts)-1] = body + ", default" + last[len(body):]
+		}
+		t.rep[n], t.hasRep[n] = m[1]+strings.Join(parts, ",")+m[3]+cr, true
+		return true
+	}
+	return false
+}
+
+// emptyEntry is whether a service's networks: entry sets nothing: null or {}.
+func emptyEntry(v tree.Value) bool {
+	m, ok := v.(*tree.Map)
+	return v == nil || ok && (m == nil || m.Len() == 0)
+}
+
+// onlyDefault is whether a networks: value joins compose's default network
+// alone and sets nothing on it, as having no networks: does.
+func onlyDefault(v tree.Value) bool {
+	switch x := v.(type) {
+	case *tree.Map:
+		d, _ := x.Get("default")
+		return x.Len() == 1 && x.Has("default") && emptyEntry(d)
+	case []tree.Value:
+		return len(x) == 1 && x[0] == "default"
+	}
+	return false
+}
+
+// movedNets is a service's networks: off kasbah-net, as c03Shared writes it:
+// the entry under kasbah where move says so, merge joining kasbah's aliases,
+// and default joined, in kasbah-net's place for a list that does not move.
+func movedNets(nets tree.Value, move bool, merge []string) tree.Value {
+	switch v := nets.(type) {
+	case *tree.Map:
+		m := v.Clone()
+		old, _ := m.Get(sharedNet)
+		m.Delete(sharedNet)
+		if move {
+			m.Set(projectNet, old)
+		}
+		if len(merge) > 0 {
+			kv, _ := m.Get(projectNet)
+			k := tree.NewMap()
+			if km, _ := kv.(*tree.Map); km != nil {
+				k = km.Clone()
+			}
+			al := slices.Clone(asList(opt(k, "aliases")))
+			for _, a := range merge {
+				al = append(al, a)
+			}
+			k.Set("aliases", al)
+			m.Set(projectNet, k)
+		}
+		if !m.Has("default") {
+			m.Set("default", nil)
+		}
+		return m
+	case []tree.Value:
+		on := listHas(v, "default")
+		var out []tree.Value
+		for _, e := range v {
+			switch {
+			case e != sharedNet:
+				out = append(out, e)
+			case move:
+				out = append(out, projectNet)
+			case !on:
+				out, on = append(out, "default"), true
+			}
+		}
+		if !on {
+			out = append(out, "default")
+		}
+		return out
+	}
+	return nets
 }
 
 // c05: the deprecated top-level version: goes, and nothing around it.
@@ -599,13 +1003,14 @@ func (x *fixer) planManifest() {
 
 // --- Verifying ----------------------------------------------------------------
 
-// verifyCompose: the same top-level keys but for version: leaving and
-// networks: arriving, and the same services. An edit at the wrong indentation
-// can parse; it cannot keep both.
+// verifyCompose: the same top-level keys but for version: leaving, networks:
+// arriving or leaving with only kasbah-net in it, and the same services. An
+// edit at the wrong indentation can parse; it cannot keep both.
 func verifyCompose(a, b tree.Value) bool {
 	ka, kb := keysOf(a), keysOf(b)
 	for _, k := range ka {
-		if !inList(kb, k) && k != "version" {
+		gone := k == "version" || k == "networks" && slices.Equal(keysOf(opt(a, k)), []string{sharedNet})
+		if !inList(kb, k) && !gone {
 			return false
 		}
 	}

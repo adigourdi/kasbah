@@ -57,7 +57,7 @@ func TestJoinIsIdempotent(t *testing.T) {
 	apps := t.TempDir()
 	os.Mkdir(filepath.Join(apps, "a"), 0o755)
 	os.Mkdir(filepath.Join(apps, "b"), 0o755)
-	d := fake("a_kasbah a\nb_kasbah b\n", "kasbah-net\na_kasbah\n", nil, &calls)
+	d := fake("a_kasbah a\nb_kasbah b\n", "traefik_default\na_kasbah\n", nil, &calls)
 	all, joined, err := d.JoinAll(apps)
 	if err != nil || strings.Join(all, " ") != "a_kasbah b_kasbah" || strings.Join(joined, " ") != "b_kasbah" {
 		t.Fatalf("%v %v %v", all, joined, err)
@@ -72,7 +72,7 @@ func TestJoinIsIdempotent(t *testing.T) {
 
 func TestLeave(t *testing.T) {
 	var calls []string
-	done, err := fake("", "kasbah-net\na_kasbah\n", nil, &calls).Leave([]string{"a_kasbah", "c_kasbah"})
+	done, err := fake("", "traefik_default\na_kasbah\n", nil, &calls).Leave([]string{"a_kasbah", "c_kasbah"})
 	if err != nil || strings.Join(done, " ") != "a_kasbah" || calls[len(calls)-1] != "network disconnect a_kasbah traefik" {
 		t.Fatalf("%v %v %q", done, err, calls)
 	}

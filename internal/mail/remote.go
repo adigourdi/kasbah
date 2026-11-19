@@ -430,13 +430,6 @@ func remoteStart(apps string, timeout time.Duration, stdout, stderr io.Writer) e
 		return strings.TrimSpace(string(out))
 	}
 	dmsBefore := cid("mail-dms")
-	// A stack still on kasbah-net leaves it with this up: say so, apps lose it.
-	moved := "no"
-	if dmsBefore != "" {
-		if on, err := inspect(dmsBefore, "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}"); err == nil && slices.Contains(strings.Fields(on), "kasbah-net") {
-			moved = "yes"
-		}
-	}
 	// --remove-orphans: a service the template no longer names is removed.
 	if err := dc("up", "-d", "--remove-orphans"); err != nil {
 		return fmt.Errorf("docker compose -p %s up -d --remove-orphans failed in %s: %v", Project, dir, err)
@@ -514,8 +507,8 @@ func remoteStart(apps string, timeout time.Duration, stdout, stderr io.Writer) e
 	restarts, _ := inspect(dms, "{{.RestartCount}}")
 	image, _ := inspect(dms, "{{.Config.Image}}")
 	var out bytes.Buffer
-	fmt.Fprintf(&out, "mail_cypht_health=%s\nmail_cypht_nginx=%s\nmail_dms_state=%s\nmail_dms_health=%s\nmail_dms_restarts=%s\nmail_dms_image=%s\nmail_jail=%s\nmail_cypht_unbanned=%s\nmail_cypht_addr=%s\nmail_networks=%s\nmail_moved=%s\n",
-		h, nginx, state, health(dms), restarts, image, jail, unbanned, addr, strings.Join(nets, " "), moved)
+	fmt.Fprintf(&out, "mail_cypht_health=%s\nmail_cypht_nginx=%s\nmail_dms_state=%s\nmail_dms_health=%s\nmail_dms_restarts=%s\nmail_dms_image=%s\nmail_jail=%s\nmail_cypht_unbanned=%s\nmail_cypht_addr=%s\nmail_networks=%s\n",
+		h, nginx, state, health(dms), restarts, image, jail, unbanned, addr, strings.Join(nets, " "))
 	_, err = stdout.Write(out.Bytes())
 	return err
 }

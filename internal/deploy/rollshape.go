@@ -11,13 +11,11 @@ import (
 type RollShape struct {
 	// NoRoll is what its kasbah.noRoll label asks, as NoRoll reads it.
 	NoRoll string
-	// ByContainerName: the fragment reaches it by its container_name; OffNet:
-	// by a name it answers only off the project's kasbah network (check only —
-	// the deploy counts such a service unrouted).
-	ByContainerName, OffNet bool
-	ContainerName           bool // it sets container_name
-	Published               bool // it publishes a host port
-	Health                  Healthcheck
+	// ByContainerName: the fragment reaches it by its container_name.
+	ByContainerName bool
+	ContainerName   bool // it sets container_name
+	Published       bool // it publishes a host port
+	Health          Healthcheck
 	// Gated is its first depends_on entry with a condition other than
 	// service_started, as "db (service_healthy)"; "" for none.
 	Gated string
@@ -70,7 +68,6 @@ func NoRoll(labels map[string]string) string {
 const (
 	StayNoRoll Stay = iota + 1
 	StayByContainerName
-	StayOffNet
 	StayContainerName
 	StayNoHealthWait
 	StayPublished
@@ -89,7 +86,6 @@ func (r RollShape) Stays(noHealthWait bool) []Stay {
 	}{
 		{r.NoRoll != "", StayNoRoll},
 		{r.ByContainerName, StayByContainerName},
-		{r.OffNet, StayOffNet},
 		{r.ContainerName, StayContainerName},
 		{noHealthWait, StayNoHealthWait},
 		{r.Published, StayPublished},
@@ -113,8 +109,6 @@ func (r RollShape) Why(s Stay) string {
 		return "it is labelled " + NoRollLabel + "=" + r.NoRoll + ", which reads as true"
 	case StayByContainerName:
 		return "the fragment targets its container_name"
-	case StayOffNet:
-		return "the fragment reaches it by a name it answers only off the project's kasbah network"
 	case StayContainerName:
 		return "it sets container_name"
 	case StayNoHealthWait:

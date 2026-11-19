@@ -582,10 +582,10 @@ assert '[ "$v_extra" = "by=$RIG_SSH_USER" ]' "then by=<the ssh user>, and nothin
 assert '[ "${got[c_state]}" = "running" ]' "$container is running (got '${got[c_state]}')"
 assert '[ "${got[c_project]}" = "$project" ]' \
     "it belongs to the compose project deploy names with -p (got '${got[c_project]}')"
-assert 'grep -qw "kasbah-net" <<<"${got[c_nets]}"' \
-    "and it is on kasbah-net, which is what makes container_name resolvable (networks: ${got[c_nets]})"
+assert 'grep -qw "demo_kasbah" <<<"${got[c_nets]}"' \
+    "and it is on demo_kasbah, which is what makes demo-web.demo_kasbah resolvable (networks: ${got[c_nets]})"
 assert 'grep -qw "demo_internal" <<<"${got[c_nets]}"' \
-    "as well as the project's own network (networks: ${got[c_nets]})"
+    "as well as the project's internal network (networks: ${got[c_nets]})"
 assert '[ "${got[c_env]}" = "1" ]' \
     "compose read the rendered .env — DEMO_GREETING reached the container (got '${got[c_env]}' matches)"
 

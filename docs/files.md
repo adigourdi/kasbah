@@ -312,7 +312,7 @@ neither.
 
 | Object | Writer | Readers | Spec | Lifecycle | Code |
 |---|---|---|---|---|---|
-| network `kasbah-net` | `server init` (the Traefik compose file's fixed-name network) | Traefik, the routed services of legacy projects (external) | `server-setup.md` (Network), `traefik.md` (Network) | never removed | `templates/traefik/compose.yml` |
+| network `traefik_default` | `server init`, `upgrade-traefik` (the Traefik stack's `compose up`, which names no network of its own) | Traefik alone | `server-setup.md` (Network), `traefik.md` (Network) | kept by `server destroy` | `templates/traefik/compose.yml` |
 | network `<project>_kasbah` | the project's `compose up` (deploy, rollback, revert), from its `kasbah:` network | Traefik, attached by the engine after `up` (`internal/traefiknet`) and by every Traefik start while `<apps>/<project>/` exists; the project's routed services | `traefik.md` (Network) | detached, then removed by `drop`'s `compose down`, and the same way when a version with no services replaces one whose containers are still there — a network that survives makes drop report the down failed; kept by `server destroy` | `internal/deploy/engine.go` `engine.up`, `internal/traefiknet/traefiknet.go` `Docker.Join` |
 | network `mail_kasbah` | `server init --with-mail` (the mail stack's `compose up`) | Traefik, attached at the mail start and every Traefik start; `mail-dms`, `mail-cypht` | `mail.md` (Components) | kept by `server destroy` | `templates/mail/compose.yml`, `internal/traefiknet/traefiknet.go` `Docker.Join` |
 | compose project `traefik` | `server init`, `upgrade-traefik` | — | `traefik.md` | kept by `server destroy` | `templates/traefik/compose.yml` |

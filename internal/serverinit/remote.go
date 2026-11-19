@@ -402,8 +402,8 @@ func remoteStart(apps string, restart bool, timeout time.Duration, acme, stamp s
 			return fmt.Errorf("docker compose -p %s restart traefik failed: %v", project, err)
 		}
 	}
-	// A recreated Traefik is on kasbah-net alone: every project's network and
-	// the mail stack's are joined again, or their routes answer 502.
+	// A recreated Traefik is on its own network alone: every project's network
+	// and the mail stack's are joined again, or their routes answer 502.
 	nets, joined, err := traefiknet.Docker(traefiknet.Exec).JoinAll(apps)
 	if err != nil {
 		return fmt.Errorf("traefik is up and could not rejoin the project networks (%v) — their sites answer 502 until a re-run of init or a deploy connects it", err)

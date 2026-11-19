@@ -1056,9 +1056,9 @@ the scanner cannot take a shape apart — a quoted key, a flow mapping, an
 inline value — the fix is **refused and named**, never guessed. So is a
 `compose.prod.yml` that does not parse. Two rules are also refused case by case,
 with the reason printed: **C08** on a built service that names no `image:` at
-all (it is a tag rewrite, and kasbah will not invent an image name), and **C04**
-under the banned default-alias shape, where declaring the default network
-external would entrench exactly what C07 is failing on.
+all (it is a tag rewrite, and kasbah will not invent an image name), and
+**C03**'s move off `kasbah-net` for a routed service already on `kasbah` whose
+`kasbah-net` entry carries options, which are the author's to merge.
 
 `--fix` runs **before** the report, so the lines you read and the exit code you
 get describe the project as it now is. Traefik rules, C07, C09, C11, hooks and

@@ -64,7 +64,7 @@ func TestEngineServicelessRemovesTheOldContainers(t *testing.T) {
 	r.running("cid=running")
 	t.Setenv("PS", ps)
 	tnets := netRig(t, r, "")
-	os.WriteFile(tnets, []byte("kasbah-net\ndemo_kasbah\n"), 0o644)
+	os.WriteFile(tnets, []byte("traefik_default\ndemo_kasbah\n"), 0o644)
 	sp := r.spec()
 	sp.Images, sp.Health = nil, Health{Timeout: 5}
 	rc, _, errs := r.run(sp)
@@ -73,7 +73,7 @@ func TestEngineServicelessRemovesTheOldContainers(t *testing.T) {
 		t.Fatalf("rc %d:\n%s\n%s", rc, strings.Join(c, "\n"), errs)
 	}
 	// Traefik leaves first, or down could not remove the network.
-	if d := index(c, "network disconnect demo_kasbah traefik"); d < 0 || d > index(c, "compose -p demo down") || index(c, "network disconnect kasbah-net") >= 0 {
+	if d := index(c, "network disconnect demo_kasbah traefik"); d < 0 || d > index(c, "compose -p demo down") || index(c, "network disconnect traefik_default") >= 0 {
 		t.Errorf("calls:\n%s", strings.Join(c, "\n"))
 	}
 	if !strings.Contains(errs, "disconnected traefik from demo_kasbah") {

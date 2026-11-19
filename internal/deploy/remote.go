@@ -187,6 +187,9 @@ func installFragment(apps, name, size, sum, target string, tagged bool, stdin io
 	}
 	model := sync.OnceValues(func() (*composeModel, error) { return readModel(name, composeQuery(dir)) })
 	if m, err := model(); err == nil {
+		if err := m.foreign(name); err != nil {
+			return fail("%v", err)
+		}
 		if err := m.dotted(name); err != nil {
 			return fail("%v", err)
 		}

@@ -343,33 +343,20 @@ func deref(n *yaml.Node) *yaml.Node {
 
 // owners is every name m's services answer to on its kasbah network: a
 // service joined to it, its kasbah aliases, its container_name.
-func (m *composeModel) owners() []owner { return m.namesOn(projectNet) }
-
-// namesOn is every name m's services answer to on the networks keyed nets,
-// each service once.
-func (m *composeModel) namesOn(nets ...string) []owner {
+func (m *composeModel) owners() []owner {
 	var out []owner
 	for _, svc := range sortedKeys(m.Services) {
 		s := m.Services[svc]
-		var aliases []owner
-		joined := false
-		for _, k := range nets {
-			n, ok := s.Networks[k]
-			joined = joined || ok
-			label := projectNet
-			if k != projectNet {
-				label = legacyNet
-			}
-			if n != nil {
-				for _, a := range n.Aliases {
-					aliases = append(aliases, owner{a, svc, "a " + label + " alias of " + svc})
-				}
-			}
-		}
+		n, joined := s.Networks[projectNet]
 		if !joined {
 			continue
 		}
-		out = append(append(out, owner{svc, svc, ""}), aliases...)
+		out = append(out, owner{svc, svc, ""})
+		if n != nil {
+			for _, a := range n.Aliases {
+				out = append(out, owner{a, svc, "a " + projectNet + " alias of " + svc})
+			}
+		}
 		if s.ContainerName != "" {
 			out = append(out, owner{s.ContainerName, svc, svc + "'s container_name"})
 		}
@@ -481,22 +468,12 @@ func fromKeys(bs []backend, tmpl []byte) {
 	}
 }
 
-// legacyNet is the network projects once shared; Traefik is still on it.
-const legacyNet = "kasbah-net"
-
-// dotted refuses a name with a dot on m's kasbah network or kasbah-net:
-// Docker answers a whole dotted name on every network the asker is on, so
-// web.<other>_kasbah would answer for another project's backend before that
-// project's web does.
+// dotted refuses a name with a dot on m's kasbah network: Docker answers a
+// whole dotted name on every network the asker is on, so web.<other>_kasbah
+// would answer for another project's backend before that project's web does.
 func (m *composeModel) dotted(project string) error {
-	nets := []string{projectNet, legacyNet}
-	for _, k := range sortedKeys(m.Networks) {
-		if m.Networks[k].Name == legacyNet && k != legacyNet {
-			nets = append(nets, k)
-		}
-	}
 	var bad []string
-	for _, o := range m.namesOn(nets...) {
+	for _, o := range m.owners() {
 		if strings.Contains(o.name, ".") {
 			what := o.what
 			if what == "" {
@@ -508,7 +485,28 @@ func (m *composeModel) dotted(project string) error {
 	if len(bad) == 0 {
 		return nil
 	}
-	return fmt.Errorf("compose puts a name with a dot on this project's kasbah network (%s) or kasbah-net: %s — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend; rename it without a dot, and the fragment's backend with it (kasbah help C16)", m.netName(project), strings.Join(bad, ", "))
+	return fmt.Errorf("compose puts a name with a dot on this project's kasbah network (%s): %s — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend; rename it without a dot, and the fragment's backend with it (kasbah help C16)", m.netName(project), strings.Join(bad, ", "))
+}
+
+// foreign refuses a network compose would take from outside the project: an
+// external one, or one whose name: is not compose's own <project>_<key>.
+// Whatever else joins it shares it, a kasbah alias or another project's
+// backend name among them, and a deploy runs no check to catch it.
+func (m *composeModel) foreign(project string) error {
+	var bad []string
+	for _, k := range sortedKeys(m.Networks) {
+		n := m.Networks[k]
+		switch {
+		case bool(n.External):
+			bad = append(bad, k+" (external "+n.Name+")")
+		case n.Name != "" && n.Name != project+"_"+k:
+			bad = append(bad, k+" (named "+n.Name+")")
+		}
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	return fmt.Errorf("compose joins this project to a network from outside it: %s — a network outside the project is shared with whatever else joins it, which can then answer for this project's names or reach its services; drop it, or drop its external: and name: so compose creates %s_<key> (kasbah help C04)", strings.Join(bad, ", "), project)
 }
 
 // ownList names what a backend may target, or how to get something to.

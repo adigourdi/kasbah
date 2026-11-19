@@ -182,8 +182,8 @@ func TestActDisconnectsTraefik(t *testing.T) {
 		name, inspect, detached, err string
 		inspectErr                   error
 	}{
-		{"attached", "kasbah-net\nbuilt-app_kasbah\n", "built-app_kasbah", "", nil},
-		{"not attached", "kasbah-net\n", "", "", nil},
+		{"attached", "traefik_default\nbuilt-app_kasbah\n", "built-app_kasbah", "", nil},
+		{"not attached", "traefik_default\n", "", "", nil},
 		{"no traefik", "", "", "", errors.New("Error: No such object: traefik")},
 		{"inspect fails", "", "", "docker inspect traefik failed: boom", errors.New("boom")},
 	} {

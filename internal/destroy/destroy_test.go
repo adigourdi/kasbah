@@ -923,13 +923,13 @@ func TestRemoveAcmeDNS(t *testing.T) {
 	os.WriteFile(apps+"/traefik/acme-dns/cloudflare.env", []byte("CF_DNS_API_TOKEN=x\n"), 0o640)
 	compose := "services:\n  traefik:\n    volumes:\n      - \"/a:/b\"\n" +
 		"    # Each DNS provider's credentials, installed by `kasbah server init --acme-dns=`.\n" +
-		"    env_file:\n      - acme-dns/cloudflare.env\n    networks:\n      - kasbah-net\n"
+		"    env_file:\n      - acme-dns/cloudflare.env\n    networks:\n      - default\n"
 	os.WriteFile(apps+"/traefik/compose.yml", []byte(compose), 0o644)
 	if got := removeAcmeDNS(apps); got != "removed" {
 		t.Errorf("removal: %s", got)
 	}
 	b, _ := os.ReadFile(apps + "/traefik/compose.yml")
-	if string(b) != "services:\n  traefik:\n    volumes:\n      - \"/a:/b\"\n    networks:\n      - kasbah-net\n" {
+	if string(b) != "services:\n  traefik:\n    volumes:\n      - \"/a:/b\"\n    networks:\n      - default\n" {
 		t.Errorf("compose.yml:\n%s", b)
 	}
 	if _, err := os.Stat(apps + "/traefik/acme-dns"); !os.IsNotExist(err) {

@@ -14,7 +14,7 @@ func netRig(t *testing.T, r *rig, connects string) string {
 	root := t.TempDir()
 	nets, tnets := filepath.Join(root, "nets"), filepath.Join(root, "tnets")
 	os.WriteFile(nets, []byte("demo_kasbah\n"), 0o644)
-	os.WriteFile(tnets, []byte("kasbah-net\n"), 0o644)
+	os.WriteFile(tnets, []byte("traefik_default\n"), 0o644)
 	t.Setenv("NETS", nets)
 	t.Setenv("TNETS", tnets)
 	if connects != "" {

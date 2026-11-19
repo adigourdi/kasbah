@@ -117,24 +117,31 @@ the project's own `kasbah` network, declared at the top level as exactly
 `kasbah: {}`. Compose creates it as `<name>_kasbah` and deploy connects
 Traefik to it.
 
-- A routed service off it fails ([C03](compliance.md#compose)). The legacy
-  shared `kasbah-net` warns instead, because every project's routed
-  containers reach each other there, and a fragment cannot target a service
-  on it by service name ([T07](compliance.md#traefik), a failure). `deploy`
-  goes further and refuses any backend on `kasbah-net` alone: the server
-  installs each backend qualified with the project's `kasbah` network
+- A routed service off it fails ([C03](compliance.md#compose)), and so does
+  one on `kasbah-net`, the network every project once shared: `check --fix`
+  swaps that network for `kasbah`, its aliases kept, and drops its
+  declaration, and swaps it for `default` on an unrouted service. Every
+  service it takes off `kasbah-net` ends on the project's `default` network
+  too, so the services that met there still reach each other; an unrouted one
+  left on `default` alone loses its `networks:`, which means the same. It
+  moves all of them or none: a service it cannot edit is named, and keeps the
+  rest on `kasbah-net` with it until it is moved by hand — onto `default` as
+  well.
+  `deploy` refuses any backend off the project's `kasbah` network: the server
+  installs each backend qualified with it
   ([traefik.md → Backends are the project's own](traefik.md#backends-are-the-projects-own)).
   A service reached by its `container_name` does not roll
   ([C11](compliance.md#compose), a warning).
 - Any setting on the network (`external`, `name`, `driver`) fails
   ([C04](compliance.md#compose)): compose would try to recreate it under
-  Traefik.
+  Traefik. So does any network taken from outside — `external: true`, or a
+  `name:` other than compose's own `<name>_<key>`, which compose joins if it
+  exists: a project joins only its own, and a deploy refuses it.
 - Every name on it — service, alias, `container_name` — is `<name>` or
   `<name>-…` ([C09](compliance.md#compose), a failure): Traefik resolves names
   across every project's network, so a service called `web` could answer for
   another project's.
-- No name on it, or on a legacy `kasbah-net` — service, alias,
-  `container_name` — holds a dot ([C16](compliance.md#compose), a failure,
+- No name on it — service, alias, `container_name` — holds a dot ([C16](compliance.md#compose), a failure,
   and `deploy` refuses it too): Docker answers a whole dotted name on every
   network Traefik is on, so `web.<other>_kasbah` would answer for another
   project's backend.
@@ -157,7 +164,7 @@ Traefik to it.
   no label: it is never rolled.
 
 **Everything else** — databases, caches, workers — stays off the `kasbah`
-network and `kasbah-net` ([C07](compliance.md#compose), a failure): Traefik
+network ([C07](compliance.md#compose), a failure): Traefik
 is on that network, and a service there is one name lookup away from every
 other project. Put them on a project-internal network, or leave out
 `networks:` so they sit on the project's default one.
@@ -232,10 +239,8 @@ What fails, and why:
   is checked by `check --server`.
 - A hostname whose first label is `traefik`, `mail` or `webmail`
   ([T05](compliance.md#traefik)): those are kasbah's on the server.
-- A server URL naming nothing in `compose.prod.yml`, a service on no
-  Traefik network, or a service on the legacy `kasbah-net` by its service
-  name rather than its `container_name` ([T07](compliance.md#traefik)): there
-  every project's same-named service answers too. `deploy` holds the
+- A server URL naming nothing in `compose.prod.yml`, or a service off the
+  `kasbah` network ([T07](compliance.md#traefik)). `deploy` holds the
   rendered fragment to the stricter form on the server — a service, `kasbah`
   alias or `container_name` on the project's `kasbah` network, written bare
   (no IP, domain or network suffix).

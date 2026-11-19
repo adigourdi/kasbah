@@ -37,21 +37,11 @@ func rotation() *tree.Map { return obj("max-size", "10m", "max-file", "3") }
 // masked paths aside on both. An edit that meets a value that is not a
 // mapping where its path runs is a refusal.
 func guard(orig, cand tree.Value, edits []edit) bool {
-	want, got := orig, cand
-	ok := true
-	for _, e := range edits {
-		switch e.kind {
-		case 's':
-			want, ok = setPath(want, e.path, e.val)
-		case 'd':
-			want, ok = delPath(want, e.path)
-		case 'a':
-			want, ok = appendAt(want, e.path, e.val)
-		}
-		if !ok {
-			return false
-		}
+	want, ok := applied(orig, edits)
+	if !ok {
+		return false
 	}
+	got := cand
 	for _, e := range edits {
 		if e.kind != 'm' {
 			continue
@@ -64,6 +54,26 @@ func guard(orig, cand tree.Value, edits []edit) bool {
 		}
 	}
 	return equal(want, got)
+}
+
+// applied is orig with the edits made, masks aside; false where one meets a
+// value that is not a mapping where its path runs.
+func applied(orig tree.Value, edits []edit) (tree.Value, bool) {
+	v, ok := orig, true
+	for _, e := range edits {
+		switch e.kind {
+		case 's':
+			v, ok = setPath(v, e.path, e.val)
+		case 'd':
+			v, ok = delPath(v, e.path)
+		case 'a':
+			v, ok = appendAt(v, e.path, e.val)
+		}
+		if !ok {
+			return nil, false
+		}
+	}
+	return v, true
 }
 
 // appendAt adds x to the list at p; null or absent there is an empty list.

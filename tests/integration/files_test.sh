@@ -389,14 +389,14 @@ require ws "$snap_dir/ws.project" '<project-dir>/.kasbah' '<project-dir>/.kasbah
 
 # --- Docker objects -----------------------------------------------------------
 docker_list=$(cat "$snap_dir/docker")
-for want in "network kasbah-net" "network ${project}_kasbah" "network mail_kasbah" "image $image_web:$v1" "image $image_web:$v2" "image $image_web:current" \
+for want in "network traefik_default" "network ${project}_kasbah" "network mail_kasbah" "image $image_web:$v1" "image $image_web:$v2" "image $image_web:current" \
             "image $image_worker:current" "project traefik" "project mail" "project $project" "project kasbah-backup"; do
     assert 'grep -qxF "$want" <<<"$docker_list"' "the rig holds $want (docs/files.md → Docker objects)"
 done
 
 # --- Leave the rig as it was found, but only on success -----------------------
 # rig_clean downs every compose project — mail and the backup stack included —
-# and removes kasbah-net, /apps and /etc/kasbah; the images it leaves go here.
+# and removes /apps and /etc/kasbah; the images it leaves go here.
 if [ "$fail" -eq 0 ]; then
     rig_ssh "docker image rm -f $image_web:$v1 $image_worker:$v1 $image_web:$v2 $image_worker:$v2 $image_web:current $image_worker:current" >/dev/null 2>&1
     rig_clean || fail=1
