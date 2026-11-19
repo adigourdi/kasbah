@@ -820,7 +820,7 @@ func (e *engine) preflight() error {
 			if err := m.foreign(e.project); err != nil {
 				return failf("%v", err)
 			}
-			if err := m.dotted(e.project); err != nil {
+			if err := m.clashes(e.project); err != nil {
 				return failf("%v", err)
 			}
 		}

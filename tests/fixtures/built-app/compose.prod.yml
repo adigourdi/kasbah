@@ -11,9 +11,9 @@
 name: built-app
 
 services:
-  # Prefixed with the project name: Traefik sits on every project's network
-  # and resolves names across them all. Nothing stops a service and its
-  # container carrying the same name.
+  # The prefix is optional, as a deploy scopes each backend to the project's
+  # own network. Nothing stops a service and its container carrying the same
+  # name.
   built-app-web:
     build:
       context: .

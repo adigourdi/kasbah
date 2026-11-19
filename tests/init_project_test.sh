@@ -55,16 +55,15 @@ assert 'grep -qxF ".kasbah/" .gitignore' "gitignore has .kasbah/"
 
 # --- Case 1b: the starter snippet is a project `kasbah check` accepts ---------
 # It is the first compose file most projects ever have, so what it teaches is
-# what most compose files end up looking like. One routed service: named for
-# the project, on the project's own kasbah network and nothing else because a
-# lone routed service has nothing to keep off it, and behind both routers for
-# the domain so plain HTTP redirects instead of 404ing (T08).
+# what most compose files end up looking like. One routed service, plain `web`
+# (a deploy scopes it to the project's own network), on the kasbah network
+# alone, behind both routers so plain HTTP redirects instead of 404ing (T08).
 projs="$tmpdir/snippet"
 mkdir -p "$projs"
 cd "$projs"
 snippet="$("$kasbah" init-project --name=snip --domain=snip.example.com 2>/dev/null)"
-assert 'grep -qF "    snip-web:" <<<"$snippet"'            "the scaffolded service is named for the project (said '$snippet')"
-assert '! grep -qE "^    (app|web):" <<<"$snippet"'        "and not with a name every other project would also pick"
+assert 'grep -qxF "    web:" <<<"$snippet"'                "the scaffolded service is plain web (said '$snippet')"
+assert '! grep -qF "snip-web" <<<"$snippet"'                "with no project prefix anywhere"
 assert 'grep -qF "networks: [kasbah]" <<<"$snippet"'       "the one routed service joins the project's kasbah network alone"
 assert 'grep -qF "    kasbah: {}" <<<"$snippet"'            "which is the project's own, not external"
 assert '! grep -qF "kasbah-net" <<<"$snippet"'              "and the shared kasbah-net is not offered"
@@ -98,7 +97,7 @@ extract "  services:" 1 > compose.prod.yml
 extract "  http:"     0 > traefik-dynamic.yml
 assert 'grep -qxF "    networks: [kasbah]" compose.prod.yml && ! grep -qF container_name compose.prod.yml' \
     "the compose block came out whole, with no container_name: the fragment targets the service (got: $(cat compose.prod.yml))"
-assert 'grep -qxF "          - url: \"http://snip-web:80\"" traefik-dynamic.yml' \
+assert 'grep -qxF "          - url: \"http://web:80\"" traefik-dynamic.yml' \
     "and so did the fragment (got: $(cat traefik-dynamic.yml))"
 
 check_out="$("$kasbah" check 2>&1)"; rc=$?

@@ -556,13 +556,13 @@ below). The only differences:
         before the host, or a compose model that cannot be read is refused
         with `kasbah help T07`, quoting a host written in the fragment, or
         naming the ${KEY} that filled one, its line and `kasbah env set KEY
-        USER@HOST`), and no service, alias or container_name on that
-        network holds a dot (`kasbah help C16`), and compose declares no
-        network from outside the project — one `external`, or with a name
-        other than compose's own `<name>_<key>`, as `kasbah-net` or
-        `mail_kasbah`: whatever else joins it shares it (`kasbah help C04`;
-        a compose model that cannot be read is left to compose's up there,
-        which fails on it too).
+        USER@HOST`), and no service, alias, container_name or hostname
+        on that network holds a dot or is traefik (`kasbah help C16`),
+        and compose declares no network from outside the project — one
+        `external`, or with a name other than compose's own
+        `<name>_<key>`, as `kasbah-net` or `mail_kasbah`: whatever else
+        joins it shares it (`kasbah help C04`; a compose model that cannot
+        be read is left to compose's up there, which fails on it too).
         Any of these failing starts nothing and puts the files back.
      a. Create backups/<outgoing version>-<stamp>/ and run the backup hooks
         into it ($KASBAH_BACKUP_DIR), against the currently-running (previous

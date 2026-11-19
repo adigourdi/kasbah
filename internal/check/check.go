@@ -29,6 +29,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/prompt"
 	"github.com/adigourdi/kasbah/internal/resources"
 	"github.com/adigourdi/kasbah/internal/state"
+	"github.com/adigourdi/kasbah/internal/traefiknet"
 	"github.com/adigourdi/kasbah/internal/tree"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
@@ -374,7 +375,7 @@ func (c *checker) composeSection() {
 		c.failf("C02", "Services missing json-file logging with max-size/max-file: %s", strings.Join(bad, " "))
 	}
 
-	c.c09Project(c.networks())
+	c.networks()
 	c.c16()
 	c.c10()
 	c.c05()
@@ -653,9 +654,9 @@ func published(p tree.Value) bool {
 // compose names it <name>_kasbah, and deploy connects Traefik to it.
 const projectNet = "kasbah"
 
-// networks is C03, C04 and C07; it returns the services on the project's
-// kasbah network, for C09.
-func (c *checker) networks() (own []string) {
+// networks is C03, C04 and C07.
+func (c *checker) networks() {
+	var own []string
 	routed := c.routedHosts()
 	_, unread := c.fragment()
 	if c.m.Unrouted && !isFile(traefikFile) {
@@ -713,7 +714,6 @@ func (c *checker) networks() (own []string) {
 	default:
 		c.passf("C07", "No internal services on the kasbah network")
 	}
-	return own
 }
 
 // sharedNets is the network keys that are the shared kasbah-net: that key, and
@@ -810,39 +810,10 @@ func (c *checker) c04External(projectDone bool) {
 	}
 }
 
-// c09Project fails a name on the kasbah network not named for the project:
-// Traefik sits on every project's network and resolves names across them, so
-// another project's service, alias or container_name could answer for this one's.
-func (c *checker) c09Project(own []string) {
-	if len(own) == 0 {
-		return
-	}
-	name := c.m.Name
-	ok := func(s string) bool { return s == name || strings.HasPrefix(s, name+"-") }
-	var bad []string
-	for _, svc := range own {
-		if !ok(svc) {
-			bad = append(bad, svc+" (service)")
-		}
-		for _, a := range asList(opt(c.svc(svc, "networks"), projectNet, "aliases")) {
-			if s, _ := a.(string); !ok(s) {
-				bad = append(bad, tree.Text(a)+" (alias of "+svc+")")
-			}
-		}
-		if cn := scalar(c.svc(svc, "container_name")); cn != "" && !ok(cn) {
-			bad = append(bad, cn+" (container_name of "+svc+")")
-		}
-	}
-	if len(bad) == 0 {
-		c.passf("C09", "Names on the kasbah network are project-prefixed")
-	} else {
-		c.failf("C09", "Names on the kasbah network that are not '%s' or '%s-*': %s — Traefik resolves names across every project's network, so another project's name can answer for this one's", name, name, strings.Join(bad, " "))
-	}
-}
-
-// c16 fails a name with a dot on the kasbah network: Docker answers a whole
-// dotted name on every network Traefik is on, so web.<other>_kasbah would
-// answer for another project's backend. Silent when none has one.
+// c16 fails a name on the kasbah network that can answer for another's:
+// Docker answers a whole dotted name on every network Traefik is on, so
+// web.<other>_kasbah would answer for another project's backend, and traefik
+// answers beside Traefik's own container. Silent when none does.
 func (c *checker) c16() {
 	var bad []string
 	for _, svc := range c.services {
@@ -850,24 +821,20 @@ func (c *checker) c16() {
 		if !joinsNet(on, projectNet) {
 			continue
 		}
-		if strings.Contains(svc, ".") {
-			bad = append(bad, svc+" (service)")
-		}
-		var aliases []string
+		names := [][2]string{{svc, "service"}}
 		for _, a := range asList(opt(on, projectNet, "aliases")) {
-			if s := tree.Text(a); strings.Contains(s, ".") && !slices.Contains(aliases, s) {
-				aliases = append(aliases, s)
+			names = append(names, [2]string{tree.Text(a), "alias of " + svc})
+		}
+		names = append(names, [2]string{scalar(c.svc(svc, "container_name")), "container_name of " + svc},
+			[2]string{scalar(c.svc(svc, "hostname")), "hostname of " + svc})
+		for _, n := range names {
+			if e := n[0] + " (" + n[1] + ")"; (strings.Contains(n[0], ".") || strings.EqualFold(n[0], traefiknet.Container)) && !slices.Contains(bad, e) {
+				bad = append(bad, e)
 			}
-		}
-		for _, a := range aliases {
-			bad = append(bad, a+" (alias of "+svc+")")
-		}
-		if cn := scalar(c.svc(svc, "container_name")); strings.Contains(cn, ".") {
-			bad = append(bad, cn+" (container_name of "+svc+")")
 		}
 	}
 	if len(bad) > 0 {
-		c.failf("C16", "Names on the kasbah network with a dot: %s — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend or kasbah's own webmail; a deploy refuses it", strings.Join(bad, " "))
+		c.failf("C16", "Names on the kasbah network with a dot or named %s: %s — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend or kasbah's own webmail, and %s beside Traefik's own container; a deploy refuses it", traefiknet.Container, strings.Join(bad, " "), traefiknet.Container)
 	}
 }
 

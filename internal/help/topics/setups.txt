@@ -1,7 +1,7 @@
 The common shapes of a project. Each is a complete project under examples/
 in the kasbah repository that passes `kasbah check` with no failure and no
-warning: copy it, replace its name, its domain and the names prefixed with
-it, and adapt the services.
+warning: copy it, replace its name, its domain and the image names prefixed
+with it, and adapt the services; the service names' prefix is optional.
 
   examples/web-app/             One service built from the project's
                                 Dockerfile, tagged :current, with a compose

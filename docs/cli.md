@@ -985,7 +985,7 @@ Does **not** scaffold `compose.prod.yml`. The user authors that file — kasbah
 has no opinion on which service is "primary", what ports to expose, etc. After
 running, kasbah prints a minimal starter compose snippet and a matching Traefik
 fragment to stdout so the user can paste and adapt if useful. Both are shapes
-`kasbah check` passes clean: one routed service named for the project (C09) on
+`kasbah check` passes clean: one routed service, `web`, on
 the project's own `kasbah` network, with a healthcheck so a deploy rolls it
 (C11), and two routers for the domain so plain HTTP
 redirects rather than 404s (T08).
@@ -1067,7 +1067,7 @@ all (it is a tag rewrite, and kasbah will not invent an image name), and
 `kasbah-net` entry carries options, which are the author's to merge.
 
 `--fix` runs **before** the report, so the lines you read and the exit code you
-get describe the project as it now is. Traefik rules, C07, C09, C11, hooks and
+get describe the project as it now is. Traefik rules, C07, C11, hooks and
 mail claims are never auto-fixed — routing and topology are policy, and kasbah cannot
 invent a command.
 
@@ -2133,12 +2133,13 @@ chain holds two:
   of its project's own names on `<name>_kasbah` — reached only through
   `kasbah-net`, it answers 502 once qualified (judged from `docker compose -p
   <name> config` in `<apps>/<name>` as a deploy judges it; a project whose
-  compose cannot be read is listed as unjudged) — and each container with a
-  dotted name or alias on a `*_kasbah` network, which could hijack a scoped
-  name. Each answers 502 until the project is moved to `kasbah: {}` with
-  `kasbah check --fix` and redeployed with this kasbah (a dotted name, until
-  it is renamed without one). A project on both `kasbah-net` and its own
-  network, routed by its own names, keeps its route and is not listed. The
+  compose cannot be read is listed as unjudged) — and each container whose
+  name, alias or hostname on a `*_kasbah` network has the shape of a scoped
+  name (`<a>.<b>_kasbah`), which could hijack it. Each answers 502 until the
+  project is moved to `kasbah: {}` with `kasbah check --fix` and redeployed
+  with this kasbah (a dotted name, until it is renamed without one). A
+  project on both `kasbah-net` and its own network, routed by its own names,
+  keeps its route and is not listed. The
   plan also lists, as left as written: each IP, dotted or outside backend,
   which keeps answering and which the next deploy with this kasbah refuses
   (T07); each `<name>.yml` that is no project's; and the containers still on

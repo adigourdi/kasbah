@@ -1,6 +1,6 @@
 services:
-  # Named for the project: Traefik resolves names across every project's
-  # network, so a name on the kasbah network carries the project's prefix.
+  # Any service name will do: a deploy scopes each backend to the project's
+  # own network. The image name keeps the prefix, as image tags are host-wide.
   site-web:
     build:
       context: .

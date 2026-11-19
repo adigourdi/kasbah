@@ -28,9 +28,8 @@ services:
   # OpenDKIM, OpenDMARC, policyd-spf, Amavis and SpamAssassin, all of which are
   # switched off below rather than left to the image's defaults.
   #
-  # The service is named for its container on purpose: Traefik sits on every
-  # project's network as well as this one and resolves names across them all,
-  # so a bare `dms` alias would be one more name to collide.
+  # The service is named for its container, so one name serves the docs'
+  # commands, this file and the webmail backend alike.
   mail-dms:
     image: ghcr.io/docker-mailserver/docker-mailserver:15.1.0
     container_name: mail-dms

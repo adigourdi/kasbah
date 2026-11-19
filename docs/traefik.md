@@ -96,7 +96,7 @@ network:
 ```yaml
 # /apps/<project>/compose.yml
 services:
-  myapp-web:
+  web:
     networks: [kasbah, internal]
   postgres:
     networks: [internal]
@@ -143,36 +143,38 @@ through `kasbah-net` loses its route and answers 502, and the migration lists
 each before it asks. `kasbah check --fix` moves the project to `kasbah: {}`,
 and a redeploy routes it again.
 
-Why not put the whole project on its network via `default:`? Compose registers
-every service's **service name** as a DNS alias on each network it joins, and
-Traefik — on every project network — resolves names across all of them: two
-projects with a `postgres` both on networks Traefik is on would make the
-name ambiguous from Traefik's side. Keeping internal services on a
-project-internal network scopes those aliases. `kasbah check` enforces the split
-(C03/C04/C07/C09).
+Why not put the whole project on its network via `default:`? Traefik is on
+every project's `kasbah` network, so each service there is one hop from the
+shared proxy, and only a routed one needs to be. Keeping internal services on
+a project-internal network keeps a database or cache out of its reach.
+`kasbah check` enforces the split (C03/C04/C07).
 
 The network is what lets Traefik resolve `http://<name>:<port>` in the file
 fragment. On a project's `kasbah` network a fragment targets the routed
 **service name** (or an alias, or a `container_name`, T07): Docker DNS answers
 it with every replica, which is what lets a deploy roll a new container in
-beside the old one with no 502 (`build-deploy.md`). A name is not unambiguous
-on its own, though: Traefik resolves names across every network it is on, and
-another project's service name or alias answers for the same name — so a project naming a service like
-its neighbour's container would receive the neighbour's traffic. Every name on a
-project's `kasbah` network must therefore carry the project's own prefix (C09,
-a failure), and its network must be exactly `kasbah: {}` (C04): any setting
-makes compose try to recreate it while Traefik is attached, which fails.
+beside the old one with no 502 (`build-deploy.md`). A bare name is not
+unambiguous on its own: Traefik resolves names across every network it is on,
+so another project's service or alias of the same name could answer for it.
+The installed fragment therefore never holds a bare name (below), and a
+project names its services as it likes — `web`, `db` — whatever its
+neighbours call theirs. Its network must be exactly `kasbah: {}` (C04): any
+setting makes compose try to recreate it while Traefik is attached, which
+fails.
 
-The installed fragment does not rest on names alone: each backend host in it
+The installed fragment does not rest on bare names: each backend host in it
 is qualified with the project's network, `http://web:80` installed as
 `http://web.<project>_kasbah:80` (the network's name as compose resolves it). Docker's
 DNS first looks the whole dotted name up on every network the asker is on, so
-an alias literally named `web.<project>_kasbah` on another network Traefik is
-on would answer before this project's `web` does; the qualified name answers on
-the project's network only because no project kasbah deploys may put a dotted
-name on its `kasbah` network (C16, refused by `deploy`, `deploy X.Y.Z` and
-`rollback` too). A project's
-`traefik-dynamic.yml` keeps the bare name.
+an alias or `hostname:` literally `web.<project>_kasbah` on another network
+Traefik is on would answer before this project's `web` does (a `domainname:`
+adds no name Docker answers); the qualified name answers on the project's
+network only because no project kasbah deploys may put a dotted name on its
+`kasbah` network. Nor may it put a name `traefik` there: Traefik's own
+container is on that network under that name, so both would answer and the
+route would reach Traefik itself by turns. Both are C16, refused by `deploy`,
+`deploy X.Y.Z` and `rollback` too. A project's `traefik-dynamic.yml` keeps the
+bare name.
 
 ## Discovery
 
@@ -259,7 +261,7 @@ http:
     myapp:
       loadBalancer:
         servers:
-          - url: "http://myapp-web:80"
+          - url: "http://web:80"
 ```
 
 The service URL names the routed service on the project's `kasbah` network —
@@ -273,7 +275,7 @@ to a `container_name` cannot roll: it is recreated in place, briefly unrouted.
 Every `http.services.*.loadBalancer.servers[].url`, and every `tcp` or `udp`
 service's `servers[].address` (`host:port`), is a backend. The server installs
 each with its host qualified by the project's `kasbah` network —
-`http://myapp-web:80` becomes `http://myapp-web.myapp_kasbah:80`, keeping the
+`http://web:80` becomes `http://web.myapp_kasbah:80`, keeping the
 scheme, port, path and every other byte of the file as written — and refuses
 one whose host, once its `${KEY}`s are filled, is not the project's own name
 on that network: a service joined to it, one of its `networks.kasbah.aliases`,
@@ -297,8 +299,8 @@ refused, asking for the URL written out, as qualifying it would change that
 other use too. The block-scalar and anchor refusals, and a backend that cannot
 be located (below), name a `${KEY}` that filled it but no `kasbah env set`:
 the fix is in how the fragment is written. The compose model must not put a
-dotted name on the project's `kasbah` network either (above, `kasbah help
-C16`). `deploy`, `deploy X.Y.Z` and `rollback` hold
+dotted name, or one named `traefik`, on the project's `kasbah` network either
+(above, `kasbah help C16`). `deploy`, `deploy X.Y.Z` and `rollback` hold
 every version's fragment to this — in the engine's pre-flight, before
 anything starts, and again when the fragment is installed, which leaves the
 live file as it was on a refusal. A compose model that cannot be read refuses
@@ -713,8 +715,10 @@ server status` surfaces it.
   project's (C04; a deploy refuses it too).
 - Attach non-routed services (databases, caches, workers) to the `kasbah`
   network — internal services stay on a project-internal network.
+- Give a name on the `kasbah` network — service, alias, `container_name`,
+  `hostname` — a dot, or name it `traefik` (C16; a deploy refuses it too).
 
-`kasbah check` enforces these (rules T01–T13, C03, C04, C07, C09, C14).
+`kasbah check` enforces these (rules T01–T13, C03, C04, C07, C14, C16).
 
 ## Upgrading Traefik
 

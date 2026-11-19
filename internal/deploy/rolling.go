@@ -80,6 +80,7 @@ func (x *external) UnmarshalJSON(b []byte) error {
 
 type composeService struct {
 	ContainerName string            `json:"container_name"`
+	Hostname      string            `json:"hostname"`
 	Labels        map[string]string `json:"labels"`
 	Image         string            `json:"image"`
 	Healthcheck   *struct {

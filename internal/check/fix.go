@@ -1198,7 +1198,7 @@ func (c *checker) fix(e Env) error {
 		}
 	}
 	fmt.Fprintln(w, "  --fix applies C01–C05, C08, R01–R03 and the kasbah_version backfill, to")
-	fmt.Fprintln(w, "  compose.prod.yml and kasbah.yml only. C07, C09, every Traefik rule, Hooks")
+	fmt.Fprintln(w, "  compose.prod.yml and kasbah.yml only. C07, every Traefik rule, Hooks")
 	fmt.Fprintln(w, "  and Mail claims are by hand: `kasbah help <id>` says how, and `kasbah help")
 	fmt.Fprintln(w, "  rules` lists them.")
 	fmt.Fprintln(w)

@@ -16,9 +16,9 @@ compose.prod.yml — the compose file the server runs.
          max-size and max-file (C02); cpus: ${KASBAH_CPU_LIMIT} and
          mem_limit: ${KASBAH_MEM_LIMIT} (R01, R02); no reservations (R03).
   Routed services join the project's kasbah network, declared as exactly
-         kasbah: {} (C03, C04), named <name> or <name>-... (C09); with no
-         container_name, no host port and a healthcheck they roll on deploy
-         (C11).
+         kasbah: {} (C03, C04), under names with no dot and none
+         traefik (C16); with no container_name, no host port and a
+         healthcheck they roll on deploy (C11).
   Everything else stays off the kasbah network (C07).
   Built services: image: <name>-<service>:current (C08); a compose
          healthcheck, or a warning (H01).

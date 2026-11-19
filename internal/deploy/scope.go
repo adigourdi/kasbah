@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/adigourdi/kasbah/internal/trace"
+	"github.com/adigourdi/kasbah/internal/traefiknet"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -555,13 +556,22 @@ func fromKeys(bs []backend, tmpl []byte) {
 	}
 }
 
-// dotted refuses a name with a dot on m's kasbah network: Docker answers a
-// whole dotted name on every network the asker is on, so web.<other>_kasbah
-// would answer for another project's backend before that project's web does.
-func (m *composeModel) dotted(project string) error {
+// clashes refuses a name on m's kasbah network that can answer for another's:
+// Docker answers a whole dotted name on every network the asker is on, so
+// web.<other>_kasbah would answer for another project's backend before that
+// project's web does, and traefik answers beside Traefik's own container.
+func (m *composeModel) clashes(project string) error {
+	own := m.owners()
+	for _, svc := range sortedKeys(m.Services) {
+		if s := m.Services[svc]; s.Hostname != "" {
+			if _, on := s.Networks[projectNet]; on {
+				own = append(own, owner{s.Hostname, svc, svc + "'s hostname"})
+			}
+		}
+	}
 	var bad []string
-	for _, o := range m.owners() {
-		if strings.Contains(o.name, ".") {
+	for _, o := range own {
+		if strings.Contains(o.name, ".") || strings.EqualFold(o.name, traefiknet.Container) {
 			what := o.what
 			if what == "" {
 				what = "a service"
@@ -572,7 +582,7 @@ func (m *composeModel) dotted(project string) error {
 	if len(bad) == 0 {
 		return nil
 	}
-	return fmt.Errorf("compose puts a name with a dot on this project's kasbah network (%s): %s — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend; rename it without a dot, and the fragment's backend with it (kasbah help C16)", m.netName(project), strings.Join(bad, ", "))
+	return fmt.Errorf("compose puts a name with a dot or named %s on this project's kasbah network (%s): %s — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend, and %s beside Traefik's own container; rename it, and the fragment's backend with it (kasbah help C16)", traefiknet.Container, m.netName(project), strings.Join(bad, ", "), traefiknet.Container)
 }
 
 // foreign refuses a network compose would take from outside the project: an

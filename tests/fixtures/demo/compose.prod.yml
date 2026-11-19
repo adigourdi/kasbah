@@ -5,9 +5,9 @@
 name: demo
 
 services:
-  # Named for the project, not `web` (C09). Like the built-app fixture, this
-  # one routes by container_name, a shape T07 accepts beside a service name.
-  # A service and its container may carry the same name.
+  # Like the built-app fixture, this one routes by container_name,
+  # a shape T07 accepts beside a service name. A service and its container
+  # may carry the same name.
   demo-web:
     image: nginx:alpine
     # traefik-dynamic.yml's loadBalancer URL points at this name; deploy installs

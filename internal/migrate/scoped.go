@@ -425,7 +425,7 @@ type container struct {
 }
 
 // containers is every running container: its name, compose project, and
-// the aliases it has on each network.
+// the names it answers on each network — its aliases, and its hostname.
 func containers(docker traefiknet.Docker) ([]container, error) {
 	ids, err := docker("ps", "-q")
 	if err != nil {
@@ -434,20 +434,23 @@ func containers(docker traefiknet.Docker) ([]container, error) {
 	if len(strings.Fields(ids)) == 0 {
 		return nil, nil
 	}
-	out, err := docker(append([]string{"inspect", "-f", `{{.Name}}|{{index .Config.Labels "com.docker.compose.project"}}|{{range $k, $v := .NetworkSettings.Networks}}{{$k}}={{join $v.Aliases ","}} {{end}}`}, strings.Fields(ids)...)...)
+	out, err := docker(append([]string{"inspect", "-f", `{{.Name}}|{{index .Config.Labels "com.docker.compose.project"}}|{{.Config.Hostname}}|{{range $k, $v := .NetworkSettings.Networks}}{{$k}}={{join $v.Aliases ","}} {{end}}`}, strings.Fields(ids)...)...)
 	if err != nil {
 		return nil, fmt.Errorf("docker inspect failed: %v", err)
 	}
 	var cs []container
 	for _, l := range strings.Split(strings.ReplaceAll(out, "\r", ""), "\n") {
-		f := strings.SplitN(l, "|", 3)
-		if len(f) < 3 {
+		f := strings.SplitN(l, "|", 4)
+		if len(f) < 4 {
 			continue
 		}
 		c := container{name: strings.TrimPrefix(f[0], "/"), project: f[1], nets: map[string][]string{}}
-		for _, n := range strings.Fields(f[2]) {
+		for _, n := range strings.Fields(f[3]) {
 			k, as, _ := strings.Cut(n, "=")
 			c.nets[k] = strings.FieldsFunc(as, func(r rune) bool { return r == ',' })
+			if f[2] != "" {
+				c.nets[k] = append(c.nets[k], f[2])
+			}
 		}
 		cs = append(cs, c)
 	}
@@ -460,8 +463,8 @@ const fix = "until the project is moved to `kasbah: {}` with `kasbah check --fix
 
 // lost is what 1→2 will cost, read-only. Lost: each project fragment's
 // backend that is not one of its project's own names on <name>_kasbah, which
-// it reached only through kasbah-net, and each dotted name on a project
-// network, which could take another's route. Notes: an IP or outside host,
+// it reached only through kasbah-net, and each name on a project network
+// shaped like a scoped one (<a>.<b>_kasbah), which could take another's route. Notes: an IP or outside host,
 // left as written; a <name>.yml that is no project's; who stays on kasbah-net.
 func lost(apps string, docker traefiknet.Docker, compose func(dir string) func(...string) (string, error)) Cost {
 	var c Cost
@@ -510,8 +513,10 @@ func lost(apps string, docker traefiknet.Docker, compose func(dir string) func(.
 			if !strings.HasSuffix(n, "_kasbah") {
 				continue
 			}
+			// Only a name whose last label ends in _kasbah can stand for a
+			// scoped backend, <svc>.<project>_kasbah.
 			for _, a := range append([]string{ct.name}, ct.nets[n]...) {
-				if strings.Contains(a, ".") {
+				if i := strings.LastIndex(a, "."); i >= 0 && strings.HasSuffix(strings.ToLower(a[i+1:]), "_kasbah") {
 					c.Lost = append(c.Lost, fmt.Sprintf("%s answers the dotted name %s on %s, so it could hijack another project's scoped backend until it is renamed without a dot and its project redeployed with this kasbah (kasbah help C16)", ct.name, a, n))
 				}
 			}

@@ -190,7 +190,7 @@ func installFragment(apps, name, size, sum, target string, tagged bool, stdin io
 		if err := m.foreign(name); err != nil {
 			return fail("%v", err)
 		}
-		if err := m.dotted(name); err != nil {
+		if err := m.clashes(name); err != nil {
 			return fail("%v", err)
 		}
 	}

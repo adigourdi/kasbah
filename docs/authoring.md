@@ -47,8 +47,9 @@ answers on, and what a deploy ships. Field by field in
   reads, is refused before any rule runs ([S02](compliance.md#structure)).
 - `kasbah_version` — written by `init-project` and kept by kasbah; leave it as
   it is.
-- `name` — the project's directory on the server and the prefix of every name
-  Traefik can see: lowercase letters, digits and `-`, starting with a letter.
+- `name` — the project's directory and compose project name on the server,
+  which names its network `<name>_kasbah`: lowercase letters, digits and
+  `-`, starting with a letter.
   `traefik`, `mail`, `data`, `backups` and `kasbah-backup` are kasbah's and
   refused ([S07](compliance.md#structure)): a project deployed under one
   would overwrite or remove what kasbah keeps there — the shared proxy, the
@@ -137,14 +138,11 @@ Traefik to it.
   Traefik. So does any network taken from outside — `external: true`, or a
   `name:` other than compose's own `<name>_<key>`, which compose joins if it
   exists: a project joins only its own, and a deploy refuses it.
-- Every name on it — service, alias, `container_name` — is `<name>` or
-  `<name>-…` ([C09](compliance.md#compose), a failure): Traefik resolves names
-  across every project's network, so a service called `web` could answer for
-  another project's.
-- No name on it — service, alias, `container_name` — holds a dot ([C16](compliance.md#compose), a failure,
-  and `deploy` refuses it too): Docker answers a whole dotted name on every
-  network Traefik is on, so `web.<other>_kasbah` would answer for another
-  project's backend.
+- No name on it — service, alias, `container_name`, `hostname` — holds a
+  dot or is `traefik` ([C16](compliance.md#compose), a failure, and `deploy`
+  refuses it too): Docker answers a whole dotted name on every network
+  Traefik is on, so `web.<other>_kasbah` would answer for another project's
+  backend, and `traefik` answers beside Traefik's own container.
 - To **roll** on deploy — the new container started beside the old one, the
   old one stopped once the new one is healthy — a routed service sets no
   `container_name`, publishes no host port, declares a compose `healthcheck:`
@@ -164,10 +162,10 @@ Traefik to it.
   no label: it is never rolled.
 
 **Everything else** — databases, caches, workers — stays off the `kasbah`
-network ([C07](compliance.md#compose), a failure): Traefik
-is on that network, and a service there is one name lookup away from every
-other project. Put them on a project-internal network, or leave out
-`networks:` so they sit on the project's default one.
+network ([C07](compliance.md#compose), a failure): Traefik is on every
+project's `kasbah` network, so a service there is one hop from the shared
+proxy, which has no business reaching it. Put them on a project-internal
+network, or leave out `networks:` so they sit on the project's default one.
 
 **Built services** — a `build:` key — name their image with the `:current`
 tag, as `image: <name>-web:current` ([C08](compliance.md#compose), a
@@ -191,9 +189,10 @@ your machine with `kasbah build-push`.
 - A `container_name` a container outside the project already has, running or
   stopped: Docker gives a name to one container per host, so compose's up
   would fail on it, and `deploy` refuses it before anything starts
-  (`check --server` fails it, [C17](compliance.md#compose)). Beyond C09's
-  prefix for a name on the `kasbah` network, any `container_name` is allowed,
-  so long as it is unique on the host.
+  (`check --server` fails it, [C17](compliance.md#compose)). Any
+  `container_name` is allowed, so long as it is unique on the host and, on
+  the `kasbah` network, holds no dot and is not `traefik`
+  ([C16](compliance.md#compose)).
 - `mail-dms` outside a comment ([C10](compliance.md#compose), a warning): no
   project shares a network with the mail server; an app sends through
   `mail.<domain>:587` ([mail.md](mail.md) → SMTP access from apps).
@@ -328,15 +327,64 @@ the fragment through its own `${KEY}` (`traefik-dynamic.yml` above).
 Excludes `.env` and `.kasbah/` ([S05, S06](compliance.md#structure), both
 warnings): the first holds secrets, the second this checkout's state.
 
+## Dropping a name prefix
+
+Service names need no `<name>-` prefix: a deploy scopes each backend to the
+project's own network. A project that carries one drops it by hand; for each
+renamed service (`demo-web` to `web`), change:
+
+- its key under `services:`, and every `depends_on`, `links`,
+  `extends.service`, `networks.*.aliases`, `volumes_from` and
+  `network_mode`/`ipc`/`pid: service:` entry naming it;
+- the fragment's backend hosts (`http://demo-web:80` to `http://web:80`),
+  unless they name a `container_name`;
+- `health.container` in `kasbah.yml`;
+- the service name in hook commands (`docker compose exec -T demo-db …`);
+- any `.env`, `.env.prod.example` or app config value naming the old host.
+
+Keep `image:` and `container_name` as they are: both are host-wide, shared
+with every project on the server, and each deploy moves `<image>:current`.
+`git grep -w demo-web` finds the rest in the repository. A server `.env`
+value is changed with `kasbah env set KEY --no-restart` before the deploy:
+without `--no-restart` the live version is restarted onto a host that does
+not exist yet, and a backend filled from a key still naming an old service
+is refused.
+
+What the rename deploy runs against (`build-deploy.md` → `kasbah deploy`):
+
+- Its backup and pre-deploy hooks are the new manifest's, run with the new
+  `compose.yml` already synced while the old containers still run, so
+  `docker compose exec -T db …` fails (`service "db" is not running`), and
+  carrying on past it keeps a backup with no dump. Take one first with
+  `kasbah backup`, which runs the live version's own hooks, or write this
+  release's backup and pre-deploy hooks to reach the old containers
+  (`docker exec demo-demo-db-1 …`) and the next release's back.
+- Its `up` removes the old services as orphans and starts the new ones in
+  place, not as a roll. The live route names the old hosts until the new
+  fragment ships, after the health wait and the post-deploy hooks, so the
+  domain answers 502 for that whole stretch. Named volumes and bind mounts
+  are kept; a renamed service's anonymous volumes are lost.
+
+A rollback across the rename is not clean. Its pre-rollback and restore
+hooks are the earlier version's, naming `demo-db` while `db` runs, so they
+fail and no data is restored: the old services start on the named volumes
+as the renamed ones left them. The backup taken by hand is restored with
+`kasbah restore --backup=<it> --with-data` on a server with off-box backups,
+or by hand. The `.env` keeps the new hosts whichever one the rollback is
+told to take, as the rename deploy's backup was taken after `env set`: put
+each value back with `kasbah env set KEY --no-restart` first. The route
+answers 502 again from the rollback's `up` until the old fragment ships.
+
 ## Setups
 
 Each directory under `examples/` is a complete project for one shape: copy
-it, replace its `name`, its domain and the names prefixed with it, and adapt
-the services. Every one passes `kasbah check` with no failure and no warning;
-the test suite runs `check` over each, so none can drift from the rules. The
-images are real stock images standing in for yours; their versions are
-pinned to exact releases, since a rollback runs the files of an older
-version and a moving tag would not take the image back with them.
+it, replace its `name`, its domain and the image names prefixed with it, and
+adapt the services; the service names may keep or drop the prefix. Every one
+passes `kasbah check` with no failure and no warning; the test suite runs
+`check` over each, so none can drift from the rules. The images are real
+stock images standing in for yours; their versions are pinned to exact
+releases, since a rollback runs the files of an older version and a moving
+tag would not take the image back with them.
 
 ### A web app — [`examples/web-app/`](../examples/web-app/)
 

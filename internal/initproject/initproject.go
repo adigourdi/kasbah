@@ -238,7 +238,7 @@ func Snippet(name, domain string) string {
 const snippet = "Next step: author compose.prod.yml. Starter snippet:\n" +
 	"\n" +
 	"  services:\n" +
-	"    {name}-web:\n" +
+	"    web:\n" +
 	"      image: nginx:alpine\n" +
 	"      restart: unless-stopped\n" +
 	"      cpus: ${KASBAH_CPU_LIMIT}\n" +
@@ -287,6 +287,6 @@ const snippet = "Next step: author compose.prod.yml. Starter snippet:\n" +
 	"      {name}:\n" +
 	"        loadBalancer:\n" +
 	"          servers:\n" +
-	"            - url: \"http://{name}-web:80\"\n" +
+	"            - url: \"http://web:80\"\n" +
 	"\n" +
 	"Then run `kasbah check` to validate structure.\n"

@@ -189,14 +189,21 @@ func TestScopeFragmentNamesTheKey(t *testing.T) {
 	}
 }
 
-// A dotted name on the kasbah network is refused, whosever it is.
-func TestComposeModelDotted(t *testing.T) {
+// A dotted name on the kasbah network, or one named for Traefik's container,
+// is refused, whosever it is: a service, alias, container_name or hostname.
+func TestComposeModelClashes(t *testing.T) {
 	m, _ := readModel("shop", func(...string) (string, error) {
-		return `{"services":{"web":{"container_name":"web.shop","networks":{"kasbah":{"aliases":["www","web.other_kasbah"]}}},"api.v2":{"networks":{"kasbah":null}},"db.x":{"networks":{"internal":null}}}}`, nil
+		return `{"services":{"web":{"container_name":"web.shop","hostname":"web.other_kasbah","networks":{"kasbah":{"aliases":["www","web.other_kasbah"]}}},"api.v2":{"networks":{"kasbah":null}},"traefik":{"networks":{"kasbah":null}},"app":{"hostname":"Traefik","networks":{"kasbah":{"aliases":["traefik"]}}},"db.x":{"hostname":"db.x","networks":{"internal":null}}}}`, nil
 	})
-	err := m.dotted("shop")
-	if err == nil || err.Error() != "compose puts a name with a dot on this project's kasbah network (shop_kasbah): api.v2 (a service), web.other_kasbah (a kasbah alias of web), web.shop (web's container_name) — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend; rename it without a dot, and the fragment's backend with it (kasbah help C16)" {
+	err := m.clashes("shop")
+	if err == nil || err.Error() != "compose puts a name with a dot or named traefik on this project's kasbah network (shop_kasbah): api.v2 (a service), traefik (a kasbah alias of app), traefik (a service), web.other_kasbah (a kasbah alias of web), web.shop (web's container_name), Traefik (app's hostname), web.other_kasbah (web's hostname) — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend, and traefik beside Traefik's own container; rename it, and the fragment's backend with it (kasbah help C16)" {
 		t.Errorf("%v", err)
+	}
+	m, _ = readModel("shop", func(...string) (string, error) {
+		return `{"services":{"web":{"hostname":"web","networks":{"kasbah":null}},"proxy":{"networks":{"kasbah":{"aliases":["traefik-ui"]}}}}}`, nil
+	})
+	if err := m.clashes("shop"); err != nil {
+		t.Errorf("an undotted hostname, a name only starting traefik: %v", err)
 	}
 	// Off the kasbah network a dotted name answers nothing Traefik asks.
 	for _, model := range []string{
@@ -204,18 +211,18 @@ func TestComposeModelDotted(t *testing.T) {
 		`{"networks":{"default":{"name":"kasbah-net"}},"services":{"web.victim_kasbah":{"networks":{"default":null}}}}`,
 	} {
 		m, _ := readModel("shop", func(...string) (string, error) { return model, nil })
-		if err := m.dotted("shop"); err != nil {
+		if err := m.clashes("shop"); err != nil {
 			t.Errorf("%s: %v", model, err)
 		}
 	}
 	m, _ = readModel("shop", func(...string) (string, error) {
 		return `{"networks":{"internal":{"name":"shop_internal"}},"services":{"db":{"container_name":"db.x","networks":{"internal":{"aliases":["a.b"]}}}}}`, nil
 	})
-	if err := m.dotted("shop"); err != nil {
+	if err := m.clashes("shop"); err != nil {
 		t.Errorf("off Traefik's networks: %v", err)
 	}
 	m, _ = readModel("shop", func(...string) (string, error) { return scopeModel, nil })
-	if err := m.dotted("shop"); err != nil {
+	if err := m.clashes("shop"); err != nil {
 		t.Errorf("%v", err)
 	}
 }
@@ -353,10 +360,10 @@ func TestEnginePreflightScopesTheFragment(t *testing.T) {
 		t.Errorf("model: rc %d %q", rc, errs)
 	}
 	// A dotted name refuses the deploy, routed or not.
-	os.WriteFile(cfg, []byte(`{"services":{"web":{"networks":{"kasbah":{"aliases":["web.other_kasbah"]}}}}}`), 0o644)
+	os.WriteFile(cfg, []byte(`{"services":{"web":{"hostname":"web.other_kasbah","networks":{"kasbah":null}}}}`), 0o644)
 	os.Remove(r.log)
 	sp.Fragment = ""
-	if rc, _, errs := r.run(sp); rc != 1 || !strings.Contains(errs, "compose puts a name with a dot on this project's kasbah network (demo_kasbah): web.other_kasbah") {
+	if rc, _, errs := r.run(sp); rc != 1 || !strings.Contains(errs, "named traefik on this project's kasbah network (demo_kasbah): web.other_kasbah (web's hostname)") {
 		t.Errorf("dotted: rc %d %q", rc, errs)
 	}
 	for _, c := range r.calls() {

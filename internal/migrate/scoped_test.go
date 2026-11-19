@@ -306,11 +306,13 @@ func v1Models() func(string) func(...string) (string, error) {
 
 func v1Docker() *fakeDocker {
 	return &fakeDocker{shared: []string{"traefik", "old-web-1", "delta-web-1"}, traefik: []string{"kasbah-net", "alpha_kasbah", "mail_kasbah"}, ps: "a\nb\nc\nd\ne\n",
-		inspect: "/traefik||kasbah-net= alpha_kasbah= mail_kasbah=\n" +
-			"/old-web-1|old|kasbah-net=old-web-1,web \n" +
-			"/delta-web-1|delta|kasbah-net=delta-web-1,web delta_kasbah=delta-web-1,web \n" +
-			"/alpha-web-1|alpha|alpha_kasbah=alpha-web-1,web,www alpha_default=alpha-web-1,web \n" +
-			"/gamma-api-1|gamma|gamma_kasbah=gamma-api-1,web.alpha_kasbah \n"}
+		inspect: "/traefik||3f1c0e2a9b7d|kasbah-net= alpha_kasbah= mail_kasbah=\n" +
+			"/old-web-1|old|8a2e4c6d0b1f|kasbah-net=old-web-1,web \n" +
+			"/delta-web-1|delta||kasbah-net=delta-web-1,web delta_kasbah=delta-web-1,web \n" +
+			"/alpha-web-1|alpha|alpha|alpha_kasbah=alpha-web-1,web,www alpha_default=alpha-web-1,web \n" +
+			"/eps-app-1|eps|web.alpha_kasbah|eps_kasbah=eps-app-1,app \n" +
+			"/mail-dms|mail|mail.example.com|mail_kasbah=mail-dms,mail.example.com \n" +
+			"/gamma-api-1|gamma||gamma_kasbah=gamma-api-1,web.alpha_kasbah \n"}
 }
 
 func TestLost(t *testing.T) {
@@ -319,6 +321,7 @@ func TestLost(t *testing.T) {
 	want := Cost{Lost: []string{
 		"alpha: backend admin in traefik/dynamic/alpha.yml is not one of its own names on alpha_kasbah, so its route answers 502 " + fix,
 		"beta is unjudged: its traefik/dynamic/beta.yml could not be read against `docker compose -p beta config` in " + apps + "/beta (exit status 1: no configuration file provided: not found)",
+		"eps-app-1 answers the dotted name web.alpha_kasbah on eps_kasbah, so it could hijack another project's scoped backend until it is renamed without a dot and its project redeployed with this kasbah (kasbah help C16)",
 		"gamma-api-1 answers the dotted name web.alpha_kasbah on gamma_kasbah, so it could hijack another project's scoped backend until it is renamed without a dot and its project redeployed with this kasbah (kasbah help C16)",
 	}, Notes: []string{
 		"alpha: backend 10.0.0.9 in traefik/dynamic/alpha.yml is left as written; the next deploy with this kasbah refuses it (kasbah help T07)",

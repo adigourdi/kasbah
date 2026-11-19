@@ -98,7 +98,6 @@ Compose:
   ✓ C03 All routed services join the project's kasbah network
   ✓ C04 The kasbah network is the project's own (demo_kasbah)
   ✓ C07 No internal services on the kasbah network
-  ✓ C09 Names on the kasbah network are project-prefixed
   ✓ C05 No deprecated 'version:' field
   ✓ C14 No service publishes host port 80 or 443
   ⚠ C11 demo-web will not roll on deploy — the fragment targets its container_name, so it is recreated in place, briefly unrouted
@@ -124,7 +123,7 @@ Env:
   ✓ E04 .env.prod.example has no obvious long secrets
   ✓ E05 .env.prod.example leaves the KASBAH_* prefix to kasbah
 
-Summary: 29 passed, 1 warning, 0 failed
+Summary: 28 passed, 1 warning, 0 failed
 ` + "`kasbah help C11`" + ` (or any ID above) says why a rule exists and what to change.
 `
 	if out != want || code != 0 {
@@ -326,14 +325,6 @@ func TestVerdicts(t *testing.T) {
 				"traefik-dynamic.yml": strings.Replace(goodFragment, "demo-web:80", "demo-front:80", 1)}, 6,
 			[]string{"  ✗ T07 Fragment targets names no service answers to: demo-front (target a service on the kasbah network, one of its kasbah aliases, or a container_name)",
 				"  ✗ C03 Routed services on the shared kasbah-net: demo-web — Traefik reaches a routed service only over the project's kasbah network: join them to kasbah in its place, declare kasbah: {} and drop kasbah-net; check --fix does where kasbah-net is the network's key"}},
-		{"a name on the kasbah network not named for the project fails C09",
-			map[string]string{"compose.prod.yml": strings.Replace(strings.Replace(goodCompose, "  demo-web:\n", "  web:\n", 1),
-				"    networks: [kasbah]\n", "    networks: {kasbah: {aliases: [demo-api, krvb-w]}}\n", 1)}, 6,
-			[]string{"  ✗ C09 Names on the kasbah network that are not 'demo' or 'demo-*': web (service) krvb-w (alias of web) — Traefik resolves names across every project's network, so another project's name can answer for this one's"}},
-		{"a container_name on the kasbah network not named for the project fails C09",
-			map[string]string{"compose.prod.yml": strings.Replace(goodCompose, "container_name: demo-web", "container_name: krvb-w", 1),
-				"traefik-dynamic.yml": strings.Replace(goodFragment, "demo-web:80", "krvb-w:80", 1)}, 6,
-			[]string{"  ✗ C09 Names on the kasbah network that are not 'demo' or 'demo-*': krvb-w (container_name of demo-web) — Traefik resolves names across every project's network, so another project's name can answer for this one's"}},
 		{"a commented mail-dms is not a use of it",
 			map[string]string{".env.prod.example": "# c\n# SMTP_HOST=mail-dms was the old way\nDOMAIN=x\n"}, 0,
 			[]string{"  ✓ E01 .env.prod.example syntax is valid"}},
@@ -521,6 +512,20 @@ func TestVerdicts(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// C09 is retired: a name on the kasbah network need not carry the project's
+// name, since a deploy scopes each backend to the project's own network.
+func TestNamesNeedNoProjectPrefix(t *testing.T) {
+	project(t, map[string]string{
+		"compose.prod.yml": strings.Replace(strings.Replace(goodCompose, "  demo-web:\n", "  web:\n", 1),
+			"    networks: [kasbah]\n", "    networks: {kasbah: {aliases: [front]}}\n", 1),
+		"traefik-dynamic.yml": strings.Replace(goodFragment, "demo-web:80", "web:80", 1),
+	})
+	out, _, code := check(t)
+	if code != 0 || strings.Contains(out, "C09") || !strings.Contains(out, "  ✓ T07 Fragment loadBalancer URLs target a service, alias or container_name compose defines\n") {
+		t.Errorf("exit %d, want 0, a T07 pass and no C09 line:\n%s", code, out)
 	}
 }
 
@@ -829,22 +834,28 @@ func TestC15(t *testing.T) {
 func TestC16(t *testing.T) {
 	web := "    networks: [kasbah, internal]\n  db:"
 	with := func(lines string) string { return strings.Replace(rollCompose, web, lines, 1) }
-	const why = " — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend or kasbah's own webmail; a deploy refuses it"
+	const head = "  ✗ C16 Names on the kasbah network with a dot or named traefik: "
+	const why = " — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend or kasbah's own webmail, and traefik beside Traefik's own container; a deploy refuses it"
 	for _, tc := range []struct{ name, compose, want string }{
 		{"a kasbah alias", with("    networks: {kasbah: {aliases: [demo-www, web.other_kasbah]}, internal: {}}\n  db:"),
-			"  ✗ C16 Names on the kasbah network with a dot: web.other_kasbah (alias of demo-web)" + why},
+			"web.other_kasbah (alias of demo-web)"},
 		{"a container_name and a service name", strings.Replace(with("    container_name: demo.web\n"+web), "  demo-web:", "  demo.site:", 1),
-			"  ✗ C16 Names on the kasbah network with a dot: demo.site (service) demo.web (container_name of demo.site)" + why},
+			"demo.site (service) demo.web (container_name of demo.site)"},
+		{"a hostname", with("    hostname: web.other_kasbah\n" + web), "web.other_kasbah (hostname of demo-web)"},
+		{"traefik as a service, alias and hostname", strings.Replace(with("    hostname: Traefik\n    networks: {kasbah: {aliases: [traefik]}, internal: {}}\n  db:"), "  demo-web:", "  traefik:", 1),
+			"traefik (service) traefik (alias of traefik) Traefik (hostname of traefik)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			project(t, map[string]string{"compose.prod.yml": tc.compose})
-			if out, _, code := check(t); !strings.Contains(out, tc.want+"\n") || code == 0 {
-				t.Errorf("exit %d, no line %q in:\n%s", code, tc.want, out)
+			if out, _, code := check(t); !strings.Contains(out, head+tc.want+why+"\n") || code == 0 {
+				t.Errorf("exit %d, no line %q in:\n%s", code, head+tc.want+why, out)
 			}
 		})
 	}
-	// Off the kasbah network a dot is no business of C16's; silent when it passes.
-	project(t, map[string]string{"compose.prod.yml": strings.Replace(rollCompose, "    networks: [internal]\n", "    container_name: db.internal\n    networks: [internal]\n", 1)})
+	// Off the kasbah network a dot is no business of C16's, nor an undotted
+	// hostname or a name only starting traefik on it; silent when it passes.
+	compose := strings.Replace(rollCompose, "    networks: [internal]\n", "    container_name: db.internal\n    hostname: traefik\n    networks: [internal]\n", 1)
+	project(t, map[string]string{"compose.prod.yml": strings.Replace(compose, web, "    hostname: web\n    networks: {kasbah: {aliases: [traefik-ui]}, internal: {}}\n  db:", 1)})
 	if out, _, _ := check(t); strings.Contains(out, "C16") {
 		t.Errorf("C16 speaks:\n%s", out)
 	}

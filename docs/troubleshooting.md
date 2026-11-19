@@ -326,9 +326,8 @@ the same as C13, C12 and C17.
 there (`docker compose -p <name> down`), or rename the project (`name:` in
 `kasbah.yml`), or change the port the service publishes. For a name, remove
 (`docker rm`) or rename (`docker rename`) the container holding it, or change
-the service's `container_name` — beyond C09's prefix on the `kasbah`
-network, any name is allowed, so long as no other container on the host has
-it.
+the service's `container_name` — any name is allowed, so long as no other
+container on the host has it and, on the `kasbah` network, it holds no dot.
 
 ## traefik-dynamic.yml cannot be rendered: ${…} is not set in …/.env
 
