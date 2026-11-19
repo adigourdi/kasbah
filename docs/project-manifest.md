@@ -29,6 +29,7 @@ sync:
 ```yaml
 schema: 1
 kasbah_version: 0.1.0
+min_kasbah: 2.0.0               # oldest kasbah this project works with
 
 name: shop
 domain: shop.example.com
@@ -104,7 +105,7 @@ mail:
 ## Field reference
 
 Types are what the YAML says, not what it can be printed as. A text field
-(`name`, `domain`, `client`, `kasbah_version`, every command, container and
+(`name`, `domain`, `client`, `kasbah_version`, `min_kasbah`, every command, container and
 domain below) takes a string — a number reads as its text — and refuses a
 boolean, a list or a block; a block (`health`, `hooks`, `resources`, `mail`)
 that is not a mapping is refused, and an absent or null one means none
@@ -122,7 +123,8 @@ reads all older schemas of its own major; crossing a major boundary requires
 `kasbah migrate` (see the compatibility policy in `overview.md`). Schema 1 is
 **frozen as of kasbah 1.0.0**: any change to the format is a new schema number
 and goes through an explicit migration — except an optional key that an older
-kasbah ignores, which schema 1 takes without a bump (`resources:` is one).
+kasbah ignores, which schema 1 takes without a bump (`resources:` and
+`min_kasbah` are two).
 `kasbah --version` prints it.
 
 ### `kasbah_version` *(required, auto-written)*
@@ -131,6 +133,40 @@ The version of `kasbah` that last wrote this file. Kasbah writes this on
 `init-project`, `check --fix`, and `kasbah migrate`. Projects shouldn't edit
 it manually. `kasbah migrate` reads it to know which files in the source tree
 still need moving.
+
+### `min_kasbah` *(optional, written by the author)*
+
+The oldest kasbah the project works with, as a bare release version
+`MAJOR.MINOR.PATCH` — `2.0.0`, with no `v` and no operator. Set it when the
+project relies on something an older kasbah ignores without a word: a
+`kasbah.noRoll` label is one (kasbah 1.2.0 does not know it, so its deploy
+rolls the service anyway), and `kasbah check` points at this field for any
+`kasbah.*` label it does not know (C18, `compliance.md`).
+
+Every command that reads `kasbah.yml` checks it right after `schema` — only
+the shapes of `kasbah_version`, `name` and `domain` (a single value each) are
+checked before it — and the working tree's before it connects to a server: a
+kasbah older than it is refused, naming the version the project needs and its
+own, with `kasbah self-update` as the way on, and a value that is no bare
+`X.Y.Z` is refused with the shape it takes. A build that carries no stamp
+meets no `min_kasbah`, and its way on is a stamped build (`docker compose run
+--rm build`, `CONTRIBUTING.md`). Each refusal exits 1, `kasbah check`
+included, which leads it with its rule's ID (S09, `compliance.md`), as it
+does a newer `schema`. A tag's `min_kasbah` this kasbah does not meet is
+refused before connecting by `deploy X.Y.Z` and `rollback X.Y.Z`, and by a
+bare `rollback` once the server's record names its version, before anything
+the rollback itself changes (`build-deploy.md` → `kasbah rollback`); a tag's
+malformed value is refused by `deploy X.Y.Z` before connecting and by a
+rollback once it reads the tag. What meets it: a release at or above it; a
+pre-release whose own `X.Y.Z` is at or above it (`1.3.0-rc.1` meets
+`1.3.0`); and a dev build `X.Y.Z-dev…` also the next patch, minor and major
+after `X.Y.Z`, one of which it is heading to — `1.2.1-dev…` meets `1.2.2`,
+`1.3.0` and `2.0.0`, and is refused `1.2.3`, `1.4.0` and `2.1.0`.
+
+Nothing kasbah writes sets or changes it: `init-project` leaves it out, and
+`check --fix` and `kasbah migrate` keep it as written. It is not compared
+with `kasbah_version`. kasbah 2.0.0 is the first release that reads it; an
+older kasbah ignores it, as it ignores any key it does not know.
 
 ### `name` *(required)*
 

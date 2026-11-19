@@ -498,6 +498,10 @@ below). The only differences:
   kasbah refuses the block, it cannot be resolved, or a value resolves above
   the ceiling — where a rollback warns and takes the ceiling (rollback flow,
   step 9).
+- The tag is read before any connection, so a missing tag or a fault in its
+  files — a `min_kasbah` this kasbah does not meet among them — refuses the
+  run with nothing connected to; a rollback asks the record first, and reads
+  only a named tag's `min_kasbah` ahead of it (rollback flow, step 1).
 
 ### Flow (no-args path — working tree)
 
@@ -852,7 +856,12 @@ small without sacrificing history.
 ### Flow
 
 ```
-1. Open SSH ControlMaster.
+1. With VERSION named, read kasbah.yml at v<VERSION> locally (`git show`):
+   a `min_kasbah` there this kasbah does not meet is refused before any
+   connection, naming the version the tag needs and this one, with
+   `kasbah self-update` as the way on — a tag does not change, so the fix is
+   an upgrade. A missing tag or kasbah.yml says nothing here, so step 3's
+   answer comes first. Then open SSH ControlMaster.
 2. Resolve target version:
    - explicit: positional VERSION arg
    - explicit `-dirty.` version: refused — git cannot reproduce it
@@ -900,7 +909,11 @@ small without sacrificing history.
 7. Parse v<target>'s manifest for its `sync:` list. A v<target> whose
    kasbah.yml has a top-level `backup:` key is refused, naming the version:
    a tag is read with the manifest it was tagged with, so it cannot be
-   rolled back to.
+   rolled back to. A `min_kasbah` this kasbah does not meet is refused as in
+   step 1, with `kasbah self-update` as the way on: an implicit target is
+   known only from the record, so its tag's `min_kasbah` is checked here —
+   after the connection (and the binary shipped in it), before anything the
+   rollback itself changes.
    Then find v<target>'s backup (`kasbah remote deploy backup-probe`,
    read-only, before anything on the server changes): the newest
    `backups/<target>-<stamp>.tar.gz` — the latest stamp; a version may

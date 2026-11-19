@@ -12,6 +12,7 @@ import (
 
 	"github.com/adigourdi/kasbah/internal/cli"
 	"github.com/adigourdi/kasbah/internal/tree"
+	"github.com/adigourdi/kasbah/internal/version"
 	"github.com/adigourdi/kasbah/internal/yamlx"
 )
 
@@ -76,12 +77,25 @@ type NewerSchema struct {
 func (n *NewerSchema) Error() string { return n.err.Error() }
 func (n *NewerSchema) Unwrap() error { return n.err }
 
+// OlderKasbah is the refusal of a manifest whose min_kasbah this kasbah does
+// not meet.
+type OlderKasbah struct {
+	Min string
+	err *cli.Error
+}
+
+func (o *OlderKasbah) Error() string { return o.err.Error() }
+func (o *OlderKasbah) Unwrap() error { return o.err }
+
 // Manifest is a validated kasbah.yml.
 type Manifest struct {
 	Path          string
 	Schema        string
 	KasbahVersion string
-	Name          string
+	// MinKasbah is min_kasbah, "" when unset: the oldest kasbah the project
+	// works with, which this one meets.
+	MinKasbah string
+	Name      string
 	// Domain may be empty: init-project without --domain writes `domain: ""`,
 	// and the commands that need one enforce it themselves.
 	Domain string
@@ -95,10 +109,10 @@ type Manifest struct {
 // Get is the value at path in the document (tree.Lookup).
 func (m *Manifest) Get(path ...any) (tree.Value, bool) { return tree.Lookup(m.Doc, path...) }
 
-// Require reads and validates the manifest at path. A
-// missing manifest is exit 2; anything else wrong is exit 1. version is this
-// kasbah's, for the newer-schema refusal.
-func Require(path, version string) (*Manifest, error) {
+// Require reads and validates the manifest at path: a missing one is exit 2,
+// anything else wrong exit 1. ver is this kasbah's version.Base, which the
+// schema and min_kasbah are held to.
+func Require(path, ver string) (*Manifest, error) {
 	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() {
 		return nil, cli.Failf(cli.ExitNoProject, "No %s in current directory.", path).
 			Cont("Run from the project root, or `kasbah init-project` to scaffold.").Help("S01")
@@ -114,23 +128,11 @@ func Require(path, version string) (*Manifest, error) {
 	if _, ok := docs[0].(*tree.Map); !ok && docs[0] != nil {
 		return nil, cli.Fail("%s: the document is not a mapping — kasbah.yml is a set of fields like schema: and name:", path).Help("files")
 	}
-	// The four fields are single-line values: null or absent is "".
 	var fields [4]string
 	for i, k := range []string{"schema", "kasbah_version", "name", "domain"} {
-		v, _ := tree.Lookup(docs[0], k)
-		switch v.(type) {
-		case []tree.Value, *tree.Map:
-			return nil, cli.Fail("%s: %s: is a list or a mapping — it has to be a single value", path, k).Help("files")
-		case bool:
-			if k != "schema" {
-				return nil, cli.Fail("%s: %s: must be a string, not %s", path, k, tree.Compact(v)).Help("files")
-			}
+		if fields[i], err = text(path, docs[0], k); err != nil {
+			return nil, err
 		}
-		f := tree.TextAt(docs[0], k)
-		if strings.Contains(f, "\n") {
-			return nil, cli.Fail("%s: %s: spans more than one line — it has to be a single value", path, k).Help("files")
-		}
-		fields[i] = strings.TrimSuffix(f, "\r")
 	}
 	schema, kv, name, domain := fields[0], fields[1], fields[2], fields[3]
 
@@ -143,9 +145,29 @@ func Require(path, version string) (*Manifest, error) {
 	// `[ "$schema" -gt 1 ]`: a value too large for test(1) is an error there,
 	// and the check is then skipped rather than failed.
 	if n, err := strconv.ParseUint(schema, 10, 64); err == nil && n > Schema {
-		return nil, &NewerSchema{Schema: n, err: cli.Fail("%s: schema %s is newer than this kasbah (%s supports schema %d). Upgrade kasbah.", path, schema, version, Schema).Help("S02")}
+		return nil, &NewerSchema{Schema: n, err: cli.Fail("%s: schema %s is newer than this kasbah (%s supports schema %d). Upgrade kasbah.", path, schema, ver, Schema).Help("S02")}
 	}
-	// After the schema: a newer one may give `routed` a meaning this kasbah lacks.
+	// After the schema: a newer one may give min_kasbah or `routed` a meaning
+	// this kasbah lacks.
+	minKasbah, err := text(path, docs[0], "min_kasbah")
+	if err != nil {
+		return nil, err
+	}
+	if minKasbah != "" {
+		want, err := version.Release(minKasbah)
+		if err != nil {
+			return nil, cli.Fail("%s: min_kasbah must be a release version MAJOR.MINOR.PATCH, such as 2.0.0 — no v, no operator (got '%s')", path, minKasbah).
+				Next("Set it to the oldest kasbah release this project works with, or remove it.").Help("S09")
+		}
+		if _, err := version.Parse(ver); err != nil {
+			return nil, &OlderKasbah{Min: minKasbah, err: cli.Fail("%s: this project needs kasbah %s or newer (min_kasbah), and this kasbah carries no build stamp, so it meets no minimum", path, minKasbah).
+				Next("Build it with `docker compose run --rm build`, which stamps it.").Help("S09")}
+		}
+		if !version.Meets(ver, want) {
+			return nil, &OlderKasbah{Min: minKasbah, err: cli.Fail("%s: this project needs kasbah %s or newer (min_kasbah), and this kasbah is %s", path, minKasbah, ver).
+				Next("Install it: `kasbah self-update` for the newest release, or `kasbah self-update v" + minKasbah + "`.").Help("S09")}
+		}
+	}
 	routed, _ := tree.Lookup(docs[0], "routed")
 	if _, ok := routed.(bool); !ok && routed != nil {
 		return nil, cli.Fail("%s: routed: must be true or false, not %s", path, tree.Compact(routed)).Help("files")
@@ -160,7 +182,26 @@ func Require(path, version string) (*Manifest, error) {
 	if NameReserved(name) {
 		return nil, cli.Fail("%s: %s. Rename the project.", path, ReservedWhy(name)).Help("S07")
 	}
-	return &Manifest{Path: path, Schema: schema, KasbahVersion: kv, Name: name, Domain: domain, Unrouted: routed == false, Doc: docs[0]}, nil
+	return &Manifest{Path: path, Schema: schema, KasbahVersion: kv, MinKasbah: minKasbah, Name: name, Domain: domain, Unrouted: routed == false, Doc: docs[0]}, nil
+}
+
+// text is the single-line text field k of doc, "" when null or absent, its
+// trailing CR stripped. schema alone may be a boolean, for its own refusal.
+func text(path string, doc tree.Value, k string) (string, error) {
+	v, _ := tree.Lookup(doc, k)
+	switch v.(type) {
+	case []tree.Value, *tree.Map:
+		return "", cli.Fail("%s: %s: is a list or a mapping — it has to be a single value", path, k).Help("files")
+	case bool:
+		if k != "schema" {
+			return "", cli.Fail("%s: %s: must be a string, not %s", path, k, tree.Compact(v)).Help("files")
+		}
+	}
+	f := tree.TextAt(doc, k)
+	if strings.Contains(f, "\n") {
+		return "", cli.Fail("%s: %s: spans more than one line — it has to be a single value", path, k).Help("files")
+	}
+	return strings.TrimSuffix(f, "\r"), nil
 }
 
 // Render is the manifest init-project scaffolds. The domain is written inside

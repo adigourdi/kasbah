@@ -11,7 +11,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/tree"
 )
 
-const version = "0.9.0-dev"
+const ours = "0.9.0-dev"
 
 func write(t *testing.T, content string) string {
 	t.Helper()
@@ -24,7 +24,7 @@ func write(t *testing.T, content string) string {
 
 func refused(t *testing.T, path string, code int, want string) {
 	t.Helper()
-	_, err := Require(path, version)
+	_, err := Require(path, ours)
 	var e *cli.Error
 	if !errors.As(err, &e) {
 		t.Fatalf("want a refusal containing %q, got %v", want, err)
@@ -36,7 +36,7 @@ func refused(t *testing.T, path string, code int, want string) {
 
 func TestMissing(t *testing.T) {
 	p := filepath.Join(t.TempDir(), File)
-	_, err := Require(p, version)
+	_, err := Require(p, ours)
 	e := err.(*cli.Error)
 	if e.Code != cli.ExitNoProject || !strings.HasPrefix(e.Lines[0], "No ") || len(e.Lines) != 2 ||
 		e.Lines[1] != "Run from the project root, or `kasbah init-project` to scaffold." {
@@ -49,12 +49,12 @@ func TestMissing(t *testing.T) {
 }
 
 func TestValid(t *testing.T) {
-	p := write(t, "schema: 1\nkasbah_version: "+version+"\nname: demo\ndomain: \"demo.example.com\"\nsync:\n  - compose.prod.yml -> compose.yml\n")
-	m, err := Require(p, version)
+	p := write(t, "schema: 1\nkasbah_version: "+ours+"\nname: demo\ndomain: \"demo.example.com\"\nsync:\n  - compose.prod.yml -> compose.yml\n")
+	m, err := Require(p, ours)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.Schema != "1" || m.KasbahVersion != version || m.Name != "demo" || m.Domain != "demo.example.com" {
+	if m.Schema != "1" || m.KasbahVersion != ours || m.Name != "demo" || m.Domain != "demo.example.com" {
 		t.Errorf("fields %+v", m)
 	}
 	if v, _ := m.Get("sync", 0); v != "compose.prod.yml -> compose.yml" {
@@ -65,12 +65,12 @@ func TestValid(t *testing.T) {
 func TestRefusals(t *testing.T) {
 	refused(t, write(t, "schema: 2\nkasbah_version: x\nname: demo\ndomain: \"\"\n"), 1, "schema 2 is newer than this kasbah (0.9.0-dev supports schema 1). Upgrade kasbah.")
 	// A newer schema names its major, for the hand-off to a kasbah of it.
-	_, err := Require(write(t, "schema: 7\nname: demo\n"), version)
+	_, err := Require(write(t, "schema: 7\nname: demo\n"), ours)
 	var ns *NewerSchema
 	if !errors.As(err, &ns) || ns.Schema != 7 {
 		t.Errorf("a newer schema is not a *NewerSchema naming it: %#v", err)
 	}
-	if _, err := Require(write(t, "schema: 0\nname: demo\n"), version); errors.As(err, &ns) {
+	if _, err := Require(write(t, "schema: 0\nname: demo\n"), ours); errors.As(err, &ns) {
 		t.Errorf("an older schema is a *NewerSchema: %v", err)
 	}
 	refused(t, write(t, "kasbah_version: x\nname: demo\n"), 1, "missing required field 'schema'")
@@ -97,7 +97,7 @@ func TestRefusals(t *testing.T) {
 		refused(t, write(t, "schema: 1\nname: demo\nrouted: "+v+"\n"), 1, "routed: must be true or false, not ")
 	}
 	// The schema is judged first: a newer one hands off whatever `routed` holds.
-	if _, err := Require(write(t, "schema: 2\nname: demo\nrouted: maybe\n"), version); !errors.As(err, &ns) || ns.Schema != 2 {
+	if _, err := Require(write(t, "schema: 2\nname: demo\nrouted: maybe\n"), ours); !errors.As(err, &ns) || ns.Schema != 2 {
 		t.Errorf("schema 2 beside a bad routed: is not a *NewerSchema: %v", err)
 	}
 	refused(t, write(t, "name: demo\nrouted: maybe\n"), 1, "missing required field 'schema'")
@@ -118,21 +118,21 @@ func TestAccepted(t *testing.T) {
 		"schema: 1\r\nkasbah_version: 0.1.0\r\nname: crlf\r\ndomain: \"c.test\"\r\nsync: []\r\n": "crlf",
 	}
 	for in, name := range cases {
-		m, err := Require(write(t, in), version)
+		m, err := Require(write(t, in), ours)
 		if err != nil || m.Name != name {
 			t.Errorf("%q: %v %v", in, m, err)
 		}
 	}
-	m, _ := Require(write(t, "schema: 1\r\nname: crlf\r\ndomain: \"c.test\"\r\n"), version)
+	m, _ := Require(write(t, "schema: 1\r\nname: crlf\r\ndomain: \"c.test\"\r\n"), ours)
 	if m.Domain != "c.test" {
 		t.Errorf("CRLF domain %q", m.Domain)
 	}
-	m, _ = Require(write(t, "schema: 1\nname: nodomain\ndomain: \"\"\n"), version)
+	m, _ = Require(write(t, "schema: 1\nname: nodomain\ndomain: \"\"\n"), ours)
 	if m.Domain != "" || m.Unrouted {
 		t.Errorf("empty domain %q, unrouted %v", m.Domain, m.Unrouted)
 	}
 	for in, unrouted := range map[string]bool{"routed: false\n": true, "routed: False\r\n": true, "routed: true\n": false, "routed: ~\n": false, "": false} {
-		m, err := Require(write(t, "schema: 1\nname: relay\n"+in), version)
+		m, err := Require(write(t, "schema: 1\nname: relay\n"+in), ours)
 		if err != nil || m.Unrouted != unrouted || m.Domain != "" {
 			t.Errorf("%q: %+v %v", in, m, err)
 		}
@@ -142,14 +142,14 @@ func TestAccepted(t *testing.T) {
 // init-project's manifest, byte for byte, and it reads back.
 func TestRender(t *testing.T) {
 	want := "schema: 1\nkasbah_version: 0.9.0-dev\n\nname: demo\ndomain: \"demo.example.com\"\n\nsync:\n  - compose.prod.yml -> compose.yml\n  - .env.prod.example\n"
-	if got := string(Render("demo", "demo.example.com", version)); got != want {
+	if got := string(Render("demo", "demo.example.com", ours)); got != want {
 		t.Errorf("render:\n%s\nwant\n%s", got, want)
 	}
 	p := filepath.Join(t.TempDir(), File)
-	if err := Write(p, "integration", "", version); err != nil {
+	if err := Write(p, "integration", "", ours); err != nil {
 		t.Fatal(err)
 	}
-	m, err := Require(p, version)
+	m, err := Require(p, ours)
 	if err != nil || m.Name != "integration" || m.Domain != "" {
 		t.Errorf("written manifest reads back as %+v %v", m, err)
 	}
@@ -171,5 +171,59 @@ func TestClientCheck(t *testing.T) {
 	}
 	if r, ok := ClientCheck("mail"); ok || r != "client 'mail' is reserved — kasbah owns the backup repository of that name (reserved: traefik mail data backups)" {
 		t.Errorf("mail: %q", r)
+	}
+}
+
+func TestMinKasbah(t *testing.T) {
+	const dev = "1.2.1-dev"
+	need := func(min string) string { return "schema: 1\nname: demo\nmin_kasbah: " + min + "\n" }
+	for min, want := range map[string]string{"1.2.0": "1.2.0", "1.2.2": "1.2.2", "2.0.0": "2.0.0", `"2.0.0"`: "2.0.0", `"2.0.0\r"`: "2.0.0"} {
+		m, err := Require(write(t, need(min)), dev)
+		if err != nil {
+			t.Errorf("min_kasbah %s refused: %v", min, err)
+		} else if m.MinKasbah != want {
+			t.Errorf("min_kasbah %s read as %q", min, m.MinKasbah)
+		}
+	}
+	if m, err := Require(write(t, "schema: 1\r\nname: demo\r\nmin_kasbah: 1.0.0\r\n"), dev); err != nil || m.MinKasbah != "1.0.0" {
+		t.Errorf("CRLF min_kasbah: %+v, %v", m, err)
+	}
+	if m, err := Require(write(t, "schema: 1\nname: demo\nmin_kasbah:\n"), dev); err != nil || m.MinKasbah != "" {
+		t.Errorf("null min_kasbah: %+v, %v", m, err)
+	}
+
+	for _, min := range []string{"1.2.3", "1.4.0", "2.1.0", "99.0.0"} {
+		_, err := Require(write(t, need(min)), dev)
+		var ok *OlderKasbah
+		var e *cli.Error
+		if !errors.As(err, &ok) || ok.Min != min || !errors.As(err, &e) {
+			t.Errorf("min_kasbah %s: not an *OlderKasbah naming it: %#v", min, err)
+			continue
+		}
+		if want := "this project needs kasbah " + min + " or newer (min_kasbah), and this kasbah is " + dev; e.Code != 1 || !strings.Contains(e.Lines[0], want) {
+			t.Errorf("min_kasbah %s: exit %d %q", min, e.Code, e.Lines)
+		}
+		if e.HelpTopic() != "S09" || !strings.Contains(strings.Join(e.NextLines(), " "), "kasbah self-update v"+min) {
+			t.Errorf("min_kasbah %s: help %q, next %q", min, e.HelpTopic(), e.NextLines())
+		}
+	}
+	// An unstamped build meets no minimum, and the way out is a stamped build.
+	_, err := Require(write(t, need("1.0.0")), "unstamped")
+	var older *OlderKasbah
+	var ue *cli.Error
+	if !errors.As(err, &older) || !errors.As(err, &ue) || !strings.Contains(ue.Lines[0], "carries no build stamp, so it meets no minimum") ||
+		!strings.Contains(strings.Join(ue.NextLines(), " "), "docker compose run --rm build") {
+		t.Errorf("unstamped build under min_kasbah 1.0.0: %#v", err)
+	}
+	for _, min := range []string{"v2.0.0", "\">=2.0.0\"", "2.0", "2", "2.0.0-rc.1", "latest"} {
+		refused(t, write(t, need(min)), 1, "min_kasbah must be a release version MAJOR.MINOR.PATCH, such as 2.0.0 — no v, no operator (got '")
+	}
+	refused(t, write(t, need("true")), 1, "min_kasbah: must be a string, not true")
+	refused(t, write(t, need("[2.0.0]")), 1, "min_kasbah: is a list or a mapping")
+	refused(t, write(t, need("\"2.0.0\\n3.0.0\"")), 1, "min_kasbah: spans more than one line")
+	// The schema is judged first: a newer one hands off whatever min_kasbah says.
+	var ns *NewerSchema
+	if _, err := Require(write(t, "schema: 2\nname: demo\nmin_kasbah: [x]\n"), dev); !errors.As(err, &ns) {
+		t.Errorf("schema 2 beside a bad min_kasbah: is not a *NewerSchema: %v", err)
 	}
 }

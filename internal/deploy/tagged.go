@@ -159,9 +159,13 @@ func RunTagged(c Ctx, o Options, mode string) error {
 
 	// A named deploy is judged against this checkout before any connection; a
 	// rollback asks the record first — "never deployed here" is the more
-	// useful answer when the tag is missing too.
+	// useful answer when the tag is missing too — but for the tag's min_kasbah.
 	if mode == "deploy" {
 		if err := r.readRef(t); err != nil {
+			return err
+		}
+	} else if r.version != "" {
+		if err := tagMinKasbah("v"+r.version, c.Version); err != nil {
 			return err
 		}
 	}
@@ -474,16 +478,48 @@ func extractBlob(ref, path, dest, what string) error {
 }
 
 // taggedManifest is Require's refusal of the kasbah.yml extracted from ref,
-// named as the tag's: a tag cannot be edited, so the fix is a new release.
+// named as the tag's: a tag cannot be edited, so the fix is a new release,
+// but for a min_kasbah this kasbah is too old for, which an upgrade meets.
 func taggedManifest(err error, path, ref string) error {
 	var e *cli.Error
 	var newer *manifest.NewerSchema
+	var older *manifest.OlderKasbah
 	if errors.As(err, &newer) || !errors.As(err, &e) {
 		return err
 	}
 	e.Lines[0] = manifest.File + " at " + ref + strings.TrimPrefix(e.Lines[0], path)
+	if errors.As(err, &older) {
+		return err
+	}
 	return e.SetNext("A version deploys with the kasbah.yml it was tagged with, and a tag does not",
 		"change: fix kasbah.yml in a new release and deploy that.")
+}
+
+// tagMinKasbah is the refusal of a min_kasbah in ref's kasbah.yml this kasbah
+// does not meet; a missing tag or file, or any other fault, is readRef's to name.
+func tagMinKasbah(ref, ver string) error {
+	if trace.Run(exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/"+ref+"^{commit}")) != nil {
+		return nil
+	}
+	out, err := trace.Output(exec.Command("git", "show", ref+":"+manifest.File))
+	if err != nil {
+		return nil
+	}
+	tmp, err := os.MkdirTemp("", "kasbah-rollback.")
+	if err != nil {
+		return nil
+	}
+	pop := atexit.Push(func() { os.RemoveAll(tmp) })
+	defer func() { os.RemoveAll(tmp); pop() }()
+	path := filepath.Join(tmp, manifest.File)
+	if os.WriteFile(path, out, 0o600) != nil {
+		return nil
+	}
+	_, err = manifest.Require(path, ver)
+	if older := (*manifest.OlderKasbah)(nil); errors.As(err, &older) {
+		return taggedManifest(err, path, ref)
+	}
+	return nil
 }
 
 // readRef is everything this run reads out of the checkout: the tag, then

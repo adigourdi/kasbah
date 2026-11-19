@@ -744,4 +744,24 @@ func TestTaggedManifestRemedy(t *testing.T) {
 	if strings.Contains(got, dir) || strings.Contains(got, "Add `schema: 1`") {
 		t.Errorf("names the extracted copy or asks for its edit:\n%s", got)
 	}
+
+	// A min_kasbah this kasbah does not meet asks for an upgrade, not a release.
+	os.WriteFile(path, []byte("schema: 1\nname: demo\nmin_kasbah: 99.0.0\n"), 0o644)
+	_, err = manifest.Require(path, "1.0.0")
+	b.Reset()
+	var older *manifest.OlderKasbah
+	if err := taggedManifest(err, path, "v1.2.0"); !errors.As(err, &older) {
+		t.Fatalf("not an *OlderKasbah: %v", err)
+	} else {
+		(&cli.Output{Stderr: &b}).Report(err)
+	}
+	got = b.String()
+	for _, want := range []string{"kasbah.yml at v1.2.0: this project needs kasbah 99.0.0 or newer (min_kasbah), and this kasbah is 1.0.0", "kasbah self-update v99.0.0", "help: kasbah help S09"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, dir) || strings.Contains(got, "in a new release") {
+		t.Errorf("names the extracted copy or asks for a release:\n%s", got)
+	}
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/adigourdi/kasbah/internal/acme"
 	"github.com/adigourdi/kasbah/internal/atexit"
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/deploy"
 	"github.com/adigourdi/kasbah/internal/env"
 	"github.com/adigourdi/kasbah/internal/marker"
 	"github.com/adigourdi/kasbah/internal/remote"
@@ -42,7 +43,7 @@ type Options struct {
 
 const (
 	// DryLabel is what the next run sweeps a leftover throwaway by.
-	DryLabel = "kasbah.role=traefik-dry-run"
+	DryLabel = deploy.RoleLabel + "=traefik-dry-run"
 	// DryCA refuses at once on every host, and no genuine error can name it.
 	DryCA = "https://127.0.0.1:1/kasbah-dry-run-no-ca"
 	// DryACMEError is the one error family the throwaway's CA produces. The

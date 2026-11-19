@@ -1,8 +1,11 @@
 package deploy
 
 import (
+	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/adigourdi/kasbah/internal/backup"
 )
 
 // RollShape is what compose and the fragment say about whether a routed
@@ -41,6 +44,19 @@ type Stay int
 // labels, the key matches in any case and the value as strconv.ParseBool
 // reads it.
 const NoRollLabel = "kasbah.noRoll"
+
+// RoleLabel is the label key kasbah's own short-lived containers carry.
+const RoleLabel = backup.RoleLabel
+
+// Labels are the kasbah.* label keys kasbah reads or writes; check warns on
+// any other a compose service carries (C18).
+var Labels = []string{NoRollLabel, RoleLabel, backup.LauncherLabel}
+
+// KnownLabel is whether k is one of Labels as kasbah reads it: NoRollLabel in
+// any case, the others exactly.
+func KnownLabel(k string) bool {
+	return strings.EqualFold(k, NoRollLabel) || slices.Contains(Labels, k)
+}
 
 // NoRoll is what a service's labels ask of its roll: "" for a roll (no
 // kasbah.noRoll, or one reading false), "true" for none, else the value of a

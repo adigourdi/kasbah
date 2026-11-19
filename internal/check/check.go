@@ -131,6 +131,9 @@ func Run(e Env) (code int) {
 	}
 	c.m = m
 	c.passf("S01,S02", "kasbah.yml exists (schema %s)", m.Schema)
+	if m.MinKasbah != "" {
+		c.passf("S09", "kasbah %s meets min_kasbah %s", e.Version, m.MinKasbah)
+	}
 
 	// Asked before the local rules: T05's verdict depends on the answer.
 	if e.Server != "" {
@@ -255,7 +258,7 @@ func (c *checker) footer() {
 // check's own lines do.
 func ruled(err error) error {
 	var e *cli.Error
-	if errors.As(err, &e) && slices.Contains([]string{"S01", "S02", "S07"}, e.HelpTopic()) {
+	if errors.As(err, &e) && slices.Contains([]string{"S01", "S02", "S07", "S09"}, e.HelpTopic()) {
 		e.Lines[0] = e.HelpTopic() + " " + e.Lines[0]
 	}
 	return err
@@ -311,7 +314,7 @@ func (c *checker) s08() {
 	}
 }
 
-// --- Compose (C01–C05, C07–C11, C14–C16) ----------------------------------------
+// --- Compose (C01–C05, C07–C11, C14–C16, C18) -----------------------------------
 
 var restartOK = regexp.MustCompile(`^(unless-stopped|always|on-failure(:[0-9]+)?)$`)
 
@@ -385,6 +388,7 @@ func (c *checker) composeSection() {
 	c.c14()
 	c.c11()
 	c.c15()
+	c.c18()
 }
 
 // c14: no service publishes host port 80 or 443, Traefik's; a host range
@@ -564,6 +568,28 @@ func (c *checker) c15() {
 	}
 	if seen && !bad {
 		c.passf("C15", "Every %s label is a boolean", deploy.NoRollLabel)
+	}
+}
+
+// c18: every kasbah.* label a service carries, in the map or the list form,
+// is one this kasbah reads; another warns, once per service and key.
+func (c *checker) c18() {
+	for _, svc := range c.services {
+		labels := c.svc(svc, "labels")
+		keys := keysOf(labels)
+		for _, l := range asList(labels) {
+			s, _ := l.(string)
+			k, _, _ := strings.Cut(s, "=")
+			keys = append(keys, k)
+		}
+		seen := map[string]bool{}
+		for _, k := range keys {
+			if seen[k] || !strings.HasPrefix(strings.ToLower(k), "kasbah.") || deploy.KnownLabel(k) {
+				continue
+			}
+			seen[k] = true
+			c.warnf("C18", "%s: label %s is not one this kasbah reads — an older or newer kasbah may give it a meaning; set min_kasbah in kasbah.yml to the release that reads it, or drop it", svc, k)
+		}
 	}
 }
 

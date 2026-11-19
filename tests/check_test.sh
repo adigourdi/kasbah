@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test: kasbah check — Structure rules (S01–S06).
+# Test: kasbah check — Structure rules (S01–S09).
 
 set -uo pipefail
 
@@ -195,6 +195,27 @@ assert '[ "$rc" = "1" ]'                              "future schema exits 1 (go
 assert 'grep -qF "newer than this kasbah" <<<"$out"' "future schema message"
 assert 'grep -qF "error: S02 kasbah.yml: schema 99 is newer" <<<"$out"' "led by S02 (said '$out')"
 assert 'grep -qxF "       help: kasbah help S02" <<<"$out"' "and points at S02's help (said '$out')"
+
+# --- Case 7b: a min_kasbah above this kasbah — exit 1, before any rule ---------------
+proj7b="$tmpdir/min-kasbah"
+make_project "$proj7b"
+printf 'min_kasbah: 99.0.0\n' >> "$proj7b/kasbah.yml"
+out="$(cd "$proj7b" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "1" ]' "a min_kasbah above this kasbah exits 1 (got $rc)"
+assert 'grep -qF "error: S09 kasbah.yml: this project needs kasbah 99.0.0 or newer (min_kasbah), and this kasbah is " <<<"$out"' \
+    "led by S09, naming the version it needs (said '$out')"
+assert 'grep -qF "kasbah self-update v99.0.0" <<<"$out"' "naming the upgrade (said '$out')"
+assert 'grep -qxF "       help: kasbah help S09" <<<"$out"' "and points at S09's help (said '$out')"
+assert '! grep -qF "Summary:" <<<"$out"' "no rule ran past it (said '$out')"
+sed -i 's/^min_kasbah: .*/min_kasbah: 2.0/' "$proj7b/kasbah.yml"
+out="$(cd "$proj7b" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "1" ]' "a malformed min_kasbah exits 1 (got $rc)"
+assert 'grep -qF "min_kasbah must be a release version MAJOR.MINOR.PATCH, such as 2.0.0" <<<"$out"' \
+    "saying the shape it takes (said '$out')"
+sed -i 's/^min_kasbah: .*/min_kasbah: 0.1.0/' "$proj7b/kasbah.yml"
+out="$(cd "$proj7b" && "$kasbah" check 2>&1)"; rc=$?
+assert '[ "$rc" = "0" ]' "a min_kasbah this kasbah meets passes (got $rc: $out)"
+assert 'grep -qE "^  ✓ S09 kasbah .* meets min_kasbah 0\.1\.0$" <<<"$out"' "with S09's pass line (said '$out')"
 
 # --- Case 8: --help works without a project ----------------------------------
 out="$(cd "$tmpdir" && "$kasbah" check --help 2>&1)"; rc=$?

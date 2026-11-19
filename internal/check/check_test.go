@@ -831,6 +831,67 @@ func TestC15(t *testing.T) {
 	}
 }
 
+func TestC18(t *testing.T) {
+	with := func(lines string) string {
+		return strings.Replace(rollCompose, "    networks: [internal]\n", lines+"    networks: [internal]\n", 1)
+	}
+	line := func(k string) string {
+		return "  ⚠ C18 db: label " + k + " is not one this kasbah reads — an older or newer kasbah may give it a meaning; set min_kasbah in kasbah.yml to the release that reads it, or drop it"
+	}
+	for _, tc := range []struct {
+		name, compose string
+		want          []string
+	}{
+		{"an unknown label, in the map form", with("    labels: {kasbah.noRol: \"true\", other: x}\n"), []string{line("kasbah.noRol")}},
+		{"in the list form, a repeat once", with("    labels: [kasbah.future=1, kasbah.future=2, \"KASBAH.Other\"]\n"), []string{line("kasbah.future"), line("KASBAH.Other")}},
+		{"known labels, kasbah.noRoll in any case", with("    labels: {kasbah.NOROLL: \"true\", kasbah.role: x, kasbah.backup.launcher: \"1\"}\n"), nil},
+		{"kasbah.role matches exactly", with("    labels: [kasbah.Role=x]\n"), []string{line("kasbah.Role")}},
+		{"a key that only starts with kasbah", with("    labels: {kasbahx.y: z, kasbah: v}\n"), nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			project(t, map[string]string{"compose.prod.yml": tc.compose})
+			out, _, code := check(t)
+			for _, w := range tc.want {
+				if !strings.Contains(out, w+"\n") {
+					t.Errorf("no line %q in:\n%s", w, out)
+				}
+			}
+			if n := strings.Count(out, " C18 "); n != len(tc.want) {
+				t.Errorf("%d C18 lines, want %d:\n%s", n, len(tc.want), out)
+			}
+			if strings.Contains(out, " C15 ") != strings.Contains(tc.compose, "NOROLL") {
+				t.Errorf("C15 and C18 split the label wrong:\n%s", out)
+			}
+			if code != 0 {
+				t.Errorf("exit %d: C18 warns, it does not fail", code)
+			}
+		})
+	}
+}
+
+func TestS09(t *testing.T) {
+	run := func(version string) (string, string, int) {
+		var o, e bytes.Buffer
+		code := Run(Env{Out: &cli.Output{Stdout: &o, Stderr: &e}, PWD: "/p", Version: version})
+		return o.String(), e.String(), code
+	}
+	project(t, map[string]string{"kasbah.yml": "schema: 1\nname: demo\ndomain: demo.example.com\nmin_kasbah: 2.0.0\n"})
+	if out, _, code := run("1.2.1-dev"); code != 0 || !strings.Contains(out, "  ✓ S09 kasbah 1.2.1-dev meets min_kasbah 2.0.0\n") {
+		t.Errorf("exit %d:\n%s", code, out)
+	}
+	out, errOut, code := run("1.2.0")
+	if want := "error: S09 kasbah.yml: this project needs kasbah 2.0.0 or newer (min_kasbah), and this kasbah is 1.2.0"; code != 1 || !strings.Contains(errOut, want) || !strings.Contains(errOut, "help: kasbah help S09") {
+		t.Errorf("exit %d, want 1 with %q:\n%s", code, want, errOut)
+	}
+	if strings.Contains(out, "✓") || strings.Contains(out, "Summary") {
+		t.Errorf("rules ran past the refusal:\n%s", out)
+	}
+	project(t, nil)
+	if out, _, _ := run("1.2.0"); strings.Contains(out, "S09") {
+		t.Errorf("S09 speaks with no min_kasbah:\n%s", out)
+	}
+}
+
 func TestC16(t *testing.T) {
 	web := "    networks: [kasbah, internal]\n  db:"
 	with := func(lines string) string { return strings.Replace(rollCompose, web, lines, 1) }

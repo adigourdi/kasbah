@@ -33,6 +33,8 @@ var dropsCause = map[string]bool{
 	`internal/ssh/ssh.go Connect "cannot reach %s over ssh (see ssh's own error above)"`:                                            true,
 	// The value or the answer is malformed, and the message says how; the
 	// parser's own wording would only repeat it.
+	`internal/manifest/manifest.go Require "%s: min_kasbah must be a release version MAJOR.MINOR.PATCH, such as 2.0.0 — no v, no operator (got '%s')"`:                                                                   true,
+	`internal/manifest/manifest.go Require "%s: this project needs kasbah %s or newer (min_kasbah), and this kasbah carries no build stamp, so it meets no minimum"`:                                                     true,
 	`internal/backup/backup.go CheckJitter "%s: --backup-jitter=%s is a day or more — the slot is a time of day, so anything from 86400 wraps"`:                                                                          true,
 	`internal/backup/backup.go CheckKeep "%s: %s%s is not a whole number of snapshots to keep"`:                                                                                                                          true,
 	`internal/backup/backup.go CheckTimeout "%s: --backup-timeout=%s is too large a number of seconds to hold"`:                                                                                                          true,

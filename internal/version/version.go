@@ -199,3 +199,39 @@ func Base(stamp string) (string, error) {
 	}
 	return s, nil
 }
+
+// Release reads a bare release version, MAJOR.MINOR.PATCH: no `v`, no
+// pre-release, no build metadata.
+func Release(s string) (Version, error) {
+	v, err := Parse(s)
+	if err != nil || len(v.Pre) > 0 || v.Meta != "" {
+		return Version{}, fmt.Errorf("%q is not a release version (expected MAJOR.MINOR.PATCH)", s)
+	}
+	return v, nil
+}
+
+// Meets is whether build (a stamp or its Base) meets the release min: its core
+// is at or above min, or it is X.Y.Z-dev… and min is the next patch, minor or
+// major after X.Y.Z. A build that does not parse meets nothing.
+func Meets(build string, min Version) bool {
+	b, err := Parse(build)
+	if err != nil {
+		return false
+	}
+	if Compare(Version{Major: b.Major, Minor: b.Minor, Patch: b.Patch}, min) >= 0 {
+		return true
+	}
+	if len(b.Pre) == 0 || b.Pre[0] != "dev" || len(b.Pre) > 1 && !stamped(b.Pre) {
+		return false
+	}
+	for _, next := range []Version{
+		{Major: b.Major, Minor: b.Minor, Patch: b.Patch + 1},
+		{Major: b.Major, Minor: b.Minor + 1},
+		{Major: b.Major + 1},
+	} {
+		if Compare(next, min) == 0 {
+			return true
+		}
+	}
+	return false
+}

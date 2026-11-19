@@ -9,7 +9,8 @@ kasbah.yml — the manifest, written by `kasbah init-project`.
   Should: domain: the hostname the routers answer on (T02, T08 skipped
          without it).
   May:   routed: false (T11), health (H02, H03), hooks (HK01, HK02),
-         resources (R05), client (S08), mail.domain (M01).
+         resources (R05), client (S08), mail.domain (M01), min_kasbah:
+         X.Y.Z, the oldest kasbah the project works with (S09).
 
 compose.prod.yml — the compose file the server runs.
   Every service: restart: unless-stopped (C01); json-file logging with
@@ -18,12 +19,14 @@ compose.prod.yml — the compose file the server runs.
   Routed services join the project's kasbah network, declared as exactly
          kasbah: {} (C03, C04), under names with no dot and none
          traefik (C16); with no container_name, no host port and a
-         healthcheck they roll on deploy (C11).
+         healthcheck they roll on deploy (C11); kasbah.noRoll: "true"
+         recreates one in place instead (C15).
   Everything else stays off the kasbah network (C07).
   Built services: image: <name>-<service>:current (C08); a compose
          healthcheck, or a warning (H01).
   Never: traefik.* labels (T06), host port 80 or 443 (C14), mail-dms
-         (C10), a top-level version: (C05).
+         (C10), a top-level version: (C05), a kasbah.* label this kasbah
+         does not read (C18).
   `kasbah check --fix` rewrites C01-C05, C08 and R01-R03.
 
 traefik-dynamic.yml — the project's routing, a Traefik file-provider fragment.

@@ -241,7 +241,7 @@ func Collect(apps string) *Report {
 }
 
 // RoleLabel is the label key kasbah's own short-lived containers carry.
-const RoleLabel = "kasbah.role"
+const RoleLabel = deploy.RoleLabel
 
 // Stacks is every compose project kasbah runs under apps, by name: the
 // Traefik, mail and backup stacks and each entry that is not reserved or the

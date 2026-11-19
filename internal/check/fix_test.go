@@ -204,6 +204,21 @@ func TestFixManifestBackfill(t *testing.T) {
 	}
 }
 
+// min_kasbah is the author's: --fix keeps it as written.
+func TestFixKeepsMinKasbah(t *testing.T) {
+	project(t, map[string]string{"kasbah.yml": "schema: 1\nname: demo\nmin_kasbah: 0.1.0 # noRoll\ndomain: demo.example.com\n"})
+	var o, e bytes.Buffer
+	out := &cli.Output{Stdout: &o, Stderr: &e}
+	if code := Run(Env{Out: out, PWD: "/p", Version: "2.0.0", Fix: true, Yes: true,
+		Prompt: &prompt.Prompter{In: strings.NewReader(""), Out: out}}); code != 0 {
+		t.Fatalf("exit %d\n%s%s", code, &o, &e)
+	}
+	got, _ := os.ReadFile("kasbah.yml")
+	if want := "schema: 1\nkasbah_version: 2.0.0\nname: demo\nmin_kasbah: 0.1.0 # noRoll\ndomain: demo.example.com\n"; string(got) != want {
+		t.Fatalf("kasbah.yml:\n%q", got)
+	}
+}
+
 func TestSplitValue(t *testing.T) {
 	for _, c := range []struct {
 		in, val, cmt string

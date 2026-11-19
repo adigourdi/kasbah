@@ -46,6 +46,9 @@ var Rules = []Rule{
 	{"S08", "Structure", "fail", false, "client is a backup repository name kasbah can create",
 		"client names the restic repository the project's snapshots file into, and deploy refuses the same values.",
 		"Use lowercase letters, digits and -, starting with a letter, and none of traefik, mail, data, backups; or leave client out to file under the project's name."},
+	{"S09", "Structure", "fail", false, "This kasbah meets kasbah.yml's min_kasbah",
+		"min_kasbah names the oldest kasbah the project works with, for a feature an older one ignores without a word (a kasbah.noRoll label). A malformed value, or a kasbah older than it, is refused before any rule runs, and by every project command before it connects to the server; a tag's min_kasbah is refused before connecting by deploy X.Y.Z, and by rollback X.Y.Z when this kasbah does not meet it — a bare rollback's once the server's record names the tag; a tag's malformed value, by deploy X.Y.Z before connecting and by a rollback once it reads the tag (exit 1). kasbah 2.0.0 is the first to read it.",
+		"Run `kasbah self-update` (or `kasbah self-update v<min_kasbah>`); an unstamped build meets none, so build it with `docker compose run --rm build`. Write the value as a bare release version, such as 2.0.0: no v, no operator."},
 
 	{"C01", "Compose", "fail", false, "Every service sets a restart policy",
 		"A service that does not come back after a crash or a reboot stays down.",
@@ -95,6 +98,9 @@ var Rules = []Rule{
 	{"C17", "Compose", "fail", true, "No outside container holds a container_name",
 		"Docker gives a name to one container per host, running or stopped, so the deploy's up would fail on it; the deploy refuses it first.",
 		"Change the container_name, or remove or rename the container holding it."},
+	{"C18", "Compose", "warn", false, "Every kasbah.* label is one this kasbah reads",
+		"A kasbah.* label this kasbah does not know does nothing here, while an older or newer kasbah may give it a meaning: kasbah 1.2.0 ignores kasbah.noRoll and rolls the service. kasbah 2.0.0 is the first to warn about one.",
+		"Set `min_kasbah:` in kasbah.yml to the release that reads the label, so an older kasbah refuses the project, or drop the label if it is a typo."},
 
 	{"R01", "Resources", "fail/warn", false, "Every service sets a cpus limit",
 		"A per-container ceiling keeps one project from taking the host. A literal does not follow the host, so it warns until `check --server` compares it.",

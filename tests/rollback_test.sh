@@ -919,6 +919,44 @@ out="$( deploy deploy@vps 9.0.0 )"; rc=$?
 assert '[ "$rc" != "0" ]' "and so does one whose tag lists paths of the wrong kind (rc $rc: $out)"
 assert '[ ! -s "$ssh_log" ]' "also before any connection (ssh saw: $(cat "$ssh_log"))"
 
+# A min_kasbah this kasbah does not meet stops a deploy and a rollback before the
+# first ssh, from the working tree's manifest.
+cp "$project/kasbah.yml" "$tmpdir/kasbah.yml.kept"
+printf 'min_kasbah: 99.0.0\n' >> "$project/kasbah.yml"
+for cmd in "deploy deploy@vps" "rollback deploy@vps 1.0.0" "deploy deploy@vps 1.0.0"; do
+    out="$( (cd "$project" && kasbah_run $cmd) )"; rc=$?
+    assert '[ "$rc" = "1" ]' "$cmd under min_kasbah 99.0.0 exits 1 (rc $rc: $out)"
+    assert 'grep -qF "this project needs kasbah 99.0.0 or newer (min_kasbah)" <<<"$out"' \
+        "$cmd names the version it needs (said '$out')"
+    assert '[ ! -s "$ssh_log" ]' "$cmd never opened a connection (ssh saw: $(cat "$ssh_log"))"
+done
+cp "$tmpdir/kasbah.yml.kept" "$project/kasbah.yml"
+
+# The tag's own min_kasbah, with none in the working tree: a named version is read
+# out of its tag before the first ssh; a bare rollback learns its version from the
+# record, so it refuses once connected, before the rollback changes anything.
+(
+    cd "$project" || exit 1
+    printf 'min_kasbah: 99.0.0\n' >> kasbah.yml
+    git commit -qam "the commit v11.0.0 tags, needing kasbah 99.0.0"
+    git tag v11.0.0
+    git reset -q --hard v2.0.0
+) >/dev/null 2>&1
+for cmd in "deploy deploy@vps 11.0.0" "rollback deploy@vps 11.0.0"; do
+    out="$( (cd "$project" && kasbah_run $cmd) )"; rc=$?
+    assert '[ "$rc" = "1" ]' "$cmd, whose tag needs kasbah 99.0.0, exits 1 (rc $rc: $out)"
+    assert 'grep -qF "kasbah.yml at v11.0.0: this project needs kasbah 99.0.0 or newer (min_kasbah)" <<<"$out"' \
+        "$cmd names the tag and the version it needs (said '$out')"
+    assert 'grep -qF "kasbah self-update v99.0.0" <<<"$out"' "$cmd says to upgrade (said '$out')"
+    assert '[ ! -s "$ssh_log" ]' "$cmd never opened a connection (ssh saw: $(cat "$ssh_log"))"
+done
+out="$( FAKE_ACTIVE=$'2026-08-02T00:00:00+00:00 deploy 11.0.0 no-backup kasbah=0.1.0 digest=-\n2026-08-03T00:00:00+00:00 deploy 2.0.0 no-backup kasbah=0.1.0 digest=-\n' \
+        rollback deploy@vps )"; rc=$?
+assert '[ "$rc" = "1" ]' "a bare rollback to a tag needing kasbah 99.0.0 exits 1 (rc $rc: $out)"
+assert 'grep -qF "kasbah.yml at v11.0.0: this project needs kasbah 99.0.0 or newer (min_kasbah)" <<<"$out"' \
+    "naming the tag and the version it needs (said '$out')"
+assert '[ -z "$(ran)" ]' "and nothing ran on the server"
+
 # --- What the operator is told to run next -------------------------------------------
 # The two late failures are where an operator reads most carefully, and `kasbah
 # deploy` is a runnable instruction that ships the working tree — undoing the

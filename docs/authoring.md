@@ -27,7 +27,8 @@ change, and `kasbah help files` and `kasbah help setups` summarise this guide
 files without building, pulling or running anything: it exits 0 when nothing
 fails, warned or not, 6 when a rule fails, and 1 when it cannot check at all —
 a `kasbah.yml` that does not load (bad YAML, a missing, non-integer or newer
-`schema`, a missing, malformed or reserved `name`, a field of the wrong type)
+`schema`, a `min_kasbah` this kasbah does not meet or that is no `X.Y.Z`, a
+missing, malformed or reserved `name`, a field of the wrong type)
 or a file shaped too badly for a rule to read ([cli.md](cli.md) → `kasbah check`).
 `kasbah check --fix` rewrites what can be fixed mechanically — restart
 policies, log rotation, a top-level `version:`, the limits and reservations,
@@ -86,6 +87,14 @@ against it, are skipped.
   the server's 90% ([R05](compliance.md#resources) fails a malformed one).
 - `client` — groups the project's off-server backups with others
   ([S08](compliance.md#structure)).
+- `min_kasbah: 2.0.0` — the oldest kasbah the project works with, a bare
+  `X.Y.Z`. Every project command run by an older kasbah refuses the project,
+  naming the version it needs, before it connects to the server (a named
+  tag's too, for `deploy X.Y.Z` and `rollback X.Y.Z`); a bare `rollback`'s
+  target tag once the server's record names it
+  ([S09](compliance.md#structure)). Set it when the project relies on what an
+  older kasbah ignores, such as `kasbah.noRoll`. kasbah 2.0.0 is the first
+  release that reads it; an older one ignores it.
 - `mail.domain` — the mail domain the app sends from
   ([M01](compliance.md#mail-m01m03-only-if-mail-present-in-manifest) fails a
   block naming none); a deploy warns, without stopping, when the server's mail
@@ -159,7 +168,12 @@ Traefik to it.
   ([C11](compliance.md#compose)). The running containers carry the label too,
   so a rollback to a version without it is not rolled either. The value is a boolean, read as Traefik
   reads its labels ([C15](compliance.md#compose)). An unrouted service needs
-  no label: it is never rolled.
+  no label: it is never rolled. kasbah 1.2.0 and older do not know the label
+  and roll the service anyway, so a project that carries it sets
+  `min_kasbah: 2.0.0` in `kasbah.yml`.
+- Any other `kasbah.*` label warns ([C18](compliance.md#compose)): this
+  kasbah gives it no meaning, while an older or newer one may. Drop a typo;
+  for a label a newer kasbah reads, set `min_kasbah` to that release.
 
 **Everything else** — databases, caches, workers — stays off the `kasbah`
 network ([C07](compliance.md#compose), a failure): Traefik is on every

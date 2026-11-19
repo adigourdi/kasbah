@@ -218,3 +218,68 @@ func TestDev(t *testing.T) {
 		}
 	}
 }
+
+func TestRelease(t *testing.T) {
+	for _, s := range []string{"2.0.0", "0.1.0", "10.20.30"} {
+		if _, err := Release(s); err != nil {
+			t.Errorf("Release(%q): %v", s, err)
+		}
+	}
+	for _, s := range []string{"", "v2.0.0", ">=2.0.0", "2.0", "2", "2.0.0-rc.1", "2.0.0+g1", "02.0.0", "2.0.0 ", "2.0.x"} {
+		if _, err := Release(s); err == nil {
+			t.Errorf("Release(%q) accepted", s)
+		}
+	}
+}
+
+func TestMeets(t *testing.T) {
+	const dev = "1.2.1-dev.218.1763500000+gabc1234"
+	for _, tc := range []struct {
+		build, min string
+		want       bool
+	}{
+		{"1.2.0", "1.2.0", true},
+		{"1.2.0", "1.1.9", true},
+		{"2.0.0", "1.9.9", true},
+		{"1.2.0", "1.2.1", false},
+		{"1.2.0", "1.3.0", false},
+		{"1.2.0", "2.0.0", false},
+		{dev, "1.2.1", true},
+		{dev, "1.2.0", true},
+		{dev, "0.9.0", true},
+		{dev, "1.2.2", true},
+		{dev, "1.3.0", true},
+		{dev, "2.0.0", true},
+		{dev, "1.2.3", false},
+		{dev, "1.4.0", false},
+		{dev, "2.1.0", false},
+		{dev, "3.0.0", false},
+		{"1.2.1-dev.218.1763500000+gabc1234.dirty", "2.0.0", true},
+		{"2.0.0-dev.3.1763500000+gabc1234", "2.0.0", true},
+		{"2.0.0-dev.3.1763500000+gabc1234", "2.1.0", true},
+		{"1.0.0-dev.0.1700000000", "1.0.1", true},
+		{"1.3.0-rc.1", "1.3.0", true},
+		{"1.3.0-rc.1", "1.2.9", true},
+		{"1.3.0-rc.1", "1.3.1", false},
+		{"1.3.0-rc.1", "1.4.0", false},
+		{"1.3.0-rc.1.4.1763500000+gabc1234", "1.3.0", true},
+		{"1.3.0-rc.1.4.1763500000+gabc1234", "1.3.1", false},
+		{"1.3.0-rc.1.4.1763500000+gabc1234", "2.0.0", false},
+		{"1.2.1-dev", "1.2.2", true},
+		{"1.2.1-dev", "2.0.0", true},
+		{"1.2.1-dev", "1.2.3", false},
+		{"1.2.1-dev", "2.1.0", false},
+		{"1.2.1-dev.x", "1.2.2", false},
+		{"1.3.0-rc.1", "2.0.0", false},
+		{"not-a-build", "0.0.1", false},
+		{"", "0.0.1", false},
+	} {
+		min, err := Release(tc.min)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := Meets(tc.build, min); got != tc.want {
+			t.Errorf("Meets(%q, %s) = %v, want %v", tc.build, tc.min, got, tc.want)
+		}
+	}
+}

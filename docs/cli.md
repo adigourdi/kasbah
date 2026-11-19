@@ -1012,8 +1012,9 @@ that is not a mapping; inside a mapping `http.routers`, a router that is not a
 mapping or a `websecure` router whose `tls:` is not one; an unreadable
 `.env.prod.example`; and a `kasbah.yml` that does not load — YAML that does
 not parse or is not one mapping, a missing, non-integer or newer `schema`
-(S02), a reserved `name` (S07), a missing or malformed one, a field of the
-wrong type. A missing `kasbah.yml` (S01, exit 2) and the S02 and S07 refusals
+(S02), a `min_kasbah` this kasbah does not meet or that is no `X.Y.Z` (S09),
+a reserved `name` (S07), a missing or malformed one, a field of the
+wrong type. A missing `kasbah.yml` (S01, exit 2) and the S02, S07 and S09 refusals
 print with the rule's ID ahead of the text, as the report's lines do —
 `error: S01 No kasbah.yml in current directory.` — and end on
 `help: kasbah help <ID>`. Every other bad shape — a compose file that does not parse,
@@ -2030,6 +2031,11 @@ side effect — in three cases:
   command; otherwise the run stops naming `kasbah self-update vN.M.P`.
 - **A manifest's `schema` belongs to a newer major**: the newest installed
   kasbah of that major runs the command.
+
+A manifest's `min_kasbah` this kasbah does not meet is refused, not handed
+off: the refusal names the version the project needs and this one, and the
+way on is `kasbah self-update` — or, for a build with no stamp, which meets
+none, a stamped build (`project-manifest.md` → `min_kasbah`).
 
 **A dev build asks before it replaces a release.** When the workstation runs a
 dev build and the server a release (an `-rc.N` included) that the dev build
