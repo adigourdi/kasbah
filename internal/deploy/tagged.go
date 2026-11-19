@@ -428,10 +428,16 @@ func (r *run) requireTag() error {
 	if trace.Run(f) == nil && have() {
 		return nil
 	}
-	return cli.Fail("%s is not a tag in this repository, and `git fetch --tags` did not bring it", ref).Cont(
-		r.target+" ran "+r.version+", so the tag exists somewhere — every file this",
-		"run would ship comes out of it, and there is nothing to ship without it.",
-		"fetch it from wherever that version was tagged, then retry.")
+	e := cli.Fail("%s is not a tag in this repository, and `git fetch --tags` did not bring it", ref)
+	fetch := "git fetch <remote> tag " + ref
+	if r.mode == "rollback" {
+		return e.Cont(r.target+" ran "+r.version+", so the tag exists somewhere — every file this",
+			"run would ship comes out of it, and there is nothing to ship without it.").Next(
+			"fetch it from wherever that version was tagged (`" + fetch + "`), then retry.")
+	}
+	return e.Cont("a named deploy ships exactly what the tag holds, and there is nothing to ship without it.").Next(
+		"tag the commit it should ship (`git tag "+ref+" <commit>`) or fetch the tag from where it",
+		"was cut (`"+fetch+"`), then retry — or deploy HEAD without a version:  kasbah deploy "+r.target)
 }
 
 // refType is blob, tree or "" for a path at ref: `git ls-tree` exits 0 with

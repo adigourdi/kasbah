@@ -888,7 +888,10 @@ small without sacrificing history.
      deployed" from evidence it does not have.
 4. Verify git tag v<target> exists locally.
      missing → `git fetch --tags`, retry
-     still missing → hard fail
+     still missing → hard fail, naming `git fetch <remote> tag v<target>`.
+     A rollback can say the tag exists somewhere, since the server ran it;
+     `kasbah deploy X.Y.Z` cannot, and names tagging the commit
+     (`git tag v<target> <commit>`) or deploying HEAD without a version.
 5. Read v<target>'s files WITHOUT touching the working tree:
      git show v<target>:kasbah.yml       → used for the sync list
      git show v<target>:compose.prod.yml  → used for the image set

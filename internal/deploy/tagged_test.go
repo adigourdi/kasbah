@@ -305,6 +305,37 @@ func TestRollbackRefusals(t *testing.T) {
 	}
 }
 
+// The refusal argues from the record only where there is one: a deploy's
+// server never ran the version.
+func TestTaggedMissingTag(t *testing.T) {
+	for _, c := range []struct {
+		mode       string
+		f          *fake
+		want, next string
+	}{
+		{"rollback", &fake{record: record("2026-02-01T00:00:00+00:00 deploy 3.0.0 no-backup\n", "", true)},
+			"d@h ran 3.0.0, so the tag exists somewhere",
+			"fetch it from wherever that version was tagged (`git fetch <remote> tag v3.0.0`), then retry."},
+		{"deploy", &fake{},
+			"a named deploy ships exactly what the tag holds",
+			"(`git tag v3.0.0 <commit>`)"},
+	} {
+		history(t, "")
+		err, out := runTagged(t, c.f, Options{Target: "d@h", Version: "3.0.0"}, c.mode)
+		var e *cli.Error
+		if !errors.As(err, &e) || !strings.Contains(out, "v3.0.0 is not a tag in this repository") || !strings.Contains(e.Error(), c.want) {
+			t.Fatalf("%s: %v\n%s", c.mode, err, out)
+		}
+		if next := strings.Join(e.NextLines(), "\n"); !strings.Contains(next, c.next) || !strings.Contains(out, c.next) {
+			t.Errorf("%s: next step %q\n%s", c.mode, next, out)
+		}
+		if c.mode == "deploy" && (strings.Contains(out, " ran 3.0.0") || !strings.Contains(out, "kasbah deploy d@h")) {
+			t.Errorf("deploy: claims a run or offers no untagged way on:\n%s", out)
+		}
+		noState(t, c.mode)
+	}
+}
+
 func TestTaggedRefChecks(t *testing.T) {
 	history(t, "")
 	write(t, map[string]string{"kasbah.yml": "schema: 1\nname: demo\nsync:\n  - compose.prod.yml -> compose.yml\n  - gone.txt\n  - extra.txt/\n"})
