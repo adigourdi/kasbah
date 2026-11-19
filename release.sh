@@ -30,7 +30,8 @@
 # line's own commit.
 #
 # minisign runs in its container and asks for the key's password itself, so a
-# release needs a terminal on stdin (there is no environment variable for it).
+# release needs a terminal on stdin (there is no environment variable for it);
+# a failed signing is asked again, three tries in all, before the run gives up.
 # Needs gh (authenticated), docker, git and sha256sum on PATH.
 
 set -euo pipefail
@@ -216,8 +217,15 @@ release() {
 
     stage "$tag" "$scratch"
     cp "$repo_dir/release.pub" "$scratch/release.pub"
-    minisign -v "$key_dir:/keys:ro" -v "$scratch:/work" -w /work "$minisign_image" \
-        -S -s "/keys/$key_name" -t "kasbah $ver" -m checksums.txt
+    # Three tries at the key's password, so a typo does not cost the tests and
+    # both builds again.
+    local try
+    for try in 1 2 3; do
+        minisign -v "$key_dir:/keys:ro" -v "$scratch:/work" -w /work "$minisign_image" \
+            -S -s "/keys/$key_name" -t "kasbah $ver" -m checksums.txt && break
+        [ "$try" -lt 3 ] || die "signing failed three times — nothing released"
+        echo "release: signing failed (try $try of 3) — enter the key's password again" >&2
+    done
     # The committed public key must be the secret key's pair, or nobody can verify.
     minisign -v "$scratch:/work:ro" -w /work "$minisign_image" -V -p release.pub -m checksums.txt >/dev/null \
         || die "release.pub does not verify what $key signed — the pair does not match"

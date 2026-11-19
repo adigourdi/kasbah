@@ -42,6 +42,7 @@ export GH_LOG="$tmpdir/gh.log"
 export GH_KEEP="$tmpdir/gh-keep"
 export TEST_SH_LOG="$tmpdir/test-sh.log"
 export BUILD_COUNT="$tmpdir/build-count"
+export SIGN_COUNT="$tmpdir/sign-count"
 export VERIFY_SAW_PUB="$tmpdir/verify-saw-pub"
 
 # Mounts map container paths back to the host, so the minisign stub writes
@@ -91,6 +92,10 @@ case " $* " in
         printf 'fake kasbah darwin/arm64%s\n' "$salt" > dist/darwin/kasbah-darwin-arm64
         echo "built kasbah (stub $n)" ;;
     *" jedisct1/minisign -S "*)
+        # The first MINISIGN_S_FAILS signings fail, as a mistyped password does.
+        n=$(( $(cat "$SIGN_COUNT" 2>/dev/null || echo 0) + 1 ))
+        echo "$n" > "$SIGN_COUNT"
+        [ "$n" -le "${MINISIGN_S_FAILS:-0}" ] && exit 1
         printf 'fake signature\n' > "$(host_of /work/checksums.txt.minisig)" ;;
     *" jedisct1/minisign -V "*)
         cp "$(host_of /work/release.pub)" "$VERIFY_SAW_PUB"
@@ -139,7 +144,7 @@ export KASBAH_RELEASE_KEY="$key_dir/release.key"
 # fresh <version> — a committed, pushed repo holding release.sh, a VERSION, a
 # test.sh that passes (TEST_SH_RC otherwise) and logs, and the key pair.
 fresh() {
-    rm -rf "$repo" "$origin" "$key_dir" "$DOCKER_LOG" "$GH_LOG" "$GH_KEEP" "$TEST_SH_LOG" "$BUILD_COUNT" "$BUILD_COUNT.goos" "$VERIFY_SAW_PUB"
+    rm -rf "$repo" "$origin" "$key_dir" "$DOCKER_LOG" "$GH_LOG" "$GH_KEEP" "$TEST_SH_LOG" "$BUILD_COUNT" "$BUILD_COUNT.goos" "$SIGN_COUNT" "$VERIFY_SAW_PUB"
     mkdir -p "$repo" "$key_dir"
     cp "$repo_dir/release.sh" "$repo_dir/get.sh" "$repo/"
     printf '%s\n' "$1" > "$repo/VERSION"
@@ -491,6 +496,25 @@ unset BUILD_DRIFT
 assert '[ "$rc" = 1 ]' "two builds that differ on a pre-existing tag: refused (exit $rc)"
 assert '[ "$(local_tags)" = v1.2.3 ]' "two builds that differ on a pre-existing tag: the tag was not this run's to take away (tags: $(local_tags | tr '\n' ' '))"
 assert '[ -z "$(origin_tags)" ]' "two builds that differ on a pre-existing tag: nothing pushed"
+
+# A mistyped password is asked again: two failed signings still release, a
+# third gives up with the tag taken away and nothing pushed.
+fresh 1.2.3
+export MINISIGN_S_FAILS=2
+release v1.2.3
+unset MINISIGN_S_FAILS
+assert '[ "$rc" = 0 ] && [ "$(cat "$SIGN_COUNT")" = 3 ]' "two failed signings: released on the third try (exit $rc, signed $(cat "$SIGN_COUNT") times: $err)"
+assert '[ "$(cat "$BUILD_COUNT")" = 2 ] && [ "$(grep -c "^test.sh" "$TEST_SH_LOG")" = 1 ]' "two failed signings: tests and builds ran once"
+assert 'grep -q "signing failed (try 1 of 3)" <<<"$err" && grep -q "signing failed (try 2 of 3)" <<<"$err"' "two failed signings: each said (got: $err)"
+assert '[ "$(origin_tags)" = v1.2.3 ]' "two failed signings: the tag was pushed"
+
+fresh 1.2.3
+export MINISIGN_S_FAILS=3
+release v1.2.3
+unset MINISIGN_S_FAILS
+assert_nothing_released "three failed signings"
+assert '[ "$(cat "$SIGN_COUNT")" = 3 ]' "three failed signings: tried three times (signed $(cat "$SIGN_COUNT"))"
+assert 'grep -q "signing failed three times" <<<"$err"' "three failed signings: says so (got: $err)"
 
 # A build whose stamp is not the tag — what another tag on HEAD or a dirty
 # tree would give — is refused after the first build, before anything is signed.

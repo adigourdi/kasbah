@@ -100,6 +100,7 @@ For maintainers. Releases are GitHub Releases cut from a local checkout.
 The release commit sets `VERSION` to the new number: a patch for fixes, a
 minor for additive features, a major for a schema change. `./release.sh` needs
 that commit pushed and the tree clean, `gh` authenticated, and a terminal for
-the key's password; a `-rc.N` suffix makes a pre-release. What a release
+the key's password, asked up to three times; a `-rc.N` suffix makes a
+pre-release. What a release
 contains and how builds are versioned: [docs/overview.md](docs/overview.md)
 (Distribution) and the header of `release.sh`.
