@@ -547,8 +547,19 @@ below). The only differences:
         .env.prod.example declares, not a KASBAH_ key, set non-empty in .env
         to one line, and the result has the YAML structure of the fragment
         as written (traefik.md → Project fragment) — a refusal names the key
-        and `kasbah env set KEY USER@HOST`, never the value. Any of these
-        failing starts nothing and puts the files back.
+        and `kasbah env set KEY USER@HOST`, never the value — and every
+        backend host of the rendered fragment is the project's own name on
+        its kasbah network, read from `docker compose -p <name> config`
+        (traefik.md → Backends are the project's own; another project's
+        name, an IP, an outside or qualified host, a user or password
+        before the host, or a compose model that cannot be read is refused
+        with `kasbah help T07`, quoting a host written in the fragment, or
+        naming the ${KEY} that filled one, its line and `kasbah env set KEY
+        USER@HOST`), and no service, alias or container_name on that
+        network or on kasbah-net holds a dot (`kasbah help C16`; a compose
+        model that cannot be read is left to compose's up there, which fails
+        on it too).
+        Any of these failing starts nothing and puts the files back.
      a. Create backups/<outgoing version>-<stamp>/ and run the backup hooks
         into it ($KASBAH_BACKUP_DIR), against the currently-running (previous
         version) containers — --skip-hooks does not skip them.
@@ -585,9 +596,12 @@ below). The only differences:
    *local* side sends it (its content — a symlinked fragment sends what it
    points to — with its size and sha256) once the engine has returned 0 with
    a valid report, and `kasbah remote deploy fragment` fills its ${KEY}s from
-   /apps/<name>/.env as the pre-flight did, then renames it into place, mode
-   640; identical bytes are left alone. A render that fails leaves the live
-   file as it was. The ordering is the point (see below). A
+   /apps/<name>/.env as the pre-flight did, qualifies each backend host with
+   the project's network (`http://web:80` → `http://web.<name>_kasbah:80`,
+   every other byte kept) after refusing one that is not the project's own,
+   as the pre-flight did, then renames it into place, mode 640; identical
+   bytes are left alone. A render or a refusal leaves the live file as it
+   was. The ordering is the point (see below). A
    checkout with no fragment writes nothing and is warned about. An unrouted
    project (`routed: false`) is not warned about: instead the route an
    earlier, routed version left at /apps/traefik/dynamic/<name>.yml is
@@ -993,8 +1007,11 @@ small without sacrificing history.
         it, to versions.log, rotate, apply backup retention.
 11. Restore v<target>'s Traefik fragment: <apps>/traefik/dynamic/<name>.yml,
     installed from the same extraction as a deploy's step 9 installs it, its
-    ${KEY}s filled from the server's .env as this run leaves it (the engine's
-    pre-flight rendered that same fragment first); a ${…} naming a key
+    ${KEY}s filled from the server's .env as this run leaves it and its
+    backends scoped to the project's network (the engine's pre-flight
+    rendered and checked that same fragment first: a v<target> whose
+    fragment targets a backend that is not the project's own is refused
+    before anything starts, as a deploy is); a ${…} naming a key
     the fragment may not take is left as written, with one warning line, as
     text from before deploys filled ${KEY}s — a declared key still needs its
     value. **Last**, once the remote step has
@@ -1257,7 +1274,9 @@ directory is listed in `files.md`).
   port, no `depends_on` condition but `service_started` (only a
   plain `up` waits for the others — a migration that must succeed first), every
   host the **live** fragment reaches it by being its service name or a `kasbah`
-  alias (so the route Traefik holds during the roll keeps answering), and
+  alias (so the route Traefik holds during the roll keeps answering; a live
+  host qualified with `<name>_kasbah` counts as its bare name, any other
+  qualified host reaches nothing), and
   health wait on, has its stopped old containers removed, gets its new replicas
   started beside the running ones (`up -d --no-deps --no-recreate --scale
   <svc>=<running+replicas>`), waits for them to be healthy under

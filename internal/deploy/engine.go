@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
@@ -804,9 +805,25 @@ func (e *engine) preflight() error {
 	if len(missing) > 0 {
 		return failf("not on this server: %s — run `kasbah build-push` for %s first. Nothing was changed.", strings.Join(missing, " "), e.sp.Version)
 	}
+	var out []byte
+	var kept []string
 	if e.sp.Fragment != "" {
-		_, kept, err := RenderFragment(e.dir, []byte(e.sp.Fragment), e.sp.Target, e.sp.Tagged)
-		if err != nil {
+		var err error
+		if out, kept, err = RenderFragment(e.dir, []byte(e.sp.Fragment), e.sp.Target, e.sp.Tagged); err != nil {
+			return failf("%v", err)
+		}
+	}
+	model := sync.OnceValues(func() (*composeModel, error) { return readModel(e.project, composeQuery(e.dir)) })
+	// An unread model is scopeFragment's to refuse, and fails compose's up too.
+	if !composefile.Serviceless(e.dir) {
+		if m, err := model(); err == nil {
+			if err := m.dotted(e.project); err != nil {
+				return failf("%v", err)
+			}
+		}
+	}
+	if e.sp.Fragment != "" {
+		if _, err := scopeFragment([]byte(e.sp.Fragment), out, scoping{e.project, e.sp.Target, e.sp.Mode, model}); err != nil {
 			return failf("%v", err)
 		}
 		if len(kept) > 0 {

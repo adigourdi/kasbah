@@ -901,6 +901,25 @@ assert '[ "$rc" = "0" ] && [ "$(greeting_header "hello again")" = "hello again" 
     "$KASBAH_BIN" env set BUILT_APP_GREETING "$RIG_TARGET" --no-restart >/dev/null 2>&1 ) || fail=1
 ( cd "$projdir" && git checkout -q -- traefik-dynamic.yml ) || exit 2
 
+# --- The installed route is scoped to the project's own network -------------------------
+# Traefik sits on every project's network, so a bare backend name resolves on
+# any of them: the installed copy names built-app_kasbah, the project's file
+# does not, and a backend that is not the project's is refused before anything starts.
+route_text=$(rig_ssh "cat $route_remote" 2>/dev/null)
+assert 'grep -qF "url: \"http://built-app-web.built-app_kasbah:80\"" <<<"$route_text" && ! grep -qF "http://built-app-web:80" <<<"$route_text"' \
+    "the installed route targets built-app-web on built-app_kasbah alone (route: $(grep -F url: <<<"$route_text"))"
+assert 'grep -qF "url: \"http://built-app-web:80\"" "$projdir/traefik-dynamic.yml"' \
+    "and the project's traefik-dynamic.yml keeps the bare name"
+route_before=$(rig_ssh "sha256sum $route_remote" 2>/dev/null)
+sed -i 's|http://built-app-web:80|http://demo-web:80|' "$projdir/traefik-dynamic.yml"
+build_push "$RIG_TARGET" --dirty; rc=$?
+assert '[ "$rc" = "0" ]' "build-push --dirty ships the tree whose fragment targets another project's name (exit $rc: $(cli_err))"
+deploy "$RIG_TARGET" --dirty; rc=$?
+assert '[ "$rc" = "1" ] && grep -qF "host \"demo-web\" is not a name of this project on its kasbah network (built-app_kasbah)" "$tmpdir/err" && grep -qF "kasbah help T07" "$tmpdir/err" && grep -qF "nothing was started" "$tmpdir/err"' \
+    "a backend that is not the project's stops the deploy before anything starts (exit $rc: $(cli_err))"
+assert '[ "$(rig_ssh "sha256sum $route_remote" 2>/dev/null)" = "$route_before" ]' "and the live route is the one before it"
+( cd "$projdir" && git checkout -q -- traefik-dynamic.yml ) || exit 2
+
 # --- routed: false takes down the route a routed version left ---------------------------
 route_remote="$apps/traefik/dynamic/$project.yml"
 route_state() { rig_ssh "[ -f $route_remote ] && echo present || echo absent" 2>/dev/null | tr -d '\r'; }

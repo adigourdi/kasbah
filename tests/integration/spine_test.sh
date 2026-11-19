@@ -447,9 +447,9 @@ frag_stat=$(rig_ssh "stat -c '%F %a' $fragment" 2>/dev/null)
 assert '[ "$frag_stat" = "regular file 640" ]' \
     "$fragment is a regular file, mode 640 (got '$frag_stat')"
 frag_sha=$(rig_ssh "sha256sum $fragment | cut -d' ' -f1" 2>/dev/null)
-local_sha=$(sha256sum "$projdir/traefik-dynamic.yml" | cut -d' ' -f1)
+local_sha=$(sed 's|http://demo-web:80|http://demo-web.demo_kasbah:80|' "$projdir/traefik-dynamic.yml" | sha256sum | cut -d' ' -f1)
 assert '[ "$frag_sha" = "$local_sha" ]' \
-    "and it is the project's traefik-dynamic.yml byte for byte
+    "and it is the project's traefik-dynamic.yml byte for byte, its backend scoped to demo_kasbah
         rig:   $frag_sha
         local: $local_sha"
 assert '[ "$(rig_ssh "[ -e $apps/$project/traefik-dynamic.yml ] && echo present || echo absent" 2>/dev/null)" = "absent" ]' \

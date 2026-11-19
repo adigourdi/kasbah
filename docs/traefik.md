@@ -127,10 +127,12 @@ runs by hand elsewhere on the host never gets Traefik attached. A Traefik recrea
 (`docker compose -p traefik up -d`) has lost them: every site answers 502 until
 `server init` is re-run.
 
-**`kasbah-net`** (a frozen name) is still created by the Traefik stack, and a
-project still routed through it — `networks: [kasbah-net]`, `external: true` —
-keeps working, with `kasbah check` warning that it should move to a `kasbah`
-network. Projects on it see each other, as all projects did before.
+**`kasbah-net`** (a frozen name) is still created by the Traefik stack, but it
+no longer routes a project: a service on it alone — `networks: [kasbah-net]`,
+`external: true` — is not a name of the project's `kasbah` network, so a deploy
+refuses a fragment that targets it (Project fragment), though `kasbah check`
+only warns that the service should move to a `kasbah` network. Projects on it
+see each other.
 
 Why not put the whole project on its network via `default:`? Compose registers
 every service's **service name** as a DNS alias on each network it joins, and
@@ -152,6 +154,18 @@ its neighbour's container would receive the neighbour's traffic. Every name on a
 project's `kasbah` network must therefore carry the project's own prefix (C09,
 a failure), and its network must be exactly `kasbah: {}` (C04): any setting
 makes compose try to recreate it while Traefik is attached, which fails.
+
+The installed fragment does not rest on names alone: each backend host in it
+is qualified with the project's network, `http://web:80` installed as
+`http://web.<project>_kasbah:80` (the network's name as compose resolves it). Docker's
+DNS first looks the whole dotted name up on every network the asker is on, so
+an alias literally named `web.<project>_kasbah` on another network Traefik is
+on would answer before this project's `web` does; the qualified name answers on
+the project's network only because no project kasbah deploys may put a dotted
+name on its `kasbah` network or on the legacy `kasbah-net`, which Traefik is
+also on — joined by that name or as a `default` network named `kasbah-net`
+(C16, refused by `deploy`, `deploy X.Y.Z` and `rollback` too). A project's
+`traefik-dynamic.yml` keeps the bare name.
 
 ## Discovery
 
@@ -204,7 +218,8 @@ with nothing to route says `routed: false` in its manifest and ships none —
 installs it as `/apps/traefik/dynamic/<manifest.name>.yml` — no
 intermediate copy, no entry in the manifest's `sync:` list. Kasbah
 handles it out-of-band: the server's kasbah fills its `${KEY}`s from the
-project's `.env` (below) and renames the result into place, mode `640`.
+project's `.env` (below), scopes its backends to the project's network
+(below), and renames the result into place, mode `640`.
 Traefik picks up the change on the next watch tick.
 
 The filename `traefik-dynamic.yml` mirrors Traefik's own terminology
@@ -240,9 +255,47 @@ http:
 
 The service URL names the routed service on the project's `kasbah` network —
 stable across restarts and rolling deploys, since compose registers the service
-name as an alias for every replica. A `container_name` works too, but a service
-pinned to one cannot roll: it is recreated in place, briefly unrouted. On the
-legacy `kasbah-net` only a `container_name` will do (T07).
+name as an alias for every replica. A `networks.kasbah.aliases` entry or a
+`container_name` of a service on that network works too, but a service pinned
+to a `container_name` cannot roll: it is recreated in place, briefly unrouted.
+
+### Backends are the project's own
+
+Every `http.services.*.loadBalancer.servers[].url`, and every `tcp` or `udp`
+service's `servers[].address` (`host:port`), is a backend. The server installs
+each with its host qualified by the project's `kasbah` network —
+`http://myapp-web:80` becomes `http://myapp-web.myapp_kasbah:80`, keeping the
+scheme, port, path and every other byte of the file as written — and refuses
+one whose host, once its `${KEY}`s are filled, is not the project's own name
+on that network: a service joined to it, one of its `networks.kasbah.aliases`,
+or its `container_name`, read from `docker compose -p <project> config`,
+matched in any case as DNS matches it (`http://WEB:80` is `web`'s, and
+installed as `http://WEB.myapp_kasbah:80`). The host is the one Go's URL
+parser reads, which is what Traefik dials: a URL with a user or password
+before its host (`http://web:pw@10.0.0.5:80` dials `10.0.0.5`) is refused, as
+is one that holds a tab or a line break or does not parse. A url or address
+written as a block scalar that keeps its closing line break (`|`, `>`, `|+`,
+`>+`) is refused too, as Traefik reads the break as part of the value and
+disables the service: strip it (`|-`, `>-`) or write it on one line. Another
+project's name, an IP address (an unbracketed IPv6 `address` too), an outside
+hostname and a host already qualified (any dot) are refused alike, naming
+the host and the names the project has there (`kasbah help T07`) — or, for a
+host a `${KEY}` filled, the key and its line and
+`kasbah env set KEY USER@HOST`, never the value. A backend written as an
+anchor, or inside an anchored mapping or sequence — its own, or one holding an
+alias the backend is read through — that is also aliased outside a backend is
+refused, asking for the URL written out, as qualifying it would change that
+other use too. The block-scalar and anchor refusals, and a backend that cannot
+be located (below), name a `${KEY}` that filled it but no `kasbah env set`:
+the fix is in how the fragment is written. The compose model must not put a
+dotted name on the project's `kasbah` network or on `kasbah-net` either
+(above, `kasbah help C16`). `deploy`, `deploy X.Y.Z` and `rollback` hold
+every version's fragment to this — in the engine's pre-flight, before
+anything starts, and again when the fragment is installed, which leaves the
+live file as it was on a refusal. A compose model that cannot be read refuses
+too: nothing is installed unscoped. So is a fragment that does not parse as
+YAML, and a backend that cannot be located in the text — not written as one
+plain, quoted or block scalar — asking for one on a line.
 
 Both routers, not just the `websecure` one: without the `web` half the
 hostname answers plain HTTP with Traefik's 404 rather than a redirect, which
@@ -303,7 +356,8 @@ http:
 - A changed value reaches Traefik on the next deploy, which renders new bytes
   and Traefik reloads them live; `kasbah env set` alone does not re-render the
   fragment.
-- A fragment with no `${KEY}` and no `$${` is installed byte for byte.
+- A fragment with no `${KEY}` and no `$${` is installed byte for byte, but
+  for its backends' scoped hosts (above).
 
 Traefik's own `{{ env "X" }}` reads the Traefik container's environment, which
 holds a DNS provider's credentials and nothing per project.

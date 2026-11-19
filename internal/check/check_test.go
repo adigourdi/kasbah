@@ -794,6 +794,35 @@ func TestC15(t *testing.T) {
 	}
 }
 
+func TestC16(t *testing.T) {
+	web := "    networks: [kasbah, internal]\n  db:"
+	with := func(lines string) string { return strings.Replace(rollCompose, web, lines, 1) }
+	const why = " — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend; a deploy refuses it"
+	for _, tc := range []struct{ name, compose, want string }{
+		{"a kasbah alias", with("    networks: {kasbah: {aliases: [demo-www, web.other_kasbah]}, internal: {}}\n  db:"),
+			"  ✗ C16 Names on the kasbah network or kasbah-net with a dot: web.other_kasbah (alias of demo-web)" + why},
+		{"a container_name and a service name", strings.Replace(with("    container_name: demo.web\n"+web), "  demo-web:", "  demo.site:", 1),
+			"  ✗ C16 Names on the kasbah network or kasbah-net with a dot: demo.site (service) demo.web (container_name of demo.site)" + why},
+		// Traefik is on kasbah-net too, joined by name or as the default network.
+		{"a kasbah-net alias", strings.Replace(legacyCompose, "    networks: [kasbah-net]\n", "    networks: {kasbah-net: {aliases: [web.victim_kasbah]}}\n", 1),
+			"  ✗ C16 Names on the kasbah network or kasbah-net with a dot: web.victim_kasbah (alias of demo-web)" + why},
+		{"a default network named kasbah-net", strings.Replace(strings.Replace(legacyCompose, "    networks: [kasbah-net]\n", "", 1), "container_name: demo-web", "container_name: web.victim_kasbah", 1) + "  default: {name: kasbah-net, external: true}\n",
+			"  ✗ C16 Names on the kasbah network or kasbah-net with a dot: web.victim_kasbah (container_name of demo-web)" + why},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			project(t, map[string]string{"compose.prod.yml": tc.compose})
+			if out, _, code := check(t); !strings.Contains(out, tc.want+"\n") || code == 0 {
+				t.Errorf("exit %d, no line %q in:\n%s", code, tc.want, out)
+			}
+		})
+	}
+	// Off the kasbah network a dot is no business of C16's; silent when it passes.
+	project(t, map[string]string{"compose.prod.yml": strings.Replace(rollCompose, "    networks: [internal]\n", "    container_name: db.internal\n    networks: [internal]\n", 1)})
+	if out, _, _ := check(t); strings.Contains(out, "C16") {
+		t.Errorf("C16 speaks:\n%s", out)
+	}
+}
+
 func TestC14(t *testing.T) {
 	with := func(ports string) string {
 		return strings.Replace(relayCompose, `    ports: ["5000:5000/udp"]`, "    ports: "+ports, 1)

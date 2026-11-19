@@ -308,7 +308,7 @@ func (c *checker) s08() {
 	}
 }
 
-// --- Compose (C01–C05, C07–C11, C14, C15) ----------------------------------------
+// --- Compose (C01–C05, C07–C11, C14–C16) ----------------------------------------
 
 var restartOK = regexp.MustCompile(`^(unless-stopped|always|on-failure(:[0-9]+)?)$`)
 
@@ -375,6 +375,7 @@ func (c *checker) composeSection() {
 	onHN, own, defaultAliases := c.networks()
 	c.c09(onHN, defaultAliases)
 	c.c09Project(own)
+	c.c16(defaultAliases)
 	c.c10()
 	c.c05()
 	if c.anyBuilt() {
@@ -827,6 +828,49 @@ func (c *checker) c09Project(own []string) {
 		c.passf("C09", "Names on the kasbah network are project-prefixed")
 	} else {
 		c.failf("C09", "Names on the kasbah network that are not '%s' or '%s-*': %s — Traefik resolves names across every project's network, so another project's name can answer for this one's", name, name, strings.Join(bad, " "))
+	}
+}
+
+// c16 fails a name with a dot on the kasbah network or kasbah-net: Docker
+// answers a whole dotted name on every network Traefik is on, so
+// web.<other>_kasbah would answer for another project's backend. Silent when
+// none has one.
+func (c *checker) c16(defaultAliases bool) {
+	nets := []string{projectNet, "kasbah-net"}
+	if defaultAliases {
+		nets = append(nets, "default")
+	}
+	var bad []string
+	for _, svc := range c.services {
+		on := c.svc(svc, "networks")
+		joined := defaultAliases && !hasKey(c.svc(svc), "networks")
+		var aliases []string
+		for _, k := range nets {
+			if !joinsNet(on, k) {
+				continue
+			}
+			joined = true
+			for _, a := range asList(opt(on, k, "aliases")) {
+				if s := tree.Text(a); strings.Contains(s, ".") && !slices.Contains(aliases, s) {
+					aliases = append(aliases, s)
+				}
+			}
+		}
+		if !joined {
+			continue
+		}
+		if strings.Contains(svc, ".") {
+			bad = append(bad, svc+" (service)")
+		}
+		for _, a := range aliases {
+			bad = append(bad, a+" (alias of "+svc+")")
+		}
+		if cn := scalar(c.svc(svc, "container_name")); strings.Contains(cn, ".") {
+			bad = append(bad, cn+" (container_name of "+svc+")")
+		}
+	}
+	if len(bad) > 0 {
+		c.failf("C16", "Names on the kasbah network or kasbah-net with a dot: %s — Docker answers a dotted name on every network Traefik is on, so it could answer for another project's backend; a deploy refuses it", strings.Join(bad, " "))
 	}
 }
 

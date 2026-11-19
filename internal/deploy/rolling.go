@@ -105,22 +105,14 @@ type roll struct {
 // model reads the compose file as compose resolves it, profiles and
 // interpolation applied.
 func (e *engine) model() (*composeModel, error) {
-	out, err := e.query("compose", "-p", e.project, "config", "--format", "json")
-	if err != nil {
-		return nil, err
-	}
-	var m composeModel
-	if err := json.Unmarshal([]byte(out), &m); err != nil {
-		return nil, err
-	}
-	return &m, nil
+	return readModel(e.project, e.query)
 }
 
 // routedBy is the fragment host svc answers on the project network, "" for
-// none; a container_name answers on any network.
+// none, matched in any case as DNS does; a container_name answers on any network.
 func routedBy(name string, s composeService, hosts []string) (host string, byContainerName bool) {
 	for _, h := range hosts {
-		if s.ContainerName != "" && h == s.ContainerName {
+		if s.ContainerName != "" && strings.EqualFold(h, s.ContainerName) {
 			return h, true
 		}
 	}
@@ -133,7 +125,7 @@ func routedBy(name string, s composeService, hosts []string) (host string, byCon
 		names = append(names, n.Aliases...)
 	}
 	for _, h := range hosts {
-		if slices.Contains(names, h) {
+		if slices.ContainsFunc(names, func(n string) bool { return strings.EqualFold(n, h) }) {
 			return h, false
 		}
 	}
@@ -169,11 +161,8 @@ func (e *engine) rolls() (*composeModel, []roll, []stay) {
 		e.note("could not read the compose model (%v) — every service is recreated in place", err)
 		return nil, nil, nil
 	}
-	netName := e.project + "_" + projectNet
-	if n, ok := m.Networks[projectNet]; ok && n.Name != "" {
-		netName = n.Name
-	}
-	live := fragmentHosts(filepath.Join(filepath.Dir(e.dir), "traefik", "dynamic", e.project+".yml"))
+	netName := m.netName(e.project)
+	live := liveHosts(fragmentHosts(filepath.Join(filepath.Dir(e.dir), "traefik", "dynamic", e.project+".yml")), netName)
 	var out []roll
 	var stays []stay
 	for _, svc := range sortedKeys(m.Services) {

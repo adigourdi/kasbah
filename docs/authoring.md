@@ -120,9 +120,12 @@ Traefik to it.
 - A routed service off it fails ([C03](compliance.md#compose)). The legacy
   shared `kasbah-net` warns instead, because every project's routed
   containers reach each other there, and a fragment cannot target a service
-  on it by service name ([T07](compliance.md#traefik), a failure): only a
-  `container_name` will do, and a service reached by its `container_name`
-  does not roll ([C11](compliance.md#compose), a warning).
+  on it by service name ([T07](compliance.md#traefik), a failure). `deploy`
+  goes further and refuses any backend on `kasbah-net` alone: the server
+  installs each backend qualified with the project's `kasbah` network
+  ([traefik.md → Backends are the project's own](traefik.md#backends-are-the-projects-own)).
+  A service reached by its `container_name` does not roll
+  ([C11](compliance.md#compose), a warning).
 - Any setting on the network (`external`, `name`, `driver`) fails
   ([C04](compliance.md#compose)): compose would try to recreate it under
   Traefik.
@@ -130,6 +133,11 @@ Traefik to it.
   `<name>-…` ([C09](compliance.md#compose), a failure): Traefik resolves names
   across every project's network, so a service called `web` could answer for
   another project's.
+- No name on it, or on a legacy `kasbah-net` — service, alias,
+  `container_name` — holds a dot ([C16](compliance.md#compose), a failure,
+  and `deploy` refuses it too): Docker answers a whole dotted name on every
+  network Traefik is on, so `web.<other>_kasbah` would answer for another
+  project's backend.
 - To **roll** on deploy — the new container started beside the old one, the
   old one stopped once the new one is healthy — a routed service sets no
   `container_name`, publishes no host port, declares a compose `healthcheck:`
@@ -221,7 +229,10 @@ What fails, and why:
 - A server URL naming nothing in `compose.prod.yml`, a service on no
   Traefik network, or a service on the legacy `kasbah-net` by its service
   name rather than its `container_name` ([T07](compliance.md#traefik)): there
-  every project's same-named service answers too.
+  every project's same-named service answers too. `deploy` holds the
+  rendered fragment to the stricter form on the server — a service, `kasbah`
+  alias or `container_name` on the project's `kasbah` network, written bare
+  (no IP, domain or network suffix).
 - A Traefik `@internal` service other than `noop@internal`
   ([T09](compliance.md#traefik)): `api@internal` and its kin would publish
   Traefik's API with no authentication.

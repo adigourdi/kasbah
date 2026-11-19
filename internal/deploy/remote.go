@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/adigourdi/kasbah/internal/cli"
@@ -156,9 +157,11 @@ func unroute(apps, name string, stdout, stderr io.Writer) int {
 // secrets, so it is no more readable than .env is.
 const FragmentMode = 0o640
 
-// installFragment renders the fragment on stdin (RenderFragment) and renames
-// it over <apps>/traefik/dynamic/<name>.yml: fragment=written, or unchanged
-// for the bytes already there. A failure leaves the live file as it was.
+// installFragment renders the fragment on stdin (RenderFragment), refuses a
+// dotted name on Traefik's networks (dotted), scopes its backends to the
+// project's kasbah network (scopeFragment) and renames it over
+// <apps>/traefik/dynamic/<name>.yml: fragment=written, or unchanged for the
+// bytes already there. A failure leaves the live file as it was.
 func installFragment(apps, name, size, sum, target string, tagged bool, stdin io.Reader, stdout, stderr io.Writer) int {
 	if !manifest.ValidName(name) {
 		fmt.Fprintf(stderr, "remote: invalid project name '%s'\n", name)
@@ -177,7 +180,19 @@ func installFragment(apps, name, size, sum, target string, tagged bool, stdin io
 		}
 	}
 	// The engine's pre-flight rendered it first and named what it kept.
-	out, _, err := RenderFragment(filepath.Join(apps, name), body, target, tagged)
+	dir := filepath.Join(apps, name)
+	out, _, err := RenderFragment(dir, body, target, tagged)
+	if err != nil {
+		return fail("%v", err)
+	}
+	model := sync.OnceValues(func() (*composeModel, error) { return readModel(name, composeQuery(dir)) })
+	if m, err := model(); err == nil {
+		if err := m.dotted(name); err != nil {
+			return fail("%v", err)
+		}
+	}
+	run := map[bool]string{false: "deploy", true: "deploy X.Y.Z or rollback"}[tagged]
+	out, err = scopeFragment(body, out, scoping{name, target, run, model})
 	if err != nil {
 		return fail("%v", err)
 	}
