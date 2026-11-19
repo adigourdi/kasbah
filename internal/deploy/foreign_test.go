@@ -95,12 +95,12 @@ func TestCollisions(t *testing.T) {
 		{"127.0.0.1:18000-18001:80", "0.0.0.0:18000-18001->80-81/tcp", true},
 		{"18000-18001:80/udp", "0.0.0.0:18000-18001->80-81/tcp", false},
 	} {
-		c := Collisions("demo", "/apps/demo", []Bind{bind(tc.ours, "web")}, []Holder{{Name: "x", Ports: dockerPorts(tc.theirs)}})
+		c := Collisions("demo", "/apps/demo", []Bind{bind(tc.ours, "web")}, nil, []Holder{{Name: "x", Ports: dockerPorts(tc.theirs)}})
 		if (len(c) > 0) != tc.hit || tc.hit && c[0].Kind != PortCollision {
 			t.Errorf("%s vs %s: %+v", tc.ours, tc.theirs, c)
 		}
 	}
-	c := Collisions("demo", "/apps/demo", []Bind{bind("18000-18002:80", "web")}, []Holder{
+	c := Collisions("demo", "/apps/demo", []Bind{bind("18000-18002:80", "web")}, nil, []Holder{
 		{Name: "a", Project: "other", Ports: dockerPorts("0.0.0.0:18000->80/tcp, [::]:18000->80/tcp")},
 		{Name: "b", Ports: dockerPorts("0.0.0.0:18001-18002->80-81/tcp")},
 	})
@@ -119,10 +119,39 @@ func TestCollisions(t *testing.T) {
 		{"demo", []Holder{{Name: "demo-web-1", Project: "demo"}},
 			"a compose project named demo already exists outside /apps/demo: demo-web-1, started with no working directory recorded — Docker keys compose projects by name, so this project's up would take its containers for its own; run `docker compose -p demo down` where it was started, or rename this project"},
 	} {
-		c := Collisions(tc.name, "/apps/"+tc.name, nil, tc.hs)
+		c := Collisions(tc.name, "/apps/"+tc.name, nil, nil, tc.hs)
 		if len(c) != 1 || c[0].Kind != NameCollision || c[0].Msg != tc.want {
 			t.Errorf("name: %+v", c)
 		}
+	}
+}
+
+// A container_name is held by a container of that exact name, running or not,
+// listed alone or among a legacy link's names.
+func TestContainerNameCollisions(t *testing.T) {
+	names := []ContainerName{{"web", "app"}, {"db", "store"}}
+	c := Collisions("demo", "/apps/demo", nil, names, []Holder{
+		{Name: "web", Project: "other", Dir: "/o"},
+		{Name: "Web"},
+		{Name: "db-1"},
+		{Name: "proxy"},
+	})
+	if len(c) != 1 || c[0].Kind != ContainerNameCollision || c[0].Msg != "container web (compose project other) already holds web, the container_name service app of this project sets — Docker gives a name to one container per host, running or stopped; remove or rename that container, or change the container_name app sets" {
+		t.Errorf("name: %+v", c)
+	}
+	c = Collisions("demo", "/apps/demo", nil, names, []Holder{{Name: "db,other/db"}})
+	if len(c) != 1 || c[0].Kind != ContainerNameCollision || !strings.HasPrefix(c[0].Msg, "container db (not a compose container) already holds db, the container_name service store of this project sets") {
+		t.Errorf("linked: %+v", c)
+	}
+	// The project's own one-off holding one refuses that alone.
+	c = Collisions("demo", "/apps/demo", []Bind{{Lo: 80, Hi: 80, Proto: "tcp", Svc: "app"}}, names, []Holder{{Name: "web", Project: "demo", Run: true, Ports: []Bind{{Lo: 80, Hi: 80, Proto: "tcp"}}}})
+	if len(c) != 1 || c[0].Kind != ContainerNameCollision || !strings.HasPrefix(c[0].Msg, "container web (a one-off `docker compose run` of this project) already holds web") {
+		t.Errorf("own one-off: %+v", c)
+	}
+	// Another stack of the project's name holding one is both refusals.
+	c = Collisions("demo", "/apps/demo", nil, names, []Holder{{Name: "web", Project: "demo", Dir: "/home/u/demo"}})
+	if len(c) != 2 || c[0].Kind != NameCollision || c[1].Kind != ContainerNameCollision {
+		t.Errorf("same project name: %+v", c)
 	}
 }
 
@@ -138,6 +167,9 @@ func TestOutsiders(t *testing.T) {
 		"zed\trunning\t\t\t\t0.0.0.0:8080->80/tcp\r",
 		"idle\texited\tother\t/o\tc\t",
 		"old\texited\tdemo\t/home/u/demo\tc\t",
+		"web\texited\tdemo\t" + dir + "\tc\t",
+		"demo-web-run-1\texited\tdemo\t" + dir + "\tc\t\tTrue",
+		"pinned\trunning\tdemo\t" + dir + "\tc\t\tTrue",
 		"quiet\trunning\tother\t/o\tc\t5432/tcp",
 		"bad row",
 	}, "\n")
@@ -149,7 +181,7 @@ func TestOutsiders(t *testing.T) {
 	for _, h := range hs {
 		names = append(names, h.Name)
 	}
-	if strings.Join(names, " ") != "old zed" {
+	if strings.Join(names, " ") != "demo-web-run-1 idle old pinned quiet zed" || !hs[0].Run || !hs[3].Run || hs[1].Run || hs[1].Ports != nil || hs[4].Ports != nil {
 		t.Errorf("outsiders: %v", names)
 	}
 }

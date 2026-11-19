@@ -179,8 +179,8 @@ type ServerReport struct {
 	// Leftovers is every project under apps with something a run left that
 	// may hold .env (B02).
 	Leftovers []ProjectLeftovers `json:"leftovers"`
-	// Outsiders is the containers outside this project that could collide
-	// with it (C12, C13); OutsidersError why docker could not say.
+	// Outsiders is the containers outside this project, which could collide
+	// with it (C12, C13, C17); OutsidersError why docker could not say.
 	Outsiders      []deploy.Holder `json:"outsiders"`
 	OutsidersError string          `json:"outsiders_error"`
 }
@@ -1220,39 +1220,63 @@ func (c *checker) b01Verdict(r *backuprec.Record, b backuprec.Facts, clock strin
 	}
 }
 
-// outsiders is C12 and C13: what a deploy's pre-flight would refuse, read
-// from the same containers and judged by the same function.
+// outsiders is C12, C13 and C17: what a deploy's pre-flight would refuse,
+// read from the same containers and judged by the same function.
 func (c *checker) outsiders() {
 	s := c.srv
 	dir := s.apps + "/" + c.m.Name
 	if s.r.OutsidersError != "" {
-		c.warnf("C12,C13", "whether a container outside %s on %s publishes a port it publishes, or runs under its compose project name, cannot be checked: %s", dir, s.target, s.r.OutsidersError)
+		c.warnf("C12,C13,C17", "whether a container outside %s on %s publishes a port it publishes, holds a container_name it sets, or runs under its compose project name, cannot be checked: %s", dir, s.target, s.r.OutsidersError)
 		return
 	}
 	binds, unsure := c.binds()
-	cs := deploy.Collisions(c.m.Name, dir, binds, s.r.Outsiders)
+	names, unsureNames := c.containerNamesBySvc()
+	cs := deploy.Collisions(c.m.Name, dir, binds, names, s.r.Outsiders)
 	for _, col := range cs {
-		if col.Kind == deploy.NameCollision {
+		switch col.Kind {
+		case deploy.NameCollision:
 			c.failf("C13", "on %s, %s — a deploy refuses this", s.target, col.Msg)
-		} else {
+		case deploy.ContainerNameCollision:
+			c.failf("C17", "on %s, %s — a deploy refuses this", s.target, col.Msg)
+		default:
 			c.failf("C12", "on %s, %s — a deploy refuses this", s.target, col.Msg)
 		}
 	}
 	for _, u := range unsure {
 		c.warnf("C12", "whether a container outside %s on %s publishes %s cannot be checked: %s", dir, s.target, u.entry, u.why)
 	}
-	if len(cs) == 0 && len(unsure) == 0 {
-		c.passf("C12,C13", "no container outside %s on %s publishes a port it publishes or runs under its compose project name", dir, s.target)
+	for _, u := range unsureNames {
+		c.warnf("C17", "whether a container outside %s on %s holds %s cannot be checked: %s", dir, s.target, u.entry, u.why)
+	}
+	if len(cs) == 0 && len(unsure) == 0 && len(unsureNames) == 0 {
+		c.passf("C12,C13,C17", "no container outside %s on %s publishes a port it publishes, holds a container_name it sets, or runs under its compose project name", dir, s.target)
 	}
 }
 
-type unsurePort struct{ entry, why string }
+// containerNamesBySvc is every container_name compose.prod.yml sets, by
+// service, interpolated from the server's .env; unsure the ones left unread.
+func (c *checker) containerNamesBySvc() (out []deploy.ContainerName, unsure []unsureEntry) {
+	for _, svc := range c.services {
+		raw := scalar(c.svc(svc, "container_name"))
+		if raw == "" {
+			continue
+		}
+		if cn, err := c.interp(raw); err != nil {
+			unsure = append(unsure, unsureEntry{fmt.Sprintf("service %s's container_name %q", svc, raw), err.Error()})
+		} else if cn != "" {
+			out = append(out, deploy.ContainerName{Name: cn, Svc: svc})
+		}
+	}
+	return out, unsure
+}
+
+type unsureEntry struct{ entry, why string }
 
 // binds is every host port compose.prod.yml publishes, by service, the
 // server .env interpolated as compose would; unsure the entries that leaves
 // unread: an unresolved interpolation, an .env line kasbah cannot read, or a
 // host port that is not one.
-func (c *checker) binds() (bs []deploy.Bind, unsure []unsurePort) {
+func (c *checker) binds() (bs []deploy.Bind, unsure []unsureEntry) {
 	for _, svc := range c.services {
 		for _, p := range asList(c.svc(svc, "ports")) {
 			var b deploy.Bind
@@ -1282,7 +1306,7 @@ func (c *checker) binds() (bs []deploy.Bind, unsure []unsurePort) {
 			}
 			switch {
 			case err != nil:
-				unsure = append(unsure, unsurePort{entry, err.Error()})
+				unsure = append(unsure, unsureEntry{entry, err.Error()})
 			case ok:
 				b.Svc = svc
 				bs = append(bs, b)

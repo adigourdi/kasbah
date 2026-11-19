@@ -331,6 +331,18 @@ func (m *composeModel) binds() []Bind {
 	return bs
 }
 
+// containerNames is every container_name the model's services set, by
+// service name.
+func (m *composeModel) containerNames() []ContainerName {
+	var out []ContainerName
+	for _, name := range sortedKeys(m.Services) {
+		if cn := m.Services[name].ContainerName; cn != "" {
+			out = append(out, ContainerName{cn, name})
+		}
+	}
+	return out
+}
+
 func published(s composeService) bool {
 	for _, p := range s.Ports {
 		if p.Published != "" {

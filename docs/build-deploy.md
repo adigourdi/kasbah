@@ -540,12 +540,13 @@ below). The only differences:
 8. Run `kasbah remote deploy run` on the VPS, the manifest's hooks, health,
    snapshot targets and built-image list passed as JSON on stdin:
      Pre-flight: every built image's :<version> is on the server, and no
-        container outside the project holds a host port compose.yml publishes
-        or the compose project name <name> (see "Containers outside the
-        project" below), and the fragment renders against .env: every
-        ${KEY} in traefik-dynamic.yml (sent in the JSON) is a key the shipped
-        .env.prod.example declares, not a KASBAH_ key, set non-empty in .env
-        to one line, and the result has the YAML structure of the fragment
+        container outside the project holds a host port compose.yml publishes,
+        a container_name it sets, or the compose project name <name> (see
+        "Containers outside the project" below), and the fragment renders
+        against .env: every ${KEY} in traefik-dynamic.yml (sent in the JSON)
+        is a key the shipped .env.prod.example declares, not a KASBAH_ key,
+        set non-empty in .env to one line, and the result has the YAML
+        structure of the fragment
         as written (traefik.md → Project fragment) — a refusal names the key
         and `kasbah env set KEY USER@HOST`, never the value — and every
         backend host of the rendered fragment is the project's own name on
@@ -970,8 +971,8 @@ small without sacrificing history.
    --env-seed= for the keys .env lacks; exit 5 when there is no answer to
    be had.
 10. Run the engine on the VPS in rollback mode (`kasbah remote deploy run`),
-    after deploy step 8's pre-flight — a host port or the project name taken
-    since v<target> last ran is refused the same way:
+    after deploy step 8's pre-flight — a host port, a container name or the
+    project name taken since v<target> last ran is refused the same way:
      a. Extract v<target>'s backup, when there is one and a hook below will
         run, into <apps>/<name>/.kasbah-unpacked.<pid>/ (mode 770 to the
         `kasbah` group like `.env`, on the project's filesystem: it holds
@@ -1105,14 +1106,14 @@ The engine has two modes:
 
 ### Containers outside the project
 
-A host port or the compose project name can already be taken on the server —
-by a stack started by hand from elsewhere, or by any other container: Traefik
-on 80 and 443, the mail and backup stacks, another kasbah project. Under the
-run's lock, once `versions.log` is read and every built image is found on the
-server, and before any backup, hook, retag or up, the engine lists every
-container on the host (`docker ps -a`: its compose project and
-working-directory labels, and the ports it publishes) and refuses the run,
-exit 1 with nothing started, when either holds:
+A host port, a container name or the compose project name can already be
+taken on the server — by a stack started by hand from elsewhere, or by any
+other container: Traefik on 80 and 443, the mail and backup stacks, another
+kasbah project. Under the run's lock, once `versions.log` is read and every
+built image is found on the server, and before any backup, hook, retag or up,
+the engine lists every container on the host (`docker ps -a`: its name, its
+compose project and working-directory labels, and the ports it publishes) and
+refuses the run, exit 1 with nothing started, when any of these holds:
 
 - **A port is taken.** A running container that is not this project's
   publishes a host port and protocol `compose.yml` publishes, as `docker
@@ -1129,6 +1130,14 @@ exit 1 with nothing started, when either holds:
   The refusal names the container, its compose project (or that it has none),
   the port and the service publishing it, and says to stop or move that
   container or change the service's port.
+- **A container name is taken.** A container that is not this project's,
+  running or stopped, is named the `container_name` a service sets, as
+  `docker compose config` resolves it, matched exactly. Docker gives a name to
+  one container per host, so compose's up would fail on it. The refusal names
+  the name, the holder's compose project (or that it has none) and the
+  service, and says to remove or rename that container — stopping it is not
+  enough — or change the service's `container_name`. A one-off
+  `docker compose run --name` of the project's own counts here, and only here.
 - **The name is taken.** A container, running or not, carries
   `com.docker.compose.project=<name>` with a working directory other than
   `<apps>/<name>`. Docker keys compose projects by name alone, so compose
@@ -1140,9 +1149,11 @@ exit 1 with nothing started, when either holds:
   reserved, refused when the manifest loads (`project-manifest.md`).
 
 The project's own containers — its name, started from `<apps>/<name>` (or the
-path that resolves to) — never count, so a redeploy whose running containers
-already hold the ports it publishes goes through (a service publishing a host
-port is recreated in place, never rolled — C11). A process that is not a container
+path that resolves to) — never count (but for a one-off, above), so a redeploy whose running containers
+already hold the ports it publishes and the container names it sets goes
+through (a service publishing a host port or setting a `container_name` is
+recreated in place, never rolled — C11), its earlier version's stopped
+containers included. A process that is not a container
 (a system nginx on `:80`) is not looked for: compose up fails on it, naming the
 port. The check runs inside the engine, after the sync, because the ports are
 compose's reading of the files the run shipped: a first deploy refused here
@@ -1151,9 +1162,10 @@ leaves those files in `<apps>/<name>/` with nothing started and nothing in
 back in the same run, as any failure before the retag does, and records
 nothing in `versions.log` either. When docker cannot be listed the run says so
 and carries on — compose up would fail the same way; when `docker compose
-config` cannot be read it says the ports were not checked, and the name still
-is. `kasbah check --server` reports the same two (C12,
-C13 in `compliance.md`) before a deploy is tried.
+config` cannot be read it says the ports and container names were not
+checked, and the compose project name still is. `kasbah check --server`
+reports the same three (C12, C17, C13 in `compliance.md`) before a deploy is
+tried.
 
 ### A dropped session
 

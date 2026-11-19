@@ -92,6 +92,9 @@ var Rules = []Rule{
 	{"C16", "Compose", "fail", false, "No name on the kasbah network or kasbah-net contains a dot",
 		"Docker answers a whole dotted name on every network Traefik is on before it reads one as <name>.<network>, so an alias such as web.<other>_kasbah would answer for another project's backend. Traefik is on the legacy kasbah-net too, so it counts, joined by that name or as a default network named kasbah-net. Deploy, deploy X.Y.Z and rollback refuse it on the server too.",
 		"Rename the service, kasbah alias or container_name without a dot, and point the fragment's backend at the new name."},
+	{"C17", "Compose", "fail", true, "No outside container holds a container_name",
+		"Docker gives a name to one container per host, running or stopped, so the deploy's up would fail on it; the deploy refuses it first.",
+		"Change the container_name, or remove or rename the container holding it."},
 
 	{"R01", "Resources", "fail/warn", false, "Every service sets a cpus limit",
 		"A per-container ceiling keeps one project from taking the host. A literal does not follow the host, so it warns until `check --server` compares it.",

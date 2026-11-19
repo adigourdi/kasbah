@@ -121,21 +121,24 @@ func portRange(s string) (int, int, bool) {
 	return lo, hi, true
 }
 
-// Holder is a container outside the project that may collide with it, as
-// `docker ps -a` reads it; Ports only while it runs.
+// Holder is a container outside the project, as `docker ps -a` reads it;
+// Ports only while it runs. Run is the project's own one-off `compose run`,
+// kept only for the container_name it may hold.
 type Holder struct {
 	Name    string `json:"name"`
 	Project string `json:"project,omitempty"`
 	Dir     string `json:"working_dir,omitempty"`
 	Config  string `json:"config_files,omitempty"`
 	Ports   []Bind `json:"ports,omitempty"`
+	Run     bool   `json:"run,omitempty"`
 }
 
-const holderFormat = `{{.Names}}	{{.State}}	{{.Label "com.docker.compose.project"}}	{{.Label "com.docker.compose.project.working_dir"}}	{{.Label "com.docker.compose.project.config_files"}}	{{.Ports}}`
+const holderFormat = `{{.Names}}	{{.State}}	{{.Label "com.docker.compose.project"}}	{{.Label "com.docker.compose.project.working_dir"}}	{{.Label "com.docker.compose.project.config_files"}}	{{.Ports}}	{{.Label "com.docker.compose.oneoff"}}`
 
-// Outsiders is every container on the host that is not the project name's
-// at dir and could collide with it — one publishing a port while it runs,
-// and any, running or not, of a compose project called name — by name.
+// Outsiders is every container on the host, running or not, that is not the
+// project name's at dir, by name, and the project's own one-offs as Run: any
+// may hold a container_name the project sets, a port it publishes, or its
+// compose project name.
 func Outsiders(name, dir string, query func(...string) (string, error)) ([]Holder, error) {
 	out, err := query("ps", "-a", "--format", holderFormat)
 	if err != nil {
@@ -145,19 +148,21 @@ func Outsiders(name, dir string, query func(...string) (string, error)) ([]Holde
 	hs := []Holder{}
 	for _, l := range strings.Split(strings.ReplaceAll(out, "\r", ""), "\n") {
 		f := strings.Split(l, "\t")
-		if len(f) != 6 {
+		if len(f) != 6 && len(f) != 7 {
 			continue
 		}
 		h := Holder{Name: f[0], Project: f[2], Dir: f[3], Config: f[4]}
 		if owns(h.Project, h.Dir) {
+			// A one-off started with --name may hold a container_name.
+			if len(f) == 7 && f[6] == "True" {
+				hs = append(hs, Holder{Name: h.Name, Project: h.Project, Run: true})
+			}
 			continue
 		}
 		if f[1] == "running" || f[1] == "paused" || f[1] == "restarting" {
 			h.Ports = dockerPorts(f[5])
 		}
-		if h.Project == name || len(h.Ports) > 0 {
-			hs = append(hs, h)
-		}
+		hs = append(hs, h)
 	}
 	sort.SliceStable(hs, func(i, j int) bool { return hs[i].Name < hs[j].Name })
 	return hs, nil
@@ -200,9 +205,13 @@ func dockerPorts(s string) []Bind {
 type CollisionKind int
 
 const (
-	NameCollision CollisionKind = iota // another compose project of the name
-	PortCollision                      // a port a holder already publishes
+	NameCollision          CollisionKind = iota // another compose project of the name
+	PortCollision                               // a port a holder already publishes
+	ContainerNameCollision                      // a container_name a holder already holds
 )
+
+// ContainerName is the container_name service Svc of the project sets.
+type ContainerName struct{ Name, Svc string }
 
 // Collision is one reason a project cannot come up beside the holders, and
 // Msg the words the deploy refuses it in.
@@ -211,10 +220,11 @@ type Collision struct {
 	Msg  string
 }
 
-// Collisions is why the project name at dir, publishing binds, cannot come
-// up beside the holders: each other compose project of its name, then each
-// port a holder already publishes. Empty when it can.
-func Collisions(name, dir string, binds []Bind, hs []Holder) []Collision {
+// Collisions is why the project name at dir, publishing binds and setting
+// names, cannot come up beside the holders: each other compose project of its
+// name, each port a holder already publishes, then each container_name a
+// holder already holds. Empty when it can.
+func Collisions(name, dir string, binds []Bind, names []ContainerName, hs []Holder) []Collision {
 	var out []Collision
 	type stack struct {
 		dir, config string
@@ -222,7 +232,7 @@ func Collisions(name, dir string, binds []Bind, hs []Holder) []Collision {
 	}
 	var named []*stack
 	for _, h := range hs {
-		if h.Project != name {
+		if h.Project != name || h.Run {
 			continue
 		}
 		i := slices.IndexFunc(named, func(s *stack) bool { return s.dir == h.Dir })
@@ -252,12 +262,23 @@ func Collisions(name, dir string, binds []Bind, hs []Holder) []Collision {
 			continue
 		}
 		for _, h := range hs {
+			if h.Run {
+				continue
+			}
 			i := slices.IndexFunc(h.Ports, b.collides)
 			if i < 0 {
 				continue
 			}
 			out = append(out, Collision{PortCollision, fmt.Sprintf("container %s (%s) publishes %s, which service %s of this project publishes too — stop or move that container, or change the port %s publishes",
 				h.Name, whose(h), h.Ports[i], b.Svc, b.Svc)})
+		}
+	}
+	for _, cn := range names {
+		for _, h := range hs {
+			if slices.Contains(strings.Split(h.Name, ","), cn.Name) {
+				out = append(out, Collision{ContainerNameCollision, fmt.Sprintf("container %s (%s) already holds %s, the container_name service %s of this project sets — Docker gives a name to one container per host, running or stopped; remove or rename that container, or change the container_name %s sets",
+					cn.Name, whose(h), cn.Name, cn.Svc, cn.Svc)})
+			}
 		}
 	}
 	return out
@@ -271,6 +292,9 @@ func rangeHeld(b Bind, hs []Holder) []string {
 		one.Lo, one.Hi = p, p
 		taken := false
 		for _, h := range hs {
+			if h.Run {
+				continue
+			}
 			for _, hb := range h.Ports {
 				if one.collides(hb) {
 					taken = true
@@ -288,6 +312,9 @@ func rangeHeld(b Bind, hs []Holder) []string {
 }
 
 func whose(h Holder) string {
+	if h.Run {
+		return "a one-off `docker compose run` of this project"
+	}
 	if h.Project != "" {
 		return "compose project " + h.Project
 	}

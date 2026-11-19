@@ -54,9 +54,10 @@ Summary: 30 passed, 0 warning, 1 failed
 
 **Cause:** at least one `✗` line above the summary: a rule the project breaks.
 `check` never changes anything on its own, and `deploy` refuses several of the
-same things itself — an outside container on a published port or the
-project's compose project name (C12, C13), a `client:` it cannot file backups
-under (S08) — so a failure here is usually the deploy's failure, earlier.
+same things itself — an outside container on a published port, a
+`container_name` or the project's compose project name (C12, C17, C13), a
+`client:` it cannot file backups under (S08) — so a failure here is usually
+the deploy's failure, earlier.
 
 **Fix:** `kasbah help <ID>` for the rule on the line — why it exists and what
 to change. `kasbah check --fix` repairs the rules it can (C01–C05, C08,
@@ -305,18 +306,29 @@ a compose project named demo already exists outside /apps/demo: demo-web-1, star
 and, for a published port:
 
 ```
-container other-db-1 (…) publishes 0.0.0.0:5432->5432/tcp, which service db of this project publishes too — stop or move that container, or change the port db publishes
+container other-db-1 (…) publishes 0.0.0.0:5432/tcp, which service db of this project publishes too — stop or move that container, or change the port db publishes
+```
+
+and, for a `container_name`:
+
+```
+container db (…) already holds db, the container_name service db of this project sets — Docker gives a name to one container per host, running or stopped; remove or rename that container, or change the container_name db sets
 ```
 
 **Cause:** a container that is not this project's holds what the deploy would
 need: the compose project name (Docker would take its containers for this
-project's) or a host port the project publishes. The deploy refuses before
-changing anything; `kasbah check --server USER@HOST` reports the same as C13
-and C12.
+project's), a host port the project publishes, or a `container_name` it sets
+(Docker names one container per host, a stopped one included). The deploy
+refuses before changing anything; `kasbah check --server USER@HOST` reports
+the same as C13, C12 and C17.
 
 **Fix:** the line names the containers and where they were started: stop them
 there (`docker compose -p <name> down`), or rename the project (`name:` in
-`kasbah.yml`), or change the port the service publishes.
+`kasbah.yml`), or change the port the service publishes. For a name, remove
+(`docker rm`) or rename (`docker rename`) the container holding it, or change
+the service's `container_name` — beyond C09's prefix on the `kasbah`
+network, any name is allowed, so long as no other container on the host has
+it.
 
 ## traefik-dynamic.yml cannot be rendered: ${…} is not set in …/.env
 

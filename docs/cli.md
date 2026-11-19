@@ -1024,8 +1024,9 @@ the projects' own limits fit the host together (R06), whether
 every mail domain on it can sign (M04), whether the backup stack ran (B01),
 whether any project holds a leftover backup directory, kept-aside snapshot or
 rollback extraction that may hold a copy of `.env` (B02), whether a container
-outside the project holds a host port the project publishes or its compose
-project name (C12, C13 — what a deploy refuses) and
+outside the project holds a host port the project publishes, a
+`container_name` it sets, or its compose project name (C12, C17, C13 — what a
+deploy refuses) and
 whether the apps tree is the operators' group's. It also
 tightens T05 from a first-label heuristic to the hostnames that server really
 owns, and reads the server's `traefik.yml` so T04 and T10 judge a resolver
@@ -1177,8 +1178,9 @@ Flow (no-args / working-tree path):
 8. Run the engine on the VPS, `kasbah remote deploy run`:
    - Pre-flight: every built image's `:<version>` is on the server, and no
      container outside the project publishes a host port `compose.yml`
-     publishes, nor runs under the compose project name `<name>` from
-     another directory — either refuses the run, naming the container and the
+     publishes, nor is named a `container_name` it sets, nor runs under the
+     compose project name `<name>` from another directory — any of these
+     refuses the run, naming the container and the
      way out, with nothing started (`build-deploy.md` → Containers outside the
      project); and the fragment renders against `.env` — a `${KEY}` the
      template does not declare, a `KASBAH_` one, one `.env` leaves unset or
@@ -1289,8 +1291,9 @@ Flow (see `build-deploy.md` for full detail):
 8. On VPS: run the engine in rollback mode, `kasbah remote deploy run`:
    - Pre-flight, as `deploy` runs it: every built image's `:<target>` is on
      the server, and no container outside the project publishes a host port
-     v<target>'s `compose.yml` publishes, nor runs under the compose project
-     name `<name>` from another directory, and v<target>'s fragment renders
+     v<target>'s `compose.yml` publishes, nor is named a `container_name` it
+     sets, nor runs under the compose project name `<name>` from another
+     directory, and v<target>'s fragment renders
      against the server's `.env` — any of these refuses the rollback,
      naming the container and the way out, with nothing started and the files
      and `.env` put back.

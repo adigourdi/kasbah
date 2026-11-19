@@ -3,7 +3,8 @@
 # stacks outside the project, from a directory outside the apps path — one
 # publishing the host port the project publishes, one using the project's
 # compose project name — and `check --server` reporting both, and passing a
-# host range for one container port that still has a free port.
+# host range for one container port that still has a free port; then a
+# stopped container outside the project holding a container_name it sets.
 #
 # What only the rig can show: real `docker ps` labels and Ports column, read by
 # the deploy's pre-flight before compose up; compose never treating the foreign
@@ -33,6 +34,8 @@ project=squat
 squatter=squatter
 port=18080
 v1=1.0.0
+v2=1.0.1
+held_name="$project-held"
 projdir_remote="$apps/$project"
 
 fail=0
@@ -49,6 +52,7 @@ cleanup() {
     if [ -n "$foreign_home" ]; then
         rig_ssh "docker compose -p $squatter down --remove-orphans >/dev/null 2>&1
                  docker compose -p $project down --remove-orphans >/dev/null 2>&1
+                 docker rm -f $held_name >/dev/null 2>&1
                  rm -rf '$foreign_home/foreign-port' '$foreign_home/foreign-name'" >/dev/null 2>&1
     fi
     rm -rf "$tmpdir"
@@ -268,12 +272,53 @@ got=$(rig_ssh "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.
 assert '[ "$got" = "200" ]' "and answers on :$port (got '$got')"
 
 check --server "$RIG_TARGET"; out=$(cli_out; cli_err)
-assert 'grep -qF "✓ C12,C13 no container outside $projdir_remote on $RIG_TARGET publishes a port it publishes or runs under its compose project name" <<<"$out"' \
+assert 'grep -qF "✓ C12,C13,C17 no container outside $projdir_remote on $RIG_TARGET publishes a port it publishes, holds a container_name it sets, or runs under its compose project name" <<<"$out"' \
     "check --server passes over the project's own container
 $(sed 's/^/      | /' <<<"$out")"
 
 deploy "$RIG_TARGET" "$v1"; rc=$?
 assert '[ "$rc" = "0" ]' "a redeploy over its own container publishing :$port succeeds (exit $rc)
+$(sed 's/^/      | /' "$tmpdir/err")"
+
+# --- A container_name a stopped container outside the project holds ---------------
+if ! rig_ssh "docker create --name $held_name nginx:alpine" >"$tmpdir/fup.log" 2>&1; then
+    echo "error: could not create the container named $held_name on the rig" >&2
+    sed 's/^/       | /' "$tmpdir/fup.log" >&2
+    exit 2
+fi
+sed -i "s/^    image: nginx:alpine$/    image: nginx:alpine\n    container_name: $held_name/" "$projdir/compose.prod.yml"
+if ! ( cd "$projdir" && git commit -qam "container_name" && git tag "v$v2" ) >"$tmpdir/git.log" 2>&1; then
+    echo "error: could not tag v$v2 in the fixture copy" >&2
+    sed 's/^/       | /' "$tmpdir/git.log" >&2
+    exit 2
+fi
+ours="$project-$project-web-1 running $projdir_remote"
+cn_msg="container $held_name (not a compose container) already holds $held_name, the container_name service $project-web of this project sets — Docker gives a name to one container per host, running or stopped; remove or rename that container, or change the container_name $project-web sets"
+
+check --server "$RIG_TARGET"; rc=$?
+out=$(cli_out; cli_err)
+assert '[ "$rc" = "6" ] && grep -qF "✗ C17 on $RIG_TARGET, $cn_msg — a deploy refuses this" <<<"$out"' \
+    "check --server reports the container_name a stopped outside container holds (exit $rc)
+$(sed 's/^/      | /' <<<"$out")"
+
+deploy "$RIG_TARGET"; rc=$?
+err=$(cli_err)
+assert '[ "$rc" = "1" ] && grep -qF "$cn_msg. Nothing was started." <<<"$err"' \
+    "a deploy setting a container_name an outside container holds is refused (exit $rc)
+$(sed 's/^/      | /' <<<"$err")"
+assert '[ "$(labelled)" = "$ours" ]' "v$v1 is left running as it was (got '$(labelled)')"
+
+if ! rig_ssh "docker rm $held_name" >"$tmpdir/fdown.log" 2>&1; then
+    echo "error: could not remove the container named $held_name" >&2
+    sed 's/^/       | /' "$tmpdir/fdown.log" >&2
+    exit 2
+fi
+deploy "$RIG_TARGET"; rc=$?
+assert '[ "$rc" = "0" ]' "with the name free the deploy succeeds (exit $rc)
+$(sed 's/^/      | /' "$tmpdir/err")"
+assert '[ "$(labelled)" = "$held_name running $projdir_remote" ]' "the project's container takes the name (got '$(labelled)')"
+deploy "$RIG_TARGET" "$v2"; rc=$?
+assert '[ "$rc" = "0" ]' "a redeploy over its own container holding the name succeeds (exit $rc)
 $(sed 's/^/      | /' "$tmpdir/err")"
 
 drop "$RIG_TARGET" --yes; rc=$?

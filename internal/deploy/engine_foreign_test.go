@@ -54,6 +54,35 @@ func TestEngineOutsiders(t *testing.T) {
 	}
 }
 
+// A container_name a container outside the project holds, stopped or not,
+// stops the run before anything is started; the project's own older one never does.
+func TestEngineOutsidersContainerName(t *testing.T) {
+	r := newRig(t)
+	r.running("demo-web")
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(cfg, []byte(`{"services":{"web":{"container_name":"web"}}}`), 0o644)
+	t.Setenv("CONFIG", cfg)
+	ps := filepath.Join(t.TempDir(), "ps")
+	t.Setenv("PS", ps)
+	for _, row := range []string{"web\texited\tother\t/home/u/other\tc\t", "web\trunning\t\t\t\t"} {
+		os.WriteFile(ps, []byte(row+"\n"), 0o644)
+		os.Remove(r.log)
+		rc, _, errs := r.run(r.spec())
+		if rc != 1 || !strings.Contains(errs, "already holds web, the container_name service web of this project sets — Docker gives a name to one container per host, running or stopped; remove or rename that container, or change the container_name web sets. Nothing was started.") {
+			t.Errorf("%q: rc %d\n%s", row, rc, errs)
+		}
+		if log, _ := os.ReadFile(r.log); strings.Contains(string(log), " up ") || strings.Contains(string(log), "hook ") || strings.Contains(string(log), "tag ") {
+			t.Errorf("started something:\n%s", log)
+		}
+	}
+	os.WriteFile(ps, []byte("web\texited\tdemo\t"+r.dir+"\tc\t\nother\texited\tother\t/o\tc\t\n"), 0o644)
+	sp := r.spec()
+	sp.NoHealthWait = true
+	if rc, _, errs := r.run(sp); rc != 0 {
+		t.Errorf("own container: rc %d\n%s", rc, errs)
+	}
+}
+
 // A redeploy refused here is a failure before the retag: the shipped files
 // go back and versions.log gains nothing.
 func TestEngineOutsidersRedeploy(t *testing.T) {
@@ -99,7 +128,7 @@ func TestEngineOutsidersRangeAndConfig(t *testing.T) {
 		t.Errorf("all taken: rc %d\n%s", rc, errs)
 	}
 	os.WriteFile(cfg, []byte("not json"), 0o644)
-	if rc, _, errs := r.run(sp); rc != 0 || !strings.Contains(errs, "could not read the ports compose.yml publishes (") || !strings.Contains(errs, "whether a container outside the project holds one was not checked") {
+	if rc, _, errs := r.run(sp); rc != 0 || !strings.Contains(errs, "could not read the ports compose.yml publishes and the container_names it sets (") || !strings.Contains(errs, "whether a container outside the project holds one was not checked") {
 		t.Errorf("config: rc %d\n%s", rc, errs)
 	}
 	os.WriteFile(ps, []byte("demo-web-1\texited\tdemo\t/home/u/demo\tc\t\n"), 0o644)

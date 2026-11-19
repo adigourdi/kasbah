@@ -181,6 +181,12 @@ your machine with `kasbah build-push`.
   Any other port is the project's to publish; `check --server` fails one a
   container outside the project already holds
   ([C12](compliance.md#compose)).
+- A `container_name` a container outside the project already has, running or
+  stopped: Docker gives a name to one container per host, so compose's up
+  would fail on it, and `deploy` refuses it before anything starts
+  (`check --server` fails it, [C17](compliance.md#compose)). Beyond C09's
+  prefix for a name on the `kasbah` network, any `container_name` is allowed,
+  so long as it is unique on the host.
 - `mail-dms` outside a comment ([C10](compliance.md#compose), a warning): no
   project shares a network with the mail server; an app sends through
   `mail.<domain>:587` ([mail.md](mail.md) → SMTP access from apps).

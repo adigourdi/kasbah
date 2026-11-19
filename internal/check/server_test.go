@@ -1181,24 +1181,24 @@ func TestServerOutsiders(t *testing.T) {
 		want, not []string
 		code      int
 	}{
-		{"", nil, "", []string{"  ✓ C12,C13 no container outside /apps/demo on deploy@vps publishes a port it publishes or runs under its compose project name"}, nil, 0},
+		{"", nil, "", []string{"  ✓ C12,C13,C17 no container outside /apps/demo on deploy@vps publishes a port it publishes, holds a container_name it sets, or runs under its compose project name"}, nil, 0},
 		{"", []deploy.Holder{dns, other}, "", []string{
 			"  ✗ C12 on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp, which service demo-web of this project publishes too — stop or move that container, or change the port demo-web publishes — a deploy refuses this",
 			"  ✗ C12 on deploy@vps, container dns (not a compose container) publishes 5353/udp, which service demo-web of this project publishes too"}, nil, 6},
-		{"WEB_PORT=8081\n", []deploy.Holder{other}, "", []string{"  ✓ C12,C13 no container outside"}, nil, 0},
+		{"WEB_PORT=8081\n", []deploy.Holder{other}, "", []string{"  ✓ C12,C13,C17 no container outside"}, nil, 0},
 		// The .env as compose reads it: an inline comment and quotes are not the value.
 		{"WEB_PORT=8080 # dev\n", []deploy.Holder{other}, "", []string{"  ✗ C12 on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
 		{"WEB_PORT=\"8080\"\n", []deploy.Holder{other}, "", []string{"  ✗ C12 on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
-		{"WEB_PORT=${OTHER:-8081}\n", []deploy.Holder{other}, "", []string{"  ✓ C12,C13 no container outside"}, nil, 0},
+		{"WEB_PORT=${OTHER:-8081}\n", []deploy.Holder{other}, "", []string{"  ✓ C12,C13,C17 no container outside"}, nil, 0},
 		// `KEY = v` and `KEY: v` set the port, as compose reads them.
 		{"WEB_PORT = 8080\n", []deploy.Holder{other}, "", []string{"  ✗ C12 on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
 		{"\u00a0\nWEB_PORT: 8080 # dev\n", []deploy.Holder{other}, "", []string{"  ✗ C12 on deploy@vps, container other-web-1 (compose project other) publishes 8080/tcp"}, nil, 6},
 		// A key compose would take with other characters: unread, so the port cannot pass on its default.
-		{"WEB.PORT=1\n", []deploy.Holder{other}, "", []string{"cannot be checked: the server's .env has a line kasbah cannot read as compose does: line 4 is not an assignment kasbah reads"}, []string{"✓ C12,C13 no container outside"}, 0},
+		{"WEB.PORT=1\n", []deploy.Holder{other}, "", []string{"cannot be checked: the server's .env has a line kasbah cannot read as compose does: line 4 is not an assignment kasbah reads"}, []string{"✓ C12,C13,C17 no container outside"}, 0},
 		{"", []deploy.Holder{named}, "", []string{
 			"  ✗ C13 on deploy@vps, a compose project named demo already exists outside /apps/demo: demo-web-1, started from /home/u/demo (/home/u/demo/compose.yml) — Docker keys compose projects by name, so this project's up would take its containers for its own; run `docker compose -p demo down` in /home/u/demo, or rename this project — a deploy refuses this"}, nil, 6},
 		{"", nil, "there is no docker on the server", []string{
-			"  ⚠ C12,C13 whether a container outside /apps/demo on deploy@vps publishes a port it publishes, or runs under its compose project name, cannot be checked: there is no docker on the server"}, []string{"✓ C12,C13 no container outside"}, 0},
+			"  ⚠ C12,C13,C17 whether a container outside /apps/demo on deploy@vps publishes a port it publishes, holds a container_name it sets, or runs under its compose project name, cannot be checked: there is no docker on the server"}, []string{"✓ C12,C13,C17 no container outside"}, 0},
 	} {
 		srvProject(t, "")
 		os.WriteFile(composeFile, []byte(ports), 0o644)
@@ -1210,6 +1210,50 @@ func TestServerOutsiders(t *testing.T) {
 		hasNot(t, out, tc.not...)
 		if code != tc.code {
 			t.Errorf("%v: exit %d, want %d:\n%s", tc.hs, code, tc.code, out)
+		}
+	}
+}
+
+// A container_name an outside container holds, read from the server's .env
+// as compose interpolates it; one left unread warns.
+func TestServerOutsidersContainerName(t *testing.T) {
+	named := strings.Replace(goodCompose, "networks:\n  kasbah: {}\n", `  db:
+    image: postgres:alpine
+    container_name: "${CN:-db}"
+    restart: unless-stopped
+    cpus: ${KASBAH_CPU_LIMIT}
+    mem_limit: ${KASBAH_MEM_LIMIT}
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+networks:
+  kasbah: {}
+`, 1)
+	holder := deploy.Holder{Name: "demo-web", Project: "other", Dir: "/o"}
+	for _, tc := range []struct {
+		env       string
+		hs        []deploy.Holder
+		want, not []string
+		code      int
+	}{
+		{"", []deploy.Holder{holder}, []string{
+			"  ✗ C17 on deploy@vps, container demo-web (compose project other) already holds demo-web, the container_name service demo-web of this project sets — Docker gives a name to one container per host, running or stopped; remove or rename that container, or change the container_name demo-web sets — a deploy refuses this"},
+			[]string{"✓ C12,C13,C17"}, 6},
+		{"", []deploy.Holder{{Name: "db", Project: "other", Dir: "/o"}, {Name: "Db"}}, []string{"  ✗ C17 on deploy@vps, container db (compose project other) already holds db, the container_name service db of this project sets"}, []string{"Db"}, 6},
+		{"CN=store\n", []deploy.Holder{{Name: "db"}}, []string{"  ✓ C12,C13,C17 no container outside"}, []string{"C17 on"}, 0},
+		{"CN=store\n", []deploy.Holder{{Name: "store"}}, []string{"  ✗ C17 on deploy@vps, container store (not a compose container) already holds store, the container_name service db"}, nil, 6},
+		{"X='unclosed\n", []deploy.Holder{{Name: "db"}}, []string{
+			"  ⚠ C17 whether a container outside /apps/demo on deploy@vps holds service db's container_name \"${CN:-db}\" cannot be checked: the server's .env has a line kasbah cannot read as compose does"},
+			[]string{"✓ C12,C13,C17", "✗ C17"}, 0},
+	} {
+		srvProject(t, "")
+		os.WriteFile(composeFile, []byte(named), 0o644)
+		s := newSrv(t)
+		s.r.Env = b64s("DOMAIN=demo.example.com\nKASBAH_CPU_LIMIT=14.4\nKASBAH_MEM_LIMIT=54g\n" + tc.env)
+		s.r.Outsiders = tc.hs
+		out, code := s.run()
+		contains(t, out, tc.want...)
+		hasNot(t, out, tc.not...)
+		if code != tc.code {
+			t.Errorf("%q %v: exit %d, want %d:\n%s", tc.env, tc.hs, code, tc.code, out)
 		}
 	}
 }
@@ -1234,15 +1278,15 @@ func TestServerOutsidersPorts(t *testing.T) {
 			"  ✗ C12 on deploy@vps, container h9000 (not a compose container) publishes 9000/tcp, which service demo-web",
 			"  ✗ C12 on deploy@vps, container h7000 (not a compose container) publishes 7000/tcp",
 			"  ⚠ C12 whether a container outside /apps/demo on deploy@vps publishes service demo-web's port \"$$x:84\" cannot be checked: \"$x\" is not a host port or range"},
-			[]string{"h18000", "✓ C12,C13 no container outside"}},
+			[]string{"h18000", "✓ C12,C13,C17 no container outside"}},
 		{"B=9000\n", held(18000, 18001), []string{
 			"  ⚠ C12 whether a container outside /apps/demo on deploy@vps publishes service demo-web's port \"${C:?set C}:81\" cannot be checked: required variable C is missing a value: set C",
 			"every port of 18000-18001/tcp, the range service demo-web of this project publishes one port from, is taken: container h18000 (not a compose container) publishes 18000/tcp, container h18001 (not a compose container) publishes 18001/tcp"},
-			[]string{"✓ C12,C13 no container outside", "h9000"}},
+			[]string{"✓ C12,C13,C17 no container outside", "h9000"}},
 		{"B='unclosed\n", nil, []string{
 			"  ⚠ C12 whether a container outside /apps/demo on deploy@vps publishes service demo-web's port \"${A:-${B}}:80\" cannot be checked: the server's .env has a line kasbah cannot read as compose does: line 4 (B): the single quote is not closed",
 			"service demo-web's port \"$$x:84\" cannot be checked: \"$x\" is not a host port or range"},
-			[]string{"✓ C12,C13 no container outside"}},
+			[]string{"✓ C12,C13,C17 no container outside"}},
 	} {
 		srvProject(t, "")
 		os.WriteFile(composeFile, []byte(ports), 0o644)

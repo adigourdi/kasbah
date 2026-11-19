@@ -833,24 +833,26 @@ func (e *engine) preflight() error {
 	return e.outsiders()
 }
 
-// outsiders refuses a stack another one on this host would collide with: a
-// port it already publishes, or this project's compose project name.
+// outsiders refuses a stack a container outside it on this host would collide
+// with: a port it already publishes, a container_name it already holds, or
+// this project's compose project name.
 func (e *engine) outsiders() error {
 	hs, err := Outsiders(e.project, e.dir, e.query)
 	if err != nil {
-		e.note("could not list this host's containers (%v) — the ports and compose project name of other stacks were not checked", err)
+		e.note("could not list this host's containers (%v) — the ports, container names and compose project name of other stacks were not checked", err)
 		return nil
 	}
 	if len(hs) == 0 {
 		return nil
 	}
 	var binds []Bind
+	var names []ContainerName
 	if m, err := e.model(); err == nil {
-		binds = m.binds()
+		binds, names = m.binds(), m.containerNames()
 	} else {
-		e.note("could not read the ports compose.yml publishes (%v) — whether a container outside the project holds one was not checked", err)
+		e.note("could not read the ports compose.yml publishes and the container_names it sets (%v) — whether a container outside the project holds one was not checked", err)
 	}
-	if cs := Collisions(e.project, e.dir, binds, hs); len(cs) > 0 {
+	if cs := Collisions(e.project, e.dir, binds, names, hs); len(cs) > 0 {
 		msgs := make([]string, len(cs))
 		for i, c := range cs {
 			msgs[i] = c.Msg
