@@ -2061,7 +2061,8 @@ vN[.M[.P]]` builds and installs a release tag instead) — and
 `~/.local/bin/kasbah` is a symlink to the newest installed version that runs, or
 to the one a version argument named. A running kasbah hands off to a sibling version — re-executing
 `<lib>/<version>/kasbah` with the same arguments and environment, before any
-side effect — in three cases:
+side effect but a `git fetch --tags` and, for a rollback, a binary shipped
+(below) — in four cases:
 
 - **A server holds a newer build** of its major. The same-build rule refuses
   to talk to it; when that build is installed, the refusal becomes a hand-off
@@ -2074,11 +2075,24 @@ side effect — in three cases:
   command; otherwise the run stops naming `kasbah self-update vN.M.P`.
 - **A manifest's `schema` belongs to a newer major**: the newest installed
   kasbah of that major runs the command.
+- **A manifest's `min_kasbah` is one this kasbah does not meet** (S09): the
+  newest installed kasbah of `min_kasbah`'s major that meets it, by S09's
+  rule, runs the command — never one of a later major, nor one ranked at or
+  below this kasbah (a dev build ranks below its release, yet may meet what
+  the release does not). A build with no stamp meets no `min_kasbah` and hands
+  off the same way. With none such installed the refusal stands, naming the
+  version the project needs and this one, that no such version is installed,
+  and `kasbah self-update vX.Y.Z` as the way on —
+  or, for a build with no stamp, a stamped build (`project-manifest.md` →
+  `min_kasbah`).
 
-A manifest's `min_kasbah` this kasbah does not meet is refused, not handed
-off: the refusal names the version the project needs and this one, and the
-way on is `kasbah self-update` — or, for a build with no stamp, which meets
-none, a stamped build (`project-manifest.md` → `min_kasbah`).
+Both manifest cases hold for every project command, `kasbah check` included,
+and for a tag's `kasbah.yml`: `deploy X.Y.Z` reads the tag's before
+connecting, and so does `rollback X.Y.Z` when the tag is in this checkout; a
+bare `rollback`, which learns its tag from the server's record, and a named
+one that has to fetch its tag do either once connected — the binary may be
+shipped by then — before anything the rollback changes (`build-deploy.md` →
+`kasbah rollback`).
 
 **A dev build asks before it replaces a release.** When the workstation runs a
 dev build and the server a release (an `-rc.N` included) that the dev build
@@ -2098,8 +2112,10 @@ change of the server's binary prints `server kasbah OLD → NEW` (`(none)` on a
 first install, `(unknown)` when the old binary could not say).
 
 One hop only: the exec'd binary carries `KASBAH_HANDOFF=<build it came from>`,
-and a second refusal is final. A kasbah run from a checkout (`dist/kasbah`)
-never hands off; it says so and names the version to build. The library root
+and a second refusal is final. It runs the command from the start, so what the
+first version printed before handing off (`check`'s header, a rollback's
+record warnings and target line) is printed again. A kasbah run from a
+checkout (`dist/kasbah`) never hands off; it says so and names the version to build. The library root
 is the running binary's own parent directory when it sits in a version
 directory, else `KASBAH_LIB_DIR`, `$XDG_DATA_HOME/kasbah`, `~/.local/share/kasbah`.
 
@@ -2304,9 +2320,9 @@ for one a signal ends, `debug: log: <path>` for any other. A workstation
 command's stderr line the operator already sees is not repeated; the server's
 half streams whole. Exit codes and stdout are the same with or without it.
 `KASBAH_DEBUG` is not passed on to a kasbah the run starts itself (a
-`--version` probe of another build saves no log of its own), but a hand-off
-to another installed version (the newer-server and newer-schema refusals) is
-given `KASBAH_DEBUG=1` when the run has `--debug`,
+`--version` probe of another build saves no log of its own), but every
+hand-off to another installed version is given `KASBAH_DEBUG=1` when the run
+has `--debug`,
 so the version that carries the command on streams and saves its trace too.
 
 Logs go to `$XDG_STATE_HOME/kasbah/logs`, else `~/.local/state/kasbah/logs`,

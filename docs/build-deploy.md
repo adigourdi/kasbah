@@ -499,9 +499,11 @@ below). The only differences:
   the ceiling — where a rollback warns and takes the ceiling (rollback flow,
   step 9).
 - The tag is read before any connection, so a missing tag or a fault in its
-  files — a `min_kasbah` this kasbah does not meet among them — refuses the
-  run with nothing connected to; a rollback asks the record first, and reads
-  only a named tag's `min_kasbah` ahead of it (rollback flow, step 1).
+  files refuses the run with nothing connected to, and a newer `schema` or a
+  `min_kasbah` this kasbah does not meet there hands it off, or refuses it,
+  just as early (`cli.md` → Hand-off between installed versions); a rollback
+  asks the record first, and reads only a named tag's `schema` and
+  `min_kasbah` ahead of it (rollback flow, step 1).
 
 ### Flow (no-args path — working tree)
 
@@ -857,10 +859,12 @@ small without sacrificing history.
 
 ```
 1. With VERSION named, read kasbah.yml at v<VERSION> locally (`git show`):
-   a `min_kasbah` there this kasbah does not meet is refused before any
-   connection, naming the version the tag needs and this one, with
-   `kasbah self-update` as the way on — a tag does not change, so the fix is
-   an upgrade. A missing tag or kasbah.yml says nothing here, so step 3's
+   a `schema` of a newer major or a `min_kasbah` this kasbah does not meet
+   there hands the run, before any connection, to an installed kasbah that
+   reads it (`cli.md` → Hand-off between installed versions); with none
+   installed it is refused there, naming what the tag needs and this kasbah,
+   with `kasbah self-update` as the way on — a tag does not change, so the
+   fix is an upgrade. A missing tag or kasbah.yml says nothing here, so step 3's
    answer comes first. Then open SSH ControlMaster.
 2. Resolve target version:
    - explicit: positional VERSION arg
@@ -909,9 +913,10 @@ small without sacrificing history.
 7. Parse v<target>'s manifest for its `sync:` list. A v<target> whose
    kasbah.yml has a top-level `backup:` key is refused, naming the version:
    a tag is read with the manifest it was tagged with, so it cannot be
-   rolled back to. A `min_kasbah` this kasbah does not meet is refused as in
-   step 1, with `kasbah self-update` as the way on: an implicit target is
-   known only from the record, so its tag's `min_kasbah` is checked here —
+   rolled back to. A newer `schema` or a `min_kasbah` this kasbah does not
+   meet is handed off or refused as in step 1: an implicit target is known
+   only from the record, and a tag step 4 fetched was not there for step 1,
+   so their tag's are checked here —
    after the connection (and the binary shipped in it), before anything the
    rollback itself changes.
    Then find v<target>'s backup (`kasbah remote deploy backup-probe`,

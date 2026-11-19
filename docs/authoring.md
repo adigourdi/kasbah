@@ -88,11 +88,11 @@ against it, are skipped.
 - `client` — groups the project's off-server backups with others
   ([S08](compliance.md#structure)).
 - `min_kasbah: 2.0.0` — the oldest kasbah the project works with, a bare
-  `X.Y.Z`. Every project command run by an older kasbah refuses the project,
-  naming the version it needs, before it connects to the server (a named
-  tag's too, for `deploy X.Y.Z` and `rollback X.Y.Z`); a bare `rollback`'s
-  target tag once the server's record names it
-  ([S09](compliance.md#structure)). Set it when the project relies on what an
+  `X.Y.Z`. A project command run by an older kasbah hands the run, before it
+  connects to the server, to a newer installed kasbah of `min_kasbah`'s major
+  that meets it, and with none installed refuses the project, naming the
+  version it needs; a tag's `min_kasbah` is checked as its `kasbah.yml` is
+  read ([S09](compliance.md#structure)). Set it when the project relies on what an
   older kasbah ignores, such as `kasbah.noRoll`. kasbah 2.0.0 is the first
   release that reads it; an older one ignores it.
 - `mail.domain` — the mail domain the app sends from

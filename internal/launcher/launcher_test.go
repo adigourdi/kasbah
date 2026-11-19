@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/adigourdi/kasbah/internal/version"
 )
 
 func plant(t *testing.T, root, ver string, perm os.FileMode) {
@@ -88,6 +90,34 @@ func TestInstalled(t *testing.T) {
 	}
 	if Newest(root, 3) != "" || Newest(root, 0) != "" {
 		t.Error("Newest found a major that is not installed")
+	}
+	// Meeting is S09's rule within min's major: a dev build meets the release
+	// after its core, but not one of the next major.
+	for min, want := range map[string]string{
+		"1.0.0": "1.0.2-dev.90.1792460000", "1.1.0": "1.0.2-dev.90.1792460000", "1.2.0": "",
+		"2.0.0": "2.1.0-dev.3.1", "2.1.1": "2.1.0-dev.3.1", "2.3.0": "", "3.0.0": "", "0.9.0": "",
+	} {
+		if want != "" {
+			want = filepath.Join(root, want, "kasbah")
+		}
+		v, _ := version.Release(min)
+		if got := Meeting(root, v, ""); got != want {
+			t.Errorf("Meeting(%s) = %q, want %q", min, got, want)
+		}
+	}
+	// Nor one ranked at or below the running build, which it may meet still:
+	// 1.0.2-dev.90 meets 1.0.3, release 1.0.2 does not.
+	v103, _ := version.Release("1.0.3")
+	for running, want := range map[string]string{
+		"": "1.0.2-dev.90.1792460000", "dev": "1.0.2-dev.90.1792460000", "1.0.2-dev.86.1792460290": "1.0.2-dev.90.1792460000",
+		"1.0.2": "", "1.0.2-dev.90.1792460000": "", "2.0.0": "",
+	} {
+		if want != "" {
+			want = filepath.Join(root, want, "kasbah")
+		}
+		if got := Meeting(root, v103, running); got != want {
+			t.Errorf("Meeting(1.0.3) running %q = %q, want %q", running, got, want)
+		}
 	}
 	if Find(root, "1.0.2-dev.86.1792460280") != filepath.Join(root, "1.0.2-dev.86.1792460280", "kasbah") {
 		t.Errorf("Find = %q", Find(root, "1.0.2-dev.86.1792460280"))

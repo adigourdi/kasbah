@@ -43,13 +43,13 @@ func handoffEnv() {
 	}
 }
 
-// resolve is the binary to hand the command to for err — a server build newer
-// than ours (remote.Newer) or a manifest schema above ours
-// (manifest.NewerSchema) — or "" when err is any other error, or when the
-// hand-off cannot happen: the refusal then carries why.
+// resolve is the binary to hand err's command to: a newer server build, a
+// newer manifest schema or a min_kasbah we do not meet. "" for any other err,
+// or when the hand-off cannot happen, the refusal then saying why.
 func resolve(err error, getenv func(string) string) string {
 	var newer *remote.Newer
 	var schema *manifest.NewerSchema
+	var older *manifest.OlderKasbah
 	var find func(root string) string
 	var wanted, remedy string
 	switch {
@@ -61,6 +61,14 @@ func resolve(err error, getenv func(string) string) string {
 		find = func(root string) string { return launcher.Newest(root, schema.Schema) }
 		wanted = fmt.Sprintf("a kasbah of major %d", schema.Schema)
 		remedy = fmt.Sprintf("Install it: `kasbah self-update v%d`, or ./install-dev.sh from that tag's checkout.", schema.Schema)
+	case errors.As(err, &older):
+		min, minErr := version.Release(older.Min)
+		if minErr != nil {
+			return ""
+		}
+		find = func(root string) string { return launcher.Meeting(root, min, build) }
+		wanted = fmt.Sprintf("kasbah %s or a newer %d.x", older.Min, min.Major)
+		// The refusal carries its own way on: a self-update, or a stamped build.
 	default:
 		return ""
 	}
@@ -68,7 +76,7 @@ func resolve(err error, getenv func(string) string) string {
 		cont(err, fmt.Sprintf("this run was already handed off from kasbah %s, and the versions still disagree", from))
 		return ""
 	}
-	exe, exeErr := os.Executable()
+	exe, exeErr := executable()
 	if exeErr != nil {
 		cont(err, fmt.Sprintf("cannot locate this binary to hand off from it: %v", exeErr))
 		return ""
@@ -88,9 +96,14 @@ func resolve(err error, getenv func(string) string) string {
 		return bin
 	}
 	cont(err, fmt.Sprintf("%s is not installed on this workstation (nothing under %s)", wanted, root))
-	next(err, remedy)
+	if remedy != "" {
+		next(err, remedy)
+	}
 	return ""
 }
+
+// executable is this binary's path, which says whether it runs from a checkout.
+var executable = os.Executable
 
 // libDirStep is the step for a library root no variable names.
 const libDirStep = "Set KASBAH_LIB_DIR to the directory kasbah's versions are installed under."

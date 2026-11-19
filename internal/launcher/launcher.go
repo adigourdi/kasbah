@@ -110,6 +110,22 @@ func Newest(root string, major uint64) string {
 	return ""
 }
 
+// Meeting is the newest installed version of min's major under root that
+// meets min (version.Meets, the S09 rule) and ranks above running when running
+// parses, "" when none: a dev build meets more than its rank says.
+func Meeting(root string, min version.Version, running string) string {
+	floor, floorErr := version.Parse(running)
+	for _, e := range Installed(root) {
+		if floorErr == nil && version.Compare(e.Version, floor) <= 0 {
+			break
+		}
+		if e.Version.Major == min.Major && version.Meets(e.Version.String(), min) {
+			return e.Bin
+		}
+	}
+	return ""
+}
+
 // Runs reports whether bin answers --version within limit.
 func Runs(bin string, limit time.Duration) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), limit)

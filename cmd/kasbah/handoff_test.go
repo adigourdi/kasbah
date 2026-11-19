@@ -49,6 +49,12 @@ func TestResolve(t *testing.T) {
 		_, err := manifest.Require(p, "1.0.0")
 		return err
 	}
+	older := func(min, ver string) error {
+		p := filepath.Join(t.TempDir(), "kasbah.yml")
+		os.WriteFile(p, []byte("schema: 1\nname: demo\nmin_kasbah: "+min+"\n"), 0o644)
+		_, err := manifest.Require(p, ver)
+		return err
+	}
 	tests := []struct {
 		name string
 		err  error
@@ -70,6 +76,14 @@ func TestResolve(t *testing.T) {
 		{"a newer major is no hand-off", newer("2.0.1"), lib, "", ""},
 		{"the manifest's major, newest installed", schema("schema: 2\nname: demo\n"), lib, v201, ""},
 		{"the manifest's major is not installed", schema("schema: 3\nname: demo\n"), lib, "", "kasbah self-update v3"},
+		{"min_kasbah, newest of its major that meets it", older("1.1.0", "1.0.0"), lib, v120, ""},
+		{"min_kasbah met by the newest installed", older("1.2.0", "1.1.0"), lib, v120, ""},
+		{"min_kasbah of the next major", older("2.0.1", "1.2.0"), lib, v201, ""},
+		{"min_kasbah above every install of its major, a newer major installed", older("1.3.0", "1.2.0"), lib, "",
+			"kasbah 1.3.0 or a newer 1.x is not installed on this workstation (nothing under " + root + ")"},
+		{"min_kasbah not installed keeps its remedy", older("1.3.0", "1.2.0"), lib, "", "`kasbah self-update v1.3.0`"},
+		{"min_kasbah of an unstamped build", older("1.1.0", "dev"), lib, v120, ""},
+		{"min_kasbah already handed off", older("1.1.0", "1.0.0"), map[string]string{"KASBAH_LIB_DIR": root, "KASBAH_HANDOFF": "1.0.0"}, "", "already handed off from kasbah 1.0.0"},
 		{"already handed off", newer("1.1.0"), map[string]string{"KASBAH_LIB_DIR": root, "KASBAH_HANDOFF": "1.0.0"}, "", "already handed off from kasbah 1.0.0"},
 		{"no library root", newer("1.1.0"), map[string]string{}, "", "nor HOME"},
 	}
@@ -92,6 +106,62 @@ func TestResolve(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A min_kasbah hand-off never goes to a build ranked at or below the running
+// one, though a dev build there may meet more than the running release does.
+func TestResolveMeetingAboveRunning(t *testing.T) {
+	root := t.TempDir()
+	dev := plantVersion(t, root, "1.2.1-dev.5.1")
+	plantVersion(t, root, "1.2.0")
+	saved := build
+	t.Cleanup(func() { build = saved })
+	getenv := func(k string) string { return map[string]string{"KASBAH_LIB_DIR": root}[k] }
+	for running, want := range map[string]string{"1.2.0": dev, "1.2.1": ""} {
+		build = running
+		p := filepath.Join(t.TempDir(), "kasbah.yml")
+		os.WriteFile(p, []byte("schema: 1\nname: demo\nmin_kasbah: 1.2.2\n"), 0o644)
+		_, err := manifest.Require(p, running)
+		if got := resolve(err, getenv); got != want {
+			t.Errorf("running %s: resolve = %q, want %q", running, got, want)
+		}
+		if want == "" && !strings.Contains(shown(err), "kasbah 1.2.2 or a newer 1.x is not installed") {
+			t.Errorf("running %s: the refusal does not say none is installed: %s", running, shown(err))
+		}
+	}
+}
+
+// A checkout build refuses a min_kasbah it does not meet, however many
+// installed versions meet it.
+func TestResolveFromCheckout(t *testing.T) {
+	root := t.TempDir()
+	plantVersion(t, root, "1.2.0")
+	co := t.TempDir()
+	os.MkdirAll(filepath.Join(co, "cmd", "kasbah"), 0o755)
+	os.MkdirAll(filepath.Join(co, "dist"), 0o755)
+	os.WriteFile(filepath.Join(co, "go.mod"), []byte("module x\n"), 0o644)
+	os.WriteFile(filepath.Join(co, "dist", "kasbah"), nil, 0o755)
+	saved := executable
+	executable = func() (string, error) { return filepath.Join(co, "dist", "kasbah"), nil }
+	t.Cleanup(func() { executable = saved })
+	p := filepath.Join(t.TempDir(), "kasbah.yml")
+	for ver, said := range map[string]string{
+		"1.0.0": "and this kasbah is 1.0.0",
+		"dev":   "this kasbah carries no build stamp",
+	} {
+		os.WriteFile(p, []byte("schema: 1\nname: demo\nmin_kasbah: 1.1.0\n"), 0o644)
+		_, err := manifest.Require(p, ver)
+		if got := resolve(err, func(k string) string { return map[string]string{"KASBAH_LIB_DIR": root}[k] }); got != "" {
+			t.Errorf("a checkout handed off to %s", got)
+		}
+		msg := shown(err)
+		for _, want := range []string{said, "this kasbah runs from a checkout, which does not hand off to an installed version",
+			"Check out and build kasbah 1.1.0 or a newer 1.x, or run an installed kasbah."} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("%s: the refusal does not say %q:\n%s", ver, want, msg)
+			}
+		}
 	}
 }
 
@@ -121,6 +191,17 @@ func TestCheckHandsOff(t *testing.T) {
 	}})
 	if got != want || code != cli.ExitFailure {
 		t.Errorf("check's newer-schema refusal resolved to %q (exit %d); want %q, exit 1", got, code, want)
+	}
+	// S09 the same way.
+	want = plantVersion(t, root, "1.3.0")
+	os.WriteFile(filepath.Join(proj, manifest.File), []byte("schema: 1\nname: demo\nmin_kasbah: 1.3.0\n"), 0o644)
+	got = ""
+	code = check.Run(check.Env{Out: out, PWD: proj, Version: "1.0.0", Report: func(err error) int {
+		got = resolve(err, func(k string) string { return map[string]string{"KASBAH_LIB_DIR": root}[k] })
+		return out.Report(err)
+	}})
+	if got != want || code != cli.ExitFailure {
+		t.Errorf("check's min_kasbah refusal resolved to %q (exit %d); want %q, exit 1", got, code, want)
 	}
 }
 

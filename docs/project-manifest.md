@@ -146,15 +146,18 @@ rolls the service anyway), and `kasbah check` points at this field for any
 Every command that reads `kasbah.yml` checks it right after `schema` — only
 the shapes of `kasbah_version`, `name` and `domain` (a single value each) are
 checked before it — and the working tree's before it connects to a server: a
-kasbah older than it is refused, naming the version the project needs and its
-own, with `kasbah self-update` as the way on, and a value that is no bare
+kasbah older than it hands the command to the newest installed kasbah of
+`min_kasbah`'s major that meets it and ranks above itself (`cli.md` → Hand-off
+between installed versions), and with none installed is refused, naming the version the project
+needs and its own, with `kasbah self-update` as the way on; a value that is no bare
 `X.Y.Z` is refused with the shape it takes. A build that carries no stamp
-meets no `min_kasbah`, and its way on is a stamped build (`docker compose run
---rm build`, `CONTRIBUTING.md`). Each refusal exits 1, `kasbah check`
+meets no `min_kasbah`: it hands off the same way, and with none installed its
+way on is a stamped build (`docker compose run --rm build`, `CONTRIBUTING.md`). Each refusal exits 1, `kasbah check`
 included, which leads it with its rule's ID (S09, `compliance.md`), as it
 does a newer `schema`. A tag's `min_kasbah` this kasbah does not meet is
-refused before connecting by `deploy X.Y.Z` and `rollback X.Y.Z`, and by a
-bare `rollback` once the server's record names its version, before anything
+handed off or refused before connecting by `deploy X.Y.Z`, and by `rollback X.Y.Z`
+when the tag is in this checkout; by a bare `rollback` once the server's record
+names its version, and by a named one once it has fetched the tag, before anything
 the rollback itself changes (`build-deploy.md` → `kasbah rollback`); a tag's
 malformed value is refused by `deploy X.Y.Z` before connecting and by a
 rollback once it reads the tag. What meets it: a release at or above it; a

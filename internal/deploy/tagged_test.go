@@ -765,3 +765,43 @@ func TestTaggedManifestRemedy(t *testing.T) {
 		t.Errorf("names the extracted copy or asks for a release:\n%s", got)
 	}
 }
+
+// A named version's kasbah.yml that another kasbah answers — a newer schema or
+// a min_kasbah above this one — is passed up for the hand-off before any
+// connection, named as the tag's.
+func TestTagHandOffBeforeDial(t *testing.T) {
+	for _, tc := range []struct {
+		body, said string
+		is         func(error) bool
+	}{
+		{"schema: 2\nname: demo\n", "kasbah.yml at v3.0.0: schema 2 is newer than this kasbah",
+			func(err error) bool { var n *manifest.NewerSchema; return errors.As(err, &n) }},
+		{"schema: 1\nname: demo\nmin_kasbah: 99.0.0\n", "kasbah.yml at v3.0.0: this project needs kasbah 99.0.0 or newer",
+			func(err error) bool { var o *manifest.OlderKasbah; return errors.As(err, &o) }},
+	} {
+		for _, mode := range []string{"rollback", "deploy"} {
+			history(t, "")
+			write(t, map[string]string{"kasbah.yml": tc.body})
+			git(t, "commit", "-qam", "three")
+			git(t, "tag", "v3.0.0")
+			git(t, "reset", "-q", "--hard", "v2.0.0")
+			var b bytes.Buffer
+			out := &cli.Output{Stdout: &b, Stderr: &b}
+			dialed := false
+			err := RunTagged(Ctx{
+				Out: out, Prompter: &prompt.Prompter{In: strings.NewReader(""), Out: out},
+				PWD: ".", Version: "0.1.0",
+				Dial: func(string) (Server, error) { dialed = true; return nil, errors.New("dialed") },
+				Now:  func() time.Time { return time.Unix(0, 0) },
+			}, Options{Target: "d@h", Version: "3.0.0"}, mode)
+			if !tc.is(err) || dialed {
+				t.Errorf("%s 3.0.0 (%q): %#v, dialed %v", mode, tc.body, err, dialed)
+				continue
+			}
+			out.Report(err)
+			if !strings.Contains(b.String(), tc.said) || strings.Contains(b.String(), os.TempDir()) {
+				t.Errorf("%s 3.0.0 does not say %q under the tag's name:\n%s", mode, tc.said, b.String())
+			}
+		}
+	}
+}
