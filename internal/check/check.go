@@ -112,9 +112,14 @@ func Run(e Env) (code int) {
 			code = a.code
 		}
 	}()
+	// A refusal another kasbah answers is handed off before anything prints:
+	// the version handed to prints the header itself.
+	m, err := manifest.Require(manifest.File, e.Version)
+	if manifest.HandsOff(err) {
+		return e.report(ruled(err))
+	}
 	fmt.Fprintf(c.w, "Checking %s\n\n", e.PWD)
 	if e.Fix {
-		m, err := manifest.Require(manifest.File, e.Version)
 		if err != nil {
 			return e.report(ruled(err))
 		}
@@ -125,7 +130,9 @@ func Run(e Env) (code int) {
 	}
 	fmt.Fprintln(c.w, "Structure:")
 
-	m, err := manifest.Require(manifest.File, e.Version)
+	if e.Fix {
+		m, err = manifest.Require(manifest.File, e.Version)
+	}
 	if err != nil {
 		return e.report(ruled(err))
 	}

@@ -2112,9 +2112,15 @@ change of the server's binary prints `server kasbah OLD → NEW` (`(none)` on a
 first install, `(unknown)` when the old binary could not say).
 
 One hop only: the exec'd binary carries `KASBAH_HANDOFF=<build it came from>`,
-and a second refusal is final. It runs the command from the start, so what the
-first version printed before handing off (`check`'s header, a rollback's
-record warnings and target line) is printed again. A kasbah run from a
+and a second refusal is final. The version handed to runs the command from
+the start. On a `kasbah.yml` already in the checkout, `check` and a bare
+rollback hand off before printing what that version prints again: `check`
+reads the project's before its header, and a rollback holds its record's
+warnings and target line until its tag's keeps the run — with no version to
+hand to, the refusal shows without them. A hand-off on a tag fetched during
+the run, or on a newer server build, follows what was already printed, and
+the version handed to prints it again.
+A kasbah run from a
 checkout (`dist/kasbah`) never hands off; it says so and names the version to build. The library root
 is the running binary's own parent directory when it sits in a version
 directory, else `KASBAH_LIB_DIR`, `$XDG_DATA_HOME/kasbah`, `~/.local/share/kasbah`.

@@ -2,11 +2,13 @@ package check
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/adigourdi/kasbah/internal/cli"
+	"github.com/adigourdi/kasbah/internal/manifest"
 )
 
 const goodCompose = `services:
@@ -971,5 +973,36 @@ func TestFooterPrefersFailure(t *testing.T) {
 	c.footer()
 	if !strings.HasSuffix(b.String(), "`kasbah help C01` (or any ID above) says why a rule exists and what to change.\n") {
 		t.Errorf("footer:\n%s", b.String())
+	}
+}
+
+// A kasbah.yml another kasbah answers is refused before the header, so a
+// hand-off prints it once; any other refusal still follows it.
+func TestHandOffBeforeHeader(t *testing.T) {
+	for _, body := range []string{
+		"schema: 1\nname: demo\nmin_kasbah: 99.0.0\n",
+		"schema: 2\nname: demo\n",
+	} {
+		for _, fix := range []bool{false, true} {
+			project(t, map[string]string{"kasbah.yml": body})
+			var o, e bytes.Buffer
+			var got error
+			out := &cli.Output{Stdout: &o, Stderr: &e}
+			code := Run(Env{Out: out, PWD: "/p", Version: "1", Fix: fix,
+				Report: func(err error) int { got = err; return out.Report(err) }})
+			var newer *manifest.NewerSchema
+			var older *manifest.OlderKasbah
+			if !errors.As(got, &newer) && !errors.As(got, &older) {
+				t.Errorf("%q fix=%v: not a hand-off refusal: %v", body, fix, got)
+			}
+			if code == 0 || strings.Contains(o.String(), "Checking") || strings.Contains(o.String(), "Structure:") {
+				t.Errorf("%q fix=%v: code %d, printed before the refusal:\n%s", body, fix, code, o.String())
+			}
+		}
+	}
+	project(t, map[string]string{"kasbah.yml": ""})
+	out, _, code := check(t)
+	if code == 0 || out != "Checking /p\n\nStructure:\n" {
+		t.Errorf("a missing kasbah.yml: code %d, stdout %q", code, out)
 	}
 }

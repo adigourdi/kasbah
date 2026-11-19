@@ -3,6 +3,7 @@
 package manifest
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -86,6 +87,14 @@ type OlderKasbah struct {
 
 func (o *OlderKasbah) Error() string { return o.err.Error() }
 func (o *OlderKasbah) Unwrap() error { return o.err }
+
+// HandsOff is whether err is a manifest refusal another installed kasbah
+// answers: a NewerSchema or an OlderKasbah.
+func HandsOff(err error) bool {
+	var newer *NewerSchema
+	var older *OlderKasbah
+	return errors.As(err, &newer) || errors.As(err, &older)
+}
 
 // Manifest is a validated kasbah.yml.
 type Manifest struct {

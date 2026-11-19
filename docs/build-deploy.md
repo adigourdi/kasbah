@@ -917,11 +917,14 @@ small without sacrificing history.
    kasbah.yml has a top-level `backup:` key is refused, naming the version:
    a tag is read with the manifest it was tagged with, so it cannot be
    rolled back to. A newer `schema` or a `min_kasbah` this kasbah does not
-   meet is handed off or refused as in step 1: an implicit target is known
-   only from the record, and a tag step 4 fetched was not there for step 1,
-   so their tag's are checked here —
-   after the connection (and the binary shipped in it), before anything the
-   rollback itself changes.
+   meet is handed off or refused as in step 1. An implicit target is known
+   only from the record, so when its tag is already local its kasbah.yml is
+   read right after step 3 — after the connection (and the binary shipped
+   in it), before steps 4-6 — and a hand-off comes before a tag that lacks
+   compose.prod.yml, as a named target's does in step 1. A tag step 4
+   fetched was not there for either, so its kasbah.yml is read in step 5,
+   once compose.prod.yml is found there, before step 6. Both are before
+   anything the rollback itself changes.
    Then find v<target>'s backup (`kasbah remote deploy backup-probe`,
    read-only, before anything on the server changes): the newest
    `backups/<target>-<stamp>.tar.gz` — the latest stamp; a version may

@@ -836,3 +836,56 @@ func TestTagHandOffBeforeDial(t *testing.T) {
 		}
 	}
 }
+
+// A bare rollback holds the record's warnings and its target line until the
+// target's kasbah.yml is known not to hand off: handed off, the version handed
+// to is the one that prints them; kept, they print in the record's order.
+func TestBareRollbackHandOffHoldsRecordLines(t *testing.T) {
+	for _, tc := range []struct {
+		v1extra string
+		is      func(error) bool
+	}{
+		{"schema: 2\n", func(err error) bool { var n *manifest.NewerSchema; return errors.As(err, &n) }},
+		{"min_kasbah: 99.0.0\n", func(err error) bool { var o *manifest.OlderKasbah; return errors.As(err, &o) }},
+		{"", nil},
+	} {
+		history(t, tc.v1extra)
+		t.Setenv("TMPDIR", t.TempDir())
+		prev := "{\"" + ReportKey + "\":1,\"version\":\"1.0.0\",\"prev_version\":\"2.0.0\",\"deployed_before\":true,\"backup\":\"no-backup\",\"digest\":\"-\"}\n"
+		rec := record(twoDeploys, "", true)
+		rec.Warnings = []string{"record-warning"}
+		err, out := runTagged(t, &fake{record: rec, out: &prev}, Options{Target: "d@h"}, "rollback")
+		warn, target := strings.Index(out, "record-warning"), strings.Index(out, "rolling back to 1.0.0")
+		if tc.is != nil {
+			if !tc.is(err) || warn >= 0 || target >= 0 {
+				t.Errorf("v1.0.0 with %q: %#v, printed before the hand-off:\n%s", tc.v1extra, err, out)
+			}
+			continue
+		}
+		if err != nil || warn < 0 || target < warn || strings.Index(out, "Rolled demo back") < target {
+			t.Errorf("kept rollback: %v, out of order:\n%s", err, out)
+		}
+	}
+}
+
+// A rollback refused before its target is known to stay prints the record
+// lines it held, ahead of the refusal.
+func TestRollbackRefusalFlushesRecordLines(t *testing.T) {
+	for _, tc := range []struct {
+		name, version, active, want string
+	}{
+		{"no earlier deploy", "", "2026-02-01T00:00:00+00:00 deploy 2.0.0 no-backup\n",
+			"there is no earlier deploy of demo on d@h to roll back to"},
+		{"never deployed", "1.0.0", "2026-02-01T00:00:00+00:00 deploy 2.0.0 no-backup\n",
+			"Version 1.0.0 was never deployed to this VPS."},
+	} {
+		history(t, "")
+		rec := record(tc.active, "", true)
+		rec.Warnings = []string{"record-warning"}
+		err, out := runTagged(t, &fake{record: rec}, Options{Target: "d@h", Version: tc.version}, "rollback")
+		warn, refusal := strings.Index(out, "record-warning"), strings.Index(out, tc.want)
+		if err == nil || warn < 0 || refusal < warn {
+			t.Errorf("%s: %v, warning not ahead of the refusal:\n%s", tc.name, err, out)
+		}
+	}
+}

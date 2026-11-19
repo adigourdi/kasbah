@@ -192,16 +192,26 @@ func RunTagged(c Ctx, o Options, mode string) error {
 			return err
 		}
 		for _, w := range rec.Warnings {
-			c.Out.Warn("%s", w)
+			r.hold(c.Out.Warn, "%s", w)
 		}
-		if r.version == "" {
+		bare := r.version == ""
+		if bare {
 			if err := r.implicitTarget(rec); err != nil {
+				r.flush()
 				return err
 			}
 		}
 		if err := r.requireDeployed(rec); err != nil {
+			r.flush()
 			return err
 		}
+		// A named target's tag was asked before connecting.
+		if bare {
+			if err := tagHandOff("v"+r.version, c.Version); err != nil {
+				return err
+			}
+		}
+		r.flush()
 	}
 	if t.extract == "" {
 		if err := r.readRef(t); err != nil {
@@ -289,34 +299,47 @@ func RunTagged(c Ctx, o Options, mode string) error {
 	return nil
 }
 
+// hold queues a rollback's record line until its target is known not to be
+// handed off, so the version handed to is the only one to print it.
+func (r *run) hold(say func(string, ...any), format string, args ...any) {
+	r.held = append(r.held, func() { say(format, args...) })
+}
+
+func (r *run) flush() {
+	for _, f := range r.held {
+		f()
+	}
+	r.held = nil
+}
+
 // implicitTarget is the second-latest deploy entry over both files.
 func (r *run) implicitTarget(rec *vlog.Record) error {
-	o, name := r.c.Out, r.m.Name
+	name := r.m.Name
 	idx, damaged := rec.PrevDeploy()
 	if idx >= 0 {
 		it := rec.Items[idx]
 		r.version = it.Version
-		o.Info("rolling back to %s — the latest clean `deploy` entry before the running one in %s's record (%s)", r.version, r.target, it.Time)
+		r.hold(r.c.Out.Info, "rolling back to %s — the latest clean `deploy` entry before the running one in %s's record (%s)", r.version, r.target, it.Time)
 		if n := dirtyDeploys(rec.Items[idx+1 : latestDeploy(rec)]); n > 0 {
-			o.Info("  stepped over %d --dirty deploy(s) after it — never a rollback target", n)
+			r.hold(r.c.Out.Info, "  stepped over %d --dirty deploy(s) after it — never a rollback target", n)
 		}
 		// A line a killed append left is still a deploy that ran: stepped
 		// over, it makes the target one version too far back.
 		if damaged > 0 {
-			o.Warn("%s's record on %s has %d line(s) no version can be read", name, r.target, damaged)
-			o.Warn("  out of — counted across %s and %s — and they were", rec.ActivePath, rec.ArchivePath)
-			o.Warn("  stepped over to reach %s. A truncated write leaves exactly that, and the", r.version)
-			o.Warn("  deploy it recorded is still a deploy that ran, so")
-			o.Warn("  this target may be one version further back than it should be")
-			o.Warn("  read both files before letting this rollback stand")
+			r.hold(r.c.Out.Warn, "%s's record on %s has %d line(s) no version can be read", name, r.target, damaged)
+			r.hold(r.c.Out.Warn, "  out of — counted across %s and %s — and they were", rec.ActivePath, rec.ArchivePath)
+			r.hold(r.c.Out.Warn, "  stepped over to reach %s. A truncated write leaves exactly that, and the", r.version)
+			r.hold(r.c.Out.Warn, "  deploy it recorded is still a deploy that ran, so")
+			r.hold(r.c.Out.Warn, "  this target may be one version further back than it should be")
+			r.hold(r.c.Out.Warn, "  read both files before letting this rollback stand")
 		}
 		// Found in a half-read archive, a nearer deploy may be in what the
 		// truncated member swallowed — the newest archived entries.
 		if it.Archived {
 			if n := rec.Note(); n != "" {
-				o.Warn("%s", n)
-				o.Warn("  and %s was read out of it, so a nearer deploy may be among the", r.version)
-				o.Warn("  entries that could not be decoded")
+				r.hold(r.c.Out.Warn, "%s", n)
+				r.hold(r.c.Out.Warn, "  and %s was read out of it, so a nearer deploy may be among the", r.version)
+				r.hold(r.c.Out.Warn, "  entries that could not be decoded")
 			}
 		}
 		return nil
@@ -493,23 +516,16 @@ func taggedManifest(err error, path, ref string) error {
 		return err
 	}
 	e.Lines[0] = manifest.File + " at " + ref + strings.TrimPrefix(e.Lines[0], path)
-	if handsOff(err) {
+	if manifest.HandsOff(err) {
 		return err
 	}
 	return e.SetNext("A version deploys with the kasbah.yml it was tagged with, and a tag does not",
 		"change: fix kasbah.yml in a new release and deploy that.")
 }
 
-// handsOff is whether err is a manifest refusal another installed kasbah
-// answers: a newer schema, or a min_kasbah this kasbah does not meet.
-func handsOff(err error) bool {
-	var newer *manifest.NewerSchema
-	var older *manifest.OlderKasbah
-	return errors.As(err, &newer) || errors.As(err, &older)
-}
-
 // tagHandOff is the refusal of ref's kasbah.yml that another kasbah answers
-// (handsOff); a missing tag or file, or any other fault, is readRef's to name.
+// (manifest.HandsOff); a missing tag or file, or any other fault, is
+// readRef's to name.
 func tagHandOff(ref, ver string) error {
 	if trace.Run(exec.Command("git", "rev-parse", "-q", "--verify", "refs/tags/"+ref+"^{commit}")) != nil {
 		return nil
@@ -528,7 +544,7 @@ func tagHandOff(ref, ver string) error {
 	if os.WriteFile(path, out, 0o600) != nil {
 		return nil
 	}
-	if _, err = manifest.Require(path, ver); handsOff(err) {
+	if _, err = manifest.Require(path, ver); manifest.HandsOff(err) {
 		return taggedManifest(err, path, ref)
 	}
 	return nil

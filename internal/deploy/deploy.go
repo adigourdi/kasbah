@@ -360,6 +360,8 @@ type run struct {
 	envRestore  bool
 	envKeys     []string
 	restoreData bool
+	// held is the rollback lines hold queues for flush.
+	held []func()
 	// envPop, while the backup's .env is live ahead of the engine, unregisters
 	// the signal cleanup that puts the server's back.
 	envPop func()
