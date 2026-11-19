@@ -33,6 +33,8 @@ type fakeDocker struct {
 	// connectErr fails every `network connect`; traefik starts on its own
 	// network alone, two project networks waiting.
 	connectErr bool
+	// shared is each container's `name mode nets` once kasbah-net exists.
+	shared string
 }
 
 func (f *fakeDocker) run(dir string, args ...string) (string, error) {
@@ -50,6 +52,15 @@ func (f *fakeDocker) run(dir string, args ...string) (string, error) {
 	case strings.HasPrefix(j, "network ls --filter label=com.docker.compose.network=kasbah --format"):
 		// hand_kasbah has no <apps>/hand: a compose project run by hand.
 		return "mail_kasbah mail\ndemo_kasbah demo\nhand_kasbah hand\n", nil
+	case strings.HasPrefix(j, "network inspect"), j == "network rm kasbah-net":
+		if f.shared == "" {
+			return "", errors.New("Error response from daemon: network kasbah-net not found")
+		}
+		return "", nil
+	case j == "ps -aq":
+		return "id\n", nil
+	case args[0] == "inspect" && strings.Contains(j, "HostConfig.NetworkMode"):
+		return f.shared, nil
 	case strings.HasPrefix(j, "network connect"):
 		if f.connectErr {
 			return "", errors.New("exit status 1")
@@ -71,6 +82,11 @@ func (f *fakeDocker) run(dir string, args ...string) (string, error) {
 				return "true", nil
 			}
 			return "false", nil
+		case strings.Contains(j, "State.Status"):
+			if f.healthyOn[f.ups] {
+				return "running", nil
+			}
+			return "exited", nil
 		case strings.Contains(j, "Config.Image"):
 			b, _ := os.ReadFile(filepath.Join(dir, "..", "never"))
 			return string(b) + "traefik:image", nil
@@ -119,7 +135,7 @@ func TestStart(t *testing.T) {
 	f0 := &fakeDocker{healthyOn: map[int]bool{1: true}}
 	install(t, f0)
 	if u := start(apps, bk, "", time.Second, failWriter{}); u.RolledBack != "no" || u.Health != "healthy" || restored(apps) ||
-		u.Networks != "demo_kasbah mail_kasbah" || u.JoinErr != "" {
+		u.Networks != "demo_kasbah mail_kasbah" || u.JoinErr != "" || u.Shared != "" {
 		t.Errorf("healthy: %+v", u)
 	}
 	// Rejoined right after the up, before the health wait.
@@ -127,6 +143,22 @@ func TestStart(t *testing.T) {
 		indexOf(f0.calls, "network connect mail_kasbah traefik") < 0 {
 		t.Errorf("join order: %q", f0.calls)
 	}
+	if indexOf(f0.calls, "network rm") >= 0 {
+		t.Errorf("no kasbah-net to remove: %q", f0.calls)
+	}
+	// The running Traefik, recreated off kasbah-net, lets it go once nothing
+	// else is on it.
+	f0 = &fakeDocker{healthyOn: map[int]bool{1: true}, shared: "/traefik traefik_default traefik_default demo_kasbah\n"}
+	install(t, f0)
+	if u := start(apps, bk, "", time.Second, failWriter{}); u.Shared != "kasbah-net removed: no container is on it" ||
+		indexOf(f0.calls, "network rm kasbah-net") < indexOf(f0.calls, "inspect -f {{if") {
+		t.Errorf("kasbah-net unused: %+v %q", u, f0.calls)
+	}
+	install(t, &fakeDocker{healthyOn: map[int]bool{1: true}, shared: "/old-db-1 kasbah-net \n"})
+	if u := start(apps, bk, "", time.Second, failWriter{}); u.Shared != "kasbah-net kept: old-db-1 still on it" {
+		t.Errorf("kasbah-net in use: %+v", u)
+	}
+
 	apps, bk = stack(t)
 	install(t, &fakeDocker{healthyOn: map[int]bool{1: true}, connectErr: true})
 	if u := start(apps, bk, "", time.Second, failWriter{}); u.RolledBack != "no" || !strings.Contains(u.JoinErr, "docker network connect demo_kasbah traefik failed") {

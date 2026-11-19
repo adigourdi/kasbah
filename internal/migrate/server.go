@@ -48,6 +48,8 @@ type Report struct {
 	// Gone is an undo's files left out because their directory is gone (a
 	// dropped project).
 	Gone []string `json:"gone"`
+	// Left is an undo's steps' Left: what it did not put back live.
+	Left []string `json:"left,omitempty"`
 }
 
 // Keys is what a report must carry to be one (remote.Decode).
@@ -72,7 +74,8 @@ const ExitRefused = 5
 type Refusal struct {
 	// Way is "finish" (a stopped run: forward at Major), "stay" (a finished
 	// one: left at Major), "aside" (Snapshot does not read back), "busy" (a
-	// lock is held) or "second" (Snapshot, of this second, already exists).
+	// lock is held), "second" (Snapshot, of this second, already exists) or
+	// "fix" (a file a step cannot rewrite, named in the cause).
 	Way      string `json:"refused"`
 	Major    int    `json:"major"`
 	Snapshot string `json:"snapshot"`
@@ -99,6 +102,8 @@ func (r Refusal) Step(target string, undo bool) string {
 		return fmt.Sprintf("Re-run `%s` once it has finished.", same)
 	case "second":
 		return fmt.Sprintf("Re-run `%s` in a second.", same)
+	case "fix":
+		return fmt.Sprintf("Fix the file the cause above names, then re-run `%s`.", again)
 	}
 	// Both ends ship together: only a server of another build gets here.
 	return fmt.Sprintf("This kasbah does not know the server's next step %q — the server runs another build of kasbah than this workstation; the cause above is its own.", r.Way)
@@ -126,14 +131,23 @@ var reSnapshot = regexp.MustCompile(`^([0-9]+)-to-([0-9]+)-([0-9]{8}T[0-9]{6}Z)\
 // finished with.
 const Undone = ".undone"
 
+// Begun is the suffix of the empty note beside a snapshot whose run went on
+// to its steps, written before the first rewrite.
+const Begun = ".begun"
+
 // undone is whether an undo finished with the snapshot at path.
-func undone(path string) (bool, error) {
-	_, err := os.Lstat(path + Undone)
+func undone(path string) (bool, error) { return noted(path + Undone) }
+
+// begun is whether the run that took the snapshot at path began its steps.
+func begun(path string) (bool, error) { return noted(path + Begun) }
+
+func noted(path string) (bool, error) {
+	_, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("could not check for %s: %v", path+Undone, err)
+		return false, fmt.Errorf("could not check for %s: %v", path, err)
 	}
 	return true, nil
 }
@@ -306,8 +320,9 @@ func snapshot(apps, name string, rel []string) (string, error) {
 	return path, nil
 }
 
-// Run is the server side of `kasbah migrate server`: under the locks, a
-// snapshot, every step from the marker's major to ours, and the marker last.
+// Run is the server side of `kasbah migrate server`: under the locks, every
+// step's files judged, a snapshot, every step from the marker's major to
+// ours, and the marker last.
 func Run(apps, ours string, steps []Step, now time.Time) (*Report, error) {
 	held, err := lockAll(apps)
 	if err != nil {
@@ -335,29 +350,55 @@ func Run(apps, ours string, steps []Step, now time.Time) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A failed run's snapshot holds the originals; a rerun keeps it so that
-	// an undo restores those, never the half-migrated tree. One an undo has
-	// finished with is history, and a fresh one is taken.
-	if r.Snapshot, _, err = Find(apps, from, to); err != nil {
-		return nil, err
-	}
-	if r.Snapshot != "" {
-		if done, err := undone(r.Snapshot); err != nil {
-			return nil, err
-		} else if done {
-			r.Snapshot = ""
+	// Every step's files are judged as they are now, before any snapshot:
+	// exact while no step before the last rewrites a file.
+	for _, s := range plan {
+		_, _, err := prepare(apps, s)
+		if st := (stop{}); errors.As(err, &st) {
+			f := cli.Fail("step %d->%d cannot rewrite %s: it %s — this run changed nothing and took no snapshot", s.From, s.To, st.path, st.why)
+			if prior, err := stopped(apps, from, to); err == nil && prior != "" {
+				f = cli.Fail("step %d->%d cannot rewrite %s: it %s — this run changed nothing, but an earlier one stopped partway and %s holds the originals of what it rewrote", s.From, s.To, st.path, st.why, prior)
+			}
+			return nil, refused{f, Refusal{Way: "fix", Major: from}}
 		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	// A run that began its steps and stopped left the originals in its
+	// snapshot; a rerun keeps it so that an undo restores those, never the
+	// half-migrated tree. One an undo has finished with is history, and one
+	// whose run never began its steps rewrote nothing, so the live files are
+	// the originals: either way a fresh one is taken.
+	if r.Snapshot, err = stopped(apps, from, to); err != nil {
+		return nil, err
 	}
 	if r.Snapshot != "" {
 		r.SnapshotReused = true
-	} else if r.Snapshot, err = snapshot(apps, SnapshotName(from, to, now), rel); err != nil {
-		return nil, err
+	} else {
+		if r.Snapshot, err = snapshot(apps, SnapshotName(from, to, now), rel); err != nil {
+			return nil, err
+		}
+		if err := writeAtomic(r.Snapshot+Begun, nil, 0o644); err != nil {
+			return nil, fmt.Errorf("%v — nothing was rewritten; a rerun takes a fresh snapshot", err)
+		}
 	}
 	for _, s := range plan {
+		var cost Cost
+		if s.Warn != nil {
+			cost = s.Warn(apps)
+		}
 		sr, err := apply(apps, s)
+		sr.Warnings, sr.Notes = cost.Lost, cost.Notes
+		if err == nil && s.Act != nil {
+			if sr.Done, err = s.Act(apps); err != nil {
+				err = fmt.Errorf("step %d->%d rewrote its files, then failed: %v", s.From, s.To, err)
+			}
+		}
 		r.Steps = append(r.Steps, sr)
+		// The report so far goes with the failure: what was done before it.
 		if err != nil {
-			return nil, partway{fmt.Errorf("%v — the marker still says major %d; the originals are in %s", err, from, r.Snapshot)}
+			return r, partway{fmt.Errorf("%v — the marker still says major %d; the originals are in %s", err, from, r.Snapshot)}
 		}
 	}
 	own := tree.NewMap()
@@ -370,7 +411,8 @@ func Run(apps, ours string, steps []Step, now time.Time) (*Report, error) {
 }
 
 // Find is the newest snapshot under apps from major from to major to, and
-// its stamp; "" when there is none. A to of -1 matches any.
+// its stamp; "" when there is none. A to of -1 matches any. It reads names
+// alone: the notes beside one (Begun, Undone) are its caller's to weigh.
 func Find(apps string, from, to int) (path string, at time.Time, err error) {
 	ents, err := os.ReadDir(filepath.Join(apps, Dir))
 	if errors.Is(err, os.ErrNotExist) {
@@ -440,8 +482,33 @@ func DeployedSince(apps string, t time.Time) (project, stamp string, err error) 
 }
 
 // Undo puts back the newest unfinished or finished migration, unless a
-// project has deployed since its snapshot was taken.
-func Undo(apps string) (*Report, error) {
+// project has deployed since its snapshot was taken; steps are the chain it
+// was run from, whose Left the report carries.
+func Undo(apps string, steps []Step) (r *Report, err error) {
+	defer func() {
+		if err == nil {
+			r.Left = left(apps, steps, r.From, r.To)
+		}
+	}()
+	return undo(apps)
+}
+
+// left is what an undo of the steps from major from to major to leaves live.
+func left(apps string, steps []Step, from, to int) []string {
+	plan, err := Plan(steps, from, to)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, s := range plan {
+		if s.Left != nil {
+			out = append(out, s.Left(apps)...)
+		}
+	}
+	return out
+}
+
+func undo(apps string) (*Report, error) {
 	held, err := lockAll(apps)
 	if err != nil {
 		return nil, err
@@ -637,4 +704,22 @@ func differs(apps, path string, r *Report) ([]entry, error) {
 		return nil
 	})
 	return out, err
+}
+
+// stopped is the snapshot of a from→to run that began its steps and stopped,
+// one an undo has not finished with; "" for none.
+func stopped(apps string, from, to int) (string, error) {
+	snap, _, err := Find(apps, from, to)
+	if err != nil || snap == "" {
+		return "", err
+	}
+	done, err := undone(snap)
+	if err != nil {
+		return "", err
+	}
+	started, err := begun(snap)
+	if err != nil || done || !started {
+		return "", err
+	}
+	return snap, nil
 }

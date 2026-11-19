@@ -441,6 +441,13 @@ func remoteStart(apps string, restart bool, timeout time.Duration, acme, stamp s
 		time.Sleep(2 * time.Second)
 	}
 
+	// Healthy: kasbah-net goes unless a container, this Traefik included,
+	// still needs it.
+	shared, err := traefiknet.Docker(traefiknet.Exec).DropShared()
+	if err != nil {
+		shared = traefiknet.Shared + " left in place: " + firstLine(err.Error())
+	}
+
 	after := startedAt(id)
 	action := "running"
 	switch {
@@ -451,9 +458,19 @@ func remoteStart(apps string, restart bool, timeout time.Duration, acme, stamp s
 	}
 	name, _ := inspect(id, "{{.Name}}")
 	image, _ := inspect(id, "{{.Config.Image}}")
-	fmt.Fprintf(stdout, "traefik_action=%s\ntraefik_health=%s\ntraefik_started_at=%s\ntraefik_image=%s\ntraefik_container=%s\ntraefik_networks=%s\n",
-		action, health, after, image, strings.TrimPrefix(name, "/"), strings.Join(nets, " "))
+	fmt.Fprintf(stdout, "traefik_action=%s\ntraefik_health=%s\ntraefik_started_at=%s\ntraefik_image=%s\ntraefik_container=%s\ntraefik_networks=%s\ntraefik_shared=%s\n",
+		action, health, after, image, strings.TrimPrefix(name, "/"), strings.Join(nets, " "), shared)
 	return nil
+}
+
+// firstLine is s's first non-blank line, CRs dropped, fit for a key=value line.
+func firstLine(s string) string {
+	for _, l := range strings.Split(strings.ReplaceAll(s, "\r", ""), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			return l
+		}
+	}
+	return ""
 }
 
 // resetByHand is a failed reset's refusal: traefik.yml already names the new CA,

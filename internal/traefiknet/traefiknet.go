@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -24,6 +25,9 @@ const (
 	// Container is the shared Traefik's container_name; Project its compose project.
 	Container = "traefik"
 	Project   = "traefik"
+	// Shared is the network every project shared before each had its own;
+	// this kasbah never creates Traefik on it.
+	Shared = "kasbah-net"
 )
 
 // ErrNoTraefik is a host with no traefik container to attach.
@@ -107,8 +111,8 @@ func (docker Docker) Served(apps string) ([]string, error) {
 	return names, nil
 }
 
-// attached is the networks Traefik is on; ErrNoTraefik when it is absent.
-func (docker Docker) attached() (map[string]bool, error) {
+// Attached is the networks Traefik is on; ErrNoTraefik when it is absent.
+func (docker Docker) Attached() (map[string]bool, error) {
 	out, err := docker("inspect", "-f", "{{range $k, $v := .NetworkSettings.Networks}}{{$k}}\n{{end}}", Container)
 	if err != nil {
 		if strings.Contains(err.Error(), "No such") {
@@ -129,7 +133,7 @@ func (docker Docker) Join(nets []string) ([]string, error) {
 	if len(nets) == 0 {
 		return nil, nil
 	}
-	on, err := docker.attached()
+	on, err := docker.Attached()
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +144,7 @@ func (docker Docker) Join(nets []string) ([]string, error) {
 		}
 		if _, err := docker("network", "connect", n, Container); err != nil {
 			// Lost a race with another run: what was asked for holds.
-			if now, aerr := docker.attached(); aerr == nil && now[n] {
+			if now, aerr := docker.Attached(); aerr == nil && now[n] {
 				continue
 			}
 			return done, fmt.Errorf("docker network connect %s %s failed: %v", n, Container, err)
@@ -166,7 +170,7 @@ func (docker Docker) Leave(nets []string) ([]string, error) {
 	if len(nets) == 0 {
 		return nil, nil
 	}
-	on, err := docker.attached()
+	on, err := docker.Attached()
 	if errors.Is(err, ErrNoTraefik) {
 		return nil, nil
 	}
@@ -184,6 +188,64 @@ func (docker Docker) Leave(nets []string) ([]string, error) {
 		done = append(done, n)
 	}
 	return done, nil
+}
+
+// NoNetwork is whether err is docker's own answer that network name does not
+// exist, in either of the wordings its daemons use.
+func NoNetwork(err error, name string) bool {
+	m := err.Error()
+	return strings.Contains(m, "network "+name+" not found") || strings.Contains(m, "No such network: "+name)
+}
+
+// OnShared is every container, running or stopped, attached to Shared or
+// created on it, in byte order: a stopped one is not in `docker network
+// inspect`, and one created on it cannot start once it is gone.
+func (docker Docker) OnShared() ([]string, error) {
+	ids, err := docker("ps", "-aq")
+	if err != nil {
+		return nil, fmt.Errorf("docker ps -a failed: %v", err)
+	}
+	if len(fields(ids)) == 0 {
+		return nil, nil
+	}
+	out, err := docker(append([]string{"inspect", "-f", "{{.Name}} {{.HostConfig.NetworkMode}} {{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}"}, fields(ids)...)...)
+	if err != nil {
+		return nil, fmt.Errorf("docker inspect failed: %v", err)
+	}
+	var on []string
+	for _, l := range strings.Split(strings.ReplaceAll(out, "\r", ""), "\n") {
+		if f := strings.Fields(l); len(f) > 1 && slices.Contains(f[1:], Shared) {
+			on = append(on, strings.TrimPrefix(f[0], "/"))
+		}
+	}
+	sort.Strings(on)
+	return on, nil
+}
+
+// DropShared removes Shared once no container is on it or created on it, and
+// says what it did; "" when there is no Shared. A recreated Traefik's start
+// runs it.
+func (docker Docker) DropShared() (string, error) {
+	if _, err := docker("network", "inspect", "-f", "{{.Name}}", Shared); err != nil {
+		if NoNetwork(err, Shared) {
+			return "", nil
+		}
+		return "", fmt.Errorf("docker network inspect %s failed: %v", Shared, err)
+	}
+	on, err := docker.OnShared()
+	if err != nil {
+		return "", err
+	}
+	if len(on) > 0 {
+		return fmt.Sprintf("%s kept: %s still on it", Shared, strings.Join(on, ", ")), nil
+	}
+	if _, err := docker("network", "rm", Shared); err != nil {
+		if NoNetwork(err, Shared) {
+			return "", nil
+		}
+		return "", fmt.Errorf("docker network rm %s failed: %v", Shared, err)
+	}
+	return Shared + " removed: no container is on it", nil
 }
 
 func fields(s string) []string {

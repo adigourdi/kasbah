@@ -384,7 +384,10 @@ What it does:
    when the static config changed and the container was not just recreated.
    Once Traefik is healthy, the env files of providers it no longer reads are
    removed — save one a file under `dynamic/` still names, which is kept with
-   a warning naming those files.
+   a warning naming those files — and so is `kasbah-net`, the network an
+   older kasbah created Traefik on, once no container, running or stopped, is
+   on it or created on it; the report says it was removed, or names each
+   container that keeps it.
 7. Health-check Traefik, print the dashboard URL. Plain HTTP redirects to
    HTTPS, and the dashboard carries HSTS on its 401 (`traefik.md` → Dashboard).
 8. If `--with-mail`: this is spread across steps 5-7 rather than sitting
@@ -595,7 +598,10 @@ stack that will not yield them is refused, naming the one
 that is missing and pointing at `server init` — repairing a stack is init's
 job, and a version bump must not move a server's CA or its dashboard
 credentials as a side effect. `acme.json` is never written; the run digests
-it before and after and reports whether the new Traefik touched it.
+it before and after and reports whether the new Traefik touched it. Once
+Traefik runs, `kasbah-net`, the network an older kasbah created Traefik on, is
+removed when no container, running or stopped, is on it or created on it, and
+the report says so, or names each container that keeps it.
 
 If the new version does not come up healthy, the backup is copied back **on
 the server** and the old version brought up again, in the same step rather
@@ -2056,36 +2062,97 @@ marker is an older major (every other command refuses that server and names
 this one); the same-build rule still applies, so a newer server build is
 refused or handed off as elsewhere. It prints the plan — the steps from the
 marker's major up to ours, the files each rewrites, the snapshot path, the
-locks — and asks *Migrate? Every kasbah workstation older than N.x will be
-refused by this server afterwards.* (`--yes`; without a TTY the unanswered
-prompt is a hard fail naming the flag). A server already at this major does
-nothing and exits 0.
+locks, and, for a step that costs a route (`1→2`), what the server reads with
+`kasbah remote migrate --probe`, which changes nothing: each file the run
+could not rewrite, which would refuse it before its snapshot, named with why;
+what will lose its route; and what it leaves as written — and asks *Migrate?
+Every kasbah workstation older than N.x will be refused by this server
+afterwards.* (`--yes`; without a TTY the unanswered prompt is a hard fail
+naming the flag). The list is a warning, never a refusal: answering no is the
+way to stop. A probe that fails says the list is unjudged and still asks. A
+server already at this major does nothing and exits 0.
 
 On the server (`kasbah remote migrate`, outliving a dropped session): the
 migration lock `<apps>/.kasbah/migrate.lock`, the server lock
-`<apps>/.kasbah/server.lock` (exclusive) and every project's
-`.deploy.lock` are taken without waiting (a held one refuses, naming the
-project); every file the steps declare, plus the marker, is written into
-`<apps>/.kasbah/migrate/<from>-to-<to>-<stamp>.tar` before anything is
-rewritten — unless one for this step already exists while the marker still
-says `<from>` and no `.undone` note sits beside it: that one holds the
-originals of a run that died halfway, so it is kept and reused (after an
-undo has finished with it a fresh snapshot is taken instead; one from a
-kasbah that left no notes is reused even when it was undone); files are
-rewritten one by one, temp + rename, each skipped when its own stamp already
-says `<to>`, so a run that died halfway finishes on the
-next; the marker moves last (merged — keys it does not own survive). Steps are
-compiled into the binary, one per major, and the newest binary carries them
-all. Today the chain holds one, `0→1`, which rewrites nothing: 0.x server
-state is 1.x state.
+`<apps>/.kasbah/server.lock` (exclusive) and every project's `.deploy.lock`
+are taken without waiting (a held one refuses, naming the project); every
+step's files are rewritten in memory, each skipped when its own stamp already
+says `<to>` — one that cannot be rewritten refuses the run (`kasbah remote
+migrate` exits 5) naming the file and why, this run having changed nothing
+and taken no snapshot — and naming, too, the snapshot of an earlier run that
+stopped partway, which holds the originals of what that run rewrote — for a
+fix and a rerun; then every file the steps declare, plus the
+marker, is written into `<apps>/.kasbah/migrate/<from>-to-<to>-<stamp>.tar`,
+and an empty note `<snapshot>.begun` beside it, before anything is rewritten —
+unless one for this step already exists while the marker still says `<from>`,
+with a `.begun` note and no `.undone` note beside it: that one holds the
+originals of a run that died once it began its steps, so it is kept and
+reused. One without a `.begun` note (its run rewrote nothing, so the live
+files are the originals; or a kasbah that wrote no such note took it), and
+one an undo has finished with, are passed over and a fresh snapshot is
+taken. Each step then writes its files one by one, temp + rename, so a run
+that died halfway finishes on the next; a step's live action, if it has one,
+runs after its files and before the marker, and runs again on a rerun; the
+marker moves last (merged — keys it does not own survive). Steps are compiled
+into the binary, one per major, and the newest binary carries them all. The
+chain holds two:
+
+- `0→1` rewrites nothing: 0.x server state is 1.x state.
+- `1→2` scopes every route to its own project's network. Each project
+  fragment `<apps>/traefik/dynamic/<name>.yml` — one whose project has its
+  directory `<apps>/<name>/`; another `<name>.yml` there is left as written,
+  and the plan names it — has each backend host that is a bare name (`http`
+  `url`, `tcp`/`udp` `address`) qualified with `<name>_kasbah` —
+  `http://web:80` becomes `http://web.<name>_kasbah:80`, as a 2.x deploy
+  installs it, every other byte kept; an IP or a dotted host is left as
+  written. `_mail.yml`'s webmail backend is qualified with `mail_kasbah`.
+  `kasbah-net` is cut out of `<apps>/traefik/compose.yml`, from the traefik
+  service's `networks:` and the top-level ones, its lines alone (an entry's
+  deeper-indented lines, a block scalar's among them, go with it). Each file's
+  version is read from its content: a fragment with no bare backend host left,
+  and a compose file that no longer names `kasbah-net`, are at 2 and skipped.
+  A file it cannot edit in place — one that does not parse, a backend in an
+  anchor also read outside a backend, a block scalar, userinfo or an unfilled
+  `${KEY}` in a backend, a `networks:` in flow style or as an alias, an alias
+  or a merge key anywhere in the traefik service's `networks:` or as a key of
+  the top-level ones, a traefik service written as an alias or given its
+  `networks:` through a merge — refuses the run before its snapshot, naming
+  the file and the line, for a fix by hand and a rerun. Then the live Traefik
+  is disconnected from `kasbah-net` (`docker network disconnect`, no restart);
+  Traefik already off it, or no Traefik, is fine, and the report says which.
+  The network itself stays: Traefik was created on it, and Docker starts a
+  container only while the network it was created on exists. A Traefik on no
+  other network stays on it too, so its published ports keep answering. The
+  report names the next `kasbah server init` or `kasbah server
+  upgrade-traefik`, which recreates Traefik on `traefik_default` and then
+  removes `kasbah-net` once no container, running or stopped, is on it or was
+  created on it — or names each one that still is, and keeps it.
+
+  The plan lists what will lose its route: each fragment backend host that
+  is a bare name (or one already qualified with `<name>_kasbah`) and not one
+  of its project's own names on `<name>_kasbah` — reached only through
+  `kasbah-net`, it answers 502 once qualified (judged from `docker compose -p
+  <name> config` in `<apps>/<name>` as a deploy judges it; a project whose
+  compose cannot be read is listed as unjudged) — and each container with a
+  dotted name or alias on a `*_kasbah` network, which could hijack a scoped
+  name. Each answers 502 until the project is moved to `kasbah: {}` with
+  `kasbah check --fix` and redeployed with this kasbah (a dotted name, until
+  it is renamed without one). A project on both `kasbah-net` and its own
+  network, routed by its own names, keeps its route and is not listed. The
+  plan also lists, as left as written: each IP, dotted or outside backend,
+  which keeps answering and which the next deploy with this kasbah refuses
+  (T07); each `<name>.yml` that is no project's; and the containers still on
+  `kasbah-net`. The run's report repeats the lists, and says what it did to
+  Traefik; a run that fails once it has begun its steps prints them, and
+  what it did, before its cause.
 
 `--undo`, after the same prompt, goes back one of two ways, and once done
 leaves an empty note `<snapshot>.undone` beside the snapshot it used:
 
 - *A run that stopped.* The newest snapshot that starts at the marker's
-  major, with no note beside it, is a run that stopped before moving the
-  marker — partway, or before its first rewrite. Its files that differ from
-  the live ones (an absent live file counts) are restored, possibly none,
+  major, with no `.undone` note beside it, is a run that stopped before moving
+  the marker — partway, or before its first rewrite. Its files that differ
+  from the live ones (an absent live file counts) are restored, possibly none,
   then the note is written; the marker is left as it is — it already says that
   major, and its snapshotted copy would drop a key written since. With nothing
   to put back the run is reported closed. A snapshot from a kasbah that left
@@ -2099,34 +2166,46 @@ leaves an empty note `<snapshot>.undone` beside the snapshot it used:
 So after a finished `0→1` and a stopped `1→2`, a first `--undo` closes `1→2`
 and a second undoes `0→1`; after a finished `1→2` is undone, a file it held
 that changes later (an `upgrade-traefik`) is not reverted — the next `--undo`
-undoes `0→1`, or is *nothing to undo*. A file whose directory is gone (a
-dropped project) is not restored, and the report names it. A restore that
+undoes `0→1`, or is *nothing to undo*. An undo restores files and the
+marker alone. The server binary stays this build, which a workstation of the
+older major refuses as a newer major, and this kasbah refuses the restored
+marker; to manage the server with the older major, put that major's server
+build (the release asset `kasbah_<version>_linux_<arch>`) at
+`<apps>/.kasbah/bin/kasbah` by hand, which the report names. An undone
+`1→2` puts back the bare fragments, `_mail.yml` and Traefik's compose file
+naming `kasbah-net`, but not Traefik on `kasbah-net`: when Traefik is off it,
+the report says so and gives `docker network connect kasbah-net traefik`,
+run on the server, to put it back (or says that `kasbah-net` is gone, as no
+container was left on it). A file whose directory is gone (a dropped
+project) is not restored, and the report names it. A restore that
 has files to put back refuses when any project's `versions.log` has an entry
 newer than the snapshot: the server has moved on, and the tarball is the
 manual path; for a stopped run, re-running `kasbah migrate server` finishes
 it instead. An entry in the same second as the snapshot does not count as
 newer.
 
-A run that fails once its snapshot is written (or reused), and an undo that
-fails writing a restored file, its note or the marker (`kasbah remote
-migrate` exits 3 for both; the command itself exits 1), fail naming the same
-command to re-run once the cause is fixed: it resumes, on the same snapshot.
-A run's failure names `--undo` beside it, as the way back. A failure before
-that — nothing to undo, say — and a snapshot that does not read back fail in
-the server's own words, the latter naming what it already restored, and name
-no re-run of the same command as it stands. A refusal names its way on: a
-held lock (the migration lock, the server lock or a project's `.deploy.lock`,
-for a run or an undo) names the same command, `--undo` included when given,
-to re-run once its holder has finished; a run whose snapshot name, of this
-second, is already taken names it to re-run in a second; a deploy since the
-snapshot names leaving `USER@HOST` at its major (a finished migration) or
-`kasbah migrate server USER@HOST` with a kasbah of the stopped run's major,
-which finishes it; a stopped run's snapshot that does not read back names the
-file to move aside, then `kasbah migrate server USER@HOST --undo`. For a
-refusal `kasbah remote migrate` prints the cause alone and exits 5 with a
-report of which on stdout, and the workstation prints the step with its
-target; a report that does not read back fails naming the exit, nothing
-changed, and the same command to re-run to see the refusal again.
+A run that fails once it has begun its steps (its snapshot written and noted
+`.begun`, or reused), and an undo that fails writing a restored file, its note
+or the marker (`kasbah remote migrate` exits 3 for both; the command itself
+exits 1), fail naming the same command to re-run once the cause is fixed: it
+resumes, on the same snapshot. A run's failure names `--undo` beside it, as
+the way back. A failure before that — nothing to undo, say — and a snapshot
+that does not read back fail in the server's own words, the latter naming what
+it already restored, and name no re-run of the same command as it stands. A
+refusal names its way on: a held lock (the migration lock, the server lock or
+a project's `.deploy.lock`, for a run or an undo) names the same command,
+`--undo` included when given, to re-run once its holder has finished; a file a
+step cannot rewrite names fixing it, then re-running `kasbah migrate server
+USER@HOST`; a run whose snapshot name, of this second, is already taken names
+it to re-run in a second; a deploy since the snapshot names leaving
+`USER@HOST` at its major (a finished migration) or `kasbah migrate server
+USER@HOST` with a kasbah of the stopped run's major, which finishes it; a
+stopped run's snapshot that does not read back names the file to move aside,
+then `kasbah migrate server USER@HOST --undo`. For a refusal `kasbah remote
+migrate` prints the cause alone and exits 5 with a report of which on stdout,
+and the workstation prints the step with its target; a report that does not
+read back fails naming the exit, nothing changed, and the same command to
+re-run to see the refusal again.
 
 Exit codes: 3 unreachable, 4 no marker, 1 refused.
 

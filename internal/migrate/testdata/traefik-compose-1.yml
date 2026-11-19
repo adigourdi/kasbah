@@ -1,0 +1,70 @@
+# The shared Traefik stack — one instance per VPS, installed at
+# <apps>/traefik/compose.yml by `kasbah server init`.
+#
+# The apps and data paths below are substituted on the workstation before this
+# file is shipped. Traefik's static configuration expands no environment
+# variable, so every value it needs is baked at render time, a DNS provider's
+# credentials aside (compose reads them from their own files); nothing here is
+# left for compose to interpolate, which is why the stack carries no `.env`.
+# A dynamic file is rendered as a Go template, and its `{{ env "X" }}` reads
+# this container's environment, which holds nothing per project: a project
+# fragment's ${KEY}s are filled from that project's .env by deploy instead,
+# before the file lands in dynamic/ (docs/traefik.md -> Project fragment).
+#
+# Run by hand as: docker compose -p traefik up -d
+# The `-p` is not optional — `name:` below is the weakest source of the project
+# name, and COMPOSE_PROJECT_NAME in the environment outranks it.
+name: traefik
+
+services:
+  traefik:
+    # Substituted on the workstation. The tag kasbah pins is built into the
+    # kasbah binary, because two commands decide it: a
+    # first `server init` renders that pin, and `server upgrade-traefik` renders
+    # whatever --version says. Every later init reads the tag back out of the
+    # copy on the server and reproduces it (docs/traefik.md -> Ownership), so a
+    # managed upgrade is not undone by the next re-run.
+    image: traefik:v3.7.10
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # No docker socket. Routing comes from the file provider alone: the
+      # docker provider drops routers for unhealthy containers, cannot express
+      # a backend-less redirect, and scatters routing across every project's
+      # compose file (docs/traefik.md). Mounting the socket would also hand
+      # every routed project root on the host.
+      - "/srv/apps/traefik/traefik.yml:/etc/traefik/traefik.yml:ro"
+      - "/srv/apps/traefik/dynamic:/etc/traefik/dynamic:ro"
+      # Read-write: this is where ACME stores the account and the certificates.
+      # `kasbah server init` creates it as a *file* first — Docker materialises
+      # a missing bind-mount source as a directory.
+      - "/srv/data/traefik/letsencrypt/acme.json:/letsencrypt/acme.json"
+    networks:
+      - kasbah-net
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Deliberately no `cpus:` / `mem_limit:`. Those ceilings exist so that one
+    # project cannot lock out Traefik and SSH; capping the ingress protects
+    # nothing it is not already the victim of, and a throttled Traefik takes
+    # every site with it. `kasbah check`'s R01-R03 govern project compose
+    # files, not kasbah-owned stacks.
+
+# Kasbah's own shared network, kept for projects still routed through it
+# (declared `external: true` on their side). Each project's own network, and
+# the mail stack's, is joined live with `docker network connect` instead.
+networks:
+  kasbah-net:
+    name: kasbah-net
+    driver: bridge

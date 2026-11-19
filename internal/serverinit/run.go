@@ -816,6 +816,9 @@ func Run(c Ctx, o Options) (err error) {
 	if nets := strings.Fields(tfk["traefik_networks"]); len(nets) > 0 {
 		out.Info("           on %d project network(s): %s", len(nets), strings.Join(nets, " "))
 	}
+	if sh := tfk["traefik_shared"]; sh != "" {
+		out.Info("           %s", sh)
+	}
 	from := ""
 	if v.Acme.Stored != "" && v.Acme.Stored != v.Acme.CA {
 		from = v.Acme.Stored + " -> "

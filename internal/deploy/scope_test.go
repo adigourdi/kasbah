@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -403,5 +404,32 @@ func TestEngineRollReadsAScopedLiveFragment(t *testing.T) {
 func TestScopeFragmentUnparsed(t *testing.T) {
 	if _, err := scopeOf(t, "http: [\n"); err == nil || !strings.Contains(err.Error(), "does not parse as YAML") {
 		t.Errorf("%v", err)
+	}
+}
+
+func TestQualifyAndStrays(t *testing.T) {
+	const frag = "http:\n  services:\n    a:\n      loadBalancer:\n        servers:\n          - url: http://web:80\n          - url: http://web.alpha_kasbah:80\n          - url: http://10.0.0.5\n          - url: http://admin:80\n"
+	out, n, err := Qualify("alpha", []byte(frag))
+	if err != nil || n != 2 || string(out) != strings.NewReplacer("web:80", "web.alpha_kasbah:80", "admin:80", "admin.alpha_kasbah:80").Replace(frag) {
+		t.Errorf("%d %v\n%s", n, err, out)
+	}
+	if _, n, err := Qualify("alpha", out); err != nil || n != 0 {
+		t.Errorf("rerun: %d %v", n, err)
+	}
+	model := func(m string) func(...string) (string, error) {
+		return func(...string) (string, error) { return m, nil }
+	}
+	own := `{"services":{"web":{"networks":{"kasbah":null}}},"networks":{"kasbah":{"name":"alpha_kasbah"}}}`
+	lost, outside, err := Strays("alpha", out, model(own))
+	if err != nil || !slices.Equal(lost, []string{"admin.alpha_kasbah"}) || !slices.Equal(outside, []string{"10.0.0.5"}) {
+		t.Errorf("%q %q %v", lost, outside, err)
+	}
+	renamed := `{"services":{"web":{"networks":{"kasbah":null}}},"networks":{"kasbah":{"name":"shared"}}}`
+	if lost, outside, err := Strays("alpha", out, model(renamed)); err != nil || len(lost) != 3 || len(outside) != 1 {
+		t.Errorf("a network compose does not name alpha_kasbah: %q %q %v", lost, outside, err)
+	}
+	// Only a bare name needs the model; a backend Qualify refuses is its to say.
+	if lost, outside, err := Strays("alpha", []byte("http:\n  services:\n    a:\n      loadBalancer:\n        servers:\n          - url: http://db.example.com\n          - url: http://u:p@web:80\n"), nil); err != nil || lost != nil || !slices.Equal(outside, []string{"db.example.com"}) {
+		t.Errorf("no bare name reads no model: %q %q %v", lost, outside, err)
 	}
 }

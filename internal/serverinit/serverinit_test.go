@@ -950,3 +950,15 @@ func TestRemoteLayoutFailureCarriesItsCause(t *testing.T) {
 		t.Fatalf("err = %v, want %q", err, want)
 	}
 }
+
+func TestFirstLine(t *testing.T) {
+	for in, want := range map[string]string{
+		"docker network rm kasbah-net failed: exit status 1\r\nError response from daemon: busy\n": "docker network rm kasbah-net failed: exit status 1",
+		"\n  \nError response from daemon: x\n":                                                    "Error response from daemon: x",
+		"":                                                                                         "",
+	} {
+		if got := firstLine(in); got != want {
+			t.Errorf("%q: %q", in, got)
+		}
+	}
+}

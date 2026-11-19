@@ -294,6 +294,9 @@ func Run(c Ctx, o Options) error {
 	if nets := strings.Fields(up.Networks); len(nets) > 0 {
 		c.Out.Info("  rejoined %d project network(s): %s", len(nets), strings.Join(nets, " "))
 	}
+	if up.Shared != "" {
+		c.Out.Info("  %s", up.Shared)
+	}
 	if x.stack.AcmeState == "nonempty" {
 		if up.AcmeDigest == x.stack.AcmeDigest {
 			c.Out.Info("  acme.json: unchanged (kasbah never writes it; the certificates carried over)")

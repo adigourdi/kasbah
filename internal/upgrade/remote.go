@@ -82,6 +82,8 @@ type Up struct {
 	// JoinErr why it could not rejoin one.
 	Networks string `json:"up_networks"`
 	JoinErr  string `json:"up_join_err,omitempty"`
+	// Shared is what the start did to kasbah-net once Traefik ran.
+	Shared string `json:"up_shared,omitempty"`
 }
 
 func b64(path string) string {
@@ -526,6 +528,12 @@ func start(apps, backupDir, acme string, timeout time.Duration, stderr io.Writer
 		u.Image, _ = inspect(id, "{{.Config.Image}}")
 		u.StartedAt, _ = inspect(id, "{{.State.StartedAt}}")
 		u.State, _ = inspect(id, "{{.State.Status}}")
+	}
+	if u.State == "running" {
+		var err error
+		if u.Shared, err = traefiknet.Docker(func(a ...string) (string, error) { return dockerCmd("", a...) }).DropShared(); err != nil {
+			u.Shared = traefiknet.Shared + " left in place: " + err.Error()
+		}
 	}
 	u.AcmeDigest = digest(acme)
 	return u

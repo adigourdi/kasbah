@@ -43,6 +43,15 @@ type owner struct{ name, svc, what string }
 // one's address, out of text, in document order. Each found once, an alias's
 // target included.
 func backends(text []byte) ([]backend, error) {
+	bs, err := readBackends(text)
+	if err != nil {
+		return nil, fmt.Errorf("%s does not parse as YAML (%v) (kasbah help T01)", Fragment, err)
+	}
+	return bs, nil
+}
+
+// readBackends is backends with YAML's own error.
+func readBackends(text []byte) ([]backend, error) {
 	norm := bytes.ReplaceAll(text, []byte("\r\n"), []byte("\n"))
 	lines := lineStarts(text)
 	dec := yaml.NewDecoder(bytes.NewReader(norm))
@@ -54,7 +63,7 @@ func backends(text []byte) ([]backend, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("%s does not parse as YAML (%v) (kasbah help T01)", Fragment, err)
+			return nil, err
 		}
 		if len(doc.Content) == 0 {
 			continue
@@ -436,6 +445,12 @@ func scopeFragment(tmpl, text []byte, sc scoping) ([]byte, error) {
 	if len(bad) > 0 {
 		return nil, fmt.Errorf("%s targets a backend that is not this project's: %s — target %s (kasbah help T07)", Fragment, strings.Join(bad, "; "), ownList(own))
 	}
+	return qualify(text, bs, netName), nil
+}
+
+// qualify is text with each of bs's hosts followed by .netName.
+func qualify(text []byte, bs []backend, netName string) []byte {
+	bs = slices.Clone(bs)
 	sort.SliceStable(bs, func(i, j int) bool { return bs[i].at < bs[j].at })
 	out := make([]byte, 0, len(text)+len(bs)*(len(netName)+1))
 	last := 0
@@ -443,8 +458,80 @@ func scopeFragment(tmpl, text []byte, sc scoping) ([]byte, error) {
 		out = append(append(append(out, text[last:b.at]...), '.'), netName...)
 		last = b.at
 	}
-	return append(out, text[last:]...), nil
+	return append(out, text[last:]...)
 }
+
+// bareName is whether h is a host name of one label: what scoping qualifies.
+func bareName(h string) bool {
+	return h != "" && !strings.Contains(h, ".") && net.ParseIP(h) == nil &&
+		strings.Trim(h, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") == ""
+}
+
+// Qualify is text, a fragment installed for project, with each backend host
+// that is a bare name qualified with <project>_kasbah, every other byte kept,
+// and how many it qualified; an IP or a dotted host is left as written. A
+// backend it cannot rewrite in place is an error naming it.
+func Qualify(project string, text []byte) ([]byte, int, error) {
+	bs, err := readBackends(text)
+	if err != nil {
+		return nil, 0, fmt.Errorf("does not parse as YAML (%v)", err)
+	}
+	var todo []backend
+	for _, b := range bs {
+		switch {
+		case b.bad != "":
+			return nil, 0, fmt.Errorf("%s %s", b.where, b.bad)
+		case bareName(b.host):
+			todo = append(todo, b)
+		}
+	}
+	return qualify(text, todo, project+"_"+projectNet), len(todo), nil
+}
+
+// Strays is each backend host of text, a fragment installed for project,
+// that will not reach the project once scoped, judged from `docker compose -p
+// project config` through query (as ComposeQuery runs it): lost a bare name,
+// or one qualified with <project>_kasbah, that is not one of the project's own
+// names on that network; outside an IP or another dotted host, which Qualify
+// leaves as written and a deploy refuses (T07). One Qualify refuses is in
+// neither; the model is read only when there is a bare name to judge.
+func Strays(project string, text []byte, query func(...string) (string, error)) (lost, outside []string, err error) {
+	bs, err := readBackends(text)
+	if err != nil {
+		return nil, nil, fmt.Errorf("does not parse as YAML (%v)", err)
+	}
+	netName := project + "_" + projectNet
+	var named []string
+	for _, b := range bs {
+		bare, _ := strings.CutSuffix(b.host, "."+netName)
+		switch {
+		case b.bad != "":
+		case bareName(bare):
+			named = append(named, b.host)
+		default:
+			outside = append(outside, b.host)
+		}
+	}
+	if len(named) == 0 {
+		return nil, outside, nil
+	}
+	m, err := readModel(project, query)
+	if err != nil {
+		return nil, nil, err
+	}
+	own := m.owners()
+	scoped := m.netName(project) == netName
+	for _, h := range named {
+		bare, _ := strings.CutSuffix(h, "."+netName)
+		if !scoped || !slices.ContainsFunc(own, func(o owner) bool { return strings.EqualFold(o.name, bare) }) {
+			lost = append(lost, h)
+		}
+	}
+	return lost, outside, nil
+}
+
+// ComposeQuery is docker run in dir, under LC_ALL=C, through trace.
+func ComposeQuery(dir string) func(...string) (string, error) { return composeQuery(dir) }
 
 // fromKeys sets each backend's keys: the ${KEY}s of tmpl's same backend
 // written before the end of its host, read from tmpl's own line. A tmpl whose

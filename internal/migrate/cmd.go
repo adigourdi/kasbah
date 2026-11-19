@@ -52,11 +52,19 @@ compatibility).
                             every workstation of the old major is refused by the
                             server. Idempotent: a file already at the target is
                             skipped, so a run that died halfway is finished by
-                            the next.
+                            the next. Every file a step rewrites is rewritten
+                            in memory first: one it cannot rewrite stops the
+                            run before any is. Before asking, the plan lists
+                            what will lose its route and any file that would
+                            stop it; a step's live action (1->2 disconnects
+                            Traefik from kasbah-net) runs after its files,
+                            before the marker.
 
-  --undo    put the newest snapshot back, marker included. Refused when any
-            project's versions.log has an entry newer than the snapshot: the
-            tarball is named for the manual path.
+  --undo    put the newest snapshot back, marker included — files only: the
+            server binary stays this build, and Traefik is not put back on
+            kasbah-net (the report says how). Refused when any project's
+            versions.log has an entry newer than the snapshot: the tarball is
+            named for the manual path.
   --yes     answer the confirmation, for scripts. Without it and without a
             terminal, migrate stops rather than assuming.
 `
@@ -113,6 +121,8 @@ type Session interface {
 	// the marker; a server with none is exit 4.
 	Marker() (*marker.Marker, string, error)
 	Migrate(apps, ours string, undo bool) ([]byte, int)
+	// Probe is `kasbah remote migrate --probe`: a ProbeReport, read-only.
+	Probe(apps, ours string) ([]byte, int)
 	Close()
 }
 
@@ -158,6 +168,11 @@ func (s *SSH) Migrate(apps, ours string, undo bool) ([]byte, int) {
 	return out, ssh.ExitCode(err)
 }
 
+func (s *SSH) Probe(apps, ours string) ([]byte, int) {
+	out, err := s.Conn.Run(s.bin, "remote", "migrate", "--apps="+apps, "--version="+ours, "--probe")
+	return out, ssh.ExitCode(err)
+}
+
 func (s *SSH) Close() { s.Conn.Close() }
 
 // Ctx is what a run needs from its process.
@@ -192,7 +207,7 @@ func RunServer(c Ctx, o Options) error {
 	if o.Undo {
 		fmt.Fprintf(w, "undo the last migration of %s from its snapshot under %s: a run that stopped partway has the files it rewrote put back, %s untouched; else the newest finished one goes back, %s last\n", o.Target, filepath.Join(apps, Dir), path, path)
 		fmt.Fprintf(w, "refused if it has a file to put back and any project has deployed since it was taken\n")
-		return confirmAndRun(c, s, o, apps, "Undo? Once a finished migration goes back, workstations of this server's old major can talk to it again, and this kasbah's major is refused until it is migrated again.")
+		return confirmAndRun(c, s, o, apps, fmt.Sprintf("Undo? Once a finished migration goes back, this kasbah's major is refused until it is migrated again, and the server binary stays this build, which a workstation of the old major refuses until that major's binary is put at %s by hand.", serverbin.Path(apps)))
 	}
 	if from == to {
 		fmt.Fprintf(w, "nothing to migrate: %s on %s is at major %d (kasbah %s), which is this kasbah's\n", path, o.Target, from, recorded)
@@ -203,12 +218,50 @@ func RunServer(c Ctx, o Options) error {
 		return cli.Fail("cannot migrate %s: %v", o.Target, err)
 	}
 	fmt.Fprintf(w, "migrate %s: %s from major %d (kasbah %s) to %d (kasbah %s)\n", o.Target, path, from, recorded, to, c.Version)
+	warns := false
 	for _, st := range plan {
 		fmt.Fprintf(w, "  step %d->%d: %s\n", st.From, st.To, st.Desc)
+		warns = warns || st.Warn != nil
 	}
 	fmt.Fprintf(w, "  snapshot: %s, written before anything is rewritten\n", filepath.Join(apps, Dir, SnapshotName(from, to, c.Now())))
 	fmt.Fprintf(w, "  locks: %s and every project's .deploy.lock, taken without waiting\n", filepath.Join(apps, Lock))
+	if warns {
+		printProbe(w, s, apps, c.Version, o.Target)
+	}
 	return confirmAndRun(c, s, o, apps, fmt.Sprintf("Migrate? Every kasbah workstation older than %d.x will be refused by this server afterwards.", to))
+}
+
+// printProbe lists, before the prompt, what the plan will cost on target:
+// a warning, never a refusal, as the prompt is the way to stop.
+func printProbe(w io.Writer, s Session, apps, ours, target string) {
+	out, rc := s.Probe(apps, ours)
+	var r ProbeReport
+	err := remote.Decode(out, &r, ProbeKeys, "the migration probe", target)
+	switch {
+	case rc != 0:
+		fmt.Fprintf(w, "  what will lose its route is unjudged: the probe on %s exited %d (see above); the run's report lists it\n", target, rc)
+		return
+	case err != nil:
+		fmt.Fprintf(w, "  what will lose its route is unjudged: %v; the run's report lists it\n", err)
+		return
+	}
+	list := func(head string, l []string) {
+		fmt.Fprintf(w, "  %s\n", head)
+		for _, x := range l {
+			fmt.Fprintf(w, "    - %s\n", x)
+		}
+	}
+	if len(r.Stops) > 0 {
+		list("will stop before rewriting any file (fix it by hand first):", r.Stops)
+	}
+	if len(r.Warnings) == 0 {
+		fmt.Fprintf(w, "  nothing found that will lose its route\n")
+	} else {
+		list("will lose its route (answer no to stop here):", r.Warnings)
+	}
+	if len(r.Notes) > 0 {
+		list("left as it is:", r.Notes)
+	}
 }
 
 func confirmAndRun(c Ctx, s Session, o Options, apps, question string) error {
@@ -267,11 +320,13 @@ func Print(w io.Writer, target string, r *Report) {
 		}
 		printGone(w, r)
 	case r.Undo:
-		fmt.Fprintf(w, "undone on %s: %s restored (%d file(s), the marker %s) — the server is back at major %d\n", target, r.Snapshot, len(r.Restored), r.Marker, r.From)
+		fmt.Fprintf(w, "undone on %s: %s restored (%d file(s), the marker %s) — the marker is back at major %d\n", target, r.Snapshot, len(r.Restored), r.Marker, r.From)
 		for _, f := range r.Restored {
 			fmt.Fprintf(w, "  restored %s\n", f)
 		}
 		printGone(w, r)
+		apps := filepath.Dir(filepath.Dir(filepath.Dir(r.Snapshot)))
+		fmt.Fprintf(w, "  the server binary is still this build, which a kasbah of major %d refuses as newer: to manage %s with one, put that kasbah's server build (the release asset kasbah_<version>_linux_<arch>) at %s by hand\n", r.From, target, serverbin.Path(apps))
 	case r.Nothing:
 		fmt.Fprintf(w, "nothing to migrate on %s: the marker is already at major %d\n", target, r.To)
 	default:
@@ -280,13 +335,30 @@ func Print(w io.Writer, target string, r *Report) {
 			reused = " (an earlier run's, kept: it holds the originals)"
 		}
 		fmt.Fprintf(w, "migrated %s from major %d to %d; snapshot %s%s\n", target, r.From, r.To, r.Snapshot, reused)
-		for _, s := range r.Steps {
-			fmt.Fprintf(w, "  step %d->%d: %d file(s)\n", s.From, s.To, len(s.Files))
-			for _, f := range s.Files {
-				fmt.Fprintf(w, "    %s %s\n", f.Path, f.Action)
-			}
-		}
+		printSteps(w, r.Steps)
 		fmt.Fprintf(w, "  marker %s\n", r.Marker)
+	}
+	for _, l := range r.Left {
+		fmt.Fprintf(w, "  %s\n", l)
+	}
+}
+
+// printSteps is each step's files, what its live action did, and its cost.
+func printSteps(w io.Writer, steps []StepReport) {
+	for _, s := range steps {
+		fmt.Fprintf(w, "  step %d->%d: %d file(s)\n", s.From, s.To, len(s.Files))
+		for _, f := range s.Files {
+			fmt.Fprintf(w, "    %s %s\n", f.Path, f.Action)
+		}
+		for _, l := range s.Done {
+			fmt.Fprintf(w, "    %s\n", l)
+		}
+		for _, l := range s.Warnings {
+			fmt.Fprintf(w, "    warning: %s\n", l)
+		}
+		for _, l := range s.Notes {
+			fmt.Fprintf(w, "    note: %s\n", l)
+		}
 	}
 }
 

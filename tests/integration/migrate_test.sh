@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Integration test: crossing a major (docs/server-setup.md → Server marker,
-# compatibility rule) against the live rig, with the real binary and its one
-# real step, 0→1.
+# compatibility rule) against the live rig, with the real binary and its
+# steps: 0→1, and 1→2 from a kasbah of major 2.
 #
 # The server is prepared, then its marker is planted at kasbah 0.9.0 — an
 # older major. Every prepared-server command must refuse *before* shipping its
@@ -173,6 +173,61 @@ assert 'grep -qF "99.0.0" <<<"$(err)"' "naming it (said '$(err)')"
 run server status "$RIG_TARGET"; rc=$?
 assert '[ "$rc" = 1 ] && grep -qF "99.0.0" <<<"$(err)"' "and so does server status (exit $rc: $(err))"
 assert '[ "$(marker_version)" = "99.0.0" ]' "neither touched the marker ($(marker_version))"
+
+# --- 1→2: scoped backends, Traefik off kasbah-net -----------------------------
+# Only a kasbah of major 2 or later carries this step. A 1.x server is
+# planted: a project with a bare backend, kasbah-net in Traefik's compose
+# file, and Traefik created on it by that file, as 1.x started it, and on a
+# project network too.
+if [ "$major" -ge 2 ]; then
+    rig_ssh "rm -rf $apps/alpha $snapdir" >/dev/null 2>&1
+    plant_marker "$(jq '.kasbah_version = "1.9.0"' <<<"$marker_json")"
+    frag=$apps/traefik/dynamic/zeta.yml
+    rig_ssh "mkdir -p $apps/zeta" >/dev/null 2>&1
+    printf 'http:\n  services:\n    zeta:\n      loadBalancer:\n        servers:\n          - url: "http://web:80"\n' |
+        rig_ssh "cat > $frag" >/dev/null 2>&1
+    rig_ssh "sed -i 's/^    container_name: traefik\$/&\\n    networks:\\n      - kasbah-net/' $apps/traefik/compose.yml && printf 'networks:\\n  kasbah-net:\\n    name: kasbah-net\\n' >> $apps/traefik/compose.yml" >/dev/null 2>&1
+    rig_ssh "cd $apps/traefik && docker compose -p traefik up -d && docker network create zeta_kasbah >/dev/null && docker network connect zeta_kasbah traefik" >/dev/null 2>&1
+    compose_v1=$(remote_cat "$apps/traefik/compose.yml")
+    assert 'grep -qF -- "- kasbah-net" <<<"$compose_v1"' "the planted compose file names kasbah-net"
+    assert '[ "$(rig_ssh "docker inspect -f {{.HostConfig.NetworkMode}} traefik" 2>/dev/null | tr -d "\r")" = kasbah-net ]' "Traefik was created on kasbah-net"
+
+    run migrate server "$RIG_TARGET"; rc=$?
+    assert '[ "$rc" = 1 ] && grep -qF "step 1->2" <<<"$(out)"' "the plan names step 1->2 (exit $rc: $(out))"
+    assert 'grep -qF "zeta is unjudged" <<<"$(out)"' "and lists, before asking, a project whose compose cannot be read (said '$(out)')"
+    assert '[ "$(remote_cat "$frag")" = "$(printf "http:\n  services:\n    zeta:\n      loadBalancer:\n        servers:\n          - url: \"http://web:80\"")" ]' "the unanswered prompt changed nothing"
+
+    run migrate server "$RIG_TARGET" --yes; rc=$?
+    assert '[ "$rc" = 0 ]' "migrate server 1->2 succeeds (exit $rc: $(err))"
+    assert 'grep -qF "http://web.zeta_kasbah:80" <<<"$(remote_cat "$frag")"' "the fragment's backend is scoped ($(remote_cat "$frag"))"
+    assert '! grep -qF kasbah-net <<<"$(remote_cat "$apps/traefik/compose.yml")"' "Traefik's compose file no longer names kasbah-net"
+    assert 'rig_ssh "docker compose -f $apps/traefik/compose.yml config -q" >/dev/null 2>&1' "and still reads as compose"
+    assert '! rig_ssh "docker inspect -f {{json .NetworkSettings.Networks}} traefik" 2>/dev/null | grep -qF "\"kasbah-net\""' "Traefik is off kasbah-net"
+    assert 'rig_ssh "docker network inspect kasbah-net" >/dev/null 2>&1' "and kasbah-net, which Traefik was created on, is kept"
+    assert 'grep -qF "traefik disconnected from kasbah-net, which is kept" <<<"$(out)"' "and the report says so (said '$(out)')"
+    assert 'grep -qF "warning: zeta is unjudged" <<<"$(out)"' "the report repeats the warning (said '$(out)')"
+    assert 'rig_ssh "docker restart traefik" >/dev/null 2>&1' "Traefik still starts after a restart"
+    assert '[ "$(rig_ssh "docker inspect -f {{.State.Running}} traefik" 2>/dev/null | tr -d "\r")" = true ]' "and is running"
+
+    run migrate server "$RIG_TARGET" --undo --yes; rc=$?
+    assert '[ "$rc" = 0 ]' "undo of 1->2 succeeds (exit $rc: $(err))"
+    assert 'grep -qF "http://web:80" <<<"$(remote_cat "$frag")"' "the fragment is put back"
+    assert '[ "$(remote_cat "$apps/traefik/compose.yml")" = "$compose_v1" ]' "so is Traefik's compose file"
+    assert 'grep -qF "docker network connect kasbah-net traefik" <<<"$(out)"' "and the report says how to put Traefik back on kasbah-net (said '$(out)')"
+    assert 'grep -qF "$bin by hand" <<<"$(out)"' "and where an older major's binary goes (said '$(out)')"
+
+    # Migrated again, a 2.x server init recreates Traefik off kasbah-net, and
+    # the network, with nothing left on it, goes.
+    sleep 1
+    run migrate server "$RIG_TARGET" --yes; rc=$?
+    assert '[ "$rc" = 0 ]' "migrating 1->2 again succeeds (exit $rc: $(err))"
+    run server init "$RIG_TARGET" --no-mail --no-backup "${traefik_flags[@]}"; rc=$?
+    assert '[ "$rc" = 0 ]' "server init after 1->2 succeeds (exit $rc: $(err))"
+    assert '[ "$(rig_ssh "docker inspect -f {{.HostConfig.NetworkMode}} traefik" 2>/dev/null | tr -d "\r")" != kasbah-net ]' "Traefik is recreated off kasbah-net"
+    assert '! rig_ssh "docker network inspect kasbah-net" >/dev/null 2>&1' "kasbah-net is removed"
+    assert 'grep -qF "kasbah-net removed" <<<"$(err)"' "and init says so (said '$(err)')"
+    rig_ssh "rm -rf $frag $apps/zeta; docker network rm zeta_kasbah" >/dev/null 2>&1
+fi
 
 # --- kasbah migrate in a schema-1 project ------------------------------------
 cp -r "$repo_dir/tests/fixtures/demo" "$tmpdir/demo"

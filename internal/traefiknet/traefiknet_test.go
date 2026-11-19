@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -78,5 +79,52 @@ func TestLeave(t *testing.T) {
 	}
 	if done, err := fake("", "", errors.New("Error: No such object: traefik"), &calls).Leave([]string{"a_kasbah"}); err != nil || done != nil {
 		t.Fatalf("no traefik leaves nothing to do: %v %v", done, err)
+	}
+}
+
+// shared is a docker whose kasbah-net exists unless gone, with each
+// container's `name mode nets…` line; rm is logged.
+func shared(gone bool, containers string, calls *[]string) Docker {
+	return func(args ...string) (string, error) {
+		j := strings.Join(args, " ")
+		switch {
+		case strings.HasPrefix(j, "network inspect"), j == "network rm kasbah-net":
+			if gone {
+				return "", errors.New("Error response from daemon: network kasbah-net not found")
+			}
+			*calls = append(*calls, j)
+			return "kasbah-net\n", nil
+		case j == "ps -aq":
+			return strings.Repeat("id\n", strings.Count(containers, "\n")), nil
+		case args[0] == "inspect":
+			return containers, nil
+		}
+		return "", errors.New("unexpected docker " + j)
+	}
+}
+
+func TestDropShared(t *testing.T) {
+	var calls []string
+	if said, err := shared(true, "", &calls).DropShared(); said != "" || err != nil || len(calls) != 0 {
+		t.Errorf("gone: %q %v %q", said, err, calls)
+	}
+	// A stopped container created on it, and one disconnected from it while
+	// it ran, still need it to start.
+	said, err := shared(false, "/traefik traefik_default traefik_default a_kasbah\r\n/old-db-1 kasbah-net \n/old-web-1 kasbah-net old_default \n/legacy bridge kasbah-net \n", &calls).DropShared()
+	if err != nil || said != "kasbah-net kept: legacy, old-db-1, old-web-1 still on it" || slices.Contains(calls, "network rm kasbah-net") {
+		t.Errorf("in use: %q %v %q", said, err, calls)
+	}
+	calls = nil
+	said, err = shared(false, "/traefik traefik_default traefik_default a_kasbah\n", &calls).DropShared()
+	if err != nil || said != "kasbah-net removed: no container is on it" || calls[len(calls)-1] != "network rm kasbah-net" {
+		t.Errorf("unused: %q %v %q", said, err, calls)
+	}
+	if _, err := Docker(func(...string) (string, error) {
+		return "", errors.New(`exec: "docker": executable file not found in $PATH`)
+	}).DropShared(); err == nil {
+		t.Error("a docker that does not run is not a network that is gone")
+	}
+	if !NoNetwork(errors.New("Error: No such network: kasbah-net"), Shared) || NoNetwork(errors.New("Error response from daemon: network kasbah-net2 not found"), "kasbah-net2x") {
+		t.Error("NoNetwork")
 	}
 }

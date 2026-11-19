@@ -6,10 +6,14 @@
 package migrate
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/adigourdi/kasbah/internal/deploy"
+	"github.com/adigourdi/kasbah/internal/traefiknet"
 )
 
 // Step rewrites the files of one major into the next.
@@ -20,11 +24,28 @@ type Step struct {
 	// Files lists the files the step rewrites, relative to the tree's root
 	// (the apps path, or the project root); one that is absent is skipped.
 	Files func(root string) ([]string, error)
-	// Major reads a file's own version stamp; a file at To or above is
-	// skipped, so a run that died halfway finishes on the next.
-	Major func(body []byte) (int, error)
+	// Major reads the version of a file (rel, as Files names it) from its
+	// bytes; a file at To or above is skipped, so a run that died halfway
+	// finishes on the next.
+	Major func(rel string, body []byte) (int, error)
 	// Rewrite is the step's transform of one file's bytes.
-	Rewrite func(body []byte) ([]byte, error)
+	Rewrite func(rel string, body []byte) ([]byte, error)
+	// Warn, when set, is what the step will cost, read-only: the plan lists
+	// it before asking, and the run's report repeats it.
+	Warn func(root string) Cost
+	// Act, when set, runs after the step's rewrites and before the marker
+	// moves, and says what it did; idempotent, as a rerun runs it again.
+	Act func(root string) ([]string, error)
+	// Left, when set, is what an undo of the step leaves live that its files
+	// do not put back, read-only, for the undo's report.
+	Left func(root string) []string
+}
+
+// Cost is a step's Warn: what will lose its route, and what it leaves as
+// written that a reader might expect it to change.
+type Cost struct {
+	Lost  []string `json:"lost"`
+	Notes []string `json:"notes"`
 }
 
 // Server is the server chain. 0.x state is 1.x state (docs/overview.md →
@@ -33,9 +54,9 @@ var Server = []Step{{
 	From: 0, To: 1,
 	Desc:    "rewrites no file (0.x server state is 1.x state); the marker's kasbah_version moves to this build's",
 	Files:   func(string) ([]string, error) { return nil, nil },
-	Major:   func([]byte) (int, error) { return 0, nil },
-	Rewrite: func(b []byte) ([]byte, error) { return b, nil },
-}}
+	Major:   func(string, []byte) (int, error) { return 0, nil },
+	Rewrite: func(_ string, b []byte) ([]byte, error) { return b, nil },
+}, scoped(traefiknet.Exec, deploy.ComposeQuery)}
 
 // Project is the project chain: schema 1 is the first, so it is empty.
 var Project []Step
@@ -73,6 +94,11 @@ type StepReport struct {
 	From  int          `json:"from"`
 	To    int          `json:"to"`
 	Files []FileResult `json:"files"`
+	// Warnings and Notes are the step's Warn, as the run found it; Done its
+	// Act's.
+	Warnings []string `json:"warnings,omitempty"`
+	Notes    []string `json:"notes,omitempty"`
+	Done     []string `json:"done,omitempty"`
 }
 
 // writeAtomic renders data to a temp file beside path and renames it over,
@@ -94,14 +120,30 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 	return nil
 }
 
-// apply runs one step over its files under root, each rewritten only when
-// its own stamp is below the step's To.
-func apply(root string, s Step) (StepReport, error) {
+// stop is a file a step cannot rewrite: rel as Files names it, path under
+// the root, and why.
+type stop struct{ rel, path, why string }
+
+func (e stop) Error() string { return e.path + " " + e.why }
+
+// edit is one file a step will rewrite: where, its mode, its new bytes.
+type edit struct {
+	path string
+	mode os.FileMode
+	body []byte
+	// at is its FileResult's index.
+	at int
+}
+
+// prepare reads every file of s under root and makes each rewrite in memory,
+// writing nothing: what each will get. A file it cannot rewrite is a stop.
+func prepare(root string, s Step) (StepReport, []edit, error) {
 	r := StepReport{From: s.From, To: s.To, Files: []FileResult{}}
 	files, err := s.Files(root)
 	if err != nil {
-		return r, fmt.Errorf("step %d->%d could not list its files: %v", s.From, s.To, err)
+		return r, nil, fmt.Errorf("step %d->%d could not list its files: %v", s.From, s.To, err)
 	}
+	var edits []edit
 	for _, rel := range files {
 		path := filepath.Join(root, rel)
 		fi, err := os.Stat(path)
@@ -110,28 +152,49 @@ func apply(root string, s Step) (StepReport, error) {
 			continue
 		}
 		if err != nil || !fi.Mode().IsRegular() {
-			return r, fmt.Errorf("step %d->%d: %s is not a regular file", s.From, s.To, path)
+			return r, nil, stop{rel, path, "is not a regular file"}
 		}
 		body, err := os.ReadFile(path)
 		if err != nil {
-			return r, fmt.Errorf("step %d->%d could not read %s: %v", s.From, s.To, path, err)
+			return r, nil, stop{rel, path, fmt.Sprintf("could not be read: %v", err)}
 		}
-		at, err := s.Major(body)
+		at, err := s.Major(rel, body)
 		if err != nil {
-			return r, fmt.Errorf("step %d->%d cannot tell the version of %s: %v", s.From, s.To, path, err)
+			return r, nil, stop{rel, path, fmt.Sprintf("cannot be rewritten in place: %v", err)}
 		}
 		if at >= s.To {
 			r.Files = append(r.Files, FileResult{rel, "skipped"})
 			continue
 		}
-		out, err := s.Rewrite(body)
+		out, err := s.Rewrite(rel, body)
 		if err != nil {
-			return r, fmt.Errorf("step %d->%d failed on %s: %v", s.From, s.To, path, err)
+			return r, nil, stop{rel, path, fmt.Sprintf("cannot be rewritten in place: %v", err)}
 		}
-		if err := writeAtomic(path, out, fi.Mode().Perm()); err != nil {
+		edits = append(edits, edit{path, fi.Mode().Perm(), out, len(r.Files)})
+		r.Files = append(r.Files, FileResult{rel, "rewritten"})
+	}
+	return r, edits, nil
+}
+
+// apply runs one step over its files under root, each rewritten only when
+// its own stamp is below the step's To, and only once every one has been
+// rewritten in memory.
+func apply(root string, s Step) (StepReport, error) {
+	r, edits, err := prepare(root, s)
+	if st := (stop{}); errors.As(err, &st) {
+		r.Files = []FileResult{}
+		return r, fmt.Errorf("step %d->%d stops at %s, rewriting no file: it %s", s.From, s.To, st.path, st.why)
+	}
+	if err != nil {
+		return r, err
+	}
+	for i, e := range edits {
+		if err := writeAtomic(e.path, e.body, e.mode); err != nil {
+			for _, n := range edits[i:] {
+				r.Files[n.at].Action = "not rewritten"
+			}
 			return r, fmt.Errorf("step %d->%d: %v", s.From, s.To, err)
 		}
-		r.Files = append(r.Files, FileResult{rel, "rewritten"})
 	}
 	return r, nil
 }

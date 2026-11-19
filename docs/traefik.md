@@ -131,12 +131,17 @@ every site answers 502 until `server init` is re-run.
 No network is shared between projects. A routed service on `kasbah-net`, the
 network every project once shared, fails `kasbah check` (C03, which `check
 --fix` moves to `kasbah`), and a deploy refuses a project whose compose joins
-it, or any network from outside the project. Nothing removes `kasbah-net`
-from a server that has it, and Traefik stays on it until it is recreated:
-once `server init` or `upgrade-traefik` recreates it on `traefik_default`, a
-project an older kasbah deployed on `kasbah-net` loses its route and answers
-502, though both report success. `kasbah check --fix` moves it to `kasbah:
-{}`, and a redeploy routes it again.
+it, or any network from outside the project. `kasbah migrate server`, crossing
+to 2, takes `kasbah-net` out of Traefik's compose file and disconnects the
+live Traefik from it, but keeps the network: Traefik was created on it, and
+Docker does not start a container whose network is gone. The next `server
+init` or `upgrade-traefik` recreates Traefik on `traefik_default` and, once it
+runs, removes `kasbah-net` when no container, running or stopped, is on it or
+was created on it, and says so; one that still is keeps it, named in that
+command's output (`cli.md`). A backend an older kasbah's project reached only
+through `kasbah-net` loses its route and answers 502, and the migration lists
+each before it asks. `kasbah check --fix` moves the project to `kasbah: {}`,
+and a redeploy routes it again.
 
 Why not put the whole project on its network via `default:`? Compose registers
 every service's **service name** as a DNS alias on each network it joins, and
